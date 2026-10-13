@@ -144,6 +144,7 @@ describe('classification guard (derived from source)', () => {
       'harness/routines/project-history-refresh-action.ts',
       'harness/routines/p2p-perf-actions.ts',
       'harness/routines/sync-batch-delta-check-action.ts',
+      'harness/routines/sync-batch-lint-guards-action.ts',
       'harness/routines/gate-fire-drill-action.ts',
       'harness/routines/release-actions.ts',
       // Runs release-local.sh and setup-release-checkout.sh from the LIVE tree before it moves

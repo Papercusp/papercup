@@ -12,6 +12,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { beginNodeTestLedger } from '../../../../libs/test-config/src/node-test-ledger';
+import type { TestRunRow } from '../../../../libs/test-config/src/admin-test-runs-reporter';
+import { parseTestRunExecutionDetails } from '../../../../libs/test-config/src/execution-details';
 import { verifierSourceFiles } from '../verifier-source';
 import {
   CHILD_SOURCE_NOTICE_ENV,
@@ -341,6 +345,67 @@ describe('provenance fields on the terminal marker line', () => {
  * CHILD_SOURCE_NOTICE_ENV; the router exports a per-run file and reports what landed.
  */
 describe('test-spawned child committed-source substitutions', () => {
+  it('main records actual substituted cases and isolates the next node group from earlier notices', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'router-node-source-')));
+    const keys = [CHILD_SOURCE_NOTICE_ENV, 'NODE_OPTIONS', 'PC_HEAVY_PREEMPT_READY_FILE',
+      'PC_HEAVY_PSI_FINALIZATION_FILE', 'VERIFY_TAURI_SOURCE_RECEIPT', 'VERIFY_TAURI_SOURCE_REF'];
+    const saved = keys.map(key => process.env[key]);
+    for (const key of keys) delete process.env[key];
+    const rows: TestRunRow[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      mkdirSync(join(root, 'scripts'));
+      mkdirSync(join(root, 'papercusp-desktop', 'test'), { recursive: true });
+      writeFileSync(join(root, 'package.json'), '{"type":"module"}');
+      writeFileSync(join(root, 'papercusp-desktop', 'package.json'), '{"type":"module"}');
+      const first = join(root, 'scripts', 'fixture.test.mjs');
+      const committed = "import { test } from 'node:test'; test('HEAD case', () => {});\n";
+      writeFileSync(first, committed);
+      writeFileSync(join(root, 'papercusp-desktop', 'test', 'fixture.test.js'),
+        "import { test } from 'node:test'; test('later clean case', () => {});\n");
+      const git = (args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8',
+        env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+      git(['init', '-q']); git(['add', '.']);
+      git(['-c', 'user.name=Router fixture', '-c', 'user.email=router@example.test', 'commit', '-qm', 'fixture']);
+      const commit = git(['rev-parse', 'HEAD']).trim();
+      writeFileSync(first, "import { test } from 'node:test'; test('WORKTREE first', () => { throw Error('wrong source'); }); test('WORKTREE second', () => {});\n");
+      process.env.NODE_OPTIONS = `--import=${resolve(REPO_ROOT, 'scripts/lib/committed-source-loader.mjs')}`;
+      const code = await main(['scripts/fixture.test.mjs', 'papercusp-desktop/test/fixture.test.js'], {
+        repoRoot: root,
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        beginNodeTestLedgerImpl: (options: Parameters<typeof beginNodeTestLedger>[0]) =>
+          beginNodeTestLedger({ ...options, writeRows: async batch => { rows.push(...batch); } }),
+        runGovernedTestProcessImpl: async (_options: unknown, runChild: Function) => {
+          const result = await runChild({}, process.env);
+          // Restore disk before record(): child notices must remain the execution authority.
+          writeFileSync(first, committed);
+          return result;
+        },
+      });
+      expect(code).toBe(0);
+      expect(rows).toHaveLength(2);
+      const substituted = rows.find(row => row.filePath === 'scripts/fixture.test.mjs')!;
+      expect(substituted).toMatchObject({ status: 'pass', commitSha: null, worktreeDirty: true });
+      expect(parseTestRunExecutionDetails(substituted.executionDetails)).toMatchObject({
+        passed: 1, failed: 0, skipped: 0, passedCaseTitles: ['HEAD case'],
+        worktreeDirtyReason: expect.stringContaining('substituted esm scripts/fixture.test.mjs'),
+      });
+      const clean = rows.find(row => row.filePath === 'papercusp-desktop/test/fixture.test.js')!;
+      expect(clean).toMatchObject({ status: 'pass', commitSha: commit, worktreeDirty: false });
+      expect(parseTestRunExecutionDetails(clean.executionDetails)?.passedCaseTitles).toEqual(['later clean case']);
+    } finally {
+      keys.forEach((key, index) => {
+        if (saved[index] === undefined) delete process.env[key];
+        else process.env[key] = saved[index];
+      });
+      logSpy.mockRestore(); errSpy.mockRestore(); stdoutSpy.mockRestore(); stderrSpy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   const notice = (top: string, over: Record<string, unknown> = {}) =>
     JSON.stringify({
       schemaVersion: CHILD_SOURCE_NOTICE_SCHEMA,

@@ -149,10 +149,17 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 vi.mock('../coordination/context-pressure', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   fetchContextPressure: fetchContextPressureM,
+  fetchContextPressureReadings: fetchContextPressureM,
 }));
 vi.mock('../../goals/holder-authority', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   readGoalHolderAuthority: readGoalHolderAuthorityM,
+}));
+// The mocked authority reader ignores its SQL argument. Supplying that argument
+// must not acquire a real pool before the mock is reached.
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOrgPg: () => ({ sql: () => { throw new Error('Unexpected SQL in scheduler handler unit tests'); } }),
 }));
 // The work-scope gate is a pure allow/deny decision for this scheduler suite. Mocking the
 // dynamically imported module keeps its pot-control-policy sync listener (and its real PG
@@ -262,9 +269,10 @@ import {
   type RepairTaskTx,
 } from '../../scheduler/acceptance-readiness-hold';
 
-function handlerPayload(out: { data?: unknown; content?: Array<{ text?: string }> }): Record<string, unknown> {
-  if (out.data !== undefined) return out.data as Record<string, unknown>;
-  return JSON.parse(out.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+function handlerPayload(out: unknown): Record<string, unknown> {
+  const response = out as { data?: unknown; content?: Array<{ text?: string }> };
+  if (response.data !== undefined) return response.data as Record<string, unknown>;
+  return JSON.parse(response.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
 beforeEach(() => {
@@ -306,6 +314,8 @@ beforeEach(() => {
   leaseClaimedWorkItemM.mockResolvedValue(true);
   releaseWorkItemM.mockResolvedValue(undefined);
   clearClaimSpecM.mockResolvedValue({ ok: true, errors: [], cleared: true });
+  readClaimConcurrencyM.mockReset();
+  readClaimConcurrencyM.mockResolvedValue({ blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] });
 });
 
 describe('plansStartExactPlanBinding — automatic cleanup stays narrower than arbitrary plan filters', () => {
@@ -358,6 +368,99 @@ const TOOLS: Array<{ name: string; args: ZodTypeAny }> = [
   { name: 'scheduler:get_next', args: (getNextTool as { args: ZodTypeAny }).args },
   { name: 'work_items:claim_next', args: (claimNextTool as { args: ZodTypeAny }).args },
 ];
+
+describe('scheduler:get_next records early refusal dispositions (EI-25880074393060687)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopeState.scope = null;
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+    registryState.projects = [{ slug: 'papercusp' }];
+    loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
+    getSessionBriefM.mockResolvedValue(null);
+    getActiveClaimForOwnerM.mockResolvedValue(null);
+    getNextM.mockResolvedValue(null);
+    readClaimConcurrencyM.mockResolvedValue({ blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] });
+  });
+
+  it('records an unresolved harness refusal without inventing a spec or claim', async () => {
+    const metadata = vi.fn();
+    const out = await getNextTool.handler({}, { metadata } as never);
+    expect(handlerPayload(out)).toMatchObject({ error: 'harness_required' });
+    expect(getNextM).not.toHaveBeenCalled();
+    expect(metadata).toHaveBeenLastCalledWith({
+      schedulerDisposition: { kind: 'no-claim', reason: 'missing' },
+    });
+  });
+
+  it.each(['paused', 'leader-unavailable', 'plan-complete'] as const)(
+    'records the %s preflight refusal against its resolved fleet revision',
+    async (branch) => {
+      scopeState.scope = {
+        ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member',
+        record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 }, revision: 4 },
+      };
+      if (branch === 'paused') {
+        scopeState.windingDown = true;
+        scopeState.pauseReason = 'owner paused';
+      } else if (branch === 'leader-unavailable') {
+        reconcileFleetScopeLeaderSuccessionM.mockResolvedValue('unavailable');
+      } else {
+        diagnoseFleetScopePlanTerminalityM.mockResolvedValue({
+          planSlugs: ['finished'], terminalPlanSlugs: ['finished'], allTerminal: true,
+        });
+      }
+      const metadata = vi.fn();
+      const out = await getNextTool.handler({ harness: 'papercusp' }, { metadata } as never);
+      const payload = handlerPayload(out);
+      expect(payload.ok).toBe(false);
+      expect(getNextM).not.toHaveBeenCalled();
+      expect(metadata).toHaveBeenLastCalledWith({
+        schedulerDisposition: {
+          kind: 'no-claim', reason: payload.reason ?? payload.error,
+          specId: 'bugs-rev4', revision: 4,
+        },
+      });
+    },
+  );
+
+  it('records a declared-plan refusal before selection', async () => {
+    getPresenceM.mockResolvedValue({ currentPlanSlug: 'active-control-plan' });
+    planTerminalityInWorkspaceM.mockResolvedValue({ status: 'active', hasOpenItems: true });
+    const metadata = vi.fn();
+    const out = await getNextTool.handler({ harness: 'papercusp' }, { metadata } as never);
+    expect(handlerPayload(out)).toMatchObject({ error: 'plan_scope_missing' });
+    expect(getNextM).not.toHaveBeenCalled();
+    expect(metadata).toHaveBeenLastCalledWith({
+      schedulerDisposition: { kind: 'no-claim', reason: 'declared_plan_without_claim_spec' },
+    });
+  });
+
+  it('records a concurrency refusal without counting an existing hold as a new claim', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 }, revision: 4 },
+    };
+    readClaimConcurrencyM.mockResolvedValue({
+      blocked: true, activeClaims: 1, maxConcurrentClaims: 1, heldIds: ['WI-already-held'],
+    });
+    getClaimSpecRecordM.mockResolvedValue({
+      source: 'cup', spec: { specId: 'bugs-rev4', revision: 4 }, revision: 4,
+      updatedBy: null, updatedAt: null,
+    });
+    const metadata = vi.fn();
+    const out = await getNextTool.handler({ harness: 'papercusp' }, { metadata } as never);
+    const payload = handlerPayload(out);
+    expect(payload).toMatchObject({ diagnosis: { concurrencyBlocked: true } });
+    expect(metadata).toHaveBeenLastCalledWith({
+      schedulerDisposition: {
+        kind: 'no-claim', reason: String(payload.reason ?? payload.error).slice(0, 500),
+        specId: 'bugs-rev4', revision: 4,
+      },
+    });
+  });
+});
 
 describe('scheduler:get_next claim-spec identity is inherited (EI-20225786201327575)', () => {
   it('teaches the accepted call shape and keeps spec identity read-only', () => {
@@ -1124,7 +1227,8 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     getNextM.mockImplementation(() => new Promise(() => {}));
     readClaimConcurrencyM.mockRejectedValue(new Error('pool still unavailable'));
 
-    const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+    const metadata = vi.fn();
+    const p = getNextTool.handler({ harness: 'papercusp' } as never, { metadata } as never) as Promise<{
       content: Array<{ text: string }>;
     }>;
     await vi.advanceTimersByTimeAsync(GET_NEXT_BUDGET_MS + 100);
@@ -1140,6 +1244,8 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     });
     expect(body.message).toContain('inconclusive');
     expect(body.message).not.toContain('no claims for this caller');
+    expect(metadata).toHaveBeenCalled();
+    for (const [record] of metadata.mock.calls) expect(record).not.toHaveProperty('schedulerDisposition');
     warnSpy.mockRestore();
   });
 
@@ -1294,7 +1400,8 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
 
   async function expectPreflightTimeout(lastPreflightStep: string) {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+    const metadata = vi.fn();
+    const p = getNextTool.handler({ harness: 'papercusp' } as never, { metadata } as never) as Promise<{
       content: Array<{ text: string }>;
     }>;
     await vi.advanceTimersByTimeAsync(GET_NEXT_BUDGET_MS + 100);
@@ -1330,6 +1437,9 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     )).toBe(true);
     expect(body.message).toContain('No claim was attempted');
     expect(getNextM).not.toHaveBeenCalled();
+    expect(metadata).toHaveBeenLastCalledWith({
+      schedulerDisposition: { kind: 'no-claim', reason: 'timeout' },
+    });
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:preflight exceeded'));
     warnSpy.mockRestore();
   }

@@ -25,7 +25,7 @@ vi.mock('@/app/_components/inbox/chat-seed', () => ({ seedOperatorChatDraft: vi.
 import ReportsRoute from './ReportsRoute';
 import { reportFullFixture as report, reportSummaryFixture } from './reports-test-fixture';
 import { seedOperatorChatDraft } from '@/app/_components/inbox/chat-seed';
-import { reportsHistoryFilterExpression } from '../../../../../scripts/tauri-surface-verify-reports.mts';
+import { reportsClearFiltersExpression, reportsHistoryFilterExpression } from '../../../../../scripts/tauri-surface-verify-reports.mts';
 
 beforeEach(() => {
   fixture.enabled = true; fixture.queries = []; fixture.list = []; fixture.catalog = null; fixture.detail = []; fixture.previous = null;
@@ -223,17 +223,30 @@ describe('Reports route', () => {
     await waitFor(() => expect((update.mock.calls.at(-1)![0].searchParams as URLSearchParams).get('subject')).toBe('work_item:WI-123'));
     expect(screen.queryByPlaceholderText('plan:plan-slug')).toBeNull();
   });
-  it('preserves hidden advanced filters and clears only filters, keeping the selected report', async () => {
-    const update = mount('?vis=owner&pot=pot-a&tag=operations&sel=edition-2');
+  it('clears every filter through the native action on the real toolbar, keeping the selected report and history', async () => {
+    const update = mount('?kind=audit&subject=plan%3Aexample-plan&q=findings&since=2026-10-01&vis=owner&pot=pot-a&tag=operations&sel=edition-2&hist=true');
     expect(screen.queryByLabelText('Origin pot')).toBeNull();
     expect(fixture.queries.find(q => q.queryName === 'reports.list')?.args).toMatchObject({ visibility: 'owner', originHarnessSlug: 'pot-a', tags: ['operations'] });
     fireEvent.click(screen.getByRole('button', { name: 'More filters · active' }));
     expect((screen.getByLabelText('Origin pot') as HTMLInputElement).value).toBe('pot-a');
-    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    const unrelated = document.createElement('button');
+    unrelated.textContent = 'Clear filters';
+    const unrelatedClick = vi.fn();
+    unrelated.addEventListener('click', unrelatedClick);
+    document.querySelector('.reports-heading')!.append(unrelated);
+    new Function('document', `return ${reportsClearFiltersExpression()}`)(document);
+    expect(unrelatedClick).not.toHaveBeenCalled();
     await waitFor(() => expect(update).toHaveBeenCalled());
     const params = update.mock.calls.at(-1)![0].searchParams as URLSearchParams;
     expect(params.get('sel')).toBe('edition-2');
-    expect(params.has('vis') || params.has('pot') || params.has('tag')).toBe(false);
+    expect(params.get('hist')).toBe('true');
+    expect(['kind', 'subject', 'pot', 'vis', 'q', 'tag', 'since'].every(key => !params.has(key))).toBe(true);
+  });
+  it('refuses the native clear-filter action when no Reports filter control is available', () => {
+    const update = mount('?sel=edition-2');
+    expect(() => new Function('document', `return ${reportsClearFiltersExpression()}`)(document))
+      .toThrow('Expected one Clear filters button in the Reports filter controls');
+    expect(update).not.toHaveBeenCalled();
   });
   it('uses slash to focus search without intercepting text input', () => {
     mount();

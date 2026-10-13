@@ -9,10 +9,152 @@ import { versionedSymbolIdentity, unmeasuredSourceEvidence, type CodeIntelAnswer
   type CodeIntelVersionedSite, type SymbolSite } from './contracts.ts';
 import type { CandidateSearch, FirstPartyCallersQuery } from './first-party-callers.ts';
 import { hierarchyItems, isExternalPath, tsDeclarations, tsSiteOf, type TsDeclaration, type ScopedTsTree } from './typescript-service.ts';
+import { rrfCombine } from '../../../../libs/generic/rrf/src/index.ts';
 
 const posix = (path: string) => path.split('\\').join('/');
 const nodeKey = (item: TsModule.CallHierarchyItem) => `${item.file}:${item.selectionSpan.start}`;
 const MAX_NODES = 1_000;
+
+/** P020: extend the existing compiler snapshot; no graph index or embedding claim. */
+export function compilerDiscovery(q: FirstPartyCallersQuery, tree: ScopedTsTree, program: TsModule.Program,
+  paths: readonly string[], limitations: readonly string[], started: number, now: () => number): CodeIntelAnswer {
+  const limit = Math.min(q.limit ?? 100, 500), maxDepth = q.maxDepth ?? 5, maxPaths = q.maxPaths ?? 20;
+  const reasons = new Set<string>();
+  const declarations = tsDeclarations(tree, program, '', MAX_NODES + 1);
+  if (declarations.length > MAX_NODES) reasons.add('nodes');
+  const items = new Map<string, TsModule.CallHierarchyItem>();
+  for (const d of declarations.slice(0, MAX_NODES)) {
+    if (!tree.rootFiles.has(d.file)) continue;
+    for (const item of hierarchyItems(tree, d)) items.set(nodeKey(item), item);
+  }
+  const ordered = [...items.values()].sort((a, b) => nodeKey(a).localeCompare(nodeKey(b)));
+  const sources: CodeIntelSourceFile[] = program.getSourceFiles().flatMap(file => {
+    if (!tree.rootFiles.has(file.fileName)) return [];
+    const path = posix(relative(tree.root, file.fileName));
+    return [{ path, contentHash: createHash('sha256').update(file.text).digest('hex'),
+      language: /\.[cm]?jsx?$/.test(path) ? 'javascript' : 'typescript', representation: 'full-source' as const }];
+  });
+  for (const [file, text] of tree.configReads) {
+    const path = posix(relative(tree.root, file));
+    if (!isExternalPath(path)) sources.push({ path, contentHash: createHash('sha256').update(text).digest('hex'),
+      language: 'json', representation: 'full-source' });
+  }
+  sources.sort((a, b) => a.path.localeCompare(b.path));
+  const sourceByPath = new Map(sources.map(source => [source.path, source]));
+  const repositoryId = q.repositoryId ?? `local-root:${createHash('sha256').update(realpathSync(q.root)).digest('hex')}`;
+  const endpoint = (item: TsModule.CallHierarchyItem): CodeIntelVersionedSite => {
+    const site = { ...tsSiteOf(tree, program, item.file, item.selectionSpan.start, item.kind), name: item.name };
+    const source = sourceByPath.get(site.path)!;
+    return { site, contentHash: source.contentHash, versionedSymbolId: versionedSymbolIdentity(repositoryId, site, source) };
+  };
+  const outgoing = new Map(ordered.map(item => [nodeKey(item), new Set<string>()]));
+  const undirected = new Map(ordered.map(item => [nodeKey(item), new Set<string>()]));
+  const incoming = new Set<string>();
+  let edgeCount = 0;
+  for (const item of ordered) {
+    for (const call of tree.service.provideCallHierarchyOutgoingCalls(item.file, item.selectionSpan.start)) {
+      const from = nodeKey(item), to = nodeKey(call.to);
+      if (!items.has(to)) { reasons.add('out-of-scope-targets'); continue; }
+      if (outgoing.get(from)!.has(to)) continue;
+      if (edgeCount >= MAX_NODES) { reasons.add('edges'); continue; }
+      edgeCount += 1;
+      outgoing.get(from)!.add(to); undirected.get(from)!.add(to); undirected.get(to)!.add(from); incoming.add(to);
+    }
+  }
+  const groups: NonNullable<CodeIntelAnswer['discovery']>['groups'][number][] = [];
+  const groupByNode = new Map<string, string>();
+  for (const item of ordered) {
+    const key = nodeKey(item);
+    if (groupByNode.has(key)) continue;
+    const component = [key], seen = new Set([key]);
+    for (let i = 0; i < component.length; i++) for (const adjacent of undirected.get(component[i]!)!) {
+      if (!seen.has(adjacent)) { seen.add(adjacent); component.push(adjacent); }
+    }
+    component.sort();
+    const members = component.map(key => endpoint(items.get(key)!));
+    const id = createHash('sha256').update(JSON.stringify(members.map(member => member.versionedSymbolId))).digest('hex');
+    groups.push({ id, members });
+    for (const key of component) groupByNode.set(key, id);
+  }
+  const flows: NonNullable<CodeIntelAnswer['discovery']>['flows'][number][] = [];
+  if (q.op === 'flows') {
+    for (const entry of ordered.filter(item => !incoming.has(nodeKey(item)))) {
+      const queue = [[nodeKey(entry)]];
+      for (let cursor = 0; cursor < queue.length; cursor++) {
+        const walk = queue[cursor]!, last = walk[walk.length - 1]!;
+        const next = [...outgoing.get(last)!].filter(key => !walk.includes(key)).sort();
+        if (!next.length || walk.length - 1 >= maxDepth) {
+          if (next.length) reasons.add('depth');
+          if (flows.length >= maxPaths) { reasons.add('paths'); break; }
+          flows.push({ entry: endpoint(entry), nodes: walk.map(key => endpoint(items.get(key)!)), runtimeExecution: 'unknown' });
+          continue;
+        }
+        for (const key of next) {
+          if (queue.length >= MAX_NODES) { reasons.add('frontier'); break; }
+          queue.push([...walk, key]);
+        }
+      }
+      if (reasons.has('paths')) break;
+    }
+    if (ordered.length && !flows.length) reasons.add('no-zero-incoming-entry');
+  }
+  const tokenize = (text: string): string[] => text.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const terms = [...new Set(tokenize(q.name))].filter(term => !['the', 'a', 'an', 'of', 'to', 'and', 'for', 'with'].includes(term));
+  const candidates = q.op !== 'concept-search' || !terms.length ? [] : ordered.flatMap(item => {
+    const file = program.getSourceFile(item.file)!;
+    const named = tokenize(item.name + ' ' + posix(relative(tree.root, item.file)));
+    // Inspect the callable body; never label a
+    // neighbour relevant merely because it is in a retrieved component.
+    const code = tokenize(file.text.slice(item.span.start, item.span.start + item.span.length));
+    if (!terms.every(term => named.includes(term) || code.includes(term))) return [];
+    return [{ key: nodeKey(item), item, named: terms.filter(term => named.includes(term)).length,
+      code: terms.filter(term => code.includes(term)).length }];
+  });
+  const rank = (field: 'named' | 'code') => candidates.filter(candidate => candidate[field] > 0)
+    .sort((a, b) => b[field] - a[field] || a.key.localeCompare(b.key))
+    .map(candidate => ({ key: candidate.key, score: candidate[field], row: candidate }));
+  const fused = rrfCombine([{ name: 'symbol-path', list: rank('named') }, { name: 'source-text', list: rank('code') }]);
+  const matches = fused.slice(0, limit).map(match => ({ symbol: endpoint(match.row.item),
+    groupId: groupByNode.get(match.row.key)!, score: match.score, rankers: match.rankers, evidence: 'retrieval' as const }));
+  if (fused.length > limit) reasons.add('results');
+  const selected = q.op === 'concept-search' ? matches.map(match => match.symbol)
+    : ordered.slice(0, limit).map(endpoint);
+  if (q.op !== 'concept-search' && ordered.length > limit) reasons.add('results');
+  const selectedIds = new Set(selected.map(symbol => symbol.versionedSymbolId));
+  const shownFlows = flows.filter(flow => flow.nodes.every(node => selectedIds.has(node.versionedSymbolId)));
+  if (shownFlows.length !== flows.length) reasons.add('results');
+  const shownGroups = groups.flatMap(group => {
+    const members = group.members.filter(member => selectedIds.has(member.versionedSymbolId));
+    return members.length ? [{ ...group, members }] : [];
+  });
+  const sites = selected.map(symbol => symbol.site);
+  const evidence: CodeIntelSourceEvidence = {
+    schemaVersion: 1,
+    sourceScope: { repositoryId, identityKind: q.repositoryId ? 'registry' : 'local-root', paths,
+      sourceFingerprint: createHash('sha256').update(JSON.stringify(sources)).digest('hex'), supportingFiles: sources },
+    graphScope: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations: [...limitations,
+      'Weak call components, zero-incoming entry points and lexical relevance are inferred discovery suggestions, not architectural or runtime truth.',
+      'Only selected JS/TS files are analysed; external, dynamic and callback bindings and semantic similarity remain unmeasured.'] },
+    languageCapabilities: [...new Set(sources.filter(source => source.language !== 'json').map(source => source.language))]
+      .map(language => ({ language, intent: q.op === 'concept-search' ? 'text-search' : 'structural-search', status: 'syntax-only' })),
+    siteIdentities: selected.map((symbol, siteIndex) => ({ siteIndex, sourcePath: symbol.site.path,
+      contentHash: symbol.contentHash, versionedSymbolId: symbol.versionedSymbolId })),
+    relationships: selected.flatMap((symbol, siteIndex) => {
+      const item = ordered.find(item => endpoint(item).versionedSymbolId === symbol.versionedSymbolId)!;
+      return [...outgoing.get(nodeKey(item))!].map(key => ({ siteIndex, kind: 'callees', origin: 'compiler',
+        knowledge: 'observed', runtimeExecution: 'unknown', binding: 'direct', source: symbol, target: endpoint(items.get(key)!) }));
+    }),
+  };
+  return { backend: 'typescript-service', intent: q.op === 'concept-search' ? 'text-search' : 'structural-search', query: q.name,
+    sites, evidence, coverage: evidence.graphScope, error: null,
+    discovery: { knowledge: 'inferred', method: 'weak-call-components/lexical-rrf', semanticSimilarity: 'unmeasured',
+      outcome: reasons.size ? 'incomplete' : (q.op === 'flows' ? flows.length : selected.length) ? 'suggestions' : 'not-found-in-scope',
+      nodesMeasured: ordered.length, truncationReasons: [...reasons], groups: shownGroups, flows: shownFlows, matches },
+    truncation: { truncated: reasons.has('results') || reasons.has('nodes') || reasons.has('edges') || reasons.has('paths') || reasons.has('depth') || reasons.has('frontier'),
+      totalAvailable: q.op === 'concept-search' ? fused.length : ordered.length, continuation: null },
+    freshness: { health: 'healthy', indexedAt: new Date(started).toISOString(), indexedCommit: null, staleVsDisk: false },
+    latencyMs: Math.round(now() - started) };
+}
 
 /** Includes transitive consumers that do not contain the initial symbol name. */
 export function traversalSourceFiles(root: string, rgPath: string, paths: readonly string[]): CandidateSearch {

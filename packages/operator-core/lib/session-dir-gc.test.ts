@@ -164,6 +164,20 @@ describe('planSessionDirGc archive guard', () => {
     mtimeMs: NOW - ageMs,
   });
 
+  it('OWNERSHIP (WI-6554700010010238): never collects a dir another install materialized, even past retention', () => {
+    const mine = mk('su-mine', DEFAULT_RETENTION_MS * 2);
+    const foreign = mk('su-foreign', DEFAULT_RETENTION_MS * 2);
+    const plan = planSessionDirGc({
+      candidates: [mine, foreign],
+      protectedIdentity: { ...empty, owned: { ownerIds: new Set(['su-mine']), sessionKeys: new Set() } },
+      nowMs: NOW,
+      retentionMs: DEFAULT_RETENTION_MS,
+      unarchivedPaths: new Set(),
+    });
+    expect(plan.remove).toEqual([mine]);
+    expect(plan.keptForeign).toEqual([foreign]);
+  });
+
   it('diverts a stale-but-unarchived dir to keptUnarchived instead of remove', () => {
     const archived = mk('su-archived', DEFAULT_RETENTION_MS * 2);
     const notYet = mk('su-not-yet', DEFAULT_RETENTION_MS * 2);

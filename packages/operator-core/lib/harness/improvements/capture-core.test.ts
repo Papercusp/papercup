@@ -1869,7 +1869,7 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
       d,
     );
     expect(res.created).toBe(true);
-    expect(res.possibleDuplicates[0].id).toBe('EI-7');
+    expect(res.possibleDuplicates?.[0].id).toBe('EI-7');
     expect(d.created).toHaveLength(1);
     expect(d.created[0].admission).toBe('pending');
     // The created row IS the record: the file-time verdict + candidates ride its
@@ -2000,7 +2000,7 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     );
     expect(res.created).toBe(true);
     // ...but the dup is still REPORTED for visibility.
-    expect(res.possibleDuplicates[0].id).toBe('EI-7');
+    expect(res.possibleDuplicates?.[0].id).toBe('EI-7');
   });
 
   it("dedupScope:'open' — an OPEN duplicate still carries the verdict (files under P-002)", async () => {
@@ -2408,7 +2408,7 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     const d = semDeps(deps({ found: [] }), { hard: [{ id: 'EI-50', similarity: 0.95 }], soft: [] }, [worded]);
     const res = await captureImprovement({ title: 'duplicate friction reports flood the queue', kind: 'bug' }, d);
     expect(res.created).toBe(true);
-    expect(res.possibleDuplicates[0]).toMatchObject({ id: 'EI-50', semantic: 'hard', similarity: 0.95 });
+    expect(res.possibleDuplicates?.[0]).toMatchObject({ id: 'EI-50', semantic: 'hard', similarity: 0.95 });
     expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'likely-duplicate' });
   });
 
@@ -2704,7 +2704,7 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
       d,
     );
     expect(res.created).toBe(true);
-    expect(res.possibleDuplicates[0]).toMatchObject({ id: 'EI-54', semantic: 'soft', similarity: 0.87 });
+    expect(res.possibleDuplicates?.[0]).toMatchObject({ id: 'EI-54', semantic: 'soft', similarity: 0.87 });
     expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'likely-duplicate' });
   });
 
@@ -2714,7 +2714,7 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     // Same inputs as the case above, minus the opt-in. Only the flag differs.
     const res = await captureImprovement({ title: 'a completely differently worded capture', kind: 'change' }, d);
     expect(res.created).toBe(true);
-    expect(res.possibleDuplicates[0]).toMatchObject({ id: 'EI-55', semantic: 'soft' });
+    expect(res.possibleDuplicates?.[0]).toMatchObject({ id: 'EI-55', semantic: 'soft' });
     expect((d.created[0].payload as Record<string, unknown> | undefined)?.dedupVerdict).toBeUndefined();
   });
 
@@ -2751,8 +2751,8 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     const d = semDeps(deps({ found: [same] }), { hard: [{ id: 'EI-53', similarity: 0.96 }], soft: [] }, [same]);
     const res = await captureImprovement({ title: 'docs search returns stale results', kind: 'bug' }, d);
     expect(res.created).toBe(true);
-    expect(res.possibleDuplicates[0].semantic).toBeUndefined();
-    expect(res.possibleDuplicates[0].similarity).toBe(1);
+    expect(res.possibleDuplicates?.[0].semantic).toBeUndefined();
+    expect(res.possibleDuplicates?.[0].similarity).toBe(1);
   });
 
   // P-013 (D-042) narrowed this test's original claim, and deliberately so. It
@@ -3173,9 +3173,9 @@ describe('P-007 — symptom-first containment lookup', () => {
   it('surfaces the containment hit that Jaccard missed, flagged as such', async () => {
     const d = deps({ found: [existing({ id: 'EI-19948333346987654', title: REAL_TITLE })] });
     const res = await captureImprovement({ title: SYMPTOM_QUERY, kind: 'bug', checkDuplicatesOnly: true }, d);
-    expect(res.possibleDuplicates.map((p) => p.id)).toEqual(['EI-19948333346987654']);
-    expect(res.possibleDuplicates[0].lexical).toBe('containment');
-    expect(res.possibleDuplicates[0].similarity).toBeGreaterThanOrEqual(CONTAINMENT_THRESHOLD);
+    expect(res.possibleDuplicates?.map((p) => p.id)).toEqual(['EI-19948333346987654']);
+    expect(res.possibleDuplicates?.[0].lexical).toBe('containment');
+    expect(res.possibleDuplicates?.[0].similarity).toBeGreaterThanOrEqual(CONTAINMENT_THRESHOLD);
   });
 
   it('SAFETY: a containment-only hit NEVER declines a capture — surfacing is widened, blocking is not', async () => {
@@ -3186,14 +3186,14 @@ describe('P-007 — symptom-first containment lookup', () => {
     const res = await captureImprovement({ title: SYMPTOM_QUERY, kind: 'bug' }, d);
     expect(res.created).toBe(true);
     expect(d.created).toHaveLength(1);
-    expect(res.possibleDuplicates[0].lexical).toBe('containment'); // still SHOWN, just not blocking
+    expect(res.possibleDuplicates?.[0].lexical).toBe('containment'); // still SHOWN, just not blocking
   });
 
   it('does not re-label a candidate the lexical net already caught (exact title keeps similarity 1, no containment flag)', async () => {
     const d = deps({ found: [existing({ id: 'EI-19948333346987654', title: REAL_TITLE })] });
     const res = await captureImprovement({ title: REAL_TITLE, kind: 'bug', checkDuplicatesOnly: true }, d);
-    expect(res.possibleDuplicates[0].similarity).toBe(1);
-    expect(res.possibleDuplicates[0].lexical).toBeUndefined();
+    expect(res.possibleDuplicates?.[0].similarity).toBe(1);
+    expect(res.possibleDuplicates?.[0].lexical).toBeUndefined();
   });
 
   it('a too-short query is NOT a containment match (below CONTAINMENT_MIN_TOKENS it would match half the backlog)', async () => {

@@ -295,7 +295,7 @@ export async function runNegativeSpaceTick(
         declined += 1;
         log(
           `[negative-space] declined "${entry.surface}:${entry.queryNorm}" (${result.reason ?? 'not created'})` +
-            (result.possibleDuplicates[0] ? ` — likely ${result.possibleDuplicates[0].id}` : ''),
+            (result.possibleDuplicates?.[0] ? ` — likely ${result.possibleDuplicates[0].id}` : ''),
         );
       }
     } catch (e) {

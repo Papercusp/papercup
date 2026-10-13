@@ -145,6 +145,10 @@ export async function listEnrichedWorkItems(opts: {
     harness: opts.harness,
     harnesses: opts.harness ? undefined : opts.harnesses,
     kind: opts.kind,
+    // This reader backs the Work Items queue. Keep record/document/event rows out
+    // even when a kind filter is supplied; listWorkItems otherwise treats an
+    // explicit kind as an intentional request for that kind's nature.
+    natures: ['work'],
     state: opts.state,
     limit,
   });
@@ -197,7 +201,7 @@ const getWorkItems = defineTool({
     try {
       const [enriched, total] = await Promise.all([
         listEnrichedWorkItems({ harness: slug, kind, state, limit }),
-        countWorkItems({ harness: slug, kind, state }),
+        countWorkItems({ harness: slug, kind, state, natures: ['work'] }),
       ]);
       // `count` = rows returned (may be capped); `total` = the true count in the
       // store for this filter, so a consumer never reads the downloaded length

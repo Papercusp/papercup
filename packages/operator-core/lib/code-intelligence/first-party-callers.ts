@@ -51,7 +51,7 @@ import {
   type TsDeclaration,
   type TsTree,
 } from './typescript-service.ts';
-import { compilerTraversal, traversalSourceFiles } from './first-party-traversal.ts';
+import { compilerDiscovery, compilerTraversal, traversalSourceFiles } from './first-party-traversal.ts';
 
 /** ripgrep glob for every extension the program takes (typescript-service TS_TREE_EXTENSIONS). */
 export const FIRST_PARTY_SOURCE_GLOB = '*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}';
@@ -111,7 +111,7 @@ export interface FirstPartyCallersQuery {
   readonly repositoryId?: string;
   readonly name: string;
   /** Native graph operations share the existing bounded compiler worker. */
-  readonly op?: 'callers' | 'symbol' | 'callees' | 'context' | 'impact' | 'trace' | 'contracts';
+  readonly op?: 'callers' | 'symbol' | 'callees' | 'context' | 'impact' | 'trace' | 'contracts' | 'communities' | 'flows' | 'concept-search';
   readonly filePath?: string;
   readonly line1?: number;
   readonly kind?: string;
@@ -633,13 +633,15 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   const now = q.now ?? (() => Date.now());
   const started = now();
   const op = q.op ?? 'callers';
-  const intent = op === 'impact' || op === 'trace' ? op : op === 'callees' ? 'callees' : op === 'callers' ? 'callers' : 'definition';
+  const discovery = ['communities', 'flows', 'concept-search'].includes(op);
+  const intent = discovery ? op === 'concept-search' ? 'text-search' : 'structural-search'
+    : op === 'impact' || op === 'trace' ? op : op === 'callees' ? 'callees' : op === 'callers' ? 'callers' : 'definition';
   const answer = (name: string, startedAt: number, clock: () => number, parts: Parameters<typeof buildAnswer>[3]) => {
     const result = buildAnswer(name, startedAt, clock, { ...parts, intent });
     return parts.evidence ? result : { ...result, evidence: unmeasuredCallersEvidence(result, q) };
   };
   const limit = Math.max(1, Math.floor(q.limit ?? FIRST_PARTY_CALLERS_DEFAULT_LIMIT));
-  if (!['callers', 'symbol', 'callees', 'context', 'impact', 'trace', 'contracts'].includes(op)) {
+  if (!['callers', 'symbol', 'callees', 'context', 'impact', 'trace', 'contracts', 'communities', 'flows', 'concept-search'].includes(op)) {
     return answer(q.name, started, now, { error: `unsupported first-party graph operation '${op}'` });
   }
   if (op !== 'callers' && q.filePath && !/\.[cm]?[jt]sx?$/.test(q.filePath)) {
@@ -649,7 +651,13 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
       intent, status: 'unsupported',
     }] } };
   }
-  if (!IDENTIFIER.test(q.name)) {
+  if (discovery && (!q.paths?.length || q.paths.some(path => path === '.' || path === './'))) {
+    return answer(q.name, started, now, { error: 'Discovery requires explicit bounded source paths, not the whole repository.' });
+  }
+  if (op === 'concept-search' && (!q.name.trim() || q.name.length > 500)) {
+    return answer(q.name, started, now, { error: 'concept-search requires a non-empty query of at most 500 characters in name.' });
+  }
+  if (!discovery && !IDENTIFIER.test(q.name)) {
     return answer(q.name, started, now, { error: `callers needs one identifier; "${q.name}" is not one` });
   }
   const rgPath = q.rgPath ?? resolveRipgrep();
@@ -679,7 +687,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   }
   // Transitive callers may never spell the initial name. Traverse a full scoped
   // source program, instead of treating the single-name candidate set as a graph.
-  const search = op === 'impact' || op === 'trace' || q.includeInterfaces ? traversalSourceFiles(q.root, rgPath, scope.paths)
+  const search = discovery || op === 'impact' || op === 'trace' || q.includeInterfaces ? traversalSourceFiles(q.root, rgPath, scope.paths)
     : findCandidateFiles(q.root, q.name, rgPath, scope.paths);
   if (search.error) return answer(q.name, started, now, { error: search.error });
   const partial = [
@@ -689,7 +697,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   if (search.files.length === 0) {
     // No searched source file contains the word: as strong an absence as grep's.
     return answer(q.name, started, now, {
-      ...(op !== 'callers' ? { error: `No declaration named '${q.name}' in the searched source scope` } : {}),
+      ...(op !== 'callers' ? { error: discovery ? 'No admitted JS/TS source files in the discovery scope.' : `No declaration named '${q.name}' in the searched source scope` } : {}),
       limitations: partial,
       attribution: {
         resolved: 0,
@@ -711,12 +719,13 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   // Bodies outside that scope add no certified callers; retain their re-export
   // links without turning a bounded planning advisory into a whole-project load.
   const incomingScope = scope.scoped && op === 'impact' && (q.direction ?? 'downstream') === 'downstream';
-  const declarationScope = (op === 'callers' || op === 'symbol' || incomingScope) && !q.includeInterfaces;
+  const declarationScope = (discovery || op === 'callers' || op === 'symbol' || incomingScope) && !q.includeInterfaces;
   const tree = openScopedTsTree(q.ts, q.root, search.files,
     declarationScope ? undefined : (_ts, _file, text) => text, q.authorizedReadRoots);
   try {
     const program = tree.service.getProgram();
     if (!program) return answer(q.name, started, now, { error: 'TypeScript produced no program for the candidate files' });
+    if (discovery) return { ...compilerDiscovery(q, tree, program, scope.paths, partial, started, now), attribution: null };
     if (op === 'contracts') {
       const interfaces = compilerInterfaceEvidence(q.ts, program, q.root, limit);
       const sources: CodeIntelSourceFile[] = program.getSourceFiles().flatMap(sf => {

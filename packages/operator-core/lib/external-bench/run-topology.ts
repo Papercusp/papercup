@@ -107,6 +107,39 @@ export interface AgentRunOutput extends AgentRunUsage {
    * never zero.
    */
   capabilityEvidence?: CapabilityExerciseEvidence[] | null;
+  /**
+   * benchmark-coverage-frontierswe-v2 D-033: the execution path that ran this agent (the live FrontierSWE
+   * Papercusp arm reports 'modernization-launch-adapter'). The driver stamps the distinct reported values on
+   * `armMeta.executionPath` via {@link withExecutionPath}. Absent = unreported, never inferred.
+   */
+  executionPath?: string | null;
+}
+
+/**
+ * D-033: stamp the execution paths that contributing agents reported onto a row's armMeta, merged with any the
+ * row already carries. One distinct value is stamped as a string, several as an array. When at least one agent
+ * reported, `executionPathUnreported` counts the contributors that did not, so a partial report never reads as a
+ * uniform one. When none reported, armMeta is returned without either key.
+ */
+export function withExecutionPath(
+  armMeta: Record<string, unknown>,
+  outputs: ReadonlyArray<Pick<AgentRunOutput, 'executionPath'>>,
+): Record<string, unknown> {
+  const { executionPath: prior, executionPathUnreported: priorUnreported, ...rest } = armMeta;
+  const isPath = (p: unknown): p is string => typeof p === 'string' && p.length > 0;
+  const reported = [
+    ...(isPath(prior) ? [prior] : Array.isArray(prior) ? prior.filter(isPath) : []),
+    ...outputs.map((o) => o.executionPath).filter(isPath),
+  ];
+  const unreported = (typeof priorUnreported === 'number' ? priorUnreported : 0)
+    + outputs.filter((o) => !isPath(o.executionPath)).length;
+  const distinct = [...new Set(reported)];
+  if (distinct.length === 0) return armMeta;
+  return {
+    ...rest,
+    executionPath: distinct.length === 1 ? distinct[0] : distinct,
+    ...(unreported > 0 ? { executionPathUnreported: unreported } : {}),
+  };
 }
 
 /** The declared ensemble selector (frozen in the protocol as `control.ensemble.selector`). */
@@ -289,7 +322,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
   });
   /** Attach the merged capability evidence of every agent that ran for this task unit. */
   const withEvidence = (armMeta: Record<string, unknown>, outputs: ReadonlyArray<AgentRunOutput>) =>
-    withCapabilityEvidence(armMeta, mergeCapabilityEvidence(outputs.map((o) => o.capabilityEvidence)));
+    withExecutionPath(withCapabilityEvidence(armMeta, mergeCapabilityEvidence(outputs.map((o) => o.capabilityEvidence))), outputs);
 
   // ── per-topology task execution ──────────────────────────────────────────────
   /** distributed / huddle / central: ONE worker per task carrying its team's coordination directive. */
@@ -496,7 +529,10 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       // The lead is a contributor to every row of its team: merge its evidence with the row's own.
       const leadEvidence = (r: TaskRunResult, armMeta: Record<string, unknown>) => leadOutput === undefined
         ? armMeta
-        : withCapabilityEvidence(armMeta, mergeCapabilityEvidence([readCapabilityEvidence(r), leadOutput.capabilityEvidence]));
+        : withExecutionPath(
+          withCapabilityEvidence(armMeta, mergeCapabilityEvidence([readCapabilityEvidence(r), leadOutput.capabilityEvidence])),
+          [leadOutput],
+        );
       await drainUnits(
         plan.tasks.map((task) => ({ task, plan })),
         (r) => ({

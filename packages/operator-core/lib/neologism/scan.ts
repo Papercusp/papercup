@@ -274,7 +274,7 @@ export async function runNeologismTick(
         declined += 1;
         log(
           `[neologism] declined "${entry.term}" (${result.reason ?? 'not created'})` +
-            (result.possibleDuplicates[0] ? ` — likely ${result.possibleDuplicates[0].id}` : ''),
+            (result.possibleDuplicates?.[0] ? ` — likely ${result.possibleDuplicates[0].id}` : ''),
         );
       }
     } catch (e) {

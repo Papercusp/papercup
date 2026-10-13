@@ -178,6 +178,12 @@ import {
   resourceBlockReason,
   stageSubstitutionAdvisory,
   drainSubstitutionAdvisory,
+  OMP_BASH_TOOL,
+  RTK_GUARD_MODULE,
+  importRtkRewriter,
+  ompBashRtkResult,
+  rtkGuardModuleCandidates,
+  type RtkRewriteSync,
   type InboxEntry,
 } from '../coord-hook';
 // The audited shell pairs, so the pre-filter guard below can read each pair's VERDICT
@@ -6907,5 +6913,122 @@ describe('onToolCall registry verdict — resource holds + substitutions (P-017)
     });
     expect(r.block).toBeUndefined();
     expect(checkCalls()).toBe(0);
+  });
+});
+
+// WI-6554700010010472 (owner #1798): OMP's native bash goes through the same RTK rewriter
+// as Claude's Bash, Codex's direct shell calls and capability:bash.
+describe('RTK output compression for OMP native bash', () => {
+  const rtkFake = (): { rewrite: RtkRewriteSync; calls: Array<{ command: string; cwd?: string }> } => {
+    const calls: Array<{ command: string; cwd?: string }> = [];
+    const rewrite: RtkRewriteSync = (command, opts) => {
+      calls.push({ command, cwd: opts?.cwd });
+      return `rtk ${command}`;
+    };
+    return { rewrite, calls };
+  };
+
+  it('replaces only the command of a bash call and keeps every other parameter', () => {
+    const { rewrite, calls } = rtkFake();
+    const input = { command: 'git status', env: { FOO: '1' }, timeout: 30, cwd: '/w', async: true };
+    const out = ompBashRtkResult({ toolName: OMP_BASH_TOOL, input }, {}, rewrite);
+    expect(out).toEqual({ input: { command: 'rtk git status', env: { FOO: '1' }, timeout: 30, cwd: '/w', async: true } });
+    expect(calls).toEqual([{ command: 'git status', cwd: '/w' }]);
+    // The event's own input is not mutated: activity reports and gates saw the original.
+    expect(input.command).toBe('git status');
+  });
+
+  it('keeps fields of a non-blocking gate result alongside the rewrite', () => {
+    const { rewrite } = rtkFake();
+    const gate: { block?: boolean; reason?: string } = { reason: 'advisory' };
+    const out = ompBashRtkResult({ toolName: 'bash', input: { command: 'ls' } }, gate, rewrite);
+    expect(out).toEqual({ reason: 'advisory', input: { command: 'rtk ls' } });
+  });
+
+  it('never rewrites a blocked call, and never asks RTK about one', () => {
+    const { rewrite, calls } = rtkFake();
+    const blocked = { block: true, reason: 'held by a peer' };
+    expect(ompBashRtkResult({ toolName: 'bash', input: { command: 'git status' } }, blocked, rewrite)).toBe(blocked);
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ['python', { command: 'git status' }],
+    ['read', { path: 'x' }],
+    ['Bash', { command: 'git status' }],
+  ])('leaves a %s call untouched', (toolName, input) => {
+    const { rewrite, calls } = rtkFake();
+    const result = {};
+    expect(ompBashRtkResult({ toolName, input }, result, rewrite)).toBe(result);
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ['no input', undefined],
+    ['a missing command', { cwd: '/w' }],
+    ['a blank command', { command: '   ' }],
+    ['a non-string command', { command: ['git', 'status'] }],
+    ['a PTY (interactive) run', { command: 'git status', pty: true }],
+    ['RTK_DISABLED=1 in the call env', { command: 'git status', env: { RTK_DISABLED: '1' } }],
+  ])('leaves a bash call with %s untouched', (_label, input) => {
+    const { rewrite, calls } = rtkFake();
+    const result = {};
+    expect(ompBashRtkResult({ toolName: 'bash', input }, result, rewrite)).toBe(result);
+    expect(calls).toEqual([]);
+  });
+
+  it('fails open: no rewriter, a null or identical rewrite, or a throwing rewriter', () => {
+    const result = {};
+    const event = { toolName: 'bash', input: { command: 'git status' } };
+    expect(ompBashRtkResult(event, result, null)).toBe(result);
+    expect(ompBashRtkResult(event, result, () => null)).toBe(result);
+    expect(ompBashRtkResult(event, result, (c) => c)).toBe(result);
+    expect(
+      ompBashRtkResult(event, result, () => {
+        throw new Error('rtk crashed');
+      }),
+    ).toBe(result);
+  });
+
+  it('looks for the rewriter where both installers put hooks/cc', () => {
+    expect(rtkGuardModuleCandidates('/h')).toEqual([`/h/.papercusp/hooks/cc/${RTK_GUARD_MODULE}`]);
+  });
+
+  it('imports rtkRewriteSync from the first loadable candidate, skipping missing and broken ones', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-rtk-'));
+    try {
+      const broken = join(dir, 'broken.mjs');
+      const wrongShape = join(dir, 'wrong-shape.mjs');
+      const good = join(dir, 'good.mjs');
+      writeFileSync(broken, 'throw new Error("load failure");\n');
+      writeFileSync(wrongShape, 'export const rtkRewriteSync = "not a function";\n');
+      writeFileSync(good, 'export function rtkRewriteSync(c) { return "rtk " + c; }\n');
+      const rewrite = await importRtkRewriter([join(dir, 'missing.mjs'), broken, wrongShape, good]);
+      expect(rewrite?.('git status')).toBe('rtk git status');
+      expect(await importRtkRewriter([join(dir, 'missing.mjs'), broken, wrongShape])).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads the real shared rewriter from the hooks/cc module the installers copy', async () => {
+    const guard = resolve(dirname(fileURLToPath(import.meta.url)), '../../cc', RTK_GUARD_MODULE);
+    const rewrite = await importRtkRewriter([guard]);
+    expect(typeof rewrite).toBe('function');
+    // The shared policy applies: an explicit opt-out is never rewritten.
+    expect(rewrite?.('RTK_DISABLED=1 git status')).toBeNull();
+  });
+
+  it('wires the rewrite into the registered tool_call handler, after the block check', () => {
+    const source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../coord-hook.ts'), 'utf8');
+    const start = source.indexOf("pi.on('tool_call'");
+    const end = source.indexOf("pi.on('tool_result'", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const handler = source.slice(start, end);
+    const blockCheck = handler.indexOf('if (result.block) return result;');
+    const rewrite = handler.indexOf('return ompBashRtkResult(event, result, await safe(() => loadRtkRewriter(), null));');
+    expect(blockCheck).toBeGreaterThan(-1);
+    expect(rewrite).toBeGreaterThan(blockCheck);
   });
 });

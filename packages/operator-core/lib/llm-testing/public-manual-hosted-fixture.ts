@@ -165,6 +165,20 @@ export interface PublicManualHostedFixtureBinding {
   connectionId: string;
 }
 
+/** Health and a source SHA cannot establish that the selected migrations
+ * supplied the schema used by session startup. Probe the real consumer columns
+ * before declaring a private host ready or creating delegation records. */
+export async function assertPublicManualHostedRuntimeSchema(
+  run: <T>(fn: (sql: Sql) => Promise<T>) => Promise<T>,
+) {
+  try {
+    await run(sql => sql`SELECT retired_at, retired_by, retired_reason
+      FROM harness_shared.adv_sessions LIMIT 0`);
+  } catch (cause) {
+    throw new Error('hosted_fixture_session_retirement_schema_missing', { cause });
+  }
+}
+
 /** A private test host is verified by its own HTTP response, never by a cloud claim. */
 export async function preparePublicManualHostedDelegation(
   binding: PublicManualHostedFixtureBinding,
@@ -177,6 +191,7 @@ export async function preparePublicManualHostedDelegation(
     || !['localhost', '127.0.0.1'].includes(origin.hostname)
     || origin.username || origin.password) throw new Error('hosted_fixture_operator_not_loopback');
   if (!/^[a-f0-9]{10,40}$/.test(expectedSha)) throw new Error('hosted_fixture_operator_sha_required');
+  await assertPublicManualHostedRuntimeSchema(run);
   const unsupported = async (): Promise<never> => { throw new Error('hosted_fixture_cloud_provider_not_permitted'); };
   const organization: HostedDelegationOrganization = {
     organizationId: binding.organizationId,

@@ -315,7 +315,7 @@ describe('membership.report frames (WI-10004257)', () => {
   it('survives a sink that throws, and ignores the frame without a sink', async () => {
     const throwing = membershipHarness(() => { throw new Error('store down'); });
     await expect(throwing.adapter.accept(frame('org-1'))).resolves.toBeUndefined();
-    expect(throwing.warnings).toEqual(['membership report failed: store down']);
+    expect(throwing.warnings).toEqual(['membership_report_failed']);
     const none = membershipHarness();
     await expect(none.adapter.accept(frame('org-1'))).resolves.toBeUndefined();
     expect(none.warnings).toEqual([]);
@@ -1223,7 +1223,7 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
       code: 'desktop_query_failed',
     });
     // The wire carries only the code; the cause must reach the host journal (D-405).
-    expect(warnings).toHaveBeenCalledWith('desktop.roster failed: Error: registry unavailable');
+    expect(warnings).toHaveBeenCalledWith('desktop_query_failed');
   });
 
   it('starts the workspace desktop for a controller on a terminal channel, before any desktop exists (D-405)', async () => {
@@ -1287,7 +1287,7 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
       operation: 'desktop.start',
       code: 'desktop_start_failed',
     });
-    expect(failing.warnings).toHaveBeenCalledWith('desktop.start failed: Error: desktop pack socket refused');
+    expect(failing.warnings).toHaveBeenCalledWith('desktop_start_failed');
     expect(JSON.stringify(failing.payloads('term-1'))).not.toContain('socket refused');
 
     const bare = desktopHarness();

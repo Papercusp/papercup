@@ -4,7 +4,7 @@
  * The load-bearing test in this file is INCIDENT ANCHOR (the fifth term). Everything else guards
  * an exemption; that one guards the difference between a detector and a 4,037-page metronome.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   countPendingWakeSources,
   evaluateSilentHalt,
@@ -25,6 +25,25 @@ import type { StalledLoopHostClass } from '../../events/await/host-recovery-elig
 // Never publish synthetic halt conditions to the shared fleet.
 vi.mock('../../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
 vi.mock('../../alarm-attention', () => ({ resolveAlarm: vi.fn(async () => true) }));
+
+// Keep the real attention helper and DEFAULT sweep adapter. Only isolate the durable
+// store and external channels; injecting deps.notify hid the production return loss.
+const attention = vi.hoisted(() => ({
+  ensureIntent: vi.fn(),
+  claimChannel: vi.fn(),
+  recordIntent: vi.fn(),
+  recordOutcome: vi.fn(),
+  mobile: vi.fn(),
+  desktop: vi.fn(),
+}));
+vi.mock('../../attention-notify-store', () => ({
+  ensureAttentionNotifyIntent: attention.ensureIntent,
+  claimAttentionNotifyChannel: attention.claimChannel,
+  recordAttentionNotifyIntent: attention.recordIntent,
+  recordAttentionNotifyOutcome: attention.recordOutcome,
+}));
+vi.mock('../../device-push-dispatcher', () => ({ notifyWorkspace: attention.mobile }));
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: attention.desktop }));
 
 // The default host reader (D-006 (2)) discovers live psu hosts on disk. Tests that call
 // sweepSilentHalts without injecting readHostClass must never read the real ~/.papercusp/psu-pty.
@@ -823,6 +842,85 @@ describe('sweepSilentHalts — P-007 slice 2 (D-006)', () => {
     const r = await h.run();
     expect(r.paged).toEqual(['su-halted']);
     expect(h.alertFleetLeader).not.toHaveBeenCalled();
+  });
+});
+
+describe('sweepSilentHalts — default notification adapter', () => {
+  const now = Date.parse('2026-10-10T23:00:00.000Z');
+  const alertLeader = vi.fn(async () => {});
+
+  beforeEach(() => {
+    attention.ensureIntent.mockReset().mockResolvedValue({ id: 9, created: true });
+    attention.claimChannel.mockReset().mockResolvedValue(true);
+    attention.recordIntent.mockReset().mockResolvedValue(10);
+    attention.recordOutcome.mockReset().mockResolvedValue(undefined);
+    attention.mobile.mockReset().mockResolvedValue([]);
+    attention.desktop.mockReset().mockResolvedValue(undefined);
+    alertLeader.mockClear();
+  });
+
+  const run = (candidates: SilentHaltCandidate[], nowMs = now) => sweepSilentHalts({
+    workspaceId: 'ws',
+    sql: {} as never,
+    deps: {
+      nowMs,
+      readCandidates: async () => candidates,
+      readLoopStatuses: (async () => new Map(candidates.map((c) => [c.ownerId, {
+        active: false, lastRealTurnAt: new Date(nowMs - 180 * MIN).toISOString(),
+      }]))) as never,
+      wakeFirstEnabled: false,
+      readEngineLoopRows: (async () => ({})) as never,
+      readFleetParkPath: async () => null,
+      readHostClass: async () => null,
+      alertFleetLeader: alertLeader,
+    },
+  });
+
+  it('alerts once for the same owner and epoch, then alerts again for a new epoch', async () => {
+    const member = candidate({ fleetSlug: 'fleet-x' });
+    expect((await run([member])).fleetLeaderAlerted).toEqual(['su-halted']);
+
+    attention.ensureIntent.mockResolvedValueOnce({ id: 9, created: false });
+    attention.claimChannel.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+    expect((await run([candidate({ ...member, inactiveForMs: 130 * MIN })], now + 10 * MIN)).fleetLeaderAlerted).toEqual([]);
+    expect(alertLeader).toHaveBeenCalledTimes(1);
+    const firstKey = attention.ensureIntent.mock.calls[0][1];
+    expect(attention.ensureIntent.mock.calls[1][1]).toBe(firstKey);
+
+    expect((await run([member], now + 20 * MIN)).fleetLeaderAlerted).toEqual(['su-halted']);
+    expect(attention.ensureIntent.mock.calls[2][1]).not.toBe(firstKey);
+    expect(alertLeader).toHaveBeenCalledTimes(2);
+    expect(attention.recordIntent).not.toHaveBeenCalled();
+  });
+
+  it('does not re-alert for an existing intent even when an unfinished channel is delivered', async () => {
+    attention.ensureIntent.mockResolvedValue({ id: 9, created: false });
+    attention.claimChannel.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const result = await run([candidate({ fleetSlug: 'fleet-x' })]);
+    expect(attention.mobile).toHaveBeenCalledTimes(1);
+    expect(attention.desktop).not.toHaveBeenCalled();
+    expect(result.fleetLeaderAlerted).toEqual([]);
+    expect(alertLeader).not.toHaveBeenCalled();
+  });
+
+  it('does not let existing intents with channel attempts starve a new halt out of the page cap', async () => {
+    const owners = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    attention.ensureIntent.mockImplementation(async (input: { data: { ownerId: string } }) => ({
+      id: owners.indexOf(input.data.ownerId) + 1, created: input.data.ownerId === 'g',
+    }));
+    const result = await run(owners.map((ownerId) => candidate({ ownerId, fleetSlug: 'fleet-x' })));
+    expect(result.paged).toEqual(owners);
+    expect(result.pageCapReached).toBe(false);
+    expect(result.fleetLeaderAlerted).toEqual(['g']);
+    expect(alertLeader).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves fail-soft delivery and leader alerting when intent storage is unavailable', async () => {
+    attention.ensureIntent.mockResolvedValue(null);
+    const result = await run([candidate({ fleetSlug: 'fleet-x' })]);
+    expect(attention.mobile).toHaveBeenCalledTimes(1);
+    expect(attention.desktop).toHaveBeenCalledTimes(1);
+    expect(result.fleetLeaderAlerted).toEqual(['su-halted']);
   });
 });
 

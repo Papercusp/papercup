@@ -1325,6 +1325,18 @@ export default defineTool({
       ),
   }),
   async handler(rawArgs, ctx) {
+    // Definite refusals can return before the final disposition writer. Record
+    // their existing response through the same vocabulary, without another DB
+    // read. Claim watchdog exits stay separate: a timed-out claim can still
+    // commit, so those responses must not be certified as no-claim.
+    const recordNoClaim = <T extends { content: Array<{ text: string }> }>(
+      response: T,
+      specHead?: SchedulerDispositionSpecHead,
+    ): T => {
+      const payload = JSON.parse(response.content[0]!.text) as Record<string, unknown>;
+      ctx.metadata?.({ schedulerDisposition: schedulerDispositionMetadata(null, payload, specHead) });
+      return response;
+    };
     const handlerStartedAt = Date.now();
     const remainingBudgetMs = (phaseCapMs = GET_NEXT_BUDGET_MS): number =>
       Math.max(1, Math.min(phaseCapMs, GET_NEXT_TOTAL_BUDGET_MS - (Date.now() - handlerStartedAt)));
@@ -1366,7 +1378,7 @@ export default defineTool({
       // binding, an explicit wildcard, or a stale/ambiguous durable binding. Preserve
       // the canonical resolver's candidates so the caller can correct the binding
       // instead of guessing a harness and crossing an isolation boundary.
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
@@ -1389,7 +1401,7 @@ export default defineTool({
           },
         ],
         isError: true,
-      };
+      });
     }
     // Re-bind so every downstream `args.harness` stays a definite string — the
     // alternative (renaming ~15 call sites) would also have caught the unrelated
@@ -1670,7 +1682,7 @@ export default defineTool({
       { fallback: null, timeoutMs: preflightBudgetMs, label: 'scheduler:get_next:preflight' },
     ));
     if (preflight.degraded || !preflight.value) {
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
@@ -1685,13 +1697,19 @@ export default defineTool({
             ),
           },
         ],
-      };
+      });
     }
     const preflightState = preflight.value;
+    const preflightSpecHead = 'reconciliation' in preflightState && preflightState.reconciliation.scope
+      ? specHeadFrom({
+          specId: preflightState.reconciliation.scope.record.spec?.specId,
+          revision: preflightState.reconciliation.scope.record.revision,
+        })
+      : undefined;
     if (preflightState.kind === 'work-scope-refusal') {
-      return {
+      return recordNoClaim({
         content: [{ type: 'text' as const, text: preflightState.text }],
-      };
+      });
     }
     // WI-5940: the compact-first verdict. Returned BEFORE every claim path below, so the
     // filing's "and no item is claimed" holds by construction rather than by inspection.
@@ -1721,25 +1739,25 @@ export default defineTool({
           registerAwait: registerAwaitStore,
         },
       );
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify({ ...preflightState.refusal, ...(benchOutcome ? { bench: benchOutcome } : {}) }),
           },
         ],
-      };
+      });
     }
     // WI-2092233: the route-it-instead verdict for an active GOAL steward. Returned BEFORE every
     // claim path below, so "and no item is claimed" holds by construction.
     if (preflightState.kind === 'goal-steward') {
-      return {
+      return recordNoClaim({
         content: [{ type: 'text' as const, text: JSON.stringify(preflightState.refusal) }],
-      };
+      });
     }
     if (preflightState.kind === 'scoped-miss') {
       const { reconciliation } = preflightState;
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
@@ -1748,7 +1766,7 @@ export default defineTool({
             ),
           },
         ],
-      };
+      }, preflightSpecHead);
     }
     if (preflightState.kind === 'paused') {
       const { reconciliation, pause } = preflightState;
@@ -1761,7 +1779,7 @@ export default defineTool({
       // pull they're forbidden to make anyway. Self/subscriber-scoped + best-effort,
       // same posture as the successful-claim cancel below.
       const claimableAwaitsCancelled = await cancelClaimableAwaits(ident.ownerId, { includeStanding: true }).catch(() => 0);
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
@@ -1774,21 +1792,21 @@ export default defineTool({
             ),
           },
         ],
-      };
+      }, preflightSpecHead);
     }
     if (preflightState.kind === 'leader-unavailable') {
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify(fleetLeaderUnavailableRefusal(preflightState.reconciliation.scope!)),
           },
         ],
-      };
+      }, preflightSpecHead);
     }
     if (preflightState.kind === 'plan-complete') {
       const { reconciliation, planTerminality } = preflightState;
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
@@ -1800,17 +1818,17 @@ export default defineTool({
             ),
           },
         ],
-      };
+      }, preflightSpecHead);
     }
     if (preflightState.kind === 'plan-scope-missing') {
-      return {
+      return recordNoClaim({
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify(planScopeMissingRefusal(preflightState.planSlug, ident.ownerId, args.harness)),
           },
         ],
-      };
+      });
     }
     const { reconciliation, specOn, contendedPaths } = preflightState;
     // P-004 / D-002 (D-007 hybrid): scheduler:get_next is the primary self-pull surface,
@@ -2082,14 +2100,14 @@ export default defineTool({
         maxConcurrentClaims: capRec?.spec.limits?.maxConcurrentClaims,
       }).catch(() => null);
       if (capped?.blocked) {
-        return {
+        return recordNoClaim({
           content: [
             {
               type: 'text' as const,
               text: JSON.stringify({ ok: false, ...concurrencyBlockedRefusal(capped, ident.ownerId) }),
             },
           ],
-        };
+        }, specHeadFrom({ specId: capRec?.spec.specId, revision: capRec?.revision }) ?? preflightSpecHead);
       }
 
       // EI-22773843177950284: plans:start binds a SOLO starter to one exact plan,

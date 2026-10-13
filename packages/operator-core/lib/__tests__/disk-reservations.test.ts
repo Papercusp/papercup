@@ -92,6 +92,49 @@ describe('disk reservation ledger — Node reader', () => {
     expect(() => command('papercusp_free_gb() { printf 100; }; papercusp_ledger_lock() { return 1; }')).toThrow();
     expect(() => command('papercusp_require_free_gb() { return 0; }')).toThrow();
   });
+  it.each(['valid', 'short-life', 'small-budget', 'wrong-purpose', 'peer', 'physical-shortage'])(
+    'strict pre-admitted window validates %s and preserves the ancestor receipt', (scenario) => {
+      const ledger = scratch();
+      const target = scratch();
+      const child = [
+        'source "$1"',
+        'scenario="$4"',
+        'papercusp_free_gb() { if [ "$scenario" = physical-shortage ]; then printf 77; else printf 100; fi; }',
+        'status=0',
+        'papercusp_require_disk_reservation "$2" 78 native "$3" || status=$?',
+        'if [ "$status" = 0 ]; then',
+        '  [ "$PAPERCUSP_DISK_RESERVATION_FILE" = "$3" ] || exit 99',
+        '  papercusp_release_disk_reservation',
+        'fi',
+        '[ -f "$3" ] || exit 98',
+        'printf "CHILD_STATUS=%s\\n" "$status"',
+        'exit "$status"',
+      ].join('\n');
+      const parent = [
+        'source "$1"',
+        'export PAPERCUSP_DISK_RESERVATION_DIR="$2" PAPERCUSP_DISK_RESERVATION_TTL_SEC=32400',
+        'papercusp_free_gb() { printf 100; }',
+        'papercusp_require_disk_reservation "$3" 78 native || exit $?',
+        'receipt="$PAPERCUSP_DISK_RESERVATION_FILE"',
+        'trap \'PAPERCUSP_DISK_RESERVATION_FILE="$receipt" papercusp_release_disk_reservation; [ -z "${peer:-}" ] || kill "$peer" 2>/dev/null\' EXIT',
+        'case "$5" in',
+        '  short-life) sed -i "s/^expires=.*/expires=$(($(date +%s) + 60))/" "$receipt" ;;',
+        '  small-budget) sed -i "s/^gb=.*/gb=65/" "$receipt" ;;',
+        '  wrong-purpose) sed -i "s/^label=.*/label=other/" "$receipt" ;;',
+        '  peer) sleep 30 >/dev/null 2>&1 & peer=$!; sed -i "s/^pid=.*/pid=$peer/; s/^start=.*/start=$(papercusp_proc_starttime "$peer")/" "$receipt" ;;',
+        'esac',
+        'export PAPERCUSP_DISK_RESERVATION_TTL_SEC=21600',
+        'bash -c "$4" strict-child "$1" "$3" "$receipt" "$5"',
+      ].join('\n');
+      const result = spawnSync('bash', ['-c', parent, 'strict-parent', SHELL_LIB, ledger, target, child, scenario],
+        { encoding: 'utf8', timeout: 15_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(scenario === 'valid' ? 0 : 28);
+      expect(result.stdout).toContain(`CHILD_STATUS=${scenario === 'valid' ? 0 : 28}`);
+      if (scenario === 'valid') expect(result.stdout).toContain('adopted 78GB ancestor reservation');
+      if (scenario === 'peer') expect(result.stdout).not.toContain('adopted');
+    }, 20_000);
+
   it('rejects collectively oversized evidence destinations on one physical device', () => {
     const paths = [scratch(), scratch(), scratch()];
     const allocations = paths.map((path, i) => ({ path, bytes: [25, 24, 24][i] * GIB }));

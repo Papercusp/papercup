@@ -5917,7 +5917,7 @@
           "POST"
         ]
       },
-      "description": "Read the model-tier menu (stored, else the committed defaults) with each tier’s effective soft compaction limit — explicit per-tier value, else the model-derived default floor((window − margin) / 1.2). Also returns the per-role tier ceilings.",
+      "description": "Read the model-tier menu with effective soft compaction limits, per-role tier ceilings and the shared launchAliases catalog for fleet:launch-on-plan, capability:launch-agent and psu --model.",
       "capabilities": [
         "operator:read"
       ],
@@ -14824,7 +14824,7 @@
           "POST"
         ]
       },
-      "description": "Code topology: symbol | context | callers | callees | impact | trace | contracts | health. Native operations use current JS/TS compiler snapshots with defining-file disambiguation. contracts joins static HTTP/RPC/event producer-consumer evidence over explicit registered harnesses in the authenticated workspace, with source versions, mismatched consumers and unknown middleware/runtime execution. Impact/trace use max_depth/max_paths/limit and per-hop provenance. Other languages and selectors receive explicit unsupported results.",
+      "description": "Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Native operations use current JS/TS snapshots. Discovery requires explicit bounded paths; communities are weak call components, flows are possible zero-incoming call paths, and concept-search fuses symbol/path and source-text rankings. Discovery is inferred retrieval evidence; semantic similarity and runtime execution are unmeasured. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.",
       "capabilities": [
         "intel:read"
       ],

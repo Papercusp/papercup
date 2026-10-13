@@ -53,7 +53,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError } from '@papercusp/operator-core/lib/verifier-source';
+import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError, writeVerifierTaskReceipt } from '@papercusp/operator-core/lib/verifier-source';
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -699,6 +699,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   const owned = await fs.mkdtemp(join(scratch, 'verifier-command-'));
   const root = join(owned, 'invoked-source');
   try {
+    writeVerifierTaskReceipt(owned, donor, env);
     assertOutsideArchive(owned, resolve(receiptPath));
     const receipt = await prepareVerifierSource({ repo: donor, ref, dest: root,
       inputs, inputsFile, tauriInputs, gitCheckout: true });

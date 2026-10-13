@@ -7,6 +7,7 @@ import {
   LiveHealthHistoryWriter,
   LiveHealthMonitor,
   applyHostLiveHealthReadings,
+  decodeLiveHealthHistorySnapshot,
   parseCloseWaitCount,
   parseMemoryKernel,
   parseNetworkCounters,
@@ -139,6 +140,103 @@ describe('live-health host parsers', () => {
       const byteRows = bytes.trim().split('\n').map((line) => JSON.parse(line) as LiveHealthSnapshot);
       expect((await stat(bytePath)).size).toBeLessThanOrEqual(rowBytes * 2);
       expect(byteRows.map((row) => row.sequence)).toEqual([3, 4]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retains an oversized fleet snapshot instead of permanently skipping history', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-live-health-history-fleet-'));
+    try {
+      const snapshot = historySnapshot(1);
+      const writers: Record<string, LiveHealthSnapshot['writers'][string]> = {};
+      const observations = emptyLiveHealthObservations();
+      for (let index = 0; index < 700; index += 1) {
+        const id = `monitor.host:${index}`;
+        writers[id] = { id, kind: 'monitor', instanceId: `fleet-${index}`, pid: index + 1, platform: 'linux', startedAtMs: 1_000 };
+        observations['disk.freeBytes'][id] = {
+          ...snapshot.signals['disk.freeBytes'], state: 'measured', value: index + 1, writerId: id,
+          reason: null, lastMeasuredAtMs: snapshot.sampledAtMs,
+        };
+      }
+      const fleet = { ...snapshot, writers, observations };
+      expect(Buffer.byteLength(JSON.stringify(fleet))).toBeGreaterThan(256 * 1024);
+      const writer = new LiveHealthHistoryWriter(join(root, 'samples.jsonl'));
+      expect(await writer.append(fleet)).toBe(true);
+      expect((await stat(writer.path)).size).toBeLessThanOrEqual(writer.maxRecordBytes);
+      expect(decodeLiveHealthHistorySnapshot((await readFile(writer.path, 'utf8')).trim().split('\n'))).toEqual(fleet);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retains complete multi-row samples across restart and sample-count compaction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-live-health-history-parts-'));
+    try {
+      const path = join(root, 'samples.jsonl');
+      const options = { maxRecordBytes: 512, maxBytes: 100_000, maxSamples: 2 };
+      const writer = new LiveHealthHistoryWriter(path, options);
+      expect(await writer.append(historySnapshot(1))).toBe(true);
+      const firstRows = (await readFile(path, 'utf8')).trim().split('\n');
+      expect(firstRows.length).toBeGreaterThan(1);
+      expect(firstRows.every((row) => Buffer.byteLength(row) + 1 <= 512)).toBe(true);
+      expect(decodeLiveHealthHistorySnapshot(firstRows)).toEqual(historySnapshot(1));
+      const restarted = new LiveHealthHistoryWriter(path, options);
+      expect(await restarted.append(historySnapshot(2))).toBe(true);
+      expect(await restarted.append(historySnapshot(3))).toBe(true);
+      const rows = (await readFile(path, 'utf8')).trim().split('\n');
+      const secondParts = JSON.parse(rows[0]!).parts as number;
+      expect(decodeLiveHealthHistorySnapshot(rows.slice(0, secondParts))).toEqual(historySnapshot(2));
+      expect(decodeLiveHealthHistorySnapshot(rows.slice(secondParts))).toEqual(historySnapshot(3));
+      expect((await stat(path)).size).toBeLessThanOrEqual(options.maxBytes);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads legacy snapshots and rejects missing, altered or reordered encoded parts', async () => {
+    expect(decodeLiveHealthHistorySnapshot([JSON.stringify(historySnapshot(1))])).toEqual(historySnapshot(1));
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-live-health-history-integrity-'));
+    try {
+      const writer = new LiveHealthHistoryWriter(join(root, 'samples.jsonl'), { maxRecordBytes: 512 });
+      expect(await writer.append(historySnapshot(1))).toBe(true);
+      const rows = (await readFile(writer.path, 'utf8')).trim().split('\n');
+      expect(decodeLiveHealthHistorySnapshot(rows.slice(1))).toBeNull();
+      expect(decodeLiveHealthHistorySnapshot([...rows].reverse())).toBeNull();
+      const damaged = JSON.parse(rows[0]!); damaged.sha256 = '0'.repeat(64);
+      expect(decodeLiveHealthHistorySnapshot([JSON.stringify(damaged), ...rows.slice(1)])).toBeNull();
+      damaged.sourceBytes = 64 * 1024 * 1024;
+      expect(decodeLiveHealthHistorySnapshot([JSON.stringify(damaged), ...rows.slice(1)])).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('never retains a partial encoded sample when byte compaction or an interrupted append cuts a frame', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-live-health-history-byte-parts-'));
+    try {
+      const path = join(root, 'samples.jsonl');
+      const first = new LiveHealthHistoryWriter(path, { maxRecordBytes: 512 });
+      expect(await first.append(historySnapshot(1))).toBe(true);
+      const frame = (await readFile(path, 'utf8')).trim().split('\n');
+      const bytes = (await stat(path)).size;
+      const bounded = new LiveHealthHistoryWriter(path, { maxRecordBytes: 512, maxBytes: bytes * 2 + 128, maxSamples: 20 });
+      expect(await bounded.append(historySnapshot(2))).toBe(true);
+      expect(await bounded.append(historySnapshot(3))).toBe(true);
+      const rows = (await readFile(path, 'utf8')).trim().split('\n');
+      for (let index = 0; index < rows.length;) {
+        const parts = JSON.parse(rows[index]!).parts as number;
+        expect(decodeLiveHealthHistorySnapshot(rows.slice(index, index + parts))).not.toBeNull();
+        index += parts;
+      }
+      expect((await stat(path)).size).toBeLessThanOrEqual(bytes * 2 + 128);
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(path, frame.slice(1).join('\n') + '\n');
+      const recovered = new LiveHealthHistoryWriter(path, { maxRecordBytes: 512 });
+      expect(await recovered.append(historySnapshot(4))).toBe(true);
+      expect(decodeLiveHealthHistorySnapshot((await readFile(path, 'utf8')).trim().split('\n'))).toEqual(historySnapshot(4));
+      const tooSmall = new LiveHealthHistoryWriter(join(root, 'too-small.jsonl'), { maxBytes: 100, maxRecordBytes: 100 });
+      expect(await tooSmall.append(historySnapshot(4))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -346,7 +346,7 @@ export interface ShippedCodeSearchAdvisory {
 /**
  * EI-19390763763662489: an empty improvement-dedup result searches prior work-item
  * text, not the shipped tree. Absence-shaped proposals are the dangerous case: the
- * caller naturally reads `possibleDuplicates: []` as corroboration that the named
+ * caller naturally reads an empty `possibleDuplicates` result as corroboration that the named
  * capability does not exist, then builds a second implementation of code already in
  * production.
  *
@@ -358,9 +358,13 @@ export interface ShippedCodeSearchAdvisory {
  */
 export function describeShippedCodeSearchGap(
   args: { title: string; body?: string; lane?: string },
-  possibleDuplicates: readonly unknown[] | undefined,
+  possibleDuplicates: readonly unknown[] | null | undefined,
 ): ShippedCodeSearchAdvisory | undefined {
-  if (args.lane === 'observation' || !Array.isArray(possibleDuplicates) || possibleDuplicates.length > 0) {
+  if (
+    args.lane === 'observation' ||
+    possibleDuplicates === undefined ||
+    (Array.isArray(possibleDuplicates) && possibleDuplicates.length > 0)
+  ) {
     return undefined;
   }
 
@@ -372,11 +376,15 @@ export function describeShippedCodeSearchGap(
   );
   if (absencePremises.length === 0) return undefined;
 
+  const workItemDedupNote =
+    possibleDuplicates === null
+      ? '`possibleDuplicates: null` means no usable work-item-text dedup verdict was available; it is NOT evidence that no prior item exists.'
+      : '`possibleDuplicates: []` means the work-item-text dedup found no prior item; it is NOT evidence that this capability is absent from shipped code.';
+
   return {
     absencePremises,
     note:
-      'Report only — the capture still succeeded. `possibleDuplicates: []` means the work-item-text ' +
-      'dedup found no prior item; it is NOT evidence that this capability is absent from shipped code. ' +
+      'Report only — the capture still succeeded. ' + workItemDedupNote + ' ' +
       'Before building, run the premise recheck(s) above across the whole repository: use scoped `rg` ' +
       'for text/symbol spellings and `graph:query` for call topology. Reuse the existing surface if found.',
   };
@@ -681,7 +689,7 @@ export default defineTool({
       description: 'body',
     },
     returns:
-      'CREATE: { ok, created, issue, topics, possibleDuplicates, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates, dedupCoverage, hint, alreadyDecided? }. The check-only `hint` states whether this was title-only or bound to the exact supplied body. A title-only match list can be incomplete even when it contains matches; rerun with the final body before relying on the results.\n\n' +
+      'CREATE: { ok, created, issue, topics, possibleDuplicates:array|null, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates:array|null, dedupCoverage, hint, alreadyDecided? }. `possibleDuplicates:null` means both lexical and semantic searches were unavailable and no known hit could be listed; it is not a clean result. The check-only `hint` states whether this was title-only or bound to the exact supplied body. A title-only match list can be incomplete even when it contains matches; rerun with the final body before relying on the results.\n\n' +
       'For standard/trimmed tiers, `issue` is a compact reference (id, kind, harness, state, title, assignee); read stored details with `work_items:get { id }`, or request `payloadTier:"full"` when the complete echo is needed.\n\n' +
       'UNKEYED OBSERVATION CREATE (`lane:"observation"`, no `conditionKey`): returns only `{ ok:true }`. Fresh storage and a server-side fold intentionally have the same response; the filing is complete and needs no caller-side duplicate investigation. Keyed machine-emitter observations retain their detailed coalesce response.\n\n' +
       'KEYED COALESCE (reason:"coalesced" — an observation matching an open conditionKey): also `coalescedOnto { id, repeatCount, bodyPersisted, bodyDiscarded?, priorAuthor, crossAuthor }`. Read `bodyPersisted` BEFORE asserting the row says what you wrote: on false your title/body was DISCARDED and the row still shows the previous reading. `crossAuthor:true` means you wrote onto a PEER\'s row (expected for a shared conditionKey; occurrences are all retained).\n\n' +
@@ -692,9 +700,10 @@ export default defineTool({
       '  • semantic:hard  — embedding match. The created row carries the same verdict annotation.\n' +
       '  • semantic:soft  — weaker embedding match. ADVISORY ONLY, never declines.\n' +
       '  • lexical:"containment" — your (shorter) title is almost fully covered by a much longer stored one. ADVISORY ONLY, never declines. This is the net that makes a SHORT symptom query work: Jaccard divides by the union, so a short query that is a perfect subset of a long stored title scores |query|/|title| and cannot clear the threshold on its own.\n\n' +
-      'dedupCoverage { lexical, semantic, degraded } — WHAT COULD ACTUALLY BE CHECKED. Read it before treating an empty possibleDuplicates as "nothing similar exists". semantic:"partial" means the embedding query ran against a below-floor index; its hits can help, but an empty result may miss duplicates. semantic:"unavailable" means the embedder did not return a verdict or index coverage is unknown/unmeasured. Either state makes degraded:true: an empty result is "could not fully check", not "checked and clean".' +
-      '\n\nAn absence-shaped filing/check with `possibleDuplicates: []` also returns `shippedCodeSearch { absencePremises, note }`: work-item dedup cannot prove shipped code is absent, so run the named whole-repo `rg` / `graph:query` recheck before building. Report-only; it never blocks the capture.',
+      'dedupCoverage { lexical, semantic, degraded } — WHAT COULD ACTUALLY BE CHECKED. Read it before treating an empty possibleDuplicates list as "nothing similar exists". `possibleDuplicates:null` means both fuzzy legs were unavailable and no known hit could be listed. semantic:"partial" means the embedding query ran against a below-floor index; its hits can help, but an empty result may miss duplicates. semantic:"unavailable" means the embedder did not return a verdict or index coverage is unknown/unmeasured. Either state makes degraded:true: an empty result is "could not fully check", not "checked and clean".' +
+      '\n\nAn absence-shaped filing/check with `possibleDuplicates: []` or `null` may also return `shippedCodeSearch { absencePremises, note }`: work-item dedup cannot prove shipped code is absent, so run the named whole-repo `rg` / `graph:query` recheck before building. Report-only; it never blocks the capture.',
     seeAlso: [
+      'possibleDuplicates may be null when both lexical and semantic search were unavailable; that is no verdict, not a clean search. Read dedupCoverage before interpreting empty or missing matches.',
       'SYMPTOM-FIRST — improvements:capture { title, checkDuplicatesOnly:true } BEFORE you diagnose: "has anyone already hit this?" costs one call and a title, and creates nothing. Treat its title-only match list as incomplete; rerun with the final body before relying on it.',
       'improvements:digest (triage the backlog this lands in — but NEVER shows lane:"observation" rows; see below)',
       // Moved out of `notWhen` (P-011 prompt-weight: seeAlso is not counted against
@@ -1120,7 +1129,7 @@ export default defineTool({
       created: z.boolean().optional(),
       issue: z.unknown().optional(),
       topics: z.array(z.unknown()).optional(),
-      possibleDuplicates: z.array(z.unknown()).optional(),
+      possibleDuplicates: z.array(z.unknown()).nullable().optional(),
       dedupCoverage: z.unknown().optional(),
       alreadyDecided: z.unknown().optional(),
       reason: z.string().optional(),

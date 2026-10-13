@@ -656,16 +656,28 @@ describe('test-files router', () => {
     expect(() => discoverVitestRoute('libs/generic/tooldef/src/no-such.test.ts')).toThrow(/does not exist/);
   });
 
-  // EI-14278: a config-less `libs/generic/*` submodule (its own package.json `"test": "vitest run"`,
-  // zero explicit vitest config — the borrowable-libs shape) must route to the package cwd config-less
-  // (config: null) instead of throwing `no Vitest config owns …`. Without this, ~25 real generic libs
-  // (plan-parser, memory, result-encoding, …) are unroutable via `npm run test:file` and each agent
-  // rediscovers the `cd libs/generic/<name> && npm test` escape hatch.
+  // EI-14278: a config-less Vitest package must route to its own cwd. Keep
+  // the fixture isolated: maintained generic packages can gain explicit configs.
   it('routes a config-less libs/generic/* package to its own cwd with config: null', () => {
-    const route = discoverVitestRoute('libs/generic/plan-parser/src/index.test.ts');
-    expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/plan-parser'));
-    expect(route.config).toBeNull();
-    expect(route.requested).toBe('src/index.test.ts');
+    const root = mkdtempSync(join(tmpdir(), 'router-configless-package-'));
+    const pkg = join(root, 'libs/generic/fixture');
+    try {
+      mkdirSync(join(pkg, 'src'), { recursive: true });
+      writeFileSync(join(pkg, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
+      writeFileSync(join(pkg, 'src/index.test.ts'), '');
+      writeFileSync(join(root, 'vitest.config.ts'), 'export default {};');
+      const file = 'libs/generic/fixture/src/index.test.ts';
+      expect(discoverVitestRoute(file, root)).toMatchObject({
+        cwd: pkg, config: null, requested: 'src/index.test.ts',
+      });
+      // Adding a package config must take precedence over its own fallback.
+      writeFileSync(join(pkg, 'vitest.config.ts'), 'export default {};');
+      expect(discoverVitestRoute(file, root)).toMatchObject({
+        cwd: pkg, config: 'vitest.config.ts', requested: 'src/index.test.ts',
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('still prefers an explicit vitest.config.* over the config-less package fallback', () => {
@@ -1554,6 +1566,35 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       stderr: expect.stringContaining('AssertionError') });
     expect(probeScopeSupportImpl).toHaveBeenCalledTimes(1);
     expect((spawnImpl.mock.calls[0] as unknown[] | undefined)?.[0]).toBe('/usr/bin/systemd-run');
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['unadmitted scope', '', '', true, true],
+    ['assertion verdict', 'Tests  1 failed (1)\n', '', true, false],
+    ['admitted scope payload', '', 'Running scope as unit: papercusp-test-fixture.scope\n', true, false],
+    ['process-group payload', '', '', false, false],
+  ])('qualifies post-preflight scope output for %s without replaying the payload (EI-25878128777441671)', async (_label, stdout, prefix, supported, launchFailed) => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const env = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/reachable/bus' };
+    const spawnImpl = vi.fn(() => child);
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      env, systemdRunPath: '/usr/bin/systemd-run', setsidPath: '/usr/bin/setsid',
+      probeScopeSupportImpl: async () => ({ ok: supported }), spawnImpl,
+      stopScopeImpl: () => ({ tasks: 0 }), onProgress: () => {},
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, env, { inherited: true }),
+    });
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
+    child.stdout.write(stdout);
+    child.stderr.write(`${prefix}Failed to start transient scope unit: Transport endpoint is not connected\n`);
+    child.emit('close', 1, null);
+    await expect(pending).resolves.toMatchObject({
+      status: 1, timedOut: false,
+      error: launchFailed ? expect.objectContaining({ code: 'TEST_SCOPE_LAUNCH_FAILED' }) : null,
+      stderr: expect.stringContaining('Transport endpoint is not connected'),
+    });
     expect(spawnImpl).toHaveBeenCalledTimes(1);
   });
 

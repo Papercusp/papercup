@@ -153,6 +153,47 @@ describe('agent-loop approval store — real Postgres (migration 934)', () => {
     expect(resolved).toBe(false);
   });
 
+  it.each([true, false])('a mismatched waiter cannot consume a resolved approval (approved=%s)', async (approved) => {
+    await createLoopApproval(REQ);
+    await resolveLoopApproval({
+      ...REQ, approved, reason: 'workspace A decision', resolvedBy: 'test:workspace-A',
+    });
+    const before = await sql`SELECT * FROM harness_shared.agent_loop_approvals`;
+
+    const foreignDecision = await awaitLoopApprovalDecision({
+      ...REQ, workspaceId: 'OTHER-ws', timeoutMs: 0,
+    });
+    expect(foreignDecision.approved).toBe(false);
+    expect(foreignDecision.reason).toBe('approval request expired');
+    const after = await sql`SELECT * FROM harness_shared.agent_loop_approvals`;
+    expect([...after]).toEqual([...before]);
+
+    // The rightful waiter still receives the untouched decision and consumes it.
+    const rightfulDecision = await awaitLoopApprovalDecision(REQ);
+    expect(rightfulDecision).toEqual({ approved, reason: 'workspace A decision' });
+    expect(await sql`SELECT * FROM harness_shared.agent_loop_approvals`).toHaveLength(0);
+  });
+
+  it.each(['timeout', 'abort'] as const)('a mismatched waiter cannot deny or delete a pending approval on %s', async (exit) => {
+    await createLoopApproval(REQ);
+    const before = await sql`SELECT * FROM harness_shared.agent_loop_approvals`;
+    const ctrl = new AbortController();
+    if (exit === 'abort') ctrl.abort();
+
+    const foreignDecision = await awaitLoopApprovalDecision({
+      ...REQ, workspaceId: 'OTHER-ws', timeoutMs: 0, signal: ctrl.signal,
+    });
+    expect(foreignDecision.approved).toBe(false);
+    expect(foreignDecision.reason).toBe(exit === 'abort'
+      ? 'approval aborted (run cancelled)' : 'approval request expired');
+    const after = await sql`SELECT * FROM harness_shared.agent_loop_approvals`;
+    expect([...after]).toEqual([...before]);
+
+    // A foreign wait must leave a request that its own workspace can resolve.
+    expect(await resolveLoopApproval({ ...REQ, approved: true })).toBe(true);
+    expect((await awaitLoopApprovalDecision(REQ)).approved).toBe(true);
+  });
+
   it('timeout self-denies: the row leaves pending and the waiter gets a deny', async () => {
     await createLoopApproval(REQ);
     const decision = await awaitLoopApprovalDecision({

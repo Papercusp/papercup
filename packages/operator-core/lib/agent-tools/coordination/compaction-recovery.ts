@@ -36,6 +36,10 @@ export interface CompactionPlanAuthorityCurrent {
     planItemId: string | null;
   }>;
   specsMore?: number;
+  /** D-006 (oversized-tool-results-reduction-2026-10-12): present when a recovery
+   *  orient emptied `decisions[].body` because this session's carry document already
+   *  delivered the same plan revision. `refetch` names the exact read. */
+  deliveredInCarry?: { builtAt: string; omitted: 'decision bodies'; refetch: string };
 }
 
 export interface CompactionPlanAuthorityUnavailable {

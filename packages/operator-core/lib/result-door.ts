@@ -512,6 +512,14 @@ function hasOnlyRecoverableCoordThreadMarkers(
  * `pipe`, which on a JSON body is the all-or-nothing trap this hint exists to
  * warn about — a no-match returns an EMPTY body that reads like a filter that
  * worked. Callers that have already classified MUST pass their shape.
+ *
+ * oversized-tool-results-reduction-2026-10-12#D-005 changed the `pipe` half:
+ * `applyProjection` now renders a pipe-only JSON body with 2-space indentation
+ * before the line operators run, so `grep`/`head` cut it by field line instead
+ * of keeping all or nothing. `pick` still leads (it returns JSON; `pipe` returns
+ * lines), but the hint no longer claims `pipe` cannot reduce a JSON body. This
+ * hint is emitted by the same build that runs `applyProjection`, so the two
+ * cannot disagree.
  */
 export function buildProjectionHint(
   textItems: ReadonlyArray<{ text: string }>,
@@ -550,7 +558,7 @@ export function buildProjectionHint(
   if (shape.json) {
     return (
       `${lead}JSON (${shape.lineCount} line(s)): \`projection: { pick: ["results[].id"] }\`; ` +
-      `\`pick\` is what reduces it. \`pipe\` is all-or-nothing.${asString}${searchIt}`
+      `\`pick\` is what reduces it; \`pipe\` filters the indented lines.${asString}${searchIt}`
     );
   }
   // capability:read's scratch-reference guard runs inside the handler, before

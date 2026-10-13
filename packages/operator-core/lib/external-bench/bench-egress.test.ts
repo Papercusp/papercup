@@ -112,8 +112,16 @@ function request(socketPath: string, body: string, halfClose = false): Promise<s
 describe('resolveEgressEndpoints', () => {
   it('defaults the target host to 127.0.0.1', () => {
     expect(resolveEgressEndpoints([{ name: 'gw', listenPort: 8788, targetPort: 8788 }])).toEqual([
-      { name: 'gw', listenPort: 8788, targetPort: 8788, targetHost: '127.0.0.1' },
+      { name: 'gw', listenPort: 8788, targetPort: 8788, targetHost: '127.0.0.1', perTask: false },
     ]);
+  });
+
+  it('D-033: a perTask endpoint takes no targetPort and resolves with a null one', () => {
+    expect(resolveEgressEndpoints([{ name: 'gw', listenPort: 8788, perTask: true }])).toEqual([
+      { name: 'gw', listenPort: 8788, targetPort: null, targetHost: '127.0.0.1', perTask: true },
+    ]);
+    expect(() => resolveEgressEndpoints([{ name: 'gw', listenPort: 8788, perTask: true, targetPort: 1 }])).toThrow(/takes no targetPort/);
+    expect(() => resolveEgressEndpoints([{ name: 'gw', listenPort: 8788 }])).toThrow(/is not a port/);
   });
 
   it.each([
@@ -186,6 +194,55 @@ describe('startBenchEgress', () => {
     expect(await request(join(dir, 'mcp.sock'), 'GET /b')).toBe('pong:GET /b');
     expect(await request(join(dir, 'gw.sock'), 'GET /c')).toBe('pong:GET /c');
     expect(egress.stats()).toEqual({ gw: { connections: 2, errors: 0 }, mcp: { connections: 1, errors: 0 } });
+  });
+
+  it('D-033: a perTask endpoint relays only while bound to an open task network; one task network at a time', async () => {
+    const fake = fakeDocker({ listen: [8788, 9071] });
+    const egress = await startBenchEgress({
+      runId: 'pertask',
+      endpoints: [{ name: 'gw', listenPort: 8788, perTask: true }, { name: 'mcp', listenPort: 9071, targetPort: upstreamPort }],
+      exec: fake.exec, workRoot, readyTimeoutMs: 2000, readyPollMs: 10,
+    });
+    started.push(egress);
+    const sock = join(relayDirOf(fake.calls), 'gw.sock');
+    // An unbound endpoint destroys the client on accept, so its write can race the close (EPIPE/ECONNRESET).
+    const refused = (body: string) =>
+      request(sock, body).catch((e: unknown) => (/EPIPE|ECONNRESET/.test(String(e)) ? '' : Promise.reject(e)));
+
+    expect(await refused('GET /unbound')).toBe('');
+    expect(egress.stats().gw).toEqual({ connections: 1, errors: 1 });
+
+    const lease = await egress.openTaskNetwork('task-a');
+    await expect(egress.openTaskNetwork('task-b')).rejects.toThrow(/one open task network at a time/);
+    expect(() => egress.bindTaskEndpoint('pc-egress-other', 'gw', upstreamPort)).toThrow(/is not open/);
+    expect(() => egress.bindTaskEndpoint(lease.network, 'mcp', upstreamPort)).toThrow(/shared, not perTask/);
+    expect(() => egress.bindTaskEndpoint(lease.network, 'nope', upstreamPort)).toThrow(/no endpoint named/);
+    expect(() => egress.bindTaskEndpoint(lease.network, 'gw', 0)).toThrow(/is not a port/);
+
+    const unbind = egress.bindTaskEndpoint(lease.network, 'gw', upstreamPort);
+    expect(() => egress.bindTaskEndpoint(lease.network, 'gw', upstreamPort)).toThrow(/already bound/);
+    expect(await request(sock, 'GET /bound')).toBe('pong:GET /bound');
+    unbind();
+    expect(await refused('GET /after-unbind')).toBe('');
+
+    egress.bindTaskEndpoint(lease.network, 'gw', upstreamPort);
+    expect(await lease.release()).toEqual([]);
+    expect(await refused('GET /after-release'), 'releasing the network unbinds it').toBe('');
+    expect(egress.stats().gw).toEqual({ connections: 4, errors: 3 });
+
+    const next = await egress.openTaskNetwork('task-b');
+    expect(next.network).not.toBe(lease.network);
+  });
+
+  it('D-033: a failed task-network open frees the single slot', async () => {
+    const fake = fakeDocker({ listen: [8788], fail: ['network connect'] });
+    const egress = await startBenchEgress({
+      runId: 'pertask-fail', endpoints: [{ name: 'gw', listenPort: 8788, perTask: true }],
+      exec: fake.exec, workRoot, readyTimeoutMs: 2000, readyPollMs: 10,
+    });
+    started.push(egress);
+    await expect(egress.openTaskNetwork('a')).rejects.toThrow(/could not join/);
+    await expect(egress.openTaskNetwork('b')).rejects.toThrow(/could not join/);
   });
 
   it('still returns the response when the client half-closes after its request', async () => {

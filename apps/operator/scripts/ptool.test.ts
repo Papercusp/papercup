@@ -861,6 +861,18 @@ describe('ptool call deadlines', () => {
       name: 'coord:declare-intent',
       args: { intent: 'timeout mapping regression' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-25808449616032701: resume-recovery identity/message/spec reads have
+    // no shorter server timeout than the MCP transport cap. Cover direct and
+    // deferred routes so ptool cannot preempt their structured result at 30s.
+    for (const [name, args] of [
+      ['coord:whoami', {}],
+      ['coord:read', { msg_id: 'coord-send-timeout-regression' }],
+      ['scheduler:get_claim_spec', { fleet: 'timeout-regression' }],
+    ]) {
+      expect(timeoutForTool(name, args)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+      expect(timeoutForTool('tools:invoke', { name, args }))
+        .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    }
     // EI-23173103907673402: live tools:find schema searches can cross the
     // ordinary 30s client cutoff; cover direct and deferred discovery routes.
     expect(timeoutForTool('tools:find')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);

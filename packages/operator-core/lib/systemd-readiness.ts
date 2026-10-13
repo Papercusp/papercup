@@ -5,12 +5,11 @@
  * bound. The helper is deliberately fire-and-forget: an unavailable notifier
  * must never turn a healthy HTTP host into a crash loop.
  */
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 const DEFAULT_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 10_000;
-const SYSTEMD_NOTIFY_BIN = 'systemd-notify';
 
 function notifyTimeoutMs(): number {
   const configured = Number(process.env.PAPERCUSP_SYSTEMD_NOTIFY_TIMEOUT_MS);
@@ -22,7 +21,7 @@ function errorMessage(error: unknown): string {
   try {
     return error instanceof Error ? error.message : String(error);
   } catch {
-    return 'unknown systemd-notify failure';
+    return 'unknown systemd notification failure';
   }
 }
 
@@ -39,18 +38,18 @@ export function notifySystemdReady(): void {
   if (!process.env.NOTIFY_SOCKET) return;
 
   try {
-    execFile(
-      SYSTEMD_NOTIFY_BIN,
-      ['--ready'],
-      { timeout: notifyTimeoutMs() },
-      (error) => {
-        if (error) {
-          logFailure('systemd-notify --ready failed: ' + errorMessage(error));
-        }
-      },
-    );
+    const notifier = createSystemdNotifier();
+    if (!notifier) return;
+    // The one-shot CLI can time out in its acknowledgement barrier or exit
+    // before the manager attributes its datagram. Keep the existing native
+    // sender alive in our cgroup after READY, just as the Portal launcher does.
+    // Type=notify credits readiness only after the listener has bound.
+    void notifier.notify('READY=1').catch((error) => {
+      notifier.close();
+      logFailure('READY=1 notification failed: ' + errorMessage(error));
+    });
   } catch (error) {
-    logFailure('unable to invoke systemd-notify --ready: ' + errorMessage(error));
+    logFailure('unable to create readiness notifier: ' + errorMessage(error));
   }
 }
 

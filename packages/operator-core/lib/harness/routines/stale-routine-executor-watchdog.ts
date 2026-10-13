@@ -257,13 +257,33 @@ const STALE_EXECUTOR_RESTART_PID_POLL_MS = 250;
  */
 export const STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS = 3 * 60_000;
 
+/**
+ * WI-6554700010009238: ceiling for the doubling backoff after CONSECUTIVE
+ * `git_sync_barrier_drain_timeout` refusals. Each refused attempt still asks every
+ * in-flight git-sync pass to yield, so a fixed 3-min retry against a host that cannot
+ * drain kept papercusp from committing for 30 min (2026-10-12: four refused drains,
+ * four yields). Doubling 3 → 6 → 12 → 24 → 30 min makes that churn decay.
+ */
+export const STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS = 30 * 60_000;
+
+/** Retry wait after a refused/failed attempt, given the consecutive drain-refusal count. */
+export function staleExecutorRetryBackoffMs(consecutiveDrainRefusals: number): number {
+  if (consecutiveDrainRefusals <= 1) return STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS;
+  return Math.min(
+    STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS * 2 ** (consecutiveDrainRefusals - 1),
+    STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS,
+  );
+}
+
 let staleExecutorRestartInFlight = false;
 let staleExecutorRestartCooldownUntilMs = 0;
+let staleExecutorConsecutiveDrainRefusals = 0;
 
 /** Test seam: the in-flight latch and cooldown are module state shared across cases. */
 export function resetStaleExecutorRestartStateForTests(): void {
   staleExecutorRestartInFlight = false;
   staleExecutorRestartCooldownUntilMs = 0;
+  staleExecutorConsecutiveDrainRefusals = 0;
 }
 
 /**
@@ -399,11 +419,16 @@ export async function restartStaleBgHostExecutor(
   const result = await attemptStaleBgHostExecutorRestart(identity, verdict, deps);
   // A real attempt that did not restart (refused, failed, unverified) backs off
   // instead of re-running every tick; success/coalesce arm the longer cooldown inside.
+  // Consecutive drain refusals double the wait (WI-6554700010009238).
   if (result.attempted && !result.restarted && !result.coalesced) {
+    staleExecutorConsecutiveDrainRefusals =
+      result.code === 'git_sync_barrier_drain_timeout' ? staleExecutorConsecutiveDrainRefusals + 1 : 0;
     staleExecutorRestartCooldownUntilMs = Math.max(
       staleExecutorRestartCooldownUntilMs,
-      nowMs + STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS,
+      nowMs + staleExecutorRetryBackoffMs(staleExecutorConsecutiveDrainRefusals),
     );
+  } else if (result.restarted || result.coalesced) {
+    staleExecutorConsecutiveDrainRefusals = 0;
   }
   return result;
 }

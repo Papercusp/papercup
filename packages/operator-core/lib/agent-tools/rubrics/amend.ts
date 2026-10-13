@@ -598,6 +598,11 @@ export default defineTool({
         poll: { tool: 'rubrics:amend-status', args: { rubricRef: args.rubricRef, idempotencyKey: receiptKey } },
       });
       const run = trackAmendRun(receiptKey, args.rubricRef, async (): Promise<Record<string, unknown>> => {
+        // A preview must enforce the same instrument admission as apply before
+        // spending a reviewer turn on a patch the authoring guard will refuse.
+        const instrumentAudit = await auditAmendInstrumentBindings(input);
+        const instrumentRefusal = instrumentAudit ? unregisteredInstrumentRefusal(instrumentAudit) : null;
+        if (instrumentRefusal) return { ...instrumentRefusal, dryRun: true };
         let preview: Awaited<ReturnType<typeof previewAcceptanceBarAmendment>>;
         try {
           preview = await previewAcceptanceBarAmendment(input);

@@ -52,6 +52,14 @@
     // If a future input needs another @types package, ADD it to this array —
     // `types` restricts automatic @types inclusion, so an omission fails at emit time.
     "types": ["node"],
+    // ⚠ Do NOT add `allowImportingTsExtensions` here. It would tolerate a
+    // `.ts`-suffixed relative import in an input's TS graph (TS5097), but it also
+    // changes declaration EMIT: tsc then writes specifiers like
+    // `import("./related-tests.d.mts")` where it wrote `import("./related-tests.mjs")`
+    // (measured 2026-10-13, WI-6554700010010634). A TS source reachable from these
+    // inputs that must also run under plain node imports its sibling by package
+    // self-reference instead (`@papercusp/operator-core/lib/<file>`); both halves are
+    // pinned by packages/operator-core/lib/gen-declarations-ts-extension-imports.test.ts.
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "es2022",

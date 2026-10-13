@@ -311,6 +311,9 @@ export function mapAdvSessionRow(r: {
   /** Optional for the same reason as {@link ended_by}: a SELECT that omits it maps to
    *  null, which reads as "no signal recorded" rather than inventing one. */
   ended_signal?: string | null;
+  retired_at?: string | Date | null;
+  retired_by?: string | null;
+  retired_reason?: string | null;
   port_id?: string | null;
   port_source_adv_session_id?: number | string | null;
   port_status?: string | null;
@@ -445,7 +448,7 @@ export async function listPendingWorkbenchLaunches(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal
+             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE display = 'workbench'
          AND launched_at IS NULL
@@ -622,7 +625,7 @@ export async function listStartingTerminalLaunches(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal
+             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE display = ${DISPLAY_TERMINAL_LAUNCH}
          AND (ended_at IS NULL OR session_id IS NULL)
@@ -2323,7 +2326,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
              to_jsonb(a)->'launch_argv' AS launch_argv,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
@@ -2513,7 +2516,7 @@ export async function listResumableSessions(
              a.plan_slug, a.agent, a.role, a.feature, a.mode, a.terminal_bin, a.pid,
              a.window_id, a.omp_thread_id, a.label, a.cwd, a.coord_owner_id, a.session_id,
              a.launch_argv,
-             a.started_at, selected.last_active_at, a.ended_at, a.exit_code, a.ended_by, a.ended_signal
+             a.started_at, selected.last_active_at, a.ended_at, a.exit_code, a.ended_by, a.ended_signal, a.retired_at, a.retired_by, a.retired_reason
         FROM selected
         JOIN harness_shared.adv_sessions a ON a.id = selected.id
        ORDER BY selected.last_active_at DESC
@@ -2573,7 +2576,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
              -- sessions recover the harness scope persisted at launch time.
              to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
              plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
              to_jsonb(a)->'launch_argv' AS launch_argv,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
@@ -2622,7 +2625,7 @@ export async function getLatestActiveAdvSessionByOwner(
                to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
                plan_slug, agent, role, feature, mode, terminal_bin, pid,
                window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-               started_at, ended_at, exit_code, ended_by, ended_signal,
+               started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
                to_jsonb(a)->'launch_argv' AS launch_argv,
                to_jsonb(a)->>'port_id' AS port_id,
                to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
@@ -2657,7 +2660,7 @@ export async function getAdvSessionInWorkspace(id: number, workspaceId: string):
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
              to_jsonb(a)->'launch_argv' AS launch_argv,
-             started_at, ended_at, exit_code, ended_by, ended_signal,
+             started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
@@ -2757,7 +2760,7 @@ export async function advSessionsByCoordOwner(
       SELECT ${ids ? sql`DISTINCT ON (coord_owner_id)` : sql``}
              id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv,
-             display, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal
+             display, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id IS NOT NULL
          ${ids ? sql`AND coord_owner_id = ANY(${ids}::text[])` : sql``}
@@ -2844,7 +2847,7 @@ export async function listRecordedLiveSessions(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT DISTINCT ON (coord_owner_id)
              id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NULL
          AND coord_owner_id IS NOT NULL
@@ -2961,7 +2964,7 @@ export async function listEndedAdvSessionsByOwners(coordOwnerIds: string[]): Pro
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT DISTINCT ON (coord_owner_id)
              id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NOT NULL
          AND coord_owner_id = ANY(${ids}::text[])
@@ -3135,7 +3138,7 @@ export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promis
     const { sql } = getOrgPg();
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${coordOwnerId}
        ORDER BY id DESC
@@ -3167,7 +3170,7 @@ export async function latestLiveAdvSessionByLabel(label: string, workspaceId: st
     const cutoffIso = new Date(Date.now() - RECORDED_LIVE_MAX_AGE_MS).toISOString();
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE label = ${label}
          AND workspace_id = ${workspaceId}
@@ -3234,7 +3237,7 @@ export async function listEndedAdvSessions(
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NOT NULL
          -- Match the transcript handles understood by endedSessionStreamUrl:
@@ -3414,7 +3417,7 @@ export async function advSessionsByTranscriptHandles(handles: {
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE (${sessionIds}::text[] IS NOT NULL AND session_id = ANY(${sessionIds}::text[]))
           OR (${ompThreadIds}::text[] IS NOT NULL AND omp_thread_id = ANY(${ompThreadIds}::text[]))
@@ -3477,7 +3480,7 @@ export async function advSessionsByIdToken(token: string, opts: { limit?: number
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE lower(coord_owner_id) LIKE ${pattern}
           OR lower(session_id)     LIKE ${pattern}

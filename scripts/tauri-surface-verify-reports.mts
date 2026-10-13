@@ -18,6 +18,16 @@ export interface NativeLiveProfile {
   nativeChildren?: { script: string; bundle: string; sha256: string }[];
 }
 
+/** Exercise the same clear-filter action in native verification and the real DOM regression. */
+export function reportsClearFiltersExpression(): string {
+  return `(() => {
+    const buttons = Array.from(document.querySelectorAll('.reports-filter-controls button'))
+      .filter(button => button.textContent?.trim() === 'Clear filters');
+    if (buttons.length !== 1) throw new Error('Expected one Clear filters button in the Reports filter controls');
+    buttons[0].click();
+    return true;
+  })()`;
+}
 
 /** Keep the native history/filter witness testable against the real Reports DOM. */
 export function reportsHistoryFilterExpression(expected: {
@@ -399,7 +409,7 @@ async function verifyReports(evidenceDir: string) {
     poll(`document.querySelectorAll('.reports-list-item').length === 0
       && document.querySelector('.reports-list')?.textContent.includes('No reports match')
       && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}`);
-    native('eval', `Array.from(document.querySelectorAll('.reports-heading button')).find(b => b.textContent === 'Clear filters').click()`);
+    native('eval', reportsClearFiltersExpression());
     poll(`['kind','subject','pot','vis','q','tag','since'].every(key => !new URL(location.href).searchParams.has(key))
       && new URL(location.href).searchParams.get('sel') === ${JSON.stringify(original.report_id)}
       && Array.from(document.querySelectorAll('.reports-list-item')).some(b => b.textContent.includes(${JSON.stringify(correctedTitle)}))`);

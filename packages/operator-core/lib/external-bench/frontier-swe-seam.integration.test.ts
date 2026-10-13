@@ -142,5 +142,5 @@ describe('FrontierSWE seam with an in-container Codex session home (real docker)
     rmSync(sqliteHome, { recursive: true });
     expect(existsSync(sessionHome) || existsSync(sqliteHome)).toBe(false);
     expect(readFileSync(join(homesRoot, 'session-12', 'auth.json'), 'utf8')).toContain('other-session');
-  }, 90_000);
+  }, 300_000); // docker create/exec stall for minutes on this host under load (EI-25661823593517912); int4 timed out at 90s
 });

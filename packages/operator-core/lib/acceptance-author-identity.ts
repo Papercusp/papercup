@@ -225,6 +225,44 @@ export async function acceptanceLineageClosure(
 }
 
 /**
+ * `id` plus every identity it descends from (launch and rebind edges, same
+ * 64-hop bound as {@link acceptanceLineageClosure}), WITHOUT its descendants.
+ *
+ * This is the set that a NEW edge `id → x` would make lineage-related to `x`:
+ * x becomes a descendant of `id` and of all of `id`'s ancestors, while `id`'s
+ * existing descendants become x's siblings (sharing a parent is not lineage).
+ * The reviewer-relaunch guard (EI-25876555362728602) uses it to ask "would this
+ * launch put the reviewer under one of the plan's implementers?" without
+ * refusing a leader whose OTHER children are implementers.
+ * Query failures propagate.
+ */
+export async function acceptanceLineageAncestors(
+  id: string | null | undefined,
+  opts: AcceptanceAuthorIdentityOpts = {},
+): Promise<Set<string>> {
+  const self = id?.trim() ?? '';
+  if (!self) return new Set();
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ node: string }>>`
+      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+        ${identityEdges(sql, workspaceId)}
+      ),
+      ancestors(node, path, depth) AS (
+        SELECT ${self}::text, ARRAY[${self}::text], 0
+        UNION ALL
+        SELECT edge.from_id, ancestors.path || edge.from_id, ancestors.depth + 1
+          FROM ancestors
+          JOIN identity_edges AS edge ON edge.to_id = ancestors.node
+         WHERE ancestors.depth < 64
+           AND NOT edge.from_id = ANY(ancestors.path)
+      )
+      SELECT node FROM ancestors
+  `;
+  return new Set(rows.map((row) => row.node).filter((node): node is string => Boolean(node)));
+}
+
+/**
  * Whether `candidateId` is the recorded author or a successor reachable through
  * one or more successful `coord:rebind-identity` operations. Spawn descendants
  * are deliberately NOT author successors; callers that need evaluator

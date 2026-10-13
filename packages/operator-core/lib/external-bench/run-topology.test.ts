@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
 import { resolveCoordinationSpec } from './coordination-topology';
 import type { CloneGradeSeam } from './coordination-topology';
-import { runTopology, type AgentRunOutput, type RunAgentInput, type TopologyRowMeta } from './run-topology';
+import { runTopology, withExecutionPath, type AgentRunOutput, type RunAgentInput, type TopologyRowMeta } from './run-topology';
 import type { BenchTask } from './types';
 
 const ROW_META: TopologyRowMeta = {
@@ -384,4 +384,38 @@ test('hierarchical — the lead overhead consumes iso-budget, so fewer worker ta
   assert.equal(res.rows.length, 2, 'only 2 worker tasks fit AFTER the lead coordination overhead');
   assert.equal(res.skippedTaskIds.length, 2, 'the coordination cost is paid in fewer completed tasks (C3)');
   assert.equal(res.budgetExhausted, true);
+});
+
+test('D-033: each row names the execution path its agents reported; unreported agents never borrow one', async () => {
+  const spec = resolveCoordinationSpec(loadBuiltinBlueprint('dist-broadcast').blueprint);
+  const reported = fakeAgent({ executionPath: 'modernization-launch-adapter' });
+  const res = await runTopology<FakeHandle>({
+    spec, backlog: [task('instance_a__a-1'), task('instance_b__b-2')], seam: fakeSeam().seam,
+    budget: { maxModelCalls: 100 }, rowMeta: ROW_META, runId: 'r-exec', seed: 1, now: fakeClock(), runAgent: reported.run,
+  });
+  assert.equal(res.rows.length, 2);
+  for (const r of res.rows) {
+    assert.equal(r.armMeta?.executionPath, 'modernization-launch-adapter');
+    assert.equal(r.armMeta?.executionPathUnreported, undefined);
+  }
+
+  const silent = fakeAgent();
+  const quiet = await runTopology<FakeHandle>({
+    spec, backlog: [task('instance_a__a-1')], seam: fakeSeam().seam,
+    budget: { maxModelCalls: 100 }, rowMeta: ROW_META, runId: 'r-quiet', seed: 1, now: fakeClock(), runAgent: silent.run,
+  });
+  assert.equal(quiet.rows.length, 1);
+  assert.ok(!('executionPath' in (quiet.rows[0]!.armMeta ?? {})), 'an unreported path is absent, never inferred');
+});
+
+test('D-033: withExecutionPath stamps one value as a string, several as an array, and counts unreported contributors', () => {
+  assert.deepEqual(withExecutionPath({ k: 1 }, [{ executionPath: 'a' }, { executionPath: 'a' }]), { k: 1, executionPath: 'a' });
+  assert.deepEqual(withExecutionPath({}, [{ executionPath: 'a' }, { executionPath: 'b' }]), { executionPath: ['a', 'b'] });
+  assert.deepEqual(withExecutionPath({}, [{ executionPath: 'a' }, {}, { executionPath: null }]), { executionPath: 'a', executionPathUnreported: 2 });
+  assert.deepEqual(withExecutionPath({ k: 1 }, [{}, { executionPath: '' }]), { k: 1 });
+  // A lead merged into a row that already carries its workers' path: values and unreported counts accumulate.
+  assert.deepEqual(
+    withExecutionPath({ executionPath: 'a', executionPathUnreported: 1 }, [{ executionPath: 'b' }, {}]),
+    { executionPath: ['a', 'b'], executionPathUnreported: 2 },
+  );
 });

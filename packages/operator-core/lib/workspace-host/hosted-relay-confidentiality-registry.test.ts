@@ -204,6 +204,21 @@ function consoleArgumentFields(source: string): string[] {
   return fields.sort();
 }
 
+/** Callback warnings reach the runtime console transitively, outside its census. */
+function dynamicHostWarnings(source: string): string[] {
+  const found: string[] = [];
+  const tree = ts.createSourceFile('host-warnings.ts', source, ts.ScriptTarget.Latest, true);
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node)
+      && ['warn', 'this.warn', 'this.options.onWarning'].includes(node.expression.getText(tree).replace(/\?\./g, '.'))) {
+      if (node.arguments.length !== 1 || !ts.isStringLiteral(node.arguments[0]!)) found.push(node.getText(tree));
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  return found;
+}
+
 function environmentKeys(source: string, constants: Readonly<Record<string, string>> = {}): { keys: string[]; dynamic: string[] } {
   const keys = new Set<string>();
   const dynamic: string[] = [];
@@ -381,6 +396,17 @@ describe('hosted relay confidentiality registry (P-001)', () => {
     const registered = HOSTED_CONTROL_PLANE_FIELD_REGISTRY['desktop-audit-warnings']!;
     expect(consoleArgumentFields(source + '\nconsole.error(customerPayload);').filter((field) => !(field in registered)))
       .toEqual(['error.0.argument.0']);
+  });
+
+  it('keeps transitive runtime and adapter warning arguments fixed, with a raw-error negative control', () => {
+    for (const path of [
+      'packages/operator-core/lib/workspace-host/hosted-workspace-host-runtime.ts',
+      'packages/operator-core/lib/workspace-host/hosted-session-host.ts',
+    ]) {
+      expect(dynamicHostWarnings(readFileSync(resolve(REPO, path), 'utf8')), path).toEqual([]);
+    }
+    expect(dynamicHostWarnings("warn('envelope failed: ' + String(error)); this.warn(error.message); this.options.onWarning?.(customerPayload);"))
+      .toHaveLength(3);
   });
 
   it('detects redirected and additional Drizzle tables even when their fields are already classified', () => {

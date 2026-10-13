@@ -33,6 +33,7 @@ interface ConverseRequestBody {
   welcomed_user?: { display_name?: string };
   mayAskActive?: boolean;
   modality?: 'voice' | 'text';
+  voiceProfile?: 'standard' | 'slim';
   /** Rendering surface: 'desktop' (default) vs 'tui' (the pui terminal
    *  workbench). Forwarded to operator:converse so it injects per-surface
    *  affordances (tui-operator-surface D-003). */
@@ -276,6 +277,7 @@ export default defineTool({
             converseToolName,
             {
               messages: body.messages ?? [],
+              voiceProfile: body.voiceProfile,
               trigger: body.trigger,
               welcomedUser: body.welcomed_user,
               mayAskActive: body.mayAskActive,

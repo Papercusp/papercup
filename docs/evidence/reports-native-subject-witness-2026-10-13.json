@@ -441,6 +441,72 @@
       "outcome": "Terminal before source preparation: verification command imported getHarnessAdminUrl from the wrong package. Corrected command uses the maintained operator resolver; no test ran in this attempt."
     }
   },
+  "canonicalW48": {
+    "taskId": "0mv6uwlqyfvdcxlb669",
+    "runGroup": "reports-native-f146-canonical-w48-20261013",
+    "sourceCommit": "4861e16a2b1c2e7e44e0c5b1b33fda6adfbed3d7",
+    "nativeHarnessRun": "20261013T154940Z-2934940",
+    "terminalVerdict": "fail",
+    "terminalReason": "assert/exit-143",
+    "endedAt": "2026-10-13T16:19:39.530Z",
+    "preparePassed": true,
+    "bootPassed": true,
+    "nativeJourneyRun": "20261013T161727Z-81042",
+    "failureStep": 30,
+    "failureSha256": "9fb62ab00d826bdf80964d626118bfcc0ca99e8682655fd197d6f5164b1b48f2",
+    "logSha256": "00a334a1ad51afe71203c61b83aecb46c676bd569caa53eca7e4fbcbc43abfc1",
+    "failure": "Clear filters lookup inside .reports-heading returned undefined. The real button belongs to .reports-filter-controls.",
+    "historyFilterPredicate": "The run progressed past the repaired history/filter assertion.",
+    "retirementProof": "Not reached; D-026 remains open.",
+    "canonicalLedger": {
+      "checkedAt": "2026-10-13T16:49:56.417Z",
+      "anchorId": 21207954,
+      "anchorPresent": true,
+      "recordedGroupRows": 0,
+      "note": "No canonical native pass or failure row was recovered; the retained native failure remains original evidence."
+    },
+    "sourceWindow": {
+      "checkedAt": "2026-10-13T16:11:57Z",
+      "declaredInputs": 68,
+      "snapshotEqual": 68,
+      "workingEqual": 68,
+      "receipt": "/tmp/reports-f146-w48-input-equality.json"
+    },
+    "workerShutdown": {
+      "workItem": "EI-25868427686173697",
+      "rootCause": "unknown",
+      "diagnostic": "/tmp/reports-f146-w48-worker-diagnostic.json",
+      "observed": "Untruncated worker-termination snapshot: npm parent sleeping in ep_poll, shell in do_wait, Node runnable, esbuild in futex_do_wait. This does not identify the shutdown phase or establish resource causality."
+    },
+    "clearFilterRepair": {
+      "workItem": "WI-6554700010010587",
+      "sourcePath": "scripts/tauri-surface-verify-reports.mts",
+      "testPath": "apps/operator-vite/src/components/reports/ReportsRoute.test.tsx",
+      "sourceSha256": "93d1794a487898c48fe088e0f60d245fcbad7c146c2d360bf0d996d96e870936",
+      "testSha256": "edad068cee312194b11360fe85ea7cec67eccc93a4114c818fa05567f07c7045",
+      "baseline": { "testRunId": 21214459, "passed": 0, "failed": 1, "filtered": 20 },
+      "fixedSuite": { "testRunId": 21214466, "passed": 22, "failed": 0, "skipped": 0, "collectionFailed": false },
+      "provenance": "Local working-source proof; source and test differed from HEAD at the 16:49:56 check. No committed or native pass is asserted.",
+      "rootCauseVerification": {
+        "hypothesis": "The native selector searches the wrong DOM container.",
+        "alternativeHypothesis": "The product failed to render the Clear filters control.",
+        "distinguishingTest": "Execute the exact native action against the real filtered ReportsRoute DOM, then change only the action's container to .reports-filter-controls.",
+        "predictedObservations": {
+          "hypothesis": "The heading selector throws, while the toolbar selector clears seven filters and preserves the selected citation and history.",
+          "alternativeHypothesis": "Both selectors fail because no clear-filter control exists."
+        },
+        "actualObservation": "Baseline 21214459 reproduced undefined.click; fixed 21214466 passed all 22 UI tests, including the native action, unrelated heading button and absent-control guard.",
+        "detectorRepair": "The real DOM regression now invokes the exported native expression rather than an independent Testing Library click."
+      }
+    },
+    "evidence": [
+      "/tmp/reports-f146-w48-terminal-distilled.json",
+      "/tmp/reports-f146-w48-native-artifact-census.json",
+      "/tmp/reports-f146-w48-final-ledger-source.json",
+      "/tmp/reports-f146-w48-clear-red.json",
+      "/tmp/reports-f146-w48-clear-green.json"
+    ]
+  },
   "attemptFingerprint": "exit:6d1d022103f6",
   "limitations": [
     "Whole Reports acceptance and shipment remain open.",

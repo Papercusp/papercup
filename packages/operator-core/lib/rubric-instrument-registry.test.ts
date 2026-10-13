@@ -10,6 +10,7 @@ import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics'
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 import {
+  BM25_LATENCY_INSTRUMENT_KEY,
   auditInstrumentBindings,
   budgetUtilisationPct,
   getRegisteredInstrument,
@@ -72,6 +73,13 @@ describe('instrument parsers read the real output formats', () => {
 });
 
 describe('the registry seed set', () => {
+  it('registers the operational BM25 artifact without claiming a platform measurement', async () => {
+    expect(getRegisteredInstrument(BM25_LATENCY_INSTRUMENT_KEY)?.evaluator).toBe('artifact');
+    expect(platformComputedInstrumentKeys()).not.toContain(BM25_LATENCY_INSTRUMENT_KEY);
+    await expect(runInstrument(BM25_LATENCY_INSTRUMENT_KEY)).rejects.toThrow('retained artifact evidence');
+    expect(auditInstrumentBindings({ prior: [], next: [{ key: 'r-2',
+      check: { kind: 'instrument', instrumentKey: BM25_LATENCY_INSTRUMENT_KEY } }] }).refused).toEqual([]);
+  });
   it('registers every host instrument key the performance audit recorded, verbatim (derived, not hand-copied)', () => {
     const audit = readFileSync(AUDIT_EVIDENCE, 'utf8');
     const auditKeys = new Set(

@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,6 +14,7 @@ import {
   publicSessionPortInspection,
   selectSessionPortEvidenceSpan,
 } from './service';
+import type { SessionArchiveStore } from '../session-archive';
 import type { StableSource } from './source';
 import type { PortableTurn } from './types';
 import { verifySessionPortSeed } from './render';
@@ -264,6 +266,45 @@ describe('consult evidence-span session ports (P-007)', () => {
 });
 
 describe('tracked Claude source acquisition', () => {
+  it.each([null, '2026-10-13T00:00:00.000Z'])('ports the exact retained transcript without an archive (endedAt=%s)', async (endedAt) => {
+    const config = mkdtempSync(join(tmpdir(), 'port-retained-claude-'));
+    const project = join(config, 'projects', 'cwd');
+    mkdirSync(project, { recursive: true });
+    const path = join(project, `${row.sessionId}.jsonl`);
+    const original = source('selected retained history').bytes;
+    writeFileSync(path, original);
+    // A later incarnation in the same tracked home must never replace the
+    // selected history merely because the archive stamp is absent.
+    writeFileSync(join(project, '22222222-2222-4222-8222-222222222222.jsonl'), source('unrelated later history').bytes);
+    const readStamp = vi.fn(async () => null);
+    const readFiles = vi.fn();
+    const archiveStore = { readStamp, readFiles } as unknown as SessionArchiveStore;
+    const selected = { ...row, endedAt };
+    try {
+      const acquired = await acquireTrackedClaudeSource(selected, {
+        configDirForOwner: () => config,
+        archiveStore: () => archiveStore,
+      });
+      const inspection = publicSessionPortInspection(inspectAcquiredSessionPort({
+        sourceRow: selected, stableSource: acquired, target,
+      }));
+      expect(acquired.bytes).toEqual(original);
+      expect(inspection.source).toMatchObject({
+        nativeSessionId: row.sessionId,
+        snapshotKind: 'live-jsonl',
+        completeBytes: original.length,
+        sha256: createHash('sha256').update(original).digest('hex'),
+      });
+      expect(acquired.fileIdentity?.path).toBe(path);
+      expect(readFileSync(path)).toEqual(original);
+      expect(readFiles).not.toHaveBeenCalled();
+      if (endedAt) expect(readStamp).toHaveBeenCalledWith('claude', row.sessionId);
+      else expect(readStamp).not.toHaveBeenCalled();
+    } finally {
+      rmSync(config, { recursive: true, force: true });
+    }
+  });
+
   it('falls back to the canonical archive when cleanup deletes the inspected live JSONL', async () => {
     const archived = {
       ...source('archived history'),

@@ -213,3 +213,119 @@ describe('session-dir relocation (D-026 step 3)', () => {
       .toThrow(/not an env name/);
   });
 });
+
+describe('config origin rewrite (D-033 step 2)', () => {
+  const GW = 'http://papercusp-egress:41001', MCP = 'http://papercusp-egress:41002';
+  const config = [
+    '# BEGIN PAPERCUSP_CODEX_GATEWAY_ROOT',
+    '# a commented http://127.0.0.1:1 is never dialed, so it never refuses',
+    'model_provider = "papercusp-codex-gateway"',
+    '[model_providers.papercusp-codex-gateway]',
+    'base_url = "http://127.0.0.1:32101/v1"',
+    'model_catalog_url = "http://127.0.0.1:32101/v1/models"',
+    '[mcp_servers.papercusp-su]',
+    'url = "http://127.0.0.1:9071/api/mcp?client=su-x&sig=abc"',
+    '[mcp_servers.remote]',
+    'url = "http://localhost.example.com:8080/mcp"',
+    '',
+  ].join('\n');
+  const rewritten = config
+    .replace('base_url = "http://127.0.0.1:32101/v1"', `base_url = "${GW}/v1"`)
+    .replace('model_catalog_url = "http://127.0.0.1:32101/v1/models"', `model_catalog_url = "${GW}/v1/models"`)
+    .replace('url = "http://127.0.0.1:9071/api/mcp', `url = "${MCP}/api/mcp`);
+  const maps = [{ from: 'http://127.0.0.1:32101', to: GW }, { from: 'http://127.0.0.1:9071', to: MCP }];
+
+  function setup(text: string | null, originRewrites: DockerExecTarget['originRewrites']) {
+    const base = mkdtempSync(join(root, 'orig-'));
+    const homes = join(base, 'homes'), perHomes = join(base, 'task-homes');
+    const home = join(homes, 'session-5');
+    mkdirSync(home, { recursive: true });
+    const file = join(home, 'config.toml');
+    if (text !== null) writeFileSync(file, text, { mode: 0o600 });
+    const t: DockerExecTarget = { ...target, originRewrites,
+      sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }] } };
+    const run = () => {
+      rmSync(argvLog, { force: true });
+      const { wrapperPath } = materializeDockerExecWrapper(t, { dir: mkdtempSync(join(root, 'ow-')), dockerBin: fakeDocker });
+      const r = spawnSync(wrapperPath, ['exec', 'go'], { env: { CODEX_HOME: home, PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+      return { r, dockerRan: existsSync(argvLog) };
+    };
+    return { file, run };
+  }
+
+  it('maps every gateway and MCP origin to its egress origin, keeps the file mode, and then runs the agent', () => {
+    const s = setup(config, maps);
+    const { r, dockerRan } = s.run();
+    expect(r.stderr).toBe('');
+    expect(r.status).toBe(0);
+    expect(dockerRan).toBe(true);
+    expect(readFileSync(s.file, 'utf8')).toBe(rewritten);
+    expect(statSync(s.file).mode & 0o777).toBe(0o600);
+  });
+
+  it('is idempotent on resume: an already-rewritten config runs unchanged', () => {
+    const s = setup(config, maps);
+    expect(s.run().r.status).toBe(0);
+    const again = s.run();
+    expect(again.r.status).toBe(0);
+    expect(again.dockerRan).toBe(true);
+    expect(readFileSync(s.file, 'utf8')).toBe(rewritten);
+  });
+
+  it('matches whole origins only: a shorter port never rewrites inside a longer one, and the leftover refuses', () => {
+    const s = setup(config, [{ from: 'http://127.0.0.1:3210', to: GW }, { from: 'http://127.0.0.1:9071', to: MCP }]);
+    const { r, dockerRan } = s.run();
+    expect(r.status).toBe(126);
+    expect(dockerRan).toBe(false);
+    expect(r.stderr).toContain('http://127.0.0.1:32101');
+    expect(r.stderr).not.toContain('sig=abc');
+    // Refused before writing: the operator's file is exactly as it was.
+    expect(readFileSync(s.file, 'utf8')).toBe(config);
+  });
+
+  it.each([
+    ['an unmapped 127.0.0.1 port', 'url = "http://127.0.0.1:3070/api"'],
+    ['localhost', 'url = "http://LOCALHOST:8788/v1"'],
+    ['another 127/8 address', 'url = "http://127.0.0.2:80"'],
+    ['IPv6 loopback', 'url = "http://[::1]:9071/x"'],
+    ['https on loopback', 'url = "https://127.0.0.1:443"'],
+    ['a portless loopback origin', 'url = "http://localhost/v1"'],
+  ])('fails closed (126) on %s left in the config', (_label, line) => {
+    const s = setup(`${line}\n`, maps);
+    const { r, dockerRan } = s.run();
+    expect(r.status).toBe(126);
+    expect(dockerRan).toBe(false);
+    expect(r.stderr).toMatch(/still names loopback origin/);
+  });
+
+  it('rewrites in one pass, so one mapping never chains into another', () => {
+    const s = setup('a = "http://a.test:1/x"\nb = "http://b.test:2/y"\n',
+      [{ from: 'http://a.test:1', to: 'http://b.test:2' }, { from: 'http://b.test:2', to: 'http://c.test:3' }]);
+    expect(s.run().r.status).toBe(0);
+    expect(readFileSync(s.file, 'utf8')).toBe('a = "http://b.test:2/x"\nb = "http://c.test:3/y"\n');
+  });
+
+  it('with an empty mapping list still runs the loopback check', () => {
+    expect(setup(config, []).run().r.status).toBe(126);
+    expect(setup('model = "x"\n', []).run().r.status).toBe(0);
+  });
+
+  it('fails closed (126) when the session has no config.toml to rewrite', () => {
+    const { r, dockerRan } = setup(null, maps).run();
+    expect(r.status).toBe(126);
+    expect(dockerRan).toBe(false);
+    expect(r.stderr).toMatch(/cannot read .*config\.toml/);
+  });
+
+  it('refuses targets it could not rewrite safely', () => {
+    const reloc = { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: '/h/homes', perTaskDir: '/h/task' }] };
+    expect(() => validateDockerExecTarget({ ...target, originRewrites: maps })).toThrow(/requires sessionRelocation/);
+    expect(() => validateDockerExecTarget({ ...target, sessionRelocation: reloc,
+      originRewrites: [{ from: 'http://127.0.0.1:9071', to: 'http://127.0.0.1:41002' }] })).toThrow(/loopback origin/);
+    expect(() => validateDockerExecTarget({ ...target, sessionRelocation: reloc,
+      originRewrites: [{ from: 'http://127.0.0.1:9071/api', to: MCP }] })).toThrow(/not scheme:\/\/host:port/);
+    expect(() => validateDockerExecTarget({ ...target, sessionRelocation: reloc,
+      originRewrites: [{ from: 'http://127.0.0.1:9071', to: MCP }, { from: 'http://127.0.0.1:9071', to: GW }] })).toThrow(/twice/);
+    expect(() => validateDockerExecTarget({ ...target, sessionRelocation: reloc, originRewrites: maps })).not.toThrow();
+  });
+});

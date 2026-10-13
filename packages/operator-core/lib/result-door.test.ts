@@ -3801,10 +3801,13 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
     return boundedBody(doored)._projection.next;
   }
 
-  it('a JSON body leads with `pick` and states that `pipe` cannot reduce it', () => {
+  it('a JSON body leads with `pick` and says `pipe` filters the indented rendering (D-005)', () => {
     const footer = footerFor([{ type: 'text', text: longJson(BUDGET_CHARS * 2) }]);
     expect(footer).toContain('`pick` is what reduces it');
-    expect(footer).toContain('all-or-nothing');
+    // oversized-tool-results-reduction-2026-10-12#D-005: applyProjection renders a
+    // pipe-only JSON body indented, so `pipe` does cut it. The old claim is now false.
+    expect(footer).toContain('`pipe` filters the indented lines');
+    expect(footer).not.toContain('all-or-nothing');
     expect(footer).toContain('1 line(s)');
     // The actual defect was ORDER: the pipe form was advertised first.
     expect(footer.indexOf('pick')).toBeLessThan(footer.indexOf('pipe'));

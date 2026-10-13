@@ -180,8 +180,9 @@ export async function awaitLoopApprovalDecision(
            SET status = 'denied', reason = ${reason}, resolved_at = now(),
                resolved_by = 'loop:self'
          WHERE chat_id = ${args.chatId} AND call_id = ${args.callId}
+           AND workspace_id = ${args.workspaceId}
            AND status = 'pending'`;
-      await consume(sql, args.chatId, args.callId);
+      await consume(sql, args.chatId, args.callId, args.workspaceId);
     } catch {
       /* best-effort — the deny is returned regardless */
     }
@@ -194,7 +195,8 @@ export async function awaitLoopApprovalDecision(
     try {
       rows = await sql<Array<{ status: string; reason: string | null }>>`
         SELECT status, reason FROM harness_shared.agent_loop_approvals
-         WHERE chat_id = ${args.chatId} AND call_id = ${args.callId}`;
+         WHERE chat_id = ${args.chatId} AND call_id = ${args.callId}
+           AND workspace_id = ${args.workspaceId}`;
     } catch (e) {
       // FAIL CLOSED: an unreadable decision is a deny, never an approve.
       return {
@@ -204,11 +206,11 @@ export async function awaitLoopApprovalDecision(
     }
     const row = rows[0];
     if (!row) {
-      // Row vanished (age sweep / manual cleanup) — treat as denied.
+      // Missing, expired, or outside this workspace — treat as denied.
       return { approved: false, reason: 'approval request expired' };
     }
     if (row.status !== 'pending') {
-      await consume(sql, args.chatId, args.callId);
+      await consume(sql, args.chatId, args.callId, args.workspaceId);
       return {
         approved: row.status === 'approved',
         ...(row.reason ? { reason: row.reason } : {}),
@@ -222,11 +224,12 @@ export async function awaitLoopApprovalDecision(
   }
 }
 
-async function consume(sql: Sql, chatId: string, callId: string): Promise<void> {
+async function consume(sql: Sql, chatId: string, callId: string, workspaceId: string): Promise<void> {
   try {
     await sql`
       DELETE FROM harness_shared.agent_loop_approvals
-       WHERE chat_id = ${chatId} AND call_id = ${callId}`;
+       WHERE chat_id = ${chatId} AND call_id = ${callId}
+         AND workspace_id = ${workspaceId}`;
   } catch {
     /* best-effort — the age sweep clears it eventually */
   }

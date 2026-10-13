@@ -177,6 +177,43 @@ describe('P-025 transactional acceptance carry', () => {
     expect(rows).toEqual([{ taken_by: 'driver-a' }]);
   }, 60_000);
 
+  it('mints no carry for a template instance (a scheduled run plan) — WI-6554700010010577', async () => {
+    const slug = PLAN('instance');
+    await registerHarnessProject(admin, workspaceId, HARNESS);
+    await seedPlan(admin, workspaceId, HARNESS, slug, body(slug));
+    // A run instance is a plan cloned from a template: the gate skips it
+    // ('template-instance') and retireRunInstancePlan supersedes it when the run settles.
+    await admin`
+      UPDATE harness_shared.harness_plans SET template_slug = 'zzz-carry-template'
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
+    `;
+
+    const result = await applyPlanDrainTransition(slug, HARNESS, { accountableOwnerId: 'su-carry-driver' });
+    expect(result).toMatchObject({
+      applied: true,
+      to: 'awaiting-acceptance',
+      acceptanceCarry: { outcome: 'exempt-template-instance', id: null },
+    });
+    // The direct handoff (the plans:set-status caller's path) reports the same exemption.
+    const direct = await admin.begin(async (tx) =>
+      ensureAcceptanceDrainCarryInTransaction(tx, {
+        workspaceId,
+        harnessSlug: HARNESS,
+        planSlug: slug,
+        accountableOwnerId: 'su-carry-driver',
+      }),
+    );
+    expect(direct).toMatchObject({ outcome: 'exempt-template-instance', id: null });
+
+    const items = await admin`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${HARNESS}
+         AND payload->>'acceptanceDrainPlan' = ${`${workspaceId}/${HARNESS}/${slug}`}
+    `;
+    expect(items).toEqual([]);
+  }, 60_000);
+
   it('refreshes one keyed filing across blocker changes and readiness while preserving age evidence', async () => {
     const slug = PLAN('refresh');
     await registerHarnessProject(admin, workspaceId, HARNESS);

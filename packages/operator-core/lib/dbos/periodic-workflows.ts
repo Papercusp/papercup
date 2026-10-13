@@ -456,6 +456,7 @@ async function sessionArchiveReconcileTick(): Promise<void> {
           s.dbFailed ||
           s.diskFailed ||
           s.diskSkippedFresh ||
+          s.diskSkippedForeign ||
           s.skippedDisk ||
           // EI-22126624550252124: dbSkippedLive was PRINTED in the line below but
           // was not one of the conditions that decided whether to print it, so a
@@ -467,7 +468,7 @@ async function sessionArchiveReconcileTick(): Promise<void> {
           s.dbSkippedLive
         ) {
           console.log(
-            `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbSkippedLive} live-skipped / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers${s.diskLeftoversRetained ? ` (+${s.diskLeftoversRetained} shared-state RETAINED)` : ''} across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
+            `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbSkippedLive} live-skipped / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers${s.diskLeftoversRetained ? ` (+${s.diskLeftoversRetained} shared-state RETAINED)` : ''} across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.diskSkippedForeign ? `; ${s.diskSkippedForeign} FOREIGN dir(s) left untouched — another install shares this $HOME (WI-6554700010010238)` : ''}${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
           );
         }
         // INVARIANT (EI-22126624550252124) — always emitted, see the helper.

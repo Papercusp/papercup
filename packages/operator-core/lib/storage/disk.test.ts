@@ -3,7 +3,75 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { dirSizeBytes, dirSizeBytesAsync, listDiskRootChildren, listDiskRootChildrenAsync, type DiskWalkBudget } from './disk';
+import {
+  dirSizeBytes,
+  dirSizeBytesAsync,
+  gatherProtectedSessionIdentity,
+  listDiskRootChildren,
+  listDiskRootChildrenAsync,
+  type DiskWalkBudget,
+} from './disk';
+import { planSessionDirGc, type SessionDirCandidate } from '../session-dir-gc';
+
+// Hermetic: never read this host's live PTY sockets from a unit test.
+vi.mock('../events/await/psu-pty-discovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../events/await/psu-pty-discovery')>()),
+  listLiveHostsAsync: async () => [],
+}));
+
+describe('Storage prune gatherProtectedSessionIdentity — OWNERSHIP (WI-6554700010010238)', () => {
+  // Answers each query by its relation + filter, so the assertion is about WHICH
+  // rows feed the ownership allow-list, not about query order.
+  const fakeSql = async (strings: TemplateStringsArray): Promise<Array<Record<string, unknown>>> => {
+    const q = strings.join('?');
+    if (q.includes('coord_presence')) return [{ owner_id: 'su-live' }];
+    if (q.includes('event_awaits')) return [];
+    if (q.includes('adv_sessions')) {
+      return q.includes('ended_at IS NULL') ? [] : [{ id: 7, coord_owner_id: 'su-ended-mine' }];
+    }
+    if (q.includes('spawned_agents')) {
+      return q.includes('finished_at IS NULL') ? [] : [{ spawn_id: 'bee-1', session_owner: 'su-bee-owner' }];
+    }
+    throw new Error(`unexpected query: ${q}`);
+  };
+
+  it('owns everything this database launched (any state) and nothing another install launched', async () => {
+    const gather = await gatherProtectedSessionIdentity(fakeSql);
+    expect(gather.ok).toBe(true);
+    const owned = gather.identity.owned;
+    expect(owned).toBeDefined();
+    expect([...owned!.ownerIds].sort()).toEqual(['bee-1', 'su-bee-owner', 'su-ended-mine', 'su-live']);
+    expect([...owned!.sessionKeys]).toEqual(['7']);
+    // An ENDED session is owned but not protected: it stays collectable here.
+    expect(gather.identity.ownerIds.has('su-ended-mine')).toBe(false);
+  });
+
+  it('a prune plan keeps a foreign dir and still collects its own ended dir', async () => {
+    const gather = await gatherProtectedSessionIdentity(fakeSql);
+    const now = 10_000_000_000;
+    const mk = (keyKind: 'owner' | 'session', key: string): SessionDirCandidate => ({
+      path: `/tmp/${key}`, keyKind, key, mtimeMs: 0,
+    });
+    const mine = mk('owner', 'su-ended-mine');
+    const mineCodex = mk('session', '7');
+    const foreign = mk('owner', 'su-foreign');
+    const foreignCodex = mk('session', '99');
+    const plan = planSessionDirGc({
+      candidates: [mine, mineCodex, foreign, foreignCodex],
+      protectedIdentity: gather.identity,
+      nowMs: now,
+      retentionMs: 1,
+      unarchivedPaths: new Set(),
+    });
+    expect(plan.keptForeign).toEqual([foreign, foreignCodex]);
+    expect(plan.remove).toEqual([mine, mineCodex]);
+  });
+
+  it('fails closed: a failed read returns ok:false so prune refuses to delete', async () => {
+    const gather = await gatherProtectedSessionIdentity(async () => { throw new Error('pg down'); });
+    expect(gather.ok).toBe(false);
+  });
+});
 
 describe('bounded disk attribution', () => {
   it('times out an individual child without hiding a later sibling or exceeding the shared budget', async () => {

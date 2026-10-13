@@ -1571,6 +1571,465 @@
       "No original cohort backfill, universal isolation, full native actor census, independent acceptance or R7 shipment credit."
     ]
   },
+  "canonicalArchiveRecovery20261013": {
+    "observedAt": "2026-10-13T15:52:52.117Z",
+    "priorArtifactSha256": "87c530ebb3c9a8b7719e7a9aa1a8027b043d102df0ac064e7f924c7650242b8c",
+    "workItem": "EI-25832751993763782",
+    "scope": "Renewed byte-level verification of two recovered answering sessions. Supersedes current archive-unavailable claims while preserving the dated missing-path observations.",
+    "archiveRead": {
+      "database": "papercusp",
+      "serverPort": 5432,
+      "workspaceId": "default",
+      "pinSource": "apps/operator/.env.local DATABASE_URL",
+      "seam": "pgSessionArchiveStore.readStamp/readFiles + decompressArchiveBlobBounded + sha256Hex",
+      "nativeFilesRestored": false
+    },
+    "codex": {
+      "nativeSession": "01a12d6b-0886-7550-8bd0-96d72dec936d",
+      "advSessionId": 41032,
+      "answeringOwner": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+      "rawBytes": 883969,
+      "rawSha256": "829bd253ac2d4c0f8ef050a8a56ce9e0a6caca678cbae28a54d75f80d7c07e60",
+      "originalPrefixHashMatches": true,
+      "frameLine": 9,
+      "frameLineSha256IncludingNewline": "740723a273e548e20857d06942536e5c8cb2d924deffd4f0b011dc500681cd70",
+      "portId": "d4ee2e1a-43ee-46de-bed2-b271f4af4047",
+      "frameChecksum": "8022840a4a256defa2192e87ffd0d13c2a5e0ebfc32dea00cb16dcf7b1c7d242",
+      "replyLine": 141,
+      "replyLineSha256IncludingNewline": "d105635bbb455d073f303c12a3b04cd43659c08bf54292f5fd15ea7f7eccb2ba",
+      "postId": 1175213,
+      "replyBodySha256": "b116e8fec432f895e9971e6c7989471235d4a914f4b9be6cefdafd8d6aac80d9",
+      "physicalCallId": "exec-32385d69-3a75-427c-bc25-b9bc1b323143",
+      "callIdFingerprint": "fcc8293871ff81d52ec2d6a3480aaf3f36b5537ce493985f8aa2338fd7bc79f8",
+      "replyInvocationId": 36499010,
+      "nativeReplyResult": {
+        "ok": true,
+        "post_id": 1175213
+      },
+      "recordedCallCensus": {
+        "population": "Completed McpToolCall events in the exact archived 150-line transcript; excludes outer functions.exec and non-tool effects.",
+        "windowStart": "2026-10-12T00:01:32.445Z",
+        "windowEnd": "2026-10-12T00:08:22.491Z",
+        "physicalItems": 21,
+        "matchedItems": 21,
+        "ledgerRows": 29,
+        "unmatchedItems": [],
+        "identity": "Exact answering client, bound meta:threadId, candidateAdv41032 and caller-row audit41032 on every listed matching row. Delegated tools:invoke rows may share a physical fingerprint.",
+        "rows": [
+          {
+            "nativeLine": 31,
+            "tool": "tools:find",
+            "physicalCallId": "exec-abe44a2c-830d-4854-a856-b0f4ef70e3c1",
+            "fingerprint": "5ae2ef9465118838d65b5582ab1ec04ecc59b74a2a994fb2fd84639e89f7830c",
+            "invocations": [
+              {
+                "id": 36497145,
+                "tool": "tools:find"
+              }
+            ]
+          },
+          {
+            "nativeLine": 39,
+            "tool": "tools:find",
+            "physicalCallId": "exec-8cbc4705-5eb6-4780-917c-1abdc842fbe1",
+            "fingerprint": "5be3e308223aa25f10b4ca7bba25f9dc1f8adae7dcc7a3885c915e5d8714a712",
+            "invocations": [
+              {
+                "id": 36497247,
+                "tool": "tools:find"
+              }
+            ]
+          },
+          {
+            "nativeLine": 48,
+            "tool": "tools:invoke",
+            "physicalCallId": "exec-9dd4e320-dac1-4380-9a3a-8481f46fdb24",
+            "fingerprint": "4349f0dd9e07d590b4c0ba71cdf48b8ec419fe68830fe6ec83f8e66351f9fe62",
+            "invocations": [
+              {
+                "id": 36497394,
+                "tool": "conversations:get"
+              },
+              {
+                "id": 36497395,
+                "tool": "tools:invoke"
+              }
+            ]
+          },
+          {
+            "nativeLine": 49,
+            "tool": "tools:invoke",
+            "physicalCallId": "exec-6b0a5761-ad8f-4662-84fb-731f5198afcd",
+            "fingerprint": "5df9603039ab147c427a85f2514d51279f999e8c106b2cd2f75cf58e00669969",
+            "invocations": [
+              {
+                "id": 36497403,
+                "tool": "rubrics:get"
+              },
+              {
+                "id": 36497404,
+                "tool": "tools:invoke"
+              }
+            ]
+          },
+          {
+            "nativeLine": 64,
+            "tool": "tools:invoke",
+            "physicalCallId": "exec-4533bd52-fe82-480c-81ea-41ca757e000b",
+            "fingerprint": "c48926a0d42c34b366887ac842a2300ba184a96f9b76d1d59a08b1e295d6f62f",
+            "invocations": [
+              {
+                "id": 36497628,
+                "tool": "rubrics:get"
+              },
+              {
+                "id": 36497629,
+                "tool": "tools:invoke"
+              }
+            ]
+          },
+          {
+            "nativeLine": 92,
+            "tool": "tools:invoke",
+            "physicalCallId": "exec-56937873-5a1f-4186-9faa-ceb5d3e393dc",
+            "fingerprint": "ce834570d9a8a099b2e38ed6a226de5bd93c070f13f72f4d1df9314fc42dcc01",
+            "invocations": [
+              {
+                "id": 36498140,
+                "tool": "conversations:get"
+              },
+              {
+                "id": 36498141,
+                "tool": "tools:invoke"
+              }
+            ]
+          },
+          {
+            "nativeLine": 93,
+            "tool": "plans:get",
+            "physicalCallId": "exec-76ea1ab2-ce56-4707-ac73-990e2e57ac01",
+            "fingerprint": "38a6f4d2486c3bc782c747493ef419b286dbdf49cd72416a3bb5e2b2929b9904",
+            "invocations": [
+              {
+                "id": 36498146,
+                "tool": "plans:get"
+              }
+            ]
+          },
+          {
+            "nativeLine": 100,
+            "tool": "tools:invoke",
+            "physicalCallId": "exec-e579288b-7d78-4462-9b65-172bf8c100e9",
+            "fingerprint": "c0a8acb1054027790c4f652fd7b743453b2d364fc78f406e78375f616dc35b85",
+            "invocations": [
+              {
+                "id": 36498248,
+                "tool": "conversations:get"
+              },
+              {
+                "id": 36498249,
+                "tool": "tools:invoke"
+              }
+            ]
+          },
+          {
+            "nativeLine": 101,
+            "tool": "tools:invoke",
+            "physicalCallId": "exec-b64a20b8-60f5-4981-9f7a-ae83b66204c1",
+            "fingerprint": "942472c1b2a584d6b5341bbb8c7af733999544e0139d8db3d5dae410b94954dd",
+            "invocations": [
+              {
+                "id": 36498257,
+                "tool": "conversations:get"
+              },
+              {
+                "id": 36498258,
+                "tool": "tools:invoke"
+              }
+            ]
+          },
+          {
+            "nativeLine": 102,
+            "tool": "tools:invoke",
+            "physicalCallId": "exec-065ab6dd-81ff-4cec-9751-3ba590dea090",
+            "fingerprint": "be6fe24df0d802ae4d425ea8de9ece9b356260b3da1d0806d23dad76ab93937c",
+            "invocations": [
+              {
+                "id": 36498268,
+                "tool": "conversations:get"
+              },
+              {
+                "id": 36498269,
+                "tool": "tools:invoke"
+              }
+            ]
+          },
+          {
+            "nativeLine": 109,
+            "tool": "tools:invoke",
+            "physicalCallId": "exec-348f5562-7dc4-4e94-ae81-7ff0e72f3bda",
+            "fingerprint": "f02254db871203b960fd3c91b1f3943e2cd910a24526ae072d92befaf309fb08",
+            "invocations": [
+              {
+                "id": 36498365,
+                "tool": "conversations:get"
+              },
+              {
+                "id": 36498366,
+                "tool": "tools:invoke"
+              }
+            ]
+          },
+          {
+            "nativeLine": 116,
+            "tool": "plans:get",
+            "physicalCallId": "exec-b7b1e5ac-4769-49b4-93f9-e41b903dcfa0",
+            "fingerprint": "ad6e15067e60b425c4c3e313b556aba7d7aeb140b7cb743b1ab77bbdec436d0a",
+            "invocations": [
+              {
+                "id": 36498501,
+                "tool": "plans:get"
+              }
+            ]
+          },
+          {
+            "nativeLine": 118,
+            "tool": "plans:get",
+            "physicalCallId": "exec-037b95a7-bd10-440b-903a-2b41e8342218",
+            "fingerprint": "2eae2856696a91fa840c9156017057a00d94585c395632803f2b78f4b0af81ff",
+            "invocations": [
+              {
+                "id": 36498503,
+                "tool": "plans:get"
+              }
+            ]
+          },
+          {
+            "nativeLine": 119,
+            "tool": "plans:get",
+            "physicalCallId": "exec-654164fd-e8c9-48ee-ac6e-27c0de569088",
+            "fingerprint": "676202224a76db7ad92ecf1cf3f3528b2b3100129ca5f2d048f31dd727815dd8",
+            "invocations": [
+              {
+                "id": 36498506,
+                "tool": "plans:get"
+              }
+            ]
+          },
+          {
+            "nativeLine": 120,
+            "tool": "plans:get",
+            "physicalCallId": "exec-c7f36f7f-2a9e-4050-b360-37c66073552e",
+            "fingerprint": "8eb3e5b27c24464c33fae47d2b324ef330a2f4a550dcccbe07d975ce1a4b5b5a",
+            "invocations": [
+              {
+                "id": 36498511,
+                "tool": "plans:get"
+              }
+            ]
+          },
+          {
+            "nativeLine": 121,
+            "tool": "plans:get",
+            "physicalCallId": "exec-6ba29b36-f48a-471a-a5d6-9615b94cd791",
+            "fingerprint": "37e2d3f546cfe91c40b2c55abaeff52e69d1cfa47c8052455df392e77adaf925",
+            "invocations": [
+              {
+                "id": 36498525,
+                "tool": "plans:get"
+              }
+            ]
+          },
+          {
+            "nativeLine": 122,
+            "tool": "plans:get",
+            "physicalCallId": "exec-3d50f227-b5ce-43ff-a4a3-2f14e567646b",
+            "fingerprint": "aed65beb42f7e32e2e2df06fd77a2b0be60e5044a9dc27e52d7f4625c666fc6d",
+            "invocations": [
+              {
+                "id": 36498531,
+                "tool": "plans:get"
+              }
+            ]
+          },
+          {
+            "nativeLine": 123,
+            "tool": "plans:get",
+            "physicalCallId": "exec-dd6929b8-00dd-4de2-bc95-a084f52a1d45",
+            "fingerprint": "99cadf1341f4d214a48ae629db81bfbab86250f1dd1cae4a00095a5e41769cd1",
+            "invocations": [
+              {
+                "id": 36498537,
+                "tool": "plans:get"
+              }
+            ]
+          },
+          {
+            "nativeLine": 124,
+            "tool": "plans:get",
+            "physicalCallId": "exec-6b6450bc-0c0a-4f20-a2cf-b35b2282191f",
+            "fingerprint": "a27628d267ac44037525db0b3215c4dfbe1b4f7f5a975bb29be36dd37bd68754",
+            "invocations": [
+              {
+                "id": 36498544,
+                "tool": "plans:get"
+              }
+            ]
+          },
+          {
+            "nativeLine": 125,
+            "tool": "plans:get",
+            "physicalCallId": "exec-70d64cf0-68a3-4d0b-b9c1-0669ac981561",
+            "fingerprint": "e6e03023f4c9ccca5fa060b006d51780630f9c1e3559a98bc13a976661a64f65",
+            "invocations": [
+              {
+                "id": 36498549,
+                "tool": "plans:get"
+              }
+            ]
+          },
+          {
+            "nativeLine": 141,
+            "tool": "consult:reply",
+            "physicalCallId": "exec-32385d69-3a75-427c-bc25-b9bc1b323143",
+            "fingerprint": "fcc8293871ff81d52ec2d6a3480aaf3f36b5537ce493985f8aa2338fd7bc79f8",
+            "invocations": [
+              {
+                "id": 36499010,
+                "tool": "consult:reply"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "claude": {
+      "nativeSession": "8490f093-0200-44c6-a9ab-30a667d2a933",
+      "advSessionId": 41894,
+      "answeringOwner": "su-c48906b7-51d2-4b95-9c57-19f2a99726da",
+      "rawBytes": 1805534,
+      "rawSha256": "b5ff8996a53b5a52d56c914003f565c89f6178bec82e5c5824579c796fdc49aa",
+      "frameLine": 4,
+      "frameLineSha256IncludingNewline": "acde32c53fcd0d33c75bdb2045b57669bf13725085c7ecf3aced7ed806c91043",
+      "portId": "6a1977bf-ee6f-4473-ab8f-bb2928682d01",
+      "renderedHash": "683d0852c87e3563796c7d2cac862e88915c3a5e2c212cec4975c942f466af95",
+      "postId": 1177915,
+      "replyBodySha256": "b273af5602a1033e19a79bf3e05f5e6391f718dddcaf7e2acdb21cd14826ed58",
+      "cliReplyInvocationId": 37223293,
+      "nativeBashToolUseId": "toolu_01G83pd2be2dvRdAPXu76jnJ",
+      "nativeBashLine": 360,
+      "nativeResultLine": 366,
+      "nativeResultContainsExactPost": true,
+      "nativeResultIsError": false,
+      "identity": "Reply37223293 binds the answering client and query:native_session to adv41894 with caller-row audit. This carrier has no server callIdFingerprint; Bash/result and post hashes corroborate the CLI call without Codex-style physical fingerprint equality.",
+      "operation": "convert; historical source does not satisfy required native fork"
+    },
+    "writerEvidence": [
+      "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts:1737",
+      "packages/operator-core/lib/projected-tool-deps.ts:646",
+      "packages/operator-core/lib/session-archive.ts:877"
+    ],
+    "evidenceRefs": [
+      {
+        "path": "/dev/shm/get-feedback-canonical-native-read-20261013T1550.json",
+        "sha256": "eb06cf4a942dfcbba195bbe59f67f0d21ec75cdec089b08fbbb698fc9e9c47d6"
+      },
+      {
+        "path": "/dev/shm/get-feedback-canonical-native-physical-audit-20261013T1552.json",
+        "sha256": "673aca8a1c7325cc3aed1ee3e7d44f5e19b3e63ff026e2a02743a11cd4d007f3"
+      },
+      {
+        "path": "/dev/shm/get-feedback-canonical-native-call-matches-bounded-20261013T1558.json",
+        "sha256": "ea187011d00b595209074a34e77e061fcec60c8446b9c4eddb794e1084c5ed9e"
+      }
+    ],
+    "limits": [
+      "Archive stamp owner/adv metadata is incomplete; canonical adv identity and native transcript establish the measured targets. Stamp metadata does not identify the deletion actor.",
+      "Precise original removal process remains unmeasured. The foreign-install custody guard is peer-owned WI-6554700010010238.",
+      "This bounded recorded-call census does not cover all shell/filesystem effects, source mutation/ABA, selector wakes or system-direct actors. D-006 remains open.",
+      "Original R6 cohort4/shortfall4/unknown1, required native fork/full matrix, independent acceptance and exact R7 shipment remain open.",
+      "Existing49/5 test receipts remain scoped historical proof; no settled requests or tests were replayed."
+    ]
+  },
+  "nativeForkPopulation20261013": {
+    "observedAt": "2026-10-13T16:39:36.604Z",
+    "priorArtifactSha256": "0c788694bdce0aaa7d7470d5d751281c0045a498d469bc6a0954e944b5bb71e3",
+    "runtime": "serving staging operator e8df875079; testing:run nativeConsult",
+    "liveCase": {
+      "requestKey": "get-feedback-native-live-claude-fork-e16e0-20261013-v1",
+      "conversationId": "conv-request-049558ec57335514140bc0ad1b4e1d59db4a3a1fff98cee1fe81b8738d84d7b9",
+      "constraints": { "sourceBackend": "claude", "targetBackend": "claude", "sourceState": "live" },
+      "state": "no_qualified_responder",
+      "nativePool": [],
+      "answeringSessionLaunched": false,
+      "observation": "The exact registered-current-native index query found zero native-consult or session-port/source path mentions. This explains the requested path population exclusion; it does not establish complete ingestion, liveness or absence of expert knowledge."
+    },
+    "endedCase": {
+      "requestKey": "get-feedback-native-ended-claude-fork-e16e0-20261013-v1",
+      "conversationId": "conv-request-6c27572452c5656d527bf05830b13f3b6fd8cd215dafa17068336be1e0cc5974",
+      "constraints": { "sourceBackend": "claude", "targetBackend": "claude", "sourceState": "ended" },
+      "state": "no_launchable_responder",
+      "relevance": "unmeasured; embed-unavailable lexical minimum fill",
+      "sourceOwnerId": "su-9306f9c3-98b4-4a32-b4d5-23a42097c3bb",
+      "sourceNativeSessionId": "be765269-d337-40a6-b656-1cc7fbf22112",
+      "sourceAdvSessionId": 29798,
+      "boundary": { "kind": "archive-manifest", "completeBytes": 3300205, "sha256": "adbc11b3c2d400a3f068acd892d5998a3ba5d96b37762c174c0f057e1edaddda", "heldClaims": [] },
+      "attempts": [
+        { "rank": 1, "agent": "claude", "model": "fable", "operation": "convert", "outcome": "skipped", "reason": "account-walled", "detail": "every claude account reads full/paused (10 account(s))" },
+        { "rank": 2, "agent": "claude", "model": "opus", "operation": "convert", "outcome": "skipped", "reason": "account-walled", "detail": "every claude account reads full/paused (10 account(s))" }
+      ],
+      "answeringSessionLaunched": false,
+      "retry": {
+        "idempotencyKey": "9d4211e1-4e85-4937-8f0f-0b11cc0a6b26",
+        "observation": "The original call timed out. Two absence reads with a same-table positive control preceded its late persistence at 16:27:41.433Z. Identical retry with the original transport key began at 16:29:25.251Z and returned a parent-signal abort. The original call, not the retry, first persisted the single durable conversation; no duplicate or fork success is claimed."
+      }
+    },
+    "evidenceRefs": [
+      { "path": "/dev/shm/get-feedback-native-live-fork-20261013T1614.accept.json", "sha256": "2260f9160fa5f2162d6bbb0e36d94a3a9622e03667000dc46c0562705cd4d4d5" },
+      { "path": "/dev/shm/get-feedback-native-live-fork-20261013T1614.routing.json", "sha256": "9e1dce846f3d5c8530fddb3cbbc96fa31553936a5e943151639e9998c34df51b" },
+      { "path": "/dev/shm/get-feedback-native-ended-fork-20261013T1623.db-state.json", "sha256": "af5dbb75eaa4af3d9a68b44cdd6e9080408df7c5c45d7de745f7e4797bf5e3c7" },
+      { "path": "/dev/shm/get-feedback-native-ended-fork-20261013T1621.state.json", "sha256": "dad52d79f0dfb16cd41efa26fa84326fd7b62b38d7c0573262887b69ecf694b6" },
+      { "path": "/dev/shm/get-feedback-native-ended-fork-20261013T1629.after-retry.json", "sha256": "8f84ca8b1c0becb3371813cb882c868703b265a950c0a45d3884dfde037c1ba1" },
+      { "path": "/dev/shm/get-feedback-native-ended-fork-20261013T1631.full-state.json", "sha256": "5ec2bcb72ae4d584657b0c02c3b81a7af35e398bcc68f049cc6ae0c13a84e1db" },
+      { "path": "/dev/shm/get-feedback-native-ended-fork-20261013T1633.attempts.json", "sha256": "20e25c46be74085d23a929a722af38a81b0a0ee8c0cdb4849e242c4ad413dc6c" },
+      { "path": "/dev/shm/get-feedback-native-fork-population-20261013T1636.json", "sha256": "5f9ac67487de06f229e2f0bdb155da8886ed46284d1a21dcc00d6f105b51f76a" }
+    ],
+    "limits": ["Both new cases are terminal without a child or answer; neither qualifies native-fork or matrix success.", "Registry-not-ended and indexed turn counts are not liveness or ingestion completeness.", "Account probe receipts describe the measured launch window, not permanent backend availability.", "D006/D017, original fixed R6 cohort4/shortfall4/unknown1, independent acceptance and exact R7 shipment remain open.", "No settled test, old consultation or native archive audit was replayed."]
+  },
+  "nativeIngestCompleteness20261013": {
+    "observedAt": "2026-10-13T16:58:37.021Z",
+    "priorArtifactSha256": "81ed471a80bf29230f2d6487b5663e94fae20235ed25598663f3106d805319e3",
+    "scope": "Saved registry-not-ended, role-null Claude population with exact current native identity; no liveness claim or historical-population equivalence.",
+    "writer": { "path": "packages/operator-core/lib/search/session-ingest.ts", "sha256": "08a84126db4f78ec28859406b20108cf0b277244ca36e9b311f547f01f91c4b8", "cursor": "session_ingest_state.byte_offset advances after canonical turn insertion; faithful parts are best-effort and have an independent repair cursor.", "parser": "Production parseClaudeLine; comparison uses speaker, turn_idx and MD5 of the exact redacted/capped text, with complete native prefix SHA256 retained separately." },
+    "population": { "registeredSources": 15, "canonicalSourcesRead": 15, "stableDescriptorReads": 15, "indexMatchesConsumedParser": 15, "cursorCoversCompleteSource": 13, "cursorBehindCompleteSource": 2, "pendingCompleteBytes": 155272, "rawPathMatchingLines": 0, "fullParserPathMentions": 0, "cappedParserPathMentions": 0, "indexedPathMentions": 0, "sameTablePositiveControl": "passed" },
+    "pending": [{ "advSessionId": 42244, "nativeSessionId": "7faeec27-b8ba-47fa-ad63-07478ab9142c", "cursor": 469727, "completeBytes": 471441, "pendingCompleteBytes": 1714 }, { "advSessionId": 41959, "nativeSessionId": "66deba69-e15e-424b-9749-5cba8bbb3e23", "cursor": 2109658, "completeBytes": 2263216, "pendingCompleteBytes": 153558 }],
+    "evidenceRefs": [
+      { "path": "/dev/shm/get-feedback-ingest-20261013-exact-population.json", "sha256": "3fb01c26794859c2f81664279a437b051a547e9fc9a8b06d43af7435f46b3afb" },
+      { "path": "/dev/shm/get-feedback-ingest-20261013-index.json", "sha256": "545d0550b669a230162e41c45c2d823eae80e111fdd5cbec99cbfd6f2699f86d" },
+      { "path": "/dev/shm/get-feedback-ingest-20261013-measurement.json", "sha256": "1b9fc6b3ddf98b87ab17df88f75d9a83702623d3565c4c6860d0d5b008901990" }
+    ],
+    "decision": "No justified replay of the terminal live-Claude request: its requested path strings also occur zero times in these complete canonical native prefixes, including both unread tails. Continue independent D-006 writer/census work.",
+    "limits": ["Two saved cursors do not cover their observed complete sources; this is a bounded snapshot, not an ingestion stall diagnosis.", "A consumed cursor alone does not prove faithful parts, untruncated recall, semantic expertise or liveness; those are separate properties.", "The population moved since the earlier index-only observation; these fifteen sources do not retroactively certify that earlier population.", "Lexical path absence is not absence of expert knowledge. No new child, native-fork, matrix, original R6 cohort or R7 shipment credit follows."]
+  },
+  "d006ReceiptRemovalWindow20261013": {
+    "priorArtifactSha256": "d72251df7a3d3007bafb097b27ad80eca7b9b15a2ba8d12286538314a995a09d",
+    "evidencePlane": "retained-production-ledger-historical-window",
+    "window": { "workspaceId": "papercusp-workspace", "startInclusive": "2026-10-13T00:30:00Z", "endExclusive": "2026-10-13T00:55:00Z", "sourceOwnerId": "su-56e2f83b-010d-4f42-b750-19bc8fde6ea5", "sourceAdvSessionId": 34326, "answeringOwnerId": "su-c48906b7-51d2-4b95-9c57-19f2a99726da", "answeringAdvSessionId": 41894 },
+    "method": "Reuse existing tool_invocations identityLaunchRecord, requestOrigin.nativeSession, session-port audit, mode/loop history, resolved coordination recipients and required-wake attempts. Reads span all harness scopes in the exact workspace/window and include known-positive rows. No new native request or test replay.",
+    "recordedActors": { "sourceCalls": 0, "answeringCalls": 108, "completeGroups": 17, "nativeBoundCallerRowCalls": 65, "ownerWorkspaceFallbackCalls": 32, "launchRecordWithNoSelectionCalls": 5, "missingLaunchRecordCalls": 6, "requestClientMatchesAnswerer": true, "positiveControlInvocation": 37223293, "positiveControl": "passed", "limit": "invoked_at is dispatch-settle time. The first 101-row read hit its SQL cap and grants no complete census; the later uncapped grouping and compact totals are authoritative for this recorded subset. Native-bound CLI requests have no physical MCP call fingerprint; fallback and missing audit are not upgraded." },
+    "systemPort": { "actor": "system:session-port", "sourceAdvSessionId": 34326, "targetAdvSessionId": 41894, "portId": "6a1977bf-ee6f-4473-ab8f-bb2928682d01", "stages": ["inspected", "prepared", "pending", "delivered"], "positiveControl": "passed", "limit": "Explicit observed lineage; fail-soft port audit is not a universal system-direct mutation history." },
+    "retainedHistory": { "modeRows": 0, "modePositiveControl": "passed outside the window: row14935 on2026-10-03; the initial same-window control failed and grants no absence proof", "loopRows": 0, "loopPositiveControl": "passed in the same window: row582463", "completedRequiredWakeRows": 0, "wakePositiveControl": "passed in the same window: row35682", "limit": "No matching retained rows under these exact predicates. Mode auditing, loop transitions and required-wake diagnostics are fail-soft; expiry, direct writes, optimistic/ambient/system wakes and dropped/pruned history remain unmeasured." },
+    "coordination": { "completeSenderRecipientGroups": 18, "sourceExplicitRecipientRows": 0, "answererExplicitRecipientRows": 0, "answererAuthoredRowIds": [24247768, 24247769], "answererPositiveControl": "passed: row24247768 names requester e16e0", "predicate": "Source/child sender or resolved to[] containing source, child or wildcard; across surfaces in the exact workspace/window", "limit": "Wildcard inbox eligibility is not actual delivery or wake. Sender grouping is preserved; the child notices address the requester. Earlier summary-truncated recipient output grants no complete recipient census." },
+    "writerEvidence": ["packages/operator-core/lib/projected-tool-deps.ts:1687", "packages/operator-core/lib/projected-tool-deps.ts:1882", "packages/operator-core/lib/plan-items/claims.ts:409", "packages/operator-core/lib/plan-items/claims.ts:510", "packages/operator-core/lib/agent-tools/coordination/inbox-wake.ts:252", "packages/operator-core/lib/agent-tools/coordination/inbox-wake.ts:440", "packages/operator-core/lib/harness/routines/loop-transition-log.ts:335", "packages/operator-core/lib/modes/store.ts:294", "packages/operator-core/lib/session-port/telemetry.ts:41"],
+    "evidenceRefs": [
+      { "path": "/dev/shm/get-feedback-d006-receipt-window-20261013-compact.json", "sha256": "d2d1b13f78eebac604707fd670355fec232569a41c211d1d637c17d5ca87573b" },
+      { "path": "/dev/shm/get-feedback-d006-receipt-window-20261013-history.json", "sha256": "886a4df80003bad850ace28390bc0a771c170139d55a03e22737b24ae89b7abd" },
+      { "path": "/dev/shm/get-feedback-d006-receipt-window-20261013-qualified.json", "sha256": "114ccc0eaa4a464b4068a61cd5b9b34e1d407756a6335d5f50fdf8513b504f44" },
+      { "path": "/dev/shm/get-feedback-d006-receipt-window-20261013-coord.json", "sha256": "6128700f96478d05542030367a7fdb307dde93f70da0f25d89fc15db23d458f9" },
+      { "path": "/dev/shm/get-feedback-d006-receipt-window-20261013-totals.json", "sha256": "976bf3c275999fdda81ebf27811d9c144dadd85992e8296340ef7569ac08a783" }
+    ],
+    "limits": ["The selected source was already ended. This answered receipt-removal conversion remains supplemental and earns no native-fork or fixed R6 cohort credit.", "Plan-only claim acquire/heartbeat/replacement/release/sweep delete or overwrite rows without a universal retained transition history. Current endpoint reads cannot retrospectively exclude ABA.", "This section strengthens bounded actor/system/wake evidence only. Complete canonical/direct/lock/filesystem coverage, required native matrix, original R6 population4/shortfall4/unknown1 and exact R7 shipment remain open."]
+  },
   "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, unknown requester decision, and durable native receipt retention", "Exact R7 shipment"],
   "limits": ["No failed or closed native request was retried or relabelled.", "The prior live Codex-to-Claude no-child artifact remains unchanged.", "The original R6 population/cut is unchanged; this supplemental request earns no cohort credit.", "This artifact makes no universal immutability, full native-matrix, acceptance or shipment claim."]
 }

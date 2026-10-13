@@ -4,7 +4,7 @@ import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { PostgresHostedProviderDelegationStore } from '../workspace-host/hosted-provider-delegation';
-import { preparePublicManualHostedDelegation, purgePublicManualHostedConnector,
+import { assertPublicManualHostedRuntimeSchema, preparePublicManualHostedDelegation, purgePublicManualHostedConnector,
   type PublicManualHostedFixtureBinding } from './public-manual-hosted-fixture';
 
 const scoped = vi.hoisted(() => ({ sql: null as Sql | null }));
@@ -82,6 +82,21 @@ describe('private public manual hosted fixture (real Postgres)', () => {
     } finally { await delegation.close(); }
     expect(await readHostedWorkspaceHosting(readerBinding)).toBeNull();
   });
+  it.each(['retired_at', 'retired_by', 'retired_reason'])(
+    'refuses readiness before delegation when the actual migrated schema lacks %s', async column => {
+      const binding = await seed();
+      await expect(db.adminSql.begin(async tx => {
+        // This suite owns its disposable clone. Roll back the legacy schema
+        // after the actual PostgreSQL consumer probe refuses it.
+        await tx.unsafe(`ALTER TABLE harness_shared.adv_sessions DROP COLUMN ${column}`);
+        return preparePublicManualHostedDelegation(binding,
+          fn => fn(tx as unknown as Sql), origin, SHA);
+      })).rejects.toThrow('hosted_fixture_session_retirement_schema_missing');
+      expect(await new PostgresHostedProviderDelegationStore(run, CONTROL)
+        .read(binding.customerWorkspaceId, binding.connectionId)).toBeNull();
+      await expect(assertPublicManualHostedRuntimeSchema(run)).resolves.toBeUndefined();
+    },
+  );
   it.each(['unhealthy', 'wrong-source'] as const)('retains invalid delegation after %s private host verification', async failure => {
     const binding = await seed();
     status = failure === 'unhealthy' ? 503 : 200;

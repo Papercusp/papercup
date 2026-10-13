@@ -23,6 +23,7 @@ import { readSuperuserToken } from '../superuser-token';
 import { emitTaskTerminalEvent, type TaskTerminalEventEmitter } from './task-terminal-events';
 import { recordAttemptOnClose } from '../verification-attempts/attempt-ledger';
 import { nudgeOnNewLoop } from '../verification-attempts/loop-gate';
+import { cleanupEndedVerifierDirectories } from '../verifier-source';
 import {
   TASK_STATES,
   isTerminalState,
@@ -337,6 +338,8 @@ export interface CloseTaskInput {
 }
 
 export interface CloseTaskEffects {
+  /** Cleanup must succeed before the terminal row loses its retry path. */
+  cleanupVerifierDirectories?: typeof cleanupEndedVerifierDirectories;
   /** Test seam; production uses the awaited-event bridge. */
   emitTerminal?: TaskTerminalEventEmitter;
   /** Test seam; production stamps the slow-attempt record (verification-attempts). */
@@ -428,7 +431,7 @@ export async function closeTask(
   effects: CloseTaskEffects = {},
 ): Promise<boolean> {
   const sql = sqlOf(inject);
-  const existing = input.terminalProvenance ? await getTask(taskId, inject) : null;
+  const existing = await getTask(taskId, inject);
   if (input.terminalProvenance && !existing) return false;
   if (input.terminalProvenance && existing?.scopeUnit && existing.scopeUnit !== input.terminalProvenance.scopeUnit) {
     // A systemd snapshot is identity-bearing evidence. Refuse to attach it to a
@@ -438,6 +441,8 @@ export async function closeTask(
   const classified = classifyTerminalClose(input, existing);
   assertState(classified.state);
   if (!isTerminalState(classified.state)) throw new Error(`task-manager: ${classified.state} is not terminal`);
+  if (existing && !existing.endedAt)
+    await (effects.cleanupVerifierDirectories ?? cleanupEndedVerifierDirectories)(existing);
   const terminalJson = classified.terminalProvenance ? JSON.stringify(classified.terminalProvenance) : null;
   const rows = await sql<Array<{
     task_id: string;

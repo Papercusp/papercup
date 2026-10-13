@@ -9,7 +9,7 @@
  *
  * Plan: loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5).
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
@@ -36,6 +36,14 @@ import {
   readMonitorOwnerTurnEvidence,
 } from './monitor-policy';
 import { persistMonitorNoDeltaBudget, standDownMonitorLoop } from './monitor-standdown';
+import { classifyLoopNextWake } from '../../agent-tools/loop/next-wake';
+
+// Alarm resolution has its own rail tests. Keep this real-PG loop suite bound to
+// its throwaway org fixture instead of resolving against the process-wide condition stream.
+vi.mock('../../alarm-attention', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../alarm-attention')>()),
+  resolveAlarm: vi.fn(async () => true),
+}));
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -713,6 +721,9 @@ describe('loop surface round-trip (real PG)', () => {
     const status = await getLoopStatus(OWNER, { sql });
     expect(status!.lastLoopTurnAt).toBeNull(); // current-arm clock remains intentionally scoped
     expect(status!.lastSuppressedWakeLoopTurnAt).toBe(loopAssistant.toISOString());
+    // The status reader's dispatch-scoped proof must agree with the classifier used by
+    // loop:status and loop:checkpoint, even though the current-arm turn clock is empty.
+    expect(classifyLoopNextWake(status!, now)).toEqual({ guaranteed: true, reason: null });
   });
 
   it('getLoopStatus surfaces carry:"cold" for a cold-armed loop (su-cold-auto P-008 observability)', async () => {

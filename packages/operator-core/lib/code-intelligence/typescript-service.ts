@@ -231,16 +231,17 @@ export function tsSiteOf(tree: TsTree, program: TsModule.Program, fileName: stri
 }
 
 /** Exact-name declarations from navigate-to (the search behind tsserver's workspace/symbol), default libs excluded. */
-export function tsDeclarations(tree: TsTree, program: TsModule.Program, subject: string): TsDeclaration[] {
+export function tsDeclarations(tree: TsTree, program: TsModule.Program, subject: string, maxResults?: number): TsDeclaration[] {
   const out: TsDeclaration[] = [];
-  for (const item of tree.service.getNavigateToItems(subject, undefined, undefined, false, true)) {
-    if (item.name !== subject) continue;
+  for (const item of tree.service.getNavigateToItems(subject, maxResults, undefined, false, true)) {
+    if (subject && item.name !== subject) continue;
     const sf = program.getSourceFile(item.fileName);
     if (!sf) continue;
     const span = sf.text.slice(item.textSpan.start, item.textSpan.start + item.textSpan.length);
-    const col = identifierColumn(span, subject);
+    const col = identifierColumn(span, subject || item.name);
     const namePos = item.textSpan.start + Math.max(col, 0);
-    out.push({ file: item.fileName, namePos, site: tsSiteOf(tree, program, item.fileName, namePos, item.kind) });
+    out.push({ file: item.fileName, namePos, site: { ...tsSiteOf(tree, program, item.fileName, namePos, item.kind),
+      ...(!subject ? { name: item.name } : {}) } });
   }
   return out;
 }

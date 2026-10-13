@@ -2705,7 +2705,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     // sharing the same pc-heavy admission.
     const freezeMsAtStart = readPcHeavyFrozenTotalMs();
     const sampler = createGovernedProcessDemandSampler(plannedDemand);
-    const { ownsProcessGroup, spawnCommand, spawnArgs, scopeUnit } = resolveTestChildLauncher({
+    const { launcher, ownsProcessGroup, spawnCommand, spawnArgs, scopeUnit } = resolveTestChildLauncher({
       command,
       args,
       env: childEnv,
@@ -2920,12 +2920,27 @@ export function runCapturedTestProcess(command, args, options = {}) {
       // Releasing it at close ends the protected window while the run is still
       // producing its terminal evidence.
       emitProgress('finished', status, signal, true);
+      const capturedStdout = Buffer.concat(stdout).toString('utf8');
+      const capturedStderr = Buffer.concat(stderr).toString('utf8');
+      // EI-25878128777441671: the harmless preflight may succeed while this
+      // subsequent scope admission fails. Keep an exact, diagnostic-only
+      // systemd rejection on the existing launch-error path, rather than
+      // releasing its demand receipt or recording a failed test. Payload output
+      // (including the admitted-scope notice) makes this shape ambiguous and
+      // must retain its own verdict. Never replay the payload on this evidence.
+      const scopeLaunchError = launcher === 'systemd-run' && status !== 0 && status != null && !signal &&
+        !timedOut && capturedStdout.trim() === '' &&
+        /^(?:Failed to start transient scope unit:|Failed to connect to bus:)[^\r\n]+$/i.test(capturedStderr.trim())
+        ? Object.assign(new Error(`test scope admission failed: ${capturedStderr.trim()}`), {
+          code: 'TEST_SCOPE_LAUNCH_FAILED',
+        })
+        : null;
       resolveRun({
         status,
         signal,
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
-        error: spawnError ?? captureError,
+        stdout: capturedStdout,
+        stderr: capturedStderr,
+        error: spawnError ?? captureError ?? scopeLaunchError,
         timedOut,
         processDiagnostic,
         actualDemand: sampler.stop({ diskBytes: capturedBytes }),
@@ -3106,6 +3121,9 @@ export function privateIntegrationVerifierInputs(root, files, env = process.env,
 export async function main(
   argv = process.argv.slice(2),
   {
+    repoRoot = REPO_ROOT,
+    beginNodeTestLedgerImpl = async options => (await loadNodeTestLedger()).beginNodeTestLedger(options),
+    runGovernedTestProcessImpl = runGovernedTestProcess,
     runCapturedTestProcessImpl = runCapturedTestProcess,
     runVitestListImpl = runVitestList,
     restrictedHoldPreflightImpl = runRestrictedHoldPreflight,
@@ -3222,7 +3240,7 @@ export async function main(
 
   let routes;
   try {
-    routes = testFiles.map((file) => discoverTestRoute(isAbsolute(file) ? relative(REPO_ROOT, file) : file));
+    routes = testFiles.map((file) => discoverTestRoute(isAbsolute(file) ? relative(repoRoot, file) : file, repoRoot));
   } catch (error) {
     console.error(formatRouteError(error instanceof Error ? error.message : String(error)));
     return TEST_FILE_EXIT_NOT_MEASURED;
@@ -3231,18 +3249,18 @@ export async function main(
   const groups = groupRoutes(routes);
   if (!dry) {
     try {
-      const inputs = privateIntegrationVerifierInputs(REPO_ROOT, testFiles);
+      const inputs = privateIntegrationVerifierInputs(repoRoot, testFiles);
       if (inputs) {
-        const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: REPO_ROOT });
+        const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
         const ref = head?.stdout?.trim();
         if (head?.error || head?.status !== 0 || !/^[a-f0-9]{40}$/.test(ref ?? ''))
           throw new Error('private verification requires a measured source commit');
         const receiptDir = mkdtempSync(join(tmpdir(), 'private-proof-source-'));
         const receiptPath = join(receiptDir, 'verifier-source.json');
-        const sourceArgs = new Map(testFiles.map(file => [file, relative(REPO_ROOT, resolve(REPO_ROOT, file))]));
+        const sourceArgs = new Map(testFiles.map(file => [file, relative(repoRoot, resolve(repoRoot, file))]));
         console.error(`TEST_FILE_VERIFIER_SOURCE ref=${ref} receipt=${receiptPath}`);
         try {
-          return await runPrivateVerifierImpl({ repo: REPO_ROOT, ref, receiptPath, inputs,
+          return await runPrivateVerifierImpl({ repo: repoRoot, ref, receiptPath, inputs,
             // The frozen router takes over this same logical invocation's
             // barriers; ordinary test children still never inherit them.
             env: { ...process.env,
@@ -3271,19 +3289,19 @@ export async function main(
   // EI-18681435059177620: stamp WHAT IS ABOUT TO BE MEASURED before measuring it. Printed up front
   // as well as at the end because a run that is killed, hung, or timed out by its caller still has
   // to say which state it was describing — that partial log is exactly the one that gets pasted.
-  const provenanceBefore = snapshotProvenance(routes.map((route) => route.absolute));
+  const provenanceBefore = snapshotProvenance(routes.map((route) => route.absolute), repoRoot);
   console.log(formatProvenanceBanner(provenanceBefore, 'pre-run'));
   // EI-18750303030034478: an in-tree mutation probe deliberately breaks a tracked file for the length
   // of its guard run, and a red read from that mutant looks exactly like a regression in YOUR change.
   // Diagnostic only: one stderr line, never a verdict input (see scripts/lib/mutation-probe-window.mjs).
-  const probeWindowBefore = readMutationProbeWindow(REPO_ROOT);
-  if (probeWindowBefore) console.error(formatMutationProbeWindow(probeWindowBefore, REPO_ROOT));
+  const probeWindowBefore = readMutationProbeWindow(repoRoot);
+  if (probeWindowBefore) console.error(formatMutationProbeWindow(probeWindowBefore, repoRoot));
   // WI-10005713 (D-012 / R-11): a session holding an active personal disclosure has no network,
   // but a test or source it WROTE would run here with the network. Refuse before ANY test process
   // starts — the same restrictedHoldRefusal testing:run applies in-process (it marks the child env
   // so this does not run twice). Fail-closed: an unreadable census refuses too.
   if (!dry) {
-    const restrictedHold = restrictedHoldPreflightImpl({ repoRoot: REPO_ROOT, files: routes.map((route) => route.absolute) });
+    const restrictedHold = restrictedHoldPreflightImpl({ repoRoot, files: routes.map((route) => route.absolute) });
     if (restrictedHold.verdict === 'refuse') {
       console.error(formatRestrictedHoldRefusal(restrictedHold));
       return TEST_FILE_EXIT_NOT_MEASURED;
@@ -3317,7 +3335,7 @@ export async function main(
   // individually by hand — exactly the documented fallback, just not auto-attributed.
   const MULTI_FILE_ATTRIBUTION_CAP = 25;
   for (const [groupIndex, group] of groups.entries()) {
-    const cwdLabel = relative(REPO_ROOT, group.cwd) || '.';
+    const cwdLabel = relative(repoRoot, group.cwd) || '.';
     if (group.runner === 'node') {
       const exact = group.routes.map((route) => route.requested);
       console.log(`ROUTE cwd=${cwdLabel} runner=node:test`);
@@ -3341,15 +3359,14 @@ export async function main(
           // notices must not poison this node:test run's persisted source identity.
           const nodeSourceSink = childSourceNoticeSink?.path
             ? openChildSourceNoticeSink(process.env) : childSourceNoticeSink;
-          const { beginNodeTestLedger } = await loadNodeTestLedger();
           // AWAITED: the before-snapshot must settle before the spawnSync below blocks the loop.
-          nodeLedger = await beginNodeTestLedger({ repoRoot: REPO_ROOT,
-            readExecutedSource: () => readChildSourceNotices(nodeSourceSink, REPO_ROOT) });
+          nodeLedger = await beginNodeTestLedgerImpl({ repoRoot,
+            readExecutedSource: () => readChildSourceNotices(nodeSourceSink, repoRoot) });
         } catch (error) {
           console.error(`TEST_FILE_LEDGER runner=node:test rows=0 reason=${JSON.stringify(`ledger unavailable: ${error?.message ?? error}`)}`);
         }
       }
-      const result = await runGovernedTestFileProcess(runGovernedTestProcess, {
+      const result = await runGovernedTestFileProcess(runGovernedTestProcessImpl, {
         workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
         namespace: 'test-files-node-process',
         owner: `test-files:${cwdLabel}:${process.pid}`,
@@ -3839,16 +3856,16 @@ export async function main(
   // EI-18681435059177620: re-measure AFTER the run. This is the half that would have caught the
   // reported incident automatically — a tested file edited while the suite was executing leaves a
   // verdict that describes neither state, and until now nothing said so.
-  const provenanceAfter = snapshotProvenance(routes.map((route) => route.absolute));
+  const provenanceAfter = snapshotProvenance(routes.map((route) => route.absolute), repoRoot);
   const provenanceDiff = diffProvenanceSnapshots(provenanceBefore, provenanceAfter);
   const driftMarker = formatProvenanceDrift(provenanceDiff);
   if (driftMarker) console.error(driftMarker);
   console.log(formatProvenanceBanner(provenanceAfter, 'post-run'));
-  const childSourceNotices = readChildSourceNotices(childSourceNoticeSink);
+  const childSourceNotices = readChildSourceNotices(childSourceNoticeSink, repoRoot);
   for (const line of formatChildSourceNotices(childSourceNotices)) console.log(line);
   // Re-read AFTER the run: a probe that opened its window mid-run is the case the pre-run read missed.
-  const probeWindowAfter = readMutationProbeWindow(REPO_ROOT);
-  if (probeWindowAfter) console.error(formatMutationProbeWindow(probeWindowAfter, REPO_ROOT));
+  const probeWindowAfter = readMutationProbeWindow(repoRoot);
+  if (probeWindowAfter) console.error(formatMutationProbeWindow(probeWindowAfter, repoRoot));
 
   // The invariant the line below now carries. Unreachable today — a zero/partial match is refused
   // per-group above, and `executed` is derived from that matched set — which is precisely why it

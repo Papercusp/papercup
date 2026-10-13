@@ -122,8 +122,8 @@ type ToolDef = {
   ) => Promise<{ content?: Array<{ text: string }>; data?: Record<string, unknown> }>;
 };
 
-const callGetNext = (args: Record<string, unknown> = {}) =>
-  (getNextTool as unknown as ToolDef).handler({ harness: 'papercusp', ...args }, {});
+const callGetNext = (args: Record<string, unknown> = {}, ctx: Record<string, unknown> = {}) =>
+  (getNextTool as unknown as ToolDef).handler({ harness: 'papercusp', ...args }, ctx);
 
 function refusalPayload(out: { content?: Array<{ text: string }> }): Record<string, unknown> {
   expect(out.content?.[0]?.text).toBeDefined();
@@ -164,6 +164,15 @@ describe('scheduler:get_next — P-009 auto-bench on the context-critical refusa
     // it — not a fleet-wide or default park.
     const [subject] = mocks.autoBenchContextCriticalCaller.mock.calls[0];
     expect(subject).toMatchObject({ ownerId: OWNER, bucket: 'critical' });
+  });
+
+  it('records the compact-first refusal without inventing an unresolved claim-spec revision', async () => {
+    const metadata = vi.fn();
+    const payload = refusalPayload(await callGetNext({}, { metadata }));
+    expect(mocks.getNextForBee).not.toHaveBeenCalled();
+    expect(metadata).toHaveBeenLastCalledWith({
+      schedulerDisposition: { kind: 'no-claim', reason: String(payload.error).slice(0, 500) },
+    });
   });
 
   it('carries the bench outcome back on the refusal, so the park is visible rather than implied', async () => {

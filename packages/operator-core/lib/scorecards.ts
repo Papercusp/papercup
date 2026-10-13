@@ -21,12 +21,18 @@
  * scorecards flip per-workspace exactly like the engineer_issues store they ride.
  */
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { getLongLivedAdminPool, _endLongLivedAdminPoolForTests } from './long-lived-admin-pool';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY, measureGateReuseAuditWindow } from './release/gate-fire-ledger';
 import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
-import { platformComputedInstrumentKeys } from './rubric-instrument-registry';
+import {
+  BM25_LATENCY_ARTIFACT_IDENTITY, BM25_LATENCY_ARTIFACT_PATH, BM25_LATENCY_INSTRUMENT_KEY,
+  parseBm25LatencyArtifact, platformComputedInstrumentKeys,
+} from './rubric-instrument-registry';
+import { moduleRepoRoot } from './module-repo-root';
 import {
   collectGoalHolderBehaviorMetrics,
   holderBehaviorCriterionForInstrument,
@@ -366,6 +372,17 @@ export function scorecardInstrumentProvenance(
   return snapshot.provenance === 'platform-computed' ? 'platform-computed' : 'self-reported';
 }
 
+/** One retained artifact has two independent bounds; its aggregate verdict cannot rate either. */
+export function scorecardCriterionInstrumentVerdict(
+  key: string, criterionKey: string, snapshot: ScorecardInstrumentSnapshot,
+): ScorecardInstrumentSnapshot['verdict'] {
+  if (key !== BM25_LATENCY_INSTRUMENT_KEY) return snapshot.verdict;
+  if (snapshot.verdict === 'unknown') return 'unknown';
+  const value = snapshot.value as { criteria?: Record<string, { verdict?: unknown }> } | undefined;
+  const verdict = value?.criteria?.[criterionKey]?.verdict;
+  return verdict === 'pass' || verdict === 'fail' ? verdict : 'unknown';
+}
+
 /**
  * Resolve registered measurements at the existing instrument seam. Caller
  * snapshots are assertions, regardless of their claimed provenance. Only a
@@ -382,6 +399,8 @@ export async function resolveScorecardInstrumentSnapshots(
     list?: typeof listScorecardPage;
     rubric?: typeof getRubric;
     now?: () => number;
+    /** Read retained artifact bytes from the serving checkout, never cwd or a sibling tree. */
+    readArtifact?: (path: string) => Promise<string>;
     gateReuseAudit?: typeof measureGateReuseAuditWindow;
     /** Holder-behavior metrics for the subject window; null when no goal was stewarded. */
     holderMetrics?: (input: {
@@ -455,6 +474,29 @@ export async function resolveScorecardInstrumentSnapshots(
     criterion.check?.kind === 'instrument' ? criterion.check.instrumentKey : criterion.instrumentKey,
   ));
   for (const key of keys) {
+    if (key === BM25_LATENCY_INSTRUMENT_KEY) {
+      const base = { measuredAt: BM25_LATENCY_ARTIFACT_IDENTITY.generatedAt,
+        provenance: 'self-reported' as const, evidenceRef: BM25_LATENCY_ARTIFACT_PATH };
+      try {
+        const bytes = await (deps.readArtifact ?? (path => readFile(path, 'utf8')))(
+          join(moduleRepoRoot(import.meta.url), BM25_LATENCY_ARTIFACT_PATH),
+        );
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        if (sha256 !== BM25_LATENCY_ARTIFACT_IDENTITY.sha256) {
+          snapshots[key] = { ...base, verdict: 'unknown',
+            value: { reason: 'Artifact bytes differ from the original R-1 run.', sha256 } };
+          continue;
+        }
+        const measurement = parseBm25LatencyArtifact(JSON.parse(bytes));
+        snapshots[key] = { ...base, verdict: measurement.verdict,
+          value: { ...measurement, artifactIdentity: { path: BM25_LATENCY_ARTIFACT_PATH,
+            ...BM25_LATENCY_ARTIFACT_IDENTITY } } };
+      } catch (error) {
+        snapshots[key] = { ...base, verdict: 'unknown',
+          value: { reason: error instanceof Error ? error.message : String(error) } };
+      }
+      continue;
+    }
     if (!key || !registered.has(key)) continue;
     const measuredAt = new Date((deps.now ?? Date.now)()).toISOString();
     const subject = input.subject;
@@ -965,17 +1007,18 @@ export function evaluateScorecardInstrumentContract(input: {
       }
     }
     const expected = expectedInstrumentVerdict(input.ratings[criterion.key]?.rating ?? '');
+    const observed = scorecardCriterionInstrumentVerdict(instrumentKey, criterion.key, snapshot);
     // WI-10005422: an instrument that could not decide ('unknown') cannot CONTRADICT a
     // negative claim. A rubric may fail a criterion on grounds the instrument cannot see
     // (WOE goal-mode-foundation fails a critical unknown left unowned, which the base-card
     // resolver reads as 'unknown'), so that fail is unconfirmed, not contradicted. A claimed
     // PASS over an unknown snapshot stays a mismatch: a positive needs the measurement.
-    const unconfirmedNegative = expected === 'fail' && snapshot.verdict === 'unknown';
+    const unconfirmedNegative = expected === 'fail' && observed === 'unknown';
     // P-003 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): an instrument
     // that measured the trigger but leaves the rest to judgment says so structurally
     // (value.unknownReason 'needs-judgment'). It defers, so it contradicts no rating.
-    const defers = snapshot.verdict === 'unknown' && instrumentUnknownReason(snapshot) === 'needs-judgment';
-    if (expected && expected !== snapshot.verdict && !unconfirmedNegative && !defers) {
+    const defers = observed === 'unknown' && instrumentUnknownReason(snapshot) === 'needs-judgment';
+    if (expected && expected !== observed && !unconfirmedNegative && !defers) {
       verdictMismatches.push(instrumentKey);
     }
     // A claimed positive over a platform-computed fail, or over a computed "the trigger never
@@ -983,8 +1026,8 @@ export function evaluateScorecardInstrumentContract(input: {
     if (
       expected === 'pass' &&
       scorecardInstrumentProvenance(snapshot) === 'platform-computed' &&
-      (snapshot.verdict === 'fail' ||
-        (snapshot.verdict === 'unknown' && ['not-exercised', 'idle'].includes(instrumentUnknownReason(snapshot) ?? '')))
+      (observed === 'fail' ||
+        (observed === 'unknown' && ['not-exercised', 'idle'].includes(instrumentUnknownReason(snapshot) ?? '')))
     ) {
       positiveClaimContradictions.push(instrumentKey);
     }

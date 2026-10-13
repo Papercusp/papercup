@@ -111,6 +111,9 @@ export interface AcceptanceDrainFilingInput {
 
 export type AcceptanceDrainFilingOutcome = 'created' | 'already-open' | 'unknown' | 'error';
 
+/** What the in-transaction carry handoff did; `exempt-template-instance` files nothing. */
+export type AcceptanceDrainCarryOutcome = 'created' | 'already-open' | 'exempt-template-instance';
+
 export interface AcceptanceDrainFilingResult {
   outcome: AcceptanceDrainFilingOutcome;
   id: string | null;
@@ -444,8 +447,22 @@ export async function ensureAcceptanceDrainCarryInTransaction(
   input: Pick<AcceptanceDrainFilingInput, 'workspaceId' | 'harnessSlug' | 'planSlug'> & {
     accountableOwnerId?: string | null;
   },
-): Promise<AcceptanceDrainFilingResult & { outcome: 'created' | 'already-open' }> {
+): Promise<Omit<AcceptanceDrainFilingResult, 'outcome'> & { outcome: AcceptanceDrainCarryOutcome }> {
   const ref = acceptanceDrainPlanRef(input);
+  // WI-6554700010010577: a template INSTANCE (a scheduled run's plan) has no acceptance
+  // step. The gate skips it ('template-instance', plan-acceptance-gate.ts) and
+  // retireRunInstancePlan supersedes it when its run settles, so a carry minted here
+  // assigns the actor an acceptance task that can only be shipped wrongly (claiming a
+  // possibly failed run delivered) or dropped as noise. Decided on the same row the gate
+  // reads, inside the transaction that moved the plan, so every caller is covered.
+  const instance = await tx<{ template_slug: string | null }[]>`
+    SELECT template_slug FROM harness_shared.harness_plans
+     WHERE workspace_id = ${input.workspaceId}
+       AND harness_slug = ${input.harnessSlug}
+       AND plan_slug = ${input.planSlug}
+     LIMIT 1
+  `;
+  if (instance[0]?.template_slug) return { outcome: 'exempt-template-instance', id: null, ref };
   // Reuse pre-key filers too. This predicate is the existing payload identity;
   // locking the row prevents a concurrent claim from being overwritten.
   const open = await tx<{ feature_id: string; harness_slug: string }[]>`

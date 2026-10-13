@@ -83,6 +83,9 @@ export interface SyncBatchDeltaDepsConfig {
   root: string;
   /** Integration branch (`staging` here). */
   branch: string;
+  /** System identity filed work-items carry (owner + `payload.filedBy`). Defaults to
+   *  `system:sync-batch-delta-check`; the P-028 guard routine passes its own. */
+  filedBy?: string;
   /** Process seam — defaults to the real async argv spawn below. Tests inject a
    *  recorder to assert WHICH legs run at idle priority without spawning anything. */
   exec?: (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => Promise<RunResult | null>;
@@ -152,9 +155,13 @@ async function run(
   }
 }
 
-function stripSgr(s: string): string {
+export function stripSgr(s: string): string {
   return s.replace(SGR_RE, '');
 }
+
+/** The bounded async argv spawn above, for sibling bindings that run their own legs
+ *  (`sync-batch-lint-guards-deps.ts`, P-028) under the same contract. */
+export const runBoundedArgv = run;
 
 /** Parse the router's terminal `TEST_FILE_RESULT … status=…` line. Contract (root
  *  CLAUDE.md + the pure module's header): an ABSENT line or `matched=0` is `null`
@@ -410,7 +417,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
             conditionKey: finding.conditionKey,
             payload: {
               paths: finding.paths,
-              filedBy: 'system:sync-batch-delta-check',
+              filedBy: cfg.filedBy ?? 'system:sync-batch-delta-check',
               authorSource: finding.authorSource,
             },
             // P-002 / D-002: route the fix-it to the agent whose edit broke it. Omitted
@@ -418,7 +425,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
             ...(finding.assignee ? { assign_to: finding.assignee } : {}),
           },
           {
-            ownerId: 'system:sync-batch-delta-check',
+            ownerId: cfg.filedBy ?? 'system:sync-batch-delta-check',
             workspaceId: cfg.workspaceId,
             harnessSlug: cfg.installSlug,
           },

@@ -36,6 +36,74 @@ import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 /** The explicit manual binding: the criterion is deliberately graded by a person. */
 export const MANUAL_INSTRUMENT_KEY = 'none';
 
+/** The unchanged R-1 bakeoff artifact also supplies the approved R-2/R-3 outcomes. */
+export const BM25_LATENCY_ARTIFACT_PATH = 'docs/evidence/bm25-bakeoff-work-items-2026-10-11.json';
+export const BM25_LATENCY_INSTRUMENT_KEY = `${BM25_LATENCY_ARTIFACT_PATH}:summaries[method=pgts].p95Ms|p50Ms,n,corpus.rows,corpus.source,generatedAt,commit,serverVersion,versions.bake_pgts,loadavg`;
+export const BM25_LATENCY_ARTIFACT_IDENTITY = Object.freeze({
+  generatedAt: '2026-10-11T11:27:55.979Z',
+  commit: 'c20d6c21f9bc37ff4c2cf1b3ad9b65346b2d6572',
+  sha256: 'f605e046cefdad7d84e1010cf37b3cf8301b60e638b76cb4417f4bce381bc651',
+});
+
+/** Validate original artifact fields, never the baseline rows or top-level queries count. */
+export function parseBm25LatencyArtifact(artifact: unknown): {
+  verdict: 'pass' | 'fail' | 'unknown';
+  reason?: string;
+  criteria?: Record<'r-2' | 'r-3', { verdict: 'pass' | 'fail'; valueMs: number; limitMs: number }>;
+  corpus?: Record<string, unknown>;
+  forms?: Record<string, unknown>[];
+  serverVersion?: string;
+  versions?: Record<string, unknown>;
+  loadavg?: Record<string, unknown>;
+} {
+  const object = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+  const positiveInteger = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
+  const nonnegative = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  const text = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+  const unknown = (reason: string) => ({ verdict: 'unknown' as const, reason });
+  if (!object(artifact) || artifact.kind !== 'bm25-bakeoff' ||
+      artifact.plan !== 'bm25-lexical-search-evoke-adoption-2026-10-10' ||
+      artifact.generatedAt !== BM25_LATENCY_ARTIFACT_IDENTITY.generatedAt ||
+      artifact.commit !== BM25_LATENCY_ARTIFACT_IDENTITY.commit) {
+    return unknown('The artifact must have the original R-1 run identity.');
+  }
+  if (!object(artifact.corpus) || artifact.corpus.key !== 'work-items' ||
+      artifact.corpus.source !== 'operator-db-copy' || !positiveInteger(artifact.corpus.rows) ||
+      !text(artifact.serverVersion) || !object(artifact.versions) || !text(artifact.versions.bake_pgts)) {
+    return unknown('The live corpus row count, source and server/pgts versions are required.');
+  }
+  const load = artifact.loadavg;
+  if (!object(load) || !positiveInteger(load.cores) ||
+      ![load.start, load.end].every(v => Array.isArray(v) && v.length === 3 && v.every(nonnegative))) {
+    return unknown('Original load context is required; it never changes the latency limits.');
+  }
+  if (!Array.isArray(artifact.summaries)) return unknown('Timed pgts summaries are missing.');
+  const selected = artifact.summaries.filter(row => object(row) && row.method === 'pgts');
+  const forms: Record<string, unknown>[] = [];
+  for (const variant of ['short', 'title']) {
+    const rows = selected.filter(row => row.variant === variant);
+    if (rows.length !== 1) return unknown(`Exactly one pgts ${variant} summary is required.`);
+    const row = rows[0];
+    if (!positiveInteger(row.n) || row.n < 1000 || !nonnegative(row.p50Ms) ||
+        !nonnegative(row.p95Ms) || row.p50Ms > row.p95Ms ||
+        !Number.isSafeInteger(row.errors) || (row.errors as number) < 0) {
+      return unknown(`The pgts ${variant} timed sample is incomplete or malformed.`);
+    }
+    forms.push({ method: 'pgts', variant, n: row.n, p50Ms: row.p50Ms, p95Ms: row.p95Ms, errors: row.errors });
+  }
+  if (selected.length !== 2) return unknown('Unexpected pgts query form in the original artifact.');
+  const p95 = Math.max(...forms.map(row => row.p95Ms as number));
+  const p50 = Math.max(...forms.map(row => row.p50Ms as number));
+  const hasErrors = forms.some(row => (row.errors as number) > 0);
+  const criteria = {
+    'r-2': { verdict: !hasErrors && p95 <= 50 ? 'pass' as const : 'fail' as const, valueMs: p95, limitMs: 50 },
+    'r-3': { verdict: !hasErrors && p50 <= 10 ? 'pass' as const : 'fail' as const, valueMs: p50, limitMs: 10 },
+  };
+  return { verdict: Object.values(criteria).every(c => c.verdict === 'pass') ? 'pass' : 'fail',
+    criteria, corpus: { ...artifact.corpus }, forms, serverVersion: artifact.serverVersion,
+    versions: { bake_pgts: artifact.versions.bake_pgts }, loadavg: { ...load } };
+}
+
 export type InstrumentUnit = '%' | 'cores' | 's' | 'ms' | 'count';
 
 export interface InstrumentParseContext {
@@ -84,7 +152,15 @@ export interface PlatformInstrument {
   resolvedBy: 'scorecards:instrument-snapshots';
 }
 
-export type RegisteredInstrument = CommandInstrument | PlatformInstrument;
+/** Validates retained evidence; it does not execute or independently remeasure a benchmark. */
+export interface ArtifactInstrument {
+  key: string;
+  evaluator: 'artifact';
+  description: string;
+  resolvedBy: 'scorecards:instrument-snapshots';
+}
+
+export type RegisteredInstrument = CommandInstrument | PlatformInstrument | ArtifactInstrument;
 
 export type PsiWindow = 'avg10' | 'avg60' | 'avg300';
 
@@ -510,6 +586,11 @@ export function platformComputedInstrumentKeys(): string[] {
 export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> {
   const registry = new Map<string, RegisteredInstrument>();
   for (const instrument of COMMAND_INSTRUMENTS) registry.set(instrument.key, instrument);
+  registry.set(BM25_LATENCY_INSTRUMENT_KEY, {
+    key: BM25_LATENCY_INSTRUMENT_KEY, evaluator: 'artifact',
+    description: 'Validate the original R-1 operational bakeoff bytes and derive separate R-2 p95 / R-3 p50 outcomes. Retained artifact provenance stays self-reported.',
+    resolvedBy: 'scorecards:instrument-snapshots',
+  });
   for (const key of platformComputedInstrumentKeys()) {
     if (registry.has(key)) continue;
     registry.set(key, {
@@ -583,7 +664,8 @@ export async function runInstrument(key: string, deps: InstrumentRunDeps = {}): 
     throw new Error(`unregistered instrument '${key}' — registered: ${registeredInstrumentKeys().join(', ')}`);
   }
   if (instrument.evaluator !== 'command') {
-    throw new Error(`instrument '${key}' is platform-computed (${instrument.resolvedBy}); it is not run as a command`);
+    const source = instrument.evaluator === 'artifact' ? 'retained artifact evidence' : 'platform-computed';
+    throw new Error(`instrument '${key}' is ${source} (${instrument.resolvedBy}); it is not run as a command`);
   }
   const exec = deps.exec ?? defaultExec;
   const now = deps.now ?? Date.now;

@@ -63,7 +63,7 @@
  * subtly-different definition of "produced a turn".
  *
  * RECURRENCE GUARD. One owner-visible escalation per (owner, disarm epoch), via
- * `notifyAttention`'s `dedupeKey`. A session that stays halted does not re-page; one that is
+ * `notifyAttentionOnce`'s `dedupeKey`. A session that stays halted does not re-page; one that is
  * re-armed and later halts AGAIN has a new epoch and does page, because that is a new fault.
  * This is the direct answer to the metronome above.
  *
@@ -91,7 +91,7 @@ import { observeFallback } from '../../degradation/fallback-observations';
 import { broadcastSevereEvent } from '../../severe-event-broadcast';
 import { resolveAlarm } from '../../alarm-attention';
 import { getOrgPg } from '@papercusp/db-org';
-import type { AttentionNotifyInput } from '../../attention-notify';
+import type { ReplaySafeAttentionNotifyInput } from '../../attention-notify';
 import type { StalledLoopHostClass } from '../../events/await/host-recovery-eligibility';
 import {
   countWakeSourcesBySubscriber,
@@ -355,11 +355,12 @@ export interface SilentHaltSweepDeps {
   /** Injectable for tests; defaults to the shared `getLoopStatuses` accessor. */
   readLoopStatuses?: typeof getLoopStatuses;
   /**
-   * Injectable for tests; defaults to a dynamically-imported `notifyAttention`. Return
-   * `{ deduped: true }` when the page already existed for this (owner, epoch): a deduped page
+   * Injectable for tests; defaults to a dynamically-imported `notifyAttentionOnce`. Return
+   * `{ intentCreated: false }` when the page already existed for this (owner, epoch): a replay
    * neither counts against the per-sweep page cap nor re-alerts the fleet leader (D-006 (3)/(4)).
+   * Older injected adapters may return `{ deduped: true }` or void.
    */
-  notify?: (payload: AttentionNotifyInput & { dedupeKey?: string }) => Promise<{ deduped?: boolean } | void>;
+  notify?: (payload: ReplaySafeAttentionNotifyInput) => Promise<{ intentCreated?: boolean | null; deduped?: boolean } | void>;
   /**
    * Classifies the halted session's psu host (P-007 slice 2, D-006 (2)); defaults to the
    * stalled-loops guard's `readStalledLoopHost` + `classifyStalledLoopHost`. `null` = unreadable,
@@ -837,12 +838,12 @@ export async function sweepSilentHalts(opts: {
 
   const notify =
     deps.notify ??
-    (async (payload: AttentionNotifyInput & { dedupeKey?: string }) => {
+    (async (payload: ReplaySafeAttentionNotifyInput) => {
       // Keep the original owner-alarm producer on the rail too. Retry its failed
       // aggregate delivery before paging, without duplicating a successful broadcast.
       if (!conditionPublished) await broadcastSevereEvent(event).catch(() => false);
-      const { notifyAttention } = await import('../../attention-notify');
-      return notifyAttention(payload);
+      const { notifyAttentionOnce } = await import('../../attention-notify');
+      return notifyAttentionOnce(payload);
     });
   const alertFleetLeader =
     deps.alertFleetLeader ??
@@ -946,8 +947,13 @@ export async function sweepSilentHalts(opts: {
         },
       });
       result.paged.push(candidate.ownerId);
-      const deduped = typeof outcome === 'object' && outcome !== null && outcome.deduped === true;
-      if (deduped) continue;
+      // Channel delivery is a separate decision: an existing intent can still have an
+      // unfinished channel. Only a NEW intent spends this cap or alerts the leader.
+      // Preserve legacy injected adapters and fail-soft paging when reservation is unknown.
+      const existingIntent = typeof outcome === 'object' && outcome !== null && (
+        outcome.intentCreated === false || (outcome.intentCreated == null && outcome.deduped === true)
+      );
+      if (existingIntent) continue;
       newPages++;
       // D-006 (3): the fleet's leader can re-place the held work; the owner page alone leaves a
       // fleet member's lane frozen until a human reads it. Same epoch dedupe as the page.

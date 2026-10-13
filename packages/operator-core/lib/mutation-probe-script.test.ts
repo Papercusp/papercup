@@ -2625,6 +2625,81 @@ printf 'TEST_FILE_RESULT requested=1 executed=1 status=passed\\n'
   });
 });
 
+/**
+ * WI-6554700010010581 — the runner-misuse markers are matched anywhere in the
+ * captured output, and a failing Vitest toContain prints the WHOLE subject
+ * string. A subject whose comment reads `cargo: command not found` therefore
+ * turned a measured catch into harness-error. Measured assertion evidence proves
+ * the runner executed assertions, so it outranks a quoted marker; an ECHOED copy
+ * of the reporter record (not at column 0) must not unlock that override.
+ * Markers are built from parts so this file's own code-frame never contains them.
+ */
+describe('mutation-probe.sh — a quoted runner-misuse marker cannot void a measured catch', () => {
+  const misuse = [': command', 'not found'].join(' ');
+  const record = ['TEST_FILE', 'ASSERTION_FAILURE'].join('_');
+  function quotingGuard(name: string, mutantLines: string[]): string {
+    const guard = join(dir, name);
+    // A quoted heredoc prints each line verbatim (no shell quoting or expansion).
+    writeFileSync(guard, `#!/usr/bin/env bash
+if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then
+  cat <<'GUARD_OUTPUT'
+${mutantLines.join('\n')}
+GUARD_OUTPUT
+  exit 1
+fi
+printf 'TEST_FILE_RESULT requested=1 executed=1 status=passed\\n'
+`);
+    return `bash ${guard} {}`;
+  }
+
+  it('scores a reporter-measured failure CAUGHT even when its diff quotes a misuse marker', () => {
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test',
+      quotingGuard('quoted-marker-router.sh', [
+        `AssertionError: expected '#!/usr/bin/env bash' to contain 'node build.mjs'`,
+        `+ # build calls with cargo${misuse}. Resolve the Rust entry point.`,
+        `${record} file="fixture.test.ts" name="wiring" message="AssertionError"`,
+      ]),
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(out).toContain('assertion_evidence=test-file-assertion-failure');
+    expect(out).not.toMatch(/RUNNER-MISUSE/i);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('still reports harness-error when the only reporter record is an ECHOED copy, not a real one', () => {
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test',
+      quotingGuard('echoed-record-router.sh', [
+        `bash: line 1: vitest${misuse}`,
+        `+   ${record} file="fixture.test.ts" name="quoted" message="x"`,
+      ]),
+    ]);
+    expect(code, out).toBe(2);
+    expect(out).toContain('verdict=harness-error');
+    expect(out).toMatch(/runner_misuse=:,command,not,found/);
+    expect(out).not.toContain('verdict=caught');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('scores a direct Vitest failed-test count CAUGHT even when its output quotes a misuse marker', () => {
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test',
+      quotingGuard('quoted-marker-vitest.sh', [
+        `- Expected: "No test files found"`,
+        `+ Received: "vitest${misuse}"`,
+        ' Test Files  1 failed (1)',
+        '      Tests  1 failed (1)',
+      ]),
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(out).toContain('assertion_evidence=vitest-failed-tests');
+    expect(read()).toBe(ORIGINAL);
+  });
+});
+
 describe('mutation-probe.sh — a baseline that ran zero tests is never scored', () => {
   /** Write a guard whose output/exit may differ by phase; returns the --test command. */
   function phaseGuard(body: string): string {

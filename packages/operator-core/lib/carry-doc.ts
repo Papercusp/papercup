@@ -405,6 +405,13 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
     workspaceId: string,
     stampedGeneration: number,
   ) => Promise<unknown>;
+  /** Test seam for the D-006 recovery-delivery record (oversized-tool-results-reduction-2026-10-12).
+   *  Defaults to the session_briefs write a later recovery orient compares against. */
+  recordRecoveryDeliveryFn?: (
+    ownerId: string,
+    recovery: AutomaticCompactionRecovery['recovery'],
+    buildEpoch: number,
+  ) => Promise<unknown>;
   getModesFn?: (workspaceId: string, ownerId: string) => Promise<CarryDocMode[]>;
   getPlanItemsFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocPlanItem[]>;
   getAsksFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocAsk[]>;
@@ -726,6 +733,21 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   const armControlWitness = opts.armControlWitnessFn ?? defaultArmControlWitness;
   if (!recoveryScopeMismatch && typeof automaticRecovery?.marker.controlGeneration === 'number') {
     await armControlWitness(ownerId, ws, automaticRecovery.marker.controlGeneration).catch(
+      () => {},
+    );
+  }
+  // D-006 (oversized-tool-results-reduction-2026-10-12): record what this document
+  // delivers, stamped with the PRE-wipe epoch. Every caller bumps the epoch after
+  // building, so a recovery orient trusts this record only across exactly that one
+  // bump and re-sends in full otherwise. Fail-soft: a missed write costs only the dedupe.
+  if (!recoveryScopeMismatch && automaticRecovery) {
+    const recordRecoveryDelivery =
+      opts.recordRecoveryDeliveryFn ??
+      (async (id: string, recovery: AutomaticCompactionRecovery['recovery'], buildEpoch: number) => {
+        const mod = await import('./agent-tools/coordination/recovery-delivery');
+        return mod.recordRecoveryDelivery(id, recovery, buildEpoch);
+      });
+    await recordRecoveryDelivery(ownerId, automaticRecovery.recovery, automaticRecovery.marker.memoryEpoch).catch(
       () => {},
     );
   }

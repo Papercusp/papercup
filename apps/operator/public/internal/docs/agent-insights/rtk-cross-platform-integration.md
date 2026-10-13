@@ -1,9 +1,9 @@
-# RTK (Rust Token Killer) integration — the three shell seams, the pinned installer, the alarms, and why it was lost in August 2026
+# RTK (Rust Token Killer) integration — the four shell seams, the pinned installer, the alarms, and why it was lost in August 2026
 URL: /internal/docs/agent-insights/rtk-cross-platform-integration
 
-How RTK output compression is wired into every agent shell: native Claude Bash (inside the egress guard, the single Bash rewriter), capability:bash (at the spawn seam) and Codex's native shell (its own PreToolUse hook, allow + updatedInput, code-mode script calls left verbatim). Also: the pinned sha256 installer, the two alarms that make a loss visible, the tests that fail if the wiring is removed, and the 2026-08 root cause.
+How RTK output compression is wired into every agent shell: native Claude Bash (inside the egress guard, the single Bash rewriter), capability:bash (at the spawn seam) and Codex's native shell (its own PreToolUse hook, allow + updatedInput, code-mode script calls left verbatim). Also: the pinned sha256 installer, the two alarms that make a loss visible, the tests that fail if the wiring is removed, and the 2026-08 root cause. OMP's native bash is the fourth seam (the coord hook's tool_call input replacement, WI-6554700010010472); an older desktop package reverting the installed hooks is covered too (WI-6554700010010534).
 
-**Status (verified 2026-10-12, WI-6554700010009291 and WI-6554700010009447, owner directives #1759 / #1764):** RTK is installed and wired into all three agent shells on the Linux dev box.
+**Status (verified 2026-10-12, WI-6554700010009291 and WI-6554700010009447, owner directives #1759 / #1764):** RTK is installed and wired into all four agent shells on the Linux dev box (OMP native `bash` added 2026-10-13, WI-6554700010010472).
 
 * Binary: `~/.local/bin/rtk`, **v0.51.0**, provisioned by `apps/operator/scripts/install-rtk.sh` (pinned release, sha256-verified). Desktop installs run the same script (WI-6554700010009448, see Provisioning).
 * Native Claude `Bash`: a fresh `git status` came back in RTK form and rtk's ledger gained a row (15 -> 16) once `install-standalone-mcp.sh` had re-copied the hooks.
@@ -22,7 +22,7 @@ RTK was lost twice over, and nothing noticed either loss for weeks.
 
 **The general lesson:** a fail-open integration needs a separate signal that notices when it has been failing open for weeks. A native-tool integration must also be wired into our replacement tool (`capability:bash`), or the native-tool cutover silently drops it (owner #1764).
 
-## Wiring — three seams, one contract
+## Wiring — four seams, one contract
 
 ### Native Claude `Bash`: inside the egress guard
 
@@ -57,6 +57,15 @@ Codex's hook contract differs from Claude's in ways that each cost a silent no-o
 
 **Verifying it live.** A throwaway `CODEX_HOME` with the gateway provider block copied from a managed su home (the newest home by mtime can lack it: pick one whose `config.toml` has `[model_providers.papercusp-codex-gateway]`). Copy the hooks in the INSTALLED layout, `hooks/cc/` beside `hooks/inject/`: the egress guard imports `../inject/core.mjs`, and a flat copy crashes on import, which Codex reports only as `hook: PreToolUse Failed`. On 2026-10-12, a shim that called the real `decideCodexRtk` with a direct-style id produced the rewrite and ledger row above; the production hook on the same nested call printed nothing, exited 0 and left `git status` verbatim with no ledger row.
 
+### OMP native `bash`: the coord hook's `tool_call` input replacement
+
+`apps/operator/scripts/hooks/omp/coord-hook.ts` (installed as `~/.papercusp/papercusp-coord.ts`, loaded by `omp-su` via `-e`) applies RTK in its registered `tool_call` handler (WI-6554700010010472, owner directive #1798). OMP 18.0.3 lets a non-blocking `tool_call` handler return `input`, the raw input the tool executes with, and its extension wrapper re-resolves approval against that revised input (`extensibility/shared-events.ts`, `ToolCallEventResult`). Every gate in `onToolCall` judges the original command; only the executed text changes.
+
+* `ompBashRtkResult` rewrites only OMP's `bash` tool and keeps every other parameter (`env`, `timeout`, `cwd`, `async`). It leaves the call alone when it is blocked, runs on a PTY (an interactive program), sets `RTK_DISABLED=1` in its `env`, or RTK has no rewrite.
+* The rewriter is the shared `rtkRewriteSync`, imported at runtime from `~/.papercusp/hooks/cc/pretooluse-restricted-egress-guard.mjs`. A static `../cc/` import cannot work: the hook runs as `~/.papercusp/papercusp-coord.ts` (copied by `install-standalone-mcp.sh`, copied or esbuild-bundled by the desktop installer), where `../cc` resolves to `~/cc`. If the import fails, commands run verbatim.
+* Fleet roles under the capability-only cutover have no native `bash` (`fleetOmpToolsArgs` passes `--tools read,find,glob,grep,web_search`) and get RTK through `capability:bash`. Interactive psu OMP sessions keep native `bash`.
+* Verified 2026-10-13 with the installed rewriter and rtk 0.51.0: `git status` became `rtk git status` and `ls -la …` became `rtk ls -la …`; vitest, PTY and `python` calls were unchanged. Not yet observed in a live OMP session (OMP use was 6 sessions in the prior 7 days).
+
 ### Shared contract (all seams)
 
 * **Binary resolution:** `PAPERCUSP_RTK_BIN` (an empty value disables RTK), then `~/.local/bin/rtk`, then `PATH`.
@@ -88,16 +97,18 @@ Both installers refuse to publish an uncommitted hook source, so a new hook reac
 
 ## Tests that fail if the wiring is removed again
 
-| Removal                                                                                                                           | Test that fails                                                                                                                                                                                                    |
-| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| RTK dropped from the egress guard, or the sandbox wraps the original instead of the RTK form                                      | `apps/operator/scripts/hooks/cc/__tests__/restricted-egress-guard.test.ts` ("RTK composed into the single Bash rewrite", `rtkRewriteSync`, script wiring)                                                          |
-| A second Bash rewriter re-added to `hooks.json`, or rtk added to the `capability:bash` gate entry                                 | `apps/operator/scripts/worker-plugin/__tests__/worker-plugin.test.ts`                                                                                                                                              |
-| `capability:bash` stops spawning the RTK form                                                                                     | `packages/operator-core/lib/agent-tools/capability/rtk-rewrite.test.ts` (drives the real `bash.handler`)                                                                                                           |
-| The Codex hook drops `permissionDecision: 'allow'`, or starts rewriting code-mode script calls                                    | `apps/operator/scripts/hooks/cc/__tests__/codex-rtk-rewrite.test.ts`                                                                                                                                               |
-| The Codex registration is removed, gets the wrong matcher, a second Codex rewriter is added, or resumed homes stop being repaired | `packages/operator-core/lib/role-codex-home.test.ts` ("Codex RTK rewrite": "registers exactly one ^Bash$ rewrite on SU and role homes", the resume-repair test, and an end-to-end test through `~/.local/bin/rtk`) |
-| The dev-box installer stops provisioning rtk                                                                                      | `apps/operator/scripts/__tests__/install-rtk.test.ts` ("install-standalone-mcp.sh provisions rtk")                                                                                                                 |
-| The desktop installer stops provisioning rtk, provisions a non-real home, or the sidecar stops shipping the script                | `packages/operator-core/lib/desktop-install/__tests__/papercusp-files.test.ts` ("RTK binary provisioning", including an end-to-end run of the real script against a fake release)                                  |
-| The alarms stop firing                                                                                                            | `packages/operator-core/lib/system-health/rtk-liveness.test.ts`                                                                                                                                                    |
+| Removal                                                                                                                                         | Test that fails                                                                                                                                                                                                    |
+| ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| RTK dropped from the egress guard, or the sandbox wraps the original instead of the RTK form                                                    | `apps/operator/scripts/hooks/cc/__tests__/restricted-egress-guard.test.ts` ("RTK composed into the single Bash rewrite", `rtkRewriteSync`, script wiring)                                                          |
+| OMP's `tool_call` handler stops applying the rewrite, rewrites a blocked or PTY call, or looks for the rewriter outside `~/.papercusp/hooks/cc` | `apps/operator/scripts/hooks/omp/__tests__/coord-hook.test.ts` ("RTK output compression for OMP native bash")                                                                                                      |
+| A packaged hook directory ships without dates, or the standalone installer stops stamping `hooks/cc`                                            | `apps/operator/scripts/__tests__/write-hook-source-provenance.test.ts`, `packages/operator-core/lib/desktop-install/stamp-installed-cc-hooks.test.ts`                                                              |
+| A second Bash rewriter re-added to `hooks.json`, or rtk added to the `capability:bash` gate entry                                               | `apps/operator/scripts/worker-plugin/__tests__/worker-plugin.test.ts`                                                                                                                                              |
+| `capability:bash` stops spawning the RTK form                                                                                                   | `packages/operator-core/lib/agent-tools/capability/rtk-rewrite.test.ts` (drives the real `bash.handler`)                                                                                                           |
+| The Codex hook drops `permissionDecision: 'allow'`, or starts rewriting code-mode script calls                                                  | `apps/operator/scripts/hooks/cc/__tests__/codex-rtk-rewrite.test.ts`                                                                                                                                               |
+| The Codex registration is removed, gets the wrong matcher, a second Codex rewriter is added, or resumed homes stop being repaired               | `packages/operator-core/lib/role-codex-home.test.ts` ("Codex RTK rewrite": "registers exactly one ^Bash$ rewrite on SU and role homes", the resume-repair test, and an end-to-end test through `~/.local/bin/rtk`) |
+| The dev-box installer stops provisioning rtk                                                                                                    | `apps/operator/scripts/__tests__/install-rtk.test.ts` ("install-standalone-mcp.sh provisions rtk")                                                                                                                 |
+| The desktop installer stops provisioning rtk, provisions a non-real home, or the sidecar stops shipping the script                              | `packages/operator-core/lib/desktop-install/__tests__/papercusp-files.test.ts` ("RTK binary provisioning", including an end-to-end run of the real script against a fake release)                                  |
+| The alarms stop firing                                                                                                                          | `packages/operator-core/lib/system-health/rtk-liveness.test.ts`                                                                                                                                                    |
 
 Every guard above was proven falsifiable with `scripts/mutation-probe.sh` (copy-out; every mutant caught). For the Codex seam: wrong matcher, resume repair dropped, `allow` dropped, nested-call skip dropped. ⚠ A probe whose replacement contains Perl's `$'` post-match variable produces a SYNTAX-ERROR mutant whose "caught" proves nothing; use `${1}` capture references and check `mutant_parse=ok` in the result.
 
@@ -106,6 +117,14 @@ Every guard above was proven falsifiable with `scripts/mutation-probe.sh` (copy-
 The authoritative signal is a **new ledger row**, or the compressed output format (for example `git status` without git's hint lines). The model's paraphrase of the output is not evidence. Ledger: `rtk gain` (summary), `rtk gain -d --format json` (per day), or the sqlite file `~/.local/share/rtk/history.db` (table `commands`: `timestamp, original_cmd, rtk_cmd, saved_tokens, project_path`). Every seam writes the same ledger.
 
 rtk prints `[rtk] warning: failed to parse permissions from <repo>/.claude/settings.json` on stderr for `rtk rewrite`. All seams read stdout only, so it is harmless.
+
+## An older desktop package can revert the installed hooks (2026-10-13)
+
+At 14:50Z on 2026-10-13 the packaged desktop sidecar (0.0.26, built 2026-10-07) reinstalled `~/.papercusp/hooks/cc` from `/usr/lib/Papercusp Server/sidecar/...`. Its egress guard predates `rtkRewriteSync`, so Claude native Bash lost RTK and the installed Codex RTK hook failed at import (`does not provide an export named 'rtkRewriteSync'`). The OMP seam fails open the same way.
+
+Cause: the installer's downgrade guard (`install-provenance.ts`, WI-37405) orders installs by git committer date. A packaged app has no repository, so it had no date and the guard let the install through (`dates-unknown`). `install-standalone-mcp.sh` also wrote no `.installed-from`, so the record kept naming the packaged source after a canonical reinstall.
+
+Fix (WI-6554700010010534): `build-desktop-sidecar.sh` writes `.source-provenance.json` beside each packaged hook directory (`apps/operator/scripts/write-hook-source-provenance.mjs`), and `resolveSourceGitProvenance` reads it when git has no answer. `install-standalone-mcp.sh` now stamps `hooks/cc` with the same `CC_HOOK_FILES` scoping as the desktop installer (`stamp-installed-cc-hooks.ts`). A package built before this fix still overwrites newer hooks: upgrade the desktop app, or re-run `install-standalone-mcp.sh` after it restarts. Check with `node -e 'import(process.env.HOME + "/.papercusp/hooks/cc/pretooluse-restricted-egress-guard.mjs").then(m => console.log(typeof m.rtkRewriteSync))'` (`function` means RTK is present).
 
 ## Open follow-ups
 

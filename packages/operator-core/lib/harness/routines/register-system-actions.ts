@@ -631,6 +631,13 @@ import './frozen-candidate-drift-sweep-action';
 // Skips under host load and while a checkpoint suite runs; observer only — no revert, no gate
 // fire, no spawn. Seeded ACTIVE (seed-sync-batch-delta-check-routine.ts).
 import './sync-batch-delta-check-action';
+// green-main-cycle-time-2026-10-08 P-028: `system:sync-batch-lint-guards` — the gate's
+// repo-wide lint guards per git-sync batch (every 5 min, its own row so the delta check's
+// affected leg never delays it). Each guard is diffed against its own last measurement;
+// a new offending path is filed as one condition-keyed work-item routed to its author by
+// the P-011 path. Undetermined runs keep the prior record. Observer only. Seeded ACTIVE
+// (seed-sync-batch-lint-guards-routine.ts).
+import './sync-batch-lint-guards-action';
 // gate-verdict-liveness-and-repair-reliability-2026-08-31 P-016: `system:gate-fire-drill`
 // — the weekly fire drill: on a GREEN idle unheld gate, launch a fresh recording checkpoint
 // run, kill it seconds later, and assert the P-003 detection chain saw it (P-001 fire anchor

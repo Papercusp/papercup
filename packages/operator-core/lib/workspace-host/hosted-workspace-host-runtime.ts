@@ -80,6 +80,7 @@ export interface HostedWorkspaceHostRuntimeOptions {
   desktop?: HostedDesktopBackend;
   onAudit?: (event: HostedHostAuditEvent) => void;
   onTerminal?: (reason: HostedConnectorTerminalReason, detail: string) => void;
+  /** Fixed control codes only; dependency exceptions may contain customer content. */
   onWarning?: (message: string) => void;
   /**
    * Called with every binding BEFORE its adapter is built. The production default
@@ -251,7 +252,7 @@ export function createHostedWorkspaceHostRuntime(
   if (loadMachineKey) {
     loadMachineKey().then(
       (pair) => { machineNoiseKeyPair = pair; },
-      (error: unknown) => warn(`machine Noise key unavailable; sealed phone channels refused: ${String(error)}`),
+      () => warn('machine_noise_key_unavailable'),
     );
   }
 
@@ -277,7 +278,7 @@ export function createHostedWorkspaceHostRuntime(
       // Envelopes arriving before `bound` have no binding to be audited against, so
       // they are dropped rather than served by an adapter with a guessed identity.
       if (!adapter) return;
-      void adapter.accept(envelope).catch((error) => warn(`envelope failed: ${String(error)}`));
+      void adapter.accept(envelope).catch(() => warn('envelope_failed'));
     },
     onBound: (next) => {
       // Every (re)connect rebuilds. See the header: a binding carries a rotatable
@@ -288,14 +289,14 @@ export function createHostedWorkspaceHostRuntime(
       binding = next;
       try {
         options.onBinding?.(next);
-      } catch (error) {
-        warn(`binding hook failed: ${String(error)}`);
+      } catch {
+        warn('binding_hook_failed');
       }
       adapter = new HostedWorkspaceHostSessionAdapter({
         binding: next,
         workspaceRoot: options.workspaceRoot,
         send: (message) => {
-          if (!client.send(message)) warn(`dropped outbound ${message.type} — connector down`);
+          if (!client.send(message)) warn('outbound_connector_unavailable');
         },
         onAudit,
         onWarning: warn,

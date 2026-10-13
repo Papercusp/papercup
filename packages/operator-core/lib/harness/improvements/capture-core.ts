@@ -448,9 +448,11 @@ export interface PossibleDuplicate {
 }
 
 /**
- * What the dedup search actually managed to CHECK (P-007). Without this, an empty
- * `possibleDuplicates` is ambiguous between "checked, nothing similar exists" and
- * "could not check" — and the two demand opposite responses.
+ * What the dedup search actually managed to CHECK (P-007). On a completed search,
+ * `possibleDuplicates: null` means both fuzzy legs were unavailable and no known hit
+ * could be listed; `[]` means a leg returned a verdict but no
+ * candidate was found. A degraded result can still contain useful hits, so callers
+ * must read this alongside `possibleDuplicates`.
  *
  * The embedder-backed leg fails OPEN (returns null on timeout/unavailability), which is
  * correct for availability but silently degrades recall. EI-19502216864373653 measured the
@@ -578,7 +580,7 @@ export interface CaptureImprovementResult {
   improvementKind?: ImprovementKind;
   issue?: EngineerIssue;
   topics?: string[];
-  possibleDuplicates: PossibleDuplicate[];
+  possibleDuplicates: PossibleDuplicate[] | null;
   /** P-007: what the dedup search could actually check. Read this BEFORE reading an empty
    *  `possibleDuplicates` as "nothing similar exists". */
   dedupCoverage?: DedupCoverage;
@@ -3095,6 +3097,14 @@ export async function captureImprovement(
       exactKeyLookupFailed ||
       classKeyLookupFailed,
   };
+  // Keep an empty list from looking like a clean search when neither fuzzy leg
+  // returned a usable verdict. Positive/exact/partial hits remain visible; null
+  // means no duplicate-search verdict could be reported.
+  const noFuzzyVerdict = lexicalLeg === 'unavailable' && semanticLeg === 'unavailable';
+  const reportedPossibleDuplicates =
+    noFuzzyVerdict && possibleDuplicates.length === 0
+      ? null
+      : possibleDuplicates;
 
   // "Already decided" recall (P-003): signature-match this capture against the
   // PRIOR resolved/closed items so a settled friction is recognised before it
@@ -3108,13 +3118,15 @@ export async function captureImprovement(
 
   if (checkOnly) {
     const incompleteCoverageHint = dedupCoverage.degraded
-      ? ' ⚠ INCOMPLETE: dedupCoverage.degraded is true, so an empty possibleDuplicates list is inconclusive even if one search leg reports ok. Do not treat this result as clean.'
+      ? reportedPossibleDuplicates === null
+        ? ' ⚠ NO DEDUP VERDICT: `possibleDuplicates` is null because both lexical and semantic searches were unavailable. Do not treat this as no duplicates.'
+        : ' ⚠ INCOMPLETE: dedupCoverage.degraded is true, so an empty possibleDuplicates list is inconclusive even if one search leg reports ok. Do not treat this result as clean.'
       : '';
     return {
       ok: true,
       created: false,
       reason: 'check-only',
-      possibleDuplicates,
+      possibleDuplicates: reportedPossibleDuplicates,
       dedupCoverage,
       admissionIdentity: identity,
       hint: input.body
@@ -3234,7 +3246,7 @@ export async function captureImprovement(
               ...(input.subTopic ? [input.subTopic] : []),
               ...(sourceRole !== 'human' ? [`improvement-source:${sourceRole}`] : []),
             ],
-            possibleDuplicates,
+            possibleDuplicates: reportedPossibleDuplicates,
             dedupCoverage,
             ...(alreadyDecided.length ? { alreadyDecided } : {}),
           };
@@ -3371,7 +3383,7 @@ export async function captureImprovement(
             kind: canonicalIssue?.kind as 'bug' | 'change' | undefined,
             improvementKind: input.kind,
             ...(canonicalIssue ? { issue: canonicalIssue } : {}),
-            possibleDuplicates,
+            possibleDuplicates: reportedPossibleDuplicates,
             dedupCoverage,
             admissionIdentity: identity,
             queueAdmission,
@@ -3465,7 +3477,7 @@ export async function captureImprovement(
             improvementKind: input.kind,
             issue: promoted,
             topics: [IMPROVEMENT_TOPIC, ...(input.subTopic ? [input.subTopic] : [])],
-            possibleDuplicates,
+            possibleDuplicates: reportedPossibleDuplicates,
             dedupCoverage,
             ...(alreadyDecided.length ? { alreadyDecided } : {}),
           };
@@ -3535,7 +3547,7 @@ export async function captureImprovement(
         improvementKind: input.kind,
         issue: finalIssue,
         topics,
-        possibleDuplicates,
+        possibleDuplicates: reportedPossibleDuplicates,
         dedupCoverage,
         ...(alreadyDecided.length ? { alreadyDecided } : {}),
       };
@@ -3640,7 +3652,7 @@ export async function captureImprovement(
             improvementKind: input.kind,
             issue: merged,
             topics,
-            possibleDuplicates,
+            possibleDuplicates: reportedPossibleDuplicates,
             dedupCoverage,
             ...(alreadyDecided.length ? { alreadyDecided } : {}),
           };
@@ -3863,7 +3875,7 @@ export async function captureImprovement(
         )) {
           return {
             ok: true, created: false, reason: 'coalesced', issue: related,
-            possibleDuplicates, dedupCoverage,
+            possibleDuplicates: reportedPossibleDuplicates, dedupCoverage,
           };
         }
         const relatedIds = raced
@@ -4130,7 +4142,7 @@ export async function captureImprovement(
     improvementKind: input.kind,
     issue,
     topics,
-    possibleDuplicates,
+    possibleDuplicates: reportedPossibleDuplicates,
     dedupCoverage,
     ...(input.force && !input.watchdogKey ? {} : { admissionIdentity: identity }),
     ...(reviewRequired ? { reviewRequired: true } : {}),

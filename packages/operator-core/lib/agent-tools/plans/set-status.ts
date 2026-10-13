@@ -78,7 +78,7 @@ import {
   type CompletionVerificationEvidence,
 } from '../../coord-lifecycle/records';
 import { typeEvidenceGapInCompletion } from '../type-evidence-gap';
-import { ensureAcceptanceDrainCarryInTransaction } from './acceptance-drain-filing';
+import { ensureAcceptanceDrainCarryInTransaction, type AcceptanceDrainCarryOutcome } from './acceptance-drain-filing';
 import { planDrainTransitionMutationGated } from './plan-drain-transition';
 import type { BlindReviewGateCode } from '../../blind-review-gate';
 import { reevaluateBarReadinessOnScopeWrite, type BarReadinessResult } from './plan-scope-cascade';
@@ -278,7 +278,7 @@ type SetStatusValue =
       /** WI-1830: computed inside the lock (race-safe) — this →done flip left the plan with
        *  zero open items, so the fleet's lane drained. False for every non-→done flip. */
       drainedPlan: boolean;
-      acceptanceCarry?: { outcome: 'created' | 'already-open'; id: string | null };
+      acceptanceCarry?: { outcome: AcceptanceDrainCarryOutcome; id: string | null };
       /** P-006: the flip drained the plan, but the blind gap review door withheld
        *  awaiting-acceptance (plan-drain-transition.ts planDrainTransitionMutationGated). */
       acceptanceBlocked?: { code: BlindReviewGateCode; message: string };

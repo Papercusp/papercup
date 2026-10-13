@@ -58,8 +58,11 @@ export async function emitTaskTerminalEvent(
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     if (/relation .*event_awaits.* does not exist/.test(message)) return;
+    // Import failures need their original frame: the bridge's warning site
+    // cannot identify the module whose initialization failed.
+    const diagnostic = error instanceof Error ? error.stack || message : message;
     (deps.warn ?? ((value: string) => console.warn(value)))(
-      `[task-manager] terminal event failed for ${event.taskId}: ${message}`,
+      `[task-manager] terminal event failed for ${event.taskId}: ${diagnostic}`,
     );
   }
 }

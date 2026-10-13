@@ -990,8 +990,8 @@ export class HostedWorkspaceHostSessionAdapter {
     }
     try {
       this.options.onMembershipReport(message);
-    } catch (err) {
-      this.warn(`membership report failed: ${err instanceof Error ? err.message : String(err)}`);
+    } catch {
+      this.warn('membership_report_failed');
     }
   }
 
@@ -1085,7 +1085,7 @@ export class HostedWorkspaceHostSessionAdapter {
         if (refusedChannelId) {
           this.options.send({ type: 'relay.close', channelId: refusedChannelId, reason: 'channel_kind_not_allowed' });
         }
-        this.warn(`refused a ${typeof requested === 'string' ? requested.slice(0, 32) : 'malformed'} channel: not served by this install`);
+        this.warn('channel_kind_not_allowed');
         return;
       }
     }
@@ -1113,8 +1113,8 @@ export class HostedWorkspaceHostSessionAdapter {
       if (message.relayUsage !== undefined && this.options.onRelayUsage) {
         try {
           this.options.onRelayUsage(message.relayUsage);
-        } catch (err) {
-          this.options.onWarning?.(`relay usage report failed: ${err instanceof Error ? err.message : String(err)}`);
+        } catch {
+          this.options.onWarning?.('relay_usage_report_failed');
         }
       }
       return;
@@ -1842,7 +1842,7 @@ export class HostedWorkspaceHostSessionAdapter {
       this.audit('desktop_thumbnail', identity, channelId, `desktop=${desktopSessionId} bytes=${image.byteLength}`);
     } catch (error) {
       const code = error instanceof SafeRootFileError ? error.code : 'desktop_query_failed';
-      if (code === 'desktop_query_failed') this.warn(`${type} failed: ${String(error)}`);
+      if (code === 'desktop_query_failed') this.warn('desktop_query_failed');
       this.send(channelId, { type: 'operation.error', requestId, operation: type, code });
       this.audit('operation_denied', identity, channelId, code);
     }
@@ -1896,7 +1896,7 @@ export class HostedWorkspaceHostSessionAdapter {
       if (personal && (error as { code?: unknown } | null)?.code === 'personal_desktop_unavailable') {
         return refuse('personal_desktop_unavailable');
       }
-      this.warn(`desktop.start${personal ? ' personal' : ''} failed: ${String(error)}`);
+      this.warn('desktop_start_failed');
       refuse('desktop_start_failed');
     }
   }

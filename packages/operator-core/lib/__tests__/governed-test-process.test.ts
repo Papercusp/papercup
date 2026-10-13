@@ -425,6 +425,21 @@ describe('no false green', () => {
     expect(classifyGovernedTestProcessOutcome(outcome).kind).toBe('cancel');
   });
 
+  it('cancels a post-preflight scope-launch error with retained stderr (EI-25878128777441671)', () => {
+    expect(classifyGovernedTestProcessOutcome({
+      status: 1, signal: null,
+      error: Object.assign(new Error('scope admission failed'), { code: 'TEST_SCOPE_LAUNCH_FAILED' }),
+      stderr: 'Failed to start transient scope unit: Transport endpoint is not connected',
+      actualDemand: { memoryBytes: 999 },
+    })).toEqual({ kind: 'cancel', reason: 'test scope admission failed before a trustworthy verdict was produced' });
+    // Identical diagnostic words from a measured payload do not create a launch error.
+    expect(classifyGovernedTestProcessOutcome({
+      status: 1, signal: null, stdout: 'Tests  1 failed (1)',
+      stderr: 'Failed to start transient scope unit: Transport endpoint is not connected',
+      actualDemand: { memoryBytes: 3 },
+    })).toEqual({ kind: 'release', actualDemand: { memoryBytes: 3 } });
+  });
+
   it('carries no measured demand on a refusal, so a cancelled run cannot teach the governor', () => {
     const settled = classifyGovernedTestProcessOutcome({
       code: 0,
@@ -530,7 +545,61 @@ describe('governed admission retry (WI-1410919)', () => {
     expect(logged[0]).toContain('GOVERNED_ADMISSION_RETRY');
     expect(logged[0]).toContain('attempt=2/3');
     expect(logged[0]).toContain('pgCode=55P03');
+    const keys = runGovernedOperation.mock.calls.map(([input]) => (input as { idempotencyKey: string }).idempotencyKey);
+    expect(new Set(keys).size, 'unconfirmed/pre-admission failures retain the same idempotency identity').toBe(1);
   });
+
+  it('renews each confirmed cancelled receipt before retrying and launches one child', async () => {
+    const cancelled = new Set<string>();
+    const keys: string[] = [];
+    const logged: string[] = [];
+    let launches = 0;
+    const runGovernedOperation = vi.fn(async (input: { idempotencyKey: string }, run: (ctx: typeof context) => Promise<unknown>) => {
+      keys.push(input.idempotencyKey);
+      if (cancelled.has(input.idempotencyKey)) throw new Error('cancelled durable receipt is not leaseable');
+      if (keys.length < 3) {
+        cancelled.add(input.idempotencyKey);
+        throw Object.assign(contention('57014'), {
+          governedAdmissionStartFailure: {
+            contractVersion: 1, idempotencyKey: input.idempotencyKey, receiptId: `receipt-${keys.length}`,
+            state: 'cancelled', cancellationVerified: true,
+          },
+        });
+      }
+      return run(context);
+    });
+    const result = await runGovernedTestProcess(
+      baseOptions({ executionApi: api(runGovernedOperation), idempotencyKey: 'initial-key', log: (line: string) => logged.push(line) }),
+      async () => { launches++; return 'child ran'; },
+    );
+    expect(result).toBe('child ran');
+    expect(keys[0]).toBe('initial-key');
+    expect(new Set(keys).size).toBe(3);
+    expect(launches).toBe(1);
+    expect(logged[0]).toContain('cancelledReceipt=receipt-1 receiptRenewed=true');
+  });
+
+  it.each(['unconfirmed', 'wrong-key', 'wrong-state', 'wrong-contract', 'missing-receipt'])(
+    'fails closed on %s cancellation evidence before creating another receipt',
+    async (mode) => {
+      const error = Object.assign(contention('57014'), {
+        governedAdmissionStartFailure: {
+          contractVersion: mode === 'wrong-contract' ? 2 : 1,
+          idempotencyKey: mode === 'wrong-key' ? 'other-key' : 'initial-key',
+          receiptId: mode === 'missing-receipt' ? '' : 'receipt-1',
+          state: mode === 'wrong-state' ? 'running' : 'cancelled',
+          cancellationVerified: mode !== 'unconfirmed',
+        },
+      });
+      const runGovernedOperation = vi.fn(async () => { throw error; });
+      const child = vi.fn(async () => 'child ran');
+      await expect(runGovernedTestProcess(
+        baseOptions({ executionApi: api(runGovernedOperation), idempotencyKey: 'initial-key', log: () => {} }), child,
+      )).rejects.toBe(error);
+      expect(runGovernedOperation).toHaveBeenCalledTimes(1);
+      expect(child).not.toHaveBeenCalled();
+    },
+  );
 
   it('retries a postgres.js CONNECTION_DESTROYED admission failure before launching the child', async () => {
     let calls = 0;

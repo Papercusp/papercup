@@ -1747,7 +1747,19 @@ run_guard() {
 # peer installs; on timeout it prints NPM_INSTALL_SAFE_ERROR and exits 1 before a single test
 # runs (no TEST_FILE_RESULT line), which was scored "MUTANT CAUGHT" — a manufactured proof.
 RUNNER_MISUSE_ERE='No test files found|Unknown option|: command not found|NPM_INSTALL_SAFE_ERROR'
+# WI-6554700010010581: these markers are matched anywhere in the captured output,
+# and that output routinely QUOTES text that is not a runner diagnostic. A Vitest
+# toContain/toBe failure prints the whole subject string, so a subject file with a
+# comment like `cargo: command not found` turned a measured catch into
+# harness-error (and an earlier test worked around the same self-match in its own
+# source instead of here). Misuse means the runner never executed assertions, so
+# a run that carries MEASURED assertion-failure evidence (a reporter record,
+# Vitest's failed-test count, or libtest's named failures) cannot be misuse: such
+# a run reports no misuse hits, and the assertion-evidence leg scores it.
 detect_runner_misuse() {
+  if detect_assertion_failure_evidence "$1" >/dev/null; then
+    return 0
+  fi
   grep -Eo "$RUNNER_MISUSE_ERE" "$1" 2>/dev/null | sort -u | head -3 | tr '\n' ' '
 }
 
@@ -1764,7 +1776,10 @@ detect_runner_misuse() {
 # return 2 when the output is not a recognized test-run format.
 detect_assertion_failure_evidence() {
   local result_line summary cargo_rc
-  if grep -Fq 'TEST_FILE_ASSERTION_FAILURE file=' "$1" 2>/dev/null; then
+  # Line-anchored like record-run.ts's parser: the router emits the record at
+  # column 0, while an assertion diff that merely QUOTES it is indented/prefixed.
+  # detect_runner_misuse trusts this evidence, so an echoed copy must not count.
+  if grep -Eq '^TEST_FILE_ASSERTION_FAILURE file=' "$1" 2>/dev/null; then
     printf '%s' 'test-file-assertion-failure'
     return 0
   fi

@@ -3464,7 +3464,17 @@ export default defineTool({
                 timeoutMs: ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS,
                 label: 'orient:buildCompactionRecovery',
               });
-              return recoveryResult.value;
+              const built = recoveryResult.value;
+              if (!built) return built;
+              // D-006 (oversized-tool-results-reduction-2026-10-12): replace legs this
+              // session's carry document already delivered, when that document is
+              // provably still in context. Bounded and fail-soft to the full recovery.
+              const { applyCarryDeliveredStubs } = await import('../recovery-delivery');
+              const stubbedResult = await withBoundedTimeout(
+                applyCarryDeliveredStubs(ownerId, built).then((r) => r.recovery),
+                { fallback: built, timeoutMs: ORIENT_PREFLIGHT_LEG_TIMEOUT_MS, label: 'orient:recoveryDeliveryStubs' },
+              );
+              return stubbedResult.value ?? built;
             } catch {
               return undefined;
             }

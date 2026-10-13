@@ -402,6 +402,9 @@ export function classifyGovernedTestProcessOutcome(outcome = {}) {
   }
   const code = outcome.code ?? outcome.status ?? null;
   const signal = outcome.signal ?? null;
+  if (outcome.error?.code === 'TEST_SCOPE_LAUNCH_FAILED') {
+    return { kind: 'cancel', reason: 'test scope admission failed before a trustworthy verdict was produced' };
+  }
   if (outcome.error && (code == null || code < 0 || output.trim() === '')) {
     return { kind: 'cancel', reason: `test process failed to start: ${outcome.error.message ?? outcome.error}` };
   }
@@ -492,7 +495,7 @@ export async function runGovernedTestProcess(options, run) {
   const workspaceId = await resolveGovernedWorkspaceId(options.workspaceId, env);
   const timeoutMs = options.timeoutMs;
   const leaseTtlMs = options.leaseTtlMs ?? api.governedExecutionLeaseTtlForTimeout?.(timeoutMs);
-  const operation = {
+  let operation = {
     workspaceId,
     namespace: options.namespace ?? 'test-process',
     owner: options.owner,
@@ -533,13 +536,28 @@ export async function runGovernedTestProcess(options, run) {
       // `started` first: a post-launch failure is never retried, however retryable the
       // error looks. Re-running tests is a worse outcome than surfacing the error.
       if (started || attempt >= maxAttempts || !isRetryableAdmissionFailure(error)) throw error;
+      const startFailure = error?.governedAdmissionStartFailure;
+      if (startFailure) {
+        // A failed lease/start can leave an active or cancelled durable receipt.
+        // Only the canonical cleanup's confirmed cancellation of THIS key lets
+        // us renew it. A lost cleanup reply or mismatched evidence fails closed.
+        if (
+          startFailure.contractVersion !== 1 ||
+          startFailure.idempotencyKey !== operation.idempotencyKey ||
+          typeof startFailure.receiptId !== 'string' || !startFailure.receiptId ||
+          startFailure.state !== 'cancelled' ||
+          startFailure.cancellationVerified !== true
+        ) throw error;
+        operation = { ...operation, idempotencyKey: governedProcessIdempotencyKey(options.owner) };
+      }
       const delayMs = backoffBaseMs * 2 ** (attempt - 1);
       // A silent retry would hide fleet-wide DB contention — real signal about the box,
       // and an invisible mitigation is how a degradation becomes permanent.
       log(
         `${GOVERNED_ADMISSION_RETRY_MARKER} attempt=${attempt + 1}/${maxAttempts} ` +
           `pgCode=${admissionFailureCode(error) ?? 'unknown'} delayMs=${delayMs} ` +
-          `owner=${options.owner ?? 'unknown'}`,
+          `owner=${options.owner ?? 'unknown'}` +
+          (startFailure ? ` cancelledReceipt=${startFailure.receiptId} receiptRenewed=true` : ''),
       );
       await sleep(delayMs);
     }

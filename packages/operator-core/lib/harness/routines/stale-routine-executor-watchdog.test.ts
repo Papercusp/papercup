@@ -19,6 +19,8 @@ import {
   STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC,
   STALE_EXECUTOR_RESTART_COOLDOWN_MS,
   STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS,
+  STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS,
+  staleExecutorRetryBackoffMs,
   defaultPtoolScriptPath,
   evaluateGateCodeFastPath,
   gateCodeFastPathMinUptimeSec,
@@ -487,6 +489,52 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     expect(ptoolCalls).toBe(2);
     // The backoff is a short retry window, never the post-success cooldown.
     expect(STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS).toBeLessThan(STALE_EXECUTOR_RESTART_COOLDOWN_MS);
+  });
+
+  it('doubles the wait across consecutive drain refusals and resets it after a restart (WI-6554700010009238)', async () => {
+    let nowMs = 6_000_000_000_000;
+    let ptoolCalls = 0;
+    let answer: Record<string, unknown> = { ok: false, reason: 'git_sync_barrier_drain_timeout' };
+    const run = async (command: string) => {
+      if (command === 'systemctl') return { stdout: '101\n' };
+      ptoolCalls += 1;
+      return answer.ok === false
+        ? { stdout: JSON.stringify(answer), error: 'Command failed: exit 5' }
+        : { stdout: JSON.stringify(answer) };
+    };
+    const deps = {
+      now: () => nowMs,
+      run,
+      ptoolScript: '/tmp/ptool.mjs',
+      verifyGeneration: async () => ({ verified: true, beforePid: 101, observedPid: 202, code: 'generation_changed' as const }),
+    };
+    const attempt = () => restartStaleBgHostExecutor('port-3271', staleVerdict(), deps);
+
+    // Refusal #1 waits 3 min, #2 waits 6 min, #3 waits 12 min.
+    for (const waitMs of [3, 6, 12].map((m) => m * 60_000)) {
+      await expect(attempt()).resolves.toMatchObject({ attempted: true, code: 'git_sync_barrier_drain_timeout' });
+      nowMs += waitMs - 1_000;
+      await expect(attempt()).resolves.toMatchObject({ attempted: false, code: 'restart_cooldown' });
+      nowMs += 1_000;
+    }
+    expect(ptoolCalls).toBe(3);
+
+    // A successful restart resets the count: the next refusal waits the base 3 min again.
+    answer = { ok: true, restarted: true, restartedFromPid: 101 };
+    await expect(attempt()).resolves.toMatchObject({ restarted: true, code: 'restarted' });
+    nowMs += STALE_EXECUTOR_RESTART_COOLDOWN_MS;
+    answer = { ok: false, reason: 'git_sync_barrier_drain_timeout' };
+    await expect(attempt()).resolves.toMatchObject({ attempted: true, code: 'git_sync_barrier_drain_timeout' });
+    nowMs += STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS;
+    await expect(attempt()).resolves.toMatchObject({ attempted: true, code: 'git_sync_barrier_drain_timeout' });
+  });
+
+  it('staleExecutorRetryBackoffMs: base for one refusal, doubling, capped at 30 min', () => {
+    expect(staleExecutorRetryBackoffMs(0)).toBe(STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS);
+    expect(staleExecutorRetryBackoffMs(1)).toBe(STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS);
+    expect(staleExecutorRetryBackoffMs(2)).toBe(2 * STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS);
+    expect(staleExecutorRetryBackoffMs(4)).toBe(8 * STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS);
+    expect(staleExecutorRetryBackoffMs(9)).toBe(STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS);
   });
 });
 

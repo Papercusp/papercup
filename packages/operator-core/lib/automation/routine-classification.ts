@@ -432,6 +432,14 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     // pausing it stops only the checks themselves.
     why: 'Runs bounded per-sync-batch affected-tests/typecheck legs and files deduped work-items — no agent spawn or wake',
   },
+  'system:sync-batch-lint-guards': {
+    spend: 'none',
+    // Verified against sync-batch-lint-guards-action.ts before classifying: it runs the
+    // integration tree's `npm run lint:*` guard scripts as bounded idle-priority
+    // subprocesses and files condition-keyed work-items via createOneWorkItem — no agent
+    // spawn, no session wake, no pipeline dispatch.
+    why: 'Runs the repo-wide lint guards per sync batch and files deduped work-items — no agent spawn or wake',
+  },
   'system:reconcile-silent-halts': {
     spend: 'none',
     // Found unclassified by the registry cross-check while landing gate-fire-drill (the

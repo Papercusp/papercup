@@ -46,8 +46,15 @@ export interface BenchEgressEndpoint {
   name: string;
   /** The port the sidecar listens on — what the agent dials as `papercusp-egress:<listenPort>`. */
   listenPort: number;
-  /** The loopback port the host relay pipes to (e.g. the gateway's 8788). */
-  targetPort: number;
+  /** The loopback port the host relay pipes to (e.g. the gateway's 8788). Omitted for a `perTask` endpoint. */
+  targetPort?: number;
+  /**
+   * D-033: the target is bound per task network with {@link BenchEgress.bindTaskEndpoint} (a per-assignment metered
+   * gateway whose port is known only after the task container exists). The relay refuses connections while it is
+   * unbound, and an egress with any perTask endpoint admits one open task network at a time, so a bound target is
+   * reachable from exactly one task container.
+   */
+  perTask?: boolean;
   /** Must be loopback. Default `127.0.0.1`. */
   targetHost?: string;
 }
@@ -99,6 +106,12 @@ export interface BenchEgress {
   originFor(name: string): string;
   /** A fresh per-task internal network the sidecar is reachable on (D-031). */
   openTaskNetwork(tag: string): Promise<TaskNetworkLease>;
+  /**
+   * D-033: bind a perTask endpoint to `targetPort` for the open task network `network`. Throws on an unknown or
+   * shared endpoint, a network that is not open, a bad port, or an endpoint that is already bound. Returns an
+   * idempotent unbind; releasing the network unbinds too.
+   */
+  bindTaskEndpoint(network: string, name: string, targetPort: number): () => void;
   /** Per-endpoint relay counters (evidence that the agent's traffic went through the relay). */
   stats(): Record<string, EndpointStats>;
   /** Release open task networks, remove the sidecar and base network, close the relay. Idempotent, never-throw. */
@@ -108,8 +121,16 @@ export interface BenchEgress {
 interface ResolvedEndpoint {
   name: string;
   listenPort: number;
-  targetPort: number;
+  /** null for a perTask endpoint: the live target is its {@link EndpointBinding}. */
+  targetPort: number | null;
   targetHost: string;
+  perTask: boolean;
+}
+
+/** D-033: the live target of one perTask endpoint. */
+interface EndpointBinding {
+  network: string | null;
+  port: number | null;
 }
 
 function isPort(n: unknown): n is number {
@@ -126,14 +147,18 @@ export function resolveEgressEndpoints(endpoints: readonly BenchEgressEndpoint[]
     if (names.has(e.name)) throw new Error(`bench-egress: duplicate endpoint name '${e.name}'`);
     if (!isPort(e.listenPort)) throw new Error(`bench-egress: endpoint '${e.name}' listenPort ${e.listenPort} is not a port`);
     if (ports.has(e.listenPort)) throw new Error(`bench-egress: duplicate listenPort ${e.listenPort}`);
-    if (!isPort(e.targetPort)) throw new Error(`bench-egress: endpoint '${e.name}' targetPort ${e.targetPort} is not a port`);
+    const perTask = e.perTask === true;
+    if (perTask && e.targetPort !== undefined) {
+      throw new Error(`bench-egress: perTask endpoint '${e.name}' takes no targetPort; bind one with bindTaskEndpoint`);
+    }
+    if (!perTask && !isPort(e.targetPort)) throw new Error(`bench-egress: endpoint '${e.name}' targetPort ${e.targetPort} is not a port`);
     const targetHost = e.targetHost ?? '127.0.0.1';
     if (!LOOPBACK_HOSTS.has(targetHost)) {
       throw new Error(`bench-egress: endpoint '${e.name}' target ${targetHost} is not loopback — the relay only fronts fixed local services`);
     }
     names.add(e.name);
     ports.add(e.listenPort);
-    return { name: e.name, listenPort: e.listenPort, targetPort: e.targetPort, targetHost };
+    return { name: e.name, listenPort: e.listenPort, targetPort: perTask ? null : e.targetPort!, targetHost, perTask };
   });
 }
 
@@ -169,13 +194,22 @@ interface Relay {
   sockets: Set<Socket>;
 }
 
-/** One relay: a unix-socket server that pipes every connection to a fixed loopback target. */
-async function startRelay(socketPath: string, ep: ResolvedEndpoint, stat: EndpointStats): Promise<Relay> {
+/**
+ * One relay: a unix-socket server that pipes every connection to a loopback target — fixed, or (perTask, D-033) read
+ * from the endpoint's binding at connect time. A connection to an unbound perTask endpoint is counted and refused.
+ */
+async function startRelay(socketPath: string, ep: ResolvedEndpoint, stat: EndpointStats, binding?: EndpointBinding): Promise<Relay> {
   const sockets = new Set<Socket>();
   // allowHalfOpen: a client that half-closes after its request must still get the response back.
   const server = createServer({ allowHalfOpen: true }, (client) => {
     stat.connections++;
-    const upstream = connect({ host: ep.targetHost, port: ep.targetPort });
+    const port = ep.perTask ? binding?.port ?? null : ep.targetPort;
+    if (port === null) {
+      stat.errors++;
+      client.destroy();
+      return;
+    }
+    const upstream = connect({ host: ep.targetHost, port });
     sockets.add(client);
     sockets.add(upstream);
     const fail = () => {
@@ -276,6 +310,11 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
   const relays: Relay[] = [];
   const stats: Record<string, EndpointStats> = {};
   const leases = new Map<string, TaskNetworkLease>();
+  // D-033: one binding per perTask endpoint; with any perTask endpoint, at most one task network is opening or open.
+  const bindings = new Map<string, EndpointBinding>(
+    endpoints.filter((e) => e.perTask).map((e) => [e.name, { network: null, port: null }]),
+  );
+  let networksInUse = 0;
   let sidecarId = '';
   let sidecarAttempted = false;
   let baseCreated = false;
@@ -322,7 +361,7 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
         throw new Error(`bench-egress: socket path too long for a unix socket (${socketPath}) — use a shorter workRoot`);
       }
       stats[ep.name] = { connections: 0, errors: 0 };
-      relays.push(await startRelay(socketPath, ep, stats[ep.name]!));
+      relays.push(await startRelay(socketPath, ep, stats[ep.name]!, bindings.get(ep.name)));
     }
     const confPath = join(workDir, 'nginx.conf');
     writeFileSync(confPath, renderEgressNginxConf(endpoints), { mode: 0o644 });
@@ -382,12 +421,21 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
     },
     async openTaskNetwork(tag: string): Promise<TaskNetworkLease> {
       if (stopped) throw new Error('bench-egress: stopped');
+      // Counted synchronously, before any await, so two concurrent opens cannot both pass the check.
+      if (bindings.size > 0 && networksInUse > 0) {
+        throw new Error('bench-egress: an egress with per-task endpoints admits one open task network at a time (D-033)');
+      }
+      networksInUse++;
       const network = `${prefix}-t${++seq}-${dockerSafe(tag, 20)}`;
       const created = await docker(exec, ['network', 'create', '--internal', '--label', label, network]);
-      if (!created.ok) throw new Error(`bench-egress: network create ${network} failed — ${created.err}`);
+      if (!created.ok) {
+        networksInUse--;
+        throw new Error(`bench-egress: network create ${network} failed — ${created.err}`);
+      }
       const joined = await docker(exec, ['network', 'connect', '--alias', BENCH_EGRESS_ALIAS, network, sidecarId]);
       if (!joined.ok) {
         await docker(exec, ['network', 'rm', network]);
+        networksInUse--;
         throw new Error(`bench-egress: sidecar could not join ${network} — ${joined.err}`);
       }
       let released = false;
@@ -397,6 +445,13 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
           if (released) return [];
           released = true;
           leases.delete(network);
+          networksInUse--;
+          for (const b of bindings.values()) {
+            if (b.network === network) {
+              b.network = null;
+              b.port = null;
+            }
+          }
           const errors: string[] = [];
           const d = await docker(exec, ['network', 'disconnect', '-f', network, sidecarId]);
           if (!d.ok) errors.push(`disconnect sidecar from ${network}: ${d.err}`);
@@ -407,6 +462,23 @@ export async function startBenchEgress(cfg: BenchEgressConfig): Promise<BenchEgr
       };
       leases.set(network, lease);
       return lease;
+    },
+    bindTaskEndpoint(network: string, name: string, targetPort: number): () => void {
+      if (stopped) throw new Error('bench-egress: stopped');
+      if (!origins.has(name)) throw new Error(`bench-egress: no endpoint named '${name}'`);
+      const b = bindings.get(name);
+      if (!b) throw new Error(`bench-egress: endpoint '${name}' is shared, not perTask`);
+      if (!leases.has(network)) throw new Error(`bench-egress: task network ${network} is not open`);
+      if (!isPort(targetPort)) throw new Error(`bench-egress: endpoint '${name}' targetPort ${targetPort} is not a port`);
+      if (b.network !== null) throw new Error(`bench-egress: endpoint '${name}' is already bound to ${b.network}`);
+      b.network = network;
+      b.port = targetPort;
+      return () => {
+        if (b.network === network) {
+          b.network = null;
+          b.port = null;
+        }
+      };
     },
     stats(): Record<string, EndpointStats> {
       return Object.fromEntries(Object.entries(stats).map(([k, v]) => [k, { ...v }]));

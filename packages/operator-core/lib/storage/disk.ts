@@ -532,6 +532,7 @@ export async function gatherProtectedSessionIdentity(
 ): Promise<ProtectedGatherResult> {
   const ownerIds = new Set<string>();
   const sessionKeys = new Set<string>();
+  const owned = { ownerIds: new Set<string>(), sessionKeys: new Set<string>() };
   try {
     const presence = await sql`
       SELECT owner_id FROM harness_shared.coord_presence
@@ -555,9 +556,28 @@ export async function gatherProtectedSessionIdentity(
       SELECT subscriber_id FROM harness_shared.event_awaits
        WHERE fired_at IS NULL AND cancelled_at IS NULL`;
     for (const r of awaits) if (r.subscriber_id) ownerIds.add(String(r.subscriber_id));
+
+    // OWNERSHIP (WI-6554700010010238): every identity THIS database launched, in
+    // any state. planSessionDirGc keeps a dir absent from it (`keptForeign`), so a
+    // second install sharing $HOME cannot prune the other install's sessions. The
+    // archive table is deliberately NOT a source (a foreign install that already
+    // swept a dir would then "own" every owner it stole from).
+    const launched = await sql`SELECT id, coord_owner_id FROM harness_shared.adv_sessions`;
+    for (const r of launched) {
+      if (r.coord_owner_id) owned.ownerIds.add(String(r.coord_owner_id));
+      if (r.id != null) owned.sessionKeys.add(String(r.id));
+    }
+    const spawned = await sql`SELECT spawn_id, session_owner FROM harness_shared.spawned_agents`;
+    for (const r of spawned) {
+      if (r.spawn_id) owned.ownerIds.add(String(r.spawn_id));
+      if (r.session_owner) owned.ownerIds.add(String(r.session_owner));
+    }
   } catch {
     return { ok: false, identity: { ownerIds, sessionKeys } };
   }
   const identity = protectLivePtyHostHomes({ ownerIds, sessionKeys }, await listLiveHostsAsync());
-  return { ok: true, identity };
+  // Anything live/protected was launched here too (a live PTY host, a wake).
+  for (const id of identity.ownerIds) owned.ownerIds.add(id);
+  for (const k of identity.sessionKeys) owned.sessionKeys.add(k);
+  return { ok: true, identity: { ...identity, owned } };
 }

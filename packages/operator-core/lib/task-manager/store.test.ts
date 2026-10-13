@@ -86,6 +86,28 @@ describe('reopenStrandedTask', () => {
 });
 
 describe('closeTask terminal event', () => {
+  it('retains the live ledger row and emits nothing when verifier cleanup fails, then retries before UPDATE', async () => {
+    const row = { task_id: 'cleanup-task', workspace_id: 'workspace-1', class: 'bash-job',
+      state: 'running', ended_at: null, launched_by: 'fixture' };
+    let updates = 0;
+    const sql = (async (strings: TemplateStringsArray) => {
+      if (strings.join('').includes('UPDATE harness_shared.task_ledger')) updates++;
+      return [row];
+    }) as unknown as Sql;
+    const emitTerminal = vi.fn();
+    const cleanupVerifierDirectories = vi.fn().mockRejectedValueOnce(new Error('cleanup IO failure'))
+      .mockImplementationOnce(async () => { expect(updates).toBe(0); });
+    const effects = { emitTerminal, cleanupVerifierDirectories };
+    await expect(closeTask('cleanup-task', { state: 'killed', exitCode: 137 }, sql, effects))
+      .rejects.toThrow('cleanup IO failure');
+    expect(updates).toBe(0);
+    expect(emitTerminal).not.toHaveBeenCalled();
+    await expect(closeTask('cleanup-task', { state: 'killed', exitCode: 137 }, sql, effects)).resolves.toBe(true);
+    expect(updates).toBe(1);
+    expect(cleanupVerifierDirectories).toHaveBeenCalledTimes(2);
+    expect(emitTerminal).toHaveBeenCalledOnce();
+  });
+
   it('emits the exact first terminal transition and never emits for an idempotent replay', async () => {
     const emitTerminal = vi.fn();
     const row = {

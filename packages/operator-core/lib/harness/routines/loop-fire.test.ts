@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   fireLoopWake,
   defaultLoopKickoff,
@@ -25,6 +26,7 @@ import {
   type OwnerStewardshipDeps,
 } from './loop-fire';
 import { AGENT_OBLIGATION_REMINDER_BINDING_KIND } from '../../agent-obligation-reminders';
+import { renderCheckLine, splitCarryNoteChecks, splitCarryNoteWalls, type CheckEntry } from '../../carry-note';
 
 /** A fresh set of injected deps with sensible "allow + woke 1" defaults; override per test. */
 function mkDeps(
@@ -278,6 +280,65 @@ describe('renderLoopChecksBlock — contested verification is explicit on wake',
     expect(out).not.toContain('older verified check(s)');
     expect(out).toContain('unaddressed 0');
     expect(out).toContain('unaddressed 3');
+  });
+});
+
+describe('R-004 matched production check-renderer inputs', () => {
+  const snapshot = JSON.parse(readFileSync(new URL(
+    '../../../../../docs/evidence/byoc-p009-r004-matched-input-2026-10-13.json', import.meta.url,
+  ), 'utf8')) as { snapshots: Array<{ kind: string; note: string }> };
+  // Exact pre-compactor algorithm at 61b1c090369cd89cd7445ec4ba7d06b744a08b18,
+  // sharing the current parser/line renderer so only history compaction differs.
+  const baseline = (checks: ReadonlyArray<CheckEntry>): string | null => checks.length ? (
+    '🧪 CARRIED CHECKS — claims + probes (✓ verified w/ evidence · ⚠ CONTESTED: evidence contradicts verification; ' +
+    '? PREDICTED: run the re-check before ' +
+    'relying on it; update/clear via loop:checkpoint { checks }):\n' +
+    checks.map((c) => `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`).join('\n')
+  ) : null;
+  const bytes = (text: string | null) => Buffer.byteLength(text ?? '', 'utf8');
+
+  it('reduces the frozen historical check block by at least half without changing its source rows', () => {
+    const note = snapshot.snapshots.find(row => row.kind === 'historical-production-note')!.note;
+    const { body, walls } = splitCarryNoteWalls(note);
+    const { checks } = splitCarryNoteChecks(body);
+    const original = JSON.stringify({ note, checks, walls });
+    expect(checks).toHaveLength(12);
+    const candidate = renderLoopChecksBlock(checks)!;
+    expect(bytes(candidate)).toBeLessThanOrEqual(bytes(baseline(checks)) / 2);
+    expect(bytes(candidate)).toBeGreaterThan(candidate.length); // Unicode is measured as UTF-8.
+    for (const check of checks) expect(candidate).toContain(`#${check.id}`);
+    for (const check of checks.filter(c => !c.verified || c.contested || !c.id)) {
+      expect(candidate).toContain(renderCheckLine(check).replace(/^-\s*/, '• '));
+    }
+    expect(candidate).toContain(renderCheckLine(checks.at(-1)!).replace(/^-\s*/, '• '));
+    expect(JSON.stringify({ note, checks, walls })).toBe(original);
+  });
+
+  it('reports no check-block savings for the active production note with no check history', () => {
+    const note = snapshot.snapshots.find(row => row.kind === 'active-production-note')!.note;
+    const { body, walls } = splitCarryNoteWalls(note);
+    const { body: narrative, checks } = splitCarryNoteChecks(body);
+    expect(checks).toHaveLength(0);
+    expect(walls).toHaveLength(1);
+    expect(renderLoopChecksBlock(checks)).toBe(baseline(checks));
+    const wake = renderLoopWakeText({ kickoff: 'P-009 matched input control', fireNumber: 145,
+      checkpoint: narrative, checks, walls, nowMs: 1791912360000 });
+    expect(wake).toContain(narrative);
+    expect(wake).toContain(walls[0].claim);
+    expect(wake).toContain(walls[0].recheck);
+  });
+
+  it('keeps Unicode authorizations, retractions and spent IDs expanded when evidence is unsettled', () => {
+    const checks: CheckEntry[] = [
+      { id: 'authorization', claim: '授权仅限 P-009', recheck: 'read current scope' },
+      { id: 'retracted', claim: 'R-004 ≥50% was retracted', verified: 'old pass', contested: 'no pickup proof' },
+      { id: 'spent', claim: 'Spent request ID 🔒 remains consumed', verified: 'receipt persisted' },
+      { claim: 'Evidence without a stable ID cannot disappear ✅', verified: 'saved receipt' },
+    ];
+    const candidate = renderLoopChecksBlock(checks)!;
+    expect(bytes(candidate)).toBeGreaterThan(candidate.length);
+    for (const check of checks) expect(candidate).toContain(renderCheckLine(check).replace(/^-\s*/, '• '));
+    expect(candidate).not.toContain('older verified check(s)');
   });
 });
 

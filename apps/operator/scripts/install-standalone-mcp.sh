@@ -1772,6 +1772,17 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     esac
   done
   echo "✓ Installed Claude/Codex lock + coord hooks to $CC_HOOK_DEST_DIR"
+  # WI-6554700010010534: stamp what was just installed, with the same CC_HOOK_FILES scoping
+  # as the desktop installer, so its downgrade guard compares real dates. Without it the
+  # previous installer's .installed-from survives (on 2026-10-13: an undated 2026-10-07
+  # desktop package) and the next packaged install can revert these hooks.
+  CC_STAMP_TSX="${REPO_ROOT}/node_modules/.bin/tsx"
+  if [ -x "$CC_STAMP_TSX" ]; then
+    "$CC_STAMP_TSX" "${REPO_ROOT}/packages/operator-core/lib/desktop-install/stamp-installed-cc-hooks.ts" "$CC_HOOK_SRC_DIR" \
+      || echo "! Could not stamp $CC_HOOK_DEST_DIR; the downgrade guard still sees the previous installer's record"
+  else
+    echo "! tsx not found under ${REPO_ROOT}/node_modules; $CC_HOOK_DEST_DIR left unstamped"
+  fi
 else
   echo "! Expected CC lock hooks at $CC_HOOK_SRC_DIR; skipping (Claude/Codex lock enforcement inactive)"
 fi

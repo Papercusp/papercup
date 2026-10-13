@@ -56,6 +56,7 @@ import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   appendAdvisories,
   stashAdvisory,
@@ -5168,6 +5169,93 @@ export function _resetToolCallCacheForTests(): void {
   acquiredLocks.clear();
 }
 
+// ── RTK output compression for OMP's native bash (WI-6554700010010472) ──
+//
+// Claude's native Bash gets RTK inside pretooluse-restricted-egress-guard.mjs, Codex's
+// direct shell calls get it from pretooluse-codex-rtk-rewrite.mjs, and capability:bash
+// applies it at its spawn seam. OMP's native `bash` had none of these, so every command
+// in a psu OMP session ran verbatim. This reuses the SAME rewriter (rtkRewriteSync: the
+// vitest exclusion, the RTK_DISABLED=1 opt-out, the size cap, the timeout, the
+// PAPERCUSP_RTK_BIN override, fail-open on a missing binary), so all clients share one
+// policy.
+//
+// OMP contract (pi-coding-agent 18.0.3, extensibility/shared-events.ts
+// ToolCallEventResult): a non-blocking tool_call handler may return `input`, the raw
+// input the tool executes with; the extension wrapper re-resolves approval against it.
+// Every gate in onToolCall judges the ORIGINAL command; only the executed text changes.
+// Fleet roles under the capability-only cutover have no native bash (fleetOmpToolsArgs)
+// and get RTK through capability:bash instead.
+
+/** OMP's native shell tool. */
+export const OMP_BASH_TOOL = 'bash';
+
+/** The shared rewriter's signature (rtkRewriteSync in pretooluse-restricted-egress-guard.mjs). */
+export type RtkRewriteSync = (command: string, opts?: { cwd?: string }) => string | null;
+
+export const RTK_GUARD_MODULE = 'pretooluse-restricted-egress-guard.mjs';
+
+/**
+ * Where the shared rewriter is installed. This file runs as ~/.papercusp/papercusp-coord.ts
+ * (copied by install-standalone-mcp.sh, copied or esbuild-bundled by the desktop
+ * installer), so a static `../cc/` import would resolve to ~/cc and break the install.
+ * Both installers copy hooks/cc to ~/.papercusp/hooks/cc, beside the ../inject/core.mjs
+ * the guard imports.
+ */
+export function rtkGuardModuleCandidates(home: string = process.env.HOME ?? homedir()): string[] {
+  return [join(home, '.papercusp', 'hooks', 'cc', RTK_GUARD_MODULE)];
+}
+
+/** rtkRewriteSync from the first candidate that loads, or null when none does (fail open). */
+export async function importRtkRewriter(candidates: readonly string[]): Promise<RtkRewriteSync | null> {
+  for (const file of candidates) {
+    if (!existsSync(file)) continue;
+    try {
+      const mod = (await import(pathToFileURL(file).href)) as { rtkRewriteSync?: unknown };
+      if (typeof mod.rtkRewriteSync === 'function') return mod.rtkRewriteSync as RtkRewriteSync;
+    } catch {
+      // A module that fails to load leaves commands verbatim; try the next location.
+    }
+  }
+  return null;
+}
+
+let rtkRewriterOnce: Promise<RtkRewriteSync | null> | undefined;
+
+/** The session's rewriter, imported once. */
+function loadRtkRewriter(): Promise<RtkRewriteSync | null> {
+  rtkRewriterOnce ??= importRtkRewriter(rtkGuardModuleCandidates());
+  return rtkRewriterOnce;
+}
+
+/**
+ * The tool_call result with OMP's bash command replaced by its RTK form, or `result`
+ * unchanged when: the call is blocked; it is not OMP's bash; it has no command; it runs
+ * on a PTY (an interactive program); its env sets RTK_DISABLED=1; or RTK has no rewrite.
+ */
+export function ompBashRtkResult<R extends { block?: boolean }>(
+  event: { toolName: string; input?: unknown },
+  result: R,
+  rewrite: RtkRewriteSync | null,
+): R | (R & { input: Record<string, unknown> }) {
+  if (result.block || !rewrite) return result;
+  if (event.toolName !== OMP_BASH_TOOL) return result;
+  if (!event.input || typeof event.input !== 'object') return result;
+  const input = event.input as Record<string, unknown>;
+  const command = input.command;
+  if (typeof command !== 'string' || !command.trim()) return result;
+  if (input.pty === true) return result;
+  const env = input.env && typeof input.env === 'object' ? (input.env as Record<string, unknown>) : null;
+  if (env && String(env.RTK_DISABLED ?? '') === '1') return result;
+  let rewritten: string | null;
+  try {
+    rewritten = rewrite(command, { cwd: typeof input.cwd === 'string' ? input.cwd : undefined });
+  } catch {
+    return result;
+  }
+  if (!rewritten || rewritten === command) return result;
+  return { ...result, input: { ...input, command: rewritten } };
+}
+
 // ── OMP adapter (registration) ───────────────────────────────────────
 
 /**
@@ -5409,8 +5497,11 @@ export default function register(pi: HookApi): void {
     noteStallToolInFlight(true);
     pokeStallWatchdog();
     const result = await safe(() => onToolCall(event, ctx), {});
-    if (!result.block) stageActivityReport(event);
-    return result;
+    if (result.block) return result;
+    stageActivityReport(event);
+    // RTK output compression for the native shell (WI-6554700010010472). Every gate above
+    // judged the original command; only the executed text changes. Fails open.
+    return ompBashRtkResult(event, result, await safe(() => loadRtkRewriter(), null));
   });
 
   pi.on('tool_result', async (event, ctx) => {

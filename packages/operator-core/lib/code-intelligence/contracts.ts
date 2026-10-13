@@ -295,6 +295,18 @@ export interface CodeIntelAnswer {
   /** Omission on a legacy backend is unmeasured; never fill hashes from a later disk read. */
   readonly evidence?: CodeIntelSourceEvidence;
   readonly traversal?: CodeIntelTraversal;
+  /** Retrieval/grouping suggestions over a captured compiler scope, never execution proof. */
+  readonly discovery?: {
+    readonly knowledge: 'inferred';
+    readonly method: 'weak-call-components/lexical-rrf';
+    readonly semanticSimilarity: 'unmeasured';
+    readonly outcome: 'suggestions' | 'not-found-in-scope' | 'incomplete';
+    readonly nodesMeasured: number;
+    readonly truncationReasons: readonly string[];
+    readonly groups: readonly { id: string; members: readonly CodeIntelVersionedSite[] }[];
+    readonly flows: readonly { entry: CodeIntelVersionedSite; nodes: readonly CodeIntelVersionedSite[]; runtimeExecution: 'unknown' }[];
+    readonly matches: readonly { symbol: CodeIntelVersionedSite; groupId: string; score: number; rankers: readonly string[]; evidence: 'retrieval' }[];
+  };
   /**
    * Scope of the evidence, independently of health, freshness and output limits.
    * Omission on a legacy producer means unmeasured, never source completeness.

@@ -18,6 +18,7 @@ const rubricsMocks = vi.hoisted(() => ({
   previewAcceptanceBarAmendment: vi.fn(),
   rubricCompleteness: vi.fn(),
   getRubric: vi.fn(),
+  applyRubricAmendment: vi.fn(),
   mintAmendmentIdempotencyKey: vi.fn(() => 'amend-minted-key'),
   findAmendmentDecisionByKey: vi.fn(),
 }));
@@ -83,6 +84,9 @@ vi.mock('../../rubrics', () => ({
   previewAcceptanceBarAmendment: rubricsMocks.previewAcceptanceBarAmendment,
   rubricCompleteness: rubricsMocks.rubricCompleteness,
   getRubric: rubricsMocks.getRubric,
+  applyRubricAmendment: rubricsMocks.applyRubricAmendment,
+  effectiveCriterionInstrumentKey: (criterion: { check?: { kind: string; instrumentKey?: string }; instrumentKey?: string }) =>
+    criterion.check?.kind === 'instrument' ? criterion.check.instrumentKey ?? null : criterion.instrumentKey ?? null,
   mintAmendmentIdempotencyKey: rubricsMocks.mintAmendmentIdempotencyKey,
   findAmendmentDecisionByKey: rubricsMocks.findAmendmentDecisionByKey,
 }));
@@ -107,6 +111,7 @@ const body = async (args: unknown) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  rubricsMocks.applyRubricAmendment.mockReset();
   receiptDb.rows.clear();
   rubricsMocks.getRubric.mockResolvedValue(undefined);
   planMocks.getPlanRow.mockResolvedValue(null);
@@ -605,6 +610,26 @@ describe('rubrics:amend complete acceptance criteria input', () => {
       error: "no rubric 'missing-rubric' — rubrics:list to see refs",
       rubricRef: 'missing-rubric',
     });
+  });
+
+  it('refuses an unregistered instrument before posting or launching its review', async () => {
+    const changed = { ...criterion, check: { kind: 'instrument' as const, instrumentKey: 'unregistered:outcome' } };
+    rubricsMocks.getRubric.mockResolvedValue({ criteria: [criterion] });
+    rubricsMocks.applyRubricAmendment.mockReturnValue({ criteria: [changed] });
+
+    const result = await body({
+      rubricRef: 'acceptance-example', dryRun: true, criteria: [changed],
+      requestReview: { workItemId: 'WI-9' },
+    });
+
+    expect(result).toMatchObject({
+      ok: false, dryRun: true, code: 'unregistered_instrument',
+      refused: [{ criterion: 'r-1', instrumentKey: 'unregistered:outcome', priorInstrumentKey: null }],
+    });
+    expect(rubricsMocks.previewAcceptanceBarAmendment).not.toHaveBeenCalled();
+    expect(workItemMocks.commentWorkItem).not.toHaveBeenCalled();
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
+    expect(rubricsMocks.amendRubric).not.toHaveBeenCalled();
   });
 
   it('returns a non-blocking methodLint advisory for native-shell acceptance methods', async () => {

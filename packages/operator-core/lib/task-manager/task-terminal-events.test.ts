@@ -37,6 +37,30 @@ describe('task terminal awaited events', () => {
     });
   });
 
+  it('preserves the original error stack when terminal delivery fails during module initialization', async () => {
+    const cause = new ReferenceError('Cannot access event module before initialization');
+    cause.stack = `${cause.name}: ${cause.message}\n    at initializeEventModule (/source/events/await/engine.ts:42:7)`;
+    const warn = vi.fn();
+
+    await emitTaskTerminalEvent(
+      {
+        taskId: 'tsk-import-failed',
+        workspaceId: 'workspace-a',
+        harnessSlug: null,
+        taskClass: 'bash-job',
+        launchedBy: 'su-a',
+        state: 'killed',
+        exitCode: 137,
+        exitReason: 'oom-kill',
+      },
+      { emit: async () => { throw cause; }, warn },
+    );
+
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('terminal event failed for tsk-import-failed'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(cause.stack));
+  });
+
   it('fails soft when wake delivery is unavailable', async () => {
     const warn = vi.fn();
     await emitTaskTerminalEvent(

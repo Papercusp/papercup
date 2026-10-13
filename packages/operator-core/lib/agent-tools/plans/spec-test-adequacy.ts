@@ -42,6 +42,26 @@ export const SPEC_TEST_ADEQUACY_RUBRIC_REF = 'spec-test-adequacy';
  */
 export const SPEC_TEST_ADEQUACY_REPLAY_LIMIT = 25;
 
+/**
+ * The evidence-row limit a persisted rerun recipe pins (WI-6554700010010541).
+ *
+ * The evaluator refuses with `evidence_selection_hit_limit` once the rows it
+ * loads reach the limit, and the exact replay loads at least every binding the
+ * card graded. A fixed 25 therefore made every clause with 25 or more bindings
+ * permanently uncertifiable: `scorecards:emit` replays the recipe and is
+ * refused every time (measured 2026-10-13 on
+ * green-main-cycle-time-2026-10-08#AUTO-BAR-R-11-P-007@3, 31 bindings).
+ *
+ * A cohort that fits keeps the critical-pressure budget. A larger cohort pins
+ * exactly one row more than it graded, so the replay stays bounded and can still
+ * load its own population. Its judge replay is refused admission under critical
+ * pressure (a transient wait), rather than the card being impossible.
+ */
+export function specTestAdequacyReplayLimit(gradedRows: number): number {
+  const rows = Number.isSafeInteger(gradedRows) && gradedRows > 0 ? gradedRows : 0;
+  return rows < SPEC_TEST_ADEQUACY_REPLAY_LIMIT ? SPEC_TEST_ADEQUACY_REPLAY_LIMIT : rows + 1;
+}
+
 export const PLAN_CLASS_RUBRIC_REFS = [
   'plan-class-feature-ship',
   'plan-class-bugfix',
@@ -2142,7 +2162,7 @@ function rerunRecipeFor(
       ...(replayBindingIds !== undefined ? { bindingIds: replayBindingIds } : {}),
       ...(selection?.planItemIds?.length ? { planItemIds: [...selection.planItemIds] } : {}),
       includeDraft: true,
-      limit: SPEC_TEST_ADEQUACY_REPLAY_LIMIT,
+      limit: specTestAdequacyReplayLimit(Math.max(evidence.length, replayBindingIds?.length ?? 0)),
       // Replay the exact immutable clause snapshot that produced this grade. The pin
       // fixes WHICH clause revision is graded; it does not freeze freshness — the
       // server re-measures each binding's persisted recipe, so this card replays

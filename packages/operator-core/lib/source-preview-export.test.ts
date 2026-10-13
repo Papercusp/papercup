@@ -11,11 +11,13 @@
  * Every case drives a synthetic superproject under tmpdir; nothing touches the
  * shared checkout.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import type { Sql } from 'postgres';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ADDED_FILES,
@@ -38,7 +40,9 @@ import {
 } from '../../../scripts/source-preview.mjs';
 import { DROPPED, INTERNAL_DOC_CONTENTS, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
 import { captureTestSourceSnapshot } from './testing-worktree';
-import { verifierSourceFiles } from './verifier-source';
+import { cleanupEndedVerifierDirectories, verifierSourceFiles, writeVerifierTaskReceipt } from './verifier-source';
+import { closeTask } from './task-manager/store';
+import type { TaskRow } from './task-manager/types';
 
 let tmp: string;
 let fx: Superproject;
@@ -483,6 +487,104 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(existsSync(join(fixture.repo, 'node_modules'))).toBe(false);
       expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(ref);
     });
+
+  it.each(['spawned', 'pending'] as const)('terminal task close cleans a real SIGKILL during synchronous verifier preparation with %s enrollment and preserves peers', async (enrollment) => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-command-killed-' + enrollment));
+    git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nprintf "%s\\n" "$3" > "$VERIFIER_KILL_READY"\nexec sleep 60\n');
+    write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+    git(fixture.repo, ['add', helper, '.gitignore']);
+    git(fixture.repo, ['commit', '-qm', 'kill during verifier preparation']);
+    const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const ready = join(tmp, 'verifier-kill-ready-' + enrollment), taskId = 'verifierkillfixture';
+    const cli = new URL('../../../scripts/source-preview.mjs', import.meta.url).href;
+    const options = { repo: fixture.repo, ref, receiptPath: join(tmp, 'verifier-kill-source-' + enrollment + '.json'),
+      inputs: [helper], command: [process.execPath, '-e', 'process.exit(0)'] };
+    const child = spawn(process.execPath, ['--input-type=module', '-e',
+      `import { runVerifierCommand } from ${JSON.stringify(cli)}; process.exitCode = await runVerifierCommand(${JSON.stringify(options)});`],
+    { cwd: fixture.repo, detached: true, env: childEnv({
+      PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: taskId, VERIFIER_KILL_READY: ready,
+    }), stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', bytes => { output += bytes; });
+    child.stderr.on('data', bytes => { output += bytes; });
+    const closed = once(child, 'close');
+    try {
+      await vi.waitFor(() => expect(existsSync(ready), output).toBe(true), { timeout: 15_000, interval: 20 });
+      const owned = dirname(readFileSync(ready, 'utf8').trim());
+      const receipt = JSON.parse(readFileSync(join(owned, '.verifier-task.json'), 'utf8'));
+      expect(receipt).toMatchObject({ taskId, pid: child.pid, repoRoot: fixture.repo });
+      expect(statSync(join(owned, '.verifier-task.json')).mode & 0o777).toBe(0o600);
+      process.kill(-child.pid!, 'SIGKILL');
+      expect(await closed).toEqual([null, 'SIGKILL']);
+      expect(existsSync(owned)).toBe(true); // The killed process's finally never ran.
+      const scratch = dirname(owned);
+      const peer = mkdtempSync(join(scratch, 'verifier-command-'));
+      writeFileSync(join(peer, '.verifier-task.json'), JSON.stringify({ ...receipt, taskId: 'peer-task' }));
+      const live = mkdtempSync(join(scratch, 'verifier-command-'));
+      writeVerifierTaskReceipt(live, fixture.repo, { PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: taskId });
+      const link = join(scratch, 'verifier-command-link');
+      symlinkSync(peer, link, 'dir');
+      const scopeUnit = 'pc-verifierkillfixture.service';
+      const cgroupPath = '/papercusp.slice/papercusp-bash.slice/papercusp-bash-job.slice/' + scopeUnit;
+      // Model the payload's kernel membership independently of the asynchronous
+      // markSpawned write. The real killed process above supplies the death proof.
+      const ownedReceipt = { ...receipt, cgroupPath };
+      const row = { task_id: taskId, workspace_id: 'fixture-workspace', root_task_id: taskId,
+        class: 'bash-job', cwd: fixture.repo, confined: enrollment === 'spawned',
+        state: enrollment === 'spawned' ? 'running' : 'pending', scope_unit: scopeUnit,
+        cgroup_path: enrollment === 'spawned' ? cgroupPath : null,
+        argv: [], launched_by: 'fixture', ended_at: null };
+      const cleanupRow = { taskId, class: 'bash-job', confined: true, cwd: fixture.repo,
+        scopeUnit, cgroupPath } as TaskRow;
+      for (const changed of [{ taskId: 'other-task' }, { confined: false },
+        { scopeUnit: 'wrong-scope.service' }, { cgroupPath: null }]) {
+        await cleanupEndedVerifierDirectories({ ...cleanupRow, ...changed });
+        expect(existsSync(owned)).toBe(true);
+      }
+      const receiptPath = join(owned, '.verifier-task.json');
+      const receiptCopy = join(tmp, 'verifier-kill-ownership.json');
+      writeFileSync(receiptCopy, JSON.stringify(receipt));
+      rmSync(receiptPath);
+      symlinkSync(receiptCopy, receiptPath);
+      await cleanupEndedVerifierDirectories(cleanupRow);
+      expect(existsSync(owned)).toBe(true);
+      rmSync(receiptPath);
+      if (enrollment === 'pending') {
+        const pending = { ...cleanupRow, confined: false, cgroupPath: null, state: 'pending' } as TaskRow;
+        for (const kernelPath of [null, '/unconfined/' + scopeUnit,
+          cgroupPath.replace(taskId, 'peertask'), cgroupPath + '/../../pc-peertask.service']) {
+          writeFileSync(receiptPath, JSON.stringify({ ...ownedReceipt, cgroupPath: kernelPath }));
+          await cleanupEndedVerifierDirectories(pending);
+          expect(existsSync(owned)).toBe(true);
+        }
+      }
+      writeFileSync(receiptPath, JSON.stringify(ownedReceipt));
+      let updated = false;
+      const sql = (async (strings: TemplateStringsArray) => {
+        if (strings.join('').includes('UPDATE harness_shared.task_ledger')) {
+          expect(existsSync(owned)).toBe(false); // Cleanup precedes terminal persistence.
+          updated = true;
+        }
+        return [row];
+      }) as unknown as Sql;
+      await expect(closeTask(taskId, { state: 'killed', exitCode: 137 }, sql,
+        { emitTerminal: vi.fn() })).resolves.toBe(true);
+      expect(updated).toBe(true);
+      expect(existsSync(peer)).toBe(true);
+      expect(existsSync(live)).toBe(true);
+      expect(existsSync(link)).toBe(true);
+      await cleanupEndedVerifierDirectories({ taskId, class: 'bash-job', confined: true,
+        cwd: fixture.repo, scopeUnit: row.scope_unit, cgroupPath: row.cgroup_path } as TaskRow);
+      expect(existsSync(peer)).toBe(true);
+    } finally {
+      try { process.kill(-child.pid!, 'SIGKILL'); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+      await closed;
+    }
+  });
 
   it('refuses dirty inputs before running any provider command and rejects missing CLI commands', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-command-dirty'));

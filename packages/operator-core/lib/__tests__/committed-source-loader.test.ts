@@ -83,6 +83,14 @@ beforeAll(() => {
   put(fixture, 'req-entry.mjs', "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)(process.argv[2]);\n");
   put(fixture, 'c-dirty.cjs', "console.log('CJS-HEAD');\n");
   put(fixture, 'ts/c.cts', "const v: string = 'CTS';\nconsole.log(`CTS-RAN=${v}`);\n");
+  // Dev sidecars live beneath an app package with no module declaration.
+  // Their narrower bin package must keep tsx on the ESM load path, where the
+  // committed-source loader judges raw bytes before the transform.
+  put(fixture, 'apps/operator/package.json', '{}\n');
+  put(fixture, 'apps/operator/bin/package.json', readFileSync(join(REPO, 'apps/operator/bin/package.json'), 'utf8'));
+  put(fixture, 'apps/operator/bin/sidecar.ts', "import { v } from './value';\nconsole.log(`SIDECAR=${v}`);\n");
+  put(fixture, 'apps/operator/bin/value.ts', "export const v: string = 'HEAD';\n");
+  put(fixture, 'apps/operator/cjs-bin/sidecar.ts', "const v: string = 'HEAD';\nconsole.log(`SIDECAR=${v}`);\n");
   put(fixture, 'cjs/package.json', '{ "type": "commonjs" }\n');
   put(fixture, 'cjs/[eval]-wrapper', "console.log('FILE-WRAPPER-RAN');\n");
   put(fixture, 'cjs/[stdin]-wrapper', "console.log('FILE-WRAPPER-RAN');\n");
@@ -111,6 +119,7 @@ beforeAll(() => {
   put(fixture, 'new-door.mjs', "console.log('NEW-DOOR-RAN');\n");
   put(fixture, 'mod.mjs', "export const v = 'DIRTY';\n");
   put(fixture, 'ts/mod.ts', "export const v: string = 'DIRTY';\n");
+  put(fixture, 'apps/operator/bin/value.ts', "export const v: string = 'DIRTY';\n");
   put(fixture, 'new.mjs', "console.log('NEW-RAN');\n");
   put(fixture, 'gen/out.mjs', "export const g = 'GEN';\n");
   put(fixture, 'node_modules/dep/package.json', '{ "name": "dep", "type": "module", "exports": "./index.mjs" }\n');
@@ -439,6 +448,31 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(loaded.status).not.toBe(0);
     expect(loaded.stderr).toContain('COMMITTED_SOURCE refused ts/c.cts');
     expect(loaded.stdout).not.toContain('CTS-RAN');
+  }, 60_000);
+
+  it('runs a dev sidecar through ESM and substitutes a dirty imported dependency before tsx transforms it', () => {
+    const entry = 'apps/operator/bin/sidecar.ts';
+    const control = run(['--import', 'tsx', entry], cleanEnv());
+    expect(control.status, control.stderr).toBe(0);
+    expect(control.stdout).toContain('SIDECAR=DIRTY');
+
+    const loaded = underLoader(entry);
+    expect(loaded.status, loaded.stderr).toBe(0);
+    expect(loaded.stdout).toContain('SIDECAR=HEAD');
+    expect(loaded.stdout).not.toContain('SIDECAR=DIRTY');
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE substituted apps/operator/bin/value.ts');
+  }, 60_000);
+
+  it('refuses the same clean dev TypeScript format without the entrypoint module declaration', () => {
+    const entry = 'apps/operator/cjs-bin/sidecar.ts';
+    const control = run(['--import', 'tsx', entry], cleanEnv());
+    expect(control.status, control.stderr).toBe(0);
+    expect(control.stdout).toContain('SIDECAR=HEAD');
+
+    const loaded = underLoader(entry);
+    expect(loaded.status).not.toBe(0);
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE refused apps/operator/cjs-bin/sidecar.ts');
+    expect(loaded.stdout).not.toContain('SIDECAR=HEAD');
   }, 60_000);
 
   it("runs committed TypeScript that Node strips inside _compile, so _compile's format argument is forwarded", () => {

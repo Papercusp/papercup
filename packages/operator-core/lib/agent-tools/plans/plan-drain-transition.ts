@@ -56,7 +56,7 @@
 import { derivePlanLifecycle, derivePlanStatusTransition, parsePlan } from '@papercusp/plan-parser';
 import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { withPlanLock } from './with-plan-lock';
-import { ensureAcceptanceDrainCarryInTransaction } from './acceptance-drain-filing';
+import { ensureAcceptanceDrainCarryInTransaction, type AcceptanceDrainCarryOutcome } from './acceptance-drain-filing';
 import { isPlanRunInstanceSlug } from './run-instance-slug';
 import { evaluateBlindReviewGate, type BlindReviewGateCode } from '../../blind-review-gate';
 
@@ -99,7 +99,7 @@ export interface PlanDrainTransitionResult {
   reason?: string;
   skipped?: PlanDrainTransitionSkip;
   acceptanceCarry?: {
-    outcome: 'created' | 'already-open';
+    outcome: AcceptanceDrainCarryOutcome;
     id: string | null;
   };
   /** Set when the blind gap review door withheld the move to awaiting-acceptance. */

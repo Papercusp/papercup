@@ -44,6 +44,10 @@ const DEEP_DELEGATING_ROLES: ReadonlySet<string> = new Set(['papercup']);
 export interface SelectConverseToolsInput {
   role: string;
   hostTrust: ConverseHostTrust;
+  modality?: 'text' | 'voice';
+  /** Standard is retained for same-build latency comparisons. Voice defaults to slim. */
+  voiceProfile?: 'standard' | 'slim';
+  supportsVoice?: (name: string) => boolean;
   /** The owner host deliberately runs the brain under the hosted customer OS identity. */
   agentRunsAsCustomer?: boolean;
   /** The customer-safe door names in colon form (capabilityToolNames(
@@ -67,11 +71,18 @@ function dedupe(names: readonly string[]): readonly string[] {
 export function selectConverseTools(input: SelectConverseToolsInput): readonly string[] {
   const deep = DEEP_DELEGATING_ROLES.has(input.role) ? [DELEGATE_DEEP_TOOL] : [];
   const manual = input.role === 'papercup' || input.role === 'papercup-deep' ? PUBLIC_MANUAL_TOOLS : [];
-  if (input.hostTrust === 'owner' && !input.agentRunsAsCustomer) {
-    return dedupe([...ALL_AGENT_MCP_TOOLS, ...deep, ...manual]);
-  }
-  const doors = input.publicDoorNames().map(toAllowedToolName);
-  return dedupe([...doors, ...INTERACTIVE_CHAT_TOOLS, ...deep, ...manual]);
+  const selected = input.hostTrust === 'owner' && !input.agentRunsAsCustomer
+    ? dedupe([...ALL_AGENT_MCP_TOOLS, ...deep, ...manual])
+    : dedupe([...input.publicDoorNames().map(toAllowedToolName), ...INTERACTIVE_CHAT_TOOLS, ...deep, ...manual]);
+  if (input.modality !== 'voice') return selected;
+  // The same list feeds the prompt, mount and allowed-tools. A text-only card
+  // must not inflate the voice schema budget or remain callable but unlisted.
+  const voice = selected.filter((name) => input.supportsVoice?.(name.replace(AGENT_MCP_TOOL_PREFIX, '')) ?? true);
+  if (input.voiceProfile === 'standard') return voice;
+  // These are scanner/governance analysis tools, not conversational actions.
+  // Keep the existing task, plan, memory, docs and action seams, and deep
+  // delegation for questions requiring the broader analytical surface.
+  return voice.filter((name) => !/^(rubrics|scorecards|calibration|autonomy|decision_ledger|improvements):/.test(name.replace(AGENT_MCP_TOOL_PREFIX, '')));
 }
 
 export interface ConverseMcpMountInput {

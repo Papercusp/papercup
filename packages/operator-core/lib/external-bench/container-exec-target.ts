@@ -18,6 +18,8 @@
  *     never-forward set (PATH, HOME, the override keys themselves) never does.
  *   - `-t` is requested only when stdin AND stdout are TTYs (psu-pty vs a pipe).
  *   - the CLI's exit code (or terminating signal) is the wrapper's.
+ *   - with `originRewrites`, the agent never starts on a config.toml that still names a
+ *     loopback origin: mapped origins are rewritten, anything left refuses (exit 126).
  *   - the file is named after the agent (`codex`), so psu's codexManagedDaemonArgs
  *     still adds `--no-daemon` and the CLI runs in-process inside the container.
  *
@@ -55,6 +57,34 @@ export interface DockerExecTarget {
    * After relocating it pings the bridge FROM INSIDE the container and refuses to start the agent if that fails.
    */
   hookBridge?: HookBridgeTarget;
+  /**
+   * Host-origin rewrites for the session's config.toml (benchmark-coverage-frontierswe-v2 D-033 step 2). Requires
+   * `sessionRelocation`: config.toml lives in the session dir. The operator writes host origins there (the scoped
+   * gateway `base_url`/`model_catalog_url`, the MCP `url`), and inside the container 127.0.0.1 is the container's own
+   * loopback. Before every exec the wrapper replaces each exact `from` origin with its `to` (egress) origin in one pass.
+   * It then refuses to start the agent (exit 126) if any loopback origin remains outside a whole-line comment, so an
+   * unmapped host port fails closed instead of dialing the container itself. An empty list runs only that check.
+   */
+  originRewrites?: readonly OriginRewrite[];
+}
+
+/** One exact origin mapping: `scheme://host:port`, no path. `to` must not be a loopback origin. */
+export interface OriginRewrite {
+  from: string;
+  to: string;
+}
+
+/**
+ * Regex source matching a loopback origin (any 127/8 address, localhost, [::1] or 0.0.0.0, optional port), used
+ * case-insensitively. Exported so the launch adapter can pre-check a config with the wrapper's exact rule.
+ */
+export const LOOPBACK_ORIGIN_SOURCE =
+  String.raw`(?:https?|wss?)://(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::\d{1,5})?(?![A-Za-z0-9.-])`;
+
+const ORIGIN = /^https?:\/\/(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\]):\d{1,5}$/;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export interface HookBridgeTarget {
@@ -192,6 +222,22 @@ export function validateDockerExecTarget(target: DockerExecTarget): void {
       }
     }
   }
+  const rewrites = target.originRewrites;
+  if (rewrites) {
+    if (!relocation) throw new Error('container exec target: originRewrites requires sessionRelocation (config.toml lives in the session dir)');
+    const loopback = new RegExp(`^${LOOPBACK_ORIGIN_SOURCE}$`, 'i');
+    const seen = new Set<string>();
+    for (const { from, to } of rewrites) {
+      for (const [field, v] of [['from', from], ['to', to]] as const) {
+        if (!ORIGIN.test(v)) throw new Error(`container exec target: originRewrites ${field} ${JSON.stringify(v)} is not scheme://host:port`);
+      }
+      if (loopback.test(to)) {
+        throw new Error(`container exec target: originRewrites to ${to} is a loopback origin; inside the container it would dial the container itself`);
+      }
+      if (seen.has(from)) throw new Error(`container exec target: originRewrites maps ${from} twice`);
+      seen.add(from);
+    }
+  }
 }
 
 export interface RenderWrapperOptions {
@@ -227,6 +273,15 @@ export function renderDockerExecWrapper(target: DockerExecTarget, opts: RenderWr
           shimPath: target.hookBridge.shimPath ?? CONTAINER_HOOK_SHIM_PATH,
           pingTimeoutMs: target.hookBridge.pingTimeoutMs ?? 180_000,
           sessionName: HOOK_SESSION_NAME.source }
+      : null,
+    // One alternation, longest first, so a single pass can never chain one rewrite into another. The digit lookahead
+    // keeps http://127.0.0.1:3210 from matching inside http://127.0.0.1:32101.
+    originRewrite: target.originRewrites
+      ? { pattern: target.originRewrites.length
+            ? `(?:${[...target.originRewrites].map(r => r.from).sort((a, b) => b.length - a.length).map(escapeRegExp).join('|')})(?![0-9])`
+            : null,
+          map: Object.fromEntries(target.originRewrites.map(r => [r.from, r.to])),
+          loopback: LOOPBACK_ORIGIN_SOURCE }
       : null,
   };
   return `${shebangFor(opts.nodeBin)}
@@ -346,8 +401,34 @@ function pingBridge(b, s) {
       String(r.stderr || '').trim().slice(0, 300) + '; refusing to run the agent without its hooks');
   }
 }
+// Origin rewrite (D-033 step 2): inside the container 127.0.0.1 is the container's own loopback. Map each host origin
+// config.toml names to its egress origin, then fail closed on any loopback origin left. Runs after relocate(), on the
+// file the agent will read, and refuses BEFORE writing, so a refusal leaves the file as the operator wrote it.
+function rewriteOrigins(o, sessionEnv) {
+  const home = process.env[sessionEnv];
+  if (!home) refuse(sessionEnv + ' is unset; cannot rewrite its config origins');
+  const file = path.join(home, 'config.toml');
+  let text = '';
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) { refuse('cannot read ' + file + ' to rewrite its origins: ' + e.message); }
+  const next = o.pattern ? text.replace(new RegExp(o.pattern, 'g'), (m) => o.map[m]) : text;
+  const left = new Set();
+  for (const line of next.split('\\n')) {
+    if (/^\\s*#/.test(line)) continue;
+    for (const m of line.match(new RegExp(o.loopback, 'gi')) || []) left.add(m);
+  }
+  if (left.size) {
+    refuse(file + ' still names loopback origin(s) ' + [...left].join(', ') +
+      ' with no egress mapping; inside the container they would dial the container itself');
+  }
+  if (next !== text) {
+    const tmp = file + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, next, { mode: fs.statSync(file).mode & 0o777 });
+    fs.renameSync(tmp, file);
+  }
+}
 const bridged = cfg.hookBridge ? bridgeHooks(cfg.hookBridge, cfg.relocation.sessionEnv) : null;
 if (cfg.relocation) relocate(cfg.relocation);
+if (cfg.originRewrite) rewriteOrigins(cfg.originRewrite, cfg.relocation.sessionEnv);
 if (bridged) pingBridge(cfg.hookBridge, bridged);
 const forward = cfg.forward.map((s) => new RegExp(s));
 const never = cfg.never.map((s) => new RegExp(s));

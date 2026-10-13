@@ -60,7 +60,8 @@ async function firstPartyCallersAnswer(
   ctx: { projectDir?: string },
 ): Promise<CodeIntelAnswer> {
   const limit = Math.min(Math.max(1, args.limit ?? MAX_SITES_PER_ANSWER), FIRST_PARTY_CALLERS_DEFAULT_LIMIT);
-  const nativeOp = args.op === 'symbol' || args.op === 'callees' || args.op === 'context' || args.op === 'impact' || args.op === 'trace' ? args.op : 'callers';
+  const nativeOp = ['communities', 'flows', 'concept-search'].includes(args.op ?? '') ? args.op as 'communities' | 'flows' | 'concept-search'
+    : args.op === 'symbol' || args.op === 'callees' || args.op === 'context' || args.op === 'impact' || args.op === 'trace' ? args.op : 'callers';
   if (nativeOp !== 'callers' && (args.uid || args.repo)) return {
     backend: 'typescript-service', intent: nativeOp === 'impact' || nativeOp === 'trace' ? nativeOp : nativeOp === 'callees' ? 'callees' : 'definition', query: args.name ?? '', sites: [],
     truncation: { truncated: false, totalAvailable: null, continuation: null },
@@ -72,7 +73,7 @@ async function firstPartyCallersAnswer(
     root: resolveAgentWorkspaceRoot(ctx),
     name: args.name ?? '',
     ...(nativeOp !== 'callers' ? { op: nativeOp, filePath: args.file_path, line1: args.line1, kind: args.kind } : {}),
-    ...(nativeOp === 'impact' || nativeOp === 'trace' ? { target: args.target, targetFilePath: args.target_file_path,
+    ...(['impact', 'trace', 'flows'].includes(nativeOp) ? { target: args.target, targetFilePath: args.target_file_path,
       targetLine1: args.target_line1, direction: args.direction, maxDepth: args.max_depth, maxPaths: args.max_paths } : {}),
     limit,
     ...(args.paths && args.paths.length > 0 ? { paths: args.paths } : {}),
@@ -101,6 +102,7 @@ async function firstPartyCallersAnswer(
 // deliberately refuses. That lets an agent receive the typed `useInstead`
 // guidance rather than a schema error with no redirect.
 const OP_VALUES = [
+  'communities', 'flows', 'concept-search',
   'contracts',
   'context',
   'trace',
@@ -111,7 +113,7 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Code topology: symbol | context | callers | callees | impact | trace | contracts | health. Native operations use current JS/TS compiler snapshots with defining-file disambiguation. contracts joins static HTTP/RPC/event producer-consumer evidence over explicit registered harnesses in the authenticated workspace, with source versions, mismatched consumers and unknown middleware/runtime execution. Impact/trace use max_depth/max_paths/limit and per-hop provenance. Other languages and selectors receive explicit unsupported results.',
+    'Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Native operations use current JS/TS snapshots. Discovery requires explicit bounded paths; communities are weak call components, flows are possible zero-incoming call paths, and concept-search fuses symbol/path and source-text rankings. Discovery is inferred retrieval evidence; semantic similarity and runtime execution are unmeasured. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.',
   guidance: {
     when: 'You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.',
     notWhen:
@@ -137,7 +139,7 @@ export default defineTool({
       .string()
       .min(1)
       .optional()
-      .describe('Symbol name. Required for every op except `health`.'),
+      .describe('Exact symbol name for topology; concept-search takes a phrase. Optional for communities/flows/health.'),
     kind: z
       .string()
       .min(1)
@@ -191,7 +193,7 @@ export default defineTool({
   async handler(args, ctx) {
     const op = args.op as string;
     if (op === 'contracts') return { data: await scopedContractQuery(args, ctx) };
-    const native = ['callers', 'symbol', 'callees', 'context', 'impact', 'trace'].includes(op);
+    const native = ['callers', 'symbol', 'callees', 'context', 'impact', 'trace', 'communities', 'flows', 'concept-search'].includes(op);
     const scoped = (answer: CodeIntelAnswer): CodeIntelAnswer => {
       const measured = answer.evidence ? answer : { ...answer,
       evidence: unmeasuredSourceEvidence(answer, { repositoryId: null, identityKind: 'unknown',
@@ -228,7 +230,20 @@ export default defineTool({
           }
           return op !== 'trace' || (Boolean(traversal.target) && previous === traversal.target!.versionedSymbolId);
         }));
-      const sourceBacked = pathsBacked && (measured.sites.length === 0 || (Boolean(evidence.sourceScope.repositoryId) &&
+      const discovery = measured.discovery;
+      const discoveryBacked = !discovery ? (!['communities', 'flows', 'concept-search'].includes(op) || measured.error !== null)
+        : discovery.knowledge === 'inferred' && discovery.semanticSimilarity === 'unmeasured' &&
+          hash(evidence.sourceScope.sourceFingerprint) && discovery.groups.every(group => group.members.every(endpointBacked)) &&
+          discovery.matches.every(match => match.evidence === 'retrieval' && Number.isFinite(match.score) && match.score > 0 &&
+            endpointBacked(match.symbol) && discovery.groups.some(group => group.id === match.groupId &&
+              group.members.some(member => member.versionedSymbolId === match.symbol.versionedSymbolId))) &&
+          discovery.flows.length <= (args.max_paths ?? 20) && discovery.flows.every(flow =>
+            flow.runtimeExecution === 'unknown' && endpointBacked(flow.entry) && flow.nodes.length > 0 &&
+            flow.nodes.length - 1 <= (args.max_depth ?? 5) && flow.nodes.every(endpointBacked) &&
+            flow.entry.versionedSymbolId === flow.nodes[0]!.versionedSymbolId && flow.nodes.slice(1).every((node, index) =>
+              evidence.relationships.some(edge => edge.knowledge === 'observed' && edge.binding === 'direct' &&
+                edge.source?.versionedSymbolId === flow.nodes[index]!.versionedSymbolId && edge.target?.versionedSymbolId === node.versionedSymbolId)));
+      const sourceBacked = pathsBacked && discoveryBacked && (measured.sites.length === 0 || (Boolean(evidence.sourceScope.repositoryId) &&
         hash(evidence.sourceScope.sourceFingerprint) && measured.sites.every((site, index) => {
           const identity = evidence.siteIdentities.find(row => row.siteIndex === index);
           return identity?.sourcePath === site.path && hash(identity.contentHash) && Boolean(identity.versionedSymbolId) &&
@@ -238,7 +253,7 @@ export default defineTool({
           (!relation.target || endpointBacked(relation.target)))));
       if (sourceBacked) return measured;
       const reason = 'Graph source versions are unavailable: refusing sites whose repository/content snapshot cannot be determined. Re-query through an admitted current compiler route.';
-      return { ...measured, sites: [], traversal: undefined, error: [measured.error, reason].filter(Boolean).join(' '),
+      return { ...measured, sites: [], traversal: undefined, discovery: undefined, error: [measured.error, reason].filter(Boolean).join(' '),
         freshness: { ...measured.freshness, health: 'unknown' },
         truncation: { truncated: false, totalAvailable: null, continuation: null },
         evidence: { ...evidence, siteIdentities: [], relationships: [],
