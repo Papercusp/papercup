@@ -227,7 +227,15 @@ test('native Inbox acknowledgement removes only the selected message after refre
     await captureCache('beforeAckCache');
 
     await native('navigate', `${origin}/adv?opcv=inbox`, '--json');
-    await native('click', testIdSelector('inbox-filter-alerts'), '--json');
+    const alertsFilter = testIdSelector('inbox-filter-alerts');
+    // The Inbox face is lazy-loaded by OperatorChatSidebar. Navigation can
+    // return while its fallback still says "Loading inbox…", so wait for the
+    // real control before clicking it; an immediate click tests chunk timing
+    // instead of the acknowledgment flow.
+    await expect.poll(async () => measure(`!!document.querySelector(${JSON.stringify(alertsFilter)})`), {
+      timeout: 45_000, intervals: [300, 800, 1500],
+    }).toBe(true);
+    await native('click', alertsFilter, '--json');
     const selectedRow = testIdSelector(`inbox-row-${selectedItem!.id}`);
     const neighborRow = testIdSelector(`inbox-row-${neighborItem!.id}`);
     await expect.poll(async () => {
