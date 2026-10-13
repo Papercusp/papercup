@@ -2229,8 +2229,9 @@ function appendRatingRerunProbes(
  *  24 — technical compound modifiers do not turn negative-control observations into proof gaps.
  *  25 — execution verdicts reconcile explicit nested and structured test-run IDs/files to the joined ledger row.
  *  26 — shared mutant runs preserve distinct targets and require a measured case for each target.
+ *  28 — binder-authored fixtureFree=true no longer establishes fixture absence for test-backed evidence without a fixture fingerprint.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 27;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 28;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -2609,13 +2610,15 @@ export function evaluateSpecTestAdequacy(input: {
     (row) => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) && detailsOf(row).fixtureFree === true,
   );
   const fixtureUseAttested = exactEvidence.some((row) => detailsOf(row).fixtureFree === false);
+  // Binder-authored fixtureFree cannot establish fixture absence for test-backed evidence.
+  // Operational work-item evidence has no test bytes whose fixture use could contradict it.
   const unresolvedFixtureProof = exactEvidence.filter(
     (row) =>
+      row.evidenceKind !== 'operational' &&
       EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) &&
-      row.fingerprints.fixtureFingerprint === null &&
-      (detailsOf(row).fixtureFree !== true || fixtureUseRequired),
+      row.fingerprints.fixtureFingerprint === null,
   );
-  const fixtureFreeAttestationConflictsWithUse = unresolvedFixtureProof.some(
+  const fixtureFreeAttestationUnverified = unresolvedFixtureProof.some(
     (row) => detailsOf(row).fixtureFree === true,
   );
   const fixtureFreeConflicts = exactEvidence.filter(
@@ -2644,17 +2647,23 @@ export function evaluateSpecTestAdequacy(input: {
       ? {
           rating: 'unknown',
           evidence: evidenceWithBindings(
-            (fixtureFreeAttestationConflictsWithUse
-              ? 'The clause declares fixture use, so fixtureFree=true cannot replace fixture calibration evidence for '
+            (fixtureFreeAttestationUnverified
+              ? fixtureUseRequired
+                ? 'The clause declares fixture use, so binder-authored fixtureFree=true cannot replace calibration evidence for '
+                : 'Binder-authored fixtureFree=true does not establish fixture absence for '
               : fixtureUseRequired || fixtureBindings.length > 0 || fixtureUseAttested
-                ? 'A fixture is required or used; an executable binding has no fixture fingerprint and does not explicitly attest adequacy.fixtureFree=true for '
-                : 'A null fixtureFingerprint does not establish fixture-free proof; an executable binding has no fixture fingerprint and does not explicitly attest adequacy.fixtureFree=true for ') +
+                ? 'A fixture is required or used, but no fixture fingerprint or calibration evidence is bound for '
+                : 'A null fixtureFingerprint does not establish fixture-free proof; fixture absence is not independently measured for ') +
               clauseIdentity(clause) + '.',
             unresolvedFixtureProof,
           ),
-          suggestion: fixtureFreeAttestationConflictsWithUse
-            ? 'Bind a measured fixture fingerprint and calibration proof; a fixture-free attestation cannot override fixture use declared by the clause.'
-            : 'For each executable binding, bind a measured fixture fingerprint and calibration proof or explicitly attest adequacy.fixtureFree=true; a missing fingerprint alone is insufficient.',
+          suggestion: fixtureFreeAttestationUnverified
+            ? fixtureUseRequired
+              ? 'Bind a measured fixture fingerprint and calibration proof; fixtureFree=true cannot override fixture use declared by the clause.'
+              : 'Fixture-free status needs independent measurement; fixtureFree=true is only binder-authored metadata.'
+            : fixtureUseRequired || fixtureBindings.length > 0 || fixtureUseAttested
+              ? 'Bind a measured fixture fingerprint and calibration proof before rating fixture calibration.'
+              : 'Fixture absence is not independently measured; bind a measured fixture fingerprint and calibration proof or provide independent fixture-absence evidence.',
         }
       : fixtureApplicable
     ? booleanRating(fixtureProofEvidence, (d) => d.fixtureCalibrated, {

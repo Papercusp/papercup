@@ -3390,10 +3390,10 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(27);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(28);
   });
 
-  it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
+  it('keeps fixture calibration unknown when a null fingerprint has no independent fixture-free measurement', () => {
     const row = evidence({
       evidenceKind: 'counterexample',
       evidenceRef: 'counterexample:tree-only-spec',
@@ -3452,8 +3452,9 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
     expect(result.ratings['fixture-calibration'].evidence).toContain(
-      'does not explicitly attest adequacy.fixtureFree=true',
+      'A null fixtureFingerprint does not establish fixture-free proof',
     );
+    expect(result.ratings['fixture-calibration'].suggestion).toContain('independently measured');
   });
 
   it('does not let one calibrated fixture binding cover an executable sibling without a fixture fingerprint', () => {
@@ -3489,18 +3490,18 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
     expect(result.ratings['fixture-calibration'].evidence).toContain(
-      'does not explicitly attest adequacy.fixtureFree=true',
+      'A fixture is required or used, but no fixture fingerprint or calibration evidence is bound for',
     );
     expect(result.ratings['fixture-calibration'].evidence).toContain(
       'test:fixture-use-without-calibration',
     );
   });
 
-  it('accepts fixture-free proof only when the exact executable binding attests fixtureFree=true', () => {
+  it('does not treat binder-authored fixtureFree=true as measured fixture absence', () => {
     const base = evidence();
     const row = evidence({
       evidenceKind: 'test',
-      evidenceRef: 'test:explicitly-fixture-free',
+      evidenceRef: 'test:fixture-free-claim-without-fixture-measurement',
       fingerprints: { ...base.fingerprints, fixtureFingerprint: null },
       details: {
         adequacy: {
@@ -3517,8 +3518,11 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       classRef: 'plan-class-bugfix',
     });
 
-    expect(result.ratings['fixture-calibration'].rating).toBe('not-applicable');
-    expect(result.ratings['fixture-calibration'].evidence).toContain('explicitly attest fixtureFree=true');
+    expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
+    expect(result.ratings['fixture-calibration'].evidence).toContain(
+      'Binder-authored fixtureFree=true does not establish fixture absence',
+    );
+    expect(result.ratings['fixture-calibration'].suggestion).toContain('independent measurement');
   });
 
   it('keeps fixture calibration unknown when the falsifier observation declares fixture use despite fixtureFree=true', () => {
