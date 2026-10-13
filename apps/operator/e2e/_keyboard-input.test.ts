@@ -1,8 +1,48 @@
+// @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { installWorkspaceKeyboardDiagnostics, typeWorkspaceNameWithKeyboard,
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { attachWorkspaceKeyboardDiagnostics, installWorkspaceKeyboardDiagnostics, typeWorkspaceNameWithKeyboard,
   withinInputBudget, type KeyboardInputEvidence } from './_keyboard-input';
 
 afterEach(() => vi.useRealTimers());
+
+describe('workspace keyboard evidence retention', () => {
+  it('keeps passing evidence when the reporter discards attachment metadata', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'workspace-keyboard-evidence-'));
+    const data = { actions: [{ character: 'M', outcome: 'passed' }],
+      renderer: { inputs: [{ value: 'M' }] }, hostEventLoopMaxMs: 20, failed: false };
+    // A list reporter consumes the descriptor without saving its body.
+    const attach = vi.fn(async () => {});
+    try {
+      await attachWorkspaceKeyboardDiagnostics({ outputPath: name => join(directory, name), attach }, data);
+      const path = join(directory, 'workspace-keyboard-input-diagnostics.json');
+      expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(data);
+      expect(attach).toHaveBeenCalledWith('workspace-keyboard-input-diagnostics', {
+        path, contentType: 'application/json',
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('retains failure evidence even when attaching it fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'workspace-keyboard-evidence-'));
+    const error = new Error('reporter attachment rejected');
+    const data = { actions: [{ phase: 'press', outcome: 'failed' }], failed: true };
+    try {
+      await expect(attachWorkspaceKeyboardDiagnostics({
+        outputPath: name => join(directory, name),
+        attach: async () => { throw error; },
+      }, data)).rejects.toBe(error);
+      expect(JSON.parse(await readFile(join(directory,
+        'workspace-keyboard-input-diagnostics.json'), 'utf8'))).toEqual(data);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('workspace keyboard journey failure boundary', () => {
   it('uses real targeted key events and verifies every intermediate value', async () => {
@@ -77,30 +117,24 @@ describe('workspace keyboard journey failure boundary', () => {
 // independently of the journey helper, including its credential exclusion.
 describe('workspace keyboard browser evidence', () => {
   it('records only workspace-name events, with bounded evidence', async () => {
-    const { JSDOM } = await import('jsdom');
-    const dom = new JSDOM('<input aria-label="Workspace name"><input aria-label="Injected credential reference">');
-    const previous = { window: globalThis.window, document: globalThis.document,
-      HTMLInputElement: globalThis.HTMLInputElement, KeyboardEvent: globalThis.KeyboardEvent,
-      PerformanceObserver: globalThis.PerformanceObserver };
+    document.body.innerHTML = '<input aria-label="Workspace name"><input aria-label="Injected credential reference">';
     const observers: Array<(entries: { getEntries: () => PerformanceEntry[] }) => void> = [];
     vi.useFakeTimers();
-    Object.assign(globalThis, { window: dom.window, document: dom.window.document,
-      HTMLInputElement: dom.window.HTMLInputElement, KeyboardEvent: dom.window.KeyboardEvent,
-      PerformanceObserver: class {
-        static supportedEntryTypes = ['longtask'];
-        constructor(callback: typeof observers[number]) { observers.push(callback); }
-        observe() {}
-      } });
+    vi.stubGlobal('PerformanceObserver', class {
+      static supportedEntryTypes: string[] = ['longtask'];
+      constructor(callback: typeof observers[number]) { observers.push(callback); }
+      observe() {}
+    });
     try {
       installWorkspaceKeyboardDiagnostics();
-      const inputs = dom.window.document.querySelectorAll('input');
+      const inputs = document.querySelectorAll('input');
       inputs[1].value = 'secret-credential';
-      inputs[1].dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      inputs[1].dispatchEvent(new Event('input', { bubbles: true }));
       inputs[0].value = 'My';
-      inputs[0].dispatchEvent(new dom.window.KeyboardEvent('keyup', { key: 'y', bubbles: true }));
-      for (let i = 0; i < 105; i++) inputs[0].dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+      inputs[0].dispatchEvent(new KeyboardEvent('keyup', { key: 'y', bubbles: true }));
+      for (let i = 0; i < 105; i++) inputs[0].dispatchEvent(new Event('input', { bubbles: true }));
       observers[0]({ getEntries: () => [{ startTime: 50, duration: 1500 } as PerformanceEntry] });
-      const diagnostics = (dom.window as unknown as { __tutorialKeyboardDiagnostics: {
+      const diagnostics = (window as unknown as { __tutorialKeyboardDiagnostics: {
         inputs: Array<{ type: string; value: string; key?: string }>;
         longTasks: Array<{ durationMs: number }>;
       } }).__tutorialKeyboardDiagnostics;
@@ -109,9 +143,9 @@ describe('workspace keyboard browser evidence', () => {
       expect(JSON.stringify(diagnostics)).not.toContain('secret-credential');
       expect(diagnostics.longTasks).toEqual([{ atMs: performance.timeOrigin + 50, durationMs: 1500 }]);
     } finally {
-      Object.assign(globalThis, previous);
+      vi.unstubAllGlobals();
       vi.clearAllTimers();
-      dom.window.close();
+      document.body.replaceChildren();
     }
   });
 });

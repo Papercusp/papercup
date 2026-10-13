@@ -1,3 +1,5 @@
+import { writeFile } from 'node:fs/promises';
+
 /** Keyboard evidence for the actual URL-backed workspace-name journey.
  * A page-level keyboard call has no locator action timeout. Keep real key
  * events, but stop the journey at the failed character rather than letting
@@ -12,6 +14,23 @@ export type KeyboardInputEvidence = {
   outcome: 'passed' | 'failed';
   error?: string;
 };
+
+/** Body-only attachments disappear with list reporters on passing runs.
+ * Keep the JSON in the test output directory before attaching its path.
+ */
+export async function attachWorkspaceKeyboardDiagnostics(
+  testInfo: {
+    outputPath: (name: string) => string;
+    attach: (name: string, options: { path: string; contentType: string }) => Promise<void>;
+  },
+  data: unknown,
+): Promise<void> {
+  const path = testInfo.outputPath('workspace-keyboard-input-diagnostics.json');
+  await writeFile(path, JSON.stringify(data));
+  await testInfo.attach('workspace-keyboard-input-diagnostics', {
+    path, contentType: 'application/json',
+  });
+}
 
 export async function withinInputBudget<T>(
   action: () => Promise<T>,

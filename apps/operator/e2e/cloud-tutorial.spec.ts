@@ -5,7 +5,7 @@
 import { expect, test, type Page } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
 import { installWorkspaceKeyboardDiagnostics, typeWorkspaceNameWithKeyboard,
-  withinInputBudget, type KeyboardInputEvidence } from './_keyboard-input';
+  attachWorkspaceKeyboardDiagnostics, withinInputBudget, type KeyboardInputEvidence } from './_keyboard-input';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson';
 import { prepareCloudTutorialNetlog } from '@papercusp/test-config/hermetic-tmpdir';
@@ -837,10 +837,10 @@ for (const existing of [false, true]) for (const accessible of [false, true]) {
         const renderer = await withinInputBudget(() => page.evaluate(() =>
           (window as unknown as { __tutorialKeyboardDiagnostics?: unknown }).__tutorialKeyboardDiagnostics),
         1000, 'renderer input evidence').catch(error => ({ unavailable: String(error) }));
-        await test.info().attach('workspace-keyboard-input-diagnostics', {
-          body: JSON.stringify({ actions: inputEvidence, renderer,
-            hostEventLoopMaxMs: hostLoop.max / 1e6,
-            failed: typingFailure !== undefined }), contentType: 'application/json',
+        await attachWorkspaceKeyboardDiagnostics(test.info(), {
+          actions: inputEvidence, renderer,
+          hostEventLoopMaxMs: hostLoop.max / 1e6,
+          failed: typingFailure !== undefined,
         }).catch(error => {
           if (typingFailure === undefined) throw error;
           console.error('WORKSPACE_INPUT_DIAGNOSTICS_ATTACHMENT_FAILED', String(error));
