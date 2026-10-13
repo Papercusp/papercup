@@ -1634,7 +1634,10 @@ export interface SignedGateVerdictPublishResult {
     | 'identity-unreadable'
     | 'manifest-unreadable'
     | 'no-test-rows'
-    | 'deadline-exceeded';
+    | 'deadline-exceeded'
+    /** WI-6554700010009547: the caller gave publication no time budget (`deadlineMs <= 0`),
+     *  so `publish` was never started. */
+    | 'skipped-no-budget';
 }
 
 /** The signed shard ledger is additive evidence, so it cannot own the checkpoint run lock
@@ -1647,6 +1650,13 @@ export async function publishSignedGateVerdictsWithDeadline(
   log: (line: string) => void,
   deadlineMs = SIGNED_GATE_VERDICT_PUBLISH_DEADLINE_MS,
 ): Promise<SignedGateVerdictPublishResult> {
+  // WI-6554700010009547: a caller with no time to spare (the self-watchdog's last-gasp record)
+  // must not START the publisher: it loads the registry fresh and builds a shard manifest at the
+  // candidate sha, which outlived the watchdog's onFire grace and got the whole tail SIGKILLed.
+  if (!(deadlineMs > 0)) {
+    log('signed gate shard publication skipped (no time budget)');
+    return { published: 0, skipped: 0, reason: 'skipped-no-budget' };
+  }
   const startedAt = Date.now();
   log(`signed gate shard publication started (deadline ${deadlineMs}ms)`);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1665,6 +1675,13 @@ export async function publishSignedGateVerdictsWithDeadline(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/** WI-6554700010009547: per-call knobs for {@link recordCheckpointVerdict}. */
+export interface RecordCheckpointVerdictOptions {
+  /** Deadline for the additive signed-shard publication step. Omitted = the
+   *  {@link SIGNED_GATE_VERDICT_PUBLISH_DEADLINE_MS} default; `0` = do not publish at all. */
+  signedShardDeadlineMs?: number;
 }
 
 interface GateTestRunRow {
@@ -2376,7 +2393,11 @@ export function __resetSelfHealPrebindForTest(): void {
   selfHealPrebound = null;
 }
 
-export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict: CheckpointVerdict): Promise<boolean> {
+export async function recordCheckpointVerdict(
+  target: GateVerdictTarget,
+  verdict: CheckpointVerdict,
+  options: RecordCheckpointVerdictOptions = {},
+): Promise<boolean> {
   // P-003: settle the logical qualification BEFORE filtering non-recordable pipeline outcomes.
   // `skipped-locked`, migrations-pending, and the other typed pre-suite no-verdicts are not gate
   // verdicts, but they are exactly the outcomes that return the same logical attempt to waiting.
@@ -2460,6 +2481,7 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
   const signedVerdicts = await publishSignedGateVerdictsWithDeadline(
     () => publishSignedGateVerdicts(target, verdict),
     (line) => console.log(`${orchestratorStdoutTag()} ${line}`),
+    options.signedShardDeadlineMs ?? SIGNED_GATE_VERDICT_PUBLISH_DEADLINE_MS,
   );
   if (signedVerdicts.published > 0) {
     console.log(
