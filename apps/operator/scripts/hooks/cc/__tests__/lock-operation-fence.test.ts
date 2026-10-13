@@ -242,6 +242,19 @@ describe('native hook operation fence', () => {
     expect(acquires().every(r => r.args.hook_operation?.id === pinned.operation.id)).toBe(true);
   });
 
+  it('a recurring tool id with a different scope is denied, never replayed onto the earlier paths', async () => {
+    await hook('pretooluse-locks-acquire.sh', payload());
+    const first = record();
+    expect(first.operation.authority).toBeTruthy();
+    const sent = acquires().length;
+    const result = await hook('pretooluse-locks-acquire.sh', payload('edit-one', ['sub/two.ts']));
+    const decision = JSON.parse(result.stdout).hookSpecificOutput;
+    expect(decision.permissionDecision).toBe('deny');
+    expect(decision.permissionDecisionReason).toContain('native edit operation');
+    expect(acquires()).toHaveLength(sent);
+    expect(record()).toEqual(first);
+  });
+
   it('settling an inert record at Stop sends no doomed preparation acquire and retires it', async () => {
     inertRecord();
     await hook('lifecycle-report.sh', { hook_event_name: 'Stop', session_id: session });
