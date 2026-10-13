@@ -100,6 +100,19 @@ export function meetsExpect(value: number, expect: RecordedRubricCheckExpect): b
   }
 }
 
+/** Predicate ops that compare a reading against a threshold; a NULL reading cannot be compared. */
+const ORDERING_OPS: ReadonlySet<string> = new Set(['gt', 'gte', 'lt', 'lte']);
+
+/** The predicate op of one executed probe child (its `probe.expect.op`), or null when absent. */
+function probePredicateOp(child: { probe?: unknown }): string | null {
+  const probe = child.probe;
+  if (!probe || typeof probe !== 'object') return null;
+  const expect = (probe as { expect?: unknown }).expect;
+  if (!expect || typeof expect !== 'object') return null;
+  const op = (expect as { op?: unknown }).op;
+  return typeof op === 'string' ? op : null;
+}
+
 function scalarOrNull(value: unknown): string | number | boolean | null {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value === 'string' || typeof value === 'boolean') return value;
@@ -124,6 +137,21 @@ export function probeCheckResults(
     const unit = unitByKey.get(criterionKey) ?? null;
     children.forEach((child, childIndex) => {
       const value = scalarOrNull(child.observed);
+      // An ordering comparison (gt/gte/lt/lte) against a missing, NULL or boolean reading measured
+      // nothing: the probe ran, but there was no value to compare. Record it as 'error' (unknown),
+      // the same as an instrument reading of null, never as a 'fail', which grades the criterion at
+      // its WORST level for a window in which the measured thing simply did not happen.
+      const op = probePredicateOp(child);
+      if (child.verdict === 'fail' && op !== null && ORDERING_OPS.has(op) && (value === null || typeof value === 'boolean')) {
+        out.push({
+          check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit },
+          verdict: 'error',
+          measuredAt: child.measuredAt,
+          durationMs: null,
+          detail: `probe measured nothing: '${op}' needs a number or string, observed ${JSON.stringify(child.observed ?? null)}`,
+        });
+        return;
+      }
       out.push({
         check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit },
         verdict: child.verdict,

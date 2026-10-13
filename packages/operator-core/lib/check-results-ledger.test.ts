@@ -59,3 +59,54 @@ describe('probeCheckResults — the declared unit rides on every ledger row', ()
     expect(row?.check.unit).toBeNull();
   });
 });
+
+// EI-25846520420095595: a scout-cost probe `lte 5` read NULL in a window where the accumulator never
+// ran; the ledger stored verdict 'fail', so the criterion graded at its WORST level. A comparison that
+// had nothing to compare measured nothing, exactly like an instrument reading of null: 'error'.
+describe('probeCheckResults — a probe that measured nothing is error, not fail', () => {
+  const probed = (op: string, observed: unknown, verdict: 'pass' | 'fail' = 'fail') => ({
+    kind: 'probe',
+    probe: { kind: 'sql', expect: { path: '$.v', op, ...(op === 'exists' ? {} : { value: 5 }) } },
+    verdict,
+    status: verdict === 'pass' ? 'fresh' : 'stale',
+    executed: true,
+    ...(observed === undefined ? {} : { observed }),
+    measuredAt: AT,
+  });
+  const run = (child: object) =>
+    probeCheckResults('perf-fixture', { c: child } as Record<string, { kind: string }>)[0]!;
+
+  it.each(['gt', 'gte', 'lt', 'lte'])('%s against a NULL or absent reading records error with a measured-nothing detail', (op) => {
+    for (const observed of [null, undefined]) {
+      const row = run(probed(op, observed));
+      expect(row.verdict).toBe('error');
+      expect(row.check.value).toBeNull();
+      expect(row.detail?.startsWith(`probe measured nothing: '${op}' needs a number or string`)).toBe(true);
+    }
+  });
+
+  it('keeps a real reading that misses the threshold as fail', () => {
+    const row = run(probed('lte', 7.3));
+    expect(row.verdict).toBe('fail');
+    expect(row.check.value).toBe(7.3);
+    expect(row.detail).toBe('probe predicate did not match (observed 7.3)');
+  });
+
+  it('keeps exists/eq/ne failures as fail: absence is what those predicates measure', () => {
+    expect(run(probed('exists', undefined)).verdict).toBe('fail');
+    expect(run(probed('eq', null)).verdict).toBe('fail');
+    expect(run(probed('ne', null)).verdict).toBe('fail');
+  });
+
+  it('never turns a pass into error, and leaves a probe with no predicate unchanged', () => {
+    expect(run(probed('lte', null, 'pass')).verdict).toBe('pass');
+    expect(run({ ...probed('lte', null), probe: { kind: 'sql' } }).verdict).toBe('fail');
+  });
+
+  it('records error per child inside a grouped all-check, leaving its real-reading siblings alone', () => {
+    const rows = probeCheckResults('perf-fixture', {
+      grp: { kind: 'probe', all: [probed('lte', 2, 'pass'), probed('lte', null)], verdict: 'fail', status: 'stale', executed: true, measuredAt: AT },
+    } as Record<string, { kind: string }>);
+    expect(rows.map((r) => [r.check.id, r.verdict])).toEqual([['grp:0', 'pass'], ['grp:1', 'error']]);
+  });
+});
