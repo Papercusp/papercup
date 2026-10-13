@@ -3122,7 +3122,7 @@ export async function resolveDirectTrackedResumeSession(
   if (cached) return cached;
   const wanted = String(id ?? "");
   const binding = UUID_RE.test(wanted) ? recoverSessionIdentity(wanted, { home }) : null;
-  const exactId = /^\d+$/.test(wanted) ? Number(wanted) : binding?.advSessionId;
+  const exactId = /^\d+$/.test(wanted) ? Number(wanted) : (binding?.advSessionId ?? NaN);
   if (!Number.isSafeInteger(exactId) || exactId <= 0) return null;
   const exact = await apiImpl(
     `/api/adv/sessions/resumable?id=${encodeURIComponent(String(exactId))}`,

@@ -89,7 +89,7 @@ describe('papercusp database-backup progress watchdog', () => {
 
   it('lets archive growth extend the floor but never the absolute ceiling', () => {
     const body = functionBody('run_bounded_watched');
-    expect(body).toContain('current_bytes=$(sudo -n -u postgres du -sb "$progress_path"');
+    expect(body).toContain('measurement_output=$(sudo -n -u postgres du -sb "$progress_path" 2>&1)');
     expect(body).not.toContain('current_bytes=$(du -sb "$progress_path"');
     expect(body).not.toContain('current_bytes=${current_bytes:-0}');
     expect(body).toContain('[ "$current_bytes" -gt "$last_bytes" ]');
@@ -117,7 +117,7 @@ describe('papercusp database-backup progress watchdog', () => {
         harness,
         `#!/usr/bin/env bash
 set -uo pipefail
-PC_BACKUP_WATCH_SEC=1
+PC_BACKUP_WATCH_SEC=0.25
 PC_BACKUP_MIN_FREE_GB=0
 PROGRESS_STALE_SEC=2
 KILL_GRACE_SEC=0
@@ -128,13 +128,16 @@ sudo() {
   printf '%s\\n' "$*" >>"$SUDO_LOG"
   [ "$1" = "-n" ] && [ "$2" = "-u" ] && [ "$3" = "postgres" ] || return 125
   shift 3
-  [ "\${FAIL_PROGRESS_MEASURE:-0}" != "1" ] || return 1
+  if [ "\${FAIL_PROGRESS_MEASURE:-0}" = "1" ]; then
+    printf '%s\\n' 'du: Permission denied' >&2
+    return 1
+  fi
   command "$@"
 }
 ${watchdogSource()}
 case "$1" in
   growing)
-    run_bounded_watched 2 8 "$PROGRESS_PATH" bash -c 'for i in 1 2 3 4; do printf x >> "$PROGRESS_PATH"; sleep 1; done'
+    run_bounded_watched 2 12 "$PROGRESS_PATH" bash -c 'for i in 1 2 3 4 5 6 7 8; do printf x >> "$PROGRESS_PATH"; sleep 0.5; done'
     ;;
   stalled)
     : > "$PROGRESS_PATH"
@@ -166,7 +169,7 @@ esac
 
       const growing = run('growing');
       expect(growing.status, growing.stderr).toBe(0);
-      expect(readFileSync(progress, 'utf8')).toHaveLength(4);
+      expect(readFileSync(progress, 'utf8')).toHaveLength(8);
       expect(readFileSync(sudoLog, 'utf8')).toContain('-n -u postgres du -sb');
 
       rmSync(progress, { force: true });
@@ -184,6 +187,7 @@ esac
       const unmeasurable = run('unmeasurable', true);
       expect(unmeasurable.status, unmeasurable.stderr).not.toBe(0);
       expect(unmeasurable.stderr).toContain('unable to measure archive progress');
+      expect(unmeasurable.stderr).toContain('du_status=1 output=du: Permission denied');
       expect(unmeasurable.stderr).not.toContain('killing stalled producer');
       expect(readFileSync(sudoLog, 'utf8')).toContain('-n -u postgres du -sb');
     } finally {

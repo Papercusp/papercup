@@ -67,19 +67,22 @@ const loopDelivery = (over: Partial<DeliveryWork> = {}): DeliveryWork =>
 
 /** A fake postgres-js tagged-template: routes SELECT → the routine ref, UPDATE → rearm rows,
  *  and records every call so the test can assert what ran. */
-function fakeSql(opts: { ref?: Record<string, unknown> | null; rearmRows?: { id: string }[] } = {}) {
-  const calls: { kind: 'select' | 'update' | 'other'; text: string }[] = [];
-  const fn = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+function fakeSql(opts: { ref?: Record<string, unknown> | null; rearmRows?: { id: string }[]; failTransition?: boolean } = {}) {
+  const calls: { kind: 'select' | 'update' | 'other'; text: string; values: unknown[] }[] = [];
+  const fn = (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
     if (/^\s*SELECT/i.test(text)) {
-      calls.push({ kind: 'select', text });
+      calls.push({ kind: 'select', text, values });
       return Promise.resolve(opts.ref === undefined ? [] : opts.ref ? [opts.ref] : []);
     }
     if (/UPDATE/i.test(text)) {
-      calls.push({ kind: 'update', text });
+      calls.push({ kind: 'update', text, values });
       return Promise.resolve(opts.rearmRows ?? [{ id: 'loop_su_owner' }]);
     }
-    calls.push({ kind: 'other', text });
+    calls.push({ kind: 'other', text, values });
+    if (opts.failTransition && text.includes('INSERT INTO harness_shared.routine_loop_transitions')) {
+      return Promise.reject(new Error('simulated transition-log failure'));
+    }
     return Promise.resolve([]);
   };
   return Object.assign(fn, { calls });
@@ -153,15 +156,20 @@ describe('computeDeathRearmMs (P1a — 429-aware re-arm)', () => {
 });
 
 describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn)', () => {
-  it('a 429 DEATH on a loop wake records an error + re-arms the parked loop', async () => {
+  it.each([
+    { rearm: true, failTransition: false },
+    { rearm: true, failTransition: true },
+    { rearm: false, failTransition: false },
+  ])('EI-25819428676194926: a 429 death records only actual rearms and tolerates logger failure (%j)', async ({ rearm, failTransition }) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {}); // the handler logs the observed death (expected)
-    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const sql = fakeSql({ ref: refRow, rearmRows: rearm ? [{ id: 'loop_su_owner' }] : [], failTransition });
     const recordFire = vi.fn(async () => {});
     const res = await handleLoopResumeTurnExit(loopDelivery(), deathRaw(), { sql: sql as never, recordFire });
 
     expect(res.handled).toBe(true);
     expect(res.class).toBe('rate_limited');
-    expect(res.rearmedMs).toBeGreaterThan(0);
+    if (rearm) expect(res.rearmedMs).toBeGreaterThan(0);
+    else expect(res.rearmedMs).toBeUndefined();
     // Fed the EXISTING circuit with the loop's exact fire-gate key + 'error'.
     expect(recordFire).toHaveBeenCalledTimes(1);
     expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-owner', expect.stringContaining('rate_limited'), 'infra-error') // WI-669: infra-shaped — counter preserved;
@@ -169,6 +177,23 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     const update = sql.calls.find((c) => c.kind === 'update');
     expect(update).toBeTruthy();
     expect(update!.text).toContain("'infinity'");
+    const transitions = sql.calls.filter((c) => c.text.includes('INSERT INTO harness_shared.routine_loop_transitions'));
+    expect(transitions).toHaveLength(rearm ? 1 : 0);
+    if (rearm) {
+      expect(transitions[0].values.slice(0,8)).toEqual([
+        'ws-papercusp', 'papercusp', 'loop_su_owner', 'loop-su-owner',
+        'system:loop-wake', 'su-owner', 'rearmed', 'loop-turn-outcome',
+      ]);
+      // Compare the emitted deadline with the actual guarded UPDATE's bound value.
+      expect(transitions[0].values[8]).toBe(update!.values[0]);
+      const detail = transitions[0].values[10];
+      expect(typeof detail).toBe('string');
+      if (typeof detail !== 'string') throw new Error('missing transition provenance');
+      expect(JSON.parse(detail)).toMatchObject({
+        via: 'resume-turn-death', class: 'rate_limited', deliveryId: 1,
+        source: 'loop:loop_su_owner', delayMs: res.rearmedMs,
+      });
+    }
   });
 
   it('a Codex exit 0 without turn.completed records malformed_output and re-arms the loop', async () => {
@@ -623,6 +648,13 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     expect(res).toMatchObject({ handled: true, class: 'usage_limit' });
     expect(autoPause).not.toHaveBeenCalled();
     expect(res.rearmedMs).toBeGreaterThan(0);
+    const transitions = sql.calls.filter((c) => c.text.includes('INSERT INTO harness_shared.routine_loop_transitions'));
+    expect(transitions).toHaveLength(1);
+    const detail = transitions[0].values[10];
+    if (typeof detail !== 'string') throw new Error('missing usage-reset provenance');
+    expect(JSON.parse(detail)).toMatchObject({
+      class: 'usage_limit', resetAt: expect.any(Number), resetPrecision: expect.any(String),
+    });
   });
 });
 

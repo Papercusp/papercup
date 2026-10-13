@@ -346,9 +346,13 @@ run_bounded_watched() {
 
       now_epoch=$(date +%s)
       elapsed=$(( now_epoch - start_epoch ))
-      if ! current_bytes=$(sudo -n -u postgres du -sb "$progress_path" 2>/dev/null | cut -f1) ||
-         ! [[ "$current_bytes" =~ ^[0-9]+$ ]]; then
-        log "ABORTING DUMP: unable to measure archive progress at $progress_path as postgres; terminating bounded producer"
+      measurement_output=$(sudo -n -u postgres du -sb "$progress_path" 2>&1)
+      measurement_rc=$?
+      current_bytes=${measurement_output%%$'\t'*}
+      if [ "$measurement_rc" -ne 0 ] || ! [[ "$current_bytes" =~ ^[0-9]+$ ]]; then
+        measurement_detail=$(printf '%s' "$measurement_output" | tr '\r\n' ' ')
+        measurement_detail=${measurement_detail:0:240}
+        log "ABORTING DUMP: unable to measure archive progress at $progress_path as postgres (du_status=$measurement_rc output=${measurement_detail:-<empty>}); terminating bounded producer"
         kill -TERM "$dump_pid" 2>/dev/null
         sleep "$KILL_GRACE_SEC"
         kill -KILL "$dump_pid" 2>/dev/null

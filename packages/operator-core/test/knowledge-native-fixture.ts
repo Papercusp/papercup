@@ -20,7 +20,8 @@ type CorpusReceipt = { outcome: string; returned: number; admitted: number;
   stages: Array<{ lexical: { sourceCalls: SourceCall[] }; semantic: { sourceCalls: SourceCall[] } }> };
 
 async function readCorpusReceipt(sql: ReturnType<typeof getOrgPg>['sql'], workspace: string,
-  owner: string, surface: string, evidenceDir: string, filename: string, stalled = false) {
+  owner: string, surface: string, evidenceDir: string, filename: string, stalled = false,
+  healthySources: readonly string[] = stalled ? ['doc', 'report'] : ['plan', 'doc', 'report']) {
   // The production writer deliberately runs asynchronously. Wait only for its
   // persisted row; keep the native request and preparation clocks unchanged.
   const deadline = Date.now() + 5_000;
@@ -51,7 +52,7 @@ async function readCorpusReceipt(sql: ReturnType<typeof getOrgPg>['sql'], worksp
     }
   }
   const lexical = corpus.stages.flatMap(stage => stage.lexical.sourceCalls);
-  for (const source of stalled ? ['doc', 'report'] : ['plan', 'doc', 'report']) {
+  for (const source of healthySources) {
     assert.ok(lexical.some(call => call.source === source && call.status === 'ran' && call.rows! > 0),
       `${surface} lost the healthy ${source} source receipt`);
   }
@@ -185,8 +186,12 @@ async function main() {
       userId: null, queryContext: warmQuery,
       session: { sessionId: 'su-private-source-control', port: 'turn-start', client: 'codex' } });
     writeFileSync(join(evidenceDir, 'source-control.json'), JSON.stringify({ payload: sourceBlock }));
+    // This receipt belongs to the normal builder above. A standalone corpus
+    // diagnostic uses a different query execution and cannot explain its result.
+    await readCorpusReceipt(sql, workspace, 'su-private-source-control', 'turn-start',
+      evidenceDir, 'source-control-receipt.json', false, ['report']);
     assert.ok(sourceBlock?.includes(warmReport.reportId),
-      'source memory builder failed known corpus control; see source-control.json and warm-corpus-control.json');
+      'source memory builder failed known corpus control; see source-control.json and source-control-receipt.json');
     const knowledgeBlock = await buildMemoryContextBlock({ workspaceId: workspace, harnessSlugs: [workspace],
       userId: null, queryContext: 'zephyrquartz diagnostic snapshot recovery evidence',
       session: { sessionId: 'su-private-knowledge-source-control', port: 'turn-start', client: 'codex' } });

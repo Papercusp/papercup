@@ -7700,6 +7700,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       if (verifyViewState) await verifyOperatorProcessViewState(first.port);
       await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
       await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+      // Plans intentionally skips account reads. Enter the account-bearing
+      // Overview pane through the installed client so this request is cold
+      // and the oracle cannot wait for traffic that navigation never sent.
+      pane.write('h');
       // Observe the client's own cold request; never warm the catalog with a
       // preparatory REST call. Duplicate ESM loading formerly stalled this
       // request for 30s and starved the three-second identity probe.
@@ -8481,6 +8485,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const pane = new PuiPane(bin, operatorPort, home, { cwd: launchDir });
     const frames: Record<string, string> = {};
     let streamingEvidence: Record<string, unknown> | undefined;
+    let interruptTurnId: string | undefined;
     try {
       await openComposer(pane);
       pane.write(greeting);
@@ -8531,6 +8536,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       const longChat = await waitForSavedTurn(longRequest);
       const longCommand = longChat.transcript.find((turn) => turn.content === longRequest)?.su_command?.command;
       if (longCommand?.type !== 'owner_turn') throw new Error('Interrupt target lacks an owner-turn receipt');
+      interruptTurnId = longCommand.turnId;
       // The engine's completed owner-turn receipt follows the native input
       // acknowledgement, not model completion. Interrupt real inference after
       // that receipt; a refused sleep command cannot stand in for running work.
@@ -8556,18 +8562,20 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       // the `isSendReady(...)).toBe(false)` assertion below keeps this
       // journey's input-lock contract independent of which footer branch owns.
       await pane.waitFor('Agent Chat · Running · Ctrl+X cancel');
+      // A native approval or an early completed reply cannot produce the
+      // required live stream by waiting longer. Detect that boundary now and
+      // preserve this turn's events below instead of masking it as no text.
+      const interruptText = () => scriptedEngine.events.flatMap((event) =>
+        event.type === 'transcript' && event.role === 'assistant' && event.phase === 'delta'
+          && event.turnId === longCommand.turnId ? [event.content] : []).join('');
+      await vi.waitUntil(() => engine.adapter.host.descriptor().lifecycle !== 'running'
+        || /\b1\s+2\s+3\b/.test(interruptText()),
+      { timeout: 120_000, interval: 100 });
+      expect(engine.adapter.host.descriptor().lifecycle,
+        'the inline interruption stimulus reached approval or completion before its native numeric stream').toBe('running');
       await vi.waitFor(
         () => {
-          const partialText = scriptedEngine.events
-            .flatMap((event) =>
-              event.type === 'transcript' &&
-              event.role === 'assistant' &&
-              event.phase === 'delta' &&
-              event.turnId === longCommand.turnId
-                ? [event.content]
-                : [],
-            )
-            .join('');
+          const partialText = interruptText();
           expect(partialText, 'native text must reach the host before completion').toMatch(/\b1\s+2\s+3\b/);
           // Read the FIRST pane column, not one bar off each end: the agent-chat pane
           // is rendered beside the Presence rail (`│5302 …││● claude  su │`), so
@@ -8797,6 +8805,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           binary: bin,
           binarySha256,
           frames,
+          interruptTurnId,
+          interruptEvents: interruptTurnId ? scriptedEngine.events.filter((event) =>
+            'turnId' in event && event.turnId === interruptTurnId) : undefined,
           nativeState,
           intentPivotWarnings,
           timeoutDegradations,

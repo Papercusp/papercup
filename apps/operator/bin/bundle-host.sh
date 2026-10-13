@@ -261,7 +261,26 @@ HOST_EXTERNALS+=(
   --external:viem
   --external:iconv-lite
   --external:@smithy/core
+  # WI-6554700010009462: the PDF stack, reached ONLY through dynamic imports —
+  # pdfjs-dist (3.66 MB) from content-intake.ts, pdf-lib + @pdf-lib/fontkit
+  # (~2.4 MB with pako/standard-fonts) from dao-hr/contracts-esign.ts. External
+  # + dynamic means a host loads them only when it extracts or builds a PDF.
+  # Keep those imports dynamic: a static import hoists an external to boot.
+  --external:pdfjs-dist
+  --external:pdf-lib
+  --external:@pdf-lib/fontkit
+  # 0.19 MB; provider-router.ts dynamic-imports it for an openrouter selection.
+  --external:@openrouter/ai-sdk-provider
 )
+
+if ! VIEM_ALIAS_OUTPUT="$(bundle_host_viem_aliases "${COMMITTED_NODE[0]}" "$REPO_ROOT")"; then
+  echo 'ERROR: could not resolve viem utility ESM exports' >&2
+  exit 78
+fi
+HOST_VIEM_ALIASES=()
+while IFS= read -r viem_alias; do
+  HOST_VIEM_ALIASES+=("$viem_alias")
+done <<< "$VIEM_ALIAS_OUTPUT"
 
 # self-exec guards would all fire at boot. isCliEntry()
 # (operator-core/lib/util/cli-entry.ts) returns false under this define — its
@@ -507,7 +526,7 @@ bundle_rc=0
       --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
       "${BUNDLED_SOURCE_SHA_DEFINE[@]}" \
       --log-limit=20 \
-      "${HOST_EXTERNALS[@]}"; then
+      "${HOST_EXTERNALS[@]}" "${HOST_VIEM_ALIASES[@]}"; then
       echo "ERROR: esbuild failed to bundle $ENTRY (see the esbuild diagnostics above)."
       exit 1
     fi

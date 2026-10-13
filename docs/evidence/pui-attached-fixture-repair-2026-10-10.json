@@ -179,12 +179,33 @@
       "profilePath": "/tmp/pui-acceptance-7534f/cold-identity-profile-20261011-1716/timing/operator-549229-af09aab3-5841-4bb1-a6cd-9db51a5a0c80.json",
       "profileSha256": "cd0ddfd06a546396c4ba2aaf3b682060202f8bd07ddda1464cedf4f0f032f9af",
       "requests": [
-        { "method": "GET", "path": "/api/harness/papercup/agent-chats", "status": 500, "wallMs": 7270, "eventLoopMaxMs": 7147.094015 },
-        { "method": "POST", "path": "/api/agent-mcp/run-tool", "toolName": "accounts:status", "status": 408, "wallMs": 30793, "eventLoopMaxMs": 30618.419199 }
+        {
+          "method": "GET",
+          "path": "/api/harness/papercup/agent-chats",
+          "status": 500,
+          "wallMs": 7270,
+          "eventLoopMaxMs": 7147.094015
+        },
+        {
+          "method": "POST",
+          "path": "/api/agent-mcp/run-tool",
+          "toolName": "accounts:status",
+          "status": 408,
+          "wallMs": 30793,
+          "eventLoopMaxMs": 30618.419199
+        }
       ],
       "cpuAttribution": [
-        { "source": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts", "handlerSampledMs": 27794, "synchronousEsmHookSampledMs": 23106 },
-        { "source": "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts", "handlerSampledMs": 6590, "synchronousEsmHookSampledMs": 4618 }
+        {
+          "source": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+          "handlerSampledMs": 27794,
+          "synchronousEsmHookSampledMs": 23106
+        },
+        {
+          "source": "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts",
+          "handlerSampledMs": 6590,
+          "synchronousEsmHookSampledMs": 4618
+        }
       ]
     },
     "rootCause": "Request-time dynamic imports traverse the already loaded CommonJS catalog/chat-data graph through tsx's synchronous Node ESM hooks, blocking the private HTTP event loop.",
@@ -199,13 +220,31 @@
       "logSha256": "29b3a34152fb3566bf624f28873fcc9aa277caa8099a603c2ad33aafd9af840f",
       "state": "terminal failed exit 1 at 2026-10-11T17:42:39.962Z; both cold controls selected, 2 failed / 92 skipped; initial identity and account-status complete but remaining startup loop stalls exceed the guard",
       "observations": [
-        { "observer": false, "initialIdentityMs": 34, "accountStatusMs": 94, "accountStatusCode": 200, "eventLoopMaxMs": 7683.964927 },
-        { "observer": true, "initialIdentityMs": 39, "accountStatusMs": 151, "accountStatusCode": 200, "eventLoopMaxMs": 6144.655359 }
+        {
+          "observer": false,
+          "initialIdentityMs": 34,
+          "accountStatusMs": 94,
+          "accountStatusCode": 200,
+          "eventLoopMaxMs": 7683.964927
+        },
+        {
+          "observer": true,
+          "initialIdentityMs": 39,
+          "accountStatusMs": 151,
+          "accountStatusCode": 200,
+          "eventLoopMaxMs": 6144.655359
+        }
       ],
       "remainingCpuAttribution": "New profiles locate synchronous ESM waits in plans:attention's readInbox/readAckedMsgIds lazy import and telemetry defaultGoalRehydrator. Redundant attention imports are removed; intentional telemetry cycles remain lazy. The acceptance fixture is being aligned with the served operator's bundled loader.",
       "profiles": [
-        { "path": "/tmp/pui-acceptance-7534f/cold-identity-repair-20261011-1736/timing/operator-1749256-97efea1f-7855-46bd-9fea-3381130cdc5d.json", "sha256": "efd011a59fa336962ddd95c7a497134c1022af75708270c440cc13da6fc244a2" },
-        { "path": "/tmp/pui-acceptance-7534f/cold-identity-repair-20261011-1736/timing/operator-1860399-d6fc9b9e-7403-4061-ac58-c127fd93caee.json", "sha256": "d2c0f7413ec58c47669726b1fbfda9b9131acb453996ec0af40aeeb161d36390" }
+        {
+          "path": "/tmp/pui-acceptance-7534f/cold-identity-repair-20261011-1736/timing/operator-1749256-97efea1f-7855-46bd-9fea-3381130cdc5d.json",
+          "sha256": "efd011a59fa336962ddd95c7a497134c1022af75708270c440cc13da6fc244a2"
+        },
+        {
+          "path": "/tmp/pui-acceptance-7534f/cold-identity-repair-20261011-1736/timing/operator-1860399-d6fc9b9e-7403-4061-ac58-c127fd93caee.json",
+          "sha256": "d2c0f7413ec58c47669726b1fbfda9b9131acb453996ec0af40aeeb161d36390"
+        }
       ],
       "detectorCorrection": "Wait only for request completion; assert its immutable wall/loop measurements once, without retrying a historical maximum for 40 seconds."
     },
@@ -244,13 +283,35 @@
         "testFileSha256": "7014d2a3705635aa59b0edf44d87b7d8c0bf46d87747db03a686421e9df8face",
         "fixtureEntrySha256": "38acf689906080be578645e7061083c0b3255f9445a3c63d5e219b4a9d782451",
         "controls": [
-          { "observerViewStateRead": false, "identityStatus": 200, "identityMs": 41, "accountStatus": 200, "accountStatusMs": 130, "eventLoopDelayMaxMsSinceReadyAtAccountResponse": 221.904895, "nativeLaunches": 0 },
-          { "observerViewStateRead": true, "identityStatus": 200, "identityMs": 43, "accountStatus": 200, "accountStatusMs": 85, "eventLoopDelayMaxMsSinceReadyAtAccountResponse": 152.305663, "nativeLaunches": 0 }
+          {
+            "observerViewStateRead": false,
+            "identityStatus": 200,
+            "identityMs": 41,
+            "accountStatus": 200,
+            "accountStatusMs": 130,
+            "eventLoopDelayMaxMsSinceReadyAtAccountResponse": 221.904895,
+            "nativeLaunches": 0
+          },
+          {
+            "observerViewStateRead": true,
+            "identityStatus": 200,
+            "identityMs": 43,
+            "accountStatus": 200,
+            "accountStatusMs": 85,
+            "eventLoopDelayMaxMsSinceReadyAtAccountResponse": 152.305663,
+            "nativeLaunches": 0
+          }
         ],
         "provenance": "Current-build fixture only; TEST_FILE_RESULT reports unknown commit provenance after shared HEAD movement, ledger source is dirty. No clean as-committed BAR or immutable full-candidate claim.",
         "cpuProfiles": [
-          { "path": "/tmp/pui-acceptance-7534f/cold-identity-census-20261011-1819/timing/operator-157142-8a757a8c-933c-4ef1-b386-436caaba61a8.json", "sha256": "273896485263385fa248bfe077e8aa12d262db9d90a2f022012140352463dd88" },
-          { "path": "/tmp/pui-acceptance-7534f/cold-identity-census-20261011-1819/timing/operator-170164-5e36bd82-d0f8-45e2-958f-078337f20052.json", "sha256": "a5351bd7aa43b995e47bc85bc5affebdfb97c32fdbd4ece92a3d751f77a8fea3" }
+          {
+            "path": "/tmp/pui-acceptance-7534f/cold-identity-census-20261011-1819/timing/operator-157142-8a757a8c-933c-4ef1-b386-436caaba61a8.json",
+            "sha256": "273896485263385fa248bfe077e8aa12d262db9d90a2f022012140352463dd88"
+          },
+          {
+            "path": "/tmp/pui-acceptance-7534f/cold-identity-census-20261011-1819/timing/operator-170164-5e36bd82-d0f8-45e2-958f-078337f20052.json",
+            "sha256": "a5351bd7aa43b995e47bc85bc5affebdfb97c32fdbd4ece92a3d751f77a8fea3"
+          }
         ]
       },
       "limitations": "Both cold controls only; no native launch, approval, restart or immutable full-candidate verdict."
@@ -281,7 +342,12 @@
       "secondOperatorPid": 2247838,
       "port": 41033,
       "nativePostExitHolder": "clean-scan; held=false",
-      "attachOutcome": { "httpStatus": 503, "status": "error", "code": "attached_engine_start_failed", "error": "The native transcript is unavailable or still being restored" },
+      "attachOutcome": {
+        "httpStatus": 503,
+        "status": "error",
+        "code": "attached_engine_start_failed",
+        "error": "The native transcript is unavailable or still being restored"
+      },
       "nativeModel": "papercusp-gateway/claude-sonnet-4-6",
       "accountRoute": "auto",
       "accountServed": "aviynw6",
@@ -290,9 +356,18 @@
     "rootCause": "The launcher transcript preflight hardcoded the default OMP store although launch and native-resume environment used PAPERCUSP_SU_OMP_HOMES_DIR. Structured resume also omitted the persisted descriptor agentHome from the preflight source. The preflight therefore refused a valid private native transcript before the existing exact-home resolver ran.",
     "alternativeHypothesis": "Archive timing or provider capacity prevented the transcript from being restored.",
     "distinguishingTest": "Canonical filesystem launcher tests create the exact native transcript in saved/configured homes without any provider or archive, then check transcript presence and native resume environment. A negative control puts the same thread id only in an unrelated default home. Structured-resume test refuses unless descriptor agentHome reaches transcript preflight.",
-    "negativeControl": { "testRunIds": [21155678, 21155682], "result": "Three launcher regressions and the structured-resume regression failed on unchanged production source." },
+    "negativeControl": {
+      "testRunIds": [
+        21155678,
+        21155682
+      ],
+      "result": "Three launcher regressions and the structured-resume regression failed on unchanged production source."
+    },
     "guardVerification": {
-      "testRunIds": [21155704, 21155707],
+      "testRunIds": [
+        21155704,
+        21155707
+      ],
       "launcherTestsPassed": 13,
       "structuredResumeTestsPassed": 21,
       "exitCode": 0,
@@ -370,7 +445,10 @@
       "deadline": "2026-10-12T21:43:46.764Z",
       "state": "Passed: explicit native target-note approval/effect and same conversation after a second operator OS process.",
       "resumeMessage": "coord-send-0a0f2ad1c8b670fe61d36a7d8f086f77edc79224edd71d32ec108f7cf72fe338",
-      "attemptAuditPosts": [1177646, 1177647],
+      "attemptAuditPosts": [
+        1177646,
+        1177647
+      ],
       "testRunId": 21161988,
       "terminalAt": "2026-10-12T21:34:08.500Z",
       "exitCode": 0,
@@ -417,5 +495,314 @@
       }
     },
     "limitations": "Canonical mounted-device classifiers and the current-build native target-note approval/restart journey passed. The journey does not retain a standalone mounted-prerequisite receipt and is not immutable full-candidate acceptance. All original publication holds remain."
+  },
+  "candidate3592Acceptance": {
+    "workItems": [
+      "WI-10003592",
+      "EI-25697542669399195",
+      "WI-6554700010009476",
+      "WI-6554700010009475"
+    ],
+    "taskId": "0mv5sum732mjm6lb9dn",
+    "rootLog": ".papercusp/scratch/bash-7058e61d-330.log",
+    "rootLogSha256": "7e685061d0d9a147967e3d8dd520ef54f238b0f4b5f7ec6672b0d6f051c107d9",
+    "terminalAt": "2026-10-12T23:17:42.188Z",
+    "exitCode": 1,
+    "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-3592f5530dbcace48d9d84b86d398fd860b26b00/pui-3592-native-repair-20261012-2205.acceptance.json",
+    "verdictSha256": "4dfdfc6082701ab7273321a5dabca9c2e187e094cd8acd1cd91da72520c9c3f6",
+    "checkedAt": "2026-10-12T23:15:27.686Z",
+    "ok": false,
+    "candidate": {
+      "sourceSha": "3592f5530dbcace48d9d84b86d398fd860b26b00",
+      "artifact": "linux-x86_64",
+      "archive": "/tmp/pui-acceptance-7534f/candidates/source-3592f5530dbcace48d9d84b86d398fd860b26b00/pui-0.1.0-linux-x86_64.tar.gz",
+      "archiveSha256": "c47f52c06d3f68013a1b41120b778e3ba51ea6f160813f6b3f07cde23a20264c",
+      "installRoot": "/tmp/pui-acceptance-7534f/run-3592-native-repair-20261012-2205/home/.local/share/pui",
+      "installedBinarySha256": "a42541b60da113213ce66ca877320fe44feb1d41246d4d01a6ea71416c0146e6",
+      "advertise": [
+        {
+          "platform": "Linux x86_64",
+          "backend": "Claude"
+        },
+        {
+          "platform": "Linux x86_64",
+          "backend": "Codex"
+        },
+        {
+          "platform": "Linux x86_64",
+          "backend": "OMP"
+        }
+      ]
+    },
+    "refusals": [
+      "installed-product codex test leg did not exit successfully (status 1)",
+      "installed-product claude test leg did not exit successfully (status 1)",
+      "installed-product omp test leg did not exit successfully (status 1)",
+      "Linux x86_64 × Claude is advertised without installed-product evidence for PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE"
+    ],
+    "legs": [
+      {
+        "backend": "codex",
+        "logPath": "/tmp/pui-acceptance-7534f/run-3592-native-repair-20261012-2205/vitest-codex.log",
+        "logSha256": "d047eac52c2f9fae5282634ec7109d6a1ae4cbedd707c93b05cb8e707a0f306c",
+        "coldFailures": [
+          {
+            "observer": false,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 225.968127
+          },
+          {
+            "observer": true,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 162.398207
+          }
+        ],
+        "restartReceiptCount": 1,
+        "errors": [
+          "AssertionError: the installed client must finish its cold account-status request: expected undefined to be defined"
+        ],
+        "childExit": [
+          "--- child exit: code=1 signal=none ---"
+        ]
+      },
+      {
+        "backend": "claude",
+        "logPath": "/tmp/pui-acceptance-7534f/run-3592-native-repair-20261012-2205/vitest-claude.log",
+        "logSha256": "33adb838d8825225789ae8683f247a2608e9104c6c1050d34e7adfbb7faf991c",
+        "coldFailures": [
+          {
+            "observer": false,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 152.043519
+          },
+          {
+            "observer": true,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 147.980287
+          }
+        ],
+        "restartReceiptCount": 1,
+        "errors": [
+          "AssertionError: the installed client must finish its cold account-status request: expected undefined to be defined",
+          "AssertionError: native text must reach the host before completion: expected '' to match /\\b1\\s+2\\s+3\\b/"
+        ],
+        "childExit": [
+          "--- child exit: code=1 signal=none ---"
+        ]
+      },
+      {
+        "backend": "omp",
+        "logPath": "/tmp/pui-acceptance-7534f/run-3592-native-repair-20261012-2205/vitest-omp.log",
+        "logSha256": "265ce7591ea6ae504d4d8f94a4f0e74f894b8e8df27837e8d8a207c337b5492e",
+        "coldFailures": [
+          {
+            "observer": false,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 258.342911
+          },
+          {
+            "observer": true,
+            "accountRequests": 0,
+            "eventLoopMaxMs": 176.947199
+          }
+        ],
+        "restartReceiptCount": 1,
+        "errors": [
+          "AssertionError: the installed client must finish its cold account-status request: expected undefined to be defined"
+        ],
+        "childExit": [
+          "--- child exit: code=1 signal=none ---"
+        ]
+      }
+    ],
+    "coldRootCause": "The restored Plans pane intentionally omits account reads; preflight waited for a request its own UI stimulus never sent. Zero starts and healthy identity/footer distinguish this from the prior event-loop stall.",
+    "streamRootCause": "Claude interpreted write-the-numbers as a file task and waited on native Write /tmp/numbers_placeholder.txt approval. No numeric delta was possible while that owner decision was pending.",
+    "repairs": [
+      "Cold probe enters Overview via h through the installed client, before its first accounts:status request; no REST prewarm or native launch.",
+      "Bounded numeric stimulus now explicitly requests chat output and disallows files/commands/tools.",
+      "Fail fast when lifecycle leaves running before numeric deltas; aggregate split chunks and preserve exact interrupt-turn events."
+    ],
+    "auditPosts": [
+      1177828,
+      1177829,
+      1177830
+    ],
+    "helperVerification": {
+      "taskId": "0mv5wef00wnj9yn1c00",
+      "logPath": ".papercusp/scratch/bash-396bfe81-183.log",
+      "logSha256": "7d0ecfcde33467f2ada3acec12d82ff3168ffb19e08f70895b1669b6082c289b",
+      "exitCode": 0,
+      "terminalAt": "2026-10-12T23:44:32.770Z",
+      "summary": [
+        " Test Files  1 passed (1)",
+        "      Tests  50 passed (50)",
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=f8d6ba4fd1 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-12T23:44:05.910Z skippedTests=0"
+      ],
+      "sourceMapPath": "/tmp/pui-acceptance-7534f/interrupt-cold-helper-source-map-20261012-2345.json",
+      "plane": "current-build uncommitted source; not immutable candidate"
+    },
+    "focusedVerification": {
+      "taskId": "0mv5whcd610klf9d1jg",
+      "rootLog": ".papercusp/scratch/bash-cd2b971c-cce.log",
+      "root": "/tmp/pui-acceptance-7534f/run-3592-cold-inline-repair-20261012-2350",
+      "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-3592f5530dbcace48d9d84b86d398fd860b26b00/pui-3592-cold-inline-repair-20261012-2350.partial.acceptance.json",
+      "deadline": "2026-10-13T00:15:50.348Z",
+      "state": "Three focused tests passed, zero failures; partial current-build release verdict remains refused by design.",
+      "plane": "current-build filtered runner over exact3592 installed binary; release verdict remains partial/refused",
+      "rootExitCode": 1,
+      "terminalAt": "2026-10-12T23:53:01.385Z",
+      "rootLogSha256": "c0ea8fd4370ea79ee4678695e0a20178d551a4149c7e99a277f6da94072e2d7b",
+      "verdictSha256": "833cef1939a871fed2e478f1de6129a7e93af3daa363885f09db45d0a68385b7",
+      "verdictOk": false,
+      "refusals": [
+        "the runner checkout /home/marsh-office/papercupai-workspace/papercusp was at e291a4ea027e1102382486d13073d8cd05bdd275 before the legs, not the candidate source 3592f5530dbcace48d9d84b86d398fd860b26b00, so the suites and operator fixture ran other code (run apps/tui/scripts/release-acceptance.sh, which checks the candidate out in isolation)",
+        "the runner checkout /home/marsh-office/papercupai-workspace/papercusp had 72 uncommitted tracked change(s) before the legs (M .papercusp/tool-catalog.json; M apps/operator-docs/src/content/docs/agent-insights/rtk-cross-platform-integration.mdx; M apps/operator/lib/psu-launcher.test.ts; M apps/operator/lib/release/green-checkpoint-real-deps.test.ts; M apps/operator/lib/release/green-checkpoint.test.ts; ...), so the suites and operator fixture ran other code",
+        "the runner checkout /home/marsh-office/papercupai-workspace/papercusp was at 8f54d89cac3d4fb604d3bd55870d430d9975bd44 after the legs, not the candidate source 3592f5530dbcace48d9d84b86d398fd860b26b00, so the suites and operator fixture ran other code (run apps/tui/scripts/release-acceptance.sh, which checks the candidate out in isolation)",
+        "the runner checkout /home/marsh-office/papercupai-workspace/papercusp had 69 uncommitted tracked change(s) after the legs (M .papercusp/tool-catalog.json; M apps/operator-docs/src/content/docs/agent-insights/rtk-cross-platform-integration.mdx; M apps/operator/bin/bundle-host.sh; M apps/operator/lib/psu-launcher.test.ts; M apps/operator/lib/release/green-checkpoint-real-deps.test.ts; ...), so the suites and operator fixture ran other code",
+        "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts as run is not the candidate's committed copy, so its evidence describes other code",
+        "packages/operator-core/lib/pui-e2e/release-acceptance.ts as run is not the candidate's committed copy, so its evidence describes other code",
+        "Linux x86_64 × Claude is advertised without installed-product evidence for PUI_OPERATOR_PROCESS_ACCEPTANCE",
+        "Linux x86_64 × Claude is advertised without installed-product evidence for PUI_INSTALLED_NATIVE_QUESTION_ACCEPTANCE",
+        "required capability 'First prompt and streamed response' on Linux x86_64 has no installed-product evidence for PUI_COMPOSER_ACCEPTANCE",
+        "required capability 'Persona, tools and permissions' on Linux x86_64 has no installed-product evidence for PUI_R03_CONTEXT_ACCEPTANCE",
+        "required capability 'Persona, tools and permissions' on Linux x86_64 has no installed-product evidence for PUI_SETUP_ACCEPTANCE",
+        "required capability 'Persona, tools and permissions' on Linux x86_64 has no installed-product evidence for PUI_APPROVAL_ALLOW_ACCEPTANCE",
+        "required capability 'Editable task list' on Linux x86_64 has no installed-product evidence for PUI_TASK_ACCEPTANCE",
+        "required capability 'Plans and work-item links' on Linux x86_64 has no installed-product evidence for PUI_TASK_PROMOTE_ACCEPTANCE",
+        "required capability 'Multiline prompt editing' on Linux x86_64 has no installed-product evidence for PUI_EDITOR_UNDO_ACCEPTANCE",
+        "required capability 'Multiline prompt editing' on Linux x86_64 has no installed-product evidence for PUI_EDITOR_HISTORY_ACCEPTANCE",
+        "required capability 'Multiline prompt editing' on Linux x86_64 has no installed-product evidence for AUTO_BAR_R_05_ACCEPTANCE",
+        "required capability 'Transcript navigation and copying' on Linux x86_64 has no installed-product evidence for PUI_EDITOR_COPY_ACCEPTANCE",
+        "required capability 'Tool requests and command output' on Linux x86_64 has no installed-product evidence for PUI_TOOLS_DIFF_ACCEPTANCE",
+        "required capability 'Code changes and diffs' on Linux x86_64 has no installed-product evidence for PUI_TOOLS_DIFF_ACCEPTANCE",
+        "required capability 'Approvals and permission scope' on Linux x86_64 has no installed-product evidence for PUI_APPROVAL_ALLOW_ACCEPTANCE",
+        "required capability 'Approvals and permission scope' on Linux x86_64 has no installed-product evidence for PUI_APPROVAL_DENY_ACCEPTANCE",
+        "required capability 'Interactive questions' on Linux x86_64 has no installed-product evidence for PUI_QUESTION_ACCEPTANCE",
+        "required capability 'New/switch/rename/archive sessions' on Linux x86_64 has no installed-product evidence for PUI_SESSION_LIFECYCLE_ACCEPTANCE",
+        "required capability 'New/switch/rename/archive sessions' on Linux x86_64 has no installed-product evidence for PUI_SETUP_ACCEPTANCE",
+        "required capability 'Legacy history continuation and fork' on Linux x86_64 has no installed-product evidence for PUI_LEGACY_CONTINUATION_ACCEPTANCE",
+        "required capability 'Interrupt, end and recovery' on Linux x86_64 has no installed-product evidence for PUI_R06_RECOVERY_ACCEPTANCE",
+        "required capability 'Interrupt, end and recovery' on Linux x86_64 has no installed-product evidence for PUI_P009_END_ACCEPTANCE",
+        "required capability 'Model/account/effort/mode settings' on Linux x86_64 has no installed-product evidence for PUI_SETUP_ACCEPTANCE",
+        "required capability 'Model/account/effort/mode settings' on Linux x86_64 has no installed-product evidence for PUI_SETTINGS_PICKERS_ACCEPTANCE",
+        "required capability 'Context, usage and compaction' on Linux x86_64 has no installed-product evidence for PUI_USAGE_ACCEPTANCE",
+        "required capability 'Context, usage and compaction' on Linux x86_64 has no installed-product evidence for PUI_R03_CONTEXT_ACCEPTANCE",
+        "required capability 'Commands, help, skills and plugins' on Linux x86_64 has no installed-product evidence for PUI_COMMANDS_ACCEPTANCE",
+        "required capability 'Files and attachments' on Linux x86_64 has no installed-product evidence for PUI_FILE_CONTEXT_ACCEPTANCE",
+        "required capability 'Authentication and first-run setup' on Linux x86_64 has no installed-product evidence for PUI_EMPTY_REGISTRY_ONBOARDING_ACCEPTANCE",
+        "required capability 'Authentication and first-run setup' on Linux x86_64 has no installed-product evidence for PUI_SETUP_RECONNECT_ACCEPTANCE",
+        "required capability 'Installation, update and support' on Linux x86_64 has no installed-product evidence for PUI_ABOUT_SUPPORT_ACCEPTANCE"
+      ],
+      "legs": [
+        {
+          "engine": "scripted",
+          "status": 0,
+          "evidence": "/tmp/pui-acceptance-7534f/run-3592-cold-inline-repair-20261012-2350/evidence-scripted.json",
+          "rows": 0
+        },
+        {
+          "engine": "claude",
+          "status": 0,
+          "evidence": "/tmp/pui-acceptance-7534f/run-3592-cold-inline-repair-20261012-2350/evidence-claude.json",
+          "rows": 1
+        }
+      ],
+      "claudeLogPath": "/tmp/pui-acceptance-7534f/run-3592-cold-inline-repair-20261012-2350/vitest-claude.log",
+      "claudeLogSha256": "eba50d9d4fbd1801adcf30b3480e83ce4f34f1f3d9842dbe7a5a14053f8d0bdc",
+      "testSummary": [
+        " Test Files  1 passed | 1 skipped (2)",
+        "      Tests  3 passed | 95 skipped (98)",
+        "--- child exit: code=0 signal=none ---"
+      ],
+      "coldReceipts": [
+        {
+          "observer": false,
+          "nativeLaunches": 0,
+          "accountSpans": [
+            {
+              "step": "operator-api",
+              "method": "POST",
+              "pathname": "/api/agent-mcp/run-tool",
+              "toolName": "accounts:status",
+              "status": 200,
+              "durationMs": 51,
+              "eventLoopDelayMaxMsSinceReady": 275.513343,
+              "at": "2026-10-12T23:51:47.239Z"
+            }
+          ]
+        },
+        {
+          "observer": true,
+          "nativeLaunches": 0,
+          "accountSpans": [
+            {
+              "step": "operator-api",
+              "method": "POST",
+              "pathname": "/api/agent-mcp/run-tool",
+              "toolName": "accounts:status",
+              "status": 200,
+              "durationMs": 54,
+              "eventLoopDelayMaxMsSinceReady": 126.091263,
+              "at": "2026-10-12T23:52:05.260Z"
+            }
+          ]
+        }
+      ],
+      "streamingEvidence": {
+        "turnId": "pui-turn-pui-1791849148614467160",
+        "observedAt": "2026-10-12T23:52:30.816Z",
+        "partialText": "1\n2\n3",
+        "visibleNumbers": [
+          1,
+          2,
+          3
+        ],
+        "lifecycle": "running",
+        "completed": false
+      },
+      "identity": {
+        "agentChatId": "36ef77bf-35e3-46c6-845a-5b18657f50e9",
+        "advSessionId": 1,
+        "backend": "claude",
+        "nativeSessionId": "cfc47cf8-ca25-43d0-8154-f3ef6484308b",
+        "ownerId": "su-1a43a047-2674-4987-9e26-e1a170f6314e",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      },
+      "resumedIdentity": {
+        "agentChatId": "36ef77bf-35e3-46c6-845a-5b18657f50e9",
+        "advSessionId": 1,
+        "backend": "claude",
+        "nativeSessionId": "cfc47cf8-ca25-43d0-8154-f3ef6484308b",
+        "ownerId": "su-1a43a047-2674-4987-9e26-e1a170f6314e",
+        "workspaceId": "pui-agent-chat-e2e",
+        "harnessSlug": "papercusp"
+      },
+      "resumedRuntimeGeneration": 1,
+      "commandTypes": [
+        "owner_turn",
+        "owner_turn",
+        "owner_turn",
+        "interrupt",
+        "owner_turn",
+        "end",
+        "owner_turn",
+        "end"
+      ],
+      "sourceMapPath": "/tmp/pui-acceptance-7534f/cold-inline-repair-source-map-20261012-2350.json",
+      "sourceMapStatus": "Not generated: direct Vitest acceptance runner does not emit the npm test:file source-map output. The path was requested in the environment and is absent. Retained log and current source hashes provide bounded local verification; new immutable full acceptance is required.",
+      "sourceSha256": {
+        "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts": "64d135876263fa78b765e9b61d007b846ccef294ca7d883c8318f55b6db63c57",
+        "packages/operator-core/lib/pui-e2e/release-acceptance.ts": "c8118c8ab56a3aec50bc41a2c144eed3671969998fa610cb1a650a7b66bde377",
+        "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts": "a11029b368d24706fe217966d6023cb1741b5dc0cf4fcba6cbbdec0e1bcda772"
+      },
+      "commitAtRead": "8f54d89cac3d4fb604d3bd55870d430d9975bd44",
+      "commitComparison": "At read, committed helper/test hashes match; the integration-file cold navigation and streaming detector edits remain uncommitted. No exact committed-candidate proof is inferred."
+    },
+    "limitations": [
+      "Full immutable3592 acceptance remains refused.",
+      "Three native restart receipts are scoped evidence, not full acceptance.",
+      "Current BAR/spec/calibration binding, independent grading, exact final Avi candidate approval and public publication remain held."
+    ]
   }
 }

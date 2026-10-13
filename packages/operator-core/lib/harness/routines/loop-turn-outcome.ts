@@ -56,6 +56,7 @@ import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../../agent-tools/coordination/compaction-recovery';
 import { addressContinuationToOwner } from '../../carry-respawn-addressing';
 import { autoPauseLoopRoutine as defaultAutoPauseLoopRoutine } from './loop-cost-cap';
+import { recordLoopTransition } from './loop-transition-log';
 import { detectOwnerAsk, stashLoopWallNag as defaultStashLoopWallNag } from './loop-wall-nag';
 import { buildLoopWakePrompt, materializeLoop as defaultMaterializeLoop, type MaterializeLoopInput } from './loop';
 import { registerResumeTurnOutcomeHandler } from '../../events/await/engine';
@@ -545,6 +546,33 @@ export async function handleLoopResumeTurnExit(
         log(`re-arm failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`);
         return false;
       });
+      if (rearmed) {
+        // Record the finite deadline's writer and inputs, not a phantom transition
+        // when the infinity guard lost a race. Logging stays fail-soft and detached.
+        void recordLoopTransition(sql, {
+          workspaceId: ref.workspaceId,
+          installSlug: ref.installSlug,
+          routineId,
+          routineName: ref.name,
+          targetRole: 'system:loop-wake',
+          targetOwnerId: ref.targetOwnerId,
+          event: 'rearmed',
+          actor: 'loop-turn-outcome',
+          newNextFireAt: new Date(now + delayMs).toISOString(),
+          intervalSec: ref.intervalSec,
+          detail: {
+            via: 'resume-turn-death',
+            class: klass,
+            provider: outcome.error.provider,
+            delayMs,
+            retryAfterMs: outcome.error.retryAfterMs ?? null,
+            resetAt: outcome.error.resetAt ?? null,
+            resetPrecision: outcome.error.resetPrecision ?? null,
+            deliveryId: d.id,
+            source: d.source,
+          },
+        });
+      }
     }
     log(
       "loop '" +

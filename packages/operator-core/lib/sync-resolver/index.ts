@@ -1976,12 +1976,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       .object({
         workspaceId: z.string().nullable().optional(),
         endedLimit: clampedLimit(200, 50).optional(),
+        view: z.enum(['full', 'header']).optional(),
       })
       .optional(),
     resolve: async (args) => {
-      const { workspaceId = null, endedLimit = 50 } = (args ?? {}) as {
+      const { workspaceId = null, endedLimit = 50, view = 'full' } = (args ?? {}) as {
         workspaceId?: string | null;
         endedLimit?: number;
+        view?: 'full' | 'header';
       };
       // BOUNDED + EXTRACTED (WI-39825). The four-leg fan-out, its shared read
       // deadline and the per-leg degradation policy now live in
@@ -1990,8 +1992,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // input is its wire args — so the knob had to become a function parameter
       // rather than a client-visible field. That module's header carries the
       // full reasoning and the per-leg policy.
-      const { readAdvRoster } = await import('./adv-roster-read');
-      return [await readAdvRoster({ workspaceId, endedLimit })];
+      const { readAdvRoster, projectAdvRoster } = await import('./adv-roster-read');
+      return [projectAdvRoster(await readAdvRoster({ workspaceId, endedLimit }), view)];
     },
   },
 

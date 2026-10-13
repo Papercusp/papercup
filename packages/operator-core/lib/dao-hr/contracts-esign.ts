@@ -5,8 +5,6 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import type { Sql } from 'postgres';
-import { PDFDocument } from 'pdf-lib';
-import fontkit from '@pdf-lib/fontkit';
 import { getOrgPg } from '@papercusp/db-org';
 import { z } from 'zod';
 import { PERSON_DATATYPE, getCanonicalEntity } from '../relationship-graph/resolver';
@@ -31,6 +29,11 @@ export interface ContractExecution {
 const db = (deps: Deps) => deps.sql ?? getOrgPg().sql;
 const sha256 = (bytes: Uint8Array) => '0x' + createHash('sha256').update(bytes).digest('hex');
 const connection = (tx: unknown) => tx as Sql;
+// Lazy on purpose: pdf-lib + @pdf-lib/fontkit (~2.4 MB) are external to the host bundle
+// (apps/operator/bin/bundle-host.sh). A static import would hoist them into every host
+// process at boot; a dynamic one loads them only when a contract PDF is built or read.
+const loadPdfLib = () => import('pdf-lib');
+const loadFontkit = async () => (await import('@pdf-lib/fontkit')).default;
 // Resolve from the package export so host bundling cannot move the asset path.
 const require=createRequire(import.meta.url);
 let contractFont:Buffer|undefined;
@@ -58,6 +61,7 @@ export function offerMergeValues(offer: HiringOffer, extra: { issuerTitle: strin
 /** Noto Sans is bundled under OFL; no host-installed font or network is needed.
  * Missing glyphs are refused instead of silently changing names or legal text. */
 export async function contractPdf(documents: string[]) {
+  const [{ PDFDocument }, fontkit] = await Promise.all([loadPdfLib(), loadFontkit()]);
   const pdf = await PDFDocument.create();pdf.registerFontkit(fontkit);
   const font=await pdf.embedFont(contractFontBytes(),{subset:true}),glyphs=new Set(font.getCharacterSet());
   for(const document of documents)for(const character of document){
@@ -142,7 +146,7 @@ export async function startContractSigning(input: DaoKey & { offerId:string;acto
   if (row.state==='prepared') {
     const changed=await sql`UPDATE harness_shared.dao_hr_contracts SET state='dispatching' WHERE workspace_id=${input.workspaceId} AND dao_slug=${input.daoSlug} AND offer_id=${input.offerId} AND state='prepared' RETURNING contract_id`;
     if (!changed.length) throw new ContractSigningError('invalid_transition','Another signing dispatch is in progress.');
-    const pdf=await PDFDocument.load(row.source_pdf);
+    const pdf=await (await loadPdfLib()).PDFDocument.load(row.source_pdf);
     const id=await adapter.create({ contractId:row.contract_id,pdf:row.source_pdf,lastPage:pdf.getPageCount(),signers:row.signers });
     await sql`UPDATE harness_shared.dao_hr_contracts SET envelope_id=${id} WHERE workspace_id=${input.workspaceId} AND dao_slug=${input.daoSlug} AND offer_id=${input.offerId} AND state='dispatching'`;
     row=await getContractExecution(input,deps);

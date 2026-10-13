@@ -44,6 +44,22 @@ const wi = (over: Partial<CorpusHit> = {}): CorpusHit => ({
 const QUERY = 'why did the http2 transport change on the sse endpoint';
 
 describe('complete knowledge context', () => {
+  it('retains the known Report when broad plan matches would consume its budget', () => {
+    const report: CorpusHit = { source: 'report',sourceId: 'warm-report',scope: 'papercusp',
+      excerpt: 'warmquartz diagnostic snapshot recovery evidence. Retain the snapshot.',
+      score: .04,rankers: ['lexical'] };
+    const broadPlans: CorpusHit[] = ['amber','cobalt','jade','zephyr'].map(token => ({
+      source: 'plan',sourceId: `papercusp:${token}`,scope: 'harness:papercusp',
+      excerpt: 'Ordinary background. '.repeat(20) + `${token} diagnostic snapshot recovery evidence.`,
+      score: .02,rankers: ['lexical'],
+    }));
+    const result = selectCorpusLines({ hits: [report,...broadPlans],
+      queryText: 'warmquartz diagnostic',harnessSlugs: ['papercusp'] });
+    expect(result.lines[0].handle.ref).toBe('report:warm-report');
+    expect(result.lines.some(line => line.line.includes('Retain the snapshot'))).toBe(true);
+    expect(result.dropped.some(drop => drop.reason === 'budget-exhausted')).toBe(true);
+  });
+
   it('retains prerequisite context and resolves all three source kinds', () => {
     const hits: CorpusHit[] = [
       { source: 'plan',sourceId: 'papercusp:repair',scope: 'harness:papercusp',excerpt: 'http2 transport repair',score: .03 },

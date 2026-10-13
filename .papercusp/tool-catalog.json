@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 962,
+  "count": 963,
   "tools": [
     {
       "name": "ablation:report",
@@ -25121,7 +25121,7 @@
           "POST"
         ]
       },
-      "description": "Replace the `## Now` block atomically. The Now block is the cold-resume anchor — the single most-read field, NOT a log: keep State ≤2000 chars + Next ≤800 (both auto-truncate, reported as `clamped`; long-form detail belongs in the plan body via plans:set-content / set-content-chunk). Auto-bumps frontmatter updated:.",
+      "description": "Write the plan's Now note (state + next, stored as structured fields; the plan markdown and version are untouched). The Now is the cold-resume anchor — the single most-read field, NOT a log: keep State ≤2000 chars + Next ≤800 (both auto-truncate, reported as `clamped`; long-form detail belongs in the plan body via plans:set-content / set-content-chunk).",
       "capabilities": [
         "plans:write"
       ],
@@ -32310,6 +32310,80 @@
         "when": "The user picked a template (from templates:list, or named one) and wants to START building the app — this scaffolds the harness AND hands the GUIDE to a builder in one call.",
         "notWhen": "Just browsing what exists → templates:list. Only reading how a template builds (no new harness) → templates:get-guide. Creating a harness from a blueprint (not a template) → harness:create.",
         "chaining": "templates:list → templates:get-guide { template } → templates:new-app { template, slug }."
+      }
+    },
+    {
+      "name": "testing:case-categories",
+      "http": {
+        "path": "/api/agent-tools/testing/case-categories",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Per-test-case categories derived at read time from their sources: layer (file path), subsystem (testing domain registry), surfaces (coverage evidence), citations (rubric tests checks and spec evidence bindings), cost p50/p95 and flakiness (recorded case results). Also lists the live testing_surfaces no recorded case covers. Read-only; no label is stored.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "You need what a test case covers, who cites it, what it costs or how flaky it is, or which live surfaces have no recorded test case.",
+        "notWhen": "File-level flake ranking (testing:flakiness) or raw per-run case rows (testing:runs { cases: true }).",
+        "chaining": "Pass files to scope one area. When truncatedByLimit is true, counts are floors, not totals."
       }
     },
     {

@@ -1352,6 +1352,48 @@
     ],
     "next": "Continue actual D006/D017 native source isolation and remaining matrix acceptance, independent rubric9 review and exactR7 shipment. Do not replay this committed qualification solely for HEAD."
   },
-  "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, and receipt-removal replication", "Independent rubric vetting and exact R7 shipment"],
+  "d006PlanClaimExtension": {
+    "priorArtifactSha256": "cbe061ff3f3617bd82a7dc9de0e1584d023d612bac677caff570229e06d16597",
+    "evidencePlane": "local-working-tree-disposable-postgres-copy-out",
+    "testPath": "packages/operator-core/lib/plan-items/claims.integration.test.ts",
+    "testSha256": "412da6f09dd3726a9480668c16b3e541ccec2c547c5317c47148eb63af2410c9",
+    "subjectPath": "packages/operator-core/lib/plan-items/claims.ts",
+    "subjectSha256": "14c682a012949ac5f6b6fca993296ee06beef6fb5d516665d0a782410348ad2f",
+    "method": "Extend the existing real-PG production authority-routed claim-store suite. A disposable transactional observer captures INSERT/UPDATE/DELETE with complete old/new rows. application_name tags identify controlled fixture wrappers, not physical native actors. Foreign answerer operations preserve source rows while own acquire/heartbeat/releaseAll succeeds. Source release/reacquire is observed despite equal holders; stale system force-release/takeover preserves the replacement. Source acquire plus system expiry/sweep has equal empty endpoints and three observed transitions.",
+    "fullFile": {
+      "testRunId": 21167479, "passed": 26, "failed": 0, "skipped": 0, "processExit": 0,
+      "prefix": "/dev/shm/get-feedback-d006-plan-claims-local-20261012T2336",
+      "logSha256": "149085ba86cb67b59b05da056d7c78b43cb190f43635bed4633aed830a1e64ae",
+      "sourceMapSha256": "41a130283da840fe7e55c8f0258734285b52c67d7f40e253b32cba5955ece37f",
+      "sourceCapture": "UNKNOWN: three late imports were not captured. The independently read canonical receipt is local, dirty and correctly scoped to papercusp/papercusp-workspace."
+    },
+    "causalQualification": {
+      "filter": "D-006 plan-only claim isolation.*answerer operations",
+      "baseline": { "testRunId": 21168015, "passed": 1, "failed": 0, "unselected": 25 },
+      "unchangedCopy": { "testRunId": 21168029, "passed": 1, "failed": 0, "unselected": 25 },
+      "mutant": { "testRunId": 21168039, "passed": 0, "failed": 1, "unselected": 25 },
+      "mutation": "Remove exactly one owner predicate in deleteClaimLocal; exact perl -Mstrict -pe preflight verifies the entire expected mutant before allocating PG.",
+      "mutantSha256": "1c5179f0c0b7276100ceae5954dbd323137dd714e231bc2d16ed5ac5a8c341be",
+      "predictedControl": "Foreign release returns false and leaves the source unchanged; the selected case passes.",
+      "predictedMutant": "Foreign release returns true and fails the source-preservation assertion.",
+      "actualObservation": "Both controls pass; mutant fails at claims.integration.test.ts:327:100 with expected true to be false. Later snapshot/reversion/system-CAS assertions are not independently falsified by this mutant.",
+      "verdict": "caught", "probeExit": 0, "guardExit": 1, "mutantParse": "unchecked",
+      "treeIntegrity": "Maintained probe verifies byte-identical original subject after overlay; current named source SHA remains 14c682a0.",
+      "ledgerReadback": "All three exact receipts independently read through testing:runs: source mutation-probe, worktreeDirty true, isScratchConfig false, papercusp/papercusp-workspace. Commit labels do not describe a clean executed tree.",
+      "sourceCapture": "All three repository-worker source diagnostics are stable with reasons []; complete executed graph and opaque inputs remain unqualified. Separate result objects report unknown file verdicts/nothing-to-record; final logs and canonical receipts establish outcomes.",
+      "prefix": "/dev/shm/get-feedback-d006-plan-claims-mut-local-20261012T2358",
+      "logSha256": "cdc3e22f3052ce2319f0b8a4a8385d35d77fe3200205fb26a3f229fe51834d50",
+      "commandReceiptSha256": "746fa8757152853cdb15bdc5d89216eae8be0f5faf0712e5a1102b1f5337e08f"
+    },
+    "committedQualification": {
+      "status": "open",
+      "observedSnapshots": ["c550476f3c", "8a48ea8e80"],
+      "testSha256InBoth": "7f922386dabf3e2999f03776b8c4a0bc660b5efaa7fd313e033908de5ff80a52",
+      "result": "Both maintained snapshots omit the new guard. No committed test was launched or dirty receipt relabelled; no manual git operation was used."
+    },
+    "limits": ["Fixture coverage is not retained production history or physical native attribution.", "Native matrix, universal source/filesystem immutability, original R6 cohort/decision and exact R7 shipment remain open.", "Rubric9 vetting is settled in the separately retained corrected card/independent audit, with its Git execution ceiling disclosed; no author-audit or card replay."],
+    "next": "Qualify only this new guard when actual committed bytes match. Continue independent native/D006/R6/R7 work and preserve settled checks without HEAD-only replay."
+  },
+  "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, and receipt-removal replication", "Exact R7 shipment"],
   "limits": ["No failed or closed native request was retried or relabelled.", "The prior live Codex-to-Claude no-child artifact remains unchanged.", "The original R6 population/cut is unchanged; this supplemental request earns no cohort credit.", "This artifact makes no universal immutability, full native-matrix, acceptance or shipment claim."]
 }

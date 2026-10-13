@@ -6040,7 +6040,7 @@ export type ClaimFailure =
 
 /**
  * P-009 / D-024 — explain a by-id claim refused by the CATEGORY half of the work predicate.
- * Returns the row's nature/audience when the feature-family row exists and is NOT agent work
+ * Returns the row's nature/audience when the resolved row exists and is NOT agent work
  * by category (nature 'work' AND audience 'agent'); null when it is agent work or absent.
  * The test is the same SQL function the claim UPDATE applies (agentWorkCategoryWhereSql), so
  * the explanation cannot disagree with the refusal. Read-only and diagnostic: it never
@@ -6048,12 +6048,16 @@ export type ClaimFailure =
  */
 export async function readNonAgentWorkCategory(
   id: string,
-  harness: string,
+  harness: string | null,
+  workspaceId: string = activeWorkspaceId(),
 ): Promise<{ nature: string; audience: string | null } | null> {
   const { sql } = getOrgPg();
   const rows = await sql<{ nature: string; audience: string | null }[]>`
     SELECT nature, audience FROM harness_shared.work_items
-     WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${harness} AND feature_id = ${id}
+     WHERE workspace_id = ${workspaceId} AND feature_id = ${id}
+       AND ${harness === null
+         ? sql`(harness_slug = '' OR harness_slug LIKE 'operator:%')`
+         : sql`harness_slug = ${harness}`}
        AND NOT ${agentWorkCategoryWhereSql(sql, null)}
      LIMIT 1`;
   return rows[0] ?? null;
@@ -9400,6 +9404,8 @@ export interface WorkItemObservation {
    *  actually succeed. False for both "someone holds it" and "unclaimed but gated". */
   available: boolean;
   claimedBy: string | null;
+  /** The named claim's category predicate refuses this nature/audience. */
+  notAgentWork?: { nature: string; audience: string | null };
   /** Current applied operation receipt prevents this target from claiming. */
   operationClaimDenied?: string;
   /** Accepted bug proof no longer authorizes fixing on the registered target. */
@@ -9511,6 +9517,17 @@ export async function observeWorkItem(
   // Dispatch replay preserves ownership but must re-read admission/trust/origin.
   // Ordinary rd callers retain the historical holder-only observation contract.
   const checkAdmission = unclaimed || opts.revalidateHeld === true;
+  if (checkAdmission) {
+    // EI-25818014870381372: named claims reject non-agent categories even though they
+    // deliberately override readiness/status. Use the claim's own SQL predicate, scoped
+    // to the row actually resolved above (the requested harness is only a preference).
+    const category = await readNonAgentWorkCategory(
+      id, wi.harness, wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId(),
+    );
+    if (category) return {
+      item: wi, available: false, claimedBy: wi.assignee, gated: true, notAgentWork: category,
+    };
+  }
   if (checkAdmission) {
     const payload = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
       ? wi.payload as Record<string, unknown> : null;

@@ -26,6 +26,28 @@ HOST_BANNER_DEFINES=(--define:__dirname=__pc_dirname --define:__filename=__pc_fi
 # Release bundles share the desktop's name-preserving compaction. DBOS registers
 # workflows and steps by function name, so never add --minify-identifiers here.
 HOST_RELEASE_COMPACTION_ARGS=(--minify-whitespace --minify-syntax)
+# HOST externalizes the optional viem client, including every package subpath.
+# Resolve its official ESM utility exports so esbuild can tree-shake the pure
+# helpers instead of loading whole utility/accounts/chains barrels at boot.
+# Desktop already bundles these dependencies and does not need these aliases.
+bundle_host_viem_aliases() {
+  "$1" --input-type=module - "$2" <<'NODE'
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+const require = createRequire(resolve(process.argv[2], 'packages/operator-core/package.json'));
+const manifest = require.resolve('viem/package.json');
+const pkg = JSON.parse(readFileSync(manifest, 'utf8'));
+for (const subpath of ['utils', 'accounts', 'chains']) {
+  const target = pkg.exports?.['./' + subpath]?.import;
+  if (typeof target !== 'string' || !target.startsWith('./')) {
+    throw new Error('viem has no ESM export for ' + subpath);
+  }
+  console.log('--alias:viem/' + subpath + '=' + resolve(dirname(manifest), target));
+}
+NODE
+}
+
 bundle_host_select_profile() {
   HOST_MINIFY_ARGS=()
   case "${1:-development}" in

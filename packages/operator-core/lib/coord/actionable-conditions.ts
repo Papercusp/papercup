@@ -39,8 +39,12 @@ export interface ActionableCondition {
    *
    * 'suffix'  = the text after the prefix IS the harness slug.
    * 'ambient' = the key carries no harness; the caller must supply one.
+   * 'leading-segment' = the text after the prefix is `<harness>:<detail>`, and the
+   *   harness is the segment before the FIRST ':' — for families whose key must also
+   *   name a sub-subject that may itself contain ':' (a failing leg such as `lint:tsc`).
+   *   'suffix' cannot serve them: it refuses any suffix containing ':' by design.
    */
-  harnessFrom: 'suffix' | 'ambient';
+  harnessFrom: 'suffix' | 'ambient' | 'leading-segment';
   severity: 'critical' | 'major' | 'minor' | 'nit';
 }
 
@@ -56,6 +60,16 @@ export const GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX = 'github-bridge-ag
  * nothing, which is indistinguishable from no red at all.
  */
 export const FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX = 'frozen-repair-convergence:';
+
+/**
+ * Stable condition namespace for ONE failing leg of a frozen repair queue
+ * (green-main-cycle-time-2026-10-08 P-013, D-028/D-029). Keys are
+ * `frozen-repair-leg:<pipeline>:<failing entry>`, emitted only by
+ * release/frozen-repair-leg-routing.ts, which imports this constant so the emitted
+ * prefix and its opt-in entry cannot drift apart. The entry may contain ':' (`lint:tsc`),
+ * which is why the entry below uses `harnessFrom: 'leading-segment'`.
+ */
+export const FROZEN_REPAIR_LEG_CONDITION_PREFIX = 'frozen-repair-leg:';
 
 /**
  * Stable condition namespace for a collapsed fail-open rate
@@ -95,6 +109,13 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // tick the hold holds; suffix is `pipelineName(integrationRoot)`, the same slug the other
   // gate entries use. Critical: it is the last path off a frozen `main`.
   { prefix: FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX, harnessFrom: 'suffix', severity: 'critical' },
+  // green-main-cycle-time-2026-10-08 P-013 (D-028/D-029): ONE claimable item per failing
+  // leg of the frozen queue, so the repair is not a single gate owner's serial labour —
+  // any agent may claim a leg, fix it and admit the fix (admission needs no gate
+  // ownership). Durable: opened when a leg enters the queue's failing set, resolved when
+  // it leaves, never per-tick. Major, not critical: the convergence and red-streak items
+  // above already carry the stop-the-line severity for the queue as a whole.
+  { prefix: FROZEN_REPAIR_LEG_CONDITION_PREFIX, harnessFrom: 'leading-segment', severity: 'major' },
   { prefix: 'main-behind-staging:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'release-trigger-freeze:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'release-trigger-fire-stale:', harnessFrom: 'suffix', severity: 'major' },

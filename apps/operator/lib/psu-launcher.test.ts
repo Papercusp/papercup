@@ -9623,9 +9623,14 @@ describe("direct numeric tracked-session recovery (EI-24966472541417677)", () =>
   it.each([source.sessionId, "native-omp-thread", "0", "-1", "12.5", "1e3", "9007199254740992"])(
     "leaves native or invalid adv id %s to its existing guarded path",
     async (id) => {
-      const apiImpl = vi.fn();
-      expect(await resolveDirectTrackedResumeSession([], id, { apiImpl })).toBeNull();
-      expect(apiImpl).not.toHaveBeenCalled();
+      const home = mkdtempSync(join(tmpdir(), "psu-unbound-native-resume-"));
+      try {
+        const apiImpl = vi.fn();
+        expect(await resolveDirectTrackedResumeSession([], id, { home, apiImpl })).toBeNull();
+        expect(apiImpl).not.toHaveBeenCalled();
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
     },
   );
 
@@ -9641,7 +9646,8 @@ describe("direct numeric tracked-session recovery (EI-24966472541417677)", () =>
       const historical = { ...source, agent: "codex" };
       recordSessionOwner(source.sessionId, source.coordOwnerId, { home, advSessionId: source.id });
       const apiImpl = vi.fn(async () => ({ sessions: [historical] }));
-      expect(await resolveDirectTrackedResumeSession([recent], source.sessionId, { home, apiImpl }))
+      const other = { ...recent, sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
+      expect(await resolveDirectTrackedResumeSession([other], source.sessionId, { home, apiImpl }))
         .toBe(historical);
       expect(apiImpl).toHaveBeenCalledExactlyOnceWith("/api/adv/sessions/resumable?id=31413");
       expect(existsSync(join(home, ".papercusp", "su-codex-homes", "session-31413"))).toBe(false);

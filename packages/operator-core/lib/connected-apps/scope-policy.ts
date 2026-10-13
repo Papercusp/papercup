@@ -251,16 +251,18 @@ function nonEmpty(list: readonly string[] | undefined): readonly string[] | null
  * Decide one call. Order matters only for the reported reason: key state first (a revoked key
  * is revoked whatever it asks for), then workspace, then the hard-deny set, then the scopes.
  */
+export interface AppScopeInput {
+  tool: AppScopeTool;
+  args: unknown;
+  /** The workspace the call is dispatched under. */
+  workspaceId: string | null | undefined;
+  /** The transport's harness (`'*'` or empty = none named). */
+  harnessSlug?: string | null;
+  now?: Date;
+}
+
 export function evaluateAppScope(
-  input: {
-    tool: AppScopeTool;
-    args: unknown;
-    /** The workspace the call is dispatched under. */
-    workspaceId: string | null | undefined;
-    /** The transport's harness (`'*'` or empty = none named). */
-    harnessSlug?: string | null;
-    now?: Date;
-  },
+  input: AppScopeInput,
   row: AppScopeRow,
 ): AppScopeVerdict {
   const now = input.now ?? new Date();
@@ -336,6 +338,47 @@ export function evaluateAppScope(
     }
   }
   return { allow: true };
+}
+
+export interface AppScopeChainExplanation {
+  verdict: AppScopeVerdict | { allow: false; code: 'key_unknown'; reason: string };
+  /** Listing alone may defer a missing harness; it never authorizes invocation. */
+  listable: boolean;
+  /** Null for an allowed call or a missing chain. */
+  blockingScopeId: string | null;
+  /** Only identifiers and decisions, never the raw grants or credential-bearing rows. */
+  decisions: Array<{ scopeId: string; verdict: AppScopeVerdict }>;
+}
+
+/**
+ * Explain the existing parent-key/token intersection at one instant. Evaluate every
+ * row, including those after a denial, so a listing deferral cannot hide a later
+ * refusal and administrators can see which restrictions govern the request.
+ */
+export function evaluateAppScopeChain(
+  input: AppScopeInput,
+  rows: readonly AppScopeRow[],
+): AppScopeChainExplanation {
+  if (!rows.length) {
+    return {
+      verdict: { allow: false, code: 'key_unknown', reason: 'no app scope rows were supplied' },
+      listable: false,
+      blockingScopeId: null,
+      decisions: [],
+    };
+  }
+  const now = input.now ?? new Date();
+  const decisions = rows.map((row) => ({
+    scopeId: row.id,
+    verdict: evaluateAppScope({ ...input, now }, row),
+  }));
+  const blocking = decisions.find((decision) => !decision.verdict.allow);
+  return {
+    verdict: blocking?.verdict ?? { allow: true },
+    listable: decisions.every(({ verdict }) => verdict.allow || verdict.code === 'harness_required_by_scope'),
+    blockingScopeId: blocking?.scopeId ?? null,
+    decisions,
+  };
 }
 
 export interface AppKeyScopeProblem {

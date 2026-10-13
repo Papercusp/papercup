@@ -61,6 +61,9 @@ vi.mock('../../work-item-claim-lease-wiring', () => ({
 // before the envelope assertion runs (EI-20308567859934395).
 vi.mock('../coordination/context-pressure', () => ({
   fetchContextPressure: vi.fn(async () => new Map()),
+  // get_next's preflight has read per-owner readings since c7ef831c06; without this
+  // stub preflight throws, degrades, and no committed-claim envelope is formed.
+  fetchContextPressureReadings: vi.fn(async () => new Map()),
 }));
 vi.mock('../locks/live-lock-paths', () => ({
   liveLockedPaths: vi.fn(async () => []),
