@@ -58,6 +58,17 @@ import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracl
 import { GRADING_INTEGRITY_AUDIT_POLICY } from './selection-policies';
 import type { ScorecardRow } from '../scorecards';
 import type { Rubric } from '../rubrics';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+// grading-integrity's dispatch path records fallback observations; their timer
+// flush opens the live org-admin pool, which the real-PG rail refuses with a
+// console.warn that fails whichever test is running (WI-6554700010009686).
+// Same stub as grading-integrity.test.ts; the afterAll guard keeps it honest.
+vi.mock('../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
+afterAll(() => { expect(readRealPgRailBlocks().blocked).toBe(0); });
 
 /** Narrow the P-005 result union for the tests that expect success. */
 function asOk(r: GetFeedbackResult | GetFeedbackError): GetFeedbackResult {
