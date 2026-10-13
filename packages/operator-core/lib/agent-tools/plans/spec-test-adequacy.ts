@@ -1888,7 +1888,7 @@ function riskFloorRating(
     isClauseBoundMutationProof(clause, row, evidence);
   const isL4Proof = ({ row, details }: (typeof detailRows)[number]): boolean =>
     isMutation(row) ? hasClauseBoundMutationProof(row) : hasCoverageRung({ row, details }, 'l4');
-  const meetsL4 = detailRows.some(isL4Proof);
+  const l4ProofRows = detailRows.filter(isL4Proof);
   const isL3Proof = ({ row, details }: (typeof detailRows)[number]): boolean =>
     isL4Proof({ row, details }) ||
     hasCoverageRung({ row, details }, 'l3');
@@ -1900,14 +1900,22 @@ function riskFloorRating(
       return pairedTest ? [row, pairedTest] : [row];
     }))];
   if (floor === 'l4') {
-    if (meetsL4) {
+    if (l4ProofRows.length > 0) {
+      const proofBasis = [
+        l4ProofRows.some(({ row, details }) => hasCoverageRung({ row, details }, 'l4'))
+          ? 'targeted L4 coverage-census evidence'
+          : null,
+        l4ProofRows.some(({ row }) => isMutation(row) && hasClauseBoundMutationProof(row))
+          ? 'clause-bound mutation/counterexample evidence with a passing baseline case'
+          : null,
+      ].filter((entry): entry is string => entry !== null).join(' and ');
       return {
         floor,
         rating: {
           rating: 'pass',
           evidence: evidenceWithBindings(
-            `Targeted L4 proof meets the ${clauseIdentity(clause)} floor.`,
-            proofBindings(detailRows.filter(isL4Proof)),
+            `The ${clauseIdentity(clause)} L4 risk floor is met via ${proofBasis}.`,
+            proofBindings(l4ProofRows),
           ),
         },
       };
