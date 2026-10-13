@@ -403,6 +403,175 @@ export function validateDirectoryBinding(input: DirectoryBindingInput): Director
   return normalized;
 }
 
+export type DirectoryMappedRole = 'admin' | 'member' | 'billing';
+
+export interface DirectoryGroupMappingInput {
+  organizationId: string;
+  directoryId: string;
+  groupId: string;
+  role: DirectoryMappedRole;
+  purpose: string;
+}
+
+export interface DirectoryGroupMappingResult {
+  mappingId: string;
+  directoryId: string;
+  groupId: string;
+  role: DirectoryMappedRole;
+  status: 'active' | 'removed';
+  revokedMembershipIds: string[];
+  auditId: string;
+}
+
+export interface DirectoryProvisionInput {
+  organizationId: string;
+  userId: string;
+  directoryId: string;
+  directoryUserId: string;
+  purpose: string;
+}
+
+export interface DirectoryProvisionResult {
+  membershipId: string;
+  role: DirectoryMappedRole;
+  identityId: string;
+  mappedGroupIds: string[];
+  auditId: string;
+}
+
+/** Deterministic resolution when a user sits in several mapped groups. */
+export const DIRECTORY_ROLE_PRECEDENCE: readonly DirectoryMappedRole[] = ['admin', 'member', 'billing'];
+const DIRECTORY_CONVERGENCE_LIMIT = 1000;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function resolveDirectoryRole(roles: readonly DirectoryMappedRole[]): DirectoryMappedRole {
+  const resolved = DIRECTORY_ROLE_PRECEDENCE.find((role) => roles.includes(role));
+  if (!resolved) throw new Error('directory_provision_no_mapped_group');
+  return resolved;
+}
+
+function directoryText(value: unknown, field: string, prefix: string): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 512) throw new TypeError(`${prefix}_invalid:${field}`);
+  return value.trim();
+}
+
+function directoryUuid(value: unknown, field: string, prefix: string): string {
+  if (typeof value !== 'string' || !UUID_PATTERN.test(value)) throw new TypeError(`${prefix}_invalid:${field}`);
+  return value.toLowerCase();
+}
+
+export function validateDirectoryGroupMapping(
+  raw: Partial<DirectoryGroupMappingInput>,
+  requireRole: boolean,
+): Omit<DirectoryGroupMappingInput, 'role'> & { role?: DirectoryMappedRole } {
+  const prefix = 'directory_group_mapping';
+  if (requireRole && !DIRECTORY_ROLE_PRECEDENCE.includes(raw.role as DirectoryMappedRole)) {
+    // 'owner' lands here too: no directory group can ever confer ownership.
+    throw new TypeError(`${prefix}_invalid:role`);
+  }
+  const normalized = {
+    organizationId: directoryUuid(raw.organizationId, 'organizationId', prefix),
+    directoryId: directoryText(raw.directoryId, 'directoryId', prefix),
+    groupId: directoryText(raw.groupId, 'groupId', prefix),
+    purpose: directoryText(raw.purpose, 'purpose', prefix),
+    ...(requireRole ? { role: raw.role as DirectoryMappedRole } : {}),
+  };
+  assertGovernancePayloadSafe(normalized);
+  return normalized;
+}
+
+export function validateDirectoryProvision(raw: Partial<DirectoryProvisionInput>): DirectoryProvisionInput {
+  const prefix = 'directory_provision';
+  const normalized = {
+    organizationId: directoryUuid(raw.organizationId, 'organizationId', prefix),
+    userId: directoryUuid(raw.userId, 'userId', prefix),
+    directoryId: directoryText(raw.directoryId, 'directoryId', prefix),
+    directoryUserId: directoryText(raw.directoryUserId, 'directoryUserId', prefix),
+    purpose: directoryText(raw.purpose, 'purpose', prefix),
+  };
+  assertGovernancePayloadSafe(normalized);
+  return normalized;
+}
+
+/** Re-resolve administrator authority inside the write transaction; a
+ * previously resolved cookie is not durable authority. */
+async function lockDirectoryAdministrator(
+  sql: Sql,
+  principal: HostedPrincipal,
+  organizationId: string,
+  prefix: string,
+): Promise<{ role: string; externalOrganizationId: string }> {
+  if (!isHostedPrincipal(principal) || principal.activeOrganizationId !== organizationId || !principal.permissions.has('members:manage')) {
+    throw new Error(`${prefix}_forbidden`);
+  }
+  const organizations = await sql<{ external_organization_id: string }[]>`
+    SELECT external_organization_id FROM papercusp_auth.organizations
+     WHERE id = ${organizationId}::uuid AND identity_provider = 'workos' AND status = 'active' FOR SHARE`;
+  if (!organizations[0]) throw new Error(`${prefix}_organization_not_found`);
+  const actors = await sql<{ role: string; status: string }[]>`
+    SELECT membership.role, membership.status FROM papercusp_auth.organization_memberships AS membership
+    JOIN papercusp_auth.hosted_users AS actor ON actor.id = membership.user_id
+     WHERE membership.organization_id = ${organizationId}::uuid AND membership.user_id = ${principal.userId}::uuid
+       AND actor.status = 'active' FOR SHARE OF membership, actor`;
+  if (!actors[0] || !hostedPermissionsForMembership(actors[0]).has('members:manage')) throw new Error(`${prefix}_forbidden`);
+  return { role: actors[0].role, externalOrganizationId: organizations[0].external_organization_id };
+}
+
+/** Revocation convergence for directory-provisioned grants touching one group.
+ * A grant keeps only groups that still have an active mapping; it is revoked
+ * (with this organization's sessions closed) when none remain or when its role
+ * now exceeds what those groups justify. Never elevates. Bounded and atomic:
+ * an overflow refuses the whole change instead of half-converging. */
+async function convergeDirectoryProvisioning(sql: Sql, organizationId: string, directoryId: string, groupId: string): Promise<string[]> {
+  const rows = await sql<Array<{ id: string; user_id: string; profile: Record<string, GovernanceJson>;
+    membership_id: string; role: string; status: string }>>`
+    SELECT identity.id::text, identity.hosted_user_id::text AS user_id, identity.profile,
+      membership.id::text AS membership_id, membership.role, membership.status
+    FROM papercusp_auth.external_identities AS identity
+    JOIN papercusp_auth.organization_memberships AS membership
+      ON membership.id::text = identity.profile -> 'directory_provisioning' ->> 'membershipId'
+     AND membership.organization_id = ${organizationId}::uuid AND membership.user_id = identity.hosted_user_id
+    WHERE identity.provider = 'workos-dsync'
+      AND identity.profile -> 'directory_provisioning' ->> 'organizationId' = ${organizationId}
+      AND identity.profile -> 'directory_provisioning' ->> 'directoryId' = ${directoryId}
+      AND jsonb_typeof(identity.profile -> 'directory_provisioning' -> 'mappedGroups') = 'array'
+      AND (identity.profile -> 'directory_provisioning' -> 'mappedGroups') ? ${groupId}
+    ORDER BY identity.id LIMIT ${DIRECTORY_CONVERGENCE_LIMIT + 1}
+    FOR UPDATE OF identity, membership`;
+  if (rows.length > DIRECTORY_CONVERGENCE_LIMIT) throw new Error('directory_group_mapping_convergence_limit');
+  if (!rows.length) return [];
+  const active = new Map((await sql<{ group_id: string; role: DirectoryMappedRole }[]>`
+    SELECT group_id, role FROM papercusp_auth.directory_group_role_mappings
+     WHERE organization_id = ${organizationId}::uuid AND directory_id = ${directoryId} AND status = 'active'`)
+    .map((row) => [row.group_id, row.role] as const));
+  const revoked: string[] = [];
+  for (const row of rows) {
+    const provisioning = row.profile.directory_provisioning as Record<string, GovernanceJson>;
+    const mapped = (provisioning.mappedGroups as GovernanceJson[]).filter((value): value is string => typeof value === 'string');
+    const remaining = mapped.filter((group) => active.has(group));
+    const dropped = new Set(mapped.filter((group) => !active.has(group)));
+    const resolvedRank = remaining.length
+      ? DIRECTORY_ROLE_PRECEDENCE.indexOf(resolveDirectoryRole(remaining.map((group) => active.get(group)!))) : -1;
+    const heldRank = DIRECTORY_ROLE_PRECEDENCE.indexOf(row.role as DirectoryMappedRole);
+    const revoke = !remaining.length || heldRank < 0 || heldRank < resolvedRank;
+    const authorized = Array.isArray(row.profile.authorized_directory_groups)
+      ? row.profile.authorized_directory_groups.filter((value): value is string => typeof value === 'string') : [];
+    const profile = { ...row.profile, authorized_directory_groups: authorized.filter((group) => !dropped.has(group)),
+      directory_provisioning: { ...provisioning, mappedGroups: remaining } };
+    await sql`UPDATE papercusp_auth.external_identities SET profile = ${JSON.stringify(profile)}::text::jsonb, updated_at = now()
+      WHERE id = ${row.id}::uuid`;
+    if (!revoke || row.status === 'revoked') continue;
+    await sql`UPDATE papercusp_auth.organization_memberships
+      SET status = 'revoked', revoked_at = COALESCE(revoked_at, now()), updated_at = now()
+      WHERE id = ${row.membership_id}::uuid AND organization_id = ${organizationId}::uuid`;
+    await sql`UPDATE papercusp_auth.hosted_sessions
+      SET revoked_at = now(), revocation_reason = 'directory_group_mapping_changed', updated_at = now()
+      WHERE user_id = ${row.user_id} AND organization_id = ${organizationId} AND revoked_at IS NULL`;
+    revoked.push(row.membership_id);
+  }
+  return revoked;
+}
+
 /** References describe revocation authority only. They never grant a role,
  * link an email, or reactivate a removed identity or membership. */
 export class HostedDirectoryBindingManager {
@@ -547,6 +716,130 @@ export class HostedDirectoryBindingManager {
       }, sql);
       return { organizationId: input.organizationId, generatedAt, scope: 'local-memberships-and-directory-bindings',
         memberLimit: ACCESS_REVIEW_MEMBER_LIMIT, directoryIdentityLimitPerMember: ACCESS_REVIEW_IDENTITY_LIMIT, members, auditId };
+    });
+  }
+
+  /** Owner/admin approval that one directory group may be provisioned with one
+   * non-owner role. Owners may approve admin; admins only member|billing. A
+   * role change converges existing directory-provisioned grants downward only:
+   * a member now holding more authority than its mapped groups justify is
+   * revoked (never silently elevated). */
+  async setGroupMapping(principal: HostedPrincipal, raw: DirectoryGroupMappingInput): Promise<DirectoryGroupMappingResult> {
+    const input = validateDirectoryGroupMapping(raw, true) as DirectoryGroupMappingInput;
+    return this.run<DirectoryGroupMappingResult>(async (sql) => {
+      const { role: actorRole } = await lockDirectoryAdministrator(sql, principal, input.organizationId, 'directory_group_mapping');
+      if (input.role === 'admin' && actorRole !== 'owner') throw new Error('directory_group_mapping_forbidden_role');
+      const existing = await sql<{ id: string; role: DirectoryMappedRole; status: string }[]>`
+        SELECT id::text, role, status FROM papercusp_auth.directory_group_role_mappings
+         WHERE organization_id = ${input.organizationId}::uuid AND directory_id = ${input.directoryId}
+           AND group_id = ${input.groupId} FOR UPDATE`;
+      if (existing[0]?.status === 'active' && existing[0].role === 'admin' && actorRole !== 'owner') {
+        throw new Error('directory_group_mapping_forbidden_role');
+      }
+      const rows = await sql<{ id: string }[]>`
+        INSERT INTO papercusp_auth.directory_group_role_mappings
+          (organization_id, directory_id, group_id, role, approved_by_user_id)
+        VALUES (${input.organizationId}::uuid, ${input.directoryId}, ${input.groupId}, ${input.role}, ${principal.userId}::uuid)
+        ON CONFLICT (organization_id, directory_id, group_id) DO UPDATE
+          SET role = EXCLUDED.role, status = 'active', approved_by_user_id = EXCLUDED.approved_by_user_id,
+              approved_at = now(), removed_by_user_id = NULL, removed_at = NULL, updated_at = now()
+        RETURNING id::text`;
+      const revokedMembershipIds = await convergeDirectoryProvisioning(sql, input.organizationId, input.directoryId, input.groupId);
+      const auditId = await appendOrganizationAuditEvent({ organizationId: input.organizationId,
+        actorKind: 'customer_user', actorId: principal.userId, action: 'directory_group_mapping.set', purpose: input.purpose,
+        targetType: 'directory_group_role_mapping', targetId: rows[0].id,
+        metadata: { directoryId: input.directoryId, groupId: input.groupId, role: input.role,
+          previousRole: existing[0]?.role ?? null, previousStatus: existing[0]?.status ?? null, revokedMembershipIds } }, sql);
+      return { mappingId: rows[0].id, directoryId: input.directoryId, groupId: input.groupId, role: input.role,
+        status: 'active', revokedMembershipIds, auditId };
+    });
+  }
+
+  /** Withdraw an approval. Every directory-provisioned membership that no longer
+   * has an active mapped group is revoked and its organization sessions closed
+   * in the same transaction, so closure does not wait on a webhook. */
+  async removeGroupMapping(principal: HostedPrincipal, raw: Omit<DirectoryGroupMappingInput, 'role'>): Promise<DirectoryGroupMappingResult> {
+    const input = validateDirectoryGroupMapping(raw, false);
+    return this.run<DirectoryGroupMappingResult>(async (sql) => {
+      const { role: actorRole } = await lockDirectoryAdministrator(sql, principal, input.organizationId, 'directory_group_mapping');
+      const existing = await sql<{ id: string; role: DirectoryMappedRole; status: string }[]>`
+        SELECT id::text, role, status FROM papercusp_auth.directory_group_role_mappings
+         WHERE organization_id = ${input.organizationId}::uuid AND directory_id = ${input.directoryId}
+           AND group_id = ${input.groupId} FOR UPDATE`;
+      const mapping = existing[0];
+      if (!mapping || mapping.status !== 'active') throw new Error('directory_group_mapping_not_found');
+      if (mapping.role === 'admin' && actorRole !== 'owner') throw new Error('directory_group_mapping_forbidden_role');
+      await sql`UPDATE papercusp_auth.directory_group_role_mappings
+        SET status = 'removed', removed_by_user_id = ${principal.userId}::uuid, removed_at = now(), updated_at = now()
+        WHERE id = ${mapping.id}::uuid`;
+      const revokedMembershipIds = await convergeDirectoryProvisioning(sql, input.organizationId, input.directoryId, input.groupId);
+      const auditId = await appendOrganizationAuditEvent({ organizationId: input.organizationId,
+        actorKind: 'customer_user', actorId: principal.userId, action: 'directory_group_mapping.removed', purpose: input.purpose,
+        targetType: 'directory_group_role_mapping', targetId: mapping.id,
+        metadata: { directoryId: input.directoryId, groupId: input.groupId, role: mapping.role, revokedMembershipIds } }, sql);
+      return { mappingId: mapping.id, directoryId: input.directoryId, groupId: input.groupId, role: mapping.role,
+        status: 'removed', revokedMembershipIds, auditId };
+    });
+  }
+
+  /** Explicit administrator action: link one hosted user to one OBSERVED,
+   * active directory user and create their membership from approved group
+   * mappings. Directory payload (email, role, raw attributes) never selects
+   * the user; an existing membership of any status is refused, so this path
+   * cannot elevate or reactivate. */
+  async provisionFromDirectory(principal: HostedPrincipal, raw: DirectoryProvisionInput): Promise<DirectoryProvisionResult> {
+    const input = validateDirectoryProvision(raw);
+    if (principal.userId === input.userId) throw new Error('directory_provision_forbidden');
+    return this.run<DirectoryProvisionResult>(async (sql) => {
+      const { role: actorRole, externalOrganizationId } =
+        await lockDirectoryAdministrator(sql, principal, input.organizationId, 'directory_provision');
+      const users = await sql<{ status: string }[]>`SELECT status FROM papercusp_auth.hosted_users
+        WHERE id = ${input.userId}::uuid FOR SHARE`;
+      if (users[0]?.status !== 'active') throw new Error('directory_provision_user_not_found');
+      const memberships = await sql`SELECT 1 FROM papercusp_auth.organization_memberships
+        WHERE organization_id = ${input.organizationId}::uuid AND user_id = ${input.userId}::uuid`;
+      if (memberships[0]) throw new Error('directory_provision_membership_exists');
+      const observations = await sql<{ state: string; groups: string[] }[]>`
+        SELECT state, groups FROM papercusp_auth.directory_user_observations
+         WHERE external_organization_id = ${externalOrganizationId} AND directory_id = ${input.directoryId}
+           AND directory_user_id = ${input.directoryUserId} FOR SHARE`;
+      if (observations[0]?.state !== 'active') throw new Error('directory_provision_not_observed');
+      const mappings = await sql<{ group_id: string; role: DirectoryMappedRole }[]>`
+        SELECT group_id, role FROM papercusp_auth.directory_group_role_mappings
+         WHERE organization_id = ${input.organizationId}::uuid AND directory_id = ${input.directoryId}
+           AND status = 'active' AND group_id = ANY(${observations[0].groups}::text[])
+         ORDER BY group_id FOR SHARE`;
+      if (!mappings.length) throw new Error('directory_provision_no_mapped_group');
+      const role = resolveDirectoryRole(mappings.map((row) => row.role));
+      if (role === 'admin' && actorRole !== 'owner') throw new Error('directory_provision_forbidden_role');
+      const mappedGroups = mappings.map((row) => row.group_id);
+      const subject = workosDirectoryIdentitySubject(externalOrganizationId, input.directoryId, input.directoryUserId);
+      await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`directory-binding:${subject}`}, 0))`;
+      const links = await sql<{ id: string; hosted_user_id: string; status: string; profile: Record<string, GovernanceJson> }[]>`
+        SELECT id, hosted_user_id, status, profile FROM papercusp_auth.external_identities
+         WHERE provider = 'workos-dsync' AND subject = ${subject} FOR UPDATE`;
+      const existing = links[0];
+      if (existing && existing.hosted_user_id !== input.userId) throw new Error('directory_binding_subject_conflict');
+      if (existing && existing.status !== 'active') throw new Error('directory_binding_inactive');
+      const created = await sql<{ id: string }[]>`SELECT papercusp_auth.provision_directory_membership(
+        ${input.organizationId}::uuid, ${input.userId}::uuid, ${role}, ${principal.userId}::uuid)::text AS id`;
+      const membershipId = created[0].id;
+      const previous = Array.isArray(existing?.profile.authorized_directory_groups)
+        ? existing.profile.authorized_directory_groups.filter((value): value is string => typeof value === 'string') : [];
+      const profile = { ...(existing?.profile ?? {}),
+        authorized_directory_groups: [...new Set([...previous, ...mappedGroups])].sort(),
+        directory_provisioning: { organizationId: input.organizationId, directoryId: input.directoryId, membershipId, mappedGroups } };
+      assertGovernancePayloadSafe(profile);
+      const rows = existing
+        ? await sql<{ id: string }[]>`UPDATE papercusp_auth.external_identities
+            SET profile = ${JSON.stringify(profile)}::text::jsonb, updated_at = now() WHERE id = ${existing.id}::uuid RETURNING id`
+        : await sql<{ id: string }[]>`INSERT INTO papercusp_auth.external_identities (hosted_user_id, provider, subject, profile)
+            VALUES (${input.userId}::uuid, 'workos-dsync', ${subject}, ${JSON.stringify(profile)}::text::jsonb) RETURNING id`;
+      const auditId = await appendOrganizationAuditEvent({ organizationId: input.organizationId,
+        actorKind: 'customer_user', actorId: principal.userId, action: 'directory_membership.provisioned', purpose: input.purpose,
+        targetType: 'organization_membership', targetId: membershipId,
+        metadata: { userId: input.userId, subject, role, mappedGroups } }, sql);
+      return { membershipId, role, identityId: rows[0].id, mappedGroupIds: mappedGroups, auditId };
     });
   }
 

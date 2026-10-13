@@ -167,6 +167,17 @@ export type WorkosLifecycleMutation =
       externalOrganizationId: string;
       directorySubject: string;
       groupSubject?: string;
+    }
+  | {
+      /** Records an ingested directory fact (user active / group added) in
+       * papercusp_auth.directory_user_observations. Never authority: it grants,
+       * elevates and reactivates nothing (WI-10007899, 903 D-067). */
+      kind: 'observe-directory-membership';
+      provider: 'workos';
+      userSubject: string;
+      externalOrganizationId: string;
+      directorySubject: string;
+      groupSubject?: string;
     };
 
 export interface WorkosLifecycleClosureTargets {
@@ -347,8 +358,9 @@ export function projectWorkosLifecycleMutation(event: WorkosLifecycleEvent): Wor
       if ((event.kind === 'directory.user.changed' && event.state === 'active') ||
           (event.kind === 'directory.group.membership' && event.direction === 'added')) {
         return {
-          kind: 'ignore-external-authority', provider: 'workos', userSubject, externalOrganizationId,
-          cause: event.kind === 'directory.user.changed' ? 'directory-user-active' : 'directory-group-added',
+          kind: 'observe-directory-membership', provider: 'workos', userSubject, externalOrganizationId, directorySubject,
+          ...(event.kind === 'directory.group.membership'
+            ? { groupSubject: requiredText(event.groupSubject, 'groupSubject') } : {}),
         };
       }
       return {

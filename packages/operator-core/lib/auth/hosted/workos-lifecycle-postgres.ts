@@ -444,6 +444,19 @@ export class PostgresWorkosLifecycleProjectionStore implements WorkosLifecyclePr
                 (profile->'authorized_directory_groups') ? ${mutation.groupSubject ?? ''}))
            FOR UPDATE
         `;
+        // The ingested fact converges regardless of whether a local grant exists,
+        // so a later explicit provisioning never acts on a stale observation.
+        await sql`
+          INSERT INTO papercusp_auth.directory_user_observations
+            (external_organization_id, directory_id, directory_user_id, state, groups)
+          VALUES (${mutation.externalOrganizationId}, ${mutation.directorySubject}, ${mutation.userSubject},
+            ${mutation.groupSubject === undefined ? 'inactive' : 'unknown'}, ARRAY[]::text[])
+          ON CONFLICT (external_organization_id, directory_id, directory_user_id) DO UPDATE
+            SET state = CASE WHEN ${mutation.groupSubject === undefined} THEN 'inactive'
+                  ELSE papercusp_auth.directory_user_observations.state END,
+                groups = array_remove(papercusp_auth.directory_user_observations.groups, ${mutation.groupSubject ?? null}::text),
+                updated_at = now()
+        `;
         const userId = links[0]?.hosted_user_id;
         const organizationId = (await this.organizationTargets(sql, mutation.externalOrganizationId))?.organizationIds?.[0];
         if (!userId || !organizationId) return undefined;
@@ -455,6 +468,29 @@ export class PostgresWorkosLifecycleProjectionStore implements WorkosLifecyclePr
              AND status <> 'revoked'
         `;
         return this.membershipSessionTargets(sql, userId, organizationId);
+      }
+      case 'observe-directory-membership': {
+        // Facts only. Each group has its own lifecycle cursor (entity key), so
+        // per-group add/remove ordering is preserved; the user-state cursor is
+        // separate, so an out-of-order group add never revives an inactive user.
+        const group = mutation.groupSubject ?? null;
+        await sql`
+          INSERT INTO papercusp_auth.directory_user_observations
+            (external_organization_id, directory_id, directory_user_id, state, groups)
+          VALUES (${mutation.externalOrganizationId}, ${mutation.directorySubject}, ${mutation.userSubject},
+            ${group === null ? 'active' : 'unknown'},
+            CASE WHEN ${group}::text IS NULL THEN ARRAY[]::text[] ELSE ARRAY[${group}::text] END)
+          ON CONFLICT (external_organization_id, directory_id, directory_user_id) DO UPDATE
+            SET state = CASE WHEN ${group}::text IS NULL THEN 'active' ELSE papercusp_auth.directory_user_observations.state END,
+                groups = CASE
+                  WHEN ${group}::text IS NULL OR ${group}::text = ANY(papercusp_auth.directory_user_observations.groups)
+                    THEN papercusp_auth.directory_user_observations.groups
+                  WHEN cardinality(papercusp_auth.directory_user_observations.groups) >= 1000
+                    THEN papercusp_auth.directory_user_observations.groups
+                  ELSE array_append(papercusp_auth.directory_user_observations.groups, ${group}::text) END,
+                updated_at = now()
+        `;
+        return undefined;
       }
       case 'ignore-external-authority':
         return undefined;
