@@ -122,7 +122,7 @@ describe('reconcileNowNext — supersede exactly the measured failure class', ()
   });
 
   it('preserves the author’s words verbatim when it supersedes', () => {
-    // Prepend-only, like terminal-now-stamp: the derived verdict leads, the
+    // Prepend-only: the derived verdict leads, the
     // typed line survives beneath it. Nothing is destroyed on a read.
     const prose = 'P-001 — smallest change, highest value (45 items advertise pickable work).';
     const r = reconcileNowNext(prose, [item('P-001', 'done'), item('P-002', 'todo')]);

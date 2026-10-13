@@ -11,11 +11,15 @@
  * update records no revision. Readers take the note over any content `## Now`
  * section, which stays only as frozen legacy text (now-note-store.ts).
  *
- * Writes inside the plan lock; the Now/item contradiction and omission guards
- * evaluate the plan as it will read with the new note.
+ * Writes inside the plan lock; the Now/item omission guard evaluates the plan
+ * as it will read with the new note.
  *
- * `replaceNowBlock` below is the content-section writer still used by the
- * terminal and greenlit stamps until P-006 retires them.
+ * P-006 (D-011): a note may mention finished items. Item status is derived from
+ * the item rows, so the note is narration only; set-now no longer refuses a note
+ * that names a done item, and no terminal/greenlit stamp is written into it.
+ *
+ * `replaceNowBlock` below is the content-section writer used by the
+ * plan-scope-cascade banners (stampMootCarrierNowBlock / stampBarReadinessNowBlock).
  */
 
 import { z } from 'zod';
@@ -25,12 +29,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { newMsgId } from '@papercusp/coordination/core';
 import { withPlanLock } from './with-plan-lock';
 import { maskFences, parsePlan } from './parser';
-import {
-  detectNowItemContradictions,
-  detectNowItemOmissions,
-  type NowItemContradiction,
-  type NowItemOmission,
-} from './now-item-contradictions';
+import { detectNowItemOmissions, type NowItemOmission } from './now-item-contradictions';
 import { applyNowNoteToParsed, buildSetNowNote, type PlanNowNote } from './now-note-store';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
@@ -66,7 +65,6 @@ const argsSchema = z.object({
 type SetNowValue =
   | { ok: true }
   | { ok: false; code: 'not_found' }
-  | { ok: false; code: 'now_item_status_contradiction'; contradictions: NowItemContradiction[] }
   | { ok: false; code: 'now_item_omission'; omissions: NowItemOmission[] };
 
 export function replaceNowBlock(body: string, state: string, next: string): string {
@@ -105,8 +103,8 @@ export function replaceNowBlock(body: string, state: string, next: string): stri
 }
 
 /**
- * Pure decision core for plans:set-now. Keeping the contradiction check in
- * the same evaluator used by the handler makes the structured write guard
+ * Pure decision core for plans:set-now. Keeping the omission check in the
+ * same evaluator used by the handler makes the structured write guard
  * unit-testable without the SU lock side-database.
  *
  * derived-status-not-hand-written-2026-10-12 P-004 (D-007/D-008): the Now is a
@@ -137,13 +135,7 @@ export function evaluateNowUpdate(
 
   const nowNote = buildSetNowNote({ state, next, ...meta });
   const asRead = applyNowNoteToParsed(parsePlan(current, { filePath: `${slug}.md` }), nowNote);
-  const contradictions = detectNowItemContradictions(asRead);
-  if (contradictions.length > 0) {
-    return {
-      newBody: null,
-      value: { ok: false, code: 'now_item_status_contradiction', contradictions },
-    };
-  }
+  // P-006: no contradiction refusal — a note naming a done item is narration.
   const omissions = detectNowItemOmissions(asRead);
   if (omissions.length > 0) {
     return {
@@ -247,10 +239,8 @@ export default defineTool({
             ok: false as const,
             slug,
             error: result.value.code,
-            ...(result.value.code === 'now_item_status_contradiction'
-              ? { contradictions: result.value.contradictions }
-              : result.value.code === 'now_item_omission'
-                ? { omissions: result.value.omissions }
+            ...(result.value.code === 'now_item_omission'
+              ? { omissions: result.value.omissions }
               : {}),
           };
         }

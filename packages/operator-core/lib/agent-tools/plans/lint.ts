@@ -43,7 +43,6 @@ import type { ParsedPlan } from './parser';
 import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { detectUnparsedItemLines } from './item-parse-feedback';
-import { TERMINAL_NOW_STAMP_MARK } from './terminal-now-stamp';
 import { analyzePlanDagParallelism, nativePlanGraphAdvice, type PlanCodeScope } from './plan-dag-parallelism';
 import type { DependencyPolicyFinding } from '../../scheduler/dependency-invariants';
 import {
@@ -51,6 +50,14 @@ import {
   detectNowItemOmissions,
 } from './now-item-contradictions';
 export { detectNowItemContradictions, detectNowItemOmissions } from './now-item-contradictions';
+
+/**
+ * The mark plans:set-plan-status used to prepend to a terminal plan's `## Now`
+ * (WI-38303). derived-status-not-hand-written-2026-10-12 P-006 retired the
+ * stamp; plans stamped before then still carry it, and it still means "this Now
+ * already says the plan is closed", so terminal_status_stale_now honours it.
+ */
+const LEGACY_TERMINAL_NOW_STAMP_MARK = '⛔ PLAN CLOSED';
 
 const argsSchema = z.object({
   slug: z.string().optional().describe('Lint one plan (full report: errors + warnings). Omit for all plans (bounded summary).'),
@@ -384,20 +391,21 @@ export async function lintParsed(
   // by exactly that in one session — the work-item title, the Now block and the
   // Next all agreed with each other, and only the frontmatter was true.
   //
-  // plans:set-plan-status now stamps the Now block on a terminal flip, so a
-  // freshly-shipped plan self-silences (the stamp is the falsifier below). This
-  // rule covers what the stamp cannot: the pre-existing corpus, and the
-  // whole-document writers (plans:set-content / set-content-chunk) that can set a
-  // terminal status without going through the status verb. Those two already gate
-  // writes on lint, which is why the guard belongs HERE rather than as a
-  // post-hoc rewrite of content the caller deliberately authored.
+  // P-006 retired the terminal stamp plans:set-plan-status used to write into
+  // the Now (a status is derived from the frontmatter and item rows, never
+  // written into the narration). Plans stamped before then still carry the
+  // legacy mark, which still suppresses this warning. Everything else is the
+  // author's to fix with plans:set-now. The whole-document writers
+  // (plans:set-content / set-content-chunk) gate writes on lint, which is why
+  // the guard belongs HERE rather than as a post-hoc rewrite of content the
+  // caller deliberately authored.
   //
   // Low-FP by the same construction as its mirror: it reads only the
   // self-referential `next`, and any of the ordinary ways of writing "nothing
   // left" suppress it.
   if (status === 'shipped' || status === 'superseded') {
     const nowNext = (parsed.now?.next ?? '').replace(/[*_`]/g, '').trim();
-    const alreadyStamped = (parsed.now?.raw ?? '').includes(TERMINAL_NOW_STAMP_MARK);
+    const alreadyStamped = (parsed.now?.raw ?? '').includes(LEGACY_TERMINAL_NOW_STAMP_MARK);
     // ANCHORED AT THE OPENER, deliberately. A bare keyword search anywhere in
     // the string is wrong in the one case that matters most: the real sentence
     // that misled an agent was "Grade the rubric, then flip the plan to
@@ -416,8 +424,8 @@ export async function lintParsed(
         message:
           `This plan is '${status}' but its \`## Now\` block still directs work ("${nowNext.slice(0, 80)}${nowNext.length > 80 ? '…' : ''}"). ` +
           `The Now block is the most-read field on a plan, so a finished plan that still issues instructions sends the ` +
-          `next agent to redo work that is already done. Rewrite it with plans:set-now, or re-run the terminal flip via ` +
-          `plans:set-plan-status, which stamps the block automatically (WI-38303).`,
+          `next agent to redo work that is already done. Rewrite it with plans:set-now so the Next says the plan is ` +
+          `finished (for example "Nothing — the plan is shipped.").`,
       });
     }
   }

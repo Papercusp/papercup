@@ -12,7 +12,6 @@ import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { argsSchema, evaluateSetContent } from './set-content';
 import { hashPlanContent } from './content-hash';
-import { TERMINAL_NOW_STAMP_MARK } from './terminal-now-stamp';
 
 const FRONTMATTER = `---
 title: EI-1812 Test
@@ -286,8 +285,10 @@ describe('evaluateSetContent — plan lifecycle status writer guard (WI-10002607
   });
 });
 
-describe('evaluateSetContent — terminal Now invariant (WI-38303)', () => {
-  it('stamps a prose rewrite of a plan that is already shipped', async () => {
+describe('evaluateSetContent — no terminal Now stamp (derived-status P-006)', () => {
+  // P-006 retired the WI-38303 stamp: a rewrite of a shipped plan is stored
+  // exactly as the caller authored it; nothing is prepended to its Now.
+  it('stores a prose rewrite of a shipped plan verbatim', async () => {
     const terminal = CURRENT.replace('status: draft', 'status: shipped');
     const proposed = terminal.replace('Where it stands now.', 'The shipped state remains recorded.');
     const { newBody, value } = await evaluateSetContent(terminal, proposed, 'ei-1812-test', undefined, {
@@ -296,32 +297,9 @@ describe('evaluateSetContent — terminal Now invariant (WI-38303)', () => {
 
     expect(value.ok).toBe(true);
     if (!value.ok) return;
-    expect(value.nowStamped).toBe(true);
-    expect(newBody).toContain(TERMINAL_NOW_STAMP_MARK);
-  });
-
-  it('does not nest a second stamp on a later raw edit', async () => {
-    const terminal = CURRENT.replace('status: draft', 'status: shipped');
-    const first = await evaluateSetContent(
-      terminal,
-      terminal.replace('Where it stands now.', 'The shipped state remains recorded.'),
-      'ei-1812-test',
-      undefined,
-      { allowShrink: true },
-    );
-    expect(first.newBody).not.toBeNull();
-    const second = await evaluateSetContent(
-      first.newBody,
-      first.newBody!.replace('## Decisions', '## Background\n\nHistorical note.\n\n## Decisions'),
-      'ei-1812-test',
-      undefined,
-      { allowShrink: true },
-    );
-
-    expect(second.value.ok).toBe(true);
-    if (!second.value.ok) return;
-    expect(second.value.nowStamped).toBeUndefined();
-    expect((second.newBody!.match(new RegExp(TERMINAL_NOW_STAMP_MARK, 'g')) ?? [])).toHaveLength(1);
+    expect(value).not.toHaveProperty('nowStamped');
+    expect(newBody).toBe(proposed);
+    expect(newBody).not.toContain('PLAN CLOSED');
   });
 });
 
