@@ -77,8 +77,9 @@
 #   VOLUME_MAX_AGE_SECS=86400 anonymous dangling volumes older than this go
 #   SKIP_IMAGES=1             skip the image sweep (keep re-pull cost at zero)
 #   SKIP_TESTCONTAINERS=1     skip the leaked-testcontainer sweep (step 4)
-#   TESTCONTAINER_IDLE_MAX_SECS=86400  a testcontainer unused this long with no
-#                             established connection is removed (floor 3600)
+#   TESTCONTAINER_IDLE_MAX_SECS=18000  a testcontainer unused this long with no
+#                             established connection is removed (floor 3600;
+#                             5 h so the hourly tick keeps every leak under 6 h)
 #   PAPERCUSP_TESTCONTAINERS_LAST_USED_DIR  last-use marker dir (default
 #                             /tmp/pcv/testcontainers-last-used, shared with
 #                             libs/test-config)
@@ -215,7 +216,16 @@ log "anonymous volumes removed=${anon_removed} skipped_too_young=${anon_skipped_
 #   - no established TCP connection touches any of its published host ports.
 #     A connection counts as use and refreshes the marker.
 # `docker rm -f -v` also drops the container's own anonymous data volumes.
-TESTCONTAINER_IDLE_MAX_SECS="${TESTCONTAINER_IDLE_MAX_SECS:-86400}"
+#
+# Default 5 h (WI-6554700010010406). Plan papercusp-performance-audit-2026-10-12
+# R-4 requires that no test container is observed idle for more than 6 h without
+# an owner. This script runs hourly (papercup-docker-reclaim.timer, *:17), so a
+# container that crosses the threshold just after a tick survives about one more
+# hour: the worst observed idle is roughly threshold + 1 h. A 6 h default would
+# allow ~7 h. The cost of a short window is bounded: libs/test-config stamps the
+# marker every time a Vitest process resolves the container, so the shared reused
+# test PG is re-created only after more than 5 h with no use at all.
+TESTCONTAINER_IDLE_MAX_SECS="${TESTCONTAINER_IDLE_MAX_SECS:-18000}"
 TESTCONTAINERS_LAST_USED_DIR="${PAPERCUSP_TESTCONTAINERS_LAST_USED_DIR:-/tmp/pcv/testcontainers-last-used}"
 SKIP_TESTCONTAINERS="${SKIP_TESTCONTAINERS:-0}"
 if (( TESTCONTAINER_IDLE_MAX_SECS < 3600 )); then

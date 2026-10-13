@@ -28,6 +28,9 @@ const UNMARKED_ID = 'd'.repeat(64);
 const GONE_ID = 'e'.repeat(64);
 
 const DAY_SECS = 86_400;
+const HOUR_SECS = 3_600;
+// WI-6554700010010406: 5 h, so the hourly timer keeps every leak under 6 h (R-4).
+const DEFAULT_IDLE_SECS = 5 * HOUR_SECS;
 
 interface Fixture {
   root: string;
@@ -88,12 +91,14 @@ function makeFixture(opts: { ids: string[]; busyPorts?: string[] }): Fixture {
     root,
     markers,
     calls: () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []),
-    run: (env = {}) =>
-      execFileSync('bash', [SCRIPT], {
+    run: (env = {}) => {
+      // An inherited override would mask the script's own default.
+      const { TESTCONTAINER_IDLE_MAX_SECS: _inherited, ...inherited } = process.env;
+      return execFileSync('bash', [SCRIPT], {
         encoding: 'utf8',
         timeout: 15_000,
         env: {
-          ...process.env,
+          ...inherited,
           PATH: `${bin}:${process.env.PATH}`,
           FIXTURE_LOG: log,
           FIXTURE_TC_IDS: opts.ids.join(' '),
@@ -104,7 +109,8 @@ function makeFixture(opts: { ids: string[]; busyPorts?: string[] }): Fixture {
           RECLAIM_MIN_FREE_PCT: '101',
           ...env,
         },
-      }),
+      });
+    },
     mark: (id, ageSecs) => {
       mkdirSync(markers, { recursive: true });
       const path = join(markers, id);
@@ -147,9 +153,19 @@ describe('WI-6554700010009309 — docker reclaim removes only leaked testcontain
 
   it('keeps a container used within the idle window', () => {
     const f = makeFixture({ ids: [FRESH_ID] });
-    f.mark(FRESH_ID, DAY_SECS - 3600);
+    f.mark(FRESH_ID, DEFAULT_IDLE_SECS - HOUR_SECS / 2);
     f.run();
     expect(removed(f.calls())).toEqual([]);
+  });
+
+  it('defaults the idle threshold to 5 h, so the hourly tick never leaves a leak idle past 6 h (R-4)', () => {
+    // Worst observed idle is threshold + one timer period (hourly). A 24 h or
+    // 6 h default would let a leaked container sit 25 h or 7 h before removal.
+    const f = makeFixture({ ids: [IDLE_ID] });
+    f.mark(IDLE_ID, DEFAULT_IDLE_SECS + HOUR_SECS / 2);
+    const out = f.run();
+    expect(removed(f.calls())).toEqual([IDLE_ID]);
+    expect(out).toMatch(/idle threshold 18000s/);
   });
 
   it('never removes a container on first sight: an unmarked one is stamped and its idle window starts', () => {
