@@ -116,17 +116,19 @@ describe('judgeDegradation — dominant reason names the key (R-7)', () => {
 describe('judgeYieldDrop — adjacent healthy-window yield declines', () => {
   const mechanism = getDegradationMechanism('gate-pass-reuse');
   if (!mechanism?.yieldDrop) throw new Error('gate-pass-reuse yield-drop registration is missing');
+  // Capture the narrowed value: TS resets property narrowing inside the `it` callbacks below.
+  const yieldDrop = mechanism.yieldDrop;
 
   it('alarms at a 0.50 absolute drop, but not below it or without a sampled healthy baseline', () => {
     const prior = windowOf(40, 40);
     const exactDrop = windowOf(100, 50, { otherRunner: 50 });
-    expect(judgeYieldDrop(prior, exactDrop, { mechanism: mechanism.mechanism, scope: 'task' }, mechanism.yieldDrop))
+    expect(judgeYieldDrop(prior, exactDrop, { mechanism: mechanism.mechanism, scope: 'task' }, yieldDrop))
       .toMatchObject({ kind: 'collapsed', reason: 'yield-decline', conditionKey: 'degraded:gate-pass-reuse:task:yield-decline' });
 
     const smallerDrop = windowOf(100, 51, { otherRunner: 49 });
-    expect(judgeYieldDrop(prior, smallerDrop, { mechanism: mechanism.mechanism, scope: 'task' }, mechanism.yieldDrop)).toBeNull();
-    expect(judgeYieldDrop(windowOf(19, 19), windowOf(1, 0), { mechanism: mechanism.mechanism }, mechanism.yieldDrop)).toBeNull();
-    expect(judgeYieldDrop(windowOf(40, 19), windowOf(1, 0), { mechanism: mechanism.mechanism }, mechanism.yieldDrop)).toBeNull();
+    expect(judgeYieldDrop(prior, smallerDrop, { mechanism: mechanism.mechanism, scope: 'task' }, yieldDrop)).toBeNull();
+    expect(judgeYieldDrop(windowOf(19, 19), windowOf(1, 0), { mechanism: mechanism.mechanism }, yieldDrop)).toBeNull();
+    expect(judgeYieldDrop(windowOf(40, 19), windowOf(1, 0), { mechanism: mechanism.mechanism }, yieldDrop)).toBeNull();
   });
 });
 

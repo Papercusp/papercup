@@ -121,8 +121,8 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
          WHERE ${filter(p)}
       ORDER BY e.exact_rank DESC`;
       const fused = mergeExactAndBm25(
-        exactRows as Array<Record<string, unknown> & { rank: number }>,
-        rows as Array<Record<string, unknown> & { rank: number }>,
+        exactRows as unknown as Array<Record<string, unknown> & { rank: number }>,
+        rows as unknown as Array<Record<string, unknown> & { rank: number }>,
         r => `${String(r.workspace_id)}\u0000${String(r.harness_slug)}\u0000${String(r.plan_slug)}`,
         p.limit,
       );

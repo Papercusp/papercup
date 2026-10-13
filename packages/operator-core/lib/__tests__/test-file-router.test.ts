@@ -1509,7 +1509,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     await expect(pending).resolves.toMatchObject({ status: 1, timedOut: false,
       stderr: expect.stringContaining('AssertionError') });
     expect(probeScopeSupportImpl).toHaveBeenCalledTimes(1);
-    expect(spawnImpl.mock.calls[0]?.[0]).toBe('/usr/bin/systemd-run');
+    expect((spawnImpl.mock.calls[0] as unknown[] | undefined)?.[0]).toBe('/usr/bin/systemd-run');
     expect(spawnImpl).toHaveBeenCalledTimes(1);
   });
 
