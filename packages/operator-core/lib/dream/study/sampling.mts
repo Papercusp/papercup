@@ -34,7 +34,13 @@ const mappings = [
     removal: 'Removing C leaves versioned packing without a hive-membership constraint on candidate repositories.' },
 ] as const;
 
-export function studySampling(snapshot: CapabilitySamplingSnapshot, arm: 'uniform-pair' | 'structured-pair' | 'structured-triple') {
+export function studySampling(snapshot: CapabilitySamplingSnapshot, arm: 'uniform-pair' | 'structured-pair' | 'structured-triple', graphComparison = false) {
+  if (graphComparison) {
+    if (arm !== 'structured-pair') throw new Error('Graph comparison requires the paired sampler');
+    // Use the verified current population's graph evidence, rather than D017's hand-authored mappings.
+    const sampler = { mode: 'structured' as const, arity: 2 as const, policy: { cooldownMs: 0 } };
+    return { sampler, annotationHash: capabilityHash(JSON.stringify({ sourceSnapshot: snapshot.fingerprint, sampler })) };
+  }
   const units = new Map(snapshot.eligible.map(e => [e.packet.unit.id, e]));
   const relations: CapabilityStructuralRelation[] = [];
   const thirdRoles: CapabilityThirdRole[] = [];

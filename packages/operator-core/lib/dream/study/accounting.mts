@@ -108,3 +108,27 @@ export function requireStudyRoom(rows: StudyTotal[], arm: DreamEvaluationArm, li
   return { attempts, accountedUsd: cost, armAttempts, armAccountedUsd: armCost,
     treatmentAttempts, treatmentAccountedUsd: treatmentCost };
 }
+
+/** Shared by the paid driver: select the next recorded assignment before changing controls. */
+export function prepareStudyPilot(blocks: readonly StudyBlock[], rows: StudyTotal[], choice: {
+  pin: string; arm: DreamEvaluationArm; graphTreatment?: 'graph' | 'control';
+}) {
+  const limits = validateStudyBlocks(blocks);
+  const block = blocks.find(entry => entry.pin === choice.pin);
+  if (!block) throw new Error('Study block is not registered');
+  const protocol = DreamEvaluationProtocolSchema.parse(block.protocol);
+  const graph = !!protocol.comparison?.graphAblation;
+  if (graph && (!choice.graphTreatment || choice.arm !== 'structured-pair'))
+    throw new Error('Graph study driver requires an explicit paired treatment');
+  if (!graph && choice.graphTreatment)
+    throw new Error('Legacy study block cannot accept a graph treatment');
+  const matched = choice.arm === 'structured-pair' || choice.arm === 'structured-triple';
+  const prior = rows.filter(row => row.pin === choice.pin && row.arm === choice.arm &&
+    (!graph || row.graphTreatment === choice.graphTreatment));
+  const pilot = DreamPilotPinSchema.parse({ ...block, arm: choice.arm,
+    ...(matched ? { matchedPairIndex: prior.reduce((sum, row) => sum + row.attempts, 0) } : {}),
+    ...(graph ? { graphTreatment: choice.graphTreatment } : {}) });
+  const cumulative = requireStudyRoom(rows, choice.arm, limits,
+    { blocks, ...(graph ? { pilot } : {}) });
+  return { pilot, cumulative, limits };
+}

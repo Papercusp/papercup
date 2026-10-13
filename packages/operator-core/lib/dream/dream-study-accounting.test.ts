@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
-import { STUDY_BLOCKS, requireStudyRoom, validateStudyBlocks, type StudyTotal } from './study/accounting.mts';
+import { describe, expect, it, vi } from 'vitest';
+import { dreamComparisonInputHash, dreamEvaluationProtocolHash, type DreamPilotPin } from './dream-evaluation';
+import { STUDY_BLOCKS, prepareStudyPilot, readStudyTotals, requireStudyRoom, validateStudyBlocks, type StudyTotal } from './study/accounting.mts';
 
 const blocks = Object.values(STUDY_BLOCKS).map(block => JSON.parse(readFileSync(new URL('./study/' + block.file, import.meta.url), 'utf8')));
 const limits = validateStudyBlocks(blocks);
@@ -33,5 +34,102 @@ describe('finite Dream study accounting across model blocks', () => {
     const changed = structuredClone(blocks); changed[1].protocol.limits.attempts = 201;
     expect(() => validateStudyBlocks(changed)).toThrow();
     for (const bad of [null, NaN, -1]) expect(() => requireStudyRoom([row(STUDY_BLOCKS.haiku.pin, 1, bad as number)], 'structured-pair', limits)).toThrow(/Invalid/);
+  });
+});
+
+describe('native graph comparison retains cumulative study admission', () => {
+  function native() {
+    const protocol = structuredClone(blocks[1]!.protocol);
+    const common = { sourceSnapshot: protocol.sourceSnapshot, manifestRevision: 'native-current-seven',
+      scope: { workspaceId: 'papercusp-workspace', potSlug: 'papercusp' },
+      problemContext: { mode: 'open-exploration' as const, evidence: [], note: 'Frozen independent comparison.' } };
+    protocol.comparison = { ...common, inputHash: dreamComparisonInputHash(common),
+      graphAblation: { treatments: ['graph', 'control'], populationIds: ['a', 'b'], samplerHash: 'a'.repeat(64),
+        attemptsPerTreatment: 2, usdPerTreatment: limits.cycleUsd * 2, outcomeAssessment: 'blinded-independent-executed-benefit' } };
+    delete protocol.comparison.sourceSnapshot;
+    const block = { protocol, pin: dreamEvaluationProtocolHash(protocol) };
+    const pilot: DreamPilotPin = { ...block, arm: 'structured-pair', graphTreatment: 'graph', matchedPairIndex: 0 };
+    return { block, registered: [...blocks, block], pilot };
+  }
+  const treatment = (pin: string, graphTreatment: 'graph' | 'control', attempts: number, cost: number): StudyTotal =>
+    ({ ...row(pin, attempts, cost), graphTreatment });
+
+  it('selects the next treatment assignment from its recorded attempts without resetting legacy spending', () => {
+    const { block, registered } = native();
+    const rows = [row(STUDY_BLOCKS.haiku.pin, 2, 0.05), treatment(block.pin, 'control', 1, 0.02)];
+    const control = prepareStudyPilot(registered, rows, { pin: block.pin, arm: 'structured-pair', graphTreatment: 'control' });
+    expect(control.pilot).toMatchObject({ pin: block.pin, matchedPairIndex: 1, graphTreatment: 'control' });
+    expect(control.cumulative).toMatchObject({ attempts: 3, accountedUsd: 0.07, treatmentAttempts: 1 });
+    expect(prepareStudyPilot(registered, rows, { pin: block.pin, arm: 'structured-pair', graphTreatment: 'graph' }).pilot.matchedPairIndex).toBe(0);
+    expect(prepareStudyPilot(blocks, [row(STUDY_BLOCKS.luna.pin, 1, 0.01)],
+      { pin: STUDY_BLOCKS.luna.pin, arm: 'structured-pair' }).pilot.matchedPairIndex).toBe(1);
+  });
+
+  it('refuses a driver selection with an unregistered block, missing treatment, or a mismatched arm', () => {
+    const { block, registered } = native();
+    expect(() => prepareStudyPilot(registered, [], { pin: 'b'.repeat(64), arm: 'structured-pair', graphTreatment: 'graph' })).toThrow('not registered');
+    expect(() => prepareStudyPilot(registered, [], { pin: block.pin, arm: 'structured-pair' })).toThrow('explicit paired treatment');
+    expect(() => prepareStudyPilot(registered, [], { pin: block.pin, arm: 'uniform-pair', graphTreatment: 'graph' })).toThrow('explicit paired treatment');
+    expect(() => prepareStudyPilot(blocks, [], { pin: STUDY_BLOCKS.luna.pin, arm: 'structured-pair', graphTreatment: 'graph' })).toThrow('Legacy study block');
+    expect(() => prepareStudyPilot(registered, [row(STUDY_BLOCKS.haiku.pin, 50, 0.1)],
+      { pin: block.pin, arm: 'structured-pair', graphTreatment: 'graph' })).toThrow('Cumulative study');
+  });
+
+  it('requires both historical pins and unchanged global limits for a new graph block', () => {
+    const { block, registered } = native();
+    expect(validateStudyBlocks(registered)).toEqual(limits);
+    expect(() => validateStudyBlocks([block])).toThrow('every historical block');
+    const changed = structuredClone(block); changed.protocol.limits.discoveryUsd += 1;
+    changed.pin = dreamEvaluationProtocolHash(changed.protocol);
+    expect(() => validateStudyBlocks([...blocks, changed])).toThrow('cumulative study limits');
+    expect(() => validateStudyBlocks([...registered, block])).toThrow('every historical block');
+  });
+
+  it('queries both historical pins plus the new pin and preserves separate treatment costs', async () => {
+    const { block, registered } = native();
+    const graph = treatment(block.pin, 'graph', 1, limits.cycleUsd);
+    const control = treatment(block.pin, 'control', 1, 0.01);
+    const sql = vi.fn().mockResolvedValueOnce([graph, control]).mockResolvedValueOnce([]);
+    expect(await readStudyTotals(sql as never, 'papercusp-workspace', registered)).toEqual([graph, control]);
+    for (const call of sql.mock.calls) expect(call[2]).toEqual(registered.map(entry => entry.pin));
+    expect(sql.mock.calls[0]![0].join('')).toContain('GROUP BY 1, 2, 3');
+  });
+
+  it('counts legacy failures and conservative costs against the next graph admission', () => {
+    const { block, registered, pilot } = native();
+    const rows = [row(STUDY_BLOCKS.haiku.pin, 2, 0.05), row(STUDY_BLOCKS.luna.pin, 1, 0.1),
+      treatment(block.pin, 'control', 1, 0.02)];
+    expect(requireStudyRoom(rows, 'structured-pair', limits, { blocks: registered, pilot }))
+      .toMatchObject({ attempts: 4, armAttempts: 4, accountedUsd: 0.17, treatmentAttempts: 0 });
+    expect(() => requireStudyRoom([row(STUDY_BLOCKS.haiku.pin, 49, 1), ...rows.slice(2)], 'structured-pair', limits,
+      { blocks: registered, pilot })).toThrow('Cumulative study');
+    expect(() => requireStudyRoom([row(STUDY_BLOCKS.haiku.pin, 1, limits.discoveryUsdPerArm)], 'structured-pair', limits,
+      { blocks: registered, pilot })).toThrow('Cumulative study');
+  });
+
+  it('admits treatments independently while charging unknown reservations and limiting attempts', () => {
+    const { block, registered, pilot } = native();
+    const graphSpent = treatment(block.pin, 'graph', 1, limits.cycleUsd * 2);
+    const next = { ...pilot, matchedPairIndex: 1 };
+    expect(() => requireStudyRoom([graphSpent], 'structured-pair', limits, { blocks: registered, pilot: next }))
+      .toThrow('treatment attempt or conservative monetary');
+    expect(requireStudyRoom([graphSpent], 'structured-pair', limits,
+      { blocks: registered, pilot: { ...pilot, graphTreatment: 'control' } })).toMatchObject({ treatmentAttempts: 0 });
+    expect(() => requireStudyRoom([treatment(block.pin, 'graph', 2, 0.01)], 'structured-pair', limits,
+      { blocks: registered, pilot: { ...pilot, matchedPairIndex: 2 } })).toThrow('treatment attempt');
+  });
+
+  it('refuses missing/foreign treatment attribution and replayed pair assignment', () => {
+    const { block, registered, pilot } = native();
+    const options = { blocks: registered, pilot };
+    expect(() => requireStudyRoom([], 'structured-pair', limits, { blocks: registered })).toThrow('registered treatment pin');
+    expect(() => requireStudyRoom([row(block.pin, 1, 0.1)], 'structured-pair', limits, options)).toThrow('Invalid cumulative');
+    expect(() => requireStudyRoom([treatment(STUDY_BLOCKS.haiku.pin, 'graph', 1, 0.1)], 'structured-pair', limits, options))
+      .toThrow('Invalid cumulative');
+    const observed = treatment(block.pin, 'graph', 1, 0.1);
+    expect(() => requireStudyRoom([observed], 'structured-pair', limits, options)).toThrow('recorded attempts');
+    expect(() => requireStudyRoom([observed, observed], 'structured-pair', limits, options)).toThrow('Invalid cumulative');
+    expect(() => requireStudyRoom([], 'structured-pair', limits,
+      { blocks: registered, pilot: { ...pilot, pin: 'b'.repeat(64) } })).toThrow('registered treatment pin');
   });
 });

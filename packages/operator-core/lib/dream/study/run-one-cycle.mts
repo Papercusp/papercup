@@ -5,14 +5,15 @@ import { dirname, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { installFlagOverrideStore } from '../../flag-override-store.ts';
 import { productionDreamCycle } from '../../dream/dream-cycle-action.ts';
-import { dreamEvaluationProtocolHash, DreamPilotPinSchema } from '../../dream/dream-evaluation.ts';
+import { applyDreamGraphTreatment, dreamEvaluationProtocolHash, requireDreamPilotProtocol } from '../../dream/dream-evaluation.ts';
+import { capabilityHash } from '../../dream/capability-contracts.ts';
 import { rerankCapabilityPriors } from '../../dream/capability-review.ts';
-import { getPilotCapabilityManifest } from '../../dream/capability-catalog.ts';
+import { getCurrentCapabilityManifest, getPilotCapabilityManifest } from '../../dream/capability-catalog.ts';
 import { buildCapabilityPacket } from '../../dream/capability-packets.ts';
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from '../../dream/capability-sampler.ts';
 import { CAPABILITY_DREAM_PROMPT_VERSION } from '../../dream/capability-pass.ts';
 import { studySampling } from './sampling.mts';
-import { STUDY_BLOCKS, validateStudyBlocks, requireStudyRoom, readStudyTotals } from './accounting.mts';
+import { STUDY_BLOCKS, validateStudyBlocks, prepareStudyPilot, readStudyTotals } from './accounting.mts';
 import { DEFAULT_DREAM_REVIEW_CONFIG } from '../../dream/dream-config.ts';
 import { getDreamRun } from '../../dream/dream-run-store.ts';
 import { dreamCapabilityRun } from '../../dream/dream-run-provenance.ts';
@@ -34,11 +35,18 @@ process.env.PAPERCUSP_WORKSPACE_ID = workspaceId;
 const blockArg = process.argv.find(arg => arg.startsWith('--block='))?.slice('--block='.length) ?? 'haiku';
 if (blockArg !== 'haiku' && blockArg !== 'luna') throw new Error('Unknown study model block');
 const blocks = await Promise.all(Object.values(STUDY_BLOCKS).map(async block => JSON.parse(await readFile(resolve(here, block.file), 'utf8'))));
+const comparisonFile = process.argv.find(arg => arg.startsWith('--comparison='))?.slice('--comparison='.length);
+const comparisonBlock = comparisonFile ? JSON.parse(await readFile(resolve(here, comparisonFile), 'utf8')) : null;
+if (comparisonBlock) blocks.push(comparisonBlock);
 const limits = validateStudyBlocks(blocks);
-const frozen = blocks.find(block => block.pin === STUDY_BLOCKS[blockArg].pin)!;
+const frozen = comparisonBlock ?? blocks.find(block => block.pin === STUDY_BLOCKS[blockArg].pin)!;
 if (dreamEvaluationProtocolHash(frozen.protocol) !== frozen.pin) throw new Error('Study protocol hash changed');
-const arm = process.argv.find(arg => ['uniform-pair', 'structured-pair', 'structured-triple'].includes(arg)) ?? 'uniform-pair';
-const pilot = DreamPilotPinSchema.parse({ ...frozen, arm });
+const graphComparison = !!frozen.protocol.comparison?.graphAblation;
+if (comparisonFile && !graphComparison) throw new Error('Comparison file must register a graph/control study');
+const treatment = process.argv.find(arg => arg.startsWith('--treatment='))?.slice('--treatment='.length);
+if (treatment !== undefined && treatment !== 'graph' && treatment !== 'control') throw new Error('Unknown graph study treatment');
+const arm = (process.argv.find(arg => ['uniform-pair', 'structured-pair', 'structured-triple'].includes(arg)) ??
+  (graphComparison ? 'structured-pair' : 'uniform-pair')) as 'uniform-pair' | 'structured-pair' | 'structured-triple';
 const log = async (entry: unknown) => {
   const line = JSON.stringify({ at: new Date().toISOString(), entry });
   await appendFile(resolve(here, 'cycle-events.jsonl'), line + '\n');
@@ -74,12 +82,9 @@ const master = await sql<Array<{ enabled: boolean }>>`
   SELECT enabled FROM harness_shared.learning_pot_scope
   WHERE workspace_id = ${workspaceId} AND pot_slug = 'papercusp'`;
 if (master.length !== 1 || master[0]!.enabled !== false) throw new Error('Expected disabled master; inspect current owner state before this temporary restore protocol');
-const totals = await readStudyTotals(sql, workspaceId);
-const cumulative = requireStudyRoom(totals, arm, limits);
-if (arm === 'structured-pair' || arm === 'structured-triple') {
-  pilot.matchedPairIndex = totals.find(row => row.pin === frozen.pin && row.arm === arm)?.attempts ?? 0;
-  DreamPilotPinSchema.parse(pilot);
-}
+const totals = await readStudyTotals(sql, workspaceId, blocks);
+const { pilot, cumulative } = prepareStudyPilot(blocks, totals, { pin: frozen.pin, arm,
+  ...(treatment ? { graphTreatment: treatment } : {}) });
 // Replay the actual bounded source set from the failed review, without repeating
 // its generation or changing the study record. Keep original failures in the funnel.
 const [readiness] = await sql<Array<{ review: any; outcome: any }>>`
@@ -95,7 +100,7 @@ if (!ranked.outcome.attempted || ranked.outcome.scored !== readiness.review.prio
   await sql.end();
   throw new Error('D017 reranker is not ready; no settings changed and no provider called');
 }
-const manifest = getPilotCapabilityManifest();
+const manifest = frozen.protocol.comparison ? getCurrentCapabilityManifest() : getPilotCapabilityManifest();
 const packetScope = { workspaceId, potSlug: 'papercusp', repositoryId: 'papercusp' };
 const packets = [];
 for (const unit of manifest.units) {
@@ -105,12 +110,18 @@ for (const unit of manifest.units) {
 }
 const snapshot = await buildCapabilitySamplingSnapshot({ rootPath: root, scope: packetScope, manifest, packets });
 if (snapshot.fingerprint !== frozen.protocol.sourceSnapshot) throw new Error('Frozen study source snapshot changed');
-const { sampler, annotationHash } = studySampling(snapshot, arm);
-const sample = sampleCapabilityCombination(snapshot, { ...sampler, seed: frozen.protocol.seed + ':readiness', now: Date.now(), promptVersion: CAPABILITY_DREAM_PROMPT_VERSION });
+const { sampler, annotationHash } = studySampling(snapshot, arm, graphComparison);
+requireDreamPilotProtocol(pilot, { sourceSnapshot: snapshot.fingerprint, manifestRevision: snapshot.manifestRevision,
+  scope: packetScope, generator: frozen.protocol.models.generator, reviewer: frozen.protocol.models.reviewer,
+  mode: 'manual', samplerMode: sampler.mode, arity: sampler.arity, samplerHash: capabilityHash(JSON.stringify(sampler)),
+  cycle: { maxCostUsd: limits.cycleUsd, rolling24hCostUsd: limits.rollingDayUsd } });
+const treatmentSnapshot = applyDreamGraphTreatment(snapshot, pilot);
+const sample = sampleCapabilityCombination(treatmentSnapshot, { ...sampler, seed: frozen.protocol.seed + ':readiness', now: Date.now(), promptVersion: CAPABILITY_DREAM_PROMPT_VERSION });
 if (sample.status !== 'selected' || (arm === 'structured-triple' && !sample.selection.c))
   throw new Error('Study sampler cannot supply its declared arm; no settings changed and no provider called');
 await log({ phase: 'sampling-readiness', arm, annotationHash, sampler, sourceSnapshot: snapshot.fingerprint });
-await log({ phase: 'prepared', arm, block: blockArg, protocolPin: frozen.pin, models: frozen.protocol.models, matchedPairIndex: pilot.matchedPairIndex, masterEnabled: false, priorStudyArms: totals, cumulative });
+await log({ phase: 'prepared', arm, block: blockArg, protocolPin: frozen.pin, graphTreatment: pilot.graphTreatment,
+  models: frozen.protocol.models, matchedPairIndex: pilot.matchedPairIndex, masterEnabled: false, priorStudyArms: totals, cumulative });
 if (!process.argv.includes('--run')) {
   await log({ phase: 'dry-run', message: 'No settings changed and no provider called. Pass --run for one governed attempt.' });
   await sql.end();

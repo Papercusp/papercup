@@ -56,6 +56,15 @@ describe('P020 source-correlated discovery', () => {
     expect(result.discovery).toMatchObject({ outcome: 'not-found-in-scope', matches: [] });
     expect(result.evidence!.sourceScope.sourceFingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
+  it('rejects partial-term matches across disconnected source instead of combining unrelated capabilities', () => {
+    const root = fixture();
+    // Each term has a real positive control; no callable supplies the combined query.
+    expect(query(root, 'concept-search', { name: 'invoice' }).sites.length).toBeGreaterThan(0);
+    expect(query(root, 'concept-search', { name: 'garden' }).sites.map(site => site.name)).toContain('unrelated');
+    const mixed = query(root, 'concept-search', { name: 'invoice garden' });
+    expect(mixed.error).toBeNull(); expect(mixed.sites).toEqual([]);
+    expect(mixed.discovery).toMatchObject({ outcome: 'not-found-in-scope', matches: [] });
+  });
   it('changes result and group identities after source edits, rather than retaining old relevance', () => {
     const root = fixture(), before = query(root, 'concept-search', { name: 'invoice payment' });
     writeFileSync(join(root, 'main.ts'), 'export function garden() { return "garden watering"; }\n');
