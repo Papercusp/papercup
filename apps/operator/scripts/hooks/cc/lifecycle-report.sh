@@ -7,7 +7,8 @@
 #
 # SHARED by Claude AND Codex (the cc/ contract). One script handles both events: it
 # reads `hook_event_name` from stdin (SessionStart → "▶ session started";
-# SessionEnd / Stop → "■ session ended"). SessionStart keeps the detached
+# SessionEnd → "■ session ended"; Stop → lock replay only, never a lifecycle
+# report — it is a TURN end, WI-6554700010009992). SessionStart keeps the detached
 # fire-and-forget path. SessionEnd is synchronously bounded: activity:report
 # classifies it with the existing carry/reset guards, and only a genuine terminal
 # verdict reuses the audited admin fleet:kill route to reap an otherwise-live
@@ -137,6 +138,16 @@ for entry in entries:
 PYEOF
 fi
 
+# WI-6554700010009992: Stop is a TURN boundary, not a session end. Codex fires it
+# at the end of EVERY turn, so reporting it as "■ session ended" made
+# activity:report judge a parked, loop-less session terminal after its first turn:
+# it released the owner's leases and then fleet:kill'ed the live managed host
+# (su-608d73b4, 2026-10-13 12:12:09Z, a warm headless executor). Stop's only job
+# here is the lock-release replay above; SessionEnd alone reports the end.
+if [ "$EVENT_NAME" = "Stop" ]; then
+  exit 0
+fi
+
 report() {
   python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "$AGENT" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF'
 import json, os, sys, urllib.request, urllib.parse
@@ -157,11 +168,13 @@ if not isinstance(ev, dict):
     sys.exit(0)
 
 name = (ev.get('hook_event_name') or ev.get('hookEventName') or '').strip()
-# Map the event → a lifecycle summary. SessionStart = appeared; SessionEnd / Stop =
-# left. Anything else: ignore (we only mark the two endpoints).
+# Map the event → a lifecycle summary. SessionStart = appeared; SessionEnd = left.
+# Anything else: ignore (we only mark the two endpoints). Stop is a turn boundary and
+# never reaches here (the shell exits first); it is refused again for defence in depth
+# because a Stop judged as an end fleet:kill's a live session (WI-6554700010009992).
 if name == 'SessionStart':
     summary = '▶ session started'
-elif name in ('SessionEnd', 'Stop'):
+elif name == 'SessionEnd':
     summary = '■ session ended'
 else:
     sys.exit(0)
@@ -230,7 +243,7 @@ except Exception:
 # alive. The response carries activity:report's existing continuation classifier;
 # never reproduce that state machine here. Only the exact terminal verdict may
 # invoke the already-audited owner-targeted kill path.
-if name not in ('SessionEnd', 'Stop'):
+if name != 'SessionEnd':
     sys.exit(0)
 
 def response_json(raw):
@@ -285,7 +298,7 @@ except Exception:
 PYEOF
 }
 
-if [ "$EVENT_NAME" = "SessionEnd" ] || [ "$EVENT_NAME" = "Stop" ]; then
+if [ "$EVENT_NAME" = "SessionEnd" ]; then
   # Must consume the terminal-vs-continuation verdict before this hook exits.
   report >/dev/null 2>&1 || true
 elif [ -n "${PAPERCUSP_ACTIVITY_SYNC:-}" ]; then
