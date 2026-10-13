@@ -15,6 +15,7 @@ import {
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- guard script is plain .mjs and intentionally has no declaration file.
 } from '../../../scripts/check-vitest-config-enrollment.mjs';
+import { FOREIGN_HIVE_SUBMODULES } from '../../../scripts/lib/foreign-hive-submodules.mjs';
 
 describe('Vitest config enrollment guard', () => {
   it('recognizes the shared base and the gate-participation fragment', () => {
@@ -97,6 +98,37 @@ describe('Vitest config enrollment guard', () => {
       expect(paths).toEqual(['apps/drill/vitest.config.ts']);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // WI-6554700010009815: a registered foreign-hive submodule (scripts/lib/foreign-hive-submodules.mjs)
+  // is another hive's code, judged by that hive's gate. The guard must not collect its config, neither
+  // as a declared workspace nor nested under one, so it needs no PLAIN_CONFIG_EXEMPTIONS entry. A
+  // sibling that merely shares the path prefix is still collected.
+  it('skips registered foreign-hive submodules when collecting declared configs', () => {
+    expect(FOREIGN_HIVE_SUBMODULES.length).toBeGreaterThan(0);
+    for (const { path: hive } of FOREIGN_HIVE_SUBMODULES) {
+      const parent = hive.split('/').slice(0, -1).join('/');
+      expect(parent, `${hive} must sit under a parent directory`).not.toBe('');
+      expect(PLAIN_CONFIG_EXEMPTIONS.has(`${hive}/vitest.config.ts`)).toBe(false);
+      // As a workspace (`<parent>/*`), then nested under a workspace rooted at <parent>.
+      for (const workspaces of [[`${parent}/*`], [parent]]) {
+        const root = mkdtempSync(join(tmpdir(), 'vitest-enrollment-foreign-hive-'));
+        try {
+          writeFileSync(join(root, 'package.json'), JSON.stringify({ workspaces }));
+          mkdirSync(join(root, parent), { recursive: true });
+          writeFileSync(join(root, parent, 'package.json'), '{}');
+          for (const app of [hive, `${hive}-sibling`]) {
+            mkdirSync(join(root, app), { recursive: true });
+            writeFileSync(join(root, app, 'package.json'), '{}');
+            writeFileSync(join(root, app, 'vitest.config.ts'), 'export default {};');
+          }
+          const paths = collectVitestConfigs(root).map((config: { path: string }) => config.path);
+          expect(paths, JSON.stringify(workspaces)).toEqual([`${hive}-sibling/vitest.config.ts`]);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      }
     }
   });
 

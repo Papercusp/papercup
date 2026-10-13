@@ -25,6 +25,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isInForeignHive } from './lib/foreign-hive-submodules.mjs';
 import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -62,10 +63,11 @@ export const PLAIN_CONFIG_EXEMPTIONS = new Set([
   'libs/generic/git-graph/vitest.config.ts',
   'libs/generic/ui-primitives/vitest.config.ts',
   // Same class (WI-6554700010009161): libs/generic/rrf is github.com/Papercusp/rrf and its config
-  // deliberately follows @papercusp/search's standalone route; apps/slack-asana-bug-drill is the
-  // drill fixture app @bug-drill/fixture, its own repo (papercupai/slack-asana-bug-drill-20261009).
+  // deliberately follows @papercusp/search's standalone route.
+  // A registered foreign-hive submodule (scripts/lib/foreign-hive-submodules.mjs, e.g. the drill
+  // fixture app apps/slack-asana-bug-drill) needs NO entry here: it is another hive's code, judged by
+  // that hive's own gate, so declaredWorkspaceDirs never collects it (WI-6554700010009815).
   'libs/generic/rrf/vitest.config.ts',
-  'apps/slack-asana-bug-drill/vitest.config.ts',
   // node:test package (`node --test src/**/*.node-test.ts`); its vitest config is `include: []`
   // and runs nothing, so it has no pass proofs to record.
   'libs/papercusp/packages/cli/vitest.config.ts',
@@ -170,7 +172,12 @@ function declaredWorkspaceDirs(root = ROOT) {
     }
     if (existsSync(join(root, pattern, 'package.json'))) dirs.add(pattern);
   }
-  return [...dirs].filter((dir) => !excluded.some((re) => re.test(normalizePath(dir)))).sort();
+  // A registered foreign-hive submodule (scripts/lib/foreign-hive-submodules.mjs) is another hive's
+  // code, judged by that hive's own gate, so its configs are not this tree's population
+  // (WI-6554700010009815).
+  return [...dirs]
+    .filter((dir) => !excluded.some((re) => re.test(normalizePath(dir))) && !isInForeignHive(normalizePath(dir)))
+    .sort();
 }
 
 function collectWorkspaceConfigs(workspaceDir, root, out) {
@@ -183,8 +190,10 @@ function collectWorkspaceConfigs(workspaceDir, root, out) {
   }
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
-        collectWorkspaceConfigs(join(workspaceDir, entry.name), root, out);
+      const childDir = join(workspaceDir, entry.name);
+      // A foreign hive nested under a declared workspace is skipped for the same reason.
+      if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.') && !isInForeignHive(normalizePath(childDir))) {
+        collectWorkspaceConfigs(childDir, root, out);
       }
       continue;
     }
