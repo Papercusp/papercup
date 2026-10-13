@@ -188,16 +188,25 @@ describe('dependsOnSuggestionField — facts:assert suggests the dependency the 
     expect(dependsOnSuggestionField(body, [], undefined, { resolvesToCommit: () => false })).toBeNull();
   });
 
-  it.each([
-    'Live intake: ask c308 a853236d for existing-builder acceptance.',
-    'The live receipt has artifact fingerprint a853236d.',
-  ])('the production receipt resolves noncommit IDs before suggesting dependencies: %s', async (body) => {
+  it('resolves a live SHA candidate before suggesting dependencies', async () => {
     const asked: string[] = [];
+    const body = 'Live intake: ask c308 a853236d for existing-builder acceptance.';
     const out = await dependsOnSuggestionFieldResolvingCommits(body, [], undefined, async (token) => {
       asked.push(token);
       return false;
     });
     expect(asked).toEqual(['a853236d']);
+    expect(out).toBeNull();
+  });
+
+  it('keeps artifact fingerprints out of the production commit resolver', async () => {
+    const asked: string[] = [];
+    const body = 'The live receipt has artifact fingerprint a853236d.';
+    const out = await dependsOnSuggestionFieldResolvingCommits(body, [], undefined, async (token) => {
+      asked.push(token);
+      return false;
+    });
+    expect(asked).toEqual([]);
     expect(out).toBeNull();
   });
 

@@ -19,6 +19,7 @@ import { assertSingleWriteStatement } from './pg-mutate-query';
 import {
   assertSingleReadStatement,
   assertReadOnlyExplainStatement,
+  SET_LOCAL_UNTRACKED_STATEMENTS,
   extractPgErrorInfo,
   extractReferencedTables,
   personalVaultRefusal,
@@ -62,6 +63,7 @@ import {
   refutedTenantAdvisory,
   pgReadQuery,
   boundedPgReadTxn,
+  type PgReadTxnTimeoutContext,
   PgReadQueryError,
   PgReadQueryTimeoutError,
   PG_READ_QUERY_CALL_OVERHEAD_MS,
@@ -444,6 +446,69 @@ describe('boundedPgReadTxn — bounded internal loop reads', () => {
       vi.useRealTimers();
     }
   });
+
+  it.each(['acquire', 'setup', 'callback', 'commit'] as const)(
+    'attaches bounded phase and safe acquire snapshots when %s times out',
+    async (phase) => {
+      vi.useFakeTimers();
+      const { resetAcquireRegistryForTest } = await import('@papercusp/db-org');
+      resetAcquireRegistryForTest();
+      try {
+        const never = () => new Promise<never>(() => {});
+        const tx = Object.assign(async () => [], {
+          unsafe: async (query: string) =>
+            phase === 'setup' && query === 'SET TRANSACTION READ ONLY' ? never() : [],
+        });
+        const client = phase === 'acquire'
+          ? { begin: never }
+          : phase === 'commit'
+            ? { begin: async (fn: (transaction: unknown) => Promise<unknown>) => { await fn(tx); return never(); } }
+            : { begin: async (fn: (transaction: unknown) => Promise<unknown>) => fn(tx) };
+        let callbackCalled = false;
+        const pending = boundedPgReadTxn(
+          async () => {
+            callbackCalled = true;
+            return phase === 'callback' ? never() : 'ok';
+          },
+          {
+            client: client as never,
+            acquirePool: 'org-admin',
+            timeoutMs: 100,
+            acquireTimeoutMs: 100,
+          },
+        );
+        const settled = pending.then(
+          () => { throw new Error('expected a bounded transaction deadline'); },
+          (error: Error & { boundedPgReadTxn?: PgReadTxnTimeoutContext }) => error,
+        );
+
+        const deadlineMs = phase === 'acquire' || phase === 'setup'
+          ? 101
+          : 100 + 100 + PG_READ_QUERY_CALL_OVERHEAD_MS + 1;
+        await vi.advanceTimersByTimeAsync(deadlineMs);
+        const error = await settled;
+        const context = (error as Error & { boundedPgReadTxn?: PgReadTxnTimeoutContext }).boundedPgReadTxn;
+
+        expect(context).toMatchObject({
+          phase,
+          acquirePool: 'org-admin',
+          acquireSnapshot: { pool: 'org-admin' },
+          acquireTicketSnapshot: { pool: 'org-admin', active: 1 },
+        });
+        expect(error.message).toContain(`phase=${phase}`);
+        expect(JSON.stringify(context?.acquireTicketSnapshot)).not.toMatch(/ownerId|sessionId|sql|connectionString/i);
+        expect(callbackCalled).toBe(phase === 'callback' || phase === 'commit');
+        if (phase === 'callback' || phase === 'commit') {
+          expect(context?.acquireTicketSnapshot?.tickets[0]?.state).toBe('held');
+        } else {
+          expect(context?.acquireTicketSnapshot?.tickets[0]?.state).toBe('waiting');
+        }
+      } finally {
+        resetAcquireRegistryForTest();
+        vi.useRealTimers();
+      }
+    },
+  );
 });
 
 describe('pgReadQuery — same-transaction positive control (WI-41165)', () => {
@@ -470,6 +535,7 @@ describe('pgReadQuery — same-transaction positive control (WI-41165)', () => {
 
     expect(calls).toEqual([
       'SET TRANSACTION READ ONLY',
+      SET_LOCAL_UNTRACKED_STATEMENTS,
       'SET LOCAL statement_timeout = 5000',
       "SET LOCAL TIME ZONE 'UTC'",
       "SELECT * FROM (SELECT id FROM t WHERE id = 'known-1') AS _pgq_positive_control LIMIT 2",
@@ -519,6 +585,7 @@ describe('pgReadQuery — read-only EXPLAIN', () => {
 
     expect(calls).toEqual([
       'SET TRANSACTION READ ONLY',
+      SET_LOCAL_UNTRACKED_STATEMENTS,
       'SET LOCAL statement_timeout = 5000',
       "SET LOCAL TIME ZONE 'UTC'",
       'EXPLAIN (FORMAT TEXT) SELECT 1',
