@@ -315,6 +315,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'llm',
     why: 'Admits a registered operation whose declared target can mint agent work or a plan run',
   },
+  'system:rubric-rescore': {
+    spend: 'none',
+    why: 'Deterministic re-run of a rubric’s registered host instruments and read-only probes, plus an awaited-event emit on a crossing; no agent spawn, wake or dispatched work',
+  },
   'system:external-trigger-dispatch': {
     spend: 'llm',
     why: 'Launches event-triggered plan runs and wakes their claimable work',
