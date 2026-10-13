@@ -758,7 +758,8 @@ export interface FrozenRepairAdmission {
   patch?: { commit: string; parent: string; sha256: string };
   /** hunk-exact: per admitted path, how many ledgered hunks were replayed and by whom. */
   hunks?: Record<string, { applied: number; agents: string[] }>;
-  /** Exact ledger rows captured by this hunk source; later edits are not consumed. */
+  /** Exact ledger rows captured by this hunk source; later edits are not consumed. Whole-blob and
+   *  committed-patch admissions record the rows their admitted blobs carry (WI-6554700010009991). */
   ledgerRowIds?: number[];
   /** whole-blob: the number of ledgered hunks by OTHER agents the admitted blobs may carry. */
   foreignHunksAccepted?: number;
@@ -1156,11 +1157,44 @@ function redAttributionBasis(entry: RepairSignatureEntry, admission: FrozenRepai
 }
 
 /**
+ * The workspaces whose WHOLE test task the signature holds red: a `<ws> :: test` /
+ * `<ws> :: test:*` task, or a bare workspace marker with no `test-file` entry of its own (the
+ * gate re-runs such a marker as `<ws> :: test`). A whole-task red names no file, so none of that
+ * workspace's files was known green at the round that recorded it. A bare marker PAIRED with
+ * test-file entries is only the file run's companion and does not count: there the red files
+ * are named and every other file of the workspace was green.
+ */
+function wholeTestTaskRedWorkspaces(signature: readonly RepairSignatureEntry[]): Set<string> {
+  const pairedFileWorkspaces = new Set(
+    signature.filter((entry) => entry.kind === 'test-file' && entry.workspace).map((entry) => entry.workspace as string),
+  );
+  const out = new Set<string>();
+  for (const entry of signature) {
+    if (entry.kind !== 'workspace-task') continue;
+    const task = parseRepairTaskId(entry.id);
+    if (task) {
+      if (task.script === 'test' || task.script.startsWith('test:')) out.add(task.workspace);
+    } else if (WORKSPACE_NAME_SHAPE.test(entry.id) && !pairedFileWorkspaces.has(entry.id)) {
+      out.add(entry.id);
+    }
+  }
+  return out;
+}
+
+/**
  * PURE (green-main-cycle-time-2026-10-08#D-040): attribute each entry `nextSignature` adds over
  * `queue.signature` (by kind and id, so previously green at the last judged round) to the
  * admissions in the window ending at `measuredHead`. Sound, not exact: with several unmeasured
  * admissions in one window each is named, but the admission that caused a red is never dropped
  * without the `omittedAdmissions` count saying so.
+ *
+ * An entry the prior signature already covered as part of a whole red test task is NOT newly
+ * red: a `test-file` (or its bare workspace marker) of a workspace whose test task was red names
+ * a file that was never known green, so blaming a window admission for it would be a false
+ * accusation. This is what a red test lane looks like once a later round names its failing files
+ * (a full-gate red, or a targeted round that narrows the lane, P-005 stage 3). The cost is the
+ * converse: a genuinely new red file in such a workspace goes unattributed until its workspace
+ * is narrowed to files, but it still lands in the signature and is still re-run.
  */
 export function attributeRoundReds(
   queue: Pick<FrozenCandidateRepairQueue, 'candidate' | 'admissions' | 'convergenceRounds' | 'signature'>,
@@ -1168,12 +1202,17 @@ export function attributeRoundReds(
   measuredHead: string,
 ): FrozenRepairRedAttribution[] {
   const prior = new Set((queue.signature ?? []).map((entry) => `${entry.kind}:${entry.id}`));
+  const wholeTaskRed = wholeTestTaskRedWorkspaces(queue.signature ?? []);
+  const coveredByWholeTaskRed = (entry: RepairSignatureEntry): boolean =>
+    (entry.kind === 'test-file' && entry.workspace !== undefined && wholeTaskRed.has(entry.workspace)) ||
+    (entry.kind === 'workspace-task' && wholeTaskRed.has(entry.id));
   const window = frozenRepairRoundAdmissionWindow(queue, measuredHead);
   const rank = (basis: FrozenRepairRedAttributionBasis): number => FROZEN_REPAIR_RED_ATTRIBUTION_BASES.indexOf(basis);
   const out: FrozenRepairRedAttribution[] = [];
   for (const entry of nextSignature) {
     const key = `${entry.kind}:${entry.id}`;
     if (prior.has(key)) continue;
+    if (coveredByWholeTaskRed(entry)) continue;
     if (out.length >= FROZEN_REPAIR_ROUND_ATTRIBUTION_CAP) break;
     const ranked = window
       .map((admission, index) => ({ admission, index, basis: redAttributionBasis(entry, admission) }))

@@ -283,6 +283,8 @@ import {
   vitestSuiteFailRow,
   VITEST_TEST_FILE_SOURCE,
   parseFailingFilesLine,
+  parseFailedTestFiles,
+  parseSummaryFailedCounts,
 } from "../../../../scripts/lib/vitest-summary.mjs";
 import {
   collectAutoTypecheckRoutes,
@@ -7016,7 +7018,20 @@ export function interpretRepairHeadMeasurements(input: {
     const unresolved = gateOutcomes
       ? gateOutcomes.filter((entry) => entry.status === "fail" || entry.status === "errored").map((entry) => entry.id)
       : gateList;
+    const outcomeById = new Map((gateOutcomes ?? []).map((entry) => [entry.id, entry] as const));
     for (const id of unresolved) {
+      // P-005 stage 3: a soundly narrowed test task is re-queued as its failing FILES plus the
+      // workspace marker — the file run's own shape — so the next round re-runs those files,
+      // not the whole lane. Anything not provably well-formed keeps the task id (never a
+      // dropped red: narrowing only ever replaces a task by the files that make it red).
+      const narrowed = soundNarrowedFiles(outcomeById.get(id));
+      if (narrowed) {
+        for (const f of narrowed) {
+          emit({ kind: "test-file", id: f.file, recipe: `npm run test:file -- ${f.file}`, workspace: f.workspace });
+          emit({ kind: "workspace-task", id: f.workspace, recipe: `npm run test -w ${f.workspace}`, workspace: f.workspace });
+        }
+        continue;
+      }
       const prior = priorById.get(id);
       emit(
         prior
@@ -7335,6 +7350,75 @@ export interface TargetedGateOutcome {
   status: "pass" | "fail" | "errored" | "not-checked";
   /** Bounded stdout/stderr evidence for a measured nonzero task exit. */
   outputTail?: string;
+  /** P-005 stage 3: the failing test FILES a failed test task's own output names, when
+   *  {@link narrowFailingTestLeg} could narrow it soundly. The next round re-runs these files
+   *  instead of the whole task. Present only on a `fail` that resolves to one workspace run. */
+  narrowedFiles?: FailingFile[];
+  /** P-005 stage 3: why a failed task was NOT narrowed. Never silent: a failed test task
+   *  carries exactly one of `narrowedFiles` / `narrowWithheld`. */
+  narrowWithheld?: string;
+}
+
+/** P-005 stage 3: why {@link narrowFailingTestLeg} kept a failed task whole. */
+export type TestLegNarrowWithheld =
+  | "not-a-test-script"
+  | "abnormal-termination"
+  | "unhandled-errors"
+  | "no-summary-row"
+  | "multiple-summary-rows"
+  | "no-failed-files-counted"
+  | "failing-file-count-mismatch";
+
+export type TestLegNarrowing =
+  | { narrowed: true; files: string[] }
+  | { narrowed: false; reason: TestLegNarrowWithheld };
+
+/**
+ * PURE (green-main-cycle-time-2026-10-08#D-003 step 3, P-005 stage 3): reduce a FAILED test
+ * task to the failing files its own vitest output names, so the next repair round re-runs those
+ * files instead of the whole lane. Every round used to re-run each red lane whole (the 08:50Z
+ * live queue held 4 whole test lanes), because the red emission re-queued the task id.
+ *
+ * Narrowing is an optimisation, so it is refused whenever the output cannot PROVE it names every
+ * failure. It narrows only when all of these hold:
+ *  - the script is `test` or `test:*` (a vitest task, not a lint or seed leg);
+ *  - the run ended normally: no vitest worker-pool crash marker, no npm signal footer, no
+ *    pure-lane shard signal (a killed run's summary does not cover what it never ran);
+ *  - no `Errors N errors` row and no Unhandled Errors/Rejection section (an unhandled error is
+ *    not attributed to any file, so naming files would drop it);
+ *  - exactly ONE `Test Files` summary row (one vitest process: a sharded lane prints one per
+ *    shard, and a shard that died before its summary would be invisible to a per-row sum);
+ *  - that row counts N >= 1 failed files, and the parsed failing-file set has exactly N members.
+ *
+ * Soundness of the re-run: a lane only FILTERS which files run (`PC_TEST_LANE` is inert unless
+ * set, packages/operator-core/vitest.config.ts), so a named file re-runs under the same config.
+ * Promotion is unaffected: the full gate at the head the targeted round reports green is still
+ * the promotion proof.
+ */
+export function narrowFailingTestLeg(
+  script: string,
+  streams: readonly (string | null | undefined)[],
+): TestLegNarrowing {
+  if (script !== "test" && !script.startsWith("test:")) return { narrowed: false, reason: "not-a-test-script" };
+  const text = stripVitestAnsi(streams.filter((s): s is string => typeof s === "string").join("\n"));
+  if (
+    isWorkerPoolCrash(text) ||
+    /^\s*npm (?:error|ERR!) signal\s+SIG/m.test(text) ||
+    /\bVITEST_PURE_LANE_SHARD state=(?:signaled|spawn-error)\b/.test(text)
+  ) {
+    return { narrowed: false, reason: "abnormal-termination" };
+  }
+  if (/^\s*Errors\s+\d+\s+errors?\b/m.test(text) || /\bUnhandled (?:Errors?|Rejection)\b/.test(text)) {
+    return { narrowed: false, reason: "unhandled-errors" };
+  }
+  const rows = text.match(/^\s*Test Files\s+\d/gm) ?? [];
+  if (rows.length === 0) return { narrowed: false, reason: "no-summary-row" };
+  if (rows.length > 1) return { narrowed: false, reason: "multiple-summary-rows" };
+  const failedFiles = parseSummaryFailedCounts(text)?.testFiles ?? 0;
+  if (failedFiles < 1) return { narrowed: false, reason: "no-failed-files-counted" };
+  const files = parseFailedTestFiles(text);
+  if (files.length !== failedFiles) return { narrowed: false, reason: "failing-file-count-mismatch" };
+  return { narrowed: true, files };
 }
 
 export interface TargetedGateResult {
@@ -7374,6 +7458,25 @@ export function validateTargetedGateOutcomes(
   return result.perGate;
 }
 
+const NARROWED_TEST_FILE = new RegExp(`^${VITEST_TEST_FILE_SOURCE}$`);
+
+/**
+ * P-005 stage 3: the narrowed files of a targeted outcome, ONLY when they are fit to replace its
+ * task in the next signature: a `fail` of one workspace run, a non-empty list of test-file paths,
+ * every one paired with that run's workspace. Anything else returns null and the caller keeps
+ * the task whole — a malformed narrowing must never erase a red.
+ */
+export function soundNarrowedFiles(outcome: TargetedGateOutcome | undefined): FailingFile[] | null {
+  if (!outcome || outcome.status !== "fail" || !Array.isArray(outcome.narrowedFiles) || outcome.narrowedFiles.length === 0) return null;
+  const runs = resolveGateRuns([outcome.id]);
+  const workspace = runs.length === 1 ? runs[0]?.workspace : null;
+  if (!workspace) return null;
+  const ok = outcome.narrowedFiles.every((f) =>
+    f !== null && typeof f === "object" && f.workspace === workspace &&
+    typeof f.file === "string" && NARROWED_TEST_FILE.test(f.file));
+  return ok ? outcome.narrowedFiles : null;
+}
+
 /** Per-run budget of a targeted leg's persisted `outputTail`. Below the 2000-char joined
  *  cap so the `<ws> :: <script>: ` label fits without cutting the digest's first line. */
 const TARGETED_LEG_TAIL_BUDGET = 1_900;
@@ -7393,6 +7496,8 @@ export async function measureTargetedGateRuns(
   const measured = new Map<string, TargetedGateOutcome["status"]>();
   const failureOutputs = new Map<string, string>();
   const failureBriefs = new Map<string, string>();
+  // P-005 stage 3: a failed run's narrowing verdict, keyed like `measured`.
+  const narrowings = new Map<string, TestLegNarrowing>();
   const summaries: string[] = [];
   for (const { script, workspace } of resolveGateRuns(gateIds)) {
     const label = workspace ? `${workspace} :: ${script}` : script;
@@ -7418,6 +7523,11 @@ export async function measureTargetedGateRuns(
           failureOutputs.set(key(script, workspace), tail);
           failureBriefs.set(key(script, workspace), summarizeLegStreams(streams, TARGETED_LEG_BRIEF_BUDGET));
         }
+        // Only a TEST task has files to narrow to; a lint/seed failure carries no verdict at all.
+        const narrowing = narrowFailingTestLeg(script, streams);
+        if (narrowing.narrowed || narrowing.reason !== "not-a-test-script") {
+          narrowings.set(key(script, workspace), narrowing);
+        }
       }
     } catch (e) {
       status = "errored";
@@ -7426,13 +7536,27 @@ export async function measureTargetedGateRuns(
     }
     measured.set(key(script, workspace), status);
     const diagnostic = failureBriefs.get(key(script, workspace));
-    summaries.push(`${label}: ${status === "not-checked" ? "NOT CHECKED (examined nothing — not gating)" : status === "pass" ? "pass" : status.toUpperCase()}${erroredReason ? ` (${erroredReason})` : ""}${diagnostic ? ` (output: ${diagnostic.replace(/\s+/g, " ").replace(/;/g, ",")})` : ""}`);
+    const narrowing = narrowings.get(key(script, workspace));
+    const narrowNote = !narrowing ? ""
+      : narrowing.narrowed ? ` [narrowed to ${narrowing.files.length} failing file(s)]`
+      : ` [kept whole: ${narrowing.reason}]`;
+    summaries.push(`${label}: ${status === "not-checked" ? "NOT CHECKED (examined nothing — not gating)" : status === "pass" ? "pass" : status.toUpperCase()}${narrowNote}${erroredReason ? ` (${erroredReason})` : ""}${diagnostic ? ` (output: ${diagnostic.replace(/\s+/g, " ").replace(/;/g, ",")})` : ""}`);
   }
   const perGate = [...new Set(gateIds)].map((id): TargetedGateOutcome => {
-    const statuses = resolveGateRuns([id]).map(({ script, workspace }) => measured.get(key(script, workspace)));
+    const runs = resolveGateRuns([id]);
+    const statuses = runs.map(({ script, workspace }) => measured.get(key(script, workspace)));
+    // P-005 stage 3: an id narrows only when it is ONE failed run in ONE workspace. A
+    // multi-run id (a registry leg) keeps its whole set: one run's files cannot speak for another.
+    const single = runs.length === 1 ? runs[0] : undefined;
+    const narrowing = single ? narrowings.get(key(single.script, single.workspace)) : undefined;
+    const narrowFields: Pick<TargetedGateOutcome, "narrowedFiles" | "narrowWithheld"> =
+      !narrowing || statuses[0] !== "fail" ? {}
+      : !narrowing.narrowed ? { narrowWithheld: narrowing.reason }
+      : !single?.workspace ? { narrowWithheld: "no-workspace" }
+      : { narrowedFiles: narrowing.files.map((file) => ({ workspace: single.workspace as string, file })) };
     // Each tail LEADS with its digest, so the joined set is bounded from the FRONT: a cut
     // from the end only ever loses raw tail, never a failing test's name.
-    const outputTail = resolveGateRuns([id]).map(({ script, workspace }) => {
+    const outputTail = runs.map(({ script, workspace }) => {
       const tail = failureOutputs.get(key(script, workspace));
       return tail ? `${workspace ? `${workspace} :: ` : ""}${script}: ${tail}` : "";
     }).filter(Boolean).join("\n").slice(0, 2_000);
@@ -7443,6 +7567,7 @@ export async function measureTargetedGateRuns(
         : statuses.includes("fail") ? "fail"
         : statuses.includes("not-checked") ? "not-checked" : "pass",
       ...(outputTail ? { outputTail } : {}),
+      ...narrowFields,
     };
   });
   const pass = perGate.every((entry) => entry.status === "pass" || entry.status === "not-checked");

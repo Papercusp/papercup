@@ -19,6 +19,7 @@ import {
   type FrozenCandidateRepairQueue,
   type FrozenRepairAdmission,
   type FrozenRepairAdmissionRadiusSummary,
+  type RepairSignatureInput,
 } from './frozen-candidate-repair-queue';
 
 const C = '1111111111111111111111111111111111111111';
@@ -207,6 +208,46 @@ describe('P-007 (#D-040) — a red round attributes newly red entries to its win
     const parsed = parseFrozenCandidateRepairQueue(raw) as FrozenCandidateRepairQueue;
     expect(lastRound(parsed)?.attributions).toHaveLength(1);
     expect(parsed.admissions?.[0]?.precheck?.radius).toBeUndefined();
+  });
+});
+
+describe('P-007 (#D-040) — a file of a whole red test task was never known green, so it is not newly red', () => {
+  const LANE = `${LEG} :: test:lane-stateful`;
+  const VITE = '@papercusp/operator-vite';
+  const A = 'lib/release/a.test.ts';
+  const file = (id: string, workspace = LEG): RepairSignatureInput => ({ kind: 'test-file', id, recipe: `npm run test:file -- ${id}`, workspace });
+  const marker = (workspace: string): RepairSignatureInput => ({ kind: 'workspace-task', id: workspace, recipe: `npm run test -w ${workspace}`, workspace });
+  const openedWith = (failingTests: string[]) => createFrozenCandidateRepairQueue({ candidate: C, base: BASE, failingTests, nowMs: T0 });
+  const redWith = (queue: FrozenCandidateRepairQueue, signature: RepairSignatureInput[]) =>
+    markFrozenRepairVerificationRed(admit(queue, H1, T0 + 10, { radius: OVER_CAP }), { repairHead: H1, nowMs: T0 + 20, signature });
+
+  it('a red test lane later named by its failing files blames no admission (a narrowed lane or a full-gate red)', () => {
+    const red = redWith(openedWith([LANE]), [file(A), marker(LEG)]);
+    expect(red.signature.map((e) => `${e.kind}:${e.id}`)).toEqual([`test-file:${A}`, `workspace-task:${LEG}`]);
+    expect(lastRound(red)?.attributions).toBeUndefined();
+  });
+
+  it('a bare workspace marker with no file of its own is a whole-task red too', () => {
+    expect(lastRound(redWith(openedWith([LEG]), [file(A), marker(LEG)]))?.attributions).toBeUndefined();
+  });
+
+  it('a marker paired with named files is not a whole-task red: a new file in that workspace is still blamed', () => {
+    const red = redWith(openedWith([LEG, 'lib/old.test.ts']), [file('lib/old.test.ts'), file(A), marker(LEG)]);
+    expect(lastRound(red)?.attributions?.map((a) => a.entry)).toEqual([`test-file:${A}`]);
+  });
+
+  it('a red lane covers only its own workspace: a new red file elsewhere is blamed with its marker', () => {
+    const red = redWith(openedWith([LANE]), [file(A), marker(LEG), file('src/b.test.ts', VITE), marker(VITE)]);
+    expect(lastRound(red)?.attributions?.map((a) => [a.entry, a.basis])).toEqual([
+      ['test-file:src/b.test.ts', 'unmeasured-radius'],
+      [`workspace-task:${VITE}`, 'unmeasured-radius'],
+    ]);
+  });
+
+  it('another task of the same workspace is matched exactly by id, never covered by the red lane', () => {
+    const pure = `${LEG} :: test:lane-pure`;
+    const red = redWith(openedWith([LANE]), [{ kind: 'workspace-task', id: pure, recipe: `npm run test:lane-pure -w ${LEG}`, workspace: LEG }]);
+    expect(lastRound(red)?.attributions?.map((a) => a.entry)).toEqual([`workspace-task:${pure}`]);
   });
 });
 
