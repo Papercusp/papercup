@@ -39,12 +39,16 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn as ptySpawn, type IPty } from "@lydell/node-pty";
+import { pollUntil } from "@papercusp/operator-core/lib/pui-e2e/poll-until";
+import { VtScreen } from "@papercusp/operator-core/lib/pui-e2e/vt-screen";
 import { afterEach, describe, expect, it } from "vitest";
 
-const LAUNCHER = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../scripts/psu-launcher.mjs",
-);
+// PUI_RESUME_LAUNCHER lets scripts/mutation-probe.sh point the child at a
+// relocated mutant (its `{}`); unset, the test runs the real launcher.
+const LAUNCHER =
+  process.env.PUI_RESUME_LAUNCHER ??
+  resolve(dirname(fileURLToPath(import.meta.url)), "../scripts/psu-launcher.mjs");
 const BACKENDS = ["claude", "codex", "omp"] as const;
 type Backend = (typeof BACKENDS)[number];
 
@@ -147,8 +151,18 @@ interface RunResult {
   launches: Launch[];
 }
 
-/** Run `psu --resume <id> --no-picker [...extra]` against the fixture. */
-async function runPsuResume(fx: Fixture, extra: string[] = []): Promise<RunResult> {
+interface Staged {
+  env: Record<string, string>;
+  requests: RunResult["requests"];
+  argv: string[];
+  launches: () => Launch[];
+}
+
+/**
+ * Fake backends, stub operator and a scrubbed environment for one
+ * `psu --resume <id> --no-picker [...extra]` run against the fixture.
+ */
+async function stagePsuResume(fx: Fixture, extra: string[]): Promise<Staged> {
   const bin = join(fx.home, "fakebin");
   const launchDir = join(fx.home, "launches");
   mkdirSync(bin, { recursive: true });
@@ -156,9 +170,24 @@ async function runPsuResume(fx: Fixture, extra: string[] = []): Promise<RunResul
   for (const b of BACKENDS) {
     const p = join(bin, b);
     // One record per spawn: binary name, working directory, then argv one per line.
+    // Then behave like a TUI on its terminal: show the conversation of the first
+    // argv entry that names a transcript on disk, a ready marker, and echo one
+    // typed line (stdin "ignore" gives EOF, so a piped run exits at once).
     writeFileSync(
       p,
-      `#!/bin/sh\n{ printf '%s\\n' "${b}" "$PWD"; printf '%s\\n' "$@"; } > "${launchDir}/${b}.$$"\nexit 0\n`,
+      [
+        "#!/bin/sh",
+        `{ printf '%s\\n' "${b}" "$PWD"; printf '%s\\n' "$@"; } > "${launchDir}/${b}.$$"`,
+        'for a in "$@"; do',
+        '  case "$a" in ????????*) f=$(find "$HOME/.papercusp" -name "*$a*.jsonl" 2>/dev/null | head -n 1) ;; *) f= ;; esac',
+        '  if [ -n "$f" ]; then printf \'CONVERSATION %s: %s\\n\' "$a" "$(grep -o \'hello from before\' "$f" | head -n 1)"; break; fi',
+        "done",
+        `printf 'BACKEND %s READY\\n' "${b}"`,
+        "IFS= read -r line",
+        "printf 'TYPED %s\\n' \"$line\"",
+        "exit 0",
+        "",
+      ].join("\n"),
     );
     chmodSync(p, 0o755);
   }
@@ -186,10 +215,19 @@ async function runPsuResume(fx: Fixture, extra: string[] = []): Promise<RunResul
 
   // Nothing from the developer's own session may steer the child: drop every
   // papercusp/backend variable, then point it at the stub and the fake binaries.
-  const env: NodeJS.ProcessEnv = {};
+  const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (/^(PAPERCUSP_|CLAUDE|CODEX_|OMP_|PI_|ANTHROPIC_|OPENAI_)/.test(k)) continue;
+    if (v === undefined || /^(PAPERCUSP_|PSU_|PUI_|CLAUDE|CODEX_|OMP_|PI_|ANTHROPIC_|OPENAI_)/.test(k)) continue;
     env[k] = v;
+  }
+  // `npm run test:file` exports NODE_OPTIONS=--import=<committed-source-loader>;
+  // a node child that inherits it runs the HEAD blob of any dirty checkout file
+  // (WI-6554700010009516), so an uncommitted launcher edit or a mutation-probe
+  // mutant would never execute. The launcher under test must run its on-disk bytes.
+  if (env.NODE_OPTIONS) {
+    const kept = env.NODE_OPTIONS.split(/\s+/).filter((o) => o && !o.includes("committed-source-loader"));
+    if (kept.length) env.NODE_OPTIONS = kept.join(" ");
+    else delete env.NODE_OPTIONS;
   }
   Object.assign(env, {
     HOME: fx.home,
@@ -198,23 +236,97 @@ async function runPsuResume(fx: Fixture, extra: string[] = []): Promise<RunResul
     PAPERCUSP_MCP_PROXY: "0",
   });
 
-  const child = spawn(
-    process.execPath,
-    [LAUNCHER, "--resume", String(ADV_ID), "--no-picker", ...extra],
-    { cwd: fx.home, env, stdio: ["ignore", "pipe", "pipe"] },
-  );
+  const launches = () =>
+    readdirSync(launchDir).map((f) => {
+      const [b, cwd, ...argv] = readFileSync(join(launchDir, f), "utf8").split("\n");
+      return { bin: b, cwd, argv: argv.filter((a, i) => !(a === "" && i === argv.length - 1)) };
+    });
+  return {
+    env,
+    requests,
+    argv: [LAUNCHER, "--resume", String(ADV_ID), "--no-picker", ...extra],
+    launches,
+  };
+}
+
+/** Run `psu --resume <id> --no-picker [...extra]` with piped output. */
+async function runPsuResume(fx: Fixture, extra: string[] = []): Promise<RunResult> {
+  const staged = await stagePsuResume(fx, extra);
+  const child = spawn(process.execPath, staged.argv, {
+    cwd: fx.home,
+    env: staged.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let output = "";
   child.stdout.on("data", (d) => (output += d));
   child.stderr.on("data", (d) => (output += d));
   const killer = setTimeout(() => child.kill("SIGKILL"), 90_000);
   const code = await new Promise<number | null>((r) => child.on("exit", (c) => r(c)));
   clearTimeout(killer);
+  return { code, output, requests: staged.requests, launches: staged.launches() };
+}
 
-  const launches = readdirSync(launchDir).map((f) => {
-    const [b, cwd, ...argv] = readFileSync(join(launchDir, f), "utf8").split("\n");
-    return { bin: b, cwd, argv: argv.filter((a, i) => !(a === "" && i === argv.length - 1)) };
+const PTY_ROWS = 60;
+const PTY_COLS = 120;
+
+interface PtyRun {
+  code: number;
+  /**
+   * The rendered terminal, hard-wrapped lines rejoined: the last frame that
+   * showed a backend's output, else the terminal as the run left it.
+   */
+  screen: string;
+  launches: Launch[];
+}
+
+/**
+ * Run the same command on a real pseudo-terminal, as PUI's pane does. When
+ * `typed` is given, wait for the backend's ready marker and type it + Enter,
+ * so the line only reaches the backend if the launcher handed it the terminal.
+ */
+async function runPsuResumePty(fx: Fixture, extra: string[], typed?: string): Promise<PtyRun> {
+  const staged = await stagePsuResume(fx, extra);
+  const pty: IPty = ptySpawn(process.execPath, staged.argv, {
+    name: "xterm-256color",
+    cols: PTY_COLS,
+    rows: PTY_ROWS,
+    cwd: fx.home,
+    env: { ...staged.env, TERM: "xterm-256color" },
   });
-  return { code, output, requests, launches };
+  cleanups.push(() => {
+    try {
+      pty.kill();
+    } catch {
+      /* already exited */
+    }
+  });
+  let raw = "";
+  // The launcher repaints the terminal once the backend exits, so the frame
+  // the backend itself painted is kept as it last appeared.
+  let backendFrame: string | null = null;
+  const screen = () => {
+    const vt = new VtScreen(PTY_ROWS, PTY_COLS);
+    vt.feed(raw);
+    return vt.text().replace(/\n/g, "");
+  };
+  pty.onData((d) => {
+    raw += d;
+    const s = screen();
+    if (s.includes("BACKEND ")) backendFrame = s;
+  });
+  const exited = new Promise<number>((r) => pty.onExit((e) => r(e.exitCode)));
+  if (typed !== undefined) {
+    const ready = await pollUntil(() => / READY/.test(screen()), { timeoutMs: 90_000 });
+    expect(ready.ok, screen()).toBe(true);
+    pty.write(`${typed}\r`);
+  }
+  const code = await Promise.race([
+    exited,
+    new Promise<number>((_, reject) =>
+      setTimeout(() => reject(new Error(`pty run did not exit:\n${screen()}`)), 90_000),
+    ),
+  ]);
+  return { code, screen: backendFrame ?? screen(), launches: staged.launches() };
 }
 
 /** The argv slice that names WHICH conversation the backend reopens. */
@@ -275,5 +387,37 @@ describe("PUI cross-backend resume refusal (R-25)", () => {
       expect(run.requests.every((r) => r.path.startsWith("/api/adv/sessions/resumable"))).toBe(true);
     },
     120_000,
+  );
+});
+
+describe("PUI resume on a real terminal, as PUI's pane runs it (R-11, R-25)", () => {
+  it.each(BACKENDS)(
+    "the resumed %s backend owns the terminal: its conversation is on screen and typed input reaches it",
+    async (agent) => {
+      const fx = fixture(agent);
+      const token = `typed-${agent}-${process.pid}`;
+      const run = await runPsuResumePty(fx, [], token);
+
+      expect(run.code, run.screen).toBe(0);
+      expect(run.launches.map((l) => l.bin)).toEqual([agent]);
+      expect(run.screen).toContain(`CONVERSATION ${NATIVE_ID[agent]}: hello from before`);
+      expect(run.screen).toContain(`BACKEND ${agent} READY`);
+      expect(run.screen).toContain(`TYPED ${token}`);
+    },
+    150_000,
+  );
+
+  it(
+    "a refused cross-backend pick shows its cause on the terminal and opens no backend",
+    async () => {
+      const fx = fixture("codex", { withTranscript: false });
+      const run = await runPsuResumePty(fx, ["--agent", "claude"]);
+
+      expect(run.code, run.screen).not.toBe(0);
+      expect(run.screen).toMatch(/psu: refusing to resume — .*no source transcript to carry onto claude/);
+      expect(run.launches).toEqual([]);
+      expect(run.screen).not.toContain("READY");
+    },
+    150_000,
   );
 });
