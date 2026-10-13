@@ -150,6 +150,45 @@ export function isDirectedDelivery(e: Record<string, unknown>, ownerId: string):
 const VOLATILE_TIMESTAMP_RE =
   /\d{4}-\d{2}-\d{2}[T ][\d:]{5,8}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g;
 
+function isSystemNotice(entry: Record<string, unknown>): boolean {
+  const to = entry['to'];
+  return entry['auto'] === true && entry['kind'] === 'message' && !entry['lifecycle'] &&
+    Array.isArray(to) && to.length > 0 && to.every(recipient => recipient === '*') &&
+    typeof entry['category'] === 'string' && typeof entry['summary'] === 'string';
+}
+
+/** Native delivery only: derive scope from live presence and held claims, never
+ * from an alarm's guessed audience. VIEW/feed history keeps the complete rows.
+ * A failed scope read passes null and preserves delivery. */
+export function relevantSystemNoticeDelivery<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  scope: { ownerId: string; workItemIds: readonly string[]; planSlug?: string | null;
+    files?: readonly string[]; fleetSlug?: string | null } | null,
+): { entries: T[]; excluded: number } {
+  if (!scope) return { entries: [...entries], excluded: 0 };
+  const refs = [scope.ownerId, ...scope.workItemIds, scope.planSlug, scope.fleetSlug,
+    ...(scope.files ?? [])].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0);
+  const mentions = (text: string, ref: string): boolean => {
+    for (let index = text.indexOf(ref); index >= 0; index = text.indexOf(ref, index + 1)) {
+      const before = text[index - 1];
+      const after = text[index + ref.length];
+      if ((!before || !/[\w./-]/.test(before)) && (!after || !/[\w./-]/.test(after))) return true;
+    }
+    return false;
+  };
+  const kept = entries.filter(entry => {
+    if (!isSystemNotice(entry) || entry['blocking'] === true ||
+        ['ack', 'answer', 'action'].includes(String(entry['expects']))) return true;
+    // Exclude emitter bookkeeping: its checkout/cwd identifies the producer,
+    // not the subject. Preserve both structured references and literal prose.
+    const text = JSON.stringify([entry['summary'], entry['body'], entry['sections'],
+      entry['condition_key'], entry['resolves_condition'], entry['resolves_conditions'],
+      entry['plan_slug'], entry['files'], entry['items'], entry['why']]);
+    return refs.some(ref => mentions(text, ref));
+  });
+  return { entries: kept, excluded: entries.length - kept.length };
+}
+
 /** Remember only compact fingerprints on the existing two-phase inbox cursor.
  * Public inbox VIEW reads do not use this filter. Directed/mixed deliveries and
  * peer broadcasts always pass through. Losing state re-delivers, never skips. */
@@ -170,11 +209,8 @@ export function changedSystemNoticeDelivery<T extends Record<string, unknown>>(
   const kept: T[] = [];
   const pending = new Map<T, { key: string; fingerprint: string }>();
   for (const entry of entries) {
-    const to = entry['to'];
-    if (entry['auto'] !== true || entry['kind'] !== 'message' || entry['lifecycle'] ||
-        !Array.isArray(to) || to.length === 0 ||
-        !to.every((recipient) => recipient === '*') ||
-        typeof entry['category'] !== 'string' || typeof entry['summary'] !== 'string') {
+    if (!isSystemNotice(entry) || entry['blocking'] === true ||
+        ['ack', 'answer', 'action'].includes(String(entry['expects']))) {
       kept.push(entry);
       continue;
     }

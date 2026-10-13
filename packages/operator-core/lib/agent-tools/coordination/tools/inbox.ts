@@ -42,6 +42,7 @@ import {
   excludeIntentDeclares,
   coalesceRepeatedBroadcasts,
   changedSystemNoticeDelivery,
+  relevantSystemNoticeDelivery,
   inboxPriorityBucket,
   prioritizedInboxWindow,
   expandInboxChunkGroupsForMessageIds,
@@ -1287,6 +1288,27 @@ export default defineTool({
     // The watermark is read concurrently too — the P-010 re-bootstrap flag rides
     // it (snapshot_rebootstrap_pending), so the common no-flag path adds only one
     // cheap PK read and no extra latency.
+    const nativeNoticeDelivery = Object.prototype.hasOwnProperty.call(args, '__systemNoticeState');
+    // Reuse these existing readers for the context/claim gauges below. Resolve
+    // native scope before paging so unrelated broadcasts cannot stop a scan
+    // before an older relevant notice. Failed reads preserve delivery.
+    const readerPresence = measureInboxPhase('reader-presence-read', () => getPresence(identity.ownerId))
+      .catch(() => null);
+    const readerFleet = measureInboxPhase('reader-presence-fleet-read', () => fetchPresenceFleet([identity.ownerId]))
+      .catch(() => null);
+    const activeClaims = nativeNoticeDelivery
+      ? measureInboxPhase('active-claim-freshness-read', () => listActiveClaimFreshnessForOwner(
+          (ctx as { workspaceId?: string | null } | undefined)?.workspaceId ?? activeWorkspaceId(),
+          identity.ownerId,
+        )).catch(() => null)
+      : null;
+    let noticeScope: Parameters<typeof relevantSystemNoticeDelivery>[1] = null;
+    if (nativeNoticeDelivery) {
+      const [presence, claims, fleets] = await Promise.all([readerPresence, activeClaims, readerFleet]);
+      if (presence && claims && fleets) noticeScope = { ownerId: identity.ownerId,
+        workItemIds: claims.map(claim => claim.workItemId), planSlug: presence.currentPlanSlug,
+        files: presence.currentFiles, fleetSlug: fleets.get(identity.ownerId)?.fleetSlug };
+    }
     const [, ownInbox, wm] = await Promise.all([
       measureInboxPhase("presence-heartbeat", () =>
         inboxHeartbeatThrottle.shouldBeat(identity.ownerId)
@@ -1374,7 +1396,8 @@ export default defineTool({
                       { includeIntents: args.include_intents, from: resolvedFrom },
                     ) as unknown as { kept: Array<Record<string, unknown>> };
                     return prioritizedInboxWindow(
-                      coalesceRepeatedBroadcasts(kept),
+                      coalesceRepeatedBroadcasts(nativeNoticeDelivery
+                        ? relevantSystemNoticeDelivery(kept, noticeScope).entries : kept),
                       limit,
                     ).length >= limit;
                   },
@@ -1608,7 +1631,12 @@ export default defineTool({
     // the next tool call. Only the native delivery path passes committed state;
     // stage its replacement with the inbox cursor after the complete fold.
     const maxInjectionLines = 8;
-    const noticeDelivery = Object.prototype.hasOwnProperty.call(args, '__systemNoticeState')
+    let noticeRelevance: ReturnType<typeof relevantSystemNoticeDelivery> | null = null;
+    if (nativeNoticeDelivery) {
+      noticeRelevance = relevantSystemNoticeDelivery(injectionPopulation, noticeScope);
+      injectionEntries = prioritizedInboxWindow(noticeRelevance.entries, limit) as unknown as typeof injectionEntries;
+    }
+    const noticeDelivery = nativeNoticeDelivery
       ? changedSystemNoticeDelivery(
           injectionEntries as unknown as Array<Record<string, unknown>>,
           (args as InboxDeliveryFloor).__systemNoticeState,
@@ -1680,10 +1708,9 @@ export default defineTool({
     // (TOCTOU) resolves to current truth.
     let cueScope: RecipientCueScope | undefined;
     try {
-      const fleet = (await measureInboxPhase(
-        "reader-presence-fleet-read",
-        () => fetchPresenceFleet([identity.ownerId]),
-      )).get(identity.ownerId);
+      const fleets = await readerFleet;
+      if (!fleets) throw new Error('fleet membership unavailable');
+      const fleet = fleets.get(identity.ownerId);
       cueScope = {
         recipientId: identity.ownerId,
         fleetSlugs: fleet?.fleetSlug ? [fleet.fleetSlug] : [],
@@ -1834,10 +1861,7 @@ export default defineTool({
     let contextGauge: string | null = null;
     let respawnLine: string | null = null;
     try {
-      const pres = await measureInboxPhase(
-        "reader-presence-read",
-        () => getPresence(identity.ownerId),
-      );
+      const pres = await readerPresence;
       // WI-4154: derive the usage from the transcript's CURRENT state (anchored
       // incremental read — cost is the append delta), never from the watchdog's
       // point-in-time cache, which went stale across every compaction boundary and
@@ -1953,10 +1977,11 @@ export default defineTool({
           const ws =
             (ctx as { workspaceId?: string | null } | undefined)?.workspaceId ??
             activeWorkspaceId();
-          const fresh = await measureInboxPhase(
+          const fresh = await (activeClaims ?? measureInboxPhase(
             "active-claim-freshness-read",
             () => listActiveClaimFreshnessForOwner(ws, identity.ownerId),
-          );
+          ));
+          if (!fresh) throw new Error('active claim scope unavailable');
           flushLine = renderFlushGateLine(pct, classifyStaleClaims(fresh, Date.now()), {
             loopNeedingCarryNote,
           });
@@ -2150,6 +2175,8 @@ export default defineTool({
             ...(noticeDelivery ? {
               __systemNoticeState: noticeDelivery.state,
               system_notices_suppressed: noticeDelivery.suppressed,
+              system_notices_irrelevant: noticeRelevance?.excluded ?? 0,
+              system_notice_history: { tool: 'coord:feed' },
             } : {}),
             // P-015: the ≥80% loud gauge, exposed OUT of `injection` so the PostToolUse
             // hook can inject it even when there are no new entries (empty-inbox turns).

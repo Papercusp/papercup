@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { changedSystemNoticeDelivery, prioritizedInboxWindow } from './inbox-visibility';
+import { changedSystemNoticeDelivery, relevantSystemNoticeDelivery, prioritizedInboxWindow } from './inbox-visibility';
 import { renderSevereEventEmitter } from '../../severe-event-emitter';
 import { sectionsToText } from './message-fields';
 import { chunkOverCapMessage } from './tools/send-chunking';
@@ -53,6 +53,51 @@ describe('changed system notice delivery', () => {
     expect(Object.keys(changedSystemNoticeDelivery(rows, {}).state)).toHaveLength(256);
     expect(changedSystemNoticeDelivery([alarm()], null).entries).toHaveLength(1);
     expect(changedSystemNoticeDelivery([alarm()], { bad: 1 }).entries).toHaveLength(1);
+  });
+
+  it('delivers blocking and reply-bearing broadcasts on every read', () => {
+    const rows = [alarm({ blocking: true }), alarm({ expects: 'action' }), alarm({ expects: 'answer' })];
+    const first = changedSystemNoticeDelivery(rows, {});
+    expect(changedSystemNoticeDelivery(rows, first.state).entries).toEqual(rows);
+  });
+});
+
+describe('native system notice relevance', () => {
+  const scope = { ownerId: 'su-reader', workItemIds: ['WI-123'], planSlug: 'my-plan',
+    files: ['packages/owned.ts'], fleetSlug: 'my-fleet' };
+  const notice = (over: Record<string, unknown> = {}) => ({
+    auto: true, kind: 'message', to: ['*'], category: 'severe-event',
+    summary: 'Compaction over-limit: su-other', ...over,
+  });
+
+  it('keeps exact owner, held item, plan, file and fleet subjects', () => {
+    const relevant = ['su-reader', 'WI-123', 'my-plan', 'packages/owned.ts:12', '@fleet:my-fleet']
+      .map(summary => notice({ summary }));
+    const rows = [notice(), ...relevant, notice({ summary: 'global ungraded backlog' })];
+    expect(relevantSystemNoticeDelivery(rows, scope)).toEqual({ entries: relevant, excluded: 2 });
+  });
+
+  it('uses structured references and rejects prefix collisions and producer cwd', () => {
+    const structured = notice({ why: { goalRef: 'WI-123' } });
+    const rows = [structured, notice({ summary: 'WI-1234 my-plan-old other/packages/owned.ts' }),
+      notice({ emitter: { cwd: 'packages/owned.ts' } })];
+    expect(relevantSystemNoticeDelivery(rows, scope)).toEqual({ entries: [structured], excluded: 2 });
+  });
+
+  it('preserves directed, mixed, peer, lifecycle, malformed and blocking delivery', () => {
+    const rows = [notice({ to: ['su-reader'] }), notice({ to: ['*', 'su-other'] }),
+      notice({ auto: false }), notice({ lifecycle: 'intent' }), notice({ to: null }),
+      notice({ blocking: true }), notice({ expects: 'answer' }), notice({ expects: 'ack' })];
+    expect(relevantSystemNoticeDelivery(rows, scope)).toEqual({ entries: rows, excluded: 0 });
+  });
+
+  it('fails open when scope is unavailable and re-delivers when the subject enters scope', () => {
+    const rows = [notice({ condition_key: 'work-item:WI-999' })];
+    expect(relevantSystemNoticeDelivery(rows, null).entries).toEqual(rows);
+    const outside = relevantSystemNoticeDelivery(rows, scope);
+    const prior = changedSystemNoticeDelivery(outside.entries, {});
+    const now = relevantSystemNoticeDelivery(rows, { ...scope, workItemIds: ['WI-999'] });
+    expect(changedSystemNoticeDelivery(now.entries, prior.state).entries).toEqual(rows);
   });
 });
 
