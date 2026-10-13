@@ -98,8 +98,34 @@ export interface RubricRescoreOutcome {
   executed: number;
   testRunIds: number[];
   crossings: RubricCriterionRegressedPayload[];
-  /** A probe batch that could not run; its criteria simply keep their prior rows. */
+  /** Probe criteria that could not be judged this fire; each keeps its prior ledger rows. */
   probeError?: string;
+}
+
+/**
+ * Tools a re-score probe may reach through the palette chokepoint WITH confirmation.
+ *
+ * The scheduled re-score has no agent MCP context, so its probes go through
+ * dispatchPaletteTarget, whose guard classes dev:pg_query as high-tier (raw SQL) and refuses it
+ * with confirmation_required unless confirmed. Every scheduled fire on 2026-10-13 lost all 13 sql
+ * probe rows that way. Confirming is safe for exactly this tool: the probe layer has already
+ * accepted only a single SELECT or WITH...SELECT, and dev:pg_query runs it in a READ ONLY
+ * transaction with a row cap and statement timeout. Any other tool keeps the unconfirmed path.
+ */
+export const RESCORE_CONFIRMED_PROBE_TOOLS: ReadonlySet<string> = new Set(['dev:pg_query']);
+
+/** The default re-score probe dispatcher (palette chokepoint, harness-scoped). */
+export function rescoreProbeDispatcher(
+  harness: string | undefined,
+  dispatch: typeof dispatchPaletteTarget = dispatchPaletteTarget,
+): (name: string, args: Record<string, unknown>) => ReturnType<typeof dispatchPaletteTarget> {
+  return (name, args) =>
+    dispatch({
+      name,
+      args,
+      ...(RESCORE_CONFIRMED_PROBE_TOOLS.has(name) ? { confirmed: true } : {}),
+      ...(harness ? { harness } : {}),
+    });
 }
 
 /** Re-run a rubric's executable checks and emit one event per pass → fail crossing. */
@@ -120,18 +146,26 @@ export async function rescoreRubric(
   const results: RubricCheckResult[] = [
     ...(await (deps.runInstruments ?? runInstrumentChecks)({ rubricRef, criteria: executable })),
   ];
-  let probeError: string | undefined;
+  const probeErrors: string[] = [];
   const probeCriteria = executable.filter((c) => (c.check as { kind?: string } | undefined)?.kind === 'probe');
   if (probeCriteria.length > 0) {
-    // `unknown` ratings: run every probe without asserting any rating it could contradict.
-    const ratings = Object.fromEntries(probeCriteria.map((c) => [c.key, { rating: 'unknown' }]));
     const harness = input.harnessSlug ?? rubric.subjectHarnessSlug ?? undefined;
-    const dispatchTool = deps.dispatchTool ?? ((name: string, args: Record<string, unknown>) =>
-      dispatchPaletteTarget({ name, args, ...(harness ? { harness } : {}) }));
-    const evaluation = await (deps.evaluateProbes ?? evaluateCriterionProbeChecks)({ criteria: probeCriteria, ratings, dispatchTool });
-    if (evaluation.ok) results.push(...probeCheckResults(rubricRef, evaluation.checkRuns, probeCriteria));
-    else probeError = `${evaluation.error}: ${evaluation.detail}`;
+    const dispatchTool = deps.dispatchTool ?? rescoreProbeDispatcher(harness);
+    const evaluateProbes = deps.evaluateProbes ?? evaluateCriterionProbeChecks;
+    // One evaluation per criterion. The evaluator fails closed for a whole batch (right for a
+    // scorecard, which must not grade around an unjudged check), but a re-score that dropped every
+    // probe because one timed out would leave the rest unmeasured. An unjudgeable criterion keeps
+    // its prior ledger rows and is named in probeError. `unknown` ratings run the probe without
+    // asserting a rating it could contradict.
+    for (const criterion of probeCriteria) {
+      const evaluation = await evaluateProbes({ criteria: [criterion], ratings: { [criterion.key]: { rating: 'unknown' } }, dispatchTool });
+      if (evaluation.ok) results.push(...probeCheckResults(rubricRef, evaluation.checkRuns, [criterion]));
+      else probeErrors.push(`${evaluation.criterionKey ?? criterion.key}: ${evaluation.error}: ${evaluation.detail}`);
+    }
   }
+  const probeError = probeErrors.length > 0
+    ? `${probeErrors.length} of ${probeCriteria.length} probe criteria unjudged; ${probeErrors.join(' | ')}`
+    : undefined;
 
   const testRunIds = results.length > 0
     ? await (deps.record ?? ((r, s) => recordRubricCheckResults(r, s, getOrgPg().sql as never)))(results, {
