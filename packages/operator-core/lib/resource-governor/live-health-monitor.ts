@@ -6,11 +6,12 @@
  * Linux-specific probes fail to explicit unknown on every other platform.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, open, readFile, readdir, rename, statfs, unlink, writeFile } from 'node:fs/promises';
 import { arch, cpus, freemem, homedir, platform, release, totalmem } from 'node:os';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { getResourceProfile, type ResourceProfile } from '@papercusp/resource-profile';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import {
@@ -99,6 +100,65 @@ interface LiveHealthHistoryTail {
   readonly needsRewrite: boolean;
 }
 
+const HISTORY_ENCODING = 'live-health-history-gzip-v1';
+const HISTORY_MAX_DECODED_BYTES = 32 * 1024 * 1024;
+interface EncodedHistoryPart {
+  encoding: typeof HISTORY_ENCODING;
+  sourceBytes: number;
+  sha256: string;
+  part: number;
+  parts: number;
+  data: string;
+}
+
+function historyPart(value: unknown): value is EncodedHistoryPart {
+  if (!value || typeof value !== 'object') return false;
+  const p = value as EncodedHistoryPart;
+  return p.encoding === HISTORY_ENCODING && Number.isSafeInteger(p.sourceBytes) && p.sourceBytes > 0 &&
+    p.sourceBytes <= HISTORY_MAX_DECODED_BYTES && typeof p.sha256 === 'string' && /^[a-f0-9]{64}$/.test(p.sha256) &&
+    Number.isSafeInteger(p.parts) && p.parts > 0 && p.parts <= 100_000 &&
+    Number.isSafeInteger(p.part) && p.part >= 0 && p.part < p.parts && typeof p.data === 'string';
+}
+
+/** Decode one complete history sample, including legacy unencoded snapshots. */
+export function decodeLiveHealthHistorySnapshot(rows: readonly string[]): LiveHealthSnapshot | null {
+  try {
+    const values: unknown[] = rows.map((row) => JSON.parse(row));
+    if (values.length === 1 && isLiveHealthSnapshot(values[0])) return values[0];
+    const first = values[0];
+    if (!historyPart(first) || first.part !== 0 || values.length !== first.parts) return null;
+    if (!values.every((p, index) => historyPart(p) && p.part === index && p.parts === first.parts &&
+      p.sha256 === first.sha256 && p.sourceBytes === first.sourceBytes)) return null;
+    const encoded = (values as EncodedHistoryPart[]).map((p) => p.data).join('');
+    const compressed = Buffer.from(encoded, 'base64');
+    if (compressed.toString('base64') !== encoded) return null;
+    const raw = gunzipSync(compressed, { maxOutputLength: first.sourceBytes });
+    if (raw.length !== first.sourceBytes || createHash('sha256').update(raw).digest('hex') !== first.sha256) return null;
+    const snapshot: unknown = JSON.parse(raw.toString('utf8'));
+    return isLiveHealthSnapshot(snapshot) ? snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
+function encodeHistorySnapshot(snapshot: LiveHealthSnapshot, maxRecordBytes: number): string[] | null {
+  const raw = Buffer.from(JSON.stringify(snapshot));
+  if (raw.length + 1 <= maxRecordBytes) return [raw.toString('utf8')];
+  if (raw.length > HISTORY_MAX_DECODED_BYTES) return null;
+  const data = gzipSync(raw).toString('base64');
+  const header = { encoding: HISTORY_ENCODING, sourceBytes: raw.length, sha256: createHash('sha256').update(raw).digest('hex') };
+  // Reserve the largest supported part indices before splitting, so every physical
+  // JSONL row respects the cap even when the snapshot needs multiple rows.
+  const overhead = Buffer.byteLength(JSON.stringify({ ...header, part: 100_000, parts: 100_000, data: '' })) + 1;
+  const chunkBytes = maxRecordBytes - overhead;
+  if (chunkBytes < 1) return null;
+  const parts = Math.ceil(data.length / chunkBytes);
+  if (parts > 100_000) return null;
+  return Array.from({ length: parts }, (_, part) => JSON.stringify({
+    ...header, part, parts, data: data.slice(part * chunkBytes, (part + 1) * chunkBytes),
+  }));
+}
+
 /**
  * Append complete snapshots as JSONL while bounding disk use and sample count.
  * The monitor is the sole writer for this path; appends are serialized so an
@@ -157,31 +217,42 @@ export class LiveHealthHistoryWriter {
     }
   }
 
-  private validRows(text: string): string[] {
-    return text.split(/\r?\n/).filter((line) => {
-      if (!line) return false;
+  private validFrames(text: string): string[][] {
+    const frames: string[][] = [];
+    const rows = text.split(/\r?\n/).filter(Boolean);
+    for (let index = 0; index < rows.length; index += 1) {
+      const line = rows[index]!;
       try {
         const value: unknown = JSON.parse(line);
-        return value !== null && typeof value === 'object' && !Array.isArray(value);
+        if (historyPart(value)) {
+          if (value.part !== 0 || value.parts > rows.length - index) continue;
+          const frame = rows.slice(index, index + value.parts);
+          if (!decodeLiveHealthHistorySnapshot(frame)) continue;
+          frames.push(frame);
+          index += value.parts - 1;
+        } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+          frames.push([line]);
+        }
       } catch {
-        return false;
+        // Ignore malformed/torn records, retaining only whole history samples.
       }
-    });
+    }
+    return frames;
   }
 
-  private async replaceRows(rows: readonly string[], targetRows: number, targetBytes: number): Promise<void> {
-    const kept: string[] = [];
+  private async replaceRows(frames: readonly string[][], targetRows: number, targetBytes: number): Promise<void> {
+    const kept: string[][] = [];
     let bytes = 0;
-    for (let index = rows.length - 1; index >= 0 && kept.length < targetRows; index -= 1) {
-      const row = rows[index]!;
-      const rowBytes = Buffer.byteLength(row) + 1;
+    for (let index = frames.length - 1; index >= 0 && kept.length < targetRows; index -= 1) {
+      const frame = frames[index]!;
+      const rowBytes = frame.reduce((total, row) => total + Buffer.byteLength(row) + 1, 0);
       if (bytes + rowBytes > targetBytes) break;
-      kept.push(row);
+      kept.push(frame);
       bytes += rowBytes;
     }
-    const ordered = kept.reverse();
+    const ordered = kept.reverse().flat();
     await writeLiveHealthText(this.path, ordered.length ? ordered.join('\n') + '\n' : '');
-    this.rowCount = ordered.length;
+    this.rowCount = kept.length;
     this.byteCount = bytes;
   }
 
@@ -189,29 +260,31 @@ export class LiveHealthHistoryWriter {
     if (this.initialized) return;
     const tail = await this.readTail();
     const rawRows = tail.text.split(/\r?\n/).filter(Boolean);
-    const rows = this.validRows(tail.text);
-    this.rowCount = rows.length;
-    this.byteCount = rows.reduce((total, row) => total + Buffer.byteLength(row) + 1, 0);
+    const frames = this.validFrames(tail.text);
+    this.rowCount = frames.length;
+    this.byteCount = frames.flat().reduce((total, row) => total + Buffer.byteLength(row) + 1, 0);
     this.initialized = true;
     if (
       tail.needsRewrite ||
-      rows.length !== rawRows.length ||
+      frames.flat().length !== rawRows.length ||
       this.rowCount > this.maxSamples ||
       this.byteCount > this.maxBytes
     ) {
-      await this.replaceRows(rows, this.maxSamples, this.maxBytes);
+      await this.replaceRows(frames, this.maxSamples, this.maxBytes);
     }
   }
 
   private async appendSerial(snapshot: LiveHealthSnapshot): Promise<boolean> {
-    const row = JSON.stringify(snapshot) + '\n';
+    const rows = encodeHistorySnapshot(snapshot, this.maxRecordBytes);
+    if (!rows) return false;
+    const row = rows.join('\n') + '\n';
     const rowBytes = Buffer.byteLength(row);
-    if (rowBytes > this.maxRecordBytes || rowBytes > this.maxBytes) return false;
+    if (rowBytes > this.maxBytes) return false;
     await this.initialize();
     if (this.rowCount + 1 > this.maxSamples || this.byteCount + rowBytes > this.maxBytes) {
       const tail = await this.readTail();
       await this.replaceRows(
-        this.validRows(tail.text),
+        this.validFrames(tail.text),
         Math.floor(this.maxSamples / 2),
         Math.floor(this.maxBytes / 2),
       );
