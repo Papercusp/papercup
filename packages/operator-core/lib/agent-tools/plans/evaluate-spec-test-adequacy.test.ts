@@ -1026,6 +1026,50 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(full).length / 2);
   });
 
+  // oversized-tool-results-reduction-2026-10-12 P-006: following the summary to learn WHY a
+  // clause fails must not re-fetch every passing criterion and the draft. Falsifier: the
+  // summary offers no narrowed re-call, the narrowed read still carries passing criteria or
+  // the draft, or narrowing changes a verdict, wouldBlock or the counts.
+  it('offers nonPassingDetail from the summary; criteria narrows returned ratings without changing any verdict', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    const base = { harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship', specIds: ['SPEC-001'] };
+
+    const summary = await call(base);
+    const full = await call({ ...base, detail: 'full' });
+    const nonPassing = (Object.entries(full.rows[0].ratings) as Array<[string, { rating: string }]>)
+      .filter(([, entry]) => entry.rating !== 'pass' && entry.rating !== 'not-applicable')
+      .map(([criterion]) => criterion);
+    expect(nonPassing.length).toBeGreaterThan(0);
+
+    expect(summary.nonPassingDetail).toMatchObject({
+      tool: 'plans:evaluate-spec-test-adequacy',
+      args: { ...base, criteria: nonPassing, detail: 'full' },
+    });
+    expect(full).not.toHaveProperty('nonPassingDetail');
+
+    const narrowed = await call(tool.args.parse(summary.nonPassingDetail.args));
+    expect(Object.keys(narrowed.rows[0].ratings).sort()).toEqual([...nonPassing].sort());
+    for (const criterion of nonPassing) {
+      expect(narrowed.rows[0].ratings[criterion]).toEqual(full.rows[0].ratings[criterion]);
+    }
+    expect(narrowed.rows[0]).not.toHaveProperty('scorecardDraft');
+    expect(narrowed.rows[0].scorecardDraftOmitted).toEqual(expect.any(String));
+    // Narrowing is output-only: every verdict is still computed over all criteria.
+    expect(narrowed.rows[0]).toMatchObject({ verdict: full.rows[0].verdict, wouldBlock: full.rows[0].wouldBlock });
+    expect(narrowed.verdicts).toEqual(full.verdicts);
+    expect(narrowed.wouldBlock).toEqual(full.wouldBlock);
+    expect(JSON.stringify(narrowed).length).toBeLessThan(JSON.stringify(full).length);
+
+    // A summary narrowed to one criterion keeps only that rating, same verdict.
+    const one = await call({ ...base, criteria: [nonPassing[0]] });
+    expect(Object.keys(one.rows[0].ratings)).toEqual([nonPassing[0]]);
+    expect(one.rows[0].verdict).toBe(full.rows[0].verdict);
+
+    expect(tool.args.safeParse({ ...base, criteria: ['not-a-criterion'] }).success).toBe(false);
+    expect(tool.args.safeParse({ ...base, criteria: [] }).success).toBe(false);
+  });
+
+
   it('bounds blocked-criterion explanations and marks incomplete evidence in compact replay', async () => {
     const staleLiveBinding = {
       id: 37231,

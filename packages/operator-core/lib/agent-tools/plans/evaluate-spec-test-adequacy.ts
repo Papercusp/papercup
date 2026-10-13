@@ -15,6 +15,7 @@ import {
 } from './spec-evidence-store';
 import { resolvePersistedClassRef } from './plan-spec-quality-gate';
 import {
+  ADEQUACY_CRITERIA,
   evaluateSpecTestAdequacy,
   latestLogicalEvidence,
   PLAN_CLASS_RUBRIC_REFS,
@@ -335,6 +336,9 @@ export const argsSchema = refineEvenWithShapeIssues(z.object({
     'Maximum evidence rows to load for the filtered plan/spec/work-item/evidence scope, not the number of selected clauses. The default is 1000. If loaded rows reach this ceiling, evaluation refuses with evidence_selection_hit_limit and no verdict because the cohort may be truncated; omit this argument or set it above the expected evidence rows (up to 1000), or narrow the selectors.',
   ),
   detail: reviewReadDetailArg,
+  criteria: z.array(z.enum(ADEQUACY_CRITERIA)).min(1).max(ADEQUACY_CRITERIA.length).optional().describe(
+    'Return ratings for only these criteria; verdict, wouldBlock and verdicts still cover every criterion. With detail:"full" it omits scorecardDraft (a partial draft cannot be emitted).',
+  ),
 }), (args, ctx) => {
   if ((args.specRevision === undefined) !== (args.specFingerprint === undefined)) {
     ctx.addIssue({
@@ -545,15 +549,64 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
   };
 }
 
+/**
+ * oversized-tool-results-reduction-2026-10-12 P-006: the ready plans:certify-spec-clauses
+ * call for a result with passing rows. Offered only for a live, unpinned evaluation against
+ * an active acceptance rubric: certify cannot pin bindingIds or a clause snapshot, so a
+ * pinned read would silently widen its cohort. Carries only arguments certify accepts.
+ */
+export function certifyPassingRef(
+  args: {
+    harness?: string;
+    slug: string;
+    workItemIds?: string[];
+    evidenceRefs?: string[];
+    bindingIds?: number[];
+    specIds?: string[];
+    planItemIds?: string[];
+    specRevision?: number;
+    replaySnapshot?: boolean;
+    includeDraft?: boolean;
+    limit?: number;
+  },
+  ctx: { classRef: PlanClassRubricRef; classRefSource: EvaluatorClassSource; passingCount: number },
+) {
+  if (
+    ctx.passingCount === 0 ||
+    ctx.classRefSource !== 'active-acceptance-rubric' ||
+    args.replaySnapshot === true ||
+    args.specRevision !== undefined ||
+    args.bindingIds !== undefined
+  ) {
+    return undefined;
+  }
+  return {
+    tool: 'plans:certify-spec-clauses' as const,
+    args: {
+      ...(args.harness !== undefined ? { harness: args.harness } : {}),
+      slug: args.slug,
+      classRef: ctx.classRef,
+      ...(args.workItemIds ? { workItemIds: args.workItemIds } : {}),
+      ...(args.evidenceRefs ? { evidenceRefs: args.evidenceRefs } : {}),
+      ...(args.specIds ? { specIds: args.specIds } : {}),
+      ...(args.planItemIds ? { planItemIds: args.planItemIds } : {}),
+      ...(args.includeDraft !== undefined ? { includeDraft: args.includeDraft } : {}),
+      ...(args.limit !== undefined ? { limit: args.limit } : {}),
+    },
+    passing: ctx.passingCount,
+    note: 'Files every passing card server-side via the scorecards:emit path; no draft round-trip.',
+  };
+}
+
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
     'Grade affected current spec revisions against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns per-clause verdicts with every would-block reason. detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; never files a verdict. evidenceRefs selects immutable refs; bindingIds pins exact persisted rows, even when refs repeat. limit caps evidence rows, not clauses (default 1000); raise it above the filtered cohort when needed. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. For historical audit, pass scorecardId with planSlug; the evaluator replays the card’s stored recipe as of creation and marks historicalAuditOnly provenance, never a current ship-read. Check ok and rows.length before indexing.',
   guidance: {
     returns:
-      'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. The system ad-hoc scope instead requires exactly one workItemId and uses its explicit completion-class attestation, limited to its resolved BehaviorContract clauses; classRefSource is work-item-completion-attestation. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. The optional limit caps evidence rows across the filtered scope, not the number of selected clauses; its default is 1000. When loaded rows reach the ceiling, evidence_selection_hit_limit returns ok:false with error, count, limit and remedy and NO rows field because the cohort may be truncated. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full".',
+      'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. The system ad-hoc scope instead requires exactly one workItemId and uses its explicit completion-class attestation, limited to its resolved BehaviorContract clauses; classRefSource is work-item-completion-attestation. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. The optional limit caps evidence rows across the filtered scope, not the number of selected clauses; its default is 1000. When loaded rows reach the ceiling, evidence_selection_hit_limit returns ok:false with error, count, limit and remedy and NO rows field because the cohort may be truncated. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full". To learn why a clause fails, follow nonPassingDetail (present when any criterion is not pass/not-applicable): the same re-call narrowed by criteria to the non-passing ones, without the draft. When a live evaluation has passing rows, certifyPassing is the ready plans:certify-spec-clauses call that files those cards.',
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
-    notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
+    notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing passing cards — plans:certify-spec-clauses (certifyPassing), not a full read plus hand scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
     chaining:
       'plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy → plans:certify-spec-clauses files each passing card. P-007 consumes current emitted rows at work_items:complete.',
     seeAlso: ['plans:get-spec-evidence', 'scorecards:emit', 'rubrics:get spec-test-adequacy'],
@@ -1133,6 +1186,59 @@ export default defineTool({
             },
           }))
         : rows;
+    // oversized-tool-results-reduction-2026-10-12 P-006: callers mostly follow the summary's
+    // fullBody ref to learn why a clause fails, which re-fetched every criterion's evidence
+    // (each re-lists every bound proof record) plus the draft. Measured 2026-10-13: 716 full
+    // reads/day, ~115 MB, 441 within 10 min of the same owner's summary; a one-row full
+    // body ran 52-109 KB, its non-passing criteria ~14-16 KB of that. `criteria` narrows
+    // only what is RETURNED — verdict, wouldBlock and verdicts are computed from every
+    // criterion above — and nonPassingDetail is the ready re-call for exactly those.
+    const criteriaFilter = args.criteria ? new Set<string>(args.criteria) : null;
+    const pickCriteria = <V>(entries: Record<string, V>): Record<string, V> =>
+      criteriaFilter
+        ? Object.fromEntries(Object.entries(entries).filter(([criterion]) => criteriaFilter.has(criterion)))
+        : entries;
+    // Generic so the scorecardRows variant (its draft carries the evidence notes) keeps its type.
+    const filterRow = <R extends Pick<EvaluatedRow, 'ratings' | 'draggingBindingIds'>>(row: R): R =>
+      criteriaFilter
+        ? {
+            ...row,
+            ratings: pickCriteria(row.ratings) as R['ratings'],
+            draggingBindingIds: pickCriteria(row.draggingBindingIds) as R['draggingBindingIds'],
+          }
+        : row;
+    const fullRows = criteriaFilter
+      ? scorecardRows.map((row) => {
+          const { scorecardDraft: _omittedDraft, ...rest } = filterRow(row);
+          return { ...rest, scorecardDraftOmitted: 'criteria filter: a partial draft cannot be emitted; omit criteria for it' };
+        })
+      : scorecardRows;
+    const nonPassingCriteria = [
+      ...new Set(
+        rows.flatMap((row) =>
+          Object.entries(filterRow(row).ratings)
+            .filter(([, entry]) => !PASS_LIKE.has(entry.rating))
+            .map(([criterion]) => criterion),
+        ),
+      ),
+    ];
+    const nonPassingDetail =
+      !isFullDetail(args.detail) && nonPassingCriteria.length > 0
+        ? fullBodyRef('plans:evaluate-spec-test-adequacy', { ...args, criteria: nonPassingCriteria }, [
+            'rows[].scorecardDraft',
+            'rows[].ratings of passing criteria',
+          ])
+        : undefined;
+    // Same plan, measured the same day: 418 of 734 full reads (62 MB) were followed within
+    // 15 min by a hand scorecards:emit — the full body fetched only to shuttle drafts back.
+    // plans:certify-spec-clauses files every passing draft server-side through that same
+    // emit path. Offer its ready call only for a live, unpinned evaluation: it cannot pin
+    // bindingIds or a clause snapshot, so a pinned read would silently widen its cohort.
+    const certifyPassing = certifyPassingRef(args, {
+      classRef,
+      classRefSource: classResolution.source,
+      passingCount: rows.filter((row) => row.verdict === 'pass').length,
+    });
     return {
       data: {
         ok: true,
@@ -1150,11 +1256,13 @@ export default defineTool({
         excludedDraftSpecIds: excludedDraftClauses.map((clause) => clause.specId),
         excludedClauses,
         ...(governingNote ? { governingNote } : {}),
+        ...(certifyPassing ? { certifyPassing } : {}),
         ...(isFullDetail(args.detail)
-          ? { detail: 'full' as const, rows: scorecardRows }
+          ? { detail: 'full' as const, rows: fullRows }
           : {
               detail: 'summary' as const,
-              rows: rows.map(summaryRow),
+              rows: rows.map((row) => summaryRow(filterRow(row))),
+              ...(nonPassingDetail ? { nonPassingDetail } : {}),
               fullBody: fullBodyRef('plans:evaluate-spec-test-adequacy', args, [
                 'rows[].ratings[].evidence',
                 'rows[].evidenceRefs',
