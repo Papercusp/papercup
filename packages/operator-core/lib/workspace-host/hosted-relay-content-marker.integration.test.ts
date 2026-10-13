@@ -202,7 +202,7 @@ async function settle(pending: Array<Promise<void>>): Promise<void> {
   throw new Error('assembled relay did not settle');
 }
 
-async function runAssembledByoc() {
+async function runAssembledByoc(untrustedEndpoint = false) {
   const root = await mkdtemp(join(tmpdir(), 'byoc-marker-'));
   const captures: Capture[] = [];
   const pending: Array<Promise<void>> = [];
@@ -304,7 +304,9 @@ async function runAssembledByoc() {
       const sealed = new ByocSealedChannel({
         initiator: true,
         localKeyPair: clientKey,
-        expectedRemotePublicKey: hostKey.publicKey,
+        expectedRemotePublicKey: untrustedEndpoint
+          ? SecretStream.keyPair(Buffer.alloc(32, 43)).publicKey
+          : hostKey.publicKey,
         sendPacket: (packet) => wire.peer.send(JSON.stringify(packet)),
         onFrame: (frame) => frames.push(frame),
         onError: (error) => hostWarnings.push(`browser sealed channel: ${error.message}`),
@@ -320,6 +322,24 @@ async function runAssembledByoc() {
       return { sealed, frames };
     }
     const ptyBrowser = browser('pty');
+    if (untrustedEndpoint) {
+      // Queue content before trust is established through the actual broker,
+      // connector, and host. A valid connector binding cannot confer key trust.
+      const opening = ptyBrowser.sealed.opened.then(() => null, (error: Error) => error.message);
+      const sending = ptyBrowser.sealed.send({
+        type: 'pty.input', data: Buffer.from(marker('pty')).toString('base64'),
+      }).then(() => null, (error: Error) => error.message);
+      await settle(pending);
+      const refusal = { opening: await opening, sending: await sending };
+      await settle(pending);
+      return {
+        root, captures, client, adapter, refusal,
+        receivedFrames: ptyBrowser.frames,
+        hostWrites: ptys.flatMap((pty) => pty.writes),
+        fetched, desktopSockets,
+        delivered: Object.fromEntries(PLANES.map((plane) => [plane, false])) as Record<Plane, boolean>,
+      };
+    }
     await settle(pending);
     await ptyBrowser.sealed.opened;
     await ptyBrowser.sealed.send({ type: 'pty.input', data: Buffer.from(marker('pty')).toString('base64') });
@@ -457,5 +477,24 @@ describe('hosted BYOC content marker negative control (P-003)', () => {
       recoverable(run.captures, marker(plane)).map((capture) => ({ plane, surface: capture.surface })),
     );
     expect(leaks).toEqual([]);
+  });
+
+  it('refuses queued customer content from an untrusted endpoint through the assembled relay and host', async () => {
+    const refused = await runAssembledByoc(true);
+    try {
+      expect(refused.refusal).toEqual({
+        opening: 'BYOC sealed channel remote key mismatch',
+        sending: 'BYOC sealed channel remote key mismatch',
+      });
+      expect(refused.receivedFrames).toEqual([]);
+      expect(refused.hostWrites).toEqual([]);
+      expect(refused.fetched).toEqual([]);
+      expect(refused.desktopSockets).toEqual([]);
+      expect(refused.captures.flatMap((capture) => recoverable([capture], marker('pty')))).toEqual([]);
+    } finally {
+      refused.client.stop();
+      refused.adapter.close();
+      await rm(refused.root, { recursive: true, force: true });
+    }
   });
 });

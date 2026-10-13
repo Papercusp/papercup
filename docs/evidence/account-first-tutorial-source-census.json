@@ -97,7 +97,7 @@
     {"id":"agents","module":"work","route":"/?panel=agents","teaches":"Inspect the authorized agent roster; launching remains explicit.","policy":"workspace"},
     {"id":"processes","operatorKind":"tasks-roster","module":"work","route":"/?panel=processes","teaches":"Inspect running task/process evidence and its freshness.","policy":"workspace"},
     {"id":"sessions","operatorKind":"session-history","module":"work","route":"/?panel=sessions","teaches":"Read session history and reopen the intended conversation.","policy":"workspace"},
-    {"id":"voice","module":"help","route":"/?panel=voice","teaches":"Choose a configured chat voice engine; tutorial recording has separate consent.","policy":"voice"},
+    {"id":"voice","module":"help","route":"/settings/voice","teaches":"Choose a configured chat voice engine; tutorial recording has separate consent.","policy":"voice"},
     {"id":"quick","operatorKind":"quick-panel","module":"navigation","route":"/?panel=quick","teaches":"Use the quick palette for prompts, brainstorm and docs.","policy":"navigation"},
     {"id":"accounts-dock","module":"account","route":"/?accountsPane=true","teaches":"Review model/provider accounts; keep credentials out of lesson Help.","policy":"workspace"},
     {"id":"papercup-chat","module":"work","route":"/?chatPane=true","teaches":"Give a goal, context and output; verify answers and request corrections.","policy":"workspace"},

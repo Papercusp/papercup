@@ -211,6 +211,19 @@ describe('account product guide entry', () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith('/billing'));
     expect(vi.mocked(captureBrowserTelemetry).mock.calls.filter(([, p]) => p.action === 'pause')).toHaveLength(1);
   });
+  it('opens the maintained Tauri voice settings route from the product guide', async () => {
+    const assign = vi.fn();
+    vi.stubGlobal('window', Object.assign(Object.create(window), { location: { assign } }));
+    const fetcher = vi.fn().mockResolvedValueOnce(response(record({ currentLessonId: 'help' })))
+      .mockResolvedValueOnce(response(record({ revision: 1, currentLessonId: 'help', disposition: 'paused' })));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}><p>Home</p></AccountProductTutorial>);
+    await screen.findByRole('heading', { name: 'Get help in context' });
+    const voiceLink = await screen.findByRole('link', { name: 'Open voice' });
+    expect(voiceLink.getAttribute('href')).toBe('/settings/voice');
+    fireEvent.click(voiceLink);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('/settings/voice'));
+  });
   it('measures saved explanation reviews and recovery without domain success or private state', () => {
     const capture = vi.fn();
     const observer = createProductTutorialAnalytics(capture);

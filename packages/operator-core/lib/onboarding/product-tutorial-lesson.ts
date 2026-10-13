@@ -368,7 +368,7 @@ export const PRODUCT_TUTORIAL_TARGETS: readonly ProductTutorialTarget[] = [
   {
     "id": "voice",
     "module": "help",
-    "route": "/?panel=voice",
+    "route": "/settings/voice",
     "teaches": "Choose a configured chat voice engine; tutorial recording has separate consent.",
     "policy": "voice"
   },
