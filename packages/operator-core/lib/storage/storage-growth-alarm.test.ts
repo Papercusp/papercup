@@ -319,6 +319,18 @@ describe('detectUndeclaredGrowth', () => {
     expect(undeclared).toEqual([]);
   });
 
+  it('surfaces thread-post growth without borrowing the message-log retention decision', () => {
+    // message-log-gc deletes coord_event_log messages, not their canonical posts.
+    // Its verified retention cannot suppress an unrelated table's policy gap.
+    const { undeclared } = detectUndeclaredGrowth(
+      [tbl('coord_thread_posts', 512), tbl('coord_event_log', 512)],
+      [...DECLARED, 'coord_event_log'],
+      128 * MB,
+    );
+    expect(undeclared.map((entry) => entry.table)).toEqual(['coord_thread_posts']);
+    expect(undeclared[0].bytes).toBe(512 * MB);
+  });
+
   it('does NOT flag the four measured session archive/index tables with verified retention owners', () => {
     const sessionTables = [
       tbl('session_archive_files', 7_000),
