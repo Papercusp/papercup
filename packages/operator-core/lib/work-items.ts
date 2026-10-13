@@ -6796,6 +6796,38 @@ export function reservedPlanLaneExclusionSql(
             AND candidate.feature_id = ANY(${[...decisionCandidates.ids]}::text[])
        ))
   )` : sql`harness_shared.plan_decisions`;
+  // WI-6554700010009932: every lane held by a live taken work-item, one row per (holder, lane),
+  // in the exact identity form guardPlanItemSiblingClaim uses. The canonical source columns win
+  // when the holder has a non-blank source_plan_slug and at least one non-blank item id; only
+  // otherwise does its legacy payload.plan_item identity count. Item ids are compared raw, as
+  // the `= ANY(source_plan_item_ids)` form always did. Uncorrelated, so Postgres evaluates it
+  // once per statement (as a hashed subplan) instead of once per candidate row.
+  const holderHasCanonicalLane = sql`(
+    NULLIF(btrim(holder.source_plan_slug), '') IS NOT NULL
+    AND EXISTS (
+      SELECT 1
+        FROM unnest(COALESCE(holder.source_plan_item_ids, ARRAY[]::text[])) AS holder_any(item_id)
+       WHERE btrim(holder_any.item_id) <> ''
+    )
+  )`;
+  const heldLanes = sql`(
+    SELECT holder.workspace_id, holder.feature_id, lane.plan_slug, lane.item_id
+      FROM harness_shared.work_items holder
+      CROSS JOIN LATERAL (
+        SELECT btrim(holder.source_plan_slug) AS plan_slug, holder_item.item_id
+          FROM unnest(COALESCE(holder.source_plan_item_ids, ARRAY[]::text[])) AS holder_item(item_id)
+         WHERE ${holderHasCanonicalLane}
+        UNION ALL
+        SELECT holder.payload->'plan_item'->>'plan_slug', holder.payload->'plan_item'->>'item_id'
+         WHERE NOT ${holderHasCanonicalLane}
+      ) lane
+     WHERE holder.taken_by IS NOT NULL
+       AND btrim(holder.taken_by) <> ''
+       AND lower(btrim(holder.taken_by)) <> 'unassigned'
+       AND holder.status NOT IN ('passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped')
+       AND lane.plan_slug IS NOT NULL
+       AND lane.item_id IS NOT NULL
+  )`;
   return sql`NOT (
     COALESCE(${col}, '{}'::jsonb) ? 'plan_item' AND (
       -- EI-13524: a fleet stamp is a reservation in its own right, independently of
@@ -6923,76 +6955,30 @@ export function reservedPlanLaneExclusionSql(
       -- transaction guard remains mandatory for concurrent races and source-only
       -- candidates: this predicate is the churn/diagnosis floor, not the mutex.
       --
-      -- WI-6554700010009927 (perf audit P-012): the precise sibling EXISTS below runs once
-      -- per CANDIDATE row and detoasts every live taken sibling's payload->'plan_item'.
-      -- Measured 2026-10-13 on a logged 9.6 s listWorkItems statement: 37 ms x 179
-      -- candidates, 1.86 M shared buffer hits, 71% of execution. The prefilter is the set
-      -- of lanes held by ANY live taken item (both identity forms, every workspace), a
-      -- SUPERSET of what the precise EXISTS accepts, so the result is unchanged. It is
-      -- uncorrelated, so Postgres hashes it once per statement and only candidates whose
-      -- lane is actually held reach the per-row EXISTS (9,344 -> 2,819 ms, identical rows).
-      -- COALESCE keeps a NULL row-IN result (NULL candidate identity) out of the caller's
-      -- NOT (... OR ...): the precise EXISTS it guards is never NULL.
-      OR (
-        COALESCE((${col}->'plan_item'->>'plan_slug', ${col}->'plan_item'->>'item_id') IN (
-          SELECT held.plan_slug, held.item_id
-            FROM (
-              SELECT btrim(h.source_plan_slug) AS plan_slug, h_item.item_id
-                FROM harness_shared.work_items h
-                CROSS JOIN LATERAL unnest(COALESCE(h.source_plan_item_ids, ARRAY[]::text[])) AS h_item(item_id)
-               WHERE h.taken_by IS NOT NULL
-                 AND btrim(h.taken_by) <> ''
-                 AND lower(btrim(h.taken_by)) <> 'unassigned'
-                 AND h.status NOT IN ('passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped')
-              UNION ALL
-              SELECT h.payload->'plan_item'->>'plan_slug', h.payload->'plan_item'->>'item_id'
-                FROM harness_shared.work_items h
-               WHERE h.taken_by IS NOT NULL
-                 AND btrim(h.taken_by) <> ''
-                 AND lower(btrim(h.taken_by)) <> 'unassigned'
-                 AND h.status NOT IN ('passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped')
-            ) held
-           WHERE held.plan_slug IS NOT NULL
-             AND held.item_id IS NOT NULL
+      --
+      -- "Another live taken work-item holds this candidate's lane" is evaluated with two
+      -- uncorrelated sets over heldLanes (one row per holder and lane, defined above), so
+      -- Postgres hashes each once per statement. A lane excludes the candidate when it is
+      -- held at all AND it is not held by exactly one item that is the candidate itself:
+      -- two or more holders always include someone else, and a single holder is someone
+      -- else exactly when its id differs. This is the precise sibling rule (same workspace,
+      -- different feature_id) without a per-candidate scan.
+      -- WI-6554700010009927 first guarded the correlated sibling EXISTS with a hashed lane
+      -- prefilter (9,344 -> 2,819 ms on a logged 9.6 s listWorkItems statement); the EXISTS
+      -- still ran for every candidate whose lane was held at all (44 x 26 ms = 1.13 s of a
+      -- 2.7 s statement, 2026-10-13). WI-6554700010009932 removed it.
+      -- COALESCE keeps a NULL row-IN (a NULL candidate slug or item id) from turning the
+      -- caller's NOT (... OR ...) into NULL; such a candidate has no lane to collide on.
+      OR COALESCE(
+        (${wsCol}, ${col}->'plan_item'->>'plan_slug', ${col}->'plan_item'->>'item_id') IN (
+          SELECT held.workspace_id, held.plan_slug, held.item_id FROM ${heldLanes} held
+        )
+        AND (${wsCol}, ${col}->'plan_item'->>'plan_slug', ${col}->'plan_item'->>'item_id', ${idCol}) NOT IN (
+          SELECT held.workspace_id, held.plan_slug, held.item_id, min(held.feature_id)
+            FROM ${heldLanes} held
+           GROUP BY held.workspace_id, held.plan_slug, held.item_id
+          HAVING count(DISTINCT held.feature_id) = 1
         ), false)
-        AND EXISTS (
-        SELECT 1
-          FROM harness_shared.work_items sibling
-         WHERE sibling.workspace_id = ${wsCol}
-           AND sibling.feature_id <> ${idCol}
-           AND sibling.taken_by IS NOT NULL
-           AND btrim(sibling.taken_by) <> ''
-           AND lower(btrim(sibling.taken_by)) <> 'unassigned'
-           AND sibling.status NOT IN ('passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped')
-           AND (
-             (
-               NULLIF(btrim(sibling.source_plan_slug), '') IS NOT NULL
-               AND EXISTS (
-                 SELECT 1
-                   FROM unnest(COALESCE(sibling.source_plan_item_ids, ARRAY[]::text[])) AS sibling_item(item_id)
-                  WHERE btrim(sibling_item.item_id) <> ''
-               )
-               AND btrim(sibling.source_plan_slug) = ${col}->'plan_item'->>'plan_slug'
-               AND ${col}->'plan_item'->>'item_id' = ANY(
-                 COALESCE(sibling.source_plan_item_ids, ARRAY[]::text[])
-               )
-             )
-             OR (
-               NOT (
-                 NULLIF(btrim(sibling.source_plan_slug), '') IS NOT NULL
-                 AND EXISTS (
-                   SELECT 1
-                     FROM unnest(COALESCE(sibling.source_plan_item_ids, ARRAY[]::text[])) AS sibling_item(item_id)
-                    WHERE btrim(sibling_item.item_id) <> ''
-                 )
-               )
-               AND COALESCE(sibling.payload, '{}'::jsonb)->'plan_item'->>'plan_slug'
-                     = ${col}->'plan_item'->>'plan_slug'
-               AND COALESCE(sibling.payload, '{}'::jsonb)->'plan_item'->>'item_id'
-                     = ${col}->'plan_item'->>'item_id'
-             )
-           )
-      ))
       -- EI-20467873456529090: a completed plan-item is terminal residue, not generic backlog.
       -- planItemLaneBlockReason already rejects this after a claim, but that is too late for
       -- claimable previews, aggregate diagnostics, and fleet:bench. The normalized index is the
@@ -7094,7 +7080,12 @@ export function reservedPlanLaneExclusionSql(
         FROM ${masterDecisions} d,
              LATERAL regexp_matches(d.body,
                '(^|[^A-Za-z0-9_-])(WI-[0-9]+)[[:space:]]+owns execution([[:space:]]+and([[:space:]]|$)|[.;]|$)', 'g') AS master(ref)
-       WHERE ${affirmativeDirectRoute}
+       -- WI-6554700010009932: the regex needs the whitespace-delimited words "owns" and
+       -- "execution", so this containment test on migration 1364's token index is an exact
+       -- superset. Without it every admissible read regex-scanned the whole decision corpus
+       -- (1,034 ms, 38,354 buffers, 14,805 decisions) to find the 1 row; with it, 7 ms.
+       WHERE regexp_split_to_array(d.body, '[^A-Za-z0-9_-]+') @> ARRAY['owns', 'execution']::text[]
+         AND ${affirmativeDirectRoute}
          AND ${decisionCandidates ? sql`master.ref[2] = ANY(${[...decisionCandidates.ids]}::text[])` : sql`TRUE`}
     ), FALSE)
     -- WI-10006417: an explicit Route A sentence names one session as the plan's
@@ -7103,7 +7094,12 @@ export function reservedPlanLaneExclusionSql(
     -- plan_item_assignments surface is per-item and is not populated by this ruling.
     OR COALESCE((${wsCol}, ${col}->'plan_item'->>'plan_slug') IN (
       SELECT d.workspace_id, d.plan_slug FROM ${candidatePlanDecisions} d
-       WHERE LOWER(d.body) ~ '(^|[^a-z0-9_-])route[[:space:]]+a:[[:space:]]+this session[[:space:]]+[(]su-[a-f0-9-]{8,36}[)][[:space:]]+implements the plan([[:space:].;]|$)'
+       -- WI-6554700010009932: every word of the sentence is a token of LOWER(body), so this
+       -- containment test on migration 1490's lowercase token index is an exact superset of
+       -- the regex. Without it the leg was a 516-587 ms sequential scan of every decision.
+       WHERE regexp_split_to_array(lower(d.body), '[^a-z0-9_-]+')
+               @> ARRAY['route', 'a', 'this', 'session', 'implements', 'the', 'plan']::text[]
+         AND LOWER(d.body) ~ '(^|[^a-z0-9_-])route[[:space:]]+a:[[:space:]]+this session[[:space:]]+[(]su-[a-f0-9-]{8,36}[)][[:space:]]+implements the plan([[:space:].;]|$)'
     ), FALSE)
   )`;
 }
