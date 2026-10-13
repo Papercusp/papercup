@@ -2132,6 +2132,31 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       fixtureSpecClosureUnion(ROOT).has(f),
   },
   {
+    // WI-10007411 — Vite's production-only CSS preload helper creates stylesheet links for
+    // lazy HUD imports. Keep the first-link failure guard on the real production preview path;
+    // fixture-driven E2E uses Vite dev mode and cannot exercise that helper. The package script
+    // builds operator-vite, owns a preview server, and runs only the focused Playwright case.
+    workspace: "@papercusp/web",
+    script: "test:e2e:css-preload",
+    appliesTo: (f) =>
+      f === "scripts/affected-tests.mjs" ||
+      f === "apps/operator/e2e/adv-shell-nav.spec.ts" ||
+      f === "apps/operator/playwright.production-preview.config.ts" ||
+      f === "apps/operator/package.json" ||
+      f === "apps/operator-vite/package.json" ||
+      f === "apps/operator-vite/vite.config.ts" ||
+      f === "package-lock.json" ||
+      f === "apps/operator-vite/src/routes/adv/index.tsx" ||
+      f === "apps/operator-vite/src/components/adv/AdvShell.tsx" ||
+      f === "apps/operator-vite/src/components/ChunkReloadPrompt.tsx" ||
+      f === "apps/operator-vite/src/lazy-reload-gate.ts" ||
+      f === "libs/generic/sync/src/lazy-with-retry.ts" ||
+      f.startsWith("apps/operator/app/adv/hud/") ||
+      f.startsWith("apps/operator/app/_components/chat/") ||
+      f === "apps/operator/app/adv/sessions/SessionsRosterView.css" ||
+      f === "apps/operator/app/admin/plans/plans.css",
+  },
+  {
     // EI-24368307678871025 — the host's real esbuild graph must resolve imports
     // against the committed operator-core tree before a restart uses that graph.
     // The existing check builds into a temporary directory, so it cannot replace
@@ -2151,6 +2176,38 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(f) &&
         (f.startsWith("apps/operator/lib/") ||
           f.startsWith("packages/operator-core/lib/"))),
+  },
+  {
+    // WI-6554700010009310 (perf audit 2026-10-12 P-010) — the operator-vite CLIENT bundle
+    // budget (scripts/check-bundle-budget.mjs, EI-13213) ran only in .github/workflows, so the
+    // green-checkpoint gate never measured it. It runs the real `vite build` into a temp dir
+    // (~150 s measured on this host) and fails when the eager (pre-first-paint) set exceeds
+    // its budget, one eager chunk exceeds the per-chunk cap, a named heavy chunk (Porcupine,
+    // elk, UiwMdPane) turns eager, or a dynamic import's split is defeated. A leak can enter
+    // through any source the SPA reaches, including relative imports deep inside
+    // operator-core (how EI-13213 hid), so every non-test JS/TS source under the client's
+    // roots attaches it.
+    workspace: "@papercusp/operator-core",
+    script: "lint:bundle-budget",
+    appliesTo: (f) =>
+      f === "scripts/check-bundle-budget.mjs" ||
+      f === "scripts/lib/bundle-budget.mjs" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "apps/operator-vite/package.json" ||
+      f === "apps/operator-vite/vite.config.ts" ||
+      f === "apps/operator-vite/index.html" ||
+      f === "packages/operator-core/package.json" ||
+      f === "package.json" ||
+      f === "package-lock.json" ||
+      (/\.[cm]?[jt]sx?$/.test(f) &&
+        !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(f) &&
+        !f.endsWith(".d.ts") &&
+        (f.startsWith("apps/operator-vite/src/") ||
+          f.startsWith("apps/operator/app/") ||
+          f.startsWith("apps/operator/lib/") ||
+          f.startsWith("apps/operator/providers/") ||
+          f.startsWith("packages/") ||
+          f.startsWith("libs/"))),
   },
   {
     // WI-10002061 — this guard scans tracked TS/TSX source across the entire tree.
