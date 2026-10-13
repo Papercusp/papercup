@@ -3955,8 +3955,59 @@ export function sessionPortUpgradeError(error: any): Error;
  * picker used to offer other backends only to Claude sources — a leftover from
  * when protocol v1 read Claude transcripts only — so a Codex or OMP session could
  * never be switched interactively (consult-backed-parking-2026-10-12 P-011,
- * R-10). The source backend is listed first so the native rows lead the menu. */
-export function resumePickerBackendsFor(session: any): any[];
+ * R-10). The source backend is listed first so the native rows lead the menu.
+ *
+ * `capabilities` (from fetchSessionPortCapabilities) narrows the cross-backend
+ * targets to the pairs the SERVING operator can port (WI-6554700010011137): a
+ * launcher newer than its operator used to offer "Port to claude" for a Codex
+ * session and only learn after the pick that the operator refuses it. Unknown
+ * capabilities filter nothing — the server's own refusal stays the backstop.
+ * @param {any} session
+ * @param {SessionPortCapabilities | null} [capabilities]
+ * @returns {string[]} */
+export function resumePickerBackendsFor(session: any, capabilities?: SessionPortCapabilities | null): string[];
+/** PURE (exported for tests): the cross-backend pairs an operator accepts, read
+ * back out of its own `targetBackend` refusal. Operators that predate
+ * GET /api/adv/sessions/port/capabilities have no other way to say it: main
+ * d740fc3802 answers "V1 targetBackend must be codex|omp" (protocol v1 read
+ * Claude sources only); a build with every pair answers "targetBackend must be
+ * claude|codex|omp". Returns null when the text is not such a refusal.
+ * @param {unknown} message
+ * @returns {Array<{ source: string, target: string }> | null} */
+export function sessionPortPairsFromTargetRefusal(message: unknown): Array<{
+    source: string;
+    target: string;
+}> | null;
+/** PURE (exported for tests): may `source` be continued on `target`? A
+ * same-backend continuation is a native resume and always allowed; unknown
+ * capabilities allow everything so the server's refusal remains the backstop.
+ * @param {SessionPortCapabilities | null | undefined} capabilities
+ * @param {string} source
+ * @param {string} target
+ * @returns {boolean} */
+export function sessionPortPairSupported(capabilities: SessionPortCapabilities | null | undefined, source: string, target: string): boolean;
+/**
+ * What the launcher knows about the serving operator's session-port pairs.
+ * `known:false` means "could not tell" and filters nothing.
+ * @typedef {{ known: boolean, via?: string, reason?: string, pairs?: Array<{ source: string, target: string }> }} SessionPortCapabilities
+ */
+/** Ask the serving operator which session-port pairs it supports. Prefers
+ * GET /api/adv/sessions/port/capabilities; on a 404 (an operator older than that
+ * route) reads the pair set from a side-effect-free inspect refusal instead.
+ * Never throws: anything it cannot interpret returns `{ known:false }`, which
+ * filters nothing (WI-6554700010011137).
+ * @param {{ apiImpl?: (path: string, opts?: any) => Promise<any> }} [deps]
+ * @returns {Promise<SessionPortCapabilities>} */
+export function fetchSessionPortCapabilities({ apiImpl }?: {
+    apiImpl?: (path: string, opts?: any) => Promise<any>;
+}): Promise<SessionPortCapabilities>;
+/** PURE (exported for tests): the one line the picker prints when it hides a
+ * target the serving operator cannot port to; null when nothing is hidden.
+ * @param {any} session
+ * @param {SessionPortCapabilities | null | undefined} capabilities
+ * @param {string | null} [operatorUrl]
+ * @returns {string | null} */
+export function unsupportedSessionPortTargetsNotice(session: any, capabilities: SessionPortCapabilities | null | undefined, operatorUrl?: string | null): string | null;
 /** Resolve the backend before account selection. Same-backend selections keep
  * the byte-identical native resume/fork path; any other backend creates a fresh
  * session for the target through the session port (protocol v1), whichever of
@@ -5063,6 +5114,19 @@ export type RunWrapperOptions = {
     reportSessionEndedImpl?: ((...args: any[]) => any) | undefined;
     onSpawn?: (() => any) | undefined;
     onSpawnFailure?: (() => any) | null | undefined;
+};
+/**
+ * What the launcher knows about the serving operator's session-port pairs.
+ * `known:false` means "could not tell" and filters nothing.
+ */
+export type SessionPortCapabilities = {
+    known: boolean;
+    via?: string;
+    reason?: string;
+    pairs?: Array<{
+        source: string;
+        target: string;
+    }>;
 };
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";

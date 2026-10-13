@@ -15014,6 +15014,18 @@ export const SESSION_PORT_TRANSFORM_VERSION = 4;
 export function sessionPortUpgradeError(error) {
   const status = Number(error?.status ?? 0);
   const message = String(error?.message ?? error ?? "");
+  // WI-6554700010011137: an operator that predates a cross-backend pair still
+  // speaks the same protocol/transform, so it refuses the PAIR with a 400 —
+  // "V1 targetBackend must be codex|omp" on main d740fc3802 — rather than the
+  // 404/426 skew answers below. Say what that means instead of echoing it raw.
+  const accepted = sessionPortPairsFromTargetRefusal(message);
+  if (status === 400 && accepted) {
+    const offered = accepted.map((p) => `${p.source}→${p.target}`).join(", ");
+    return new Error(
+      `psu: the serving operator cannot port this session to that backend — it only ports ${offered || "nothing"} (${message}). ` +
+        `This psu launcher is newer than the operator it is talking to; the port works once the operator runs a build that supports this pair.`,
+    );
+  }
   if (
     status === 404 ||
     status === 426 ||
@@ -15048,12 +15060,135 @@ function providerForResumeTarget(agent) {
  * picker used to offer other backends only to Claude sources — a leftover from
  * when protocol v1 read Claude transcripts only — so a Codex or OMP session could
  * never be switched interactively (consult-backed-parking-2026-10-12 P-011,
- * R-10). The source backend is listed first so the native rows lead the menu. */
-export function resumePickerBackendsFor(session) {
+ * R-10). The source backend is listed first so the native rows lead the menu.
+ *
+ * `capabilities` (from fetchSessionPortCapabilities) narrows the cross-backend
+ * targets to the pairs the SERVING operator can port (WI-6554700010011137): a
+ * launcher newer than its operator used to offer "Port to claude" for a Codex
+ * session and only learn after the pick that the operator refuses it. Unknown
+ * capabilities filter nothing — the server's own refusal stays the backstop.
+ * @param {any} session
+ * @param {SessionPortCapabilities | null} [capabilities]
+ * @returns {string[]} */
+export function resumePickerBackendsFor(session, capabilities = null) {
   const source = session?.agent;
-  return AGENTS.includes(source)
-    ? [source, ...AGENTS.filter((agent) => agent !== source)]
-    : [...AGENTS];
+  if (!AGENTS.includes(source)) return [...AGENTS];
+  return [source, ...AGENTS.filter((agent) => agent !== source)].filter(
+    (target) => sessionPortPairSupported(capabilities, source, target),
+  );
+}
+
+/** PURE (exported for tests): the cross-backend pairs an operator accepts, read
+ * back out of its own `targetBackend` refusal. Operators that predate
+ * GET /api/adv/sessions/port/capabilities have no other way to say it: main
+ * d740fc3802 answers "V1 targetBackend must be codex|omp" (protocol v1 read
+ * Claude sources only); a build with every pair answers "targetBackend must be
+ * claude|codex|omp". Returns null when the text is not such a refusal.
+ * @param {unknown} message
+ * @returns {Array<{ source: string, target: string }> | null} */
+export function sessionPortPairsFromTargetRefusal(message) {
+  const match = /(V1 )?targetBackend must be ([a-z]+(?:\|[a-z]+)*)/.exec(
+    String(message ?? ""),
+  );
+  if (!match) return null;
+  const targets = match[2].split("|").filter((agent) => AGENTS.includes(agent));
+  if (targets.length === 0) return null;
+  const sources = match[1] ? ["claude"] : [...AGENTS];
+  return sources.flatMap((source) =>
+    targets
+      .filter((target) => target !== source)
+      .map((target) => ({ source, target })),
+  );
+}
+
+/** PURE (exported for tests): may `source` be continued on `target`? A
+ * same-backend continuation is a native resume and always allowed; unknown
+ * capabilities allow everything so the server's refusal remains the backstop.
+ * @param {SessionPortCapabilities | null | undefined} capabilities
+ * @param {string} source
+ * @param {string} target
+ * @returns {boolean} */
+export function sessionPortPairSupported(capabilities, source, target) {
+  if (source === target || !capabilities?.known) return true;
+  return (capabilities.pairs ?? []).some(
+    (pair) => pair?.source === source && pair?.target === target,
+  );
+}
+
+/** A `targetBackend` no operator accepts. Inspect validates protocol, then
+ * sourceAdvSessionId, then targetBackend — all before it reads a session or
+ * records telemetry — so this probe costs one 400 and changes nothing. */
+const SESSION_PORT_CAPABILITY_PROBE_TARGET = "__psu_capability_probe__";
+
+/**
+ * What the launcher knows about the serving operator's session-port pairs.
+ * `known:false` means "could not tell" and filters nothing.
+ * @typedef {{ known: boolean, via?: string, reason?: string, pairs?: Array<{ source: string, target: string }> }} SessionPortCapabilities
+ */
+
+/** Ask the serving operator which session-port pairs it supports. Prefers
+ * GET /api/adv/sessions/port/capabilities; on a 404 (an operator older than that
+ * route) reads the pair set from a side-effect-free inspect refusal instead.
+ * Never throws: anything it cannot interpret returns `{ known:false }`, which
+ * filters nothing (WI-6554700010011137).
+ * @param {{ apiImpl?: (path: string, opts?: any) => Promise<any> }} [deps]
+ * @returns {Promise<SessionPortCapabilities>} */
+export async function fetchSessionPortCapabilities({ apiImpl = api } = {}) {
+  try {
+    const advertised = await apiImpl("/api/adv/sessions/port/capabilities", {
+      method: "GET",
+    });
+    if (Array.isArray(advertised?.pairs))
+      return { known: true, via: "capabilities", pairs: advertised.pairs };
+    return { known: false, reason: "capabilities response carried no pairs" };
+  } catch (error) {
+    if (Number(error?.status) !== 404)
+      return { known: false, reason: String(error?.message ?? error) };
+  }
+  try {
+    await apiImpl("/api/adv/sessions/port/inspect", {
+      method: "POST",
+      body: JSON.stringify({
+        protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+        transformVersion: SESSION_PORT_TRANSFORM_VERSION,
+        sourceAdvSessionId: 1,
+        targetBackend: SESSION_PORT_CAPABILITY_PROBE_TARGET,
+      }),
+    });
+  } catch (error) {
+    const pairs =
+      Number(error?.status) === 400
+        ? sessionPortPairsFromTargetRefusal(error?.message)
+        : null;
+    if (pairs) return { known: true, via: "legacy-refusal", pairs };
+    return { known: false, reason: String(error?.message ?? error) };
+  }
+  return { known: false, reason: "operator accepted a capability probe target" };
+}
+
+/** PURE (exported for tests): the one line the picker prints when it hides a
+ * target the serving operator cannot port to; null when nothing is hidden.
+ * @param {any} session
+ * @param {SessionPortCapabilities | null | undefined} capabilities
+ * @param {string | null} [operatorUrl]
+ * @returns {string | null} */
+export function unsupportedSessionPortTargetsNotice(
+  session,
+  capabilities,
+  operatorUrl = null,
+) {
+  const source = session?.agent;
+  if (!capabilities?.known || !AGENTS.includes(source)) return null;
+  const hidden = AGENTS.filter(
+    (target) => !sessionPortPairSupported(capabilities, source, target),
+  );
+  if (hidden.length === 0) return null;
+  const where = operatorUrl ? ` at ${operatorUrl}` : "";
+  const why =
+    capabilities.via === "legacy-refusal"
+      ? "its build is older than this psu launcher and predates that port; it becomes available once the operator runs a newer build"
+      : "it does not advertise that port";
+  return `psu: not offering ${hidden.join(" or ")} — the serving operator${where} cannot port a ${source} session there (${why}).`;
 }
 
 /** Resolve the backend before account selection. Same-backend selections keep
@@ -15313,7 +15448,17 @@ async function chooseResumeTarget(session, args) {
   if (picked !== CHOOSE_MODEL)
     return resolveResumeTarget(session, args, picked);
 
-  const allowedBackends = resumePickerBackendsFor(session);
+  // Offer only the cross-backend targets the SERVING operator can port to — a
+  // newer launcher against an older operator otherwise lists "Port to claude"
+  // and fails after the pick (WI-6554700010011137).
+  const portCapabilities = await fetchSessionPortCapabilities();
+  const hiddenTargetsNotice = unsupportedSessionPortTargetsNotice(
+    session,
+    portCapabilities,
+    launcherOperatorTarget().url,
+  );
+  if (hiddenTargetsNotice) console.error(hiddenTargetsNotice);
+  const allowedBackends = resumePickerBackendsFor(session, portCapabilities);
   const askCustomSpec = async (targetAgent) => {
     const typed = await input({
       message: `${targetAgent} model spec (<model>[:<effort>]; empty = backend default):`,
