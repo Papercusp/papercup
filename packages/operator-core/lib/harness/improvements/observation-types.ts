@@ -111,6 +111,19 @@ export interface ObservationRatingEntry {
   /** The explicit alternative to `remediation`: a reasoned, OWNED decision not to
    *  act on this poor rating (≥10 chars — "n/a" is not a decision). */
   disregard?: string;
+  /** test-rubric-unification-2026-10-12 P-007 (D-004 rule 2): server-stamped when
+   *  `scorecards:emit { fromLedger }` rated this criterion from a results-ledger row.
+   *  Never accepted from a caller (the emit rating schema is strict). */
+  ratedFrom?: 'ledger';
+  /** The ledger row that decided a `ratedFrom:'ledger'` rating. */
+  ledgerResult?: ObservationLedgerResult;
+}
+
+/** One harness_shared.test_runs rubric-check row, as cited by a ledger-filled rating. */
+export interface ObservationLedgerResult {
+  testRunId: number;
+  value: number | string | boolean | null;
+  unit: string | null;
 }
 
 /**
@@ -368,6 +381,9 @@ export interface ScorecardReleaseGateBinding {
  * observations carry none of them.
  */
 export interface StructuredObservation {
+  /** test-rubric-unification-2026-10-12 P-007: the card was emitted with `fromLedger`, so
+   *  every executable criterion's rating is a `ratedFrom:'ledger'` entry. Server-stamped. */
+  ledgerFilled?: boolean;
   // ── v1 free-text fields (D-005) — unchanged, still first-class.
   kind?: ObservationKind;
   scope?: ObservationScope;
@@ -1195,6 +1211,16 @@ function asAcceptanceSeatSuccession(v: unknown): AcceptanceSeatSuccession | unde
  * by the READ side to surface the structured view onto a candidate without a
  * hard dependency on how it was written.
  */
+function asLedgerResult(v: unknown): ObservationLedgerResult | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const r = v as Record<string, unknown>;
+  if (typeof r.testRunId !== 'number' || !Number.isInteger(r.testRunId)) return null;
+  const value = r.value;
+  if (!(value === null || typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean')) return null;
+  if (!(r.unit === null || typeof r.unit === 'string')) return null;
+  return { testRunId: r.testRunId, value, unit: r.unit };
+}
+
 export function asStructuredObservation(v: unknown): StructuredObservation | undefined {
   if (!v || typeof v !== 'object') return undefined;
   const o = v as Record<string, unknown>;
@@ -1206,6 +1232,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (typeof o.sourceHive === 'string' && o.sourceHive.trim()) out.sourceHive = o.sourceHive;
   if (typeof o.targetHive === 'string' && o.targetHive.trim()) out.targetHive = o.targetHive;
   if (typeof o.rubricRef === 'string' && o.rubricRef.trim()) out.rubricRef = o.rubricRef;
+  if (o.ledgerFilled === true) out.ledgerFilled = true;
   if (typeof o.rubricRevision === 'number' && Number.isFinite(o.rubricRevision)) {
     out.rubricRevision = o.rubricRevision;
   }
@@ -1291,6 +1318,8 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           ...(typeof e.suggestion === 'string' && e.suggestion.trim() ? { suggestion: e.suggestion } : {}),
           ...(typeof e.remediation === 'string' && e.remediation.trim() ? { remediation: e.remediation } : {}),
           ...(typeof e.disregard === 'string' && e.disregard.trim() ? { disregard: e.disregard } : {}),
+          ...(e.ratedFrom === 'ledger' ? { ratedFrom: 'ledger' as const } : {}),
+          ...(asLedgerResult(e.ledgerResult) ? { ledgerResult: asLedgerResult(e.ledgerResult)! } : {}),
         };
       }
     }
