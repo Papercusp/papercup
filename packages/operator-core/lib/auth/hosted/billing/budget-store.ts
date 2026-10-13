@@ -181,6 +181,12 @@ async function lock(sql: Sql, s: HostedBudgetScope): Promise<void> {
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(
     json_build_array('hosted-budget', ${s.controlWorkspaceId}::text, ${s.organizationId}::text)::text, 0))`;
 }
+/** The one organization fence every hosted budget writer shares. Allocation
+ * holds (allocation-store.ts, enterprise P-009) reuse it so they compose inside
+ * this store's transactions and serialize with its reservations. Re-entrant. */
+export const lockHostedBudgetOrganization = (sql: Sql,
+  s: Pick<HostedBudgetScope, 'controlWorkspaceId' | 'organizationId'>): Promise<void> =>
+  lock(sql, { ...s, customerWorkspaceId: '' });
 
 /** Complete LOCAL receipt history through the caller's reservation transaction.
  * The store takes the write-capable population fence before its organization
