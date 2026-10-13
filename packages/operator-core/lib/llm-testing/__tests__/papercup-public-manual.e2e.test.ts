@@ -27,6 +27,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { endPiSession, startPiSession } from '@papercusp/agent-mcp/provisioning';
 import type { ChatSession, TurnResult } from '@papercusp/testing-shell/llm';
+import { loadIsolatedHostedTestUserKit } from '../isolated-hosted-test-user.mts';
 
 import { getOrCreateActiveConversation } from '../../operator-conversations';
 import { ensureWorkspaceEntry, readRegistry, workspaceDir, workspacesRoot, writeRegistry } from '../../workspace-registry';
@@ -101,21 +102,32 @@ async function verifyFixtureBundle() {
   return result;
 }
 
+const isolatedPortalKits = new Set<Awaited<ReturnType<typeof loadIsolatedHostedTestUserKit>>>();
+afterEach(async () => {
+  const kits = [...isolatedPortalKits];
+  isolatedPortalKits.clear();
+  const outcomes = await Promise.allSettled(kits.map(kit => kit.close()));
+  const errors = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected').map(outcome => outcome.reason);
+  if (errors.length) throw new AggregateError(errors, 'isolated hosted TEST fixture cleanup failed');
+});
+
 async function loadPortalFixtureModules(portalRoot: string, phase = publicManualHostedPhaseRecorder(() => {})) {
-  // Vitest already owns TypeScript loading here. An outer tsImport registers
-  // another namespace around helpers which use tsImport themselves; its query
-  // suffix can then reach fs as part of the launcher filename. Use the runner's
-  // normal import path, and reuse the statically loaded parseEnvFile above.
+  // Pure metadata/cleanup helpers can use the runner's loader. Admission loads
+  // the retained candidate graph through the same isolated child as Playwright.
   const sourceImport = async (path: string) => {
     const loaded = await import(/* @vite-ignore */ pathToFileURL(path).href);
     return { ...loaded.default, ...loaded };
   };
-  const { loadHostedTestUserKit, cleanupHostedTestResources, isolatedHostedWorkspaceContext } = await phase('portal-fixture-module-import',
+  const { cleanupHostedTestResources, isolatedHostedWorkspaceContext } = await phase('portal-fixture-module-import',
     () => sourceImport(join(portalRoot, 'e2e/hosted-test-user.ts')), 10_000);
   const { resolveServedRelease } = await phase('portal-served-artifact-import',
     () => sourceImport(join(portalRoot, 'e2e/served-artifact.ts')), 10_000);
   return {
-    loadHostedTestUserKit: loadHostedTestUserKit as (portalRoot: string) => Promise<PortalHostedTestUserKit>,
+    loadHostedTestUserKit: async (root: string): Promise<PortalHostedTestUserKit> => {
+      const kit = await loadIsolatedHostedTestUserKit({ portalRoot: root });
+      isolatedPortalKits.add(kit);
+      return kit;
+    },
     isolatedHostedWorkspaceContext: isolatedHostedWorkspaceContext as
       (env: Readonly<Record<string, string | undefined>>) => string,
     cleanupHostedTestResources,
