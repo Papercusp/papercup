@@ -111,11 +111,14 @@ beforeAll(async () => {
       ) {
         recoveryInner = recoveryReleaseInner;
       }
-      const decorateOperation = (value: unknown) => operation && value && typeof value === 'object'
+      const decorateOperation = (raw: unknown) => {
+        const value = typeof raw === 'function' ? raw(operation) : raw;
+        return operation && value && typeof value === 'object'
         ? { ...value, operation_id: operation.id,
             ...(toolName === 'locks:release' || toolName === 'locks:cancel_wait'
               ? { state: toolName === 'locks:release' ? 'completed' : 'cancelled' } : {}) }
         : value;
+      };
       const rpc = rejectsDomain
         ? {
             jsonrpc: "2.0",
@@ -227,6 +230,12 @@ async function runPost(
   input: object,
   extraEnv: Record<string, string> = {},
 ): Promise<{ status: number | null; stdout: string }> {
+  // These pre-existing post-hook cases verify tokens cached by the old hook
+  // across an upgrade. Seed that legacy cache shape explicitly. The separate
+  // lock-operation-fence suite exercises new operation completion/recovery.
+  for (const file of fs.readdirSync(cache)) {
+    if (file.endsWith('.operation.json')) fs.rmSync(join(cache, file));
+  }
   const { status, stdout } = await runHookProcess("bash", [POST_HOOK], {
     input: JSON.stringify(input),
     env: {
@@ -556,7 +565,7 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     for (const id of ids) expect(fs.existsSync(join(cache, `${id}.attest`))).toBe(false);
   });
 
-  it("ambiguous acquire response → releases only the fresh automatic lock it can identify", async () => {
+  it("ambiguous acquire response retains its operation without guessing a fresh automatic holder", async () => {
     emptyAcquireContent = true;
     recoveryQueueInner = {
       active_locks: [
@@ -600,22 +609,13 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     expect(r.stdout).toBe("");
     expect(requests.map((request) => request.body.params.name)).toEqual([
       "locks:acquire",
-      "locks:queue",
-      "locks:release",
     ]);
-    expect(requests[1].body.params.arguments).toMatchObject({
-      owner: "test-owner",
-      paths: ["sub/ambiguous.ts"],
-    });
-    expect(requests[2].body.params.arguments).toMatchObject({
-      lock_id: "orphan-lock",
-      paths: ["sub/ambiguous.ts"],
-      coordination_domain: fs.realpathSync(repo),
-    });
     expect(fs.existsSync(join(cache, "tu-ambiguous.lock"))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(join(cache, 'tu-ambiguous.operation.json'), 'utf8')))
+      .toMatchObject({ paths: ['sub/ambiguous.ts'], operation: { authority: 'decision-fixture' } });
   });
 
-  it("stale operator rejects coordination_domain → retries without it and emits a non-blocking advisory", async () => {
+  it("stale operator rejects coordination_domain without an unsafe operation downgrade", async () => {
     rejectCoordinationDomain = true;
     nextInner = { ok: true, lock_id: "legacy-lock" };
     const r = await run(editOf("sub/legacy-operator.ts", "tu-legacy-operator"));
@@ -624,26 +624,17 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     const out = JSON.parse(r.stdout);
     expect(out.hookSpecificOutput).toMatchObject({
       hookEventName: "PreToolUse",
-      permissionDecision: "allow",
+      permissionDecision: "deny",
     });
     expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(
-      /compatibility fallback/i,
-    );
-    expect(out.hookSpecificOutput.additionalContext).toMatch(/version skew/i);
-    expect(out.hookSpecificOutput.additionalContext).toMatch(
-      /retained file-lock enforcement/i,
+      /rejected the operation scope/i,
     );
 
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(1);
     expect(requests[0].body.params.arguments.coordination_domain).toBe(
       fs.realpathSync(repo),
     );
-    expect(requests[1].body.params.arguments).not.toHaveProperty(
-      "coordination_domain",
-    );
-    expect(
-      fs.readFileSync(join(cache, "tu-legacy-operator.lock"), "utf8"),
-    ).toBe("legacy-lock");
+    expect(fs.existsSync(join(cache, 'tu-legacy-operator.lock'))).toBe(false);
   });
 
   it("PostToolUse releases through the same physical domain as PreToolUse", async () => {
