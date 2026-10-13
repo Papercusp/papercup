@@ -20,7 +20,9 @@ vi.mock('@inquirer/prompts', async (importOriginal) => ({
   select,
 }));
 
-const LAUNCHER = fileURLToPath(new URL('./psu-launcher.mjs', import.meta.url));
+// The maintained copy-out mutation probe supplies its mirror path; Node's committed-source
+// loader remains active in the child, and ordinary suite runs use the installed source path.
+const LAUNCHER = process.env.PSU_LAUNCHER_TEST_PATH || fileURLToPath(new URL('./psu-launcher.mjs', import.meta.url));
 
 function launch(argv: string[]) {
   return spawnSync(process.execPath, [LAUNCHER, ...argv], {
