@@ -14,7 +14,7 @@
  */
 import { DbCallDeadlineError, getOrgPg, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, type ClaimSpec } from './claim-spec';
+import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, appendIdsToClaimSpec, type ClaimSpec } from './claim-spec';
 import { buildP2pLaneFence } from './p2p-lane-fence';
 import { getNextWorkItem, type GetNextResult, type ResolutionStepEvent } from './get-next';
 import { releaseWorkItem, type OrgSql, type WorkItem } from '../work-items';
@@ -61,6 +61,8 @@ export interface SetClaimSpecResult {
   ok: boolean;
   errors: string[];
   revision?: number;
+  /** The committed union returned by append mode, never a pre-write snapshot. */
+  spec?: ClaimSpec;
   /** WI-1564: set when the write is suspicious but not invalid — e.g. a
    *  hive-scoped spec landing under the legacy 'default' workspace partition,
    *  which the federation outbox-drain does not serve (the row strands). */
@@ -394,7 +396,10 @@ export async function setClaimSpec(
   args: {
     cupId: string;
     workspaceId?: string;
-    spec: unknown;
+    spec?: unknown;
+    appendIds?: string[];
+    /** Run the tool's existing admission oracle against the locked candidate. */
+    validateAppend?: (spec: ClaimSpec, harnessSlug: string | null) => Promise<{ errors: string[]; warning?: string }>;
     updatedBy?: string;
     /** P-016 (cross-machine-coord-parity): the hive HOME slug this spec federates
      *  under. Set ⇒ the spec rides that hive's peer-log (mig-438 WHEN gate) so a
@@ -405,6 +410,53 @@ export async function setClaimSpec(
   },
   sqlOverride?: OrgSql,
 ): Promise<SetClaimSpecResult> {
+  if (args.appendIds !== undefined) {
+    if (args.spec !== undefined || !args.cupId.startsWith('fleet:') || args.appendIds.length === 0 ||
+        args.appendIds.some((id) => typeof id !== 'string' || !id.trim())) {
+      return { ok: false, errors: ['appendIds requires a fleet target, nonempty ids, and no replacement spec'] };
+    }
+    const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+    const sql = sqlOverride ?? getOrgPg().sql;
+    const ids = [...new Set(args.appendIds.map((id) => id.trim()))];
+    return await sql.begin(async (tx) => {
+      // An existing row is locked through validation + UPDATE. For first use,
+      // INSERT … DO NOTHING arbitrates a concurrent bootstrap, then the loser
+      // re-reads/locks the winner and unions its IDs instead of replacing them.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const rows = await tx<{ spec: unknown; revision: number; harness_slug: string | null }[]>`
+          SELECT spec, revision, harness_slug FROM harness_shared.cup_claim_specs
+           WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} FOR UPDATE`;
+        const prior = rows[0];
+        const seed = prior ? validateClaimSpec(prior.spec) : validateClaimSpec({
+          ...DEFAULT_CLAIM_SPEC,
+          specId: `${args.cupId}:id-cohort`,
+          view: { filter: { field: 'id', op: 'in', value: ids } },
+        });
+        if (!seed.ok || !seed.spec) return { ok: false, errors: seed.errors };
+        const merged = appendIdsToClaimSpec(seed.spec, ids);
+        if (!merged) return { ok: false, errors: ['appendIds requires an existing positive ID cohort; dynamic lanes need an explicit replacement spec'] };
+        const revision = (prior?.revision ?? 0) + 1;
+        const candidate = withColumnRevision(merged, revision);
+        // Keep the stored federation scope as well as all authored rank, limits,
+        // states and filter fences. Append is not a scope-rehome operation.
+        const potSlug = prior ? prior.harness_slug : args.potSlug ?? null;
+        const admission = await args.validateAppend?.(candidate, potSlug);
+        if (admission?.errors.length) return { ok: false, errors: admission.errors };
+        const stored = prior
+          ? await tx`
+              UPDATE harness_shared.cup_claim_specs
+                 SET spec = ${JSON.stringify(candidate)}::text::jsonb, revision = ${revision},
+                     id_only = ${isIdOnlySelector(candidate)}, updated_by = ${args.updatedBy ?? null}, updated_at = now()
+               WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} RETURNING revision`
+          : await tx`
+              INSERT INTO harness_shared.cup_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
+              VALUES (${ws}, ${args.cupId}, ${JSON.stringify(candidate)}::text::jsonb, ${revision}, ${isIdOnlySelector(candidate)}, ${args.updatedBy ?? null}, ${potSlug}, now())
+              ON CONFLICT (workspace_id, bee_id) DO NOTHING RETURNING revision`;
+        if (stored.length) return { ok: true, errors: [], revision, spec: candidate, ...(admission?.warning ? { warning: admission.warning } : {}) };
+      }
+      return { ok: false, errors: ['claim spec changed during bootstrap; retry appendIds against the current fleet row'] };
+    }) as unknown as SetClaimSpecResult;
+  }
   const v = validateClaimSpec(args.spec);
   if (!v.ok || !v.spec) return { ok: false, errors: v.errors };
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;

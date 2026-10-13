@@ -472,6 +472,9 @@ export default defineTool({
         .describe(
           'EI-12830: DELETE the target row instead of setting a spec, so the target falls back to fleet inheritance (bee spec → fleet spec → DEFAULT). Use on a `cupId` to drop a per-bee override that permanently shadows every later fleet-level `{ fleet }` re-steer, or on a `fleet` to retire the whole fleet lane back to default. Idempotent (clearing an absent row reports cleared:false); `spec` is not required (and is ignored) when clear:true. The delete tombstones any hive-federated row so remote peers drop the stale spec too.',
         ),
+      appendIds: z.array(z.string().trim().min(1)).min(1).max(200).optional().describe(
+        'Atomically union these work-item ids into a fleet ID cohort, retaining its incumbent ids, fences, rank, limits, states and federation scope, and bumping one revision. Pass fleet plus appendIds (no spec or clear); an absent fleet spec becomes an exact id cohort. Dynamic/property lanes require an explicit replacement spec. Existing claim-floor admission checks still apply.',
+      ),
       confirmCollapse: z
         .boolean()
         .optional()
@@ -504,9 +507,12 @@ export default defineTool({
     .refine((a) => Boolean(a.cupId) !== Boolean(a.fleet), {
       message: 'pass exactly ONE of cupId (steer one cup) or fleet (steer the whole fleet via inheritance)',
     })
-    .refine((a) => a.clear === true || a.spec !== undefined, {
+    .refine((a) => a.clear === true || a.spec !== undefined || a.appendIds !== undefined, {
       message:
-        'spec is required unless clear:true (clear deletes the target row so it falls back to fleet inheritance)',
+        'pass spec, appendIds, or clear:true (clear deletes the target row so it falls back to fleet inheritance)',
+    })
+    .refine((a) => a.appendIds === undefined || (Boolean(a.fleet) && a.spec === undefined && !a.clear), {
+      message: 'appendIds requires fleet and cannot be combined with spec or clear:true',
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
@@ -538,10 +544,6 @@ export default defineTool({
         },
       };
     }
-    const validated = validateClaimSpec(args.spec);
-    if (!validated.ok || !validated.spec) {
-      return { data: { ok: false, errors: validated.errors } };
-    }
     const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
     const resolvedHarness = resolveClaimSpecPotSlug(args.harness, ctxHarnessRaw);
     // Fleet target (P-002): validate the fleet exists (mirrors WI-1408 — a typo'd slug
@@ -566,6 +568,38 @@ export default defineTool({
       }
       const { fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
       targetBeeId = fleetSpecBeeKey(fleetSlug);
+    }
+    if (args.appendIds !== undefined) {
+      let admission: Awaited<ReturnType<typeof previewClaimSpecAdmission>> | undefined;
+      const res = await setClaimSpec({
+        cupId: targetBeeId,
+        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+        appendIds: args.appendIds,
+        updatedBy: ident.ownerId,
+        potSlug: resolvedHarness ?? null,
+        validateAppend: async (spec, storedHarness) => {
+          admission = await previewClaimSpecAdmission({
+            spec, harness: resolvedHarness ?? storedHarness ?? undefined,
+            assignee: ident.ownerId, fleet: args.fleet?.trim(),
+          });
+          return admission;
+        },
+      });
+      const wake = res.ok && res.spec
+        ? await wakeClaimableAwaitersAfterSpecChange({
+            cupId: targetBeeId, fleet: args.fleet?.trim(), specId: res.spec.specId, revision: res.revision ?? null,
+          })
+        : { woken: 0 };
+      return { data: {
+        ...res,
+        ...(admission ? { admissibilityPreview: admission.preview } : {}),
+        claimableAwaitersWoken: wake.woken,
+        ...(wake.warning ? { warning: [res.warning, wake.warning].filter(Boolean).join('\n') } : {}),
+      } };
+    }
+    const validated = validateClaimSpec(args.spec);
+    if (!validated.ok || !validated.spec) {
+      return { data: { ok: false, errors: validated.errors } };
     }
     const admission = await previewClaimSpecAdmission({
       spec: validated.spec,

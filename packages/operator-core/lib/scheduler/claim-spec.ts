@@ -1107,6 +1107,31 @@ export function positiveIdCohortIds(filter: unknown): string[] | null {
   return positiveFieldCohortValues(filter, 'id');
 }
 
+/** Extend only a bounded positive ID cohort; every non-ID fence remains intact. */
+export function appendIdsToClaimSpec(spec: ClaimSpec, ids: readonly string[]): ClaimSpec | null {
+  const fixed = fixedCohortIds(spec);
+  const cohort = fixed ?? positiveIdCohortIds(spec.view.filter);
+  if (cohort === null) return null;
+  const extend = (values: readonly string[]) => [...new Set([...values, ...ids])];
+  const incumbentFilter = spec.view.filter;
+  const all = incumbentFilter && 'all' in incumbentFilter ? incumbentFilter.all : undefined;
+  let filter: FilterNode;
+  if (fixed !== null || !all) {
+    filter = { field: 'id', op: 'in', value: extend(cohort) };
+  } else {
+    filter = {
+      all: all.map((node): FilterNode => {
+        if ('field' in node && node.field === 'id' && (node.op === '=' || node.op === 'in')) {
+          const values = Array.isArray(node.value) ? node.value : [node.value];
+          return { field: 'id', op: 'in', value: extend(values.map(String)) };
+        }
+        return node;
+      }),
+    };
+  }
+  return { ...spec, view: { ...spec.view, filter } };
+}
+
 /** Positive kind bounds share the ID extractor's conservative boolean rules. */
 export function positiveKindCohortKinds(filter: unknown): string[] | null {
   return positiveFieldCohortValues(filter, 'kind');
