@@ -97,12 +97,38 @@ function sqlWriterColumns(source: string): Map<string, Set<string>> {
   return found;
 }
 
-/** The shared audit writer uses Drizzle rather than a literal SQL INSERT. */
-function auditObjectFields(source: string): { row: string[]; details: string[]; dynamic: string[] } {
-  const row = new Set<string>();
+/** Bind Drizzle row fields to their insert target; unresolved targets fail closed. */
+function auditObjectFields(source: string): { rows: Record<string, string[]>; details: string[]; dynamic: string[] } {
+  const rows = new Map<string, Set<string>>();
   const details = new Set<string>();
   const dynamic: string[] = [];
   const tree = ts.createSourceFile('audit.ts', source, ts.ScriptTarget.Latest, true);
+  function tableTarget(expression: ts.Expression, seen = new Set<ts.Node>()): string | undefined {
+    if (seen.has(expression)) return undefined;
+    seen.add(expression);
+    if (ts.isParenthesizedExpression(expression)) return tableTarget(expression.expression, seen);
+    if (ts.isPropertyAccessExpression(expression)) return expression.getText(tree);
+    if (!ts.isIdentifier(expression)) return undefined;
+    // Resolve const aliases in their nearest lexical scope. A same-named local
+    // declaration or parameter must never resolve to a different outer table.
+    for (let scope: ts.Node | undefined = expression.parent; scope; scope = scope.parent) {
+      if (ts.isBlock(scope) || ts.isSourceFile(scope)) {
+        for (const statement of scope.statements) {
+          if (!ts.isVariableStatement(statement)) continue;
+          const declaration = statement.declarationList.declarations.find((candidate) =>
+            ts.isIdentifier(candidate.name) && candidate.name.text === expression.text);
+          if (declaration) {
+            if (!(statement.declarationList.flags & ts.NodeFlags.Const)
+              || declaration.pos >= expression.pos || !declaration.initializer) return undefined;
+            return tableTarget(declaration.initializer, seen);
+          }
+        }
+      }
+      if (ts.isFunctionLike(scope) && scope.parameters.some((parameter) =>
+        ts.isIdentifier(parameter.name) && parameter.name.text === expression.text)) return undefined;
+    }
+    return undefined;
+  }
   function objectKeys(object: ts.ObjectLiteralExpression, fields: Set<string>) {
     for (const property of object.properties) {
       if (ts.isSpreadAssignment(property)) {
@@ -125,6 +151,16 @@ function auditObjectFields(source: string): { row: string[]; details: string[]; 
       && ts.isCallExpression(node.expression.expression)
       && ts.isPropertyAccessExpression(node.expression.expression.expression)
       && node.expression.expression.expression.name.text === 'insert') {
+      const insert = node.expression.expression;
+      const target = insert.arguments.length === 1 && insert.arguments[0]
+        ? tableTarget(insert.arguments[0]) : undefined;
+      if (!target) {
+        dynamic.push(node.getText(tree));
+        ts.forEachChild(node, visit);
+        return;
+      }
+      const row = rows.get(target) ?? new Set<string>();
+      rows.set(target, row);
       const value = node.arguments[0];
       if (value && ts.isObjectLiteralExpression(value)) objectKeys(value, row);
       else dynamic.push(node.getText(tree));
@@ -142,7 +178,11 @@ function auditObjectFields(source: string): { row: string[]; details: string[]; 
     ts.forEachChild(node, visit);
   }
   visit(tree);
-  return { row: [...row].sort(), details: [...details].sort(), dynamic };
+  return {
+    rows: Object.fromEntries([...rows].map(([table, fields]) => [table, [...fields].sort()])),
+    details: [...details].sort(),
+    dynamic,
+  };
 }
 
 /** Census the arguments reaching console, including a newly introduced method/site. */
@@ -309,12 +349,14 @@ describe('hosted relay confidentiality registry (P-001)', () => {
   });
 
   it('classifies the real Drizzle audit row, hosted detail objects and console argument populations', () => {
-    const source = readFileSync(resolve(REPO, HOSTED_CONTROL_PLANE_WRITER_REGISTRY['desktop-audit-row'].sources[0]), 'utf8');
+    const writer = HOSTED_CONTROL_PLANE_WRITER_REGISTRY['desktop-audit-row'];
+    const source = readFileSync(resolve(REPO, writer.sources[0]), 'utf8');
     const found = auditObjectFields(source);
     expect(found.dynamic).toEqual([]);
-    expect(found.row).toContain('details');
+    expect(Object.keys(found.rows), 'new Drizzle sink must be registered with its own fields').toEqual([writer.drizzleTable]);
+    expect(found.rows[writer.drizzleTable]).toContain('details');
     expect(found.details).toContain('detail');
-    expect(Object.keys(HOSTED_CONTROL_PLANE_FIELD_REGISTRY['desktop-audit-row']!).sort()).toEqual(found.row);
+    expect(Object.keys(HOSTED_CONTROL_PLANE_FIELD_REGISTRY['desktop-audit-row']!).sort()).toEqual(found.rows[writer.drizzleTable]);
     expect(Object.keys(HOSTED_CONTROL_PLANE_FIELD_REGISTRY['hosted-desktop-audit-details']!).sort()).toEqual(found.details);
     for (const sink of ['desktop-audit-warnings', 'hosted-handler-warnings', 'customer-host-warnings'] as const) {
       const writer = HOSTED_CONTROL_PLANE_WRITER_REGISTRY[sink];
@@ -330,7 +372,8 @@ describe('hosted relay confidentiality registry (P-001)', () => {
     const detailChange = source.replace("target: 'hosted',", "target: 'hosted', customerPayload: event.detail,");
     expect(rowChange).not.toBe(source);
     expect(detailChange).not.toBe(source);
-    expect(auditObjectFields(rowChange).row.filter((field) => !(field in HOSTED_CONTROL_PLANE_FIELD_REGISTRY['desktop-audit-row']!)))
+    const table = HOSTED_CONTROL_PLANE_WRITER_REGISTRY['desktop-audit-row'].drizzleTable;
+    expect(auditObjectFields(rowChange).rows[table]!.filter((field) => !(field in HOSTED_CONTROL_PLANE_FIELD_REGISTRY['desktop-audit-row']!)))
       .toEqual(['customerPayload']);
     expect(auditObjectFields(detailChange).details.filter((field) => !(field in HOSTED_CONTROL_PLANE_FIELD_REGISTRY['hosted-desktop-audit-details']!)))
       .toEqual(['customerPayload']);
@@ -338,6 +381,38 @@ describe('hosted relay confidentiality registry (P-001)', () => {
     const registered = HOSTED_CONTROL_PLANE_FIELD_REGISTRY['desktop-audit-warnings']!;
     expect(consoleArgumentFields(source + '\nconsole.error(customerPayload);').filter((field) => !(field in registered)))
       .toEqual(['error.0.argument.0']);
+  });
+
+  it('detects redirected and additional Drizzle tables even when their fields are already classified', () => {
+    const writer = HOSTED_CONTROL_PLANE_WRITER_REGISTRY['desktop-audit-row'];
+    const source = readFileSync(resolve(REPO, writer.sources[0]), 'utf8');
+    const redirected = source.replace('const table = generated.auditLogInHarnessShared;',
+      'const table = generated.unclassifiedAudit;');
+    expect(redirected).not.toBe(source);
+    const redirectedRows = auditObjectFields(redirected).rows;
+    expect(Object.keys(redirectedRows)).toEqual(['generated.unclassifiedAudit']);
+    expect(redirectedRows['generated.unclassifiedAudit']).toEqual(auditObjectFields(source).rows[writer.drizzleTable]);
+    const extra = source + '\nfunction extraWriter() { const table = generated.unclassifiedAudit;'
+      + ' drizzle(tx).insert(table).values({ id: row.id, details: row.details }); }';
+    expect(Object.keys(auditObjectFields(extra).rows).filter((target) => target !== writer.drizzleTable))
+      .toEqual(['generated.unclassifiedAudit']);
+  });
+
+  it('resolves local const table aliases and refuses dynamic or shadowed Drizzle targets', () => {
+    const source = 'const table = generated.auditLogInHarnessShared;'
+      + ' function known() { const alias = table; drizzle(tx).insert(alias).values({ id: row.id }); }'
+      + ' function separate() { const table = generated.otherAudit; drizzle(tx).insert(table).values({ details: row.details }); }';
+    expect(auditObjectFields(source)).toEqual({ rows: {
+      'generated.auditLogInHarnessShared': ['id'], 'generated.otherAudit': ['details'],
+    }, details: [], dynamic: [] });
+    for (const unknown of [
+      'drizzle(tx).insert(getTable()).values({ id: row.id });',
+      'const table = generated.auditLogInHarnessShared; function shadow(table) { drizzle(tx).insert(table).values({ id: row.id }); }',
+      'let table = generated.auditLogInHarnessShared; drizzle(tx).insert(table).values({ id: row.id });',
+    ]) {
+      expect(auditObjectFields(unknown).rows).toEqual({});
+      expect(auditObjectFields(unknown).dynamic).toHaveLength(1);
+    }
   });
 
   it('keeps diagnostic, configuration and structured persistence fields content-bearing', () => {
