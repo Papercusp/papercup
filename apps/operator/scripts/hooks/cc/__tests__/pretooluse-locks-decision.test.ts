@@ -51,6 +51,10 @@ let acquireRefusalText: string | null = null;
 /** Recovery responses keyed by tool name; null leaves the existing static reply path. */
 let recoveryQueueInner: unknown | null = null;
 let recoveryReleaseInner: unknown | null = null;
+/** WI-6554700010011017: an operation-UNqualified origin (its lock schemas omit
+ * hook_operation). Only that legacy path runs the queue-based acquire recovery.
+ * Pair it with an isolated cache dir: the hook caches the origin verdict there. */
+let legacyOrigin = false;
 let lastRequest: { url: string; body: Record<string, any> } | null = null;
 let requests: Array<{ url: string; body: Record<string, any> }> = [];
 
@@ -90,7 +94,10 @@ beforeAll(async () => {
       if (parsed.method === "tools/list") {
         const tools = ["locks:acquire", "locks:release", "locks:cancel_wait"].map((name) => ({
           name,
-          inputSchema: { type: "object", properties: { paths: {}, hook_operation: {} } },
+          inputSchema: {
+            type: "object",
+            properties: legacyOrigin ? { paths: {} } : { paths: {}, hook_operation: {} },
+          },
         }));
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools } }));
@@ -127,6 +134,9 @@ beforeAll(async () => {
         if (Array.isArray(rows) && args?.owner) {
           for (const row of rows) {
             if (row?.owner === "$REQUEST_OWNER") row.owner = args.owner;
+            // Stamped at reply time: recovery only matches a lock acquired
+            // within 2s of its own acquire attempt.
+            if (row?.acquired_ts === "$NOW") row.acquired_ts = new Date().toISOString();
           }
         }
       } else if (
@@ -225,6 +235,7 @@ afterEach(() => {
   acquireRefusalText = null;
   recoveryQueueInner = null;
   recoveryReleaseInner = null;
+  legacyOrigin = false;
   lastRequest = null;
   requests = [];
 });
@@ -1358,6 +1369,75 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     expect(context).toContain("NOT lock-protected");
     expect(context).toContain("superuser_native_session_verifier_unavailable");
     expect(fs.existsSync(join(cache, "tu-verifier-unavailable.lock"))).toBe(false);
+  });
+
+  // WI-6554700010011017: the error marker has one slot. A failed recovery step
+  // used to overwrite the refusal that caused the fail-open, so the marker kept
+  // only "recovery-queue" and never said why the edit was unprotected.
+  async function runLegacyOriginRecovery(toolUseId: string) {
+    legacyOrigin = true;
+    const isolatedCache = fs.mkdtempSync(join(os.tmpdir(), "cchook-dec-recovery-"));
+    try {
+      const r = await run(editOf("sub/held.ts", toolUseId), {
+        PAPERCUSP_LOCKS_CACHE_DIR: isolatedCache,
+        PAPERCUSP_LOCK_SID: "test-recovery-owner",
+      });
+      expect(r.status).toBe(0);
+      expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe("allow");
+      const records = ["last-error.json", "owner-test-recovery-owner-last-error.json"].map(
+        (marker) => JSON.parse(fs.readFileSync(join(isolatedCache, marker), "utf8")),
+      );
+      expect(records[1].owner).toBe("test-recovery-owner");
+      return records;
+    } finally {
+      fs.rmSync(isolatedCache, { recursive: true, force: true });
+    }
+  }
+
+  it("keeps the primary refusal when the recovery queue read also refuses (WI-6554700010011017)", async () => {
+    acquireRefusalText = "request_rejected: superuser_native_session_verifier_unavailable";
+    const records = await runLegacyOriginRecovery("tu-recovery-queue-refused");
+    expect(requests.map((q) => q.body.params?.name)).toEqual(["locks:acquire", "locks:queue"]);
+    for (const record of records) {
+      expect(record).toMatchObject({
+        handler: "pretooluse",
+        phase: "parse",
+        detail: "request_rejected: superuser_native_session_verifier_unavailable",
+      });
+      expect(record.recovery).toHaveLength(1);
+      expect(record.recovery[0].phase).toBe("recovery-queue");
+      expect(record.recovery[0].detail).toContain("superuser_native_session_verifier_unavailable");
+      expect(record).not.toHaveProperty("recovery_dropped");
+    }
+  });
+
+  it("bounds recovery failures on the primary record and counts the dropped ones (WI-6554700010011017)", async () => {
+    emptyAcquireContent = true;
+    const lockIds = ["rl-1", "rl-2", "rl-3", "rl-4"];
+    recoveryQueueInner = {
+      active_locks: lockIds.map((lock_id) => ({
+        lock_id,
+        path: "sub/held.ts",
+        owner: "$REQUEST_OWNER",
+        intent: "PreToolUse:Edit",
+        coordination_domain: fs.realpathSync(repo),
+        acquired_ts: "$NOW",
+      })),
+      waiting: [],
+    };
+    recoveryReleaseInner = { ok: false, reason: "release_refused" };
+    const records = await runLegacyOriginRecovery("tu-recovery-release-refused");
+    expect(requests.map((q) => q.body.params?.name)).toEqual([
+      "locks:acquire", "locks:queue", ...lockIds.map(() => "locks:release"),
+    ]);
+    for (const record of records) {
+      expect(record).toMatchObject({ phase: "parse", detail: "no text content in tool result" });
+      expect(record.recovery).toHaveLength(3);
+      expect(record.recovery.map((entry: { phase: string }) => entry.phase)).toEqual([
+        "recovery-release", "recovery-release", "recovery-release",
+      ]);
+      expect(record.recovery_dropped).toBe(1);
+    }
   });
 
   it("server refusal with a `reason` (e.g. policy) → deny carrying that reason", async () => {
