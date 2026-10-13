@@ -58,6 +58,7 @@ urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHa
 operator_url, token_path, agent_id, cache_dir, hook_dir, fallback_operator_url = sys.argv[1:7]
 sys.path.insert(0, hook_dir)
 from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
+from mcp_response import read_lock_operation, settle_lock_operation, parent_tool_terminal, with_native_session
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
@@ -128,7 +129,7 @@ owner = (
 # Stop cleanup is session-scoped. lifecycle-report.sh selects cache entries by
 # native session sidecar, and this second check rejects peer-owned entries even
 # when they share the cache directory and happen to use the same native id.
-if payload.get('hook_event_name') == 'Stop':
+if payload.get('hook_event_name') in ('Stop', 'SessionEnd') and not os.path.exists(os.path.join(cache_dir, tool_use_id + '.operation.json')):
     if not isinstance(session_id, str) or not session_id:
         sys.exit(0)
     try:
@@ -182,7 +183,7 @@ def cleanup_sidecars(base_path):
     # '.owner' is the claiming session stamped by the PreToolUse hook for the
     # orphan reconcile (EI-22176521893516708); drop it with the rest so a
     # released claim leaves nothing the sweep could later re-examine.
-    for suffix in ('.lock', '.paths', '.domain', '.owner', '.session'):
+    for suffix in ('.lock', '.paths', '.domain', '.owner', '.session', '.attest'):
         try:
             os.remove(base_path + suffix)
         except Exception:
@@ -259,8 +260,8 @@ def tool_request(name, arguments, base_url):
         'params': {'name': name, 'arguments': arguments},
     }).encode()
     return urllib.request.Request(
-        base_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
-        + urllib.parse.quote(owner, safe=''),
+        with_native_session(base_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&client='
+        + urllib.parse.quote(owner, safe=''), session_id),
         data=body,
         headers={
             'Authorization': 'Bearer ' + token,
@@ -274,7 +275,7 @@ def tool_request(name, arguments, base_url):
 def call_tool(name, arguments):
     last_exc = None
     origins = [operator_url]
-    if fallback_operator_url and fallback_operator_url != operator_url:
+    if 'hook_operation' not in arguments and fallback_operator_url and fallback_operator_url != operator_url:
         origins.append(fallback_operator_url)
     for attempt in range(len(RETRY_BACKOFFS) + 1):
         # A staging authority can accept the connection but never answer while
@@ -419,6 +420,8 @@ def recover_failed_code_mode_edit(current_cache_path):
     earlier automatic token here closes that lifecycle without waiting for TTL.
     """
     native_retry = tool_name in CODEX_NATIVE_EDIT_TOOLS
+    if not native_retry and not parent_tool_terminal(payload.get('tool_response', payload.get('toolResponse'))):
+        return
     if native_retry:
         if not native_edit_result_succeeded(payload.get('tool_response', payload.get('toolResponse'))):
             return
@@ -448,8 +451,27 @@ def recover_failed_code_mode_edit(current_cache_path):
             )
         )
 
+    for operation_file in Path(cache_dir).glob('*.operation.json'):
+        base = str(operation_file)[:-len('.operation.json')]
+        if (base + '.lock' == current_cache_path or Path(base + '.batch').exists()
+                or os.path.basename(base).startswith('batch-')):
+            continue
+        record = read_lock_operation(str(operation_file), owner, session_id)
+        if not record or record['tool_id'].startswith('batch-'):
+            continue
+        domain = record.get('coordination_domain')
+        if not domain or not all(path_named_in_patch(path, domain) for path in record['paths']):
+            continue
+        proof = native_edit_proof(tool_name, payload.get('tool_response', payload.get('toolResponse')), record['paths']) if native_retry else None
+        if settle_lock_operation(str(operation_file), record, call_tool, proof):
+            cleanup_sidecars(base)
+        else:
+            mark_release_error('parent-operation-finish', 'terminal operation not confirmed')
+
     for lock_file in Path(cache_dir).glob('*.lock'):
         base = str(lock_file)[:-len('.lock')]
+        if Path(base + '.operation.json').exists():
+            continue
         if str(lock_file) == current_cache_path:
             continue
         if Path(base + '.batch').exists():
@@ -518,6 +540,20 @@ def recover_failed_code_mode_edit(current_cache_path):
 # where PreToolUse correctly wrote no release token because the caller's wider
 # lock must remain held. The helper classifies success + enrolled paths itself.
 run_declaration_regenerator(['--hook-payload'], raw)
+
+# Operation completion does not depend on receiving a .lock grant reply.
+operation_path = os.path.join(cache_dir, tool_use_id + '.operation.json')
+if os.path.exists(operation_path):
+    record = read_lock_operation(operation_path, owner, session_id)
+    if record:
+        proof = native_edit_proof(tool_name, payload.get('tool_response', payload.get('toolResponse')), record['paths'])
+        if settle_lock_operation(operation_path, record, call_tool, proof):
+            cleanup_sidecars(operation_path[:-len('.operation.json')])
+            mark_release_success('operation-finish')
+        else:
+            mark_release_error('operation-finish', 'terminal operation not confirmed; sidecar retained')
+        recover_failed_code_mode_edit(os.path.join(cache_dir, tool_use_id + '.lock'))
+    sys.exit(0)
 
 
 def attest_retained_edit():

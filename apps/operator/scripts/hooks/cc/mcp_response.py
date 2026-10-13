@@ -13,10 +13,152 @@ rejected tool call, not a usable inner payload.
 
 import json
 import os
+import uuid
+from datetime import datetime, timedelta, timezone
+import urllib.request
+import urllib.parse
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 OUTPUT_ENVELOPE_SCHEMA_VERSION = 'papercusp.output-envelope/v1'
 SCRATCH_URI_PREFIX = 'papercusp://scratch/'
+
+
+def read_lock_operation(path, owner, session_id):
+    """A native operation belongs to one owner AND one client continuation."""
+    try:
+        with open(path, encoding='utf-8') as stream:
+            record = json.load(stream)
+        if (record.get('version') != 1 or record.get('owner') != owner
+                or record.get('session_id') != session_id):
+            return None
+        uuid.UUID(record['operation']['id'])
+        if not record.get('paths') or not record.get('intent', '').startswith('PreToolUse:'):
+            return None
+        return record
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def write_lock_operation(path, record):
+    """Persist before HTTP; a failed write must never admit an acquire."""
+    temp = path + '.tmp-' + str(os.getpid())
+    try:
+        with open(temp, 'w', encoding='utf-8') as stream:
+            os.chmod(temp, 0o600)
+            json.dump(record, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            os.unlink(temp)
+        except FileNotFoundError:
+            pass
+
+
+def prepare_lock_operation(path, owner, session_id, tool_id, arguments):
+    if not session_id or not tool_id:
+        raise ValueError('native session and tool identity required')
+    record = read_lock_operation(path, owner, session_id)
+    scope = {key: arguments.get(key) for key in ('paths', 'intent', 'ttl_sec', 'coordination_domain')}
+    if os.path.exists(path):
+        if record is None or any(record.get(key) != value for key, value in scope.items()):
+            raise ValueError('native operation scope changed')
+        return record
+    record = dict(scope, version=1, owner=owner, session_id=session_id, tool_id=tool_id,
+                  operation={'id': str(uuid.uuid4()),
+                             'deadline': (datetime.now(timezone.utc) + timedelta(seconds=1200)).isoformat()})
+    # The existing batch leader election serializes batch creation. O_EXCL
+    # serializes per-tool creation, including a repeated native PreToolUse.
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        record = read_lock_operation(path, owner, session_id)
+        if record is None or any(record.get(key) != value for key, value in scope.items()):
+            raise ValueError('native operation creation conflict')
+        return record
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+        json.dump(record, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return record
+
+
+def lock_operation_arguments(record, finish=False):
+    operation = dict(record['operation'])
+    args = {'hook_operation': operation}
+    if record.get('coordination_domain'):
+        args['coordination_domain'] = record['coordination_domain']
+    if finish:
+        operation.update({key: record[key] for key in ('paths', 'intent', 'ttl_sec')})
+    else:
+        args.update({key: record[key] for key in ('paths', 'intent', 'ttl_sec')})
+        args['wait'] = {'max_sec': 0}
+    return args
+
+
+def settle_lock_operation(path, record, call_tool, proof=None):
+    """Never downgrade operation identity, pin, or exact scope on a retry."""
+    if record.get('terminal') == 'completed' or (record.get('terminal') == 'cancelled' and proof is None):
+        return True
+    if not record['operation'].get('authority'):
+        prepared, error = call_tool('locks:acquire', lock_operation_arguments(record))
+        if (error is not None or not isinstance(prepared, dict)
+                or prepared.get('reason') != 'operation_authority_required'
+                or not isinstance(prepared.get('operation_authority'), str)):
+            return False
+        record['operation']['authority'] = prepared['operation_authority']
+        write_lock_operation(path, record)
+    args = lock_operation_arguments(record, finish=True)
+    if proof is not None:
+        args['native_edit_proof'] = proof
+    result, error = call_tool('locks:release' if proof is not None else 'locks:cancel_wait', args)
+    confirmed = (error is None and isinstance(result, dict) and result.get('ok') is True
+            and result.get('operation_id') == record['operation']['id']
+            and result.get('state') in ('completed', 'cancelled'))
+    if confirmed:
+        record['terminal'] = result['state']
+        write_lock_operation(path, record)
+    return confirmed
+
+
+def call_lock_operation(origin, token, owner, session_id, name, arguments):
+    """The pinned operation protocol never retries at an unqualified origin."""
+    url = with_native_session(origin.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&client='
+                              + urllib.parse.quote(owner, safe=''), session_id)
+    request = urllib.request.Request(url, data=json.dumps({
+        'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+        'params': {'name': name, 'arguments': arguments},
+    }).encode(), headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+                         'Accept': 'application/json, text/event-stream'}, method='POST')
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=10) as response:
+            inner, error, phase = parse_mcp_response(response.read().decode('utf-8', errors='replace'))
+        return inner, error or (None if phase == 'ok' else phase)
+    except Exception as exc:
+        return None, str(exc)
+
+
+def parent_tool_terminal(response):
+    """A yielded native exec envelope cannot finish its nested edit."""
+    if isinstance(response, dict):
+        if ('session_id' in response and 'exit_code' not in response
+                or response.get('status') in ('running', 'yielded')):
+            return False
+        return all(parent_tool_terminal(value) for value in response.values())
+    if isinstance(response, list):
+        return all(parent_tool_terminal(value) for value in response)
+    if isinstance(response, str):
+        if 'Script running with cell ID' in response:
+            return False
+        try:
+            parsed = json.loads(response)
+        except (ValueError, TypeError):
+            return True
+        if isinstance(parsed, (dict, list)):
+            return parent_tool_terminal(parsed)
+    return response is not None
 
 
 def with_native_session(url, native_session_id):

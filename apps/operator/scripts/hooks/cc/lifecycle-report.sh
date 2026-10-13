@@ -60,13 +60,13 @@ fi
 # Recover only this session's remaining per-tool cache entries through the same
 # exact-path release implementation used by PostToolUse. The callee verifies
 # owner+session again, so a shared cache cannot release a peer's lock.
-if [ "$EVENT_NAME" = "Stop" ]; then
+if [ "$EVENT_NAME" = "Stop" ] || [ "$EVENT_NAME" = "SessionEnd" ]; then
   python3 - "$CACHE_DIR" "$(dirname "$0")/posttooluse-locks-release.sh" 3<<<"$INPUT" <<'PYEOF' >/dev/null 2>&1 || true
 import json, os, subprocess, sys
 
 cache_dir, release_hook = sys.argv[1:3]
 sys.path.insert(0, os.path.dirname(release_hook))
-from mcp_response import read_hook_payload  # noqa: E402
+from mcp_response import read_hook_payload, read_lock_operation  # noqa: E402
 
 try:
     event = json.loads(read_hook_payload())
@@ -85,6 +85,20 @@ try:
 except Exception:
     sys.exit(0)
 for entry in entries:
+    if entry.name.endswith('.operation.json'):
+        tool_use_id = entry.name[:-len('.operation.json')]
+        record = read_lock_operation(entry.path, os.environ.get('PAPERCUSP_LOCK_SID') or os.environ.get('PAPERCUSP_SID'), session_id)
+        if not record:
+            continue
+        try:
+            subprocess.run(['bash', release_hook], input=json.dumps({
+                'hook_event_name': event.get('hook_event_name'),
+                'tool_use_id': tool_use_id, 'session_id': session_id,
+            }), text=True, env=os.environ.copy(), stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=30, check=False)
+        except Exception:
+            pass
+        continue
     if not entry.name.endswith('.session'):
         continue
     tool_use_id = entry.name[:-len('.session')]

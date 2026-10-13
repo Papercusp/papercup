@@ -38,6 +38,7 @@ urllib.request.install_opener(
 operator_url, token_path, agent_id, cache_dir, hook_dir, fallback_operator_url = sys.argv[1:7]
 sys.path.insert(0, hook_dir)
 from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
+from mcp_response import read_lock_operation, settle_lock_operation, call_lock_operation, parent_tool_terminal
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
@@ -63,6 +64,9 @@ except Exception:
     sys.exit(0)
 
 
+RESULT_COLLECTION_KEYS = ('tool_calls', 'toolCalls', 'calls', 'tools', 'tool_results', 'toolResults', 'results', 'responses')
+
+
 def tool_ids(value):
     ids = []
 
@@ -78,7 +82,7 @@ def tool_ids(value):
                     add(value.get('tool_use_id') or value.get('toolUseId') or value.get('id'))
                 else:
                     add(value)
-    for key in ('tool_calls', 'toolCalls', 'calls', 'tools'):
+    for key in RESULT_COLLECTION_KEYS:
         values = payload.get(key)
         if isinstance(values, list):
             for value in values:
@@ -285,7 +289,7 @@ def native_edit_result_succeeded(response):
 def result_records():
     """Index PostToolBatch records by tool_use_id across Claude wire aliases."""
     records = {}
-    for key in ('tool_calls', 'toolCalls', 'calls', 'tools', 'tool_results', 'toolResults', 'results', 'responses'):
+    for key in RESULT_COLLECTION_KEYS:
         values = payload.get(key)
         if not isinstance(values, list):
             continue
@@ -550,6 +554,33 @@ for batch_id in groups:
     if not processing_path:
         continue
     try:
+        operation_path = state.get('operation_path')
+        if operation_path:
+            # Partial/yielded batches have live siblings. Keep both the fence
+            # and the election state, so a later complete batch can finish.
+            records = result_records()
+            expected = state.get('tool_use_ids') or []
+            complete = bool(expected) and all(
+                tool_id in records and parent_tool_terminal(records[tool_id]) for tool_id in expected)
+            if not complete:
+                os.replace(processing_path, state_path)
+                continue
+            # Never follow a cache-supplied absolute path outside this cache.
+            expected_path = os.path.join(cache_dir, 'batch-' + batch_id + '.operation.json')
+            record = read_lock_operation(expected_path, owner, session_id)
+            if operation_path != expected_path or not record:
+                os.replace(processing_path, state_path)
+                continue
+            def operation_call(name, arguments):
+                return call_lock_operation(operator_url, token, owner, session_id, name, arguments)
+            proof = native_edit_batch_proof(state, 'paths')
+            if proof:
+                regenerate_declarations(state)
+            if settle_lock_operation(expected_path, record, operation_call, proof):
+                cleanup_batch(batch_id, state_path, processing_path)
+            else:
+                os.replace(processing_path, state_path)
+            continue
         # Only a complete terminal granted state can release.  All other
         # statuses, including allowed/denied/running and partial payloads,
         # intentionally skip the network write and only clean local artifacts.
@@ -567,7 +598,8 @@ for batch_id in groups:
         # Cleanup occurs for every state we successfully claimed.  A failed
         # release is still safe: the server-side acquire TTL remains the guard.
     finally:
-        cleanup_batch(batch_id, state_path, processing_path)
+        if not state.get('operation_path'):
+            cleanup_batch(batch_id, state_path, processing_path)
 
 sys.exit(0)
 PYEOF

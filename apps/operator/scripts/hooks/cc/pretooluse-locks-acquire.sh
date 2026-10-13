@@ -75,6 +75,8 @@ from datetime import datetime
 operator_url, token_path, agent_id, cache_dir, hook_dir = sys.argv[1:6]
 sys.path.insert(0, hook_dir)
 from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
+from mcp_response import (prepare_lock_operation, write_lock_operation,
+                          lock_operation_arguments, settle_lock_operation, with_native_session)
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
@@ -1220,6 +1222,9 @@ def _batch_terminal_state(status, **extra):
         'updated_at': time.time(),
     }
     state.update(extra)
+    if globals().get('operation_path'):
+        state['operation_path'] = operation_path
+        state['session_id'] = native_session_id
     return _batch_write_json(_batch_path('.state.json'), state)
 
 
@@ -1309,6 +1314,19 @@ lock_arguments = {
 if len(repo_domains) == 1:
     lock_arguments['coordination_domain'] = next(iter(repo_domains))
 
+operation_path = (_batch_path('.operation.json') if batch_info else
+                  os.path.join(cache_dir, tool_use_id + '.operation.json'))
+try:
+    operation_record = prepare_lock_operation(
+        operation_path, owner, native_session_id,
+        batch_info['batch_id'] if batch_info else tool_use_id, lock_arguments)
+except Exception as exc:
+    mark_error('operation-persist', exc)
+    deny('locks: could not persist the native edit operation; retry after inspecting hook health.')
+lock_arguments = lock_operation_arguments(operation_record)
+if operation_record.get('terminal'):
+    deny('locks: this native edit operation already finished; issue a new native tool call.')
+
 
 def _make_tool_request(name, arguments):
     # format=json: the MCP result-format default flipped to compact (TOON-rendered
@@ -1319,8 +1337,8 @@ def _make_tool_request(name, arguments):
         'params': {'name': name, 'arguments': arguments},
     }).encode()
     return urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&client='
-        + urllib.parse.quote(owner, safe=''),
+        with_native_session(operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&client='
+        + urllib.parse.quote(owner, safe=''), native_session_id),
         data=body,
         headers={
             'Authorization': 'Bearer ' + token,
@@ -1337,7 +1355,7 @@ def _make_request(arguments):
 
 req = _make_request(lock_arguments)
 req_without_coordination_domain = None
-if 'coordination_domain' in lock_arguments:
+if 'coordination_domain' in lock_arguments and 'hook_operation' not in lock_arguments:
     fallback_arguments = dict(lock_arguments)
     del fallback_arguments['coordination_domain']
     req_without_coordination_domain = _make_request(fallback_arguments)
@@ -1481,6 +1499,8 @@ def _sweep_orphaned_claims():
                     continue
                 if not entry.name.endswith('.lock'):
                     continue
+                if os.path.exists(entry.path[:-len('.lock')] + '.operation.json'):
+                    continue  # Native terminal evidence, never age, owns this fence.
                 scanned += 1
                 if scanned > ORPHAN_SCAN_MAX:
                     break
@@ -1616,6 +1636,10 @@ def _timestamp_epoch(value):
 
 
 def _recover_ambiguous_acquire(started_at):
+    if globals().get('operation_record'):
+        # The persisted operation is the recovery selector even before a grant
+        # exists. A queue snapshot cannot rule out a later committed grant.
+        return
     """Release only a just-created automatic lock after a lost acquire reply.
 
     The acquire is a write: the operator can commit the lock and lose the MCP
@@ -1809,6 +1833,14 @@ def _grant(granted):
 
 
 def _batch_deny(reason):
+    if globals().get('operation_record'):
+        def cancel_call(name, arguments):
+            value, error, phase, exc = _best_effort_tool(name, arguments)
+            return value, exc or error or (None if phase == 'ok' else phase)
+        try:
+            settle_lock_operation(operation_path, operation_record, cancel_call)
+        except Exception as exc:
+            mark_error('operation-cancel', exc)
     if batch_info:
         _batch_terminal_state('denied', reason=reason)
         _batch_mark_tool('denied')
@@ -1886,7 +1918,24 @@ _sweep_orphaned_claims()
 request = req
 inner = _locks_acquire_once(request)
 _batch_allow_fail_open(inner)
+if inner.get('reason') == 'operation_authority_required':
+    authority = inner.get('operation_authority')
+    if not isinstance(authority, str) or not authority:
+        _batch_deny('locks: operation authority preparation was incomplete.')
+    operation_record['operation']['authority'] = authority
+    try:
+        write_lock_operation(operation_path, operation_record)
+    except Exception as exc:
+        mark_error('operation-pin-persist', exc)
+        _batch_deny('locks: could not persist the prepared authority; no acquire admitted.')
+    request = _make_request(lock_operation_arguments(operation_record))
+    inner = _locks_acquire_once(request)
+    _batch_allow_fail_open(inner)
+if inner.get('ok') is True and (not operation_record['operation'].get('authority')
+        or inner.get('operation_id') != operation_record['operation']['id']):
+    _batch_deny('locks: running operator did not confirm the native operation protocol; no legacy acquire retry is safe.')
 if inner.get('_hook_compatibility_error'):
+    _batch_deny('locks: running operator rejected the operation scope; retry after the maintained protocol is available.')
     if req_without_coordination_domain is None:
         mark_error('compatibility', inner.get('_detail', 'coordination_domain rejected'))
         if batch_info:
