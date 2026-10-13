@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { NuqsAdapter } from "../../../operator-vite/src/lib/nuqs-tanstack-router-adapter";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import { OperatorWorkspaceLocationProvider } from "@papercusp/operator-ui";
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, currentTutorialStep, type TutorialEvent, type TutorialState } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import { hostedBrowserApiMarker } from "../hosted-browser-api";
 import CloudWorkspacesPage from "@/app/cloud-workspaces/page";
@@ -14,7 +15,7 @@ type TutorialObservation = Extract<TutorialEvent, { type: "observe" }>["observat
 const data = vi.hoisted(() => ({
   rows: [] as CloudWorkspacesControlRow[], loading: false, error: null as Error | null, mutate: vi.fn(), invalidate: vi.fn(),
   companionInputs: [] as Array<{ configurationValid: boolean; configurationReviewed: boolean; boundWorkspaceId: string | null; workspaceId: string | null; workspaceReady: boolean }>,
-  observations: [] as unknown[], states: [] as unknown[],
+  observations: [] as unknown[], states: [] as unknown[], routeErrors: [] as string[],
   injectionMode: null as null | "stale-next-reviewed",
   injectedObservations: [] as Array<{ emitted: TutorialObservation; injected: TutorialObservation; priorRevision: number }>,
   replayObservation: null as null | ((observation: TutorialObservation) => void),
@@ -82,17 +83,18 @@ function mount(initial = "/cloud-workspaces", options: { resetQueue?: boolean } 
   if (options.resetQueue !== false) resetNuqsUpdateQueue();
   const root = createRootRoute({
     component: () => <NuqsAdapter><main><Outlet /></main></NuqsAdapter>,
+    onCatch: error => { data.routeErrors.push(error.stack ?? error.message); },
     errorComponent: ({ error }) => <pre data-testid="cloud-route-error">{error.stack ?? error.message}</pre>,
   });
   const cloud = createRoute({ getParentRoute: () => root, path: "/cloud-workspaces", component: CloudWorkspacesPage });
   const other = createRoute({ getParentRoute: () => root, path: "/other", component: () => <h1>Other view</h1> });
   const router = createRouter({ routeTree: root.addChildren([cloud, other]), history: createMemoryHistory({ initialEntries: [initial] }) });
-  const view = render(<StrictMode><RouterProvider router={router} /></StrictMode>);
+  const view = render(<StrictMode><OperatorWorkspaceLocationProvider location="cloud"><RouterProvider router={router} /></OperatorWorkspaceLocationProvider></StrictMode>);
   return { ...view, router };
 }
 beforeEach(() => {
   data.rows = []; data.loading = false; data.error = null; data.mutate.mockReset().mockResolvedValue({ ok: true }); data.invalidate.mockReset().mockResolvedValue(undefined);
-  data.companionInputs = []; data.observations = []; data.states = [];
+  data.companionInputs = []; data.observations = []; data.states = []; data.routeErrors = [];
   data.injectionMode = null; data.injectedObservations = []; data.replayObservation = null;
   window.__PAPERCUSP_HOSTED_BROWSER__ = hostedBrowserApiMarker("control");
   delete window.__PAPERCUSP_HOSTED_BROWSER_API__;
@@ -113,6 +115,7 @@ afterEach(() => {
   cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); delete window.__PAPERCUSP_HOSTED_BROWSER__;
   // A routed render failure must remain visible even if an earlier assertion passed.
   expect(routeError).toBeUndefined();
+  expect(data.routeErrors).toEqual([]);
 });
 function expectNoHiddenProductWrites() {
   expect(data.mutate).not.toHaveBeenCalled();
@@ -256,6 +259,8 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
         applied: state && [JSON.stringify(state.observation?.scope) === JSON.stringify(scope), state.observation?.revision,
           state.observation?.configuration?.connectionId, state.observation?.configuration?.valid,
           state.observation?.configuration?.costReviewed, currentTutorialStep(state)?.id],
+        guideConnected: guide.isConnected,
+        routeErrors: data.routeErrors.map(error => error.split("\n")[0]).slice(-2),
         headings: within(guide).queryAllByRole("heading").map(heading => heading.textContent),
       };
     };
