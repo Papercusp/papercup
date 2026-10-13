@@ -223,6 +223,32 @@ describe('runSyncLintGuardTick', () => {
     expect(f.state.value?.guards['lint:condition-rail']).toEqual(prior.guards['lint:condition-rail']);
   });
 
+  it('retries an undetermined guard at the same head before declaring the batch complete', async () => {
+    const f = fake({
+      head: 'h2', prior: allPass('h1'),
+      runs: { 'lint:condition-rail': { exitCode: null, output: 'timed out' } },
+    });
+    await runSyncLintGuardTick(f.deps);
+    f.deps.runGuard = async () => ({ exitCode: 0, output: 'clean' });
+    const retry = await runSyncLintGuardTick(f.deps);
+    expect(retry.status).toBe('measured');
+    expect(retry.state?.guards['lint:condition-rail']).toMatchObject({ status: 'pass', sha: 'h2' });
+    expect((await runSyncLintGuardTick(f.deps)).status).toBe('up-to-date');
+  });
+
+  it('retries a refused finding without requiring another commit', async () => {
+    const f = fake({ head: 'h2', prior: allPass('h1'),
+      runs: { 'lint:no-raw-setinterval': setIntervalRed(['apps/new/timer.ts']) } });
+    const fileRed = f.deps.fileRed;
+    f.deps.fileRed = async () => ({ ok: false, error: 'store unavailable' });
+    expect((await runSyncLintGuardTick(f.deps)).deferred).toHaveLength(1);
+    f.deps.fileRed = fileRed;
+    const retry = await runSyncLintGuardTick(f.deps);
+    expect(retry.filed).toHaveLength(1);
+    expect(retry.filed[0]).toMatchObject({ path: 'apps/new/timer.ts', id: 'WI-1' });
+    expect((await runSyncLintGuardTick(f.deps)).status).toBe('up-to-date');
+  });
+
   it('does not re-run guards when the tip has not moved, and skips above the hard load ceiling', async () => {
     const same = fake({ head: 'h1', prior: allPass('h1') });
     expect((await runSyncLintGuardTick(same.deps)).status).toBe('up-to-date');
@@ -246,7 +272,7 @@ describe('runSyncLintGuardTick', () => {
     expect(r.deferred).toEqual([{ script: 'lint:no-raw-setinterval', path: 'apps/b/two.ts' }]);
 
     const next = fake({
-      head: 'h3',
+      head: 'h2',
       prior: f.state.value,
       runs: { 'lint:no-raw-setinterval': setIntervalRed(['apps/a/one.ts', 'apps/b/two.ts']) },
     });

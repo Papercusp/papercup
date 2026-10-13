@@ -199,7 +199,7 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     expect((parsed.next_cursor as { args: { byte_offset: number } }).args.byte_offset).toBe(decoded.length);
   });
 
-  it('pages a volatile scratch fallback losslessly through capability:read and tools:invoke', async () => {
+  it('pages a volatile scratch fallback losslessly through capability:read uri alias and tools:invoke', async () => {
     const original = payload(40_000);
     const fallback = storeVolatileScratchReference({
       payload: original,
@@ -212,7 +212,7 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
 
     const chunks: Buffer[] = [];
     let args: Record<string, unknown> = {
-      file_path: fallback!.uri,
+      uri: fallback!.uri,
       byte_offset: 0,
       byte_limit: MAX_BYTE_PAGE,
     };

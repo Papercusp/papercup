@@ -2381,7 +2381,11 @@ export async function verifyResumeStarted(
                     summary.target.backend !== expectedPort.targetBackend ||
                     (summary.target.ownerId != null && summary.target.ownerId !== ownerId) ||
                     summary.hashes.rendered !== port.renderedHash)) ||
-                  (portExpected != null && port.metadata.targetNativeSessionId !== portExpected) ||
+                  // Codex/OMP bootstrap reservations have no native UUID yet.
+                  // The later adv-session, persisted seed and physical child
+                  // attest it; only a populated reservation can contradict it.
+                  (portExpected != null && port.metadata.targetNativeSessionId != null &&
+                    port.metadata.targetNativeSessionId !== portExpected) ||
                   (port.metadata.bootstrapReceiptTargetAdvSessionId != null && port.metadata.bootstrapReceiptTargetAdvSessionId !== target.id) ||
                   (proof?.renderedHash != null && proof.renderedHash !== port.renderedHash) ||
                   (portExpected != null && typeof proof?.nativeRef === 'string' && !proof.nativeRef.endsWith(`${portExpected}.jsonl`)) ||

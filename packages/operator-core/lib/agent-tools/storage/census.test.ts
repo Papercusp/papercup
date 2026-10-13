@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({ sql: {}, read: vi.fn(), census: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'workspace-a' }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({ ...await importOriginal<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('../../workspace-registry', async (importOriginal) => ({ ...await importOriginal<typeof import('../../workspace-registry')>(), activeWorkspaceId: () => 'workspace-a' }));
 vi.mock('../../storage/disk-reclaim', () => ({ readReclaimReceipt: h.read, reclaimReceiptHref: (id: string) => `/settings/storage?reclaim=${id}` }));
 vi.mock('../../storage/disk-consumer-census', () => ({ readDiskConsumerCensus: h.census, resolveCensusDevices: async () => [{ device: '/' }, { device: '/mnt/data' }] }));
 import tool from './census';

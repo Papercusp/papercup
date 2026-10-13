@@ -225,9 +225,10 @@ export const RESTART_SAFETY_NOTE =
   'git-sync sweeps 38 submodules plus several pots from inside this host\'s own cgroup, so its operations are in ' +
   'flight nearly continuously (measured 2026-08-31: 20 consecutive attempts over 40s, never fewer than 4 in ' +
   'flight). That refusal is EXPECTED, TRANSIENT, and side-effect-free — "NOTHING was done: no cooldown claimed, ' +
-  'no drain, no signal". The supported way through is `git_sync_drain_sec` (seconds, up to 45) on the same call: ' +
+  'no drain, no signal". The supported way through is `git_sync_drain_sec` (seconds, up to 120) on the same call: ' +
   'with a drain budget the cgroup check is only ADVISORY and the workspace-wide `git-sync` barrier arbitrates ' +
-  'instead — fires hold that barrier just ~5-10s, and it measured FREE in 20 of 40 sampled seconds. Pass the same ' +
+  'instead — a pass yields at its next submodule batch, but one already inside its commit phase finishes it ' +
+  '(measured 50-90s under load), so pass the full 120. Pass the same ' +
   'value to the dry run, so the preview answers for the call you are actually about to make. A `drain_timeout` is ' +
   'equally side-effect-free, so retry once rather than abandoning the remediation. ' +
   'Do NOT reach for `override_git_sync_collision` to force past it: that SIGKILLs a commit after lock acquisition ' +
@@ -241,8 +242,14 @@ export const RESTART_SAFETY_NOTE =
  * restart tool's max_drain_sec:0 still refuses to trample a consequential
  * exclusive-resource holder. Never add an override flag here — those flags
  * turn a busy host into a peer-work-destroying restart.
+ *
+ * WI-6554700010010584: 45s refused 17 of 17 attempts (2026-10-11..13) while other
+ * callers at 60s+ succeeded. Each refusal's last holder was one pass inside its
+ * superproject pointer-bump phase, which has no yield boundary and measured 70-90s
+ * under load (papercusp 2026-10-13 18:17-18:19Z, portal 07:49-07:51Z). Use the
+ * barrier's own ceiling; the watchdog test pins the two together.
  */
-export const STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC = 45;
+export const STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC = 120;
 export const STALE_EXECUTOR_RESTART_COOLDOWN_MS = 13 * 60_000;
 const STALE_EXECUTOR_PTOOL_TIMEOUT_MS = 30_000 + STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC * 1_000;
 const STALE_EXECUTOR_RESTART_PID_WAIT_MS = 30_000;

@@ -3674,7 +3674,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     const started = new Promise<void>((resolve) => { childStarted = resolve; });
     let finishChild!: () => void;
     runGitBoundedMock.mockImplementation(async (...args) => {
-      if ((args[0] as string[]).at(-1) === 'first') return first;
+      if ((args[0] as string[]).at(-1) === 'first"') return first;
       childStarted();
       await new Promise<void>((resolve) => { finishChild = resolve; });
       if (settlement === 'reject') throw new Error('second check-ignore failed');
@@ -3684,7 +3684,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       const opts = raw as unknown as RunGitSyncOpts;
       // Exercise the maintained concurrent Git preflight: Promise.all rejects
       // on one command while another tracked command can still be running.
-      await classifyProtectedPathExclusions(opts.runGit!, repoDir, ['first', 'second']);
+      // A `"` keeps each name on the one-path probe (verbatim names are batched).
+      await classifyProtectedPathExclusions(opts.runGit!, repoDir, ['first"', 'second"']);
       return syncedOutcome;
     });
     let returned = false;

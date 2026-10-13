@@ -536,7 +536,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
       const leadEvidence = (r: TaskRunResult, armMeta: Record<string, unknown>) => leadOutput === undefined
         ? armMeta
         : withExecutionPath(
-          withCapabilityEvidence(armMeta, mergeCapabilityEvidence([readCapabilityEvidence(r), leadOutput.capabilityEvidence])),
+          withCapabilityEvidence(armMeta, mergeCapabilityEvidence([readCapabilityEvidence(r), leadOutput.capabilityEvidence])) ?? armMeta,
           [leadOutput],
         );
       await drainUnits(

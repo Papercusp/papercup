@@ -391,6 +391,9 @@ export type ExtractDiff = (checkout: TaskCheckout, task: BenchTask) => Promise<s
 export interface GenerationTelemetry {
   tokensIn: number;
   tokensOut: number;
+  /** Cache tokens remain separate so downstream pricing preserves the native request accounting. */
+  tokensCacheRead?: number;
+  tokensCacheWrite?: number;
   costUsd: number;
   turns: number;
   wallClockMs: number;

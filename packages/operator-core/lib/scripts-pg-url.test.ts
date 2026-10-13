@@ -27,7 +27,7 @@
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -543,6 +543,7 @@ describe('scripts/pg-url.mjs (the shell door)', () => {
     const sourceProbe = `
       import { _resolveUrlsForTests } from '@papercusp/db-org/connection';
       const u = new URL(_resolveUrlsForTests().admin);
+      _resolveUrlsForTests();
       console.log(JSON.stringify({ host: u.hostname, port: u.port, database: u.pathname,
         inheritedSecret: process.env.UNRELATED_OPERATOR_SECRET ?? null }));
     `;
@@ -552,11 +553,21 @@ describe('scripts/pg-url.mjs (the shell door)', () => {
       delete env.UNRELATED_OPERATOR_SECRET;
       return env;
     };
-    const runProbe = (root: string, env: NodeJS.ProcessEnv) => JSON.parse(execFileSync(process.execPath,
-      [cli, `--root=${root}`, '--no-verify', '--exec', '--', process.execPath, '--import', 'tsx',
-        '--input-type=module', '-e', sourceProbe],
-      { cwd: REPO_ROOT, env, encoding: 'utf8', timeout: 30_000 },
-    ));
+    const runProbe = (root: string, env: NodeJS.ProcessEnv) => {
+      const result = spawnSync(process.execPath,
+        [cli, `--root=${root}`, '--no-verify', '--exec', '--', process.execPath, '--import', 'tsx',
+          '--input-type=module', '-e', sourceProbe],
+        { cwd: REPO_ROOT, env, encoding: 'utf8', timeout: 30_000 },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      const diagnostics = result.stderr.trim().split('\n').filter(line => line.startsWith('[db]'));
+      expect(diagnostics.length).toBeGreaterThan(0);
+      expect(diagnostics.every(line => /^\[db\] target source=\S+ endpoint=\S+$/.test(line))).toBe(true);
+      expect(new Set(diagnostics).size).toBe(diagnostics.length);
+      expect(result.stderr).not.toContain('secret');
+      return JSON.parse(result.stdout);
+    };
 
     it('binds the real db-org source resolver to the selected operator root in a fresh child', () => {
       const root = mkdtempSync(join(tmpdir(), 'pg-url-source-root-'));

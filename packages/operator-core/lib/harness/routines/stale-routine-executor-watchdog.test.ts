@@ -418,6 +418,13 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     nowMs += STALE_EXECUTOR_RESTART_COOLDOWN_MS + 1;
   });
 
+  it('WI-6554700010010584: drains for the full git-sync barrier ceiling, not a shorter budget', async () => {
+    // 45s refused 17/17: a pass already inside its pointer-bump phase cannot yield and
+    // measured 70-90s. A budget above the ceiling would be rejected by the restart schema.
+    const { GIT_SYNC_RESTART_BARRIER_DRAIN_SEC } = await import('../../release/gate-collision-guard');
+    expect(STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC).toBe(GIT_SYNC_RESTART_BARRIER_DRAIN_SEC);
+  });
+
   it('does not invoke the restart command for another identity or a healthy verdict', async () => {
     let calls = 0;
     const run = async () => {

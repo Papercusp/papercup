@@ -1452,7 +1452,7 @@ describe('verifyResumeStarted (resume liveness is three-state)', () => {
 });
 
 describe('verifyResumeStarted prepared cross-backend continuation', () => {
-  function fixture(sourceBackend: 'codex' | 'omp' = 'codex') {
+  function fixture(sourceBackend: 'claude' | 'codex' | 'omp' = 'codex') {
     const source = { id: 11, workspaceId: 'ws-test', coordOwnerId: OWNER, agent: sourceBackend,
       sessionId: 'source-native' } as AdvSessionRow;
     const target = { id: 12, workspaceId: 'ws-test', coordOwnerId: OWNER, agent: 'claude',
@@ -1538,7 +1538,7 @@ describe('verifyResumeStarted prepared cross-backend continuation', () => {
   });
 
   function codexTargetFixture() {
-    const f = fixture();
+    const f = fixture('claude');
     f.target.agent = 'codex';
     f.port.targetBackend = 'codex';
     (f.port.metadata.summary as { target: { backend: string } }).target.backend = 'codex';
@@ -1548,6 +1548,23 @@ describe('verifyResumeStarted prepared cross-backend continuation', () => {
       expectedPort: { sourceAdvSessionId: 11, targetBackend: 'codex' as const },
       findHost: () => host as never } };
   }
+
+  it.each([undefined, null])('accepts an unassigned bootstrap native UUID only after the Codex child identity is observed (%s)', async (bootstrapNative) => {
+    const f = codexTargetFixture();
+    f.port.metadata.targetNativeSessionId = bootstrapNative;
+    f.host.nativeSessionId = 'target-native';
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({
+      started: true, mismatch: false, expectedSessionId: 'target-native', actualSessionId: 'target-native',
+    });
+    f.host.nativeSessionId = null;
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({
+      started: null, mismatch: false, expectedSessionId: 'target-native', actualSessionId: null,
+    });
+    f.host.nativeSessionId = 'unrelated-child';
+    expect(await verifyResumeStarted(OWNER, f.options)).toMatchObject({
+      started: false, mismatch: true, actualSessionId: 'unrelated-child',
+    });
+  });
 
   it.each([undefined, null])('keeps a delivered Codex conversion without observed identity unconfirmed (%s)', async (nativeSessionId) => {
     const f = codexTargetFixture();

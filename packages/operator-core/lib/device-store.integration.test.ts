@@ -245,6 +245,19 @@ describe('device-store (real PG + real RLS)', () => {
     await revokeDevice(idA, wsA);
     expect(await pushTargetsForWorkspace(wsA)).toHaveLength(0);
   });
+  it('session pushes require the grant and exclude paused, revoked and foreign devices', async () => {
+    const ws = freshWs(); const foreign = freshWs();
+    const allowed = freshDevice(); const absent = freshDevice(); const paused = freshDevice(); const revoked = freshDevice(); const other = freshDevice();
+    for (const [id, workspaceId] of [[allowed, ws], [absent, ws], [paused, ws], [revoked, ws], [other, foreign]]) {
+      await insertDevice({ deviceId: id, workspaceId, userEmail: 'owner@example.com' });
+      await upsertPushToken({ deviceId: id, workspaceId, platform: 'fcm', token: `token-${id}` });
+      if (id !== absent) await setDeviceAgentSessionsEnabled(id, workspaceId, true);
+    }
+    await setDevicePaused(ws, paused, true); await revokeDevice(revoked, ws);
+    expect(await pushTargetsForWorkspace(ws, 'agent-sessions')).toEqual([{ platform: 'fcm', token: `token-${allowed}` }]);
+    await setDeviceAgentSessionsEnabled(allowed, ws, false);
+    expect(await pushTargetsForWorkspace(ws, 'agent-sessions')).toEqual([]);
+  });
 
   // D-013 #6: a sealed cloud channel identifies the phone by its Noise static key.
   it('findDeviceIdByNoisePublicKey: resolves one live device, fails closed on unknown, revoked, shared or foreign keys', async () => {

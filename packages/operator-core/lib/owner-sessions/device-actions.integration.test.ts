@@ -8,13 +8,15 @@ vi.mock('@papercusp/db-org', async original => ({ ...(await original<typeof impo
     return cb(tx);
   }),
 }));
-import { auditDeviceAction, deviceActionKey, deviceActionRefusal, runDeviceAction } from './device-actions';
+import { auditDeviceAction, deviceActionKey, deviceActionRefusal, runDeviceAction, type DeviceActionContext } from './device-actions';
 import { createOrgTestDb } from '../../test/_org-test-db';
 describe('device action receipts (real PG and RLS)', () => {
   let db: OrgTestDb;
   beforeAll(async () => { db = await createOrgTestDb(); h.appSql = db.appSql; }, Number(process.env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS) || 120_000);
   afterAll(async () => { await db?.cleanup(); });
-  const context = () => ({ principal: { kind: 'device' as const, slug: `phone-${randomUUID()}`, workspaceId: `ws-${randomUUID()}` }, owner: 'su-target', action: 'send' as const });
+  const context = (): DeviceActionContext => ({ principal: { kind: 'device', slug: `phone-${randomUUID()}`,
+    workspaceId: `ws-${randomUUID()}`, authMethod: 'jwt', trust: 'verified', capabilities: new Set(['device:*']) },
+    owner: 'su-target', action: 'send' });
   it('serializes concurrent network retries and stores one action audit row without message text', async () => {
     const c = context(); const run = vi.fn(async () => ({ status: 200, body: { ok: true, delivery: { kind: 'queued' } } }));
     const replies = await Promise.all(Array.from({ length: 4 }, () => runDeviceAction(c, 'same-key', { text: 'credential marker never stored' }, run)));

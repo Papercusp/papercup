@@ -378,6 +378,28 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     expect(h.llm).toHaveBeenCalled();
   });
 
+  it('NATIVE-GRAPH-COMPARISON: refuses a missing measured treatment before generation and records the assigned treatment', async () => {
+    const h = harness(), original = await pilot(h);
+    const common = { manifestRevision: f.manifest.revision,
+      scope: { workspaceId: h.input.workspaceId, potSlug: h.input.potSlug },
+      problemContext: { mode: 'open-exploration' as const, evidence: [], note: 'Frozen unit comparison.' } };
+    const comparison = { ...common, inputHash: dreamComparisonInputHash({ ...common, sourceSnapshot: original.protocol.sourceSnapshot }),
+      graphAblation: { treatments: ['graph', 'control'] as ['graph', 'control'], populationIds: f.packets.map(p => p.unit.id),
+        samplerHash: capabilityHash(JSON.stringify(h.input.sampler ?? {})), attemptsPerTreatment: 2, usdPerTreatment: 2,
+        outcomeAssessment: 'blinded-independent-executed-benefit' as const } };
+    h.input.pilot = { ...freezeDreamEvaluationProtocol({ ...original.protocol, comparison }),
+      arm: 'structured-pair', matchedPairIndex: 0, graphTreatment: 'control' };
+    await runDreamCycle(h.input, h.d);
+    expect(h.llm).not.toHaveBeenCalled();
+    expect(h.d.sample).not.toHaveBeenCalled();
+    const saved = h.row('cycle-1:dream:1');
+    expect(saved.status).toBe('error');
+    expect(saved.error).toContain('no measured graph treatment');
+    expect(dreamCapabilityRun(saved)?.evaluation).toMatchObject({
+      protocolPin: h.input.pilot.pin, inputHash: comparison.inputHash, graphTreatment: 'control', matchedPairIndex: 0,
+    });
+  });
+
   it('rechecks the actual source snapshot before generation, preserving a rejected run', async () => {
     const h = harness();
     const valid = await pilot(h);

@@ -2402,15 +2402,12 @@ const TURN_INJECT_BUSY_CAP_MS = Number(process.env.PAPERCUSP_PSU_PTY_BUSY_CAP_MS
  *  prompt. Too short and the carry text lands in the clearing/animating TUI;
  *  the clear itself is fast, so this is a repaint budget, not a compute one. */
 const CLEAR_SETTLE_MS = Number(process.env.PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS) || 1_500;
-/** How long a RECYCLE waits for the killed child to actually exit before it
- *  spawns the fresh one, so we never double-spawn into a still-dying pty
- *  (su-cold-auto-mode P-004b). Fail-safe: on cap we spawn anyway (the old pid is
- *  being torn down regardless). */
+/** How long RECYCLE allows a graceful exit before escalating to SIGKILL.
+ *  A signal request never authorizes spawning a successor; the predecessor's
+ *  exit notification remains the lifetime fence (su-cold-auto-mode P-004b). */
 const RECYCLE_KILL_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_KILL_MS) || 5_000;
-/** After the graceful recycle signal's cap, give the forced process-tree kill a
- * short bounded hand-off window to report the pty child exit before spawning its
- * successor. SIGKILL itself is the lifetime fence; this wait only lets node-pty
- * reap the leader cleanly when it can. */
+/** Diagnostic window after a hard kill. A late exit is reported as pending,
+ *  then awaited; expiry must never create a second child under the same SID. */
 const RECYCLE_FORCE_KILL_WAIT_MS = Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_FORCE_KILL_WAIT_MS) || 1_000;
 
 /**
@@ -15270,7 +15267,7 @@ export function hostThroughPty(o) {
           predecessorPid,
           gracefulWaitMs: RECYCLE_KILL_TIMEOUT_MS,
         });
-        const dead = new Promise((res) => {
+        const dead = new Promise((res, reject) => {
           try {
             child.onExit((event) => {
               predecessorExitObserved = true;
@@ -15278,8 +15275,8 @@ export function hostThroughPty(o) {
               predecessorExitSignal = signalNameFromCode(event?.signal);
               res();
             });
-          } catch {
-            res();
+          } catch (error) {
+            reject(error);
           }
         });
         try {
@@ -15309,6 +15306,18 @@ export function hostThroughPty(o) {
             dead,
             new Promise((resolve) => setTimeout(resolve, RECYCLE_FORCE_KILL_WAIT_MS)),
           ]);
+          if (!predecessorExitObserved) {
+            appendHostEvent(ownerId, 'respawn-predecessor-stop-pending', {
+              mode: respawnMode,
+              predecessorPid,
+              signal: 'SIGKILL',
+              elapsedMs: Date.now() - predecessorStopStartedAt,
+            });
+            // node-pty may deliver its exit callback after the diagnostic cap,
+            // and a process blocked in the kernel can retain a queued SIGKILL.
+            // Keep the old child and recycling fence until exit is observed.
+            await dead;
+          }
         }
         appendHostEvent(ownerId, 'respawn-predecessor-stop-finished', {
           mode: respawnMode,

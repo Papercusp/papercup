@@ -253,6 +253,7 @@ export async function deletePushToken(workspaceId: string, token: string): Promi
 /** Push targets for everyone in a workspace (used by the dispatcher). */
 export async function pushTargetsForWorkspace(
   workspaceId: string,
+  requiredCapability?: typeof DEVICE_AGENT_SESSIONS_CAPABILITY,
 ): Promise<Array<{ platform: 'apns' | 'fcm'; token: string }>> {
   return withWorkspace(workspaceId, async (tx) => {
     return tx<{ platform: 'apns' | 'fcm'; token: string }[]>`
@@ -260,6 +261,9 @@ export async function pushTargetsForWorkspace(
       FROM harness_shared.mobile_push_tokens t
       JOIN harness_shared.connected_apps d ON d.id = t.device_id
       WHERE d.kind = 'mobile' AND d.revoked_at IS NULL
+        AND d.paused_at IS NULL
+        AND (${requiredCapability ?? null}::text IS NULL
+          OR COALESCE(d.scopes->'capabilities' ? ${requiredCapability ?? null}::text, false))
     `;
   });
 }

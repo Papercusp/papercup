@@ -4421,6 +4421,63 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
     "if(line==='QUIT'){process.exit(0);}}});" +
     'setTimeout(()=>process.exit(0),15000);';
 
+  it('waits for a delayed predecessor exit notification before spawning the successor', async () => {
+    const ownerId = `su-recycle-exit-fence-${process.pid}-${Math.floor(performance.now())}`;
+    const { captured, io } = fakeIo();
+    let spawns = 0;
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "for(const signal of ['SIGHUP','SIGTERM','SIGINT'])process.on(signal,()=>{});" + childCode],
+      cwd: '/tmp',
+      env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+      ownerId,
+      io,
+      bridgeTty: false,
+      hostCodeStalenessFn: () => ({ stale: false }),
+      mintRecycleArgs: (args: string[]) => ({ args, nativeId: null }),
+      spawnPty: (file, args, options, realSpawn) => {
+        const spawned = realSpawn(file, args, options);
+        if (++spawns === 1) {
+          const onExit = spawned.onExit.bind(spawned);
+          return new Proxy(spawned, {
+            get(target, property) {
+              if (property === 'onExit') {
+                return (handler: (event: { exitCode: number; signal: number }) => void) =>
+                  onExit((event: { exitCode: number; signal: number }) => {
+                    setTimeout(() => handler(event), 2_000);
+                  });
+              }
+              const value = Reflect.get(target, property, target);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          });
+        }
+        return spawned;
+      },
+    });
+    const events = () => readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+      .trim().split('\n').map((line) => JSON.parse(line));
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 5_000 });
+      await controlInject(socketPathFor(ownerId), 'recycle', '');
+      await vi.waitFor(() => expect(events().some((e) => e.kind === 'respawn-predecessor-force-kill'))
+        .toBe(true), { timeout: 8_000 });
+      // Cross the old one-second cap while node-pty's exit callback is still
+      // delayed. A queued SIGKILL alone cannot authorize a second writer.
+      await sleep(1_200);
+      expect(spawns).toBe(1);
+      expect(events().some((e) => e.kind === 'respawn-predecessor-stop-finished')).toBe(false);
+      await vi.waitFor(() => expect(spawns).toBe(2), { timeout: 5_000 });
+      const lifecycle = events();
+      const stopped = lifecycle.findIndex((e) => e.kind === 'respawn-predecessor-stop-finished');
+      expect(lifecycle[stopped]).toMatchObject({ exitObserved: true, forceKillRequested: true, signal: 'SIGKILL' });
+      expect(lifecycle.findIndex((e) => e.kind === 'respawned')).toBeGreaterThan(stopped);
+    } finally {
+      await rawInject(socketPathFor(ownerId), 'QUIT\n');
+      await done;
+    }
+  }, 25_000);
+
   it.each([
     [true, false], [false, false],
     [true, true], [false, true],

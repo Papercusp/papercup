@@ -130,7 +130,7 @@ export function buildDreamInsightBody(input: {
 }
 
 function artifactId(result: CaptureImprovementResult): string | null {
-  return result.issue?.id ?? result.coalescedOnto?.id ?? result.possibleDuplicates[0]?.id ?? null;
+  return result.issue?.id ?? result.coalescedOnto?.id ?? result.possibleDuplicates?.[0]?.id ?? null;
 }
 
 /**

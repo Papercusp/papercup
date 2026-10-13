@@ -50,6 +50,7 @@ import { shouldDerivePlanSlug, derivePlanSlug, PLAN_SLUG_DERIVED_PROVENANCE } fr
 import { shouldDeriveWhyGoal, deriveWhyGoal, WHY_GOAL_DERIVED_PROVENANCE } from './derived-why-goal';
 import { noteIntentDeclared, readAgentStateStamp } from '../../agent-state-stamp';
 import { sealCoordEnvelope } from '../../personal-vault/sealed-contents';
+import { trackDetached } from '../../detached-imports';
 
 export type { InboxOptions };
 
@@ -480,6 +481,7 @@ export async function sendMessage(
   // delivered by the park alone.
   let persistedEnv = env;
   let persistedSequence: number | null = null;
+  let created = true;
   if (liveAddrs.length > 0 || slots.length === 0) {
     // A caller-supplied msg_id is a producer's deterministic replay key (for
     // example, coord:send's MCP idempotency key). Claim that line atomically
@@ -496,6 +498,7 @@ export async function sendMessage(
       const result = await coordLog.appendLineIfAbsent('messages', identity.ownerId, env);
       persistedEnv = result.envelope;
       persistedSequence = result.sequence;
+      created = result.created;
     } else {
       persistedSequence = await coordLog.appendLine('messages', identity.ownerId, env);
     }
@@ -524,6 +527,13 @@ export async function sendMessage(
   // side-effect only, guarded on a `@fleet:` selector — a normal send pays nothing.
   if (opts.to.some((t) => t.startsWith('@fleet:'))) {
     await deliverFleetDigests(opts.to, persistedEnv, persistedEnv.to).catch(() => {});
+  }
+  // After persistence/sealing only: failed writes and deterministic replays
+  // must not publish a fresh owner notification. Other recipients pay no I/O.
+  if (created && persistedEnv.kind === 'message' && persistedEnv.to.includes('human') && identity.workspaceId) {
+    void trackDetached(import('../../session-push').then(module =>
+      module.notifySessionOwnerMessage(persistedEnv, identity.workspaceId!),
+    ).catch(error => { console.warn('[session-push] notification failed:', error instanceof Error ? error.name : 'unknown'); }));
   }
   unresolvedAudienceByEnvelope.set(persistedEnv, unresolvedAudienceSelectors);
   unreachableAudienceByEnvelope.set(persistedEnv, unreachableAudienceSelectors);

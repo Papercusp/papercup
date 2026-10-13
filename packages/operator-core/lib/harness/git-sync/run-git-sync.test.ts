@@ -35,6 +35,7 @@ import {
   defaultRunGeneratedDeclarationsGenerator,
   defaultRunToolRoutingCheck,
   classifyProtectedPathExclusions,
+  isVerbatimCheckIgnorePath,
   addFailureIgnoredPaths,
   addFailureStrayPaths,
   discoverSubmodulesRecursive,
@@ -1755,20 +1756,64 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(logs.join('\n')).toContain('pre-filtering ignored untracked protected path');
   });
 
-  it('EI-24369292425690265: checks protected paths with bounded concurrency', async () => {
+  it('WI-6554700010010584: batches verbatim protected paths into ONE real check-ignore call', async () => {
+    // Real git, not a fake: a fake answered `-z` happily while Git 2.43 rejects it
+    // without --stdin, which is how wholesale-deletion-guard's batch went dead.
+    writeFileSync(join(repo, '.gitignore'), 'ignored-*\nbuild/\n');
+    mkdirSync(join(repo, 'build'), { recursive: true });
+    mkdirSync(join(repo, 'real-dir'), { recursive: true });
+    symlinkSync('real-dir', join(repo, 'linked-dir'));
+    for (const file of ['ignored-plain', 'ignored-with space', 'ignored-"q"', 'ignored-ü', 'ignored-tracked', 'kept.txt', 'build/out.bin']) {
+      writeFileSync(join(repo, file), 'x\n');
+    }
+    git(repo, 'add', '-f', 'ignored-tracked');
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args, cwd) => {
+      calls.push([...args]);
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+      return { code: result.status ?? -1, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
+    };
+    const verbatim = ['ignored-plain', 'ignored-with space', 'ignored-tracked', 'kept.txt', 'build/out.bin', 'ignored-missing'];
+    const quoted = ['ignored-"q"', 'ignored-ü'];
+    expect(verbatim.every(isVerbatimCheckIgnorePath)).toBe(true);
+    expect(quoted.some(isVerbatimCheckIgnorePath)).toBe(false);
+    const ignored = new Set(['ignored-plain', 'ignored-with space', 'build/out.bin', 'ignored-missing', ...quoted]);
+
+    const batched = await classifyProtectedPathExclusions(runGit, repo, [...verbatim, ...quoted]);
+
+    expect(batched.ignoredUntracked).toEqual(ignored); // a tracked match is never reported
+    expect(batched.beyondSymlink).toEqual(new Set());
+    expect(calls).toEqual([
+      ['check-ignore', '--', ...verbatim],
+      ...quoted.map((path) => ['check-ignore', '--', path]),
+    ]);
+
+    // One symlink descendant fails the WHOLE batch (exit 128): re-probe per path.
+    calls.length = 0;
+    const fallback = await classifyProtectedPathExclusions(runGit, repo, [...verbatim, 'linked-dir/x', ...quoted]);
+
+    expect(fallback.ignoredUntracked).toEqual(ignored);
+    expect(fallback.beyondSymlink).toEqual(new Set(['linked-dir/x']));
+    expect(calls[0]).toEqual(['check-ignore', '--', ...verbatim, 'linked-dir/x']);
+    expect(calls).toHaveLength(1 + verbatim.length + 1 + quoted.length);
+  });
+
+  it('EI-24369292425690265: checks per-path protected paths with bounded concurrency', async () => {
     let active = 0;
     let peak = 0;
     const seen: string[] = [];
-    const paths = Array.from({ length: 24 }, (_, i) => `protected-${i}`);
+    // A `"` makes Git C-quote the echoed name, so each of these takes the one-path probe.
+    const paths = Array.from({ length: 24 }, (_, i) => `protected-"${i}"`);
     const runGit: RunGit = async (args) => {
+      expect(args).toHaveLength(3);
       const path = args[2];
       seen.push(path);
       active++;
       peak = Math.max(peak, active);
       await new Promise((resolve) => setTimeout(resolve, 5));
       active--;
-      if (path === 'protected-3') return { code: 0, stdout: `${path}\n`, stderr: '' };
-      if (path === 'protected-9') {
+      if (path === 'protected-"3"') return { code: 0, stdout: `"protected-\\"3\\""\n`, stderr: '' };
+      if (path === 'protected-"9"') {
         return { code: 128, stdout: '', stderr: `fatal: pathspec '${path}' is beyond a symbolic link` };
       }
       return { code: 1, stdout: '', stderr: '' };
@@ -1779,8 +1824,8 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(new Set(seen)).toEqual(new Set(paths));
     expect(peak).toBeGreaterThan(1);
     expect(peak).toBeLessThanOrEqual(8);
-    expect(result.ignoredUntracked).toEqual(new Set(['protected-3']));
-    expect(result.beyondSymlink).toEqual(new Set(['protected-9']));
+    expect(result.ignoredUntracked).toEqual(new Set(['protected-"3"']));
+    expect(result.beyondSymlink).toEqual(new Set(['protected-"9"']));
   });
 
   it('EI-21635845150755039: a protected symlink descendant does not strand stageable work', async () => {
@@ -5488,9 +5533,10 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
         checkIgnoreCalls.push(args);
         // Default `git check-ignore` suppresses tracked files. The fake models
         // that contract: only the ignored-untracked path is returned, so the
-        // tracked protected path must remain in the exclusion pathspec.
-        const queried = args.at(-1);
-        return queried === ignoredPath ? { code: 0, stdout: `${ignoredPath}\n` } : { code: 1, stdout: '' };
+        // tracked protected path must remain in the exclusion pathspec. Both
+        // paths are verbatim, so they arrive in ONE batched call (WI-6554700010010584).
+        const queried = args.slice(2);
+        return queried.includes(ignoredPath) ? { code: 0, stdout: `${ignoredPath}\n` } : { code: 1, stdout: '' };
       }
       if (j.startsWith('add')) {
         addCalls.push(args);
@@ -5513,10 +5559,7 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     });
 
     expect(out.status).toBe('synced');
-    expect(checkIgnoreCalls).toEqual([
-      ['check-ignore', '--', ignoredPath],
-      ['check-ignore', '--', stageableProtectedPath],
-    ]);
+    expect(checkIgnoreCalls).toEqual([['check-ignore', '--', ignoredPath, stageableProtectedPath]]);
     expect(addCalls).toHaveLength(1); // no red first attempt + recovery retry
     expect(addCalls[0]).not.toContain(`:(exclude,literal)${ignoredPath}`);
     expect(addCalls[0]).toContain(`:(exclude,literal)${stageableProtectedPath}`);
