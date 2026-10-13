@@ -33,7 +33,8 @@ beforeAll(async () => {
     CREATE SCHEMA harness_shared; CREATE TABLE harness_shared.workspace_hosts (workspace_id text NOT NULL, id text NOT NULL, PRIMARY KEY(workspace_id,id));`);
   for (const name of ['902-hosted-session-webhook-receipts.sql', '903-customer-organization-boundary.sql',
     '904-hosted-identity-links.sql', '906-customer-workspace-directory.sql', '907-hosted-governance.sql',
-    '978-hosted-customer-rls.sql', '1005-hosted-service-lifecycle-runtime.sql', '1473-hosted-directory-binding-audit.sql']) {
+    '978-hosted-customer-rls.sql', '1005-hosted-service-lifecycle-runtime.sql', '1473-hosted-directory-binding-audit.sql',
+    '1496-hosted-directory-group-mappings.sql']) {
     const armed = path.join(SQL_DIR, name);
     await sql.unsafe(readFileSync(existsSync(armed) ? armed : `${armed}.DRAFT`, 'utf8'));
   }
@@ -61,7 +62,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql.unsafe('TRUNCATE papercusp_auth.hosted_sessions, papercusp_auth.organization_audit_events, papercusp_auth.external_identities, papercusp_auth.organization_memberships, papercusp_auth.hosted_users, papercusp_auth.organizations CASCADE');
+  await sql.unsafe('TRUNCATE papercusp_auth.directory_user_observations, papercusp_auth.directory_group_role_mappings, papercusp_auth.hosted_sessions, papercusp_auth.organization_audit_events, papercusp_auth.external_identities, papercusp_auth.organization_memberships, papercusp_auth.hosted_users, papercusp_auth.organizations CASCADE');
   const users = await sql<{ id: string }[]>`INSERT INTO papercusp_auth.hosted_users(primary_email)
     VALUES ('admin@example.test'),('member@example.test'),('other@example.test') RETURNING id`;
   [actorId, memberId, otherId] = users.map((u) => u.id);
@@ -158,6 +159,109 @@ describe('bounded delegated membership reduction', () => {
     await expect(run(async (tx) => tx`UPDATE papercusp_auth.organization_memberships SET role='owner' WHERE user_id=${memberId}::uuid`)).rejects.toThrow(/only reduce/);
     await manager.reduceMembership(principal(), reduction('revoked'));
     await expect(run(async (tx) => tx`UPDATE papercusp_auth.organization_memberships SET status='active' WHERE user_id=${memberId}::uuid`)).rejects.toThrow(/restore or elevate/);
+  });
+});
+
+describe('directory group mappings and delegated provisioning (WI-10007899 / P-004)', () => {
+  const DIR = 'directory-1';
+  let newUserId: string;
+  const mapping = (groupId: string, role: 'admin' | 'member' | 'billing') =>
+    ({ organizationId, directoryId: DIR, groupId, role, purpose: 'Approved directory group mapping' });
+  const unmap = (groupId: string) => ({ organizationId, directoryId: DIR, groupId, purpose: 'Retire directory group mapping' });
+  const provision = (directoryUserId = 'dsync-new', userId = newUserId) =>
+    ({ organizationId, userId, directoryId: DIR, directoryUserId, purpose: 'Directory provisioning' });
+  const observe = (groups: string[], state = 'active', directoryUserId = 'dsync-new') =>
+    sql`INSERT INTO papercusp_auth.directory_user_observations(external_organization_id,directory_id,directory_user_id,state,groups)
+      VALUES ('workos-org',${DIR},${directoryUserId},${state},${groups}::text[])
+      ON CONFLICT (external_organization_id,directory_id,directory_user_id) DO UPDATE SET state = EXCLUDED.state, groups = EXCLUDED.groups`;
+  const setActorRole = (role: string) => sql`UPDATE papercusp_auth.organization_memberships SET role = ${role}
+    WHERE organization_id = ${organizationId}::uuid AND user_id = ${actorId}::uuid`;
+  const membershipOf = async (userId: string) => (await sql<{ id: string; role: string; status: string }[]>`
+    SELECT id::text, role, status FROM papercusp_auth.organization_memberships
+     WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid`)[0];
+  const auditCount = async () => (await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM papercusp_auth.organization_audit_events`)[0].n;
+
+  beforeEach(async () => {
+    const [row] = await sql<{ id: string }[]>`INSERT INTO papercusp_auth.hosted_users(primary_email) VALUES ('new@example.test') RETURNING id`;
+    newUserId = row.id;
+  });
+
+  it('sets, changes and removes a mapping with append-only audit and no membership side effect', async () => {
+    const before = await auditCount();
+    const set = await manager.setGroupMapping(principal(), mapping('eng', 'member'));
+    expect(set).toMatchObject({ groupId: 'eng', role: 'member', status: 'active', revokedMembershipIds: [] });
+    const changed = await manager.setGroupMapping(principal(), mapping('eng', 'billing'));
+    expect(changed).toMatchObject({ mappingId: set.mappingId, role: 'billing', status: 'active' });
+    const removed = await manager.removeGroupMapping(principal(), unmap('eng'));
+    expect(removed).toMatchObject({ mappingId: set.mappingId, status: 'removed' });
+    expect(await sql`SELECT status, removed_at IS NOT NULL AS removed FROM papercusp_auth.directory_group_role_mappings`)
+      .toEqual([{ status: 'removed', removed: true }]);
+    expect(await auditCount()).toBe(before + 3);
+    expect(await membershipOf(newUserId)).toBeUndefined();
+  });
+
+  it('only an owner may approve an admin mapping', async () => {
+    await expect(manager.setGroupMapping(principal(), mapping('admins', 'admin'))).rejects.toThrow('directory_group_mapping_forbidden_role');
+    await setActorRole('owner');
+    await expect(manager.setGroupMapping(principal(), mapping('admins', 'admin'))).resolves.toMatchObject({ role: 'admin' });
+  });
+
+  it('provisions an observed active user with the highest-precedence mapped role', async () => {
+    await manager.setGroupMapping(principal(), mapping('eng', 'member'));
+    await manager.setGroupMapping(principal(), mapping('finance', 'billing'));
+    await observe(['finance', 'eng', 'unmapped']);
+    const result = await manager.provisionFromDirectory(principal(), provision());
+    expect(result).toMatchObject({ role: 'member', mappedGroupIds: ['eng', 'finance'] });
+    expect(await membershipOf(newUserId)).toEqual({ id: result.membershipId, role: 'member', status: 'active' });
+  });
+
+  it('an admin actor cannot provision an admin grant; an owner can', async () => {
+    await setActorRole('owner');
+    await manager.setGroupMapping(principal(), mapping('admins', 'admin'));
+    await setActorRole('admin');
+    await observe(['admins']);
+    await expect(manager.provisionFromDirectory(principal(), provision())).rejects.toThrow('directory_provision_forbidden_role');
+    expect(await membershipOf(newUserId)).toBeUndefined();
+    await setActorRole('owner');
+    await expect(manager.provisionFromDirectory(principal(), provision())).resolves.toMatchObject({ role: 'admin' });
+  });
+
+  it('refuses existing members, unobserved, inactive and unmapped directory users', async () => {
+    await manager.setGroupMapping(principal(), mapping('eng', 'member'));
+    await expect(manager.provisionFromDirectory(principal(), provision('dsync-member', memberId)))
+      .rejects.toThrow('directory_provision_membership_exists');
+    await expect(manager.provisionFromDirectory(principal(), provision())).rejects.toThrow('directory_provision_not_observed');
+    await observe(['eng'], 'inactive');
+    await expect(manager.provisionFromDirectory(principal(), provision())).rejects.toThrow('directory_provision_not_observed');
+    await observe(['other'], 'active');
+    await expect(manager.provisionFromDirectory(principal(), provision())).rejects.toThrow('directory_provision_no_mapped_group');
+    expect(await membershipOf(newUserId)).toBeUndefined();
+  });
+
+  it('removing a mapping revokes the provisioned membership and closes its sessions', async () => {
+    await manager.setGroupMapping(principal(), mapping('eng', 'member'));
+    await observe(['eng']);
+    const { membershipId } = await manager.provisionFromDirectory(principal(), provision());
+    await sql`INSERT INTO papercusp_auth.hosted_sessions(id,user_id,organization_id,upstream_provider,upstream_session_id,expires_at)
+      VALUES ('provisioned',${newUserId},${organizationId},'workos','provisioned',now()+interval '1 hour')`;
+    const removed = await manager.removeGroupMapping(principal(), unmap('eng'));
+    expect(removed.revokedMembershipIds).toEqual([membershipId]);
+    expect((await membershipOf(newUserId))?.status).toBe('revoked');
+    expect(await sql`SELECT revoked_at IS NOT NULL AS revoked, revocation_reason FROM papercusp_auth.hosted_sessions WHERE id = 'provisioned'`)
+      .toEqual([{ revoked: true, revocation_reason: 'directory_group_mapping_changed' }]);
+  });
+
+  it('a downgrade revokes a now-excessive grant while an upgrade keeps it', async () => {
+    await setActorRole('owner');
+    await manager.setGroupMapping(principal(), mapping('eng', 'member'));
+    await observe(['eng']);
+    const { membershipId } = await manager.provisionFromDirectory(principal(), provision());
+    const upgraded = await manager.setGroupMapping(principal(), mapping('eng', 'admin'));
+    expect(upgraded.revokedMembershipIds).toEqual([]);
+    expect(await membershipOf(newUserId)).toEqual({ id: membershipId, role: 'member', status: 'active' });
+    const downgraded = await manager.setGroupMapping(principal(), mapping('eng', 'billing'));
+    expect(downgraded.revokedMembershipIds).toEqual([membershipId]);
+    expect((await membershipOf(newUserId))?.status).toBe('revoked');
   });
 });
 
