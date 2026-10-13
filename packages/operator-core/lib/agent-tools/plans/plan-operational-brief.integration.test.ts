@@ -6,7 +6,9 @@
  * acceptance rubric) explicit rather than zero.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import plansGetTool from './get';
+import { PLAN_ITEM_KIND, planItemRef } from '../../issue-blocks-merge';
 import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -85,6 +87,15 @@ const HOLDER = 'su-holder-fixture';
 const HELD_WORK_ITEM = `WI-brief-held-${RUN}`;
 const FREE_WORK_ITEM = `WI-brief-free-${RUN}`;
 
+// Blind review #14 G-1: the same plan with P-002 blocked by an OPEN engineer issue
+// (coord_links rel='blocks'). The returned items and derivedStatus must agree.
+const ISSUE_PLAN = `plan-operational-brief-issue-${RUN}`;
+const BLOCKING_ISSUE = `EI-brief-block-${RUN}`;
+// Blind review #14 G-2: a stored Now note written from content, so no now_updated
+// event exists for it. Its staleness is measured from its own writtenAt.
+const NOTE_PLAN = `plan-operational-brief-note-${RUN}`;
+const NOTE_WRITTEN_AT = '2026-10-12T10:00:00.000Z';
+
 type Field = { status: 'known'; value: unknown; source: string } | { status: 'unknown'; reason: string };
 type DerivedStatus = {
   counts: Record<string, number>;
@@ -100,6 +111,11 @@ type BriefResult = {
   acceptanceRubric?: unknown;
   lifecycle?: { verdict: string; acceptance?: { rubricActive: boolean; rubricRef: string | null } };
   derivedStatus?: DerivedStatus;
+  now?: {
+    state?: string;
+    note?: { writtenAt: string; eventId: string | null; source: string };
+    staleness?: { noteWrittenAt: string | null; basis: string; transitionsSinceNote: number | null };
+  };
   operationalBrief?: {
     schemaVersion: string;
     owner: Field;
@@ -154,10 +170,41 @@ beforeAll(async () => {
        'active', '2026-10-07', '2026-10-07', 'integration-fixture', false, 'rubric',
        ${JSON.stringify({ kind: 'acceptance', subjectPlan: ACCEPTANCE_PLAN })}::text::jsonb, NULL, 'local')
   `;
+  // G-1 fixture: an open bug blocks ISSUE_PLAN#P-002 through the issues:link edge shape.
+  await seedPlan(fx.admin, fx.workspaceId, HARNESS, ISSUE_PLAN, PLAN_CONTENT.replace(PLAN, ISSUE_PLAN));
+  await fx.admin`
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, status, title, summary, created_ts, updated_ts)
+    VALUES
+      (${fx.workspaceId}, ${HARNESS}, ${BLOCKING_ISSUE}, 'bug', 'open', 'Fixture blocking issue', 'Fixture.', 1, 1)
+  `;
+  await fx.admin`
+    INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, rel, dst_kind, dst_ref)
+    VALUES (${DEFAULT_COORD_WORKSPACE}, 'issue', ${BLOCKING_ISSUE}, 'blocks', ${PLAN_ITEM_KIND}, ${planItemRef(ISSUE_PLAN, 'P-002')})
+  `;
+  // G-2 fixture: a content-sourced stored note with no event id.
+  await seedPlan(fx.admin, fx.workspaceId, HARNESS, NOTE_PLAN, PLAN_CONTENT.replace(PLAN, NOTE_PLAN));
+  await fx.admin`
+    UPDATE harness_shared.harness_plans
+       SET now_note = ${JSON.stringify({
+         state: 'Stored note state.',
+         next: 'P-002.',
+         author: null,
+         writtenAt: NOTE_WRITTEN_AT,
+         eventId: null,
+         rationale: null,
+         source: 'content',
+       })}::text::jsonb
+     WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${NOTE_PLAN}
+  `;
 }, 60_000);
 
 afterAll(async () => {
   if (fx) {
+    await fx.admin`
+      DELETE FROM harness_shared.coord_links
+       WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND src_kind = 'issue' AND src_ref = ${BLOCKING_ISSUE}
+    `.catch(() => {});
     await fx.admin`
       DELETE FROM harness_shared.work_items WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS}
     `.catch(() => {});
@@ -280,6 +327,41 @@ describe('plans:get operationalBrief (real PG)', () => {
         summary: `active acceptance rubric ${ACCEPTANCE_RUBRIC} is attached; criteria details were not included in this read`,
       },
       source: 'plans:get.lifecycle.acceptance',
+    });
+  });
+});
+
+describe('plans:get wiring for blind review #14 (real PG) — derived-status-not-hand-written-2026-10-12 P-016', () => {
+  it('G-1: an open-issue block on P-002 reaches derivedStatus, so the summary and next pointer agree with the returned items', async () => {
+    const result = await read({}, ISSUE_PLAN);
+    const ds = result.derivedStatus!;
+    // The returned items carry the issue overlay ...
+    expect(result.items.find((item) => item.id === 'P-002')?.effectiveStatus).toBe('blocked');
+    // ... and the derived summary must say the same thing, not re-derive P-002 as actionable.
+    expect(ds.actionable.map((a) => a.id)).not.toContain('P-002');
+    expect(ds.blocked.find((b) => b.id === 'P-002')).toEqual(
+      expect.objectContaining({ blockedOn: [BLOCKING_ISSUE], external: true }),
+    );
+    expect(ds.next.itemId === 'P-002' && ds.next.reason === 'actionable').toBe(false);
+    expect(ds.text).not.toMatch(/next:\s*(start\s+)?P-002\b/i);
+  });
+
+  it('CONTROL G-1: the same graph without the issue edge keeps P-002 actionable', async () => {
+    const ds = (await read({})).derivedStatus!;
+    expect(ds.actionable.map((a) => a.id)).toContain('P-002');
+    expect(ds.blocked.find((b) => b.id === 'P-002')).toBeUndefined();
+  });
+
+  it('G-2: a stored note with no now_updated event is exposed with its identity and aged from its own writtenAt', async () => {
+    const result = await read({}, NOTE_PLAN);
+    expect(result.now?.state).toContain('Stored note state.');
+    expect(result.now?.note).toEqual({ writtenAt: NOTE_WRITTEN_AT, eventId: null, source: 'content' });
+    // Before the fix the baseline was the latest now_updated event, which does not exist
+    // for a content-written note, so staleness read basis 'note-not-in-event-log'.
+    expect(result.now?.staleness).toMatchObject({
+      noteWrittenAt: NOTE_WRITTEN_AT,
+      basis: 'events-after-note',
+      transitionsSinceNote: 0,
     });
   });
 });
