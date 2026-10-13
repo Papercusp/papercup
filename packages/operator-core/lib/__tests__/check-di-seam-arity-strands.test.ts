@@ -36,11 +36,22 @@ describe('findArityStrandsInSource', () => {
     expect(findArityStrandsInSource(src)).toHaveLength(0);
   });
 
-  it('ignores non-identifier arguments on the default branch (literals, property access)', () => {
+  it('ignores literal arguments on the default branch — they are not in-scope values', () => {
+    const src = `
+      const x = deps.seam ? deps.seam(a) : real(a, 'literal', 42);
+    `;
+    expect(findArityStrandsInSource(src)).toHaveLength(0);
+  });
+
+  // WI-6554700010009845 — this test used to assert that a property-access argument was ignored
+  // too. That was the blind spot that hid the agent-loop/anthropic-port.ts rawStream strand.
+  it('reports a property-access argument on the default branch that the seam drops', () => {
     const src = `
       const x = deps.seam ? deps.seam(a) : real(a, 'literal', obj.prop, 42);
     `;
-    expect(findArityStrandsInSource(src)).toHaveLength(0);
+    expect(findArityStrandsInSource(src)).toEqual([
+      expect.objectContaining({ seam: 'deps.seam', missing: ['obj.prop'] }),
+    ]);
   });
 
   it('does not flag when the whenFalse branch is not a call on the tested property', () => {
@@ -176,5 +187,78 @@ describe('findArityStrandsInSource — every spelling of "seam if present, else 
 
   it('does not flag two members of ONE receiver — the arities are its interface contract', () => {
     expect(findArityStrandsInSource(`const p = () => source.peek?.() ?? source.active(keyOf);`)).toEqual([]);
+  });
+});
+
+/**
+ * WI-6554700010009845 — the guard compared bare-identifier arguments only, so a seam that narrows an
+ * OBJECT-LITERAL or property-access argument was invisible. The live instance was
+ * agent-loop/anthropic-port.ts: its `rawStream` seam never received the route's priority, account
+ * and ownerId. Every silent fixture is paired with a reporting one in the same syntactic form, so a
+ * silent result cannot come from the form simply going unrecognised.
+ */
+describe('findArityStrandsInSource — object-literal and property-access arguments', () => {
+  const missingOf = (src: string) =>
+    findArityStrandsInSource(src).map((f: { missing: string[] }) => [...f.missing].sort());
+
+  it('reports each name the default literal sets and the seam literal never does', () => {
+    expect(
+      missingOf('const r = deps.alarm ? deps.alarm({ title, body }) : notify({ kind, title, body, importance });'),
+    ).toEqual([['{importance}', '{kind}']]);
+  });
+
+  it('stays silent when both literals set the same names', () => {
+    expect(missingOf('const r = deps.alarm ? deps.alarm({ title, body }) : notify({ title, body });')).toEqual([]);
+    expect(missingOf('const r = deps.alarm ? deps.alarm({ body, title: t }) : notify({ title: t, body });')).toEqual([]);
+  });
+
+  it('stays silent when the seam literal spreads another object, which may carry any name', () => {
+    expect(missingOf('const r = deps.alarm ? deps.alarm({ ...base, title }) : notify({ kind, title, body });')).toEqual([]);
+    expect(missingOf('const r = deps.alarm ? deps.alarm({ title }) : notify({ kind, title, body });')).toEqual([
+      ['{body}', '{kind}'],
+    ]);
+  });
+
+  it('reports a dropped property-access argument, matching `a?.b` to `a.b`', () => {
+    expect(missingOf('const r = deps.send ? deps.send(req?.body) : send(req.body, req.priority);')).toEqual([
+      ['req.priority'],
+    ]);
+    expect(missingOf('const r = deps.send ? deps.send(req.body, req.priority) : send(req.body, req.priority);')).toEqual(
+      [],
+    );
+  });
+
+  it('stays silent when the two literals share no name — two vocabularies, nothing to compare', () => {
+    expect(missingOf('const r = deps.run ? deps.run({ input }) : dispatch({ priority, account, ownerId });')).toEqual([]);
+    expect(
+      missingOf('const r = deps.run ? deps.run({ input, priority }) : dispatch({ priority, account, ownerId });'),
+    ).toEqual([['{account}', '{ownerId}']]);
+  });
+
+  it("stays silent on a value rooted at the seam's receiver — the receiver's supplier can close over it", () => {
+    expect(missingOf('const m = opts.read ? await opts.read() : await dflt(opts.path, opts.encoding);')).toEqual([]);
+    expect(missingOf('const m = opts.read ? await opts.read() : await dflt(opts.path, other.encoding);')).toEqual([
+      ['other.encoding'],
+    ]);
+  });
+
+  it('ignores a chain through a call or an element access — not an in-scope value', () => {
+    expect(missingOf('const r = deps.query ? deps.query(a) : query(a, getOrgPg().sql, rows[0].id);')).toEqual([]);
+    expect(missingOf('const r = deps.query ? deps.query(a) : query(a, pg.sql);')).toEqual([['pg.sql']]);
+  });
+
+  it('treats an identifier the seam passes as carrying every chain rooted at it', () => {
+    expect(missingOf('const r = deps.read ? await deps.read({ call }) : await read(call.signal, call.id);')).toEqual([]);
+    expect(missingOf('const r = deps.read ? await deps.read(call) : await read(call.signal);')).toEqual([]);
+    expect(missingOf('const r = deps.read ? await deps.read({ other }) : await read(call.signal);')).toEqual([
+      ['call.signal'],
+    ]);
+  });
+
+  it('recognises the receiver behind an `as` cast', () => {
+    expect(missingOf('const t = (r.last as Date).getTime ? (r.last as Date).getTime() : Date.parse(r.last);')).toEqual([]);
+    expect(missingOf('const t = (r.last as Date).getTime ? (r.last as Date).getTime() : Date.parse(r.first);')).toEqual([
+      ['r.first'],
+    ]);
   });
 });

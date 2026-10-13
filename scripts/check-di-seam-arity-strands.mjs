@@ -48,15 +48,22 @@
  * identical arguments by construction, so it cannot narrow. NOT recognised: a branch of
  * more than one statement, and flow that reaches the default by any other path.
  *
- * A finding is a bare Identifier among the default call's arguments that is NOT among
- * the seam call's arguments (by name — position is deliberately not compared, since the
- * seam and the default rarely share a parameter order). Literal / property-access /
- * call-expression arguments are ignored on both sides, because those are not what
- * "in scope, dropped" looks like syntactically. Three shapes are deliberately NOT
+ * A finding is an argument the default call passes that the seam call does not, matched
+ * by name and never by position (the seam and the default rarely share a parameter order):
+ *   - a bare Identifier (`accountId`), by name;
+ *   - a property access (`request.body`), by its source text (WI-6554700010009845);
+ *   - a property NAME that an object-literal argument of the default sets and no
+ *     object-literal argument of the seam sets, reported as `{name}`. Compared only when
+ *     BOTH calls pass an object literal and no seam-side literal spreads (`...rest` may
+ *     carry any name). WI-6554700010009845: `deps.notify({ title, body })` beside
+ *     `notifyAttention({ kind, title, body, importance, data })` dropped urgency and
+ *     routing, and the guard reported nothing.
+ * Literal and call-expression arguments are ignored on both sides, because those are not
+ * what "in scope, dropped" looks like syntactically. Three shapes are deliberately NOT
  * findings (each measured as a false positive on the real tree):
- *   - the dropped identifier IS the seam's receiver (`opts.read ? opts.read() :
- *     dflt(opts)`): whoever supplied the member supplied the object, so the seam can
- *     close over it;
+ *   - the dropped identifier IS the seam's receiver, or a property access rooted at it
+ *     (`opts.read ? opts.read() : dflt(opts)`, `… : dflt(opts.limit)`): whoever supplied
+ *     the member supplied the object, so the seam can close over it;
  *   - the seam call DELEGATES to the default (`sql.begin(run) : run(sql)`,
  *     `tx.savepoint((sp) => run(sp)) : run(tx)`): a transaction wrapper supplies the
  *     dropped handle itself. Detected as the default's callee appearing inside the
@@ -113,6 +120,58 @@ function defaultCandidateFiles() {
  */
 function identifierArgNames(callExpr) {
   return callExpr.arguments.filter(ts.isIdentifier).map((a) => a.text).filter((name) => name !== 'undefined');
+}
+
+/**
+ * An identifier, or a property chain rooted at an identifier or `this` (`request.body`,
+ * `this.cfg?.limit`), as normalised text (`?.` becomes `.`, whitespace dropped) so `a?.b` and
+ * `a.b` match. null for anything else: a chain through a call or an element access
+ * (`getOrgPg().sql`) is not an in-scope value (WI-6554700010009845).
+ */
+function valueText(node, sf) {
+  let root = node;
+  while (ts.isPropertyAccessExpression(root)) root = root.expression;
+  if (!ts.isIdentifier(root) && root.kind !== ts.SyntaxKind.ThisKeyword) return null;
+  return node.getText(sf).replace(/\s+/g, '').replace(/\?\./g, '.');
+}
+
+/** Property-access arguments of a call, as `valueText` (WI-6554700010009845). */
+function propertyAccessArgTexts(callExpr, sf) {
+  return callExpr.arguments
+    .filter(ts.isPropertyAccessExpression)
+    .map((a) => valueText(a, sf))
+    .filter(Boolean);
+}
+
+/**
+ * The object-literal arguments of a call: `values` maps each property NAME they set (shorthand,
+ * `k: v`, methods, accessors; string/numeric keys by value; a computed `[k]` key is not comparable
+ * and is skipped) to its value's `valueText`, or null when the value is not an identifier or a
+ * property chain. `literals` counts the object literals; `spread` is true when one spreads
+ * another object, which may carry any name.
+ */
+function objectLiteralArgs(callExpr, sf) {
+  const values = new Map();
+  let literals = 0;
+  let spread = false;
+  for (const arg of callExpr.arguments) {
+    const lit = unwrap(arg);
+    if (!ts.isObjectLiteralExpression(lit)) continue;
+    literals += 1;
+    for (const prop of lit.properties) {
+      if (ts.isSpreadAssignment(prop)) {
+        spread = true;
+        continue;
+      }
+      const name = prop.name;
+      if (!name || !(ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name))) continue;
+      let value = null;
+      if (ts.isShorthandPropertyAssignment(prop)) value = name.text;
+      else if (ts.isPropertyAssignment(prop)) value = valueText(unwrap(prop.initializer), sf);
+      values.set(name.text, value);
+    }
+  }
+  return { values, literals, spread };
 }
 
 /**
@@ -233,9 +292,34 @@ export function findArityStrandsInSource(sourceText, fileName = 'f.ts') {
     // The seam delegates to the default: a transaction wrapper supplies the handle itself.
     const calleeText = defaultCallee.getText(sf);
     if (seamCall.arguments.some((arg) => mentions(arg, calleeText, sf))) return;
-    const seamArgs = new Set(identifierArgNames(seamCall));
-    // Dropping the seam's own receiver is not a strand: its supplier supplied the object.
-    const missing = identifierArgNames(defaultCall).filter((a) => !seamArgs.has(a) && a !== receiver);
+    const seamLiterals = objectLiteralArgs(seamCall, sf);
+    // What the seam receives: its identifier and property-chain arguments, plus every such
+    // VALUE its object literals carry. Passing an identifier carries every chain rooted at it
+    // (`read({ call })` carries `call.signal`).
+    const carried = new Set([
+      ...identifierArgNames(seamCall),
+      ...propertyAccessArgTexts(seamCall, sf),
+      ...[...seamLiterals.values.values()].filter(Boolean),
+    ]);
+    // Dropping the seam's own receiver, or a value rooted at it, is not a strand: its supplier
+    // supplied the object, so the seam can close over it.
+    const receiverKey = valueText(unwrap(seamAccess.expression), sf) ?? receiver;
+    const isCarried = (v) =>
+      v === receiverKey || v.startsWith(`${receiverKey}.`) || carried.has(v) || carried.has(v.split('.')[0]);
+    const missing = [...identifierArgNames(defaultCall), ...propertyAccessArgTexts(defaultCall, sf)].filter(
+      (a) => !isCarried(a),
+    );
+    // Object literals on BOTH sides that share at least one name: a name the default sets and
+    // the seam never does, unless its value is carried anyway (WI-6554700010009845). No shared
+    // name means two vocabularies (a high-level input beside low-level dispatch options), so
+    // comparing them proves nothing; a seam-side spread may carry any name.
+    const defaultLiterals = objectLiteralArgs(defaultCall, sf);
+    const shared = [...defaultLiterals.values.keys()].some((name) => seamLiterals.values.has(name));
+    if (shared && !seamLiterals.spread) {
+      for (const [name, value] of defaultLiterals.values) {
+        if (!seamLiterals.values.has(name) && !(value && isCarried(value))) missing.push(`{${name}}`);
+      }
+    }
     if (missing.length === 0) return;
     const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
     findings.push({
