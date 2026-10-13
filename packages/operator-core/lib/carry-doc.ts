@@ -645,7 +645,11 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
       fleet: null,
     }),
   );
-  const ws = opts.workspaceId ?? 'default';
+  // buildCarryBrief resolves an omitted workspace from the request/process registry and
+  // returns its concrete scope. Reuse that scope for the recovery/control, modes, plan
+  // claims, asks and identity legs below; falling straight to `default` split one carry
+  // document across two workspaces when the caller omitted the explicit option.
+  const ws = opts.workspaceId ?? brief.workspaceId ?? 'default';
 
   const buildAutomaticRecovery =
     opts.buildAutomaticRecoveryFn ??
@@ -663,10 +667,43 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   // caller/session's scope. Keep both carry-document projections bound to the
   // explicit caller option; an omitted caller harness is intentionally null.
   const callerHarness = opts.harness ?? null;
-  const automaticRecovery = await buildAutomaticRecovery(ownerId, ws, {
+  let automaticRecovery = await buildAutomaticRecovery(ownerId, ws, {
     sessionHarness: callerHarness,
     heldItems: brief.heldItems,
   }).catch(() => null);
+
+  // A complete marker is only safe when the control anchor and the carried brief
+  // were assembled from the same concrete workspace. A split read can otherwise
+  // publish a default/empty control snapshot as complete and suppress the successor's
+  // one-shot orient fallback. Treat a missing or mismatched scope as incomplete.
+  const recoveryScopeMismatch = automaticRecovery !== null && (
+    (!opts.workspaceId && !brief.workspaceId) ||
+    (brief.workspaceId != null && brief.workspaceId !== ws) ||
+    automaticRecovery.recovery.control?.state.scope.workspace !== ws
+  );
+  if (recoveryScopeMismatch && automaticRecovery) {
+    automaticRecovery = {
+      ...automaticRecovery,
+      marker: {
+        ...automaticRecovery.marker,
+        complete: false,
+        controlGeneration: null,
+        controlStateHash: null,
+      },
+      recovery: {
+        ...automaticRecovery.recovery,
+        loop: null,
+        control: null,
+        planAuthority: null,
+        wakeSourceLostWarning: undefined,
+        coverage: {
+          ...automaticRecovery.recovery.coverage,
+          control: false,
+          planAuthority: false,
+        },
+      },
+    };
+  }
 
   // WI-10002058: this document is stamped at BUILD time, and every caller of
   // buildCarryDoc is a context-wipe producer — the context that was told the
@@ -687,7 +724,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
   // this invariant for its truth; remove the re-arm and that instruction goes
   // back to being a hope rather than a guarantee.
   const armControlWitness = opts.armControlWitnessFn ?? defaultArmControlWitness;
-  if (typeof automaticRecovery?.marker.controlGeneration === 'number') {
+  if (!recoveryScopeMismatch && typeof automaticRecovery?.marker.controlGeneration === 'number') {
     await armControlWitness(ownerId, ws, automaticRecovery.marker.controlGeneration).catch(
       () => {},
     );

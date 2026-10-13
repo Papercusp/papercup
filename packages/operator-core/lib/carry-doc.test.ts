@@ -229,6 +229,98 @@ describe('buildCarryDoc (seam-driven assembly)', () => {
     expect(judgeDoc.identity.role).toBe('judge');
   });
 
+  it('reuses the brief-resolved workspace for every follow-on read when the caller omits it (EI-25752506657737963)', async () => {
+    const seen: Record<string, string[]> = {
+      recovery: [], witness: [], modes: [], planItems: [], asks: [], backgroundTasks: [],
+    };
+    const build = async (workspaceId?: string) => {
+      const resolvedWorkspace = workspaceId ?? 'ws-resolved-by-brief';
+      return buildCarryDoc('su-1', {
+        ...(workspaceId ? { workspaceId } : {}),
+        harness: 'papercusp',
+        buildCarryBriefFn: async () => brief({ workspaceId: resolvedWorkspace }),
+        buildAutomaticRecoveryFn: async (_ownerId, recoveryWorkspace) => {
+          seen.recovery.push(recoveryWorkspace);
+          const recovery = automaticRecovery();
+          if (recovery.recovery.control) {
+            recovery.recovery.control.state.scope.workspace = recoveryWorkspace;
+          }
+          return recovery;
+        },
+        // Carry assembly can re-arm a control witness. Keep this preview-like test read-only.
+        armControlWitnessFn: async (_ownerId, witnessWorkspace) => {
+          seen.witness.push(witnessWorkspace);
+          return null;
+        },
+        getModesFn: async (modeWorkspace) => {
+          seen.modes.push(modeWorkspace);
+          return [];
+        },
+        getPlanItemsFn: async (_ownerId, planWorkspace) => {
+          seen.planItems.push(planWorkspace);
+          return [];
+        },
+        getAsksFn: async (_ownerId, askWorkspace) => {
+          seen.asks.push(askWorkspace);
+          return [];
+        },
+        getBackgroundTasksFn: async (_ownerId, taskWorkspace) => {
+          seen.backgroundTasks.push(taskWorkspace);
+          return [];
+        },
+        getTailFn: async () => [],
+      });
+    };
+
+    const inferred = await build();
+    expect(inferred.identity.workspaceId).toBe('ws-resolved-by-brief');
+    expect(inferred.automaticRecovery?.marker.complete).toBe(true);
+    expect(seen).toEqual({
+      recovery: ['ws-resolved-by-brief'],
+      witness: ['ws-resolved-by-brief'],
+      modes: ['ws-resolved-by-brief'],
+      planItems: ['ws-resolved-by-brief'],
+      asks: ['ws-resolved-by-brief'],
+      backgroundTasks: ['ws-resolved-by-brief'],
+    });
+
+    // An explicit caller scope remains authoritative and is passed through every leg.
+    const explicit = await build('ws-explicit');
+    expect(explicit.identity.workspaceId).toBe('ws-explicit');
+    expect(seen.recovery.at(-1)).toBe('ws-explicit');
+    expect(seen.modes.at(-1)).toBe('ws-explicit');
+    expect(seen.planItems.at(-1)).toBe('ws-explicit');
+    expect(seen.asks.at(-1)).toBe('ws-explicit');
+    expect(seen.backgroundTasks.at(-1)).toBe('ws-explicit');
+  });
+
+  it('downgrades a complete recovery marker from another workspace and does not re-arm its witness', async () => {
+    const witness = vi.fn(async () => null);
+    const recovery = automaticRecovery();
+    if (!recovery.recovery.control) throw new Error('fixture control anchor is required');
+    recovery.recovery.control.state.scope.workspace = 'ws-other';
+
+    const doc = await buildCarryDoc('su-1', {
+      ...base,
+      workspaceId: 'ws-1',
+      buildCarryBriefFn: async () => brief({ workspaceId: 'ws-1' }),
+      buildAutomaticRecoveryFn: async () => recovery,
+      armControlWitnessFn: witness,
+    });
+
+    expect(doc.identity.workspaceId).toBe('ws-1');
+    expect(doc.automaticRecovery?.marker.complete).toBe(false);
+    expect(doc.automaticRecovery?.marker).toMatchObject({ controlGeneration: null, controlStateHash: null });
+    expect(doc.automaticRecovery?.recovery).toMatchObject({
+      loop: null,
+      control: null,
+      planAuthority: null,
+      coverage: { control: false, planAuthority: false },
+    });
+    expect(doc.automaticRecovery?.recovery.coverage.control).toBe(false);
+    expect(witness).not.toHaveBeenCalled();
+  });
+
   // WI-10002058. Every caller of buildCarryDoc is a context-wipe producer, and the
   // ⟦CTRL:…⟧ block that would correct a stale marker only fires when the control
   // generation exceeds an owner-scoped, advance-only delivery watermark. The wipe
