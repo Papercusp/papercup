@@ -4320,5 +4320,92 @@
       "Raw hashed private receipts preserve exact machine custody identity; displayed home paths are normalized and host labels omitted.",
       "This comparison was due after21:32:40.332UTC and the actual20:50 completion; delayed recovery produced the endpoint at23:29UTC. Full acceptance remains OPEN."
     ]
+  },
+  "qualifiedDerivativeReclaim20261013": {
+    "schemaVersion": 1,
+    "workItem": "WI-10007997",
+    "custodyRef": "thread-post:1178504",
+    "currentProducerDecision": "p2p-public-release-endgame-2026-09-01#D-224@405",
+    "verdict": "Qualified derivative reclamation complete; full storage acceptance remains OPEN.",
+    "preservationMarkers": {
+      "count": 9,
+      "nativeTool": "Codex apply_patch",
+      "readbackTask": "0mv6tfabl1a0396ay2n",
+      "readbackLog": ".papercusp/scratch/bash-fc894915-708.log",
+      "allMarkersMatch": true
+    },
+    "qualification": {
+      "taskId": "0mv6t9m29iz0e2s1hz6",
+      "logPath": ".papercusp/scratch/bash-6694fab7-431.log",
+      "originalReceiptLog": ".papercusp/scratch/bash-7473bc86-c13.log",
+      "originalReceiptLogSha256": "b863a511cddae18124401c55e85303ce00b5974e45c46f3323756f719921b0db",
+      "exactCandidates": 23,
+      "retainedReceipts": 197,
+      "retainedSourceBanks": 9,
+      "leaseReadTask": "0mv6taq4aga9a2c1wik",
+      "leaseReadLog": ".papercusp/scratch/bash-0b23f391-de3.log",
+      "candidateLeaseMatches": 0,
+      "unreadableProcessFdDirectories": 8025,
+      "processLivenessCoverage": "No visible candidate references; incomplete process visibility is not universal no-use proof. Producer custody and current candidate source boundaries are independently retained."
+    },
+    "interruptedAttempt": {
+      "taskId": "0mv6tif57tvnafqq1pu",
+      "logPath": ".papercusp/scratch/bash-51033676-bbb.log",
+      "terminalExit": 143,
+      "interpretation": "SIGTERM near the eight-minute deadline. Exact termination sender unknown; no final preservation or completion claim from this attempt.",
+      "candidateAllocatedBytesNonExclusive": 64428658688,
+      "availableBytesBefore": 107612073984,
+      "reconciliationTask": "0mv6u8jdvvc2ex21jki",
+      "reconciliationLog": ".papercusp/scratch/bash-fd233051-acd.log",
+      "candidatesAbsentAtReconciliation": 7,
+      "candidatesRemainingAtReconciliation": 16,
+      "retainedReceiptChanges": []
+    },
+    "guardRepair": {
+      "workItem": "WI-6554700010010503",
+      "helper": "papercusp-desktop/bin/lib/release-artifacts.sh",
+      "helperSha256": "00cb8bdce26333ac2c11883a2616509df07d686d30feb1a3d4a26f670eb4dcfc",
+      "test": "papercusp-desktop/bin/lib/release-artifacts.selftest.sh",
+      "testSha256": "8c5312411d0b30c06589dd5e981901a0100f4dd97e22b6b34a77f1bf7fd60503",
+      "canonicalCommand": "npm run test:release-artifacts",
+      "testTask": "0mv6u7h4y127r3bh19k",
+      "testLog": ".papercusp/scratch/bash-48b8c07c-956.log",
+      "testExit": 0,
+      "testResult": "Canonical self-test ALL PASS, including seven new completion/failure assertions.",
+      "behavior": "Persist admission before rm; record deleted only after confirmed absence; record delete-failed for a removal error or surviving path. Reuses the existing deletion audit and canonical self-test."
+    },
+    "completedResume": {
+      "taskId": "0mv6uc2jjy0t3xp1gkz",
+      "logPath": ".papercusp/scratch/bash-b2081c77-b2a.log",
+      "logSha256": "e695a1389c1ec5fce608d858ccf9db7fa93b19b624a486af1805abd2ede1b392",
+      "terminalExit": 0,
+      "completedAtEpochSeconds": 1791905778.1815324,
+      "resumedCandidates": 16,
+      "allCandidatesAbsent": 23,
+      "perPathSuccessReceipts": 16,
+      "auditDeletedRows": 16,
+      "auditDeleteFailedRows": 0,
+      "checkedRetainedReceipts": 197,
+      "receiptChanges": [],
+      "sourceIdentityChanges": [],
+      "markerChanges": [],
+      "symlinkChanges": [],
+      "protectedD224ReceiptChanges": [],
+      "availableBytesBeforeResume": 141925351424,
+      "availableBytesAfter": 164855119872,
+      "observedNetAvailableIncreaseBytesDuringResume": 22929768448,
+      "observedNetAvailableIncreaseBytesSinceOriginal": 57243045888,
+      "exclusiveReclaimBytes": "unmeasured; concurrent writers and reflinks prevent exclusivity attribution",
+      "verificationTask": "0mv6ukjiz11g9rpf1xt",
+      "verificationLog": ".papercusp/scratch/bash-9700593c-9f3.log",
+      "transactionLocksReleased": true
+    },
+    "scope": [
+      "Exactly the 23 derivative directories retained in thread-post1178504; nine source banks are pinned with existing .vh-keep markers.",
+      "All 197 captured top-level receipt hashes and sizes are retained; nine source directory identities from resume, protected links and two current D224 nomination receipts compare unchanged.",
+      "Original029, D174, D186, private stores, canonical stores and the current D224 offload candidate remain excluded. No source-bank deletion, desktop action, telemetry-target change or LIVE_GATE_OPS action.",
+      "The inline qualification and transaction sampler are operational evidence without a maintained combined measurement instrument. No acceptance evidence binding or full payload preservation, continuous capacity, candidate demand, recorder/journal recovery or final shipment claim.",
+      "Complete pre-unit P001/P002 checkpoints are archived verbatim with verified readback in thread-post1179048 and thread-post1179049; prior completed source fixes and tests remain valid by their stored references."
+    ]
   }
 }
