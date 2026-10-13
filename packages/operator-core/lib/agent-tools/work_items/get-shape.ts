@@ -303,6 +303,27 @@ function hasCompletionEvidence(value: unknown): boolean {
 }
 
 /**
+ * In-band reference left in `workItem.terminalCompletionEvidence` when the same
+ * record is already emitted as the row's `completion` alias. get.ts derives
+ * `completion` from `workItem.terminalCompletionEvidence`, so a shaped row used to
+ * carry one completion record twice (measured 2026-10-13: 4,691 of a 12,430-char
+ * trimmed single read, EI-25800471035573592). Shaped tiers emit it once; the
+ * explicit 'full' tier is unshaped and keeps both. Plan
+ * oversized-tool-results-reduction-2026-10-12 P-001.
+ */
+export const COMPLETION_EMITTED_AT_ROW =
+  "[same record as this row's `completion`, emitted once]";
+
+function sameCompletionRecord(rowCompletion: unknown, nested: unknown): boolean {
+  if (rowCompletion === undefined || rowCompletion === nested) return true;
+  try {
+    return JSON.stringify(rowCompletion) === JSON.stringify(nested);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Keep the persisted completion record useful at every result tier without
  * replaying an unbounded jsonb payload. The scalar presence bit is intentionally
  * separate: a reader must still know that evidence exists when a large nested
@@ -385,6 +406,8 @@ function projectWorkItem(
   summaryChars: number,
   dropped: Set<string>,
   includeCompletionEvidence = true,
+  // True only when the caller's row emits this same record as `completion`.
+  completionEmittedAtRow = false,
 ): unknown {
   if (!raw || typeof raw !== "object") return raw ?? null;
   const w = raw as Row;
@@ -398,7 +421,9 @@ function projectWorkItem(
     dropped.add("workItem.terminalCompletionEvidence");
   }
   const completionEvidence = completionEvidencePresent && includeCompletionEvidence
-    ? projectCompletionEvidence(rawCompletionEvidence, caps, dropped, "workItem.terminalCompletionEvidence")
+    ? completionEmittedAtRow
+      ? COMPLETION_EMITTED_AT_ROW
+      : projectCompletionEvidence(rawCompletionEvidence, caps, dropped, "workItem.terminalCompletionEvidence")
     : null;
   const shouldExposeCompletionAuthority =
     terminal || completionAuthority != null;
@@ -567,7 +592,14 @@ function compactSingleRow(
     ok: r.ok ?? true,
     id: r.id ?? w?.id ?? null,
     ...(r.availability !== undefined ? { availability: r.availability } : {}),
-    workItem: projectWorkItem(r.workItem, caps, 0, dropped),
+    workItem: projectWorkItem(
+      r.workItem,
+      caps,
+      0,
+      dropped,
+      true,
+      completionPresent && sameCompletionRecord(r.completion, w?.terminalCompletionEvidence),
+    ),
     ...(completionRelevant ? { completion, hasCompletionEvidence: completionPresent } : {}),
     // `threadLimit` is an explicit bounded diagnostic request, not incidental
     // detail. Keep it even at the exact-read floor: dropping it here turns the
@@ -1095,7 +1127,16 @@ function projectRow(
     ok: r.ok ?? true,
     id: r.id ?? null,
     ...(r.availability !== undefined ? { availability: r.availability } : {}),
-    workItem: projectWorkItem(r.workItem, caps, summaryChars, dropped, includeCompletionEvidence),
+    workItem: projectWorkItem(
+      r.workItem,
+      caps,
+      summaryChars,
+      dropped,
+      includeCompletionEvidence,
+      completionPresent &&
+        includeCompletionEvidence &&
+        sameCompletionRecord(r.completion, w?.terminalCompletionEvidence),
+    ),
     ...(operationalBrief !== undefined ? { operationalBrief } : {}),
     ...(r.threadWindow !== undefined
       ? {

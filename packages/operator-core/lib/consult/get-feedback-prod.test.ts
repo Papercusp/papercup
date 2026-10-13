@@ -35,7 +35,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 vi.mock('./get-feedback-core', () => ({ getFeedbackCore: h.getFeedbackCore,
   acceptFeedbackRequestCore: h.acceptFeedbackRequestCore, continueFeedbackRequestCore: h.continueFeedbackRequestCore }));
-vi.mock('./relevance-router', () => ({ routeConsult: h.routeConsult }));
+// expertiseSubject: acceptFeedbackRequestProd reads it since f36b33ffd5; the mock
+// lacked it, so the acceptance test failed at HEAD.
+vi.mock('./relevance-router', () => ({ routeConsult: h.routeConsult, expertiseSubject: () => null }));
+// WI-6554700010009982: the dispatchability filter is unit-tested on its own;
+// here it is a passthrough so routes stay hermetic, and its wiring is asserted.
+const filterDispatchableRoute = vi.hoisted(() => vi.fn(async (route: unknown) => route));
+vi.mock('./source-dispatchability', () => ({ filterDispatchableRoute, probeConsultSourceDispatchable: vi.fn() }));
 vi.mock('../agent-tools/search/embedder', () => ({
   buildQueryEmbedderResolved: h.buildQueryEmbedderResolved,
   interactiveEmbedAcquireBudgetMs: h.interactiveEmbedAcquireBudgetMs,
@@ -81,6 +87,8 @@ describe('getFeedbackProd expert-routing settings', () => {
     });
     expect(h.routeConsult.mock.calls.at(-1)![0]).toMatchObject({ nativeConsult });
     expect(h.observeNativeConsultSource).toHaveBeenCalledWith(candidates[0], nativeConsult, undefined, saved.workspaceId);
+    // The dispatchability filter sees the NATIVE-filtered pool, after it.
+    expect(filterDispatchableRoute.mock.calls.at(-1)![0]).toMatchObject({ snapshot: { candidates: [candidates[1]] } });
   });
 
   beforeEach(() => vi.clearAllMocks());

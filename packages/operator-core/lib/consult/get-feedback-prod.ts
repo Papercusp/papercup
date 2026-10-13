@@ -129,6 +129,12 @@ export async function getFeedbackProd(
         constrained = await filterNativeConsultRoute(routed, request.nativeConsult,
           candidate => observeNativeConsultSource(candidate, request.nativeConsult!, undefined, request.workspaceId));
       }
+      // WI-6554700010009982: a ranked source whose transcript is gone (no
+      // native file, no archive) can never be dispatched; keep it off the menu.
+      if (!dispatchDisabled) {
+        const { filterDispatchableRoute, probeConsultSourceDispatchable } = await import('./source-dispatchability');
+        constrained = await filterDispatchableRoute(constrained, probeConsultSourceDispatchable);
+      }
       return options.filterRoute ? options.filterRoute(constrained) : constrained;
     },
     open: async (input) => {

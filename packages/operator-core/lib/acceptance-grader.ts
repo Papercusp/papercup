@@ -1710,6 +1710,7 @@ async function prodDiscoverGrader(
       import('./consult/acceptance-grader-select'),
     ]);
   const { lineagePartyKeys } = await import('./acceptance-author-identity');
+  const { filterDispatchableRoute, probeConsultSourceDispatchable } = await import('./consult/source-dispatchability');
   const resolved = await buildQueryEmbedderResolved();
   const embeddingProfile = resolved
     ? resolveProseProfileSelection(resolved.mode, resolved.profile)
@@ -1759,8 +1760,11 @@ async function prodDiscoverGrader(
       // has to be distinct by PARTY, not by ownerId. Same ledger the acceptance
       // gate already resolves scorecard authors through.
       getPartyKeys: (workspaceId, ownerIds) => lineagePartyKeys(ownerIds, { sql: getOrgPg().sql, workspaceId }),
-      route: (params) =>
-        routeConsult({ ...params, telemetry: {
+      // WI-6554700010009982: grading DISPATCHES (forks/converts the grader's
+      // transcript), so the router's ranked pool is filtered to sources whose
+      // transcript still exists natively or in the archive. A cascade seated on
+      // undispatchable sources otherwise waits on its 4h expiry.
+      route: async (params) => filterDispatchableRoute(await routeConsult({ ...params, telemetry: {
           caller: 'acceptance-grader', policy: ACCEPTANCE_GRADING_POLICY, buildSha: getBuildInfo().sha,
         } }, {
           recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
@@ -1779,7 +1783,7 @@ async function prodDiscoverGrader(
               [...verdicts.values()].map((v) => [v.ownerId, selectableGraderLiveness(v)]),
             );
           },
-        }),
+        }), probeConsultSourceDispatchable),
     },
   );
   return {
@@ -1943,6 +1947,50 @@ export function gradingCascadeWalkedToExhaustion(routingRaw: unknown, digestRaw:
   return last?.kind === 'dispatch_failed';
 }
 
+type OpenGradingAnswererFailure = AcceptanceGraderTerminalFailure & {
+  /** Revalidate the native turn before retiring its exact task. Unknown keeps the slot. */
+  retire?: () => Promise<boolean>;
+};
+
+/** Inspect the CURRENT answering incarnation, never the routed expert's old transcript. */
+async function readOpenGradingAnswererTerminalFailure(input: {
+  workspaceId: string; conversationId: string; answeringOwnerId: string;
+}): Promise<OpenGradingAnswererFailure | null> {
+  const [{ resolveResumeTarget }, { findSessionTranscript }] = await Promise.all([
+    import('./agent-launch-core'), import('./claude-sessions'),
+  ]);
+  const target = await resolveResumeTarget({ agentId: input.answeringOwnerId });
+  if (!target.ok || target.ownerId !== input.answeringOwnerId ||
+      !['claude', 'claude-code'].includes(target.agent ?? '') || !target.sessionId) return null;
+  const [path, tasks] = await Promise.all([
+    findSessionTranscript(target.sessionId, { owner: input.answeringOwnerId }),
+    listTasks({ workspaceId: input.workspaceId, coordOwnerId: input.answeringOwnerId,
+      classes: ['agent-session'], includeEnded: true, limit: 1 }),
+  ]);
+  const task = tasks[0];
+  // An unbound task, a newer incarnation, or an unreadable transcript is not failure evidence.
+  if (!path || !task?.logPath || task.sessionId !== target.sessionId) return null;
+  const nativeTail = readAcceptanceGraderLogTail(path);
+  if (!hasAcceptanceGraderNativeApiError(nativeTail, target.sessionId)) return null;
+  const failure = await detectAcceptanceGraderTerminalFailure(task.logPath, {
+    readLogTail: readAcceptanceGraderLogTail, nativeTranscriptPath: path,
+    nativeSessionId: target.sessionId, maxRechecks: 0, detectStartupStall: false,
+  });
+  if (!failure) return null;
+  return {
+    ...failure,
+    retire: async () => {
+      const current = await resolveResumeTarget({ agentId: input.answeringOwnerId });
+      if (!current.ok || current.ownerId !== input.answeringOwnerId ||
+          current.sessionId !== target.sessionId || current.agent !== target.agent ||
+          readAcceptanceGraderLogTail(path) !== nativeTail) return false;
+      if (task.endedAt) return true;
+      const result = await killTask(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+      return result.ok || result.error === 'not_live' || result.error === 'task_not_found';
+    },
+  };
+}
+
 /**
  * The dedupe half of {@link prodOpenGradingCascade}, split out so its database
  * behaviour is testable on real PG without the dispatch half (which launches a
@@ -1958,7 +2006,10 @@ export function gradingCascadeWalkedToExhaustion(routingRaw: unknown, digestRaw:
  */
 export async function reconcileOpenGradingCascades(
   params: Pick<OpenGradingCascadeParams, 'workspaceId' | 'planSlug' | 'rubricId' | 'reservation'>,
-  deps: { nowMs?: number } = {},
+  deps: {
+    nowMs?: number;
+    readTerminalFailure?: typeof readOpenGradingAnswererTerminalFailure;
+  } = {},
 ): Promise<{
   liveConversationId: string | null;
   closedSpent: Array<{ conversationId: string; answeredBy: string; answeredAt: string }>;
@@ -1967,7 +2018,8 @@ export async function reconcileOpenGradingCascades(
   const sql = getOrgPg().sql;
   const nowMs = deps.nowMs ?? Date.now();
   const rows = (await sql`
-    SELECT conversation_id, cascade_digest, routing, cascade_cursor
+    SELECT conversation_id, cascade_digest, routing, cascade_cursor,
+           requester_id, responder_id, state, expires_at, question, latency_contract
       FROM harness_shared.consult_state
      WHERE workspace_id = ${params.workspaceId}
        AND closed_at IS NULL
@@ -1987,12 +2039,33 @@ export async function reconcileOpenGradingCascades(
     cascade_digest: unknown;
     routing: unknown;
     cascade_cursor: number;
+    requester_id: string;
+    responder_id: string | null;
+    state: string;
+    expires_at: string | Date | null;
+    question: string;
+    latency_contract: string;
   }>;
 
+  // Independent bounded observations run together; updates and dispatch remain serialized by the row CAS.
+  const readFailure = deps.readTerminalFailure ?? readOpenGradingAnswererTerminalFailure;
+  const failures = await Promise.all(rows.map(async (row) => {
+    const answeringOwnerId = answeringOwnerAtCursor(row.routing, row.cascade_cursor);
+    if (!answeringOwnerId || spentGradingCascadeAnswer(row.cascade_digest, nowMs) ||
+        gradingCascadeWalkedToExhaustion(row.routing, row.cascade_digest)) return null;
+    try {
+      return await readFailure({ workspaceId: params.workspaceId,
+        conversationId: row.conversation_id, answeringOwnerId });
+    } catch {
+      return null; // An unavailable observation cannot retire a reviewer.
+    }
+  }));
+  const { advanceCascade, makeDigestEntry, queueCascadeDispatch } = await import('./consult/cascade-core');
+  const { continueCascadeDispatchProd } = await import('./consult/consult-dispatch');
   let liveConversationId: string | null = null;
   const closedSpent: Array<{ conversationId: string; answeredBy: string; answeredAt: string }> = [];
   const nowIso = new Date(nowMs).toISOString();
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
     if (gradingCascadeWalkedToExhaustion(row.routing, row.cascade_digest)) {
       // WI-10006700: finish the terminal hand-off a trigger dropped. The CAS
       // re-asserts the same predicate in SQL, so a row a concurrent trigger
@@ -2016,6 +2089,53 @@ export async function reconcileOpenGradingCascades(
     }
     const spent = spentGradingCascadeAnswer(row.cascade_digest, nowMs);
     if (!spent) {
+      const failure = failures[index];
+      if (failure) {
+        // Lock only the exact observation. A new answer, cursor, owner, digest,
+        // TTL or close wins before any task is retired or another slot is queued.
+        const recovery = await sql.begin(async (transaction) => {
+          const tx = transaction as unknown as typeof sql;
+          const matched = await tx`
+            SELECT conversation_id FROM harness_shared.consult_state
+             WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${row.conversation_id}
+               AND closed_at IS NULL AND state = ${row.state}
+               AND cascade_cursor = ${row.cascade_cursor}
+               AND responder_id IS NOT DISTINCT FROM ${row.responder_id}
+               AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
+               AND routing IS NOT DISTINCT FROM ${tx.json(row.routing as never)}::jsonb
+               AND cascade_digest IS NOT DISTINCT FROM ${tx.json(row.cascade_digest as never)}::jsonb
+             FOR UPDATE`;
+          if (!matched.length || (failure.retire && !(await failure.retire()))) return 'raced' as const;
+          const result = await advanceCascade({
+            workspaceId: params.workspaceId, conversationId: row.conversation_id,
+            question: row.question, latencyContract: row.latency_contract, requesterId: row.requester_id,
+            routing: row.routing, cascadeCursor: row.cascade_cursor, digest: row.cascade_digest,
+            expectedState: row.state, expectedExpiresAt: row.expires_at,
+            event: makeDigestEntry(row.responder_id ?? '(unrouted)', 'dispatch_failed', nowIso,
+              `Answering mission ended on ${failure.code}: ${failure.evidence}`),
+            stateOnAdvance: 'awaiting_responder', nowIso,
+          }, tx, async (opts) => ({
+            woke: 0, pending: await queueCascadeDispatch(tx, params.workspaceId, opts),
+          }));
+          if (result.raced) return 'raced' as const;
+          if (!result.exhausted) return 'pending' as const;
+          await tx`
+            UPDATE harness_shared.consult_state
+               SET state = 'no_qualified_responder', responder_id = NULL, expires_at = NULL,
+                   updated_at = ${nowIso}::timestamptz
+             WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${row.conversation_id}
+               AND closed_at IS NULL AND state IN ('awaiting_responder', 'active')`;
+          return 'exhausted' as const;
+        });
+        if (recovery === 'exhausted') continue;
+        if (recovery === 'pending') {
+          // The durable consult launch lease outlives this request. It owns the
+          // next dispatch, including the existing independence and model routing.
+          void continueCascadeDispatchProd(params.workspaceId, row.conversation_id, {
+            workspaceId: params.workspaceId, harnessSlug: null, launchedBy: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+          }).catch(() => {});
+        }
+      }
       liveConversationId ??= row.conversation_id;
       continue;
     }

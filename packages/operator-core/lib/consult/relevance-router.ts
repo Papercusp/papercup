@@ -282,6 +282,10 @@ export interface RoutingSnapshot {
   nativeConsult?: import('./native-consult').NativeConsultConstraints;
   nativeConsultSources?: import('./native-consult').NativeConsultSourceObservation[];
   nativeConsultPool?: RoutingCandidate[];
+  /** Candidates removed from this pool because the dispatch walk could not
+   * open their transcript (no native file, no archive) — WI-6554700010009982.
+   * Present only when at least one was removed, so the disclosure is legible. */
+  undispatchableSources?: import('./source-dispatchability').SourceDispatchabilityObservation[];
   /** Consumer copy persists so generic decline/expiry/revival keeps its subject. */
   cascade?:
     | import('./grading-cascade').SourceAuditCascadeMeta

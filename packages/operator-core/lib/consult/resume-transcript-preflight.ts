@@ -14,6 +14,7 @@
  * the canonical archive and the check re-resolves beneath the exact restored root.
  */
 import type { ResumeTarget } from '../agent-launch-core';
+import type { TranscriptStreamKey } from '../session-transcript-remat';
 
 export interface ConsultResumeTranscriptCheck {
   available: boolean;
@@ -26,85 +27,124 @@ export interface ConsultResumeTranscriptCheck {
   transcriptPath?: string;
 }
 
+/**
+ * Per-backend transcript location: how to find the native file, and which
+ * archive key a restore would use. Shared by the restoring check and the
+ * read-only selection probe so the two cannot disagree about a source.
+ */
+type TranscriptLocator =
+  | { refusal: string }
+  | { label: string; findNative: () => Promise<string | null>; streamKey: TranscriptStreamKey };
+
+async function locateConsultTranscript(target: ResumeTarget): Promise<TranscriptLocator> {
+  const agent = (target.agent ?? '').toLowerCase();
+  if (agent === 'claude' || agent === 'claude-code') {
+    if (!target.sessionId) return { refusal: 'Claude resume target has no native session id' };
+    const sessionId = target.sessionId;
+    const { findSessionTranscript } = await import('../claude-sessions');
+    return {
+      label: 'native transcript',
+      findNative: () => findSessionTranscript(sessionId, { owner: target.ownerId }),
+      streamKey: { kind: 'claude', sessionId, ...(target.ownerId ? { owner: target.ownerId } : {}) },
+    };
+  }
+
+  if (agent === 'codex') {
+    const [{ findCodexRolloutPath, findCodexRolloutPathByUuid }, { codexHomeForSessionKey }] = await Promise.all([
+      import('../session-transcript-resolvers'),
+      import('@papercusp/orchestrator/session-launch-dirs'),
+    ]);
+    const codexHome = codexHomeForSessionKey(target.advSessionId);
+    const rolloutId = target.sessionId;
+    return {
+      label: 'Codex transcript',
+      findNative: () => rolloutId
+        ? findCodexRolloutPathByUuid(rolloutId, { homeOverride: codexHome })
+        : findCodexRolloutPath(target.advSessionId, { homeOverride: codexHome }),
+      streamKey: rolloutId
+        ? { kind: 'codex-rollout', rolloutId }
+        : { kind: 'codex-session-key', sessionKey: String(target.advSessionId) },
+    };
+  }
+
+  if (agent === 'omp' || agent === 'pi') {
+    if (!target.ompThreadId) return { refusal: 'OMP resume target has no thread id' };
+    const threadId = target.ompThreadId;
+    const { findOmpSessionPath } = await import('../session-transcript-resolvers');
+    return {
+      label: 'OMP transcript',
+      findNative: () => findOmpSessionPath(threadId, { sessionKey: target.advSessionId }),
+      streamKey: { kind: 'omp', threadId, sessionKey: target.advSessionId },
+    };
+  }
+
+  return { refusal: `unsupported resume backend ${target.agent ?? '(unknown)'}` };
+}
+
 export async function checkConsultResumeTranscript(
   target: ResumeTarget,
 ): Promise<ConsultResumeTranscriptCheck> {
   try {
-    const agent = (target.agent ?? '').toLowerCase();
-    if (agent === 'claude' || agent === 'claude-code') {
-      if (!target.sessionId) {
-        return { available: false, detail: 'Claude resume target has no native session id' };
-      }
-      const { findSessionTranscript } = await import('../claude-sessions');
-      const existing = await findSessionTranscript(target.sessionId, { owner: target.ownerId });
-      if (existing) {
-        return { available: true, detail: `native transcript found at ${existing}`, transcriptPath: existing };
-      }
-      const { rematerializeTranscript } = await import('../session-transcript-remat');
-      const restored = await rematerializeTranscript({
-        kind: 'claude',
-        sessionId: target.sessionId,
-        ...(target.ownerId ? { owner: target.ownerId } : {}),
-      });
-      return restored.path
-        ? {
-            available: true,
-            detail: `native transcript restored from archive at ${restored.path}`,
-            transcriptPath: restored.path,
-          }
-        : {
-            available: false,
-            detail: `native transcript unavailable (${restored.reason})`,
-          };
+    const located = await locateConsultTranscript(target);
+    if ('refusal' in located) return { available: false, detail: located.refusal };
+    const existing = await located.findNative();
+    if (existing) {
+      return { available: true, detail: `${located.label} found at ${existing}`, transcriptPath: existing };
     }
-
-    if (agent === 'codex') {
-      const [{ findCodexRolloutPath, findCodexRolloutPathByUuid }, { codexHomeForSessionKey }] = await Promise.all([
-        import('../session-transcript-resolvers'),
-        import('@papercusp/orchestrator/session-launch-dirs'),
-      ]);
-      const codexHome = codexHomeForSessionKey(target.advSessionId);
-      const existing = target.sessionId
-        ? await findCodexRolloutPathByUuid(target.sessionId, { homeOverride: codexHome })
-        : await findCodexRolloutPath(target.advSessionId, { homeOverride: codexHome });
-      if (existing) {
-        return { available: true, detail: `Codex transcript found at ${existing}`, transcriptPath: existing };
-      }
-      const { rematerializeTranscript } = await import('../session-transcript-remat');
-      const restored = target.sessionId
-        ? await rematerializeTranscript({ kind: 'codex-rollout', rolloutId: target.sessionId })
-        : await rematerializeTranscript({ kind: 'codex-session-key', sessionKey: String(target.advSessionId) });
-      return restored.path
-        ? { available: true, detail: `Codex transcript restored from archive at ${restored.path}`, transcriptPath: restored.path }
-        : { available: false, detail: `Codex transcript unavailable (${restored.reason})` };
-    }
-
-    if (agent === 'omp' || agent === 'pi') {
-      if (!target.ompThreadId) {
-        return { available: false, detail: 'OMP resume target has no thread id' };
-      }
-      const { findOmpSessionPath } = await import('../session-transcript-resolvers');
-      const existing = await findOmpSessionPath(target.ompThreadId, { sessionKey: target.advSessionId });
-      if (existing) {
-        return { available: true, detail: `OMP transcript found at ${existing}`, transcriptPath: existing };
-      }
-      const { rematerializeTranscript } = await import('../session-transcript-remat');
-      const restored = await rematerializeTranscript({
-        kind: 'omp',
-        threadId: target.ompThreadId,
-        sessionKey: target.advSessionId,
-      });
-      return restored.path
-        ? { available: true, detail: `OMP transcript restored from archive at ${restored.path}`, transcriptPath: restored.path }
-        : { available: false, detail: `OMP transcript unavailable (${restored.reason})` };
-    }
-
-    return { available: false, detail: `unsupported resume backend ${target.agent ?? '(unknown)'}` };
+    const { rematerializeTranscript } = await import('../session-transcript-remat');
+    const restored = await rematerializeTranscript(located.streamKey);
+    return restored.path
+      ? {
+          available: true,
+          detail: `${located.label} restored from archive at ${restored.path}`,
+          transcriptPath: restored.path,
+        }
+      : { available: false, detail: `${located.label} unavailable (${restored.reason})` };
   } catch (e) {
     return {
       available: false,
       detail: `transcript availability preflight failed: ${(e as Error)?.message ?? String(e)}`,
     };
+  }
+}
+
+/** Result of the read-only selection probe. `dispatchable: null` is UNKNOWN. */
+export interface ConsultTranscriptProbe {
+  dispatchable: boolean | null;
+  detail: string;
+}
+
+/**
+ * READ-ONLY twin of {@link checkConsultResumeTranscript} for SELECTION
+ * (WI-6554700010009982): could the dispatch walk open this source at all?
+ * It finds the native file or a complete archive stamp, and never restores —
+ * a selector probes every ranked candidate, and restoring each one would write
+ * transcripts for sources that are never chosen.
+ *
+ * `false` only for a measured absence: no native file AND no archive row (or a
+ * target the walk refuses identically, e.g. no session id). Every fault is
+ * `null`, which a selector must treat as keep — the walk's own preflight stays
+ * the authority at launch time.
+ */
+export async function probeConsultResumeTranscript(
+  target: ResumeTarget,
+  deps: { probeArchive?: (key: TranscriptStreamKey) => Promise<{ archived: boolean | null; reason: string }> } = {},
+): Promise<ConsultTranscriptProbe> {
+  try {
+    const located = await locateConsultTranscript(target);
+    if ('refusal' in located) return { dispatchable: false, detail: located.refusal };
+    const existing = await located.findNative();
+    if (existing) return { dispatchable: true, detail: `${located.label} found at ${existing}` };
+    const probeArchive = deps.probeArchive ??
+      (async (key: TranscriptStreamKey) => (await import('../session-transcript-remat')).probeTranscriptArchive(key));
+    const archive = await probeArchive(located.streamKey);
+    if (archive.archived === true) return { dispatchable: true, detail: `${located.label} restorable from archive` };
+    if (archive.archived === false) {
+      return { dispatchable: false, detail: `${located.label} absent on disk and ${archive.reason}` };
+    }
+    return { dispatchable: null, detail: `${located.label} absent on disk; archive ${archive.reason}` };
+  } catch (e) {
+    return { dispatchable: null, detail: `transcript probe failed: ${(e as Error)?.message ?? String(e)}` };
   }
 }
 

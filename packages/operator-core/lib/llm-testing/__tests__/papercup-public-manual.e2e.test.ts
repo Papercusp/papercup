@@ -39,7 +39,8 @@ import { recordWorkspaceHostSignals, upsertWorkspaceHost, upsertWorkspaceHostCon
 import { HostedWorkspaceConnectorClient } from '../../workspace-host/hosted-connector-client';
 import { HostedWorkspaceHostSessionAdapter } from '../../workspace-host/hosted-session-host';
 import type { HostedConnectorBinding } from '../../endpoint-route/hosted-workspace-connector';
-import { assertPublicManualHostedRuntimeBudget, preparePublicManualHostedDelegation, preparePublicManualHostedRuntime, publicManualHostedRuntimeEnvironment, publicManualHostedPhaseRecorder, publicManualHostedUpgradeHeaders, purgePublicManualHostedConnector } from '../public-manual-hosted-fixture';
+import { assertPublicManualHostedRuntimeBudget, preparePublicManualHostedDelegation, preparePublicManualHostedRuntime, publicManualHostedBrowserCache, publicManualHostedRuntimeEnvironment, publicManualHostedPhaseRecorder, publicManualHostedUpgradeHeaders, purgePublicManualHostedConnector } from '../public-manual-hosted-fixture';
+import { expectedBrowserRevision } from '../../../../../scripts/ensure-playwright-browsers.mjs';
 import { connectorHostMatches } from '../../endpoint-route/routes/hosted-workspace-connector';
 import { HostedSessionCookieCodec, HOSTED_SESSION_COOKIE, resolveHostedSession, revokeHostedSession, rotateHostedSession } from '../../auth/hosted-session';
 import { resolveHostedSecretRef } from '../../auth/hosted/secret-ref';
@@ -1347,6 +1348,43 @@ describe('public manual selected private runtime preflight', () => {
       expect(existsSync(join(root, 'home/.papercusp/superuser-token'))).toBe(false);
     });
 
+  it.each([undefined, '', 'relative-browser-cache', '0'])(
+    'refuses an unpinned browser cache (%s) before account or credential creation', cache => {
+      expect(() => publicManualHostedBrowserCache({ ...environment, PLAYWRIGHT_BROWSERS_PATH: cache }))
+        .toThrow('hosted_fixture_browser_cache_required');
+      expect(existsSync(join(root, 'home/.papercusp/superuser-token'))).toBe(false);
+    });
+
+  it('rejects empty or stale maintained caches even when callers narrow the requested browsers', () => {
+    const cacheDir = join(root, 'browser-assets');
+    mkdirSync(cacheDir);
+    const env = { ...environment, PLAYWRIGHT_BROWSERS_PATH: cacheDir, PLAYWRIGHT_BROWSERS: 'ffmpeg' };
+    expect(() => publicManualHostedBrowserCache(env)).toThrow('hosted_fixture_browser_install_missing');
+    for (const name of ['chromium', 'chromium-headless-shell', 'ffmpeg']) {
+      const installed = join(cacheDir, `${name.replaceAll('-', '_')}-obsolete`);
+      mkdirSync(installed);
+      writeFileSync(join(installed, 'INSTALLATION_COMPLETE'), '');
+    }
+    expect(() => publicManualHostedBrowserCache(env)).toThrow('hosted_fixture_browser_install_missing');
+    expect(existsSync(join(root, 'home/.papercusp/superuser-token'))).toBe(false);
+  });
+
+  it('preserves the maintained cache pin while transporting an otherwise empty private HOME', () => {
+    const cacheDir = join(root, 'browser-assets');
+    mkdirSync(cacheDir);
+    for (const name of ['chromium', 'chromium-headless-shell', 'ffmpeg']) {
+      const revision = expectedBrowserRevision(name);
+      expect(revision).toBeTruthy();
+      const installed = join(cacheDir, `${name.replaceAll('-', '_')}-${revision}`);
+      mkdirSync(installed);
+      writeFileSync(join(installed, 'INSTALLATION_COMPLETE'), '');
+    }
+    const transported = publicManualHostedRuntimeEnvironment({ ...environment, PLAYWRIGHT_BROWSERS_PATH: cacheDir });
+    expect(publicManualHostedBrowserCache(transported)).toEqual({ cacheDir });
+    expect(transported.HOME).toBe(environment.HOME);
+    expect(existsSync(join(environment.HOME!, '.cache/ms-playwright'))).toBe(false);
+  });
+
   it('rejects an absent retained source, a foreign workspace, a stale registry and insufficient runtime budget', () => {
     expect(() => publicManualHostedRuntimeEnvironment({ ...environment, PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT: undefined }))
       .toThrow('hosted_fixture_operator_source_required');
@@ -2342,6 +2380,10 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     expect(['127.0.0.1', 'localhost']).toContain(new URL(baseUrl!).hostname);
     const { entry: portalEntry, metadata } = await verifyPortalRuntimePreconditions(candidateRoot!);
     const repoRoot = resolve(import.meta.dirname, '../../../../..');
+    // The supervisor pins installed binaries before isolating HOME. Refuse a
+    // dropped pin before loading admission; a sentinel alone is insufficient,
+    // so the real browser also launches below before any TEST account exists.
+    publicManualHostedBrowserCache(process.env);
     const portalFixture = await loadPortalFixtureModules(portalRoot!);
     const { controlWorkspace, kit } = await loadHostedPortalTestKitAfterRuntimeCheck({
       environment: process.env,
@@ -2390,6 +2432,9 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       // TLS readiness and fixture certificate trust are measured before creating
       // an account or making a paid request. The inner Portal stays on loopback.
       await tls.assertReady();
+      stage = 'browser-launch';
+      const { chromium } = await import('playwright');
+      browser = await chromium.launch({ headless: true, args: [`--ignore-certificate-errors-spki-list=${tls.spki}`] });
       stage = 'hosted-fixture';
       // A const handle keeps the non-undefined type inside the SQL closure below.
       const hostedUser = await kit.create(publicManualPortalUser());
@@ -2456,9 +2501,6 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         if (child!.exitCode !== null) throw new Error(`portal_fixture_exited:${child!.exitCode}; see ${logFile}`);
         try { return (await fetch(`http://127.0.0.1:${port}`, { signal: AbortSignal.timeout(2000) })).ok; } catch { return false; }
       }, { timeout: 45_000, interval: 500 }).toBe(true);
-      stage = 'browser-launch';
-      const { chromium } = await import('playwright');
-      browser = await chromium.launch({ headless: true, args: [`--ignore-certificate-errors-spki-list=${tls.spki}`] });
       const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
       const cookieValue = new HostedSessionCookieCodec(secret).encode(hostedSessionId!);
       evidenceCredentials.push(cookieValue);
