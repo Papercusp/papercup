@@ -30,6 +30,8 @@
  * bodies from the real builders and fails if any stops naming the read door.
  */
 
+import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
+
 /** Default evidence qualifier — overridden where a branch admits first-principles reasoning. */
 const DEFAULT_EVIDENCE_NOTE = 'answer requires evidence';
 /**
@@ -41,6 +43,17 @@ const DEFAULT_EVIDENCE_NOTE = 'answer requires evidence';
  * states decline's actual precondition (someone else might still cover it) and its actual cost.
  */
 const DEFAULT_DECLINE_NOTE = 'only when another reviewer might still cover it — decline ADVANCES';
+
+/** An amendment is a new review subject; the routed transcript is background,
+ * not a requirement that the proposed patch already appear in older history. */
+export function consultAmendmentReviewContext(policy: string | undefined): string | null {
+  if (policy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY) return null;
+  return 'CURRENT AMENDMENT — review the supplied patch, rationale and approval JSON against the current subject and cited validation evidence. ' +
+    'The routed historical transcript is background evidence; do not decline solely because it does not contain this new amendment. ' +
+    'Read the complete request at results[0].conversation.body and the replies at results[0].posts from conversations:get; recover a truncated brief before judging. ' +
+    'Cite the evidence you actually checked, distinguish unverified claims, and object when the amendment weakens a requirement or cannot be verified. ' +
+    'Historical relevance and first-principles reasoning do not prove live acceptance or authorize an approval.';
+}
 
 export interface ConsultResponderVerbMenuInput {
   /** The consult conversation the responder was routed into. */
