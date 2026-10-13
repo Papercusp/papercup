@@ -5754,7 +5754,7 @@ export async function trackFlakeHistory(
         workspaceId: ctx.workspaceId,
         data: { workspaces: newlyChronic.join(',') },
       } as const;
-      if (deps.alarm?.notify) await deps.alarm.notify({ title: input.title, body: input.body });
+      if (deps.alarm?.notify) await deps.alarm.notify(input);
       else await notifyAttention(input);
     } catch (e) {
       console.warn(`${orchestratorStdoutTag()} flake notify failed: ${e instanceof Error ? e.message : e}`);
@@ -7365,7 +7365,7 @@ export async function dispatchReleaseFixer(
           selfHeal: String(selfHeal),
         },
       } as const;
-      if (deps.alarm?.notify) await deps.alarm.notify({ title: input.title, body: input.body });
+      if (deps.alarm?.notify) await deps.alarm.notify(input);
       else await notifyAttention(input);
     } catch (e) {
       console.warn(`${orchestratorStdoutTag()} release-red notify failed: ${e instanceof Error ? e.message : e}`);

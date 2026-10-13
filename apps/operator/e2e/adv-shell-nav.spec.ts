@@ -464,3 +464,121 @@ test.describe('/adv shell tab navigation (P-011)', () => {
     await workspaceTrigger.click({ trial: true });
   });
 });
+
+type ViteCssFailureObservation = {
+  message: string;
+  failedUrl: string | null;
+  appOrigin: string;
+  pageUrl: string;
+  timeOrigin: number;
+  resourceTiming: Array<{
+    name: string;
+    startTime: number;
+    duration: number;
+    transferSize: number;
+    encodedBodySize: number;
+    decodedBodySize: number;
+    responseStatus: number | null;
+  }>;
+};
+
+type ViteCssFailureWindow = Window & {
+  __viteCssFailureProbe?: { events: ViteCssFailureObservation[] };
+};
+
+test('first lazy HUD CSS preload failure captures response and timing before reload', async ({ page }) => {
+  // SessionChatModal is imported by HudView, so switching from Overview to HUD
+  // causes Vite's production import-preload helper to add its extracted CSS link.
+  // The probe is installed before the app entry runs and snapshots timing in the
+  // event handler itself, before any later navigation could clear it.
+  await page.addInitScript(() => {
+    const probe: { events: ViteCssFailureObservation[] } = { events: [] };
+    (window as ViteCssFailureWindow).__viteCssFailureProbe = probe;
+    window.addEventListener('vite:preloadError', (event) => {
+      const payload = (event as Event & { payload?: unknown }).payload;
+      const message = String((payload as { message?: unknown } | null)?.message ?? payload ?? '');
+      const prefix = 'Unable to preload CSS for ';
+      const failedUrl = message.startsWith(prefix) ? message.slice(prefix.length) : null;
+      const resourceTiming = performance.getEntriesByType('resource')
+        .filter((entry) => entry.name === failedUrl)
+        .map((entry) => {
+          const timing = entry as PerformanceResourceTiming & { responseStatus?: number };
+          return {
+            name: timing.name,
+            startTime: timing.startTime,
+            duration: timing.duration,
+            transferSize: timing.transferSize,
+            encodedBodySize: timing.encodedBodySize,
+            decodedBodySize: timing.decodedBodySize,
+            responseStatus: timing.responseStatus ?? null,
+          };
+        });
+      probe.events.push({
+        message,
+        failedUrl,
+        appOrigin: location.origin,
+        pageUrl: location.href,
+        timeOrigin: performance.timeOrigin,
+        resourceTiming,
+      });
+    });
+  });
+
+  await stubShellApis(page);
+  const initialResponse = await page.goto('/adv?tab=overview&slug=e2e-nav-pot&scope=expanded', {
+    waitUntil: 'domcontentloaded',
+  });
+  expect([200, 304]).toContain(initialResponse?.status() ?? 0);
+  await expect(page.getByRole('tablist', { name: 'Adv sections' })).toBeVisible();
+
+  const initialTimeOrigin = await page.evaluate(() => performance.timeOrigin);
+  const stylesheetResponses: Array<{ url: string; status: number; origin: string }> = [];
+  let armed = false;
+  let failedUrl: string | undefined;
+  page.on('response', (response) => {
+    if (response.request().resourceType() !== 'stylesheet' || response.status() !== 503) return;
+    stylesheetResponses.push({
+      url: response.url(),
+      status: response.status(),
+      origin: new URL(response.url()).origin,
+    });
+  });
+  await page.route('**/*.css', async (route) => {
+    const request = route.request();
+    if (armed && failedUrl === undefined && request.resourceType() === 'stylesheet') {
+      failedUrl = request.url();
+      await route.fulfill({
+        status: 503,
+        contentType: 'text/css',
+        body: '/* fail only the first lazy HUD stylesheet */',
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  armed = true;
+  await page.getByRole('tab', { name: 'hud', exact: true }).click();
+  await expect.poll(async () => page.evaluate(
+    () => (window as ViteCssFailureWindow).__viteCssFailureProbe?.events.length ?? 0,
+  )).toBe(1);
+
+  const observation = await page.evaluate(
+    () => (window as ViteCssFailureWindow).__viteCssFailureProbe!.events[0]!,
+  );
+  expect(failedUrl).toBeDefined();
+  expect(observation.message).toContain('Unable to preload CSS for');
+  expect(observation.failedUrl).toBe(failedUrl);
+  expect(new URL(failedUrl!).origin).toBe(observation.appOrigin);
+  expect(stylesheetResponses).toContainEqual({
+    url: failedUrl,
+    status: 503,
+    origin: observation.appOrigin,
+  });
+  expect(observation.resourceTiming).toHaveLength(1);
+  expect(observation.resourceTiming[0]!.name).toBe(failedUrl);
+  expect(observation.resourceTiming[0]!.startTime).toBeGreaterThanOrEqual(0);
+  expect(observation.pageUrl).toContain('/adv');
+  expect(observation.timeOrigin).toBe(initialTimeOrigin);
+  expect(await page.evaluate(() => performance.timeOrigin)).toBe(initialTimeOrigin);
+});

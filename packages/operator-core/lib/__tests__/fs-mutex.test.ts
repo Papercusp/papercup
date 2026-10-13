@@ -5,12 +5,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const fileWrites = vi.hoisted(() => ({
   beforeWrite: null as null | ((path: string) => Promise<void>),
+  beforeSymlink: null as null | ((path: string) => Promise<void>),
 }));
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...actual,
+    symlink: async (...args: Parameters<typeof actual.symlink>) => {
+      await fileWrites.beforeSymlink?.(String(args[1]));
+      return actual.symlink(...args);
+    },
     writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
       await fileWrites.beforeWrite?.(String(args[0]));
       return actual.writeFile(...args);
@@ -25,25 +30,27 @@ import {
   withFsMutexRead,
   peekFsMutexSync,
   resolveFsMutexLockRoot,
+  ensureFsMutexLockRoot,
 } from '../../../../scripts/lib/fs-mutex.mjs';
 
 const originalDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
 
 afterEach(async () => {
   fileWrites.beforeWrite = null;
+  fileWrites.beforeSymlink = null;
   process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = originalDir;
   delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
 });
 
 describe('resolveFsMutexLockRoot', () => {
-  it('keeps one POSIX lock root when callers carry different TMPDIR values', () => {
+  it('keeps one account-home POSIX lock root when callers carry different TMPDIR values', () => {
     const withoutTmpOverride = resolveFsMutexLockRoot({}, { platform: 'linux', homeDir: '/unused' });
     const withPapercuspTmp = resolveFsMutexLockRoot(
       { TMPDIR: '/tmp/pcv' },
       { platform: 'linux', homeDir: '/unused' },
     );
 
-    expect(withoutTmpOverride).toBe('/tmp/pcv/fs-mutex-locks');
+    expect(withoutTmpOverride).toBe('/unused/.papercusp/fs-mutex-locks');
     expect(withPapercuspTmp).toBe(withoutTmpOverride);
   });
 
@@ -54,6 +61,69 @@ describe('resolveFsMutexLockRoot', () => {
         { platform: 'linux', homeDir: '/unused' },
       ),
     ).toBe('/operator/serialized-locks');
+  });
+});
+
+describe('ensureFsMutexLockRoot migration', () => {
+  it('keeps callers on the legacy root while known active leases drain', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-active-migration-'));
+    const homeDir = join(temp, 'home');
+    const legacyRoot = join(temp, 'legacy-locks');
+    const lockDir = join(legacyRoot, 'package-manager-cache.lock');
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(join(lockDir, 'owner.json'), JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      startedAt: new Date().toISOString(),
+    }));
+
+    try {
+      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot }))
+        .resolves.toBe(legacyRoot);
+      await expect(readdir(join(homeDir, '.papercusp', 'fs-mutex-locks')))
+        .rejects.toHaveProperty('code', 'ENOENT');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when a legacy lease owner cannot be identified', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-unknown-migration-'));
+    const homeDir = join(temp, 'home');
+    const legacyRoot = join(temp, 'legacy-locks');
+    const lockDir = join(legacyRoot, 'package-manager-cache.lock');
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(join(lockDir, 'owner.json'), JSON.stringify({
+      pid: process.pid,
+      host: `${hostname()}-unverified`,
+    }));
+
+    try {
+      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot }))
+        .rejects.toMatchObject({ code: 'ELEGACYFSLOCKBUSY' });
+      await expect(readdir(join(homeDir, '.papercusp', 'fs-mutex-locks')))
+        .rejects.toHaveProperty('code', 'ENOENT');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('continues on a directory recreated by a legacy caller when alias creation loses a race', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-alias-race-'));
+    const homeDir = join(temp, 'home');
+    const legacyRoot = join(temp, 'legacy-locks');
+    await mkdir(legacyRoot, { recursive: true });
+    fileWrites.beforeSymlink = async path => {
+      if (path === legacyRoot) await mkdir(legacyRoot);
+    };
+
+    try {
+      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot }))
+        .resolves.toBe(legacyRoot);
+      await expect(readdir(legacyRoot)).resolves.toEqual([]);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
   });
 });
 

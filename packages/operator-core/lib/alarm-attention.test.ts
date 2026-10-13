@@ -20,7 +20,15 @@ describe('escalateAlarm', () => {
     });
 
     expect(result).toBe(true);
-    expect(notify).toHaveBeenCalledWith({ title: request.title, body: request.body });
+    // The injected seam receives the SAME input production delivers: urgency and routing
+    // data included (WI-6554700010009741 — a {title, body}-only seam hid both from tests).
+    expect(notify).toHaveBeenCalledWith({
+      kind: 'intervention',
+      title: request.title,
+      body: request.body,
+      importance: 'urgent',
+      data: { conditionKey: request.conditionKey },
+    });
   });
 
   it('suppresses a repeat while the durable cooldown is active', async () => {

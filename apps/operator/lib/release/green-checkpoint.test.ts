@@ -5167,15 +5167,24 @@ describe("runGreenCheckpoint", () => {
     const { deps } = stubDeps(true);
     deps.log = (line) => logs.push(line);
 
-    const prior = process.env.DATABASE_URL;
+    // databaseEvidence() prefers HARNESS_ADMIN_DATABASE_URL / HARNESS_DATABASE_URL over
+    // DATABASE_URL (release-config.ts), and every agent shell on the dev box carries
+    // HARNESS_ADMIN_DATABASE_URL — so clear the higher-precedence keys too, or this test
+    // asserts on the ambient operator DSN instead of the value it set.
+    const keys = ["HARNESS_ADMIN_DATABASE_URL", "HARNESS_DATABASE_URL", "DATABASE_URL"] as const;
+    const prior = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    delete process.env.HARNESS_ADMIN_DATABASE_URL;
+    delete process.env.HARNESS_DATABASE_URL;
     // the measured real-world value: a transient gym-loop DB carrying 0 of the pot's tables
     process.env.DATABASE_URL =
       "postgres://test:secretpw@localhost:32787/papercusp_gym_loop_ab12cd";
     try {
       await runGreenCheckpoint(cfg(), deps, { noPush: true });
     } finally {
-      if (prior === undefined) delete process.env.DATABASE_URL;
-      else process.env.DATABASE_URL = prior;
+      for (const k of keys) {
+        if (prior[k] === undefined) delete process.env[k];
+        else process.env[k] = prior[k];
+      }
     }
 
     const evidence = logs.filter((line) => line.includes("database:"));

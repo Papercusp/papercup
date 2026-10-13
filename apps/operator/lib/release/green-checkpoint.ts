@@ -2136,11 +2136,15 @@ export async function onFire(
     await broadcastSevereEvent({ conditionKey, summary: title, body, oneShot: true });
   } catch { /* best-effort — the kill proceeds regardless */ }
   try {
-    if (deps.notify) await deps.notify({ title, body });
+    // ONE input for both legs, so an injected seam observes exactly what production delivers.
+    const input: import("@papercusp/operator-core/lib/attention-notify").AttentionNotifyInput = {
+      kind: "intervention", title, body, importance: "urgent",
+      data: { candidate: result.candidate, reason: result.reason, conditionKey },
+    };
+    if (deps.notify) await deps.notify(input);
     else {
       const { notifyAttention } = await import("@papercusp/operator-core/lib/attention-notify");
-      await notifyAttention({ kind: "intervention", title, body, importance: "urgent",
-        data: { candidate: result.candidate, reason: result.reason, conditionKey } });
+      await notifyAttention(input);
     }
   } catch { /* best-effort — the kill proceeds regardless */ }
 }
@@ -3714,7 +3718,7 @@ export function startCheckpointQualificationProgress(
   const attemptId = input.attemptId;
   const runnerId = input.gateFireId;
   const pidIdentity = checkpointPidIdentity(input.pid);
-  let phase: 'materializing' | 'suite' | 'isolating' | 'delivering' = 'materializing';
+  let phase: 'materializing' | 'suite' | 'isolating' | 'delivering' | 'finalizing' = 'materializing';
   let stopped = false;
   let pending: Promise<void> = Promise.resolve();
   let lastReportedAtMs = Date.now(); // activation already wrote the first progress clock
@@ -3745,7 +3749,8 @@ export function startCheckpointQualificationProgress(
     note(detail) {
       if (detail?.startsWith('phase:')) {
         const next = detail.slice('phase:'.length);
-        if (next === 'materializing' || next === 'suite' || next === 'isolating' || next === 'delivering') {
+        if (next === 'materializing' || next === 'suite' || next === 'isolating' || next === 'delivering' ||
+            next === 'finalizing') {
           phase = next;
           report(true);
           return;
@@ -16758,6 +16763,9 @@ export async function runGreenCheckpoint(
   // WI-6554700010009615: from here on the tick is post-verdict (the admission refire above is the
   // last branch that can start another suite), so the self-watchdog ceiling is pulled in. Run
   // b874ad21 stalled past this point for ~2h with nothing bounding it but the 180m ceiling.
+  // WI-6554700010009616: publish the post-verdict phase to the qualification runner, so the
+  // lost-run sweep can flag a live run parked here (its heartbeat stays fresh through a hang).
+  deps.reportProgress?.("phase:finalizing");
   try {
     deps.enterPostVerdictPhase?.();
   } catch (e) {

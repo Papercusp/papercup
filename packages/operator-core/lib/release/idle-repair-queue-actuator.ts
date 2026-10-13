@@ -554,7 +554,7 @@ export async function checkIdleRepairQueue(
           workspaceId,
           data: { installSlug, phase: IDLE_REPAIR_QUEUE_PHASE },
         } as const;
-        if (opts.alarm?.notify) await opts.alarm.notify({ title: input.title, body: input.body });
+        if (opts.alarm?.notify) await opts.alarm.notify(input);
         else await notifyAttention(input);
         return { ok: true, detail: 'urgent intervention raised on the owner attention surface' };
       },

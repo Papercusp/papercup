@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CURRENT_BUILD_TEST_CLASSES, SERVING_RUNTIMES } from './serving-runtimes';
+import { resolveFsMutexLockRoot } from '../../../scripts/lib/fs-mutex.mjs';
 
 const root = resolve(__dirname, '../../..');
 
@@ -41,6 +42,8 @@ describe('current-build execution route contract', () => {
       const root = e.PAPERCUSP_WORKSPACES_ROOT;
       const id = e.PAPERCUSP_WORKSPACE_ID;
       (async () => {
+      const { ensureFsMutexLockRoot } = await import(require('node:path').resolve('scripts/lib/fs-mutex.mjs'));
+      const fsMutexRoot = await ensureFsMutexLockRoot();
       const sql = postgres(e.HARNESS_ADMIN_DATABASE_URL, { max: 1 });
       const applied = await sql.unsafe('SELECT count(*)::int AS n FROM harness_shared.schema_migrations');
       await sql.end();
@@ -60,6 +63,8 @@ describe('current-build execution route contract', () => {
         apiScoped: e.PAPERCUSP_OPERATOR_URL === 'http://127.0.0.1:' + e.PAPERCUSP_HONO_PORT,
         routinesDisabled: e.PAPERCUSP_DBOS_ROUTINES === '0' && e.PAPERCUSP_DBOS_TIMERS === '0',
         vmScoped: e.DBOS__VMID !== process.env.TEST_LIVE_VM,
+        fsMutexRootHandedOff: fsMutexRoot === e.PAPERCUSP_FS_MUTEX_LOCK_DIR &&
+          e.PAPERCUSP_FS_MUTEX_LOCK_DIR === process.env.TEST_LIVE_MUTEX_ROOT,
         migrated: applied[0].n > 0,
         home: e.HOME
       }));
@@ -75,6 +80,7 @@ describe('current-build execution route contract', () => {
         TEST_LIVE_WORKSPACE: 'real-workspace',
         TEST_LIVE_DB: 'postgresql://live@localhost:5432/live',
         TEST_LIVE_PORT: '3271',
+        TEST_LIVE_MUTEX_ROOT: resolveFsMutexLockRoot(process.env),
         PAPERCUSP_SID: 'live-agent',
         GOOGLE_APPLICATION_CREDENTIALS: '/do-not-inherit.json',
         PAPERCUSP_SUBSTRATE_IPC_SOCKET: '/live/substrate.sock',

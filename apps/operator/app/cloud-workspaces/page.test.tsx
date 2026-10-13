@@ -43,6 +43,7 @@ const H = vi.hoisted(() => ({
   loading: false,
   mutate: vi.fn(),
   invalidate: vi.fn(),
+  tooltip: vi.fn(),
   queryDefaults: {} as Record<string, unknown>,
   queryUpdates: [] as Array<[string, unknown]>,
 }));
@@ -138,10 +139,13 @@ vi.mock("@/app/harness/Modal", () => ({
     ) : null,
 }));
 
-/* The rail's tooltip is Radix-portalled decoration; the accessible name it
-   supplements is on the button itself, which is what these tests read. */
+/* Record the reason supplied to the portalled tooltip as well as the
+   accessible name on its trigger. */
 vi.mock("@/app/harness/Tooltip", () => ({
-  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  Tooltip: ({ children, label }: { children: React.ReactNode; label: string }) => {
+    H.tooltip(label);
+    return <>{children}</>;
+  },
 }));
 
 import CloudWorkspacesPage, {
@@ -299,6 +303,7 @@ beforeEach(() => {
   H.loading = false;
   H.mutate.mockReset().mockResolvedValue({ ok: true });
   H.invalidate.mockReset().mockResolvedValue(undefined);
+  H.tooltip.mockReset();
   H.queryDefaults = {};
   H.queryUpdates = [];
 });
@@ -395,6 +400,8 @@ describe("CloudWorkspacesPage — rail and step routing", () => {
 
     expect(operateStep.getAttribute("aria-disabled")).toBe("true");
     expect(operateStep.disabled).toBe(false);
+    expect(operateStep.getAttribute("aria-label")).toContain("No workspaces yet");
+    expect(H.tooltip).toHaveBeenCalledWith("03 Operate — No workspaces yet");
 
     /* Reachable by keyboard, which is what lets a keyboard user surface the
        reason at all. */
@@ -1363,6 +1370,28 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  it.each(["pointer", "Tab"])("does not steal the destination's focus on %s dismissal", (dismissal) => {
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
+    const trigger = screen.getByRole("button", {
+      name: "More actions for research-control",
+    }) as HTMLButtonElement;
+    fireEvent.click(trigger);
+    const repair = screen.getByRole("menuitem", { name: "Repair" });
+    expect(document.activeElement).toBe(repair);
+    const destination = screen.getByRole("button", { name: "Stop machine" });
+    destination.focus();
+    expect(document.activeElement).toBe(destination);
+    const restore = vi.spyOn(trigger, "focus");
+
+    if (dismissal === "pointer") fireEvent.pointerDown(destination);
+    else fireEvent.keyDown(repair, { key: "Tab" });
+
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(restore).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(destination);
+  });
+
   it("does not focus a detached lifecycle target", () => {
     const host = document.createElement("div");
     const button = document.createElement("button");
@@ -1371,7 +1400,9 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
     button.focus();
     host.removeChild(button);
 
+    const focus = vi.spyOn(button, "focus");
     expect(focusSafely(button)).toBe(false);
+    expect(focus).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(document.body);
 
     document.body.removeChild(host);

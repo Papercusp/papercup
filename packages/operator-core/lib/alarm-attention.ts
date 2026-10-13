@@ -8,6 +8,7 @@
  * the attention-notify delivery path, and fail-open observability semantics.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { AttentionNotifyInput } from './attention-notify';
 import type { SevereEventBroadcast, SevereEventResolution } from './severe-event-broadcast';
 
 export const DEFAULT_ALARM_ESCALATION_COOLDOWN_MS = 6 * 60 * 60 * 1000;
@@ -25,8 +26,13 @@ export interface AlarmAttentionRequest {
 }
 
 export interface AlarmAttentionDeps {
-  /** Injectable for tests; production defaults to notifyAttention. */
-  notify?: (input: { title: string; body: string }) => Promise<void>;
+  /**
+   * Injectable for tests; production defaults to notifyAttention. Takes the FULL
+   * AttentionNotifyInput (kind, importance, routing data), never a {title, body}
+   * subset: a narrowed seam hides urgency and routing from every test that injects
+   * it (WI-6554700010009741; guarded by lint:di-seam-arity-strands).
+   */
+  notify?: (input: AttentionNotifyInput) => Promise<void>;
   /** Injectable for tests; production reads the durable notification rail. */
   recentlyEscalated?: () => Promise<boolean>;
   broadcast?: (input: SevereEventBroadcast) => Promise<boolean>;
@@ -109,11 +115,18 @@ async function defaultNotify(request: AlarmAttentionRequest, deps: AlarmAttentio
 
   try {
     if (await recentlyEscalated()) return false;
-    if (deps.notify) await deps.notify({ title: request.title, body: request.body });
+    // ONE input for both legs, so an injected seam observes exactly what production delivers.
+    const input: AttentionNotifyInput = {
+      kind: 'intervention',
+      title: request.title,
+      body: request.body,
+      importance: 'urgent',
+      data: request.conditionKey ? { conditionKey: request.conditionKey } : undefined,
+    };
+    if (deps.notify) await deps.notify(input);
     else {
       const { notifyAttention } = await import('./attention-notify');
-      await notifyAttention({ kind: 'intervention', title: request.title, body: request.body,
-        importance: 'urgent', data: request.conditionKey ? { conditionKey: request.conditionKey } : undefined });
+      await notifyAttention(input);
     }
     return true;
   } catch (err) {

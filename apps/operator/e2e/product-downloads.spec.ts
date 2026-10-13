@@ -1,4 +1,4 @@
-import { test, expect, type BrowserContext } from '@playwright/test';
+import { test, expect, type BrowserContext } from './_egress';
 import type { HydratedRelease } from '../lib/release/release-history-page';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';

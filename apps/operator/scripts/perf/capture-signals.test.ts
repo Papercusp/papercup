@@ -58,7 +58,9 @@ describe("capture-signals.py IO-stall attribution", () => {
     const out = runPy([
       "zero = '259:1 rbytes=0 wbytes=0 rios=0 wios=0\\n'",
       "put('cg/a.slice', 'io.stat', zero)",
-      "put('cg/b.slice', 'io.stat', zero)",
+      // A device absent from the baseline is a new baseline, never a zero-to-counter
+      // delta (WI-10003444), so b's baseline names both devices it writes to.
+      "put('cg/b.slice', 'io.stat', zero + '259:2 rbytes=0 wbytes=0 rios=0 wios=0\\n')",
       "put('cg/b.slice', 'io.pressure', 'some avg10=50.00 avg60=1.00 avg300=1.00 total=1\\nfull avg10=42.00 avg60=1.00 avg300=1.00 total=1\\n')",
       "put('cg/c.slice', 'io.stat', '259:1 rbytes=0 wbytes=9000000 rios=0 wios=9\\n')",
       "put('cg/idle.slice', 'io.stat', zero)",
@@ -85,13 +87,16 @@ describe("capture-signals.py IO-stall attribution", () => {
   it("cgroup_io preserves per-device deltas and reports new or missing baselines", () => {
     const out = runPy([
       "put('cg/common', 'io.stat', '259:3 rbytes=100 wbytes=200 rios=1 wios=2\\n259:1 rbytes=1000 wbytes=2000 rios=10 wios=20\\n259:9 rbytes=50 wbytes=60 rios=5 wios=6\\n')",
-      "put('cg/new-cgroup', 'io.stat', '259:8 rbytes=10 wbytes=20 rios=1 wios=2\\n')",
+      // grown-cgroup exists at both samples and gains 259:5; new-cgroup exists only at the
+      // second. Neither 259:5 nor any new-cgroup device may be counted as a delta.
+      "put('cg/grown-cgroup', 'io.stat', '259:8 rbytes=10 wbytes=20 rios=1 wios=2\\n')",
       "put('cg/gone-cgroup', 'io.stat', '259:7 rbytes=10 wbytes=20 rios=1 wios=2\\n')",
       "clock = [0.0]",
       "def sleep(_s):",
       "    clock[0] += 2.0",
       "    put('cg/common', 'io.stat', '259:3 rbytes=150 wbytes=600 rios=2 wios=6\\n259:1 rbytes=3000 wbytes=5000 rios=13 wios=25\\n259:4 rbytes=9000 wbytes=9000 rios=9 wios=9\\n')",
-      "    put('cg/new-cgroup', 'io.stat', '259:8 rbytes=100 wbytes=200 rios=3 wios=4\\n259:5 rbytes=9000 wbytes=9000 rios=9 wios=9\\n')",
+      "    put('cg/grown-cgroup', 'io.stat', '259:8 rbytes=100 wbytes=200 rios=3 wios=4\\n259:5 rbytes=9000 wbytes=9000 rios=9 wios=9\\n')",
+      "    put('cg/new-cgroup', 'io.stat', '259:8 rbytes=10 wbytes=20 rios=1 wios=2\\n259:5 rbytes=9000 wbytes=9000 rios=9 wios=9\\n')",
       "    os.remove(os.path.join(root, 'cg/gone-cgroup', 'io.stat'))",
       "r = cs.cgroup_io(root=os.path.join(root, 'cg'), monotonic_fn=lambda: clock[0], sleep_fn=sleep)",
       "print(json.dumps(r))",
@@ -122,6 +127,10 @@ describe("capture-signals.py IO-stall attribution", () => {
       missingDeviceBaselines: ["259:9"],
       counterResetDevices: [],
     });
+    expect(out.top.find((row) => row.path === "/grown-cgroup")).toMatchObject({
+      newDeviceBaselines: ["259:5"],
+      missingDeviceBaselines: [],
+    });
     expect(out.newCgroupCount).toBe(1);
     expect(out.newCgroupBaselines).toEqual([{ path: "new-cgroup", devices: ["259:5", "259:8"] }]);
     expect(out.missingCgroupCount).toBe(1);
@@ -132,6 +141,8 @@ describe("capture-signals.py IO-stall attribution", () => {
       expect.objectContaining({ devno: "259:4", newBaselines: 1, writeBytesDeltaInclusive: 0 }),
       expect.objectContaining({ devno: "259:5", newBaselines: 2, writeBytesDeltaInclusive: 0 }),
       expect.objectContaining({ devno: "259:7", missingBaselines: 1 }),
+      // 259:8 moved 180 bytes in grown-cgroup; new-cgroup's counters are a baseline only.
+      expect.objectContaining({ devno: "259:8", changedCgroups: 1, newBaselines: 1, writeBytesDeltaInclusive: 180 }),
       expect.objectContaining({ devno: "259:9", missingBaselines: 1 }),
     ]));
   });

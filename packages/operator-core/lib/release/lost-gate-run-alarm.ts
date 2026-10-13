@@ -27,8 +27,10 @@
 import type { Sql } from 'postgres';
 import type { SevereEventRoute } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import type { AttentionNotifyInput } from '../attention-notify';
 import {
   CHECKPOINT_QUALIFICATION_METADATA_KEY,
+  isPostVerdictHang,
   parseCheckpointQualificationTransaction,
   probeRunnerLiveness,
   projectCheckpointQualificationState,
@@ -275,6 +277,9 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
     const qualification = transaction && transaction.phase !== 'terminal' && runner
       ? projectCheckpointQualificationState(transaction, nowMs, liveness)
       : null;
+    // WI-6554700010009616: a live runner parked in `finalizing` keeps a fresh heartbeat (its interval
+    // fires through an awaited hang), so runnerHealth reads `progressing`. Only the phase clock sees it.
+    const postVerdictHang = !!transaction && transaction.phase !== 'terminal' && isPostVerdictHang(runner, liveness, nowMs);
     // Read routines even after their marker disappears: otherwise recovery is invisible.
     // Malformed markers and unknown liveness are not evidence of recovery.
     if (row.alarmed_key && (row.marker == null ||
@@ -282,12 +287,15 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       await resolveAlarm(`green-checkpoint-lost-run:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
     }
     if (row.progress_alarmed_key && (row.qualification == null || transaction?.phase === 'terminal' ||
-        (liveness === 'live' && qualification?.runnerHealth.state === 'progressing'))) {
+        (liveness === 'live' && qualification?.runnerHealth.state === 'progressing' && !postVerdictHang))) {
       await resolveAlarm(`green-checkpoint-run-progress:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
     }
-    const inspect = qualification?.runnerHealth.state === 'stalled' || qualification?.runnerHealth.state === 'dead';
+    const inspect = qualification?.runnerHealth.state === 'stalled' || qualification?.runnerHealth.state === 'dead' ||
+      postVerdictHang;
     const progressKey = inspect && transaction && runner
-      ? `qualification:${transaction.attemptId}:${runner.id}:${liveness === 'dead' ? 'dead' : runner.heartbeatAtMs ?? transaction.lastProgressAtMs ?? runner.reservedAtMs}`
+      ? postVerdictHang && liveness !== 'dead'
+        ? `qualification:${transaction.attemptId}:${runner.id}:post-verdict-hang:${runner.phaseEnteredAtMs}`
+        : `qualification:${transaction.attemptId}:${runner.id}:${liveness === 'dead' ? 'dead' : runner.heartbeatAtMs ?? transaction.lastProgressAtMs ?? runner.reservedAtMs}`
       : null;
     // Prefer the current runner, retaining separate stamps on the same routine metadata so
     // recovery of its heartbeat cannot make an old death alarm look new again.
@@ -349,6 +357,8 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
           body: `Qualification ${transaction!.attemptId}, runner ${runner!.id}, candidate ${transaction!.candidate ?? 'unknown'}: ` +
             (liveness === 'dead'
               ? 'the exact runner was proved dead without a terminal verdict; an ordinary guarded retry was requested.'
+              : postVerdictHang
+              ? `POST-VERDICT HANG: the live runner entered its final post-verdict steps ${Math.round((nowMs - (runner!.phaseEnteredAtMs ?? nowMs)) / 60_000)}m ago and never exited, although every post-verdict step is bounded to seconds. Its run-lock and checkpoint tree stay held, so no later tick can run. Read the run log's last "<step> started" line to name the stalled step. Preserve single flight: do not start a parallel run.`
               : `progress heartbeat is ${Math.round((qualification!.runnerHealth.progressAgeMs ?? 0) / 1_000)}s old, process liveness is ${liveness}. Inspect the exact runner and preserve single flight; heartbeat silence alone never authorizes stopping or replacing a live or unknown runner.`),
         };
     const broadcast = deps.broadcast ?? (await import('../severe-event-broadcast')).broadcastSevereEvent;
@@ -416,14 +426,16 @@ async function defaultNotifyOwner(opts: {
     const { broadcastSevereEvent } = await import('../severe-event-broadcast');
     await broadcastSevereEvent(event);
   }
-  if (deps.notify) { await deps.notify({ title: opts.title, body: opts.body }); return; }
-  const { notifyAttention } = await import('../attention-notify');
-  await notifyAttention({
+  // ONE input for both legs, so an injected seam observes exactly what production delivers.
+  const input: AttentionNotifyInput = {
     kind: 'intervention',
     title: opts.title,
     body: opts.body,
     importance: 'urgent',
     workspaceId: opts.workspaceId,
     data: opts.data,
-  });
+  };
+  if (deps.notify) { await deps.notify(input); return; }
+  const { notifyAttention } = await import('../attention-notify');
+  await notifyAttention(input);
 }

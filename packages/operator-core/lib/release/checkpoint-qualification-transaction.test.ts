@@ -11,6 +11,8 @@ import {
   projectCheckpointQualificationState,
   QUALIFICATION_PROGRESS_STALE_MS,
   recordQualificationRunnerProgress,
+  isPostVerdictHang,
+  QUALIFICATION_POST_VERDICT_HANG_MS,
   recordQualificationScheduledFire,
   qualificationIntentMatches,
   reserveQualificationRunner,
@@ -216,6 +218,19 @@ describe('logical checkpoint qualification transaction', () => {
       safeNextAction: { code: 'inspect-runner-liveness' },
     });
     expect(recordQualificationRunnerProgress(progress.transaction, { ...input, nowMs: 450 }).status).toBe('idempotent');
+    // WI-6554700010009616: the phase clock starts on a phase change and holds across same-phase
+    // beats, because the heartbeat itself keeps advancing through an awaited hang.
+    expect(progress.transaction.currentPhysicalRunner).toMatchObject({ phase: 'suite', phaseEnteredAtMs: 500 });
+    const beat = recordQualificationRunnerProgress(progress.transaction, { ...input, nowMs: 600 }).transaction;
+    expect(beat.currentPhysicalRunner).toMatchObject({ heartbeatAtMs: 600, phaseEnteredAtMs: 500 });
+    const finalizing = recordQualificationRunnerProgress(beat, { ...input, phase: 'finalizing', nowMs: 700 }).transaction;
+    expect(finalizing.currentPhysicalRunner).toMatchObject({ phase: 'finalizing', phaseEnteredAtMs: 700 });
+    const pastBound = 701 + QUALIFICATION_POST_VERDICT_HANG_MS;
+    expect(isPostVerdictHang(finalizing.currentPhysicalRunner, 'live', pastBound - 1)).toBe(false);
+    expect(isPostVerdictHang(finalizing.currentPhysicalRunner, 'live', pastBound)).toBe(true);
+    expect(isPostVerdictHang(finalizing.currentPhysicalRunner, 'unknown', pastBound)).toBe(false);
+    expect(isPostVerdictHang(finalizing.currentPhysicalRunner, 'dead', pastBound)).toBe(false);
+    expect(isPostVerdictHang(beat.currentPhysicalRunner, 'live', pastBound)).toBe(false);
     const terminal = settleQualificationTransaction(progress.transaction, {
       attemptId: 'attempt-1', runId: 'run-1', reason: 'not-green', green: false, nowMs: 600,
     }).transaction;

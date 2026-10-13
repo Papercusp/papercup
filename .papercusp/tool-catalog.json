@@ -7351,7 +7351,7 @@
           "POST"
         ]
       },
-      "description": "Read messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) window (default 50). Ambient system broadcasts are excluded by default; include_ambient shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only` (alias `unansweredOnly`). The `kinds` filter accepts canonical `CoordKind` wire values only: subscribe, unsubscribe, notify, handoff, handoff_accepted, handoff_expired, handoff_repinged, contract, plan_event, yield, message, ack, unack, escalation, escalation_resolved, escalation_reopened, presence_alert. `interrupt` is conceptual language for actionable coordination traffic, not a `kinds` value; a cooperative turn-interrupt/wrap-up is encoded as the canonical executable kind `yield`. `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`). This is a VIEW, not a delta: re-reading the same window does not empty it.",
+      "description": "Read messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) window (default: what fits one result). Ambient system broadcasts are excluded unless include_ambient. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — ignore it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only` (alias `unansweredOnly`). The `kinds` filter accepts canonical `CoordKind` wire values only: subscribe, unsubscribe, notify, handoff, handoff_accepted, handoff_expired, handoff_repinged, contract, plan_event, yield, message, ack, unack, escalation, escalation_resolved, escalation_reopened, presence_alert. `interrupt` is conceptual language for actionable coordination traffic, not a `kinds` value; a cooperative turn-interrupt/wrap-up is encoded as the canonical executable kind `yield`. `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`). This is a VIEW, not a delta: re-reading the same window does not empty it.",
       "capabilities": [
         "coord:read"
       ],
@@ -18523,7 +18523,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Stop a loop you armed with loop:arm — the goal is done, your claims are released/handed off, or the owner says stop. Blocked is NOT a stop: work_items:set_blocker + a bounded events:await (on_timeout:'wake'), then end the turn. Pass `reason` for a durable stop note; owner-scoped, ignores `harness`. GOAL mode with the goal active: also `disposition` (achieved | killed | handoff + `handoffTo`). AUTO on, no event await, no claims? Pass `acknowledgeWakeLessAutonomy:true`. Still HOLDING work-items? That flag does not help — register the bounded events:await the refusal names, release the claims, or cite `ownerStopDirectiveId`.",
+        "when": "Stop a loop you armed with loop:arm — the goal is done, your claims are released/handed off, or the owner says stop. Blocked is NOT a stop: work_items:set_blocker + a bounded events:await (on_timeout:'wake'), then end the turn. Pass `reason` for a durable stop note; owner-scoped, ignores `harness`. GOAL mode with the goal active: also `disposition` (achieved | killed | handoff + `handoffTo`). AUTO on, no event await, no claims? Pass `acknowledgeWakeLessAutonomy:true` on the FIRST call. Still HOLDING work-items? That flag will not help — register the bounded events:await the refusal names, release the claims, or cite `ownerStopDirectiveId`.",
         "notWhen": "Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.",
         "chaining": "loop:arm to start; loop:status to check; events:await to preserve an independent wake before ending an autonomous loop; loop:end to stop."
       }
@@ -36295,7 +36295,7 @@
           "POST"
         ]
       },
-      "description": "Read or set the workspace WORK-SCOPE policy: which harnesses agents may be launched into / pull work from (e.g. allowHarnesses ['papercusp','papercusp/*']). Enforced at launch / claim / promotion / fixer-dispatch chokepoints; absent ⇒ everything allowed. set/clear are audited + revertible.",
+      "description": "Read or set the workspace WORK-SCOPE policy: which harnesses agents may be launched into / pull work from (e.g. allowHarnesses ['papercusp','papercusp/*']). check can simulate a proposedPolicy without activating it. Enforced at launch / claim / promotion / fixer-dispatch chokepoints; absent ⇒ everything allowed. set/clear are audited + revertible.",
       "capabilities": [
         "operator:write"
       ],

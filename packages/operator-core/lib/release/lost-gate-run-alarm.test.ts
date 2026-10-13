@@ -9,7 +9,11 @@ import type { Sql } from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { StoredInFlightCandidate } from './in-flight-candidate';
-import { beginQualificationTransaction, type CheckpointQualificationTransaction } from './checkpoint-qualification-transaction';
+import {
+  beginQualificationTransaction,
+  QUALIFICATION_POST_VERDICT_HANG_MS,
+  type CheckpointQualificationTransaction,
+} from './checkpoint-qualification-transaction';
 import {
   LOST_RUN_SWEEP_INTERVAL_MS,
   claimLostRunAlarm,
@@ -222,6 +226,12 @@ describe('sweepLostGateRuns (P-005 / R-5)', () => {
       attention: { broadcast, resolve, notify } };
     await sweepLostGateRuns(sql, d);
     expect(notify).toHaveBeenCalledOnce();
+    // The injected seam must observe the SAME input production delivers (WI-6554700010009741):
+    // a {title, body}-only seam call silently dropped kind/importance/workspaceId/data.
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'intervention', importance: 'urgent', workspaceId: expect.any(String),
+      data: expect.objectContaining({ installSlug: 'papercusp' }),
+    }));
     const key = 'green-checkpoint-lost-run:papercusp';
     expect(broadcast.mock.calls.map(([event]) => event.conditionKey)).toEqual([key, key]);
     const { actionableConditionFor } = await import('../coord/actionable-conditions');
@@ -342,6 +352,57 @@ describe('qualification progress in the existing lost-run sweep', () => {
     await sweepLostGateRuns(sql, d);
     expect(d.broadcast).not.toHaveBeenCalled();
     expect(row.retries).toBe(0);
+  });
+
+  // WI-6554700010009616: run b874ad21 sat ~2h past its verdict while its heartbeat stayed fresh.
+  function parkedInFinalizing(parkedMs: number): CheckpointQualificationTransaction {
+    const tx = qualification(NOW - 30_000);
+    return { ...tx, currentPhysicalRunner: {
+      ...tx.currentPhysicalRunner!, phase: 'finalizing', phaseEnteredAtMs: NOW - parkedMs,
+    } };
+  }
+
+  it('pages once for a live runner parked past its final verdict, although its heartbeat is fresh', async () => {
+    const resolve = vi.fn(async () => true);
+    const parkedMs = QUALIFICATION_POST_VERDICT_HANG_MS + 60_000;
+    const { sql, row } = fakeRoutineRow(null, parkedInFinalizing(parkedMs));
+    const d = Object.assign(deps({ attention: { resolve } }), { probeQualificationRunner: vi.fn(() => 'live' as const) });
+    await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({ alarmed: ['papercusp'], deduped: [], failed: [] });
+    expect(d.broadcast).toHaveBeenCalledTimes(1);
+    expect(d.broadcast.mock.calls[0][0]).toMatchObject({ conditionKey: 'green-checkpoint-run-progress:papercusp' });
+    expect(d.broadcast.mock.calls[0][0].body).toContain('POST-VERDICT HANG');
+    expect(d.broadcast.mock.calls[0][0].body).toContain('Preserve single flight');
+    expect(row.progressAlarmKey).toBe(`qualification:attempt-1:runner-1:post-verdict-hang:${NOW - parkedMs}`);
+    expect(row.retries).toBe(0);
+    // The fresh heartbeat reads `progressing`: that must neither resolve the hang nor page it again.
+    await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({ alarmed: [], deduped: ['papercusp'], failed: [] });
+    expect(d.broadcast).toHaveBeenCalledTimes(1);
+    expect(resolve).not.toHaveBeenCalled();
+    // The attempt settling is the measured recovery.
+    row.qualification = { ...parkedInFinalizing(parkedMs), phase: 'terminal', outcome: { kind: 'red', reason: 'not-green' } };
+    await sweepLostGateRuns(sql, d);
+    expect(resolve).toHaveBeenCalledWith({ conditionKey: 'green-checkpoint-run-progress:papercusp', summary: 'lost-gate-run-alarm recovered' });
+  });
+
+  it('stays silent inside the post-verdict bound, for unknown liveness, and for a long verdict path still delivering', async () => {
+    const within = fakeRoutineRow(null, parkedInFinalizing(QUALIFICATION_POST_VERDICT_HANG_MS - 60_000));
+    const live = progressDeps('live');
+    await sweepLostGateRuns(within.sql, live);
+    expect(live.broadcast).not.toHaveBeenCalled();
+
+    const unknown = fakeRoutineRow(null, parkedInFinalizing(QUALIFICATION_POST_VERDICT_HANG_MS + 60_000));
+    const unknownDeps = progressDeps('unknown');
+    await sweepLostGateRuns(unknown.sql, unknownDeps);
+    expect(unknownDeps.broadcast).not.toHaveBeenCalled();
+
+    // Prefix salvage can legitimately run a second suite while the run is still `delivering`.
+    const salvage = parkedInFinalizing(QUALIFICATION_POST_VERDICT_HANG_MS + 60_000);
+    salvage.currentPhysicalRunner = { ...salvage.currentPhysicalRunner!, phase: 'delivering' };
+    const delivering = fakeRoutineRow(null, salvage);
+    const deliveringDeps = progressDeps('live');
+    await sweepLostGateRuns(delivering.sql, deliveringDeps);
+    expect(deliveringDeps.broadcast).not.toHaveBeenCalled();
+    expect([within.row, unknown.row, delivering.row].map((row) => row.progressAlarmKey)).toEqual([null, null, null]);
   });
 
   it('promptly retries a confirmed-dead runner before its unexpired lease, without manufacturing a verdict', async () => {

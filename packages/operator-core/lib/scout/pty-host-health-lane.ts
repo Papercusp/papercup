@@ -63,6 +63,13 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'quota-block-probe-released' ||
     kind === 'stale-fire-dropped' ||
     kind === 'respawn-rearm-superseded' ||
+    // A carry-respawn replaced the child while a delivery's native turn-start
+    // proof was still pending. That proof can never be certified against the
+    // successor, so the host tombstones the delivery ID to refuse a second paste
+    // (dedup, not a fault). The unproven start was already recorded by the
+    // delivery path's own failure event (native-turn-start-unverified or
+    // submit-verify-unconfirmed), so counting this retirement would double-count.
+    kind === 'native-turn-start-superseded' ||
     kind === 'wake-turn-deferred-for-pending-respawn' ||
     kind === 'turn-deferred-for-owner-input' ||
     kind === 'duplicate-delivery-id' ||

@@ -11,7 +11,39 @@ const src = readFileSync(SCRIPT, 'utf8');
 const lockRootAssignment = src.match(/^TAURI_VERIFIER_LOCK_ROOT=.*$/m)?.[0];
 const displayLockAssignment = src.match(/^DISPLAY_LOCK_DIR=.*$/m)?.[0];
 const portLockAssignment = src.match(/^PORT_LOCK_DIR=.*$/m)?.[0];
-const pickAndLockPortsFunction = src.match(/^pick_and_lock_ports\(\) \{[\s\S]*?^\}/m)?.[0];
+// pick_and_lock_ports is lifted out of the script and run on its own, so the
+// snippet must also carry every script-local helper it calls, transitively.
+// Lifting only the one function went red with `verify_reserved_port_pair:
+// command not found` (exit 127) as soon as the bind probe was factored out
+// beside it; deriving the helper set from the script keeps the snippet in step
+// instead of relying on a hand-maintained list.
+const scriptFunctionNames = [...src.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm)].map(match => match[1]);
+
+function extractScriptFunction(name: string): string | undefined {
+  // A one-line body (`log() { ...; }`) closes on its own line; a multi-line body
+  // closes at the next column-0 `}` (heredoc lines inside it stay indented).
+  return src.match(new RegExp(`^${name}\\(\\) \\{.*\\}[ \\t]*$`, 'm'))?.[0]
+    ?? src.match(new RegExp(`^${name}\\(\\) \\{[ \\t]*\\n[\\s\\S]*?^\\}`, 'm'))?.[0];
+}
+
+function extractFunctionWithLocalHelpers(root: string): string | undefined {
+  const bodies: string[] = [];
+  const seen = new Set<string>();
+  const visit = (name: string): boolean => {
+    if (seen.has(name)) return true;
+    seen.add(name);
+    const body = extractScriptFunction(name);
+    if (!body) return false;
+    for (const helper of scriptFunctionNames) {
+      if (helper !== name && new RegExp(`\\b${helper}\\b`).test(body) && !visit(helper)) return false;
+    }
+    bodies.push(body);
+    return true;
+  };
+  return visit(root) ? bodies.join('\n') : undefined;
+}
+
+const pickAndLockPortsFunction = extractFunctionWithLocalHelpers('pick_and_lock_ports');
 
 function commonEnv(root: string, privateTmpdir: string, runtimeDir: string, home: string) {
   return {
@@ -190,7 +222,9 @@ describe('verify-tauri-headless shares reservation locks across isolated TMPDIRs
     });
 
     try {
-      const deadline = Date.now() + 3000;
+      // Each launcher runs the script's real loopback bind probe (a node child)
+      // before it accepts a pair, so allow for node startup on a loaded host.
+      const deadline = Date.now() + 15_000;
       while (!existsSync(join(root, 'ready')) && Date.now() < deadline) {
         await new Promise((resolveWait) => setTimeout(resolveWait, 10));
       }
@@ -214,7 +248,7 @@ describe('verify-tauri-headless shares reservation locks across isolated TMPDIRs
       expect(result.code, firstStderr || firstStdout).toBe(0);
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('falls back to the same home cache when XDG_RUNTIME_DIR is unset', () => {
     expect(lockRootAssignment).toBeTruthy();

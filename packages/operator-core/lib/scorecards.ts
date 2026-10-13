@@ -23,7 +23,7 @@
 import { createHash } from 'node:crypto';
 import postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { getHarnessAdminUrl } from './embedded-pg-discovery';
+import { getLongLivedAdminPool, _endLongLivedAdminPoolForTests } from './long-lived-admin-pool';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY, measureGateReuseAuditWindow } from './release/gate-fire-ledger';
 import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import { platformComputedInstrumentKeys } from './rubric-instrument-registry';
@@ -2724,20 +2724,14 @@ export async function markGradingAuditAwaitingReemit(
 
 /** Dedicated cross-process advisory lock for grading-audit subject transitions. */
 const GRADING_AUDIT_SUBJECT_MUTEX_NAMESPACE = 'scorecards:grading-audit:subject';
-let _gradingAuditSubjectMutexSql: postgres.Sql | null = null;
+/** Registry label of the dedicated mutex pool; also its `pcusp:<label>:p<pid>` application_name. */
+const GRADING_AUDIT_SUBJECT_MUTEX_POOL = 'grading-audit-subject';
 
 function gradingAuditSubjectMutexSql(): postgres.Sql {
-  if (!_gradingAuditSubjectMutexSql) {
-    _gradingAuditSubjectMutexSql = postgres(getHarnessAdminUrl(), {
-      onnotice: () => {},
-      max: 8,
-      idle_timeout: 0,
-      connection: {
-        application_name: ('pcusp:grading-audit-subject:p' + process.pid).slice(0, 63),
-      },
-    });
-  }
-  return _gradingAuditSubjectMutexSql;
+  // getLongLivedAdminPool rebuilds the pool when the admin URL moves (EI-19306394439939264).
+  // Its idle_timeout cannot release a held session advisory lock: postgres-js cancels a
+  // connection's idle timer while it is reserved (move(c, reserved) in postgres/src/index.js).
+  return getLongLivedAdminPool(GRADING_AUDIT_SUBJECT_MUTEX_POOL, { max: 8 });
 }
 
 function gradingAuditSubjectMutexKey(input: {
@@ -2789,10 +2783,7 @@ export async function acquireGradingAuditSubjectMutex(input: {
 
 /** Test-only — close + drop the dedicated grading-audit mutex connection. */
 export async function _closeGradingAuditSubjectMutexForTests(): Promise<void> {
-  if (_gradingAuditSubjectMutexSql) {
-    await _gradingAuditSubjectMutexSql.end({ timeout: 1 }).catch(() => {});
-    _gradingAuditSubjectMutexSql = null;
-  }
+  await _endLongLivedAdminPoolForTests(GRADING_AUDIT_SUBJECT_MUTEX_POOL);
 }
 
 /**

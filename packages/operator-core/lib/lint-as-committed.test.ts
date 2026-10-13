@@ -30,6 +30,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -1254,6 +1255,49 @@ const { execFileSync } = require('node:child_process');
       expect(readFileSync(join(f.root, 'libs/runtime/source.cjs'), 'utf8')).toContain('shared-dirty-source');
       expect(readFileSync(join(f.root, 'libs/runtime/dist/index.cjs'), 'utf8')).toContain('shared-stale-dist');
     } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it('reports the child signal when the real committed runner is interrupted', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-signal-detail-'));
+    const fakeBin = join(root, 'bin');
+    gitFixture(root, ['init', '--quiet', '--initial-branch=staging']);
+    try {
+      snapshot(root, {
+        '.gitignore': 'node_modules/',
+        'package.json': JSON.stringify({ private: true, scripts: { 'lint:probe': 'node probe.cjs' } }),
+        'probe.cjs': 'console.log("the npm shim should interrupt before this runs");',
+      });
+      mkdirSync(fakeBin);
+      const npmShim = join(fakeBin, 'npm');
+      writeFileSync(npmShim, ['#!/bin/sh', 'kill -TERM $$', ''].join(String.fromCharCode(10)));
+      chmodSync(npmShim, 0o755);
+
+      const childEnv = {
+        ...process.env,
+        PATH: `${fakeBin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
+      };
+      const committedLoader = `--import=${resolve(repoRoot, 'scripts/lib/committed-source-loader.mjs')}`;
+      childEnv.NODE_OPTIONS = (childEnv.NODE_OPTIONS ?? '')
+        .split(/\s+/)
+        .filter((option) => option !== committedLoader)
+        .join(' ');
+      if (!childEnv.NODE_OPTIONS) delete childEnv.NODE_OPTIONS;
+
+      const result = spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: childEnv,
+      });
+
+      expect(result.signal, result.stdout + result.stderr).toBeNull();
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expect(result.stdout + result.stderr).toContain('terminated by signal SIGTERM (no exit status)');
+      expect(result.stdout + result.stderr).toContain('1 of 1 check(s) did NOT pass as committed');
+      expect(result.stdout + result.stderr).not.toContain('All 1 check(s) pass AS COMMITTED');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }, 40_000);
 
   it('runs the pinned workspace script and refuses an absent workspace-relative operand', () => {

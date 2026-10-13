@@ -26,7 +26,7 @@ import {
   type RepairManifestSummary,
 } from './repair-manifest';
 import { createHash } from 'node:crypto';
-import type { FixPrecheckVerdict } from './admission-fix-precheck';
+import type { AdmissionRadius, FixPrecheckVerdict } from './admission-fix-precheck';
 
 /**
  * Schema 4 (P-006, frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the row
@@ -447,6 +447,12 @@ export interface FrozenRepairAdmissionPrecheck {
   /** Last time the detached runner reported progress. */
   heartbeatAtMs?: number;
   verdict?: FixPrecheckVerdict;
+  /**
+   * P-007 (green-main-cycle-time-2026-10-08#D-037): the ordinary admission's related-test radius.
+   * The managed worker rebuilds the population from `files`; without this partition it would
+   * treat every radius file as admitted (refusable) and lose each file's leg.
+   */
+  radius?: AdmissionRadius;
 }
 
 export interface FrozenCandidateRepairQueue {
@@ -1579,6 +1585,40 @@ function parseDispatchReservation(value: unknown): FrozenRepairDispatchReservati
   };
 }
 
+const ADMISSION_RADIUS_STATUSES = new Set(['measured', 'skipped', 'not-applicable']);
+
+/**
+ * P-007: validate a persisted radius against the record's `files`. `null` = malformed, which
+ * rejects the whole record like every other malformed field: silently dropping only the radius
+ * would turn its report-only files into refusable admitted ones.
+ */
+function parseAdmissionRadius(value: unknown, files: readonly unknown[]): AdmissionRadius | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.status !== 'string' || !ADMISSION_RADIUS_STATUSES.has(row.status) || !nonBlank(row.reason)) return null;
+  if (row.detail !== undefined && typeof row.detail !== 'string') return null;
+  const list = (raw: unknown): string[] | null =>
+    Array.isArray(raw) && raw.every((file) => nonBlank(file) && files.includes(file)) ? [...(raw as string[])] : null;
+  const guarded = list(row.guarded);
+  const reportOnly = list(row.reportOnly);
+  if (!guarded || !reportOnly || guarded.some((file) => reportOnly.includes(file))) return null;
+  if (row.status !== 'measured' && guarded.length + reportOnly.length > 0) return null;
+  if (!row.legs || typeof row.legs !== 'object' || Array.isArray(row.legs)) return null;
+  const legs: Record<string, string> = {};
+  for (const [file, leg] of Object.entries(row.legs as Record<string, unknown>)) {
+    if (!nonBlank(file) || !nonBlank(leg)) return null;
+    legs[file] = leg;
+  }
+  return {
+    status: row.status as AdmissionRadius['status'],
+    reason: row.reason as string,
+    ...(typeof row.detail === 'string' && row.detail ? { detail: row.detail } : {}),
+    guarded,
+    reportOnly,
+    legs,
+  };
+}
+
 function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const row = value as Record<string, unknown>;
@@ -1629,6 +1669,8 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
       heartbeatAtMs: row.heartbeatAtMs as number,
     };
   }
+  const radius = row.radius === undefined ? undefined : parseAdmissionRadius(row.radius, files);
+  if (radius === null) return undefined;
   const verdict = row.verdict;
   if (row.status === 'running' && verdict !== undefined) return undefined;
   if (
@@ -1656,6 +1698,7 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     expiresAtMs: row.expiresAtMs as number,
     ...(progress ?? {}),
     ...(verdict ? { verdict: verdict as FixPrecheckVerdict } : {}),
+    ...(radius ? { radius } : {}),
   };
 }
 

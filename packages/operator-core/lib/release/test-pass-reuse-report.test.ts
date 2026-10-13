@@ -7,11 +7,16 @@ import { runInNewContext } from 'node:vm';
 // change in scripts/lib/test-pass-reuse.mjs breaks this test instead of silently blinding the
 // gate-side parser.
 import {
+  estimateReuseSavings,
   formatReuseAlarmLine,
   formatTestReuseLine,
   formatTestReuseTotalLine,
+  laneOfFromSplit,
+  laneScopedCandidates,
   selectReusablePasses,
 } from '../../../../scripts/lib/test-pass-reuse.mjs';
+// @ts-expect-error — pure JS guard script with no .d.mts (not enrolled in tsconfig.declarations.json; same as empty-suite-guard.test.ts)
+import { scriptSupportsPassReuse } from '../../../../scripts/lib/empty-suite-guard.mjs';
 import {
   formatExecutedMapAlarmLines,
   formatExecutedMapResultLines,
@@ -453,10 +458,12 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
     expect(end).toBeGreaterThan(start);
     const lines: string[] = [];
     // Exercise the real orchestration and selector, with only external IO replaced.
-    const arm = runInNewContext(`${source.slice(start, end)}\narmTestPassReuse`, {
+    const sandbox = {
       ROOT: '/repo', RUN_LOG_ROOT: '/logs', LANE_SCRIPTS: [], join, relative,
       process: { env: { GREEN_CHECKPOINT: '1', PAPERCUSP_TEST_RUN_GROUP: 'initial-group' } },
-      outSync: (line: string) => lines.push(line), scriptRunsZeroFilesAsPass: () => true,
+      outSync: (line: string) => lines.push(line),
+      // The real eligibility selector; the gate-decision PG write is an IO seam.
+      scriptSupportsPassReuse, recordGateReuseDecision: async () => undefined,
       testReuseEnabled: () => true,
       execFileSync: (command: string, args: string[]) => command === 'node' ? 'v25 linux x64'
         : args[0] === 'rev-parse' ? invocation().judgedSha : '',
@@ -469,7 +476,21 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
       setTimeout: () => ({ unref: () => undefined }),
       reuseCandidates: () => ['lib/uncaptured.test.ts'], laneOfTaskScript: () => null,
       selectReusablePasses, formatTestReuseLine, formatTestReuseTotalLine,
-    }) as (tasks: unknown[]) => Promise<void>;
+      estimateReuseSavings, laneOfFromSplit, laneScopedCandidates,
+      // Checkout, PG and filesystem seams: the judged-tree read, the destructive checkpoint
+      // restore, proof/duration queries and the skip-list write.
+      judgedTreeProofFormat: () => null,
+      restoreCandidateCheckpointForReuse: () => ({ ok: false, reason: 'test-stub' }),
+      loadReuseProofFiles: async () => ({ files: [], rows: 0 }),
+      loadPassDurations: async () => new Map(), writeReuseSkipList: () => '/logs/reuse-skip.json',
+    };
+    // Derived completeness: every import the extracted function names must be in the sandbox, so
+    // a new dependency fails here BY NAME instead of as a mid-run ReferenceError.
+    const body = source.slice(start, end).replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    const imported = [...source.matchAll(/^import\s*\{([^}]*)\}\s*from/gm)]
+      .flatMap((m) => m[1]!.split(',').map((n) => n.trim().split(/\s+as\s+/).pop()!.trim()).filter(Boolean));
+    expect(imported.filter((n) => new RegExp(`\\b${n}\\b`).test(body) && !(n in sandbox))).toEqual([]);
+    const arm = runInNewContext(`${source.slice(start, end)}\narmTestPassReuse`, sandbox) as (tasks: unknown[]) => Promise<void>;
     await arm([{ ws: { name: '@papercusp/operator-core', dir: '', scripts: { test: 'vitest --passWithNoTests' } },
       script: 'test' }]);
     const parsed = parseTestPassReuse(lines.join('\n'));

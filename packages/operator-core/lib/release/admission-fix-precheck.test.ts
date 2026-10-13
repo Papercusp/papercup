@@ -19,6 +19,7 @@ import {
   resolveCanonicalIntegrationRoot,
   ROUTER_EXIT_NOT_MEASURED,
   ROUTER_EXIT_TEMPFAIL,
+  type AdmissionRadius,
   type ExecOptions,
   type AdmissionPrecheckRootProbe,
   type ExecResult,
@@ -157,6 +158,89 @@ describe('evaluateFixPrecheck (P-006 / R6)', () => {
       reason: 'runner-failed',
       detail: expect.stringContaining('setup exited 1'),
     });
+  });
+});
+
+describe('admission radius (green-main-cycle-time-2026-10-08 P-007, #D-036)', () => {
+  const radius = (over: Partial<AdmissionRadius> = {}): AdmissionRadius => ({
+    status: 'measured',
+    reason: 'ok',
+    guarded: ['ws-a/lib/near.test.ts'],
+    reportOnly: ['ws-b/lib/known-red-leg.test.ts'],
+    legs: { 'ws-a/lib/near.test.ts': '@t/a', 'ws-b/lib/known-red-leg.test.ts': '@t/b', 'lib/new.test.ts': '@t/root' },
+    ...over,
+  });
+  const withRadius = (r: AdmissionRadius = radius()) =>
+    precheckPopulation({ signature: [sig('lib/red.test.ts')], admittedPaths: ['lib/fix.ts', 'lib/new.test.ts'], radius: r });
+
+  it('runs radius files after the admitted ones without ever counting them as admitted', () => {
+    const pop = withRadius();
+    expect(pop.admittedTestFiles).toEqual(['lib/new.test.ts']);
+    expect(pop.radius).toMatchObject({ guarded: ['ws-a/lib/near.test.ts'], reportOnly: ['ws-b/lib/known-red-leg.test.ts'] });
+    expect(pop.files).toEqual(['lib/red.test.ts', 'lib/new.test.ts', 'ws-a/lib/near.test.ts', 'ws-b/lib/known-red-leg.test.ts']);
+  });
+
+  it('the managed worker rebuilds the same population from the persisted files plus the partition', () => {
+    const first = withRadius();
+    // The worker only has `operation.files` + `operation.radius`: radius files must not turn into admitted ones.
+    const rebuilt = precheckPopulation({ signature: [sig('lib/red.test.ts')], admittedPaths: first.files, radius: first.radius });
+    expect(rebuilt.admittedTestFiles).toEqual(['lib/new.test.ts']);
+    expect(rebuilt.files).toEqual(first.files);
+    expect(rebuilt.radius).toEqual(first.radius);
+  });
+
+  it('a radius file never shadows a signature or explicitly admitted test file', () => {
+    const pop = withRadius(radius({ guarded: ['lib/red.test.ts', 'ws-a/lib/near.test.ts'], reportOnly: ['ws-a/lib/near.test.ts'] }));
+    expect(pop.signatureTestFiles).toEqual(['lib/red.test.ts']);
+    expect(pop.radius?.guarded).toEqual(['ws-a/lib/near.test.ts']);
+    expect(pop.radius?.reportOnly).toEqual([]);
+  });
+
+  it('a failing GUARDED radius file refuses admission-imports-red and names its leg', () => {
+    const v = evaluateFixPrecheck(withRadius(), ran([
+      ['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-a/lib/near.test.ts', 'fail'], ['ws-b/lib/known-red-leg.test.ts', 'pass'],
+    ]));
+    expect(v).toMatchObject({ ok: false, code: 'admission-imports-red', importedRed: ['ws-a/lib/near.test.ts'], newlyRedLegs: ['@t/a'], reportOnlyRed: [] });
+    if (v.ok) throw new Error('expected refusal');
+    expect(v.detail).toContain('ws-a/lib/near.test.ts (leg @t/a)');
+    expect(v.detail).toContain('previously green leg(s) turned red: @t/a');
+  });
+
+  it('a failing REPORT-ONLY radius file is reported but cannot refuse: its leg was already red', () => {
+    const v = evaluateFixPrecheck(withRadius(), ran([
+      ['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-a/lib/near.test.ts', 'pass'], ['ws-b/lib/known-red-leg.test.ts', 'fail'],
+    ]));
+    expect(v).toMatchObject({ ok: true, ran: true, fixes: ['lib/red.test.ts'], reportOnlyRed: ['ws-b/lib/known-red-leg.test.ts'] });
+  });
+
+  it('an admitted test file failing names its leg too', () => {
+    const v = evaluateFixPrecheck(withRadius(), ran([
+      ['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'fail'], ['ws-a/lib/near.test.ts', 'pass'], ['ws-b/lib/known-red-leg.test.ts', 'pass'],
+    ]));
+    expect(v).toMatchObject({ ok: false, code: 'admission-imports-red', newlyRedLegs: ['@t/root'] });
+    if (v.ok) throw new Error('expected refusal');
+    expect(v.detail).toContain('lib/new.test.ts (leg @t/root)');
+  });
+
+  it('an unmeasured radius file refuses unavailable, like any other pre-check file', () => {
+    const v = evaluateFixPrecheck(withRadius(), ran([['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'pass'], ['ws-a/lib/near.test.ts', 'pass']]));
+    expect(v).toMatchObject({ ok: false, code: 'admission-precheck-unavailable', unmeasured: ['ws-b/lib/known-red-leg.test.ts'] });
+  });
+
+  it('a skipped radius runs nothing extra but stays on the population as a loud marker', () => {
+    const pop = withRadius(radius({ status: 'skipped', reason: 'over-cap(55/40)', guarded: [], reportOnly: [] }));
+    expect(pop.files).toEqual(['lib/red.test.ts', 'lib/new.test.ts']);
+    expect(pop.radius).toMatchObject({ status: 'skipped', reason: 'over-cap(55/40)' });
+  });
+
+  it('without a radius the verdict keeps its pre-P-007 shape and wording', () => {
+    const legacy = precheckPopulation({ signature: [sig('lib/red.test.ts')], admittedPaths: ['lib/new.test.ts'] });
+    const v = evaluateFixPrecheck(legacy, ran([['lib/red.test.ts', 'pass'], ['lib/new.test.ts', 'fail']]));
+    expect(v).not.toHaveProperty('reportOnlyRed');
+    expect(v).not.toHaveProperty('newlyRedLegs');
+    if (v.ok) throw new Error('expected refusal');
+    expect(v.detail).toContain('1 admitted test file(s) outside the frozen signature fail');
+    expect(v.detail).not.toContain('(leg ');
   });
 });
 

@@ -111,9 +111,15 @@ export function classifySpecifier(spec: any): "relative" | "alias" | "bare";
  * measured 692 dropped edges in the snapshot producer that shared the map).
  *
  * @param {string} wsRoot absolute workspace root holding tsconfig.json
+ * @param {{ readFile?: (p: string) => string }} [seam] reads the tsconfig. The admission
+ *   pre-check injects a reader over a pinned Git tree so aliases come from the commit being
+ *   judged, not the shared working tree (green-main-cycle-time-2026-10-08#D-037). A throw
+ *   means "absent", exactly like a missing file on disk.
  * @returns {TsconfigPathEntry[]}
  */
-export function tsconfigPathEntriesFor(wsRoot: string): TsconfigPathEntry[];
+export function tsconfigPathEntriesFor(wsRoot: string, { readFile }?: {
+    readFile?: (p: string) => string;
+}): TsconfigPathEntry[];
 /**
  * Resolve `spec` against tsconfig `paths` entries the way TypeScript does: an EXACT key matches
  * by equality only and wins outright; otherwise the LONGEST matching wildcard prefix wins
@@ -179,7 +185,28 @@ export function staticImportClosure({ rootDir, entryFiles, aliases, fs, }?: {
  * @property {(dir: string) => string[]}      list   recursively enumerate source files under `dir`
  * @property {(p: string) => string | null}   read   file contents, or null when unreadable
  * @property {(p: string) => boolean}         exists does this path resolve on disk
+ * @property {((p: string) => string | null) | undefined} [key] content identity of `p` (a git
+ *   blob sha), or null when unknown. With `buildIndex`'s `edgeCache`, a file whose (path, key)
+ *   pair was parsed before is neither read nor re-parsed.
  */
+/**
+ * Import edges parsed out of one file, or `null` when it did not parse (an unresolved file).
+ * @typedef {{ specifiers: string[], runtimePaths: string[] } | null} ParsedEdges
+ */
+/**
+ * Parsed edges reused across `buildIndex` calls, keyed by `edgeCacheKey(file, fs.key(file))`.
+ * Only the parse is cached: resolution depends on the tree around the file, so it reruns.
+ * @typedef {Map<string, ParsedEdges>} EdgeCache
+ */
+/**
+ * The `EdgeCache` key for `file` with content identity `key`. The path is part of it because
+ * the parser picks its dialect from the extension.
+ *
+ * @param {string} file
+ * @param {string} key
+ * @returns {string}
+ */
+export function edgeCacheKey(file: string, key: string): string;
 /**
  * @typedef {object} RelatedIndex
  * @property {string[]}                files      every source file found under the root
@@ -199,12 +226,15 @@ export function staticImportClosure({ rootDir, entryFiles, aliases, fs, }?: {
  * @param {string}                  o.rootDir   absolute dir to index (a workspace's source root)
  * @param {TsconfigPathEntry[]}     [o.aliases] `tsconfigPathEntriesFor` entries (resolved with `matchTsconfigPath`)
  * @param {RelatedFs}               [o.fs]      filesystem seam (injected in tests)
+ * @param {EdgeCache}               [o.edgeCache] parsed edges reused across calls; consulted only
+ *                                              for files `fs.key` identifies
  * @returns {RelatedIndex}
  */
-export function buildIndex({ rootDir, aliases, fs }?: {
+export function buildIndex({ rootDir, aliases, fs, edgeCache }?: {
     rootDir: string;
     aliases?: TsconfigPathEntry[] | undefined;
     fs?: RelatedFs | undefined;
+    edgeCache?: EdgeCache | undefined;
 }): RelatedIndex;
 /**
  * Exact transitive forward closure, including cyclic import graphs.
@@ -329,7 +359,25 @@ export type RelatedFs = {
      * does this path resolve on disk
      */
     exists: (p: string) => boolean;
+    /**
+     * content identity of `p` (a git
+     * blob sha), or null when unknown. With `buildIndex`'s `edgeCache`, a file whose (path, key)
+     * pair was parsed before is neither read nor re-parsed.
+     */
+    key?: ((p: string) => string | null) | undefined;
 };
+/**
+ * Import edges parsed out of one file, or `null` when it did not parse (an unresolved file).
+ */
+export type ParsedEdges = {
+    specifiers: string[];
+    runtimePaths: string[];
+} | null;
+/**
+ * Parsed edges reused across `buildIndex` calls, keyed by `edgeCacheKey(file, fs.key(file))`.
+ * Only the parse is cached: resolution depends on the tree around the file, so it reruns.
+ */
+export type EdgeCache = Map<string, ParsedEdges>;
 export type RelatedIndex = {
     /**
      * every source file found under the root

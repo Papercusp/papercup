@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './_egress';
 import { writeFile } from 'node:fs/promises';
 import { renderPlanAuditReport } from '../../../packages/operator-core/lib/plan-audit-report';
 import { stubSyncQueries } from './_sync-stub';

@@ -82,6 +82,9 @@
     "scripts/lib/git-index-fault.mjs",
     "scripts/lib/git-optional-locks.mjs",
     "scripts/lib/task-exit-class.mjs",
+    // WI-6554700010009815 — the foreign-hive submodule registry, imported by the
+    // gitmodules-invariants test; keep its types generated.
+    "scripts/lib/foreign-hive-submodules.mjs",
     // WI-42146 / P-047 — the test-certified watermark that decouples the affected-test
     // diff base from the green-main pointer. Registered for this list's first reason: it
     // is imported directly by affected-tests-test-certified-base.test.ts.

@@ -195,6 +195,39 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     expect(persisted.dispatchReservation).toBeUndefined();
   });
 
+  it('P-007 (#D-037): rebuilds the population with the persisted radius partition, so a report-only red cannot refuse', async () => {
+    const files = ['lib/red.test.ts', 'ws-a/near.test.ts', 'ws-b/red-leg.test.ts'];
+    const radius = {
+      status: 'measured' as const, reason: 'ok', guarded: ['ws-a/near.test.ts'], reportOnly: ['ws-b/red-leg.test.ts'],
+      legs: { 'ws-a/near.test.ts': '@t/a', 'ws-b/red-leg.test.ts': '@t/b' },
+    };
+    const settle = async (precheck: FrozenRepairAdmissionPrecheck, failing: string) => {
+      let persisted = queue(precheck);
+      await runAdmissionPrecheckWorker(input, {
+        getTask: async () => ({ state: 'running', confined: true }),
+        readQueue: async () => ({ status: 'value', queue: persisted }),
+        transition: async (_target, update) => { persisted = update(persisted); },
+        createRunner: () => async (run: { commit: string; files: readonly string[] }) => ({
+          ran: true as const, commit: run.commit,
+          results: run.files.map((path) => ({ path, status: path === failing ? 'fail' as const : 'pass' as const })),
+        }),
+        now: () => 30,
+      });
+      return persisted.admissionPrecheck;
+    };
+    const withRadius = operation({ files, totalCount: files.length, radius });
+    expect(await settle(withRadius, 'ws-b/red-leg.test.ts')).toMatchObject({
+      status: 'passed', verdict: { ok: true, reportOnlyRed: ['ws-b/red-leg.test.ts'] },
+    });
+    expect(await settle(withRadius, 'ws-a/near.test.ts')).toMatchObject({
+      status: 'failed', verdict: { ok: false, code: 'admission-imports-red', newlyRedLegs: ['@t/a'] },
+    });
+    // CONTROL: the same files without the partition read the report-only file as admitted.
+    expect(await settle(operation({ files, totalCount: files.length }), 'ws-b/red-leg.test.ts')).toMatchObject({
+      status: 'failed', verdict: { ok: false, code: 'admission-imports-red', importedRed: ['ws-b/red-leg.test.ts'] },
+    });
+  });
+
   it('does not run outside a confined task or overwrite a successor operation', async () => {
     const unconfinedRunner = vi.fn();
     const unconfined = await runAdmissionPrecheckWorker(input, {

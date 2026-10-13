@@ -232,6 +232,8 @@ export async function runAdmissionPrecheckWorker(
   const population = precheckPopulation({
     signature: queue.signature as readonly RepairSignatureEntry[],
     admittedPaths: operation.files,
+    // P-007 (#D-037): without the persisted partition every radius file would count as admitted.
+    ...(operation.radius ? { radius: operation.radius } : {}),
   });
   const runner = deps.createRunner({
     integrationRoot: input.integrationRoot,

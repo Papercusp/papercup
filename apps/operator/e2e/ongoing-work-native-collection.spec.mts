@@ -301,6 +301,10 @@ async function loadNativeCollectionWriter() {
 // This uses the same Node loader and complete graph as the native fixture, but
 // needs no browser or database. Run it before booting the costly owned rig.
 test('native collection fixture writer graph loads under the Playwright Node loader', async () => {
+  // With a cold Playwright transform cache this graph load measured 1.1m at load ~380
+  // (WI-6554700010009809), at the edge of the default 60s budget; budget it like the other
+  // cold-graph tests in this file.
+  test.setTimeout(180_000);
   const singleton = await import('@papercusp/module-singleton');
   await test.info().attach('singleton-loader-exports', { body: JSON.stringify({
     keys: Object.keys(singleton), pin: typeof singleton.pinModuleState,

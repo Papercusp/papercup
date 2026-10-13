@@ -47,6 +47,7 @@ const { releaseWorkItem, claimWorkItem, getWorkItem, classifyClaimFailure } = aw
 const { assignActionableWorkItems } = await import('./agent-tools/coordination/actionable-work-item-dispatch');
 const { acquireClaimLocal, getClaim } = await import('./work-item-claims');
 const { createOrgTestDb } = await import('../test/_org-test-db');
+const { applyClaimPathReadDeps } = await import('../test/_work-items-schema');
 
 let db: OrgTestDb;
 let sql: Sql;
@@ -55,6 +56,7 @@ beforeAll(async () => {
   db = await createOrgTestDb();
   sql = db.adminSql;
   hoisted.sql = sql;
+  await applyClaimPathReadDeps((ddl) => sql.unsafe(ddl).simple());
 }, 120_000);
 
 afterAll(async () => {

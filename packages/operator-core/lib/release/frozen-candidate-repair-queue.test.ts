@@ -100,6 +100,43 @@ describe('frozen-candidate repair queue', () => {
     expect(
       parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pinned)))?.admissionPrecheck,
     ).toMatchObject({ sourceCommit: C2 });
+    // P-007 (green-main-cycle-time-2026-10-08#D-037): the radius partition survives the queue
+    // round-trip; a malformed one rejects the record rather than silently re-admitting its files.
+    const radius = {
+      status: 'measured' as const,
+      reason: 'ok',
+      detail: '1 workspace(s)',
+      guarded: ['lib/near.test.ts'],
+      reportOnly: ['lib/red-leg.test.ts'],
+      legs: { 'lib/near.test.ts': '@t/a', 'lib/red-leg.test.ts': '@t/b' },
+    };
+    const withRadius = {
+      ...pending,
+      admissionPrecheck: {
+        ...pending.admissionPrecheck!,
+        files: ['lib/a.test.ts', 'lib/near.test.ts', 'lib/red-leg.test.ts'],
+        totalCount: 3,
+        radius,
+      },
+    };
+    expect(
+      parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(withRadius)))?.admissionPrecheck?.radius,
+    ).toEqual(radius);
+    for (const bad of [
+      { ...radius, status: 'maybe' },
+      { ...radius, reason: '' },
+      { ...radius, guarded: ['lib/not-in-files.test.ts'] },
+      { ...radius, reportOnly: ['lib/near.test.ts'] },
+      { ...radius, status: 'skipped' },
+      { ...radius, legs: { 'lib/near.test.ts': '' } },
+      { ...radius, legs: [] },
+    ]) {
+      expect(
+        parseFrozenCandidateRepairQueue({ ...withRadius, admissionPrecheck: { ...withRadius.admissionPrecheck, radius: bad } })
+          ?.admissionPrecheck,
+        JSON.stringify(bad),
+      ).toBeUndefined();
+    }
     const admitted = markFrozenRepairAdmitted(parsed!, {
       atMs: T0 + 3,
       actor: 'su-test',

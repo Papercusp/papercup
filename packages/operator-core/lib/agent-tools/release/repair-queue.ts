@@ -1723,6 +1723,9 @@ export default defineTool({
             completedCount: 0,
             totalCount: population.files.length,
             heartbeatAtMs: startedAtMs,
+            // P-007 (#D-037): the managed worker rebuilds the population from `files`; the
+            // partition keeps report-only radius files from becoming refusable admitted ones.
+            ...(population.radius ? { radius: population.radius } : {}),
           };
           const pendingQueue: FrozenCandidateRepairQueue = {
             ...queue,
@@ -1827,6 +1830,7 @@ export default defineTool({
             detail: precheck.detail,
             precheck: precheckRecordOf(precheck, { skipPrecheck, precheckReason, dryRun, population }),
             precheckResults: precheck.ran ? precheck.results : [],
+            precheckRadius: population.radius ?? null,
             builtCommit,
             judgedSha: queue.repairHead,
             containment: await containmentAt(queue.repairHead),
@@ -2054,6 +2058,7 @@ export default defineTool({
         source: outcome.entry.source,
         paths: outcome.entry.paths,
         unchanged: outcome.entry.unchanged,
+        precheckRadius: population.radius ?? null,
         mode,
         ...(patch
           ? { patch }
@@ -2091,6 +2096,7 @@ export default defineTool({
         admission: entry,
         ...provenance,
         precheck: precheckEntry,
+        precheckRadius: population.radius ?? null,
         ...(dependencyGeneration ? { dependencyGeneration } : {}),
         containment: await containmentAt(judgedSha),
         persisted,

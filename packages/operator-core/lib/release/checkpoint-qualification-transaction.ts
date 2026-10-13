@@ -16,7 +16,12 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
-import { dependencyGenerationInfraCode, GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine } from './checkpoint-log-tags';
+import {
+  dependencyGenerationInfraCode,
+  GREEN_CHECKPOINT_RESULT_MARKER,
+  isFixtureLogLine,
+  ORCHESTRATOR_STDOUT_TAG,
+} from './checkpoint-log-tags';
 import {
   frozenRepairHeadAwaitsVerification,
   parseFrozenCandidateRepairQueue,
@@ -68,6 +73,25 @@ export const QUALIFICATION_OWNER_ABANDONED_MS = 3 * 60 * 60 * 1_000;
 export const QUALIFICATION_PROGRESS_STALE_MS = 3 * 60_000;
 /** An admitted scheduler fire may be probed before systemd has created its named scope. */
 export const QUALIFICATION_LAUNCH_GRACE_MS = 60_000;
+
+/**
+ * WI-6554700010009616: how long a LIVE runner may sit in `finalizing` before the lost-run sweep
+ * calls it a post-verdict hang. Every post-verdict step is bounded (30-60s each, WI-6554700010009547),
+ * so 20m is far past any legitimate tail. The heartbeat cannot catch this case: its interval keeps
+ * firing through an awaited hang (run b874ad21 sat ~2h with a fresh heartbeat).
+ */
+export const QUALIFICATION_POST_VERDICT_HANG_MS = 20 * 60_000;
+
+/** True when a live runner has been parked past its final verdict longer than the bound above. */
+export function isPostVerdictHang(
+  runner: Pick<QualificationPhysicalRunner, 'phase' | 'phaseEnteredAtMs'> | null | undefined,
+  liveness: RunnerLiveness,
+  nowMs: number,
+  boundMs = QUALIFICATION_POST_VERDICT_HANG_MS,
+): boolean {
+  return !!runner && runner.phase === 'finalizing' && liveness === 'live' &&
+    typeof runner.phaseEnteredAtMs === 'number' && nowMs - runner.phaseEnteredAtMs > boundMs;
+}
 
 function launchReservationInGrace(runner: QualificationPhysicalRunner | null | undefined, nowMs: number): boolean {
   return !!runner && runner.phase === 'launching' && nowMs - runner.reservedAtMs < QUALIFICATION_LAUNCH_GRACE_MS;
@@ -200,7 +224,12 @@ export interface QualificationPhysicalRunner {
   pid?: number | null;
   pidIdentity?: string | null;
   heartbeatAtMs?: number;
-  phase?: 'launching' | 'materializing' | 'suite' | 'isolating' | 'delivering';
+  /** `finalizing` (WI-6554700010009616): the tick is past its final verdict and no further suite can
+   * start, so only bounded post-verdict steps remain. A runner parked here is a post-verdict hang. */
+  phase?: 'launching' | 'materializing' | 'suite' | 'isolating' | 'delivering' | 'finalizing';
+  /** When `phase` last changed. The heartbeat keeps advancing through an awaited hang, so only
+   * this clock can say how long the runner has been parked in one phase. */
+  phaseEnteredAtMs?: number;
 }
 
 export interface QualificationPhysicalRun extends QualificationPhysicalRunner {
@@ -1312,7 +1341,12 @@ export function recordQualificationRunnerProgress(
       ...current,
       updatedAtMs: nowMs,
       lastProgressAtMs: nowMs,
-      currentPhysicalRunner: { ...runner, heartbeatAtMs: nowMs, phase: input.phase },
+      currentPhysicalRunner: {
+        ...runner,
+        heartbeatAtMs: nowMs,
+        phase: input.phase,
+        phaseEnteredAtMs: runner.phase === input.phase ? runner.phaseEnteredAtMs ?? nowMs : nowMs,
+      },
     },
   };
 }
@@ -1503,7 +1537,9 @@ export function recoverQualificationHistoricalPreSuiteError(
   if (!result || result.runId !== input.runId || result.candidate !== input.candidate ||
       result.reason !== 'error' || result.green !== null || result.advanced !== false ||
       result.crashed !== true || result.recorded !== true) return conflict('archive-result-mismatch');
-  const prelock = lines.findIndex(line => line.startsWith('[green-checkpoint] FAILED before checkpoint lock:'));
+  // Fixture lines are already filtered out above, so this matches the PRODUCTION tag — derived from
+  // its one definition (WI-37605 guard), never re-typed, so it cannot drift from the emitter.
+  const prelock = lines.findIndex(line => line.startsWith(`${ORCHESTRATOR_STDOUT_TAG} FAILED before checkpoint lock:`));
   const marker = lines.indexOf(markerLines[0]);
   if (prelock < 0 || prelock >= marker ||
       !lines[prelock].includes('dependency-generation.sh') ||
@@ -1524,7 +1560,7 @@ export function recoverQualificationHistoricalPreSuiteError(
       current.outcome.kind !== 'code-inconclusive' || current.outcome.reason !== 'error' ||
       current.currentPhysicalRunner !== null || current.pendingRepairHead) return conflict('predecessor-not-recoverable');
   if ((current.consumedPhysicalRuns ?? []).some(run =>
-    run.phase === 'suite' || run.phase === 'isolating' || run.phase === 'delivering' ||
+    run.phase === 'suite' || run.phase === 'isolating' || run.phase === 'delivering' || run.phase === 'finalizing' ||
     (run.outcome.kind !== 'pre-suite-no-verdict' &&
       !(run.id === input.runId && run.candidate === input.candidate &&
         run.outcome.kind === 'code-inconclusive' && run.outcome.reason === 'error')))) return conflict('consumed-run-not-pre-suite');

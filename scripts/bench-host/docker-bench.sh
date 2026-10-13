@@ -154,7 +154,7 @@ install_bench() {
   if ip -4 route show | grep -qE "^$(bridge_subnet) " && ! ip link show "$BENCH_BRIDGE" >/dev/null 2>&1; then
     die "$(bridge_subnet) is already routed via another interface; set BENCH_BRIDGE_CIDR"
   fi
-  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+  local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "${tmp:-}"' RETURN
   render "$tmp"
   dockerd --validate --config-file "$tmp/daemon.json" >/dev/null
   install -d -m 0755 "$ETC_DIR" "$BENCH_DATA_ROOT"

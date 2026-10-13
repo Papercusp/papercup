@@ -331,17 +331,23 @@ function candidatesFor(base) {
  * measured 692 dropped edges in the snapshot producer that shared the map).
  *
  * @param {string} wsRoot absolute workspace root holding tsconfig.json
+ * @param {{ readFile?: (p: string) => string }} [seam] reads the tsconfig. The admission
+ *   pre-check injects a reader over a pinned Git tree so aliases come from the commit being
+ *   judged, not the shared working tree (green-main-cycle-time-2026-10-08#D-037). A throw
+ *   means "absent", exactly like a missing file on disk.
  * @returns {TsconfigPathEntry[]}
  */
-export function tsconfigPathEntriesFor(wsRoot) {
+export function tsconfigPathEntriesFor(wsRoot, { readFile } = {}) {
+  const read = readFile ?? ((p) => readFileSync(p, "utf8"));
   try {
     const tsconfigPath = path.join(wsRoot, "tsconfig.json");
     let text;
     try {
-      text = readFileSync(tsconfigPath, "utf8");
+      text = read(tsconfigPath);
     } catch {
       return [];
     }
+    if (typeof text !== "string") return [];
     // Tolerate comments/trailing commas — tsconfig is JSON5-ish in practice.
     // Comments are masked by the SHARED stripper, never a local regex. A naive
     // `//`-to-end-of-line rule is string-literal-blind, so a tsconfig value that
@@ -538,7 +544,33 @@ export function staticImportClosure({
  * @property {(dir: string) => string[]}      list   recursively enumerate source files under `dir`
  * @property {(p: string) => string | null}   read   file contents, or null when unreadable
  * @property {(p: string) => boolean}         exists does this path resolve on disk
+ * @property {((p: string) => string | null) | undefined} [key] content identity of `p` (a git
+ *   blob sha), or null when unknown. With `buildIndex`'s `edgeCache`, a file whose (path, key)
+ *   pair was parsed before is neither read nor re-parsed.
  */
+
+/**
+ * Import edges parsed out of one file, or `null` when it did not parse (an unresolved file).
+ * @typedef {{ specifiers: string[], runtimePaths: string[] } | null} ParsedEdges
+ */
+
+/**
+ * Parsed edges reused across `buildIndex` calls, keyed by `edgeCacheKey(file, fs.key(file))`.
+ * Only the parse is cached: resolution depends on the tree around the file, so it reruns.
+ * @typedef {Map<string, ParsedEdges>} EdgeCache
+ */
+
+/**
+ * The `EdgeCache` key for `file` with content identity `key`. The path is part of it because
+ * the parser picks its dialect from the extension.
+ *
+ * @param {string} file
+ * @param {string} key
+ * @returns {string}
+ */
+export function edgeCacheKey(file, key) {
+  return `${key}\0${file}`;
+}
 
 /**
  * @typedef {object} RelatedIndex
@@ -560,9 +592,11 @@ export function staticImportClosure({
  * @param {string}                  o.rootDir   absolute dir to index (a workspace's source root)
  * @param {TsconfigPathEntry[]}     [o.aliases] `tsconfigPathEntriesFor` entries (resolved with `matchTsconfigPath`)
  * @param {RelatedFs}               [o.fs]      filesystem seam (injected in tests)
+ * @param {EdgeCache}               [o.edgeCache] parsed edges reused across calls; consulted only
+ *                                              for files `fs.key` identifies
  * @returns {RelatedIndex}
  */
-export function buildIndex({ rootDir, aliases = [], fs = defaultFs() } = {}) {
+export function buildIndex({ rootDir, aliases = [], fs = defaultFs(), edgeCache = undefined } = {}) {
   const aliasEntries = aliasTuples(aliases);
   const files = fs.list(rootDir);
   const fileSet = new Set(files);
@@ -588,18 +622,28 @@ export function buildIndex({ rootDir, aliases = [], fs = defaultFs() } = {}) {
   };
 
   for (const f of files) {
-    const src = fs.read(f);
-    if (src === null) {
-      // Unreadable file: we cannot know what it imports. Fail loud-ish by marking
-      // it unresolved rather than silently giving it zero dependencies.
-      unresolved.add(f);
-      deps.set(f, new Set());
-      continue;
+    const identity = edgeCache && typeof fs.key === "function" ? fs.key(f) : null;
+    const cacheKey = identity ? edgeCacheKey(f, identity) : null;
+    /** @type {ParsedEdges | undefined} */
+    let edges = cacheKey ? edgeCache?.get(cacheKey) : undefined;
+    if (edges === undefined) {
+      const src = fs.read(f);
+      if (src === null) {
+        // Unreadable file: we cannot know what it imports. Fail loud-ish by marking
+        // it unresolved rather than silently giving it zero dependencies. Not cached:
+        // a failed read says nothing about the content behind the key.
+        unresolved.add(f);
+        deps.set(f, new Set());
+        continue;
+      }
+      try {
+        edges = moduleDependencyEdges(src, f);
+      } catch {
+        edges = null;
+      }
+      if (cacheKey) edgeCache?.set(cacheKey, edges);
     }
-    let edges;
-    try {
-      edges = moduleDependencyEdges(src, f);
-    } catch {
+    if (edges === null) {
       unresolved.add(f);
       deps.set(f, new Set());
       continue;

@@ -55,6 +55,31 @@ export function isTestFilePath(p: string): boolean {
 
 export type SignatureLike = Pick<RepairSignatureEntry, 'kind' | 'id'> & Partial<Pick<RepairSignatureEntry, 'workspace'>>;
 
+/**
+ * P-007 (green-main-cycle-time-2026-10-08#D-036): an ordinary admission's related-test radius,
+ * selected at the BUILT commit. `measured` = the radius files are in the population; `skipped`
+ * = the radius was too wide or could not be computed, so the next targeted round (P-005)
+ * measures it instead — a loud marker, never a silent omission; `not-applicable` = the
+ * admission named no source path a test could import.
+ */
+export type AdmissionRadiusStatus = 'measured' | 'skipped' | 'not-applicable';
+
+export interface AdmissionRadius {
+  status: AdmissionRadiusStatus;
+  /** `ok` when measured; otherwise why: `over-cap(n/cap)`, `selection-full:<reason>`, `radius-unavailable`, `no-source-paths`. */
+  reason: string;
+  detail?: string;
+  /** Previously green radius test files: one failing at the built commit refuses `admission-imports-red`. */
+  guarded: string[];
+  /**
+   * Radius files inside a workspace whose `workspace-task` leg the signature already names red:
+   * measured and reported (`reportOnlyRed`), but they cannot refuse — that leg was not green.
+   */
+  reportOnly: string[];
+  /** Test file (radius or admitted) → its leg: the owning npm workspace name, when known. */
+  legs: Record<string, string>;
+}
+
 export interface FixPrecheckPopulation {
   /** Signature `test-file` ids — the reds the admission claims to fix. */
   signatureTestFiles: string[];
@@ -64,7 +89,9 @@ export interface FixPrecheckPopulation {
   nonTestKinds: RepairSignatureKind[];
   /** True only when the signature is non-empty and consists solely of `test-file` entries. */
   canProveDoesNotFix: boolean;
-  /** Union of both file sets, in run order (signature first). */
+  /** P-007: the admitted paths' related-test radius; absent when none was computed (gitlink or legacy). */
+  radius?: AdmissionRadius;
+  /** Every file to run, in run order: signature, admitted, guarded radius, report-only radius. */
   files: string[];
 }
 
@@ -77,6 +104,13 @@ export function precheckPopulation(input: {
   admittedPaths: readonly string[];
   /** Dependency-selected files from the immutable admission, outside the signature. */
   affectedTestFiles?: readonly string[];
+  /**
+   * P-007: the ordinary admission's radius. Its files never count as admitted, even when they
+   * also appear in `admittedPaths` (the managed worker rebuilds from the persisted `files`).
+   * The inventory keeps radius and admitted test files disjoint, so an explicitly admitted
+   * test file is never demoted to report-only.
+   */
+  radius?: AdmissionRadius;
 }): FixPrecheckPopulation {
   const signatureTestFiles: string[] = [];
   const nonTestKinds = new Set<RepairSignatureKind>();
@@ -88,20 +122,59 @@ export function precheckPopulation(input: {
       nonTestKinds.add(entry.kind);
     }
   }
+  const radiusFiles = new Set(
+    [...(input.radius?.guarded ?? []), ...(input.radius?.reportOnly ?? [])].map(normalize),
+  );
   const admittedTestFiles: string[] = [];
   for (const raw of [...input.admittedPaths, ...(input.affectedTestFiles ?? [])]) {
     const p = normalize(raw);
-    if (!p || !isTestFilePath(p)) continue;
+    if (!p || !isTestFilePath(p) || radiusFiles.has(p)) continue;
     if (signatureTestFiles.includes(p) || admittedTestFiles.includes(p)) continue;
     admittedTestFiles.push(p);
+  }
+  let radius: AdmissionRadius | undefined;
+  if (input.radius) {
+    const taken = new Set([...signatureTestFiles, ...admittedTestFiles]);
+    const keep = (list: readonly string[]): string[] => {
+      const out: string[] = [];
+      for (const raw of list) {
+        const p = normalize(raw);
+        if (!p || !isTestFilePath(p) || taken.has(p)) continue;
+        taken.add(p);
+        out.push(p);
+      }
+      return out;
+    };
+    const guarded = keep(input.radius.guarded);
+    const reportOnly = keep(input.radius.reportOnly);
+    const legs: Record<string, string> = {};
+    for (const [file, leg] of Object.entries(input.radius.legs ?? {})) {
+      const p = normalize(file);
+      if (p && typeof leg === 'string' && leg) legs[p] = leg;
+    }
+    radius = {
+      status: input.radius.status,
+      reason: input.radius.reason,
+      ...(input.radius.detail ? { detail: input.radius.detail } : {}),
+      guarded,
+      reportOnly,
+      legs,
+    };
   }
   return {
     signatureTestFiles,
     admittedTestFiles,
     nonTestKinds: [...nonTestKinds],
     canProveDoesNotFix: signatureTestFiles.length > 0 && nonTestKinds.size === 0,
-    files: [...signatureTestFiles, ...admittedTestFiles],
+    ...(radius ? { radius } : {}),
+    files: [...signatureTestFiles, ...admittedTestFiles, ...(radius?.guarded ?? []), ...(radius?.reportOnly ?? [])],
   };
+}
+
+/** `path (leg <workspace>)` when the leg is known, else the bare path. */
+function withLeg(population: FixPrecheckPopulation, file: string): string {
+  const leg = population.radius?.legs[file];
+  return leg ? `${file} (leg ${leg})` : file;
 }
 
 export type FixPrecheckFileStatus = 'pass' | 'fail' | 'unmeasured';
@@ -160,6 +233,8 @@ export type FixPrecheckVerdict =
       unmeasured: string[];
       /** Signature test files that pass at the built commit — what the admission provably fixes. */
       fixes: string[];
+      /** P-007: report-only radius files (their leg was already red) that fail; never a refusal. */
+      reportOnlyRed?: string[];
     }
   | { ok: true; ran: false; reason: 'nothing-to-run'; population: FixPrecheckPopulation }
   | {
@@ -189,10 +264,14 @@ export type FixPrecheckVerdict =
       passing: string[];
       failing: string[];
       unmeasured: string[];
-      /** Admitted-outside-signature test files that fail (the imports-red set), always reported. */
+      /** Admitted-outside-signature and guarded radius test files that fail (the imports-red set), always reported. */
       importedRed: string[];
       /** Whether BOTH refusals apply — `code` names the primary one. */
       alsoImportsRed: boolean;
+      /** P-007: report-only radius files (their leg was already red) that fail; never a refusal. */
+      reportOnlyRed?: string[];
+      /** P-007: the previously green legs the imported reds belong to, when known. */
+      newlyRedLegs?: string[];
     };
 
 /**
@@ -223,7 +302,15 @@ export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixP
   const failing = results.filter((r) => r.status === 'fail').map((r) => r.path);
   const unmeasured = results.filter((r) => r.status === 'unmeasured').map((r) => r.path);
   const fixes = population.signatureTestFiles.filter((p) => passing.includes(p));
-  const importedRed = population.admittedTestFiles.filter((p) => failing.includes(p));
+  // P-007: guarded radius files are previously green, so a failure there imports a red exactly like
+  // an admitted test file. Report-only radius files sit in a leg the signature already names red.
+  const importedRed = [...population.admittedTestFiles, ...(population.radius?.guarded ?? [])]
+    .filter((p) => failing.includes(p));
+  const reportOnlyRed = (population.radius?.reportOnly ?? []).filter((p) => failing.includes(p));
+  const newlyRedLegs = [...new Set(importedRed.map((p) => population.radius?.legs[p]).filter((leg): leg is string => !!leg))].sort();
+  const radiusFindings = population.radius ? { reportOnlyRed, newlyRedLegs } : {};
+  const importedList = importedRed.map((p) => withLeg(population, p)).join(', ');
+  const legNote = newlyRedLegs.length ? `; previously green leg(s) turned red: ${newlyRedLegs.join(', ')}` : '';
   const doesNotFix = population.canProveDoesNotFix && fixes.length === 0;
   const importsRed = importedRed.length > 0;
   const base = { ran: true as const, commit: run.commit, population, results, passing, failing, unmeasured };
@@ -236,6 +323,7 @@ export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixP
         'missing assertion evidence cannot establish that an admission fixes nothing or has no imported reds',
       importedRed,
       alsoImportsRed: importsRed,
+      ...radiusFindings,
     };
   }
   if (doesNotFix) {
@@ -249,9 +337,10 @@ export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixP
       detail:
         `none of the ${population.signatureTestFiles.length} signature test file(s) pass at the built admission commit ` +
         `${run.commit.slice(0, 12)}${unmeasuredNote}; the admission fixes nothing the frozen queue is red about` +
-        (importsRed ? `, and it also imports ${importedRed.length} new red test file(s): ${importedRed.join(', ')}` : ''),
+        (importsRed ? `, and it also imports ${importedRed.length} new red test file(s): ${importedList}${legNote}` : ''),
       importedRed,
       alsoImportsRed: importsRed,
+      ...radiusFindings,
     };
   }
   if (importsRed) {
@@ -260,13 +349,14 @@ export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixP
       ...base,
       code: 'admission-imports-red',
       detail:
-        `${importedRed.length} admitted test file(s) outside the frozen signature fail at the built admission commit ` +
-        `${run.commit.slice(0, 12)}: ${importedRed.join(', ')} — the admission would import a new red onto the lineage`,
+        `${importedRed.length} ${population.radius ? "test file(s) outside the frozen signature (admitted, or in the admitted paths' radius)" : 'admitted test file(s) outside the frozen signature'} fail at the built admission commit ` +
+        `${run.commit.slice(0, 12)}: ${importedList} — the admission would import a new red onto the lineage${legNote}`,
       importedRed,
       alsoImportsRed: false,
+      ...radiusFindings,
     };
   }
-  return { ok: true, ...base, fixes };
+  return { ok: true, ...base, fixes, ...(population.radius ? { reportOnlyRed } : {}) };
 }
 
 // ─── the real runner ─────────────────────────────────────────────────────────────────────────

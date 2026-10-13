@@ -87,7 +87,14 @@ describe("EI-23076695727837648: an adopting carry-respawn hands its first turn t
     const readStage = launcherSrc.slice(readAt, eventAt);
     expect(readStage).toMatch(/onReject:/);
     expect(readStage).toMatch(/"host-code-adoption-handoff-rejected"/);
-    expect(readStage).toMatch(/rejection\?\.ownerId \|\| adoptionOwnerId/);
+    expect(readStage).toMatch(/rejection\?\.ownerId \|\| adoptionEventOwnerId/);
+    // The fallback owner still starts from the env SID, then widens to the
+    // shim's `--owner-id=` (headless fleet shims carry no PAPERCUSP_SID).
+    const fallbackAt = launcherSrc.lastIndexOf("const adoptionEventOwnerId =", readAt);
+    expect(fallbackAt).toBeGreaterThan(mainAt);
+    expect(launcherSrc.slice(fallbackAt, readAt)).toMatch(
+      /const adoptionEventOwnerId = adoptionOwnerId \|\| args\.ownerId \|\| null;/,
+    );
     const stage = launcherSrc.slice(eventAt, launchAt);
     expect(stage).toMatch(/accepted: Boolean\(hostHandoff\)/);
     expect(stage).toMatch(/firstTurnPresent:/);

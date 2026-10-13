@@ -534,6 +534,11 @@ export const TARGETS: SweepTarget[] = [
     // `ingested_at` rather than `ts`: `ts` is indexed only as (owner, ts), which a
     // global ordering cannot use.
     orderBySql: 'ingested_at DESC',
+    // Turns arrive faster than one pass embeds them (measured 2026-10-13: ~1.9k
+    // eligible/h ingested, ~1.0k/h embedded, 95k stale, oldest 5 days). Freshest-
+    // first alone never reached the old ones, so a session's later turns stayed
+    // unroutable for consult (WI-6554700010009707). The same index scanned forward.
+    backlogOrderBySql: 'ingested_at ASC',
     recencyCol: 'ingested_at',
     recencyColKind: 'timestamptz',
     readers: [
