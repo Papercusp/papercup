@@ -23,7 +23,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
-import { ACTIONABLE_CONDITION_PREFIXES } from './coord/actionable-conditions';
+import { ACTIONABLE_CONDITION_PREFIXES, FROZEN_REPAIR_LEG_CONDITION_PREFIX } from './coord/actionable-conditions';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { readRoutinePause } from './harness/routines/release-pause-ttl';
@@ -963,19 +963,7 @@ export type StopTheLineRowContext = 'issue-wi' | 'feature-consolidated';
  * on the harness pauses entirely.
  */
 export function stopTheLineExclusionSql(sql: OrgSql, rowContext: StopTheLineRowContext) {
-  const q = rowContext === 'issue-wi' ? 'wi.' : 'harness_shared.harness_features_consolidated.';
-  const activeRedStreak = sql`EXISTS (
-    SELECT 1
-      FROM harness_shared.work_items stl
-     WHERE stl.workspace_id = ${sql.unsafe(`${q}workspace_id`)}
-       AND stl.harness_slug = ${sql.unsafe(`${q}harness_slug`)}
-       -- Use the candidate harness already equated above: the equivalent inner-row
-       -- expression prevents a parameterized condition_key lookup and scans every
-       -- condition in the harness once per candidate (EI-23204229251577253).
-       AND stl.condition_key = ${GATE_RED_STREAK_CONDITION_PREFIX} || ${sql.unsafe(`${q}harness_slug`)}
-       AND NOT (stl.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
-       AND stl.created_ts <= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - ${STOP_THE_LINE_RED_HOURS * 3600 * 1000}
-  )`;
+  const activeRedStreak = gateRedStreakOpenForSql(sql, rowContext, STOP_THE_LINE_RED_HOURS);
   if (rowContext === 'feature-consolidated') {
     return sql`(NOT ${activeRedStreak})`;
   }
@@ -1003,4 +991,156 @@ export function stopTheLineExplanation(harness: string): string {
     'If the gate is ACTUALLY green and this persists, the condition item is stale — settling it ' +
     'lifts the throttle immediately.'
   );
+}
+
+/**
+ * THE one "is this harness's gate red, and for how long" predicate, shared by every
+ * rung that reacts to a long red (green-main-cycle-time-2026-10-08 D-032 ruling 1).
+ * TRUE ⇒ the CANDIDATE ROW'S OWN workspace+harness has an OPEN `gate-red-streak:<harness>`
+ * condition item created at least `minAgeHours` ago. Stop-the-line passes
+ * {@link STOP_THE_LINE_RED_HOURS}; red-inflow control passes
+ * {@link RED_INFLOW_REPAIR_FIRST_HOURS}. A second "is main red" reader would let the two
+ * rungs disagree on the population, which is the drift this helper exists to prevent.
+ */
+export function gateRedStreakOpenForSql(sql: OrgSql, rowContext: StopTheLineRowContext, minAgeHours: number) {
+  const q = rowContext === 'issue-wi' ? 'wi.' : 'harness_shared.harness_features_consolidated.';
+  return sql`EXISTS (
+    SELECT 1
+      FROM harness_shared.work_items stl
+     WHERE stl.workspace_id = ${sql.unsafe(`${q}workspace_id`)}
+       AND stl.harness_slug = ${sql.unsafe(`${q}harness_slug`)}
+       -- Use the candidate harness already equated above: the equivalent inner-row
+       -- expression prevents a parameterized condition_key lookup and scans every
+       -- condition in the harness once per candidate (EI-23204229251577253).
+       AND stl.condition_key = ${GATE_RED_STREAK_CONDITION_PREFIX} || ${sql.unsafe(`${q}harness_slug`)}
+       AND NOT (stl.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+       AND stl.created_ts <= (EXTRACT(EPOCH FROM now()) * 1000)::bigint - ${Math.round(minAgeHours * 3600 * 1000)}
+  )`;
+}
+
+/**
+ * The SAME population as {@link gateRedStreakOpenForSql}, read as a value for ONE named
+ * harness: the creation time (epoch ms) of its open red-streak condition item, or null
+ * when the gate is not red-streaking. Used where a caller must decide BEFORE composing a
+ * query (red-inflow control skips its preclaim entirely on a green harness) and to tell
+ * the agent how long main has been red.
+ */
+export async function readGateRedStreakSinceMs(
+  sql: OrgSql,
+  workspaceId: string,
+  harness: string,
+): Promise<number | null> {
+  const rows = await sql<{ created_ts: string | number | null }[]>`
+    SELECT min(stl.created_ts) AS created_ts
+      FROM harness_shared.work_items stl
+     WHERE stl.workspace_id = ${workspaceId}
+       AND stl.harness_slug = ${harness}
+       AND stl.condition_key = ${GATE_RED_STREAK_CONDITION_PREFIX + harness}
+       AND NOT (stl.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))`;
+  const raw = rows?.[0]?.created_ts;
+  const ms = raw == null ? NaN : Number(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * RED-GATE INFLOW CONTROL — green-main-cycle-time-2026-10-08 P-017, design D-032.
+ *
+ * The rung BELOW stop-the-line. Past {@link RED_INFLOW_REPAIR_FIRST_HOURS} of red, a
+ * stable share ({@link RED_INFLOW_REPAIR_SHARE_PCT}%) of drain-fleet members get REPAIR
+ * items served before new backlog. It is a PREFERENCE, not a floor (D-032 ruling 2): a
+ * selected member with no claimable repair item takes ordinary backlog, so nobody idles.
+ * Stop-the-line's 24h floor stays the hard rung.
+ *
+ * Who: a caller of scheduler:get_next WITH a fleet slug (get_next is the self-select
+ * drain path). Selection is a stable hash of the caller's ownerId, so the same member
+ * stays selected tick after tick and roughly half of any fleet moves, without reading a
+ * roster ({@link redInflowMemberSelected}).
+ *
+ * Kill-switch: FLAGS.RED_INFLOW_REPAIR_FIRST (default ON, reversible ordering).
+ */
+export const RED_INFLOW_REPAIR_FIRST_HOURS = 8;
+
+/** Share of fleet members (by stable ownerId hash) that take repair items first. */
+export const RED_INFLOW_REPAIR_SHARE_PCT = 50;
+
+/**
+ * The sync-batch delta check's attributed per-sync red items
+ * (release/sync-batch-delta-check.ts `conditionKeyForRed`). Pinned against that producer by
+ * red-inflow-repair-first.test.ts, so a renamed key fails a test instead of silently
+ * dropping these items out of the repair set.
+ */
+export const SYNC_DELTA_RED_CONDITION_PREFIX = 'sync-delta-red:';
+
+/**
+ * Condition-key prefixes that count as REPAIR items for red-inflow control (D-032 ruling 3):
+ * P-013's per-failing-leg items and the sync-batch delta check's per-sync reds. The
+ * queue-level `frozen-repair-convergence:` item and the `gate-red-streak:` singleton are
+ * deliberately absent: D-028 reserves those to long-lived owners.
+ */
+export const RED_INFLOW_REPAIR_CONDITION_PREFIXES: readonly string[] = [
+  FROZEN_REPAIR_LEG_CONDITION_PREFIX,
+  SYNC_DELTA_RED_CONDITION_PREFIX,
+];
+
+/**
+ * Stable 0..99 bucket for an ownerId (32-bit FNV-1a, mod 100). Pure and dependency-free so
+ * the same member lands in the same bucket on every host and every tick.
+ */
+export function redInflowShareBucket(ownerId: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < ownerId.length; i += 1) {
+    hash ^= ownerId.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash % 100;
+}
+
+/** TRUE ⇒ this member is in the repair-first share. */
+export function redInflowMemberSelected(ownerId: string, sharePct: number = RED_INFLOW_REPAIR_SHARE_PCT): boolean {
+  if (!ownerId) return false;
+  return redInflowShareBucket(ownerId) < sharePct;
+}
+
+/**
+ * ISSUE-FAMILY ONLY narrowing for the red-inflow repair preclaim: TRUE ⇒ the `wi` row is a
+ * repair item AND its own harness has been red for at least
+ * {@link RED_INFLOW_REPAIR_FIRST_HOURS}. It references `wi.condition_key`, a column the
+ * feature relation (harness_features_consolidated) does not have (D-032 ruling 5,
+ * measured against information_schema), so it must never be composed into a feature-tier
+ * query; the function takes no row context for exactly that reason.
+ */
+export function redInflowRepairItemSql(sql: OrgSql) {
+  const patterns = RED_INFLOW_REPAIR_CONDITION_PREFIXES.map((p) => `${p}%`);
+  return sql`(
+    wi.condition_key IS NOT NULL
+    AND wi.condition_key LIKE ANY(${patterns as string[]}::text[])
+    AND ${gateRedStreakOpenForSql(sql, 'issue-wi', RED_INFLOW_REPAIR_FIRST_HOURS)}
+  )`;
+}
+
+/** What scheduler:get_next reports when the red-inflow preference shaped a claim. */
+export interface RedInflowStamp {
+  /** TRUE ⇒ a repair item was served ahead of backlog; FALSE ⇒ none was claimable, so backlog was served. */
+  applied: boolean;
+  /** How long the harness's gate has been red, in hours (one decimal). */
+  redSinceHours: number;
+  thresholdHours: number;
+  sharePct: number;
+  reason: string;
+}
+
+export function redInflowStamp(applied: boolean, redSinceMs: number, nowMs: number = Date.now()): RedInflowStamp {
+  const redSinceHours = Math.round(((nowMs - redSinceMs) / 3_600_000) * 10) / 10;
+  return {
+    applied,
+    redSinceHours,
+    thresholdHours: RED_INFLOW_REPAIR_FIRST_HOURS,
+    sharePct: RED_INFLOW_REPAIR_SHARE_PCT,
+    reason: applied
+      ? `Main has been red ${redSinceHours}h (over ${RED_INFLOW_REPAIR_FIRST_HOURS}h) and you are in the ` +
+        `${RED_INFLOW_REPAIR_SHARE_PCT}% repair-first share of fleet members, so a repair item ` +
+        '(a failing frozen-queue leg or a per-sync red) was served before new backlog.'
+      : `Main has been red ${redSinceHours}h and you are in the repair-first share, but no repair item ` +
+        'was claimable, so ordinary backlog was served.',
+  };
 }

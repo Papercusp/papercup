@@ -2456,6 +2456,14 @@ export const FLAGS = {
   // would not function). OFF ⇒ feature-family-only claiming (the reversible fallback, but
   // note it would break this and any other issue-family-claiming autonomous fleet today).
   SCHEDULER_ISSUES_CLAIMABLE: "papercusp-scheduler-issues-claimable",
+  // green-main-cycle-time-2026-10-08 P-017 / D-032: red-gate inflow control. While a
+  // harness's gate has been red for 8h+ (an open gate-red-streak:<harness> condition item,
+  // the same population stop-the-line reads), scheduler:get_next serves a stable half of
+  // FLEET members a repair item (frozen-repair-leg: / sync-delta-red: conditions) before
+  // new backlog. A preference, not a floor: with no repair item claimable the member takes
+  // ordinary backlog. DEFAULT ON — reversible claim ordering, none of the dangerous set.
+  // OFF ⇒ get_next keeps its normal family order (stop-the-line's 24h floor is unaffected).
+  RED_INFLOW_REPAIR_FIRST: "papercusp-red-inflow-repair-first",
   // psu-in-desktop-builds-2026-06-23 C1: exposes the `psu` superuser CLI as an
   // END-USER feature in the shipped desktop builds (the discoverable launch
   // entry + forcing the scoped `user` profile). DEFAULT OFF — this is the

@@ -91,6 +91,7 @@ import {
   selfHealOwnNodeOriginIfStranded,
   STOP_THE_LINE_RED_HOURS,
   stopTheLineExclusionSql,
+  redInflowRepairItemSql,
 } from './work-items-admission';
 import {
   WorkItemIdAmbiguousError,
@@ -9042,6 +9043,13 @@ export async function claimNextIssueWorkItem(
       /** The feature-family readiness implementation selected by the caller. */
       useMaintainedReady?: boolean;
     };
+    /**
+     * green-main-cycle-time-2026-10-08 P-017 / D-032: restrict this claim to REPAIR items
+     * (frozen-repair-leg: / sync-delta-red: conditions) on a harness red for 8h+, via the
+     * issue-only {@link redInflowRepairItemSql}. scheduler:get_next sets it for its
+     * red-inflow preclaim; every other floor below still applies unchanged.
+     */
+    repairFirstOnly?: boolean;
     /** Abort the active claim transaction when the scheduler caller's deadline fires. */
     signal?: AbortSignal;
     /** Diagnostic only: separate issue claim SQL from its post-claim reread. */
@@ -9269,6 +9277,8 @@ export async function claimNextIssueWorkItem(
           -- owner-directed escape). SAME shared fragment as the claimability preview's
           -- ok_stop_line (issueClaimCandidateSubquery), so read and claim cannot diverge.
           AND ${stopTheLineExclusionSql(tx, 'issue-wi')}
+          -- P-017/D-032 red-inflow preclaim: repair items on an 8h+ red harness only.
+          AND ${opts.repairFirstOnly ? redInflowRepairItemSql(tx) : tx`TRUE`}
           -- swarm affinity (P-002): under the per-Hive lease, honor the issue's affinity too.
           AND ${filter.swarmId ? tx`(wi.swarm_affinity IS NULL OR wi.swarm_affinity = ${filter.swarmId})` : tx`TRUE`}
           -- P-014: skip high-stakes (redundancy>1) items under the redundancy flag.
