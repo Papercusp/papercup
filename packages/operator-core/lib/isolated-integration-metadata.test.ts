@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { build } from 'esbuild';
-import { captureIsolatedWorker, isolatedIntegrationCases, isolatedIntegrationDiagnosticArtifacts, isolatedIntegrationSourceFiles, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail } from '../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedIntegrationCases, isolatedIntegrationDiagnosticArtifacts, isolatedIntegrationSourceFiles, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail, retainIsolatedLifecycleBeforeSourceCheck } from '../test/isolated-integration-proof';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
 import { createPrivateHealthSnapshot, portalBrowserPackagesPlugin, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot, preparePrivateOperatorApiBundle, resolvePreparedPrivateApiBundle } from '../test/private-http-workspace-preflight';
 import { PANEL_ORDER } from './system-health/types';
@@ -22,6 +22,43 @@ import { preflightPrivateStats } from '../test/portal-stats-fixture';
 import { privateDocsNavButton, retainPortalBrowserFailure, verifyPrivateProfileOriginControl, verifyPrivateHudReadPolicy, verifyPrivateHudHostDenial, verifyPrivateHudCapturedRoster, verifyPrivateHudCapturePreflight, verifyPrivateHostHeaderTransport, verifyPrivateTestingReadScopes } from '../test/portal-roster-browser-fixture';
 
 const testingPots = { selected: 'testing-selected', neighbor: 'testing-neighbor', foreign: 'testing-foreign' };
+
+it.each([false, true])('retains cleanup across the final source verdict and count pruning (sourceChanged=%s)', async sourceChanged => {
+  const root = mkdtempSync(join(tmpdir(), 'isolated-source-verdict-retention-'));
+  const runId = '20261012T000004Z-4';
+  const lifecycle = { schemaVersion: 1, runId, worker: { pid: 123 } };
+  const ended = { code: 0, runtimeRemoved: true, pgDataRemoved: true };
+  let sourceChecked = false;
+  try {
+    const result = await runHarness({
+      contract: { name: 'isolated-source-verdict-retention', phases: [{ id: 'execute' }] },
+      evidenceRoot: root, runId, retainedArtifacts: ['phases/execute/lifecycle.json'], guardRails: [],
+      runPhase: async ({ evidenceDir }) => {
+        await retainIsolatedLifecycleBeforeSourceCheck(evidenceDir, lifecycle, ended, () => {
+          sourceChecked = true;
+          if (sourceChanged) throw new Error('original source integrity rejection');
+        });
+        return { ok: true };
+      },
+    });
+    expect(sourceChecked).toBe(true);
+    expect(result.verdict).toBe(sourceChanged ? 'fail' : 'pass');
+    if (sourceChanged) expect(result.phases[0].detail).toContain('original source integrity rejection');
+    expect(JSON.parse(readFileSync(join(result.evidenceDir, 'phases/execute/lifecycle.json'), 'utf8')))
+      .toEqual({ ...lifecycle, ended });
+    await runHarness({
+      contract: { name: 'isolated-source-verdict-retention', phases: [{ id: 'execute' }] },
+      evidenceRoot: root, runId: '20261012T000005Z-5', guardRails: [], runPhase: async () => ({ ok: true }),
+    });
+    expect(await pruneRuns(root, 1, Date.now(), {
+      measureDisk: async () => ({ totalBytes: 1_000, availableBytes: 500 }), reserveBytes: () => 400,
+    })).toContain(runId);
+    expect(JSON.parse(readFileSync(join(root, 'retained', runId, 'phases/execute/lifecycle.json'), 'utf8')))
+      .toEqual({ ...lifecycle, ended });
+    expect(JSON.parse(readFileSync(join(root, 'retained', runId, 'result.json'), 'utf8')).verdict)
+      .toBe(sourceChanged ? 'fail' : 'pass');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 it('retains exact original private worker browser and selected persistence receipts after count pruning', async () => {
   const root = mkdtempSync(join(tmpdir(), 'isolated-receipt-retention-'));
@@ -216,6 +253,43 @@ it('rejects a successful, unrelated or uncorrelated Insights denial receipt', ()
   expect(() => verifyPrivateInsightsDenialCoverage([{ ...records[0], status: 200 }, ...records.slice(1)])).toThrow();
   expect(() => verifyPrivateInsightsDenialCoverage([{ ...records[0], body: '{"error":{"code":"unrelated"}}' }, ...records.slice(1)])).toThrow();
   expect(() => verifyPrivateInsightsDenialCoverage([{ ...records[0], control: 'unknown' }, ...records.slice(1)])).toThrow('intended UI control');
+});
+
+it('pins an imported private cleanup helper even when the caller lists only the launcher', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'isolated-cleanup-source-'));
+  const launcher = 'scripts/with-test-pg.mjs';
+  const helper = 'scripts/lib/with-test-pg-cleanup.mjs';
+  const launcherBytes = "const cleanup = await import('./lib/with-test-pg-cleanup.mjs');\n";
+  const helperBytes = 'export const cleanup = "original";\n';
+  const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+  const git = (...args: string[]) => execFileSync('git', ['-C', root,
+    '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args],
+  { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    mkdirSync(join(root, 'scripts/lib'), { recursive: true });
+    writeFileSync(join(root, launcher), launcherBytes);
+    writeFileSync(join(root, helper), helperBytes);
+    git('init', '-q'); git('add', 'scripts'); git('commit', '-qm', 'original cleanup source');
+    const commit = git('rev-parse', 'HEAD');
+    const original = await isolatedIntegrationSourceFiles(root, commit, [launcher]);
+    expect(original).toEqual([
+      { path: launcher, sha256: digest(launcherBytes), gitSha256: digest(launcherBytes) },
+      { path: helper, sha256: digest(helperBytes), gitSha256: digest(helperBytes) },
+    ]);
+    const changedHelper = 'export const cleanup = "changed";\n';
+    writeFileSync(join(root, helper), changedHelper);
+    const changed = await isolatedIntegrationSourceFiles(root, commit, [launcher, helper]);
+    expect(changed).toHaveLength(2);
+    expect(changed[1]).toEqual({ path: helper, sha256: digest(changedHelper), gitSha256: digest(helperBytes) });
+    expect(digest(JSON.stringify(changed))).not.toBe(digest(JSON.stringify(original)));
+    rmSync(join(root, helper));
+    await expect(isolatedIntegrationSourceFiles(root, commit, [launcher])).rejects.toThrow();
+    const inlineLauncher = 'const cleanup = () => {}; // historical inline cleanup\n';
+    writeFileSync(join(root, launcher), inlineLauncher);
+    expect(await isolatedIntegrationSourceFiles(root, commit, [launcher])).toEqual([
+      { path: launcher, sha256: digest(inlineLauncher), gitSha256: digest(launcherBytes) },
+    ]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 it('records submodule source at the original superproject pin even after its checkout moves', async () => {
