@@ -2581,6 +2581,50 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
  * mutant also prints no "passed" (`Tests  2 failed (2)`, measured), so reusing
  * this detector on the mutant log would false-flag every real catch.
  */
+describe('mutation-probe.sh — aborted test routers cannot certify a catch', () => {
+  it.each([
+    'TEST_FILE_ROUTE requested=1 groups=1',
+    'TEST_FILE_PROGRESS state=started cwd="packages/operator-core"',
+    'TEST_FILE_PROVENANCE head=fixture testedPaths=1',
+  ])('refuses a router abort after %s without assertion evidence', (marker) => {
+    const guard = join(dir, 'aborted-router.sh');
+    writeFileSync(guard, `#!/usr/bin/env bash
+if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then
+  printf '%s\\n' '${marker}' 'Error: connect ECONNREFUSED 127.0.0.1:24680'
+  exit 1
+fi
+printf 'TEST_FILE_RESULT requested=1 executed=1 status=passed\\n'
+`);
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code).toBe(2);
+    expect(out).toContain('verdict=inconclusive');
+    expect(out).toContain('assertion_evidence=test-runner-aborted-before-result');
+    expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('keeps a measured router assertion failure certifiable', () => {
+    const guard = join(dir, 'assertion-router.sh');
+    writeFileSync(guard, `#!/usr/bin/env bash
+printf 'TEST_FILE_ROUTE requested=1 groups=1\\n'
+if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then
+  printf 'TEST_FILE_ASSERTION_FAILURE file="fixture.test.ts" name="behavior" message="AssertionError"\\n'
+  exit 1
+fi
+printf 'TEST_FILE_RESULT requested=1 executed=1 status=passed\\n'
+`);
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(out).toContain('assertion_evidence=test-file-assertion-failure');
+    expect(read()).toBe(ORIGINAL);
+  });
+});
+
 describe('mutation-probe.sh — a baseline that ran zero tests is never scored', () => {
   /** Write a guard whose output/exit may differ by phase; returns the --test command. */
   function phaseGuard(body: string): string {

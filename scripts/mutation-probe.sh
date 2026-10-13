@@ -1819,6 +1819,15 @@ detect_assertion_failure_evidence() {
     return 1
   fi
 
+  # The router may abort in setup before it emits TEST_FILE_RESULT (for
+  # example, when its admission ledger cannot connect). Startup/progress
+  # still identifies a test run; do not mistake its exit 1 for a plain shell
+  # guard detecting the mutant. This also protects historical-mode scoring.
+  if grep -Eq '^[[:space:]]*TEST_FILE_(ROUTE|PROGRESS|PROVENANCE|SCOPE_PREFLIGHT)[[:space:]]' "$1" 2>/dev/null; then
+    printf '%s' 'test-runner-aborted-before-result'
+    return 1
+  fi
+
   return 2
 }
 
