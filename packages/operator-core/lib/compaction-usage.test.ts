@@ -21,6 +21,7 @@ import {
   estimateContextTokens,
   estimateContextWindowForOwner,
   fallbackTranscriptFresh,
+  healthyClaudeTranscriptResponseAt,
   newestTranscriptUnderOwner,
   parseLaunchCompactionLimitArgv,
   resolveCodexRolloutPathForRef,
@@ -31,6 +32,29 @@ import {
 
 beforeEach(() => {
   advSessionRowsMock.mockResolvedValue([]);
+});
+
+describe('positive live transcript recovery evidence', () => {
+  const now = 1_900_000_000_000;
+  const response = { type: 'assistant', timestamp: new Date(now - 1).toISOString(),
+    message: { model: 'claude', content: [{ type: 'text', text: 'The measured work continues.' }] } };
+  it('uses the actual response clock, including a healthy quote of the provider error', () => {
+    expect(healthyClaudeTranscriptResponseAt(JSON.stringify(response), now)).toBe(now - 1);
+    expect(healthyClaudeTranscriptResponseAt(JSON.stringify({ ...response, message: { ...response.message,
+      content: [{ type: 'text', text: 'I investigated "Prompt is too long".' }] } }), now)).toBe(now - 1);
+  });
+  it.each(['empty', 'partial', 'user-only', 'missing-clock', 'future-clock', 'api-error', 'synthetic',
+    'synthetic-model', 'empty-response'])('does not call %s a healthy measurement', kind => {
+    const record = structuredClone(response) as Record<string, any>;
+    if (kind === 'user-only') record.type = 'user';
+    if (kind === 'missing-clock') delete record.timestamp;
+    if (kind === 'future-clock') record.timestamp = new Date(now + 1).toISOString();
+    if (kind === 'api-error') record.isApiErrorMessage = true;
+    if (kind === 'synthetic') record.isSynthetic = true;
+    if (kind === 'synthetic-model') record.message.model = '<synthetic>';
+    if (kind === 'empty-response') record.message.content = [];
+    expect(healthyClaudeTranscriptResponseAt(kind === 'empty' ? '' : kind === 'partial' ? '{' : JSON.stringify(record), now)).toBeNull();
+  });
 });
 
 describe('estimateContextTokens (backend gating + degradation)', () => {

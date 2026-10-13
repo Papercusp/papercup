@@ -10,7 +10,8 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/system-health/compaction-compliance-watchdog.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -110,6 +111,7 @@ const {
   runFlushGateMock: vi.fn(async () => ({ verdict: 'clear' as const, tripwires: [] })),
 }));
 vi.mock('../compaction-usage', () => ({
+  observeHealthyClaudeTranscriptForOwner: async () => null,
   estimateContextTokensForOwner: estimateMock,
   observedPromptFloorForOwner: observedPromptFloorMock,
   estimateContextWindowForOwner: contextWindowMock,
@@ -124,6 +126,10 @@ vi.mock('../compaction-usage', () => ({
   resolveSessionRefReconciled: resolveSessionRefReconciledMock,
   resolveLaunchCompactionLimitForOwner: resolveLaunchLimitMock,
   codexReadingProvenanceForOwner: codexProvenanceMock,
+}));
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../agent-tools/coordination/tools/conditions', () => ({
+  readConditionEnvelopes: async () => [], computeConditionStates: () => [],
 }));
 vi.mock('../agent-tools/coordination/presence', () => ({
   setContextEstimate: setEstimateMock,
@@ -192,6 +198,8 @@ import {
   discoverPresencelessLoopOwners,
   carryRespawnLoopEscalationBody,
   carryRespawnStreakVerdict,
+  compactionConditionKey,
+  type CompactionComplianceDeps,
 } from './compaction-compliance-watchdog';
 import {
   getContextUsage,
@@ -323,6 +331,101 @@ beforeEach(() => {
   // tagged (origin watchdog) — point the ledger at a throwaway dir so this suite
   // never writes the real ~/.papercusp/turn-provenance.
   process.env.PAPERCUSP_TURN_PROVENANCE_DIR = join(tmpdir(), `wd-prov-${process.pid}`);
+});
+
+afterEach(() => { expect(readRealPgRailBlocks().blocked).toBe(0); });
+
+describe('original compaction durable episodes', () => {
+  function fixture() {
+    const openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const open = new Map<string, number>();
+    const row = { owner_id: 'su-episode', owner_label: 'episode', workspace_id: 'workspace',
+      compaction_limit: 100_000, compaction_limit_explicit: true, last_active_at: new Date().toISOString() };
+    const deps: CompactionComplianceDeps = { readOpenConditions: async () => [...open].map(([conditionKey, openedAtMs]) =>
+      ({ conditionKey, openedAtMs })), rail: {
+      broadcast: async event => { expect(event.oneShot).toBe(true); expect(event.conditionKey).toBeTruthy();
+        if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+        open.set(event.conditionKey!, open.get(event.conditionKey!) ?? Date.now()); return true; },
+      resolve: async event => { if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true; },
+    } };
+    const key = (kind: Parameters<typeof compactionConditionKey>[2], subject = '') =>
+      compactionConditionKey('workspace', row.owner_id, kind, subject);
+    return { deps, open, row, key, openedKeys, resolvedKeys,
+      run: (rows = [row]) => checkCompactionCompliance(fakeSql({ seeded: rows }), deps) };
+  }
+  it('opens before legacy force latches and survives restart, absence and unknown measurements', async () => {
+    const h = fixture(); estimateMock.mockResolvedValue(150_000);
+    await h.run(); expect(h.open.size).toBe(2);
+    expect(h.open.has(h.key('over-limit'))).toBe(true);
+    expect(h.open.has(h.key('force-unavailable'))).toBe(true);
+    await h.run(); expect(h.openedKeys).toHaveLength(2);
+    resetForceCompactedForTests(); resetNoHostWarnedForTests(); resetCarryRespawnForTests();
+    await h.run([]); expect(h.open.size).toBe(2);
+    estimateMock.mockResolvedValue(null); await h.run(); expect(h.open.size).toBe(2);
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(0);
+    expect(h.resolvedKeys).toEqual(expect.arrayContaining(h.openedKeys));
+  });
+  it.each(['foreign-workspace', 'foreign-owner', 'duplicate', 'invalid-limit', 'invalid-estimate',
+    'future-episode', 'unknown-clock', 'failed-ledger', 'unknown-ledger'])('preserves %s recovery', async kind => {
+    const h = fixture(); h.open.set(h.key('over-limit'), Date.now() - 100);
+    estimateMock.mockResolvedValue(50_000);
+    if (kind === 'foreign-workspace') h.row.workspace_id = 'other';
+    if (kind === 'foreign-owner') h.row.owner_id = 'other';
+    if (kind === 'invalid-limit') h.row.compaction_limit = Number.NaN;
+    if (kind === 'invalid-estimate') estimateMock.mockResolvedValue(Number.NaN);
+    if (kind === 'future-episode') h.open.set(h.key('over-limit'), Date.now() + 100_000);
+    if (kind === 'unknown-clock') h.open.set(h.key('over-limit'), Number.NaN);
+    if (kind === 'failed-ledger') h.deps.readOpenConditions = async () => { throw new Error('ledger unreadable'); };
+    if (kind === 'unknown-ledger') h.deps.readOpenConditions = async () => undefined as never;
+    await h.run(kind === 'duplicate' ? [h.row, h.row] : [h.row]);
+    expect(h.open.size).toBe(1); expect(h.resolvedKeys).toHaveLength(0);
+  });
+  it('false/null death checks cannot recover without a fresh positive live transcript response', async () => {
+    const h = fixture(); deathMock.mockResolvedValue(true); await h.run();
+    deathMock.mockResolvedValue(false); toolRefDeathMock.mockResolvedValue({ turns: 3, toolName: 'lost', evidence: 'rejected' });
+    await h.run(); expect(h.open.size).toBe(2);
+    toolRefDeathMock.mockResolvedValue(null); estimateMock.mockResolvedValue(50_000);
+    await h.run(); expect(h.open.size).toBe(2);
+    h.deps.observeHealthyTranscript = async () => ({ sessionId: 'current', measuredAtMs: 1 });
+    await h.run(); expect(h.open.size).toBe(2);
+    h.deps.observeHealthyTranscript = async () => ({ sessionId: 'current', measuredAtMs: Date.now() });
+    await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('failed keyed delivery or resolution does not suppress independent signals or a later retry', async () => {
+    const h = fixture(); estimateMock.mockResolvedValue(150_000);
+    const broadcast = h.deps.rail!.broadcast!;
+    h.deps.rail!.broadcast = async event => {
+      if (event.conditionKey === h.key('over-limit')) throw new Error('rail delivery unavailable');
+      return broadcast(event);
+    };
+    await h.run(); expect(h.open.has(h.key('force-unavailable'))).toBe(true);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('condition delivery failed'));
+    h.deps.rail!.broadcast = broadcast; await h.run(); expect(h.open.size).toBe(2);
+    const resolve = h.deps.rail!.resolve!;
+    h.deps.rail!.resolve = async () => { throw new Error('resolution unavailable'); };
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(2);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('condition recovery failed'));
+    h.deps.rail!.resolve = resolve; await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('only measured same-session rollout recovery clears a frozen episode', async () => {
+    const h = fixture(); h.open.set(h.key('frozen-codex-reading'), Date.now() - 100);
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(1);
+    codexProvenanceMock.mockResolvedValue({ rolloutPath: 'rollout', refSessionId: 'current',
+      rolloutSessionId: 'other', rolloutMtimeMs: Date.now() });
+    await h.run(); expect(h.open.size).toBe(1);
+    codexProvenanceMock.mockResolvedValue({ rolloutPath: 'rollout', refSessionId: 'current',
+      rolloutSessionId: 'current', rolloutMtimeMs: Date.now() });
+    await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('null stranding detector results preserve until a positive edit on the exact target is measured', async () => {
+    const h = fixture(); const key = h.key('compaction-stranding', JSON.stringify(['packages/target.ts']));
+    h.open.set(key, Date.now() - 100); estimateMock.mockResolvedValue(50_000);
+    await h.run(); expect(h.open.size).toBe(1);
+    await checkCompactionCompliance(fakeSql({ seeded: [h.row], targetEdits: [
+      { file: 'packages/target.ts', edited_ms: Date.now() } ] }), h.deps);
+    expect(h.open.size).toBe(0);
+  });
 });
 
 describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () => {

@@ -1611,6 +1611,40 @@ export async function detectContextDeathForOwner(ownerId: string): Promise<boole
   return tail != null && tailCarriesContextDeath(tail);
 }
 
+/** Positive recovery evidence, unlike the best-effort false/null death APIs.
+ * An empty, unreadable, changing or error-only transcript is not healthy. */
+export async function observeHealthyClaudeTranscriptForOwner(ownerId: string): Promise<{
+  sessionId: string; measuredAtMs: number;
+} | null> {
+  try {
+    const before = await resolveSessionRefReconciled(ownerId);
+    if (before?.agent !== 'claude' || !before.sessionId) return null;
+    const tail = await readLiveClaudeTranscriptTail(ownerId, TOOL_REFERENCE_DEATH_TAIL_BYTES);
+    const after = await resolveSessionRefReconciled(ownerId);
+    if (tail == null || after?.agent !== 'claude' || after.sessionId !== before.sessionId ||
+        after.transcriptOwner !== before.transcriptOwner || tailCarriesContextDeath(tail) ||
+        tailCarriesToolReferenceDeath(tail)) return null;
+    const measuredAtMs = healthyClaudeTranscriptResponseAt(tail);
+    return measuredAtMs == null ? null : { sessionId: before.sessionId, measuredAtMs };
+  } catch { return null; }
+}
+
+export function healthyClaudeTranscriptResponseAt(tail: string, nowMs = Date.now()): number | null {
+  if (!Number.isFinite(nowMs) || tailCarriesContextDeath(tail) || tailCarriesToolReferenceDeath(tail)) return null;
+  let latest: Record<string, unknown> | null = null;
+  for (const line of tail.split('\n')) {
+    try { const record = JSON.parse(line); if (record?.type === 'assistant') latest = record; }
+    catch { /* partial JSONL edge is not evidence */ }
+  }
+  if (!latest || latest.isApiErrorMessage === true || latest.isSynthetic === true) return null;
+  const at = typeof latest.timestamp === 'string' ? Date.parse(latest.timestamp) : Number.NaN;
+  const message = latest.message as { model?: string; content?: unknown } | undefined;
+  if (!Number.isFinite(at) || at <= 0 || at > nowMs || !message || message.model === '<synthetic>' ||
+      !Array.isArray(message.content) || !message.content.some(block => block && typeof block === 'object' &&
+        ((block.type === 'text' && typeof block.text === 'string' && block.text.trim()) || block.type === 'tool_use'))) return null;
+  return at;
+}
+
 /**
  * The TAIL of an owner's LIVE claude transcript, or null (omp/codex, no transcript,
  * read error). EI-13477: reconciled, same reasoning as resolveLiveTranscriptPath —
@@ -1634,7 +1668,8 @@ async function readLiveClaudeTranscriptTail(ownerId: string, bytes: number): Pro
     const fd = await fs.promises.open(p, 'r');
     try {
       const buf = Buffer.alloc(size - start);
-      await fd.read(buf, 0, buf.length, start);
+      const read = await fd.read(buf, 0, buf.length, start);
+      if (read.bytesRead !== buf.length) return null;
       return buf.toString('utf8');
     } finally {
       await fd.close();
