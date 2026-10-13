@@ -16,6 +16,13 @@
  * invisible to the watchdog. Gate run 762a13a6 reused 0 of ~7,689 eligible
  * tasks and nothing alarmed, because the only signal was a log line.
  *
+ * Identical decisions coalesce (WI-6554700010009713): two observations with the
+ * same workspace, mechanism, reason, scope and process tag, no correlation id,
+ * and event times within {@link FALLBACK_COALESCE_SPAN_MS} of each other become
+ * ONE row whose eligible/applied are the sums and whose `samples` counts them
+ * (migration 1489). Per-call mechanisms (an L2 cache get, a sidecar exec) used to
+ * write one row each, ~12.5M rows/day; readers count batches as sum(samples).
+ *
  * Writes are best-effort and batched: `observeFallback` only enqueues, never
  * throws and never awaits, so a hot path is not slowed and a database outage
  * cannot fail the caller. A short-lived process (a script, a gate child) must
@@ -89,6 +96,10 @@ export const FALLBACK_FLUSH_BATCH = 50;
 export const FALLBACK_FLUSH_DELAY_MS = 2_000;
 /** Hard cap on unflushed rows; beyond it the OLDEST are dropped and counted. */
 export const FALLBACK_BUFFER_MAX = 2_000;
+/** Max event-time distance between observations folded into one row. */
+export const FALLBACK_COALESCE_SPAN_MS = FALLBACK_FLUSH_DELAY_MS;
+/** The eligible/applied/samples columns are int4; a fold never crosses this. */
+const INT4_MAX = 2_147_483_647;
 /** Default retention for {@link pruneFallbackObservations}. */
 export const FALLBACK_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const WARN_WINDOW_MS = 10 * 60 * 1000;
@@ -104,11 +115,21 @@ interface PendingRow {
   process_tag: string | null;
   correlation_id: string | null;
   observed_at: Date;
+  /** Decisions this row stands for (identical ones coalesce; see the module doc). */
+  samples: number;
 }
 
 interface WriterState {
   pending: PendingRow[];
-  /** Rows dropped since the last flush report (buffer overflow). */
+  /**
+   * Coalescing index: per handle, coalesce key -> the still-unflushed row new
+   * identical observations fold into. Cleared whenever a flush takes the buffer,
+   * so a row is never mutated after it was handed to a write.
+   */
+  open: Map<Sql | undefined, Map<string, PendingRow>>;
+  /** Observations folded into an existing row instead of adding one (lifetime). */
+  totalCoalesced: number;
+  /** Observations dropped since the last flush report (buffer overflow). */
   dropped: number;
   /** Rows refused at observe time since the last flush report (invalid input). */
   rejected: number;
@@ -125,6 +146,8 @@ interface WriterState {
 
 const state = pinModuleState<WriterState>('@papercusp/operator-core.fallback-observations', () => ({
   pending: [],
+  open: new Map(),
+  totalCoalesced: 0,
   dropped: 0,
   rejected: 0,
   totalDropped: 0,
@@ -232,13 +255,7 @@ export function observeFallback(mechanism: string, decision: FallbackDecision, o
     warnThrottled('refused observation with an invalid correlation id');
     return false;
   }
-  if (state.pending.length >= FALLBACK_BUFFER_MAX) {
-    state.pending.shift();
-    state.dropped += 1;
-    state.totalDropped += 1;
-    warnThrottled(`buffer full (${FALLBACK_BUFFER_MAX}); dropped the oldest unflushed observation`);
-  }
-  state.pending.push({
+  const row: PendingRow = {
     sql: opts.sql,
     workspace_id: opts.workspaceId?.trim() || process.env.PAPERCUSP_WORKSPACE_ID?.trim() || 'default',
     mechanism: mechanism.trim(),
@@ -249,22 +266,75 @@ export function observeFallback(mechanism: string, decision: FallbackDecision, o
     process_tag: opts.processTag ?? null,
     correlation_id: opts.correlationId ?? null,
     observed_at: opts.observedAt ?? new Date(),
-  });
+    samples: 1,
+  };
+  if (!coalesceInto(row)) {
+    if (state.pending.length >= FALLBACK_BUFFER_MAX) {
+      const oldest = state.pending.shift()!;
+      forgetOpen(oldest);
+      state.dropped += oldest.samples;
+      state.totalDropped += oldest.samples;
+      warnThrottled(`buffer full (${FALLBACK_BUFFER_MAX}); dropped the oldest unflushed observation`);
+    }
+    state.pending.push(row);
+    rememberOpen(row);
+  }
   installExitHook();
   scheduleFlush();
   return true;
+}
+
+/** Coalesce key, or null when the row must stay its own row (an exact join key). */
+function coalesceKey(row: PendingRow): string | null {
+  if (row.correlation_id != null) return null;
+  return JSON.stringify([row.workspace_id, row.mechanism, row.reason, row.scope, row.process_tag]);
+}
+
+/** Fold `row` into an identical unflushed row; false when there is none to fold into. */
+function coalesceInto(row: PendingRow): boolean {
+  const key = coalesceKey(row);
+  if (key === null) return false;
+  const open = state.open.get(row.sql)?.get(key);
+  if (!open) return false;
+  if (Math.abs(row.observed_at.getTime() - open.observed_at.getTime()) > FALLBACK_COALESCE_SPAN_MS) return false;
+  if (open.eligible + row.eligible > INT4_MAX || open.samples + row.samples > INT4_MAX) return false;
+  open.eligible += row.eligible;
+  open.applied += row.applied;
+  open.samples += row.samples;
+  state.totalCoalesced += row.samples;
+  return true;
+}
+
+function rememberOpen(row: PendingRow): void {
+  const key = coalesceKey(row);
+  if (key === null) return;
+  let byKey = state.open.get(row.sql);
+  if (!byKey) {
+    byKey = new Map();
+    state.open.set(row.sql, byKey);
+  }
+  byKey.set(key, row);
+}
+
+function forgetOpen(row: PendingRow): void {
+  const key = coalesceKey(row);
+  if (key === null) return;
+  const byKey = state.open.get(row.sql);
+  if (byKey?.get(key) === row) byKey.delete(key);
 }
 
 async function writeBatch(sql: Sql, rows: PendingRow[]): Promise<void> {
   const values = rows.map(({ sql: _ignored, ...r }) => r);
   await sql`
     INSERT INTO harness_shared.fallback_observations
-      ${sql(values, 'workspace_id', 'mechanism', 'eligible', 'applied', 'reason', 'scope', 'process_tag', 'correlation_id', 'observed_at')}
+      ${sql(values, 'workspace_id', 'mechanism', 'eligible', 'applied', 'reason', 'scope', 'process_tag', 'correlation_id', 'observed_at', 'samples')}
   `;
 }
 
 async function flushOnce(defaultSql: Sql | undefined): Promise<FlushResult> {
   const batch = state.pending.splice(0, state.pending.length);
+  // These rows now belong to this write: later observations must start new rows.
+  state.open.clear();
   const result: FlushResult = { written: 0, failed: 0, dropped: state.dropped, rejected: state.rejected };
   state.dropped = 0;
   state.rejected = 0;
@@ -325,8 +395,13 @@ export async function flushFallbackObservations(opts: { sql?: Sql } = {}): Promi
 }
 
 /** Lifetime counters since process start (or the last test reset). */
-export function fallbackObservationCounters(): { dropped: number; rejected: number; failed: number } {
-  return { dropped: state.totalDropped, rejected: state.totalRejected, failed: state.totalFailed };
+export function fallbackObservationCounters(): { dropped: number; rejected: number; failed: number; coalesced: number } {
+  return {
+    dropped: state.totalDropped,
+    rejected: state.totalRejected,
+    failed: state.totalFailed,
+    coalesced: state.totalCoalesced,
+  };
 }
 
 /** Pure: fold per-reason aggregates into a window summary. */
@@ -387,7 +462,7 @@ export async function readFallbackWindow(
   const ws = opts.workspaceId ?? null;
   const rows = await sql<Array<{ reason: string; samples: number | string; eligible: number | string; applied: number | string }>>`
     SELECT reason,
-           count(*)::bigint      AS samples,
+           sum(samples)::bigint  AS samples,
            sum(eligible)::bigint AS eligible,
            sum(applied)::bigint  AS applied
       FROM harness_shared.fallback_observations
@@ -431,7 +506,7 @@ export async function readFallbackWindowsByScope(
   const rows = await sql<Array<{ scope: string | null; reason: string; samples: number | string; eligible: number | string; applied: number | string }>>`
     SELECT scope,
            reason,
-           count(*)::bigint      AS samples,
+           sum(samples)::bigint  AS samples,
            sum(eligible)::bigint AS eligible,
            sum(applied)::bigint  AS applied
       FROM harness_shared.fallback_observations
@@ -493,6 +568,8 @@ export function _resetFallbackObservationsForTests(): void {
   if (state.timer) clearTimeout(state.timer);
   state.timer = null;
   state.pending = [];
+  state.open = new Map();
+  state.totalCoalesced = 0;
   state.dropped = 0;
   state.rejected = 0;
   state.totalDropped = 0;
