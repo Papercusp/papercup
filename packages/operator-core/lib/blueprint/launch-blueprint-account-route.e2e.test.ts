@@ -1,0 +1,82 @@
+import { fork } from 'node:child_process';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { expect, it } from 'vitest';
+import { loadAccountPool } from '../deployment/account-pool-store';
+import { accountsForProvider, isSpawnEligible } from '../deployment/account-pool';
+import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
+  recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
+
+const root = resolve(import.meta.dirname, '../../../..');
+const options = isolatedWorkerOptions(240_000);
+
+// Explicit e2e selection only: this test spends one real provider request.
+it('records the exact real primary blueprint request on its private spawn row', async context => {
+  const sourceWorkspace = process.env.PAPERCUSP_TEST_RUN_WORKSPACE || process.env.PAPERCUSP_WORKSPACE_ID;
+  expect(sourceWorkspace, 'source workspace must be explicit').toBeTruthy();
+  const pool = await loadAccountPool(sourceWorkspace);
+  const observedAt = Date.now();
+  const eligible = accountsForProvider(pool, 'codex').filter(account => isSpawnEligible(account, observedAt));
+  expect(eligible.length, 'real primary proof requires an available configured Codex account').toBeGreaterThan(0);
+  // Transfer only maintained credential references; never read/export credential bytes.
+  const accounts = eligible.map(account => ({ ...account, boundTo: [], softPin: [],
+    credentialRef: account.credentialRef.replace(/~/g, homedir()) }));
+  const runId = await recordIsolatedIntegrationProof({ root,
+    filePath: 'packages/operator-core/lib/blueprint/launch-blueprint-account-route.e2e.test.ts',
+    sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
+      'packages/operator-core/test/blueprint-account-route-http-scenario.ts',
+      'packages/operator-core/test/isolated-integration-proof.ts',
+      'packages/operator-core/lib/blueprint/launch-blueprint.ts',
+      'packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts',
+      'packages/operator-core/lib/harness-invoke-once.ts',
+      'packages/operator-core/lib/inference-gateway/launch.ts',
+      'packages/operator-core/lib/inference-gateway/gateway.ts',
+      'packages/operator-core/lib/inference-gateway/spawn-env.ts',
+      'packages/operator-core/lib/fleet/spawn-tree.ts',
+      'libs/papercusp/packages/orchestrator/src/invoke.ts',
+      'libs/papercusp/packages/orchestrator/src/spawn-mcp.ts'],
+    retainedArtifacts: ['phases/execute/account-route.json'],
+    execute: async (observe, evidenceDir) => {
+      await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+      await mkdir(join(evidenceDir, 'tmp'));
+      const referenceFile = join(evidenceDir, 'account-pool-references.json');
+      await writeFile(referenceFile, JSON.stringify({ accounts, observedAt,
+        headroom: eligible.map(({ id, provider, rate }) => ({ id, provider, rate })) }), { mode: 0o600 });
+      const env: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: '0', PC_ISOLATED_RUNTIME_PROOF: '1',
+        STAGING_FIRST_HTTP_SCENARIO: 'blueprint-account-route', STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
+        FGR_R6_ACCOUNT_POOL_REFERENCE_FILE: referenceFile,
+        TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') };
+      delete env.PC_HEAVY_PREEMPT_READY_FILE;
+      delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')],
+      { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      observe(child);
+      child.stdout!.on('data', chunk => {
+        for (const line of String(chunk).split('\n')) if (/^(STAGING_FIRST_HTTP_PHASE|BLUEPRINT_ACCOUNT_ROUTE_PHASE) /.test(line)) console.info(line);
+      });
+      let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+      try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+      finally { await rm(referenceFile, { force: true }); await rm(join(evidenceDir, 'node_modules')); }
+      expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
+        timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      const line = result.output.split('\n').find(row => row.startsWith('BLUEPRINT_ACCOUNT_ROUTE_RECEIPT '));
+      expect(line, result.output.slice(-4_000)).toBeTruthy();
+      const receipt = JSON.parse(line!.slice('BLUEPRINT_ACCOUNT_ROUTE_RECEIPT '.length));
+      expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), hostStopped: true,
+        childStopped: true, responseDeliveredToChild: false, upstream: { status: 200, requests: 1 },
+        canonicalTreeReadOnly: true, privateMcp: true,
+        declared: { account: 'auto', backend: 'codex', codexGatewayPresent: false } });
+      expect(receipt.firstRequest.ownerId).toBe(receipt.spawnId);
+      expect(receipt.firstRequest.servingAccountId).toBe(receipt.telemetry.servingAccountId);
+      expect(receipt.route.resolvedAccountIds).toContain(receipt.firstRequest.servingAccountId);
+      expect(receipt.firstRequest.model).toBe(receipt.route.launchedModel);
+      expect(receipt.firstRequest.effort).toBe(receipt.route.launchedEffort);
+      expect(receipt.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
+      console.info('BLUEPRINT_ACCOUNT_ROUTE_VERIFIED ' + JSON.stringify(receipt));
+    },
+  });
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  console.info('BLUEPRINT_ACCOUNT_ROUTE_PROOF_RUN ' + runId);
+}, options.testTimeoutMs);

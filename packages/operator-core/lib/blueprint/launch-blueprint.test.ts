@@ -346,6 +346,17 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
   });
 
   it('caller account override precedes role route on direct and durable requests', async () => {
+    // Assert the resolver's decision as well as the final body: the body keeps
+    // an explicit caller field, which otherwise masks an inverted resolver.
+    const { resolveRoleLaunch } = await import('../fleet/role-launch');
+    const blueprintRole = loadBuiltinBlueprint('release-fix').blueprint.roles.find(role => role.id === 'release-fixer')!;
+    expect(resolveRoleLaunch('release-fixer', {
+      blueprintRole, cfg: { roleAccounts: { 'release-fixer': 'role-pin' } }, account: 'default',
+    }).account).toBe('default');
+    expect(resolveRoleLaunch('release-fixer', { blueprintRole, account: 'default' }).account).toBe('default');
+    expect(resolveRoleLaunch('release-fixer', {
+      blueprintRole, cfg: { roleAccounts: { 'release-fixer': 'role-pin' } },
+    }).account).toBe('role-pin');
     const fired: Array<Parameters<LaunchFireFn>[0]> = [];
     setLaunchBlueprintFire((input) => { fired.push(input); });
     const input = { ...opts, bodyExtra: { account: 'default', spawnModel: 'gpt-5.4:high', spawnBackend: 'codex' } };
