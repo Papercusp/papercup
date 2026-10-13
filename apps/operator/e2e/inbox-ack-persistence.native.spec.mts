@@ -265,6 +265,12 @@ test('native Inbox acknowledgement removes only the selected message after refre
     }, { timeout: 45_000, intervals: [300, 800, 1500] }).toBe(true);
     await captureCache('afterAckCache');
 
+    const afterAckLiveDomSelector = `(() => { const selected = document.querySelector(${JSON.stringify(selectedRow)}); const neighbor = document.querySelector(${JSON.stringify(neighborRow)}); return { selected: !!selected, neighbor: !!neighbor }; })()`;
+    await expect.poll(async () => measure(afterAckLiveDomSelector), {
+      timeout: 45_000, intervals: [300, 800, 1500],
+    }).toEqual({ selected: false, neighbor: true });
+    evidence.afterAckLiveDom = await measure(afterAckLiveDomSelector);
+
     await native('eval', 'window.__nativeInboxAckPreviousDocument = true; location.reload(); true');
     const postReloadSelector = `(() => { const selected = document.querySelector(${JSON.stringify(selectedRow)}); const neighbor = document.querySelector(${JSON.stringify(neighborRow)}); return { oldDocument: window.__nativeInboxAckPreviousDocument === true, ready: document.readyState === 'complete' && !!document.querySelector('[data-testid="inbox-master"]'), selected: !!selected, neighbor: !!neighbor }; })()`;
     await expect.poll(async () => measure(postReloadSelector), { timeout: 45_000, intervals: [500, 1000, 1500] }).toEqual({
