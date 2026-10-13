@@ -25,6 +25,9 @@ import {
 import { useSyncQuery } from "@papercusp/sync";
 import type { ReportBlock } from "@papercusp/chat-protocol";
 import type { AuthorIdentity } from "../../_components/AuthorBadge";
+import type { PlanStatusSummary } from "@papercusp/plan-parser";
+import type { DerivedShipGate } from "@papercusp/operator-core/lib/agent-tools/plans/derived-ship-gate";
+import type { NoteStaleness } from "@papercusp/operator-core/lib/agent-tools/plans/now-note-staleness";
 import { readListMeta } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
 import { markInteractionPhase, PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
 
@@ -643,7 +646,16 @@ export interface PlanGetResult {
   /** Derived started/paused/done state, mirrored from PlanListRow. */
   startStatus?: Exclude<PlanStartStatus, null>;
   frontmatter?: Record<string, unknown>;
-  now?: { state: string | null; next: string | null } | null;
+  now?: {
+    state: string | null;
+    next: string | null;
+    /** derived-status-not-hand-written-2026-10-12 P-003: status changes the plan-event
+     *  log recorded after the note was written. Absent on reads that skip the step. */
+    staleness?: NoteStaleness | null;
+  } | null;
+  /** derived-status-not-hand-written-2026-10-12 P-001/P-002: the plan's status derived
+   *  from its item graph at read time; `shipGate` is attached once every item is terminal. */
+  derivedStatus?: (PlanStatusSummary & { shipGate?: DerivedShipGate }) | null;
   items?: PlanItem[];
   decisions?: PlanDecision[];
   missingRefs?: string[];
