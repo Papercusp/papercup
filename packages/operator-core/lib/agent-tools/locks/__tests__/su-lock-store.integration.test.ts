@@ -27,7 +27,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ensureBootstrap,
   expireWaiter,
@@ -1209,6 +1209,60 @@ describe('head-waiter blocks new acquires (anti-starvation)', () => {
     expect(blocked.busy[0].expires_ts.getTime()).toBeGreaterThan(
       queue.waiting[0].wait_until.getTime(),
     );
+  });
+
+  it('reports the stored lease expiry, not a JS-clock estimate (WI-6554700010010480)', async () => {
+    const ws = nextWs();
+    // Skew the JS clock an hour ahead for this acquire only. The row stores
+    // clock_timestamp() + ttl, so a result derived from Date.now() would land
+    // an hour away from it; the stored lease is unaffected by the skew.
+    const realNow = Date.now.bind(Date);
+    const skew = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 3_600_000);
+    const held = await inWorkspaceTxn(ws, 'holder', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'holder', ownerLabel: 'HOLDER',
+        paths: ['lease.ts'], intent: 'lease edit', ttlSec: 120,
+      }),
+    ).finally(() => skew.mockRestore());
+    if (!held.ok) throw new Error('holder acquire should succeed');
+
+    const sql = getTxPool();
+    const [row] = await sql<Array<{ expires_ts: Date }>>`
+      SELECT expires_ts FROM agent_file_locks
+       WHERE coordination_domain = ${ws} AND path = 'lease.ts'
+    `;
+    expect(held.expires_ts.getTime()).toBe(row.expires_ts.getTime());
+  });
+
+  it('an automatic acquire that adds paths reports the earliest stored lease it holds (WI-6554700010010480)', async () => {
+    const ws = nextWs();
+    const first = await inWorkspaceTxn(ws, 'auto', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'auto', ownerLabel: 'AUTO',
+        paths: ['owned.ts'], intent: 'PreToolUse:Edit', ttlSec: 60, automatic: true,
+      }),
+    );
+    if (!first.ok) throw new Error('first automatic acquire should succeed');
+
+    // owned.ts is already held, so only added.ts is upserted; owned.ts keeps
+    // its 60s lease and the result must not claim the new 600s one for it.
+    const mixed = await inWorkspaceTxn(ws, 'auto', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'auto', ownerLabel: 'AUTO',
+        paths: ['owned.ts', 'added.ts'], intent: 'PreToolUse:Edit', ttlSec: 600, automatic: true,
+      }),
+    );
+    if (!mixed.ok) throw new Error('mixed automatic acquire should succeed');
+
+    const sql = getTxPool();
+    const rows = await sql<Array<{ path: string; expires_ts: Date }>>`
+      SELECT path, expires_ts FROM agent_file_locks
+       WHERE coordination_domain = ${ws} ORDER BY path
+    `;
+    expect(rows.map((r) => r.path)).toEqual(['added.ts', 'owned.ts']);
+    const earliest = Math.min(...rows.map((r) => r.expires_ts.getTime()));
+    expect(mixed.expires_ts.getTime()).toBe(earliest);
+    expect(mixed.expires_ts.getTime()).toBe(first.expires_ts.getTime());
   });
 
   it('new acquirer cannot jump an older waiter on the same path', async () => {
