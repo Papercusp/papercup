@@ -3000,8 +3000,31 @@ export function sweepCheckpointSurvivors(
 /** WI-4528 (EI-10800 class): how long the self-watchdog waits for an ASYNC `onFire` — the loud
  *  RED-verdict emit + the urgent attention-notify — to actually SETTLE before it delivers the
  *  guaranteed SIGKILL. Negligible against the 3h watchdog, and BOUNDED so a wedged/hanging emit
- *  can never block the kill this watchdog exists to deliver. */
-export const SELF_WATCHDOG_ONFIRE_GRACE_MS = 8_000;
+ *  can never block the kill this watchdog exists to deliver.
+ *
+ *  WI-6554700010009547: was 8s. Run 85de8fa0's onFire recorded its verdict row, then entered
+ *  signed shard publication (30s deadline, heavy git) and was SIGKILLed at 8s. That lost
+ *  everything after it: the gate_health projection, the fixer dispatch, the stdout marker, the
+ *  inconclusive event, in-flight retirement and the loud notify. The watchdog path now skips
+ *  shard publication (SELF_WATCHDOG_SIGNED_SHARD_DEADLINE_MS), and the grace covers the
+ *  remaining DB round-trips under load: 60s is still negligible against the 180m watchdog. */
+export const SELF_WATCHDOG_ONFIRE_GRACE_MS = 60_000;
+
+/** WI-6554700010009547: the self-watchdog's last-gasp verdict record does not publish signed
+ *  shard verdicts. They are additive evidence for test-pass reuse; the run's test rows stay in
+ *  `test_runs`. Publishing them builds a shard manifest at the candidate sha, which cannot be
+ *  allowed to spend the bounded onFire grace that the marker, events and notify need. */
+export const SELF_WATCHDOG_SIGNED_SHARD_DEADLINE_MS = 0;
+
+/** WI-6554700010009547: verdict-record options for a terminal emit. The normal path keeps the
+ *  default shard deadline; the self-watchdog path must fit inside SELF_WATCHDOG_ONFIRE_GRACE_MS. */
+export function terminalVerdictRecordOptions(
+  path: "normal" | "self-watchdog",
+): { signedShardDeadlineMs?: number } {
+  return path === "self-watchdog"
+    ? { signedShardDeadlineMs: SELF_WATCHDOG_SIGNED_SHARD_DEADLINE_MS }
+    : {};
+}
 
 /** Await `p`, but never longer than `graceMs` — resolves when `p` settles OR the grace elapses,
  *  whichever comes first, and swallows a rejection (the caller proceeds either way). This is what
@@ -23369,7 +23392,10 @@ if (require.main === module) {
   let stopQualificationProgress: (() => Promise<void>) | undefined;
   let flushTerminalEvents: CheckpointDeps['flushTerminalEvents'];
   let verdictRecordedAtMs: number | null = null;
-  const emitResult = async (r: CheckpointResult): Promise<void> => {
+  const emitResult = async (
+    r: CheckpointResult,
+    emitOpts: { selfWatchdog?: boolean } = {},
+  ): Promise<void> => {
     // WI-6554700010009547: entry lines go to STDERR (stdout carries only the marker), so a
     // stall between the verdict and the marker names its own step in the run log.
     await writeStdioFlushed(
@@ -23394,7 +23420,10 @@ if (require.main === module) {
           process.stderr,
           `${orchestratorStdoutTag()} terminal verdict record started\n`,
         );
-        const recorded = await recordOwnVerdict(result);
+        const recorded = await recordOwnVerdict(
+          result,
+          terminalVerdictRecordOptions(emitOpts.selfWatchdog ? "self-watchdog" : "normal"),
+        );
         await writeStdioFlushed(
           process.stderr,
           `${orchestratorStdoutTag()} terminal verdict record ${recorded ? "completed" : "not recorded"}\n`,
@@ -23454,7 +23483,10 @@ if (require.main === module) {
    * deployed tree driving the integration tree's CLI) working. Any failure here degrades to the
    * same place, so this can never leave the gate blind: the worst case is the old behaviour.
    */
-  const recordOwnVerdict = async (r: CheckpointResult): Promise<boolean> => {
+  const recordOwnVerdict = async (
+    r: CheckpointResult,
+    recordOpts: { signedShardDeadlineMs?: number } = {},
+  ): Promise<boolean> => {
     try {
       const { gateVerdictTargetFromEnv } =
         await import("@papercusp/operator-core/lib/release/gate-verdict-target");
@@ -23465,6 +23497,7 @@ if (require.main === module) {
       return await recordCheckpointVerdict(
         target,
         checkpointVerdictFromResult(r),
+        recordOpts,
       );
     } catch (e) {
       console.error(
@@ -23788,7 +23821,9 @@ if (require.main === module) {
             });
           // Emits the result marker AND — because `green === null` — dispatches
           // `green-checkpoint:inconclusive` (global + pipeline-scoped) via emitInconclusiveVerdict.
-          await emitResult(inconclusive);
+          // WI-6554700010009547: selfWatchdog skips signed shard publication so the whole
+          // emit fits inside SELF_WATCHDOG_ONFIRE_GRACE_MS.
+          await emitResult(inconclusive, { selfWatchdog: true });
           // EI-20702428259478130: this path used to ALSO hand-roll `green-checkpoint:red` +
           // `green-checkpoint:red:<pipeline>` here. That is deleted rather than converted, for two
           // reasons: (1) emitResult above now fires the inconclusive pair for us, so keeping the red

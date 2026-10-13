@@ -36,6 +36,7 @@ import {
   markFrozenRepairAdmitted,
   normalizeRepoPath,
   settleFrozenRepairAdmission,
+  summarizeAdmissionRadius,
   type FrozenCandidateRepairQueue,
   type FrozenRepairAdmission,
   type FrozenRepairAdmissionPrecheck,
@@ -700,16 +701,23 @@ async function inspectFixerLiveness(queue: FrozenCandidateRepairQueue | null) {
   return releaseFixerSpawnAlive(getOrgPg().sql, queue.fixerSpawnId).catch(() => null);
 }
 
-/** P-006 (R6): the compact pre-check record carried on the ledger entry, the audit row and the result. */
-function precheckRecordOf(
+/**
+ * P-006 (R6): the compact pre-check record carried on the ledger entry, the audit row and the result.
+ * P-007 (green-main-cycle-time-2026-10-08#D-040): every branch also carries the admission's radius
+ * summary, so a later red round can tell an over-cap (unguarded) admission from a guarded one.
+ * Exported for its tests only.
+ */
+export function precheckRecordOf(
   verdict: FixPrecheckVerdict | null,
   ctx: { skipPrecheck: boolean; precheckReason: string; dryRun: boolean; population: FixPrecheckPopulation },
 ): NonNullable<FrozenRepairAdmission['precheck']> {
+  const summary = summarizeAdmissionRadius(ctx.population.radius);
+  const radius = summary ? { radius: summary } : {};
   if (verdict === null) {
     if (ctx.skipPrecheck)
-      return { ran: false, reason: 'skipped', precheckReason: ctx.precheckReason, wouldRun: ctx.population.files };
-    if (ctx.population.files.length === 0) return { ran: false, reason: 'nothing-to-run' };
-    return { ran: false, reason: ctx.dryRun ? 'dry-run' : 'not-run', wouldRun: ctx.population.files };
+      return { ran: false, reason: 'skipped', precheckReason: ctx.precheckReason, wouldRun: ctx.population.files, ...radius };
+    if (ctx.population.files.length === 0) return { ran: false, reason: 'nothing-to-run', ...radius };
+    return { ran: false, reason: ctx.dryRun ? 'dry-run' : 'not-run', wouldRun: ctx.population.files, ...radius };
   }
   if (verdict.ran) {
     return {
@@ -719,6 +727,7 @@ function precheckRecordOf(
       failing: verdict.failing,
       unmeasured: verdict.unmeasured,
       ...(verdict.ok ? { fixes: verdict.fixes } : {}),
+      ...radius,
     };
   }
   return {
@@ -726,6 +735,7 @@ function precheckRecordOf(
     reason: verdict.reason,
     ...('detail' in verdict ? { detail: verdict.detail } : {}),
     wouldRun: ctx.population.files,
+    ...radius,
   };
 }
 

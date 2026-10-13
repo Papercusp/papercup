@@ -124,6 +124,8 @@ import {
   GREEN_CHECKPOINT_MAX_FORKS,
   GREEN_CHECKPOINT_RESERVED_MAX_FORKS,
   SELF_WATCHDOG_MS,
+  SELF_WATCHDOG_SIGNED_SHARD_DEADLINE_MS,
+  terminalVerdictRecordOptions,
   MANUAL_SELF_WATCHDOG_ENV,
   MIN_MANUAL_SELF_WATCHDOG_MS,
   SUITE_KILL_BUDGET_MIRROR_MS,
@@ -4557,6 +4559,38 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     await vi.advanceTimersByTimeAsync(1000);
     expect(order).toEqual(["emit:start", "emit:done", "kill:-999:SIGKILL"]);
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  /** WI-6554700010009547: run 85de8fa0's onFire entered signed shard publication (30s deadline)
+   *  and was SIGKILLed at the old 8s grace, losing the marker, events and notify. The PRODUCTION
+   *  default grace must outlast a step that slow, and the watchdog record must skip shards. */
+  it("WI-6554700010009547: the default onFire grace outlasts a 30s step, and the watchdog verdict record skips signed shards", async () => {
+    const order: string[] = [];
+    const kill = vi.fn((p: number, sig: NodeJS.Signals) =>
+      order.push(`kill:${p}:${sig}`),
+    );
+    armSelfWatchdog(
+      { release: vi.fn() },
+      {
+        ms: 1000,
+        kill,
+        pid: 999,
+        log: () => {},
+        // No onFireGraceMs: the production default is what is under test.
+        onFire: async () => {
+          order.push("emit:start");
+          await new Promise((resolve) => setTimeout(resolve, 30_000));
+          order.push("emit:done");
+        },
+      },
+    );
+    await vi.advanceTimersByTimeAsync(1000 + 30_000);
+    expect(order).toEqual(["emit:start", "emit:done", "kill:-999:SIGKILL"]);
+    expect(SELF_WATCHDOG_SIGNED_SHARD_DEADLINE_MS).toBe(0);
+    expect(terminalVerdictRecordOptions("self-watchdog")).toEqual({
+      signedShardDeadlineMs: 0,
+    });
+    expect(terminalVerdictRecordOptions("normal")).toEqual({});
   });
 
   it("WI-4528: a WEDGED onFire can never block the guaranteed kill — the grace bounds it", async () => {

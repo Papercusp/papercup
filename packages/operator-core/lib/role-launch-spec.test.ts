@@ -358,6 +358,9 @@ describe('buildRoleLaunchSpec', () => {
     expect(u.searchParams.get('spawn')).toBe(spec.spawnId);
     expect(u.searchParams.get('sig')).toBe('TESTSIG');
     expect(u.searchParams.has('superuser')).toBe(false);
+    // WI-6554700010009993: role sessions (judges, workers) ask for the trimmed payload tier.
+    // Without it every call resolved to the unshaped 'full' tier.
+    expect(u.searchParams.get('ctx_tier')).toBe('trimmed');
 
     // .mcp.json wraps the same URL.
     const mcp = JSON.parse(spec.mcpJsonContents);
@@ -1449,6 +1452,9 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     // The superuser door is otherwise unchanged.
     expect(u.searchParams.get('superuser')).toBe('1');
     expect(u.searchParams.get('workspace')).toBe('default');
+    // WI-6554700010009993: Codex su homes take this URL verbatim, so the payload tier must be
+    // baked here (Claude's user-level entry env-expands it instead).
+    expect(u.searchParams.get('ctx_tier')).toBe('trimmed');
   });
 
   it.each(['claude', 'codex', 'omp'] as const)('%s + trimmed ⇒ seeds the SU-only locks:release cleanup verb', async (agent) => {

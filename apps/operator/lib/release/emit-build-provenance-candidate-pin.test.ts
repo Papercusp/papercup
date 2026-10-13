@@ -19,6 +19,7 @@ import { deriveCandidateProvenance, parseLegBuildProvenance } from './p2p-candid
 const REPO = fileURLToPath(new URL('../../../../', import.meta.url));
 const EMIT = join(REPO, 'papercusp-desktop/bin/emit-build-provenance.sh');
 const LINUX_PRODUCER = join(REPO, 'papercusp-desktop/bin/build-linux-local.sh');
+const RELEASE_LOCAL = join(REPO, 'papercusp-desktop/bin/release-local.sh');
 const VERSION = '0.0.99';
 
 // Hermetic git: no user/system config (signing, hooks, templates) leaks into the fixture.
@@ -184,5 +185,74 @@ describe('emit-build-provenance candidate pin (EI-25852209928775891)', () => {
     expect(legEmit).toContain('PROVENANCE_SOURCE_GIT_HEAD="$PAPERCUSP_PRODUCER_DESKTOP_HEAD"');
     expect(legEmit).toContain('bundle/deb');
     expect(branch).not.toContain('PROVENANCE_GIT_ROOT="$PAPERCUSP_PRODUCER_SOURCE"');
+  });
+
+  // WI-6554700010010000: release-local.sh opts its leg emits in with `auto`, which
+  // enforces exactly when the leg could be a candidate (bare-commit buildSha).
+  it('auto enforces on a bare-commit buildSha: the superproject-rooted record is refused', () => {
+    const f = fixture();
+    const result = emit(f, {
+      PROVENANCE_REQUIRE_CANDIDATE_PIN: 'auto',
+      PROVENANCE_GIT_ROOT: f.workspace,
+      PROVENANCE_SOURCE_GIT_HEAD: f.workspaceHead,
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/candidate pin: gitHead .* does not start with buildSha/);
+    expect(existsSync(join(f.out, 'build-provenance.json'))).toBe(false);
+  });
+
+  it('auto accepts the release-local schema on a bare-commit buildSha', () => {
+    const f = fixture();
+    const manifest = join(f.root, 'candidate-source-state.json');
+    captureSources(f, manifest, [`desktop=${f.desktop}`, `workspace=${f.workspace}`]);
+    const result = emit(f, {
+      PROVENANCE_REQUIRE_CANDIDATE_PIN: 'auto',
+      PROVENANCE_GIT_ROOT: f.desktop,
+      PROVENANCE_SOURCE_GIT_HEAD: f.desktopHead,
+      PROVENANCE_SOURCE_DIRTY_MANIFEST: manifest,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(consume(f).status('desktop-pin')).toBe('pass');
+  });
+
+  it('auto exempts a -dirty buildSha, which no candidate pin can match, instead of refusing the cut', () => {
+    const base = fixture();
+    const f = { ...base, buildSha: `${base.buildSha}-dirty` };
+    const result = emit(f, {
+      PROVENANCE_REQUIRE_CANDIDATE_PIN: 'auto',
+      PROVENANCE_GIT_ROOT: f.desktop,
+      PROVENANCE_SOURCE_GIT_HEAD: f.desktopHead,
+      PROVENANCE_SOURCE_GIT_DIRTY: 'true',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const written = JSON.parse(readFileSync(join(f.out, 'build-provenance.json'), 'utf8'));
+    expect(written.buildSha).toBe(f.buildSha);
+  });
+
+  it('refuses an unrecognized pin value instead of silently disabling the guard', () => {
+    const f = fixture();
+    const result = emit(f, {
+      PROVENANCE_REQUIRE_CANDIDATE_PIN: 'yes',
+      PROVENANCE_GIT_ROOT: f.desktop,
+      PROVENANCE_SOURCE_GIT_HEAD: f.desktopHead,
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/must be 0, 1 or auto \(got 'yes'\)/);
+    expect(existsSync(join(f.out, 'build-provenance.json'))).toBe(false);
+  });
+
+  it('wires both release-local.sh leg emits through the auto pin, with desktop and workspace captured at cut start', () => {
+    const text = readFileSync(RELEASE_LOCAL, 'utf8');
+    expect(text).toContain('"desktop=$ROOT" "workspace=$ROOT/.."');
+    expect(text).toContain('export PROVENANCE_SOURCE_DIRTY_MANIFEST=');
+    const anchor = 'PROVENANCE_GIT_ROOT="$ROOT" bash "$ROOT/bin/emit-build-provenance.sh"';
+    const sites: number[] = [];
+    for (let i = text.indexOf(anchor); i >= 0; i = text.indexOf(anchor, i + 1)) sites.push(i);
+    // The Linux leg (emit_linux_build_provenance) and the mac leg collector.
+    expect(sites).toHaveLength(2);
+    for (const site of sites) {
+      const lead = text.slice(0, site).split('\n').slice(-3).join('\n');
+      expect(lead).toContain('PROVENANCE_REQUIRE_CANDIDATE_PIN="${PROVENANCE_REQUIRE_CANDIDATE_PIN:-auto}" \\');
+    }
   });
 });

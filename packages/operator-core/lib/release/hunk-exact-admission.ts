@@ -19,6 +19,13 @@
  *   - `hunk-conflict`      a hunk's anchor is not in the content at that point of the replay:
  *                          the fix was made on top of a foreign change. Names the hunk and the
  *                          other agents who touched the path. Same two exits.
+ *   - `hunk-already-applied` a hunk's effect is ALREADY on repairHead (WI-6554700010009955): an
+ *                          earlier admission carried it without consuming its ledger row — a
+ *                          whole-blob / committed-patch admission, or a build that predates
+ *                          consumed-row tracking. Replaying an insertion again DUPLICATES its text
+ *                          (no anchor miss, so nothing else refuses); a replacement would refuse
+ *                          as a misleading `hunk-conflict`. Exit: the exact `ledgerRowIds` of the
+ *                          hunks repairHead does not carry yet — never skipped on the tool's own.
  *   - `oversize`           a hunk exceeded the ledger cap and carries no content.
  *   - `not-a-blob`         the path is a symlink/gitlink/directory at repairHead — replaying
  *                          text hunks onto it is meaningless; admit it whole-blob by name.
@@ -39,7 +46,7 @@ import {
   type AdmissionGitResult,
   type AdmissionGitRunner,
 } from './repair-head-admission';
-import { replayFrozenRepairHunks, type FrozenRepairEditLedgerRow } from './frozen-repair-edit-ledger';
+import { replayFrozenRepairHunks, type FrozenRepairEditHunk, type FrozenRepairEditLedgerRow } from './frozen-repair-edit-ledger';
 import type { FrozenRepairAdmission } from './frozen-candidate-repair-queue';
 
 const SHA_RE = /^[0-9a-f]{40,64}$/;
@@ -66,6 +73,7 @@ export type HunkExactRefusalCode =
   | 'repair-head-unresolvable'
   | 'no-ledgered-hunks'
   | 'hunk-conflict'
+  | 'hunk-already-applied'
   | 'oversize'
   | 'not-a-blob'
   | 'path-under-gitlink'
@@ -119,6 +127,68 @@ export interface BuildHunkExactSourceInput {
   admissions?: readonly FrozenRepairAdmission[];
   git?: AdmissionGitRunner;
   nowMs: number;
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  return needle === '' ? 0 : haystack.split(needle).length - 1;
+}
+
+/**
+ * WI-6554700010009955: indices of `hunks` whose effect `base` ALREADY carries, judged in replay
+ * order (a hunk found present is not re-applied, so later hunks are judged against the content
+ * they were authored on top of). Content-based on purpose: consumed-row bookkeeping covers only
+ * hunk-exact admissions, so a whole-blob / committed-patch admission — or one recorded by a build
+ * that predates consumed-row tracking — leaves its carried rows unconsumed, and this is the one
+ * check that holds whatever the bookkeeping missed.
+ *
+ *   - an INSERTION keeps its anchor (`new` contains `old`), so re-applying it never misses the
+ *     anchor — it silently duplicates the inserted text. Present = its post-image is in the
+ *     content (for `replaceAll`: every occurrence of the anchor sits inside a post-image).
+ *   - a REPLACEMENT / DELETION removes its anchor. Present = anchor gone and post-image there
+ *     (a deletion has none). Without this it refuses as a misleading `hunk-conflict`.
+ *
+ * Stops at the first hunk it cannot judge (an oversize hunk, or a genuine anchor miss): the
+ * replay reports those with their own refusal code. Whole-file writes are idempotent on replay
+ * and never reported.
+ */
+export function findAlreadyAppliedHunks(base: string | null, hunks: readonly FrozenRepairEditHunk[]): number[] {
+  let content = base ?? '';
+  const already: number[] = [];
+  for (let i = 0; i < hunks.length; i += 1) {
+    const h = hunks[i]!;
+    if (h.kind === 'oversize') return already;
+    if (h.kind === 'write') {
+      content = h.body;
+      continue;
+    }
+    if (h.new === h.old) continue;
+    if (h.old === '') {
+      // Client-level create: present when the file already holds exactly that body.
+      if (content !== '' && content === h.new) {
+        already.push(i);
+        continue;
+      }
+      if (content !== '') return already;
+      content = h.new;
+      continue;
+    }
+    const hasOld = content.includes(h.old);
+    const hasNew = h.new !== '' && content.includes(h.new);
+    const insertion = h.new.includes(h.old);
+    const present = insertion
+      ? h.replaceAll
+        ? hasNew && countOccurrences(content, h.old) === countOccurrences(h.new, h.old) * countOccurrences(content, h.new)
+        : hasNew
+      : !hasOld && (h.new === '' || hasNew);
+    if (present) {
+      already.push(i);
+      continue;
+    }
+    if (!hasOld) return already;
+    const at = content.indexOf(h.old);
+    content = h.replaceAll ? content.split(h.old).join(h.new) : content.slice(0, at) + h.new + content.slice(at + h.old.length);
+  }
+  return already;
 }
 
 function exitsFor(path: string, foreignAgents: string[]): string[] {
@@ -206,6 +276,7 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
     if (rt.status !== 0) return gitFailed('read-tree', rt);
 
     const perPath: HunkExactPathReport[] = [];
+    const alreadyApplied: Array<{ path: string; row: FrozenRepairEditLedgerRow; index: number }> = [];
     for (const path of paths) {
       // A file inside a submodule has no entry in the superproject tree, so without this check
       // its hunks replay onto an empty base and refuse as a misleading `hunk-conflict`
@@ -273,6 +344,13 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
         if (cat.status !== 0) return gitFailed(`cat-file blob ${baseBlob.slice(0, 12)}`, cat);
         base = cat.stdout;
       }
+      // WI-6554700010009955: a hunk repairHead already carries is never replayed twice. Judged
+      // after every path, so the exit is ONE ledgerRowIds selection covering them all.
+      const present = findAlreadyAppliedHunks(base, mine.map((r) => r.hunk));
+      if (present.length > 0) {
+        for (const index of present) alreadyApplied.push({ path, row: mine[index]!, index });
+        continue;
+      }
       const replay = replayFrozenRepairHunks(
         base,
         mine.map((r) => r.hunk),
@@ -311,6 +389,41 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
         blob,
         unchanged: blob === baseBlob,
       });
+    }
+    if (alreadyApplied.length > 0) {
+      const presentIds = new Set(alreadyApplied.map((a) => a.row.id));
+      const remaining = ledger.filter((r) => paths.includes(r.path) && accepted.has(r.agent) && !presentIds.has(r.id));
+      const remainingPaths = paths.filter((p) => remaining.some((r) => r.path === p));
+      const presentPaths = [...new Set(alreadyApplied.map((a) => a.path))];
+      const others = [...accepted].filter((a) => a !== input.actor.trim());
+      const quoted = (ps: readonly string[]) => ps.map((p) => `'${p}'`).join(', ');
+      const exits: string[] = [];
+      if (remaining.length > 0) {
+        exits.push(
+          `release:repair-queue { op:'admit', paths:[${quoted(remainingPaths)}]` +
+            (others.length ? `, includeHunksFrom:[${others.map((a) => JSON.stringify(a)).join(', ')}]` : '') +
+            `, ledgerRowIds:[${remaining.map((r) => r.id).join(', ')}] } — replay only the hunks repairHead does not carry yet`,
+        );
+      }
+      exits.push(
+        `release:repair-queue { op:'admit', paths:[${quoted(presentPaths)}], wholeBlob:true, reason:'<why the whole staging blob is safe>' } — admit staging's blob as-is`,
+      );
+      const first = alreadyApplied[0]!;
+      return {
+        ok: false,
+        code: 'hunk-already-applied',
+        path: first.path,
+        hunkIndex: first.index,
+        detail:
+          `${alreadyApplied.length} ledgered hunk(s) are ALREADY on repairHead ${repairHead.slice(0, 12)}: ` +
+          alreadyApplied.map((a) => `${a.path} row #${a.row.id} (hunk #${a.index + 1} by ${a.row.agent})`).join('; ') +
+          '. An earlier admission carried them without consuming their ledger rows (a whole-blob / committed-patch admission, ' +
+          'or a build without consumed-row tracking); replaying them again would duplicate inserted text. ' +
+          (remaining.length > 0
+            ? `${remaining.length} selected hunk(s) are not on repairHead yet — admit exactly those (first exit).`
+            : 'Every selected hunk is already on repairHead — there is nothing to admit hunk-exactly.'),
+        exits,
+      };
     }
     const wt = run(['write-tree'], indexEnv);
     const tree = wt.stdout.trim();

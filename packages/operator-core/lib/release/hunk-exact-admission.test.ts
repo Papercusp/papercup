@@ -16,6 +16,7 @@ import {
   attributeUnledgeredPaths,
   buildCommittedPatchSource,
   buildHunkExactSource,
+  findAlreadyAppliedHunks,
   SOLE_EDITOR_WINDOW_MARGIN_MS,
   summarizeForeignHunks,
   type EditAttributionRow,
@@ -336,6 +337,75 @@ describe('buildHunkExactSource — only the caller\'s hunks enter (P-020 / D-008
     expect(buildHunkExactSource({ root, candidate, repairHead: 'f'.repeat(40), paths: ['lib/a.ts'], ledger: [], actor: 'me', nowMs: T0 })).toMatchObject({ ok: false, code: 'repair-head-unresolvable' });
   });
 });
+
+describe('hunk-already-applied — a hunk repairHead already carries is never replayed twice (WI-6554700010009955)', () => {
+  const INSERT = { kind: 'edit' as const, old: 'export const a = 1;\n', new: 'export const a = 1;\nexport const inserted = 3;\n', replaceAll: false };
+  const BUMP_B = { kind: 'edit' as const, old: 'export const b = 2;', new: 'export const b = 20;', replaceAll: false };
+  const ONCE = 'export const a = 1;\nexport const inserted = 3;\nexport const b = 20;\n';
+
+  it('refuses to re-insert a peer hunk a whole-blob admission already carried, and its exit admits ONLY the new hunk', () => {
+    const { root, candidate } = repo();
+    // A whole-blob admission carried the peer's insertion onto the lineage; it consumes no ledger rows.
+    const repairHead = sweep(root, { 'lib/a.ts': BASE_A.replace('a = 1;\n', 'a = 1;\nexport const inserted = 3;\n') }, 'whole-blob admission carrying the insertion');
+    const inserted = { ...row('peer', 'lib/a.ts', INSERT), candidate };
+    const bumped = { ...row('peer', 'lib/a.ts', BUMP_B), candidate };
+    const input = { root, candidate, repairHead, paths: ['lib/a.ts'], actor: 'me', includeHunksFrom: ['peer'], ledger: [inserted, bumped], nowMs: T0 };
+    const built = buildHunkExactSource(input);
+    expect(built).toMatchObject({ ok: false, code: 'hunk-already-applied', path: 'lib/a.ts', hunkIndex: 0 });
+    if (built.ok) throw new Error('unreachable');
+    expect(built.detail).toContain(`row #${inserted.id}`);
+    expect(built.exits[0]).toContain(`ledgerRowIds:[${bumped.id}]`);
+    expect(built.exits[0]).toContain('includeHunksFrom:["peer"]');
+    expect(built.exits.some((e) => e.includes('wholeBlob:true'))).toBe(true);
+    // Following the exit: the insertion appears exactly once.
+    const narrowed = buildHunkExactSource({ ...input, ledgerRowIds: [bumped.id] });
+    if (!narrowed.ok) throw new Error(narrowed.detail);
+    expect(show(root, narrowed.sourceCommit, 'lib/a.ts')).toBe(ONCE);
+    expect(narrowed.ledgerRowIds).toEqual([bumped.id]);
+  });
+
+  it('admit A, then A+B from the same owner never duplicates A: consumed rows skip it, and without that bookkeeping the content guard refuses', () => {
+    const { root, candidate } = repo();
+    const a = { ...row('me', 'lib/a.ts', INSERT), candidate };
+    const b = { ...row('me', 'lib/a.ts', BUMP_B), candidate };
+    const input = { root, candidate, paths: ['lib/a.ts'], actor: 'me', nowMs: T0 };
+    const first = buildHunkExactSource({ ...input, repairHead: candidate, ledger: [a] });
+    if (!first.ok) throw new Error(first.detail);
+    const tracked = buildHunkExactSource({ ...input, repairHead: first.sourceCommit, ledger: [a, b], consumedLedgerRowIds: first.ledgerRowIds });
+    if (!tracked.ok) throw new Error(tracked.detail);
+    expect(show(root, tracked.sourceCommit, 'lib/a.ts')).toBe(ONCE);
+    const untracked = buildHunkExactSource({ ...input, repairHead: first.sourceCommit, ledger: [a, b] });
+    expect(untracked).toMatchObject({ ok: false, code: 'hunk-already-applied', path: 'lib/a.ts', hunkIndex: 0 });
+    if (untracked.ok) throw new Error('unreachable');
+    expect(untracked.exits[0]).toContain(`ledgerRowIds:[${b.id}]`);
+    expect(untracked.exits[0]).not.toContain('includeHunksFrom');
+  });
+
+  it('a replacement repairHead already carries reads as already-applied, not a misleading hunk-conflict; with nothing left only the whole-blob exit remains', () => {
+    const { root, candidate } = repo();
+    const repairHead = sweep(root, { 'lib/a.ts': BASE_A.replace('b = 2', 'b = 20') }, 'whole-blob admission carrying the bump');
+    const built = buildHunkExactSource({ root, candidate, repairHead, paths: ['lib/a.ts'], actor: 'me', nowMs: T0, ledger: [row('me', 'lib/a.ts', BUMP_B)] });
+    expect(built).toMatchObject({ ok: false, code: 'hunk-already-applied', path: 'lib/a.ts' });
+    if (built.ok) throw new Error('unreachable');
+    expect(built.detail).toContain('nothing to admit');
+    expect(built.exits).toEqual([expect.stringContaining('wholeBlob:true')]);
+  });
+
+  it('findAlreadyAppliedHunks judges in replay order; replaceAll needs every anchor inside a post-image; an anchor miss, an oversize hunk and writes are left to the replay', () => {
+    const ed = (old: string, nu: string, replaceAll = false) => ({ kind: 'edit' as const, old, new: nu, replaceAll });
+    expect(findAlreadyAppliedHunks('x\n', [ed('x\n', 'x\ny\n')])).toEqual([]);
+    expect(findAlreadyAppliedHunks('x\ny\n', [ed('x\n', 'x\ny\n')])).toEqual([0]);
+    expect(findAlreadyAppliedHunks('xy x', [ed('x', 'xy', true)])).toEqual([]);
+    expect(findAlreadyAppliedHunks('xy xy', [ed('x', 'xy', true)])).toEqual([0]);
+    expect(findAlreadyAppliedHunks('a\n', [ed('gone\n', '')])).toEqual([0]);
+    expect(findAlreadyAppliedHunks('seed', [ed('', 'seed')])).toEqual([0]);
+    expect(findAlreadyAppliedHunks('a = 2', [ed('a = 1', 'a = 10'), ed('a = 10', 'a = 20')])).toEqual([]);
+    expect(findAlreadyAppliedHunks('a = 10', [ed('a = 1', 'a = 10'), ed('a = 10', 'a = 20')])).toEqual([0]);
+    expect(findAlreadyAppliedHunks('x', [{ kind: 'oversize', of: 'edit', bytes: 1, sha256: 'f'.repeat(64) }, ed('x', 'xy')])).toEqual([]);
+    expect(findAlreadyAppliedHunks('old', [{ kind: 'write', body: 'new' }, ed('new', 'new!')])).toEqual([]);
+  });
+});
+
 
 describe('summarizeForeignHunks — what a whole-blob admission may carry (D-008 layer 3b)', () => {
   it('counts ledgered hunks on the paths by agents other than the actor (∪ include)', () => {

@@ -2925,3 +2925,42 @@ describe('release:repair-queue', () => {
     });
   });
 });
+
+describe('P-007 (#D-040) — precheckRecordOf persists the admission radius on every branch', () => {
+  const overCap = { status: 'skipped' as const, reason: 'over-cap(5572/40)', guarded: [], reportOnly: [], legs: {} };
+  const population = precheckPopulation({ signature: [], admittedPaths: ['lib/src.ts'], radius: overCap });
+  const ctx = { skipPrecheck: false, precheckReason: '', dryRun: false, population };
+  const expected = { status: 'skipped', reason: 'over-cap(5572/40)' };
+
+  it.each([
+    ['not run', null, ctx],
+    ['skipped by the caller', null, { ...ctx, skipPrecheck: true, precheckReason: 'operator override' }],
+    ['dry run', null, { ...ctx, dryRun: true }],
+    ['nothing to run', null, { ...ctx, population: { ...population, files: [] } }],
+    ['ran', { ok: true, ran: true, commit: 'abc', population, results: [], passing: [], failing: [], unmeasured: [], fixes: [] }, ctx],
+    ['busy', { ok: true, ran: false, reason: 'checkpoint-tree-busy', detail: 'gate holds the tree', population }, ctx],
+  ] as const)('%s', (_label, verdict, branchCtx) => {
+    const record = repairQueueModule.precheckRecordOf(verdict as never, branchCtx as never);
+    expect(record.radius).toEqual(expected);
+  });
+
+  it('keeps the measured radius files and their legs', () => {
+    const measured = precheckPopulation({
+      signature: [],
+      admittedPaths: ['lib/src.ts'],
+      radius: { status: 'measured', reason: 'ok', guarded: ['lib/a.test.ts'], reportOnly: ['lib/b.test.ts'], legs: { 'lib/a.test.ts': '@papercusp/x' } },
+    });
+    const record = repairQueueModule.precheckRecordOf(null, { ...ctx, population: measured });
+    expect(record.radius).toEqual({
+      status: 'measured',
+      reason: 'ok',
+      files: ['lib/a.test.ts', 'lib/b.test.ts'],
+      legs: { 'lib/a.test.ts': '@papercusp/x' },
+    });
+  });
+
+  it('carries no radius when the door computed none (gitlink or legacy population)', () => {
+    const none = precheckPopulation({ signature: [], admittedPaths: ['lib/src.ts'] });
+    expect(repairQueueModule.precheckRecordOf(null, { ...ctx, population: none })).not.toHaveProperty('radius');
+  });
+});

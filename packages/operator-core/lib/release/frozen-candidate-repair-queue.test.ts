@@ -1689,9 +1689,10 @@ describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', 
       failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
       nowMs: T0 + 1_000,
     });
+    // P-007 (#D-040): lib/b.test.ts is newly red; a red at the candidate has no admission to own it.
     expect(second.convergenceRounds).toEqual([
       { round: 1, head: C, failingCount: 1, atMs: T0 },
-      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000 },
+      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000, attributions: [{ entry: 'test-file:lib/b.test.ts', basis: 'none', admissions: [] }] },
     ]);
   });
 
@@ -1923,7 +1924,7 @@ describe('WI-10007489 — each red round records the radius it EXECUTED', () => 
     });
     expect(next.convergenceRounds).toEqual([
       { round: 1, head: C, failingCount: 1, atMs: T0 },
-      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000, executed: targeted },
+      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000, executed: targeted, attributions: [{ entry: 'test-file:lib/b.test.ts', basis: 'none', admissions: [] }] },
     ]);
   });
 
@@ -2353,9 +2354,10 @@ describe('WI-10000741 / D-014 — a red measured behind a mid-suite admission is
       failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
       nowMs: T0 + 1_000,
     });
+    // P-007 (#D-040): measured at the candidate, so su-peer's later admission is NOT blamed.
     expect(next.convergenceRounds).toEqual([
       { round: 1, head: C, failingCount: 1, atMs: T0 },
-      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000 },
+      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000, attributions: [{ entry: 'test-file:lib/b.test.ts', basis: 'none', admissions: [] }] },
     ]);
     expect(next.failingTests).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
     expect(next.signature?.map((entry) => entry.id)).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);

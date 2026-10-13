@@ -56,6 +56,19 @@ import { listMcpProjections } from '@papercusp/agent-mcp';
 import { normalizeSuContextSize } from './su-context-size.mjs';
 
 /**
+ * The response-payload tier (`?ctx_tier=`) every MCP URL this module builds asks for. The MCP
+ * host reads it as the session's default `payloadTier`; with no tier a call resolves to the
+ * unshaped 'full' payload (resolvePayloadTier: callTier ?? ctxTier ?? 'full').
+ *
+ * The rule is the one psu-launcher's contextTrimmingEnv records: TRIMMED for every launch,
+ * every agent [owner 2026-08-10]. Before WI-6554700010009993 only Claude psu sessions got it
+ * (their user-level URL env-expands PAPERCUSP_CONTEXT_TIER). Codex su homes and role-scoped
+ * spawns such as judges take their URL from here and sent no tier. Measured 2026-10-13 over 3h:
+ * 46K untiered su calls (594MB) and 2.9K untiered judge calls, versus 8.5K tiered su calls.
+ */
+export const AGENT_SESSION_CONTEXT_TIER = 'trimmed' as const;
+
+/**
  * gui-chat-session-controls-2026-07-25 P-010: chat:ask_choice UNCONDITIONALLY
  * seeded onto every su/psu session's tool surface, on top of the shared
  * CORE_MCP_TOOL_NAMES spine — NOT added to the spine itself, because that
@@ -1035,6 +1048,9 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   // object the rest of the URL is built from. `getSessionSurface` grows the seed
   // at runtime (tools:find / ctx.activateTools), so this never hard-caps the role.
   params.set('tools', CORE_MCP_TOOL_NAMES.join(','));
+  // WI-6554700010009993: the session payload tier. Unsigned like `tools` (not in
+  // SIGNED_PARAM_ALLOWLIST), so it rides the same params without touching the signature.
+  params.set('ctx_tier', AGENT_SESSION_CONTEXT_TIER);
   await signSpawnParams(params, input.ttlSec ? { ttlSec: input.ttlSec } : {});
   // WI-573: route the spawned agent's MCP through the resilient proxy when the env opts in
   // (PAPERCUSP_MCP_PROXY_BASE), else the operator base unchanged. Survives a :3070 deploy restart.
@@ -1755,6 +1771,9 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     seedToolNames = [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES];
   }
   mcpUrl.searchParams.set('tools', seedToolNames.join(','));
+  // WI-6554700010009993: Codex su homes take this URL verbatim (suCodexConfigToml), so the
+  // tier must be baked here; Claude's user-level entry env-expands the same value.
+  mcpUrl.searchParams.set('ctx_tier', AGENT_SESSION_CONTEXT_TIER);
   const mcpUrlStr = mcpUrl.toString();
   const mcpJsonContents = JSON.stringify(
     {
