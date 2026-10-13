@@ -114,6 +114,16 @@ afterEach(() => {
   // A routed render failure must remain visible even if an earlier assertion passed.
   expect(routeError).toBeUndefined();
 });
+function expectNoHiddenProductWrites() {
+  expect(data.mutate).not.toHaveBeenCalled();
+  for (const [input, init] of vi.mocked(fetch).mock.calls) {
+    const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+    // Progress persistence is allowed; provisioning, repair and agent requests are not.
+    expect(url.origin).toBe(window.location.origin);
+    expect(url.pathname).toBe("/api/hosted/browser/onboarding/tutorial-progress");
+    expect(init?.method ?? "GET").toMatch(/^(GET|POST)$/);
+  }
+}
 describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
   it.each(["gcp", "aws"])("selects an authorized healthy %s prepared workspace with provider-neutral cost guidance and no provisioning", async target => {
     data.rows = [{ ...connection, id: target, target }, { ...workspace, target, connectionId: target, health: { status: "healthy", checks: [] }, estimatedMonthlyUsd: 18.5 },
@@ -134,7 +144,8 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     expect(within(cost).getByText(/Your cloud provider bills for provisioned resources and retained disks/)).toBeTruthy();
     expect(cost.textContent).not.toContain("Google Cloud bills");
     expect(screen.queryByRole("textbox", { name: "Connection label" })).toBeNull();
-    expect(data.mutate).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalled(); // Positive control for the network assertion.
+    expectNoHiddenProductWrites();
   });
   it("explains missing preparation and opens the maintained advanced BYOC form only after an explicit choice", async () => {
     const { router } = mount();
@@ -144,10 +155,10 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     fireEvent.click(within(entry).getByRole("button", { name: "Advanced: connect my own cloud" }));
     await waitFor(() => expect(router.state.location.search).toMatchObject({ tutorial: "advanced", step: "connect", connect: "gcp" }));
     await screen.findByRole("textbox", { name: "Connection label" });
-    expect(data.mutate).not.toHaveBeenCalled();
+    expectNoHiddenProductWrites();
     fireEvent.click(screen.getByRole("button", { name: "Use a prepared workspace instead" }));
     await screen.findByRole("region", { name: "Beginner workspace entry" });
-    expect(data.mutate).not.toHaveBeenCalled();
+    expectNoHiddenProductWrites();
   });
   it.each(["loading", "denied"])("does not offer stale workspace selections while access is %s", async mode => {
     data.rows = [{ ...workspace, health: { status: "healthy", checks: [] } }];
@@ -156,7 +167,22 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     const entry = await screen.findByRole("region", { name: "Beginner workspace entry" });
     expect(within(entry).queryByRole("button", { name: /Use prepared workspace/ })).toBeNull();
     expect(entry.textContent).not.toContain("private access detail");
-    expect(data.mutate).not.toHaveBeenCalled();
+    expectNoHiddenProductWrites();
+  });
+
+  it.each([
+    { desiredState: "stopped", observedState: "running" },
+    { desiredState: "running", observedState: "provisioning" },
+    { desiredState: "running", observedState: "absent" },
+    { desiredState: "running", observedState: "degraded" },
+  ] as const)("does not offer a healthy workspace with desired=$desiredState and observed=$observedState", async lifecycle => {
+    data.rows = [{ ...workspace, ...lifecycle, health: { status: "healthy", checks: [] } }];
+    mount();
+    const entry = await screen.findByRole("region", { name: "Beginner workspace entry" });
+    expect(within(entry).getByText(/No prepared healthy workspace.*administrator/)).toBeTruthy();
+    expect(within(entry).queryByRole("button", { name: /Use prepared workspace/ })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Connection label" })).toBeNull();
+    expectNoHiddenProductWrites();
   });
 
   it("discloses cost before the user provisions and leaves the real provision action untouched by guide controls", async () => {
