@@ -297,6 +297,17 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         ),
       all: z.array(z.unknown()).min(1).max(CONTINUITY_PROBE_MAX_PER_WAKE).optional()
         .describe('ALL of these independently validated read-only probes must pass; mutually exclusive with probe.'),
+      unit: z
+        .string()
+        .trim()
+        .min(1)
+        .max(32)
+        .optional()
+        .describe(
+          "unit of the scalar each probe reads at its predicate path (e.g. 'ms', 'pct', 'cores', 'MB/s'). " +
+            'Recorded on every results-ledger row this check writes, so a reading can be compared with a ' +
+            'baseline or an earlier run; a row with a different unit no longer describes the check. Omitted = unitless.',
+        ),
     })
     .strict()
     .superRefine((check, ctx) => {

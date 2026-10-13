@@ -129,7 +129,7 @@ export async function rescoreRubric(
     const dispatchTool = deps.dispatchTool ?? ((name: string, args: Record<string, unknown>) =>
       dispatchPaletteTarget({ name, args, ...(harness ? { harness } : {}) }));
     const evaluation = await (deps.evaluateProbes ?? evaluateCriterionProbeChecks)({ criteria: probeCriteria, ratings, dispatchTool });
-    if (evaluation.ok) results.push(...probeCheckResults(rubricRef, evaluation.checkRuns));
+    if (evaluation.ok) results.push(...probeCheckResults(rubricRef, evaluation.checkRuns, probeCriteria));
     else probeError = `${evaluation.error}: ${evaluation.detail}`;
   }
 

@@ -72,6 +72,19 @@ export function probeCheckId(criterionKey: string, childIndex: number): string {
   return `${criterionKey}:${childIndex}`;
 }
 
+/**
+ * The unit a probe check declares for the scalar its probes read (rubric-template probe check
+ * `unit`), or undefined when it declares none. Shared by the ledger writer and the ledger judge so
+ * a row and the check it describes agree on the unit.
+ */
+export function probeCheckUnit(check: unknown): string | undefined {
+  if (!check || typeof check !== 'object' || Array.isArray(check)) return undefined;
+  const c = check as { kind?: unknown; unit?: unknown };
+  if (c.kind !== 'probe' || typeof c.unit !== 'string') return undefined;
+  const unit = c.unit.trim();
+  return unit.length > 0 ? unit : undefined;
+}
+
 export function instrumentCheckId(criterionKey: string): string {
   return `${criterionKey}:instrument`;
 }
@@ -100,16 +113,19 @@ function scalarOrNull(value: unknown): string | number | boolean | null {
 export function probeCheckResults(
   rubricRef: string,
   checkRuns: Readonly<Record<string, { kind: string }>>,
+  criteria: ReadonlyArray<{ key: string; check?: unknown }> = [],
 ): RubricCheckResult[] {
   const out: RubricCheckResult[] = [];
+  const unitByKey = new Map(criteria.map((c) => [c.key, probeCheckUnit(c.check)]));
   for (const [criterionKey, run] of Object.entries(checkRuns)) {
     if (run.kind !== 'probe') continue;
     const probeRun = run as ScorecardProbeCheckRun;
     const children = 'all' in probeRun ? probeRun.all : [probeRun];
+    const unit = unitByKey.get(criterionKey) ?? null;
     children.forEach((child, childIndex) => {
       const value = scalarOrNull(child.observed);
       out.push({
-        check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit: null },
+        check: { id: probeCheckId(criterionKey, childIndex), rubricRef, criterionKey, kind: 'probe', value, unit },
         verdict: child.verdict,
         measuredAt: child.measuredAt,
         durationMs: null,

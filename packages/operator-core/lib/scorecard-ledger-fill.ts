@@ -32,6 +32,7 @@ import {
   instrumentCheckId,
   meetsExpect,
   probeCheckId,
+  probeCheckUnit,
   type LatestRubricCheckResult,
 } from './check-results-ledger';
 import { evaluateContinuityPredicate, type ContinuityPredicate } from './continuity-probes';
@@ -51,7 +52,10 @@ export interface LedgerCheckBinding {
   predicate?: ContinuityPredicate;
   /** Instrument: the current threshold, in the instrument's unit. */
   expect?: { op: 'lt' | 'lte' | 'gt' | 'gte' | 'eq'; value: number };
-  /** Instrument: the registered unit a row must carry to describe this check. */
+  /**
+   * The unit a row must carry to describe this check: an instrument's registered unit, or the
+   * unit a probe check declares (absent when it declares none).
+   */
   unit?: string;
 }
 
@@ -71,11 +75,13 @@ export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheck
   if (check.kind === 'probe') {
     const children = Array.isArray(check.all) ? check.all : check.probe !== undefined ? [check.probe] : [];
     if (children.length === 0) return null;
+    const unit = probeCheckUnit(check);
     return children.map((child, index) => {
       const expect = record(record(child)?.expect);
       return {
         id: probeCheckId(criterion.key, index),
         kind: 'probe' as const,
+        ...(unit !== undefined ? { unit } : {}),
         ...(expect && typeof expect.op === 'string' && typeof expect.path === 'string'
           ? { predicate: expect as unknown as ContinuityPredicate }
           : {}),

@@ -133,3 +133,31 @@ describe('fillRatingsFromLedger', () => {
     expect(out.unrecorded).toEqual(['never-run']);
   });
 });
+
+describe('probe check unit — a row describes the check only in the declared unit (P-010)', () => {
+  const lat = { key: 'lat', check: { kind: 'probe', probe: probe(1), unit: 'pct' } };
+
+  it('carries a declared probe unit on every binding and leaves an undeclared one absent', () => {
+    expect(ledgerCheckBindings(lat)?.map((b) => [b.id, b.unit])).toEqual([['lat:0', 'pct']]);
+    expect(ledgerCheckBindings(criteria[1]!)?.some((b) => 'unit' in b)).toBe(false);
+  });
+
+  it('fills from a row in the declared unit, and treats a row in another unit or none as unrecorded', () => {
+    const fill = (unit: string | null) =>
+      fillRatingsFromLedger({
+        criteria: [lat], rubricRatingScale: SCALE, callerRatings: {},
+        latest: new Map([['lat:0', row('lat:0', 1, 'pass', { unit }, 31)]]),
+      });
+    const ok = fill('pct');
+    expect(ok.ok).toBe(true);
+    if (!ok.ok) return;
+    expect(ok.ratings.lat).toMatchObject({ rating: 'meets', ratedFrom: 'ledger', ledgerResult: { testRunId: 31, value: 1, unit: 'pct' } });
+    for (const other of ['ms', null]) {
+      const out = fill(other);
+      expect(out.ok).toBe(true);
+      if (!out.ok) return;
+      expect(out.unrecorded).toEqual(['lat']);
+      expect(out.ratings.lat).toMatchObject({ rating: 'unknown', unknownReason: 'not-exercised' });
+    }
+  });
+});

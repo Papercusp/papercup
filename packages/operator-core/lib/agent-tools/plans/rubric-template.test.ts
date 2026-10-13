@@ -105,6 +105,15 @@ describe('rubric template schema', () => {
     ).toBe(false);
   });
 
+  it('accepts an optional probe-check unit and refuses an empty one (test-rubric-unification P-010)', () => {
+    const probe = { kind: 'sql', sql: 'SELECT 1 AS v', schemaRevision: 'r', expect: { path: '$.rows[0].v', op: 'lte', value: 100 } };
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'probe', probe, unit: 'pct' }).success).toBe(true);
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'probe', all: [probe, probe], unit: 'ms' }).success).toBe(true);
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'probe', probe }).success).toBe(true);
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'probe', probe, unit: '   ' }).success).toBe(false);
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'probe', probe, unit: 'x'.repeat(33) }).success).toBe(false);
+  });
+
   it('accepts a native Cargo check with explicit manifest/source attribution', () => {
     expect(
       rubricCriterionCheckSchema.safeParse({
