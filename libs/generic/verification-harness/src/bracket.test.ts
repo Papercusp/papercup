@@ -200,7 +200,7 @@ ${exitCode ? 'exit 7' : 'vh_begin ship'}
       expect(r.code).toBe(exitCode);
       expect(r.stderr).not.toContain('VH_DISABLED');
       expect(r.stderr).not.toMatch(/createIpcServer|listen EINVAL/);
-      expect(r.stdout).toContain('VH_GUARD_RAIL key=long-tmpdir-probe status=holds');
+      expect(r.stdout).toContain('VH_GUARD_RAIL key=long-tmpdir-probe status=held');
       expect(r.stdout).toMatch(new RegExp(`HARNESS_RESULT harness=linear verdict=${exitCode ? 'fail' : 'pass'}`));
       expect(r.result).not.toBeNull();
       expect(r.result.guardRails).toMatchObject({ selected: 1, results: [{ key: 'long-tmpdir-probe', ok: true }] });
