@@ -25,3 +25,26 @@ describe('consultSubjectKeys explicit ids', () => {
     );
   });
 });
+
+describe('consultSubjectKeys explicit revision pins', () => {
+  const subject = 'acceptance-byoc-delivery-acceleration-2026-09-06';
+
+  it('normalizes compact and separated revision and hash labels', () => {
+    const hash = 'a'.repeat(64);
+    const compact = consultSubjectKeys(`Vet ${subject} rev8/hash${hash}`);
+    expect(compact).toContain('revision:8');
+    expect(compact).toContain(`hash:${hash}`);
+    expect(compact).toEqual(
+      consultSubjectKeys(`Vet ${subject} revision: 8 criteriaHash: ${hash.toUpperCase()}`),
+    );
+  });
+
+  it('keeps changed or omitted explicit pins apart for the same subject', () => {
+    const current = consultSubjectKeys(`Vet ${subject} revision8 criteriaHash${'a'.repeat(64)}`);
+    for (const question of [
+      `Vet ${subject} revision7 criteriaHash${'a'.repeat(64)}`,
+      `Vet ${subject} revision8 criteriaHash${'b'.repeat(64)}`,
+      `Vet ${subject}`,
+    ]) expect(current).not.toEqual(consultSubjectKeys(question));
+  });
+});

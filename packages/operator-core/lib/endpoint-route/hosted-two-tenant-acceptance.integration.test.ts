@@ -1245,7 +1245,7 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
     }
   }, 30_000);
 
-  it('binds WS/PTY/file/MCP relay tickets to one tenant and rejects replay and rotation residue', async () => {
+  it('binds WS/PTY/file/MCP relay tickets to one tenant and rejects replay, rotation and revocation residue', async () => {
     const crossTenantEnroll = await request(
       plane,
       `/hosted/workspaces/${WORKSPACE_B}/connectors/enroll`,
@@ -1368,6 +1368,51 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
         new Request(`https://tenant-a.workspaces.papercusp.com/api/hosted/connectors/socket?ticket=${staleTicket.ticket}`),
       ),
     ).resolves.toBeNull();
+
+    // Register the new generation before revoking it: the same bearer and
+    // unconsumed ticket must work while authorized and fail after revocation.
+    const rotation = await rotated.json() as { ticket: string };
+    const nextRegistration = await request(
+      plane, `/hosted/connectors/register?ticket=${rotation.ticket}`, undefined, { method: 'POST' },
+    );
+    expect(nextRegistration.status).toBe(200);
+    const nextCredential = await nextRegistration.json() as { bearer: string };
+    const nextBinding = { hostId: HOST_A, routeLabel: 'tenant-a-next', transport: 'websocket' };
+    const nextTicket = await request(
+      plane, `/hosted/workspaces/${WORKSPACE_A}/connectors/session-ticket`, sessionA,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(nextBinding) },
+    );
+    expect(nextTicket.status).toBe(200);
+    const beforeRevocationTicket = await nextTicket.json() as { ticket: string };
+    const connectorUpgrade = new Request(
+      'https://tenant-a-next.workspaces.papercusp.com/api/hosted/connectors/socket',
+      { headers: { authorization: `Bearer ${nextCredential.bearer}` } },
+    );
+    await expect(authenticateHostedConnectorSocket(plane.components.connectorGateway!, connectorUpgrade))
+      .resolves.toMatchObject({ role: 'connector', binding: { state: 'active', routeLabel: 'tenant-a-next' } });
+
+    const revoked = await request(
+      plane, `/hosted/workspaces/${WORKSPACE_A}/connectors/revoke`, sessionA,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(nextBinding) },
+    );
+    expect(revoked.status).toBe(200);
+    await expect(authenticateHostedConnectorSocket(plane.components.connectorGateway!, connectorUpgrade))
+      .resolves.toBeNull();
+    await expect(authenticateHostedConnectorSocket(
+      plane.components.connectorGateway!,
+      new Request(`https://tenant-a-next.workspaces.papercusp.com/api/hosted/connectors/socket?ticket=${beforeRevocationTicket.ticket}`),
+    )).resolves.toBeNull();
+    const afterRevocationTicket = await request(
+      plane, `/hosted/workspaces/${WORKSPACE_A}/connectors/session-ticket`, sessionA,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(nextBinding) },
+    );
+    expect(afterRevocationTicket.status).toBe(409);
+    const revokedHeartbeat = await request(
+      plane, '/hosted/connectors/heartbeat', undefined,
+      { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${nextCredential.bearer}` },
+        body: JSON.stringify({ transport: 'websocket' }) },
+    );
+    expect(revokedHeartbeat.status).toBe(401);
   });
 
   it('keeps delegation and session authority tenant-bound across a control-plane restart and revocation', async () => {

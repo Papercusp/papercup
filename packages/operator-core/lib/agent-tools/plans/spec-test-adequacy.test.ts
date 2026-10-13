@@ -1823,6 +1823,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           executed: true,
           outcome: 'killed',
           targeted: 'spec-003-01',
+          coverageRungs: { l3: true },
         },
       },
     });
@@ -1832,6 +1833,11 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       classRef: 'plan-class-feature-ship',
     });
     expect(proved.ratings['plan-class-risk-floor'].rating).toBe('pass');
+    expect(proved.ratings['plan-class-risk-floor'].evidence).toContain('L4 risk floor is met via');
+    expect(proved.ratings['plan-class-risk-floor'].evidence).toContain(
+      'clause-bound mutation/counterexample evidence with a passing baseline case',
+    );
+    expect(proved.ratings['plan-class-risk-floor'].evidence).toContain('coverageRungs=l3:true');
     expect(proved.ratings.falsifiability.rating).toBe('pass');
 
     const waived = evaluateSpecTestAdequacy({

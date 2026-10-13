@@ -195,6 +195,9 @@ describe('hosted BYOC vendor outage through customer-controlled ingress', () => 
       tunnel: { target: 'customer@host', controlPath: join(root, 'iap-control.sock'), remoteOperatorPort: hostPort },
     });
     expect((await fetch(`${customerOrigin}/file`)).status).toBe(200);
+    const beforeOutageTurn = await fetch(`${customerOrigin}/turn`, { method: 'POST' });
+    expect(beforeOutageTurn.status).toBe(200);
+    expect(await beforeOutageTurn.json()).toEqual({ finalText: marker, steps: 2, toolResults: 1 });
 
     control.child.kill('SIGTERM');
     await once(control.child, 'close');

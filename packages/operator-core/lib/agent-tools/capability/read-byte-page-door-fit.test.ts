@@ -18,7 +18,7 @@
  * and decodes cleanly — rather than any particular page size, and they exercise
  * the real door rather than re-deriving its arithmetic.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -114,6 +114,23 @@ async function rawResponseText(args: Record<string, unknown>): Promise<string> {
 }
 
 const DOOR_BUDGET_CHARS = computeTurnDoors(0).resultEach * CHARS_PER_TOKEN_ESTIMATE;
+
+describe('EI-25801373601150765: capability:read async filesystem contract', () => {
+  it('keeps filesystem calls on the byte-page path asynchronous', () => {
+    const source = readFileSync(new URL('./read.ts', import.meta.url), 'utf8');
+
+    expect(source).toMatch(/import\s+\{\s*open,\s*readFile,\s*stat\s*\}\s+from\s+['\"]node:fs\/promises['\"]/);
+    expect(source).toMatch(/await\s+stat\(abs\)/);
+    expect(source).toMatch(/await\s+open\(abs,\s*['\"]r['\"]\)/);
+    expect(source).toMatch(/await\s+fd\.read\(/);
+    expect(source).toMatch(/await\s+fd\.close\(\)/);
+    expect(source).toMatch(/await\s+readFile\(abs\)/);
+
+    for (const syncApi of ['openSync', 'readSync', 'closeSync', 'statSync', 'readFileSync']) {
+      expect(source).not.toMatch(new RegExp(`\\b${syncApi}\\b`));
+    }
+  });
+});
 
 describe('WI-39670: byte-window pages survive the result door intact', () => {
   it('emits a response within the door budget at the ADVERTISED max byte_limit', async () => {

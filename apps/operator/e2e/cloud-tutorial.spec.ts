@@ -41,8 +41,10 @@ const workspace = {
   tunnel: { hostedConnector: { transport: 'websocket', routeLabel: 'tutorial-connector' } },
 };
 const ANSWER = 'Available tools: read files and search code.';
+type UnmodelledFixtureRequest = { path: string; method: string };
+const fixtureRequestChecks = new WeakMap<Page, { actual: UnmodelledFixtureRequest[]; expected: UnmodelledFixtureRequest[] }>();
 
-async function setupJourney(page: Page, existing: boolean, speech = false, target: 'gcp' | 'aws' = 'gcp') {
+async function setupJourney(page: Page, existing: boolean, speech = false, target: 'gcp' | 'aws' = 'gcp', expectedUnmodelledRequests: UnmodelledFixtureRequest[] = []) {
   const journeyConnection = target === 'gcp' ? connection : {
     ...connection, id: 'tutorial-aws', target: 'aws', label: 'My AWS', credentialRef: 'resolver://aws/e2e',
     provider: { vpcId: 'vpc-e2e', securityGroupIds: ['sg-e2e'], launchTemplateId: 'lt-e2e' },
@@ -65,6 +67,8 @@ async function setupJourney(page: Page, existing: boolean, speech = false, targe
   const writes: Array<{ path: string; body: Record<string, any> }> = [];
   const socketMessages: Record<string, unknown>[] = [];
   const apiHits: string[] = [];
+  const unmodelledRequests: UnmodelledFixtureRequest[] = [];
+  fixtureRequestChecks.set(page, { actual: unmodelledRequests, expected: expectedUnmodelledRequests });
   const browserErrors: string[] = [];
   const assistance: Array<{ path: string; body: Record<string, unknown> }> = [];
   page.on('pageerror', error => browserErrors.push(error.message));
@@ -199,6 +203,7 @@ async function setupJourney(page: Page, existing: boolean, speech = false, targe
     if (path.endsWith('/sse')) return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': fixture\n\n' });
     if (path === '/api/flags/bootstrap') return json({ flags: {} });
     if (path.endsWith('/operator-voice-prefs')) return json({ prefs: { enabled: false, muted: true } });
+    unmodelledRequests.push({ path, method: request.method() });
     return json({ error: 'unmodelled_tutorial_fixture_route', path }, 501);
   });
   const sync = await stubSyncQueries(page, name => name === 'workspaceHosts.control' ? rows : undefined, { transport: 'hosted' });
@@ -207,13 +212,38 @@ async function setupJourney(page: Page, existing: boolean, speech = false, targe
     setTimeout(() => socket.send(JSON.stringify({ type: 'session.bound', protocol: 'papercusp-hosted-workspace.v1', channelId: 'tutorial-channel', role: 'observer', binding: { generation: 1, hostedSessionId: 'tutorial-session' } })), 20);
     socket.onMessage(raw => { socketMessages.push(JSON.parse(String(raw))); });
   });
-  return { writes, socketMessages, apiHits, browserErrors, assistance, sync,
+  return { writes, socketMessages, apiHits, unmodelledRequests, browserErrors, assistance, sync,
     setProgressStatus: (status: number) => { progressStatus = status; },
     setHelpStatus: (status: number) => { helpStatus = status; },
     setActionStatus: (status: number) => { actionStatus = status; },
     get hosts() { return rows.filter(row => row.kind === 'workspace'); },
     get prompt() { return sentPrompt; } };
 }
+
+test.afterEach(async ({ page }, testInfo) => {
+  const check = fixtureRequestChecks.get(page);
+  if (!check) return;
+  if (check.actual.length > 0) await testInfo.attach('unmodelled-api-requests', {
+    body: JSON.stringify(check), contentType: 'application/json',
+  });
+  expect(check.actual).toEqual(check.expected);
+});
+
+test('browser fixture detects an unmodelled API request even when its 501 is ignored', async ({ page }) => {
+  const path = '/api/hosted/browser/unmodelled-fixture-control';
+  const fixture = await setupJourney(page, true, false, 'gcp', [{ path, method: 'POST' }]);
+  await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
+  await fixture.sync.waitForServed(['workspaceHosts.control']);
+  await expect(page.getByRole('region', { name: 'Beginner workspace entry' })).toBeVisible();
+  expect(fixture.unmodelledRequests).toEqual([]);
+  // The fixture intercepts this request; no control-plane write leaves the page.
+  const status = await page.evaluate(async path => (await fetch(path, { method: 'POST' })).status, path);
+  expect(status).toBe(501);
+  expect(fixture.apiHits).toContain(path);
+  expect(fixture.writes).toEqual([]); // The old named-write-only oracle would pass.
+  expect(fixture.unmodelledRequests).toEqual([{ path, method: 'POST' }]);
+  expect(fixture.browserErrors).toEqual([]);
+});
 
 // Real components, routing, dialogs and request bodies run in Chromium. The
 // provider response boundary is synthetic; real provider receipts are separate.

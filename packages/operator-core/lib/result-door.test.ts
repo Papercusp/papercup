@@ -576,6 +576,55 @@ describe('applyResultDoor', () => {
     expect(projected.results[0]?.threadWindow?.posts?.[0]).toMatchObject({ id: 41, body: selectedBody });
   });
 
+  it('tools:invoke work_items:get preserves explicitly picked thread post leaves through the outer door', () => {
+    const selectedPost = {
+      id: 43,
+      author_id: 'su-reviewer',
+      created_ts: '2026-10-08T05:00:00.000Z',
+      body: 'The reviewer needs the original objection before approving this change.',
+    };
+    const source = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'WI-explicit-thread-leaf-pick',
+        checkpoint: 'C'.repeat(10_000),
+        checkpointBody: { notes: Array.from({ length: 20 }, () => 'N'.repeat(350)) },
+        threadWindow: {
+          posts: [selectedPost],
+          shown: 1,
+          total: 3,
+          topics: [],
+          createdAt: null,
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const text = JSON.stringify(source);
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'work_items:get',
+        workspaceId: 'ws-1',
+        runId: '22222222-3333-4444-8555-666666666670',
+        preservePaths: [
+          'results[].threadWindow.posts[].id',
+          'results[].threadWindow.posts[].author_id',
+          'results[].threadWindow.posts[].created_ts',
+          'results[].threadWindow.posts[].body',
+        ],
+      },
+    );
+    const projected = JSON.parse((doored.content[0] as { type: 'text'; text: string }).text) as {
+      results: Array<{ threadWindow?: { posts?: Array<typeof selectedPost> } }>;
+    };
+
+    expect(projected.results[0]?.threadWindow?.posts?.[0]).toMatchObject(selectedPost);
+  });
+
   it('tools:invoke work_items:get keeps post bodies when projection selects the enclosing threadWindow', () => {
     const selectedBody = 'The reviewer requested the full comment text.';
     const source = {

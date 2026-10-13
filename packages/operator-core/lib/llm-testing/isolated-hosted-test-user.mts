@@ -117,7 +117,13 @@ export async function loadIsolatedHostedTestUserKit(options: {
         finished = true;
         clearTimeout(timer);
         child.off('message', onMessage); child.off('exit', onExit); child.off('error', onError);
-        error ? reject(error) : ready(value);
+        if (error) {
+          // Ordinary reporters and hosted receipts retain message/stack, but
+          // discard custom Error properties. Keep safe stage timings on that
+          // boundary as well so a cold import failure remains diagnosable.
+          if (importStages.length) error.message += '\nHosted TEST import stages: ' + JSON.stringify(importStages);
+          reject(Object.assign(error, { importStages }));
+        } else ready(value);
       };
       let stage = op;
       const importStages: Array<{ stage: string; phase: string; elapsedMs: number }> = [];

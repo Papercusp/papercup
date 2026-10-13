@@ -133,7 +133,8 @@ describe('isolated retained hosted TEST admission', () => {
     const f = fixture({ slowImport: true });
     const failure = await loadIsolatedHostedTestUserKit({ portalRoot: f.root,
       environment: f.environment, timeoutMs: 5_000 }).catch(error => error);
-    expect(failure.message).toBe('Hosted TEST fixture preflight timed out at lib/auth/hosted/workspace-admission-dependencies.ts');
+    expect(failure.message).toContain('Hosted TEST fixture preflight timed out at lib/auth/hosted/workspace-admission-dependencies.ts');
+    expect(JSON.parse(failure.message.split('\nHosted TEST import stages: ')[1])).toEqual(failure.importStages);
     expect(failure.importStages).toEqual(expect.arrayContaining([
       expect.objectContaining({ stage: 'fixture-module-import', phase: 'finished' }),
       expect.objectContaining({ stage: 'lib/workspace-host/observability-store.ts', phase: 'finished' }),
