@@ -99,6 +99,40 @@ describe('source-bound current benchmark cost', () => {
       concurrencyTimeline: { peakConcurrent: 2, avgConcurrent: 120 / 110,
         samples: [{ tMs: 0, live: 1 }, { tMs: 90, live: 2 }, { tMs: 100, live: 1 }, { tMs: 110, live: 0 }] } } } });
   });
+  it('BM-P-005-wall-concurrency: reports elapsed wall-clock and concurrency for overlapping versus sequential participants with equal calls', async () => {
+    const run = async (second: { startedAtMs: number; endedAtMs: number }) => {
+      const f = costFixture();
+      vi.mocked(f.ports.readParticipants).mockResolvedValue([f.participant, { ...f.participant, taskId: 'reviewer-task', ...second }]);
+      return f.read();
+    };
+    const overlapping = await run({ startedAtMs: 100, endedAtMs: 200 });
+    const sequential = await run({ startedAtMs: 200, endedAtMs: 300 });
+    // Same participants, same native calls and cost: only the schedule differs.
+    expect(overlapping.turns).toBe(sequential.turns);
+    expect(overlapping.costUsd).toBeCloseTo(sequential.costUsd, 12);
+    expect(overlapping.armMeta).toMatchObject({ nativeCostAccounting: { taskLedgerConcurrency: { complete: true,
+      wallClockMs: 100, participantWallClockMs: 200, concurrencyTimeline: { peakConcurrent: 2, avgConcurrent: 2 } } } });
+    expect(sequential.armMeta).toMatchObject({ nativeCostAccounting: { taskLedgerConcurrency: { complete: true,
+      wallClockMs: 200, participantWallClockMs: 200, concurrencyTimeline: { peakConcurrent: 1, avgConcurrent: 1 } } } });
+  });
+  it('BM-P-005-normalized-cost: prices one measured token ledger with the recorded schedule, not a later live schedule', async () => {
+    const f = costFixture();
+    const reader = currentBenchNativeCostReader(f.protocol, f.ports);
+    const recorded = await reader();
+    expect(recorded.costUsd).toBeCloseTo((80 * 1 + 20 * 0.5 + 10 * 2) / 1e6, 12);
+    // The live schedule changes after the run froze its prices. Replaying the same ledger keeps the recorded prices.
+    const rate = f.protocol.priceSchedule.rates[0];
+    rate.inputUsdPerMillion = 100; rate.outputUsdPerMillion = 200; f.protocol.priceSchedule.version = 'live-prices-v2';
+    const replay = await reader();
+    expect(replay).toMatchObject({ tokensIn: recorded.tokensIn, tokensOut: recorded.tokensOut, tokensCacheRead: recorded.tokensCacheRead });
+    expect(replay.costUsd).toBeCloseTo(recorded.costUsd, 12);
+    expect(replay.armMeta).toMatchObject({ nativeCostAccounting: { priceTableVersion: 'frozen-prices-v1', normalizedCostUsd: recorded.costUsd } });
+    // A run frozen under the changed schedule prices the same ledger differently, so the equality above is
+    // the recorded schedule at work rather than a constant.
+    const changed = await currentBenchNativeCostReader(f.protocol, f.ports)();
+    expect(changed.costUsd).toBeCloseTo((80 * 100 + 20 * 0.5 + 10 * 200) / 1e6, 12);
+    expect(changed.armMeta).toMatchObject({ nativeCostAccounting: { priceTableVersion: 'live-prices-v2' } });
+  });
   it.each(['missing-end', 'invalid-start', 'live', 'census-drift', 'duplicate-task'] as const)
   ('keeps task lifetime measurement unknown for %s', async change => {
     const f = costFixture();
