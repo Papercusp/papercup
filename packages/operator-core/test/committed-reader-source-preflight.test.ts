@@ -83,21 +83,55 @@ function producerFixture(extraScript = '') {
 
 describe('private worker source selection before allocation', () => {
   const committedEnv = { NODE_OPTIONS: '--import=/repo/scripts/lib/committed-source-loader.mjs' };
+  it('refuses mutable private proof even when named HEAD bytes match', () => {
+    const f = fixture();
+    rmSync(join(f.root, '.verifier-source.json'));
+    const reader = vi.fn(() => Buffer.from('helper.ts'));
+    expect(() => preparePrivateWorkerSources(f.root, ['helper.ts'], committedEnv, reader))
+      .toThrow(/independent verifier source receipt/);
+    expect(reader).not.toHaveBeenCalled();
+  });
+  it('refuses a frozen private proof without its independent receipt before any HEAD read', () => {
+    const f = fixture(); const reader = vi.fn(() => Buffer.from('helper.ts'));
+    expect(() => preparePrivateWorkerSources(f.root, ['helper.ts'], {}, reader))
+      .toThrow(/independent verifier source receipt/);
+    expect(reader).not.toHaveBeenCalled();
+  });
   it('rejects a changed worker helper that the inherited loader would replace with HEAD', () => {
     const f = fixture();
-    expect(() => preparePrivateWorkerSources(f.root, ['helper.ts'], committedEnv,
+    expect(() => preparePrivateWorkerSources(f.root, ['helper.ts'],
+      { ...committedEnv, VERIFY_TAURI_SOURCE_RECEIPT: f.options.sourceReceiptPath },
       () => Buffer.from('older helper'))).toThrow(/different HEAD bytes: helper.ts/);
   });
   it('records exact matching committed inputs and fails closed when their HEAD read fails', () => {
     const f = fixture();
-    expect(preparePrivateWorkerSources(f.root, ['helper.ts'], committedEnv,
-      () => Buffer.from('helper.ts'))).toEqual({ loader: 'committed-source',
+    const env = { ...committedEnv, VERIFY_TAURI_SOURCE_RECEIPT: f.options.sourceReceiptPath };
+    expect(preparePrivateWorkerSources(f.root, ['helper.ts'], env,
+      () => Buffer.from('helper.ts'))).toMatchObject({ loader: 'committed-source',
       files: [{ path: 'helper.ts', sha256: digest('helper.ts') }] });
-    expect(() => preparePrivateWorkerSources(f.root, ['helper.ts'], committedEnv,
+    expect(() => preparePrivateWorkerSources(f.root, ['helper.ts'], env,
       () => { throw new Error('HEAD unreadable'); })).toThrow('HEAD unreadable');
+  });
+  it('pins the frozen receipt without a HEAD loader and refuses selected source drift', () => {
+    const f = fixture(); const reader = vi.fn(() => { throw new Error('must not read HEAD'); });
+    const env = { VERIFY_TAURI_SOURCE_RECEIPT: f.options.sourceReceiptPath,
+      VERIFY_TAURI_SOURCE_REF: f.options.selectedCommit };
+    expect(preparePrivateWorkerSources(f.root, ['helper.ts'], env, reader)).toMatchObject({
+      loader: 'verifier-source', files: [{ path: 'helper.ts', sha256: digest('helper.ts') }],
+      frozenSource: { sourceCommit: f.options.selectedCommit, receiptPath: f.options.sourceReceiptPath,
+        receiptSha256: digest(readFileSync(f.options.sourceReceiptPath)) },
+    });
+    expect(reader).not.toHaveBeenCalled();
+    expect(() => preparePrivateWorkerSources(f.root, ['helper.ts'], { ...env, VERIFY_TAURI_SOURCE_REF: 'b'.repeat(40) }))
+      .toThrow(/selected source differs/);
+    writeFileSync(join(f.root, 'helper.ts'), 'peer drift');
+    expect(() => preparePrivateWorkerSources(f.root, ['helper.ts'], env, reader))
+      .toThrow(/tampered verification source archive: changed helper.ts/);
+    expect(reader).not.toHaveBeenCalled();
   });
   it('preserves working-source execution without invoking a committed reader when no loader selects HEAD', () => {
     const f = fixture(); const reader = vi.fn(() => { throw new Error('must not read HEAD'); });
+    rmSync(join(f.root, '.verifier-source.json'));
     expect(preparePrivateWorkerSources(f.root, ['helper.ts'], {}, reader).loader).toBe('working-source');
     expect(reader).not.toHaveBeenCalled();
   });
