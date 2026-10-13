@@ -17,6 +17,7 @@ import { firstPartyCallersOffthread } from '../code-intelligence/first-party-cal
 import { LSP_VENDOR_DIR } from '../code-intelligence/lsp-adapter';
 import { capabilityHash } from './capability-contracts';
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from './capability-sampler';
+import { applyDreamGraphTreatment, dreamComparisonInputHash, freezeDreamEvaluationProtocol } from './dream-evaluation';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -136,10 +137,34 @@ describe('capability packets through the pinned secret-scanned packer', () => {
       seen.add(control.selection.a.packet.unit.id); seen.add(control.selection.b.packet.unit.id);
     }
     expect(seen.has('capability:disconnected')).toBe(true);
+    const common = { manifestRevision: manifest.revision,
+      scope: { workspaceId: f.input.scope.workspaceId, potSlug: f.input.scope.potSlug },
+      problemContext: { mode: 'open-exploration' as const, evidence: [], note: 'Frozen integration comparison.' } };
+    const comparison = { ...common, inputHash: dreamComparisonInputHash({ ...common, sourceSnapshot: snapshot.fingerprint }),
+      graphAblation: { treatments: ['graph', 'control'] as ['graph', 'control'],
+        populationIds: snapshot.eligible.map(e => e.packet.unit.id), samplerHash: capabilityHash(JSON.stringify(opts)),
+        attemptsPerTreatment: 2, usdPerTreatment: 2, outcomeAssessment: 'blinded-independent-executed-benefit' as const } };
+    const bound = freezeDreamEvaluationProtocol({ sourceSnapshot: snapshot.fingerprint, comparison,
+      benchmarkHash: 'a'.repeat(64), oracleHash: 'b'.repeat(64), independentLabelsRef: 'fixture:blinded-outcomes',
+      seed: 'native-graph-fixture', models: { generator: 'generator', reviewer: 'reviewer' } });
+    const graph = applyDreamGraphTreatment(snapshot, { ...bound, arm: 'structured-pair', matchedPairIndex: 0, graphTreatment: 'graph' });
+    const baseline = applyDreamGraphTreatment(snapshot, { ...bound, arm: 'structured-pair', matchedPairIndex: 0, graphTreatment: 'control' });
+    expect(graph).toBe(snapshot);
+    expect(baseline.fingerprint).toBe(snapshot.fingerprint);
+    expect(baseline.eligible.map(e => [e.packet.unit.id, e.contentVersion, e.packet.sources])).toEqual(
+      graph.eligible.map(e => [e.packet.unit.id, e.contentVersion, e.packet.sources]));
+    expect(baseline.eligible.every(e => e.packet.graph === undefined)).toBe(true);
+    const control = sampleCapabilityCombination(baseline, opts);
+    if (control.status !== 'selected') throw new Error(control.reason);
+    expect(control.selection.relation).toBeNull();
+    expect([control.selection.a, control.selection.b].every(e => !e.packet.graph)).toBe(true);
+    expect(snapshot.eligible.some(e => e.packet.graph?.status === 'measured')).toBe(true);
     await writeFile(join(f.root, 'producer.ts'), 'export function producer(value: number) { return value * 3; }\n');
     const stale = await buildCapabilitySamplingSnapshot({ rootPath: f.root, scope: f.input.scope, manifest, packets },
       (packet, input) => verifyCapabilityPacket(packet, input, f.deps));
     expect(stale.eligible.some(e => e.packet.unit.id === 'capability:producer')).toBe(false);
+    expect(() => applyDreamGraphTreatment(stale, { ...bound, arm: 'structured-pair', matchedPairIndex: 0, graphTreatment: 'control' }))
+      .toThrow('population changed or is incomplete');
   }, 120_000);
 
   it('P022: enriches a source/test packet through the real compiler and scanner, then rejects edited evidence', async () => {

@@ -17,6 +17,7 @@ import {
   summarizeDreamEvaluationCosts,
   summarizeDreamComparison,
   dreamComparisonInputHash,
+  applyDreamGraphTreatment,
   type DreamEvaluationCost,
 } from './dream-evaluation';
 
@@ -47,6 +48,28 @@ const costs = (arm: DreamEvaluationCost['arm']): DreamEvaluationCost => ({
 });
 
 describe('frozen Dream evaluation protocol — P017', () => {
+  it('NATIVE-GRAPH-COMPARISON: pins treatments, assignment count, sampler and independent executed outcomes without changing legacy pins', () => {
+    const original = frozen();
+    const common = { manifestRevision: 'current-v2', scope: { workspaceId: 'ws', potSlug: 'pot' },
+      problemContext: { mode: 'open-exploration' as const, evidence: [], note: 'Frozen open exploration.' } };
+    const comparison = { ...common, inputHash: dreamComparisonInputHash({ ...common, sourceSnapshot: current.sourceSnapshot }),
+      graphAblation: { treatments: ['graph', 'control'] as ['graph', 'control'], populationIds: ['a', 'b'],
+        samplerHash: capabilityHash('{}'), attemptsPerTreatment: 2, usdPerTreatment: 2,
+        outcomeAssessment: 'blinded-independent-executed-benefit' as const } };
+    const bound = freezeDreamEvaluationProtocol({ ...original.protocol, comparison });
+    const now = { ...current, ...common, samplerHash: comparison.graphAblation.samplerHash };
+    for (const graphTreatment of ['graph', 'control'] as const) {
+      const assigned = { ...bound, arm: 'structured-pair' as const, graphTreatment, matchedPairIndex: 0 };
+      expect(requireDreamPilotProtocol(assigned, now)).toEqual(bound.protocol);
+      expect(() => requireDreamPilotProtocol(assigned, { ...now, samplerHash: 'b'.repeat(64) })).toThrow('sampler changed');
+      expect(() => requireDreamPilotProtocol({ ...assigned, matchedPairIndex: 2 }, now)).toThrow('bounded paired treatment');
+    }
+    expect(() => requireDreamPilotProtocol({ ...bound, arm: 'structured-pair' }, now)).toThrow('paired treatment');
+    expect(() => requireDreamPilotProtocol({ ...original, arm: 'structured-pair', graphTreatment: 'control' }, current)).toThrow('preregistered');
+    expect(dreamEvaluationProtocolHash(original.protocol)).toBe(original.pin);
+    expect(original.protocol.comparison).toBeUndefined();
+    expect(applyDreamGraphTreatment({ fingerprint: 'unused' } as never, null)).toEqual({ fingerprint: 'unused' });
+  });
   it('DREAM-COMPARABLE: binds current catalogue and attributed problem input without altering old protocol pins', () => {
     const original = frozen();
     const scope = { workspaceId: 'ws', potSlug: 'pot' };

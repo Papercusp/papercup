@@ -58,6 +58,7 @@ const HeaderSchema = z
         arm: z.enum(['uniform-pair', 'structured-pair', 'structured-triple']),
         matchedPairIndex: z.number().int().min(0).max(49).optional(),
         inputHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+        graphTreatment: z.enum(['graph', 'control']).optional(),
       })
       .strict()
       .optional(),
