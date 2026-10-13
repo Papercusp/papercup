@@ -8,7 +8,7 @@ import { chromium } from 'playwright-core';
 import { describe, expect, it } from 'vitest';
 import { prepareIdentityFixture, installIdentityFixture } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { startDaoHrTestChain } from '../../../../scripts/fixtures/dao-hr-test-chain';
-import { startDaoHrWalletBindingFixture } from '../../../../scripts/fixtures/dao-hr-wallet-binding';
+import { startDaoHrWalletBindingFixture } from './wallet-binding-fixture';
 import { register, authenticatedAccount, accountToken } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 import { resolveExecutedMapPgUrl } from '../../../../scripts/lib/executed-source-map.mjs';
 import { prepareVerifierSource, prepareVerifierDependencies, verifyVerifierSource, verifierSourceChildEnv } from '../../../../scripts/source-preview.mjs';
@@ -18,6 +18,7 @@ const NATIVE_SOURCE_INPUTS = [
   'packages/operator-core/lib/dao-hr/native.e2e.test.ts',
   'scripts/tauri-surface-verify-dao-hr.mts', 'scripts/fixtures/dao-hr-documenso-ui.ts',
   'scripts/fixtures/dao-hr-test-chain.ts', 'scripts/fixtures/dao-hr-wallet-binding.ts',
+  'scripts/fixtures/dao-hr-wallet-binding-contract.ts', 'packages/operator-core/lib/dao-hr/wallet-binding-fixture.ts',
   'scripts/lib/dao-workbench-controls.mts', 'packages/operator-core/lib/dao-finance.ts',
   'scripts/fixtures/dao-workbench-identity.mjs',
   'scripts/with-documenso-sandbox.mjs',

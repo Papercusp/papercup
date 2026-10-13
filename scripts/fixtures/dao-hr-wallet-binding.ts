@@ -7,8 +7,11 @@ import { createAdaptorServer } from '@hono/node-server';
 import { walletBindingRoute } from '../../apps/operator-public/src/routes/wallet-binding';
 import { makeSqliteDb } from '../../apps/operator-public/src/__tests__/sqlite-d1';
 import type { Env } from '../../apps/operator-public/src/env';
+import type { DaoHrWalletBindingFixture } from './dao-hr-wallet-binding-contract';
 
-export async function startDaoHrWalletBindingFixture() {
+// operator-core loads this through lib/dao-hr/wallet-binding-fixture.ts, never
+// statically: these imports need operator-public's Workers globals.
+export async function startDaoHrWalletBindingFixture(): Promise<DaoHrWalletBindingFixture> {
   if (process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1')
     throw new Error('DAO HR wallet fixture requires explicit isolated verification');
   const { db, raw } = makeSqliteDb();

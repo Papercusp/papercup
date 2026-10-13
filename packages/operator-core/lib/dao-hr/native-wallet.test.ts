@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
-import { startDaoHrWalletBindingFixture } from '../../../../scripts/fixtures/dao-hr-wallet-binding';
+import { startDaoHrWalletBindingFixture } from './wallet-binding-fixture';
 import { installIdentityFixture, prepareIdentityFixture } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { readWalletBinding, requestWalletBindingChallenge, submitWalletBinding } from '../cupboard/wallet-binding-io';
 
