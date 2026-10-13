@@ -61,6 +61,13 @@ import {
 import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import {
+  buildRedLegsAtR1,
+  decideKnownGoodFreezeCut,
+  formatFreezeCutLine,
+  type FreezeCutRecord,
+  type RedLegsAtR1,
+} from "@papercusp/operator-core/lib/release/known-good-freeze";
+import {
   buildFrozenRepairBoundedLifeRecord,
   decideFrozenRepairBoundedLife,
   frozenRepairBoundedLifeRateLimitedBody,
@@ -292,7 +299,7 @@ import {
   EXECUTED_MAP_WORKSPACE_ENV,
   executedMapRecordingEnabled,
 } from "../../../../scripts/lib/executed-source-map.mjs";
-import { TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reuse.mjs";
+import { recordGateReuseDecision, TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reuse.mjs";
 // EI-24538088938561684: a targeted TASK re-run (runGateAtRef — the frozen-repair verification's
 // `<ws> :: test:lane-*` re-run) arms the suite's per-file pass reuse and proof recording.
 import { armTargetedTaskReuse } from "../../../../scripts/lib/targeted-task-reuse.mjs";
@@ -1365,6 +1372,16 @@ export interface CheckpointDeps {
     heldMs: number;
     convergenceHoldMs: number;
   }): Promise<void>;
+  /**
+   * P-013 (green-main-cycle-time-2026-10-08, D-028/D-029): one claimable item per failing
+   * leg of the frozen queue. Called once per tick from the terminal handler with the queue
+   * the tick ended holding; `queue: null` means the queue is gone and every open leg item
+   * resolves. Never called for an UNREADABLE queue. Best-effort: must never fail a tick.
+   */
+  routeFrozenRepairLegsToAgents?(input: {
+    pipeline: string;
+    queue: { candidate: string; repairHead: string; failingTests: readonly string[] } | null;
+  }): Promise<void>;
   /** D-001 / WI-39944: the one serialized frozen-candidate repair queue. These hooks
    * live on the existing gate dependency seam so test stubs and non-recording CLI runs
    * keep the old behavior when the routine metadata target is unavailable. */
@@ -1752,6 +1769,14 @@ export interface CheckpointResult {
   /** Internal carrier from runGreenCheckpointInner to runGreenCheckpoint, which consumes it to
    *  build `roundPhases` and removes it. Never present on a result that leaves the gate. */
   roundPhaseStamps?: SetupStretchStamp[];
+  /** P-012 (green-main-cycle-time-2026-10-08): where this run's FRESH cut came from — the newest
+   *  per-sync-passed commit (`known-good`) or the tip side (`staging-tip`, with the reason the
+   *  known-good point was not used). ABSENT ⇒ not a fresh cut (a frozen queue's lineage, an
+   *  explicit candidate, a bounded-life re-cut, a diagnostic run). */
+  freezeCut?: FreezeCutRecord;
+  /** P-012: the legs that were red on this fresh candidate's first round. Present on every
+   *  fresh cut that produced a suite verdict; `legs: []` means R1 was green. */
+  redLegsAtR1?: RedLegsAtR1;
   /** P-005 / D-008: present ⇒ this candidate advanced with HYGIENE failures outstanding. The
    *  gate promoted because no product-correctness test failed, not because nothing failed —
    *  these are the drafts the caller owes the ledger. Same reasoning as `cleanGreen` directly
@@ -11324,6 +11349,7 @@ async function applyFrozenRepairBoundedLife(
   deps: CheckpointDeps,
   queue: FrozenCandidateRepairQueue,
   tip: string,
+  lastReady: string | null,
 ): Promise<FrozenRepairBoundedLifeRecord | null> {
   if (!deps.readFrozenRepairBoundedLifeState || !deps.retireFrozenRepairQueueForBoundedLife) {
     return null;
@@ -11365,12 +11391,22 @@ async function applyFrozenRepairBoundedLife(
       }
       return null;
     }
-    let knownGood: string | null = null;
+    let offered: string | null = null;
     try {
-      knownGood = (await deps.resolveKnownGoodRecutTarget?.()) ?? null;
+      offered = (await deps.resolveKnownGoodRecutTarget?.()) ?? null;
     } catch (e) {
       deps.log(`warn: P-021 known-good re-cut target unavailable, using the staging tip: ${errorText(e)}`);
     }
+    // P-012: the same lineage + ahead-of-green rules as the fresh cut, so a retire never re-cuts
+    // at a commit off the tip's lineage or at (or behind) the green pin.
+    const cut = await decideKnownGoodFreezeCut({
+      tip,
+      candidate: tip,
+      lastReady,
+      knownGood: offered,
+      isAncestor: (a, b) => isAncestor(cfg.integrationRoot, a, b),
+    });
+    const knownGood = cut.source === "known-good" ? cut.candidate : null;
     const target: FrozenRepairRecutTarget = knownGood
       ? { sha: knownGood, source: "known-good" }
       : { sha: tip, source: "staging-tip" };
@@ -11995,7 +12031,7 @@ async function runGreenCheckpointInner(
   // admitted fixes carried and recorded. See frozen-repair-bounded-life.ts.
   let boundedLifeRetire: FrozenRepairBoundedLifeRecord | null = null;
   if (repairQueue && !diagnosticOnly) {
-    boundedLifeRetire = await applyFrozenRepairBoundedLife(cfg, deps, repairQueue, candidate);
+    boundedLifeRetire = await applyFrozenRepairBoundedLife(cfg, deps, repairQueue, candidate, lastReady);
     if (boundedLifeRetire) {
       repairQueue = null;
       candidate = boundedLifeRetire.recutTarget;
@@ -12864,6 +12900,47 @@ async function runGreenCheckpointInner(
     }
   }
 
+  // P-012 (green-main-cycle-time-2026-10-08): FREEZE FROM KNOWN-GOOD POINTS. A fresh cut judges
+  // the newest staging commit whose per-sync batch check passed (sync_delta.lastPassed), not the
+  // bare tip, when that commit is on the tip's lineage and strictly ahead of the green pin (see
+  // known-good-freeze.ts for why those two rules keep the gate from starving). Not on a
+  // bounded-life re-cut: that run judges exactly the target its carry was measured against,
+  // which P-021 already chose under the same rules. The record rides on the verdict, with the
+  // round's red legs (`redLegsAtR1`), so every fresh candidate says where it came from.
+  let freezeCut: FreezeCutRecord | null = null;
+  if (
+    !opts.candidate &&
+    !repairVerification &&
+    !initialCandidateVerification &&
+    !diagnosticOnly &&
+    !boundedLifeRetire &&
+    repairQueue === null
+  ) {
+    let knownGood: string | null = null;
+    let knownGoodUnreadable = false;
+    try {
+      knownGood = (await deps.resolveKnownGoodRecutTarget?.()) ?? null;
+    } catch (e) {
+      knownGoodUnreadable = true;
+      deps.log(`warn: P-012 known-good point unreadable, judging ${candidate.slice(0, 8)}: ${e instanceof Error ? e.message : e}`);
+    }
+    freezeCut = await decideKnownGoodFreezeCut({
+      tip: candidateBeforeQuietCut,
+      candidate,
+      lastReady,
+      knownGood,
+      knownGoodUnreadable,
+      isAncestor: (a, b) => isAncestor(cfg.integrationRoot, a, b),
+    });
+    if (freezeCut.candidate !== candidate) {
+      candidate = freezeCut.candidate;
+      // A known-good cut steps back off the tip exactly like the quiet cut: publish the excluded
+      // window (tipAtSelection) and run the split-pair detector over it.
+      quietCutApplied = candidate !== candidateBeforeQuietCut;
+    }
+    deps.log(formatFreezeCutLine(freezeCut));
+  }
+
   // P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): the first FRESH cut after a frozen queue
   // was retired must hold that queue's admitted fixes. Only a fresh cut: a live queue judges its
   // own lineage, and an explicit candidate is the caller's choice.
@@ -12879,6 +12956,7 @@ async function runGreenCheckpointInner(
       candidate = carried;
       // The judged commit is the tip now; the quiet cut's excluded window no longer applies.
       quietCutApplied = false;
+      if (freezeCut) freezeCut = { ...freezeCut, source: "staging-tip", reason: "carry-advanced-to-tip", candidate };
     }
   }
 
@@ -13646,10 +13724,25 @@ async function runGreenCheckpointInner(
   // P-013: what this round observed about itself, attached once to every result that carries
   // the suite's verdict. `roundPhaseStamps` is a carrier only: runGreenCheckpoint turns it into
   // `roundPhases` against the whole pass's measured time and drops it from the public result.
-  const roundObservations: Pick<CheckpointResult, "testPassReuse" | "roundPhaseStamps" | "suiteVerdictReplay"> = {
+  // P-012: a fresh cut's candidate suite IS its first round, so its red legs are R1's.
+  const redLegsAtR1 = freezeCut
+    ? buildRedLegsAtR1(freezeCut, { green, failingFiles, postSuiteLegs })
+    : null;
+  const roundObservations: Pick<
+    CheckpointResult,
+    "testPassReuse" | "roundPhaseStamps" | "suiteVerdictReplay" | "freezeCut" | "redLegsAtR1"
+  > = {
     ...(testPassReuse ? { testPassReuse } : {}),
     roundPhaseStamps: [...setupStretch.stamps],
+    ...(freezeCut ? { freezeCut } : {}),
+    ...(redLegsAtR1 ? { redLegsAtR1 } : {}),
   };
+  if (redLegsAtR1) {
+    deps.log(
+      `GATE_RED_LEGS_AT_R1 candidate=${redLegsAtR1.candidate.slice(0, 12)} source=${redLegsAtR1.source} ` +
+        `legs=${redLegsAtR1.legs.length > 0 ? redLegsAtR1.legs.join(",") : "none"}`,
+    );
+  }
   const splitPairNote =
     !green && splitSourceTestPairs.length > 0
       ? `\n\n⚠ SPLIT-PAIR SUSPECTED: the quiet-cut candidate contains one half while the sibling's newest commit is outside the cut: ` +
@@ -15238,6 +15331,11 @@ async function runGreenCheckpointInner(
       ...(isolationNote ? { isolationNote } : {}),
       ...(failureShape ? { failureShape } : {}),
       ...(lineage ? { lineage } : {}),
+      // The ordinary red carries the round's post-suite record exactly like buildNotGreenResult
+      // and the reservation-blocked terminal. Omitting it here dropped the early typecheck
+      // failure's inventory (WI-38422) from the verdict whenever the salvage fell through.
+      ...(postSuiteMeasured !== undefined ? { postSuiteMeasured } : {}),
+      ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
     };
   }
 
@@ -16484,6 +16582,33 @@ export async function runGreenCheckpoint(
         green: finalResult.green ?? null,
       });
     }, deps.log);
+  }
+  // P-013 (green-main-cycle-time-2026-10-08, D-028/D-029): route each failing leg of the
+  // queue this tick ended holding to its own claimable item, from the same funnel every
+  // return site passes through, so no branch can skip it. An unreadable queue is skipped
+  // rather than treated as "no queue": that would resolve every leg item on a read fault.
+  if (
+    deps.routeFrozenRepairLegsToAgents &&
+    finalResult.repairQueueRead?.status !== "unreadable"
+  ) {
+    const q = finalResult.green ? null : (finalResult.repairQueue ?? null);
+    await deps
+      .routeFrozenRepairLegsToAgents({
+        pipeline: pipelineName(cfg.integrationRoot),
+        queue:
+          q && q.candidate && q.repairHead
+            ? {
+                candidate: q.candidate,
+                repairHead: q.repairHead,
+                failingTests: q.failingTests ?? [],
+              }
+            : null,
+      })
+      .catch((e) =>
+        deps.log(
+          `warn: frozen-repair leg routing failed (non-fatal): ${e instanceof Error ? e.message : e}`,
+        ),
+      );
   }
   // P-009: an `awaiting-fixer` hold tick renders no suite verdict for hours — keep the
   // cheap non-test legs MEASURED at repairHead so gate_health/failingTests stays fresh
@@ -19710,6 +19835,25 @@ export function realCheckpointDeps(
         );
       }
     },
+    async routeFrozenRepairLegsToAgents(input) {
+      // P-013 (D-028/D-029): change-only per-leg items. The routing module reads the open
+      // leg conditions, opens new legs as one-shot conditions and resolves departed ones;
+      // the condition bridge mints and settles the work-items.
+      try {
+        const { routeFrozenRepairLegs } =
+          await import("@papercusp/operator-core/lib/release/frozen-repair-leg-routing");
+        const out = await routeFrozenRepairLegs(input);
+        if (out.opened.length > 0 || out.resolved.length > 0) {
+          console.log(
+            `${orchestratorStdoutTag()} frozen-repair legs: opened ${out.opened.length}, resolved ${out.resolved.length}, routed ${out.plan.routed.length}`,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          `${orchestratorStdoutTag()} frozen-repair leg routing failed (non-fatal): ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    },
     async checkFixerProviderCapacity() {
       const { accountStatus } =
         await import("@papercusp/operator-core/lib/deployment/account-pool-store");
@@ -20157,6 +20301,13 @@ export function realCheckpointDeps(
     },
     ...(repairTarget
       ? {
+          // P-012: the per-sync batch check's newest PASSED commit (sync_delta.lastPassed). Used
+          // by the fresh cut and the P-021 re-cut, each under decideKnownGoodFreezeCut's rules.
+          async resolveKnownGoodRecutTarget() {
+            const { readSyncDeltaKnownGood } =
+              await import("@papercusp/operator-core/lib/release/sync-batch-delta-check-deps");
+            return readSyncDeltaKnownGood(repairTarget.installSlug);
+          },
           async readFrozenRepairBoundedLifeState() {
             const { readFrozenRepairBoundedLifeState } =
               await import("@papercusp/operator-core/lib/release/frozen-repair-bounded-life-store");
@@ -21972,11 +22123,14 @@ export function realCheckpointDeps(
                 checkpointRoot: cfg.checkpointRoot,
                 integrationRoot: cfg.integrationRoot,
                 releaseRoot: cfg.releaseRoot,
-              }).catch((e: unknown) => {
+              }).catch(async (e: unknown) => {
+                const reason = `arming-threw(${String(e instanceof Error ? e.message : e).replace(/\s+/g, "_").slice(0, 160)})`;
                 log(
                   `TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} applied=false ` +
-                    `reason=arming-threw(${String(e instanceof Error ? e.message : e).replace(/\s+/g, "_").slice(0, 160)})`,
+                    `reason=${reason}`,
                 );
+                const recorded = await recordGateReuseDecision(`${workspace}::${script}`, { offReason: reason });
+                if (!recorded) log(`TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} alarm-recording-failed=true`);
                 return null;
               })
             : null;
