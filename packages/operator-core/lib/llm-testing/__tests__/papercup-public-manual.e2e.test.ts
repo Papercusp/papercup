@@ -4,7 +4,8 @@
  * Uses the maintained HTTP/SSE target and the production PI provisioning seam.
  * Run explicitly with OPERATOR_BASE_URL and PAPERCUSP_TEST_PUBLIC_CHAT=1.
  * A disposable manual seed makes the suite own a current-source request host;
- * prepare its runtime with apps/operator/bin/bundle-host.sh and select its
+ * prepare its runtime with PAPERCUSP_BUNDLE_REUSE_FRESH=1 so bundle-host.sh
+ * writes a proof-bound manifest, then select its
  * output directory with PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR.
  * without a seed, OPERATOR_BASE_URL selects an existing verified host.
  * The optional PAPERCUSP_TEST_PUBLIC_PORTAL=1 case also exercises typed input
@@ -1329,10 +1330,30 @@ function isDisposableManualFixture(seedDir: string, roots = [tmpdir(), ...PAPERC
   return roots.some((root) => existsSync(root) && seed.startsWith(`${realpathSync(root)}${sep}`));
 }
 
+async function assertPreparedBundleFreshness(repoRoot: string, preparedRoot: string) {
+  const manifest = join(preparedRoot, '.bundle-fresh.json');
+  if (!existsSync(manifest))
+    throw new Error('manual_fixture_bundle_source_proof_missing: prepare with PAPERCUSP_BUNDLE_REUSE_FRESH=1 so bundle-host.sh writes .bundle-fresh.json');
+  const helperRepoRoot = resolve(import.meta.dirname, '../../../../..');
+  const helper = join(helperRepoRoot, 'apps/operator/bin/bundle-host-freshness.mjs');
+  try {
+    await runPtool(process.execPath, [helper, 'check',
+      '--repo-root', repoRoot,
+      '--entry', join(repoRoot, 'apps/operator/bin/hono-host.ts'),
+      '--outfile', join(preparedRoot, 'hono-host.mjs'),
+      '--manifest', manifest,
+    ], { cwd: repoRoot, encoding: 'utf8', timeout: 310_000 });
+  } catch (error) {
+    const detail = String((error as { stderr?: unknown }).stderr ?? error).trim();
+    throw new Error('manual_fixture_bundle_source_proof_invalid: ' + detail.slice(-1000));
+  }
+}
+
 async function ownFixtureOperator(seedDir: string,
   launch?: (root: string, port: number, logFd: number) => ReturnType<typeof spawn>,
   layout: 'source' | 'standalone' = 'source',
-  role: 'request' | 'background' = 'request') {
+  role: 'request' | 'background' = 'request',
+  repoRootOverride?: string) {
   const seed = realpathSync(seedDir);
   expect(isDisposableManualFixture(seed), 'Fixture seed must be disposable').toBe(true);
   if (role === 'background') {
@@ -1370,16 +1391,18 @@ async function ownFixtureOperator(seedDir: string,
     const origin = `http://127.0.0.1:${port}`;
     if (launch) child = launch(root, port, logFd);
     else {
-      const repoRoot = resolve(import.meta.dirname, '../../../../..');
+      const repoRoot = repoRootOverride ?? resolve(import.meta.dirname, '../../../../..');
       const prepared = process.env.PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR;
       if (!prepared || !existsSync(join(prepared, 'hono-host.mjs')))
         throw new Error('manual_fixture_bundle_missing: prepare the current-source runtime with apps/operator/bin/bundle-host.sh');
-      if (existsSync(join(prepared, '.bundle-stale.json')))
+      const preparedRoot = realpathSync(prepared);
+      if (existsSync(join(preparedRoot, '.bundle-stale.json')))
         throw new Error('manual_fixture_bundle_stale: rebuild the current-source runtime before acceptance');
+      await assertPreparedBundleFreshness(repoRoot, preparedRoot);
       // Reuse the production bundle and its runtime siblings. Compiling belongs
       // to artifact preparation; request-host health keeps its bounded deadline.
       const bundleDir = join(root, 'operator');
-      cpSync(realpathSync(prepared), bundleDir, { recursive: true });
+      cpSync(preparedRoot, bundleDir, { recursive: true });
       symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
       // Background acceptance uses only the maintained isolated-runtime env;
       // importing the installation's secrets would defeat its egress isolation.
@@ -1526,20 +1549,46 @@ describe('public manual owned host lifecycle', () => {
     } finally { rmSync(seed, { recursive: true, force: true }); }
   }, 5000);
 
-  it('refuses a missing or stale runtime before starting an acceptance host', async () => {
+  it('refuses missing, stale, or source-mismatched proofs before starting an acceptance host', async () => {
     const seed = mkdtempSync(join(tmpdir(), 'public-manual-lifetime-control-'));
     const prepared = mkdtempSync(join(tmpdir(), 'public-manual-bundle-control-'));
+    const proofRepo = mkdtempSync(join(tmpdir(), 'public-manual-proof-source-'));
     writeFileSync(join(seed, 'faq.mdx'), fixtureFaq(publicCanary));
     vi.stubEnv('PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR', prepared);
+    const git = (...args: string[]) => runPtool('git', args, { cwd: proofRepo, encoding: 'utf8' });
     try {
+      await git('init', '--quiet');
+      await git('config', 'user.name', 'Public manual proof fixture');
+      await git('config', 'user.email', 'public-manual-proof@example.invalid');
+      const entry = join(proofRepo, 'apps/operator/bin/hono-host.ts');
+      mkdirSync(dirname(entry), { recursive: true });
+      writeFileSync(entry, 'export {};\n');
+      await git('add', 'apps/operator/bin/hono-host.ts');
+      await git('commit', '-m', 'proof fixture source');
       await expect(ownFixtureOperator(seed)).rejects.toThrow(/manual_fixture_bundle_missing/);
-      writeFileSync(join(prepared, 'hono-host.mjs'), 'throw new Error("must not execute");');
+      const bundle = join(prepared, 'hono-host.mjs');
+      writeFileSync(bundle, 'throw new Error("must not execute");');
       writeFileSync(join(prepared, '.bundle-stale.json'), '{}');
       await expect(ownFixtureOperator(seed)).rejects.toThrow(/manual_fixture_bundle_stale/);
+      rmSync(join(prepared, '.bundle-stale.json'));
+      await expect(ownFixtureOperator(seed)).rejects.toThrow(/manual_fixture_bundle_source_proof_missing/);
+      const manifest = {
+        schemaVersion: 'bundle-host-freshness-v1',
+        repoRoot: realpathSync(proofRepo),
+        headSha: '0'.repeat(40),
+        entry: realpathSync(entry),
+        outfile: realpathSync(bundle),
+        outputTree: { outfile: realpathSync(bundle), fileCount: 1, sha256: '0'.repeat(64) },
+        stampedAt: new Date().toISOString(),
+      };
+      writeFileSync(join(prepared, '.bundle-fresh.json'), JSON.stringify(manifest));
+      await expect(ownFixtureOperator(seed, undefined, 'source', 'request', proofRepo))
+        .rejects.toThrow(/manual_fixture_bundle_source_proof_invalid: \[bundle-freshness\] freshness manifest HEAD mismatch/);
     } finally {
       vi.unstubAllEnvs();
       rmSync(seed, { recursive: true, force: true });
       rmSync(prepared, { recursive: true, force: true });
+      rmSync(proofRepo, { recursive: true, force: true });
     }
   });
 
