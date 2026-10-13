@@ -269,6 +269,19 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .describe(
           "stable machine-readable instrument binding (the generalized form of the criterion-level instrumentKey field); 'none' means explicitly manual",
         ),
+      expect: z
+        .object({
+          op: z.enum(['lt', 'lte', 'gt', 'gte', 'eq']),
+          value: z.number().finite(),
+        })
+        .strict()
+        .optional()
+        .describe(
+          "the criterion's threshold on the instrument's reading, in the instrument's own unit " +
+            "(e.g. { op:'lt', value:10 } for PSI cpu some avg10 below 10%). With it, a measured " +
+            "reading records pass/fail in the results ledger and scorecards:emit { fromLedger:true } " +
+            'rates the criterion from that row; without it the reading is recorded but a grader rates it.',
+        ),
     })
     .strict(),
   z
