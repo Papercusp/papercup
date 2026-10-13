@@ -12,10 +12,11 @@ import {
 } from '../file-lock-authority-ops';
 import { handleAuthorityRpc, __resetAuthorityOpsForTests } from '../authority-op-registry';
 import type { LockEvent } from '../lock-event-stream';
-import { configureLocks } from '@papercusp/locks';
+import { configureLocks, getTxPool, _resetForTests } from '@papercusp/locks';
 import { hookOperationStoreIdentity, decodeHookOperationPrepare } from '../file-lock-authority-ops';
 
 afterEach(() => __resetAuthorityOpsForTests());
+afterEach(async () => { await _resetForTests(); });
 
 function fakeCoordinator(over: Partial<FileLockCoordinator> = {}): FileLockCoordinator {
   return {
@@ -40,14 +41,40 @@ describe('hook operation authority protocol', () => {
     expect(coordinator.queue).not.toHaveBeenCalled();
   });
 
-  it('pins the actual SU endpoint without leaking credentials or changing for a credential rotation', () => {
+  it('pins the actual SU endpoint without leaking credentials or changing for a credential rotation', async () => {
     configureLocks({ getAdminBaseUrl: () => 'postgresql://alpha:secret-a@127.0.0.1:4444/main' });
     const first = hookOperationStoreIdentity();
     expect(first).toMatch(/^[a-f0-9]{64}$/);
     configureLocks({ getAdminBaseUrl: () => 'postgresql://beta:secret-b@127.0.0.1:4444/other-main' });
     expect(hookOperationStoreIdentity()).toBe(first);
+    await _resetForTests();
     configureLocks({ getAdminBaseUrl: () => 'postgresql://beta:secret-b@127.0.0.1:5555/other-main' });
     expect(hookOperationStoreIdentity()).not.toBe(first);
+  });
+
+  it('pins the bound transaction pool across host reconfiguration until the pool is reset', async () => {
+    configureLocks({ getAdminBaseUrl: () => 'postgresql://alpha:secret-a@127.0.0.1:4444/main' });
+    const pool = getTxPool();
+    const first = hookOperationStoreIdentity();
+    configureLocks({ getAdminBaseUrl: () => 'postgresql://beta:secret-b@127.0.0.1:5555/main' });
+    expect(getTxPool()).toBe(pool);
+    expect(hookOperationStoreIdentity()).toBe(first);
+    await _resetForTests();
+    expect(hookOperationStoreIdentity()).not.toBe(first);
+  });
+
+  it('rejects noncanonical operation scope before either authority mutation', async () => {
+    const coordinator = fakeCoordinator();
+    const handlers = buildFileLockAuthorityHandlers(coordinator);
+    for (const paths of [['../escape.ts'], ['/absolute.ts'], ['./a.ts'], ['a//b.ts'], ['a.ts', 'a.ts'], ['a\\b.ts']]) {
+      await expect(handlers[FILE_LOCK_OP_KINDS.acquire]({ owner: 'A', coordinationDomain: '/repo',
+        paths, intent: 'PreToolUse:Edit', ttlSec: 600, operation }, 'h')).rejects.toThrow('invalid hook operation');
+      await expect(handlers[FILE_LOCK_OP_KINDS.release]({ owner: 'A', coordinationDomain: '/repo',
+        operation: { ...operation, paths, intent: 'PreToolUse:Edit', ttlSec: 600, outcome: 'cancelled' } }, 'h'))
+        .rejects.toThrow('invalid hook operation');
+    }
+    expect(coordinator.acquire).not.toHaveBeenCalled();
+    expect(coordinator.release).not.toHaveBeenCalled();
   });
 
   it('requires both the supported protocol and a store identity from the read-only probe', () => {

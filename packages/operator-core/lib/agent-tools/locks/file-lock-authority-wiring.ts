@@ -64,6 +64,7 @@ import {
   FILE_LOCK_OP_KINDS,
   hookOperationStoreIdentity,
   decodeHookOperationPrepare,
+  finishHookLockOperationSchema,
   emitReleaseLockEvents,
   type FileLockCoordinator,
 } from '../../authority/file-lock-authority-ops';
@@ -167,7 +168,10 @@ export function adaptSuLockStore(): FileLockCoordinator {
  * ledger failure rolls back release; duplicate proofs use the operation UUID. */
 export async function finishHookOperationAtAuthority(p: FileLockReleaseParams): ReturnType<FileLockCoordinator['release']> {
   const operation = p.operation;
-  if (!operation) return { ok: false, reason: 'operation_conflict' };
+  if (!operation || !finishHookLockOperationSchema.safeParse({ ...operation, ttl_sec: operation.ttlSec }).success ||
+      !['cancelled', 'completed'].includes(operation.outcome)) {
+    return { ok: false, reason: 'operation_conflict' };
+  }
   const proof = p.nativeEditProof;
   if ((operation.outcome === 'cancelled' && proof) ||
       (proof && !isNativeEditProofForPaths(proof, operation.paths))) {

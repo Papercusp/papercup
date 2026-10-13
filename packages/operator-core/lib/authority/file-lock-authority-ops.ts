@@ -26,7 +26,7 @@
 import { registerAuthorityOp } from './authority-op-registry';
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { locksHost } from '@papercusp/locks';
+import { getTxPool, normalizePaths } from '@papercusp/locks';
 import type { HookLockOperation, HookOperationRefusal } from '@papercusp/locks';
 import { recordLockEvent, type LockEvent } from './lock-event-stream';
 import {
@@ -83,13 +83,13 @@ export const hookLockOperationSchema = z.object({
   authority: z.string().min(1).max(4096).optional(),
 });
 
-/** Identify the configured SU database without exposing its credentials. The
- * package derives papercusp_su from this same host callback. Two isolated
- * operators on one machine must never share an operation pin. */
+/** Identify the effective transaction pool without exposing credentials. Host
+ * reconfiguration cannot change this pin while mutations still use the bound
+ * pool. Constructing the lazy pool here opens no database connection. */
 export function hookOperationStoreIdentity(): string {
-  const url = new URL(locksHost().getAdminBaseUrl());
+  const options = getTxPool().options;
   return createHash('sha256').update(JSON.stringify([
-    url.protocol, url.hostname, url.port, url.searchParams.get('host'), 'papercusp_su',
+    options.host, options.port, options.path, options.database,
   ])).digest('hex');
 }
 
@@ -101,8 +101,17 @@ export function decodeHookOperationPrepare(raw: unknown): string {
   return r.storeIdentity;
 }
 
+const hookOperationPathsSchema = z.array(z.string().min(1)).min(1).max(50).refine((paths) => {
+  try {
+    const normalized = normalizePaths(paths);
+    return normalized.length === paths.length && paths.every((path) => normalized.includes(path));
+  } catch {
+    return false;
+  }
+}, 'operation paths must already be canonical and unique');
+
 export const finishHookLockOperationSchema = hookLockOperationSchema.extend({
-  paths: z.array(z.string().min(1)).min(1).max(50),
+  paths: hookOperationPathsSchema,
   intent: z.string().startsWith('PreToolUse:'),
   ttl_sec: z.number().int().positive().max(3600),
 });
@@ -309,7 +318,7 @@ export function buildFileLockAuthorityHandlers(
         throw new Error('lock.acquire: invalid payload (owner, paths[], intent, coordinationDomain required)');
       }
       if (p.operation && (!hookLockOperationSchema.safeParse(p.operation).success ||
-          !p.intent.startsWith('PreToolUse:') || !p.paths.length)) {
+          !p.intent.startsWith('PreToolUse:') || !hookOperationPathsSchema.safeParse(p.paths).success)) {
         throw new Error('lock.acquire: invalid hook operation');
       }
       const ttlSec = typeof p.ttlSec === 'number' ? p.ttlSec : 1200;

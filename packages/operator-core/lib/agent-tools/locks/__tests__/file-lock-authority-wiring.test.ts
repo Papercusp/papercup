@@ -80,6 +80,16 @@ describe('hook operation authority store adapter', () => {
     expect(recordEditAttributionStrict).not.toHaveBeenCalled();
   });
 
+  it('rejects noncanonical finish-before-acquire scope without a tombstone or attribution', async () => {
+    for (const paths of [['../escape.ts'], ['/absolute.ts'], ['./a.ts'], ['a//b.ts'], ['a.ts', 'a.ts'], ['a\\b.ts']]) {
+      const r = await finishHookOperationAtAuthority({ ...params,
+        operation: { ...operation, paths }, nativeEditProof: { ...params.nativeEditProof!, paths } });
+      expect(r).toMatchObject({ ok: false, reason: 'operation_conflict' });
+    }
+    expect(tryFinishHookOperation).not.toHaveBeenCalled();
+    expect(recordEditAttributionStrict).not.toHaveBeenCalled();
+  });
+
   it('cancellation persists terminal state without inventing edit proof', async () => {
     await finishHookOperationAtAuthority({ ...params, nativeEditProof: undefined,
       operation: { ...operation, outcome: 'cancelled' } });
