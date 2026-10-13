@@ -25,25 +25,14 @@
  *   (wake:true fires their inbox-wake). Sender is the admin UI owner.
  */
 
-import { handleHttpToolRequest } from '@papercusp/agent-mcp';
-// Side-effect: register operator-side first-party tools (the coord:* tools
-// included). Same import the agent-tools catch-all + admin/plans use.
-import '../../../agent-tools/index';
-// WI-5364: shared extras carry the runScoped seam so proxied handlers that use
-// ctx.tx get a real DB handle instead of 500ing "ctx.tx is not a function".
-import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
-import { defineTool, PAPERCUSP_CONTEXT_HEADERS, type RouteContext } from '@papercusp/agent-mcp';
+import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { requireAllowedOriginOr403 } from '../../cors';
-import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity';
-import { applyOwnerMessageDefaults } from '../../../agent-tools/coordination/owner-message';
-import { knownOwnerIdSet } from '../../../agent-tools/coordination/recipient-resolve';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { runWithWorkspace } from '../../../workspace-als';
+// The in-process re-dispatch as the admin UI owner (ADMIN_COORD_UI_OWNER — the
+// identity the Planning inbox's ack-dismiss filter reads acks BY) and the owner
+// send path live in owner-sessions/actions.ts, shared with the device routes.
+import { dispatchOwnerCoordSend, dispatchToolAsAdminUi } from '../../../owner-sessions/actions';
 
-// Shared with the Planning inbox's ack-dismiss filter (plans/attention.ts) so
-// "Acknowledge" actually dismisses: the human acks AS this owner here, and the
-// reader drops messages acked BY this owner.
-const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
 const WRITE_VERBS = new Set(['resolve', 'ack', 'message-agent', 'send']);
 const READ_ONLY_VERBS = new Set(['wake-mode']);
 
@@ -69,13 +58,6 @@ function collectHeaders(req: Request): Record<string, string | undefined> {
     m[k.toLowerCase()] = v;
   });
   return m;
-}
-
-function adminSearchParams(inbound: URLSearchParams): URLSearchParams {
-  const sp = new URLSearchParams(inbound);
-  sp.set('superuser', '1');
-  if (!sp.has('client')) sp.set('client', ADMIN_UI_CLIENT_ID);
-  return sp;
 }
 
 async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {
@@ -105,53 +87,33 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       { status: 405 },
     );
   }
-  if (verb === 'send') {
-    const targets = typeof body.to === 'string' ? [body.to] : body.to;
-    if (!Array.isArray(targets) || targets.length === 0 || targets.some(target => typeof target !== 'string')) {
-      return Response.json({ ok: false, error: 'recipient identities are required' }, { status: 400 });
-    }
-    // GUI concrete targets are exact identities from this window's workspace.
-    // The agent tool's best-effort alias/federation fallback is unsuitable here:
-    // a missing roster must not turn a stale/foreign selection into a write.
-    const concrete = targets.filter(target => target !== '*' && target !== 'human' && !target.startsWith('@'));
-    if (concrete.length) {
-      const workspaceId = ctx.principal?.workspaceId ?? activeWorkspaceId();
-      const known = await knownOwnerIdSet(workspaceId);
-      if (!known) {
-        return Response.json({ ok: false, error: 'recipient inventory unavailable' }, { status: 503 });
-      }
-      if (concrete.some(target => !known.has(target))) {
-        return Response.json({ ok: false, error: 'recipient is no longer available in this workspace' }, { status: 403 });
-      }
-    }
-  }
-  // P-033: a GUI sender is not an agent and cannot author the protocol fields
-  // coord:send now requires — D-048 made `expects` REQUIRED with no default, and
-  // every GUI call site (the HUD session chat, the Agents-pill composer + nudge)
-  // posts without it, so all three have been failing validation since it landed.
-  // The wrapper fills the gaps HONESTLY and STAMPS what it filled, so the D-070
-  // measurement never counts a GUI-derived value as sender intent. Applied here,
-  // at the one route every GUI sender already goes through, rather than at each
-  // call site — three are broken today and patching them one by one leaves the
-  // trap armed for the fourth.
-  const dispatchBody = verb === 'send' ? applyOwnerMessageDefaults(body) : body;
   const url = new URL(req.url);
   // The in-process admin projection does not resolve cookie principals again.
   // Bind both its typed context and ambient readers to the admitted workspace;
   // forwarding the caller's header would validate one roster and send in another.
   const workspaceId = ctx.principal?.workspaceId ?? activeWorkspaceId();
-  const headers = collectHeaders(req);
-  headers[PAPERCUSP_CONTEXT_HEADERS.workspace] = workspaceId;
-  const result = await runWithWorkspace(workspaceId, () => handleHttpToolRequest(
-    {
-      method: 'POST',
-      pathname: `/api/agent-tools/coord/${verb}`,
-      searchParams: adminSearchParams(url.searchParams),
-      headers,
-      body: dispatchBody,
-    },
-    HOST_EXTRAS,
-  ));
+  if (verb === 'send') {
+    // The owner send path — recipient checks against this workspace, the P-033
+    // protocol defaults a GUI sender cannot author, then coord:send as the admin
+    // UI owner — is shared with the device session send route
+    // (owner-sessions/actions.ts, mobile-agent-sessions-2026-10-12 P-001).
+    const outcome = await dispatchOwnerCoordSend({
+      workspaceId,
+      body,
+      headers: collectHeaders(req),
+      searchParams: url.searchParams,
+    });
+    if ('refused' in outcome) return Response.json(outcome.refused.body, { status: outcome.refused.status });
+    return unwrap(outcome.result);
+  }
+  const result = await dispatchToolAsAdminUi({
+    group: 'coord',
+    verb,
+    body,
+    headers: collectHeaders(req),
+    searchParams: url.searchParams,
+    workspaceId,
+  });
   return unwrap(result);
 }
 

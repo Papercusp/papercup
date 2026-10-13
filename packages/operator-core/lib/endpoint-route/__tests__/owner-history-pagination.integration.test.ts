@@ -12,7 +12,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql }),
 }));
 
-import { backfillFromOwnerSessionTurns, decodeOwnerHistoryCursor } from '../routes/harness/streams';
+import { backfillFromOwnerSessionTurns, decodeOwnerHistoryCursor } from '../../owner-sessions/transcript';
 
 beforeAll(async () => {
   const uri = await getTestPg();

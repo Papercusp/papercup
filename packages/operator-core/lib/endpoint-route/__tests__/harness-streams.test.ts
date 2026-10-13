@@ -84,20 +84,23 @@ vi.mock('../../session-timeline-parsers', () => ({
 }));
 
 const {
-  default: streamRoutes,
-  parseAgentTimelineChunks,
   capEntryText,
   THINKING_ENTRY_TEXT_CAP,
   sessionTurnEntryKind,
+  backfillFromOwnerSessionTurns,
+  decodeOwnerHistoryCursor,
+  encodeOwnerHistoryCursor,
+} = await import('../../owner-sessions/transcript');
+
+const {
+  default: streamRoutes,
+  parseAgentTimelineChunks,
   pickSessionTurnWindow,
   sessionPartEntryKind,
   positionalScanLimit,
   POSITIONAL_SCAN_CEILING,
   preferHigherFidelityBackfill,
   shouldServeDbBackfill,
-  backfillFromOwnerSessionTurns,
-  decodeOwnerHistoryCursor,
-  encodeOwnerHistoryCursor,
   splitUtf8Chunks,
   batchRawLogLines,
   slimFeatureForStream,
