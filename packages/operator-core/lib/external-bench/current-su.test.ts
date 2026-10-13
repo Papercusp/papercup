@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
@@ -1095,7 +1095,8 @@ describe('D-023 Codex subscription payer', () => {
 const native = vi.hoisted(() => ({ launch: vi.fn(), kill: vi.fn() }));
 vi.mock('../agent-tools/capability/launch-agent', () => ({ default: { handler: native.launch },
   INTERNAL_SCOPED_INFERENCE_GATEWAY: Symbol.for('benchmark-test-private-route'),
-  INTERNAL_SCOPED_SESSION_CONFINEMENT: Symbol.for('benchmark-test-server-ceiling') }));
+  INTERNAL_SCOPED_SESSION_CONFINEMENT: Symbol.for('benchmark-test-server-ceiling'),
+  INTERNAL_BACKEND_BIN_OVERRIDE: Symbol.for('benchmark-test-backend-bin') }));
 vi.mock('../task-manager/control', () => ({ killTask: native.kill }));
 
 const options: CurrentSuBenchOptions = {
@@ -1725,6 +1726,8 @@ describe('current benchmark restart and live binding', () => {
       denyWorkItemsOutside: { id: restoredHandle.featureId, harness: restoredHandle.slug, checkout },
       imposedBy: expect.stringContaining('benchmark-host') });
     expect(Object.getOwnPropertySymbols(ctx)).not.toContain(Symbol.for('benchmark-test-private-route'));
+    // A host launch (no containerExec) never pins the backend binary.
+    expect(forwarded[Symbol.for('benchmark-test-backend-bin')]).toBeUndefined();
     expect(args.brief).toContain(`id=${restoredHandle.featureId} and harness=${restoredHandle.slug}`);
     const calls = native.launch.mock.calls.length;
     await expect(ports.launch({ ...args, workItem: 'WI-neighbor' })).rejects.toThrow(/physically restored/);
@@ -1737,6 +1740,53 @@ describe('current benchmark restart and live binding', () => {
     expect(stop).toHaveBeenCalledOnce();
     await expect(ports.launch(args)).rejects.toThrow(/host-owned gateway/);
     await hosted.stop(); expect(stop).toHaveBeenCalledOnce();
+  });
+  it('pins an in-container launch to a docker-exec Codex wrapper (benchmark-coverage-frontierswe-v2 D-026/D-028)', async () => {
+    const f = fixture();
+    const ctx = { workspaceId: 'bench-private', authenticatedPrincipal: { retained: true } } as unknown as PapercuspUnifiedToolContext;
+    const protocol = currentProtocolFixture(), preregHash = 'a'.repeat(64);
+    const snapshotRoot = mkdtempSync(join(tmpdir(), 'bench-launch-cexec-'));
+    const checkout = join(snapshotRoot, 'assignment'); mkdirSync(checkout);
+    const snapshot = JSON.stringify({ entries: [{ key: 'permitted:fixture', text: 'Frozen initial context.' }] });
+    for (const name of ['corpus', 'memory']) writeFileSync(join(snapshotRoot, `${name}.json`), snapshot);
+    protocol.context = { ...protocol.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
+      corpusHash: createHash('sha256').update(snapshot).digest('hex'), memoryHash: createHash('sha256').update(snapshot).digest('hex') };
+    const restoredHandle = { ...handle, worktreePath: checkout };
+    const controller = currentBenchGatewayController({ workspaceId: options.workspaceId, loopId: 'private-host-loop',
+      token: 'b'.repeat(64), preregHash, protocol, armId: 'papercusp', taskId: 't1', seed: 1,
+      resources: { inputTokens: 1000, outputTokens: 100, requestsPerArm: 50, usdPerArm: 3, maxOpenUsd: 3,
+        wallClockMs: 1000, wallClockMsPerArm: 100,
+        armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, 't1', 1)) },
+      authenticateProvider: async () => null });
+    const hosted = await controller.startNativeGateway(() => {}, async () => ({ port: 32102, stop: vi.fn(async () => {}) } as never));
+    const opts = { ...options, preregistration: { preregHash, config: protocol, repoRoot: snapshotRoot } };
+    const containerExec = { kind: 'docker-exec' as const, containerId: 'fswe-task-1', workdir: '/app', binPath: '/opt/papercusp/codex' };
+    try {
+      expect(() => liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, ...hosted,
+        containerExec: { ...containerExec, workdir: 'app' } }, opts)).toThrow(/workdir must be absolute/);
+      const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, ...hosted, containerExec }, opts);
+      const context = await ports.restoreContext(restoredHandle, 't1');
+      const args = currentBenchLaunchRequest(opts, restoredHandle, 'issue', context);
+      await ports.launch(args);
+      const forwarded = native.launch.mock.calls.at(-1)![1];
+      const override = forwarded[Symbol.for('benchmark-test-backend-bin')] as Record<string, string>;
+      expect(Object.keys(override)).toEqual(['codex']);
+      const wrapper = readFileSync(override.codex, 'utf8');
+      expect(wrapper).toContain('fswe-task-1');
+      expect(wrapper).toContain('/opt/papercusp/codex');
+      expect(statSync(override.codex).mode & 0o111).not.toBe(0);
+      // The in-container launch keeps the private gateway route and the session ceiling.
+      expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
+      expect(forwarded[Symbol.for('benchmark-test-server-ceiling')]).toMatchObject({ denyAmbientContext: true });
+      // A carry-respawn re-launch re-execs the same wrapper against the same container.
+      await ports.launch(args);
+      expect(native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-backend-bin')]).toEqual({ codex: override.codex });
+      // A swept temp file is re-materialized rather than handed to psu as a dead path.
+      rmSync(override.codex);
+      await ports.launch(args);
+      const again = native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-backend-bin')] as Record<string, string>;
+      expect(readFileSync(again.codex, 'utf8')).toContain('fswe-task-1');
+    } finally { await hosted.stop(); rmSync(snapshotRoot, { recursive: true, force: true }); }
   });
   it('refuses an unsupported native client before starting a service', async () => {
     const f = budgetFixture(); f.input.protocol.arms[0].agent = 'claude';

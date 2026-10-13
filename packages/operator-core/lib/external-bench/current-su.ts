@@ -1,6 +1,6 @@
 /** Current native su execution over the existing benchmark lifecycle and task ledger. */
 import { createHash } from 'node:crypto';
-import { lstatSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import type launchAgentTool from '../agent-tools/capability/launch-agent';
 import { snapshotScopedInferenceGateway, type ScopedInferenceGateway } from '@papercusp/orchestrator/codex-gateway-config';
@@ -32,6 +32,7 @@ import { concurrencyTimelineFromIntervals } from './hive-backlog-utilities';
 import { restoreBenchmarkContext, readRestoredBenchmarkContext, readContainedBenchmarkFile, type BenchmarkContextInput, type BenchmarkContextReceipt } from './reproducibility/context';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 import { openAiCacheGeneration } from '../inference-gateway/cache-policy';
+import { materializeDockerExecWrapper, validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
 
 interface NativeCostParticipant {
   taskId: string; ownerId: string; codexHome: string; terminal: boolean;
@@ -1336,6 +1337,12 @@ export interface CurrentSuBenchObservations {
   nativeGateway?: ScopedInferenceGateway;
   /** Same controller-issued scope; omission cannot launch or complete accounting. */
   nativeAccountingBinding?: CurrentBenchAccountingBinding;
+  /**
+   * Run the native agent CLI INSIDE this task container (benchmark-coverage-frontierswe-v2-2026-10-10
+   * D-026/D-028). psu stays on the host; the launch pins its `codex` to a generated docker-exec
+   * wrapper, which fails closed rather than falling back to the host CLI. Codex members only.
+   */
+  containerExec?: DockerExecTarget;
   admit(handle: BenchHarnessHandle, budget: GenerationBudget, taskId: string): Promise<{ admitted: boolean; receiptRef: string }>;
   observeIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentityObservation | null>;
 }
@@ -2461,6 +2468,21 @@ export function liveCurrentSuBenchPorts(
   const gateway = observations.nativeGateway === undefined ? null : snapshotScopedInferenceGateway(observations.nativeGateway);
   const host = observations.nativeGateway === undefined ? undefined : currentBenchHostGateways.get(observations.nativeGateway);
   const accounting = observations.nativeAccountingBinding === undefined ? undefined : Object.freeze({ ...observations.nativeAccountingBinding });
+  const containerExec = observations.containerExec === undefined ? undefined : Object.freeze({ ...observations.containerExec });
+  if (containerExec) validateDockerExecTarget(containerExec);
+  let containerWrapperPath: string | null = null;
+  /** The `{ codex: wrapper }` override for an in-container launch; undefined for a host launch. */
+  const containerExecWrapper = (args: LaunchArgs): Readonly<Record<string, string>> | undefined => {
+    if (!containerExec) return undefined;
+    const members = args.members ?? [];
+    if (members.length !== 1 || members[0]?.agent !== 'codex')
+      throw new Error('An in-container benchmark launch runs exactly one Codex member.');
+    // Re-materialize if the temp file vanished: a missing override fails the launch closed,
+    // so this only matters for a long run whose temp dir was swept between resumes.
+    if (!containerWrapperPath || !existsSync(containerWrapperPath))
+      containerWrapperPath = materializeDockerExecWrapper(containerExec).wrapperPath;
+    return Object.freeze({ codex: containerWrapperPath });
+  };
   const requireBinding = () => {
     return requireCurrentBenchHostBinding(observations, opts);
   };
@@ -2528,8 +2550,12 @@ export function liveCurrentSuBenchPorts(
         denyWorkItemsOutside: Object.freeze({ id: input.workItemId, harness: input.binding.harnessSlug, checkout: input.checkout }),
         imposedBy: `benchmark-host ${accounting!.assignmentId}`,
         reason: 'All benchmark inference must cross the assignment\'s private metered gateway; native sandboxed tools perform local coding.' });
+      // D-026/D-028: the agent CLI runs inside the task container. Resolved per launch so a
+      // carry-respawn re-execs the same wrapper against the same container.
+      const backendBinOverride = containerExecWrapper(args);
       return module.default.handler(args, { ...ctx, [module.INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway,
-        [module.INTERNAL_SCOPED_SESSION_CONFINEMENT]: confinement } as PapercuspUnifiedToolContext);
+        [module.INTERNAL_SCOPED_SESSION_CONFINEMENT]: confinement,
+        ...(backendBinOverride ? { [module.INTERNAL_BACKEND_BIN_OVERRIDE]: backendBinOverride } : {}) } as PapercuspUnifiedToolContext);
     },
     getTask: async id => (await import('../task-manager/store')).getTask(id),
     listTasks: async filter => (await import('../task-manager/store')).listTasks(filter),
