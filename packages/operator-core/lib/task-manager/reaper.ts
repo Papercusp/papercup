@@ -193,6 +193,7 @@ const CONSULT_SETTLED_STATES = new Set([
   'closed_cant_help',
   'declined',
   'no_qualified_responder',
+  'no_launchable_responder',
 ]);
 
 function selectedAnsweringOwners(selected: unknown): (string | null)[] {

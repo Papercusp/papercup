@@ -282,7 +282,7 @@ export async function routeSourceGradingAudit(
     UPDATE harness_shared.consult_state SET state = 'expired', closed_at = now(), updated_at = now(),
       outcome = jsonb_build_object('dispatch', 'launch-fallback')
     WHERE workspace_id = ${workspaceId} AND conversation_id = ${result.conversation_id}
-      AND responder_id IS NULL AND state IN ('no_qualified_responder', 'awaiting_responder', 'active')`;
+      AND responder_id IS NULL AND state IN ('no_qualified_responder', 'no_launchable_responder', 'awaiting_responder', 'active')`;
   return { state: 'fallback', reason: `existing router: ${result.verdict}${result.reason ? ` (${result.reason})` : ''}` };
 }
 
@@ -295,5 +295,5 @@ export async function closeSourceAuditConsults(workspaceId: string, issueId: str
     WHERE workspace_id = ${workspaceId}
       AND routing->'cascade'->>'flavor' = 'grading-integrity'
       AND routing->'cascade'->>'issueId' = ${issueId}
-      AND state IN ('awaiting_responder', 'active', 'no_qualified_responder', 'expired')`;
+      AND state IN ('awaiting_responder', 'active', 'no_qualified_responder', 'no_launchable_responder', 'expired')`;
 }
