@@ -6922,7 +6922,40 @@ export function reservedPlanLaneExclusionSql(
       -- because that is this floor's established contract at every caller. The
       -- transaction guard remains mandatory for concurrent races and source-only
       -- candidates: this predicate is the churn/diagnosis floor, not the mutex.
-      OR EXISTS (
+      --
+      -- WI-6554700010009927 (perf audit P-012): the precise sibling EXISTS below runs once
+      -- per CANDIDATE row and detoasts every live taken sibling's payload->'plan_item'.
+      -- Measured 2026-10-13 on a logged 9.6 s listWorkItems statement: 37 ms x 179
+      -- candidates, 1.86 M shared buffer hits, 71% of execution. The prefilter is the set
+      -- of lanes held by ANY live taken item (both identity forms, every workspace), a
+      -- SUPERSET of what the precise EXISTS accepts, so the result is unchanged. It is
+      -- uncorrelated, so Postgres hashes it once per statement and only candidates whose
+      -- lane is actually held reach the per-row EXISTS (9,344 -> 2,819 ms, identical rows).
+      -- COALESCE keeps a NULL row-IN result (NULL candidate identity) out of the caller's
+      -- NOT (... OR ...): the precise EXISTS it guards is never NULL.
+      OR (
+        COALESCE((${col}->'plan_item'->>'plan_slug', ${col}->'plan_item'->>'item_id') IN (
+          SELECT held.plan_slug, held.item_id
+            FROM (
+              SELECT btrim(h.source_plan_slug) AS plan_slug, h_item.item_id
+                FROM harness_shared.work_items h
+                CROSS JOIN LATERAL unnest(COALESCE(h.source_plan_item_ids, ARRAY[]::text[])) AS h_item(item_id)
+               WHERE h.taken_by IS NOT NULL
+                 AND btrim(h.taken_by) <> ''
+                 AND lower(btrim(h.taken_by)) <> 'unassigned'
+                 AND h.status NOT IN ('passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped')
+              UNION ALL
+              SELECT h.payload->'plan_item'->>'plan_slug', h.payload->'plan_item'->>'item_id'
+                FROM harness_shared.work_items h
+               WHERE h.taken_by IS NOT NULL
+                 AND btrim(h.taken_by) <> ''
+                 AND lower(btrim(h.taken_by)) <> 'unassigned'
+                 AND h.status NOT IN ('passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped')
+            ) held
+           WHERE held.plan_slug IS NOT NULL
+             AND held.item_id IS NOT NULL
+        ), false)
+        AND EXISTS (
         SELECT 1
           FROM harness_shared.work_items sibling
          WHERE sibling.workspace_id = ${wsCol}
@@ -6959,7 +6992,7 @@ export function reservedPlanLaneExclusionSql(
                      = ${col}->'plan_item'->>'item_id'
              )
            )
-      )
+      ))
       -- EI-20467873456529090: a completed plan-item is terminal residue, not generic backlog.
       -- planItemLaneBlockReason already rejects this after a claim, but that is too late for
       -- claimable previews, aggregate diagnostics, and fleet:bench. The normalized index is the
