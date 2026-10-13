@@ -37,11 +37,31 @@ export const RTK_MAX_COMMAND_CHARS = 16_384;
 /** The prefix an agent writes to get raw output for one command. RTK honours it too. */
 export const RTK_OPT_OUT_PREFIX = 'RTK_DISABLED=1';
 
+/**
+ * Environment for every process that runs RTK-rewritten commands
+ * (WI-6554700010009529). RTK checks whether its OWN hook is installed and,
+ * when it is not, periodically prints `[rtk] /!\ No hook installed — run
+ * `rtk init -g`` to stderr, which lands in the agent's tool output. Our seams
+ * (this capability:bash rewrite, the Claude and Codex PreToolUse hooks) are
+ * deliberately not RTK's hook, and following that advice would install a
+ * second, competing rewrite. Measured: the variable removes the line with a
+ * fresh XDG_DATA_HOME; config.toml keys do not.
+ *
+ * Applied at three seams: the capability:bash child env (below), each psu
+ * Claude session's settings `env` (interactive-claude-config.ts) and every
+ * managed CODEX_HOME's `[shell_environment_policy.set]`
+ * (orchestrator codex-gateway-config.ts, pinned to this value by a test).
+ */
+export const RTK_SESSION_ENV: Readonly<Record<string, string>> = Object.freeze({
+  RTK_SUPPRESS_HOOK_WARNING: '1',
+});
+
 export type RtkSkipReason =
   | 'flag-off'
   | 'structured-caller'
   | 'opt-out'
   | 'vitest'
+  | 'early-exit-pipe'
   | 'too-long'
   | 'rtk-missing'
   | 'no-equivalent'
@@ -88,15 +108,28 @@ export function resolveRtkBin(env: NodeJS.ProcessEnv = process.env): string | nu
 }
 
 /**
+ * A pipe (`|` or `|&`, never `||`) into a consumer that stops reading early:
+ * `head`, `grep`/`rg` with a match limit (`-m N`, `--max-count`), or `sed … Nq`.
+ * Kept identical to the copy in apps/operator/scripts/hooks/cc/pretooluse-restricted-egress-guard.mjs.
+ */
+export const RTK_EARLY_EXIT_PIPE =
+  /(?:^|[^|])\|(?!\|)&?\s*(?:head\b|(?:rg|[ef]?grep)\b[^|;&\n]*\s(?:-m\s*\d|-[A-Za-z]*m\d|--max-count\b)|sed\b[^|;&\n]*\d+q\b)/;
+
+/**
  * Commands RTK must never wrap, decided on the command text alone.
  * - vitest: RTK's vitest wrapper dropped a single-file filter and ran the whole
  *   suite when its parser failed (EI-9471: a 20 s check became a 10,385-suite run).
+ * - early-exit pipes: RTK collects a command's whole output before printing, so
+ *   `head` closing the pipe no longer ends the producer. Measured 2026-10-13
+ *   (WI-6554700010009543): `rg … | head -60` took 0.5 s raw and 28.5 s as
+ *   `rtk rg … | head -60`. The agent already bounded that output itself.
  * - the opt-out prefix: the agent asked for raw output.
  */
 export function rtkSkipReasonForCommand(command: string): RtkSkipReason | null {
   if (command.length > RTK_MAX_COMMAND_CHARS) return 'too-long';
   if (/(^|[\s;&|(])RTK_DISABLED=1(\s|$)/.test(command)) return 'opt-out';
   if (/\bvitest\b/.test(command)) return 'vitest';
+  if (RTK_EARLY_EXIT_PIPE.test(command)) return 'early-exit-pipe';
   return null;
 }
 
@@ -165,10 +198,11 @@ export interface CapabilityBashRtkResult {
   command: string;
   outcome: RtkRewriteOutcome;
   /**
-   * Child-env additions. RTK prints a bare `rtk`, so the binary's directory
+   * Child-env additions, present only for a rewritten command: RTK_SESSION_ENV,
+   * plus PATH when needed. RTK prints a bare `rtk`, so the binary's directory
    * must be on the child's PATH; it is added only when it is not already there.
    */
-  env?: { PATH: string };
+  env?: Record<string, string>;
 }
 
 /**
@@ -214,6 +248,9 @@ export async function rtkCommandForCapabilityBash(
   return {
     command: outcome.command,
     outcome,
-    ...(onPath ? {} : { env: { PATH: path ? `${binDir}${delimiter}${path}` : binDir } }),
+    env: {
+      ...RTK_SESSION_ENV,
+      ...(onPath ? {} : { PATH: path ? `${binDir}${delimiter}${path}` : binDir }),
+    },
   };
 }

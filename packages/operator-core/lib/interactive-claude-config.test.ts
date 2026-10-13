@@ -31,6 +31,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
+import { RTK_SESSION_ENV } from './agent-tools/capability/rtk-rewrite';
 import {
   ensureInteractiveClaudeConfig,
   ensureOnboardingComplete,
@@ -327,6 +328,29 @@ describe('writeInteractiveClaudeConfig', () => {
     expect(
       readFileSync(join(home, '.claude', 'settings.json'), 'utf8'),
     ).not.toContain('skipDangerousModePermissionPrompt');
+  });
+
+  it('WI-6554700010009529: bakes the RTK hook-nag suppression into the session env, merged over the global env', async () => {
+    seedHome(home);
+    // A user global env must survive the merge.
+    writeFileSync(
+      join(home, '.claude', 'settings.json'),
+      JSON.stringify({ hooks: { PreToolUse: [] }, env: { USER_KEEP: 'yes' } }),
+    );
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-rtk-env', home });
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    // The egress-guard hook rewrites native Bash to RTK; without this RTK tells
+    // the agent to run `rtk init -g`, which installs a competing hook.
+    expect(settings.env).toEqual({ USER_KEEP: 'yes', ...RTK_SESSION_ENV });
+    expect(settings.env.RTK_SUPPRESS_HOOK_WARNING).toBe('1');
+    expect(readFileSync(join(home, '.claude', 'settings.json'), 'utf8')).not.toContain('RTK_SUPPRESS_HOOK_WARNING');
+  });
+
+  it('WI-6554700010009529: a global settings.json with no env still yields the RTK session env', async () => {
+    seedHome(home);
+    const { configDir } = await writeInteractiveClaudeConfig({ sid: 'su-rtk-env-bare', home });
+    const settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+    expect(settings.env).toEqual({ ...RTK_SESSION_ENV });
   });
 
   it('WI-6603: bakes the fleet-policy setting defaults every psu session inherits', async () => {

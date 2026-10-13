@@ -106,6 +106,7 @@ import { dirname, join } from 'node:path';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { reconcileClaudeCredentials } from './claude-credential-sync';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from './agent-tools/coordination/compaction-recovery';
+import { RTK_SESSION_ENV } from './agent-tools/capability/rtk-rewrite';
 
 const interactiveMaterializationQueue = new Map<string, Promise<unknown>>();
 const claudeJsonMutationQueue = new Map<string, Promise<unknown>>();
@@ -1327,6 +1328,15 @@ async function writeSessionSettings(srcSettings: string | null, dest: string): P
     ],
   });
   hooks.SessionStart = sessionStart;
+  // WI-6554700010009529: the egress-guard PreToolUse hook rewrites native Bash
+  // commands to RTK, and RTK nags this session's tool output to install its own
+  // competing hook unless RTK_SESSION_ENV is in the command's environment.
+  // Claude applies settings `env` to every Bash command; MERGED so the user's
+  // global env survives.
+  const env = {
+    ...(cfg.env && typeof cfg.env === 'object' ? (cfg.env as Record<string, unknown>) : {}),
+    ...RTK_SESSION_ENV,
+  };
   try {
     if (await presentAsync(dest) && (await lstatAsync(dest)).isSymbolicLink()) await rmAsync(dest);
     // EI-12086: claude 2.1.209+ gates `--dangerously-skip-permissions` behind an
@@ -1352,6 +1362,7 @@ async function writeSessionSettings(srcSettings: string | null, dest: string): P
           ...PAPERCUSP_SESSION_SETTING_DEFAULTS,
           permissions,
           hooks,
+          env,
           skipDangerousModePermissionPrompt: true,
         },
         null,

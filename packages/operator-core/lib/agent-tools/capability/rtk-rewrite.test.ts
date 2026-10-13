@@ -68,6 +68,7 @@ import { startBackground } from './bash-jobs';
 import {
   RTK_BIN_ENV,
   RTK_MAX_COMMAND_CHARS,
+  RTK_SESSION_ENV,
   resolveRtkBin,
   rtkCommandForCapabilityBash,
   rtkRewrite,
@@ -158,6 +159,20 @@ describe('rtkSkipReasonForCommand', () => {
     expect(rtkSkipReasonForCommand(`echo ${'a'.repeat(RTK_MAX_COMMAND_CHARS)}`)).toBe('too-long');
   });
 
+  it('never offers a pipe into an early-exit consumer (WI-6554700010009543)', () => {
+    // rtk collects the whole output first, so `head` closing the pipe would no longer stop the producer
+    expect(rtkSkipReasonForCommand('rg -n x . | head -60')).toBe('early-exit-pipe');
+    expect(rtkSkipReasonForCommand('cd pkg && git log |& head -5')).toBe('early-exit-pipe');
+    expect(rtkSkipReasonForCommand('git log | grep -m 3 fix')).toBe('early-exit-pipe');
+    expect(rtkSkipReasonForCommand('rg x | rg -m2 y')).toBe('early-exit-pipe');
+    expect(rtkSkipReasonForCommand('git log | grep --max-count=3 fix')).toBe('early-exit-pipe');
+    expect(rtkSkipReasonForCommand('git log | sed 20q')).toBe('early-exit-pipe');
+    // not early-exit: tail and plain grep read everything; `||` is not a pipe
+    expect(rtkSkipReasonForCommand('git log -n 3 | tail -5')).toBeNull();
+    expect(rtkSkipReasonForCommand('git log | grep fix')).toBeNull();
+    expect(rtkSkipReasonForCommand('git status || head -1 notes.txt')).toBeNull();
+  });
+
   it('lets ordinary commands through', () => {
     expect(rtkSkipReasonForCommand('git status')).toBeNull();
   });
@@ -225,7 +240,7 @@ describe('rtkCommandForCapabilityBash', () => {
       env: { [RTK_BIN_ENV]: fakeRtk, PATH: '/usr/bin' },
     });
     expect(result.command).toBe('rtk git status');
-    expect(result.env).toEqual({ PATH: `${binDir}${delimiter}/usr/bin` });
+    expect(result.env).toEqual({ ...RTK_SESSION_ENV, PATH: `${binDir}${delimiter}/usr/bin` });
   });
 
   it('adds no PATH when the binary directory is already on it', async () => {
@@ -236,7 +251,22 @@ describe('rtkCommandForCapabilityBash', () => {
       env: { [RTK_BIN_ENV]: fakeRtk, PATH: `/usr/bin${delimiter}${binDir}` },
     });
     expect(result.command).toBe('rtk git status');
-    expect(result.env).toBeUndefined();
+    expect(result.env).toEqual(RTK_SESSION_ENV);
+  });
+
+  it('WI-6554700010009529: a rewritten command always carries the hook-nag suppression', async () => {
+    // RTK otherwise prints `[rtk] /!\ No hook installed — run `rtk init -g`` into
+    // the agent's output, telling it to install a competing hook.
+    expect(RTK_SESSION_ENV).toEqual({ RTK_SUPPRESS_HOOK_WARNING: '1' });
+    for (const PATH of ['/usr/bin', `/usr/bin${delimiter}${binDir}`]) {
+      const result = await rtkCommandForCapabilityBash('git status', {
+        cwd: root,
+        structuredCaller: false,
+        flagEnabled: flagOn,
+        env: { [RTK_BIN_ENV]: fakeRtk, PATH },
+      });
+      expect(result.env?.RTK_SUPPRESS_HOOK_WARNING).toBe('1');
+    }
   });
 
   it('structured callers get the verbatim command without touching rtk or the flag', async () => {
@@ -295,6 +325,8 @@ describe('capability:bash — RTK at the spawn seam', () => {
     const result = await bash.handler({ command: 'git status', cwd: root }, makeCtx(root));
     expect(spawned().command).toBe('rtk git status');
     expect(spawned().env?.PATH?.split(delimiter)[0]).toBe(binDir);
+    // WI-6554700010009529: the spawned child gets the hook-nag suppression.
+    expect(spawned().env?.RTK_SUPPRESS_HOOK_WARNING).toBe('1');
     expect(result.content[0]!.text).toContain(RTK_RESULT_NOTE);
   });
 
