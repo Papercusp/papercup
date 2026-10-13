@@ -190,6 +190,10 @@ export interface AdvSessionRow {
    * value is what let a mass reap read as two voluntary exits.
    */
   endedSignal: string | null;
+  /** Deliberate operator retirement survives terminal-marker reconciliation. */
+  retiredAt?: string | null;
+  retiredBy?: string | null;
+  retiredReason?: string | null;
   /** Cross-backend session-port lineage. A port target remains hidden from
    * resumable surfaces until portStatus='delivered'. */
   portId?: string | null;
@@ -340,6 +344,9 @@ export function mapAdvSessionRow(r: {
     exitCode: r.exit_code,
     endedBy: (r.ended_by as AdvSessionEndedBy | null) ?? null,
     endedSignal: r.ended_signal ?? null,
+    retiredAt: toIsoTimestamp(r.retired_at),
+    retiredBy: r.retired_by ?? null,
+    retiredReason: r.retired_reason ?? null,
     portId: r.port_id ?? null,
     portSourceAdvSessionId: r.port_source_adv_session_id == null ? null : Number(r.port_source_adv_session_id),
     portStatus: r.port_status ?? null,
@@ -1278,7 +1285,20 @@ export type AdvSessionResumeReservation =
       leaseExpiresAt: string;
     }
   | { status: 'live'; acquired: false }
+  | { status: 'retired'; acquired: false }
   | { status: 'missing'; acquired: false };
+
+/** Fence every registration for an owner before terminating its process. Pending
+ * reservations are invalidated so a prepared resume cannot finalize after kill. */
+export async function retireAdvSessionsByOwner(ownerId: string, actor: string, reason: string): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.adv_sessions
+       SET retired_at = now(), retired_by = ${`fleet:kill:${actor}`}, retired_reason = ${reason},
+           resume_claim_key = NULL, resume_claimed_at = NULL
+     WHERE coord_owner_id = ${ownerId}
+  `;
+}
 
 /**
  * Reserve the right to resume one adv-session WITHOUT asserting liveness.
@@ -1296,6 +1316,7 @@ export async function acquireAdvSessionResume(
   leaseSec: number = RESUME_RESERVATION_LEASE_SEC,
   staleActiveSec: number = RESUME_CLAIM_WINDOW_SEC,
   localLivenessEvidence?: unknown,
+  allowRetired: boolean = false,
 ): Promise<AdvSessionResumeReservation> {
   const key = resumeClaimKey.trim();
   if (!key) throw new Error('resumeClaimKey must be non-empty');
@@ -1309,17 +1330,19 @@ export async function acquireAdvSessionResume(
         agent: string | null;
         ended_at: Date | string | null;
         ended_by: string | null;
+        retired_at: Date | string | null;
         started_at: Date | string;
         resume_claim_key: string | null;
         resume_claimed_at: Date | string | null;
       }>
     >`
-      SELECT agent, ended_at, ended_by, started_at, resume_claim_key, resume_claimed_at
+      SELECT agent, ended_at, ended_by, retired_at, started_at, resume_claim_key, resume_claimed_at
         FROM harness_shared.adv_sessions
        WHERE id = ${id}
        FOR UPDATE
     `;
     if (!row) return { status: 'missing', acquired: false } as const;
+    if (row.retired_at != null && !allowRetired) return { status: 'retired', acquired: false } as const;
 
     const nowMs = Date.now();
     const claimedAtMs = row.resume_claimed_at == null ? null : new Date(row.resume_claimed_at).getTime();
@@ -1383,6 +1406,7 @@ async function transitionAdvSessionResume(
   resumeClaimKey: string,
   transition: AdvSessionResumeTransition,
   launchArgv?: string[] | null,
+  allowRetired: boolean = false,
 ): Promise<boolean> {
   const key = resumeClaimKey.trim();
   if (!key) return false;
@@ -1425,6 +1449,9 @@ async function transitionAdvSessionResume(
         ? await tx<{ id: number }[]>`
           UPDATE harness_shared.adv_sessions
              SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
+                 retired_at = CASE WHEN ${allowRetired} THEN NULL ELSE retired_at END,
+                 retired_by = CASE WHEN ${allowRetired} THEN NULL ELSE retired_by END,
+                 retired_reason = CASE WHEN ${allowRetired} THEN NULL ELSE retired_reason END,
                  started_at = now(), shutdown_accepted_at = NULL,
                  resume_claim_key = NULL, resume_claimed_at = NULL,
                  launch_argv = COALESCE(
@@ -1432,6 +1459,7 @@ async function transitionAdvSessionResume(
                    launch_argv
                  )
            WHERE id = ${id} AND resume_claim_key = ${key}
+             AND (retired_at IS NULL OR ${allowRetired})
           RETURNING id
         `
         : await tx<{ id: number }[]>`
@@ -1463,8 +1491,9 @@ export async function finalizeAdvSessionResume(
   id: number,
   resumeClaimKey: string,
   launchArgv?: string[] | null,
+  allowRetired: boolean = false,
 ): Promise<boolean> {
-  return transitionAdvSessionResume(id, resumeClaimKey, 'finalize', launchArgv);
+  return transitionAdvSessionResume(id, resumeClaimKey, 'finalize', launchArgv, allowRetired);
 }
 
 /** Release a pre-spawn/failed reservation while preserving terminal evidence. */
@@ -1506,7 +1535,7 @@ export async function claimAdvSessionResume(
   resumeClaimKey: string | null = null,
   windowSec: number = RESUME_CLAIM_WINDOW_SEC,
   expectedOwnerId: string | null = null,
-): Promise<boolean> {
+): Promise<boolean | 'retired'> {
   const { sql } = getOrgPg();
   const key = resumeClaimKey?.trim() || null;
   const ownerId = expectedOwnerId?.trim() || null;
@@ -1522,6 +1551,7 @@ export async function claimAdvSessionResume(
              started_at = now(), shutdown_accepted_at = NULL,
              resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id}
+         AND retired_at IS NULL
          AND NOT EXISTS (
            SELECT 1 FROM harness_shared.adv_sessions AS successor
             WHERE successor.coord_owner_id = adv_sessions.coord_owner_id
@@ -1542,7 +1572,11 @@ export async function claimAdvSessionResume(
          )
       RETURNING id
     `;
-    return rows.length > 0;
+    if (rows.length > 0) return true;
+    const [retirement] = await sql<Array<{ retired_at: Date | string | null }>>`
+      SELECT retired_at FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    return retirement?.retired_at != null ? 'retired' : false;
   }
 
   // WI-41450: the old launcher used a hard HTTP deadline around this mutation.
@@ -1555,8 +1589,8 @@ export async function claimAdvSessionResume(
   // the follower waits, then reads the winner's completed verdict.
   const ledgerKey = `psu-resume:${id}:${key}`;
   return sql.begin(async (tx) => {
-    const [target] = await tx<Array<{ workspace_id: string; coord_owner_id: string | null }>>`
-      SELECT workspace_id, coord_owner_id
+    const [target] = await tx<Array<{ workspace_id: string; coord_owner_id: string | null; retired_at: Date | string | null }>>`
+      SELECT workspace_id, coord_owner_id, retired_at
         FROM harness_shared.adv_sessions
        WHERE id = ${id}
          AND NOT EXISTS (
@@ -1566,6 +1600,7 @@ export async function claimAdvSessionResume(
          )
     `;
     if (!target) return false;
+    if (target.retired_at != null) return 'retired' as const;
     if (ownerId && target.coord_owner_id !== ownerId) return false;
 
     const workspaceId = target.workspace_id;
@@ -1593,6 +1628,7 @@ export async function claimAdvSessionResume(
              started_at = now(), shutdown_accepted_at = NULL,
              resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id}
+         AND retired_at IS NULL
          AND NOT EXISTS (
            SELECT 1 FROM harness_shared.adv_sessions AS successor
             WHERE successor.coord_owner_id = adv_sessions.coord_owner_id
@@ -1662,6 +1698,7 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
           LIMIT 1
        )
          AND resume_claim_key IS NULL
+         AND retired_at IS NULL
          -- Owner activity may come from a NEW row. Reviving its retired
          -- predecessor would make that older artifact newest to the kernel.
          AND NOT EXISTS (
