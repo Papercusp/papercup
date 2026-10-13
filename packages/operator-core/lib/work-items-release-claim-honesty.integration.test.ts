@@ -85,11 +85,18 @@ async function featureTakenBy(id: string): Promise<string | null> {
 }
 
 async function seedIssue(id: string, assignee: string | null, state = 'open'): Promise<void> {
+  // Migrations 1474 + 1477: a local work row may only ENTER `blocked` when it names its blocker.
+  // A fresh (<=15 min) leader-triage reason is the lightest accepted form; other states omit
+  // payload entirely, so their rows are seeded exactly as before.
+  const payload =
+    state === 'blocked'
+      ? sql.json({ blockedReason: 'fixture: seeded blocked', blockedAt: new Date().toISOString() })
+      : null;
   await sql`
     INSERT INTO harness_shared.engineer_issues
-      (workspace_id, issue_id, scope, title, state, assignee, assigned_at, updated_at)
+      (workspace_id, issue_id, scope, title, state, assignee, assigned_at, updated_at${payload ? sql`, payload` : sql``})
     VALUES
-      (${WS}, ${id}, ${`harness:${HARNESS}`}, ${id}, ${state}, ${assignee}, ${assignee ? sql`now()` : null}, now())`;
+      (${WS}, ${id}, ${`harness:${HARNESS}`}, ${id}, ${state}, ${assignee}, ${assignee ? sql`now()` : null}, now()${payload ? sql`, ${payload}` : sql``})`;
 }
 
 async function issueAssignee(id: string): Promise<string | null> {
