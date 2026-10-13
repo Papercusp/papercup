@@ -44,6 +44,7 @@ import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilitie
 import { WORK_SELECTION_CENSUS, WORK_SELECTION_SEED_ROWS, type WorkSelectionSeedRow } from '../work-selection-census';
 import { isAgentWork } from './agent-work-predicate';
 import type { ResolutionStepEvent } from '../scheduler/get-next';
+import { pendingDetachedCount } from '../detached-imports';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -83,6 +84,7 @@ const H = 'papercup';
 
 const wi = await import('../work-items');
 const { getOrgPg } = await import('@papercusp/db-org');
+const { boundedOrgTxn } = await import('../pg-bounded-txn');
 const { getNextWorkItemDefault, readIssueClaimability } = await import('../scheduler/get-next');
 
 // ---------------------------------------------------------------------------
@@ -201,7 +203,8 @@ async function drain(door: DrainDoor): Promise<string[]> {
       // using a separate diagnostic connection so the failing pool cannot hide it.
       console.error('[agent-work-fixture-diagnostic]', JSON.stringify({
         door: door.name, served, transactions: fixtureTransactions.slice(-16),
-        resolutionSteps: resolutionSteps.slice(-24), database: await fixtureDatabaseWaits(),
+        resolutionSteps: resolutionSteps.slice(-24), detachedWork: pendingDetachedCount(),
+        database: await fixtureDatabaseWaits(),
       }));
       throw error;
     }
@@ -324,6 +327,33 @@ describe('P-012: the seed population and the door table are complete', () => {
     expect(fixtureTransactions).toHaveLength(1);
     expect(fixtureTransactions[0].acquiredAt).toBeDefined();
     expect(fixtureTransactions[0].settledAt).toBeDefined();
+  });
+
+  it('diagnostics distinguish a queued transaction from an unreachable database', async () => {
+    // Reserve the helper's four real connections, leaving BEGIN queued while a
+    // separate diagnostic connection can prove that this same database is reachable.
+    const reserved = await Promise.all(Array.from({ length: 4 }, () => db.sql.reserve()));
+    const callback = vi.fn(async (tx: postgres.TransactionSql) => tx`SELECT 1`);
+    try {
+      await expect(boundedOrgTxn(callback, {
+        client: db.sql, acquireTimeoutMs: 25, acquireRetries: 0, connectionSetupRetries: 0,
+      })).rejects.toMatchObject({ name: 'DbCallDeadlineError' });
+      expect(fixtureTransactions).toHaveLength(1);
+      expect(fixtureTransactions[0].acquiredAt).toBeUndefined();
+      expect(callback).not.toHaveBeenCalled();
+      const waits = await fixtureDatabaseWaits();
+      expect(Array.isArray(waits)).toBe(true);
+      const clients = waits as Array<{ state: string; blocked_by: number[] }>;
+      expect(clients).toHaveLength(4);
+      expect(clients.every((row) => row.state === 'idle' && row.blocked_by.length === 0)).toBe(true);
+    } finally {
+      for (const client of reserved) client.release();
+    }
+    // A deadline cannot cancel postgres.js's queued BEGIN. Observe its late
+    // acquisition/rollback and verify that the caller callback still never ran.
+    await vi.waitFor(() => expect(fixtureTransactions[0].settledAt).toBeDefined());
+    expect(fixtureTransactions[0].acquiredAt).toBeDefined();
+    expect(callback).not.toHaveBeenCalled();
   });
 
   it('seeds every nature, a human-audience work row, and agrees with the predicate twin', () => {
