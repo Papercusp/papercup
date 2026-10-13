@@ -199,6 +199,16 @@ function run(
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
+  it('retains the outer timeout diagnostic when harness startup stalls', () => {
+    const f = fixture(0);
+    writeFileSync(f.harnessTsx, '#!/usr/bin/env bash\nexec sleep 1\n');
+    const result = run(f, [], {}, 100);
+    expect(result.errorCode, result.out).toBe('ETIMEDOUT');
+    expect(result.out).toContain('RUNNER_PROCESS_RESULT');
+    expect(result.out).toContain('"errorCode":"ETIMEDOUT"');
+    expect(result.recorded).toBeNull();
+  });
+
   it('selects committed source and derives acceptance inputs before verifier admission', () => {
     const f = fixture(0);
     const runner = readFileSync(RUNNER, 'utf8');
