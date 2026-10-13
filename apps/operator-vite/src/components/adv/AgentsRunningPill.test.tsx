@@ -281,7 +281,7 @@ describe('thinkingStreamUrl (pure — EI-16982: ended=1 for archive-rematerializ
 });
 
 describe('<AgentsRunningPill>', () => {
-  it('refreshes the filesystem-derived thinking gauge inside its 10s activity window', () => {
+  it('refreshes lifecycle-derived thinking between database invalidations', () => {
     render(<Pill />);
     expect(H.queryOpts).toMatchObject({
       queryName: 'advRoster.list',
@@ -338,14 +338,40 @@ describe('<AgentsRunningPill>', () => {
     );
   });
 
-  it('shows a "thinking" count in the pill when agents are actively thinking', () => {
-    H.active = [agent({ ownerId: 'a1', transcriptFresh: true }), agent({ ownerId: 'a2', transcriptFresh: false })];
+  it.each([false, true])('counts the entire ongoing-turn population with the roster open=%s', (open) => {
+    nuqs.open = open;
+    const live = Array.from({ length: 120 }, (_, i) => agent({
+      ownerId: `live-${i}`, agent: ['claude', 'codex', 'omp'][i % 3],
+      transcriptFresh: i < 20, thinkingResolvable: i < 20,
+      machineLabel: i % 2 ? 'remote' : 'desktop', isLocal: i % 2 === 0,
+    }));
+    H.active = [...live, ...['parked', 'draining', 'suspect', 'ended', 'recorded'].map(
+      (sessionState) => agent({ ownerId: sessionState, sessionState, transcriptFresh: true, loopArmed: true }),
+    ), agent({ ownerId: 'unknown', sessionState: null, transcriptFresh: true })];
+    // Control: the old gauge reports exactly the misleading twenty, even
+    // though the authoritative roster has 120 ongoing turns across backends.
+    expect(live.filter(isTranscriptFresh)).toHaveLength(20);
     render(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('120 agents running');
+    expect(screen.getByTestId('agents-thinking-count').textContent).toContain('120 thinking');
+  });
+
+  it('updates the count when a turn parks or ends despite recent transcript output', () => {
+    H.active = [agent({ ownerId: 'a1', transcriptFresh: false }), agent({ ownerId: 'a2', transcriptFresh: false })];
+    const view = render(<Pill />);
+    expect(screen.getByTestId('agents-thinking-count').textContent).toContain('2 thinking');
+    H.active = [agent({ ownerId: 'a1', sessionState: 'parked', transcriptFresh: true }),
+      agent({ ownerId: 'a2', transcriptFresh: false })];
+    view.rerender(<Pill />);
     expect(screen.getByTestId('agents-thinking-count').textContent).toContain('1 thinking');
+    H.active = [agent({ sessionState: 'ended', transcriptFresh: true })];
+    view.rerender(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('0 agents running');
+    expect(screen.queryByTestId('agents-thinking-count')).toBeNull();
   });
 
   it('renders a pulsing thinking dot on an actively-thinking row', () => {
-    H.active = [agent({ ownerId: 'a1', transcriptFresh: true })];
+    H.active = [agent({ ownerId: 'a1', transcriptFresh: false, thinkingResolvable: false })];
     nuqs.open = true;
     render(<Pill />);
     expect(screen.getAllByTestId('thinking-dot').length).toBeGreaterThan(0);

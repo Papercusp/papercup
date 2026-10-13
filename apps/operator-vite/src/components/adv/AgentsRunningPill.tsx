@@ -40,7 +40,7 @@ import {
   displayName as rosterDisplayName,
   distinctMachineCount,
   groupByFleet,
-  isTranscriptFresh,
+  isAgentThinking,
   resumableSessionId,
   thinkingStreamUrl,
   type RosterAgent,
@@ -94,6 +94,7 @@ export {
   fmtCompactAge,
   groupByFleet,
   hasThinking,
+  isAgentThinking,
   isRunningAgent,
   isTranscriptFresh,
   machineKey,
@@ -200,10 +201,9 @@ export default function AgentsRunningPill() {
   const { data } = useSyncQuery<RosterResponse>({
     queryName: 'advRoster.list',
     args: open ? advRosterArgs(null) : { ...advRosterArgs(null), view: 'header' },
-    // `transcriptFresh` is derived from transcript mtimes rather than a database row,
-    // so no SSE invalidation can announce either edge of its 10s activity
-    // window. Keep this always-mounted header observer on a small explicit
-    // cadence; all roster consumers share the same structurally keyed query.
+    // Lifecycle verdicts also depend on activity age and host state, so keep
+    // the always-mounted header current between database invalidations.
+    // All roster consumers share the same structurally keyed query.
     pollIntervalMs: 5_000,
   });
   // A 1s clock — only while the roster is open — so the last-active pills tick up
@@ -239,7 +239,7 @@ export default function AgentsRunningPill() {
   // what produced the owner-visible "65 running" while only 3 were live.
   // Memoed on `data` so identities stay stable across the 1s nowMs ticks.
   const running = useMemo(
-    () => ((data?.[0]?.active ?? []) as RosterAgent[]).filter((a) => a.sessionState === 'live'),
+    () => ((data?.[0]?.active ?? []) as RosterAgent[]).filter(isAgentThinking),
     [data],
   );
   const activeOwnerIds = useMemo(() => new Set(running.map((a) => a.ownerId)), [running]);
@@ -290,7 +290,7 @@ export default function AgentsRunningPill() {
   const isRunning = running.length > 0;
   const groups = groupByFleet(running);
   const fleetDots = groups.filter((g) => g.slug !== null && g.color).slice(0, 6);
-  const thinkingCount = running.filter(isTranscriptFresh).length;
+  const thinkingCount = running.length;
   const machineCount = distinctMachineCount(running);
 
   return (
@@ -315,7 +315,7 @@ export default function AgentsRunningPill() {
             <span aria-hidden>⚡</span>
             {running.length} agent{running.length === 1 ? '' : 's'} running
             {thinkingCount > 0 && (
-              <span className="pc-agents-pill__thinking" data-testid="agents-thinking-count">
+              <span className="pc-agents-pill__thinking" data-testid="agents-thinking-count" title="Agents in an ongoing turn, including reasoning and tool work">
                 {' · '}{thinkingCount} thinking
               </span>
             )}

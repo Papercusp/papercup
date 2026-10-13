@@ -96,6 +96,24 @@ beforeEach(() => {
   acquireRetries.length = 0;
 });
 
+describe('deliberate retirement resume fence (WI-6554700010010429)', () => {
+  it('refuses a retired row even for a replayed lease and positive absence witness', async () => {
+    const tx = vi.fn(async (strings: TemplateStringsArray) => {
+      if (strings.join(' ').includes('SELECT agent, ended_at')) return [{
+        agent: 'claude', ended_at: new Date(), ended_by: 'signal',
+        retired_at: new Date(), retired_by: 'fleet:kill:operator',
+        started_at: new Date(), resume_claim_key: 'replay-key', resume_claimed_at: new Date(),
+      }];
+      return [{ lease_expires_at: new Date(Date.now() + 60_000) }];
+    });
+    advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
+    await expect(acquireAdvSessionResume(42, 'replay-key', 60, 300, {
+      version: 1, kind: 'no-live-claude-process',
+    })).resolves.toMatchObject({ status: 'retired', acquired: false });
+    expect(tx.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE'))).toBe(false);
+  });
+});
+
 function advSessionTableReads(): unknown[][] {
   return (advSessionRowsMock.mock.calls as unknown[][]).filter(([template]) =>
     Array.isArray(template) && template.join(' ').includes('FROM harness_shared.adv_sessions'),

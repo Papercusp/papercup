@@ -31,7 +31,7 @@ import {
   fmtCompactAge,
   groupByFleet,
   hasThinking,
-  isTranscriptFresh,
+  isAgentThinking,
   machineKey,
   machineTabs,
 } from './logic';
@@ -509,7 +509,7 @@ export function AgentRoster({
                   />
                 ) : null}
                 <span className="pc-agents-roster__live">
-                  {isTranscriptFresh(a) ? (
+                  {isAgentThinking(a) ? (
                     <ThinkingDot size={7} title={`${nameOf(a)} — thinking`} />
                   ) : (
                     <LivenessDot

@@ -81,6 +81,14 @@ export function isTranscriptFresh(
   return a.transcriptFresh ?? a.thinking ?? false;
 }
 
+/** Whether the shared lifecycle oracle reports an ongoing agent turn.
+ * Includes silent reasoning and tool work: transcript output can be buffered
+ * or unavailable while the agent is working. Fresh output, a keepalive, or an
+ * armed loop cannot promote a parked/ended/unknown session to thinking. */
+export function isAgentThinking(a: Pick<RosterAgent, 'sessionState'>): boolean {
+  return a.sessionState === 'live';
+}
+
 /** The stream URL for an agent's thinking: the run-log stream when it has a run,
  *  else the interactive-session transcript endpoint keyed per backend (claude
  *  sessionId · codex session-row id · omp thread id); null when none. Pure.

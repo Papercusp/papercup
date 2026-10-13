@@ -319,6 +319,25 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     expect(out.kind).toBe('park');
   });
 
+  it('deliberately killed owner drops a later inbox wake without starting a process (WI-6554700010010429)', async () => {
+    const s = tb.session('retired');
+    let spawned = 0;
+    let claimed = 0;
+    const d = makeDelivery({ subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-retired', pid: null }),
+    });
+    const out = await executeWake(d, baseDeps({
+      getSession: async () => ({ pid: null, endedAt: new Date().toISOString(),
+        retiredAt: new Date().toISOString(), retiredBy: 'fleet:kill:operator',
+        agent: 'claude', sessionId: 'native-retired', coordOwnerId: s.ownerId, cwd: s.cwd }) as never,
+      claimResume: async () => { claimed++; return true; },
+      spawnDetached: () => { spawned++; return 4242; },
+    }));
+    expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('retired') });
+    expect(spawned).toBe(0);
+    expect(claimed).toBe(0);
+  });
+
   it('ENDED row even though the recorded pid was reused-alive → treated as exited (resume), not inject', async () => {
     const s = tb.session('A');
     const d = makeDelivery({

@@ -45,6 +45,24 @@ describe('AgentRoster host-owned row activation', () => {
   });
 });
 
+describe('AgentRoster thinking indicators', () => {
+  it.each([
+    { sessionState: 'live', transcriptFresh: false, expected: true },
+    { sessionState: 'parked', transcriptFresh: true, expected: false },
+    { sessionState: 'ended', transcriptFresh: true, expected: false },
+    { sessionState: null, transcriptFresh: true, expected: false },
+  ])('keeps the row and detail consistent for $sessionState with transcriptFresh=$transcriptFresh',
+    ({ sessionState, transcriptFresh, expected }) => {
+      render(<AgentRoster agents={[{ ...agent, sessionState, transcriptFresh }]}
+        nowMs={Date.parse('2026-08-31T19:01:00.000Z')} />);
+      const row = screen.getByTestId('agent-row-su-portal-agent');
+      expect(row.querySelector('[data-liveness="thinking"]') != null).toBe(expected);
+      fireEvent.mouseEnter(row);
+      expect(screen.getByTestId('agent-detail').querySelector('[data-liveness="thinking"]') != null)
+        .toBe(expected);
+    });
+});
+
 describe('AgentRoster stop outcome', () => {
   const nowMs = Date.parse('2026-08-31T19:01:00.000Z');
 

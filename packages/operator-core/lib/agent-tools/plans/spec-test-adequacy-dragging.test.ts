@@ -103,7 +103,7 @@ function row(
     fingerprints: {
       sourceFingerprint: 'git:abc',
       testFingerprint: 'sha256:test',
-      fixtureFingerprint: null,
+      fixtureFingerprint: 'sha256:drag-fixture',
       rubricFingerprint: null,
       environmentFingerprint: null,
     },
@@ -123,9 +123,10 @@ function row(
         testLayer: 'unit',
         pathReachable: true,
         oracleIndependent: true,
-        // These focused rows do not use fixtures; a null fingerprint alone is intentionally
-        // insufficient to let the evaluator infer fixture-free proof.
-        fixtureFree: true,
+        // Positive controls carry the calibrated fixture used to synthesize these
+        // ledger rows; binder-only fixtureFree cannot establish fixture absence.
+        fixtureFree: false,
+        fixtureCalibrated: true,
         collected: true,
         skipped: false,
         executed: true,
@@ -187,7 +188,9 @@ describe('any-drags adequacy names the dragging binding (P-019)', () => {
       clause: clause(), evidence: [row(2), negative], classRef: 'plan-class-feature-ship',
     });
     expect(matching.ratings['execution-integrity'].rating).toBe('pass');
-    expect(matching.verdict).toBe('pass');
+    expect(matching.verdict, JSON.stringify(Object.fromEntries(
+      Object.entries(matching.ratings).map(([criterion, { rating }]) => [criterion, rating]),
+    ))).toBe('pass');
   });
 
   it('names an older failing attempt as the row dragging execution-integrity, and the clause passes once it is withdrawn', () => {
@@ -203,7 +206,9 @@ describe('any-drags adequacy names the dragging binding (P-019)', () => {
     expect(dragged.ratings['execution-integrity'].rating).toBe('fail');
     expect(dragged.draggingBindingIds['execution-integrity']).toEqual([1]);
     // The fresh sufficient row is NOT named — only the row that actually drags.
-    expect(Object.values(dragged.draggingBindingIds).flat()).not.toContain(2);
+    expect(Object.values(dragged.draggingBindingIds).flat(), JSON.stringify(Object.fromEntries(
+      Object.entries(dragged.ratings).map(([criterion, { rating }]) => [criterion, rating]),
+    ))).not.toContain(2);
     expect(dragged.ratings['execution-integrity'].evidence).toContain('id=1,');
     expect(dragged.ratings['execution-integrity'].suggestion).toContain(SUPERSEDE_DRAGGING_SUGGESTION);
 
