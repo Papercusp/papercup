@@ -407,7 +407,27 @@
       "sourceCommit": "4d900e278ef00a5a1f16569f45b0fb48205ec3a4",
       "log": "/tmp/reports-f146-ledger-qualified-w46b.log",
       "sourceReceiptWhenWritten": "/tmp/reports-f146-ledger-qualified-w46b-source.json",
-      "observed": "Initial real ledger handshake passed; frozen-source preparation is pending as of 2026-10-13T14:10Z.",
+      "observed": "The original task completed with exit 0 at 2026-10-13T14:23:58.156Z. The frozen suite passed 49 tests with zero skips and clean declared inputs. Its reporter wrote to the selected embedded ledger rather than the canonical platform ledger; no test was replayed or relocated.",
+      "recordedRunGroupId": null,
+      "runGroupExplanation": "The launch supplied PAPERCUSP_TEST_RUN_GROUP_ID; the maintained reporter reads PAPERCUSP_TEST_RUN_GROUP.",
+      "actualLedger": {
+        "endpoint": "localhost:24680",
+        "database": "papercusp",
+        "originalRowId": 91,
+        "canonicalPlatformRow": false,
+        "status": "pass",
+        "passed": 49,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": false,
+        "collectionFailed": false,
+        "startedAt": "2026-10-13T14:18:58.658Z",
+        "finishedAt": "2026-10-13T14:19:06.863Z",
+        "sourceCommit": "4d900e278ef00a5a1f16569f45b0fb48205ec3a4"
+      },
+      "canonicalRouteRead": "The maintained connection resolver selected operator-env-file localhost:5432 and recovered original local dirty row 21207954. Platform and ptool file/since queries found no matching frozen qualification row.",
+      "ownedAttributionFollowUp": "EI-25875088982993814",
+      "workerShutdown": "A fork-worker termination timeout was observed; root cause remains open under EI-25868427686173697.",
       "acceptance": "open"
     },
     "previousPreparationAttempt": {
