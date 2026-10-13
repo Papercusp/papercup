@@ -58,7 +58,14 @@ function fakeSql(options: { singleAccount?: boolean } = {}) {
   const query = async (parts: TemplateStringsArray, ...values: unknown[]) => {
     const text = parts.join(' ');
     if (text.includes('FROM harness_shared.documents')) {
-      const requestedSourceId = typeof values[4] === 'string' ? values[4] : null;
+      // Find the requested source id by the SQL text that binds it, never by a
+      // fixed slot: a filter added earlier in the WHERE clause (the datatype_id
+      // filter did exactly this) shifts every later parameter, and a stale index
+      // silently reads a different one and returns both accounts' documents.
+      const slot = parts.findIndex((part) => /d\.source_id\s*=\s*$/.test(part));
+      if (slot < 0) throw new Error(`fixture_expected_source_id_filter:${text}`);
+      const requested = values[slot];
+      const requestedSourceId = typeof requested === 'string' ? requested : null;
       return requestedSourceId
         ? documents.filter((row) => row.sourceId === requestedSourceId)
         : documents;

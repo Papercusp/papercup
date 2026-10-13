@@ -2142,6 +2142,7 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "scripts/affected-tests.mjs" ||
       f === "apps/operator/e2e/adv-shell-nav.spec.ts" ||
       f === "apps/operator/playwright.production-preview.config.ts" ||
+      f === "apps/operator-vite/vite.config.production-preview.ts" ||
       f === "apps/operator/package.json" ||
       f === "apps/operator-vite/package.json" ||
       f === "apps/operator-vite/vite.config.ts" ||

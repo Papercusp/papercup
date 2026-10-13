@@ -140,16 +140,21 @@ describe('cloud portal source reconciliation', () => {
     expect(deps.writeReceipt).not.toHaveBeenCalled();
   });
 
+  // The child imports the whole module, whose static portal-reconcile-lock.mts import pulls the
+  // operator-core resource-lock graph: measured 21.6s of a 24-27s child start at load ~220
+  // (WI-6554700010009809), so a 30s cap timed out under gate load. The cap only bounds a hang:
+  // without process.exit the setInterval below keeps the child alive forever.
+  const ONE_SHOT_CHILD_TIMEOUT_MS = 120_000;
   it('exits a one-shot process after logging even when a dependency keeps a handle open', () => {
     const moduleUrl = new URL('../systemd/reconcile-cloud-portal.mjs', import.meta.url).href;
     const child = spawnSync(process.execPath, [
       '--import', 'tsx', '--input-type=module', '-e',
       `import { settleReconcileProcess } from ${JSON.stringify(moduleUrl)}; setInterval(() => {}, 60000); await settleReconcileProcess(Promise.resolve({ status: 'deployed', releasePath: '/tmp/release' }));`,
-    ], { encoding: 'utf8', timeout: 30000 });
+    ], { encoding: 'utf8', timeout: ONE_SHOT_CHILD_TIMEOUT_MS });
     expect(child.error).toBeUndefined();
     expect(child.status).toBe(0);
     expect(child.stdout).toContain('cloud-portal-reconcile: deployed /tmp/release');
-  });
+  }, ONE_SHOT_CHILD_TIMEOUT_MS + 10_000);
 
   it('rebuilds when linked source changes even though rootDigest and release path match', async () => {
     const { config, release } = fixture();

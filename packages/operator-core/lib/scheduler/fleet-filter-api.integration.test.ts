@@ -185,8 +185,19 @@ describe('WI-10002617: named fleet filtering through the private operator API', 
         'bin/hono-host.ts', join(dir, 'hono-host.mjs')], {
         cwd: root, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024,
       });
-      writeFileSync(join(dir, 'build.log'), (build.stdout ?? '') + (build.stderr ?? ''));
-      expect(build.status, 'Private bundle failed; evidence: ' + dir + '\n' + build.stderr?.slice(-1500)).toBe(0);
+      const buildEvidence = {
+        status: build.status,
+        signal: build.signal,
+        error: build.error ? {
+          name: build.error.name,
+          code: (build.error as NodeJS.ErrnoException).code ?? null,
+          message: build.error.message,
+        } : null,
+        stdoutTail: (build.stdout ?? '').slice(-8000),
+        stderrTail: (build.stderr ?? '').slice(-8000),
+      };
+      writeFileSync(join(dir, 'build.log'), JSON.stringify(buildEvidence, null, 2));
+      expect(build.status, 'Private bundle failed; evidence: ' + dir + '\n' + JSON.stringify(buildEvidence, null, 2)).toBe(0);
       expect(hash(join(root, claimSource)), 'Claim source changed during bundle build').toBe(before);
       const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime=operator-api', '--', process.execPath, '--input-type=module', '-e', journey], {

@@ -48,6 +48,7 @@ import { mockResolvedTyped } from './testing/typed-mock';
 import { catalogEntry, buildKey, keyMatchesCatalog } from './events/await/catalog';
 import { getSystemActionEntry } from './harness/routines/system-actions';
 import { planScheduleRoutineName } from './harness/routines/materialize-plan-schedule';
+import { checkPlanStartable } from './agent-tools/plans/plan-start-gate';
 import { probeCheckId } from './check-results-ledger';
 import type { CheckedCriterion } from './rubrics-criterion-checks';
 import type { LatestRubricCheckResult, RubricCheckResult } from './check-results-ledger';
@@ -202,6 +203,22 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  it('one unjudgeable probe criterion does not drop the others; it keeps its prior rows', async () => {
+    const { deps, record } = depsFor([probeCriterion('slow'), probeCriterion('steady')], [], []);
+    const evaluateProbes = vi.fn(async (input: { criteria: ReadonlyArray<{ key: string }> }) => {
+      const key = input.criteria[0]!.key;
+      if (key === 'slow') return { ok: false, error: 'probe_run_failed', criterionKey: key, detail: 'call_timeout after 30000ms' };
+      return { ok: true, checkRuns: { [key]: { kind: 'probe', verdict: 'pass', observed: 3, measuredAt: '2026-10-13T00:00:00.000Z' } } };
+    });
+    deps.evaluateProbes = evaluateProbes as never;
+    const out = await rescoreRubric({ rubricRef: RUBRIC, workspaceId: 'ws-test', harnessSlug: 'papercusp' }, deps);
+    // One evaluation per criterion, so the timeout is isolated to its own criterion.
+    expect(evaluateProbes.mock.calls.map(([input]) => input.criteria.map((c) => c.key))).toEqual([['slow'], ['steady']]);
+    const recorded = (record.mock.calls[0] as unknown as [RubricCheckResult[]])[0];
+    expect(recorded.map((r) => [r.check.criterionKey, r.verdict])).toEqual([['steady', 'pass']]);
+    expect(out.probeError).toBe('1 of 2 probe criteria unjudged; slow: probe_run_failed: call_timeout after 30000ms');
+  });
+
   it('the routine handler refuses a payload with no rubricRef', async () => {
     await expect(
       runRubricRescoreAction({ workspaceId: 'ws-test', installSlug: 'papercusp', payloadTemplate: { input: {} } } as never),
@@ -290,5 +307,53 @@ describe('rubric re-score: driven by an armed plan schedule (R-8 falsifier 3)', 
     expect(routine.triggerConfig.action).toBeUndefined();
     expect(routine.triggerConfig.rrule).toBe('FREQ=DAILY');
     expect(routine.nextFireAt).toBeInstanceOf(Date);
+  });
+
+  // The start gate would refuse this template: it carries only a cadence and an action, so it has
+  // no acceptance BAR contract. An action-backed fire never starts or clones the plan, so arming
+  // must not consult the gate (found live 2026-10-13: arm refused acceptance_bar_contract_not_ready).
+  const gateRefusal = (slug: string) =>
+    ({
+      ok: false,
+      kind: 'inputs',
+      refusal: { slug, error: 'plan_inputs_not_ready', code: 'acceptance_bar_contract_not_ready' },
+    }) as never;
+
+  it('plans:arm-schedule does not consult the plan-start gate for an action-backed schedule', async () => {
+    const slug = 'rubric-rescore-papercusp-app-performance-2026-10-13';
+    vi.mocked(checkPlanStartable).mockClear().mockResolvedValueOnce(gateRefusal(slug));
+    const fields: Pick<PlanRow, 'workspaceId' | 'harnessSlug' | 'planSlug' | 'schedule' | 'scheduledAt' | 'content'> = {
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      planSlug: slug,
+      schedule: { kind: 'rrule', rrule: 'FREQ=DAILY', action },
+      scheduledAt: null,
+      content: '# Re-score\n',
+    };
+    mockResolvedTyped(vi.mocked(getPlanRow), fields as PlanRow);
+    const out = body((await armSchedTool.handler({ harness: 'papercusp', slug } as never, {} as never)) as Out);
+    expect(out.results[0]).toMatchObject({ ok: true, routineId: 'routine-1' });
+    expect(vi.mocked(checkPlanStartable)).not.toHaveBeenCalled();
+    expect(vi.mocked(upsertRoutine)).toHaveBeenCalledTimes(1);
+  });
+
+  it('plans:arm-schedule still applies the plan-start gate to an item-cloning schedule', async () => {
+    const slug = 'clone-template-2026-10-13';
+    vi.mocked(checkPlanStartable).mockClear().mockResolvedValueOnce(gateRefusal(slug));
+    const fields: Pick<PlanRow, 'workspaceId' | 'harnessSlug' | 'planSlug' | 'schedule' | 'scheduledAt' | 'items' | 'content'> = {
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      planSlug: slug,
+      schedule: { kind: 'rrule', rrule: 'FREQ=DAILY' },
+      scheduledAt: null,
+      items: [],
+      content: '# Clone\n\n## Phase 1\n\n- **P-001** `todo` do the thing\n',
+    };
+    mockResolvedTyped(vi.mocked(getPlanRow), fields as PlanRow);
+    const out = body((await armSchedTool.handler({ harness: 'papercusp', slug } as never, {} as never)) as Out);
+    const actual = JSON.stringify(out.results[0]);
+    expect(vi.mocked(checkPlanStartable), actual).toHaveBeenCalledTimes(1);
+    expect(out.results[0], actual).toMatchObject({ ok: false, code: 'acceptance_bar_contract_not_ready' });
+    expect(vi.mocked(upsertRoutine)).not.toHaveBeenCalled();
   });
 });

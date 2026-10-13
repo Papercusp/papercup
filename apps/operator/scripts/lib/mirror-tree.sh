@@ -26,14 +26,15 @@
 # every install and build would also make the cheap path expensive.
 
 # Copy one generated runtime asset without writing through a destination that
-# another checkout may still hard-link. Stage beside the destination and rename
-# so an in-flight Vite build sees either the old complete asset or the new one,
-# never a missing or partially copied file. A same-directory rename is atomic on
-# both Linux and macOS.
+# another checkout may still hard-link. Stage at the caller's package root and
+# rename into public/ so a recursive Vite public-dir copy never sees the transient
+# staging file. The package root and public/ share a filesystem, so the rename is
+# atomic on both Linux and macOS: readers see the old complete asset or the new
+# complete asset, never a missing or partially copied file.
 mirror_copy_unlinked() {
   local source="$1" destination="$2"
   local staged
-  staged="$(mktemp "${destination}.tmp.XXXXXX")"
+  staged="$(mktemp "${PWD}/.mirror-tree.tmp.XXXXXX")"
   if ! cp -p "$source" "$staged" || ! touch "$staged" || ! mv -f "$staged" "$destination"; then
     rm -f "$staged"
     return 1

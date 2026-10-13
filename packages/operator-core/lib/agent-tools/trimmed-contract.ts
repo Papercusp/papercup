@@ -718,6 +718,24 @@ export const SHAPER_CONTRACT_EXEMPT: Readonly<Record<string, ShaperExemption>> =
       'one level below the row where a `fields` pin cannot reach. Covered by the same ' +
       'calibrated probe.',
   },
+  // AUDITED 2026-10-13 (oversized-tool-results-reduction-2026-10-12 P-002, WI-6554700010009725):
+  // both shapers were added as write receipts on 2026-10-12 and were never classified here.
+  'improvements:capture': {
+    case: 'reasoned',
+    reason:
+      'Same family as `work_items:complete`: `shapeCaptureWriteEcho` (improvements/capture.ts) ' +
+      'SPREADS the envelope and only replaces `issue` with `compactWorkItemRef` from ' +
+      'write-echo-shape.ts — the 6-key literal rebuild one level below the row, where a ' +
+      '`fields` pin cannot reach. The full row stays behind payloadTier:"full" / work_items:get.',
+  },
+  'scheduler:get_next': {
+    case: 'reasoned',
+    reason:
+      '`shapeGetNextResult` (scheduler/get-next-shape.ts) SPREADS the envelope. It drops only ' +
+      'payload bookkeeping keys inside `workItem.payload` (named in-band), zero counters, and ' +
+      'repeated `excluded` maps (replaced by an in-band SAME_AS_POPULATION marker). Every ' +
+      'reduction is nested below the envelope and marked, so a row `fields` pin would be vacuous.',
+  },
   'work_items:list': {
     case: 'reasoned',
     reason:

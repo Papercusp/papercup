@@ -710,6 +710,53 @@ describe('canonical plan-item sibling claim guard (EI-21151083448505391)', () =>
     expect((await wi.claimNextIssueWorkItem({ harness: H, assignee: 'drain-member' }, WS))?.id).toBe('WI-SIBLING-HELD');
   });
 
+  // WI-6554700010009927 (perf audit P-012): the sibling EXISTS used to run once per candidate
+  // and detoast every live taken sibling's payload (37 ms x 179 candidates on the live box).
+  // The hashed held-lane prefilter must let ONLY candidates whose lane is held reach it,
+  // while keeping the exact admission result.
+  it('reaches the per-row sibling EXISTS only for candidates whose lane is actually held', async () => {
+    await seedPlan('held-lane-load', 'ready');
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, origin,
+         created_ts, updated_ts, taken_by, payload)
+      VALUES (${WS}, ${H}, 'WI-HELD-OWNER', 'task', 'open', 'held lane owner', 'local', 0, 0,
+              'plan-owner', ${db.sql.json({ plan_item: { plan_slug: 'held-lane-load', item_id: 'P-HELD' } })})
+    `;
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, title, origin,
+         created_ts, updated_ts, payload)
+      SELECT ${WS}, ${H}, 'WI-' || (700000 + n), 'task', 'open', 'unheld lane candidate', 'local',
+             0, 0, jsonb_build_object('plan_item',
+               jsonb_build_object('plan_slug', 'held-lane-load', 'item_id', 'P-FREE-' || n))
+        FROM generate_series(1, 1500) n
+      UNION ALL
+      SELECT ${WS}, ${H}, 'WI-HELD-DUP', 'task', 'open', 'duplicate of the held lane', 'local', 0, 0,
+             jsonb_build_object('plan_item', jsonb_build_object('plan_slug', 'held-lane-load', 'item_id', 'P-HELD'))
+    `;
+    const ids = [...Array.from({ length: 1500 }, (_, n) => `WI-${700001 + n}`), 'WI-HELD-DUP'];
+    const floor = wi.reservedPlanLaneExclusionSql(db.sql, 'generic-drainer', 'wi.payload');
+
+    const rows = await db.sql<{ feature_id: string }[]>`SELECT wi.feature_id FROM harness_shared.work_items wi
+      WHERE wi.workspace_id = ${WS} AND wi.feature_id = ANY(${ids}::text[]) AND ${floor}`;
+    const admitted = new Set(rows.map(r => r.feature_id));
+    expect(admitted.has('WI-HELD-DUP')).toBe(false);
+    expect(admitted.size).toBe(1500);
+
+    const plans = await db.sql`EXPLAIN (ANALYZE, FORMAT JSON)
+      SELECT wi.feature_id FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${WS} AND wi.feature_id = ANY(${ids}::text[]) AND ${floor}`;
+    type PlanNode = { Alias?: string; 'Actual Loops': number; Plans?: PlanNode[] };
+    const nodes: PlanNode[] = [];
+    const visit = (node: PlanNode) => { nodes.push(node); node.Plans?.forEach(visit); };
+    visit(plans[0]['QUERY PLAN'][0].Plan);
+    const siblingScans = nodes.filter(node => node.Alias === 'sibling');
+    expect(siblingScans.length).toBeGreaterThan(0);
+    // Only WI-HELD-DUP's lane is held; without the prefilter this is 1,501.
+    expect(siblingScans.reduce((sum, node) => sum + node['Actual Loops'], 0)).toBeLessThanOrEqual(1);
+  });
+
   it('permits exactly one concurrent winner across bounded feature and issue claim transactions', async () => {
     const gn = await import('./get-next');
     const payload = { plan_item: { plan_slug: 'cross-family-race', item_id: 'P-RACE', harness_slug: H } };

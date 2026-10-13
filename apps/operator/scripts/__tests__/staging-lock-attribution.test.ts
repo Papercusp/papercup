@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const REPO_ROOT = resolve(__dirname, "../../../..");
@@ -71,6 +71,21 @@ function mockSystemctl(binDir: string, properties: string): void {
   );
 }
 
+// npm-install-safe.mjs is COPIED into a fixture (its direct-entry guard compares argv[1] with
+// import.meta.url), so every relative module it imports must also exist beside the copy. Derive
+// that set from the CLI's own source instead of hand-listing it: a hand list went stale each time
+// the CLI gained an import (check-partial-install.mjs, dependency-lock-tree-audit.mjs;
+// WI-6554700010009809). Symlinks resolve to their real path, so transitive imports need nothing.
+function linkRelativeImports(sourceFile: string, copyFile: string): void {
+  const source = readFileSync(sourceFile, "utf8");
+  for (const match of source.matchAll(/\bfrom\s+["'](\.{1,2}\/[^"']+)["']/g)) {
+    const target = resolve(dirname(copyFile), match[1]);
+    if (existsSync(target)) continue;
+    mkdirSync(dirname(target), { recursive: true });
+    symlinkSync(resolve(dirname(sourceFile), match[1]), target);
+  }
+}
+
 function completeGenerationFixture(dir: string) {
   const sha = "a".repeat(40);
   const generation = join(dir, "papercusp-staging.generations/.candidate-test");
@@ -122,7 +137,7 @@ describe("staging lock attribution", () => {
       // Copy its entry file, as a real generation does, and link library imports.
       writeFileSync(join(fixture.repo, "scripts/npm-install-safe.mjs"), readFileSync(join(REPO_ROOT, "scripts/npm-install-safe.mjs")));
       symlinkSync(join(REPO_ROOT, "scripts/lib"), join(fixture.repo, "scripts/lib"), "dir");
-      symlinkSync(join(REPO_ROOT, "scripts/check-declared-deps-extracted.mjs"), join(fixture.repo, "scripts/check-declared-deps-extracted.mjs"));
+      linkRelativeImports(join(REPO_ROOT, "scripts/npm-install-safe.mjs"), join(fixture.repo, "scripts/npm-install-safe.mjs"));
       symlinkSync(join(REPO_ROOT, "apps/operator/bin/bundle-host-freshness.mjs"), join(fixture.operator, "bin/bundle-host-freshness.mjs"));
       writeFileSync(join(fixture.repo, ".gitignore"), "apps/operator/dist-host/\n");
       // These commits belong only to the temporary fixture, as in the existing

@@ -36,7 +36,7 @@ const BELOW_GATE_TOKENS = 60_000;
 const M = vi.hoisted(() => ({
   readPriorRespawnOutcome: vi.fn(async () => ({ outcome: "none" }) as unknown),
   getPresence: vi.fn(async () => null as unknown),
-  selfCompactionAvailability: vi.fn(() => ({ available: false })),
+  selfCompactionAvailability: vi.fn((_ownerId?: string) => ({ available: false })),
   readFleetWindDownLoopEndAuthorization: vi.fn(async () => null as boolean | null),
 }));
 

@@ -35,7 +35,7 @@ import {
   type ContinuityProbeSource,
 } from './continuity-probes';
 import { renderCarryNote } from './carry-note';
-import { LIMITS } from './agent-tools/limits';
+import { LIMITS, RUBRIC_PROBE_MAX_PER_EMIT } from './agent-tools/limits';
 import { CRITERION_PROBE_TIMEOUT_MS, evaluateCriterionProbeChecks, normalizeCriterionProbeChecks, validateCriterionCheckPaths } from './rubrics-criterion-checks';
 import { rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 
@@ -98,10 +98,15 @@ describe('criterion ALL probes', () => {
   });
 
   it('rejects the shared batch cap across criteria at write time and before execution', async () => {
-    const criteria = [{ key: 'a', check: check(Array(5).fill(readProbe())) }, { key: 'b', check: check(Array(4).fill(readProbe())) }];
+    // Each group stays within its own 8-child limit; together they exceed the per-emit cap, which
+    // is derived here so the case keeps exceeding it when the cap moves.
+    const groups = Math.floor(RUBRIC_PROBE_MAX_PER_EMIT / 8) + 1;
+    const criteria = Array.from({ length: groups }, (_, i) => ({ key: `g${i}`, check: check(Array(8).fill(readProbe())) }));
+    expect(groups * 8).toBeGreaterThan(RUBRIC_PROBE_MAX_PER_EMIT);
     expect(validateCriterionCheckPaths(criteria).ok).toBe(false);
     const dispatch = vi.fn(async () => ({ state: 'green' }));
-    expect(await evaluateCriterionProbeChecks({ criteria, ratings: { a: { rating: 'pass' }, b: { rating: 'pass' } }, dispatchTool: dispatch })).toMatchObject({ ok: false, error: 'probe_invalid' });
+    const ratings = Object.fromEntries(criteria.map((c) => [c.key, { rating: 'pass' }]));
+    expect(await evaluateCriterionProbeChecks({ criteria, ratings, dispatchTool: dispatch })).toMatchObject({ ok: false, error: 'probe_invalid' });
     expect(dispatch).not.toHaveBeenCalled();
   });
 
@@ -317,6 +322,8 @@ describe('continuity probe wake replay', () => {
     const probes = ['fresh', 'stale', 'error'].map((id, i) => source(readProbe({ args: { id } }), i));
     const batch = await runContinuityProbeBatch(probes, { dispatchTool });
     expect(batch.results.map((result) => result.status)).toEqual(['fresh', 'stale', 'error']);
+    // The tool's own error text rides on the diagnostic, so an unjudgeable probe says why.
+    expect(batch.results[2]?.diagnostic).toMatchObject({ code: 'tool_error', message: expect.stringMatching(/returned an error: failed$/) });
     expect(batch.results.map((result) => result.source)).toEqual(probes.map((row) => row.source));
     expect(batch.executed).toBe(3);
   });
