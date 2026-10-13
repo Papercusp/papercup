@@ -699,6 +699,23 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'polling scorecards:get for gradingAudit.state',
   },
   {
+    family: 'rubric-criterion-regressed',
+    keyTemplate: 'rubric:criterion-regressed:<rubricRef>',
+    params: [
+      {
+        name: 'rubricRef',
+        required: true,
+        describe: 'the rubric whose executable criteria a plan-scheduled system:rubric-rescore re-runs',
+      },
+    ],
+    describe:
+      "A scheduled re-score found a criterion that MET its bar on its previous ledger result and now FAILS it (pass → fail). Moves into `error` (nothing measured) or out of `unknown` never fire. Payload carries `criterionKey`, `before`, `after` and the deciding `testRunId`. The standing alert is `watch:create { pattern: 'rubric:criterion-regressed:<rubricRef>', targetKind: 'event', wake: false }`.",
+    emitter:
+      'rubric-rescore action (packages/operator-core/lib/harness/routines/rubric-rescore-action.ts) — system:rubric-rescore, fired by a plans:set-schedule { action } routine; one event per crossing',
+    exists: true,
+    replacesPoll: 'polling scorecards or test_runs for a criterion that fell below its bar',
+  },
+  {
     family: 'plan-acceptance-changed',
     keyTemplate: 'plan:acceptance:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the subject plan slug' }],
