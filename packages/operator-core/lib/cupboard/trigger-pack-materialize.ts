@@ -50,10 +50,29 @@ import {
 } from '../external-triggers/binding-engine';
 import { ensureFlagshipPlan } from '../external-triggers/flagship-plan';
 import { readyProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
+import type { AgenticPlanExecutionTarget } from '../agentic-plan-execution-target';
 import { reconcileTriggerPackReview, sha256 } from './trigger-pack-lifecycle';
 
 /** The edge event key every edge binding listens on. */
 export const TRIGGER_PACK_EDGE_EVENT_KEY = `ext:${TRIGGER_PACK_EDGE_SOURCE_KIND}:${TRIGGER_PACK_EDGE_EVENT}`;
+
+/**
+ * The stable agent name that executes a trigger pack's plan runs: the package
+ * name without its scope (`@papercupai/bug-triage` -> `bug-triage`).
+ *
+ * WI-6554700010008920: a pack binding with no execution target only MINTS its
+ * run's work-item. Nothing consumes an unassigned plan-run work-item, so the
+ * orphan sweep failed every run that no agent happened to claim by hand. Naming
+ * an executor makes the run dispatch (assign + wake) to whichever session has
+ * adopted this name, and a dead executor becomes a retried, escalated dispatch
+ * failure instead of a silent orphan.
+ */
+export function triggerPackExecutionAgentName(pluginName: string): string {
+  const short = pluginName.trim().replace(/^@[^/]+\//, '');
+  const normalized = short.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!normalized) throw new Error(`trigger_pack_execution_agent_name_invalid:${pluginName}`);
+  return normalized;
+}
 
 const FILTER_COMBINATOR_KEYS = new Set(['all', 'any', 'not', 'some']);
 
@@ -529,6 +548,8 @@ interface BindingShape {
   eventFilter: Record<string, unknown>;
   datatypeId: string | null;
   planInput: Record<string, unknown>;
+  /** Who executes the plan run this binding launches (see triggerPackExecutionAgentName). */
+  execution: AgenticPlanExecutionTarget;
 }
 
 /** Reuse the recorded binding when its shape is unchanged; otherwise replace it disarmed. */
@@ -568,7 +589,8 @@ async function reuseOrCreateBinding(
       row.eventPattern === shape.eventPattern &&
       isDeepStrictEqual(asRecord(row.eventFilter), shape.eventFilter) &&
       row.datatypeId === shape.datatypeId &&
-      isDeepStrictEqual(asRecord(asRecord(row.action).input), shape.planInput)
+      isDeepStrictEqual(asRecord(asRecord(row.action).input), shape.planInput) &&
+      isDeepStrictEqual(asRecord(row.action).execution ?? null, shape.execution)
     ) {
       return recordedId;
     }
@@ -582,6 +604,7 @@ async function reuseOrCreateBinding(
     eventFilter: shape.eventFilter,
     datatypeId: shape.datatypeId,
     ...(Object.keys(shape.planInput).length > 0 ? { planInput: shape.planInput } : {}),
+    execution: shape.execution,
     ...(stormPolicy ? { stormPolicy } : {}),
     packInstallationId: installationId,
     createdBy,
@@ -662,6 +685,10 @@ export async function materializeTriggerPack(
   const bound = new Map<string, string>();
   const nextBindings: TriggerPackResources['bindings'] = {};
   const defaultStorm = pack.defaultStormPolicy as Record<string, unknown> | undefined;
+  const execution: AgenticPlanExecutionTarget = {
+    appHarnessSlug: input.harnessSlug,
+    agentName: triggerPackExecutionAgentName(manifest.name),
+  };
   for (const binding of plan.ordered) {
     const planned = plan.plans.get(binding.target)!;
     if (binding.source.kind === 'manual') {
@@ -686,6 +713,7 @@ export async function materializeTriggerPack(
         eventFilter: resolveTriggerPackFilterInputs(binding.filter, plan.inputs).filter,
         datatypeId: binding.source.datatype ?? null,
         planInput: plan.inputs,
+        execution,
       };
       kind = 'external';
     } else {
@@ -708,6 +736,7 @@ export async function materializeTriggerPack(
         eventFilter: { ...resolveTriggerPackFilterInputs(binding.filter, plan.inputs).filter, upstreamBindingId },
         datatypeId: TRIGGER_RUN_COMPLETION_DATATYPE,
         planInput: plan.inputs,
+        execution,
       };
       kind = 'edge';
     }
