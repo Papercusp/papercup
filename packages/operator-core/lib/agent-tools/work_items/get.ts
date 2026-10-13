@@ -373,10 +373,10 @@ const workItemsGetArgRedirects: Record<string, string> = {
   ),
   includeChecks:
     'checksOnly — set it to true for a narrow checkpoint-ledger read that returns stored check-row ids and claims without the full checkpoint body or work-item payload.',
-  offset:
-    'checkpointOnly — set it to true for an exact checkpoint page; offset is a Unicode-code-point start position and the next page starts at checkpointPage.nextOffset.',
-  limit:
-    `checkpointOnly — set it to true for an exact checkpoint page; limit is capped at ${CHECKPOINT_PAGE_MAX_CHARS} Unicode code points. It is not a count of work-items or comment posts (use ids or threadLimit for those).`,
+  // `offset` / `limit` are DECLARED keys (the checkpointOnly page read), so an
+  // argRedirect for them could never render (unknownArgHint fires only for
+  // REJECTED keys). Their refusal without checkpointOnly lives in the schema
+  // refine below, whose message names the other destinations (ids, threadLimit).
   // Correct-as-designed: there is no terminal filter to enable. Say that
   // outright, so the caller stops hunting for the switch.
   include_terminal: TERMINAL_FILTER_REDIRECT,
@@ -906,7 +906,7 @@ export default defineTool({
       message: 'pass `id` (one) or `ids` (many)',
     })
     .refine((a) => a.checkpointOnly === true || (a.offset === undefined && a.limit === undefined), {
-      message: 'offset and limit are only valid with checkpointOnly:true; use ids or threadLimit for other windows',
+      message: `offset and limit are only valid with checkpointOnly:true (an exact checkpoint text page; limit is capped at ${CHECKPOINT_PAGE_MAX_CHARS} Unicode code points). limit is not a count of work-items or comment posts: use ids or threadLimit for those windows`,
     })
     .refine((a) => !a.checkpointOnly || (
       mergeIds(a.id, a.ids).length === 1 && !a.attachments && !a.resume && !a.checksOnly &&
