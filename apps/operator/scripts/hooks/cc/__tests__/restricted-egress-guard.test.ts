@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   RESTRICTED_EGRESS_MATCHER,
   RTK_BIN_ENV,
+  RTK_EARLY_EXIT_PIPE,
   decideEgress,
   egressTexts,
   prefilterHits,
@@ -24,6 +25,7 @@ import {
   rtkRewriteSync,
   sandboxedBashCommand,
 } from '../pretooluse-restricted-egress-guard.mjs';
+import { RTK_EARLY_EXIT_PIPE as CAPABILITY_BASH_EARLY_EXIT_PIPE } from '../../../../../../packages/operator-core/lib/agent-tools/capability/rtk-rewrite';
 
 /** A stand-in for `rtk rewrite <cmd>` covering the exit codes rtk uses. */
 function fakeRtk() {
@@ -36,6 +38,7 @@ function fakeRtk() {
 case "$2" in
   "git status") echo "rtk git status"; exit 0 ;;
   "git log -n 3") echo "warn" >&2; echo "rtk git log -n 3"; exit 3 ;;
+  "rg -n x . | "*) echo "rtk $2"; exit 0 ;;
   deny*) exit 2 ;;
   *vitest*) echo "rtk vitest"; exit 0 ;;
   *) exit 1 ;;
@@ -365,6 +368,26 @@ describe('rtkRewriteSync', () => {
     } finally {
       fake.cleanup();
     }
+  });
+
+  it('never offers a pipe into an early-exit consumer, though rtk would rewrite it (WI-6554700010009543)', () => {
+    const fake = fakeRtk();
+    try {
+      const env = { [RTK_BIN_ENV]: fake.bin };
+      // control: the fake rewrites this pipe shape (tail reads everything, so RTK costs nothing extra)
+      expect(rtkRewriteSync('rg -n x . | tail -5', { env })).toBe('rtk rg -n x . | tail -5');
+      expect(rtkRewriteSync('rg -n x . | head -5', { env })).toBeNull();
+      expect(rtkRewriteSync('rg -n x . |& head -5', { env })).toBeNull();
+      expect(rtkRewriteSync('rg -n x . | grep -m 3 y', { env })).toBeNull();
+      expect(rtkRewriteSync('rg -n x . | sed 20q', { env })).toBeNull();
+    } finally {
+      fake.cleanup();
+    }
+  });
+
+  it('keeps its early-exit rule identical to capability:bash (rtk-rewrite.ts)', () => {
+    expect(RTK_EARLY_EXIT_PIPE.source).toBe(CAPABILITY_BASH_EARLY_EXIT_PIPE.source);
+    expect(RTK_EARLY_EXIT_PIPE.flags).toBe(CAPABILITY_BASH_EARLY_EXIT_PIPE.flags);
   });
 
   it('never picks up the host binary implicitly under vitest', () => {
