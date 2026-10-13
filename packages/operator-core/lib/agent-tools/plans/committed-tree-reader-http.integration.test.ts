@@ -86,8 +86,7 @@ export async function measureCommittedReaderHttp(contract?: CommittedReaderCalle
   });
 }
 
-it('measures cold committed blobs through HTTP and preserves a real sidecar timeout while health advances', async context => {
-  const runId = await measureCommittedReaderHttp();
-  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
-  console.info('COMMITTED_READER_HTTP_PROOF_RUN ' + runId);
-}, options.testTimeoutMs);
+it('refuses the HTTP test before allocation when no original caller contract is provided', async () => {
+  await expect(measureCommittedReaderHttp()).rejects.toThrow(
+    'Explicit committed reader caller contract is required before allocations');
+});

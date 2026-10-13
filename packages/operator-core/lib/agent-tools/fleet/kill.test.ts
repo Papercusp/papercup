@@ -163,6 +163,33 @@ describe('findTabShellPid', () => {
 });
 
 describe('killOne', () => {
+  it.each(['desktop', 'headless', 'unmanaged', 'already-dead'] as const)(
+    'persists retirement before the %s leg can race a wake', async (leg) => {
+      const order: string[] = [];
+      const t = makeProcTree({ 300: { ppid: 1, cmdline: 'psu-host' } });
+      const retireOwner = vi.fn(async () => { order.push('retired'); });
+      await killOne({ actor: 'su-me', target: 'su-target', closeTerminal: false, reason: 'replace member' }, {
+        retireOwner,
+        findHost: () => { order.push('host-lookup'); return leg === 'desktop' || leg === 'headless'
+          ? { ...host(300), bridgeTty: leg === 'desktop' } : null; },
+        findLiveUnmanaged: () => leg === 'unmanaged' ? { source: 'omp-hook-session', heartbeatAt: null } : null,
+        kill: (pid, signal) => { order.push('signal'); return t.kill(pid, signal); },
+        alive: t.alive, sleep: noSleep,
+      });
+      expect(retireOwner).toHaveBeenCalledWith('su-target', 'su-me', 'replace member');
+      expect(order[0]).toBe('retired');
+    },
+  );
+
+  it('sends no signal when durable retirement cannot be recorded', async () => {
+    const kill = vi.fn();
+    const out = await killOne({ actor: 'su-me', target: 'su-target', closeTerminal: false, reason: 'x' }, {
+      retireOwner: async () => { throw new Error('database unavailable'); }, kill,
+    });
+    expect(out).toMatchObject({ ok: false, code: 'cleanup_failed' });
+    expect(kill).not.toHaveBeenCalled();
+  });
+
   it('refuses self-kill', async () => {
     const r = await killOne({ actor: 'su-me', target: 'su-me', closeTerminal: true, reason: 'x' }, {});
     expect(r.ok).toBe(false);

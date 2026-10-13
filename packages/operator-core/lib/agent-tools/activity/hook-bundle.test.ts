@@ -3,6 +3,7 @@ import {
   ACTIVITY_HOOK_BUNDLE_SCHEMA,
   buildActivityHookBundle,
   hasOwnerRelevantCoordDelta,
+  hookInboxSurface,
   INBOX_CURSOR_SURFACE,
   guardedLegacyInboxFloor,
   sameHostCoordGenerationDelta,
@@ -606,5 +607,58 @@ describe('activity hook bundle — glance/inbox leg split', () => {
     expect(result.surfaces).toBeUndefined();
     expect(d.glance).not.toHaveBeenCalled();
     expect(d.inbox).not.toHaveBeenCalled();
+  });
+});
+
+// WI-6554700010010423: the native hooks echo `injection` and read `entries` only as
+// an emptiness/length signal (+ `ts` as OMP's cursor fallback), so the bundle ships
+// one { msg_id, ts } stub per entry and no `recent` copy.
+describe('activity hook bundle — inbox surface is slimmed for the hook consumers', () => {
+  const fullEntry = {
+    msg_id: 'm-1',
+    ts: '2026-07-13T19:59:00.000Z',
+    from: 'su-peer',
+    kind: 'message',
+    body: [{ text: 'x'.repeat(2_000) }],
+    summary: 'a long peer message',
+    fieldProvenance: { body: 'authored' },
+  };
+
+  it('keeps injection, summary and the gauge but stubs entries and drops recent', async () => {
+    const d = deps('host-a:43');
+    d.inbox.mockResolvedValueOnce({
+      owner_id: 'su-abc',
+      entries: [fullEntry, { ...fullEntry, msg_id: 'm-2', ts: '2026-07-13T19:59:30.000Z' }],
+      recent: [fullEntry],
+      summary: { newest_ts: '2026-07-13T19:59:30.000Z', total: 2 },
+      injection: '[coord+2]\n- su-pe a long peer message',
+      context_gauge: '',
+    });
+    const result = await buildActivityHookBundle('su-abc', { generation: 'host-a:42' }, {} as never, d.value);
+
+    const inbox = result.surfaces?.inbox as Record<string, unknown>;
+    expect(inbox.entries).toEqual([
+      { msg_id: 'm-1', ts: '2026-07-13T19:59:00.000Z' },
+      { msg_id: 'm-2', ts: '2026-07-13T19:59:30.000Z' },
+    ]);
+    expect(inbox).not.toHaveProperty('recent');
+    expect(inbox).toMatchObject({
+      owner_id: 'su-abc',
+      summary: { newest_ts: '2026-07-13T19:59:30.000Z', total: 2 },
+      injection: '[coord+2]\n- su-pe a long peer message',
+      context_gauge: '',
+    });
+    // The cursor is staged from the FULL surface, before slimming.
+    expect(d.stageInboxCursor).toHaveBeenCalledWith('su-abc', { since_ts: '2026-07-13T19:59:30.000Z' });
+    expect(JSON.stringify(inbox).length).toBeLessThan(400);
+  });
+
+  it('preserves an empty entries list, which the Claude hook reads as "show the gauge"', () => {
+    expect(hookInboxSurface({ entries: [], context_gauge: 'ctx 85%' })).toEqual({ entries: [], context_gauge: 'ctx 85%' });
+  });
+
+  it('leaves a non-array entries value untouched and tolerates non-object entries', () => {
+    expect(hookInboxSurface({ entries: null })).toEqual({ entries: null });
+    expect(hookInboxSurface({ entries: [null, 'x', { ts: 't' }] })).toEqual({ entries: [{}, {}, { ts: 't' }] });
   });
 });

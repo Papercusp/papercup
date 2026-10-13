@@ -61,6 +61,7 @@ import {
   hasAdvSessionTerminalEvidence,
   latestAdvSessionByCoordOwner,
   markAdvSessionEnded,
+  retireAdvSessionsByOwner,
   repairStaleAdvSessionTerminalMarkers,
 } from '../../adv-sessions';
 import { deactivateLoop } from '../../harness/routines/loop';
@@ -100,6 +101,8 @@ export interface ProcInfo {
 }
 
 export interface KillDeps {
+  /** Persist deliberate retirement before any kill leg can race a wake. */
+  retireOwner?: (ownerId: string, actor: string, reason: string) => Promise<void>;
   /** Live psu-pty host for a coord ownerId (null = no live interactive session). */
   findHost?: (ownerId: string) => PsuPtyHost | null | Promise<PsuPtyHost | null>;
   /** Fresh presence for a session that is alive but has no operator-managed
@@ -346,6 +349,12 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   }
 
   // ── leg 1: nursery (headless) — the existing cancel machinery, reused ──
+  try {
+    await deps.retireOwner?.(input.target, input.actor, input.reason);
+  } catch (error) {
+    return { ok: false, target: input.target, code: 'cleanup_failed',
+      error: `could not persist deliberate retirement; no signal sent: ${String(error)}` };
+  }
   const nursery = await (deps.cancelNursery?.(input.target, input.reason).catch(() => null) ?? Promise.resolve(null));
   if (nursery) {
     await audit('fleet.kill_nursery', input.target, {
@@ -764,6 +773,7 @@ export default defineTool({
     const reason = clampText(args.reason, 4000) ?? 'fleet:kill';
     const closeTerminal = args.close_terminal !== false;
     const deps: KillDeps = {
+      retireOwner: retireAdvSessionsByOwner,
       findHost: (ownerId) => findLiveHostAsync(ownerId),
       findLiveUnmanaged: (ownerId) => findLiveUnmanagedSession(ownerId, workspaceId),
       cancelNursery: (target, why) => cancelNurseryTarget(target, why, workspaceId, actor),

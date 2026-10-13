@@ -97,6 +97,24 @@ beforeEach(() => {
 });
 
 describe('deliberate retirement resume fence (WI-6554700010010429)', () => {
+  it.each([['explicit relaunch', new Date(), true], ['crash recovery', null, false]] as const)(
+    'allows %s while leaving retirement intact during acquisition', async (_name, retiredAt, allowRetired) => {
+      const tx = vi.fn(async (strings: TemplateStringsArray) => {
+        if (strings.join(' ').includes('SELECT agent, ended_at')) return [{
+          agent: 'claude', ended_at: new Date(), ended_by: 'signal', retired_at: retiredAt,
+          started_at: new Date(), resume_claim_key: null, resume_claimed_at: null,
+        }];
+        return [{ lease_expires_at: new Date(Date.now() + 60_000) }];
+      });
+      advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
+      await expect(acquireAdvSessionResume(42, 'new-key', 60, 300, undefined, allowRetired))
+        .resolves.toMatchObject({ status: 'acquired', acquired: true });
+      const write = tx.mock.calls.map(([strings]) => strings.join(' ')).find(sql => sql.includes('UPDATE'));
+      expect(write).toBeDefined();
+      expect(write).not.toContain('retired_at =');
+    },
+  );
+
   it('refuses a retired row even for a replayed lease and positive absence witness', async () => {
     const tx = vi.fn(async (strings: TemplateStringsArray) => {
       if (strings.join(' ').includes('SELECT agent, ended_at')) return [{
@@ -110,7 +128,7 @@ describe('deliberate retirement resume fence (WI-6554700010010429)', () => {
     await expect(acquireAdvSessionResume(42, 'replay-key', 60, 300, {
       version: 1, kind: 'no-live-claude-process',
     })).resolves.toMatchObject({ status: 'retired', acquired: false });
-    expect(tx.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE'))).toBe(false);
+    expect(tx.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE harness_shared'))).toBe(false);
   });
 });
 

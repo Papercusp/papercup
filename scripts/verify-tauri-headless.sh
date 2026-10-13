@@ -994,6 +994,8 @@ trap 'handle_signal HUP' HUP
 # Retain the Cargo claim during preparation. The final chokepoint adopts this
 # receipt instead of reserving the same budget again after other builds enter.
 NATIVE_CARGO_DISK_RESERVATION_FILE=""
+NATIVE_CARGO_TARGET=""
+NATIVE_CARGO_NEED_GB=0
 preflight_native_cargo() {
   [ "$PREPARE_ONLY" != "1" ] || return 0
   PAPERCUSP_DESKTOP_TARGET_ROOT="$DESKTOP_DIR" . "$DESKTOP_DIR/bin/lib/claim-target-dir.sh" || return $?
@@ -1002,7 +1004,9 @@ preflight_native_cargo() {
   local target need
   target="$(papercusp_cargo_target_root "$DESKTOP_DIR/src-tauri")" || return $?
   need="$(papercusp_native_dev_cargo_need_gb "$target")" || return $?
-  papercusp_require_free_gb "$target" "$need" "native dev Cargo build" >&2 || return $?
+  papercusp_require_disk_reservation "$target" "$need" "native dev Cargo build" >&2 || return $?
+  NATIVE_CARGO_TARGET="$target"
+  NATIVE_CARGO_NEED_GB="$need"
   NATIVE_CARGO_DISK_RESERVATION_FILE="${PAPERCUSP_DISK_RESERVATION_FILE:-}"
 }
 vh_run_step native-cargo-capacity preflight_native_cargo || exit $?
@@ -1274,6 +1278,7 @@ vh_run_step write-run-marker write_run_marker "$$" || {
 # the reusable pinned-deps hardlink snapshot under the donor install mutex.
 reserve_verifier_disk() {
   local source_bytes="$1" spa_kib=0 source_gb bulk_gb source_key bulk_key status
+  local cargo_key="" cargo_extra_gb=0
   local dependency_bytes=0 trees rel size
   local disk_helper="$DESKTOP_DIR/bin/lib/disk-preflight.sh"
   [ -f "$disk_helper" ] || { echo "FATAL: missing shared disk preflight: $disk_helper" >&2; return 1; }
@@ -1311,18 +1316,49 @@ reserve_verifier_disk() {
   [ "${VERIFY_TAURI_ISOLATED_DB:-0}" != "1" ] || bulk_gb=$((bulk_gb + 8))
   source_key="$(papercusp_mount_key "$OPERATOR_SNAPSHOT_PARENT")"
   bulk_key="$(papercusp_mount_key "$WORK")"
+  if [ -n "${NATIVE_CARGO_TARGET:-}" ]; then
+    cargo_key="$(papercusp_mount_key "$NATIVE_CARGO_TARGET")"
+  fi
+  # Admit the entire same-device footprint before exporting/copying source.
+  # Grow our existing Cargo receipt atomically, rather than reserving its bytes
+  # a second time or leaving preparation demand invisible to other builders.
+  # The native chokepoint later adopts this same receipt and still checks
+  # physical Cargo headroom after preparation has actually consumed space.
+  if [ -n "$cargo_key" ]; then
+    if [ "$source_key" = "$cargo_key" ]; then
+      cargo_extra_gb=$((cargo_extra_gb + source_gb)); source_gb=0
+    fi
+    if [ "$bulk_key" = "$cargo_key" ]; then
+      cargo_extra_gb=$((cargo_extra_gb + bulk_gb)); bulk_gb=0
+    fi
+    if [ "$cargo_extra_gb" -gt 0 ]; then
+      papercusp_require_disk_reservation "$NATIVE_CARGO_TARGET" \
+        "$((NATIVE_CARGO_NEED_GB + cargo_extra_gb))" "native dev Cargo build" \
+        "$NATIVE_CARGO_DISK_RESERVATION_FILE" >&2 || {
+          status=$?; release_verifier_disk_reservations; return "$status"
+        }
+      NATIVE_CARGO_DISK_RESERVATION_FILE="$PAPERCUSP_DISK_RESERVATION_FILE"
+    fi
+  fi
   if [ -n "$source_key" ] && [ "$source_key" = "$bulk_key" ]; then
-    papercusp_require_free_gb "$WORK" "$((source_gb + bulk_gb))" "verifier source + SPA + profile + database" >&2 || return $?
-    VERIFIER_DISK_RESERVATIONS+=("${PAPERCUSP_DISK_RESERVATION_FILE:-}")
-  else
-    papercusp_require_free_gb "$OPERATOR_SNAPSHOT_PARENT" "$source_gb" "verifier source + dependency snapshot" >&2 || return $?
-    VERIFIER_DISK_RESERVATIONS+=("${PAPERCUSP_DISK_RESERVATION_FILE:-}")
-    papercusp_require_free_gb "$WORK" "$bulk_gb" "verifier SPA + profile + database" >&2 || {
-      status=$?
-      release_verifier_disk_reservations
-      return "$status"
+    [ "$((source_gb + bulk_gb))" -gt 0 ] || return 0
+    papercusp_require_disk_reservation "$WORK" "$((source_gb + bulk_gb))" "verifier source + SPA + profile + database" >&2 || {
+      status=$?; release_verifier_disk_reservations; return "$status"
     }
     VERIFIER_DISK_RESERVATIONS+=("${PAPERCUSP_DISK_RESERVATION_FILE:-}")
+  else
+    if [ "$source_gb" -gt 0 ]; then
+      papercusp_require_disk_reservation "$OPERATOR_SNAPSHOT_PARENT" "$source_gb" "verifier source + dependency snapshot" >&2 || {
+        status=$?; release_verifier_disk_reservations; return "$status"
+      }
+      VERIFIER_DISK_RESERVATIONS+=("${PAPERCUSP_DISK_RESERVATION_FILE:-}")
+    fi
+    if [ "$bulk_gb" -gt 0 ]; then
+      papercusp_require_disk_reservation "$WORK" "$bulk_gb" "verifier SPA + profile + database" >&2 || {
+        status=$?; release_verifier_disk_reservations; return "$status"
+      }
+      VERIFIER_DISK_RESERVATIONS+=("${PAPERCUSP_DISK_RESERVATION_FILE:-}")
+    fi
   fi
 }
 

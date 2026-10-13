@@ -338,6 +338,38 @@ function inboxDidAdvance(inbox: Record<string, unknown> | null, sinceTs: string 
 }
 
 /**
+ * The inbox surface as the native hooks consume it (WI-6554700010010423).
+ *
+ * Both consumers echo the server-rendered `injection` verbatim and read `entries`
+ * only as a signal: the Claude hook (posttooluse-activity-report.sh) checks whether
+ * the list is empty to decide whether to show the context gauge, and OMP's
+ * `consumeInboxDelta` (coord-hook.ts) checks its length and falls back to each
+ * entry's `ts` when `summary.newest_ts` is absent. Neither reads `recent`.
+ *
+ * Shipping full entry bodies made `entries` ~83% of a fold (15.5KB of 18.7KB,
+ * measured 2026-10-13) on the hottest tool on the box (~7.4k calls/h), so the
+ * bundle carries one `{ msg_id, ts }` stub per entry and drops `recent`. Call this
+ * only AFTER the cursor/census reads above, which use the full surface. Full
+ * bodies stay one `coord:inbox` read away.
+ */
+export function hookInboxSurface(inbox: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(inbox)) {
+    if (key === 'recent') continue;
+    out[key] = key === 'entries' && Array.isArray(value) ? value.map(hookInboxEntryStub) : value;
+  }
+  return out;
+}
+
+function hookInboxEntryStub(entry: unknown): Record<string, unknown> {
+  const e = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
+  return {
+    ...(e.msg_id !== undefined ? { msg_id: e.msg_id } : {}),
+    ...(e.ts !== undefined ? { ts: e.ts } : {}),
+  };
+}
+
+/**
  * Return a stamped bundle.  Matching generations intentionally return no
  * surfaces: the client keeps its last full snapshot.  On mismatch both
  * surfaces are replaced together.  A partial hydrate is marked incomplete and
@@ -526,7 +558,7 @@ export async function buildActivityHookBundle(
     ...base,
     complete,
     surfaces: {
-      ...(inbox ? { inbox } : {}),
+      ...(inbox ? { inbox: hookInboxSurface(inbox) } : {}),
       ...(glance ? { glance } : {}),
     },
   };
