@@ -46,7 +46,8 @@ describe('native P024 current existing-integration source priors beyond the cata
 
   it('supplies the existing integration and its renamed helper with exact source versions to independent review', async () => {
     const f = await fixture(), adapter = f.sources(), result = await adapter.search(f.request);
-    expect(result.status).toBe('current'); expect(result.matches.map(row => row.ref).sort()).toEqual(['code-source:existing.ts', 'code-source:helper.ts']);
+    expect(result.status).toBe('current');
+    expect(result.matches.map(row => row.ref).sort(), result.note).toEqual(['code-source:existing.ts', 'code-source:helper.ts']);
     expect(result.matches.find(row => row.ref === 'code-source:existing.ts')).toMatchObject({ sourceHash: capabilityHash(f.source),
       candidateHash: null, evidenceHash: null, locator: { kind: 'code', id: 'source:existing.ts', path: 'existing.ts' } });
     expect(result.note).toContain('not proof of absence');
