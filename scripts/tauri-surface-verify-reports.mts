@@ -18,6 +18,19 @@ export interface NativeLiveProfile {
   nativeChildren?: { script: string; bundle: string; sha256: string }[];
 }
 
+
+/** Keep the native history/filter witness testable against the real Reports DOM. */
+export function reportsHistoryFilterExpression(expected: {
+  originalTitle: string; correctedTitle: string; subjectValue: string; subjectLabel: string;
+}): string {
+  return `document.querySelectorAll('.reports-list-item').length === 1
+    && document.querySelector('.reports-list-item')?.textContent.includes(${JSON.stringify(expected.correctedTitle)})
+    && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(expected.originalTitle)}
+    && document.querySelector('[aria-label="Search reports"]')?.value === ${JSON.stringify(expected.originalTitle)}
+    && document.querySelector('[aria-label="Report subject"]')?.value === ${JSON.stringify(expected.subjectValue)}
+    && document.querySelectorAll('.reports-history-item').length === 2`;
+}
+
 /** Restore only the owned private context after the worker's hermetic scrub. */
 export function nativeChildEnvironment(profile: NativeLiveProfile, env = process.env): NodeJS.ProcessEnv {
   assert.equal(env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Use the isolated native verifier');
@@ -293,12 +306,8 @@ async function verifyReports(evidenceDir: string) {
     const filters = new URLSearchParams({ ws: workspace, kind: 'audit', subject: `${subject.kind}:${subject.ref}`,
       vis: 'owner', q: title, tag: 'native-fixture', since: '2000-01-01', sel: original.report_id, hist: 'true' });
     native('navigate', `/reports?${filters}`, '--json');
-    poll(`document.querySelectorAll('.reports-list-item').length === 1
-      && document.querySelector('.reports-list-item')?.textContent.includes(${JSON.stringify(correctedTitle)})
-      && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(title)}
-      && document.querySelector('[aria-label="Search reports"]')?.value === ${JSON.stringify(title)}
-      && document.querySelector('[aria-label="Report subject"]')?.value === ${JSON.stringify(`${subject.kind}:${subject.ref}`)}
-      && document.querySelectorAll('.reports-history-item').length === 2`);
+    poll(reportsHistoryFilterExpression({ originalTitle: title, correctedTitle,
+      subjectValue: `${subject.kind}:${subject.ref}`, subjectLabel: subject.label }));
     // Use the same public tools an agent uses, through the real native tab's
     // presence + intent/SSE transport. Every Reports state field round-trips.
     poll(`!!sessionStorage.getItem('papercusp_ui_client_id')`);
