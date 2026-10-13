@@ -311,7 +311,7 @@ async function discoverRealPackage() {
   const projectDir = join(ROOT, 'project');
   const target = join(projectDir, 'plugins', 'github-issues');
   await fs.mkdir(target, { recursive: true });
-  for (const file of readdirSync(PACKAGE_DIR)) await fs.copyFile(join(PACKAGE_DIR, file), join(target, file));
+  await fs.cp(PACKAGE_DIR, target, { recursive: true });
   const emptyGlobal = join(ROOT, 'no-global-plugins');
   await fs.mkdir(emptyGlobal, { recursive: true });
   return loadPlugins({ projectDir, harnessSlugs: [], globalPluginsDir: emptyGlobal });

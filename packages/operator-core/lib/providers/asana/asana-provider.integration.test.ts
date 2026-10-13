@@ -493,7 +493,7 @@ async function discoverRealPackage() {
   const projectDir = join(ROOT, 'project');
   const target = join(projectDir, 'plugins', 'asana');
   await fs.mkdir(target, { recursive: true });
-  for (const file of readdirSync(PACKAGE_DIR)) await fs.copyFile(join(PACKAGE_DIR, file), join(target, file));
+  await fs.cp(PACKAGE_DIR, target, { recursive: true });
   const emptyGlobal = join(ROOT, 'no-global-plugins');
   await fs.mkdir(emptyGlobal, { recursive: true });
   return loadPlugins({ projectDir, harnessSlugs: [], globalPluginsDir: emptyGlobal });
@@ -533,6 +533,14 @@ const ops = () => asana.calls.map((c) => c.op);
 // ── Registration ────────────────────────────────────────────────────────────
 
 describe('Asana registers as a provider through the plugin host (P-005)', () => {
+  it('discovers the complete package, preserving nested OpenAPI assets', () => {
+    const installed = join(ROOT, 'project', 'plugins', 'asana');
+    for (const file of ['asana-openapi.d.ts', 'asana-openapi.subset.json']) {
+      expect(readFileSync(join(installed, 'openapi', file), 'utf8'))
+        .toEqual(readFileSync(join(PACKAGE_DIR, 'openapi', file), 'utf8'));
+    }
+  });
+
   it('is a bundled package with the ticket datatypes, read + comment + transition, and an Asana OAuth install', () => {
     // Production discovers bundled plugins at <repo>/libs/papercusp/plugins (findBundledPluginsParent).
     expect(existsSync(join(PACKAGE_DIR, 'papercusp.json'))).toBe(true);
@@ -1085,7 +1093,7 @@ describe('Asana stays a package, not host code', () => {
   });
 
   it('the package imports nothing but node built-ins and its own manifest (no Asana SDK at runtime)', () => {
-    expect(readdirSync(PACKAGE_DIR).sort()).toEqual(['index.cjs', 'papercusp.json']);
+    expect(readdirSync(PACKAGE_DIR).sort()).toEqual(['index.cjs', 'openapi', 'papercusp.json']);
     expect(foreignImports(readFileSync(join(PACKAGE_DIR, 'index.cjs'), 'utf8'), 'index.cjs')).toEqual([]);
   });
 });

@@ -25,7 +25,7 @@
  *     with the provider's update id so the host recognises its own change (echo suppression).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { promises as fs, readdirSync } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -291,7 +291,7 @@ beforeAll(async () => {
   // The real GitHub issues package, discovered and registered the way the host does it.
   const target = join(ROOT, 'project', 'plugins', 'github-issues');
   await fs.mkdir(target, { recursive: true });
-  for (const file of readdirSync(PACKAGE_DIR)) await fs.copyFile(join(PACKAGE_DIR, file), join(target, file));
+  await fs.cp(PACKAGE_DIR, target, { recursive: true });
   const emptyGlobal = join(ROOT, 'no-global-plugins');
   await fs.mkdir(emptyGlobal, { recursive: true });
   const { loaded, errors } = await loadPlugins({ projectDir: join(ROOT, 'project'), harnessSlugs: [], globalPluginsDir: emptyGlobal });

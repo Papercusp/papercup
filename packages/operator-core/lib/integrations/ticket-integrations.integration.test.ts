@@ -19,7 +19,7 @@
  *   - a provider without `ticket.containers` is refused by name before any host.fetch exists.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { promises as fs, readdirSync } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -281,7 +281,7 @@ beforeAll(async () => {
     const source = join(REPO_ROOT, 'libs/papercusp/plugins', name);
     const target = join(projectDir, 'plugins', name);
     await fs.mkdir(target, { recursive: true });
-    for (const file of readdirSync(source)) await fs.copyFile(join(source, file), join(target, file));
+    await fs.cp(source, target, { recursive: true });
   }
   const emptyGlobal = join(ROOT, 'no-global-plugins');
   await fs.mkdir(emptyGlobal, { recursive: true });
