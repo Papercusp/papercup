@@ -134,15 +134,14 @@ export function recordRouteInvocation(exec: RouteExecution): void {
           ],
         );
       });
-    } catch (err) {
-      // Best-effort: a telemetry write failure (PG down, table missing
-      // on a not-yet-migrated dev DB) is logged once and swallowed.
+    } catch {
+      // Best-effort and once-only. Server exceptions can contain bound route
+      // values, so diagnostic output must use fixed control metadata only.
       if (warnedWriteFailure) return;
       warnedWriteFailure = true;
       console.warn(
-        `[route-telemetry] write failed for ${row.method} ${row.path}: ${
-          err instanceof Error ? err.message : String(err)
-        } (further telemetry write failures suppressed)`,
+        '[route-telemetry] write failed (further telemetry write failures suppressed)',
+        'route_telemetry_write_failed',
       );
     }
   })();

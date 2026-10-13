@@ -180,13 +180,18 @@ describe('recordRouteInvocation — degraded environments (gate hold 2026-06-10)
   it('repeated write failures warn exactly once', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     sqlBegin.mockImplementation(async () => {
-      throw new Error('relation "route_invocations" does not exist');
+      throw new Error('private-route-database-error-marker');
     });
-    recordRouteInvocation(execWith());
+    recordRouteInvocation(execWith({ path: '/private-route-template-marker' }));
     recordRouteInvocation(execWith());
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0][0])).toContain('[route-telemetry] write failed');
+    expect(warn.mock.calls[0]).toEqual([
+      '[route-telemetry] write failed (further telemetry write failures suppressed)',
+      'route_telemetry_write_failed',
+    ]);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('private-route-database-error-marker');
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('private-route-template-marker');
     sqlBegin.mockImplementation(async () => {});
     warn.mockRestore();
   });

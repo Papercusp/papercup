@@ -429,8 +429,10 @@ describe('hosted relay confidentiality registry (P-001)', () => {
       'desktop-audit-row': ['actor', 'action', 'subject', 'details'],
       'hosted-desktop-audit-details': ['detail'],
       'customer-host-warnings': ['warn.3.argument.0'],
-      'route-invocation-warnings': ['warn.0.argument.0'],
     };
+    for (const field of ['warn.0.argument.0', 'warn.0.argument.1']) {
+      expect(HOSTED_CONTROL_PLANE_FIELD_REGISTRY['route-invocation-warnings']![field]!.sensitivity).toBe('control');
+    }
     for (const [sink, fields] of Object.entries(content)) {
       for (const field of fields) expect(HOSTED_CONTROL_PLANE_FIELD_REGISTRY[sink]![field]!.sensitivity, sink + '.' + field).toBe('content');
     }

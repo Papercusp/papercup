@@ -220,7 +220,8 @@ export const HOSTED_CONTROL_PLANE_FIELD_REGISTRY: Readonly<Record<string, Readon
     'warn.1.argument.1': { sensitivity: 'control', note: 'Enumerated alive/gone write failure code; no customer or database text.' },
   },
   'route-invocation-warnings': {
-    'warn.0.argument.0': { sensitivity: 'content', note: 'Interpolated route method/path and raw database error text; a failure diagnostic can contain arbitrary bound values.' },
+    'warn.0.argument.0': { sensitivity: 'control', note: 'Fixed once-only telemetry warning prefix; no route or database error text.' },
+    'warn.0.argument.1': { sensitivity: 'control', note: 'Fixed route_telemetry_write_failed code; never database bindings or error text.' },
   },
   'customer-host-warnings': {
     'warn.0.argument.0': { sensitivity: 'control', note: 'Fixed audit warning prefix.' },
