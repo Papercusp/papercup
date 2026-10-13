@@ -34,11 +34,19 @@
  *              `typeof X.seam === 'function'`; a negated test (`!X.seam`,
  *              `=== undefined`, `typeof … !== 'function'`) swaps which branch is the seam;
  *   - nullish  `X.seam?.(…) ?? defaultCall`;
- *   - or       `X.seam?.(…) || defaultCall`.
+ *   - or       `X.seam?.(…) || defaultCall`;
+ *   - if-else  `if (cond) <P X.seam(…)> else <P defaultCall>`, both branches ONE statement
+ *              of the same kind P: `return …`, a bare expression, or an assignment to the
+ *              same target (braces around a lone statement are fine);
+ *   - if-return `if (cond) return X.seam(…); return defaultCall;` with no else: the NEXT
+ *              sibling statement is the default branch.
+ *   The statement forms take the ternary's conditions; a negated condition swaps the
+ *   branches (WI-6554700010009741: `if (deps.alarm?.notify) await deps.alarm.notify({ title,
+ *   body }); else await notifyAttention(input);` hid urgency and routing at 3 sites).
  * Parentheses, `await`, a non-null `!` and `as` / `satisfies` / `<T>` assertions around
  * either call are looked through. `(X.seam ?? dflt)(…)` is NOT a form: both receive
- * identical arguments by construction, so it cannot narrow. NOT recognised (a known
- * gap, statement-level flow): `if (X.seam) return X.seam(…); return dflt(…);`.
+ * identical arguments by construction, so it cannot narrow. NOT recognised: a branch of
+ * more than one statement, and flow that reaches the default by any other path.
  *
  * A finding is a bare Identifier among the default call's arguments that is NOT among
  * the seam call's arguments (by name — position is deliberately not compared, since the
@@ -181,6 +189,27 @@ function mentions(node, text, sf) {
   return ts.forEachChild(node, (child) => (mentions(child, text, sf) ? true : undefined)) === true;
 }
 
+/** The one statement a branch holds: itself, or the sole statement of a `{ … }` block. */
+function single(stmt) {
+  if (stmt && ts.isBlock(stmt)) return stmt.statements.length === 1 ? stmt.statements[0] : null;
+  return stmt ?? null;
+}
+
+/**
+ * What one branch statement does with its call, so two branches can be compared:
+ * `return E` · a bare expression statement `E` · an assignment `T = E`. null otherwise.
+ */
+function payload(stmt, sf) {
+  if (!stmt) return null;
+  if (ts.isReturnStatement(stmt)) return stmt.expression ? { kind: 'return', expr: stmt.expression } : null;
+  if (!ts.isExpressionStatement(stmt)) return null;
+  const e = stmt.expression;
+  if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    return { kind: 'assign', expr: e.right, target: e.left.getText(sf) };
+  }
+  return { kind: 'expr', expr: e };
+}
+
 /**
  * Findings from ONE source file:
  * [{ file, line, form, seam, missing: string[], seamCallText, defaultCallText }]
@@ -220,6 +249,32 @@ export function findArityStrandsInSource(sourceText, fileName = 'f.ts') {
     });
   }
 
+  /** The statement spellings `if-else` / `if-return` (see the header). */
+  function considerIf(node, tested) {
+    const thenP = payload(single(node.thenStatement), sf);
+    let form = 'if-else';
+    let otherP;
+    if (node.elseStatement) {
+      otherP = payload(single(node.elseStatement), sf);
+    } else {
+      // No else: only a `return` makes the NEXT sibling the default branch.
+      form = 'if-return';
+      if (thenP?.kind !== 'return') return;
+      const p = node.parent;
+      const siblings =
+        p && (ts.isBlock(p) || ts.isSourceFile(p) || ts.isModuleBlock(p) || ts.isCaseClause(p) || ts.isDefaultClause(p))
+          ? p.statements
+          : null;
+      const idx = siblings ? siblings.indexOf(node) : -1;
+      otherP = idx >= 0 ? payload(siblings[idx + 1], sf) : null;
+      if (otherP?.kind !== 'return') return;
+    }
+    if (!thenP || !otherP || thenP.kind !== otherP.kind) return;
+    if (thenP.kind === 'assign' && thenP.target !== otherP.target) return;
+    const [seamP, defaultP] = tested.present ? [thenP, otherP] : [otherP, thenP];
+    consider(node, form, tested.key, seamP.expr, defaultP.expr);
+  }
+
   function visit(node) {
     if (ts.isConditionalExpression(node)) {
       const tested = testedSeam(node.condition);
@@ -242,6 +297,9 @@ export function findArityStrandsInSource(sourceText, fileName = 'f.ts') {
         const form = node.operatorToken.kind === ts.SyntaxKind.BarBarToken ? 'or' : 'nullish';
         if (seam) consider(node, form, seam, left, node.right);
       }
+    } else if (ts.isIfStatement(node)) {
+      const tested = testedSeam(node.expression);
+      if (tested) considerIf(node, tested);
     }
     ts.forEachChild(node, visit);
   }

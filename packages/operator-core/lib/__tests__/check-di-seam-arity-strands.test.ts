@@ -119,6 +119,47 @@ describe('findArityStrandsInSource — every spelling of "seam if present, else 
     expect(findArityStrandsInSource(`const v = (deps.x ?? dflt)(a, b);`)).toEqual([]);
   });
 
+  // WI-6554700010009741 — the statement spellings of the same substitution.
+  const fn = (body: string) => `async function f(a, b) {\n${body}\n}`;
+
+  it('flags the if-return form, and a negated condition that swaps the branches', () => {
+    expect(missingOf(fn('if (deps.x) return deps.x(a);\nreturn dflt(a, b);'))).toEqual([['b']]);
+    expect(missingOf(fn('if (!deps.x) return dflt(a, b);\nreturn deps.x(a);'))).toEqual([['b']]);
+    expect(findArityStrandsInSource(fn('if (deps.x) return deps.x(a);\nreturn dflt(a, b);'))[0]).toMatchObject({
+      form: 'if-return',
+      seam: 'deps.x',
+    });
+  });
+
+  it('flags the if-else form for return, bare-expression and same-target assignment branches', () => {
+    expect(missingOf('if (deps.x) { r = deps.x(a); } else { r = dflt(a, b); }')).toEqual([['b']]);
+    expect(missingOf('if (deps.x != null) deps.x(a); else dflt(a, b);')).toEqual([['b']]);
+    expect(missingOf(fn("if (typeof deps.x === 'function') { return await deps.x(a); } else { return dflt(a, b); }"))).toEqual([
+      ['b'],
+    ]);
+  });
+
+  it('flags the pre-fix alarm-notify shape (release-actions.ts) and stays silent on the fixed one', () => {
+    const pre = 'if (deps.alarm?.notify) await deps.alarm.notify({ title: input.title, body: input.body });\nelse await notifyAttention(input);';
+    expect(findArityStrandsInSource(pre)).toEqual([
+      expect.objectContaining({ form: 'if-else', seam: 'deps.alarm.notify', missing: ['input'] }),
+    ]);
+    expect(missingOf('if (deps.alarm?.notify) await deps.alarm.notify(input);\nelse await notifyAttention(input);')).toEqual([]);
+  });
+
+  it('stays silent on statement shapes that are not a substitution', () => {
+    // A non-return then-branch with no else: the next statement runs either way.
+    expect(missingOf(fn('if (deps.x) await deps.x(a);\nawait dflt(a, b);'))).toEqual([]);
+    // Different assignment targets, or different payload kinds.
+    expect(missingOf('if (deps.x) r = deps.x(a); else s = dflt(a, b);')).toEqual([]);
+    expect(missingOf(fn('if (deps.x) return deps.x(a); else dflt(a, b);'))).toEqual([]);
+    // A multi-statement branch is outside the recognised forms.
+    expect(missingOf(fn('if (deps.x) { log(); return deps.x(a); }\nreturn dflt(a, b);'))).toEqual([]);
+    // Two members of ONE receiver, and a seam that forwards everything.
+    expect(missingOf('if (deps.x) deps.x(a); else deps.y(a, b);')).toEqual([]);
+    expect(missingOf(fn('if (deps.x) return await deps.x(a, b);\nreturn dflt(a, b);'))).toEqual([]);
+  });
+
   it("does not count the seam's own receiver as dropped, but still reports anything else", () => {
     expect(findArityStrandsInSource(`const m = opts.read ? await opts.read() : await dflt(opts);`)).toEqual([]);
     expect(missingOf(`const m = opts.read ? await opts.read() : await dflt(opts, ws);`)).toEqual([['ws']]);
