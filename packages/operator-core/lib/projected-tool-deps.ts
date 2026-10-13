@@ -1694,6 +1694,19 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
     // source (e.g. promoted it to the full tier). args_json cannot show it — the
     // host strips `projection` before dispatch.
     const sourceMaterialization = input.ctx.sourceMaterialization;
+    // WI-6554700010010439: a nested code:run / recipe call runs UNSHAPED
+    // (contextTier undefined, lossless for the script) yet inherits the outer
+    // session's requestOrigin, ctx_tier included. Without this marker a
+    // script-internal 150KB row reads as a 150KB trimmed-tier result that
+    // reached an agent's context, and every per-tier size audit inflates.
+    const nestedDispatch =
+      input.ctx.indirectDispatch === true
+        ? {
+            indirect: true as const,
+            ...(input.ctx.codeMode === true ? { codeMode: true as const } : {}),
+            contextTier: input.ctx.contextTier ?? null,
+          }
+        : null;
     const kernel =
       input.executionRevision || input.kernelPreflight || input.kernelEnforcement
         ? {
@@ -1703,13 +1716,14 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
           }
         : null;
     const meta =
-      input.metadataJson || reaction || requestOrigin || kernel || sourceMaterialization
+      input.metadataJson || reaction || requestOrigin || kernel || sourceMaterialization || nestedDispatch
         ? {
             ...(input.metadataJson ?? {}),
             ...(requestOrigin ? { requestOrigin } : {}),
             ...(reaction ? { reaction } : {}),
             // Framework-owned like `kernel`: applied after handler metadata.
             ...(sourceMaterialization ? { sourceMaterialization } : {}),
+            ...(nestedDispatch ? { nestedDispatch } : {}),
             // Framework-owned kernel fields are applied after handler metadata
             // so a tool cannot spoof what revision actually ran.
             ...(kernel ? { kernel } : {}),
