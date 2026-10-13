@@ -207,7 +207,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
       files: z
         .array(z.string().min(1))
         .min(1)
-        .max(20)
+        .max(50)
         .describe(
           'Vitest test files that must pass for this criterion (repo-root-relative preferred; ' +
             'workspace-relative accepted when unambiguous). Validated to resolve against the live ' +
