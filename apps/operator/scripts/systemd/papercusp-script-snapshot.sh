@@ -145,6 +145,69 @@ resolve_path() {
 declare -A snapshots=()
 snapshot_index=0
 
+# EI-25898717052240161: opt-in COMMITTED-source mode. A unit that deploys committed code
+# (papercup-staging-sync) must not run an uncommitted edit of its own script. Such an edit
+# is live the moment it is saved, while every module the script imports resolves inside the
+# committed candidate checkout, so one new import of an uncommitted export failed every run
+# and froze :3170 on its old build for 2.5 h (2026-10-13 19:05-21:37Z).
+# With PAPERCUSP_SCRIPT_SNAPSHOT_GIT_REF=<ref>, the target, its adjacent *.sh/*.mjs helpers
+# and lib/*.sh come from the commit <ref> names when the target is snapshotted. A target
+# outside a git work tree, an unresolvable ref, or a path absent at that commit falls back to
+# the working-tree copy, with a log line. All output goes to stderr: stdout is the path.
+snapshot_ref="${PAPERCUSP_SCRIPT_SNAPSHOT_GIT_REF:-}"
+
+snapshot_from_git() {
+  local source="${1:-}" destination_dir="${2:-}" base="${3:-}"
+  local root rel rel_dir sha extract src_dir helper
+  local prefix
+  root="$(git -C "$(dirname -- "$source")" rev-parse --show-toplevel 2>/dev/null)" &&
+    prefix="$(git -C "$(dirname -- "$source")" rev-parse --show-prefix 2>/dev/null)" || {
+    echo "[script-snapshot] $source is not in a git work tree; using the working-tree copy" >&2
+    return 1
+  }
+  # --show-prefix is relative to the top level however the path was spelled (symlinks too).
+  rel="${prefix}${base}"
+  rel_dir="${prefix%/}"
+  [[ -n "$rel_dir" ]] || rel_dir="."
+  sha="$(git -C "$root" rev-parse --verify --quiet "${snapshot_ref}^{commit}" 2>/dev/null)" || sha=""
+  if [[ -z "$sha" ]]; then
+    echo "[script-snapshot] cannot resolve $snapshot_ref in $root; using the working-tree copy of $rel" >&2
+    return 1
+  fi
+  if ! git -C "$root" cat-file -e "$sha:$rel" 2>/dev/null; then
+    echo "[script-snapshot] $rel is not in $snapshot_ref@${sha:0:10}; using the working-tree copy" >&2
+    return 1
+  fi
+  extract="$destination_dir.git-extract"
+  rm -rf -- "$extract" 2>/dev/null || true
+  mkdir -p -- "$extract" || return 1
+  if ! git -C "$root" archive --format=tar "$sha" -- "$rel_dir" | tar -x -C "$extract" -f -; then
+    echo "[script-snapshot] cannot extract $rel_dir at ${sha:0:10}; using the working-tree copy" >&2
+    rm -rf -- "$extract" 2>/dev/null || true
+    return 1
+  fi
+  src_dir="$extract/$rel_dir"
+  cp -p -- "$src_dir/$base" "$destination_dir/$base" || { rm -rf -- "$extract"; return 1; }
+  for helper in "$src_dir"/*.sh "$src_dir"/*.mjs; do
+    [[ -f "$helper" && "${helper##*/}" != "$base" ]] || continue
+    cp -p -- "$helper" "$destination_dir/" || { rm -rf -- "$extract"; return 1; }
+  done
+  if [[ -d "$src_dir/lib" ]]; then
+    mkdir -p -- "$destination_dir/lib" || { rm -rf -- "$extract"; return 1; }
+    for helper in "$src_dir"/lib/*.sh; do
+      [[ -f "$helper" ]] || continue
+      cp -p -- "$helper" "$destination_dir/lib/" || { rm -rf -- "$extract"; return 1; }
+    done
+  fi
+  rm -rf -- "$extract" 2>/dev/null || true
+  if cmp -s -- "$source" "$destination_dir/$base"; then
+    echo "[script-snapshot] $rel from $snapshot_ref@${sha:0:10}" >&2
+  else
+    echo "[script-snapshot] $rel: working tree differs from $snapshot_ref@${sha:0:10}; running the committed version" >&2
+  fi
+  return 0
+}
+
 snapshot_script() {
   local source_token="${1:-}" source source_dir base destination_dir destination sidecar
   source="$(resolve_path "$source_token")" || {
@@ -167,6 +230,12 @@ snapshot_script() {
   destination_dir="$snapshot_root/script-$snapshot_index"
   mkdir -p -- "$destination_dir" || return 73
   destination="$destination_dir/$base"
+
+  if [[ -n "$snapshot_ref" ]] && snapshot_from_git "$source" "$destination_dir" "$base"; then
+    snapshots["$source"]="$destination"
+    printf '%s\n' "$destination"
+    return 0
+  fi
 
   snapshot_file "$source" "$destination" "target $base" || return $?
 
@@ -206,6 +275,11 @@ for index in "${!argv[@]}"; do
       ;;
   esac
 done
+
+# The committed-source mode applies to THIS launcher's targets only. A nested launch from
+# inside the target (e.g. staging-sync snapshotting setup-release-checkout.sh in a candidate
+# checkout) keeps its existing working-tree behaviour unless its own caller opts in.
+unset PAPERCUSP_SCRIPT_SNAPSHOT_GIT_REF
 
 # Keep the wrapper process alive until the target exits so the EXIT trap can
 # remove the private snapshot tree, while preserving the target's exit status.

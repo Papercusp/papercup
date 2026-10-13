@@ -340,6 +340,107 @@ printf '%s\\n' "$MARKER_VALUE"
     }
   });
 
+  /**
+   * EI-25898717052240161: with PAPERCUSP_SCRIPT_SNAPSHOT_GIT_REF the target and its helpers
+   * come from the commit, so an uncommitted edit never goes live in a unit that deploys
+   * committed code (staging-sync froze :3170 for 2.5 h on 2026-10-13 that way).
+   */
+  describe('committed-source mode (EI-25898717052240161)', () => {
+    const GIT_UNSET = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_COMMON_DIR'];
+    const git = (cwd: string, ...args: string[]) => {
+      const env = { ...process.env };
+      for (const name of GIT_UNSET) delete env[name];
+      const r = spawnSync('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], { cwd, env, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+      return r.stdout.trim();
+    };
+
+    /** A repo whose committed target/helpers print COMMITTED, then edited in the working tree. */
+    async function editedRepo(dir: string) {
+      const repo = join(dir, 'repo');
+      const sourceDir = join(repo, 'bin');
+      await mkdir(join(sourceDir, 'lib'), { recursive: true });
+      const target = join(sourceDir, 'deploy.sh');
+      const body = (tag: string) => `#!/usr/bin/env bash
+set -u
+. "$(dirname "$0")/lib/marker.sh"
+. "$(dirname "$0")/helper.sh"
+printf '%s %s %s\\n' "${tag}" "$LIB_MARKER" "$HELPER_MARKER"
+`;
+      await writeExecutable(target, body('COMMITTED'));
+      await writeExecutable(join(sourceDir, 'lib', 'marker.sh'), 'LIB_MARKER=LIB_COMMITTED\n');
+      await writeExecutable(join(sourceDir, 'helper.sh'), 'HELPER_MARKER=HELPER_COMMITTED\n');
+      git(dir, 'init', '-q', '-b', 'staging', repo);
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '-q', '-m', 'base');
+      await writeExecutable(target, body('WORKTREE'));
+      await writeExecutable(join(sourceDir, 'lib', 'marker.sh'), 'LIB_MARKER=LIB_WORKTREE\n');
+      await writeExecutable(join(sourceDir, 'helper.sh'), 'HELPER_MARKER=HELPER_WORKTREE\n');
+      return { repo, target };
+    }
+
+    it('runs the committed target, adjacent helper and lib sidecar instead of the edited working tree', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'papercusp-script-snapshot-gitref-'));
+      try {
+        const { target } = await editedRepo(dir);
+        const result = await runWrapper(dir, [target], { PAPERCUSP_SCRIPT_SNAPSHOT_GIT_REF: 'staging' }, GIT_UNSET);
+        expect(result.status).toBe(0);
+        expect(result.stdout.trim()).toBe('COMMITTED LIB_COMMITTED HELPER_COMMITTED');
+        expect(result.stderr).toMatch(/bin\/deploy\.sh: working tree differs from staging@[0-9a-f]{10}; running the committed version/);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('CONTROL: without the opt-in the working-tree edit is what runs', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'papercusp-script-snapshot-gitref-'));
+      try {
+        const { target } = await editedRepo(dir);
+        const result = await runWrapper(dir, [target], {}, [...GIT_UNSET, 'PAPERCUSP_SCRIPT_SNAPSHOT_GIT_REF']);
+        expect(result.status).toBe(0);
+        expect(result.stdout.trim()).toBe('WORKTREE LIB_WORKTREE HELPER_WORKTREE');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('falls back to the working-tree copy, with a log line, when the target is not in the ref', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'papercusp-script-snapshot-gitref-'));
+      try {
+        const { repo } = await editedRepo(dir);
+        const fresh = join(repo, 'bin', 'fresh.sh');
+        await writeExecutable(fresh, '#!/usr/bin/env bash\necho UNCOMMITTED_NEW_SCRIPT\n');
+        const result = await runWrapper(dir, [fresh], { PAPERCUSP_SCRIPT_SNAPSHOT_GIT_REF: 'staging' }, GIT_UNSET);
+        expect(result.status).toBe(0);
+        expect(result.stdout.trim()).toBe('UNCOMMITTED_NEW_SCRIPT');
+        expect(result.stderr).toMatch(/bin\/fresh\.sh is not in staging@[0-9a-f]{10}; using the working-tree copy/);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not pass the opt-in to the target, so nested launches keep their own behaviour', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'papercusp-script-snapshot-gitref-'));
+      try {
+        const { repo } = await editedRepo(dir);
+        const probe = join(repo, 'bin', 'env-probe.sh');
+        await writeExecutable(probe, '#!/usr/bin/env bash\nprintf "ref=[%s]\\n" "${PAPERCUSP_SCRIPT_SNAPSHOT_GIT_REF:-}"\n');
+        git(repo, 'add', '-A');
+        git(repo, 'commit', '-q', '-m', 'probe');
+        const result = await runWrapper(dir, [probe], { PAPERCUSP_SCRIPT_SNAPSHOT_GIT_REF: 'staging' }, GIT_UNSET);
+        expect(result.status).toBe(0);
+        expect(result.stdout.trim()).toBe('ref=[]');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('opts the staging-sync unit in to the committed staging lineage', async () => {
+      const dropin = await readFile(STAGING_DROPIN, 'utf8');
+      expect(dropin).toMatch(/^Environment=PAPERCUSP_SCRIPT_SNAPSHOT_GIT_REF=staging$/m);
+    });
+  });
+
   it('routes both backup units through the snapshot wrapper, including the DB guard target', async () => {
     const dbUnit = await readFile(DB_UNIT, 'utf8');
     const healthUnit = await readFile(HEALTH_UNIT, 'utf8');
