@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
 import {
   HOSTED_CONTROL_PLANE_FIELD_REGISTRY,
+  HOSTED_CONTROL_PLANE_WRITER_REGISTRY,
   HOSTED_RELAY_FRAME_REGISTRY,
   PLAINTEXT_CONSUMERS,
 } from './hosted-relay-confidentiality-registry';
@@ -59,6 +61,61 @@ function routeInvocationColumns(source: string): string[] {
     for (const column of match[1]!.split(',')) columns.add(column.trim());
   }
   return [...columns].sort();
+}
+
+
+/** Inspect SQL template literals, omitting JS expressions so nested commas cannot hide columns. */
+function sqlWriterColumns(source: string): Map<string, Set<string>> {
+  const found = new Map<string, Set<string>>();
+  const tree = ts.createSourceFile('writer.ts', source, ts.ScriptTarget.Latest, true);
+  function assignments(table: string, sql: string) {
+    const columns = found.get(table) ?? new Set<string>();
+    for (const match of sql.matchAll(/(?:^|,)\s*([a-z_]+)\s*=/gi)) columns.add(match[1]!);
+    found.set(table, columns);
+  }
+  function visit(node: ts.Node) {
+    if (ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node) || ts.isStringLiteral(node)) {
+      const sql = (ts.isTemplateExpression(node)
+        ? node.head.text + node.templateSpans.map((span) => ' __binding__ ' + span.literal.text).join('')
+        : node.text
+      ).replace(/--[^\n]*/g, '');
+      for (const match of sql.matchAll(/\bINSERT\s+INTO\s+([a-z_]+\.[a-z_]+)\s*\(([^)]+)\)/gi)) {
+        const table = match[1]!;
+        const columns = found.get(table) ?? new Set<string>();
+        for (const column of match[2]!.split(',')) columns.add(column.trim());
+        found.set(table, columns);
+        const upsert = sql.match(/\bDO\s+UPDATE\s+SET\s+([\s\S]*?)(?:\bWHERE\b|\bRETURNING\b|$)/i);
+        if (upsert) assignments(table, upsert[1]!);
+      }
+      for (const match of sql.matchAll(/\bUPDATE\s+([a-z_]+\.[a-z_]+)(?:\s+(?:AS\s+)?[a-z_]+)?\s+SET\s+([\s\S]*?)\bWHERE\b/gi)) {
+        assignments(match[1]!, match[2]!);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  return found;
+}
+
+function environmentKeys(source: string, constants: Readonly<Record<string, string>> = {}): { keys: string[]; dynamic: string[] } {
+  const keys = new Set<string>();
+  const dynamic: string[] = [];
+  const tree = ts.createSourceFile('config.ts', source, ts.ScriptTarget.Latest, true);
+  function isEnvironment(node: ts.Node) {
+    return ['env', 'process.env'].includes(node.getText(tree));
+  }
+  function visit(node: ts.Node) {
+    if (ts.isPropertyAccessExpression(node) && isEnvironment(node.expression)) {
+      keys.add(node.name.text);
+    } else if (ts.isElementAccessExpression(node) && isEnvironment(node.expression)) {
+      if (ts.isStringLiteral(node.argumentExpression)) keys.add(node.argumentExpression.text);
+      else if (ts.isIdentifier(node.argumentExpression) && constants[node.argumentExpression.text]) keys.add(constants[node.argumentExpression.text]!);
+      else dynamic.push(node.getText(tree));
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  return { keys: [...keys].sort(), dynamic };
 }
 
 describe('hosted relay confidentiality registry (P-001)', () => {
@@ -120,6 +177,85 @@ describe('hosted relay confidentiality registry (P-001)', () => {
     for (const field of ['resolved_path', 'error_message', 'metadata_json']) {
       expect(fields[field]!.sensitivity).toBe('content');
     }
+  });
+
+
+  it('classifies INSERT, UPDATE and upsert columns for every registered SQL writer source', () => {
+    const population = new Map<string, Set<string>>();
+    const sqlWriters = Object.entries(HOSTED_CONTROL_PLANE_WRITER_REGISTRY)
+      .flatMap(([sink, writer]) => 'table' in writer ? [{ sink, table: writer.table, sources: [...writer.sources] }] : []);
+    const sources = new Set(sqlWriters.flatMap((writer) => writer.sources));
+    for (const source of sources) {
+      const writes = sqlWriterColumns(readFileSync(resolve(REPO, source), 'utf8'));
+      expect(writes.size, source).toBeGreaterThan(0);
+      for (const [table, columns] of writes) {
+        const writer = sqlWriters.find((candidate) => candidate.table === table);
+        expect(writer, 'new literal SQL sink in ' + source + ': ' + table).toBeDefined();
+        expect(writer!.sources, 'unregistered writer source for ' + table).toContain(source);
+        const union = population.get(table) ?? new Set<string>();
+        for (const column of columns) union.add(column);
+        population.set(table, union);
+      }
+    }
+    for (const { sink, table } of sqlWriters) {
+      expect(population.get(table)?.size, sink + ' positive control').toBeGreaterThan(0);
+      expect(Object.keys(HOSTED_CONTROL_PLANE_FIELD_REGISTRY[sink]!).sort(), sink)
+        .toEqual([...population.get(table)!].sort());
+    }
+    // These are UPDATE-only; an INSERT-only census would omit the actual content sinks.
+    expect(population.get('harness_shared.workspace_host_initialization_steps')).toContain('public_evidence');
+    expect(population.get('harness_shared.workspace_host_operations')).toContain('orphaned_at');
+    expect(population.get('harness_shared.workspace_hosts')).toContain('health_checks');
+  });
+
+  it('detects new receipt UPDATE fields and new SQL sinks with binding commas present', () => {
+    const source = readFileSync(resolve(REPO, 'packages/operator-core/lib/workspace-host/initialization-replay-store.ts'), 'utf8');
+    const changed = source.replace('public_evidence =', 'customer_payload =');
+    expect(changed).not.toBe(source);
+    const fields = HOSTED_CONTROL_PLANE_FIELD_REGISTRY['workspace-host-initialization-steps']!;
+    expect([...sqlWriterColumns(changed).get('harness_shared.workspace_host_initialization_steps')!]
+      .filter((field) => !(field in fields))).toEqual(['customer_payload']);
+    const extra = source + '\n tx' + String.fromCharCode(96)
+      + 'INSERT INTO harness_shared.unclassified_sink (customer_payload) VALUES (' + String.fromCharCode(36) + '{fn(1, 2)})'
+      + String.fromCharCode(96) + ';';
+    expect(sqlWriterColumns(extra).get('harness_shared.unclassified_sink')).toEqual(new Set(['customer_payload']));
+  });
+
+  it('binds configuration classification to both production environment readers', () => {
+    const constantsSource = readFileSync(resolve(REPO, 'packages/operator-core/lib/auth/hosted/first-workspace-dependencies.ts'), 'utf8');
+    const constant = constantsSource.match(/export const HOSTED_FIRST_WORKSPACE_ORGANIZATIONS_ENV = '([^']+)'/);
+    expect(constant, 'production imported configuration key positive control').not.toBeNull();
+    const constants = { HOSTED_FIRST_WORKSPACE_ORGANIZATIONS_ENV: constant![1]! };
+    for (const sink of ['vendor-runtime-config', 'customer-host-config'] as const) {
+      const writer = HOSTED_CONTROL_PLANE_WRITER_REGISTRY[sink];
+      const keys = new Set<string>();
+      for (const source of writer.sources) {
+        const result = environmentKeys(readFileSync(resolve(REPO, source), 'utf8'), constants);
+        expect(result.dynamic, 'dynamic environment keys need an explicit census').toEqual([]);
+        for (const key of result.keys) keys.add(key);
+      }
+      expect(keys.size, sink + ' positive control').toBeGreaterThan(0);
+      expect(Object.keys(HOSTED_CONTROL_PLANE_FIELD_REGISTRY[sink]!).sort()).toEqual([...keys].sort());
+    }
+    expect(environmentKeys("env['CUSTOMER_PAYLOAD']; process.env[computedKey];"))
+      .toEqual({ keys: ['CUSTOMER_PAYLOAD'], dynamic: ['process.env[computedKey]'] });
+  });
+
+  it('keeps diagnostic, configuration and structured persistence fields content-bearing', () => {
+    const content: Record<string, string[]> = {
+      'workspace-host-connections': ['provider_config', 'status_detail', 'credential_ref'],
+      'workspace-hosts': ['desired_spec', 'health_checks', 'endpoint'],
+      'workspace-host-operations': ['request', 'error', 'message', 'teardown_reason'],
+      'workspace-host-events': ['details', 'message'],
+      'workspace-host-logs': ['message', 'metadata', 'unit'],
+      'workspace-host-initialization-steps': ['public_evidence'],
+      'customer-host-config': ['PAPERCUSP_HOSTED_CONNECTOR_BEARER', 'PAPERCUSP_HOSTED_WORKSPACE_ROOT'],
+    };
+    for (const [sink, fields] of Object.entries(content)) {
+      for (const field of fields) expect(HOSTED_CONTROL_PLANE_FIELD_REGISTRY[sink]![field]!.sensitivity, sink + '.' + field).toBe('content');
+    }
+    expect(HOSTED_CONTROL_PLANE_WRITER_REGISTRY['customer-host-config'].placement).toBe('customer-host-environment');
+    expect(HOSTED_CONTROL_PLANE_WRITER_REGISTRY['workspace-host-operations'].placement).toBe('controller-database');
   });
 
   it('every content-bearing plane has at least one content frame', () => {

@@ -419,6 +419,92 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
     expect(onPlanned).not.toHaveBeenCalled();
   });
 
+
+  it('census marker: persists receipt content in the controller database and timeline under real RLS', async () => {
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+    const marker = 'customer-receipt-census-' + randomBytes(8).toString('hex');
+    const adapter = recordingAdapter();
+    const execute = adapter.execute.bind(adapter);
+    adapter.execute = async (step) => ({
+      ...(await execute(step)),
+      publicEvidence: { step: step.id, directory: '/srv/' + marker },
+    });
+
+    const result = await runWorkspaceHostInitialization(runInput(ws, hostId, adapter));
+    const receipts = await db.adminSql`
+      SELECT public_evidence FROM harness_shared.workspace_host_initialization_steps
+      WHERE workspace_id = ${ws} AND host_id = ${hostId} AND status = 'succeeded'
+    `;
+    expect(receipts).toHaveLength(result.receipts.length);
+    expect(receipts.every((row) => row.public_evidence.directory === '/srv/' + marker)).toBe(true);
+    const events = await db.adminSql`
+      SELECT details FROM harness_shared.workspace_host_events
+      WHERE workspace_id = ${ws} AND operation_id = ${result.operationId}
+        AND details ? 'publicEvidence'
+    `;
+    expect(events).toHaveLength(result.receipts.length);
+    expect(events.every((row) => row.details.publicEvidence.directory === '/srv/' + marker)).toBe(true);
+    // A different tenant's RLS view cannot read these rows. This is a customer/controller
+    // DB experiment; it does not establish a deployed vendor's placement or an ingress leak.
+    await h.appSql.begin(async (tx: any) => {
+      await tx`SELECT set_config('app.workspace_id', ${freshWs()}, true)`;
+      expect(await tx`
+        SELECT public_evidence FROM harness_shared.workspace_host_initialization_steps
+        WHERE host_id = ${hostId}
+      `).toEqual([]);
+      expect(await tx`
+        SELECT details FROM harness_shared.workspace_host_events WHERE operation_id = ${result.operationId}
+      `).toEqual([]);
+    });
+  });
+
+  it('census marker: carries SSH stderr to the operation error while redacting secrets and keeping timeline summaries clear', async () => {
+    const { GcpIapWorkspaceHostInitializationOperations } = await import('./gcp-iap-initialization-operations');
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+    const operationId = 'op_' + randomBytes(6).toString('hex');
+    const marker = 'customer-stderr-census-' + randomBytes(8).toString('hex');
+    const stdoutMarker = 'private-stdout-census-' + randomBytes(8).toString('hex');
+    let commands = 0;
+    const adapter = new GcpIapWorkspaceHostInitializationOperations({
+      projectId: 'census-test-project', zone: 'us-central1-a', instanceName: 'census-test-host',
+      instanceId: '4715512353118305137', remoteEntrypoint: '/opt/papercusp/current/bin/papercusp-workspace-initialize',
+      sshUser: 'papercusp-workspace', knownHostsFile: '/census/known_hosts', identityFile: '/census/identity',
+    }, {
+      async run(command) {
+        commands += 1;
+        // Actual bootstrap/execute command construction; only transport I/O is synthetic.
+        if (!command.stdin) return { exitCode: 0, stdout: '', stderr: '' };
+        return { exitCode: 23, stdout: stdoutMarker, stderr: marker + ' Authorization: Bearer census.secret.value' };
+      },
+    });
+    await expect(runWorkspaceHostInitialization(runInput(ws, hostId, adapter, operationId))).rejects.toThrow(marker);
+    expect(commands).toBe(2);
+    const [operation] = await db.adminSql`
+      SELECT status, message, error FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${ws} AND id = ${operationId}
+    `;
+    expect(operation.status).toBe('failed');
+    expect(operation.error.message).toContain(marker);
+    expect(operation.error.message).toContain('[REDACTED]');
+    expect(JSON.stringify(operation)).not.toContain('census.secret.value');
+    expect(JSON.stringify(operation)).not.toContain(stdoutMarker);
+    expect(operation.message).not.toContain(marker);
+    const events = await db.adminSql`
+      SELECT message, details FROM harness_shared.workspace_host_events
+      WHERE workspace_id = ${ws} AND operation_id = ${operationId}
+    `;
+    expect(events.length).toBeGreaterThan(0);
+    expect(JSON.stringify(events)).not.toContain(marker);
+    expect(JSON.stringify(events)).not.toContain(stdoutMarker);
+    const steps = await db.adminSql`
+      SELECT public_evidence FROM harness_shared.workspace_host_initialization_steps
+      WHERE workspace_id = ${ws} AND host_id = ${hostId}
+    `;
+    expect(steps).toEqual([]);
+  });
+
   it('executes every step exactly once against the host', async () => {
     const ws = freshWs();
     const hostId = await seedHost(ws);
