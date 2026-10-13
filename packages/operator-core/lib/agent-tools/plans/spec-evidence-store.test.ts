@@ -543,6 +543,24 @@ describe('completed isolated runtime certification', () => {
     expect((await read()).currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
       dimensions: { environment: 'current', source: 'current', test: 'current', testRun: 'current' } });
   });
+  it.each(['local', 'mutation-probe', 'ci', 'admin-ui'])(
+    'certifies an adopted original NULL-harness LLM witness only for a scoped adoptable %s row', async sourceKind => {
+      const state = await setupLlm();
+      state.execution.harnessSlug = null as any;
+      (state.row as any).test_run_source = sourceKind;
+      const originalExecution = JSON.stringify(state.execution);
+      expect((await read()).currentness.dimensions.environment)
+        .toBe(sourceKind === 'local' || sourceKind === 'mutation-probe' ? 'current' : 'unknown');
+      expect(JSON.stringify(state.execution)).toBe(originalExecution);
+      state.row.test_run_present = false;
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+    });
+  it('refuses a captured foreign LLM harness even when the scoped ledger row is local', async () => {
+    const state = await setupLlm();
+    state.execution.harnessSlug = 'foreign';
+    (state.row as any).test_run_source = 'local';
+    expect((await read()).currentness.dimensions.environment).toBe('unknown');
+  });
   it.each(['missing-row', 'changed-kernel', 'changed-commit', 'bundle-runtime', 'wrong-unit',
     'late-report', 'late-boot', 'remote-host', 'missing-witness', 'dirty-run', 'deployed-plane',
     'wrong-framework', 'wrong-layer', 'no-completion-selector'])(

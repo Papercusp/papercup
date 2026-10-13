@@ -2820,6 +2820,13 @@ export async function measureCompletedTestRuntime(
   const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
   const witness = stableRecordedRuntimeEnvironment(
     execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
+  // Guarded fromTestRun adoption changes ledger attribution, not the original
+  // captured receipt. The scoped join proves adoption; foreign, CI/admin and
+  // still-unscoped rows cannot certify an originally NULL-harness LLM witness.
+  const executionHarnessMatches = execution?.harnessSlug === scope.harnessSlug
+    || (selector?.kind === 'llm-in-process' && execution?.harnessSlug === null
+      && row.test_run_present
+      && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
   if (!selector || !recipe.runtimeUnits || row.evidence_kind !== 'test'
     || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
     || !(selector.kind === 'llm-in-process' ? row.test_run_framework === 'llm-test'
@@ -2829,7 +2836,7 @@ export async function measureCompletedTestRuntime(
     || !execution || execution.testLayer !== (selector.kind === 'llm-in-process' ? 'llm' : 'e2e')
     || execution.worktreeDirty
     || execution.collectionFailed || execution.failed !== 0 || execution.skipped !== 0 || execution.passed < 1
-    || execution.workspaceId !== scope.workspaceId || execution.harnessSlug !== scope.harnessSlug
+    || execution.workspaceId !== scope.workspaceId || !executionHarnessMatches
     || !execution.commitSha || !/^[a-f0-9]{40,64}$/.test(execution.commitSha)
     || execution.commitSha !== row.test_run_commit_sha || !witness
     || JSON.stringify([...witness.units].sort()) !== JSON.stringify([...recipe.runtimeUnits].sort())
