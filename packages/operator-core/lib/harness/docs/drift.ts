@@ -413,6 +413,11 @@ export async function checkSubjectRefDrift(
 
   // path / feature both resolve to a path set. Group by repo (superproject vs each
   // submodule), then one `git log` per group against that repo's own baseline (#3).
+  // A plan item/decision ref documents a plan record, not files: nothing can drift.
+  // Not an error (contrast `no-paths` below, which means an anchor failed to resolve).
+  if (ref.kind === 'plan') {
+    return { stale: false, changedPaths: [], method: 'none' };
+  }
   const paths = await resolveAnchorPaths(ref, opts);
   if (ref.kind === 'feature' && paths.length === 0) {
     return { stale: false, changedPaths: [], method: 'feature', error: 'unresolved-feature' };
