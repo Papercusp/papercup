@@ -2,8 +2,8 @@
  * rubric-staleness-watchdog.test.ts — EI-12149: a release-gating rubric that goes
  * ungraded must PAGE, not silently sit. Pure decider in all three states + the
  * sweep's orchestration (gating filter, debounce, fail-soft) via injected deps —
- * no PG (the DISCRIMINATION bar: a watchdog never shown to fire on a dead grader
- * is a green light with extra steps).
+ * no PG (the DISCRIMINATION bar: a watchdog never shown to report a stale
+ * observation window is a green light with extra steps).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -152,14 +152,19 @@ describe('evaluateRubricStaleness — the pure decider', () => {
     expect(v.reason).toContain('2026-07-14T17:00:00.000Z');
   });
 
-  it('STALE on an empty window — grading stopped is a page, not a quiet period', () => {
+  it('STALE on an empty window — reports absence without inferring cause or history', () => {
     const v = evaluateRubricStaleness(rubric, freshness(), SIX_H);
     expect(v.stale).toBe(true);
     expect(v.reason).toContain('NO scorecard in the last 6h');
     expect(v.reason).toContain('blender-release-readiness');
+    expect(v.reason).toContain('cause unknown');
+    expect(v.reason).toContain('older verdict exists');
+    expect(v.reason).not.toContain('dead grader');
+    expect(v.reason).not.toContain('predates');
+    expect(v.reason).not.toContain('newest verdict');
   });
 
-  it('STALE on partial-only — and names TRUNCATION, a different chase than a dead loop', () => {
+  it('STALE on partial-only — reports incomplete cards without inferring cause or history', () => {
     const v = evaluateRubricStaleness(
       rubric,
       freshness({ status: 'partial-only', emitted: true, count: 3, partialCount: 3, lastEmittedAt: '2026-07-14T17:30:00.000Z' }),
@@ -167,7 +172,11 @@ describe('evaluateRubricStaleness — the pure decider', () => {
     );
     expect(v.stale).toBe(true);
     expect(v.reason).toContain('NONE complete');
-    expect(v.reason).toContain('silent truncation');
+    expect(v.reason).toContain('Newest in-window emission: 2026-07-14T17:30:00.000Z');
+    expect(v.reason).toContain('Cause of incompleteness is unknown');
+    expect(v.reason).not.toContain('silent truncation');
+    expect(v.reason).not.toContain('predates');
+    expect(v.reason).not.toContain('dead grader');
   });
 
   it('UNKNOWN-RUBRIC is healthy/non-actionable rather than a stale grader alert', () => {
@@ -232,7 +241,7 @@ describe('evaluateRubricStaleness — the pure decider', () => {
       SIX_H,
     );
     expect(v.stale).toBe(true);
-    expect(v.reason).toContain('dead grader loop');
+    expect(v.reason).toContain('cause unknown');
     expect(v.reason).not.toContain('UNGRADEABLE BY CONSTRUCTION');
   });
 

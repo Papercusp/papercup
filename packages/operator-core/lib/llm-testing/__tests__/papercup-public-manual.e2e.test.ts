@@ -14,7 +14,7 @@
  */
 import { createHash, randomUUID, X509Certificate } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
-import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { createServer } from 'node:net';
@@ -39,7 +39,7 @@ import { recordWorkspaceHostSignals, upsertWorkspaceHost, upsertWorkspaceHostCon
 import { HostedWorkspaceConnectorClient } from '../../workspace-host/hosted-connector-client';
 import { HostedWorkspaceHostSessionAdapter } from '../../workspace-host/hosted-session-host';
 import type { HostedConnectorBinding } from '../../endpoint-route/hosted-workspace-connector';
-import { assertPublicManualHostedRuntimeBudget, preparePublicManualHostedDelegation, publicManualHostedPhaseRecorder, publicManualHostedUpgradeHeaders, purgePublicManualHostedConnector } from '../public-manual-hosted-fixture';
+import { assertPublicManualHostedRuntimeBudget, preparePublicManualHostedDelegation, preparePublicManualHostedRuntime, publicManualHostedRuntimeEnvironment, publicManualHostedPhaseRecorder, publicManualHostedUpgradeHeaders, purgePublicManualHostedConnector } from '../public-manual-hosted-fixture';
 import { connectorHostMatches } from '../../endpoint-route/routes/hosted-workspace-connector';
 import { HostedSessionCookieCodec, HOSTED_SESSION_COOKIE, resolveHostedSession, revokeHostedSession, rotateHostedSession } from '../../auth/hosted-session';
 import { resolveHostedSecretRef } from '../../auth/hosted/secret-ref';
@@ -50,6 +50,7 @@ import { exactOriginOr403 } from '../../endpoint-route/hosted-browser-context';
 import { PAPERCUSP_TMPDIR_CANDIDATES, tmpdirIsInsideRepo } from '../../../../../libs/test-config/src/tmpdir-guard';
 import { findBoxIdentityPaths, serializeIdentitySafeJson } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import { readSuperuserToken, superuserTokenPath } from '../../superuser-token';
+import { resolveExternalPathLockIdentity } from '../../agent-tools/locks/external-path';
 
 let baseUrl = process.env.OPERATOR_BASE_URL;
 const enabled = Boolean(baseUrl) && process.env.PAPERCUSP_TEST_PUBLIC_CHAT === '1';
@@ -124,7 +125,9 @@ async function loadPortalFixtureModules(portalRoot: string, phase = publicManual
     () => sourceImport(join(portalRoot, 'e2e/served-artifact.ts')), 10_000);
   return {
     loadHostedTestUserKit: async (root: string): Promise<PortalHostedTestUserKit> => {
-      const kit = await loadIsolatedHostedTestUserKit({ portalRoot: root });
+      preparePublicManualHostedRuntime();
+      const kit = await loadIsolatedHostedTestUserKit({ portalRoot: root,
+        environment: publicManualHostedRuntimeEnvironment(process.env) });
       isolatedPortalKits.add(kit);
       return kit;
     },
@@ -1308,6 +1311,128 @@ async function mutateFixtureRegistry(
   }
 }
 
+describe('public manual selected private runtime preflight', () => {
+  let root: string;
+  let environment: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'papercusp-test-runtime-binding-')));
+    const home = join(root, 'home');
+    for (const path of ['home/.papercusp', 'workspaces', 'tmp', 'source/apps/operator/bin'])
+      mkdirSync(join(root, path), { recursive: true });
+    writeFileSync(join(root, 'source/apps/operator/bin/hono-host.ts'), 'export {};');
+    writeFileSync(join(root, 'workspaces/registry.json'), JSON.stringify({
+      current: 'test-runtime-binding', workspaces: [{ id: 'test-runtime-binding' }],
+    }));
+    environment = { HOME: home, PAPERCUSP_WORKSPACE: 'test-runtime-binding',
+      PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT: join(root, 'source'),
+      PAPERCUSP_TEST_HOSTED_RUNTIME_DEADLINE_EPOCH_MS: String(Date.now() + 300_000),
+      PAPERCUSP_SID: 'owned-test-session', PAPERCUSP_FS_MUTEX_LOCK_DIR: '/shared-mutex-domain' };
+  });
+  afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
+
+  it('transports the supervisor home, state, registry and selected source while preserving the shared mutex domain', () => {
+    const transported = publicManualHostedRuntimeEnvironment(environment);
+    expect(transported).toMatchObject({ HOME: join(root, 'home'), TMPDIR: join(root, 'tmp'),
+      PAPERCUSP_HOME: join(root, 'home/.papercusp'), PAPERCUSP_WORKSPACES_ROOT: join(root, 'workspaces'),
+      PAPERCUSP_WORKSPACE_ID: 'test-runtime-binding', PAPERCUSP_INTEGRATION_ROOT: join(root, 'source'),
+      PAPERCUSP_FS_MUTEX_LOCK_DIR: '/shared-mutex-domain' });
+    expect(environment.PAPERCUSP_HOME).toBeUndefined();
+    expect(existsSync(join(root, 'home/.papercusp/superuser-token'))).toBe(false);
+  });
+
+  it.each(['HOME', 'TMPDIR', 'PAPERCUSP_HOME', 'PAPERCUSP_WORKSPACES_ROOT', 'PAPERCUSP_INTEGRATION_ROOT'])(
+    'rejects a mismatched %s before token creation or admission', key => {
+      const conflicting = { ...environment, [key]: root };
+      expect(() => publicManualHostedRuntimeEnvironment(conflicting)).toThrow(/hosted_fixture_/);
+      expect(existsSync(join(root, 'home/.papercusp/superuser-token'))).toBe(false);
+    });
+
+  it('rejects an absent retained source, a foreign workspace, a stale registry and insufficient runtime budget', () => {
+    expect(() => publicManualHostedRuntimeEnvironment({ ...environment, PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT: undefined }))
+      .toThrow('hosted_fixture_operator_source_required');
+    expect(() => publicManualHostedRuntimeEnvironment({ ...environment, PAPERCUSP_WORKSPACE_ID: 'live-workspace' }))
+      .toThrow('hosted_fixture_private_workspace_mismatch');
+    expect(() => publicManualHostedRuntimeEnvironment({ ...environment,
+      PAPERCUSP_TEST_HOSTED_RUNTIME_DEADLINE_EPOCH_MS: String(Date.now() + 1000) }))
+      .toThrow('hosted_fixture_runtime_budget_insufficient');
+    writeFileSync(join(root, 'workspaces/registry.json'), JSON.stringify({ current: 'test-runtime-neighbor', workspaces: [] }));
+    expect(() => publicManualHostedRuntimeEnvironment(environment)).toThrow('hosted_fixture_private_registry_mismatch');
+  });
+
+  it('rejects a registry symlink even when its target has the expected selected workspace', () => {
+    const path = join(root, 'workspaces/registry.json');
+    renameSync(path, join(root, 'neighbor-registry.json'));
+    symlinkSync(join(root, 'neighbor-registry.json'), path);
+    expect(() => publicManualHostedRuntimeEnvironment(environment)).toThrow('hosted_fixture_private_registry_mismatch');
+  });
+
+  function select() {
+    for (const key of ['PAPERCUSP_HOME', 'PAPERCUSP_WORKSPACES_ROOT', 'PAPERCUSP_WORKSPACE_ID',
+      'PAPERCUSP_INTEGRATION_ROOT', 'PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID']) vi.stubEnv(key, undefined);
+    for (const [key, value] of Object.entries(publicManualHostedRuntimeEnvironment(environment))) vi.stubEnv(key, value);
+  }
+
+  it('prepares one fresh private token idempotently and keeps its value out of the receipt', () => {
+    select();
+    const first = preparePublicManualHostedRuntime();
+    const value = readSuperuserToken();
+    expect(value).toMatch(/^[a-f0-9-]{36}$/);
+    expect(first).toEqual({ tokenPath: superuserTokenPath(), tokenCreated: true });
+    expect(lstatSync(first.tokenPath).mode & 0o777).toBe(0o600);
+    expect(JSON.stringify(first)).not.toContain(value);
+    expect(preparePublicManualHostedRuntime()).toEqual({ ...first, tokenCreated: false });
+    expect(readSuperuserToken()).toBe(value);
+  });
+
+  it('uses the existing authenticated home lock namespace for the same supervisor registry bytes', async () => {
+    select();
+    const canonical = join(root, 'workspaces/registry.json');
+    const roots = { home: join(root, 'home'), runtimeDir: join(root, 'xdg-runtime') };
+    expect(() => resolveExternalPathLockIdentity(canonical, roots)).toThrow(/external path must name a file/);
+    preparePublicManualHostedRuntime();
+    const alias = join(workspacesRoot(), 'registry.json');
+    expect(realpathSync(alias)).toBe(canonical);
+    expect(lstatSync(realpathSync(alias)).ino).toBe(lstatSync(canonical).ino);
+    expect(resolveExternalPathLockIdentity(alias, roots).path)
+      .toBe('@external/home/.papercusp-workspaces/registry.json');
+    expect(publicManualHostedRuntimeEnvironment(process.env).PAPERCUSP_WORKSPACES_ROOT).toBe(workspacesRoot());
+    const command = vi.fn(async (_file: string, args: string[]) => {
+      const payload = JSON.parse(args[args.indexOf('--json') + 1]);
+      if (args[0] === 'locks:acquire') {
+        expect(payload.external_paths).toEqual([alias]);
+        return { stdout: JSON.stringify({ ok: true, lock_id: 'owned-fixture-lock' }) };
+      }
+      return { stdout: JSON.stringify({ ok: true }) };
+    });
+    const mutate = vi.fn();
+    await mutateFixtureRegistry(mutate, 'http://127.0.0.1:3397', command);
+    expect(mutate).toHaveBeenCalledOnce();
+    expect(command).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a divergent private home registry alias before creating a token', () => {
+    select();
+    symlinkSync(join(root, 'source'), join(root, 'home/.papercusp-workspaces'), 'dir');
+    expect(() => preparePublicManualHostedRuntime()).toThrow('hosted_fixture_private_registry_alias_mismatch');
+    expect(existsSync(superuserTokenPath())).toBe(false);
+  });
+
+  it.each(['symlink', 'short', 'permissions'])('refuses an unsafe existing %s token without overwriting it', kind => {
+    select();
+    const path = superuserTokenPath();
+    const neighbor = join(root, 'neighbor-token');
+    const sentinel = 'unrelated-private-token-do-not-copy';
+    writeFileSync(neighbor, sentinel, { mode: 0o600 });
+    if (kind === 'symlink') symlinkSync(neighbor, path);
+    else writeFileSync(path, kind === 'short' ? 'short' : sentinel, { mode: 0o600 });
+    if (kind === 'permissions') chmodSync(path, 0o644);
+    const before = readFileSync(path, 'utf8');
+    expect(() => preparePublicManualHostedRuntime()).toThrow('hosted_fixture_private_token_invalid');
+    expect(readFileSync(path, 'utf8')).toBe(before);
+    expect(readFileSync(neighbor, 'utf8')).toBe(sentinel);
+  });
+});
+
 describe('public manual fixture registry coordination', () => {
   afterEach(() => { vi.unstubAllEnvs(); });
 
@@ -2073,6 +2198,7 @@ describe.runIf(Boolean(process.env.PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR))('
 
 describe.runIf(enabled)('real public Papercup manual behavior', () => {
   beforeAll(async () => {
+    preparePublicManualHostedRuntime();
     if (manualFixtureDir) {
       ownedOperator = await ownFixtureOperator(manualFixtureDir);
       baseUrl = ownedOperator.baseUrl;

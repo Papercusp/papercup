@@ -1206,6 +1206,9 @@ export default defineTool({
             // selection, for the same census reason as the lifecycle above.
             const derivedStatus = summarizePlanStatus({
               items: parsed.items,
+              // Blind review #14 G-1: the open-issue blocks overlaid on the returned items
+              // above, so the summary and its next pointer agree with them.
+              externalBlocks: blockingIssues,
               decisions: parsed.decisions,
               holders: linkedHolders,
               lifecycle: lifecycle
@@ -1258,7 +1261,15 @@ export default defineTool({
                 : {}),
               derivedStatus,
               frontmatter: parsed.frontmatter,
-              now: nowWithDerivedNext,
+              // Blind review #14 G-2: the displayed note's identity, so its staleness is
+              // measured from this note's own write time (attachNoteStaleness).
+              now:
+                nowWithDerivedNext && row.nowNote
+                  ? {
+                      ...nowWithDerivedNext,
+                      note: { writtenAt: row.nowNote.writtenAt, eventId: row.nowNote.eventId, source: row.nowNote.source },
+                    }
+                  : nowWithDerivedNext,
               contentHash: hashPlanContent(parsed.raw),
               version: row.version,
               // v2 P-001: the structured promote-policy ({ policy, warnings }) read from the row column —

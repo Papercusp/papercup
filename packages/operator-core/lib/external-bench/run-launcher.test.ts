@@ -94,6 +94,13 @@ describe('current launcher owns its assignment runtime', () => {
     expect(currentTask.mock.calls.every(([i]) => i.options.armId === 'baseline')).toBe(true);
     expect(io.legacyBind).not.toHaveBeenCalled(); expect(io.legacyRun).not.toHaveBeenCalled();
   });
+  it('refuses a native-CLI reference on a different model before any durable write or launch (FSWE-P018-SAMEMODEL)', async () => {
+    config.arms[1].model = 'other-model';
+    config.priceSchedule.rates.push({ ...config.priceSchedule.rates[0], model: 'other-model' });
+    const currentTask = vi.fn();
+    await expect(launchBenchRun({ ...input, arm: 'baseline' }, { ...deps(), currentTask })).rejects.toThrow(/native-CLI reference/);
+    expect(io.committed).not.toHaveBeenCalled(); expect(io.upsert).not.toHaveBeenCalled(); expect(currentTask).not.toHaveBeenCalled();
+  });
   it('runs the exact seed/task controls, persists assignments, and shares one lifetime budget across the full study', async () => {
     const stop = vi.fn(async () => {}), currentTask = vi.fn(async (_input: CurrentTaskInput) => ({ driver, stop }));
     const launched = await launchBenchRun(input, { ...deps(), currentTask });

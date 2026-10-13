@@ -17,7 +17,7 @@
 // config does) and VITE_BUILD_OUT_ROOT (dist/ lives in a tmp tree, never the
 // app's live bundle).
 import { afterEach, describe, expect, it } from 'vitest';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -191,6 +191,71 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
     expect(START_DEADLINE_MS).toBeLessThan(HOLD_SECS * 1000);
     expect(HOLD_SECS * 1000).toBeLessThan(DEFAULT_LOCK_TEST_TIMEOUT_MS);
   });
+
+  // WI-6554700010009957: the disk preflight runs in front of EVERY build. The host
+  // lists hundreds of mounts (285 measured), and one subprocess per mount cost ~1.6 s
+  // of each trivial build under gate load, which timed out the 10 s cases in this
+  // file. Count the external commands the reservation-key scan runs when `df -a`
+  // reports 2,000 extra mounts: the count must not grow with the mount table, and a
+  // legacy (mount-name) key must still be found.
+  it('the disk preflight runs no subprocess per host mount', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const lib = resolve(__dirname, '../../../../papercusp-desktop/bin/lib/disk-preflight.sh');
+    const shims = join(tmp, 'shims');
+    const target = join(tmp, 'target');
+    const resRoot = join(tmp, 'disk-reservations');
+    const counter = join(tmp, 'exec-count');
+    const legacyKey = target.replace(/[^A-Za-z0-9]/g, '_');
+    mkdirSync(shims);
+    mkdirSync(target);
+    // A legacy key directory, so the mount-table scan really runs.
+    mkdirSync(join(resRoot, legacyKey), { recursive: true });
+    const realPath = process.env.PATH ?? '/usr/bin:/bin';
+    for (const tool of ['tr', 'sed', 'awk', 'cut', 'stat', 'basename', 'dirname', 'cat']) {
+      writeFileSync(
+        join(shims, tool),
+        ['#!/bin/sh', `echo ${tool} >> "$EXEC_COUNT"`, `PATH="$REAL_PATH" exec ${tool} "$@"`, ''].join('\n'),
+        { mode: 0o755 },
+      );
+    }
+    writeFileSync(
+      join(shims, 'df'),
+      [
+        '#!/bin/sh',
+        'echo df >> "$EXEC_COUNT"',
+        'PATH="$REAL_PATH" df "$@"',
+        'case " $* " in *" -a "*)',
+        '  i=0',
+        '  while [ "$i" -lt 2000 ]; do echo "fakefs 1 1 1 1% /fake/mnt/$i"; i=$((i + 1)); done',
+        '  echo "fakefs 1 1 1 1% $TARGET" ;;',
+        'esac',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+
+    const res = spawnSync('bash', ['-c', 'source "$LIB" && papercusp_reservation_keys "$TARGET"'], {
+      env: {
+        ...process.env,
+        PATH: `${shims}:${realPath}`,
+        REAL_PATH: realPath,
+        EXEC_COUNT: counter,
+        LIB: lib,
+        TARGET: target,
+        PAPERCUSP_DISK_RESERVATION_DIR: resRoot,
+      },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+
+    expect(res.status).toBe(0);
+    const keys = res.stdout.trim().split('\n');
+    expect(keys[0]).toMatch(/^dev-\d+$/);
+    expect(keys).toContain(legacyKey);
+    // One subprocess per mount would be more than 2,000 here; the scan needs a handful.
+    const execs = readFileSync(counter, 'utf8').trim().split('\n');
+    expect(execs.length).toBeLessThan(50);
+  }, 60_000);
 
   it('derives the default lock key without starting Node', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));

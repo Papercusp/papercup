@@ -110,9 +110,9 @@ export interface RubricStalenessVerdict {
 /**
  * PURE: is a release-gating rubric's grading stale? `freshness` is the
  * checkScorecardFreshness read over the threshold window, so `complete === true`
- * means a COMPLETE scorecard landed in-window (the mandate). A partial-only window
- * is called out distinctly — grading that silently truncates is a different failure
- * from grading that stopped, and the responder should know which they are chasing.
+ * means a COMPLETE scorecard landed in-window (the mandate). Partial and empty
+ * windows are reported as measured; this read cannot establish why scoring is
+ * absent/incomplete or whether a historical scorecard exists.
  *
  * A THIRD failure the first two cannot express (WI-2145252): the rubric is not
  * gradeable AT ALL because a criterion measures a subsystem that no longer runs. That
@@ -148,8 +148,9 @@ export function evaluateRubricStaleness(
       stale: true,
       reason:
         `release-gating rubric '${rubric.rubricId}' has ${freshness.count} scorecard(s) in the last ${hours}h ` +
-        `but NONE complete (silent truncation — the grader is filing partial cards). ` +
-        `Newest emission ${freshness.lastEmittedAt ?? 'unknown'}; last COMPLETE grade predates the window.` +
+        `but NONE complete. ` +
+        `Newest in-window emission: ${freshness.lastEmittedAt ?? 'unknown'}. ` +
+        `Cause of incompleteness is unknown from this freshness read.` +
         ungradeable,
     };
   }
@@ -157,8 +158,7 @@ export function evaluateRubricStaleness(
     stale: true,
     reason:
       `release-gating rubric '${rubric.rubricId}' has NO scorecard in the last ${hours}h ` +
-      `(grading stopped — a dead grader loop, not a healthy quiet period). ` +
-      `The newest verdict on record predates the window; a release call reading it is reading stale evidence.` +
+      `(cause unknown from this in-window freshness read; it cannot establish whether an older verdict exists).` +
       ungradeable,
   };
 }

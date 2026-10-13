@@ -15,15 +15,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const M = vi.hoisted(() => ({
   readLines: vi.fn(async () => [] as unknown[]),
+  pgFastPath: false,
+  pgQuery: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
 }));
 
 vi.mock("../log", () => ({
   coordLog: { readLines: M.readLines },
-  coordSql: () => {
-    throw new Error("no PG in this test");
-  },
+  coordSql: () => M.pgQuery,
   coordWorkspaceId: () => "ws-test",
-  coordHasPgFastPath: () => false,
+  coordHasPgFastPath: () => M.pgFastPath,
 }));
 
 import tool, { computeConditionStates } from "./conditions";
@@ -86,6 +86,8 @@ const resolutionMany = (m: number, keys: string[], summary = `RECOVERED (${keys.
 beforeEach(() => {
   vi.clearAllMocks();
   M.readLines.mockImplementation(async () => []);
+  M.pgFastPath = false;
+  M.pgQuery.mockImplementation(async (..._args: unknown[]) => []);
 });
 
 describe("computeConditionStates (pure)", () => {
@@ -242,6 +244,28 @@ describe("computeConditionStates (pure)", () => {
 });
 
 describe("coord:conditions handler", () => {
+  it("keeps recent PG resolutions inside the capped window and folds it chronologically", async () => {
+    const key = "bounded-condition";
+    M.pgFastPath = true;
+    M.pgQuery.mockImplementation(async (..._args: unknown[]) => [
+      { body: resolution(2, key) },
+      { body: alarm(1, key) },
+    ]);
+
+    const out = await call();
+
+    const template = M.pgQuery.mock.calls[0]?.[0] as TemplateStringsArray | undefined;
+    expect(template?.join(" ")).toContain("ORDER BY id DESC");
+    expect(out.open_count).toBe(0);
+    expect(out.resolved[0]).toMatchObject({
+      condition_key: key,
+      first_seen: at(1),
+      last_seen: at(1),
+      latest_summary: "alarm " + key,
+      resolved_at: at(2),
+    });
+  });
+
   it("splits open vs resolved over the seam read", async () => {
     M.readLines.mockImplementation(async () => [
       alarm(1, "git-sync-stall:papercusp"),

@@ -243,10 +243,13 @@ export async function readConditionEnvelopes(): Promise<Record<string, unknown>[
          AND surface = 'messages'
          AND ts >= ${sinceBound}
          AND (body ? 'condition_key' OR body ? 'resolves_condition')
-       ORDER BY id ASC
+       ORDER BY id DESC
        LIMIT ${CONDITIONS_FAST_PATH_ROW_CAP}
     `;
-    return rows.map(
+    // Keep the newest events within the cap so recent resolutions are not
+    // dropped under sustained condition traffic. The fold consumes ascending
+    // events, so restore chronological order after fetching the bounded slice.
+    return rows.reverse().map(
       (r) =>
         (typeof r.body === "string" ? JSON.parse(r.body) : r.body) as Record<
           string,
