@@ -51,6 +51,31 @@ function findMessage(result: unknown, msgId: string): AttentionRecord | null {
     item.id === expectedId || item.ref?.msgId === msgId) ?? null;
 }
 
+function summarizeAttention(result: unknown, targetMsgIds: string[]) {
+  const records = collectAttention(result);
+  const messages = records.filter((item) => item.kind === 'coord-message');
+  const targetIds = new Set(targetMsgIds);
+  const summarize = (item: AttentionRecord) => ({
+    id: item.id ?? null,
+    title: item.title ?? null,
+    body: typeof item.body === 'string' ? item.body.slice(0, 240) : null,
+    ref: item.ref ?? null,
+    ownerLabel: item.ownerLabel ?? null,
+  });
+  const root = result && typeof result === 'object' && !Array.isArray(result)
+    ? result as Record<string, unknown>
+    : null;
+  return {
+    rootKeys: root ? Object.keys(root).slice(0, 32) : [],
+    attentionCount: records.length,
+    coordMessageCount: messages.length,
+    targets: targetMsgIds,
+    matchingMessages: messages.filter((item) =>
+      targetIds.has(item.id ?? '') || targetIds.has(item.ref?.msgId ?? '')).map(summarize),
+    recentCoordMessages: messages.slice(-5).map(summarize),
+  };
+}
+
 function sentMessageId(result: Record<string, unknown>, label: string): string {
   // coord:send uses the shared bulk envelope even for a single message.
   // Keep direct fields for older callers, but read the per-message result
@@ -178,12 +203,20 @@ test('native Inbox acknowledgement removes only the selected message after refre
     expect(neighborMsgId).not.toBe(selectedMsgId);
     evidence.messages = { selectedMsgId, neighborMsgId, selectedSummary, neighborSummary };
 
-    const beforeAckFeed = await invoke('plans:attention', feedArgs);
-    const selectedItem = findMessage(beforeAckFeed, selectedMsgId);
-    const neighborItem = findMessage(beforeAckFeed, neighborMsgId);
-    expect(selectedItem, 'the selected fixture must be present in the real attention feed').not.toBeNull();
-    expect(neighborItem, 'the untouched neighbor must be present in the real attention feed').not.toBeNull();
-    evidence.beforeAckFeed = { selectedItem, neighborItem };
+    let selectedItem: AttentionRecord | null = null;
+    let neighborItem: AttentionRecord | null = null;
+    // plans:attention is SWR cached; a fresh read immediately after coord:send
+    // may still return the prior feed while its change notification converges.
+    // Poll for the exact persisted fixtures and save a bounded snapshot BEFORE
+    // the assertion so a timeout receipt shows whether the feed was empty,
+    // stale, or missing only these message IDs.
+    await expect.poll(async () => {
+      const beforeAckFeed = await invoke('plans:attention', feedArgs);
+      selectedItem = findMessage(beforeAckFeed, selectedMsgId);
+      neighborItem = findMessage(beforeAckFeed, neighborMsgId);
+      evidence.beforeAckFeed = summarizeAttention(beforeAckFeed, [selectedMsgId, neighborMsgId]);
+      return selectedItem !== null && neighborItem !== null;
+    }, { timeout: 45_000, intervals: [300, 800, 1500] }).toBe(true);
     await captureCache('beforeAckCache');
 
     await native('navigate', `${origin}/adv?opcv=inbox`, '--json');
@@ -206,12 +239,15 @@ test('native Inbox acknowledgement removes only the selected message after refre
     expect(taggedAck).toBe(true);
     await native('click', testIdSelector(ackButtonId), '--json');
 
-    const afterAckFeed = await invoke('plans:attention', feedArgs);
-    const selectedAfterAck = findMessage(afterAckFeed, selectedMsgId);
-    const neighborAfterAck = findMessage(afterAckFeed, neighborMsgId);
-    evidence.afterAckFeed = { selectedItem: selectedAfterAck, neighborItem: neighborAfterAck };
-    expect(selectedAfterAck, 'a fresh plans:attention read must omit the persisted acknowledgement').toBeNull();
-    expect(neighborAfterAck, 'acknowledging one message must retain its unacknowledged neighbor').not.toBeNull();
+    let selectedAfterAck: AttentionRecord | null = null;
+    let neighborAfterAck: AttentionRecord | null = null;
+    await expect.poll(async () => {
+      const afterAckFeed = await invoke('plans:attention', feedArgs);
+      selectedAfterAck = findMessage(afterAckFeed, selectedMsgId);
+      neighborAfterAck = findMessage(afterAckFeed, neighborMsgId);
+      evidence.afterAckFeed = summarizeAttention(afterAckFeed, [selectedMsgId, neighborMsgId]);
+      return selectedAfterAck === null && neighborAfterAck !== null;
+    }, { timeout: 45_000, intervals: [300, 800, 1500] }).toBe(true);
     await captureCache('afterAckCache');
 
     await native('eval', 'window.__nativeInboxAckPreviousDocument = true; location.reload(); true');
