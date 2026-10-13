@@ -201,6 +201,25 @@ describe('frozen-candidate repair queue', () => {
     expect(malformed?.admissions?.[0]).not.toHaveProperty('patch');
   });
 
+  it("carries a newer build's admission keys through parse and persist (WI-6554700010009930)", () => {
+    const patch = { commit: C1, parent: C, sha256: 'f'.repeat(64) };
+    const admission = {
+      atMs: T0 + 1, actor: 'su-test', source: { ref: C2, sha: C2 },
+      fromRepairHead: C, toRepairHead: C2, paths: ['lib/a.test.ts'], unchanged: [],
+      blobs: { 'lib/a.test.ts': C1 }, mode: 'committed-patch' as const, patch,
+      reason: 'explicit reviewed missing-capture repair',
+    };
+    const raw = JSON.parse(JSON.stringify(markFrozenRepairAdmitted(fresh(), admission)));
+    raw.admissions[0].futureAudit = { reviewer: 'su-next' };
+    const parsed = parseFrozenCandidateRepairQueue(raw);
+    expect(parsed?.admissions?.[0]).toMatchObject({ futureAudit: { reviewer: 'su-next' }, mode: 'committed-patch', patch });
+    const reread = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(parsed)));
+    expect(reread?.admissions?.[0]).toHaveProperty('futureAudit', { reviewer: 'su-next' });
+    // A key the parser read and rejected stays dropped (the malformed-patch case above).
+    raw.admissions[0].patch = { ...patch, sha256: 'bad' };
+    expect(parseFrozenCandidateRepairQueue(raw)?.admissions?.[0]).not.toHaveProperty('patch');
+  });
+
   it('round-trips exact consumed hunk identities without consuming a later row', () => {
     const admission = {
       atMs: T0 + 100, actor: 'su-test', source: { ref: C2, sha: C2 },
@@ -1748,6 +1767,29 @@ describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', 
     // The queue itself survives — refusing it would discard the frozen head.
     expect(parsed).not.toBeNull();
     expect(parsed!.repairHead).toBe(C);
+    expect(parsed!.convergenceRounds).toEqual([{ round: 1, head: C, failingCount: 5, atMs: T0 }]);
+  });
+
+  it("a newer build's keys on a round survive this build's read-modify-write (WI-6554700010009930)", () => {
+    // The live incident: an older parser rebuilt rounds from a fixed key list, so every write
+    // from the older build stripped the `executed` record the newer gate had appended. A key
+    // this build does not know must ride through parse -> mutate -> persist -> parse unchanged.
+    const futureRound = { round: 1, head: C, failingCount: 5, atMs: T0, futureEvidence: { files: 3 } };
+    const parsed = parseFrozenCandidateRepairQueue({ ...readyToVerify(), convergenceRounds: [futureRound] });
+    expect(parsed!.convergenceRounds![0]).toEqual(futureRound);
+    const next = markFrozenRepairVerificationRed(parsed!, { repairHead: C, failingTests: [], nowMs: T0 + 1_000 });
+    const reread = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(next)));
+    expect(reread!.convergenceRounds![0]).toEqual(futureRound);
+    // The round THIS build appended carries no invented key.
+    expect(reread!.convergenceRounds).toHaveLength(2);
+    expect(reread!.convergenceRounds![1]).not.toHaveProperty('futureEvidence');
+  });
+
+  it('a round key the parser read and REJECTED is never revived by the carry-forward', () => {
+    const parsed = parseFrozenCandidateRepairQueue({
+      ...readyToVerify(),
+      convergenceRounds: [{ round: 1, head: C, failingCount: 5, atMs: T0, executed: 'not-a-record' }],
+    });
     expect(parsed!.convergenceRounds).toEqual([{ round: 1, head: C, failingCount: 5, atMs: T0 }]);
   });
 

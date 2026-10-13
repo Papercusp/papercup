@@ -434,6 +434,8 @@ beforeAll(async () => {
   // P-007 Phase C / WI-10006221: re-rendered again with the completion-verification policy.
   await db.sql.unsafe(readMigration('1373-completion-verification-claim-floor.sql')).simple();
   await db.sql.unsafe(readMigration('1364-solo-decision-execution-reservation.sql')).simple();
+  // WI-6554700010009932: the Route A leg's lowercase token index (prefilter ROUTE_A_DECISION_TOKEN_PREFILTER).
+  await db.sql.unsafe(readMigration('1490-plan-decisions-lower-execution-tokens-idx.sql')).simple();
   // WI-10006417: Route A is plan-wide even when an owner answer's itemRefs list
   // only the separate implementation details and omits the linked plan item.
   await db.sql.unsafe(readMigration('1389-plan-wide-route-a-claim-floor.sql')).simple();
@@ -807,25 +809,29 @@ describe('canonical plan-item sibling claim guard (EI-21151083448505391)', () =>
       ORDER BY wi.feature_id`;
     expect(rows.map(r => r.feature_id)).toEqual(['WI-910002', 'WI-910004']);
 
-    // With sequential scans priced out, each leg must be ABLE to use its token index. A prefilter
-    // expression that drifts from the index definition silently falls back to a full scan.
-    const indexNames = await db.sql.begin(async (tx) => {
+    // Each prefilter must be ABLE to use its token index: an expression that drifts from the
+    // index definition silently falls back to regex-scanning every decision body. Probe each
+    // exported prefilter alone with sequential scans disabled, so its GIN bitmap scan is the
+    // only non-disabled path. (Explaining the whole statement instead asserts a cost choice:
+    // on a tiny table the planner may legitimately prefer a parameterized btree path.)
+    const indexesUsedBy = (predicate: string) => db.sql.begin(async (tx) => {
       await tx`SET LOCAL enable_seqscan = off`;
-      const plans = await tx`EXPLAIN (FORMAT JSON)
-        SELECT wi.feature_id FROM harness_shared.work_items wi
-         WHERE wi.workspace_id = ${WS} AND wi.feature_id = ANY(${ids}::text[])
-           AND ${wi.reservedPlanLaneExclusionSql(tx, 'generic-drainer', 'wi.payload')}`;
+      const plans = await tx.unsafe(
+        `EXPLAIN (FORMAT JSON) SELECT 1 FROM harness_shared.plan_decisions d WHERE ${predicate}`,
+      );
       type PlanNode = { 'Index Name'?: string; Plans?: PlanNode[] };
-      const names = new Set<string>();
+      const names: string[] = [];
       const visit = (node: PlanNode) => {
-        if (node['Index Name']) names.add(node['Index Name']);
+        if (node['Index Name']) names.push(node['Index Name']);
         node.Plans?.forEach(visit);
       };
       visit(plans[0]['QUERY PLAN'][0].Plan);
       return names;
     });
-    expect(indexNames.has('plan_decisions_execution_tokens_idx')).toBe(true);
-    expect(indexNames.has('plan_decisions_lower_execution_tokens_idx')).toBe(true);
+    expect(await indexesUsedBy(wi.MASTER_DECISION_TOKEN_PREFILTER))
+      .toEqual(['plan_decisions_execution_tokens_idx']);
+    expect(await indexesUsedBy(wi.ROUTE_A_DECISION_TOKEN_PREFILTER))
+      .toEqual(['plan_decisions_lower_execution_tokens_idx']);
   });
 
   it('permits exactly one concurrent winner across bounded feature and issue claim transactions', async () => {

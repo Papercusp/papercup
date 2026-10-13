@@ -11,8 +11,47 @@ import {
   type ListSpecEvidenceDiagnostics,
 } from './spec-evidence-store';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
+import { hasMatchingDeclaredCaseTitle } from '../../testing-case-filter';
 
 type EvidenceRow = Awaited<ReturnType<typeof listSpecEvidence>>[number];
+
+/** The binding's declared `details.adequacy.testCases` (the list the adequacy evaluator matches). */
+function declaredAdequacyCases(details: unknown): string[] {
+  if (!details || typeof details !== 'object') return [];
+  const adequacy = (details as Record<string, unknown>).adequacy;
+  if (!adequacy || typeof adequacy !== 'object' || Array.isArray(adequacy)) return [];
+  const raw = (adequacy as Record<string, unknown>).testCases;
+  return Array.isArray(raw)
+    ? raw.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    : [];
+}
+
+/**
+ * WI-6554700010009931: the store row carries EVERY passed case title of the bound run
+ * (405 titles, ~44KB per row measured on :3170), because spec-test-adequacy matches
+ * declared cases against the full list in-process. An agent reading detail:'full' needs
+ * only the titles its binding declares. Keep those, report the total and how many were
+ * omitted, and point at the per-case ledger for the rest. The store row is not trimmed.
+ * LLM-layer rows are left alone: their cases are corroborated by scenario, not by title.
+ */
+function fullEvidenceRow(row: EvidenceRow) {
+  const execution = row.testRunExecution;
+  const titles = execution?.passedCaseTitles;
+  if (!execution || titles === undefined || execution.testLayer === 'llm') return row;
+  const declared = declaredAdequacyCases(row.details);
+  const kept = titles.filter((title) => declared.some((caseTitle) => hasMatchingDeclaredCaseTitle(caseTitle, [title])));
+  if (kept.length === titles.length) return row;
+  return {
+    ...row,
+    testRunExecution: {
+      ...execution,
+      passedCaseTitles: kept,
+      passedCaseTitleCount: titles.length,
+      passedCaseTitlesOmitted: titles.length - kept.length,
+      passedCaseTitlesRef: { tool: 'testing:runs', args: { testRunIds: [row.testRunId], cases: true } },
+    },
+  };
+}
 
 /**
  * P-007 (RSR-P-007-A): the default per-binding currentness table. Identity plus the
@@ -155,7 +194,7 @@ export default defineTool({
         harnessSlug,
         bounded: { limit, truncatedByLimit },
         ...(isFullDetail(detail)
-          ? { detail: 'full' as const, evidence }
+          ? { detail: 'full' as const, evidence: evidence.map(fullEvidenceRow) }
           : {
               detail: 'summary' as const,
               evidence: evidence.map(summaryEvidenceRow),

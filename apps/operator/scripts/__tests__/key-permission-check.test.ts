@@ -502,5 +502,75 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       expect(out).toContain('INDETERMINATE');
       expect(out).not.toContain('no exposed private keys found');
     });
+
+    it('retains every failed root in the deep-sweep report', () => {
+      const fx = withControl(fixture());
+      const firstRoot = join(fx.root, 'deep-first');
+      const secondRoot = join(fx.root, 'deep-second');
+      const bin = join(fx.root, 'bin');
+      const capture = join(fx.root, 'request.json');
+      mkdirSync(firstRoot, { recursive: true });
+      mkdirSync(secondRoot, { recursive: true });
+      mkdirSync(bin, { recursive: true });
+
+      const configText = 'ordinary configuration data without key material\n'.repeat(4);
+      writeFileSync(join(firstRoot, 'first.cfg'), configText);
+      writeFileSync(join(secondRoot, 'second.cfg'), configText);
+
+      const findShim = join(bin, 'find');
+      writeFileSync(
+        findShim,
+        [
+          '#!/usr/bin/env bash',
+          'case " $* " in *"$KEYPERM_SLOW_ROOT"*) exec sleep 3 ;; esac',
+          'exec /usr/bin/find "$@"',
+        ].join('\n'),
+      );
+      chmodSync(findShim, 0o755);
+
+      const grepShim = join(bin, 'grep');
+      writeFileSync(
+        grepShim,
+        [
+          '#!/usr/bin/env bash',
+          'for arg in "$@"; do if [ "$arg" = "-laIE" ]; then exit 2; fi; done',
+          'exec /usr/bin/grep "$@"',
+        ].join('\n'),
+      );
+      chmodSync(grepShim, 0o755);
+
+      const curlShim = join(bin, 'curl');
+      writeFileSync(
+        curlShim,
+        [
+          '#!/usr/bin/env bash',
+          'while [ "$#" -gt 0 ]; do',
+          '  if [ "$1" = "-d" ]; then',
+          '    shift',
+          '    printf "%s" "$1" > "$KEYPERM_CAPTURE_FILE"',
+          '    exit 0',
+          '  fi',
+          '  shift',
+          'done',
+          'exit 0',
+        ].join('\n'),
+      );
+      chmodSync(curlShim, 0o755);
+
+      runProbe(fx, {
+        KEYPERM_DEEP: '1',
+        KEYPERM_DEEP_ROOTS: firstRoot + ' ' + secondRoot,
+        KEYPERM_DEEP_TIMEOUT_S: '1',
+        KEYPERM_SLOW_ROOT: firstRoot,
+        KEYPERM_CAPTURE_FILE: capture,
+        KEYPERM_NO_FILE: '0',
+        PATH: bin + ':' + (process.env.PATH ?? ''),
+      });
+
+      const request = readFileSync(capture, 'utf8');
+      expect(request).toContain('status=ERROR');
+      expect(request).toContain(firstRoot + ': status 124 (timeout)');
+      expect(request).toContain(secondRoot + ': command status 123');
+    });
   });
 });

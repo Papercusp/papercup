@@ -271,6 +271,23 @@ describe('scorecards:list correctness payload', () => {
     expect(result.data).toMatchObject({ ok: true, hasMore: false, nextCursor: null });
   });
 
+  it('forwards provisional:true as the provisionalOnly page filter (WI-6554700010009935)', async () => {
+    const ctx = { isSuperuser: true, uiClientId: 'su-scorecards-list-test', workspaceId: 'default' } as never;
+    listScorecardPageM.mockResolvedValueOnce({ rows: [], hasMore: false });
+    await listTool.handler(
+      listTool.args.parse({ rubricRef: 'grading-integrity', subjectRef: 'EI-terminal', provisional: true }) as never,
+      ctx,
+    );
+    expect(listScorecardPageM).toHaveBeenLastCalledWith(
+      expect.objectContaining({ rubricRef: 'grading-integrity', subjectRef: 'EI-terminal', provisionalOnly: true }),
+    );
+
+    listScorecardPageM.mockResolvedValueOnce({ rows: [], hasMore: false });
+    await listTool.handler(listTool.args.parse({ rubricRef: 'grading-integrity' }) as never, ctx);
+    expect(listScorecardPageM.mock.lastCall?.[0]?.provisionalOnly).toBeUndefined();
+    expect(listTool.args.safeParse({ provisional: 'yes' }).success).toBe(false);
+  });
+
   it('returns a typed retryable envelope when the bounded read exhausts contention retries', async () => {
     listScorecardPageM.mockRejectedValueOnce(new OrgTxnTimeoutError('55P03', new Error('lock timeout')));
 

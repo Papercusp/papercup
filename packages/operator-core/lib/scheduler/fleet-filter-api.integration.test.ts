@@ -40,7 +40,9 @@ function verifyMiss(result) {
   // Claim correctness is independent of the issue-only miss diagnosis. The
   // feature-family false authoring alert is tracked separately as
   // EI-24905216534076710; preserve its exact reason in the proof receipts.
-  if (result.reason !== 'spec_exhausted' && result.reason !== 'spec_matches_nothing') {
+  if (result.reason === 'all_matches_gated') {
+    assert.match(result.error, /POOL BLOCKED, NOT SPEC-BROKEN/);
+  } else if (result.reason !== 'spec_exhausted' && result.reason !== 'spec_matches_nothing') {
     assert.match(result.error, /no claimable work-item matched/);
   }
 }
@@ -83,6 +85,7 @@ try {
   // tool-specific refusal envelopes and object-valued JSONB fixture writes.
   verifyMiss({ok:false,error:'SPEC EXHAUSTED',reason:'spec_exhausted'});
   verifyMiss({ok:false,error:'SPEC MATCHES NOTHING',reason:'spec_matches_nothing'});
+  verifyMiss({ok:false,error:'POOL BLOCKED, NOT SPEC-BROKEN (expected held feature)',reason:'all_matches_gated'});
   verifyMiss({ok:false,error:'no claimable work-item matched'});
   assert.throws(()=>verifyMiss({ok:false,error:'timeout',possiblyClaimed:true}));
   const holdStatement = "UPDATE harness_shared.work_items SET payload=jsonb_build_object('_claimHold',true) WHERE workspace_id=$1 AND feature_id=$2";
@@ -103,7 +106,11 @@ try {
     } catch {}
     await new Promise(resolve => setTimeout(resolve, 300));
   }
-  assert.ok(health, 'Private host never became ready');
+  assert.ok(health, 'Private host never served its liveness route');
+  const readinessResponse = await fetch(base + '/api/health/ready', {signal:AbortSignal.timeout(5000)});
+  const readiness = await readinessResponse.json();
+  assert.equal(readinessResponse.status, 200, 'Private Hono host readiness route did not return 200');
+  assert.equal(readiness.ready, true);
   await call(leader,'coord:whoami',{});
   const created = await call(leader,'fleet:create',{name:'private-filter-fleet'});
   const fleet = created.result.fleet?.slug ?? created.result.slug;
@@ -162,7 +169,7 @@ try {
   assert.equal(soloClaim.result.claimReceipt?.committed,true);
   assert.deepEqual((await claims()).map(row=>({...row})),[{feature_id:'WI-FILTER-SOLO',taken_by:solo}]);
   receipts.push({phase:'solo-issue-pickup',durationMs:soloClaim.durationMs,receipt:soloClaim.result.claimReceipt});
-  const proof = {health,workspace:ws,privateDatabase:true,receipts};
+  const proof = {health,readiness,workspace:ws,privateDatabase:true,receipts};
   writeFileSync(join(dir,'proof.json'),JSON.stringify(proof,null,2));
   console.log('FLEET_FILTER_API_PROOF=' + JSON.stringify(proof));
 } finally {
@@ -181,9 +188,16 @@ describe('WI-10002617: named fleet filtering through the private operator API', 
     try {
       symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir');
       const before = hash(join(root, claimSource));
+      // The host bundle's restricted-hold gate must use the same test-only
+      // census seam as the isolated runtime. Without this explicit empty
+      // census, the bundle subprocess probes the protected global org-admin
+      // database before the private PostgreSQL fixture starts.
+      const censusPath = join(dir, 'restricted-hold-census.json');
+      writeFileSync(censusPath, '[]\n');
       const build = spawnSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'),
         'bin/hono-host.ts', join(dir, 'hono-host.mjs')], {
         cwd: root, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: censusPath },
       });
       const buildEvidence = {
         status: build.status,
@@ -204,15 +218,26 @@ describe('WI-10002617: named fleet filtering through the private operator API', 
         cwd: root, encoding: 'utf8', timeout: 300_000, maxBuffer: 4 * 1024 * 1024,
         env: { ...process.env, FLEET_FILTER_PROOF_DIR: dir },
       });
-      writeFileSync(join(dir, 'journey.log'), (result.stdout ?? '') + (result.stderr ?? ''));
+      const journeyOutput = (result.stdout ?? '') + (result.stderr ?? '');
+      writeFileSync(join(dir, 'journey.log'), journeyOutput);
       expect(result.status, 'Private API proof failed; evidence: ' + dir + '\n' + result.stderr?.slice(-2000)).toBe(0);
+      const poolBudgetMatch = journeyOutput.match(/\[with-test-pg\] private pool budget (\{[^\n]+\})/);
+      expect(poolBudgetMatch, 'Isolated Hono journey did not report its private PG budget').not.toBeNull();
+      const poolBudget = JSON.parse(poolBudgetMatch![1]);
+      expect(poolBudget).toMatchObject({ maxConnections: 100, superuserReserved: 3, expectedProcesses: 3, poolMax: 4 });
+      const hostOutput = readFileSync(join(dir, 'host.log'), 'utf8');
+      const admissionRefusals = (journeyOutput + '\n' + hostOutput).match(
+        /sorry, too many clients already|remaining connection slots are reserved/gi,
+      ) ?? [];
+      expect(admissionRefusals, 'Private PostgreSQL refused an Hono connection').toHaveLength(0);
       expect(hash(join(root, claimSource)), 'Claim source changed during API proof').toBe(before);
       const proof = JSON.parse(readFileSync(join(dir, 'proof.json'), 'utf8'));
       expect(proof.receipts.map((row: { phase: string }) => row.phase)).toEqual([
         'feature-pickup', 'strict-miss', 'strict-miss', 'mixed-issue-pickup', 'solo-issue-pickup',
       ]);
       console.log('FLEET_FILTER_API_EVIDENCE=' + JSON.stringify({
-        dir, claimSourceSha256: before, bundleSha256: hash(join(dir, 'hono-host.mjs')), ...proof,
+        dir, claimSourceSha256: before, bundleSha256: hash(join(dir, 'hono-host.mjs')),
+        poolBudget, postgresAdmissionRefusals: admissionRefusals.length, ...proof,
       }));
     } finally {
       // Keep failed/successful receipts available for diagnosing the expensive

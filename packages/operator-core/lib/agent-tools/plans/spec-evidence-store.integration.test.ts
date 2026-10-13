@@ -725,6 +725,56 @@ describe('exact spec evidence bindings', () => {
       expect(stored.environment_fingerprint).toBe(expected);
     });
 
+  // EI-25847620673275477: a judge following the brief re-observes an isolated-integration
+  // proof with the cited measurement and no testRunId. Before the fix the store pinned the
+  // caller's environment (no run → no receipts), refused independent_fingerprint_mismatch,
+  // and a row that did name the run still lacked the plane the read side certifies.
+  it('adopts the cited test run, plane and run identity for an independent re-observation of an isolated run', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const runId = '20261013T000000Z-200';
+    const receipts = [{ runId, resultSha256: 'a'.repeat(64), sourceSha256: 'b'.repeat(64),
+      lifecycleSha256: 'c'.repeat(64) }];
+    const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+      testLayer: 'integration', passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+      commitSha: null, worktreeDirty: true, isolatedRuntimeReceipts: receipts };
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+      WHERE id = ${testRunId}`;
+    const currentMeasurement = { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'],
+      runtimeUnits: [`isolated-integration:${runId}`] };
+    const testRun = { id: testRunId, filePath: 'test/reconnect.test.ts' };
+    const implementer = await evidenceStore.bindSpecEvidence({
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-implementer', evidenceKind: 'test', evidenceRef: 'test/reconnect.test.ts', testRunId,
+      sourceFingerprint: 'source', details: { evidencePlane: 'live', testRun, currentMeasurement },
+    });
+    expect(implementer).toMatchObject({ status: 'created' });
+    const citedId = (implementer as { id: number }).id;
+    const judge = {
+      workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      actorId: 'su-judge', evidenceKind: 'independent-verification' as const, verifiesBindingId: citedId,
+      evidenceRef: 'test/reconnect.test.ts', sourceFingerprint: 'source',
+      environmentFingerprint: 'judge-supplied-runtime', details: { note: 'receipts re-read', currentMeasurement },
+    };
+
+    // A run other than the cited one cannot match, and the refusal names the run to use.
+    const { testRunId: otherRun } = await seedExternalEvidence('test/reconnect.test.ts');
+    const wrongRun = await evidenceStore.bindSpecEvidence({ ...judge, testRunId: otherRun });
+    expect(wrongRun).toMatchObject({ status: 'independent_fingerprint_mismatch', mismatched: ['environment'],
+      citedTestRunId: testRunId });
+    expect((wrongRun as { message: string }).message).toContain(`test-run ${testRunId}`);
+
+    const adopted = await evidenceStore.bindSpecEvidence(judge);
+    expect(adopted).toMatchObject({ status: 'created' });
+    const [row] = await db.sql<{ test_run_id: string; environment_fingerprint: string; details: Record<string, unknown> }[]>`
+      SELECT test_run_id, environment_fingerprint, details FROM harness_shared.spec_evidence_bindings
+       WHERE id = ${(adopted as { id: number }).id}`;
+    expect(Number(row.test_run_id)).toBe(testRunId);
+    expect(row.environment_fingerprint).toBe(createHash('sha256').update(JSON.stringify(receipts)).digest('hex'));
+    expect(row.details).toMatchObject({ note: 'receipts re-read', evidencePlane: 'live', testRun });
+  });
+
   it('pins only matching execution-time ledger witnesses and never a binding-time caller runtime', async () => {
     await specs.setSpecClause(clause({ mutationRequired: false }));
     const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');

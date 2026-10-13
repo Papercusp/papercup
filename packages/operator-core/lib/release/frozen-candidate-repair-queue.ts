@@ -818,12 +818,53 @@ export type FrozenRepairRetestDecision =
  * dropped entry's content is still reachable from the commits themselves. */
 export const FROZEN_REPAIR_ADMISSION_CAP = 200;
 
+/**
+ * Forward compatibility for APPEND-ONLY history entries (WI-6554700010009930).
+ *
+ * The parsers below rebuild each entry from the keys they know, so a key they do not know is
+ * lost on the next read-modify-write. Within one build that erased `admissions[].precheck`
+ * (fixed 2026-10-08). Across builds it recurs by construction: :3070 runs green `main` while
+ * bg-host and :3170 run staging, and all of them rewrite this one row. On 2026-10-13 every :3070
+ * admit stripped the `convergenceRounds[].executed` record the newer gate had just written.
+ *
+ * The known set is DERIVED, not listed: every key the parser READ while deciding an entry is
+ * known (kept when valid, deliberately dropped when not). Only keys it never touched are carried
+ * forward verbatim, so a value this build rejected is never revived. This is sound ONLY for
+ * entries no writer edits after appending them (rounds, admissions): a newer key there cannot go
+ * stale under an older writer. A new field on MUTABLE queue state must instead bump
+ * FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION, so an older reader fails closed
+ * (`schema-newer-than-reader`) rather than stripping or carrying a stale value.
+ */
+function trackEntryReads(entry: Record<string, unknown>): {
+  view: Record<string, unknown>;
+  unread: () => Record<string, unknown>;
+} {
+  const read = new Set<string>();
+  const view = new Proxy(entry, {
+    get(target, key, receiver) {
+      if (typeof key === 'string') read.add(key);
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  return {
+    view,
+    unread: () => {
+      const extra = Object.create(null) as Record<string, unknown>;
+      for (const [key, value] of Object.entries(entry)) {
+        if (!read.has(key) && value !== undefined) extra[key] = value;
+      }
+      return extra;
+    },
+  };
+}
+
 function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
   if (!Array.isArray(raw)) return [];
   const out: FrozenRepairAdmission[] = [];
   for (const v of raw) {
     if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
-    const e = v as Record<string, unknown>;
+    const tracked = trackEntryReads(v as Record<string, unknown>);
+    const e = tracked.view;
     const source = e.source as Record<string, unknown> | null | undefined;
     if (!validTimestamp(e.atMs) || !nonBlank(e.actor) || !nonBlank(e.fromRepairHead) || !nonBlank(e.toRepairHead)) continue;
     if (!source || typeof source !== 'object' || Array.isArray(source) || !nonBlank(source.ref) || !nonBlank(source.sha)) continue;
@@ -858,7 +899,7 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       typeof patch.parent === 'string' && /^[0-9a-f]{40,64}$/.test(patch.parent) &&
       typeof patch.sha256 === 'string' && /^[0-9a-f]{64}$/.test(patch.sha256);
     const precheck = parseAdmissionPrecheckRecord(e.precheck);
-    out.push({
+    const parsed: FrozenRepairAdmission = {
       atMs: e.atMs as number,
       actor: e.actor as string,
       source: { ref: source.ref as string, sha: source.sha as string },
@@ -879,7 +920,9 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       ...(foreignAgents ? { foreignAgents } : {}),
       ...(e.provenance === 'reconciled-from-ref' ? { provenance: e.provenance } : {}),
       ...(precheck ? { precheck } : {}),
-    });
+    };
+    // Built first, so every key the parser decides on has been read before `unread()` runs.
+    out.push({ ...tracked.unread(), ...parsed });
   }
   return out.slice(-FROZEN_REPAIR_ADMISSION_CAP);
 }
@@ -1730,19 +1773,22 @@ function parseConvergenceRounds(value: unknown): FrozenRepairConvergenceRound[] 
   const rounds: FrozenRepairConvergenceRound[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
-    const row = entry as Record<string, unknown>;
+    const tracked = trackEntryReads(entry as Record<string, unknown>);
+    const row = tracked.view;
     if (!Number.isInteger(row.round) || (row.round as number) < 1) continue;
     if (!nonBlank(row.head)) continue;
     if (!Number.isInteger(row.failingCount) || (row.failingCount as number) < 0) continue;
     if (!validTimestamp(row.atMs)) continue;
     const executed = normalizeRoundExecution(row.executed);
-    rounds.push({
+    const parsed: FrozenRepairConvergenceRound = {
       round: row.round as number,
-      head: row.head,
+      head: row.head as string,
       failingCount: row.failingCount as number,
       atMs: row.atMs as number,
       ...(executed ? { executed } : {}),
-    });
+    };
+    // Rounds are append-only history: carry a newer build's keys forward (see trackEntryReads).
+    rounds.push({ ...tracked.unread(), ...parsed });
   }
   return capConvergenceRounds(rounds);
 }

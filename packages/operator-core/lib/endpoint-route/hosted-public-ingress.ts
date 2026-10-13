@@ -73,6 +73,12 @@ export const HOSTED_INGRESS_FAMILIES: ReadonlyArray<HostedIngressFamily> = [
     why: 'The hosted browser surface; the plane checks its own session cookie.',
   },
   {
+    id: 'hosted-organizations',
+    expect: 'unpublished',
+    mountedPrefix: '/hosted/organizations/',
+    why: 'Organization member administration (directory bindings, access review). Not published yet: no tunnel rule or portal forward reaches /api/hosted/organizations/, and no client calls it. To publish it, add the tunnel rule and change this to control-plane.',
+  },
+  {
     id: 'workspace-connectors',
     expect: 'control-plane',
     mountedPrefix: '/hosted/workspaces/:workspaceId/connectors/',

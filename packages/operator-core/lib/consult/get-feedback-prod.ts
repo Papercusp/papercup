@@ -25,11 +25,19 @@ export async function acceptFeedbackRequestProd(
   request: GetFeedbackRequest, identity: AgentIdentity,
   options: Pick<GetFeedbackProdOptions, 'harnessSlug' | 'allowDispatch'> = {},
 ) {
-    const [{ getOrgPg }, { acceptFeedbackRequestCore }, conversations] = await Promise.all([
+    const [{ getOrgPg }, { acceptFeedbackRequestCore }, conversations, { publicManualSource }, { expertiseSubject }] = await Promise.all([
       import('@papercusp/db-org'), import('./get-feedback-core'), import('../agent-tools/coordination/conversations'),
+      import('../agent-tools/docs/_public-manual'), import('./relevance-router'),
     ]);
+    const sourceRefs = request.subjectRefs?.length ? request.subjectRefs :
+      expertiseSubject(request.question) ? [expertiseSubject(request.question)!] : [];
+    const subjectExpansion = sourceRefs.length ? await publicManualSource().expandSubjectRefs(sourceRefs) : null;
     const payload = { ...request, harnessSlug: request.harnessSlug || options.harnessSlug || undefined,
-      allowDispatch: options.allowDispatch !== false };
+      allowDispatch: options.allowDispatch !== false,
+      ...(subjectExpansion ? {
+        resolvedSubjectRefs: subjectExpansion.refs,
+        unresolvedSubjectRefs: subjectExpansion.unresolvedDocuments,
+      } : {}) };
     const accepted = await acceptFeedbackRequestCore(payload, {
       getSql: () => getOrgPg().sql,
       open: async (input) => {

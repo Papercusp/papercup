@@ -419,12 +419,12 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
     # a killed sweep is not a complete answer, so it is reported as such rather
     # than folded into the clean case.
     if [ "$rc" = 124 ]; then
-      DEEP_STATUS="TIMEOUT"
-      DEEP_FAILURE_DETAIL="$root: status 124 (timeout)"
+      [ "$DEEP_STATUS" = "ERROR" ] || DEEP_STATUS="TIMEOUT"
+      DEEP_FAILURE_DETAIL="${DEEP_FAILURE_DETAIL:+$DEEP_FAILURE_DETAIL; }$root: status 124 (timeout)"
       log "tier2: TIMED OUT after ${KEYPERM_DEEP_TIMEOUT_S}s under $root — result INDETERMINATE, not clean."
     elif [ "$rc" != 0 ]; then
       DEEP_STATUS="ERROR"
-      DEEP_FAILURE_DETAIL="$root: command status $rc"
+      DEEP_FAILURE_DETAIL="${DEEP_FAILURE_DETAIL:+$DEEP_FAILURE_DETAIL; }$root: command status $rc"
       log "tier2: scan command failed with status $rc under $root — result INDETERMINATE, not clean."
     fi
     while IFS= read -r f; do

@@ -32,6 +32,7 @@ vi.mock('../../consult/get-feedback-core', () => ({
 }));
 vi.mock('../../consult/relevance-router', () => ({
   DEFAULT_RECENCY_HALF_LIFE_DAYS: 7,
+  expertiseSubject: () => null,
   routeConsult: h.routeConsult,
 }));
 vi.mock('../search/embedder', () => ({
@@ -199,6 +200,28 @@ describe('consult:get_feedback requester guidance', () => {
     for (const request_key of ['', '   ', 'x'.repeat(201)]) {
       expect(tool.args.safeParse({ question: 'Retry the persisted request', request_key }).success).toBe(false);
     }
+  });
+
+  it('accepts an uncapped subject_refs list and persists expanded public-manual anchors before routing', async () => {
+    const manyRefs = Array.from({ length: 1_024 }, (_, index) => `packages/example/source-${index}.ts`);
+    expect(tool.args.safeParse({ question: 'Review all requested sources', subject_refs: manyRefs }).success).toBe(true);
+
+    const faqPath = 'apps/papercusp-docs/src/content/docs/faq.mdx';
+    await call('proceed', { subject_refs: [faqPath] });
+    const accepted = h.acceptFeedbackRequestCore.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(accepted).toMatchObject({
+      subjectRefs: [faqPath],
+      resolvedSubjectRefs: [
+        'packages/operator-core/lib/auth/hosted/self-signup.ts',
+        'packages/operator-core/lib/auth/hosted/billing/entitlement-seam.ts',
+        'packages/operator-core/lib/agent-tools/mode/set.ts',
+        'packages/operator-core/lib/workspace-host/hosted-provider-delegation.ts',
+        'packages/operator-core/lib/agent-tools/access/create.ts',
+        'packages/operator-core/lib/agent-tools/backup/snapshot_create.ts',
+        'packages/operator-core/lib/agent-tools/backup/restore.ts',
+      ],
+      unresolvedSubjectRefs: [],
+    });
   });
 
   it('passes the retry key and payload through the public handler to durable acceptance', async () => {

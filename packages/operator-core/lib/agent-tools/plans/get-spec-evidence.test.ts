@@ -270,4 +270,55 @@ describe('plans:get-spec-evidence detail levels', () => {
     });
     expect(result.evidence).toHaveLength(3);
   });
+
+  it('narrows detail:full passedCaseTitles to the declared cases, with the total and a ledger ref (WI-6554700010009931)', async () => {
+    const base = binding(7, 'SPEC-A', 'current');
+    const adequacy = (base.details as { adequacy: Record<string, unknown> }).adequacy;
+    const execution = {
+      status: 'pass',
+      passed: 400,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      filePath: 'packages/x.test.ts',
+      passedCaseTitles: Array.from({ length: 400 }, (_value, index) => `suite > case ${index}`),
+    };
+    const declared = {
+      ...base,
+      details: { ...base.details, adequacy: { ...adequacy, testCases: ['case 3', 'suite > case 17'] } },
+      testRunExecution: execution,
+    } as EvidenceRow;
+    const llm = { ...declared, id: 8, testRunExecution: { ...execution, testLayer: 'llm' } } as EvidenceRow;
+    const fullyDeclared = {
+      ...base,
+      id: 9,
+      details: { ...base.details, adequacy: { ...adequacy, testCases: ['only'] } },
+      testRunExecution: { ...execution, passed: 1, passedCaseTitles: ['suite > only'] },
+    } as EvidenceRow;
+    listEvidence.mockResolvedValue([declared, llm, fullyDeclared]);
+
+    const full = await call({ harness: 'papercusp', slug: 'plan-a', detail: 'full' });
+
+    // Only titles a declared case matches survive (a whole-segment suffix: 'case 3' keeps
+    // 'suite > case 3' and not 'suite > case 30'); the counters say how many were dropped.
+    expect(full.evidence[0].testRunExecution).toEqual({
+      ...execution,
+      passedCaseTitles: ['suite > case 3', 'suite > case 17'],
+      passedCaseTitleCount: 400,
+      passedCaseTitlesOmitted: 398,
+      passedCaseTitlesRef: { tool: 'testing:runs', args: { testRunIds: [1007], cases: true } },
+    });
+    // LLM-layer cases are corroborated by scenario, not title: untouched.
+    expect(full.evidence[1].testRunExecution.passedCaseTitles).toHaveLength(400);
+    expect(full.evidence[1].testRunExecution).not.toHaveProperty('passedCaseTitleCount');
+    // Nothing to omit: the row is returned as stored.
+    expect(full.evidence[2]).toEqual(fullyDeclared);
+    // The store rows the adequacy evaluator reads are not mutated.
+    expect(declared.testRunExecution?.passedCaseTitles).toHaveLength(400);
+    expect(JSON.stringify(full.evidence[0]).length).toBeLessThan(JSON.stringify(declared).length / 2);
+
+    // The summary tier never carried titles and is unchanged.
+    const summary = await call({ harness: 'papercusp', slug: 'plan-a' });
+    expect(summary.evidence[0]).not.toHaveProperty('testRunExecution');
+  });
 });

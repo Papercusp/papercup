@@ -72,15 +72,16 @@ const deps = (embedTheta: number | null, over: Partial<ConsultRouteDeps> = {}): 
 });
 
 let turnSeq = 0;
-async function insertTurn(owner: string, theta: number, tsMsAgo: number, over: { verdict?: string } = {}) {
+async function insertTurn(owner: string, theta: number, tsMsAgo: number, over: { verdict?: string; text?: string } = {}) {
   turnSeq += 1;
+  const text = over.text ?? `turn ${turnSeq} of ${owner}`;
   await rootSql`
     INSERT INTO harness_shared.session_turns
       (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text,
        text_embedding, text_embedding_mode, text_embedding_profile, turn_origin_verdict)
     VALUES ('default', 'claude', ${'sess-' + owner}, ${turnSeq},
             ${new Date(NOW.getTime() - tsMsAgo).toISOString()}::timestamptz,
-            ${owner}, 'assistant', ${'turn ' + turnSeq + ' of ' + owner},
+            ${owner}, 'assistant', ${text},
             ${JSON.stringify(vecAt(theta))}::vector,
             'gemma', ${EMBEDDER_DIM_SPECS.gemma.profileId},
             ${over.verdict ?? null})`;
@@ -303,7 +304,11 @@ describe('bounded subject evidence against real transcript SQL', () => {
     const gate = result.snapshot.candidates.find(c => c.ownerId === 'subject-gate')!;
     expect(gate.signals.similarity).toBe(1);
     expect(snapshotCandidateQualifies(result.snapshot, gate)).toBe(false);
-    expect(snapshotCandidateQualifies(result.snapshot, { ...gate, subjectEvidence: undefined })).toBe(true);
+    expect(snapshotCandidateQualifies(result.snapshot, {
+      ...gate,
+      subjectEvidence: undefined,
+      subjectEvidenceCoverage: undefined,
+    })).toBe(true);
     expect(result.snapshot.subjectValidation?.unmeasured).toBe(0);
   });
 
@@ -545,6 +550,57 @@ describe('routeConsult — routing + blend', () => {
     expect(lexicalScoped.snapshot.candidates.map((candidate) => candidate.ownerId)).toEqual([
       'reviewer-on-target-rubric',
     ]);
+  });
+
+  it('requires supported evidence for every resolved anchor and fails closed on incomplete documents', async () => {
+    const owners = ['manual-anchor-complete', 'manual-anchor-partial'];
+    const subjectRefs = ['src/billing.ts', 'src/backup.ts'];
+    const question = 'Review the public manual source anchors for billing and backup behavior.';
+    try {
+      await insertTurn(owners[0]!, 0.1, DAY, { text: 'Reviewed billing reconciliation and backup recovery in production.' });
+      await insertTurn(owners[1]!, 0.12, DAY, { text: 'Reviewed billing reconciliation in production.' });
+
+      const scoreCoverage = async (subject: string, texts: string[]) => {
+        const topic = subject === 'src/billing.ts' ? 'billing' : 'backup';
+        return texts.map(text => text.includes(topic) ? 0.95 : 0.1);
+      };
+      const covered = await routeConsult({ ...baseParams, question, subjectRefs }, deps(0, {
+        scoreSubjectEvidence: scoreCoverage,
+      }));
+
+      expect(covered.snapshot.subjectRefs).toEqual(subjectRefs);
+      expect(covered.qualified.map(candidate => candidate.ownerId)).toEqual(['manual-anchor-complete']);
+      expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-complete')?.subjectEvidenceCoverage)
+        .toMatchObject({ status: 'supported', required: subjectRefs, unresolved: [] });
+      expect(covered.snapshot.candidates.find(candidate => candidate.ownerId === 'manual-anchor-partial')?.subjectEvidenceCoverage)
+        .toMatchObject({
+          status: 'mismatch',
+          evidence: [
+            { subject: 'src/billing.ts', status: 'supported' },
+            { subject: 'src/backup.ts', status: 'mismatch' },
+          ],
+        });
+
+      const incomplete = await routeConsult({
+        ...baseParams,
+        question,
+        subjectRefs,
+        unresolvedSubjectRefs: ['apps/papercusp-docs/src/content/docs/incomplete.mdx'],
+      }, deps(0, { scoreSubjectEvidence: scoreCoverage }));
+      expect(incomplete.qualified).toEqual([]);
+      expect(incomplete.snapshot.unresolvedSubjectRefs).toEqual(['apps/papercusp-docs/src/content/docs/incomplete.mdx']);
+      expect(incomplete.snapshot.subjectValidation).toMatchObject({
+        subjects: subjectRefs,
+        unresolved: ['apps/papercusp-docs/src/content/docs/incomplete.mdx'],
+        unmeasured: expect.any(Number),
+      });
+      expect(incomplete.snapshot.subjectValidation?.unmeasured).toBeGreaterThanOrEqual(2);
+      const checked = incomplete.snapshot.candidates.filter(candidate => candidate.subjectEvidenceCoverage);
+      expect(checked.length).toBeGreaterThanOrEqual(2);
+      expect(checked.every(candidate => candidate.subjectEvidenceCoverage?.status === 'unmeasured')).toBe(true);
+    } finally {
+      await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${owners}::text[])`;
+    }
   });
 
   it('R-13/D-001: 40 days of idleness does NOT disqualify — beta still clears the floor, it just ranks last', async () => {

@@ -39,6 +39,29 @@ describe('canonical public manual retrieval', () => {
     expect(await getPublicManual({ slugs: ['faq'], source: true }, source)).toMatchObject({ error: 'public_source_read_forbidden' });
   });
 
+  it('expands a public manual document path into each declared source anchor', async () => {
+    const source = createPublicManualSource(resolve(import.meta.dirname, '../../../../../apps/papercusp-docs/src/content/docs'));
+    const expansion = await source.expandSubjectRefs(['apps/papercusp-docs/src/content/docs/faq.mdx']);
+    expect(expansion).toEqual({
+      refs: [
+        'packages/operator-core/lib/auth/hosted/self-signup.ts',
+        'packages/operator-core/lib/auth/hosted/billing/entitlement-seam.ts',
+        'packages/operator-core/lib/agent-tools/mode/set.ts',
+        'packages/operator-core/lib/workspace-host/hosted-provider-delegation.ts',
+        'packages/operator-core/lib/agent-tools/access/create.ts',
+        'packages/operator-core/lib/agent-tools/backup/snapshot_create.ts',
+        'packages/operator-core/lib/agent-tools/backup/restore.ts',
+      ],
+      unresolvedDocuments: [],
+    });
+  });
+
+  it('marks a public document without usable source anchors as incomplete', async () => {
+    const source = createPublicManualSource(root);
+    const expansion = await source.expandSubjectRefs(['faq.mdx', 'src/direct.ts']);
+    expect(expansion).toEqual({ refs: ['src/direct.ts'], unresolvedDocuments: ['faq.mdx'] });
+  });
+
   it('invalidates rendered answers and search metadata when canonical bytes change', async () => {
     const source = createPublicManualSource(root);
     const before = await getPublicManual({ slugs: ['faq'] }, source);

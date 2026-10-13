@@ -63,6 +63,7 @@ export default defineTool({
   args: z.object({
     request_key: z.string().trim().min(1).max(200).optional().describe('Stable retry identity scoped to your workspace and requester. Reuse with the same question/options after a timeout. A different payload under the same key refuses; use a new key for a fresh consult. Omitted keys deduplicate identical requests.'),
     question: hardText(LIMITS.ANNOTATION).describe('The new question to route. This tool opens a new consult; to read an existing conversation, use conversations:get { id }. Name concrete files/symbols where relevant — authorship of the code in question is a routing signal.'),
+    subject_refs: z.array(z.string().trim().min(1)).optional().describe('Source refs whose transcript evidence must each support floor qualification. Public manual document paths expand through their documents: frontmatter anchors; unresolved or unmeasured anchors stay below the floor. There is no per-array count cap.'),
     tried: hardText(LIMITS.ANNOTATION).optional().describe('What you already tried (grounds the responder; avoids re-suggesting it).'),
     observed: hardText(LIMITS.ANNOTATION).optional().describe('What you observed (evidence, not interpretation).'),
     decision_at_stake: hardText(LIMITS.ANNOTATION).optional().describe('The decision this consult informs — the requester owns it (advice, not consensus).'),
@@ -158,6 +159,7 @@ export default defineTool({
       requesterId: identity.ownerId,
       requestKey: args.request_key,
       question: args.question,
+      subjectRefs: args.subject_refs,
       tried: args.tried,
       observed: args.observed,
       decisionAtStake: args.decision_at_stake,

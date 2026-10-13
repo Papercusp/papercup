@@ -405,6 +405,16 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     // Signup is additionally gated in-handler: first-account bootstrap, then
     // the OPEN_SIGNUP flag (default OFF).
     'POST /auth/signup',
+    // Documenso e-signature completion (routes/pot/contracts.ts). The self-hosted
+    // Documenso server POSTs here from its own host, so loopback would break signing.
+    // The handler authenticates every delivery: verifyWebhook constant-time compares
+    // X-Documenso-Secret with DOCUMENSO_WEBHOOK_SECRET and refuses invalid_webhook (a
+    // secret under 24 chars is not_configured). completed() uses the body only to find
+    // the contract: it re-reads the envelope with the API key, matches both signers to
+    // the contract, and downloads the sealed PDF and certificate itself (documenso.ts).
+    // Added 2026-10-13 (WI-6554700010009809) on the gate-lint-green fleet leader's AUTO
+    // ruling: a disclosed agent decision, not an owner-typed sign-off.
+    'POST /dao-hr/documenso/webhook',
     'DELETE /device/desktop/devices/:deviceId',
     'POST /device/desktop/mint-pair-token',
     'POST /device/pair',

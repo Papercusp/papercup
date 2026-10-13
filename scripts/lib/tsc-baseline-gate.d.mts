@@ -967,22 +967,38 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates }:
     unknown: string[];
 };
 /**
+ * The `filesUnchecked` count of a delegate whose FINAL marker reads `status=out-of-scope`, else
+ * null. The final marker belongs to the delegate itself, after any nested child markers.
+ *
+ * @param {unknown} stdout
+ * @returns {number | null}
+ */
+export function outOfScopeUncheckedCount(stdout: unknown): number | null;
+/**
  * Execute an already-validated set of owning gates and return the first non-zero status.
  *
  * The environment marker prevents a malformed workspace script from recursively routing back
  * into this gate forever. A routed child owns the actual verdict; this caller only aggregates its
  * exit status. `execFile` is injectable for unit tests and never receives a shell command string.
  *
- * @param {{root: string, routes: {args: string[]}[], execFile?: Function, onUnchecked?: (count: number) => void}} opts
+ * `outOfScopeIsUnchecked` (WI-6554700010009876) is for the MIXED branch only: a delegate whose own
+ * final marker reads `status=out-of-scope` compiled NONE of its files and exits 1, which is a
+ * coverage gap rather than a type error. With the flag set, that delegate's `filesUnchecked` is
+ * reported through `onUnchecked` and it is not counted as a failure, so the caller's own compile
+ * still gives its verdict. Without the flag (the all-routed branch, where nothing else compiles)
+ * it stays a failure, because exiting 0 there would claim a check that never happened.
+ *
+ * @param {{root: string, routes: {args: string[]}[], execFile?: Function, onUnchecked?: (count: number) => void, outOfScopeIsUnchecked?: boolean}} opts
  * @returns {number}
  */
-export function runAutoTypecheckRoutes({ root, routes, execFile, onUnchecked }: {
+export function runAutoTypecheckRoutes({ root, routes, execFile, onUnchecked, outOfScopeIsUnchecked }: {
     root: string;
     routes: {
         args: string[];
     }[];
     execFile?: Function;
     onUnchecked?: (count: number) => void;
+    outOfScopeIsUnchecked?: boolean;
 }): number;
 /**
  * Which consumer legs must judge which named files.

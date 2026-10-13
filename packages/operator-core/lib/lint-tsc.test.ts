@@ -4098,6 +4098,37 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         expect((invocations[0].options.env as Record<string, string>).PAPERCUSP_TSC_AUTO_ROUTE).toBe('1');
       });
 
+      it('an OUT-OF-SCOPE delegate is unchecked files only when the mixed branch opts in (WI-6554700010009876)', () => {
+        const routes = [{ args: ['run', '--workspace', 'pkg-b', 'typecheck'] }];
+        const childExit = (marker: string) => (): never => {
+          throw Object.assign(new Error('child exit 1'), { status: 1, stdout: `${marker}\n` });
+        };
+        const outOfScope = childExit('LINT_TSC_RESULT label=fixture-delegate scope=files exit=1 status=out-of-scope filesUnchecked=2');
+        const unchecked: number[] = [];
+        // Mixed branch: the caller still owes its own compile, so a gap must not short-circuit it.
+        expect(
+          runAutoTypecheckRoutes({ root: '/repo', routes, execFile: outOfScope, onUnchecked: (n: number) => unchecked.push(n), outOfScopeIsUnchecked: true }),
+        ).toBe(0);
+        expect(unchecked).toEqual([2]);
+        // All-routed branch (no opt-in): nothing else will compile, so exit 0 would claim a check that never ran.
+        expect(runAutoTypecheckRoutes({ root: '/repo', routes, execFile: outOfScope, onUnchecked: () => {} })).toBe(1);
+        // A delegate that really failed stays a failure even with the opt-in.
+        const regressed = childExit('LINT_TSC_RESULT label=fixture-delegate scope=files exit=1 status=regressed');
+        expect(
+          runAutoTypecheckRoutes({ root: '/repo', routes, execFile: regressed, onUnchecked: () => {}, outOfScopeIsUnchecked: true }),
+        ).toBe(1);
+        // Only the delegate's FINAL marker counts: a nested child's out-of-scope line does not excuse its parent's red.
+        const nested = (): never => {
+          throw Object.assign(new Error('child exit 1'), {
+            status: 1,
+            stdout: 'LINT_TSC_RESULT label=inner scope=files exit=1 status=out-of-scope filesUnchecked=1\nLINT_TSC_RESULT label=outer scope=files exit=1 status=regressed\n',
+          });
+        };
+        expect(
+          runAutoTypecheckRoutes({ root: '/repo', routes, execFile: nested, onUnchecked: () => {}, outOfScopeIsUnchecked: true }),
+        ).toBe(1);
+      });
+
       it('plans a standalone package as npm --prefix and a workspace package as npm run --workspace (WI-10003822)', () => {
         expect(workspaceTypecheckArgs('tools/solo', true)).toEqual(['--prefix', 'tools/solo', 'run', 'typecheck']);
         expect(workspaceTypecheckArgs('apps/operator', false)).toEqual(['run', '--workspace', 'apps/operator', 'typecheck']);
@@ -4721,6 +4752,20 @@ describe('EI-21985804122617157 - mixed --files sets delegate instead of silently
       // It must NOT read `regressed`: this gate's own compile never ran, so blaming
       // operator-core would point the caller at a file that was never judged.
       expect(out).not.toContain('status=regressed');
+    });
+
+    // WI-6554700010009876: a delegate that compiled NONE of its files also exits 1, but its own
+    // marker says status=out-of-scope. That is a coverage gap, not a type error, so this gate's
+    // own compile must still run and the run reads partial, never routed-failed.
+    it('an OUT-OF-SCOPE delegate does not short-circuit the own compile: partial, never routed-failed', () => {
+      const { out, code } = runMixedGate(
+        'node -e "console.log(\'LINT_TSC_RESULT label=fixture-delegate scope=files exit=1 status=out-of-scope filesUnchecked=1\'); process.exit(1)"',
+      );
+      expect(out).toContain('label=fixture-delegate');
+      expect(out).not.toContain('status=routed-failed');
+      // THIS gate's own marker: its covered file was compiled and the routed file is reported unchecked.
+      expect(out).toMatch(/LINT_TSC_RESULT label=test scope=files exit=0 status=partial\b[^\n]*filesUnchecked=1\b/);
+      expect(code).toBe(0);
     });
 
     // THE FALSIFIABILITY CONTROL, and a real guard in its own right.

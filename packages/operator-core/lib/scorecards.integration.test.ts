@@ -1297,3 +1297,53 @@ describe('human market canonical review readers — real PG', () => {
     // This fixture attests persistence only; it never transfers money or accepts E3.
   });
 });
+
+describe('listScorecardPage provisionalOnly (WI-6554700010009935) — real PG', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+  });
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  // The grading-integrity terminal-re-rate drill needs only the interim (provisional)
+  // cards for one subject. Without a server-side filter judges paged 200-500 terminal
+  // cards (1.6-4MB per read) to find them.
+  it('returns only cards whose observation.provisional is an object, newest-first, composed with subjectRef', async () => {
+    const RUBRIC = 'test-provisional-only';
+    const insert = async (issueId: string, observation: Record<string, unknown>, at: string) => {
+      await db.adminSql`
+        INSERT INTO harness_shared.engineer_issues
+          (workspace_id, issue_id, kind, scope, title, body, severity, source,
+           state, payload, created_by, signal_origin, created_at, updated_at)
+        VALUES (
+          ${issuesScopeWorkspace()}, ${issueId}, 'change',
+          'harness:papercusp', ${`scorecard ${issueId}`}, '', 'minor', 'test',
+          'done',
+          ${JSON.stringify({ observation: { rubricRef: RUBRIC, sourceHive: 'papercusp', ...observation } })}::text::jsonb,
+          'su-test', 'organic',
+          ${at}::timestamptz, ${at}::timestamptz
+        )`;
+    };
+    const ratings = { honesty: { rating: 'pass', evidence: 'ran the probe' } };
+    const provisional = { violatableKeys: ['honesty'], stampedAt: '2026-10-13T01:00:00.000Z' };
+    await insert('EI-PROV-A1', { ratings, subject: { kind: 'agent-run', ref: 'run-a' }, provisional }, '2026-10-13T01:00:00.000Z');
+    await insert('EI-PROV-A2', { ratings, subject: { kind: 'agent-run', ref: 'run-a' }, provisional }, '2026-10-13T02:00:00.000Z');
+    await insert('EI-TERM-A', { ratings, subject: { kind: 'agent-run', ref: 'run-a' } }, '2026-10-13T03:00:00.000Z');
+    await insert('EI-PROV-B', { ratings, subject: { kind: 'agent-run', ref: 'run-b' }, provisional }, '2026-10-13T04:00:00.000Z');
+    // A JSON null stamp is not a provisional card.
+    await insert('EI-NULL-B', { ratings, subject: { kind: 'agent-run', ref: 'run-b' }, provisional: null }, '2026-10-13T05:00:00.000Z');
+
+    const ids = async (filter: Parameters<typeof listScorecardPage>[0]) =>
+      (await listScorecardPage({ rubricRef: RUBRIC, ...filter })).rows.map((row) => row.issueId);
+
+    expect(await ids({})).toEqual(['EI-NULL-B', 'EI-PROV-B', 'EI-TERM-A', 'EI-PROV-A2', 'EI-PROV-A1']);
+    expect(await ids({ provisionalOnly: true })).toEqual(['EI-PROV-B', 'EI-PROV-A2', 'EI-PROV-A1']);
+    expect(await ids({ provisionalOnly: true, subjectRef: 'run-a' })).toEqual(['EI-PROV-A2', 'EI-PROV-A1']);
+    expect(await ids({ provisionalOnly: false, subjectRef: 'run-a' })).toEqual(['EI-TERM-A', 'EI-PROV-A2', 'EI-PROV-A1']);
+  });
+});

@@ -178,6 +178,47 @@ exit 4
     expect(r.stderr).toMatch(/VH_DISABLED harness=linear reason=evidence-root-unwritable/);
   });
 
+  it.each([0, 7])('keeps instrumentation with a long TMPDIR and exit %i', (exitCode) => {
+    const parent = tmp();
+    const longTmp = path.join(parent, 'x'.repeat(150));
+    mkdirSync(longTmp);
+    let r: ReturnType<typeof run> | undefined;
+    try {
+      r = run(`
+vh_scope long-tmpdir
+${chain}
+vh_preflight
+vh_begin prep
+vh_begin build
+${exitCode ? 'exit 7' : 'vh_begin ship'}
+`, {
+        TMPDIR: longTmp,
+        VH_TSX: '',
+        VH_FAIL_OPEN: '1',
+        VH_GUARD_RAIL_SOURCE: `echo '[{"key":"long-tmpdir-probe","command":"echo probe-executed","expect":{"exitCode":0,"stdoutIncludes":"probe-executed"},"scope":["long-tmpdir"]}]'`,
+      });
+      expect(r.code).toBe(exitCode);
+      expect(r.stderr).not.toContain('VH_DISABLED');
+      expect(r.stderr).not.toMatch(/createIpcServer|listen EINVAL/);
+      expect(r.stdout).toContain('VH_GUARD_RAIL key=long-tmpdir-probe status=holds');
+      expect(r.stdout).toMatch(new RegExp(`HARNESS_RESULT harness=linear verdict=${exitCode ? 'fail' : 'pass'}`));
+      expect(r.result).not.toBeNull();
+      expect(r.result.guardRails).toMatchObject({ selected: 1, results: [{ key: 'long-tmpdir-probe', ok: true }] });
+      expect(r.rows).toEqual(exitCode ? [
+        ['prep', 'passed', null, null],
+        ['build', 'failed', null, 'exit-7'],
+        ['ship', 'blocked', null, 'aborted:build:exit-7'],
+      ] : [
+        ['prep', 'passed', null, null],
+        ['build', 'passed', null, null],
+        ['ship', 'passed', null, null],
+      ]);
+    } finally {
+      if (r) rmSync(r.root, { recursive: true, force: true });
+      rmSync(parent, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   // WI-10004050: cli.ts gated main() on argv[1] === import.meta.url's path. Reached through a
   // symlinked checkout those differ (link vs real file), so the CLI exited 0 printing nothing:
   // an empty plan, then a finalize that never wrote a result.

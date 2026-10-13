@@ -146,9 +146,15 @@ describe('OPERATOR_HTTP_ROUTE_ALLOWLIST — awaitsRouteBudget', () => {
 });
 
 describe('native Settings route coverage', () => {
-  it('resolves Autonomy save to the existing authenticated admin handler', () => {
+  it('resolves Autonomy save to the existing admin handler, which admits the relayed loopback caller', () => {
     const route = ALL_ROUTES.find((entry) => entry.method === 'POST' && entry.path === '/admin/inbox/:verb');
-    expect(route).toMatchObject({ auth: { trust: ['verified', 'trusted'] } });
+    // The relay forwards to loopback with no bearer and no cookie (rule 2 in
+    // hosted-operator-http.ts), so the operator resolves a relayed save as
+    // `unverified-loopback`. A VT-only handler 403s it. That was this route's tier
+    // until WI-6554700010009809, while the relay test below mocks the operator and
+    // could not notice. The boundary is the relay allowlist plus the handler's
+    // requireAllowedOriginOr403. The desktop webview's bare fetch needs the same tier.
+    expect(route).toMatchObject({ auth: { trust: ['verified', 'trusted', 'unverified-loopback'] } });
     expect(decideOperatorHttpRoute('POST', '/api/admin/inbox/automation-policy')).toMatchObject({ ok: true });
   });
 

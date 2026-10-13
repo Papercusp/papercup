@@ -2209,16 +2209,39 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates = 
 }
 
 /**
+ * The `filesUnchecked` count of a delegate whose FINAL marker reads `status=out-of-scope`, else
+ * null. The final marker belongs to the delegate itself, after any nested child markers.
+ *
+ * @param {unknown} stdout
+ * @returns {number | null}
+ */
+export function outOfScopeUncheckedCount(stdout) {
+  if (stdout == null) return null;
+  const markers = String(stdout).split(/\r?\n/).filter((line) => line.startsWith('LINT_TSC_RESULT '));
+  const last = markers.at(-1) ?? '';
+  if (!/\bstatus=out-of-scope\b/.test(last)) return null;
+  const count = /\bfilesUnchecked=(\d+)\b/.exec(last);
+  return count ? Number(count[1]) : null;
+}
+
+/**
  * Execute an already-validated set of owning gates and return the first non-zero status.
  *
  * The environment marker prevents a malformed workspace script from recursively routing back
  * into this gate forever. A routed child owns the actual verdict; this caller only aggregates its
  * exit status. `execFile` is injectable for unit tests and never receives a shell command string.
  *
- * @param {{root: string, routes: {args: string[]}[], execFile?: Function, onUnchecked?: (count: number) => void}} opts
+ * `outOfScopeIsUnchecked` (WI-6554700010009876) is for the MIXED branch only: a delegate whose own
+ * final marker reads `status=out-of-scope` compiled NONE of its files and exits 1, which is a
+ * coverage gap rather than a type error. With the flag set, that delegate's `filesUnchecked` is
+ * reported through `onUnchecked` and it is not counted as a failure, so the caller's own compile
+ * still gives its verdict. Without the flag (the all-routed branch, where nothing else compiles)
+ * it stays a failure, because exiting 0 there would claim a check that never happened.
+ *
+ * @param {{root: string, routes: {args: string[]}[], execFile?: Function, onUnchecked?: (count: number) => void, outOfScopeIsUnchecked?: boolean}} opts
  * @returns {number}
  */
-export function runAutoTypecheckRoutes({ root, routes, execFile = execFileSync, onUnchecked }) {
+export function runAutoTypecheckRoutes({ root, routes, execFile = execFileSync, onUnchecked, outOfScopeIsUnchecked = false }) {
   if (!Array.isArray(routes) || routes.length === 0) return 1;
   let firstFailure = 0;
   for (const route of routes) {
@@ -2239,6 +2262,11 @@ export function runAutoTypecheckRoutes({ root, routes, execFile = execFileSync, 
       }
     } catch (error) {
       if (onUnchecked && error?.stdout) process.stdout.write(error.stdout);
+      const outOfScope = outOfScopeIsUnchecked && onUnchecked ? outOfScopeUncheckedCount(error?.stdout) : null;
+      if (outOfScope !== null) {
+        onUnchecked(outOfScope);
+        continue;
+      }
       const status = Number.isInteger(error?.status) && error.status > 0 ? error.status : 1;
       if (firstFailure === 0) firstFailure = status;
     } finally {
@@ -3423,9 +3451,14 @@ export async function runTscBaselineGate({
         // verdict, which is the same false-coverage claim in the opposite direction.
         if (canAutoRoute) {
           let routeUnchecked = 0;
+          // An OUT-OF-SCOPE delegate (it compiled none of its files) is neither outcome above: it
+          // is a coverage gap, so its files count as unchecked and this gate's own compile still
+          // decides (`partial`, or `regressed` on a real red), never `routed-failed`
+          // (WI-6554700010009876).
           const routedExit = runAutoTypecheckRoutes({
             root, routes: autoRoutes.routes,
             onUnchecked: (count) => { routeUnchecked = Math.min(uncovered.length, routeUnchecked + count); },
+            outOfScopeIsUnchecked: true,
           });
           if (routedExit !== 0) {
             autoRouted = true;

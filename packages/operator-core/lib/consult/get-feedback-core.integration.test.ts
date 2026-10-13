@@ -1983,6 +1983,34 @@ describe('getFeedbackCore — subjectRef routing', () => {
     expect(routeCalls).toHaveLength(1);
     expect(routeCalls[0]?.subjectRef).toBe('acceptance-x');
   });
+
+  it('persists and forwards the complete expanded source-ref set', async () => {
+    const fixture = makeDeps(routeOf([cand('agent-anchor-reviewer')]));
+    const request: GetFeedbackRequest = {
+      ...baseReq,
+      requestKey: 'subject-ref-expansion-persistence',
+      subjectRefs: ['apps/papercusp-docs/src/content/docs/faq.mdx'],
+      resolvedSubjectRefs: ['src/billing.ts', 'src/backup.ts'],
+      unresolvedSubjectRefs: ['apps/papercusp-docs/src/content/docs/incomplete.mdx'],
+    };
+
+    const accepted = await acceptFeedbackRequestCore(request, fixture.deps);
+    const stored = await rootSql`
+      SELECT routing->'request'->'payload' AS payload
+      FROM harness_shared.consult_state
+      WHERE workspace_id = ${WS} AND conversation_id = ${accepted.conversation_id}`;
+    expect(stored[0]?.payload).toMatchObject({
+      subjectRefs: request.subjectRefs,
+      resolvedSubjectRefs: request.resolvedSubjectRefs,
+      unresolvedSubjectRefs: request.unresolvedSubjectRefs,
+    });
+
+    asOk(await getFeedbackCore(request, fixture.deps));
+    expect(fixture.routeCalls[0]).toMatchObject({
+      subjectRefs: request.resolvedSubjectRefs,
+      unresolvedSubjectRefs: request.unresolvedSubjectRefs,
+    });
+  });
 });
 
 // ── P-005: recursion lineage — depth + cycle refusal (D-005 / D-007 §7) ──

@@ -647,6 +647,8 @@ describe('dispatchPendingGradingAudits', () => {
     expect(brief).toContain("If a single blob's full chain might approach the ceiling, read a bounded page segment");
     expect(brief).toContain('continue its exact next_cursor in a separate call, or issue the page reads directly');
     expect(brief).toContain('copy that exact registered slug');
+    // WI-6554700010009935: the terminal-re-rate read is subject-scoped and provisional-only.
+    expect(brief).toContain(`scorecards:list { rubricRef:'${source.rubricRef}', subjectRef:'source-plan', provisional:true }`);
     expect(brief).toContain("path, rootHarnessSlug }");
     expect(brief).toContain('does not establish absence in the recorded evidence repository');
     expect(brief).toContain('Follow byte-page next_cursor unchanged');

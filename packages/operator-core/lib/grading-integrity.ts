@@ -1126,11 +1126,18 @@ function oldestFirst(a: ScorecardRow, b: ScorecardRow): number {
 
 function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): string {
   const scratchTemplate = `/tmp/grading-integrity-${card.issueId}.XXXXXX`;
+  // WI-6554700010009935: the rubric's terminal-re-rate drill says only
+  // `scorecards:list { rubricRef, sourceHive }`, so judges paged 200-500 terminal cards
+  // (1.6-4MB per read) to find one subject's interim cards. Name the exact narrow read.
+  const interimCardRead = card.subject?.ref
+    ? `scorecards:list { rubricRef:'${card.rubricRef}', subjectRef:'${card.subject.ref}', provisional:true }`
+    : `scorecards:list { rubricRef:'${card.rubricRef}'${card.sourceHive ? `, sourceHive:'${card.sourceHive}'` : ''}, provisional:true }`;
   return [
     `Currentness guard: at the start of the audit and immediately before emitting, require scorecard.gradingAuditCurrentness.state to be 'current'. If it is 'stale' or 'unknown', report its reason and stop without grading or emitting; the pending-audit dispatcher must refresh the stamp first.`,
     `You are the dedicated grading-integrity auditor for scorecard ${card.issueId}.`,
     `The target is a terminal standard-rubric scorecard for rubric '${card.rubricRef}'. Inspect that exact scorecard and grade whether its evidence and criterion explanations are complete and independently re-runnable.`,
     `Source subject: ${JSON.stringify(card.subject ?? null)}; evidence fingerprint: ${card.evidenceFingerprint ?? 'not recorded'}. Preserve the stored evidence scope; do not substitute a newer working tree.`,
+    `Interim cards (terminal-re-rate): read them with ${interimCardRead}. It returns only the provisional cards for this subject, usually none. Do not page the rubric's whole card history to find them.`,
     `Historical source evidence: when a criterion cites a committed file, use capability:git-evidence { op:'readFileAtCommit', commitSha:'<full SHA from the stored evidence>', path:'<repository-relative path>' } to inspect that exact blob. Do not use capability:git or current-tree capability:read as proof of historical contents. If the stored evidence lacks the full commit SHA or path, state that exact gap and do not infer from HEAD.`,
     `Historical source page budgeting: code:run has a 45-second foreground timeout ceiling. Do not fan out byte-page chains for multiple large blobs in one call; read one oversized blob's chain per code:run. If a single blob's full chain might approach the ceiling, read a bounded page segment and continue its exact next_cursor in a separate call, or issue the page reads directly. Preserve the complete bytes for the cited blob's integrity check.`,
     `External-checkout source evidence: when the cited binding's repository measurement names rootHarnessSlug, copy that exact registered slug into capability:git-evidence { op:'readFileAtCommit', commitSha, path, rootHarnessSlug }. Evidence attributed to the plan harness may have executed in another registered repository. A commit lookup failure in the plan repository does not establish absence in the recorded evidence repository; do not guess a directory or substitute HEAD. Follow byte-page next_cursor unchanged so the registered root remains pinned.`,

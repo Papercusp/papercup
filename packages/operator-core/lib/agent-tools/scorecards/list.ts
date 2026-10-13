@@ -166,6 +166,10 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Audit view: also include deliberately retracted scorecards and their withdrawal metadata.'),
+    provisional: z
+      .boolean()
+      .optional()
+      .describe('true: only provisional (interim) cards. With subjectRef, the cards a terminal card must re-rate.'),
     cursor: scorecardListCursorSchema
       .optional()
       .describe('Keyset continuation returned as nextCursor by the previous page; keep the same filters when continuing.'),
@@ -203,6 +207,7 @@ export default defineTool({
           includeSynthesized: args.includeSynthesized,
           includeSuperseded: args.includeSuperseded,
           includeRetracted: args.includeRetracted,
+          provisionalOnly: args.provisional,
           before: args.cursor as ScorecardListCursor | undefined,
           // WI-6124: links are opt-IN. This tool returns whole rows to an agent, so it is a
           // surfacing read — keep it true or agents silently see every scorecard as unlinked.

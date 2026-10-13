@@ -3171,6 +3171,13 @@ export interface ListScorecardsFilter {
   /** Include scorecards carrying a deliberate `retracted` disposition. */
   includeRetracted?: boolean;
   /**
+   * Only P-008 provisional (interim) cards: `payload.observation.provisional` is an object
+   * (WI-6554700010009935). The grading-integrity terminal-re-rate drill needs exactly the
+   * interim cards for one subject; without this filter judges scanned 200-500 terminal
+   * cards per audit (1.6-4MB reads). About 1% of cards are provisional.
+   */
+  provisionalOnly?: boolean;
+  /**
    * Resolve each row's outbound coord_links edges into {@link ScorecardRow.linkedItems}.
    * Default FALSE — links are OPT-IN. Pass true only on a read that actually SURFACES
    * them; today that is exactly two sites (the `scorecards.list` sync-resolver, which
@@ -3308,6 +3315,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
            : tx`TRUE`
        }
        AND ${filter.issueIds ? tx`scorecard.issue_id = ANY(${[...filter.issueIds]}::text[])` : tx`TRUE`}
+       AND ${filter.provisionalOnly ? tx`jsonb_typeof(scorecard.payload -> 'observation' -> 'provisional') = 'object'` : tx`TRUE`}
        AND ${filter.since ? tx`scorecard.created_at >= ${filter.since}` : tx`TRUE`}
        AND ${
          before
