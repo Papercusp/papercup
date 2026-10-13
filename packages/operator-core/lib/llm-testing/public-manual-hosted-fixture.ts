@@ -5,6 +5,7 @@ import { readSuperuserToken, superuserTokenPath } from '../superuser-token';
 import type { Sql } from 'postgres';
 import type { IncomingMessage } from 'node:http';
 import { withTimeout } from '../../../../libs/testing-shell/src/llm/runner';
+import { missingPlaywrightBrowsers } from '../../../../scripts/ensure-playwright-browsers.mjs';
 import {
   HostedProviderDelegationManager,
   PostgresHostedProviderDelegationStore,
@@ -112,6 +113,16 @@ export function publicManualHostedRuntimeEnvironment(environment: NodeJS.Process
     PAPERCUSP_WORKSPACES_ROOT: environment.PAPERCUSP_WORKSPACES_ROOT ?? bindings.PAPERCUSP_WORKSPACES_ROOT,
     PAPERCUSP_WORKSPACE_ID: workspace,
     PAPERCUSP_INTEGRATION_ROOT: integrationRoot };
+}
+
+/** Keep maintained browser assets explicit when the selected HOME is disposable. */
+export function publicManualHostedBrowserCache(environment: NodeJS.ProcessEnv) {
+  const cacheDir = environment.PLAYWRIGHT_BROWSERS_PATH;
+  if (!cacheDir || !isAbsolute(cacheDir)) throw new Error('hosted_fixture_browser_cache_required');
+  const missing = missingPlaywrightBrowsers({ env: { ...environment,
+    PLAYWRIGHT_BROWSERS: 'chromium,chromium-headless-shell,ffmpeg' } });
+  if (missing.length) throw new Error(`hosted_fixture_browser_install_missing:${missing.join(',')}`);
+  return { cacheDir };
 }
 
 /** Create only this verified TEST runtime's credential; never borrow a live token. */
