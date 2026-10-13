@@ -36,7 +36,10 @@ afterAll(async () => { await db?.cleanup(); if (root) rmSync(root, { recursive: 
 
 async function refusedAssignment(name: string, problemStatement: string) {
   const repoRoot = join(root, `protocol-${name}`), checkout = join(root, `checkout-${name}`); mkdirSync(repoRoot); mkdirSync(checkout);
-  const config = currentProtocolFixture(`PRIVATE-STOCK-NATIVE-${name}`, 8000);
+  // Lifecycle proof, not a performance budget: the refusal ends Codex ~0.3s after its first
+  // request, but sandboxed cold start (bwrap + SRT + two /v1/models probes) took 2.7-4.3s at
+  // load ~140 and exceeded an 8s cap at load ~180 (WI-10007969). Keep a wide margin.
+  const config = currentProtocolFixture(`PRIVATE-STOCK-NATIVE-${name}`, 30000);
   const corpus = JSON.stringify({ entries: [{ key: 'permitted:test', text: 'Permitted frozen context.' }] });
   for (const name of ['corpus', 'memory']) writeFileSync(join(repoRoot, `${name}.json`), corpus);
   config.context = { ...config.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
@@ -48,7 +51,10 @@ async function refusedAssignment(name: string, problemStatement: string) {
   execFileSync('git', ['fast-import', '--quiet'], { cwd: repoRoot,
     input: `blob\nmark :1\ndata ${Buffer.byteLength(body)}\n${body}\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1577836800 +0000\ndata 6\nfrozen\nM 100644 :1 ${frozen.filePath}\n\ndone\n` });
   const bodies: Array<Record<string, unknown>> = [];
+  // Request timing makes a cold-start budget miss distinguishable from a transport fault.
+  const seen: Array<{ t: number; method?: string; url?: string }> = []; const t0 = Date.now();
   const server = createServer(async (req, res) => {
+    seen.push({ t: Date.now() - t0, method: req.method, url: req.url });
     const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
     if (req.url?.endsWith('/responses')) bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
     res.writeHead(400, { 'content-type': 'application/json' });
@@ -59,13 +65,13 @@ async function refusedAssignment(name: string, problemStatement: string) {
   const controller = currentBenchGatewayController({ workspaceId, loopId: 'private-stock-loop', token: 'a'.repeat(64),
     preregHash: frozen.preregHash, protocol: config, armId: 'baseline', taskId: 't1', seed: 1,
     resources: { inputTokens: 100000, outputTokens: 1000, requestsPerArm: 50, usdPerArm: 3, maxOpenUsd: 3,
-      wallClockMs: 16000, wallClockMsPerArm: 8000,
+      wallClockMs: 60000, wallClockMsPerArm: 30000,
       armIds: config.arms.map(arm => currentBenchAssignmentId(config.runId, arm.id, 't1', 1)) }, authenticateProvider: async () => null });
   const hosted = await controller.startNativeGateway(() => {}, async () => ({ port, stop: async () => {
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
   } } as never));
   const opts: CurrentSuBenchOptions = { workspaceId, runId: config.runId, armId: 'baseline', seed: 1,
-    agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto', pollIntervalMs: 25, driveTimeoutMs: 15000,
+    agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto', pollIntervalMs: 25, driveTimeoutMs: 45000,
     preregistration: { config, preregHash: frozen.preregHash, repoRoot } };
   const ctx = { workspaceId, principal: { slug: 'authenticated-private-fixture' } } as PapercuspUnifiedToolContext;
   try {
@@ -81,7 +87,7 @@ async function refusedAssignment(name: string, problemStatement: string) {
     expect(result.telemetry.armMeta?.costUsdMeasurementMissing, JSON.stringify(result)).toBe(true);
     const tasks = await h.sql`SELECT task_id, session_id, state, exit_code FROM harness_shared.task_ledger WHERE workspace_id=${workspaceId}`;
     const sessions = await h.sql`SELECT id, session_id, ended_at FROM harness_shared.adv_sessions WHERE workspace_id=${workspaceId}`;
-    const diagnostic = JSON.stringify({ telemetry: result.telemetry, tasks, sessions });
+    const diagnostic = JSON.stringify({ telemetry: result.telemetry, tasks, sessions, seen });
     expect(bodies.length, diagnostic).toBeGreaterThan(0); expect(bodies[0].model, diagnostic).toBe('configured-alias');
     const rows = await h.sql`SELECT t.task_id, t.session_id, t.state, t.ended_at, a.id, a.ended_at AS session_ended_at
       FROM harness_shared.task_ledger t JOIN harness_shared.adv_sessions a
@@ -109,7 +115,7 @@ async function refusedAssignment(name: string, problemStatement: string) {
 
 it('retains a real native UUID and terminal ingestion after local refusal without provider forwarding', async () => {
   await refusedAssignment('lifecycle', 'Describe the empty repository.');
-}, 45000);
+}, 120000);
 
 it('keeps source-bound native instruction templates across distinct isolated assignments', async () => {
   const first = await refusedAssignment('fingerprint-first', 'Describe the first empty repository.');
@@ -133,4 +139,4 @@ it('keeps source-bound native instruction templates across distinct isolated ass
     expect(assignment.cache.nativeInstructionTemplate?.skillsRootHash)
       .toBe(createHash('sha256').update(declaredRoot).digest('hex'));
   }
-}, 90000);
+}, 240000);
