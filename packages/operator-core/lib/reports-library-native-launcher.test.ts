@@ -118,6 +118,7 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     vi.stubEnv('VERIFY_TAURI_PID', String(process.pid));
     vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'verify-tauri-isolated-90');
     vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'caller-workspace');
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'native-launcher-fixture');
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -132,6 +133,16 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
       nativeChildren: [{ script: 'scripts/native.mts', bundle,
         sha256: createHash('sha256').update(readFileSync(bundle)).digest('hex') }] };
   };
+
+  it.each([undefined, ''])('refuses a missing canonical run group before ledger or native effects (%s)', async group => {
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', group);
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP_ID', 'unused-legacy-key');
+    expect(() => checkNativeLedger(sourceRoot)).toThrow('PAPERCUSP_TEST_RUN_GROUP');
+    await expect(runNativeE2e()).rejects.toThrow('PAPERCUSP_TEST_RUN_GROUP');
+    expect(seams.execute).not.toHaveBeenCalled();
+    expect(seams.authenticate).not.toHaveBeenCalled();
+    expect(seams.reportRuntime).not.toHaveBeenCalled();
+  });
 
   it.each([false, true])('checks the ledger before native allocation and propagates handshake failure=%s', fail => {
     vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', 'postgresql://fixture@localhost:6432/ledger');

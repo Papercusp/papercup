@@ -1,5 +1,5 @@
 /** Reports Library: real publish tool -> SSE list -> exact native Markdown/Mermaid reader. */
-// VERIFY_TAURI_ASSERTION_REQUIRED_ENV=PAPERCUSP_TEST_RUNS_DB_URL,PAPERCUSP_TEST_RUN_WORKSPACE
+// VERIFY_TAURI_ASSERTION_REQUIRED_ENV=PAPERCUSP_TEST_RUNS_DB_URL,PAPERCUSP_TEST_RUN_WORKSPACE,PAPERCUSP_TEST_RUN_GROUP
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
@@ -111,6 +111,8 @@ export function nativeLedgerEnvironment(env = process.env): NodeJS.ProcessEnv {
 
 /** SELECT-only admission check, runnable before allocating the native verifier. */
 export function checkNativeLedger(sourceRoot = process.cwd(), env = process.env): void {
+  assert.ok(env.PAPERCUSP_TEST_RUN_GROUP?.trim(),
+    'Use PAPERCUSP_TEST_RUN_GROUP to retain native ledger attribution before allocation');
   execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
@@ -151,6 +153,8 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
     'Use maintained operator-core native E2E or integration test files');
   assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Use the isolated native verifier');
   assert.ok(process.env.PAPERCUSP_TEST_RUNS_DB_URL, 'Keep native results in the shared test ledger');
+  assert.ok(process.env.PAPERCUSP_TEST_RUN_GROUP?.trim(),
+    'Use PAPERCUSP_TEST_RUN_GROUP to retain native ledger attribution before allocation');
   const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
   assert.equal(receipt.schemaVersion, 'verifier-source-v1');
   assert.equal(receipt.sourceCommit, process.env.VERIFY_TAURI_SOURCE_REF);
