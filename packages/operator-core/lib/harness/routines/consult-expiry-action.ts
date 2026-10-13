@@ -126,4 +126,16 @@ registerSystemAction('consult-expiry-sweep', async () => {
   } catch (e) {
     console.warn(`[consult-expiry-sweep] park sweep failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+  // Park verdict delivery (R-7/R-20/R-21) in its own try: a delivery fault must not cost
+  // the deadline resolution above, and the reverse.
+  try {
+    const sql = getOrgPg().sql as never;
+    const { sweepParkDeliveries } = await import('../../consult/park-delivery-prod');
+    const r = await sweepParkDeliveries({ sql });
+    for (const f of r.failures) {
+      console.warn(`[consult-expiry-sweep] park delivery check failed for ${f.conversationId}: ${f.error}`);
+    }
+  } catch (e) {
+    console.warn(`[consult-expiry-sweep] park delivery sweep failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 });

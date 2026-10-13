@@ -9,7 +9,9 @@ const seams = vi.hoisted(() => ({
   sweepParks: vi.fn(async (_args: unknown) => undefined),
   pollParks: vi.fn(async (_args: unknown) => undefined),
   makeSeams: vi.fn(() => ({})),
+  sweepDeliveries: vi.fn(async (_args: unknown) => ({ checked: [], failures: [], saturated: false })),
 }));
+vi.mock('../../consult/park-delivery-prod', () => ({ sweepParkDeliveries: seams.sweepDeliveries }));
 vi.mock('../../consult/park-adapters', () => ({
   sweepDueParks: seams.sweepParks,
   pollParkOwnerAnswers: seams.pollParks,
@@ -61,5 +63,27 @@ describe('consult expiry production wiring', () => {
       expect.objectContaining({ workspaceId: 'row-workspace' }),
       expect.objectContaining({ msgId: 'stable-alert-key', to: ['requester'] }),
     );
+    // consult-backed-parking P-007: the same tick runs the verdict delivery check.
+    expect(seams.sweepDeliveries).toHaveBeenCalledOnce();
+    expect(seams.sweepDeliveries).toHaveBeenCalledWith(expect.objectContaining({ sql: expect.anything() }));
+  });
+
+  it('runs the delivery check even when the park deadline sweep throws, and survives its own failure', async () => {
+    await import('./consult-expiry-action');
+    const registration = seams.register.mock.calls.find(([name]) => name === 'consult-expiry-sweep');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      seams.sweepParks.mockRejectedValueOnce(new Error('park sweep down'));
+      seams.sweepDeliveries.mockClear();
+      await registration![1]();
+      expect(seams.sweepDeliveries).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('park sweep failed: park sweep down'));
+
+      seams.sweepDeliveries.mockRejectedValueOnce(new Error('delivery down'));
+      await expect(registration![1]()).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('park delivery sweep failed: delivery down'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
