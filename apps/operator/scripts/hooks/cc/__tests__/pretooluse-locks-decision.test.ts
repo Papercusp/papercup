@@ -1371,6 +1371,23 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     expect(fs.existsSync(join(cache, "tu-verifier-unavailable.lock"))).toBe(false);
   });
 
+  // WI-6554700010011018: all three authorization_denied locks:acquire rows of
+  // 2026-10-13 07:35-08:16Z (tool_invocations 37402636, 37402689, 37419171) were
+  // this kernel-preflight identity-state refusal. It is not the caller-identity
+  // deny pattern, so it must keep the fail-open WITH a visible advisory.
+  it("keeps the kernel-preflight stale-artifact refusal fail-open with a visible advisory (WI-6554700010011018)", async () => {
+    acquireRefusalText =
+      'Kernel preflight denied tool "locks:acquire": Identity capability (unresolved): stale-artifact (locks:acquire)';
+    const r = await run(editOf("sub/held.ts", "tu-stale-artifact"));
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    const context: string = out.hookSpecificOutput.additionalContext;
+    expect(context).toContain("NOT lock-protected");
+    expect(context).toContain("stale-artifact");
+    expect(fs.existsSync(join(cache, "tu-stale-artifact.lock"))).toBe(false);
+  });
+
   // WI-6554700010011017: the error marker has one slot. A failed recovery step
   // used to overwrite the refusal that caused the fail-open, so the marker kept
   // only "recovery-queue" and never said why the edit was unprotected.
