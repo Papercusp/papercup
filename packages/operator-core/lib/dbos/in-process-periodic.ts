@@ -311,6 +311,23 @@ const kernelLeakCheck: PeriodicCheck = {
   },
 };
 
+// Every 60s: one host sample — meminfo plus PSI stall totals and per-cgroup CPU —
+// into the kernel-leak sample table, for contention history
+// (papercusp-performance-audit-2026-10-12 P-002, D-005). Same writer and table as
+// kernel-leak-watchdog; that check keeps the 10-minute evaluation and alarms, so this
+// adds rows only. Every process writes; ON CONFLICT (boot_id, bucket_at) keeps one.
+const hostContentionSamplerCheck: PeriodicCheck = {
+  name: 'host-contention-sampler',
+  intervalMs: 60_000,
+  fireOnArm: true,
+  // D-004 (P-011): PSI totals and cgroup cpu.stat counters have no change-event source.
+  classification: 'must-sample',
+  tick: async () => {
+    const { runHostSampleOnce } = await import('../system-health/kernel-leak-watchdog');
+    await runHostSampleOnce();
+  },
+};
+
 // Every 60s: probe the dev endpoints + broadcast on each up/down TRANSITION
 // (fleet-coordination-painpoints Phase 3b). External liveness has no event source,
 // so this is the one irreducible poll; transition-only, never a per-tick firehose.
@@ -1440,6 +1457,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     connectionPressureCheck,
     pgTuningDriftCheck,
     kernelLeakCheck,
+    hostContentionSamplerCheck,
     serviceHealthCheck,
     completionRefVerifyCheck,
     spawnReclaimSweepCheck,
