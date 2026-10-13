@@ -2261,7 +2261,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/with-documenso-sandbox.mjs (WI-6554700010009231), the same class as scripts/with-test-pg.mjs: an operator- or agent-invoked e2e harness wrapper (`node scripts/with-documenso-sandbox.mjs -- <command>`), never started by the operator, bg-host or a routine. It creates one private Docker network with a database, mail and Documenso app container, runs the wrapped command once, and removes every container and the network in `finally` before it returns. It holds no queue. Its starts are synchronous, timeout-bounded `spawnSync` calls to the Docker CLI and `openssl` (5-30 s) for image checks, container starts, diagnostics and the test certificate; `dockerAllocation`'s single injectable Docker CLI client, which is awaited until the daemon answers so cleanup cannot race a late allocation; and ONE wrapped command child. That child is `detached` only so the SIGINT/SIGTERM handler can signal its process group, and the wrapper awaits its exit. Exactly two shapes are reviewed, selected by whether the source carries the Testcontainers Ryuk reaper. Without a reaper (the shape committed at 8cc9307dd5) there are six `spawnSync` calls, two of them the `docker rm` and `docker network rm` cleanup, and nothing outlives the wrapper. With a reaper there are four, because cleanup removes every container and the network through `cleanupSandboxResources`, whose default remover is the same awaited `dockerAllocation` client, and then fails closed if anything with this run's owner label remains. The reaper is the one thing that outlives the wrapper, by design and bounded. It is allocated through `dockerAllocation` before any sandbox resource, with `--rm`, a 30 s no-client timeout, a 1 s reconnection timeout and the Docker socket bind it needs to remove resources. It must acknowledge this run's owner-label filter before any container is allocated. So when the wrapper dies or closes its connection, the reaper removes only this run's labelled containers and network, then exits and is removed. `getContainerRuntimeClient()`, the file's only Testcontainers import, is used only to resolve that socket path; in testcontainers 11.14.0 it talks to the Docker API and starts no child process. matchesSource pins each shape's exact start population, the process-group stop and the `finally` cleanup, and the absence of any other Testcontainers import. With a reaper it also pins the reaper's `--rm` and both timeouts, its owner-label filter and connection check, the awaited remover and the fail-closed check. An added start, alias, worker or Testcontainers import, a dropped cleanup, a widened reaper filter or an unbounded reaper falls out of the exemption.",
+      "P-016 reviewed bypass disposition for scripts/with-documenso-sandbox.mjs (WI-6554700010009231; readiness extension WI-6554700010009544): a one-shot isolated e2e wrapper, never a serving or scheduled runtime. Its reviewed finite Docker/openssl clients and wrapped-command child retain process-group stop and finally cleanup. The legacy shape has no reaper. The reaper shape retains its sole Testcontainers import for the socket path, --rm, 30s no-client and 1s reconnection timeouts, owner-label filter acknowledgement before allocation, awaited remover, and fail-closed residue check. A readiness-enabled reaper shape adds only one Docker spawnSync client with a5s deadline and100000-byte output bound. Its caller passes the owned database, password redactions and stop predicate to the existing finite31-attempt loop; that loop reads TCP pg_isready and terminal container state, preserving bounded failure evidence. matchesSource pins this exact extension as well as the original lifecycle. Any other start, missing timeout, unlimited readiness loop, widened label filter or dropped cleanup falls out of this disposition.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       // Without the reaper: the shape committed at 8cc9307dd5, where cleanup is
@@ -2271,11 +2271,20 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       const testcontainersImports = [
         ...source.matchAll(/(?:\bfrom\s+|\bimport\s*\(?\s*|\brequire\s*\(\s*)['"]@?testcontainers\b/g),
       ].length;
+      const hasReadiness = /\bwaitForSandboxPostgres\b/.test(code);
+      const readinessPinned = !hasReadiness || (
+        source.includes("const diagnosticRun = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 });") &&
+        source.includes("await waitForSandboxPostgres(database, { run: diagnosticRun, secrets: [databasePassword], isStopped: () => stopped });") &&
+        source.includes("attempts = 31, isStopped = () => false") &&
+        source.includes("for (let attempt = 0; attempt < attempts; attempt++)") &&
+        source.includes("if (isStopped()) return;") &&
+        source.includes("if (terminal || attempt === attempts - 1)")
+      );
       const shapePinned = source.includes("REAPER_IMAGE")
-        ? resourceStartCallCount(source) === 5 &&
+        ? resourceStartCallCount(source) === 5 && readinessPinned &&
           testcontainersImports === 1 &&
           source.includes("import { getContainerRuntimeClient } from 'testcontainers';") &&
-          source.includes("await dockerAllocation(['run', '-d', '--rm', '--pull=never', '--name', name,") &&
+          source.includes(`await dockerAllocation(['run', '-d', '--rm', '--pull=${hasReadiness ? 'missing' : 'never'}', '--name', name,`) &&
           source.includes("'-e', 'RYUK_CONNECTION_TIMEOUT=30s', '-e', 'RYUK_RECONNECTION_TIMEOUT=1s', REAPER_IMAGE]);") &&
           source.includes("socket.write('label=papercusp.test.owner=' + owner + '\\n')") &&
           source.includes("    reaper.assertConnected();\n    containers.push(name);") &&
@@ -2284,7 +2293,9 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
           source.includes("try { await remove(['rm', '-f', '-v', name]); }") &&
           source.includes("try { await remove(['network', 'rm', network]); }") &&
           source.includes("if (remainingContainers || remainingNetworks) {") &&
-          source.includes("try { await cleanupSandboxResources({ containers, network, networkCreated, inspect: docker }); }") &&
+          (source.includes("try { await cleanupSandboxResources({ containers, network, networkCreated, inspect: docker }); }") ||
+            (source.includes("if (containers.length || networkCreated) {") &&
+              source.includes("await cleanupSandboxResources({ containers, network, networkCreated, inspect: docker });"))) &&
           source.includes("    try { await cleanup(); }\n    finally { reaper?.close(); }")
         : resourceStartCallCount(source) === 7 &&
           testcontainersImports === 0 &&

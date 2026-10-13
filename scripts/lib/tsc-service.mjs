@@ -569,9 +569,18 @@ export function diagnosticFilesDependingOnChangedTypes({ root, named, candidates
     if (!dependent.has(path)) continue;
     const file = program.getSourceFile(path);
     if (!file) continue;
+    // tsc judged an EARLIER snapshot of a shared, live tree; this program re-reads the file now, so
+    // a diagnostic's (line, column) may no longer exist in it. getPositionOfLineAndCharacter ASSERTS
+    // on an out-of-range column (TypeScript "Debug Failure. False expression." in
+    // computePositionOfLineAndCharacter), and that throw crashed the whole gate (EI-25816656568127078).
+    // Apply TypeScript's own bound here and skip a location this snapshot cannot hold, exactly as an
+    // out-of-range line already is: the diagnostic describes text that is gone.
+    const starts = file.getLineStarts();
     const lineIndex = Number(match[2]) - 1;
-    if (lineIndex < 0 || lineIndex >= file.getLineStarts().length) continue;
-    const pos = file.getPositionOfLineAndCharacter(lineIndex, Number(match[3]) - 1);
+    const character = Number(match[3]) - 1;
+    if (lineIndex < 0 || lineIndex >= starts.length || character < 0) continue;
+    const pos = starts[lineIndex] + character;
+    if (lineIndex + 1 < starts.length ? pos >= starts[lineIndex + 1] : pos > file.text.length) continue;
     let node = file;
     const descend = (parent) => ts.forEachChild(parent, (child) => {
       if (child.getFullStart() <= pos && pos < child.getEnd()) { node = child; descend(child); }

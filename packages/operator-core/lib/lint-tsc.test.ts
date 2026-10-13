@@ -2475,6 +2475,60 @@ describe('resolved module attribution (EI-25720784739215773)', () => {
     expect(filesDependingOnChangedModules({ root: dir, named: ['shape.ts'], candidates: ['real.ts', 'decoy.ts'] }))
       .toEqual(new Set([join(dir, 'real.ts')]));
   });
+
+  it('skips a diagnostic whose column no longer exists in the re-read file instead of crashing the gate (EI-25816656568127078)', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-stale-column-'));
+    writeFileSync(join(dir, 'shape.ts'), 'export interface Verdict { ok: boolean; reason: string }\n');
+    writeFileSync(join(dir, 'user.ts'), "import type { Verdict } from './shape';\nconst v: Verdict = { ok: true };\nexport { v };\n");
+    const user = join(dir, 'user.ts');
+    const message = "error TS2741: Property 'reason' is missing in type '{ ok: true; }' but required in type 'Verdict'.";
+    // tsc judged an earlier, longer snapshot of the shared tree. (2,400) is past the end of a middle
+    // line and (4,50) is past the end of the final line: both name text that is gone, and each made
+    // TypeScript's getPositionOfLineAndCharacter throw "Debug Failure. False expression.".
+    const stale = [`${user}(2,400): ${message}`, `${user}(4,50): ${message}`].join('\n');
+    const run = (output: string) =>
+      diagnosticFilesDependingOnChangedTypes({ root: dir, named: ['shape.ts'], candidates: ['user.ts'], output });
+    expect(() => run(stale)).not.toThrow();
+    expect(run(stale)).toEqual(new Set());
+    // Positive control: the same file still attributes from a location that exists (the `v` at 2:7),
+    // so the skip is per-diagnostic and the empty set above is not the function going inert.
+    expect(run(`${stale}\n${user}(2,7): ${message}`)).toEqual(new Set([user]));
+  });
+});
+
+describe('a crashed typecheck gate reads error(70), never regressed (EI-25816656568127078)', () => {
+  // Exit 1 is the gate's CONSIDERED failure, and the exit hook prints it as status=regressed. A
+  // gate whose top-level crash handler also exits 1 reports an uncaught exception — e.g. the
+  // TypeScript Debug Failure in diagnosticFilesDependingOnChangedTypes — as a type regression in
+  // the caller's files. Every entrypoint that runs runTscBaselineGate must exit EX_SOFTWARE instead.
+  const scriptsDir = join(dirname(fileURLToPath(import.meta.url)), '../../../scripts');
+  const entrypoints = readdirSync(scriptsDir)
+    .filter((name) => /^lint-tsc.*\.mjs$/.test(name))
+    .filter((name) => /\brunTscBaselineGate\(/.test(readFileSync(join(scriptsDir, name), 'utf8')));
+
+  it('finds the gate entrypoints (the scan below is not vacuous)', () => {
+    expect(entrypoints).toContain('lint-tsc.mjs');
+    expect(entrypoints.length).toBeGreaterThanOrEqual(7);
+  });
+
+  it('every entrypoint crash handler exits TOOLCHAIN_FAILURE_EXIT_CODE, not 1', () => {
+    const offenders = entrypoints.flatMap((name) => {
+      const text = readFileSync(join(scriptsDir, name), 'utf8');
+      const at = text.lastIndexOf('.catch((err)');
+      if (at < 0) return [`${name}: no top-level .catch((err) => …) crash handler`];
+      const handler = text.slice(at, text.indexOf('});', at));
+      if (/process\.exit\(\s*1\s*\)/.test(handler)) return [`${name}: crash handler exits 1 (reads status=regressed)`];
+      if (!handler.includes('process.exit(TOOLCHAIN_FAILURE_EXIT_CODE)')) return [`${name}: crash handler does not exit TOOLCHAIN_FAILURE_EXIT_CODE`];
+      return [];
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  it('the marker for that exit code is error(70), not regressed', () => {
+    const marker = formatLintTscResultMarker({ label: 'operator-core', scope: 'files', code: TOOLCHAIN_FAILURE_EXIT_CODE });
+    expect(marker).toContain(`status=error(${TOOLCHAIN_FAILURE_EXIT_CODE})`);
+    expect(marker).not.toContain('status=regressed');
+  });
 });
 
 describe('diagnosticFilesReferencingTypeNames — compiler messages close source-text attribution gaps (EI-21833727883305743)', () => {

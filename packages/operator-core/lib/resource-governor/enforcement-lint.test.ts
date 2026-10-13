@@ -295,6 +295,28 @@ describe('resource governor enforcement lint', () => {
     ]) expect(scanInventory([[path, unsafe]])).toContain(finding);
   });
 
+  it('pins the Documenso readiness diagnostic without widening the sandbox lifecycle disposition', () => {
+    const path = 'scripts/with-documenso-sandbox.mjs';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:resource-start-outside-admission`;
+    expect(scanInventory([[path, source]])).not.toContain(finding);
+    for (const unsafe of [
+      source.replace("timeout: 5000, maxBuffer: 100_000", "timeout: undefined, maxBuffer: 100_000"),
+      source.replace('attempts = 31, isStopped', 'attempts = Infinity, isStopped'),
+      source.replace('if (isStopped()) return;', 'if (false) return;'),
+      source.replace('secrets: [databasePassword], isStopped: () => stopped', 'secrets: [], isStopped: () => stopped'),
+      source.replace('if (terminal || attempt === attempts - 1)', 'if (false)'),
+      source.replace("socket.write('label=papercusp.test.owner=' + owner + '\\n')", "socket.write('label=all\\n')"),
+      source.replace("'--pull=missing', '--name', name", "'--pull=always', '--name', name"),
+      source.replace('if (containers.length || networkCreated) {', 'if (false) {'),
+      source.replace('await cleanup();', 'await ignoreCleanup();'),
+      source + "\nspawnSync('unreviewed-worker', []);",
+    ]) {
+      expect(unsafe).not.toBe(source);
+      expect(scanInventory([[path, unsafe]])).toContain(finding);
+    }
+  });
+
   it('bounds terminal diagnostics and the DAO verifier to their reviewed finite starts', () => {
     const terminalPath = 'apps/operator/scripts/psu-terminal-diagnostics.mjs';
     const terminal = readFileSync(ROOT + terminalPath, 'utf8');
