@@ -730,8 +730,8 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
       // Naming B in a request authenticated as A cannot change the server's
       // tenant binding. Both supported scope inputs are refused explicitly.
       const argsAttack = await read(sessionA, { workspaceId: WORKSPACE_B });
-      expect(argsAttack.status).toBe(403);
-      await expect(argsAttack.json()).resolves.toMatchObject({ error: 'workspace_binding_mismatch' });
+      expect(argsAttack.status).toBe(400);
+      await expect(argsAttack.json()).resolves.toMatchObject({ error: 'query_args_not_supported' });
       const headerAttack = await fetch(`${base}${query}&args=%7B%7D`, {
         headers: { cookie: cookie(plane, sessionA), 'x-papercusp-workspace': WORKSPACE_B },
       });
