@@ -10,6 +10,19 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+
+const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
+
+// The functions under test take `sql` explicitly, but `routineStorageSlug` (pot-membership)
+// resolves the instance plan's storage slug through the DEFAULT org pool. Unmocked, that
+// lookup reached past this file's throwaway DB; once the test rail blocked real-PG access
+// it read as `pot-lookup-unmeasured` and console.warn failed every case that settles an
+// instance (red on clean trees since 2026-10-08, found by WI-6554700010009851). Point the
+// default pool at the throwaway DB, as plan-run-action.integration.test.ts does.
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+}));
 import {
   reconcileScheduledPlanRuns,
   autoPauseOnFailureStreak,
@@ -29,6 +42,7 @@ let wiSeq = 0;
 beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
+  h.sql = sql;
 });
 afterAll(async () => {
   await org?.cleanup();
@@ -413,5 +427,137 @@ describe('reconcileAndGovern — orphaned-run reclamation on the tick', () => {
     expect(row.status).toBe('done');
     expect(row.outcome).toBe('success');
     expect(res.orphaned).toBe(0);
+  });
+});
+
+/**
+ * WI-6554700010009851 — a settled run's instance plan must be retired WHOEVER settled the
+ * run. The status-only settlers (the orphan sweep, `sweepPlanRuns` on the read path, a
+ * manual archive) never retired it, and the retire guard only matched `active`, so an
+ * instance cloned with its template's `ready`/`draft` frontmatter was skipped even by the
+ * settlers that did try. Measured 2026-10-13: 18 live instances under settled runs.
+ */
+describe('reconcileAndGovern — settled-run instance convergence', () => {
+  async function attachInstance(runId: number, template: string, status: string): Promise<string> {
+    const instanceSlug = `${template}@run-${runId}`;
+    const items: PlanIndexItem[] = [
+      { id: 'P-001', status: 'todo', text: 'never promoted', importance: 'normal', blockedBy: [], decisionRefs: [], phase: null },
+    ];
+    const content = ['---', `status: ${status}`, '---', '# Instance', '', '- **P-001** `todo` never promoted', ''].join('\n');
+    await sql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, status, template_slug, content, content_hash, items)
+      VALUES (${WS}, ${HARNESS}, ${instanceSlug}, ${status}, ${template}, ${content}, 'h',
+              ${JSON.stringify(items)}::text::jsonb)`;
+    await writePlanIndexRows(
+      sql as unknown as Parameters<typeof writePlanIndexRows>[0],
+      { workspaceId: WS, harnessSlug: HARNESS, planSlug: instanceSlug },
+      { items, decisions: [] },
+    );
+    await sql`
+      UPDATE harness_shared.plan_runs
+         SET workspace_id = ${WS}, instance_plan_slug = ${instanceSlug}
+       WHERE id = ${runId}`;
+    return instanceSlug;
+  }
+
+  async function settleRun(id: number, status: string, outcome: string | null): Promise<void> {
+    await sql`UPDATE harness_shared.plan_runs SET status = ${status}, outcome = ${outcome} WHERE id = ${id}`;
+  }
+
+  async function instanceState(slug: string) {
+    const [plan] = await sql<{ status: string; items: Array<{ id: string; status: string }>; content: string }[]>`
+      SELECT status, items, content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`;
+    const indexed = await sql<{ status: string }[]>`
+      SELECT status FROM harness_shared.plan_items
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`;
+    return {
+      status: plan.status,
+      itemStatuses: plan.items.map((i) => i.status),
+      indexStatuses: indexed.map((r) => r.status),
+      frontmatterSuperseded: /^status: superseded$/m.test(plan.content),
+    };
+  }
+
+  it('retires an orphan-failed run instance once its work-items terminate — not before', async () => {
+    const id = await seedRun('p-orphan-instance');
+    const slug = await attachInstance(id, 'p-orphan-instance', 'active');
+    await seedWi(id, 'todo');
+    await sql`UPDATE harness_shared.plan_runs SET updated_at = ${Date.now() - PLAN_RUN_ORPHAN_FAIL_MS - 60_000} WHERE id = ${id}`;
+
+    const first = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    // The orphan sweep failed the run, but its work-item is still open: a late executor
+    // may yet complete it, so the instance must stay live for that reflection to land.
+    expect(first.orphaned).toBe(1);
+    expect((await runRow(id)).status).toBe('failed');
+    expect(first.instancesRetired).toBe(0);
+    expect((await instanceState(slug)).status).toBe('active');
+
+    await sql`UPDATE harness_shared.harness_features_consolidated SET status = 'dropped'
+               WHERE harness_slug = ${HARNESS} AND payload -> 'plan_run' ->> 'runId' = ${String(id)}`;
+    const second = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect(second.instancesRetired).toBe(1);
+    expect(await instanceState(slug)).toEqual({
+      status: 'superseded',
+      itemStatuses: ['dropped'],
+      indexStatuses: ['dropped'],
+      frontmatterSuperseded: true,
+    });
+  });
+
+  it.each(['ready', 'draft', 'awaiting-acceptance'])(
+    "retires a '%s' instance under a settled run (the retire guard is not active-only)",
+    async (instanceStatus) => {
+      const template = `p-${instanceStatus}-instance`;
+      const id = await seedRun(template);
+      const slug = await attachInstance(id, template, instanceStatus);
+      await seedWi(id, 'done');
+      await settleRun(id, 'done', 'success');
+
+      const res = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+      expect(res.instancesRetired).toBe(1);
+      expect(await instanceState(slug)).toEqual({
+        status: 'superseded',
+        itemStatuses: ['dropped'],
+        indexStatuses: ['dropped'],
+        frontmatterSuperseded: true,
+      });
+    },
+  );
+
+  it('retires the instance of an archived run with no work-items (a status-only manual settle)', async () => {
+    const id = await seedRun('p-archived-instance');
+    const slug = await attachInstance(id, 'p-archived-instance', 'active');
+    await settleRun(id, 'archived', null);
+
+    const res = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect(res.instancesRetired).toBe(1);
+    expect((await instanceState(slug)).status).toBe('superseded');
+  });
+
+  it('leaves a still-running run instance alone', async () => {
+    const id = await seedRun('p-live-instance');
+    const slug = await attachInstance(id, 'p-live-instance', 'active');
+    await seedWi(id, 'todo');
+
+    const res = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect(res.instancesRetired).toBe(0);
+    expect((await runRow(id)).status).toBe('running');
+    expect((await instanceState(slug)).status).toBe('active');
+  });
+
+  it('is idempotent: a second tick retires nothing more', async () => {
+    const id = await seedRun('p-idempotent-instance');
+    await attachInstance(id, 'p-idempotent-instance', 'ready');
+    await settleRun(id, 'failed', 'failed');
+
+    expect((await reconcileAndGovern({ sql, harnessSlug: HARNESS })).instancesRetired).toBe(1);
+    expect((await reconcileAndGovern({ sql, harnessSlug: HARNESS })).instancesRetired).toBe(0);
   });
 });
