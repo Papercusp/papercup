@@ -764,6 +764,7 @@ export default defineTool({
   })(),
   async handler(args, ctx) {
     let modelResolution: ReturnType<typeof resolveLaunchModelAlias> | null = null;
+    const memberAliasResolutions: Array<ReturnType<typeof resolveLaunchModelAlias> | undefined> = [];
     const requestedDefaultEffort = args.effort;
     try {
       if (args.model) {
@@ -771,9 +772,10 @@ export default defineTool({
         args = { ...args, model: modelResolution.model, effort: modelResolution.effort ?? undefined, agent: args.agent ?? modelResolution.agent ?? undefined };
       }
       if (args.members) {
-        args = { ...args, members: args.members.map(member => {
+        args = { ...args, members: args.members.map((member, i) => {
           if (!member.model) return member;
           const resolved = resolveLaunchModelAlias(member.model, { effort: member.effort ?? requestedDefaultEffort, agent: member.agent });
+          memberAliasResolutions[i] = resolved;
           return { ...member, model: resolved.model, effort: resolved.effort ?? undefined, agent: member.agent ?? resolved.agent ?? undefined };
         }) };
       }
@@ -2087,6 +2089,24 @@ export default defineTool({
     // Back-compat: `command` (singular) is the representative reported/recorded command
     // — identical across members in the common no-`members` case.
     const command = memberCommands[0] ?? '';
+    // Use the same final model/effort pair that composed each command. A flat
+    // preflight resolution can differ after member or goal settings are folded.
+    const memberModelResolutions = isResume ? [] : foldedConfigs.map((config, i) => {
+      const model = composeModelSpec(config.model, config.effort);
+      if (!model) return null;
+      const requested = memberAliasResolutions[i] ?? modelResolution;
+      return {
+        requested: requested?.requested ?? model,
+        agent: config.agent ?? null,
+        model,
+        effort: (model.match(/:(low|medium|high|xhigh|max)$/i)?.[1] ?? null) as ReturnType<typeof resolveLaunchModelAlias>['effort'],
+        alias: requested?.alias ?? null,
+      };
+    });
+    const firstModelResolution = memberModelResolutions[0] ?? null;
+    const effectiveModelResolution = isResume ? modelResolution : memberModelResolutions.every(resolved =>
+      resolved?.model === firstModelResolution?.model && resolved?.agent === firstModelResolution?.agent &&
+      resolved?.effort === firstModelResolution?.effort) ? firstModelResolution : null;
 
     // P-014: claim the launch only after all validation, target/profile resolution,
     // backend/model preflight, and command composition have succeeded. A refused
@@ -2848,7 +2868,8 @@ export default defineTool({
       content: [{ type: 'text' as const, text: lines.join('\n') }],
       data: {
         deduped: false,
-        modelResolution,
+        modelResolution: effectiveModelResolution,
+        memberModelResolutions,
         launch: launchSummary,
         ...(completionReceipt ? { completionReceipt } : {}),
       },

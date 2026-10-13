@@ -467,13 +467,33 @@ describe('shared model alias preflight', () => {
   });
 
   it('normalizes a member override before composing its command', async () => {
-    await launchAgent.handler({ brief: 'Verify a lane', members: [{ model: 'claude opus', effort: 'xhigh' }] }, ctx);
+    const result = await launchAgent.handler({ brief: 'Verify a lane', members: [{ model: 'claude opus', effort: 'xhigh' }] }, ctx);
+    expect(result).toMatchObject({ data: { modelResolution: {
+      requested: 'claude opus', agent: 'claude', model: 'opus:max', effort: 'max',
+    } } });
     expect(spawnedCommand()).toContain('--model=opus:max');
   });
 
   it('preserves the requested default effort for a different member backend', async () => {
-    await launchAgent.handler({ model: 'claude opus', effort: 'xhigh', brief: 'Verify a lane', members: [{ model: 'sol 6.1' }] }, ctx);
+    const result = await launchAgent.handler({ model: 'claude opus', effort: 'xhigh', brief: 'Verify a lane', members: [{ model: 'sol 6.1' }] }, ctx);
+    expect(result).toMatchObject({ data: { modelResolution: {
+      requested: 'sol 6.1', agent: 'codex', model: 'gpt-6.1-sol:xhigh', effort: 'xhigh',
+    } } });
     expect(spawnedCommand()).toContain('--model=gpt-6.1-sol:xhigh');
+  });
+
+  it('echoes each effective member model for a heterogeneous batch', async () => {
+    const result = await launchAgent.handler({ model: 'claude opus', effort: 'xhigh', brief: 'Verify a lane',
+      members: [{ model: 'sol 6.1' }, { model: 'claude sonnet', effort: 'low' }] }, ctx);
+    expect(result).toMatchObject({ data: { modelResolution: null, memberModelResolutions: [
+      { requested: 'sol 6.1', agent: 'codex', model: 'gpt-6.1-sol:xhigh', effort: 'xhigh' },
+      { requested: 'claude sonnet', agent: 'claude', model: 'sonnet:low', effort: 'low' },
+    ] } });
+    const commands = spawnConsoleMock.mock.calls.map(
+      ([opts]) => (opts as { envelope: { greetingCmd: string } }).envelope.greetingCmd,
+    ).join('\n');
+    expect(commands).toContain('--model=gpt-6.1-sol:xhigh');
+    expect(commands).toContain('--model=sonnet:low');
   });
 
   it('accepts the same top-level model and effort shape as the fleet door', () => {
