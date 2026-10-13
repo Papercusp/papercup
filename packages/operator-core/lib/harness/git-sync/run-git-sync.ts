@@ -2173,6 +2173,11 @@ export interface RunGitSyncOpts {
   /** Test seam for proving whether a candidate temp pack is still open by a process.
    *  `null` means the state is unknown; unknown is always preserved. */
   isTempPackOpen?: (path: string) => Promise<boolean | null>;
+  /** Test seam for the holder probe behind the stale `.git/config.lock` guard
+   *  (WI-6554700010011004). Defaults to the host open-file check (fuser, then a /proc
+   *  scan), whose answer depends on host process-table speed. `null` means unknown,
+   *  and unknown always preserves the lock. */
+  isGitLockOpen?: (path: string) => Promise<boolean | null>;
   /** WI-39922: pre-superproject-commit repair for the tracked tool catalog.
    *  Defaults to the conditional, bounded, fail-soft regenerator above. */
   toolCatalogRegenerator?: ToolCatalogRegenerator;
@@ -7344,7 +7349,8 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       // phase already self-heals its equivalent lock; apply the same age guard
       // here, then retry once. A fresh lock is never touched.
       if (urlSync.code !== 0 && isConfigLockFailure(`${urlSync.stdout}\n${urlSync.stderr}`)) {
-        const cleared = await clearStaleConfigLock(runGit, repo, log);
+        const configLockDeps = opts.isGitLockOpen ? { isOpen: opts.isGitLockOpen } : {};
+        const cleared = await clearStaleConfigLock(runGit, repo, log, configLockDeps);
         if (cleared) urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
 
         // EI-20347384139844425: a fresh config.lock is live contention, not an
@@ -7369,7 +7375,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         }
 
         if (urlSync.code !== 0 && isConfigLockFailure(`${urlSync.stdout}\n${urlSync.stderr}`)) {
-          const clearedAfterRetry = await clearStaleConfigLock(runGit, repo, log);
+          const clearedAfterRetry = await clearStaleConfigLock(runGit, repo, log, configLockDeps);
           if (clearedAfterRetry) urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
         }
       }
