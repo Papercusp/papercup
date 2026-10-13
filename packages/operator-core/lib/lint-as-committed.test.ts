@@ -1293,7 +1293,7 @@ const { execFileSync } = require('node:child_process');
       writeFileSync(npmShim, ['#!/bin/sh', 'kill -TERM $$', ''].join(String.fromCharCode(10)));
       chmodSync(npmShim, 0o755);
 
-      const childEnv = {
+      const childEnv: NodeJS.ProcessEnv = {
         ...process.env,
         PATH: `${fakeBin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
       };
