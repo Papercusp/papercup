@@ -63,6 +63,9 @@ import {
 } from '../../authority/sha-token-registry';
 import {
   FILE_LOCK_OP_KINDS,
+  hookLockOperationSchema,
+  hookOperationStoreIdentity,
+  decodeHookOperationPrepare,
   emitAcquireLockEvents,
   type FileLockAcquireParams,
   type FileLockAcquireResult,
@@ -177,6 +180,7 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    hook_operation: hookLockOperationSchema.optional().describe('native hook only: fixed operation UUID/deadline and prepared authority pin'),
     paths: z.array(z.string().min(1)).max(50).optional().describe('repo-relative POSIX file paths (no ./, .., backslashes, or absolute paths)'),
     coordination_domain: z
       .string()
@@ -382,9 +386,70 @@ export default defineTool({
           ttlSec,
           goalRef,
           automatic: args.intent.startsWith('PreToolUse:'),
+          operation: args.hook_operation,
         }),
         { paths },
       );
+
+    if (args.hook_operation) {
+      if (!args.intent.startsWith('PreToolUse:') || args.wake_on_grant || args.pending_edit) {
+        return jsonResult({ ok: false, reason: 'operation_conflict', busy: [] });
+      }
+      const operation = args.hook_operation;
+      try {
+        const routed = await acquireWithContentionRetry(() => routeFileLockOp<Record<string, unknown>>(
+          coordinationDomain, {
+            authorityFence: {
+              expected: operation.authority,
+              localStoreIdentity: hookOperationStoreIdentity,
+              prepare: (authority) => ({ ok: false, reason: 'operation_authority_required', operation_authority: authority }),
+            },
+            local: async () => {
+              const r = await localAcquire();
+              return r.ok
+                ? { ok: true, lock_id: r.lock_id, held: r.held, newly_held: r.newly_held,
+                    expires_ts: r.expires_ts.toISOString(), operation_id: operation.id }
+                : { ok: false, busy: r.busy, ...('reason' in r ? { reason: r.reason } : {}),
+                    ...('retryable' in r ? { retryable: r.retryable } : {}), operation_id: operation.id };
+            },
+            remote: {
+              kind: FILE_LOCK_OP_KINDS.acquire,
+              payload: { owner: ownerId, ownerLabel, paths, intent: args.intent, ttlSec, goalRef,
+                automatic: true, coordinationDomain, operation } satisfies FileLockAcquireParams,
+              prepare: {
+                kind: FILE_LOCK_OP_KINDS.queue,
+                payload: { owner: ownerId, coordinationDomain, operationPrepare: true },
+                decode: decodeHookOperationPrepare,
+              },
+              decode: (raw) => {
+                const r = raw as FileLockAcquireResult;
+                if (r.operationId !== operation.id) throw new Error('operation response unavailable');
+                return r.ok
+                  ? { ok: true, lock_id: r.lockId, held: paths, newly_held: r.newlyHeld,
+                      expires_ts: r.expiresTs, operation_id: operation.id, sha_token: r.shaToken }
+                  : { ok: false, busy: r.busy ?? [], reason: r.reason, retryable: r.retryable, operation_id: operation.id };
+              },
+            },
+          },
+        ));
+        const value = routed.value;
+        if (value.ok === true) {
+          const held = value.held as string[];
+          const expiresAtMs = Date.parse(value.expires_ts as string);
+          value.sha_token ??= shaTokenForGrant(coordinationDomain, held, Date.now(), ownerId);
+          noteShaTokenGrant(coordinationDomain, held, ownerId, expiresAtMs);
+          if (routed.scope && routed.via !== 'remote-authority') {
+            emitAcquireLockEvents((event) => void recordLockEvent(event), {
+              scope: routed.scope, owner: ownerId, paths: held, expiresAtMs, ts: Date.now(),
+            });
+          }
+        }
+        return jsonResult(value);
+      } catch (err) {
+        return jsonResult({ ok: false, reason: isWorkspaceContended(err) ? 'workspace_contended' :
+          (err as { reason?: string }).reason ?? 'operation_authority_unknown', busy: [], operation_id: operation.id });
+      }
+    }
 
     let first: Awaited<ReturnType<typeof tryAcquire>> & { sha_token?: ShaTokenGrant };
     // P-015 (WI-1550): when the grant is decided LOCALLY (we are the authority, or

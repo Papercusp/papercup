@@ -12,17 +12,79 @@ import {
 } from '../file-lock-authority-ops';
 import { handleAuthorityRpc, __resetAuthorityOpsForTests } from '../authority-op-registry';
 import type { LockEvent } from '../lock-event-stream';
+import { configureLocks } from '@papercusp/locks';
+import { hookOperationStoreIdentity, decodeHookOperationPrepare } from '../file-lock-authority-ops';
 
 afterEach(() => __resetAuthorityOpsForTests());
 
 function fakeCoordinator(over: Partial<FileLockCoordinator> = {}): FileLockCoordinator {
   return {
+    operationStoreIdentity: () => 'store-a',
     acquire: vi.fn(async () => ({ ok: true, lockId: 'lk-1', expiresTs: '2026-06-05T00:00:00Z' })),
     release: vi.fn(async () => ({ ok: true, released: ['apps/x.ts'] })),
     queue: vi.fn(async () => ({ held: [], waiters: [] })),
     ...over,
   };
 }
+
+describe('hook operation authority protocol', () => {
+  const operation = { id: '71d933be-413a-48b0-83af-8856650a917b', deadline: '2026-06-05T00:30:00Z' };
+
+  it('qualifies with a read-only queue probe without calling the coordinator', async () => {
+    const coordinator = fakeCoordinator();
+    const handlers = buildFileLockAuthorityHandlers(coordinator);
+    expect(await handlers[FILE_LOCK_OP_KINDS.queue]({ owner: 'A', coordinationDomain: '/repo', operationPrepare: true }, 'h'))
+      .toEqual({ hookOperationProtocol: 1, storeIdentity: 'store-a' });
+    expect(coordinator.acquire).not.toHaveBeenCalled();
+    expect(coordinator.release).not.toHaveBeenCalled();
+    expect(coordinator.queue).not.toHaveBeenCalled();
+  });
+
+  it('pins the actual SU endpoint without leaking credentials or changing for a credential rotation', () => {
+    configureLocks({ getAdminBaseUrl: () => 'postgresql://alpha:secret-a@127.0.0.1:4444/main' });
+    const first = hookOperationStoreIdentity();
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    configureLocks({ getAdminBaseUrl: () => 'postgresql://beta:secret-b@127.0.0.1:4444/other-main' });
+    expect(hookOperationStoreIdentity()).toBe(first);
+    configureLocks({ getAdminBaseUrl: () => 'postgresql://beta:secret-b@127.0.0.1:5555/other-main' });
+    expect(hookOperationStoreIdentity()).not.toBe(first);
+  });
+
+  it('requires both the supported protocol and a store identity from the read-only probe', () => {
+    expect(decodeHookOperationPrepare({ hookOperationProtocol: 1, storeIdentity: 'store-a' })).toBe('store-a');
+    for (const response of [{}, { hookOperationProtocol: 1 }, { hookOperationProtocol: 1, storeIdentity: '' }]) {
+      expect(() => decodeHookOperationPrepare(response)).toThrow('operation protocol unavailable');
+    }
+  });
+
+  it('carries the fixed UUID and deadline to the acquire adapter', async () => {
+    const coordinator = fakeCoordinator();
+    const handlers = buildFileLockAuthorityHandlers(coordinator);
+    await handlers[FILE_LOCK_OP_KINDS.acquire]({ owner: 'A', coordinationDomain: '/repo',
+      paths: ['a.ts'], intent: 'PreToolUse:Edit', ttlSec: 600, automatic: true, operation }, 'h');
+    expect(coordinator.acquire).toHaveBeenCalledWith(expect.objectContaining({ operation, automatic: true }));
+  });
+
+  it('finishes without a received lock token using the exact operation scope and outcome', async () => {
+    const coordinator = fakeCoordinator();
+    const handlers = buildFileLockAuthorityHandlers(coordinator);
+    const finish = { ...operation, paths: ['a.ts'], intent: 'PreToolUse:Edit', ttlSec: 600, outcome: 'cancelled' };
+    await handlers[FILE_LOCK_OP_KINDS.release]({ owner: 'A', coordinationDomain: '/repo', operation: finish }, 'h');
+    expect(coordinator.release).toHaveBeenCalledWith({ owner: 'A', coordinationDomain: '/repo',
+      lockId: undefined, paths: undefined, allMine: undefined, operation: finish });
+  });
+
+  it('rejects a malformed operation or a broad selector before calling the store', async () => {
+    const coordinator = fakeCoordinator();
+    const handlers = buildFileLockAuthorityHandlers(coordinator);
+    await expect(handlers[FILE_LOCK_OP_KINDS.acquire]({ owner: 'A', coordinationDomain: '/repo',
+      paths: ['a.ts'], intent: 'PreToolUse:Edit', operation: { ...operation, id: 'bad' } }, 'h')).rejects.toThrow('invalid hook operation');
+    await expect(handlers[FILE_LOCK_OP_KINDS.release]({ owner: 'A', coordinationDomain: '/repo', allMine: true,
+      operation: { ...operation, paths: ['a.ts'], intent: 'PreToolUse:Edit', ttlSec: 600, outcome: 'completed' } }, 'h')).rejects.toThrow('invalid hook operation');
+    expect(coordinator.acquire).not.toHaveBeenCalled();
+    expect(coordinator.release).not.toHaveBeenCalled();
+  });
+});
 
 describe('registerFileLockAuthorityOps', () => {
   it('dispatches lock.acquire to the coordinator with the requesting peer as owner', async () => {

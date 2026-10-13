@@ -26,6 +26,7 @@ import { notifyPlanLockChange } from './notify-lock-change';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
   FILE_LOCK_OP_KINDS,
+  finishHookLockOperationSchema,
   emitReleaseLockEvents,
   isNativeEditProofForPaths,
   type FileLockReleaseParams,
@@ -184,6 +185,7 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    hook_operation: finishHookLockOperationSchema.optional().describe('native hook only: finish this exact prepared operation, including a lost acquire reply'),
     lock_id: lockIdSchema.optional(),
     lock_ids: z.array(lockIdSchema).min(1).max(200).optional(),
     paths: z
@@ -227,6 +229,7 @@ export default defineTool({
         Boolean(a.lock_id) ||
         (a.lock_ids?.length ?? 0) > 0 ||
         Boolean(a.all_mine) ||
+        Boolean(a.hook_operation) ||
         (a.paths?.length ?? 0) > 0 ||
         (Boolean(a.retain) && Boolean(a.native_edit_proof)),
       { message: 'pass lock_id, lock_ids, all_mine=true, or one or more paths' },
@@ -240,7 +243,9 @@ export default defineTool({
         !a.retain ||
         (Boolean(a.native_edit_proof) && !a.lock_id && (a.lock_ids?.length ?? 0) === 0 && !a.all_mine && (a.paths?.length ?? 0) === 0),
       { message: 'retain=true takes native_edit_proof (its paths are the subject) and no lock_id(s), paths or all_mine' },
-    ),
+    )
+    .refine((a) => !a.hook_operation || (!a.lock_id && !(a.lock_ids?.length) && !a.all_mine && !a.paths?.length && !a.retain),
+      { message: 'hook_operation cannot be combined with release selectors or retain' }),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain: defaultCoordinationDomain } = readFileLockIdentity(ctx);
     let coordinationDomain: string;
@@ -252,6 +257,16 @@ export default defineTool({
       };
     }
     const lockIds = mergeIds(args.lock_id, args.lock_ids);
+
+    if (args.hook_operation) {
+      const op = args.hook_operation;
+      const { routeHookOperationFinish } = await import('./file-lock-authority-wiring');
+      return textResult(await routeHookOperationFinish({
+        owner: ownerId, coordinationDomain, nativeEditProof: args.native_edit_proof,
+        operation: { id: op.id, deadline: op.deadline, paths: op.paths, intent: op.intent,
+          ttlSec: op.ttl_sec, outcome: 'completed' },
+      }, op.authority));
+    }
 
     if (args.retain) {
       return textResult(

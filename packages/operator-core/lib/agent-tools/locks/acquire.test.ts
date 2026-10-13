@@ -59,7 +59,8 @@ vi.mock('../../agent-state-stamp', () => ({
   readAgentStateStamp: vi.fn(() => ({ intentEventId: null, assumptionSetId: null, goalRef: 'WI-current' })),
 }));
 vi.mock('../../authority/file-lock-routing', () => ({ routeFileLockOp: vi.fn() }));
-vi.mock('../../authority/file-lock-authority-ops', () => ({
+vi.mock('../../authority/file-lock-authority-ops', async () => ({
+  ...(await vi.importActual<typeof import('../../authority/file-lock-authority-ops')>('../../authority/file-lock-authority-ops')),
   FILE_LOCK_OP_KINDS: { acquire: 'acquire' },
   // Real (not stubbed) fan-out so WI-1550 coverage below can assert on the
   // resulting recordLockEvent calls, not just that some mock fired.
@@ -91,6 +92,40 @@ const resolveDomainM = vi.mocked(resolveExplicitFileLockDomain);
 const readStampM = vi.mocked(readAgentStateStamp);
 const tool = (await import('./acquire')).default;
 const warningRoot = mkdtempSync(join(tmpdir(), 'locks-acquire-warning-'));
+
+describe('hook operation acquire API', () => {
+  const operation = { id: '71d933be-413a-48b0-83af-8856650a917b', deadline: '2026-06-05T00:30:00Z', authority: 'original' };
+  const request = { paths: ['a.ts'], intent: 'PreToolUse:Edit', hook_operation: operation };
+
+  it('never falls back to a local grant after an operation route fails', async () => {
+    routeM.mockRejectedValue(new Error('lost reply'));
+    const result = body(await call(request));
+    expect(result).toMatchObject({ ok: false, reason: 'operation_authority_unknown', operation_id: operation.id });
+    expect(tryAcquireM).not.toHaveBeenCalled();
+    expect(insertM).not.toHaveBeenCalled();
+  });
+
+  it('returns authority preparation without entering the ordinary waiter queue', async () => {
+    routeM.mockImplementation(async (_domain, op) => ({ value: op.authorityFence!.prepare('pinned') , via: 'local-authority' }));
+    expect(body(await call({ ...request, hook_operation: { ...operation, authority: undefined } })))
+      .toMatchObject({ ok: false, reason: 'operation_authority_required', operation_authority: 'pinned' });
+    expect(tryAcquireM).not.toHaveBeenCalled();
+    expect(insertM).not.toHaveBeenCalled();
+  });
+
+  it('preserves operation expiry and terminal refusal instead of creating a legacy waiter', async () => {
+    routeM.mockResolvedValue({ value: { ok: false, reason: 'operation_finished', operation_id: operation.id }, via: 'remote-authority' });
+    expect(body(await call({ ...request, wait: { max_sec: 30 } }))).toMatchObject({ ok: false, reason: 'operation_finished' });
+    expect(insertM).not.toHaveBeenCalled();
+  });
+
+  it('refuses hook operations on deliberate acquires and asynchronous wake queues', async () => {
+    for (const args of [{ ...request, intent: 'deliberate edit' }, { ...request, wake_on_grant: true }]) {
+      expect(body(await call(args))).toMatchObject({ ok: false, reason: 'operation_conflict' });
+    }
+    expect(routeM).not.toHaveBeenCalled();
+  });
+});
 
 beforeAll(() => {
   writeFileSync(join(warningRoot, 'existing.ts'), 'export const existing = true;\n');

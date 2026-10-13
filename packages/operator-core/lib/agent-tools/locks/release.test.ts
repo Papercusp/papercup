@@ -41,7 +41,8 @@ vi.mock('./su-lock-store', () => ({
 }));
 vi.mock('./resource-broadcast', () => ({ broadcastResourceBackUp: vi.fn() }));
 vi.mock('../../authority/file-lock-routing', () => ({ routeFileLockOp: vi.fn() }));
-vi.mock('../../authority/file-lock-authority-ops', () => ({
+vi.mock('../../authority/file-lock-authority-ops', async () => ({
+  ...(await vi.importActual<typeof import('../../authority/file-lock-authority-ops')>('../../authority/file-lock-authority-ops')),
   FILE_LOCK_OP_KINDS: { release: 'release' },
   isNativeEditProofForPaths: vi.fn((proof: unknown, released: string[]) => {
     if (!proof || typeof proof !== 'object') return false;

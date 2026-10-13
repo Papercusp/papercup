@@ -24,6 +24,10 @@
  */
 
 import { registerAuthorityOp } from './authority-op-registry';
+import { z } from 'zod';
+import { createHash } from 'node:crypto';
+import { locksHost } from '@papercusp/locks';
+import type { HookLockOperation, HookOperationRefusal } from '@papercusp/locks';
 import { recordLockEvent, type LockEvent } from './lock-event-stream';
 import {
   noteShaTokenGrant,
@@ -44,6 +48,7 @@ export interface FileLockAcquireParams {
   /** Internal automatic-guard acquire; never refresh an overlapping
    * deliberate same-owner claim. */
   automatic?: boolean;
+  operation?: HookLockOperation;
   /** Optional bounded wait, mirroring locks:acquire. */
   waitMaxSec?: number;
   /**
@@ -68,7 +73,39 @@ export interface FileLockReleaseParams {
   publishedSha?: string | null;
   /** Positive proof that a recognized native edit completed before release. */
   nativeEditProof?: NativeEditProof;
+  operation?: HookLockOperation & { paths: string[]; intent: string; ttlSec: number; outcome: 'cancelled' | 'completed' };
 }
+
+/** Hook-only extension on the maintained acquire/release/cancel surfaces. */
+export const hookLockOperationSchema = z.object({
+  id: z.string().uuid(),
+  deadline: z.string().datetime({ offset: true }),
+  authority: z.string().min(1).max(4096).optional(),
+});
+
+/** Identify the configured SU database without exposing its credentials. The
+ * package derives papercusp_su from this same host callback. Two isolated
+ * operators on one machine must never share an operation pin. */
+export function hookOperationStoreIdentity(): string {
+  const url = new URL(locksHost().getAdminBaseUrl());
+  return createHash('sha256').update(JSON.stringify([
+    url.protocol, url.hostname, url.port, url.searchParams.get('host'), 'papercusp_su',
+  ])).digest('hex');
+}
+
+export function decodeHookOperationPrepare(raw: unknown): string {
+  const r = raw as { hookOperationProtocol?: number; storeIdentity?: string };
+  if (r?.hookOperationProtocol !== 1 || typeof r.storeIdentity !== 'string' || !r.storeIdentity) {
+    throw new Error('operation protocol unavailable');
+  }
+  return r.storeIdentity;
+}
+
+export const finishHookLockOperationSchema = hookLockOperationSchema.extend({
+  paths: z.array(z.string().min(1)).min(1).max(50),
+  intent: z.string().startsWith('PreToolUse:'),
+  ttl_sec: z.number().int().positive().max(3600),
+});
 
 /** Evidence supplied by a native edit-result hook, never by lock acquisition. */
 export interface NativeEditProof {
@@ -121,6 +158,7 @@ export interface FileLockQueueParams {
   paths?: string[];
   /** See FileLockAcquireParams.coordinationDomain. */
   coordinationDomain: string;
+  operationPrepare?: boolean;
 }
 
 /** A final-write race is not holder contention. The requester should retry
@@ -135,7 +173,8 @@ export interface FileLockAcquireResult {
   /** paths that were busy when ok=false. */
   busy?: Array<{ path: string; owner: string }>;
   /** Present when the authority could not establish a stable holder snapshot. */
-  reason?: FileLockAcquireRetryReason | 'queued_waiter';
+  reason?: FileLockAcquireRetryReason | 'queued_waiter' | HookOperationRefusal;
+  operationId?: string;
   retryable?: boolean;
   /** Paths newly acquired by this call. Same-owner refreshes can return a
    * subset (or an empty list), so automatic guards never release a
@@ -151,6 +190,7 @@ export interface FileLockAcquireResult {
 /** The minimal lock-store surface the authority ops drive. The operator adapts
  *  the real su-lock-store to this at boot; tests inject a fake. */
 export interface FileLockCoordinator {
+  operationStoreIdentity?: () => string;
   acquire(p: FileLockAcquireParams): Promise<FileLockAcquireResult>;
   /** `released` is the list of paths actually released — carried (not a count) so the
    *  requester's routed-release response matches the local-release shape exactly.
@@ -162,7 +202,10 @@ export interface FileLockCoordinator {
    *  purpose — an older peer authority, or an injected fake, may not supply it, and
    *  the requester must render that as UNKNOWN rather than defaulting it to 0, which
    *  would fabricate the very "you held nothing" answer this field exists to stop. */
-  release(p: FileLockReleaseParams): Promise<{ ok: boolean; released?: string[]; heldBefore?: number }>;
+  release(p: FileLockReleaseParams): Promise<{
+    ok: boolean; released?: string[]; heldBefore?: number; operationId?: string;
+    reason?: string; requestedPaths?: string[]; attributed?: string[]; state?: 'cancelled' | 'completed';
+  }>;
   queue(p: FileLockQueueParams): Promise<unknown>;
 }
 
@@ -265,6 +308,10 @@ export function buildFileLockAuthorityHandlers(
       ) {
         throw new Error('lock.acquire: invalid payload (owner, paths[], intent, coordinationDomain required)');
       }
+      if (p.operation && (!hookLockOperationSchema.safeParse(p.operation).success ||
+          !p.intent.startsWith('PreToolUse:') || !p.paths.length)) {
+        throw new Error('lock.acquire: invalid hook operation');
+      }
       const ttlSec = typeof p.ttlSec === 'number' ? p.ttlSec : 1200;
       const result = await coordinator.acquire({
         owner: p.owner,
@@ -274,6 +321,7 @@ export function buildFileLockAuthorityHandlers(
         ttlSec,
         goalRef: p.goalRef,
         automatic: p.automatic,
+        ...(p.operation ? { operation: p.operation } : {}),
         waitMaxSec: p.waitMaxSec,
         coordinationDomain: p.coordinationDomain,
       });
@@ -298,6 +346,10 @@ export function buildFileLockAuthorityHandlers(
       if (!p || typeof p.owner !== 'string' || typeof p.coordinationDomain !== 'string') {
         throw new Error('lock.release: invalid payload (owner, coordinationDomain required)');
       }
+      if (p.operation && (!finishHookLockOperationSchema.safeParse({ ...p.operation, ttl_sec: p.operation.ttlSec }).success ||
+          !['cancelled', 'completed'].includes(p.operation.outcome) || p.lockId || p.allMine || p.paths?.length)) {
+        throw new Error('lock.release: invalid hook operation');
+      }
       const owner = p.owner;
       const result = await coordinator.release({
         owner,
@@ -306,6 +358,7 @@ export function buildFileLockAuthorityHandlers(
         allMine: p.allMine,
         coordinationDomain: p.coordinationDomain,
         ...(p.nativeEditProof ? { nativeEditProof: p.nativeEditProof } : {}),
+        ...(p.operation ? { operation: p.operation } : {}),
       });
       if (result.ok && result.released) {
         const ts = now();
@@ -324,6 +377,8 @@ export function buildFileLockAuthorityHandlers(
       if (!p || typeof p.owner !== 'string' || typeof p.coordinationDomain !== 'string') {
         throw new Error('lock.queue: invalid payload (owner, coordinationDomain required)');
       }
+      // Old authorities can answer this harmless read, but cannot qualify.
+      if (p.operationPrepare) return { hookOperationProtocol: 1, storeIdentity: coordinator.operationStoreIdentity?.() };
       return coordinator.queue({ owner: p.owner, paths: p.paths, coordinationDomain: p.coordinationDomain });
     },
   };
