@@ -80,10 +80,20 @@ beforeAll(async () => {
     req.on("data", (d) => (body += d));
     req.on("end", () => {
       const parsed = JSON.parse(body) as Record<string, any>;
-      lastRequest = { url: req.url ?? "", body: parsed };
-      requests.push(lastRequest);
       const args = parsed.params?.arguments as Record<string, any> | undefined;
       const toolName = parsed.params?.name as string | undefined;
+      const operation = args?.hook_operation;
+      // The legacy assertions count mutations. The separate operation-fence
+      // suite verifies read-only preparation and persistence before HTTP.
+      if (toolName === 'locks:acquire' && operation && !operation.authority && !rejectCoordinationDomain) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text',
+          text: JSON.stringify({ ok: false, reason: 'operation_authority_required', operation_authority: 'decision-fixture' }),
+        }] } }));
+        return;
+      }
+      lastRequest = { url: req.url ?? "", body: parsed };
+      requests.push(lastRequest);
       const rejectsDomain =
         rejectCoordinationDomain && args?.coordination_domain;
       let recoveryInner: unknown | null = null;
@@ -101,6 +111,11 @@ beforeAll(async () => {
       ) {
         recoveryInner = recoveryReleaseInner;
       }
+      const decorateOperation = (value: unknown) => operation && value && typeof value === 'object'
+        ? { ...value, operation_id: operation.id,
+            ...(toolName === 'locks:release' || toolName === 'locks:cancel_wait'
+              ? { state: toolName === 'locks:release' ? 'completed' : 'cancelled' } : {}) }
+        : value;
       const rpc = rejectsDomain
         ? {
             jsonrpc: "2.0",
@@ -125,7 +140,7 @@ beforeAll(async () => {
                   content: [
                     {
                       type: "text",
-                      text: JSON.stringify(recoveryInner),
+                      text: JSON.stringify(decorateOperation(recoveryInner)),
                     },
                   ],
                 },
@@ -137,11 +152,11 @@ beforeAll(async () => {
                   content: [
                     {
                       type: "text",
-                      text: JSON.stringify(
+                      text: JSON.stringify(decorateOperation(
                         nextInnerSeq && nextInnerSeq.length
                           ? nextInnerSeq.shift()
                           : nextInner,
-                      ),
+                      )),
                     },
                   ],
                 },
@@ -170,6 +185,11 @@ afterAll(async () => {
 });
 
 afterEach(() => {
+  // Native tool identities are unique per real call; cases intentionally reuse
+  // fixture ids, so terminal tombstones must not leak across test boundaries.
+  for (const file of fs.readdirSync(cache)) {
+    if (file.endsWith('.operation.json')) fs.rmSync(join(cache, file));
+  }
   nextInner = { ok: true, lock_id: "stub-lock" };
   nextInnerSeq = null;
   rejectCoordinationDomain = false;
