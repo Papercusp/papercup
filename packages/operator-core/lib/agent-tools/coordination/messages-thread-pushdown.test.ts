@@ -23,7 +23,10 @@ vi.mock('./log', () => ({
   coordHasPgFastPath: () => fastPathState.on,
 }));
 
-vi.mock('../../pg-read-query', () => ({ boundedPgReadTxn: boundedPgReadTxnMock }));
+vi.mock('../../pg-read-query', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../pg-read-query')>()),
+  boundedPgReadTxn: boundedPgReadTxnMock,
+}));
 
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { readThread, readThreadFromRef, THREAD_READ_ACQUIRE_TIMEOUT_MS, THREAD_READ_STATEMENT_TIMEOUT_MS } from './messages';
