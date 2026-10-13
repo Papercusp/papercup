@@ -86,8 +86,12 @@ describe('BM25 exact-list sources ↔ keepLegacyColumn', () => {
   const VIEW_BASE: Record<string, string> = { engineer_issues: 'work_items' };
   it('the exact-list relations are exactly the kept corpora', () => {
     const src = readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../agent-tools/search/sources.ts'), 'utf8');
+    const knowledge = readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../agent-tools/search/knowledge-sources.ts'), 'utf8');
     const reads = [...src.matchAll(/lexicalMode: 'and' \}, (?:p\.)?sql`(\w+)`, (?:p\.)?sql`harness_shared\.(\w+)`/g)]
       .map(r => `${VIEW_BASE[r[2]!] ?? r[2]}.${r[1]}`);
+    if (/boundedExactTopK\([\s\S]{0,1200}?from: p\.sql`harness_shared\.harness_plans p`[\s\S]{0,500}?tsv: p\.sql`p\._search`/.test(knowledge)) {
+      reads.push('harness_plans._search');
+    }
     expect(reads.length, 'no exact-list call found in sources.ts').toBeGreaterThan(0);
     const corpora: readonly Bm25Corpus[] = BM25_CORPORA;
     expect([...new Set(reads)].sort())

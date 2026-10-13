@@ -9,7 +9,7 @@
  * reloptions, views of views) are unchanged. A busy table and a corpus without a valid BM25
  * index keep their stored column and retire on a later run; a host without the library
  * retires nothing. The corpora whose search source reads the stored column through D-016's
- * exact list (work_items._search, session_turns.text_tsv) are kept: column, GIN index and
+ * exact list (harness_plans._search, work_items._search, session_turns.text_tsv) are kept: column, GIN index and
  * dependent views untouched.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -165,18 +165,20 @@ describe('legacy tsvector retirement (R-14, D-011, D-012, D-016)', () => {
       holder.release();
     }
 
-    for (const [table, column] of [['harness_plans', '_search'], ['code_recipes', 'title_tsv'], ['harness_brainstorm', 'content_tsv']]) {
+    for (const [table, column] of [['code_recipes', 'title_tsv'], ['harness_brainstorm', 'content_tsv']]) {
       expect(await generated(table!, column!), `${table}.${column}`).toBe('v');
     }
     expect(await generated('goals', '_search')).toBe('s'); // lock_timeout skip
     expect(await generated('carry_notes', 'note_tsv')).toBe('s'); // no BM25 index
 
-    // D-016: the exact list reads work_items._search and its GIN index, so both stay
+    // D-016: exact lists read harness_plans._search and work_items._search, so both stay.
+    expect(await generated('harness_plans', '_search')).toBe('s');
+    expect(await exists('harness_shared.harness_plans_search_idx')).toBe(true);
     expect(await generated('work_items', '_search')).toBe('s');
     expect(await exists('harness_shared.hfc_search_idx')).toBe(true);
     expect(await keptWorkItems()).toBe(workItemsBefore);
 
-    for (const gin of ['harness_plans_search_idx', 'code_recipes_title_tsv_idx', 'harness_brainstorm_tsv_idx']) {
+    for (const gin of ['code_recipes_title_tsv_idx', 'harness_brainstorm_tsv_idx']) {
       expect(await exists(`harness_shared.${gin}`), gin).toBe(false);
     }
     expect(await exists('harness_shared.goals_search_idx')).toBe(true);
@@ -219,7 +221,7 @@ describe('legacy tsvector retirement (R-14, D-011, D-012, D-016)', () => {
 
   it('a later run is idempotent, keeps the exact-list corpora, retires the table that was busy, and reports the freed index bytes', async () => {
     const rows = await retire();
-    expect(outcomeOf(rows, 'harness_plans')).toBe('already-retired');
+    expect(outcomeOf(rows, 'harness_plans')).toBe('kept:exact-list');
     expect(outcomeOf(rows, 'work_items')).toBe('kept:exact-list');
     expect(outcomeOf(rows, 'session_turns')).toBe('kept:exact-list');
     expect(outcomeOf(rows, 'carry_notes')).toBe('skipped:bm25-index-not-valid');

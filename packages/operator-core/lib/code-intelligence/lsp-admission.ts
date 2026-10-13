@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { CaplessAdaptiveController, type CaplessControllerOptions } from '../resource-governor/controller';
-import { RollingHealthAnalyzer, type HealthVerdict } from '../resource-governor/health-analysis';
+import { RollingHealthAnalyzer, type HealthVerdict, type HealthConditionContext } from '../resource-governor/health-analysis';
 import type { LiveHealthReading } from '../resource-governor/live-health';
 import type { CodeIntelAnswer, CodeIntelIntent } from './contracts';
 import type { LspQueryEvent } from './lsp-query-evidence';
@@ -42,6 +42,7 @@ export interface LspAdmissionOptions {
   /** Cost observation policy, never a productive capacity ceiling. */
   readonly indexHitMaxMs?: number;
   readonly costObservationTtlMs?: number;
+  readonly healthConditions?: Omit<HealthConditionContext, 'workspaceId'>;
 }
 
 export class LspAdmissionError extends Error {
@@ -102,6 +103,7 @@ export class LspAdmissionController {
   readonly #controller: CaplessAdaptiveController;
   readonly #indexHitMaxMs: number;
   readonly #costObservationTtlMs: number;
+  readonly #healthConditions: LspAdmissionOptions['healthConditions'];
   readonly #costs = new Map<string, { cost: NonNullable<LspAdmissionContext['symbolCost']>; durationMs: number; observedAtMs: number }>();
   readonly #settlementFailures = new Map<string, { error: string; action: () => Promise<void> }>();
   readonly #lanes = new Map<string, ClassLane>();
@@ -121,6 +123,7 @@ export class LspAdmissionController {
     this.#controller = new CaplessAdaptiveController(options.controller);
     this.#indexHitMaxMs = options.indexHitMaxMs ?? 25;
     this.#costObservationTtlMs = options.costObservationTtlMs ?? 60_000;
+    this.#healthConditions = options.healthConditions;
     if (!Number.isFinite(this.#indexHitMaxMs) || this.#indexHitMaxMs < 0 ||
         !Number.isFinite(this.#costObservationTtlMs) || this.#costObservationTtlMs <= 0) {
       throw new Error('LSP cost observation policy must be finite and positive');
@@ -173,7 +176,7 @@ export class LspAdmissionController {
     return { ...context, symbolCost: context.symbolCost ?? (key ? this.#costs.get(key)?.cost : undefined) ?? 'unknown' };
   }
 
-  #observeService(waiter: Waiter, healthy: boolean, atMs = this.#now()): void {
+  async #observeService(waiter: Waiter, healthy: boolean, atMs = this.#now()): Promise<void> {
     if (waiter.serviceStartedAt === undefined) return;
     const durationMs = Math.max(0, atMs - waiter.serviceStartedAt);
     const key = this.#costKey(waiter.context);
@@ -189,7 +192,9 @@ export class LspAdmissionController {
       confidence: 1, reason: null, lastMeasuredAtMs: atMs,
     };
     const frame = { scopeId: waiter.classKey, atMs, signals: { 'service.waitP95Ms': reading } };
-    const verdict = lane.health.evaluate(frame);
+    const verdict = await lane.health.evaluate(frame, { ...this.#healthConditions,
+      workspaceId: waiter.context.workspaceId,
+      ...(!healthy ? { readOpenConditions: async () => [] } : {}) });
     // A failed/refused answer never supplies an upward probe or healthy baseline.
     if (healthy && verdict.state !== 'degraded') lane.health.primeHealthy(frame);
     this.observeHealth(waiter.classKey, healthy && verdict.state === 'warming'
@@ -282,7 +287,7 @@ export class LspAdmissionController {
           if (waiter.receipt) void this.#settle(waiter, () => waiter.receipt!.cancel(error.message)).catch(() => undefined);
           this.#drain();
         }
-        else this.#observeService(waiter, false);
+        else void this.#observeService(waiter, false);
         // An ignored cancellation is still running on the wire. Do not release its slot/receipt early.
       };
       const onAbort = () => abandon('cancelled');
@@ -375,11 +380,11 @@ export class LspAdmissionController {
       if (waiter.abandoned) await this.#settle(waiter, async () => { await waiter.receipt?.cancel('LSP caller abandoned during execution'); });
       else {
         await this.#settle(waiter, async () => { await waiter.receipt?.finish(); });
+        await this.#observeService(waiter, healthyResult(result), serviceEndedAt);
         waiter.resolve(result);
-        this.#observeService(waiter, healthyResult(result), serviceEndedAt);
       }
     } catch (error) {
-      this.#observeService(waiter, false);
+      await this.#observeService(waiter, false);
       try { await this.#settle(waiter, async () => { await waiter.receipt?.cancel(`LSP execution failed: ${error instanceof Error ? error.message : String(error)}`); }); }
       catch (settlementError) { if (!waiter.abandoned) waiter.reject(settlementError); }
       if (!waiter.abandoned) waiter.reject(error);

@@ -22,7 +22,7 @@ vi.mock('./with-plan-lock', () => ({
     state.lockCalls++;
     const result = await mutate(state.body, {
       version: 2, contentHash: 'locked', opStatus: null, planStatus: null,
-      inputSchema: state.schema, templateData: null, outputSchema: null,
+      inputSchema: state.schema, templateData: null, outputSchema: null, nowNote: null,
     });
     if (result.templateData !== undefined) state.writes.push(result.templateData);
     if (result.inputSchema !== undefined) state.writes.push(result.inputSchema);

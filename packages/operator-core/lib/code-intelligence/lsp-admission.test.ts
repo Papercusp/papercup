@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LspAdmissionController, lspAdmissionClass, runLspAdmission, type LspAdmissionContext, type LspAdmissionReceipt } from './lsp-admission';
 
+vi.mock('../agent-tools/coordination/tools/conditions', () => ({
+  readConditionEnvelopes: async () => [], computeConditionStates: () => [],
+}));
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: async () => true }));
+
 const deferred = <T = void>() => {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(r => { resolve = r; });
@@ -15,6 +20,23 @@ const receipt = (): LspAdmissionReceipt => ({ start: vi.fn(async () => {}), fini
 afterEach(() => { vi.useRealTimers(); });
 
 describe('LSP class admission', () => {
+  it('awaits scoped health condition delivery before returning a completed service result', async () => {
+    let now = 1_700_000_000_000;
+    const hold = deferred();
+    const broadcast = vi.fn(async (_event: { conditionKey?: string; oneShot?: boolean }) => { await hold.promise; return true; });
+    const controller = new LspAdmissionController({ now: () => now, enqueue: async () => receipt(),
+      healthConditions: { rail: { broadcast }, readOpenConditions: async () => [] } });
+    const input = (id: string) => context(id, { deadlineAtMs: now + 10_000 });
+    for (let i = 0; i < 4; i++) await controller.run(input(`healthy-${i}`), async () => { now += 5; return 'ok'; });
+    let returned = false;
+    const result = controller.run(input('slow'), async () => { now += 500; return 'slow'; })
+      .then(value => { returned = true; return value; });
+    await vi.waitFor(() => expect(broadcast).toHaveBeenCalledTimes(1));
+    expect(returned).toBe(false);
+    expect(broadcast.mock.calls[0]?.[0]).toMatchObject({ oneShot: true,
+      conditionKey: expect.stringContaining('alarm:resource-health:') });
+    hold.resolve(); await expect(result).resolves.toBe('slow');
+  });
   it('keeps definitions and different symbol costs independent of a blocked scan', async () => {
     const persisted = receipt();
     const enqueue = vi.fn(async () => persisted);

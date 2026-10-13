@@ -2,10 +2,11 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { writeSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { nativeCliCall, nativeCliTestTimeout, nativeFixtureProcess } from './native-cli.fixture';
+import { nativeCliCall, nativeCliTestTimeout, nativeFixtureProcess, scopedNativeFixtureArgs } from './native-cli.fixture';
 import './scoped-contracts.e2e.test';
 
 const baseUrl = process.env.OPERATOR_BASE_URL;
@@ -26,23 +27,23 @@ describe('native P018 private operator CLI incident claim and resume', () => {
     expect(build.status, build.stdout + build.stderr).toBe(0);
     const handlerHash = createHash('sha256').update(readFileSync(handlerPath)).digest('hex');
     try {
-    let lastStage = 'private-pg-bootstrap';
-    const progress = setInterval(() => console.log(`NATIVE_INCIDENT_API_PROGRESS=${lastStage}`), 10_000);
+    let pendingStage = '';
     let result;
-    try {
       result = await nativeFixtureProcess(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
-        '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
-        join(import.meta.dirname, '__fixtures__/incident-api-client.ts'),
-        join(homedir(), '.papercusp/vendor/repomix'), join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash], {
+        '--isolated-runtime=operator-api', '--', process.execPath,
+        ...scopedNativeFixtureArgs(new URL('./__fixtures__/incident-api-client.ts', import.meta.url).href,
+          'runNativeIncidentApi', [join(homedir(), '.papercusp/vendor/repomix'),
+            join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash])], {
         cwd: root, env: { ...process.env, TMPDIR: '/dev/shm' }, timeoutMs: 180_000,
-        onOutput: text => {
-          for (const line of text.split('\n')) if (line.startsWith('NATIVE_INCIDENT_API_STAGE=')) {
-            lastStage = line.slice('NATIVE_INCIDENT_API_STAGE='.length);
-            console.log(line);
+        onOutput: (text, timing) => {
+          const lines = (pendingStage + text).split('\n');
+          pendingStage = lines.pop()!.slice(-2_000);
+          for (const line of lines) if (line.startsWith('NATIVE_INCIDENT_API_STAGE=')) {
+            writeSync(2, `NATIVE_INCIDENT_API_PROGRESS=${JSON.stringify({
+              stage: line.slice('NATIVE_INCIDENT_API_STAGE='.length), ...timing })}\n`);
           }
         },
       });
-    } finally { clearInterval(progress); }
     expect(result.code, result.output).toBe(0);
     const line = result.output.split('\n').find(row => row.startsWith('NATIVE_INCIDENT_API_PROOF='));
     expect(line, result.output).toBeDefined();

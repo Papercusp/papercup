@@ -734,6 +734,7 @@ import './issues/list';
 import './db/next_migration';
 import './testing/prune_orphan_runs';
 import './testing/flakiness';
+import './testing/case-categories';
 import './testing/run';
 import './testing/record-run';
 import './testing/run-status';

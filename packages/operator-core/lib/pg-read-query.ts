@@ -3661,6 +3661,27 @@ export const SET_LOCAL_ORG_SEARCH_PATH =
   "SELECT set_config('search_path', 'harness_shared, papercusp_shared, public', true)";
 
 /**
+ * Keep agent-authored ad-hoc SQL out of pg_stat_statements for the rest of this
+ * transaction (papercusp-performance-audit-2026-10-12 P-003).
+ *
+ * Measured 2026-10-13 00:10Z: 7,992 of the 19,621 pg_stat_statements entries
+ * (cap 20,000) were this module's `SELECT * FROM (…) AS _pgq` wrapper, and 8,376
+ * entries had been called exactly once. Each one-off diagnostic read occupies an
+ * entry for good, crowding out the application statements the stats exist to
+ * measure, and at the cap every new statement evicts the least-used ones.
+ *
+ * `pg_stat_statements.track` is superuser-settable. Under a role that may not set
+ * it, the DO block swallows `insufficient_privilege` so the read still runs
+ * (tracked, as before) instead of aborting the transaction. When the extension is
+ * not loaded the name is an ordinary placeholder setting and this is a no-op.
+ * `set_config(…, true)` is transaction-local and survives the block's exception
+ * subtransaction, so it never leaks onto a pooled connection.
+ */
+export const SET_LOCAL_UNTRACKED_STATEMENTS =
+  "DO $untracked$ BEGIN PERFORM set_config('pg_stat_statements.track', 'none', true); " +
+  'EXCEPTION WHEN insufficient_privilege THEN NULL; END $untracked$';
+
+/**
  * Run an internal query in one bounded, READ ONLY transaction.
  *
  * This is the shared seam for operator read paths that already use a tagged
@@ -4166,6 +4187,8 @@ export async function pgReadQuery(
     // READ ONLY must be set before the first data statement in the txn.
     await tx.unsafe('SET TRANSACTION READ ONLY');
     assertActive();
+    await tx.unsafe(SET_LOCAL_UNTRACKED_STATEMENTS);
+    assertActive();
     await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
     assertActive();
     await tx.unsafe(SET_LOCAL_UTC);
@@ -4244,6 +4267,8 @@ export async function explainReadQuery(
     const work = (assertActive: () => void) => sql.begin(async (tx) => {
       assertActive();
       await tx.unsafe('SET TRANSACTION READ ONLY');
+      assertActive();
+      await tx.unsafe(SET_LOCAL_UNTRACKED_STATEMENTS);
       assertActive();
       await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
       assertActive();

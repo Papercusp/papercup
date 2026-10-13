@@ -3,13 +3,19 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createAdaptorServer } from '@hono/node-server';
 import { nativeCliPlan, nativeCliResult } from '../native-cli.fixture.ts';
 
+// The plain-Node bootstrap supplies this callback from outside tsx's namespace.
+// The maintained handler is already compiled; routing it through tsx again
+// parses and rewrites the host artifact's dynamic imports and can exhaust the
+// private fixture deadline.
+export async function runNativeIncidentApi(argv: readonly string[],
+  importHandler: (url: string) => Promise<{ handler: Parameters<typeof createAdaptorServer>[0]['fetch'] }>) {
 const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
 assert(workspace?.startsWith('test-runtime-'), 'Private runtime required');
 assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
@@ -18,26 +24,33 @@ assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');
 // remain private. Pin their canonical installations before the host imports.
 const vendor = join(homedir(), '.papercusp/vendor');
 await mkdir(vendor, { recursive: true });
-for (const [name, selected] of [['repomix', process.argv[2]], ['lsp', process.argv[3]]] as const) {
+for (const [name, selected] of [['repomix', argv[0]], ['lsp', argv[1]]] as const) {
   assert(selected, `Missing maintained ${name} installation`);
   await symlink(await realpath(selected), join(vendor, name), 'dir');
 }
 const version = spawnSync(join(vendor, 'repomix/node_modules/.bin/repomix'), ['--version'], { encoding: 'utf8', timeout: 10_000 });
 assert.equal(version.status, 0, version.stderr); assert.match(version.stdout, /\b1\.18\.0\b/);
 console.log('NATIVE_INCIDENT_API_STAGE=pinned-assets-ready');
+console.log('NATIVE_INCIDENT_API_STAGE=import-start:first-party-callers-offthread');
 const { firstPartyCallersOffthread } = await import('../first-party-callers-offthread.ts');
+console.log('NATIVE_INCIDENT_API_STAGE=import-ready:first-party-callers-offthread');
+console.log('NATIVE_INCIDENT_API_STAGE=import-start:lsp-adapter');
 const { LSP_VENDOR_DIR } = await import('../lsp-adapter.ts');
-const handlerPath = process.argv[4], handlerHash = process.argv[5];
+console.log('NATIVE_INCIDENT_API_STAGE=import-ready:lsp-adapter');
+const handlerPath = argv[2], handlerHash = argv[3];
 assert(handlerPath && handlerHash, 'Maintained private ESM handler artifact required');
 assert.equal(createHash('sha256').update(readFileSync(handlerPath)).digest('hex'), handlerHash,
   'Prepared handler artifact changed before the private runtime loaded it');
-const { handler } = await import(/* @vite-ignore */ pathToFileURL(handlerPath).href);
+console.log('NATIVE_INCIDENT_API_STAGE=import-start:handler-artifact');
+const { handler } = await importHandler(pathToFileURL(handlerPath).href);
 console.log('NATIVE_INCIDENT_API_STAGE=handler-loaded');
+console.log('NATIVE_INCIDENT_API_STAGE=import-start:fixture-stores');
 const { superuserTokenPath } = await import('../../superuser-token.ts');
 const { loadHarnessRegistry } = await import('../../harness-registry.ts');
 const { persistHarnessTestRunsWithIds } = await import('../../testing-run-store.ts');
 const { getOrgPg } = await import('@papercusp/db-org');
 const { setAutoPumpEnabledForTests } = await import('../../events/await/engine.ts');
+console.log('NATIVE_INCIDENT_API_STAGE=import-ready:fixture-stores');
 setAutoPumpEnabledForTests(false);
 await writeFile(superuserTokenPath(), randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' });
 const server = createAdaptorServer({ fetch: handler });
@@ -49,6 +62,7 @@ for (const [key, value] of Object.entries({ workspace, harness: workspace, clien
 }
 const repo = resolve(import.meta.dirname, '../../../../..');
 async function call(name: string, args: Record<string, unknown>) {
+  const startedAt = performance.now();
   console.log(`NATIVE_INCIDENT_API_STAGE=cli-start:${name}`);
   const plan = nativeCliPlan(endpoint.toString(), name, args, { ...process.env,
     PAPERCUSP_SID: 'native-incident-private-owner', PAPERCUSP_WORKSPACE: workspace, PAPERCUSP_HARNESS_SLUG: workspace });
@@ -57,12 +71,21 @@ async function call(name: string, args: Record<string, unknown>) {
     const child = spawn(process.execPath, [join(repo, 'apps/operator/scripts/ptool.mjs'),
       name, `--url=${plan.cliUrl}`, '--json', '-'], { cwd: repo, env: plan.env, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
-    child.stdout.on('data', data => { stdout += data; }); child.stderr.on('data', data => { stderr = (stderr + data).slice(-16_000); });
+    child.stdout.on('data', data => { stdout += data; });
+    child.stderr.on('data', data => {
+      const text = String(data);
+      stderr = (stderr + text).slice(-16_000);
+      // Connection/list/request phase clocks must reach the outer fixture before
+      // a deadline kills the client. No request arguments are logged here.
+      writeSync(2, text);
+    });
     const timer = setTimeout(() => child.kill('SIGTERM'), plan.timeoutMs);
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('close', status => { clearTimeout(timer); done({ status, stdout, stderr }); });
     child.stdin.end(JSON.stringify(args));
   });
+  writeSync(2, `NATIVE_CLI_PROGRESS=${JSON.stringify({ name, state: 'settled',
+    elapsedMs: Math.round(performance.now() - startedAt), status: result.status })}\n`);
   const decoded = nativeCliResult(result) as Record<string, any>;
   console.log(`NATIVE_INCIDENT_API_STAGE=cli-finished:${name}`);
   return decoded;
@@ -132,3 +155,4 @@ try {
   await getOrgPg().sql.end({ timeout: 2 });
 }
 process.exit(0);
+}

@@ -51,6 +51,7 @@ export const BM25_CORPORA = [
   {
     table: 'harness_plans', indexName: 'harness_plans_bm25', textConfig: 'english', legacyTsvColumn: '_search',
     textExprTemplate: "coalesce({title}, '') || ' ' || coalesce({content}, '')",
+    keepLegacyColumn: 'exact-list',
   },
   {
     table: 'goals', indexName: 'goals_bm25', textConfig: 'english', legacyTsvColumn: '_search',

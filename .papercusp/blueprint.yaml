@@ -45,4 +45,16 @@ fleet:
       capabilities: ["*"]
     - id: operator
       capabilities: ["operator:write"]
+    - id: researcher
+      capabilities:
+        - "capability:fetch"
+        - "capability:read"
+        - "work_items:get"
+        - "work_items:claim"
+        - "work_items:complete"
+        - "plans:get"
+        - "reports:publish"
+        - "reports:get"
+        - "reports:list"
+        - "coord:send"
   watcher: papercup

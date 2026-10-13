@@ -63,6 +63,20 @@ describe('pgReadQuery (real PG)', () => {
     expect(r.rows[0]?.ro).toBe('on');
   });
 
+  // papercusp-performance-audit-2026-10-12 P-003: agent-authored reads were 41% of
+  // pg_stat_statements' 20,000 entries. The read must run with tracking off, and
+  // the setting must stay inside its own transaction (pooled connections).
+  it('runs with pg_stat_statements tracking off, scoped to its own transaction', async () => {
+    const r = await pgReadQuery("SELECT current_setting('pg_stat_statements.track', true) AS track", {
+      client: db.adminSql,
+    });
+    expect(r.rows[0]?.track).toBe('none');
+    const [after] = await db.adminSql.begin((tx) =>
+      tx.unsafe("SELECT current_setting('pg_stat_statements.track', true) AS track"),
+    );
+    expect(after?.track).not.toBe('none');
+  });
+
   it('blocks a data-modifying CTE that sneaks past the regex (guard 2 and/or 3)', async () => {
     // Starts with WITH → passes the regex, but the write must NOT happen: the
     // subquery-wrap forbids a data-modifying CTE in a subquery, and the READ

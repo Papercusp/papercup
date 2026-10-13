@@ -13,11 +13,15 @@
  * session was never offered another backend even though the session-port
  * service prepares claude, codex and omp sources alike.
  */
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   AGENTS,
   resolveResumeTarget,
   resumePickerBackendsFor,
+  unresumableSourceCause,
 } from "../scripts/psu-launcher.mjs";
 
 const BACKENDS = ["claude", "codex", "omp"] as const;
@@ -115,5 +119,111 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
     expect([...resumePickerBackendsFor(trackedSession(undefined))].sort()).toEqual(
       [...BACKENDS].sort(),
     );
+  });
+});
+
+/**
+ * R-23: a SINGLE session that cannot be resumed is refused with its cause
+ * before the target is spawned. launchResolvedResume calls
+ * unresumableSourceCause right after the target is resolved and BEFORE
+ * ensureBackendInstalled / chooseResumeAccount / launchSessionPort, so a
+ * non-null cause here is a refusal with nothing spawned. Per D-009 the refusal
+ * is per session, never per backend pair: the OMP source with a transcript must
+ * pass.
+ */
+describe("psu --resume refuses an unresumable source before spawn (R-23)", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  const tempHome = () => {
+    const dir = mkdtempSync(join(tmpdir(), "psu-resume-r23-"));
+    dirs.push(dir);
+    return dir;
+  };
+  const OMP_THREAD = "0d1e2f3a4b5c";
+  const ompSource = (agentHome: string) => ({
+    ...trackedSession("omp"),
+    ompThreadId: OMP_THREAD,
+    agentHome,
+  });
+  const port = (sourceAgent: Backend, targetAgent: Backend) =>
+    resolveResumeTarget(
+      trackedSession(sourceAgent),
+      {},
+      { targetAgent, modelSpec: null },
+    );
+
+  it("refuses an untracked (raw native) session and names the cause", () => {
+    const cause = unresumableSourceCause(ompSource(tempHome()), port("omp", "claude"), {
+      tracked: false,
+      home: tempHome(),
+    });
+    expect(cause).toMatch(/requires a psu-tracked source session/);
+    expect(cause).toContain(`omp session ${OMP_THREAD}`);
+  });
+
+  it.each(["claude", "codex"] as const)(
+    "refuses a tracked OMP source whose transcript is missing (onto %s), naming the session and target",
+    (targetAgent) => {
+      const agentHome = tempHome();
+      mkdirSync(join(agentHome, "sessions"), { recursive: true });
+      const cause = unresumableSourceCause(ompSource(agentHome), port("omp", targetAgent), {
+        tracked: true,
+        home: tempHome(),
+      });
+      expect(cause).toMatch(/no source transcript to carry onto/);
+      expect(cause).toContain(`omp session ${OMP_THREAD}`);
+      expect(cause).toContain(targetAgent);
+    },
+  );
+
+  it("refuses a tracked Claude source whose transcript file is missing", () => {
+    const home = tempHome();
+    const configDir = tempHome();
+    const cause = unresumableSourceCause(
+      { ...trackedSession("claude"), configDir },
+      port("claude", "omp"),
+      { tracked: true, home },
+    );
+    expect(cause).toMatch(/no source transcript to carry onto omp/);
+  });
+
+  it.each(["claude", "codex"] as const)(
+    "CONTROL: the same tracked OMP source WITH its transcript on disk ports onto %s (no pair refused wholesale)",
+    (targetAgent) => {
+      const agentHome = tempHome();
+      mkdirSync(join(agentHome, "sessions", "--repo--"), { recursive: true });
+      writeFileSync(
+        join(agentHome, "sessions", "--repo--", `2026-10-12T00-00-00_${OMP_THREAD}.jsonl`),
+        '{"type":"session"}\n',
+      );
+      expect(
+        unresumableSourceCause(ompSource(agentHome), port("omp", targetAgent), {
+          tracked: true,
+          home: tempHome(),
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it("CONTROL: a transcript-less source with a recorded session archive is resumable", () => {
+    expect(
+      unresumableSourceCause(
+        { ...trackedSession("claude"), configDir: tempHome(), hasArchive: true },
+        port("claude", "codex"),
+        { tracked: true, home: tempHome() },
+      ),
+    ).toBeNull();
+  });
+
+  it("CONTROL: a same-backend native resume is not judged by the port refusal", () => {
+    expect(
+      unresumableSourceCause(
+        { ...trackedSession("claude"), configDir: tempHome() },
+        port("claude", "claude"),
+        { tracked: false, home: tempHome() },
+      ),
+    ).toBeNull();
   });
 });

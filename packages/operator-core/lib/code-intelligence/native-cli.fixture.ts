@@ -11,25 +11,56 @@ import { PTOOL_CONNECT_TIMEOUT_MS, PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS,
 const repoRoot = resolve(import.meta.dirname, '../../../..');
 const processHeadroomMs = PTOOL_LIST_TOOLS_TIMEOUT_MS;
 
+/** Load TS fixture source without installing a global loader over built artifacts. */
+export function scopedNativeFixtureArgs(fixtureUrl: string, entry: string, argv: string[]) {
+  const script = `
+    import { tsImport } from 'tsx/esm/api';
+    const fixture = await tsImport(${JSON.stringify(fixtureUrl)}, ${JSON.stringify(fixtureUrl)});
+    await fixture[${JSON.stringify(entry)}](process.argv.slice(1), url => import(url));
+  `;
+  return ['--input-type=module', '-e', script, ...argv];
+}
+
 /** Preserve phase evidence while a private fixture runs, including on deadline. */
 export async function nativeFixtureProcess(command: string, argv: string[], options: {
-  cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number; onOutput?: (text: string) => void;
+  cwd: string; env?: NodeJS.ProcessEnv; timeoutMs: number;
+  onOutput?: (text: string, timing: { elapsedMs: number; remainingMs: number }) => void;
 }) {
+  const startedAt = performance.now();
   const child = spawn(command, argv, { cwd: options.cwd, env: options.env,
     detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = '';
-  const lifetime = processGroupLifetime(child, message => { output += message + '\n'; });
+  let head = '', tail = '', phaseCount = 0;
+  const phases: { elapsedMs: number; line: string }[] = [];
+  const pending = new Map<object, string>();
+  const clock = () => ({ elapsedMs: Math.round(performance.now() - startedAt),
+    remainingMs: Math.max(0, options.timeoutMs - Math.round(performance.now() - startedAt)) });
+  const capture = (text: string, stream: object) => {
+    if (head.length < 8_000) head = (head + text).slice(0, 8_000);
+    tail = (tail + text).slice(-30_000);
+    const lines = ((pending.get(stream) ?? '') + text).split('\n');
+    pending.set(stream, lines.pop()!.slice(-2_000));
+    for (const line of lines) {
+      if (!/^(?:NATIVE_[A-Z_]+(?:STAGE|PROGRESS)=|\[with-test-pg\] (?:pg |operator-api stage|starting))/.test(line)) continue;
+      phaseCount++;
+      // Keep both startup and the last transitions when a noisy child exceeds
+      // the trace budget. The tail alone used to erase PG/bootstrap attribution.
+      if (phases.length === 128) phases.splice(64, 1);
+      phases.push({ elapsedMs: clock().elapsedMs, line: line.slice(0, 700) });
+    }
+    options.onOutput?.(text, clock());
+  };
+  const lifetime = processGroupLifetime(child, message => capture(message + '\n', child));
   for (const stream of [child.stdout, child.stderr]) stream.on('data', data => {
-    const text = String(data);
-    output = (output + text).slice(-30_000);
-    options.onOutput?.(text);
+    capture(String(data), stream);
   });
+  const evidence = () => `NATIVE_FIXTURE_TIMING=${JSON.stringify({ timeoutMs: options.timeoutMs,
+    ...clock(), phaseCount, phases })}\nstartup:\n${head}\ntail:\n${tail}`;
   let timedOut = false;
   let termination: Promise<void> | undefined;
   const timer = setTimeout(() => {
     timedOut = true;
     termination = lifetime.terminate().catch(error => {
-      output += `\nCleanup failed: ${String(error)}\n`;
+      capture(`\nCleanup failed: ${String(error)}\n`, child);
     });
   }, options.timeoutMs);
   try {
@@ -39,8 +70,8 @@ export async function nativeFixtureProcess(command: string, argv: string[], opti
     });
     if (termination) await termination;
     else await lifetime.waitForExit({ timeoutMs: 10_000 });
-    if (timedOut) throw new Error(`Private fixture deadline ${options.timeoutMs}ms exceeded\n${output}`);
-    return { ...result, output };
+    if (timedOut) throw new Error(`Private fixture deadline ${options.timeoutMs}ms exceeded\n${evidence()}`);
+    return { ...result, output: evidence() };
   } finally { clearTimeout(timer); }
 }
 

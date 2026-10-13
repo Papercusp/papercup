@@ -634,7 +634,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
   it('rejects a structured Now write that points back at a terminal item', () => {
     const result = evaluateNowUpdate(CURRENT, 'Work remains.', 'Revisit P-001.', SLUG);
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeUndefined();
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -646,7 +646,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     const result = evaluateNowUpdate(CURRENT, 'P-001 is done.', 'Continue with P-002.', SLUG);
 
     expect(result.value).toEqual({ ok: true });
-    expect(result.newBody).toContain('**Next:** Continue with P-002.');
+    expect(result.nowNote?.next).toBe('Continue with P-002.');
   });
 
   it('accepts a structured Now write with a neutral possessive citation after completion', () => {
@@ -658,7 +658,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     );
 
     expect(result.value).toEqual({ ok: true });
-    expect(result.newBody).toContain("of P-001's 5 AUTO-REQ-M-* specs only M-004 and M-102 are item-specific.");
+    expect(result.nowNote?.state).toContain("of P-001's 5 AUTO-REQ-M-* specs only M-004 and M-102 are item-specific.");
   });
 
   it('accepts a structured Now write with an explicit do-not-reopen terminal guard', () => {
@@ -671,7 +671,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     );
 
     expect(result.value).toEqual({ ok: true });
-    expect(result.newBody).toContain('do not reopen completed Phone or P-002.');
+    expect(result.nowNote?.next).toContain('do not reopen completed Phone or P-002.');
   });
 
   it('rejects a positive reopen that follows a do-not-reopen terminal guard', () => {
@@ -683,7 +683,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
       SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeUndefined();
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -736,7 +736,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     );
 
     expect(result.value).toEqual({ ok: true });
-    expect(result.newBody).toContain('P-002 closure authority is committed.');
+    expect(result.nowNote?.state).toBe('P-002 closure authority is committed.');
   });
 
   it.each([
@@ -751,7 +751,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
       EXACT_REPRO_SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeUndefined();
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -778,7 +778,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
       EXACT_REPRO_SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeUndefined();
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -798,7 +798,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
       EXACT_REPRO_SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeUndefined();
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -818,7 +818,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
       EXACT_REPRO_SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeUndefined();
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -835,7 +835,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
     );
 
     expect(result.value).toEqual({ ok: true });
-    expect(result.newBody).toContain('P-001 is done on staging but not in main/deployed.');
+    expect(result.nowNote?.state).toBe('P-001 is done on staging but not in main/deployed.');
   });
 
   it('accepts grouped affirmative completion evidence in an incomplete plan', () => {
@@ -879,7 +879,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
       SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeUndefined();
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -904,7 +904,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
       SLUG,
     );
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeUndefined();
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_status_contradiction',
@@ -930,7 +930,7 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
   it('rejects a structured Now write that makes an exhaustive list omitting open work', () => {
     const result = evaluateNowUpdate(EXHAUSTIVE_OMISSION, 'Work remains.', 'P-002 only, and it is not actionable yet.', SLUG);
 
-    expect(result.newBody).toBeNull();
+    expect(result.nowNote).toBeUndefined();
     expect(result.value).toEqual({
       ok: false,
       code: 'now_item_omission',

@@ -31,6 +31,7 @@
  * result and never thrown into the plan write that triggered it.
  */
 
+import type { PlanNowBlock } from '@papercusp/plan-parser';
 import { parsePlan } from './parser';
 import { replaceNowBlock } from './set-now';
 import type { ActivationAuditEditNotice } from '../../plan-audits';
@@ -106,8 +107,21 @@ const FIRST_MARKER_RE = /\*\*(?:State|Next):\*\*/i;
  * already present). Pure. Prepend-only: the author's State/Next survive verbatim beneath it.
  */
 export function stampMootCarrierNowBlock(body: string, stamp: MootCarrierStamp): string | null {
+  const update = mootCarrierNowUpdate(parsePlan(body).now, stamp);
+  return update ? replaceNowBlock(body, update.state, update.next) : null;
+}
+
+/**
+ * The moot-carrier stamp as a Now update: the new `{ state, next }` for a plan whose Now
+ * (the stored note when there is one, else the content section — `resolvePlanNow`) is
+ * `now`, or `null` when there is nothing to do. Pure. P-004: the cascade writes the result
+ * as the plan's Now note; `stampMootCarrierNowBlock` is the content-section form.
+ */
+export function mootCarrierNowUpdate(
+  now: PlanNowBlock | null,
+  stamp: MootCarrierStamp,
+): { state: string; next: string } | null {
   if (stamp.carriers.length === 0) return null;
-  const now = parsePlan(body).now;
   if (!now) return null;
   const key = `${MOOT_CARRIER_NOW_MARK}: ${stamp.subjectSlug}`;
   if (now.raw.includes(key)) return null;
@@ -128,7 +142,7 @@ export function stampMootCarrierNowBlock(body: string, stamp: MootCarrierStamp):
   const freeProse = !now.state && !now.next ? now.raw.trim() : '';
   const state = [banner, preamble, now.state, freeProse].filter(Boolean).join('\n\n');
   const next = now.next ? `${repair} Then: ${now.next}` : repair;
-  return replaceNowBlock(body, state, next);
+  return { state, next };
 }
 
 export interface PlanScopeCascadeInput {
@@ -385,8 +399,22 @@ export function stampBarReadinessNowBlock(
   cause: BarReadinessWriteCause,
   today?: Date,
 ): string | null {
+  const update = barReadinessNowUpdate(parsePlan(body).now, reading, cause, today);
+  return update ? replaceNowBlock(body, update.state, update.next) : null;
+}
+
+/**
+ * The BAR-readiness restamp as a Now update over the resolved Now (`resolvePlanNow`), or
+ * `null` when there is nothing to write. Pure; same rules as `stampBarReadinessNowBlock`,
+ * which is its content-section form. P-004: the cascade writes the result as the Now note.
+ */
+export function barReadinessNowUpdate(
+  now: PlanNowBlock | null,
+  reading: BarReadinessReading,
+  cause: BarReadinessWriteCause,
+  today?: Date,
+): { state: string; next: string } | null {
   if (reading.state === null) return null;
-  const now = parsePlan(body).now;
   if (!now) return null;
 
   const markerAt = now.raw.search(FIRST_MARKER_RE);
@@ -412,7 +440,7 @@ export function stampBarReadinessNowBlock(
     state = rest.join('\n\n') || '—';
   }
   const next = now.next || (blocked && reading.nextRepair ? reading.nextRepair.action : '—');
-  return replaceNowBlock(body, state, next);
+  return { state, next };
 }
 
 export interface BarReadinessInput {

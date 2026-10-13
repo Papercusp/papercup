@@ -156,7 +156,7 @@ const planRowFixture = (content: string): PlanRow => ({
   inputSchema: null, outputSchema: null, supersedes: [], supersededBy: null,
   opStatus: null, opStartedAt: null, opUpdatedAt: null, currentWave: null, opPriority: null,
   archived: false, isLegacy: false, updatedAt: '2026-09-30T00:00:00.000Z', items: [],
-  decisions: [], nowState: null, nowNext: null, promotePolicy: null, forcedPast: null,
+  decisions: [], nowState: null, nowNext: null, nowNote: null, promotePolicy: null, forcedPast: null,
   schedule: null, scheduleActive: false, scheduledAt: null, expiresAt: null, tzid: null,
   templateSlug: null, runSeq: null,
 });

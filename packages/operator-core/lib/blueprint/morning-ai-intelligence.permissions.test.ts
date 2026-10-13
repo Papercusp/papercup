@@ -1,11 +1,12 @@
-/** Preparation for the owner-gated researcher ceiling. These fixtures exercise
- * the production ceiling predicate without changing the administrator blueprint
- * or granting a live worker any permissions. */
+/** Regression guard for the administrator's least-privilege researcher ceiling. */
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 import { identityGrantToolFailure } from '../capability-envelope/blueprint-envelopes';
 
+const administratorBlueprint = loadBlueprintFromFile(fileURLToPath(new URL(
+  '../../../../.papercusp/blueprint.yaml', import.meta.url,
+))).blueprint;
 const blueprint = loadBlueprintFromFile(fileURLToPath(new URL(
   '../../../../libs/papercusp/packages/harness/blueprints/morning-ai-intelligence/blueprint.yaml',
   import.meta.url,
@@ -19,6 +20,8 @@ const proposedTools = [
   'work_items:get', 'work_items:claim', 'work_items:complete', 'plans:get',
   'reports:publish', 'reports:get', 'reports:list', 'coord:send',
 ];
+const administratorResearcherTools = administratorBlueprint.fleet?.workerRoles
+  ?.find(entry => entry.id === 'researcher')?.capabilities ?? [];
 const capabilities = new Map<string, readonly string[]>([
   ['capability:fetch', ['capability:net']],
   ['capability:read', ['capability:fs-read']],
@@ -42,18 +45,19 @@ const capabilities = new Map<string, readonly string[]>([
   ['features:get', ['work_items:read']],
   ['plans:items', ['plans:read']],
 ]);
-const proposedCeiling = { allowCapabilities: proposedTools };
+const researcherCeiling = { allowCapabilities: administratorResearcherTools };
 const operationCeiling = { allowCapabilities: operation.policy.requiredTools };
 
-describe('morning AI proposed researcher permission boundary', () => {
-  it('keeps the producer and permission proposal on the same exact ten verbs', () => {
+describe('morning AI researcher permission boundary', () => {
+  it('keeps the producer and administrator ceiling on the same exact ten verbs', () => {
     expect([...operation.policy.requiredTools].sort()).toEqual([...proposedTools].sort());
+    expect([...administratorResearcherTools].sort()).toEqual([...proposedTools].sort());
     for (const tool of proposedTools) expect(blueprint.dependencies!.tools).toContain(tool);
   });
 
-  it.each(proposedTools)('admits %s inside both proposed and operation ceilings', toolName => {
+  it.each(proposedTools)('admits %s inside both researcher and operation ceilings', toolName => {
     expect(identityGrantToolFailure({
-      toolName, tools: capabilities, ceilings: [proposedCeiling, operationCeiling],
+      toolName, tools: capabilities, ceilings: [researcherCeiling, operationCeiling],
     })).toBeNull();
   });
 
@@ -63,7 +67,7 @@ describe('morning AI proposed researcher permission boundary', () => {
     'features:get', 'plans:items',
   ])('denies %s even when a broader role or operation would allow it', toolName => {
     const broad = { allowCapabilities: ['*'] };
-    for (const ceilings of [[proposedCeiling, broad], [broad, operationCeiling]]) {
+    for (const ceilings of [[researcherCeiling, broad], [broad, operationCeiling]]) {
       expect(identityGrantToolFailure({ toolName, tools: capabilities, ceilings }))
         .toBe('outside-ceiling');
     }

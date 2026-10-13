@@ -1,10 +1,11 @@
 /** Plan/doc adapters over the existing canonical prose and section indexes.
  * Audience is supplied by the host, before a source applies ranking or limits. */
 import type { Listing, SearchSource, SearchSourceParams } from '@papercusp/search';
+import type { Sql } from 'postgres';
 import { chunkAwareVectorLegSql, sectionAnchorBase, withIterativeScan } from '@papercusp/search';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { PLANS_CHUNK_SURFACE } from '../../search/chunks/registry';
-import { headlineTsQuery, lexicalLeg } from '../../search/lexical/rank';
+import { boundedExactTopK, headlineTsQuery, lexicalLeg, mergeExactAndBm25 } from '../../search/lexical/rank';
 import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
 import { lastMarkdownHeading, planWindowMidpoint } from '../plans/semantic-leg';
 
@@ -92,14 +93,40 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
           match: p.sql`p._search @@ plainto_tsquery('english', ${p.query})`,
         },
       });
-      const rows = await p.sql`SELECT p.plan_slug, p.harness_slug, p.title, p.status, p.archived, p.superseded_by, p.updated_at, p.content,
+      const rows = await p.sql`SELECT p.workspace_id, p.plan_slug, p.harness_slug, p.title, p.status, p.archived, p.superseded_by, p.updated_at, p.content,
         (${leg.score})::float8 AS rank,
         ts_headline('english', p.content, ${headlineTsQuery(p.sql, leg.engine, p.query)},
           'StartSel=<mark>,StopSel=</mark>,MaxWords=90,MinWords=30,MaxFragments=1') AS highlight
         FROM harness_shared.harness_plans p WHERE ${filter(p)}
           AND ${leg.match}
         ORDER BY ${leg.order}, p.plan_slug LIMIT ${p.limit}`;
-      return map(rows as Array<Record<string, unknown>>, 'lexical');
+      if (leg.engine !== 'bm25') return map(rows as Array<Record<string, unknown>>, 'lexical');
+
+      // D-016: a bounded legacy AND list protects long plans from BM25's OR-only
+      // fragment loss. Reuse its GIN-backed cap and interleaver; keep the same
+      // workspace, harness, template, audience, exclusion and currentness fences.
+      const exactTop = boundedExactTopK(p.sql as unknown as Sql, {
+        columns: p.sql`p.workspace_id, p.harness_slug, p.plan_slug`,
+        from: p.sql`harness_shared.harness_plans p`, where: filter(p),
+        tsv: p.sql`p._search`, query: p.query, limit: p.limit,
+      });
+      const exactRows = await p.sql`
+        SELECT p.workspace_id, p.plan_slug, p.harness_slug, p.title, p.status, p.archived,
+               p.superseded_by, p.updated_at, p.content, e.exact_rank::float8 AS rank,
+               ts_headline('english', p.content, ${headlineTsQuery(p.sql, 'legacy', p.query)},
+                 'StartSel=<mark>,StopSel=</mark>,MaxWords=90,MinWords=30,MaxFragments=1') AS highlight
+          FROM (${exactTop}) e
+          JOIN harness_shared.harness_plans p
+            USING (workspace_id, harness_slug, plan_slug)
+         WHERE ${filter(p)}
+      ORDER BY e.exact_rank DESC`;
+      const fused = mergeExactAndBm25(
+        exactRows as Array<Record<string, unknown> & { rank: number }>,
+        rows as Array<Record<string, unknown> & { rank: number }>,
+        r => `${String(r.workspace_id)}\u0000${String(r.harness_slug)}\u0000${String(r.plan_slug)}`,
+        p.limit,
+      );
+      return map(fused, 'lexical');
     },
     async embedding(p) {
       if (!p.embeddingProfile) return [];

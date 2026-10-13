@@ -4218,6 +4218,17 @@ export function launchSessionPort(source: any, target: any, account: any, args: 
     launchFreshSuImpl?: typeof launchFreshSu | undefined;
     reportLaunchFailureImpl?: typeof reportSessionPortLaunchFailure | undefined;
 }): Promise<void>;
+/** PURE-ish (reads FS; exported for tests): why this ONE source session cannot
+ * be carried onto another backend, or null when it can. Called before the
+ * target backend is installed, an account is chosen or anything is spawned, so
+ * an unresumable session is refused with its cause instead of launching an
+ * empty target (consult-backed-parking-2026-10-12 P-011, bar R-23). It refuses
+ * a single session only — never a backend pair (D-009): an OMP source with a
+ * transcript ports like any other. Same-backend (native) resumes keep their own
+ * path and are not judged here. `home` is injectable for tests. */
+export function unresumableSourceCause(source: any, target: any, { tracked, home }?: {
+    home?: string | undefined;
+}): string | null;
 export function resumeFlow(args?: {}, { apiImpl, launchResolvedResumeImpl }?: {
     apiImpl?: typeof api | undefined;
     launchResolvedResumeImpl?: typeof launchResolvedResume | undefined;

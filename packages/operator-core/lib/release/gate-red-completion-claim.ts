@@ -184,7 +184,7 @@ export type GateRedClaimVerdict =
     }
   | {
       refuse: true;
-      reason: 'unadmitted-paths' | 'legs-still-red' | 'paths-required';
+      reason: 'unadmitted-paths' | 'legs-still-red' | 'paths-required' | 'main-still-red';
       candidate: string;
       judgedSha: string;
       /** Claimed paths in the red radius that the admission ledger does NOT carry (or whose leg is still red). */
@@ -283,6 +283,30 @@ export function gateRedCompletionClaimVerdict(
           (paths.length ? ` Their subject paths: ${paths.join(', ')}.` : '') +
           (pathless.length ? ` ${pathless.length} leg(s) name no subject path — admit the files you fixed by hand.` : '') +
           refusalTail,
+      };
+    }
+
+    // green-main-cycle-time-2026-10-08 P-013 / D-028 (owner-approved D-021 fix 2): every leg
+    // admitted is NOT the gate green. The marker exists only while the frozen queue holds, i.e.
+    // while main is still red. The repair head must still pass a verdict before main moves,
+    // so closing the gate-red condition item now would record "gate green" while main is red.
+    // Administrative settlements make no such assertion and stay exempt.
+    if (conditionItem && !administrativeSettlement) {
+      return {
+        refuse: true,
+        reason: 'main-still-red',
+        candidate,
+        judgedSha,
+        unadmittedPaths: [],
+        redLegs,
+        admitCommand: null,
+        detail:
+          `⛔ GATE-RED CLOSE REFUSED: this is the gate-red condition item, and main is still red. ` +
+          `Frozen candidate ${candidate.slice(0, 12)} is held at repair head ${judgedSha.slice(0, 12)} ` +
+          `and no green verdict has promoted it. Every manifest leg reads admitted or green, so the ` +
+          `next gate tick re-verifies the repair head. This item settles when that verdict passes and ` +
+          `the queue clears. Keep it open until then; do not close it to report progress (record ` +
+          `progress with work_items:checkpoint).`,
       };
     }
 

@@ -16109,16 +16109,43 @@ export async function launchSessionPort(
   }
 }
 
+/** PURE-ish (reads FS; exported for tests): why this ONE source session cannot
+ * be carried onto another backend, or null when it can. Called before the
+ * target backend is installed, an account is chosen or anything is spawned, so
+ * an unresumable session is refused with its cause instead of launching an
+ * empty target (consult-backed-parking-2026-10-12 P-011, bar R-23). It refuses
+ * a single session only — never a backend pair (D-009): an OMP source with a
+ * transcript ports like any other. Same-backend (native) resumes keep their own
+ * path and are not judged here. `home` is injectable for tests. */
+export function unresumableSourceCause(
+  source,
+  target,
+  { tracked, home = homedir() } = {},
+) {
+  if (target?.operation !== "port") return null;
+  const label = `${source?.agent ?? "unknown"} session ${
+    source?.ompThreadId ?? source?.sessionId ?? "(no native id)"
+  }`;
+  if (!tracked)
+    return (
+      `cross-backend resume requires a psu-tracked source session; ${label} is a raw native ` +
+      "session (no psu row), so it can only resume/fork in place"
+    );
+  if (!sessionIsResumable(source, { home }))
+    return (
+      `${label} has no source transcript to carry onto ${target.targetAgent}: ` +
+      "no native transcript file is on disk and no session archive is recorded"
+    );
+  return null;
+}
+
 async function launchResolvedResume(source, args, { tracked }) {
   // Backend/model first, account second. Account choices are provider-scoped;
   // prompting before the target is known is how cross-backend resumes get
   // silently pinned to the source provider.
   const target = await chooseResumeTarget(source, args);
-  if (target.operation === "port" && !tracked) {
-    throw new Error(
-      "cross-backend resume requires a psu-tracked source session; raw native sessions can only resume/fork in place",
-    );
-  }
+  const unresumable = unresumableSourceCause(source, target, { tracked });
+  if (unresumable) throw new Error(`psu: refusing to resume — ${unresumable}`);
   if (!(await ensureBackendInstalled(target.targetAgent))) {
     process.exitCode = 1;
     return;

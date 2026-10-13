@@ -148,7 +148,6 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|packages/operator-core/lib/consult/consult-routing-health.ts|degraded': na(
     'historical routing-receipt histogram initializes and counts the degraded outcome bucket; this pure read neither detects a runtime condition nor performs a fallback',
   ),
-  'health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts': migrate('P-014'),
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts': migrate('P-014'),
 
   // Exact annotation IDs independently approved in thread-post:1176052; runtime siblings retain their cluster.

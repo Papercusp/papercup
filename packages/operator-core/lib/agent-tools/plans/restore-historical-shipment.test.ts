@@ -37,7 +37,7 @@ function transactionalRig(
   vi.spyOn(source, 'resolvePlanScope').mockResolvedValue(scope);
   const receipt = vi.fn(async (_sql: TemplateStringsArray, ..._values: unknown[]) => []);
   const revision = vi.fn(async () => undefined);
-  const emitted = vi.spyOn(events, 'emitPlanEventForCaller').mockResolvedValue(undefined);
+  const emitted = vi.spyOn(events, 'emitPlanEventForCaller').mockResolvedValue(null);
   vi.spyOn(revisions, 'planRevisionCapture').mockReturnValue({
     afterWrite: async () => undefined, inTransaction: revision, recorded: { current: null },
   });
@@ -45,7 +45,7 @@ function transactionalRig(
   const lock: typeof locks.withPlanLock = async (_ctx, opts, mutate) => {
     const outcome = await mutate(witness.content, {
       version: concurrentVersion, contentHash: witness.contentHash, opStatus: null, planStatus: null,
-      templateData: null, inputSchema: null, outputSchema: null,
+      templateData: null, inputSchema: null, outputSchema: null, nowNote: null,
       latestRevision: { seq: witness.seq, body: witness.shippedBody },
     });
     if (outcome.newBody !== null) {

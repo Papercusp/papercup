@@ -23,7 +23,12 @@
 
 import type { ParsedPlan, PlanNowBlock } from '@papercusp/plan-parser';
 
-export type PlanNowNoteSource = 'set-now';
+/**
+ * Who wrote the note: 'set-now' = plans:set-now (or a server-side Now update);
+ * 'content' = a content write that migrated (or deliberately edited) the
+ * content `## Now` section into the note (`noteFromContentWrite`).
+ */
+export type PlanNowNoteSource = 'set-now' | 'content';
 
 export interface PlanNowNote {
   state: string;
@@ -67,7 +72,7 @@ export function parseNowNote(raw: unknown): PlanNowNote | null {
   if (typeof r.state !== 'string' || typeof r.next !== 'string') return null;
   if (typeof r.writtenAt !== 'string' || !Number.isFinite(Date.parse(r.writtenAt))) return null;
   if (!isStringOrNull(r.author ?? null) || !isStringOrNull(r.eventId ?? null)) return null;
-  if (r.source !== 'set-now') return null;
+  if (r.source !== 'set-now' && r.source !== 'content') return null;
   return {
     state: r.state,
     next: r.next,
@@ -76,7 +81,7 @@ export function parseNowNote(raw: unknown): PlanNowNote | null {
     eventId: (r.eventId as string | null | undefined) ?? null,
     // Optional on the wire: a note from a peer that predates the field reads as none.
     rationale: typeof r.rationale === 'string' ? r.rationale : null,
-    source: 'set-now',
+    source: r.source as PlanNowNoteSource,
   };
 }
 
@@ -151,6 +156,55 @@ export function buildSetNowNote(input: {
   };
 }
 
+/**
+ * The note a content write stores (SPEC-P-004). A content write is where an
+ * existing `## Now` section migrates into a stored note: migration 1480 does no
+ * backfill, so every plan migrates the next time its content is written (that
+ * UPDATE already recomputes the row, so the migration costs nothing extra).
+ *
+ * Returns the note to store, or null to leave `now_note` alone:
+ * - null when the new content has no Now section, or one with neither a State
+ *   nor a Next (a free-form section keeps the content fallback, raw text and all);
+ * - the section as a note when the plan has no stored note yet (the migration);
+ * - the section as a note when a note exists but the writer CHANGED the
+ *   section's text, so a deliberate edit of `## Now` in content is adopted
+ *   instead of being silently hidden behind the older note;
+ * - null when the section is unchanged (a round-tripped content write carries the
+ *   frozen legacy section back as it was) or already equals the stored note.
+ *
+ * State and Next are copied verbatim (trimmed, as plans:set-now trims), so the
+ * stored note has the same text as the section it replaces.
+ */
+export function noteFromContentWrite(input: {
+  existing: PlanNowNote | null;
+  /** The section in the content before this write; null for a new plan. */
+  priorSection: PlanNowBlock | null;
+  /** The section in the content this write stores. */
+  nextSection: PlanNowBlock | null;
+  author: string | null;
+  writtenAt?: Date;
+}): PlanNowNote | null {
+  const section = input.nextSection;
+  if (!section) return null;
+  const state = section.state.trim();
+  const next = section.next.trim();
+  if (!state && !next) return null;
+  if (input.existing) {
+    const prior = input.priorSection;
+    if (prior && prior.state.trim() === state && prior.next.trim() === next) return null;
+    if (input.existing.state === state && input.existing.next === next) return null;
+  }
+  return {
+    state,
+    next,
+    author: input.author,
+    writtenAt: (input.writtenAt ?? new Date()).toISOString(),
+    eventId: null,
+    rationale: null,
+    source: 'content',
+  };
+}
+
 /** The minimal tagged-template surface the write needs (postgres.js `sql` / `tx`). */
 export type NowNoteSql = <T = unknown>(
   strings: TemplateStringsArray,
@@ -169,6 +223,9 @@ export interface PlanNowNoteScope {
  * plan revision is recorded and the markdown stays byte-identical. `origin` is
  * reset to 'local' so the capture trigger federates the write (a row last
  * written by a projection carries origin 'remote', which the capture skips).
+ * The row clock is stamped explicitly: since migration 1481 (D-009) the stamp
+ * trigger treats the note columns as bookkeeping, so it no longer stamps a
+ * note-only write itself, and the federated op must still carry a fresh clock.
  * Returns false when the plan row does not exist.
  */
 export async function writePlanNowNote(
@@ -182,6 +239,8 @@ export async function writePlanNowNote(
            now_state  = ${note.state},
            now_next   = ${note.next},
            updated_at = now(),
+           fed_ts     = (extract(epoch FROM clock_timestamp()) * 1000)::bigint,
+           fed_hlc    = harness_shared.hlc_now(),
            origin     = 'local'
      WHERE workspace_id = ${scope.workspaceId}
        AND harness_slug = ${scope.harnessSlug}
@@ -191,11 +250,9 @@ export async function writePlanNowNote(
   return rows.length > 0;
 }
 
-/** The op clock + origin a federated note apply carries. */
-export interface FederatedNowNoteClock {
+/** The provenance a federated note apply carries: the op's origin. */
+export interface FederatedNowNoteOrigin {
   origin: string;
-  fedTs: number | string | null;
-  fedHlc: string | null;
 }
 
 /**
@@ -205,18 +262,18 @@ export interface FederatedNowNoteClock {
  * holds this plan's advisory lock, so the read-compare-write cannot race a
  * local plans:set-now (same lock key).
  *
- * On apply it writes `now_note` and its `now_state` / `now_next` projection,
- * sets `origin` to the op's origin (so the capture trigger does not re-emit a
- * remote note), and moves the row clock to the op's clock only when the op is
- * newer than the row: a note can be newer than a row whose clock a later
- * content part already advanced, and that clock must not move backwards.
- * Returns true when the note was applied.
+ * On apply it writes `now_note` and its `now_state` / `now_next` projection and
+ * sets `origin` to the op's origin, so the capture trigger does not re-emit a
+ * remote note. It never touches the row clock (D-009): the note is ordered by
+ * its own `writtenAt`, and migration 1481 makes the stamp trigger treat the
+ * note columns as bookkeeping, so the row keeps its clock and is not
+ * re-stamped as a local write. Returns true when the note was applied.
  */
 export async function applyFederatedNowNote(
   sql: NowNoteSql,
   scope: PlanNowNoteScope,
   raw: unknown,
-  clock: FederatedNowNoteClock,
+  provenance: FederatedNowNoteOrigin,
 ): Promise<boolean> {
   const incoming = parseNowNote(raw);
   if (!incoming) return false;
@@ -230,21 +287,12 @@ export async function applyFederatedNowNote(
   `;
   if (!rows[0]) return false;
   if (!isNewerNowNote(incoming, parseNowNote(rows[0].now_note))) return false;
-  const fedTs = clock.fedTs == null ? null : String(clock.fedTs);
   await sql`
     UPDATE harness_shared.harness_plans
        SET now_note  = ${JSON.stringify(incoming)}::text::jsonb,
            now_state = ${incoming.state},
            now_next  = ${incoming.next},
-           origin    = ${clock.origin},
-           fed_ts    = CASE
-                         WHEN harness_shared.fed_order_key(${clock.fedHlc}::text, ${fedTs}::bigint)
-                              > harness_shared.fed_order_key(fed_hlc, fed_ts)
-                         THEN ${fedTs}::bigint ELSE fed_ts END,
-           fed_hlc   = CASE
-                         WHEN harness_shared.fed_order_key(${clock.fedHlc}::text, ${fedTs}::bigint)
-                              > harness_shared.fed_order_key(fed_hlc, fed_ts)
-                         THEN ${clock.fedHlc}::text ELSE fed_hlc END
+           origin    = ${provenance.origin}
      WHERE workspace_id = ${scope.workspaceId}
        AND harness_slug = ${scope.harnessSlug}
        AND plan_slug = ${scope.planSlug}

@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from '
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { admitArm, ARM_ADMISSIONS, type ArmAdmission } from './fair-comparison-admission';
 import { astGrepSyntaxIndex } from './ast-grep-facade';
 import { LspDaemonAnswerCache, type MeasuredLspInputs } from './lsp-daemon-cache';
@@ -23,7 +24,7 @@ import { captureCodeDependencies, assertCodeDependencyVersions } from '../agent-
 import { classifySpecEvidenceCurrentness, measureAndPinRepoFilesEvidenceAtRoot } from '../agent-tools/plans/spec-evidence-store';
 import { sourceRuntimeProvenance } from './source-runtime-provenance';
 import { nativeCliPlan, nativeCliResult, nativeCliTestTimeout } from './native-cli.fixture';
-import { nativeFixtureProcess, recoverNativeCliResult } from './native-cli.fixture';
+import { nativeFixtureProcess, recoverNativeCliResult, scopedNativeFixtureArgs } from './native-cli.fixture';
 import { PTOOL_CONNECT_TIMEOUT_MS, PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS, PTOOL_LIST_TOOLS_TIMEOUT_MS,
   ptoolConnectionRetryOptions, ptoolConnectAttemptTimeoutMs, timeoutForTool,
   resolvePtoolInvocationCandidates } from '../../../../apps/operator/scripts/ptool.mjs';
@@ -53,6 +54,40 @@ describe('native P021 required BAR captured source bundle boundary', () => {
 });
 
 describe('native CLI fixture runtime and deadline guards', () => {
+  it('keeps built artifacts outside the scoped TypeScript fixture loader', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-scoped-fixture-'));
+    try {
+      const fixture = join(root, 'fixture.ts'), artifact = join(root, 'handler.mjs');
+      writeFileSync(join(root, 'package.json'), '{"type":"module"}\n');
+      writeFileSync(artifact, `
+        export function compiledFunction() { return import('node:path'); }
+        export const parserRetained = !compiledFunction.toString().includes('.then(');
+        export const url = import.meta.url;
+      `);
+      writeFileSync(fixture, `
+        export async function run(argv: string[], load: (url: string) => Promise<{url: string, parserRetained: boolean}>) {
+          const artifact = await load(argv[0]);
+          if (artifact.url !== argv[0]) throw new Error('Built artifact entered the TypeScript namespace: ' + artifact.url);
+          if (!artifact.parserRetained) throw new Error('Built artifact was transformed by the TypeScript loader');
+          console.log('NATIVE_SCOPED_FIXTURE_PROOF=' + JSON.stringify({ source: 'typescript', artifact: artifact.url, argv: argv.slice(1) }));
+        }
+      `);
+      const artifactUrl = pathToFileURL(artifact).href;
+      const result = await nativeFixtureProcess(process.execPath,
+        scopedNativeFixtureArgs(pathToFileURL(fixture).href, 'run', [artifactUrl, 'literal argument']),
+        { cwd: process.cwd(), timeoutMs: 10_000 });
+      expect(result.code, result.output).toBe(0);
+      const proof = result.output.split('\n').find(line => line.startsWith('NATIVE_SCOPED_FIXTURE_PROOF='));
+      expect(proof, result.output).toBeDefined();
+      expect(JSON.parse(proof!.split('=', 2)[1])).toEqual({ source: 'typescript', artifact: artifactUrl, argv: ['literal argument'] });
+      const transformed = await nativeFixtureProcess(process.execPath,
+        ['--import', 'tsx', ...scopedNativeFixtureArgs(pathToFileURL(fixture).href, 'run', [artifactUrl])],
+        { cwd: process.cwd(), timeoutMs: 10_000 });
+      expect(transformed.code, transformed.output).toBe(1);
+      expect(transformed.output).toContain('Built artifact was transformed by the TypeScript loader');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it.each([0, 17])('streams actual native invocation transitions before the file settles (exit %s)', async exitCode => {
     const fixture = new URL('./native-cli.fixture.ts', import.meta.url).href;
     const script = `
@@ -113,6 +148,42 @@ describe('native CLI fixture runtime and deadline guards', () => {
       { cwd: process.cwd(), timeoutMs: 300, onOutput: text => chunks.push(text) }))
       .rejects.toThrow(/deadline 300ms exceeded[\s\S]*waiting-for-handler/);
     expect(chunks.join('')).toContain('waiting-for-handler');
+  });
+  it.each([false, true])('preserves early and late phase clocks after output truncation (deadline %s)', async timedOut => {
+    const script = `
+      process.stdout.write('NATIVE_INCIDENT_API_STAGE=private-pg-start\\n');
+      process.stdout.write('x'.repeat(60_000) + '\\n');
+      setTimeout(() => {
+        process.stdout.write('NATIVE_INCIDENT_API_STAGE=cli-start:work_items:claim\\n');
+        ${timedOut ? 'setInterval(() => {}, 1000);' : 'process.exitCode = 19;'}
+      }, 40);
+    `;
+    const clocks: { elapsedMs: number; remainingMs: number }[] = [];
+    let output: string;
+    try {
+      const result = await nativeFixtureProcess(process.execPath, ['-e', script], {
+        cwd: process.cwd(), timeoutMs: 750, onOutput: (_text, timing) => clocks.push(timing),
+      });
+      expect(timedOut).toBe(false);
+      expect(result.code).toBe(19);
+      output = result.output;
+    } catch (error) {
+      expect(timedOut).toBe(true);
+      output = String(error);
+      expect(output).toContain('Private fixture deadline 750ms exceeded');
+    }
+    const line = output.split('\n').find(row => row.startsWith('NATIVE_FIXTURE_TIMING='))!;
+    const timing = JSON.parse(line.slice('NATIVE_FIXTURE_TIMING='.length));
+    expect(timing.timeoutMs).toBe(750);
+    expect(timing.phaseCount).toBe(2);
+    expect(timing.phases.map((phase: { line: string }) => phase.line)).toEqual([
+      'NATIVE_INCIDENT_API_STAGE=private-pg-start', 'NATIVE_INCIDENT_API_STAGE=cli-start:work_items:claim',
+    ]);
+    expect(timing.phases[1].elapsedMs).toBeGreaterThan(timing.phases[0].elapsedMs);
+    expect(output).toContain('startup:\nNATIVE_INCIDENT_API_STAGE=private-pg-start');
+    expect(output.length).toBeLessThan(40_000);
+    expect(clocks.every((clock, index) => clock.elapsedMs >= (clocks[index - 1]?.elapsedMs ?? 0)
+      && clock.remainingMs <= (clocks[index - 1]?.remainingMs ?? 750))).toBe(true);
   });
   it('uses the maintained staging proxy without a green fallback and honors producer deadlines', () => {
     const plan = nativeCliPlan('http://localhost:3170', 'graph:query', {}, {

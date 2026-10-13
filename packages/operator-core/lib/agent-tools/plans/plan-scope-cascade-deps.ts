@@ -12,13 +12,15 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { isClaimHoldParked, setWorkItemClaimHold } from '../../work-items';
 import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
 import { planAcceptanceChangedKey } from '../../agent-obligations';
-import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
+import { withPlanLock } from './with-plan-lock';
+import { parsePlan } from './parser';
+import { buildSetNowNote, resolvePlanNow } from './now-note-store';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { sendMessage } from '../coordination/messages';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import {
-  stampBarReadinessNowBlock,
-  stampMootCarrierNowBlock,
+  barReadinessNowUpdate,
+  mootCarrierNowUpdate,
   type BarReadinessDeps,
   type BarReadinessRestampResult,
   type CarrierCandidate,
@@ -111,12 +113,14 @@ export function defaultPlanScopeCascadeDeps(ctx: unknown, actor: string): PlanSc
           workspaceId: scope.workspaceId,
           actorId: actor,
         },
-        async (current) => {
+        async (current, meta) => {
           if (current === null) return { newBody: null, value: false };
-          const stamped = stampMootCarrierNowBlock(current, stamp);
-          return stamped === null
+          // P-004: stamp the Now readers see (the note, else the content section)
+          // and write it as the note; the plan markdown is not rewritten.
+          const update = mootCarrierNowUpdate(resolvePlanNow(meta?.nowNote ?? null, parsePlan(current).now), stamp);
+          return update === null
             ? { newBody: null, value: false }
-            : { newBody: bumpUpdatedDate(stamped), value: true };
+            : { newBody: null, nowNote: buildSetNowNote({ ...update, author: actor, eventId: null }), value: true };
         },
       );
       return result.kind === 'applied' && result.value === true;
@@ -157,12 +161,13 @@ export function defaultBarReadinessDeps(ctx: unknown, actor: string): BarReadine
           workspaceId: scope.workspaceId,
           actorId: actor,
         },
-        async (current) => {
+        async (current, meta) => {
           if (current === null) return { newBody: null, value: false };
-          const stamped = stampBarReadinessNowBlock(current, reading, cause);
-          return stamped === null
+          // P-004: same as the moot-carrier stamp — note in, note out.
+          const update = barReadinessNowUpdate(resolvePlanNow(meta?.nowNote ?? null, parsePlan(current).now), reading, cause);
+          return update === null
             ? { newBody: null, value: false }
-            : { newBody: bumpUpdatedDate(stamped), value: true };
+            : { newBody: null, nowNote: buildSetNowNote({ ...update, author: actor, eventId: null }), value: true };
         },
       );
       const stamped = result.kind === 'applied' && result.value === true;

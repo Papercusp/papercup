@@ -478,7 +478,7 @@ async function writeToPg(
           tx as unknown as NowNoteSql,
           { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
           row.now_note,
-          { origin, fedTs, fedHlc },
+          { origin },
         );
         return;
       }
@@ -574,7 +574,7 @@ async function writeToPg(
         tx as unknown as NowNoteSql,
         { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
         row.now_note,
-        { origin, fedTs, fedHlc },
+        { origin },
       );
     },
   );

@@ -94,6 +94,64 @@ describe('plan knowledge source on BM25 (P-005)', () => {
     const partial = listing.find(h => h.key === 'plan:h:quarterly-plan');
     expect(String(partial?.row.highlight)).toContain('<mark>quarterly</mark>');
   });
+
+  it('recovers a long plan fragment from the bounded exact list when BM25 ranks it below the top 10', async () => {
+    resetBm25Availability();
+    const query = 'search engine plan';
+    const ws = `plan-fusion-${process.pid}-${Date.now()}`;
+    const target = 'fragment-target';
+    const longBody = `${'background context '.repeat(4_000)}\n## Exact procedure\n${query}\n${'closing notes '.repeat(4_000)}`;
+    await sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, template_slug, title, content, status)
+      VALUES (${ws}, 'pot-a', ${target}, NULL, 'Fragment target', ${longBody}, 'active')`;
+    for (let i = 0; i < 18; i += 1) {
+      const terms = i % 3 === 0 ? 'search engine' : i % 3 === 1 ? 'search plan' : 'engine plan';
+      const slug = `bm25-decoy-${i}`;
+      await sql`INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, template_slug, title, content, status)
+        VALUES (${ws}, 'pot-a', ${slug}, NULL, ${`Decoy ${i}`}, ${`${terms} `.repeat(40)}, 'active')`;
+    }
+    await sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, template_slug, title, content, status)
+      VALUES (${ws}, 'pot-b', 'wrong-harness', NULL, 'Wrong harness', ${longBody}, 'active'),
+             (${`${ws}-foreign`}, 'pot-a', 'wrong-workspace', NULL, 'Wrong workspace', ${longBody}, 'active')`;
+    await sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, template_slug, title, content, status, archived, superseded_by)
+      VALUES (${ws}, 'pot-a', 'template-plan', 'plan-template', 'Template plan', ${longBody}, 'active', false, NULL),
+             (${ws}, 'pot-a', 'archived-plan', NULL, 'Archived plan', ${longBody}, 'active', true, NULL),
+             (${ws}, 'pot-a', 'superseded-plan', NULL, 'Superseded plan', ${longBody}, 'active', false, 'replacement-plan'),
+             (${ws}, 'pot-a', 'excluded-plan', NULL, 'Excluded plan', ${longBody}, 'active', false, NULL)`;
+
+    const leg = await lexicalLeg(sql, {
+      table: 'harness_plans', alias: 'p', query,
+      legacy: {
+        score: sql`ts_rank_cd(p._search, plainto_tsquery('english', ${query}))`,
+        match: sql`p._search @@ plainto_tsquery('english', ${query})`,
+      },
+    });
+    expect(leg.engine).toBe('bm25');
+    const bm25Only = await sql<{ plan_slug: string }[]>`
+      SELECT p.plan_slug FROM harness_shared.harness_plans p
+       WHERE p.workspace_id = ${ws} AND p.harness_slug = 'pot-a' AND p.template_slug IS NULL
+         AND p.archived = false AND p.status IS DISTINCT FROM 'superseded'
+         AND p.superseded_by IS NULL AND p.plan_slug <> 'excluded-plan' AND ${leg.match}
+       ORDER BY ${leg.order}, p.plan_slug LIMIT 50`;
+    expect(bm25Only.findIndex(row => row.plan_slug === target)).toBeGreaterThan(9);
+
+    const excludedRef = 'plan:pot-a:excluded-plan';
+    const results = await createPlanSearchSource({
+      harnessSlugs: ['pot-a'], automatic: true, excludedRefs: new Set([excludedRef]),
+    }).lexical!({
+      sql, query, workspaceId: ws, scopeFilter: null, limit: 10,
+    } as unknown as SearchSourceParams);
+    expect(results.slice(0, 2).map(row => row.key)).toContain(`plan:pot-a:${target}`);
+    const keys = results.map(row => row.key);
+    for (const key of [
+      'plan:pot-b:wrong-harness', 'plan:pot-a:wrong-workspace',
+      'plan:pot-a:template-plan', 'plan:pot-a:archived-plan',
+      'plan:pot-a:superseded-plan', excludedRef,
+    ]) expect(keys).not.toContain(key);
+  });
 });
 
 describe('websearch operator syntax under BM25 (plan D-007)', () => {

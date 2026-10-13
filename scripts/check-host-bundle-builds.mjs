@@ -55,7 +55,13 @@ const outFile = join(outDir, 'hono-host.mjs');
 // growth and (b) PRINT the size on every run, so erosion is visible instead of
 // being rediscovered months later. A breach is often legitimate growth — diagnose
 // first, then re-baseline deliberately.
-const HOST_BUNDLE_BUDGET_BYTES = 68 * 1024 * 1024;
+//
+// Re-baselined 2026-10-12 (WI-6554700010009462): externalizing pdf-lib,
+// @pdf-lib/fontkit, pdfjs-dist and @openrouter/ai-sdk-provider (see
+// apps/operator/bin/bundle-host.sh) took the bundle 77.05 -> 70.39 MiB. The
+// remainder is organic first-party growth, not a single leaked dependency, so
+// the budget was raised 68 -> 72 MiB. Diagnose again before the next raise.
+const HOST_BUNDLE_BUDGET_BYTES = 72 * 1024 * 1024;
 const HOST_BUNDLE_POST_TRIM_BASELINE_MB = 36.4;
 const HOST_PROCESS_COUNT = 17;
 
