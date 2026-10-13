@@ -48,12 +48,13 @@ import {
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseTestPassReuseHealth, type TestPassReuseHealth } from './release/test-pass-reuse-report';
 import { parseGateRoundPhases, type GateRoundPhases } from './release/gate-round-phases';
-import { reconstructGateFireDays, type GateFireDay } from './release/gate-fire-ledger';
+import { readGateNonVerdictReasons, reconstructGateFireDays, type GateFireDay } from './release/gate-fire-ledger';
 import { resolveWorkspaceForHarness } from './harness/workspace-for-harness';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
 import { parseRepairTickLegs, type StoredRepairTickLegs } from './release/repair-tick-legs-snapshot';
 import { readFreezeAndConverge, type FreezeAndConvergeGateHealth } from './release/freeze-disposition';
 import { computeGreenMainSlo, syncTalliesFromDeltaCoverage, type GreenMainSlo } from './release/green-main-slo';
+import type { GreenMainSloPassResult } from './release/green-main-slo-watchdog';
 import { readVerdictRateWindow } from './release/gate-verdict-rate-alarm';
 import { pipelineName } from './release/pipeline-name';
 import { isAdmissionSyntheticCommitDate } from './release/admission-commit-date';
@@ -377,7 +378,7 @@ export interface GitPipelineSnapshot {
      * `unreadable` names inputs that could not be read this snapshot: their metrics are null
      * because they are UNKNOWN, not because they are healthy. Null `slo` = not computed.
      */
-    slo?: (GreenMainSlo & { unreadable: Array<'lastVerdictAt'> }) | null;
+    slo?: (GreenMainSlo & { unreadable: Array<GreenMainSloPassResult['readErrors'][number]['input']> }) | null;
     /**
      * P-013 (plan gate-file-level-test-reuse-2026-09-27): what per-test-file pass reuse did in
      * the latest gate round — files reused of candidates, a lower bound on test time saved, any
@@ -1478,6 +1479,9 @@ export async function gitPipelineSnapshot(
     .then((workspaceId) => readVerdictRateWindow(sql, { workspaceId, installSlug: slug }))
     .then((w): number | null | undefined => w.lastVerdictBearingAtMs)
     .catch((): undefined => undefined));
+  const nonVerdictReasonsPromise = observe('non-verdict-reasons', resolveWorkspaceForHarness(slug)
+    .then((workspaceId) => readGateNonVerdictReasons(sql, { workspaceId, installSlug: slug }))
+    .catch(() => null));
 
   // The three pipeline routines + git-sync's latest metadata, in one read.
   const routineRows = await routineRowsPromise;
@@ -1751,6 +1755,7 @@ export async function gitPipelineSnapshot(
   // P-016: the SLO over the same lastGreenAt + persisted queue read above. Per-sync red rate comes
   // from the sync-batch delta check's own coverage ledger; absent/malformed → null (unknown).
   const lastVerdictAtMs = await lastVerdictPromise;
+  const nonVerdictReasons = await nonVerdictReasonsPromise;
   const syncDeltaMeta = (byName('sync-batch-delta-check')?.metadata ?? {}) as Record<string, unknown>;
   const slo: NonNullable<GitPipelineSnapshot['gate']['slo']> = {
     ...computeGreenMainSlo({
@@ -1760,8 +1765,10 @@ export async function gitPipelineSnapshot(
       lastVerdictAtMs: lastVerdictAtMs ?? null,
       queue: persistedRepairQueue,
       syncTallies: syncTalliesFromDeltaCoverage(syncDeltaMeta.sync_delta),
+      nonVerdictReasons,
     }),
-    unreadable: lastVerdictAtMs === undefined ? ['lastVerdictAt'] : [],
+    unreadable: [...(lastVerdictAtMs === undefined ? ['lastVerdictAt' as const] : []),
+      ...(nonVerdictReasons === null ? ['nonVerdictReasons' as const] : [])],
   };
 
   // P-001: "judging vs idle" — probe the live checkpoint unit ONLY when opted in

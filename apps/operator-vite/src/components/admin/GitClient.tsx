@@ -162,6 +162,7 @@ interface GreenMainSloView {
     roundsToConverge: { rounds: number; converged: false } | null;
     redAddingAdmissions: { count: number; judged: number; heads: string[] } | null;
     perSyncRedRate: { fleet: string | null; judgedBatches: number; redBatches: number; rate: number | null }[] | null;
+    nonVerdictReasons?: { windowHours: 24; measuredAtMs: number; reasons: { reason: string; count: number; latestAtMs: number }[] } | null;
   };
   breaches: { metric: string; severity: 'page' | 'alert'; title: string; detail: string; episodeKey: string }[];
   thresholds: {
@@ -170,6 +171,7 @@ interface GreenMainSloView {
     roundCycleAlertMs: number;
     queueIdleAlertMs: number;
     perSyncRedRateAlert: number;
+    nonVerdictReasonMinCount?: number;
   };
   /** Inputs the server could not read: their metrics are UNKNOWN, not healthy. */
   unreadable: string[];
@@ -290,7 +292,9 @@ export function GreenMainSloCard({ slo }: { slo: GreenMainSloView }) {
     <div className="pc-git__card" style={{ gridColumn: '1 / -1' }} data-testid="gate-green-main-slo">
       <div className="pc-git__card-h">
         green-main SLO{' '}
-        {slo.breaches.length === 0 ? (
+        {slo.breaches.length === 0 && slo.unreadable.length > 0 ? (
+          <StatusPill tone="warn" label="measurement incomplete" />
+        ) : slo.breaches.length === 0 ? (
           <StatusPill tone="good" label="within SLO" />
         ) : (
           slo.breaches.map((b) => (
@@ -348,6 +352,19 @@ export function GreenMainSloCard({ slo }: { slo: GreenMainSloView }) {
                 : 'no judged batches'
           }
         />
+      </div>
+      <div className="pc-git__muted" data-testid="gate-non-verdict-reasons">
+        <strong>Non-verdict reasons · last 24h</strong>
+        {m.nonVerdictReasons == null ? (
+          <p>{slo.unreadable.includes('nonVerdictReasons') ? 'unknown · ledger unreadable' : 'not measured'}</p>
+        ) : m.nonVerdictReasons.reasons.length === 0 ? (
+          <p>0 terminal skips or aborts</p>
+        ) : (
+          <ul>
+            {m.nonVerdictReasons.reasons.map((r) => <li key={r.reason}>{r.reason}: {r.count}</li>)}
+          </ul>
+        )}
+        {t.nonVerdictReasonMinCount != null && <p>Owned follow-up at {t.nonVerdictReasonMinCount} outcomes per reason.</p>}
       </div>
       {slo.breaches.length > 0 && (
         <ul className="pc-git__muted" data-testid="gate-green-main-slo-breaches">

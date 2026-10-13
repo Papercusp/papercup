@@ -12,6 +12,7 @@ import {
   classifyGateOutcomeStatus,
   recordGateFire,
   reconstructGateFireDays,
+  readGateNonVerdictReasons,
   evaluateGateReuseAuditWindow,
   evaluateFirstPostCaptureGateReuse,
   type GateOutcomeClass,
@@ -19,6 +20,36 @@ import {
 import { buildTestPassReuseHealth } from './test-pass-reuse-report';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 import { auditDraw, formatTestReuseLine, formatTestReuseTotalLine } from '../../../../scripts/lib/test-pass-reuse.mjs';
+
+describe('non-verdict reason counts (P-029)', () => {
+  const now = Date.UTC(2026, 9, 13, 12);
+  it('reads the complete exact-scope day and excludes verdicts, pending rows and diagnostics', async () => {
+    const sql = vi.fn(async () => [
+      { status: 'skipped-joined-attempt', count: '7', latest_ms: now - 1000 },
+      { status: 'skipped-memory-budget', count: '2', latest_ms: now - 2000 },
+      { status: 'not-green', count: '3', latest_ms: now },
+      { status: 'pure-proof-capture-pending', count: '4', latest_ms: now },
+      { status: 'unknown-diagnostic', count: '5', latest_ms: now },
+    ]);
+    const result = await readGateNonVerdictReasons(sql as never, { workspaceId: 'ws-a', installSlug: 'install-a' }, now);
+    expect(result.reasons).toEqual([
+      { reason: 'skipped-joined-attempt', count: 7, latestAtMs: now - 1000 },
+      { reason: 'skipped-memory-budget', count: 2, latestAtMs: now - 2000 },
+    ]);
+    const [parts, ...values] = sql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(parts.join('?')).toContain("count(DISTINCT COALESCE(NULLIF(detail->>'gateFireId', ''), id::text))");
+    expect(values).toEqual(['ws-a', 'install-a', new Date(now - 86_400_000), new Date(now)]);
+  });
+  it('keeps empty, unreadable and invalid measurements distinct', async () => {
+    expect((await readGateNonVerdictReasons(vi.fn(async () => []) as never,
+      { workspaceId: 'w', installSlug: 'i' }, now)).reasons).toEqual([]);
+    await expect(readGateNonVerdictReasons(vi.fn(async () => { throw new Error('db down'); }) as never,
+      { workspaceId: 'w', installSlug: 'i' }, now)).rejects.toThrow('db down');
+    await expect(readGateNonVerdictReasons(vi.fn(async () => [
+      { status: 'skipped-memory-budget', count: 'NaN', latest_ms: now },
+    ]) as never, { workspaceId: 'w', installSlug: 'i' }, now)).rejects.toThrow('measurement is invalid');
+  });
+});
 
 describe('first required suite after named pure capture', () => {
   const sha = 'a'.repeat(40);

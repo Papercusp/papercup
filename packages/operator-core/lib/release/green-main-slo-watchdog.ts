@@ -22,6 +22,8 @@ import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import type { ConditionState } from '../agent-tools/coordination/tools/conditions';
 import { frozenRepairLatency } from './frozen-candidate-repair-queue';
+import { readGateNonVerdictReasons, type GateNonVerdictReasons } from './gate-fire-ledger';
+import type { GreenMainSloBreach } from './green-main-slo';
 import {
   computeGreenMainSlo,
   syncTalliesFromDeltaCoverage,
@@ -42,6 +44,8 @@ export interface GreenMainSloPassDeps {
   readQueue: () => Promise<GreenMainSloQueue | null>;
   /** Per-fleet sync tallies; omit until the sync-batch delta check exposes them. */
   readSyncTallies?: () => Promise<readonly SyncBatchFleetTally[] | null>;
+  readNonVerdictReasons?: () => Promise<GateNonVerdictReasons | null>;
+  fileNonVerdictReason?: (breach: GreenMainSloBreach) => Promise<{ id: string; assignee: string }>;
   notifyOnce: (input: ReplaySafeAttentionNotifyInput) => Promise<AttentionNotifyResult>;
   rail?: AlarmAttentionDeps;
   readConditions?: () => Promise<readonly SloCondition[]>;
@@ -62,8 +66,9 @@ export interface GreenMainSloPassResult {
   slo: GreenMainSlo;
   deliveries: GreenMainSloDelivery[];
   /** Readers that failed this tick, by input name. Empty on a healthy pass. */
-  readErrors: Array<{ input: 'lastGreenAt' | 'lastVerdictAt' | 'queue' | 'syncTallies'; message: string }>;
+  readErrors: Array<{ input: 'lastGreenAt' | 'lastVerdictAt' | 'queue' | 'syncTallies' | 'nonVerdictReasons'; message: string }>;
   conditionErrors: string[];
+  reasonItems: Array<{ reason: string; id: string; assignee: string }>;
 }
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -112,6 +117,7 @@ function measuredRecovery(
   metric: string, episode: string, exactSubject: string | null, openedAtMs: number, deps: GreenMainSloPassDeps, slo: GreenMainSlo,
   green: number | null, verdict: number | null, queue: GreenMainSloQueue | null,
   tallies: readonly SyncBatchFleetTally[] | null,
+  reasons: GateNonVerdictReasons | null,
 ): boolean {
   if (!epoch(openedAtMs, deps.nowMs)) return false;
   const prefix = `green-main-slo:${deps.installSlug}:${metric}:`;
@@ -131,6 +137,11 @@ function measuredRecovery(
       Number.isInteger(t.judgedBatches) && t.judgedBatches >= slo.thresholds.perSyncRedMinBatches &&
       Number.isInteger(t.redBatches) && t.redBatches >= 0 && t.redBatches <= t.judgedBatches &&
       t.redBatches / t.judgedBatches <= slo.thresholds.perSyncRedRateAlert);
+  }
+  if (metric === 'non-verdict-reason') {
+    if (!reasons || !exactSubject || !subject.startsWith(`${exactSubject}:`) ||
+        !/^\d+$/.test(subject.slice(exactSubject.length + 1)) || reasons.measuredAtMs < openedAtMs) return false;
+    return (reasons.reasons.find((r) => r.reason === exactSubject)?.count ?? 0) < slo.thresholds.nonVerdictReasonMinCount;
   }
   if (!queue || !epoch(queue.openedAtMs, deps.nowMs) || typeof queue.candidate !== 'string' || queue.candidate !== exactSubject) return false;
   if (metric === 'red-adding-admission') {
@@ -175,7 +186,7 @@ export async function runGreenMainSloPass(deps: GreenMainSloPassDeps): Promise<G
     }
   };
 
-  const [lastGreenAtMs, lastVerdictAtMs, queue, syncTallies] = await Promise.all([
+  const [lastGreenAtMs, lastVerdictAtMs, queue, syncTallies, nonVerdictReasons] = await Promise.all([
     read('lastGreenAt', deps.readLastGreenAtMs, null, (v) => v === null || epoch(v, deps.nowMs)),
     read('lastVerdictAt', deps.readLastVerdictAtMs, null, (v) => v === null || epoch(v, deps.nowMs)),
     read('queue', deps.readQueue, null, (v) => measuredQueue(v, deps.nowMs)),
@@ -184,15 +195,22 @@ export async function runGreenMainSloPass(deps: GreenMainSloPassDeps): Promise<G
         Number.isInteger(t.judgedBatches) && t.judgedBatches >= 0 && Number.isInteger(t.redBatches) &&
         t.redBatches >= 0 && t.redBatches <= t.judgedBatches &&
         (t.observedAtMs === undefined || epoch(t.observedAtMs, deps.nowMs))))) : Promise.resolve(null),
+    deps.readNonVerdictReasons ? read('nonVerdictReasons', deps.readNonVerdictReasons, null, (v) => v === null ||
+      (v.windowHours === 24 && epoch(v.measuredAtMs, deps.nowMs) && v.measuredAtMs === deps.nowMs &&
+        v.sinceMs === v.measuredAtMs - 86_400_000 && Array.isArray(v.reasons) &&
+        new Set(v.reasons.map((r) => r.reason)).size === v.reasons.length &&
+        v.reasons.every((r) => typeof r.reason === 'string' && !!r.reason && Number.isSafeInteger(r.count) &&
+          r.count > 0 && r.latestAtMs >= v.sinceMs && r.latestAtMs <= v.measuredAtMs))) : Promise.resolve(null),
   ]);
 
   const slo = computeGreenMainSlo(
-    { installSlug: deps.installSlug, nowMs: deps.nowMs, lastGreenAtMs, lastVerdictAtMs, queue, syncTallies },
+    { installSlug: deps.installSlug, nowMs: deps.nowMs, lastGreenAtMs, lastVerdictAtMs, queue, syncTallies, nonVerdictReasons },
     deps.thresholds,
   );
 
   const deliveries: GreenMainSloDelivery[] = [];
   const conditionErrors: string[] = [];
+  const reasonItems: GreenMainSloPassResult['reasonItems'] = [];
   let conditions: readonly SloCondition[] | null = null;
   try {
     conditions = await (deps.readConditions ?? readSloConditions)();
@@ -201,6 +219,14 @@ export async function runGreenMainSloPass(deps: GreenMainSloPassDeps): Promise<G
   catch (e) { conditions = null; conditionErrors.push(`read conditions: ${message(e)}`); }
   for (const breach of slo.breaches) {
     const key = conditionKey(deps, breach.metric, breach.episodeKey, breach.subject);
+    if (breach.metric === 'non-verdict-reason') {
+      try {
+        if (!deps.fileNonVerdictReason) throw new Error('owned reason filer unavailable');
+        const item = await deps.fileNonVerdictReason(breach);
+        if (!item?.id || !item.assignee) throw new Error('reason filing returned no accountable holder');
+        reasonItems.push({ reason: breach.subject!, ...item });
+      } catch (e) { conditionErrors.push(`file ${breach.subject}: ${message(e)}`); }
+    }
     // A historical admission can remain in the SLO panel after a later round fixed it.
     const repaired = breach.metric === 'red-adding-admission' && repairedAdmissionAt(queue, breach.episodeKey.slice(
       `green-main-slo:${deps.installSlug}:${breach.metric}:`.length), deps.nowMs) !== null;
@@ -245,13 +271,39 @@ export async function runGreenMainSloPass(deps: GreenMainSloPassDeps): Promise<G
         scope[0] !== deps.workspaceId || scope[1] !== deps.installSlug ||
         conditionKey(deps, scope[2], scope[3], scope[4]) !== condition.condition_key) continue;
       const openedAtMs = Date.parse(condition.open_since ?? condition.last_seen);
-      if (measuredRecovery(scope[2], scope[3], scope[4], openedAtMs, deps, slo, lastGreenAtMs, lastVerdictAtMs, queue, syncTallies)) {
+      if (measuredRecovery(scope[2], scope[3], scope[4], openedAtMs, deps, slo, lastGreenAtMs, lastVerdictAtMs, queue, syncTallies, nonVerdictReasons)) {
         const resolved = await resolveAlarm(condition.condition_key, 'green-main-slo', deps.rail);
         if (!resolved) conditionErrors.push(`resolve ${condition.condition_key}: delivery returned false`);
       }
     } catch (e) { conditionErrors.push(`reconcile ${condition.condition_key}: ${message(e)}`); }
   }
-  return { slo, deliveries, readErrors, conditionErrors };
+  return { slo, deliveries, readErrors, conditionErrors, reasonItems };
+}
+
+/** Reuse the condition-key create/claim seam; adoption must never report an unowned success. */
+export async function fileRecurringNonVerdictReason(
+  target: { workspaceId: string; installSlug: string },
+  breach: GreenMainSloBreach,
+): Promise<{ id: string; assignee: string }> {
+  const { readGateOwnership, ownershipHeldByLiveHolder } = await import('../coord/gate-ownership');
+  const { createOneWorkItem } = await import('../agent-tools/work_items/_create-core');
+  const { claimWorkItem, getWorkItem } = await import('../work-items');
+  const owner = await readGateOwnership({ harness: target.installSlug });
+  if (!ownershipHeldByLiveHolder(owner) || !owner.takenBy) throw new Error('no verified live gate owner for reason follow-up');
+  const filed = await createOneWorkItem({
+    kind: 'bug', title: breach.title, summary: breach.detail, harness: target.installSlug,
+    workspace: target.workspaceId, assign_to: owner.takenBy, urgent: true,
+    conditionKey: `green-main-non-verdict:${JSON.stringify([target.workspaceId, target.installSlug, breach.subject])}`,
+    payload: { source: 'green-main-slo', reason: breach.subject, count: breach.value, threshold: breach.threshold },
+  }, { ownerId: 'system:green-main-slo', workspaceId: target.workspaceId, harnessSlug: target.installSlug });
+  if (!filed.ok) throw new Error(`reason filing refused: ${filed.error}`);
+  let item = filed.workItem;
+  if (!item.assignee) {
+    item = await claimWorkItem(item.id, owner.takenBy, { harness: item.harness ?? undefined, assignedBy: 'system:green-main-slo' })
+      ?? await getWorkItem(item.id, item.harness ?? undefined) ?? item;
+  }
+  if (!item.assignee) throw new Error(`reason item ${item.id} remains unassigned`);
+  return { id: item.id, assignee: item.assignee };
 }
 
 /** Parse `gate_health.lastGreenAt` as stored (epoch ms, number or numeric string). */
@@ -284,13 +336,16 @@ export async function checkGreenMainSlo(
     const { readFrozenCandidateRepairQueueState } = await import('../harness/routines/release-actions');
     const { notifyAttentionOnce } = await import('../attention-notify');
 
+    const nowMs = (opts.nowMs ?? Date.now)();
     const result = await runGreenMainSloPass({
       installSlug,
       workspaceId,
-      nowMs: (opts.nowMs ?? Date.now)(),
+      nowMs,
       thresholds: opts.thresholds,
       readLastGreenAtMs: async () => parseLastGreenAtMs(rows[0].last_green_at),
       readLastVerdictAtMs: async () => (await readVerdictRateWindow(sql, target)).lastVerdictBearingAtMs,
+      readNonVerdictReasons: () => readGateNonVerdictReasons(sql, target, nowMs),
+      fileNonVerdictReason: (breach) => fileRecurringNonVerdictReason(target, breach),
       readQueue: async () => {
         const q = await readFrozenCandidateRepairQueueState(target);
         if (q.status === 'value') return q.queue;

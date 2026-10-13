@@ -344,6 +344,29 @@ describe('GreenMainSloCard', () => {
     expect(screen.getByTestId('gate-green-main-slo-breaches').textContent).toContain('Main has been red 245.0h on papercusp');
   });
 
+  it('renders each non-verdict reason and its daily threshold', async () => {
+    const { GreenMainSloCard } = await import('./GitClient');
+    render(<GreenMainSloCard slo={{ ...healthy, thresholds: { ...thresholds, nonVerdictReasonMinCount: 6 },
+      metrics: { ...healthy.metrics, nonVerdictReasons: { windowHours: 24, measuredAtMs: Date.now(), reasons: [
+        { reason: 'skipped-joined-attempt', count: 7, latestAtMs: Date.now() },
+        { reason: 'skipped-memory-budget', count: 2, latestAtMs: Date.now() },
+      ] } } }} />);
+    const card = screen.getByTestId('gate-non-verdict-reasons');
+    expect(card.textContent).toContain('skipped-joined-attempt: 7');
+    expect(card.textContent).toContain('skipped-memory-budget: 2');
+    expect(card.textContent).toContain('Owned follow-up at 6');
+  });
+
+  it('shows an unreadable reason ledger as unknown and a complete empty read as zero', async () => {
+    const { GreenMainSloCard } = await import('./GitClient');
+    const rendered = render(<GreenMainSloCard slo={{ ...healthy, unreadable: ['nonVerdictReasons'] }} />);
+    expect(screen.getByTestId('gate-non-verdict-reasons').textContent).toContain('unknown · ledger unreadable');
+    expect(screen.getByTestId('gate-green-main-slo').textContent).not.toContain('within SLO');
+    rendered.rerender(<GreenMainSloCard slo={{ ...healthy, metrics: { ...healthy.metrics,
+      nonVerdictReasons: { windowHours: 24, measuredAtMs: Date.now(), reasons: [] } } }} />);
+    expect(screen.getByTestId('gate-non-verdict-reasons').textContent).toContain('0 terminal skips or aborts');
+  });
+
   it('is absent for an older snapshot that carries no slo', () => {
     mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
     render(<GitClient />);

@@ -2,13 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AttentionNotifyResult, ReplaySafeAttentionNotifyInput } from '../attention-notify';
 import type { SevereEventBroadcast } from '../severe-event-broadcast';
 import type { GreenMainSloQueue } from './green-main-slo';
-import { checkGreenMainSlo, parseLastGreenAtMs, runGreenMainSloPass, type GreenMainSloPassDeps } from './green-main-slo-watchdog';
+import { checkGreenMainSlo, fileRecurringNonVerdictReason, parseLastGreenAtMs, runGreenMainSloPass, type GreenMainSloPassDeps } from './green-main-slo-watchdog';
 
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 13, 2, 0, 0);
 
 const mocks = vi.hoisted(() => ({
   readVerdictRateWindow: vi.fn(),
+  readGateNonVerdictReasons: vi.fn(),
+  readGateOwnership: vi.fn(),
+  createOneWorkItem: vi.fn(),
+  claimWorkItem: vi.fn(),
+  getWorkItem: vi.fn(),
   readFrozenCandidateRepairQueueState: vi.fn(),
   notifyAttentionOnce: vi.fn(),
   recordWatchdogPassOutcome: vi.fn(),
@@ -21,11 +26,17 @@ vi.mock('../agent-tools/coordination/tools/conditions', () => ({
   computeConditionStates: () => [],
 }));
 vi.mock('./gate-verdict-rate-alarm', () => ({ readVerdictRateWindow: mocks.readVerdictRateWindow }));
+vi.mock('./gate-fire-ledger', () => ({ readGateNonVerdictReasons: mocks.readGateNonVerdictReasons }));
 vi.mock('../harness/routines/release-actions', () => ({
   readFrozenCandidateRepairQueueState: mocks.readFrozenCandidateRepairQueueState,
 }));
 vi.mock('../attention-notify', () => ({ notifyAttentionOnce: mocks.notifyAttentionOnce }));
 vi.mock('./watchdog-health', () => ({ recordWatchdogPassOutcome: mocks.recordWatchdogPassOutcome }));
+vi.mock('../coord/gate-ownership', async (original) => ({
+  ...await original<typeof import('../coord/gate-ownership')>(), readGateOwnership: mocks.readGateOwnership,
+}));
+vi.mock('../agent-tools/work_items/_create-core', () => ({ createOneWorkItem: mocks.createOneWorkItem }));
+vi.mock('../work-items', () => ({ claimWorkItem: mocks.claimWorkItem, getWorkItem: mocks.getWorkItem }));
 
 /** A durable once-per-key store, the contract notifyAttentionOnce gives a stable dedupeKey. */
 function onceStore() {
@@ -199,6 +210,7 @@ describe('checkGreenMainSlo (production wiring)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.readVerdictRateWindow.mockResolvedValue({ fires: 3, verdicts: 2, lastVerdictBearingAtMs: NOW - 1 * HOUR });
+    mocks.readGateNonVerdictReasons.mockResolvedValue({ windowHours: 24, sinceMs: NOW - 24 * HOUR, measuredAtMs: NOW, reasons: [] });
     mocks.readFrozenCandidateRepairQueueState.mockResolvedValue({ status: 'absent' });
     mocks.notifyAttentionOnce.mockResolvedValue({ recordId: 1, deduped: false, mobileDelivered: true, desktopDelivered: true });
     mocks.recordWatchdogPassOutcome.mockResolvedValue(0);
@@ -242,6 +254,14 @@ describe('checkGreenMainSlo (production wiring)', () => {
     expect(String(passError)).toMatch(/read queue: frozen repair queue unreadable/);
   });
 
+  it('reports a failed reason read through watchdog health instead of a measured zero', async () => {
+    mocks.readGateNonVerdictReasons.mockRejectedValue(new Error('reason ledger down'));
+    const res = await checkGreenMainSlo(fakeSql([{ workspace_id: 'ws-1', last_green_at: String(NOW) }]), { nowMs: () => NOW });
+    expect(res?.slo.metrics.nonVerdictReasons).toBeNull();
+    expect(res?.readErrors).toContainEqual({ input: 'nonVerdictReasons', message: 'reason ledger down' });
+    expect(String(mocks.recordWatchdogPassOutcome.mock.calls[0][3])).toContain('reason ledger down');
+  });
+
   it('does nothing (and records a healthy pass) when the install has no gate routine', async () => {
     const res = await checkGreenMainSlo(fakeSql([]), { nowMs: () => NOW });
     expect(res).toBeNull();
@@ -273,6 +293,80 @@ function railStore() {
   };
   return { run, states, opens, closed, broadcast, resolve };
 }
+
+describe('recurring non-verdict reasons (P-029)', () => {
+  const reading = (at: number, rows: Array<{ reason: string; count: number }>) => ({
+    windowHours: 24 as const, sinceMs: at - 24 * HOUR, measuredAtMs: at,
+    reasons: rows.map((r) => ({ ...r, latestAtMs: at - 1 })),
+  });
+  const mixed = [{ reason: 'skipped-joined-attempt', count: 7 }, { reason: 'skipped-memory-budget', count: 2 }];
+
+  it('files only recurring reasons, preserves one daily notification, and surfaces filing failures', async () => {
+    const owner = onceStore();
+    const file = vi.fn(async () => ({ id: 'WI-reason', assignee: 'su-current' }));
+    const h = railStore();
+    for (const at of [NOW, NOW + 60_000]) {
+      const result = await h.run({ nowMs: at, notifyOnce: owner.notifyOnce,
+        readNonVerdictReasons: async () => reading(at, mixed), fileNonVerdictReason: file });
+      expect(result.reasonItems).toEqual([{ reason: 'skipped-joined-attempt', id: 'WI-reason', assignee: 'su-current' }]);
+      expect(result.conditionErrors).toEqual([]);
+    }
+    expect(file).toHaveBeenCalledTimes(2);
+    expect(owner.sent).toHaveLength(1);
+    expect(h.opens).toHaveLength(1);
+    const failed = await h.run({ readNonVerdictReasons: async () => reading(NOW, mixed),
+      fileNonVerdictReason: async () => { throw new Error('claim refused'); } });
+    expect(failed.reasonItems).toEqual([]);
+    expect(failed.conditionErrors).toContain('file skipped-joined-attempt: claim refused');
+  });
+
+  it('resolves only after a complete new exact-scope window; failed or stale reads retain the episode', async () => {
+    const h = railStore();
+    await h.run({ readNonVerdictReasons: async () => reading(NOW, mixed),
+      fileNonVerdictReason: async () => ({ id: 'WI-reason', assignee: 'su-current' }) });
+    const at = NOW + 25 * HOUR;
+    await h.run({ nowMs: at, readNonVerdictReasons: async () => { throw new Error('db down'); } });
+    await h.run({ nowMs: at, readNonVerdictReasons: async () => reading(NOW, []) });
+    expect(h.closed).toEqual([]);
+    await h.run({ nowMs: at, readNonVerdictReasons: async () => reading(at, []) });
+    expect(h.closed).toEqual([h.opens[0].conditionKey]);
+  });
+
+  describe('production reason filing', () => {
+    const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
+    const breach = { metric: 'non-verdict-reason' as const, subject: 'skipped-joined-attempt', value: 7,
+      threshold: 6, episodeKey: 'daily-key', title: 'Recurring joined attempt', detail: 'Seven outcomes', severity: 'alert' as const };
+    beforeEach(() => {
+      mocks.readGateOwnership.mockResolvedValue({ claimState: 'held', takenBy: 'su-current', holderSessionState: 'live', assessment: 'held-live' });
+      mocks.createOneWorkItem.mockResolvedValue({ ok: true, workItem: { id: 'WI-reason', assignee: 'su-current', harness: 'papercusp' } });
+      mocks.claimWorkItem.mockReset(); mocks.getWorkItem.mockReset();
+    });
+    it('reuses a reason key across days and passes an atomic assignment to the existing create seam', async () => {
+      expect(await fileRecurringNonVerdictReason(target, breach)).toEqual({ id: 'WI-reason', assignee: 'su-current' });
+      const key = mocks.createOneWorkItem.mock.lastCall?.[0].conditionKey;
+      await fileRecurringNonVerdictReason(target, { ...breach, episodeKey: 'next-day' });
+      expect(mocks.createOneWorkItem.mock.lastCall?.[0]).toMatchObject({ conditionKey: key, assign_to: 'su-current' });
+      expect(mocks.claimWorkItem).not.toHaveBeenCalled();
+    });
+    it('preserves a different incumbent and claims an unassigned adopted item without force', async () => {
+      mocks.createOneWorkItem.mockResolvedValueOnce({ ok: true, workItem: { id: 'WI-reason', assignee: 'su-incumbent' } });
+      expect((await fileRecurringNonVerdictReason(target, breach)).assignee).toBe('su-incumbent');
+      mocks.createOneWorkItem.mockResolvedValueOnce({ ok: true, workItem: { id: 'WI-reason', assignee: null, harness: 'papercusp' } });
+      mocks.claimWorkItem.mockResolvedValueOnce({ id: 'WI-reason', assignee: 'su-current' });
+      expect((await fileRecurringNonVerdictReason(target, breach)).assignee).toBe('su-current');
+      expect(mocks.claimWorkItem).toHaveBeenCalledWith('WI-reason', 'su-current', { harness: 'papercusp', assignedBy: 'system:green-main-slo' });
+    });
+    it('refuses unverified ownership and never reports an unassigned filing as successful', async () => {
+      mocks.readGateOwnership.mockResolvedValueOnce({ claimState: 'held', takenBy: 'su-dead', holderSessionState: 'ended' });
+      await expect(fileRecurringNonVerdictReason(target, breach)).rejects.toThrow('no verified live gate owner');
+      mocks.createOneWorkItem.mockResolvedValueOnce({ ok: true, workItem: { id: 'WI-reason', assignee: null, harness: 'papercusp' } });
+      mocks.claimWorkItem.mockResolvedValueOnce(null); mocks.getWorkItem.mockResolvedValueOnce(null);
+      await expect(fileRecurringNonVerdictReason(target, breach)).rejects.toThrow('remains unassigned');
+      mocks.createOneWorkItem.mockResolvedValueOnce({ ok: false, error: 'write refused' });
+      await expect(fileRecurringNonVerdictReason(target, breach)).rejects.toThrow('write refused');
+    });
+  });
+});
 
 describe('green-main SLO keyed lifecycle (original producer)', () => {
   const red = { readLastGreenAtMs: async () => NOW - 13 * HOUR, readLastVerdictAtMs: async () => NOW - 7 * HOUR };
