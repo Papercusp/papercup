@@ -172,7 +172,7 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     const entry = await screen.findByRole("region", { name: "Beginner workspace entry" });
     const choices = within(entry).getAllByRole("button", { name: /Use prepared workspace/ });
     expect(choices).toHaveLength(1);
-    expect(choices[0].textContent).toContain("Authorized workspace");
+    expect(choices[0].getAttribute("aria-label")).toBe("Use prepared workspace Authorized workspace");
     expect(entry.textContent).not.toContain("foreign-workspace");
     expectNoHiddenProductWrites();
     fireEvent.click(choices[0]);
