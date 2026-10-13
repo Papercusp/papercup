@@ -627,7 +627,11 @@ function runStatusline(extraEnv: Record<string, string> = {}, homeDir = home) {
 }
 
 // ── SessionStart/SessionEnd lifecycle hook ─────────────────────────────
-const LIFECYCLE_HOOK = join(__dirname, "..", "lifecycle-report.sh");
+// PAPERCUSP_TEST_LIFECYCLE_HOOK: run this suite against another copy of the hook
+// (e.g. a pre-fix blob in a scratch copy of hooks/cc) to prove the guards are
+// falsifiable without mutating the shared tree.
+const LIFECYCLE_HOOK =
+  process.env.PAPERCUSP_TEST_LIFECYCLE_HOOK || join(__dirname, "..", "lifecycle-report.sh");
 
 function runLifecycle(
   payloadObj: object,
@@ -891,6 +895,27 @@ describe("cc lifecycle hook — operator-independent paths", () => {
     } finally {
       fs.rmSync(stopCache, { recursive: true, force: true });
     }
+  });
+  // WI-6554700010009992: Codex fires Stop at the end of EVERY turn. When it was
+  // reported as "■ session ended", a parked loop-less session (a warm headless
+  // executor after its first turn) got a `terminal` verdict and fleet:kill'ed its
+  // own live host. The server verdict is forced to `terminal` here so the hook,
+  // not the classifier, is what must keep a turn end from ending the session.
+  it("Stop is a turn end — even a terminal verdict never reports an end or kills the host", async () => {
+    const { exitCode, requests } = await runLifecycleAgainstDisposition(
+      "terminal",
+      "42",
+      {},
+      "Stop",
+    );
+    expect(exitCode).toBe(0);
+    expect(requests.some((request) => request.path === "/api/admin/coordination/fleet/kill")).toBe(false);
+    const reports = requests.filter(
+      (request) =>
+        (request.body.params as { name?: string } | undefined)?.name ===
+        "activity:report",
+    );
+    expect(reports).toEqual([]);
   });
 });
 

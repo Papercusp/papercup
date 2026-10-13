@@ -25,7 +25,7 @@
  * makes the eligible pool non-replenishable, so every redundant dispatch
  * permanently shrinks it. Hence one explicit negative PER VERDICT.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { observeGraderPickup } from './acceptance-grader-pickup';
 import {
@@ -463,6 +463,48 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
         expect((await reconcileOpenGradingCascades({ ...params, planSlug }, dependencies)).liveConversationId)
           .toBe(conversationId);
         expect(await stateOf(conversationId)).toMatchObject({ state: 'active', closed: false });
+      });
+
+      it('queues the next selected slot once and preserves its durable dispatch across retries', async () => {
+        const planSlug = 'failed-answerer-next-slot';
+        const conversationId = `conv-${planSlug}`;
+        const nextOwner = 'su-next-source';
+        await seedCascade({ conversationId, planSlug, createdAgoMs: 60_000, digest: [],
+          selection: { ...selection, selected: [...selection.selected,
+            { ownerId: nextOwner, via: 'floor', score: 0.9, relevance: 0.9, similarity: 0.9, liveness: 'live' }] } });
+        const continueDispatch = vi.fn(async () => false);
+        const readTerminalFailure = vi.fn(async () => inspect(errorTurn));
+        const dependencies = { nowMs: Date.now(), readTerminalFailure, continueDispatch };
+        const result = await reconcileOpenGradingCascades({ ...params, planSlug }, dependencies);
+        expect(result.liveConversationId).toBe(conversationId);
+        const readDispatch = async () => (await db.adminSql<Array<{
+          cascade_cursor: number; responder_id: string; cascade_digest: unknown; routing: Record<string, unknown>;
+        }>>`SELECT cascade_cursor, responder_id, cascade_digest, routing FROM harness_shared.consult_state
+          WHERE workspace_id = ${RECONCILE_WS} AND conversation_id = ${conversationId}`)[0]!;
+        const queued = await readDispatch();
+        expect(queued).toMatchObject({ cascade_cursor: 1, responder_id: nextOwner,
+          cascade_digest: [expect.objectContaining({ kind: 'dispatch_failed', ownerId: 'su-failed-source' })],
+          routing: { cascadeDispatch: { responder: nextOwner, cursor: 1, leaseToken: null } } });
+        expect(continueDispatch).toHaveBeenCalledTimes(1);
+        await reconcileOpenGradingCascades({ ...params, planSlug }, dependencies);
+        expect(await readDispatch()).toEqual(queued);
+        expect(readTerminalFailure).toHaveBeenCalledTimes(1);
+        expect(continueDispatch).toHaveBeenCalledTimes(1);
+        const { continueCascadeDispatchCore } = await import('./consult/cascade-core');
+        expect(await continueCascadeDispatchCore(RECONCILE_WS, conversationId, {
+          getSql: () => db.adminSql,
+          dispatch: (isCurrent) => async (opts) => {
+            expect(await isCurrent()).toBe(true);
+            expect(opts.responder).toBe(nextOwner);
+            await opts.onAnsweringOwner?.('su-next-answerer');
+            return { woke: 1, answeringOwnerId: 'su-next-answerer' };
+          },
+        })).toBe(true);
+        const dispatched = await readDispatch();
+        expect(dispatched.routing).not.toHaveProperty('cascadeDispatch');
+        expect(dispatched.routing).toMatchObject({ selection: { selected: [
+          expect.anything(), expect.objectContaining({ ownerId: nextOwner, answeringOwnerId: 'su-next-answerer' }),
+        ] } });
       });
 
       it.each(['answer', 'cursor', 'answering-owner', 'digest'])('preserves a concurrent %s change while inspecting failure', async (change) => {

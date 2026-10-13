@@ -9,7 +9,7 @@
  */
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { ChatTurn, OpenCardSnapshot } from '@papercusp/chat-protocol';
+import type { ChatTurn, ChatTurnsPage, OpenCardSnapshot } from '@papercusp/chat-protocol';
 import {
   ASK_CAPABILITY_CONTRACT,
   CHAT_TRANSPORT_FAILED,
@@ -289,6 +289,28 @@ describe('usePapercupChat — the hook over a fake adapter', () => {
     expect(result.current.unsentQuestion).toBe('');
     expect(onAssistantTurn).toHaveBeenCalledTimes(1);
     expect(adapter.sendTurn).toHaveBeenCalledWith('What now?', { signal: expect.any(AbortSignal) });
+  });
+
+  it.each([false, true])('preserves turns created during an initial history read (reply completed: %s)', async (completed) => {
+    let finishHistory!: (page: ChatTurnsPage) => void;
+    const pendingHistory = new Promise<ChatTurnsPage>((resolve) => { finishHistory = resolve; });
+    const gated = gatedFrames([{ type: 'delta', text: 'Reply' }], [{ type: 'done' }]);
+    const adapter = makeAdapter({ loadHistory: vi.fn(() => pendingHistory),
+      sendTurn: vi.fn(async () => gated.iterable) });
+    const { result } = renderHook(() => usePapercupChat({ adapter, conversationId: 'new-chat' }));
+    await waitFor(() => expect(result.current.loadingHistory).toBe(true));
+    let sending!: Promise<void>;
+    act(() => { sending = result.current.send('Can I close this tab?'); });
+    await waitFor(() => expect(result.current.live?.text).toBe('Reply'));
+    if (completed) await act(async () => { gated.release(); await sending; });
+    await act(async () => { finishHistory({ turns: history, hasMoreEarlier: false }); });
+    expect(result.current.turns.slice(0, 2)).toEqual(history);
+    expect(result.current.turns[2]).toMatchObject({ role: 'user', text: 'Can I close this tab?' });
+    if (!completed) await act(async () => { gated.release(); await sending; });
+    expect(result.current.turns.map((turn) => turn.text)).toEqual([
+      'earlier?', 'earlier.', 'Can I close this tab?', 'Reply',
+    ]);
+    expect(adapter.sendTurn).toHaveBeenCalledOnce();
   });
 
   it('exposes open cards while the turn streams and routes the answer through the adapter', async () => {

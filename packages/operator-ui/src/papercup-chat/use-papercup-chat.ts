@@ -604,6 +604,8 @@ export function usePapercupChat(options: UsePapercupChatOptions): PapercupChatCo
   const { adapter, conversationId, historyPageSize = 50, onNavigate, onAssistantTurn } = options;
 
   const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const turnsRef = useRef(turns);
+  turnsRef.current = turns;
   const [live, setLive] = useState<AskTurnState | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [hasMoreEarlier, setHasMoreEarlier] = useState(false);
@@ -631,13 +633,22 @@ export function usePapercupChat(options: UsePapercupChatOptions): PapercupChatCo
       const load = adapterRef.current.loadHistory;
       if (!load) return;
       const gen = generationRef.current;
+      const existingIds = new Set(turnsRef.current.map((turn) => turn.id));
       setLoadingHistory(true);
       if (mode === 'replace') setSurfaceError(null);
       try {
         const page = await load({ beforeSeq, limit: historyPageSize });
         if (gen !== generationRef.current) return;
         setHasMoreEarlier(page.hasMoreEarlier);
-        setTurns((prev) => (mode === 'replace' ? page.turns : [...page.turns, ...prev]));
+        setTurns((prev) => {
+          if (mode === 'prepend') return [...page.turns, ...prev];
+          // An initial history read can finish after the first typed or voice
+          // turn. Preserve additions made since this read began; replacing
+          // them with the earlier snapshot silently erases the live question.
+          const loadedIds = new Set(page.turns.map((turn) => turn.id));
+          const added = prev.filter((turn) => !existingIds.has(turn.id) && !loadedIds.has(turn.id));
+          return [...page.turns, ...added];
+        });
       } catch (err) {
         if (gen !== generationRef.current) return;
         const code = err instanceof ChatTurnRefusedError ? askTurnRefusalState(err.body).errorCode : errorCodeOf(err);
