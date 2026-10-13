@@ -485,11 +485,32 @@ function safeHostedErrorCode(body: unknown): string | null {
 function observePortalConversationCreation(page: import('playwright').Page) {
   let creation: { status: number; errorCode: string | null } | undefined;
   const responses: Array<{ status: number; errorCode: string | null }> = [];
+  const startedAt = performance.now();
+  type TurnObservation = { requestedAtMs: number; response?: { status: number; receivedAtMs: number };
+    failure?: { kind: 'aborted' | 'transport'; receivedAtMs: number } };
+  const turns = new Map<import('playwright').Request, TurnObservation>();
+  const isTurn = (request: import('playwright').Request) => request.method() === 'POST'
+    && /\/api\/papercup-chat\/conversations\/[^/]+\/turns$/.test(new URL(request.url()).pathname);
+  const elapsed = () => Math.round(performance.now() - startedAt);
   let refuse!: (error: Error) => void;
   // Resolve with the failure instead of rejecting in an event listener. Creation
   // can fail during navigation, before the test begins awaiting a typed turn.
   const failure = new Promise<Error>((resolve) => { refuse = resolve; });
+  // Record only phase/timing/status. URLs, headers, input and response bodies
+  // can contain private data and are unnecessary to distinguish dispatch loss.
+  page.on('request', (request) => {
+    if (isTurn(request)) turns.set(request, { requestedAtMs: elapsed() });
+  });
+  page.on('requestfailed', (request) => {
+    if (!isTurn(request)) return;
+    const kind = /abort|cancel/i.test(request.failure()?.errorText ?? '') ? 'aborted' : 'transport';
+    const turn = turns.get(request);
+    if (turn) turn.failure = { kind, receivedAtMs: elapsed() };
+    refuse(new Error(`public_manual_portal_turn_request_failed:${kind}`));
+  });
   page.on('response', (response) => {
+    const turn = turns.get(response.request());
+    if (turn) turn.response = { status: response.status(), receivedAtMs: elapsed() };
     if (response.request().method() !== 'POST'
       || new URL(response.url()).pathname !== '/api/papercup-chat/conversations') return;
     void (async () => {
@@ -504,9 +525,15 @@ function observePortalConversationCreation(page: import('playwright').Page) {
   return {
     snapshot: () => creation,
     responses: () => [...responses],
+    turns: () => [...turns.values()].map(turn => ({ ...turn,
+      ...(turn.response ? { response: { ...turn.response } } : {}),
+      ...(turn.failure ? { failure: { ...turn.failure } } : {}) })),
     waitForTurn: async (send: () => Promise<unknown>, timeout = 150_000) => {
-      const response = page.waitForResponse((response) => response.request().method() === 'POST'
-        && /\/api\/papercup-chat\/conversations\/[^/]+\/turns$/.test(new URL(response.url()).pathname), { timeout });
+      const response = page.waitForResponse((response) => isTurn(response.request()), { timeout }).catch(error => {
+        if (error?.name !== 'TimeoutError') throw error;
+        const code = turns.size === 0 ? 'turn_not_dispatched' : 'turn_response_missing';
+        throw new Error(`public_manual_portal_${code}; requests=${turns.size}`, { cause: error });
+      });
       const pending = Promise.race([response, failure.then((error) => { throw error; })]);
       // A failed click must not leave an unhandled response timeout behind.
       void pending.catch(() => {});
@@ -596,6 +623,56 @@ describe('public manual Portal failure evidence', () => {
       expect(response.ok()).toBe(true);
       expect(await response.text()).toContain('event: done');
       expect(creation.snapshot()).toEqual({ status: 201, errorCode: null });
+      expect(creation.turns()).toEqual([{ requestedAtMs: expect.any(Number),
+        response: { status: 200, receivedAtMs: expect.any(Number) } }]);
+    } finally { await browser.close(); }
+  }, 30_000);
+
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('distinguishes lost first Send from a dispatched turn awaiting response headers', async () => {
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({ headless: true });
+    let release!: () => void;
+    const heldResponse = new Promise<void>(resolve => { release = resolve; });
+    try {
+      const page = await browser.newPage();
+      const creation = observePortalConversationCreation(page);
+      await page.route('http://portal.test/**', async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path.endsWith('/turns')) {
+          await heldResponse;
+          return route.fulfill({ contentType: 'text/event-stream', body: 'event: done\ndata: {}\n\n' });
+        }
+        return route.fulfill({ contentType: 'text/html', body: '<button>Send</button>' });
+      });
+      await page.goto('http://portal.test/');
+      await expect(creation.waitForTurn(() => page.getByRole('button', { name: 'Send' }).click(), 300))
+        .rejects.toThrow('public_manual_portal_turn_not_dispatched; requests=0');
+      expect(creation.turns()).toEqual([]);
+      await expect(creation.waitForTurn(() => page.evaluate(() => {
+        void fetch('/api/papercup-chat/conversations/private-chat/turns?token=private-query',
+          { method: 'POST', headers: { Authorization: 'private-header' }, body: 'private-question' });
+      }), 300)).rejects.toThrow('public_manual_portal_turn_response_missing; requests=1');
+      expect(creation.turns()).toEqual([{ requestedAtMs: expect.any(Number) }]);
+      expect(JSON.stringify(creation.turns())).not.toMatch(/private-/);
+    } finally { release(); await browser.close(); }
+  }, 30_000);
+
+  it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')('reports a failed first turn transport immediately with only safe phase evidence', async () => {
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage();
+      const creation = observePortalConversationCreation(page);
+      await page.route('http://portal.test/**', (route) => new URL(route.request().url()).pathname.endsWith('/turns')
+        ? route.abort('failed') : route.fulfill({ contentType: 'text/html', body: '<button>Send</button>' }));
+      await page.goto('http://portal.test/');
+      await expect(creation.waitForTurn(() => page.evaluate(() => {
+        void fetch('/api/papercup-chat/conversations/private-chat/turns?token=private-query',
+          { method: 'POST', body: 'private-question' }).catch(() => {});
+      }), 5000)).rejects.toThrow('public_manual_portal_turn_request_failed:transport');
+      expect(creation.turns()).toEqual([{ requestedAtMs: expect.any(Number),
+        failure: { kind: 'transport', receivedAtMs: expect.any(Number) } }]);
+      expect(JSON.stringify(creation.turns())).not.toMatch(/private-|net::/);
     } finally { await browser.close(); }
   }, 30_000);
 
@@ -2668,6 +2745,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         recordedAt: new Date().toISOString(),
         frames: publicPortalFrames(stream), history, browserText, browserState, guideMutation,
         conversationCreation: conversationCreation?.snapshot(), creationResponses: conversationCreation?.responses(),
+        turnRequests: conversationCreation?.turns(),
         operatorCreation, creationPreflight, interceptedModelTurns,
         connectedHost: connector?.observation }, caseFailure, evidenceCredentials);
       writeFileSync(join(evidenceDir, 'case.json'), safeEvidence, { mode: 0o600 });
