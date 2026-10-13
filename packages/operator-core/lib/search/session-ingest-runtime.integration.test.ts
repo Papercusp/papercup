@@ -1,14 +1,17 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { fork, spawnSync } from 'node:child_process';
+import { join, resolve } from 'node:path';
+import { describe, expect } from 'vitest';
+import { captureIsolatedWorker, isolatedIntegrationCases, isolatedWorkerFailureDetail,
+  isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 
 const root = resolve(__dirname, '../../../..');
 const source = resolve(root, 'packages/operator-core/lib/search/session-ingest.ts');
 
 describe('current-build ingestion on a private background runtime', () => {
-  it.each([false, true])('attributes a fixed incremental workload with CPU sampling=%s and removes its database and home', (sampleCpu) => {
+  const options = isolatedWorkerOptions(180_000);
+  isolatedIntegrationCases('attributes a fixed incremental workload with CPU sampling=%s and removes its database and home', async (sampleCpu, context) => {
     const sourceHash = createHash('sha256').update(readFileSync(source)).digest('hex');
     // An optional frozen local tail exercises real mixed record sizes without
     // checking private transcripts into the repository. Only hashes and counts
@@ -708,32 +711,65 @@ describe('current-build ingestion on a private background runtime', () => {
       input: probe, encoding: 'utf8', timeout: 10_000,
     });
     expect(syntax.status, syntax.stderr).toBe(0);
-    const result = spawnSync(process.execPath, [
-      resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
-      process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe,
-    ], {
-      cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 2 * 1024 * 1024,
-      env: { ...process.env, TEST_INGEST_SOURCE_HASH: sourceHash, TEST_LIVE_HOME: process.env.HOME ?? '',
-        TEST_INGEST_CORPUS_HASH: corpusHash, TEST_INGEST_SAMPLE_CPU: sampleCpu ? '1' : '0' },
+    const runId = await recordIsolatedIntegrationProof({
+      root,
+      filePath: 'packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts',
+      sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/lib/search/session-ingest.ts',
+        'packages/operator-core/test/isolated-integration-proof.ts'],
+      retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/worker-result.json',
+        'phases/execute/runtime-events.ndjson', 'phases/execute/ingest-runtime-receipt.json'],
+      prepare: evidenceDir => {
+        // These are named byte anchors; they do not certify a complete import graph.
+        if (!process.env.NODE_OPTIONS?.includes('committed-source-loader.mjs')) return;
+        const original = JSON.parse(readFileSync(join(evidenceDir, 'source.json'), 'utf8')) as {
+          files: Array<{ path: string; sha256: string; gitSha256: string | null }>;
+        };
+        const runtimePaths = ['scripts/with-test-pg.mjs', 'scripts/lib/with-test-pg-cleanup.mjs',
+          'scripts/lib/isolated-runtime-start.mjs', 'packages/operator-core/lib/search/session-ingest.ts',
+          'packages/operator-core/test/isolated-integration-proof.ts'];
+        expect(runtimePaths.filter(path => {
+          const file = original.files.find(entry => entry.path === path);
+          return !file || file.sha256 !== file.gitSha256;
+        }), 'Named runtime sources must be committed before the inherited loader can execute their current bytes')
+          .toEqual([]);
+      },
+      execute: async (observe, evidenceDir) => {
+        const child = fork(resolve(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime', '--',
+          process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
+          cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+          env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+            TEST_INGEST_SOURCE_HASH: sourceHash, TEST_LIVE_HOME: process.env.HOME ?? '',
+            TEST_INGEST_CORPUS_HASH: corpusHash, TEST_INGEST_SAMPLE_CPU: sampleCpu ? '1' : '0' },
+        });
+        observe(child);
+        const result = await captureIsolatedWorker(child, evidenceDir, options);
+        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({
+          code: 0, signal: null, timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false,
+        });
+        const dataDir = result.output.match(/datadir ([^)]+)\)/)?.[1];
+        expect(dataDir).toBeTruthy();
+        expect(existsSync(dataDir!)).toBe(false);
+        const environment = result.output.match(/^INGEST_RUNTIME_ENV (.+)$/m)?.[1];
+        expect(environment, 'Original worker environment receipt is required').toBeTruthy();
+        expect(existsSync(JSON.parse(environment!).home)).toBe(false);
+        const receipt = result.output.match(/^INGEST_RUNTIME_PROBE (.+)$/m)?.[1];
+        expect(receipt, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
+        const evidence = JSON.parse(receipt!) as { sourceHash: string; home: string; dbPort: string };
+        expect(evidence.sourceHash).toBe(sourceHash);
+        expect(existsSync(evidence.home)).toBe(false);
+        const stopped = spawnSync(process.execPath, ['-e',
+          "const net=require('node:net');const s=net.createConnection({host:'localhost',port:Number(process.argv[1])});" +
+          "s.on('connect',()=>{s.destroy();process.exitCode=1;});" +
+          "s.on('error',e=>{if(e.code!=='ECONNREFUSED'){console.error(e.code);process.exitCode=1;}});",
+          evidence.dbPort,
+        ], { encoding: 'utf8', timeout: 10_000 });
+        expect(stopped.status, stopped.stderr).toBe(0);
+        const cleanup = { ...evidence, homeRemoved: true, dataDirRemoved: true, dbPortClosed: true };
+        writeFileSync(join(evidenceDir, 'ingest-runtime-receipt.json'), JSON.stringify(cleanup), { flag: 'wx' });
+        expect(JSON.parse(readFileSync(join(evidenceDir, 'ingest-runtime-receipt.json'), 'utf8'))).toEqual(cleanup);
+        console.log('INGEST_RUNTIME_RECEIPT', JSON.stringify(cleanup));
+      },
     });
-    const dataDir = result.stdout.match(/datadir ([^)]+)\)/)?.[1];
-    expect(dataDir).toBeTruthy();
-    expect(existsSync(dataDir!)).toBe(false);
-    const environment = result.stdout.match(/^INGEST_RUNTIME_ENV (.+)$/m)?.[1];
-    if (environment) expect(existsSync(JSON.parse(environment).home)).toBe(false);
-    expect(result.status, `${result.stdout.slice(-4000)}\n${result.stderr.slice(-4000)}`).toBe(0);
-    const receipt = result.stdout.match(/^INGEST_RUNTIME_PROBE (.+)$/m)?.[1];
-    expect(receipt, result.stdout.slice(-4000)).toBeTruthy();
-    const evidence = JSON.parse(receipt!) as { sourceHash: string; home: string; dbPort: string };
-    expect(evidence.sourceHash).toBe(sourceHash);
-    expect(existsSync(evidence.home)).toBe(false);
-    const stopped = spawnSync(process.execPath, ['-e',
-      "const net=require('node:net');const s=net.createConnection({host:'localhost',port:Number(process.argv[1])});" +
-      "s.on('connect',()=>{s.destroy();process.exitCode=1;});" +
-      "s.on('error',e=>{if(e.code!=='ECONNREFUSED'){console.error(e.code);process.exitCode=1;}});",
-      evidence.dbPort,
-    ], { encoding: 'utf8', timeout: 10_000 });
-    expect(stopped.status, stopped.stderr).toBe(0);
-    console.log('INGEST_RUNTIME_RECEIPT', JSON.stringify({ ...evidence, homeRemoved: true, dataDirRemoved: true, dbPortClosed: true }));
-  }, 185_000);
+    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  }, options.testTimeoutMs);
 });
