@@ -53,19 +53,19 @@
   ],
   "retainedArtifacts": [
     {
-      "path": "/home/marsh-office/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/result.json",
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/result.json",
       "sha256": "51bbb6b5a82f4f12b8c0054c21ec56a63bcb18ecee052ad1a28afd2c9be9e5e8"
     },
     {
-      "path": "/home/marsh-office/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/phases/prepare/verifier-source-receipt.json",
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/phases/prepare/verifier-source-receipt.json",
       "sha256": "78b35c2c7829651d794ebba64a91cbff5b6120bc7b6492e069059dcb1b0ab0ef"
     },
     {
-      "path": "/home/marsh-office/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/phases/assert/playwright/ongoing-work-native-collec-2c448-ogress-table-without-writes-chromium/real-goal-table-readback.json",
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/phases/assert/playwright/ongoing-work-native-collec-2c448-ogress-table-without-writes-chromium/real-goal-table-readback.json",
       "sha256": "f5f08fa74bc12ed14e6390e8d0f262875125a465f96258cf39e2b195456f7b46"
     },
     {
-      "path": "/home/marsh-office/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/phases/assert/playwright/ongoing-work-native-collec-2c448-ogress-table-without-writes-chromium/native-completed-runtime.json",
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/phases/assert/playwright/ongoing-work-native-collec-2c448-ogress-table-without-writes-chromium/native-completed-runtime.json",
       "sha256": "862f4ee287acd28c677b14f0326831960777fcc21440ac30ff03076203ea24f3"
     }
   ]
