@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assessRetainedStorageInterval } from './retention-interval-evidence';
+import { assessQualifiedDerivativeReceipts, assessRetainedStorageInterval } from './retention-interval-evidence';
 
 const GIB = 1024 ** 3;
 const generationId = 'v1-' + 'a'.repeat(64);
@@ -139,5 +139,122 @@ describe('retained storage interval assessment', () => {
     const result = assessRetainedStorageInterval(input);
     expect(result.intervalStatus).toBe('unknown');
     expect(new Set(result.coverage.population).size).toBe(result.coverage.population.length);
+  });
+});
+
+function derivativeFixture() {
+  return {
+    before: {
+      candidates: ['/bank/cache-a', '/bank/cache-b', '/bank/cache-c'].map((path) => ({
+        path, present: true, directory: true, sameDevice: true, physicalPathUnaliased: true, nestedMounts: [] as unknown[],
+      })),
+      sources: [{ bank: '/bank', sourcePresent: true }],
+      receipts: [{ path: '/bank/receipt.json', bytes: 10, sha256: 'a'.repeat(64), metadataStable: true }], issues: [] as unknown[],
+    },
+    reconciliation: { removedCandidates: 1, remainingCount: 2, remainingPaths: ['/bank/cache-b', '/bank/cache-c'], checkedReceipts: 1, receiptChanges: [] as unknown[] },
+    resumeBefore: { candidateCount: 2, checkedReceipts: 1, sourceMarkers: 1, sourceIdentities: { '/bank/source': [1, 2] }, availableBytesBefore: 30 },
+    resumeAfter: {
+      guardExit: 0, remainingCandidates: [] as string[], removedCandidateCount: 3, resumedCandidateCount: 2, checkedRetainedReceipts: 1,
+      receiptChanges: [] as unknown[], sourceIdentityChanges: [] as unknown[], markerChanges: [] as unknown[],
+      symlinkChanges: [] as unknown[], protectedD224ReceiptChanges: [] as unknown[],
+      availableBytesBefore: 30, availableBytesAfter: 50, originalAvailableBytesBefore: 10,
+      observedNetAvailableIncreaseBytes: 20, observedNetAvailableIncreaseSinceOriginalBytes: 40,
+    },
+    pathResults: [{ path: '/bank/cache-b', exit: 0 }, { path: '/bank/cache-c', exit: 0 }], resumeTerminalExit: 0,
+    audit: { originalRemovedPopulation: 1, originalAdmissionRows: 1, originalCompletionRows: 0, resumePopulation: 2, resumeCompletionRows: 2, resumeFailureRows: 0 },
+  };
+}
+const derivativeCheck = (input: unknown, id: string) => assessQualifiedDerivativeReceipts(input).checks.find((x) => x.id === id);
+
+describe('qualified derivative retained receipt assessment', () => {
+  it('checks the reconciled transaction while preserving all unmeasured acceptance requirements', () => {
+    const result = assessQualifiedDerivativeReceipts(derivativeFixture());
+    expect(result.receiptStatus).toBe('pass');
+    expect(result.observedNetAvailableIncreaseBytes).toBe(40);
+    expect(result.coverage.checked).toHaveLength(8);
+    expect(result.coverage.notChecked).toContain('original-per-path-completion-audit');
+    expect(result.coverage.notChecked).toContain('protected-payload-reread');
+    expect(result.coverage.notChecked).toContain('continuous-headroom');
+    expect([...result.coverage.checked, ...result.coverage.notChecked, ...result.coverage.notApplicable].sort()).toEqual([...result.coverage.population].sort());
+  });
+
+  it('refuses empty or duplicated populations instead of accepting vacuous preservation', () => {
+    const empty = derivativeFixture(); empty.before.receipts = [];
+    expect(assessQualifiedDerivativeReceipts(empty).receiptStatus).toBe('unknown');
+    const duplicate = derivativeFixture(); duplicate.before.candidates.push(duplicate.before.candidates[0]!);
+    expect(derivativeCheck(duplicate, 'qualified-population')?.status).toBe('fail');
+    const receipts = derivativeFixture(); receipts.before.receipts.push(receipts.before.receipts[0]!);
+    expect(derivativeCheck(receipts, 'retained-receipt-population')?.status).toBe('fail');
+  });
+
+  it('rejects nested mounts and unqualified device/alias witnesses', () => {
+    const input = derivativeFixture(); input.before.candidates[0]!.nestedMounts.push('/mounted');
+    expect(derivativeCheck(input, 'qualified-population')?.status).toBe('fail');
+    input.before.candidates[0]!.nestedMounts = []; input.before.candidates[0]!.sameDevice = false;
+    expect(derivativeCheck(input, 'qualified-population')?.status).toBe('fail');
+  });
+
+  it('rejects an unrelated remaining path even when the population counts agree', () => {
+    const input = derivativeFixture(); input.reconciliation.remainingPaths[0] = '/unrelated/cache';
+    expect(derivativeCheck(input, 'interruption-reconciliation')?.status).toBe('fail');
+  });
+
+  it('refuses a candidate containing protected source/receipt data or another candidate', () => {
+    for (const path of ['/bank', '/bank/source', '/bank/cache-b/nested', '/bank/receipt.json']) {
+      const input = derivativeFixture(); input.before.candidates[0]!.path = path;
+      expect(derivativeCheck(input, 'protected-path-boundaries')?.status).toBe('fail');
+    }
+    const alias = derivativeFixture(); alias.before.candidates[0]!.path = '/bank/../source';
+    expect(assessQualifiedDerivativeReceipts(alias).receiptStatus).toBe('unknown');
+  });
+
+  it('requires the exact remaining path set, not merely an equal result count', () => {
+    const input = derivativeFixture(); input.pathResults[0]!.path = input.pathResults[1]!.path;
+    expect(derivativeCheck(input, 'resume-path-completion')?.status).toBe('fail');
+  });
+
+  it.each(['path', 'terminal', 'survivor'] as const)('rejects %s failure despite an authored successful verdict', (failure) => {
+    const input = derivativeFixture(); Object.assign(input, { verdict: 'PASS', terminalCompletedExit0: true });
+    if (failure === 'path') input.pathResults[0]!.exit = 23;
+    if (failure === 'terminal') input.resumeTerminalExit = 143;
+    if (failure === 'survivor') input.resumeAfter.remainingCandidates.push('/bank/cache-c');
+    expect(derivativeCheck(input, 'resume-path-completion')?.status).toBe('fail');
+  });
+
+  it.each(['receiptChanges', 'sourceIdentityChanges', 'markerChanges', 'symlinkChanges', 'protectedD224ReceiptChanges'] as const)('detects recorded %s drift', (field) => {
+    const input = derivativeFixture(); input.resumeAfter[field].push('/changed');
+    expect(derivativeCheck(input, 'recorded-preservation-comparisons')?.status).toBe('fail');
+  });
+
+  it('refuses underchecked receipts or substituted source identities', () => {
+    const input = derivativeFixture(); input.resumeAfter.checkedRetainedReceipts = 0;
+    expect(derivativeCheck(input, 'recorded-preservation-comparisons')?.status).toBe('fail');
+    input.resumeAfter.checkedRetainedReceipts = 1;
+    Reflect.deleteProperty(input.resumeBefore.sourceIdentities, '/bank/source');
+    Object.assign(input.resumeBefore.sourceIdentities, { '/other/source': [1, 2] });
+    expect(derivativeCheck(input, 'recorded-preservation-comparisons')?.status).toBe('fail');
+  });
+
+  it('distinguishes admission from completion and rejects missing resumed audit rows', () => {
+    const input = derivativeFixture(); input.audit.resumeCompletionRows = 0;
+    expect(derivativeCheck(input, 'resume-deletion-audit')?.status).toBe('fail');
+    expect(derivativeCheck(input, 'original-per-path-completion-audit')?.status).toBe('unknown');
+  });
+
+  it('recomputes net change, accepts a measured decline, and never infers exclusive reclaimed bytes', () => {
+    const input = derivativeFixture(); input.resumeAfter.observedNetAvailableIncreaseSinceOriginalBytes = 999;
+    expect(derivativeCheck(input, 'observed-net-available-bytes')?.status).toBe('fail');
+    Object.assign(input.resumeAfter, { availableBytesAfter: 5, observedNetAvailableIncreaseBytes: -25, observedNetAvailableIncreaseSinceOriginalBytes: -5 });
+    expect(derivativeCheck(input, 'observed-net-available-bytes')?.status).toBe('pass');
+    expect(derivativeCheck(input, 'exclusive-reclaim-bytes')?.status).toBe('unknown');
+  });
+
+  it('keeps missing native comparison fields and unsafe counters unknown', () => {
+    const input = derivativeFixture(); Reflect.deleteProperty(input.resumeAfter, 'receiptChanges');
+    expect(assessQualifiedDerivativeReceipts(input).receiptStatus).toBe('unknown');
+    const unsafe = derivativeFixture(); unsafe.resumeAfter.availableBytesAfter = Number.MAX_SAFE_INTEGER + 1;
+    expect(assessQualifiedDerivativeReceipts(unsafe).observedNetAvailableIncreaseBytes).toBeNull();
+    const missingIdentity = derivativeFixture(); Object.assign(missingIdentity.resumeBefore.sourceIdentities, { '/bank/source': null });
+    expect(assessQualifiedDerivativeReceipts(missingIdentity).receiptStatus).toBe('unknown');
   });
 });

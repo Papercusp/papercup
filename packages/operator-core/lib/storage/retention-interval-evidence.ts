@@ -177,3 +177,134 @@ export function assessRetainedStorageInterval(input: unknown): RetentionInterval
   add('final-candidate-demand', 'unknown', 'No applicable final native candidate admission-demand receipt is consumed by this interval assessor.');
   return finish(span);
 }
+
+const retainedPath = z.string().min(1).max(2048).regex(/^\/(?:[^/]+\/)*[^/]+$/)
+  .refine((path) => path.split('/').every((part) => part !== '.' && part !== '..'), 'Require a normalized absolute retained path.');
+const changes = z.array(z.unknown()).max(1024);
+const count = bytes.max(1024);
+const derivativeReceiptSchema = z.object({
+  before: z.object({
+    candidates: z.array(z.object({
+      path: retainedPath, present: z.boolean(), directory: z.boolean(), sameDevice: z.boolean(),
+      physicalPathUnaliased: z.boolean(), nestedMounts: changes,
+    }).passthrough()).min(1).max(256),
+    sources: z.array(z.object({ bank: retainedPath, sourcePresent: z.boolean() }).passthrough()).min(1).max(256),
+    receipts: z.array(z.object({ path: retainedPath, bytes, sha256, metadataStable: z.boolean() }).passthrough()).min(1).max(1024),
+    issues: changes,
+  }).passthrough(),
+  reconciliation: z.object({
+    removedCandidates: count, remainingCount: count, remainingPaths: z.array(retainedPath).max(256),
+    checkedReceipts: count, receiptChanges: changes,
+  }).passthrough(),
+  resumeBefore: z.object({
+    candidateCount: count, checkedReceipts: count, sourceMarkers: count,
+    sourceIdentities: z.record(retainedPath, z.tuple([bytes, bytes.positive()])), availableBytesBefore: bytes,
+  }).passthrough(),
+  resumeAfter: z.object({
+    guardExit: z.number().int(), remainingCandidates: z.array(retainedPath).max(256),
+    removedCandidateCount: count, resumedCandidateCount: count, checkedRetainedReceipts: count,
+    receiptChanges: changes, sourceIdentityChanges: changes, markerChanges: changes,
+    symlinkChanges: changes, protectedD224ReceiptChanges: changes,
+    availableBytesBefore: bytes, availableBytesAfter: bytes, originalAvailableBytesBefore: bytes,
+    observedNetAvailableIncreaseBytes: z.number().int().safe(),
+    observedNetAvailableIncreaseSinceOriginalBytes: z.number().int().safe(),
+  }).passthrough(),
+  pathResults: z.array(z.object({ path: retainedPath, exit: z.number().int() })).max(256),
+  resumeTerminalExit: z.number().int(),
+  audit: z.object({
+    originalRemovedPopulation: count, originalAdmissionRows: count, originalCompletionRows: count,
+    resumePopulation: count, resumeCompletionRows: count, resumeFailureRows: count,
+  }).passthrough(),
+});
+
+export interface DerivativeReceiptAssessment {
+  schemaVersion: 1;
+  kind: 'qualified-derivative-receipt-assessment';
+  receiptStatus: 'pass' | 'fail' | 'unknown';
+  observedNetAvailableIncreaseBytes: number | null;
+  checks: RetentionEvidenceCheck[];
+  coverage: RetentionIntervalAssessment['coverage'];
+  scope: string[];
+}
+
+/** Assess saved transaction records, preserving gaps the original sampler did not measure. */
+export function assessQualifiedDerivativeReceipts(input: unknown): DerivativeReceiptAssessment {
+  const checks: RetentionEvidenceCheck[] = [];
+  const add = (id: string, pass: boolean, detail: string) => checks.push({ id, status: pass ? 'pass' : 'fail', detail });
+  const finish = (net: number | null): DerivativeReceiptAssessment => {
+    const assessed = checks.filter((x) => x.status !== 'unknown');
+    return {
+      schemaVersion: 1, kind: 'qualified-derivative-receipt-assessment',
+      receiptStatus: assessed.some((x) => x.status === 'fail') ? 'fail' : assessed.length ? 'pass' : 'unknown',
+      observedNetAvailableIncreaseBytes: net, checks,
+      coverage: {
+        population: checks.map((x) => x.id), checked: assessed.map((x) => x.id),
+        notChecked: checks.filter((x) => x.status === 'unknown').map((x) => x.id), notApplicable: [],
+        residue: checks.filter((x) => x.status !== 'pass').map((x) => `${x.id}: ${x.detail}`),
+      },
+      scope: [
+        'Consistency assessment of saved qualification, reconciliation, terminal, per-path and audit records; no host probe or mutation.',
+        'Preservation checks assess the sampler’s recorded comparisons, not an independent reread of protected payload bytes.',
+        'Available-byte subtraction is an observed net change; concurrent writers and physical sharing prevent exclusive reclaim attribution.',
+        'No continuous headroom, candidate admission, recorder/journal recovery or final shipment certification.',
+      ],
+    };
+  };
+  const parsed = derivativeReceiptSchema.safeParse(input);
+  if (!parsed.success) {
+    checks.push({ id: 'receipt-shape', status: 'unknown', detail: parsed.error.issues.slice(0, 8).map((x) => `${x.path.join('.')}: ${x.message}`).join('; ') });
+    return finish(null);
+  }
+  const { before, reconciliation: r, resumeBefore: b, resumeAfter: a, pathResults, resumeTerminalExit, audit } = parsed.data;
+  const candidatePaths = before.candidates.map((x) => x.path);
+  const sourcePaths = before.sources.map((x) => `${x.bank}/source`);
+  const unique = (xs: string[]) => new Set(xs).size === xs.length;
+  const sameSet = (xs: string[], ys: string[]) => unique(xs) && unique(ys) && xs.length === ys.length && xs.every((x) => ys.includes(x));
+  add('qualified-population', unique(candidatePaths) && before.issues.length === 0 && before.candidates.every((x) =>
+    x.present && x.directory && x.sameDevice && x.physicalPathUnaliased && x.nestedMounts.length === 0),
+  'Require a nonempty unique candidate population and each recorded directory/device/alias/mount qualification.');
+  add('retained-receipt-population', unique(before.receipts.map((x) => x.path)) && before.receipts.every((x) => x.metadataStable),
+    'Require unique retained receipt paths, valid hashes/sizes and the recorded metadata-stability witnesses.');
+  const contains = (parent: string, child: string) => parent === child || child.startsWith(`${parent}/`);
+  const protectedPaths = [...sourcePaths, ...before.receipts.map((x) => x.path)];
+  add('protected-path-boundaries', candidatePaths.every((path, index) =>
+    !protectedPaths.some((protectedPath) => contains(path, protectedPath) || contains(protectedPath, path)) &&
+    !candidatePaths.some((other, otherIndex) => index !== otherIndex && (contains(path, other) || contains(other, path)))),
+  'Reject candidate overlap with captured source/receipt paths and overlapping candidate subtrees.');
+  add('interruption-reconciliation', unique(r.remainingPaths) && r.remainingCount === r.remainingPaths.length &&
+    r.remainingPaths.every((x) => candidatePaths.includes(x)) && r.removedCandidates + r.remainingCount === candidatePaths.length &&
+    r.checkedReceipts === before.receipts.length && r.receiptChanges.length === 0,
+  'Partition the original population into already absent and still present paths; never repeat the interrupted attempt blindly.');
+  add('resume-path-completion', sameSet(pathResults.map((x) => x.path), r.remainingPaths) && pathResults.every((x) => x.exit === 0) &&
+    b.candidateCount === r.remainingCount && a.resumedCandidateCount === r.remainingCount &&
+    a.removedCandidateCount === candidatePaths.length && a.remainingCandidates.length === 0 && a.guardExit === 0 && resumeTerminalExit === 0,
+  'Require exactly one successful per-path result for each remaining path plus recorded absence and terminal success.');
+  add('recorded-preservation-comparisons', unique(sourcePaths) && before.sources.every((x) => x.sourcePresent) &&
+    sameSet(Object.keys(b.sourceIdentities), sourcePaths) && b.sourceMarkers === sourcePaths.length &&
+    b.checkedReceipts === before.receipts.length && a.checkedRetainedReceipts === before.receipts.length &&
+    [a.receiptChanges, a.sourceIdentityChanges, a.markerChanges, a.symlinkChanges, a.protectedD224ReceiptChanges].every((x) => x.length === 0),
+  'Verify population coverage and empty recorded drift sets for receipts, source identities, markers, links and protected nomination receipts.');
+  add('resume-deletion-audit', audit.originalRemovedPopulation === r.removedCandidates &&
+    audit.originalAdmissionRows === r.removedCandidates && audit.originalCompletionRows <= r.removedCandidates &&
+    audit.resumePopulation === r.remainingCount && audit.resumeCompletionRows === pathResults.length && audit.resumeFailureRows === 0,
+  'Reconcile the recorded original and resumed audit counters; original admission rows are not invented completion receipts.');
+  const resumeNet = a.availableBytesAfter - b.availableBytesBefore;
+  const originalNet = a.availableBytesAfter - a.originalAvailableBytesBefore;
+  add('observed-net-available-bytes', a.availableBytesBefore === b.availableBytesBefore &&
+    a.observedNetAvailableIncreaseBytes === resumeNet && a.observedNetAvailableIncreaseSinceOriginalBytes === originalNet,
+  'Recompute both net changes from retained available-byte counters, without exclusive causality or sustained-capacity claims.');
+  if (audit.originalCompletionRows !== r.removedCandidates) checks.push({
+    id: 'original-per-path-completion-audit', status: 'unknown',
+    detail: 'The original interrupted removal has no complete per-path terminal audit; later recorded absence is distinct evidence.',
+  });
+  for (const [id, detail] of [
+    ['protected-payload-reread', 'Recorded unchanged comparisons do not establish an independent full protected-payload reread.'],
+    ['universal-process-no-use', 'Incomplete process visibility cannot establish universal absence of live use.'],
+    ['exclusive-reclaim-bytes', 'Concurrent allocation and physical sharing were not isolated.'],
+    ['continuous-headroom', 'Discrete available-byte records do not establish capacity between samples.'],
+    ['final-candidate-demand', 'No applicable final native candidate admission-demand receipt is assessed.'],
+    ['recorder-journal-recovery', 'The cleanup receipts do not assess frontend recorder or native journal recovery.'],
+    ['final-shipment', 'No independently supplied final shipment receipt is assessed.'],
+  ] as const) checks.push({ id, status: 'unknown', detail });
+  return finish(originalNet);
+}
