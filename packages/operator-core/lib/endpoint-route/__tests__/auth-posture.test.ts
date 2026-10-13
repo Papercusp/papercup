@@ -230,6 +230,12 @@ const RULES: ReadonlyArray<{
       // Plans cleanup uses the same cookie-less desktop-webview POST path and
       // the same requireAllowedOriginOr403 CSRF backstop as Inbox bulk resolve.
       { method: 'POST', path: '/admin/plan-cleanup', auth: VTL },
+      // Inbox triage + the standing bulk automation policy (Settings > Autonomy,
+      // the Plans pane) post from that same cookie-less desktop webview. VT 403'd
+      // both in the shipping shell (webview-fetch-auth.test.ts, WI-6554700010009809);
+      // the route's own model is "same posture as admin/coord", which is VTL.
+      // dispatchWrite applies requireAllowedOriginOr403 before proxying any verb.
+      { method: 'POST', path: '/admin/inbox/:verb', auth: VTL },
       // Same cookie-less desktop-webview HTTP-fallback path (EI-338): the
       // gateway rate/headroom stats view admits unverified-loopback (see the
       // route's own auth declaration in admin/inference-gateway-stats.ts).

@@ -28,6 +28,7 @@ import { createServer } from 'node:net';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import ts from 'typescript';
+import { DEFAULT_UNIT_TEST_TIMEOUT_MS } from '@papercusp/test-config/vitest-config';
 import { filesDependingOnChangedModules, diagnosticFilesDependingOnChangedTypes, checkedSetFor } from '../../../scripts/lib/tsc-service.mjs';
 
 it('includes executable .mts scripts in the root scripts TypeScript project', () => {
@@ -4775,6 +4776,8 @@ describe('actual program coverage of scoped typechecks (EI-25574814068391872)', 
   const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
   const gateUrl = pathToFileURL(join(repoRoot, 'scripts/lib/tsc-baseline-gate.mjs')).href;
   const exec = promisify(execFile);
+  const unitTestTimeoutMs = Number(process.env.VITEST_UNIT_TIMEOUT_MS) || DEFAULT_UNIT_TEST_TIMEOUT_MS;
+  const childFinalizationHeadroomMs = 5_000;
 
   async function runCoverageGate(files: string[], service: boolean) {
     const root = mkdtempSync(join(tmpdir(), 'tsc-gate-enrollment-'));
@@ -4814,7 +4817,12 @@ describe('actual program coverage of scoped typechecks (EI-25574814068391872)', 
         server.listen(socketPath, resolve);
       });
       const options = {
-        cwd: root, encoding: 'utf-8' as const, timeout: 15_000,
+        cwd: root,
+        encoding: 'utf-8' as const,
+        // This child runs a real tsc compile. Keep its deadline inside the shared
+        // unit-test budget, leaving time for assertions and fixture cleanup. The
+        // old local 15s cap redlined the full stateful lane while focused cases passed.
+        timeout: Math.max(1_000, unitTestTimeoutMs - childFinalizationHeadroomMs),
         env: { ...process.env, PAPERCUSP_TSC_SERVICE: service ? '1' : '0',
           PAPERCUSP_TSC_SERVICE_SOCKET: socketPath, PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE: '' },
       };

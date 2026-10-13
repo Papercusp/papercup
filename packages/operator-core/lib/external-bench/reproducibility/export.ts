@@ -14,6 +14,7 @@ import { buildRunReports, getRollout, getPrereg, listRunResults } from './store'
 import { listFleetRunsFull, getCoordTrace } from './fleet';
 import type { DbScope } from './db';
 import { buildCampaignBundle, campaignEntryFromRollout, writeCampaignBundle, type LabelCorrectionInput } from './campaign-bundle';
+import { classifyPreregisteredFreshness } from './freshness';
 
 /**
  * P-022 / D-009: write a run as a DATED campaign bundle (every task's trace pointer + scorer output, with a
@@ -54,7 +55,9 @@ export interface ExportResult {
  */
 export async function exportRunBundle(
   runId: string,
-  opts: { repoRoot?: string } & DbScope = {},
+  // compareTo: the study this run's evidence would be pooled with. The manifest then records whether the
+  // run's frozen protocol still matches it (P-006 evidence freshness); drift makes it stale, not current.
+  opts: { repoRoot?: string; compareTo?: { runId: string } } & DbScope = {},
 ): Promise<ExportResult> {
   const repoRoot = opts.repoRoot ?? REPO_ROOT;
   const scope: DbScope = { sql: opts.sql, workspaceId: opts.workspaceId };
@@ -100,6 +103,11 @@ export async function exportRunBundle(
   }
 
   const prereg = await getPrereg({ runId }, scope);
+  const comparison = opts.compareTo ? await getPrereg({ runId: opts.compareTo.runId }, scope) : null;
+  const freshness = opts.compareTo
+    ? { comparedToRunId: opts.compareTo.runId, comparedToPreregHash: comparison?.preregHash ?? null,
+        ...classifyPreregisteredFreshness(prereg?.config, comparison?.config) }
+    : null;
   const manifestRel = path.join('benchmarks', 'runs', runId, 'manifest.json');
   const manifestAbs = path.join(repoRoot, manifestRel);
   const manifest = {
@@ -107,6 +115,7 @@ export async function exportRunBundle(
     preregHash: prereg?.preregHash ?? null,
     preregFile: prereg?.filePath ?? null,
     preregistration: prereg,
+    freshness,
     reports: buildRunReports(results, prereg),
     suites: [...suites].sort(),
     arms: [...arms].sort(),
