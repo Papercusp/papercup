@@ -52,11 +52,37 @@ describe('psu launcher in hosted-customer mode (D-002)', () => {
     afterEach(() => {
       if (saved === undefined) delete process.env.PAPERCUSP_PSU_HOSTED_CUSTOMER;
       else process.env.PAPERCUSP_PSU_HOSTED_CUSTOMER = saved;
+      select.mockReset();
+      vi.restoreAllMocks();
     });
+
+    function stubIdentityOptions() {
+      return vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(new Response(JSON.stringify({ identities: [], unreadable: [] }), { status: 200 }));
+    }
 
     it('launches as plain su without asking for an identity or calling the operator', async () => {
       process.env.PAPERCUSP_PSU_HOSTED_CUSTOMER = '1';
+      const fetchSpy = stubIdentityOptions();
       await expect(pickIdentity('ws', 'h')).resolves.toEqual({ stack: [], selectedIdentityRevision: null });
+      expect(select).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('outside hosted-customer mode the same launch shows the identity picker (positive control)', async () => {
+      delete process.env.PAPERCUSP_PSU_HOSTED_CUSTOMER;
+      const fetchSpy = stubIdentityOptions();
+      select.mockResolvedValueOnce('su');
+      await expect(pickIdentity('ws', 'h')).resolves.toEqual({ stack: [], selectedIdentityRevision: null });
+      expect(select).toHaveBeenCalledTimes(1);
+      expect(select).toHaveBeenCalledWith(expect.objectContaining({ message: 'Identity', default: 'su' }));
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const requested = new URL(String(fetchSpy.mock.calls[0]?.[0]));
+      expect(requested.pathname).toBe('/api/agent-mcp/console/bootstrap-su/options');
+      expect(requested.searchParams.get('identities')).toBe('1');
+      expect(requested.searchParams.get('workspace')).toBe('ws');
+      expect(requested.searchParams.get('harness')).toBe('h');
     });
 
     describe('fleet', () => {

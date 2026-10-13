@@ -5,7 +5,7 @@ export type IsolatedHostedTestUser = {
   sessionId: string;
   organizationId: string;
   workspaceId?: string;
-  cookie(origin: string): { name: string; value: string; url: string; secure?: boolean; httpOnly?: boolean; sameSite?: string };
+  cookie(origin: string): { name: string; value: string; url: string; secure?: boolean; httpOnly?: boolean; sameSite?: 'Strict' | 'Lax' | 'None' };
   cleanup(reason: string): Promise<void>;
 };
 
@@ -26,6 +26,7 @@ const worker = String.raw`
     return { ...m.default, ...m };
   };
   let fixture, kit, user;
+  const progress = (id, stage) => process.send({ id, stage });
   const safeError = error => ({
     name: error?.name ?? 'Error',
     message: String(error?.message ?? error).replace(/sk_(?:test|live)_[A-Za-z0-9]+/g, '[redacted]'),
@@ -38,14 +39,17 @@ const worker = String.raw`
       try {
         let value;
         if (op === 'preflight') {
+          progress(id, 'fixture-module-import');
           fixture = await sourceImport(resolve('e2e/hosted-test-user.ts'));
           const workspace = fixture.isolatedHostedWorkspaceContext(process.env);
           const { core } = fixture.hostedTestSourceRoots(process.cwd());
           // These imports previously happened after upstream account creation.
           // Validate their real runtime closure before permitting admission.
-          await sourceImport(join(core, 'lib/workspace-host/observability-store.ts'));
-          await sourceImport(join(core, 'lib/auth/hosted/workspace-admission.ts'));
-          await sourceImport(join(core, 'lib/auth/hosted/workspace-admission-dependencies.ts'));
+          for (const path of ['lib/workspace-host/observability-store.ts',
+            'lib/auth/hosted/workspace-admission.ts', 'lib/auth/hosted/workspace-admission-dependencies.ts']) {
+            progress(id, path);
+            await sourceImport(join(core, path));
+          }
           value = { workspace };
         } else if (op === 'load') {
           kit = await fixture.loadHostedTestUserKit(process.cwd());
@@ -83,6 +87,7 @@ export async function loadIsolatedHostedTestUserKit(options: {
   let spawnFailure: Error | undefined;
   child.on('error', error => { spawnFailure = error; });
   let closed = false;
+  const startupDeadline = Date.now() + (options.timeoutMs ?? 60_000);
   async function stop() {
     if (closed) return;
     closed = true;
@@ -91,7 +96,8 @@ export async function loadIsolatedHostedTestUserKit(options: {
     const timer = setTimeout(() => child.kill('SIGKILL'), 1_000);
     try { await exited; } finally { clearTimeout(timer); }
   }
-  function restoreError(value: { name: string; message: string; errors?: typeof value[] }): Error {
+  type RemoteError = { name: string; message: string; errors?: RemoteError[] };
+  function restoreError(value: RemoteError): Error {
     if (value.errors) return new AggregateError(value.errors.map(restoreError), value.message);
     return Object.assign(new Error(value.message), { name: value.name });
   }
@@ -108,12 +114,17 @@ export async function loadIsolatedHostedTestUserKit(options: {
         child.off('message', onMessage); child.off('exit', onExit); child.off('error', onError);
         error ? reject(error) : ready(value);
       };
+      let stage = op;
       const onMessage = (message: any) => {
-        if (message.id === id) finish(message.error ? restoreError(message.error) : undefined, message.value);
+        if (message.id !== id) return;
+        if (message.stage) stage = message.stage;
+        else finish(message.error ? restoreError(message.error) : undefined, message.value);
       };
       const onExit = (code: number | null) => finish(new Error(`Hosted TEST fixture exited before ${op}: ${code}`));
       const onError = (error: Error) => finish(error);
-      const timer = setTimeout(() => finish(new Error(`Hosted TEST fixture ${op} timed out`)), options.timeoutMs ?? 120_000);
+      const timeout = op === 'preflight' || op === 'load'
+        ? Math.max(1, startupDeadline - Date.now()) : options.timeoutMs ?? 120_000;
+      const timer = setTimeout(() => finish(new Error(`Hosted TEST fixture ${op} timed out at ${stage}`)), timeout);
       child.on('message', onMessage); child.once('exit', onExit); child.once('error', onError);
       child.send({ id, op, ...payload }, error => { if (error) finish(error); });
     });

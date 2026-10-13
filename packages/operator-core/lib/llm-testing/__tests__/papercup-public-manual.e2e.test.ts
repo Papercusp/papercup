@@ -1043,7 +1043,9 @@ describe('public manual Portal fixture preparation', () => {
         // A const handle keeps the non-undefined type inside the phase closures below.
         const httpApi = await phase('http-client-preparation', () => request.newContext({ ignoreHTTPSErrors: true, timeout: 5000 }));
         api = httpApi;
-        const kit = await phase('frozen-hosted-kit-import', () => modules!.loadHostedTestUserKit(portalRoot), 10_000);
+        // Measured candidate cold imports take about 20s; the child owns a
+        // bounded startup and is reaped before this phase deadline can fire.
+        const kit = await phase('frozen-hosted-kit-import', () => modules!.loadHostedTestUserKit(portalRoot), 65_000);
         const journeyStartedAt = new Date();
         const document = await phase('compiled-document', () => httpApi.get(origin));
         expect(document.status()).toBe(200);
@@ -1201,7 +1203,7 @@ describe('public manual Portal fixture preparation', () => {
         expect(resolveServedRelease).toBeTypeOf('function');
         // Resolves TEST credentials and probes the control plane, but creates
         // no account, browser, host, or model request.
-        const kit = await phase('frozen-hosted-kit-import', () => loadHostedTestUserKit(portalRoot));
+        const kit = await phase('frozen-hosted-kit-import', () => loadHostedTestUserKit(portalRoot), 65_000);
         expect(kit.create).toBeTypeOf('function');
       } finally {
         if (originalIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;

@@ -30,6 +30,28 @@ async function mountGuide() {
   return render(createElement(Fixture));
 }
 describe('Guide uses the existing PostHog consent boundary', () => {
+  it('routes actual guide and help events through the hosted consent boundary while retaining local consent reads', async () => {
+    const { hostedBrowserApiMarker } = await import('../hosted-browser-api');
+    const { createTutorialAnalytics, recordTutorialHelpRequest } = await import('./cloud-tutorial-analytics');
+    window.__PAPERCUSP_HOSTED_BROWSER__ = hostedBrowserApiMarker('control');
+    const analytics = createTutorialAnalytics();
+    try {
+      analytics.update(createTutorialState(scope));
+      recordTutorialHelpRequest('connection', 'ready');
+      await act(async () => { await Promise.resolve(); });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(sdk.init).not.toHaveBeenCalled();
+      expect(sdk.capture).not.toHaveBeenCalled();
+
+      // The same default sink must still check consent for a desktop host.
+      delete window.__PAPERCUSP_HOSTED_BROWSER__;
+      analytics.action('check_again', 'connection');
+      await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/desktop/telemetry-config', { cache: 'no-store' }));
+    } finally {
+      delete window.__PAPERCUSP_HOSTED_BROWSER__;
+    }
+  });
+
   it('measures saved full-product guide progress only through the existing consent boundary', async () => {
     const { AccountProductTutorial } = await import('@papercusp/operator-ui/onboarding');
     const account = { tenantId: 'private-tenant', userId: 'private-user', sessionId: 'private-session', workspaceId: null };
