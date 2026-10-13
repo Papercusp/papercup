@@ -77,6 +77,8 @@ sys.path.insert(0, hook_dir)
 from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
 from mcp_response import (prepare_lock_operation, write_lock_operation,
                           lock_operation_arguments, settle_lock_operation, with_native_session)
+from mcp_response import (origin_operation_protocol_qualified,  # noqa: E402
+                          forget_origin_operation_protocol)
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
@@ -1316,16 +1318,25 @@ if len(repo_domains) == 1:
 
 operation_path = (_batch_path('.operation.json') if batch_info else
                   os.path.join(cache_dir, tool_use_id + '.operation.json'))
-try:
-    operation_record = prepare_lock_operation(
-        operation_path, owner, native_session_id,
-        batch_info['batch_id'] if batch_info else tool_use_id, lock_arguments)
-except Exception as exc:
-    mark_error('operation-persist', exc)
-    deny('locks: could not persist the native edit operation; retry after inspecting hook health.')
-lock_arguments = lock_operation_arguments(operation_record)
-if operation_record.get('terminal'):
-    deny('locks: this native edit operation already finished; issue a new native tool call.')
+# D-003/D-004(4): use the operation protocol only at an origin whose locks
+# schemas declare hook_operation (read-only, cached per origin). An unqualified
+# origin gets the legacy acquire and no operation record. An existing record is
+# never stripped, whatever the origin reads now.
+operation_record = None
+if os.path.exists(operation_path) or origin_operation_protocol_qualified(
+        cache_dir, operator_url, token, owner):
+    try:
+        operation_record = prepare_lock_operation(
+            operation_path, owner, native_session_id,
+            batch_info['batch_id'] if batch_info else tool_use_id, lock_arguments)
+    except Exception as exc:
+        mark_error('operation-persist', exc)
+        deny('locks: could not persist the native edit operation; retry after inspecting hook health.')
+    lock_arguments = lock_operation_arguments(operation_record)
+    if operation_record.get('terminal'):
+        deny('locks: this native edit operation already finished; issue a new native tool call.')
+else:
+    operation_path = None
 
 
 def _make_tool_request(name, arguments):
@@ -1832,8 +1843,8 @@ def _grant(granted):
     allow()
 
 
-def _batch_deny(reason):
-    if globals().get('operation_record'):
+def _batch_deny(reason, settle=True):
+    if settle and globals().get('operation_record'):
         def cancel_call(name, arguments):
             value, error, phase, exc = _best_effort_tool(name, arguments)
             return value, exc or error or (None if phase == 'ok' else phase)
@@ -1918,7 +1929,7 @@ _sweep_orphaned_claims()
 request = req
 inner = _locks_acquire_once(request)
 _batch_allow_fail_open(inner)
-if inner.get('reason') == 'operation_authority_required':
+if operation_record is not None and inner.get('reason') == 'operation_authority_required':
     authority = inner.get('operation_authority')
     if not isinstance(authority, str) or not authority:
         _batch_deny('locks: operation authority preparation was incomplete.')
@@ -1931,11 +1942,19 @@ if inner.get('reason') == 'operation_authority_required':
     request = _make_request(lock_operation_arguments(operation_record))
     inner = _locks_acquire_once(request)
     _batch_allow_fail_open(inner)
-if inner.get('ok') is True and (not operation_record['operation'].get('authority')
+if operation_record is not None and inner.get('ok') is True and (not operation_record['operation'].get('authority')
         or inner.get('operation_id') != operation_record['operation']['id']):
     _batch_deny('locks: running operator did not confirm the native operation protocol; no legacy acquire retry is safe.')
 if inner.get('_hook_compatibility_error'):
-    _batch_deny('locks: running operator rejected the operation scope; retry after the maintained protocol is available.')
+    if operation_record is not None:
+        # A qualified origin still rejected the operation scope: never
+        # downgrade this operation (D-003); re-qualify the origin next time.
+        # The rejection is argument validation, so the authority admitted
+        # nothing: do not settle, which would send a second acquire to an
+        # origin that just refused the scope.
+        forget_origin_operation_protocol(cache_dir, operator_url)
+        _batch_deny('locks: running operator rejected the operation scope; retry after the maintained protocol is available.',
+                    settle=False)
     if req_without_coordination_domain is None:
         mark_error('compatibility', inner.get('_detail', 'coordination_domain rejected'))
         if batch_info:

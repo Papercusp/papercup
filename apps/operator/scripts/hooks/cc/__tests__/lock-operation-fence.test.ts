@@ -17,6 +17,7 @@ let grants: Set<string>, explicit: Set<string>, proofs: Map<string, any>;
 let loseAcquire: boolean, unknownFinish: boolean, legacy: boolean;
 let lateAcquire: (() => void) | undefined;
 let persistedBeforeHttp: boolean;
+let schemaQualified: boolean, rejectOperation: boolean, listRequests: string[];
 
 beforeEach(async () => {
   root = fs.mkdtempSync(join(os.tmpdir(), 'operation-hook-'));
@@ -30,14 +31,33 @@ beforeEach(async () => {
   requests = []; mutations = new Map(); grants = new Set(); explicit = new Set(); proofs = new Map();
   loseAcquire = false; unknownFinish = false; legacy = false; lateAcquire = undefined;
   persistedBeforeHttp = true;
+  schemaQualified = true; rejectOperation = false; listRequests = [];
   server = createServer((req, res) => {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
-      const { name, arguments: args } = JSON.parse(body).params;
+      const message = JSON.parse(body);
+      if (message.method === 'tools/list') {
+        listRequests.push(req.url ?? '');
+        const tools = ['locks:acquire', 'locks:release', 'locks:cancel_wait'].map(tool => ({ name: tool,
+          inputSchema: { type: 'object', additionalProperties: false,
+            properties: schemaQualified ? { paths: {}, hook_operation: {} } : { paths: {} } } }));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools } }));
+        return;
+      }
+      const { name, arguments: args } = message.params;
       requests.push({ name, args, url: req.url ?? '' });
       const op = args.hook_operation;
-      let result: any = { ok: true };
+      let result: any = name === 'locks:acquire' && !op
+        ? { ok: true, lock_id: 'legacy-lock', held: args.paths, newly_held: args.paths }
+        : { ok: true };
+      if (op && rejectOperation) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32602,
+          message: "invalid_args: unrecognized key 'hook_operation' beside coordination_domain" } }));
+        return;
+      }
       let empty = false;
       if (op) {
         const records = fs.readdirSync(cache).filter(p => p.endsWith('.operation.json'))
@@ -95,7 +115,7 @@ function payload(id = 'edit-one', paths = ['sub/one.ts']) {
     tool_input: `*** Begin Patch\n${paths.map(p => `*** Update File: ${join(repo, p)}\n@@\n-a\n+b`).join('\n')}\n*** End Patch` };
 }
 
-async function hook(file: string, input: object) {
+async function hook(file: string, input: object, expectOperation = true) {
   const result = await runHookProcess('bash', [join(hooks, file)], {
     input: JSON.stringify(input), env: {
       ...process.env, HOME: home, PAPERCUSP_LOCKS_CACHE_DIR: cache, PAPERCUSP_WORKSPACE_ROOT: ws,
@@ -106,7 +126,7 @@ async function hook(file: string, input: object) {
   });
   expect(result.status).toBe(0);
   expect(result.stderr).not.toContain('Traceback');
-  if (file === 'pretooluse-locks-acquire.sh' && !result.stdout.trim()) {
+  if (expectOperation && file === 'pretooluse-locks-acquire.sh' && !result.stdout.trim()) {
     // Detect a skipped guard path at the harness boundary, before a case can
     // mistake no acquire for successful recovery.
     expect(fs.readdirSync(cache).some(p => p.endsWith('.operation.json'))).toBe(true);
@@ -146,6 +166,52 @@ function batchResults(failed = false) {
 }
 
 describe('native hook operation fence', () => {
+  const protocolCache = () => fs.readdirSync(cache).filter(p => p.startsWith('operation-protocol-'));
+  const acquires = () => requests.filter(r => r.name === 'locks:acquire');
+
+  it('an unqualified origin gets the legacy acquire, no operation record, and a cached verdict', async () => {
+    schemaQualified = false;
+    const first = await hook('pretooluse-locks-acquire.sh', payload('edit-legacy'), false);
+    expect(first.stdout.trim()).toBe('');
+    expect(fs.existsSync(join(cache, 'edit-legacy.operation.json'))).toBe(false);
+    expect(acquires()).toHaveLength(1);
+    expect(acquires()[0].args.hook_operation).toBeUndefined();
+    expect(listRequests).toHaveLength(1);
+    expect(listRequests[0]).toContain('tools=locks');
+    const [verdictFile] = protocolCache();
+    const verdict = JSON.parse(fs.readFileSync(join(cache, verdictFile), 'utf8'));
+    expect(verdict.qualified).toBe(false);
+    await hook('pretooluse-locks-acquire.sh', payload('edit-legacy-2', ['sub/two.ts']), false);
+    expect(listRequests).toHaveLength(1);
+    fs.writeFileSync(join(cache, verdictFile), JSON.stringify({ ...verdict, checked_at: verdict.checked_at - 61 }));
+    schemaQualified = true;
+    await hook('pretooluse-locks-acquire.sh', payload('edit-three', ['sub/three.ts']));
+    expect(listRequests).toHaveLength(2);
+    expect(acquires().at(-1)!.args.hook_operation.id).toBe(record('edit-three').operation.id);
+  });
+
+  it('an existing operation record is never stripped when the origin later reads unqualified', async () => {
+    await hook('pretooluse-locks-acquire.sh', payload());
+    const id = record().operation.id;
+    schemaQualified = false;
+    for (const name of protocolCache()) fs.rmSync(join(cache, name));
+    await hook('pretooluse-locks-acquire.sh', payload());
+    expect(listRequests).toHaveLength(1);
+    expect(acquires().length).toBeGreaterThanOrEqual(2);
+    expect(acquires().every(r => r.args.hook_operation?.id === id)).toBe(true);
+  });
+
+  it('an origin that rejects the operation scope denies the edit and forgets its qualification', async () => {
+    rejectOperation = true;
+    const result = await hook('pretooluse-locks-acquire.sh', payload());
+    const decision = JSON.parse(result.stdout).hookSpecificOutput;
+    expect(decision.permissionDecision).toBe('deny');
+    expect(decision.permissionDecisionReason).toContain('rejected the operation scope');
+    expect(protocolCache()).toEqual([]);
+    expect(acquires().length).toBeGreaterThan(0);
+    expect(acquires().every(r => r.args.hook_operation)).toBe(true);
+  });
+
   it('persists exact native identity and authority before acquire, then finishes with native proof', async () => {
     await hook('pretooluse-locks-acquire.sh', payload());
     const saved = record();

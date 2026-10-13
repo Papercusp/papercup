@@ -11,8 +11,10 @@ endpoint can return HTTP 200 while ``result.isError`` is true; that is still a
 rejected tool call, not a usable inner payload.
 """
 
+import hashlib
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 import urllib.request
@@ -120,6 +122,77 @@ def settle_lock_operation(path, record, call_tool, proof=None):
         record['terminal'] = result['state']
         write_lock_operation(path, record)
     return confirmed
+
+
+OPERATION_PROTOCOL_TOOLS = ('locks:acquire', 'locks:release', 'locks:cancel_wait')
+OPERATION_PROTOCOL_TTL_SEC = {True: 600, False: 60}
+
+
+def _origin_protocol_cache_path(cache_dir, origin):
+    digest = hashlib.sha256(origin.rstrip('/').encode('utf-8')).hexdigest()[:16]
+    return os.path.join(cache_dir, 'operation-protocol-' + digest + '.json')
+
+
+def schema_declares_hook_operation(raw_resp):
+    """True only when every operation tool's input schema declares hook_operation."""
+    data = [line[5:].strip() for line in raw_resp.splitlines() if line.startswith('data:')]
+    try:
+        tools = json.loads(data[-1] if data else raw_resp)['result']['tools']
+    except Exception:
+        return False
+    declared = {}
+    for tool in tools if isinstance(tools, list) else []:
+        if isinstance(tool, dict) and tool.get('name') in OPERATION_PROTOCOL_TOOLS:
+            properties = (tool.get('inputSchema') or {}).get('properties') or {}
+            declared[tool['name']] = 'hook_operation' in properties
+    return all(declared.get(name) is True for name in OPERATION_PROTOCOL_TOOLS)
+
+
+def origin_operation_protocol_qualified(cache_dir, origin, token, owner, now=None):
+    """D-003/D-004(4): may this origin receive the native operation protocol?
+
+    Qualification is a read-only tools/list schema read, never an acquire: an
+    older, non-strict origin would ignore hook_operation and grant a real legacy
+    lock. The verdict is cached per origin (600s qualified, 60s unqualified); a
+    failed read is unqualified for this call only and is not cached.
+    """
+    now = time.time() if now is None else now
+    path = _origin_protocol_cache_path(cache_dir, origin)
+    try:
+        with open(path, encoding='utf-8') as stream:
+            cached = json.load(stream)
+        qualified = cached.get('qualified')
+        if isinstance(qualified, bool) and 0 <= now - float(cached['checked_at']) < OPERATION_PROTOCOL_TTL_SEC[qualified]:
+            return qualified
+    except Exception:
+        pass
+    url = (origin.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&tools='
+           + ','.join(OPERATION_PROTOCOL_TOOLS) + '&client=' + urllib.parse.quote(owner, safe=''))
+    request = urllib.request.Request(url, data=json.dumps({
+        'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list', 'params': {},
+    }).encode(), headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+                         'Accept': 'application/json, text/event-stream'}, method='POST')
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=3) as response:
+            qualified = schema_declares_hook_operation(response.read().decode('utf-8', errors='replace'))
+    except Exception:
+        return False
+    try:
+        tmp = path + '.tmp-' + str(os.getpid())
+        with open(tmp, 'w', encoding='utf-8') as stream:
+            json.dump({'origin': origin.rstrip('/'), 'qualified': qualified, 'checked_at': now}, stream)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+    return qualified
+
+
+def forget_origin_operation_protocol(cache_dir, origin):
+    try:
+        os.remove(_origin_protocol_cache_path(cache_dir, origin))
+    except OSError:
+        pass
 
 
 def call_lock_operation(origin, token, owner, session_id, name, arguments):
