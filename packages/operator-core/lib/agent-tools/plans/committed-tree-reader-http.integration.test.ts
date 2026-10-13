@@ -1,19 +1,18 @@
 import assert from 'node:assert/strict';
-import { execFileSync, fork } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, symlink } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { fork } from 'node:child_process';
+import { mkdir, rm, symlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { createOrgTestDb } from '../../../test/_org-test-db';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
-import { preparePrivateOperatorApiBundle, produceCommittedReaderOriginalPreparation,
+import { preparePrivateOperatorApiBundle, withCommittedReaderOriginalPreparation,
   produceCommittedReaderPrivateApiBundle } from '../../../test/private-http-workspace-preflight';
+import type { CommittedReaderCallerContract } from '../../../test/private-http-workspace-preflight';
 
-const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(480_000);
 
-it('measures cold committed blobs through HTTP and preserves a real sidecar timeout while health advances', async context => {
+/** An admitted caller supplies this typed contract directly. The ordinary test
+ * has no original delivery yet and must refuse before any allocation. */
+export async function measureCommittedReaderHttp(contract?: CommittedReaderCallerContract) {
   let prepared: ReturnType<typeof preparePrivateOperatorApiBundle> | undefined;
   const filePath = 'packages/operator-core/lib/agent-tools/plans/committed-tree-reader-http.integration.test.ts';
   const sourcePaths = ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
@@ -32,28 +31,14 @@ it('measures cold committed blobs through HTTP and preserves a real sidecar time
       'packages/operator-core/lib/process-identity.ts'];
   const configPaths = ['package.json', 'packages/operator-core/package.json',
     'packages/operator-core/vitest.integration.config.ts', 'scripts/test-files.mjs'];
-  const selectedCommit = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  const schemaDb = await createOrgTestDb();
-  let schema: Record<string, string>;
-  try {
-    const columns = await schemaDb.adminSql`SELECT table_schema, table_name, column_name, data_type, udt_name,
-      is_nullable, column_default, ordinal_position FROM information_schema.columns
-      WHERE table_schema = 'harness_shared' ORDER BY table_name, ordinal_position`;
-    schema = Object.fromEntries(columns.map(row => [
-      `${row.table_schema}.${row.table_name}.${row.column_name}`,
-      createHash('sha256').update(JSON.stringify({ ...row })).digest('hex'),
-    ]));
-  } finally { await schemaDb.cleanup(); }
-
-  const preparationParent = await mkdtemp(join(tmpdir(), 'committed-reader-original-'));
-  try {
-    const independentRoot = join(preparationParent, 'independent', 'source');
-    const preparation = await produceCommittedReaderOriginalPreparation({
-      repositoryRoot: root, workRoot: join(preparationParent, 'independent'), selectedCommit, testPath: filePath,
-      helperPaths: sourcePaths, configPaths, schema,
-      environment: { PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_DBOS_ENABLE: '0', PAPERCUSP_SKIP_PG_DISCOVERY: '1',
-        NODE_PATH: join(independentRoot, 'node_modules') },
-    });
+  if (contract) {
+    assert.equal(contract.testPath, filePath, 'Explicit HTTP test selection differs');
+    assert.deepEqual([...new Set(contract.helperPaths)].sort(), [...new Set(sourcePaths)].sort(),
+      'Explicit HTTP helper population differs');
+    assert.deepEqual([...new Set(contract.configPaths)].sort(), [...new Set(configPaths)].sort(),
+      'Explicit HTTP config population differs');
+  }
+  return withCommittedReaderOriginalPreparation(contract, async preparation => {
     const proofRoot = preparation.root;
     const runId = await recordIsolatedIntegrationProof({ root: proofRoot, filePath, sourcePaths,
       requiredPreparation: preparation.identity, prepare: async evidenceDir => {
@@ -97,7 +82,12 @@ it('measures cold committed blobs through HTTP and preserves a real sidecar time
           invocationId: request.ledger.id, counters: request.counters })) }));
       },
     });
-    Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
-    console.info('COMMITTED_READER_HTTP_PROOF_RUN ' + runId);
-  } finally { await rm(preparationParent, { recursive: true, force: true }); }
+    return runId;
+  });
+}
+
+it('measures cold committed blobs through HTTP and preserves a real sidecar timeout while health advances', async context => {
+  const runId = await measureCommittedReaderHttp();
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  console.info('COMMITTED_READER_HTTP_PROOF_RUN ' + runId);
 }, options.testTimeoutMs);

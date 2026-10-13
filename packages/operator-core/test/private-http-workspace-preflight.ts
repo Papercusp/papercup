@@ -229,6 +229,52 @@ export function qualifyCommittedReaderOriginalPreparation(handoff: CommittedRead
   return { planned, cohort, bytes, recheck, handoff };
 }
 
+/** Explicit caller expectations constrain originals; they never produce them. */
+export interface CommittedReaderCallerContract {
+  selectedCommit: string;
+  original: { handoff: CommittedReaderPreparationHandoff; identity: CommittedReaderObservationIdentity };
+  testPath: string;
+  helperPaths: string[];
+  configPaths: string[];
+  schema: Record<string, string>;
+  environment: Record<string, string>;
+}
+
+function qualifyCommittedReaderCallerContract(contract: CommittedReaderCallerContract | undefined) {
+  assert.ok(contract, 'Explicit committed reader caller contract is required before allocations');
+  const o = structuredClone(contract);
+  assert.ok(o.original, 'Pinned original preparation handoff is required before producer effects');
+  assert.ok(typeof o.selectedCommit === 'string', 'Explicit selected committed source is required');
+  assert.match(o.selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
+  assert.ok(typeof o.testPath === 'string' && o.testPath, 'Explicit selected test is required');
+  for (const key of ['helperPaths', 'configPaths'] as const)
+    assert.ok(Array.isArray(o[key]), `Explicit ${key} population is required`);
+  for (const key of ['schema', 'environment'] as const)
+    assert.ok(o[key] && typeof o[key] === 'object' && !Array.isArray(o[key]),
+      `Explicit ${key} constraints are required`);
+  assert.equal(o.original.identity.sourceCommit, o.selectedCommit, 'Original selected reference differs');
+  const original = qualifyCommittedReaderOriginalPreparation(o.original.handoff, o.original.identity);
+  const { inputs } = original.planned;
+  assert.ok(inputs.testPaths.includes(o.testPath), 'Original selected test differs');
+  for (const key of ['helperPaths', 'configPaths'] as const)
+    assert.deepEqual([...new Set(inputs[key])].sort(), [...new Set(o[key])].sort(),
+      `Original ${key} population differs from requested preparation`);
+  assert.deepEqual(inputs.schema, o.schema, 'Original schema differs from requested preparation');
+  assert.deepEqual(inputs.environment,
+    Object.fromEntries(Object.entries(o.environment).map(([key, value]) => [key, digestBytes(value)])),
+    'Original environment differs from requested preparation');
+  original.recheck();
+  return { ...original.handoff, identity: structuredClone(o.original.identity) };
+}
+
+/** Caller-entry barrier: the callback owns every allocation/build/runtime effect.
+ * Missing delivery/provider inputs refuse here, before invoking that callback. */
+export async function withCommittedReaderOriginalPreparation<T>(contract: CommittedReaderCallerContract | undefined,
+  prepare: (original: CommittedReaderPreparationHandoff & { identity: CommittedReaderObservationIdentity }) => Promise<T>): Promise<T> {
+  const original = qualifyCommittedReaderCallerContract(contract);
+  return prepare(original);
+}
+
 /** Consume an independently supplied original cohort. Static archive/build
  * metadata and caller values are preparation inputs, never measurements of
  * invoked config, imports, applied schema or the original worker environment.
@@ -240,21 +286,7 @@ export async function produceCommittedReaderOriginalPreparation(o: {
   original?: { handoff: CommittedReaderPreparationHandoff; identity: CommittedReaderObservationIdentity };
 }): Promise<CommittedReaderPreparationHandoff & { identity: CommittedReaderObservationIdentity }> {
   assert.ok(o.original, 'Pinned original preparation handoff is required before producer effects');
-  assert.match(o.selectedCommit, /^[a-f0-9]{40}$/, 'Exact selected committed source is required');
-  assert.equal(o.original.identity.sourceCommit, o.selectedCommit, 'Original selected reference differs');
-  const original = qualifyCommittedReaderOriginalPreparation(o.original.handoff, o.original.identity);
-  const { inputs } = original.planned;
-  assert.ok(inputs.testPaths.includes(o.testPath), 'Original selected test differs');
-  for (const key of ['helperPaths', 'configPaths'] as const)
-    assert.deepEqual([...new Set(inputs[key])].sort(), [...new Set(o[key])].sort(),
-      `Original ${key} population differs from requested preparation`);
-  // Caller expectations may constrain a measured receipt; they never create it.
-  assert.deepEqual(inputs.schema, o.schema, 'Original schema differs from requested preparation');
-  assert.deepEqual(inputs.environment,
-    Object.fromEntries(Object.entries(o.environment).map(([key, value]) => [key, digestBytes(value)])),
-    'Original environment differs from requested preparation');
-  original.recheck();
-  return { ...original.handoff, identity: structuredClone(o.original.identity) };
+  return qualifyCommittedReaderCallerContract({ ...o, original: o.original });
 }
 
 /** The digested input receipt stays separate from the producer's output claims. */
@@ -447,11 +479,21 @@ export function preparePrivateWorkerSources(root: string, paths: string[], env: 
     { cwd: root, maxBuffer: 16 * 1024 * 1024, timeout: 10_000 })) {
   const committed = (env.NODE_OPTIONS ?? '').includes('committed-source-loader.mjs');
   assert.ok(paths.length > 0, 'Private worker source population is required');
+  // Matching HEAD at one instant does not isolate a minutes-long proof from
+  // peer edits. Committed proofs use the existing verifier-run route; local
+  // development without a selected archive keeps its working-source label.
+  const frozen = committed || Boolean(env.VERIFY_TAURI_SOURCE_RECEIPT)
+    || existsSync(join(root, '.verifier-source.json'));
+  const selected = frozen ? readVerifierSourceReceiptSync(root, env.VERIFY_TAURI_SOURCE_RECEIPT ?? '') : undefined;
+  if (selected && env.VERIFY_TAURI_SOURCE_REF)
+    assert.equal(selected.sourceCommit, env.VERIFY_TAURI_SOURCE_REF, 'Private worker selected source differs');
   const files = [...new Set(paths)].map(path => {
     assert.ok(!isAbsolute(path) && !path.split('/').includes('..') && !path.includes('\\'),
       'Private worker source must be repository-relative: ' + path);
     const bytes = readFileSync(join(root, path));
     const sha256 = digestBytes(bytes);
+    if (selected) assert.equal(selected.files.find(file => file.path === path)?.sha256, sha256,
+      'Private worker source is outside the selected archive: ' + path);
     if (committed) {
       assert.equal(digestBytes(readCommitted(path)), sha256,
         'Private worker would execute different HEAD bytes: ' + path
@@ -459,7 +501,10 @@ export function preparePrivateWorkerSources(root: string, paths: string[], env: 
     }
     return { path, sha256 };
   });
-  return { loader: committed ? 'committed-source' : 'working-source', files };
+  return { loader: committed ? 'committed-source' : selected ? 'verifier-source' : 'working-source', files,
+    ...(selected ? { frozenSource: { sourceCommit: selected.sourceCommit,
+      receiptPath: realpathSync(env.VERIFY_TAURI_SOURCE_RECEIPT!),
+      receiptSha256: digestBytes(readFileSync(env.VERIFY_TAURI_SOURCE_RECEIPT!)) } } : {}) };
 }
 
 export function preparePrivateRosterSocketRoot(scratchRoot = tmpdir()) {

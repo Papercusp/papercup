@@ -8,8 +8,11 @@ import { verifierSourceFiles } from './verifier-source';
 const sourcePreview = vi.hoisted(() => ({ prepareVerifierSource: vi.fn(), prepareVerifierDependencies: vi.fn() }));
 vi.mock('../../../scripts/source-preview.mjs', () => sourcePreview);
 
-import { produceCommittedReaderOriginalPreparation, qualifyCommittedReaderOriginalPreparation } from '../test/private-http-workspace-preflight';
-import type { CommittedReaderObservationCohort, CommittedReaderPreparationHandoff } from '../test/isolated-integration-proof';
+import { produceCommittedReaderOriginalPreparation, qualifyCommittedReaderOriginalPreparation,
+  withCommittedReaderOriginalPreparation } from '../test/private-http-workspace-preflight';
+import type { CommittedReaderCallerContract } from '../test/private-http-workspace-preflight';
+import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
+  CommittedReaderPreparationHandoff } from '../test/isolated-integration-proof';
 
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const roots: string[] = [];
@@ -107,6 +110,92 @@ function originalFixture() {
   };
   return { options, handoff, identity, inputs, cohort, source, save, noEffects };
 }
+
+describe('D050 caller entry before allocations', () => {
+  const contract = (f: ReturnType<typeof originalFixture>): CommittedReaderCallerContract => ({
+    selectedCommit: f.options.selectedCommit, original: f.options.original,
+    testPath, helperPaths: [...helperPaths], configPaths: [...configPaths],
+    schema: structuredClone(f.options.schema), environment: { ...f.options.environment },
+  });
+  const effects = () => vi.fn(async () => 'allocation callback reached');
+
+  it.each(['contract', 'selection', 'original', 'schema', 'environment'] as const)(
+    'refuses missing %s before allocation callbacks', async missing => {
+      const f = originalFixture(); const supplied = contract(f);
+      const allocate = effects();
+      if (missing !== 'contract') delete (supplied as Partial<CommittedReaderCallerContract>)[
+        missing === 'selection' ? 'selectedCommit' : missing];
+      await expect(withCommittedReaderOriginalPreparation(missing === 'contract' ? undefined : supplied, allocate))
+        .rejects.toThrow(/required|missing/i);
+      expect(allocate).not.toHaveBeenCalled(); f.noEffects();
+    });
+
+  it('permits the callback only after validating synthetic pinned originals and preserves their identity', async () => {
+    const f = originalFixture(); const bytes = readFileSync(f.handoff.observationReceiptPath);
+    const allocate = vi.fn(async (preparation: CommittedReaderPreparationHandoff & { identity: CommittedReaderObservationIdentity }) => {
+      expect(preparation).toEqual({ ...f.handoff, identity: f.identity });
+      expect(qualifyCommittedReaderOriginalPreparation(preparation, preparation.identity).bytes).toEqual(bytes);
+      return 'explicit callback result';
+    });
+    await expect(withCommittedReaderOriginalPreparation(contract(f), allocate)).resolves.toBe('explicit callback result');
+    expect(allocate).toHaveBeenCalledTimes(1); f.noEffects();
+  });
+
+  it('refuses undelivered actual HTTP caller input before any private proof or schema allocation', async () => {
+    const privateProof = vi.fn(async () => { throw new Error('private proof allocation reached'); });
+    const schemaDb = vi.fn(async () => { throw new Error('schema allocation reached'); });
+    // Import the real entrypoint without registering/running its HTTP experiment.
+    vi.doMock('vitest', () => ({ expect, it: vi.fn() }));
+    vi.doMock('../test/isolated-integration-proof', () => ({
+      isolatedWorkerOptions: () => ({ testTimeoutMs: 1 }),
+      captureIsolatedWorker: vi.fn(), recordIsolatedIntegrationProof: privateProof,
+    }));
+    vi.doMock('../test/_org-test-db', () => ({ createOrgTestDb: schemaDb }));
+    try {
+      const { measureCommittedReaderHttp } = await import('./agent-tools/plans/committed-tree-reader-http.integration.test');
+      await expect(measureCommittedReaderHttp()).rejects.toThrow(/explicit.*contract.*required.*allocations/i);
+      expect(privateProof).not.toHaveBeenCalled();
+      expect(schemaDb).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('vitest'); vi.doUnmock('../test/isolated-integration-proof'); vi.doUnmock('../test/_org-test-db');
+    }
+  });
+
+  it.each(['selection', 'identity', 'pin', 'population', 'schema-default', 'environment-default'] as const)(
+    'refuses mismatched %s before allocation callbacks', async mismatch => {
+      const f = originalFixture(); const supplied = contract(f); const allocate = effects();
+      if (mismatch === 'selection') supplied.selectedCommit = 'b'.repeat(40);
+      if (mismatch === 'identity') supplied.original.identity.process.identity = 'other-process';
+      if (mismatch === 'pin') supplied.original.handoff.observationReceiptSha256 = '0'.repeat(64);
+      if (mismatch === 'population') supplied.helperPaths = [];
+      if (mismatch === 'schema-default') supplied.schema = { ...supplied.schema, callerDefault: digest('static') };
+      if (mismatch === 'environment-default') supplied.environment.PAPERCUSP_BACKGROUND_WORKERS = 'caller-default';
+      await expect(withCommittedReaderOriginalPreparation(supplied, allocate)).rejects.toThrow(/differs|changed|required/i);
+      expect(allocate).not.toHaveBeenCalled(); f.noEffects();
+    });
+
+  it.each(['sourceReceiptPath', 'inputReceiptPath', 'observationReceiptPath'] as const)(
+    'refuses retained %s drift before allocation callbacks', async path => {
+      const f = originalFixture(); const supplied = contract(f); const allocate = effects();
+      writeFileSync(f.handoff[path], readFileSync(f.handoff[path], 'utf8') + '\n');
+      await expect(withCommittedReaderOriginalPreparation(supplied, allocate)).rejects.toThrow(/receipt.*changed/i);
+      expect(allocate).not.toHaveBeenCalled(); f.noEffects();
+    });
+
+  it('refuses a missing original dimension instead of promoting explicit caller constraints', async () => {
+    const f = originalFixture(); const supplied = contract(f); const allocate = effects();
+    delete (f.cohort.observations as Partial<typeof f.cohort.observations>).environment; f.save();
+    await expect(withCommittedReaderOriginalPreparation(supplied, allocate)).rejects.toThrow(/dimension identity is missing/i);
+    expect(allocate).not.toHaveBeenCalled(); f.noEffects();
+  });
+
+  it('preserves callback failures after successful read-only validation', async () => {
+    const f = originalFixture(); const failure = new Error('explicit callback failure');
+    const allocate = vi.fn(async () => { throw failure; });
+    await expect(withCommittedReaderOriginalPreparation(contract(f), allocate)).rejects.toBe(failure);
+    expect(allocate).toHaveBeenCalledTimes(1); f.noEffects();
+  });
+});
 
 describe('D047 pinned original preparation provenance', () => {
   it.each(['static graph and caller values', 'caller values without schema'])(
