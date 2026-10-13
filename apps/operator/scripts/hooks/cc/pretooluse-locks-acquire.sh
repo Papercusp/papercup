@@ -78,7 +78,7 @@ from mcp_response import parse_mcp_response, read_hook_payload, read_token_file 
 from mcp_response import (prepare_lock_operation, write_lock_operation,
                           lock_operation_arguments, settle_lock_operation, with_native_session)
 from mcp_response import (origin_operation_protocol_qualified,  # noqa: E402
-                          forget_origin_operation_protocol)
+                          forget_origin_operation_protocol, retire_inert_lock_operation)
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
@@ -1321,7 +1321,10 @@ operation_path = (_batch_path('.operation.json') if batch_info else
 # D-003/D-004(4): use the operation protocol only at an origin whose locks
 # schemas declare hook_operation (read-only, cached per origin). An unqualified
 # origin gets the legacy acquire and no operation record. An existing record is
-# never stripped, whatever the origin reads now.
+# never stripped, whatever the origin reads now — unless it is inert (D-005):
+# never pinned and past its admission deadline, so nothing under it was ever
+# admitted or ever can be. A recurring native tool id must not replay it.
+retire_inert_lock_operation(operation_path)
 operation_record = None
 if os.path.exists(operation_path) or origin_operation_protocol_qualified(
         cache_dir, operator_url, token, owner):

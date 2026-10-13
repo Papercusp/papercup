@@ -135,6 +135,16 @@ async function hook(file: string, input: object, expectOperation = true) {
 }
 
 function record(id = 'edit-one') { return JSON.parse(fs.readFileSync(join(cache, id + '.operation.json'), 'utf8')); }
+
+// D-005: a record shaped like the pre-fix replays (EI-25871003145591038) —
+// never pinned, admission deadline long past, scope unrelated to the new call.
+function inertRecord(id = 'edit-one') {
+  const operation = { id: '00000000-0000-4000-8000-000000000001',
+    deadline: new Date(Date.now() - 3_600_000).toISOString().replace('Z', '+00:00') };
+  fs.writeFileSync(join(cache, id + '.operation.json'), JSON.stringify({ version: 1, owner, session_id: session,
+    tool_id: id, paths: ['sub/stale.ts'], intent: 'PreToolUse:Edit', ttl_sec: 1200, operation }));
+  return operation.id;
+}
 function success(id = 'edit-one', paths = ['sub/one.ts']) {
   return { ...payload(id, paths), tool_response: { success: true, output: 'Success. Updated the following files.' } };
 }
@@ -199,6 +209,45 @@ describe('native hook operation fence', () => {
     expect(listRequests).toHaveLength(1);
     expect(acquires().length).toBeGreaterThanOrEqual(2);
     expect(acquires().every(r => r.args.hook_operation?.id === id)).toBe(true);
+  });
+
+  it('an inert record (never pinned, past its deadline) is retired, never replayed or denied', async () => {
+    const staleId = inertRecord();
+    schemaQualified = false;
+    const result = await hook('pretooluse-locks-acquire.sh', payload(), false);
+    expect(result.stdout.trim()).toBe('');
+    expect(acquires()).toHaveLength(1);
+    expect(acquires()[0].args.hook_operation).toBeUndefined();
+    expect(fs.existsSync(join(cache, 'edit-one.operation.json'))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(join(cache, 'edit-one.operation.json.expired'), 'utf8')).operation.id).toBe(staleId);
+  });
+
+  it('a qualified origin gives a recurring tool id a fresh operation instead of the inert one', async () => {
+    const staleId = inertRecord();
+    await hook('pretooluse-locks-acquire.sh', payload());
+    expect(record().operation.id).not.toBe(staleId);
+    expect(acquires().every(r => r.args.hook_operation?.id === record().operation.id)).toBe(true);
+  });
+
+  it('a pinned record past its deadline is never retired or stripped', async () => {
+    await hook('pretooluse-locks-acquire.sh', payload());
+    const pinned = record();
+    expect(pinned.operation.authority).toBeTruthy();
+    pinned.operation.deadline = new Date(Date.now() - 3_600_000).toISOString().replace('Z', '+00:00');
+    fs.writeFileSync(join(cache, 'edit-one.operation.json'), JSON.stringify(pinned));
+    schemaQualified = false;
+    for (const name of protocolCache()) fs.rmSync(join(cache, name));
+    await hook('pretooluse-locks-acquire.sh', payload());
+    expect(fs.existsSync(join(cache, 'edit-one.operation.json.expired'))).toBe(false);
+    expect(acquires().every(r => r.args.hook_operation?.id === pinned.operation.id)).toBe(true);
+  });
+
+  it('settling an inert record at Stop sends no doomed preparation acquire and retires it', async () => {
+    inertRecord();
+    await hook('lifecycle-report.sh', { hook_event_name: 'Stop', session_id: session });
+    expect(requests.filter(r => r.name.startsWith('locks:'))).toEqual([]);
+    expect(fs.existsSync(join(cache, 'edit-one.operation.json'))).toBe(false);
+    expect(fs.existsSync(join(cache, 'edit-one.operation.json.expired'))).toBe(true);
   });
 
   it('an origin that rejects the operation scope denies the edit and forgets its qualification', async () => {

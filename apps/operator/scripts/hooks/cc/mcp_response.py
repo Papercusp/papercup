@@ -58,6 +58,50 @@ def write_lock_operation(path, record):
             pass
 
 
+# D-002: the authority admits only a pinned acquire (the pin is persisted before
+# that acquire is sent) and refuses every acquire after the admission deadline.
+# A record with no pin, no terminal state and a passed deadline was therefore
+# never admitted and never can be. It is inert history, not a live operation
+# (D-005). Reusing one replays a doomed acquire for as long as the native tool
+# id recurs; against an origin that predates the protocol, that replay is the
+# operation-scope deny. The grace absorbs skew against a remote authority clock.
+INERT_OPERATION_GRACE_SEC = 300
+
+
+def lock_operation_inert(record, now=None):
+    try:
+        operation = record['operation']
+        if operation.get('authority') or record.get('terminal'):
+            return False
+        deadline = datetime.fromisoformat(operation['deadline'].replace('Z', '+00:00'))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
+    if deadline.tzinfo is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    return now >= deadline + timedelta(seconds=INERT_OPERATION_GRACE_SEC)
+
+
+def retire_inert_lock_operation(path, now=None):
+    """Move an inert record to ``<path>.expired`` so this call decides afresh.
+
+    Any owner's inert record qualifies: it can admit nothing, so it can block
+    nothing. A pinned, terminal, unreadable or still-admissible record stays.
+    """
+    try:
+        with open(path, encoding='utf-8') as stream:
+            record = json.load(stream)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(record, dict) or not lock_operation_inert(record, now):
+        return False
+    try:
+        os.replace(path, path + '.expired')
+    except OSError:
+        return False
+    return True
+
+
 def prepare_lock_operation(path, owner, session_id, tool_id, arguments):
     if not session_id or not tool_id:
         raise ValueError('native session and tool identity required')
@@ -102,6 +146,11 @@ def lock_operation_arguments(record, finish=False):
 def settle_lock_operation(path, record, call_tool, proof=None):
     """Never downgrade operation identity, pin, or exact scope on a retry."""
     if record.get('terminal') == 'completed' or (record.get('terminal') == 'cancelled' and proof is None):
+        return True
+    if lock_operation_inert(record):
+        # Nothing was admitted and nothing can be: there is no grant to fence,
+        # so send no doomed preparation acquire, and retire the record.
+        retire_inert_lock_operation(path)
         return True
     if not record['operation'].get('authority'):
         prepared, error = call_tool('locks:acquire', lock_operation_arguments(record))
