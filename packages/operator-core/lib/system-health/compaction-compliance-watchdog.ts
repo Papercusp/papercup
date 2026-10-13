@@ -50,6 +50,8 @@ import { classifyStaleClaims, type StaleClaim } from '../agent-tools/coordinatio
 import { recordContextUsage, setContextGaugeEnabled } from './context-usage-cache';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../agent-tools/coordination/compaction-recovery';
 import { addressContinuationToOwner } from '../carry-respawn-addressing';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { hostname } from 'node:os';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 
@@ -240,6 +242,7 @@ const default1mServedSmallEscalated = new Set<string>();
  * under-limit sample can be the fresh successor booting after a landed cut, so
  * it does not clear the breaker; only a sustained recovery re-arms it. */
 const carryRespawnUnderLimitSince = new Map<string, number>();
+const carryRespawnHealthySampleAt = new Map<string, number>();
 /** Streak trips at this many respawns without a sustained recovery below the limit.
  *  ⚠ WI-38347: this threshold detects "not recovering", which is NOT by itself
  *  evidence of a broken estimate — the claim this comment used to make ("impossible
@@ -596,6 +599,7 @@ export function resetCarryRespawnForTests(): void {
   carryRespawnStreak.clear();
   carryRespawnLoopEscalated.clear();
   carryRespawnUnderLimitSince.clear();
+  carryRespawnHealthySampleAt.clear();
   unsatisfiableLimitEscalated.clear();
   default1mServedSmallEscalated.clear();
 }
@@ -1423,6 +1427,17 @@ async function maybeForceRespawn(
   bound: ForceBound = 'fraction',
   conditionDeps: CompactionConditionDeps = {},
 ): Promise<boolean> {
+  // Keep the condition writer inside this original fallback producer: the
+  // immutable inventory identity must remain on the rail itself.
+  const failure = async (detail: string) => {
+    if (!workspaceId?.trim() || !ownerId?.trim()) return;
+    const event = { conditionKey: compactionConditionKey(workspaceId, ownerId, 'force-unavailable'),
+      oneShot: true, summary: `Compaction force-unavailable: ${ownerId}`, body: detail };
+    try {
+      if (conditionDeps.rail?.broadcast) await conditionDeps.rail.broadcast(event);
+      else await broadcastSevereEvent(event);
+    } catch (error) { console.warn(`[compaction-watchdog] condition delivery failed: ${String(error)}`); }
+  };
   try {
     const [{ getFlag }, { FLAGS }] = await Promise.all([
       import('@papercusp/flags/server'),
@@ -1438,7 +1453,7 @@ async function maybeForceRespawn(
     );
     const host = await findLiveHostAsync(ownerId);
     if (!host) {
-      await raiseCompactionCondition(workspaceId, ownerId, 'force-unavailable', 'No live host at the measured force threshold.', conditionDeps);
+      await failure('No live host at the measured force threshold.');
       // EI-9982: distinguish "no live psu-pty host" from the flag-off / grace-suppressed /
       // inject-failed silent-no-op paths — this is the dominant cause of a continuously-active
       // session that crosses the FORCE threshold yet is never force-cut.
@@ -1455,7 +1470,7 @@ async function maybeForceRespawn(
       return false;
     }
     if (!hostSupports(host, 'carry-respawn')) {
-      await raiseCompactionCondition(workspaceId, ownerId, 'force-unavailable', 'Live host lacks carry-respawn capability.', conditionDeps);
+      await failure('Live host lacks carry-respawn capability.');
       console.warn(
         `[compaction-watchdog] ${ownerLabel} (${ownerId}) is at the FORCE threshold but its psu host ` +
           `predates the carry-respawn capability (P-022: native /compact is retired, no fallback) — ` +
@@ -1499,8 +1514,7 @@ async function maybeForceRespawn(
         })
       : null;
     if (!spec) {
-      await raiseCompactionCondition(workspaceId, ownerId, 'force-unavailable',
-        transcriptPath ? 'Carry builder failed at the measured force threshold.' : 'No transcript at the measured force threshold.', conditionDeps);
+      await failure(transcriptPath ? 'Carry builder failed at the measured force threshold.' : 'No transcript at the measured force threshold.');
       console.warn(
         `[compaction-watchdog] force-respawn for ${ownerLabel} (${ownerId}) could not assemble the ` +
           `carry spec (${transcriptPath ? 'builder failure' : 'no transcript'}) — will retry next pass; ` +
@@ -1525,7 +1539,7 @@ async function maybeForceRespawn(
       systemPromptAddendum: spec.systemPromptAddendum,
       ownerId,
     });
-    if (!ok) await raiseCompactionCondition(workspaceId, ownerId, 'force-unavailable', 'Force injection was not accepted.', conditionDeps);
+    if (!ok) await failure('Force injection was not accepted.');
     if (ok) {
       console.warn(
         `[compaction-watchdog] FORCE-RESPAWNED ${ownerLabel} (${ownerId}) at ~${est}/${limit} tokens ` +
@@ -1535,7 +1549,7 @@ async function maybeForceRespawn(
     }
     return ok;
   } catch (e) {
-    await raiseCompactionCondition(workspaceId, ownerId, 'force-unavailable', `Force recovery failed: ${String(e)}`, conditionDeps);
+    await failure(`Force recovery failed: ${String(e)}`);
     console.warn(
       `[compaction-watchdog] force-respawn inject failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
     );
@@ -2319,7 +2333,7 @@ export async function checkCompactionCompliance(
   try {
     const gaps = await discoverPresencelessLoopOwners(sql);
     for (const gap of gaps) {
-      await raiseCompactionCondition(gap.workspaceId, gap.ownerId, 'dark-presence', 'An active loop has no presence row.', deps);
+      if (gap.workspaceId) await raiseCompactionCondition(gap.workspaceId, gap.ownerId, 'dark-presence', 'An active loop has no presence row.', deps);
       const healed = await healPresenceGap(sql, gap);
       if (healed) out.presenceGapsHealed.push(gap.ownerId);
       out.bootConfigAlerts.push({
@@ -2530,7 +2544,12 @@ export async function checkCompactionCompliance(
             const paths = JSON.parse(scope[3]);
             if (!Array.isArray(paths) || !paths.length || paths.some(path => typeof path !== 'string' || !path.trim())) continue;
             const edits = await readTargetEditsAfterBoundary(sql, r.owner_id, paths, episode.openedAtMs);
-            if (uniqueSubject && edits != null && edits.length > 0) await recoverCompactionEpisodes([episode], Date.now(), deps);
+            const now = Date.now();
+            if (uniqueSubject && edits?.some(edit => paths.includes(edit.file) &&
+                edit.editedAtMs > episode.openedAtMs && edit.editedAtMs <= now)) {
+              await recoverCompactionEpisodes(episodes(r.workspace_id, r.owner_id, 'compaction-stranding')
+                .filter(row => row.conditionKey === episode.conditionKey), now, deps);
+            }
           } catch { /* unreadable target evidence preserves the episode */ }
         }
       }
@@ -2566,6 +2585,8 @@ export async function checkCompactionCompliance(
       }
       const est = await estimateContextTokensForOwner(r.owner_id);
       if (est == null) {
+        carryRespawnHealthySampleAt.delete(r.owner_id);
+        carryRespawnUnderLimitSince.delete(r.owner_id);
         // P-018 boot self-assert (dark telemetry): a live limit-carrying session whose context
         // estimate never resolves is BLIND — the gauge, the per-turn reminder, and the P-012
         // force-compact backstop all read null, so it can silently overflow its model window
@@ -2613,7 +2634,11 @@ export async function checkCompactionCompliance(
         }
         continue;
       }
-      if (!Number.isFinite(est) || est < 0 || !Number.isFinite(r.compaction_limit) || r.compaction_limit <= 0) continue;
+      if (!Number.isFinite(est) || est < 0 || !Number.isFinite(r.compaction_limit) || r.compaction_limit <= 0) {
+        carryRespawnHealthySampleAt.delete(r.owner_id);
+        carryRespawnUnderLimitSince.delete(r.owner_id);
+        continue;
+      }
       nullEstimateStreak.delete(r.owner_id); // estimate resolved — clear the dark-telemetry streak
       await recoverBootConfig(r.owner_id, 'dark-telemetry', out); // WI-2140608: close the row we raised
       // D-011: Codex reports its EFFECTIVE window in every token_count event
@@ -2746,6 +2771,7 @@ export async function checkCompactionCompliance(
       // gate to this branch is what makes it structurally unable to disarm a healthy
       // session — not the thresholds inside it. See frozenCodexReading's header.
       if (est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
+        carryRespawnHealthySampleAt.delete(r.owner_id);
         const frozen = await frozenCodexReading(r.owner_id, r.last_active_at).catch(() => null);
         if (frozen) {
           await raiseCompactionCondition(r.workspace_id, r.owner_id, 'frozen-codex-reading', `Estimate came from mismatched frozen rollout ${frozen.rolloutPath}.`, deps);
@@ -3020,6 +3046,11 @@ export async function checkCompactionCompliance(
         await recover('over-limit');
         await recover('force-unavailable');
         if (episodes(r.workspace_id, r.owner_id, 'carry-respawn-loop').length) {
+          const last = carryRespawnHealthySampleAt.get(r.owner_id);
+          if (last == null || Date.now() - last > DEFAULT_INTERVAL_MS * 3 || last > Date.now()) {
+            carryRespawnUnderLimitSince.delete(r.owner_id);
+          }
+          carryRespawnHealthySampleAt.set(r.owner_id, Date.now());
           const since = carryRespawnUnderLimitSince.get(r.owner_id) ?? Date.now();
           carryRespawnUnderLimitSince.set(r.owner_id, since);
           if (Date.now() - since >= CARRY_RESPAWN_STREAK_WINDOW_MS) await recover('carry-respawn-loop');
@@ -3117,6 +3148,8 @@ async function escalateStaleCutoverProcess(
   cutoverAtMs: number,
   note: string,
 ): Promise<void> {
+  await raiseCompactionCondition(DEFAULT_COORD_WORKSPACE, `${hostname()}:${process.argv[1]}`, 'stale-cutover',
+    `Process booted at ${processStartedAtMs}, before cutover ${cutoverId} at ${cutoverAtMs}.`, {}, cutoverId);
   if (staleCutoverEscalated.has(cutoverId)) return;
   staleCutoverEscalated.add(cutoverId);
   const bootIso = new Date(processStartedAtMs).toISOString();
@@ -3175,6 +3208,20 @@ export function startCompactionComplianceWatchdog(
   // self-flags (+ escalates) the specific known-cutover misses above.
   const processStartedAtMs = Date.now() - process.uptime() * 1000;
   const stale = staleCutoversForProcessStart(processStartedAtMs);
+  // Resolve only this exact runtime's known cutovers from its measured boot.
+  // A different process/host, unknown cutover or missing boot is not recovery.
+  void (async () => {
+    const episodes = await compactionEpisodeReader({});
+    for (const episode of episodes(DEFAULT_COORD_WORKSPACE, `${hostname()}:${process.argv[1]}`, 'stale-cutover')) {
+      try {
+        const scope = JSON.parse(decodeURIComponent(episode.conditionKey.slice('alarm:compaction-compliance:'.length)));
+        const cutover = WATCHDOG_BEHAVIOR_CUTOVERS.find(row => row.id === scope[3]);
+        if (cutover && Number.isFinite(processStartedAtMs) && processStartedAtMs >= cutover.atMs) {
+          await recoverCompactionEpisodes([episode], Date.now(), {});
+        }
+      } catch { /* unknown cutover preserves */ }
+    }
+  })();
   console.log(
     `[compaction-watchdog] starting (pid ${process.pid}, booted ${new Date(processStartedAtMs).toISOString()})` +
       (stale.length === 0 ? ' — up to date with all known behavior cutovers.' : ''),

@@ -1619,7 +1619,7 @@ export async function observeHealthyClaudeTranscriptForOwner(ownerId: string): P
   try {
     const before = await resolveSessionRefReconciled(ownerId);
     if (before?.agent !== 'claude' || !before.sessionId) return null;
-    const tail = await readLiveClaudeTranscriptTail(ownerId, TOOL_REFERENCE_DEATH_TAIL_BYTES);
+    const tail = await readLiveClaudeTranscriptTail(ownerId, TOOL_REFERENCE_DEATH_TAIL_BYTES, before);
     const after = await resolveSessionRefReconciled(ownerId);
     if (tail == null || after?.agent !== 'claude' || after.sessionId !== before.sessionId ||
         after.transcriptOwner !== before.transcriptOwner || tailCarriesContextDeath(tail) ||
@@ -1654,9 +1654,11 @@ export function healthyClaudeTranscriptResponseAt(tail: string, nowMs = Date.now
  * The first line of a tail may be a partial record; both detectors parse whole JSONL
  * lines and skip it.
  */
-async function readLiveClaudeTranscriptTail(ownerId: string, bytes: number): Promise<string | null> {
+async function readLiveClaudeTranscriptTail(ownerId: string, bytes: number, expectedRef?: SessionRef): Promise<string | null> {
   try {
     const ref = await resolveSessionRefReconciled(ownerId);
+    if (expectedRef && (ref?.agent !== expectedRef.agent || ref.sessionId !== expectedRef.sessionId ||
+        ref.transcriptOwner !== expectedRef.transcriptOwner)) return null;
     if (!ref?.sessionId || ref.agent === 'omp' || ref.agent === 'codex') return null;
     const { findSessionTranscript } = await import('./claude-sessions');
     const p = await findSessionTranscript(ref.sessionId, {

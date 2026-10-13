@@ -1220,6 +1220,60 @@ const dispatchEnvelopeCases: RailMigrationCase[] = [{
 }];
 
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+  id: 'compaction-original-independent-episodes-force-fallback-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|<module>|1',
+    'log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|maybeForceRespawn|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const ts = (await import('typescript')).default;
+    const path = 'packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts';
+    const originalModule = source(path).statements.filter(node => !ts.isImportDeclaration(node)).map(node => node.getText()).join('\n');
+    const open = new Map<string, number>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    let estimate: number | null = 150_000, omitted = false, dead = false, healthyTranscript = false;
+    const row = { workspace_id: 'fixture', owner_id: 'fixture-owner', owner_label: 'fixture',
+      compaction_limit: 100_000, compaction_limit_explicit: true, last_active_at: new Date().toISOString() };
+    const sql = (async (parts: TemplateStringsArray) => parts.join('').includes('compaction_limit IS NOT NULL') && !omitted ? [row] : []) as unknown as import('postgres').Sql;
+    const flags = { CONTEXT_GAUGE: 'gauge', GATEWAY_MAINTENANCE_CARRY: 'carry', COMPACTION_WATCHDOG_FORCE_COMPACT: 'force' };
+    const producer = execute(originalModule, {
+      ...await import('../agent-config-constants'), DEFAULT_COORD_WORKSPACE: 'fixture', hostname: () => 'fixture-host', process,
+      estimateContextTokensForOwner: async () => estimate, estimateContextWindowForOwner: async () => 200_000,
+      observedPromptFloorForOwner: () => null, resolveSessionRefReconciled: async () => ({ agent: 'claude', sessionId: 'current' }),
+      detectContextDeathForOwner: async () => dead, detectToolReferenceDeathForOwner: async () => null,
+      codexReadingProvenanceForOwner: async () => null, recordContextUsage: () => {},
+      listActiveClaimFreshnessForOwner: async () => [], classifyStaleClaims: () => [],
+      setContextGaugeEnabled: () => {}, setContextEstimate: async () => {}, setCompactionLimit: async () => {},
+      resolveAlarm: (await import('../alarm-attention')).resolveAlarm,
+      require: (name: string) => {
+        if (name === '@papercusp/flags') return { FLAGS: flags };
+        if (name === '@papercusp/flags/server') return { getFlag: async (flag: string) => flag !== 'carry' };
+        if (name === '../events/await/psu-pty-discovery') return { findLiveHostAsync: async () => null };
+        if (name === '../agent-tools/coordination/escalations') return { openEscalation: async () => ({ msg_id: 'legacy' }) };
+        throw new Error(`Unexpected original compaction dependency: ${name}`);
+      },
+    }, '({ checkCompactionCompliance, compactionConditionKey })') as Pick<typeof import('../system-health/compaction-compliance-watchdog'),
+      'checkCompactionCompliance' | 'compactionConditionKey'>;
+    const conditions = { observeHealthyTranscript: async () => healthyTranscript ? { sessionId: 'current', measuredAtMs: Date.now() } : null,
+      readOpenConditions: async () => [...open].map(([conditionKey, openedAtMs]) => ({ conditionKey, openedAtMs })),
+      rail: { broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+        expect(event.oneShot).toBe(true); if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+        open.set(event.conditionKey!, open.get(event.conditionKey!) ?? Date.now()); return true;
+      }, resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false; resolvedKeys.push(event.conditionKey); return true;
+      } } };
+    const run = () => producer.checkCompactionCompliance(sql, conditions);
+    await run(); expect(open.size).toBe(2);
+    expect(open.has(producer.compactionConditionKey('fixture', 'fixture-owner', 'force-unavailable'))).toBe(true);
+    await run(); expect(openedKeys).toHaveLength(2);
+    omitted = true; await run(); expect(open.size).toBe(2);
+    omitted = false; estimate = null; await run(); expect(open.size).toBe(2);
+    estimate = 50_000; await run(); expect(open.size).toBe(0);
+    dead = true; await run(); expect(open.size).toBe(1);
+    dead = false; await run(); expect(open.size).toBe(1); // best-effort false is not recovery
+    healthyTranscript = true; await run(); expect(open.size).toBe(0);
+    expect(resolvedKeys.sort()).toEqual([...openedKeys].sort());
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
   id: 'placement-original-independent-episodes-and-exact-recovery', item: 'P-014', route: 'condition',
   rowIds: ['bespoke-watchdog|packages/operator-core/lib/pot/placement-watchdog.ts|<module>|1'],
   run: async () => {

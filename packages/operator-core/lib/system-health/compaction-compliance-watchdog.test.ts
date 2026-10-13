@@ -405,7 +405,7 @@ describe('original compaction durable episodes', () => {
     const resolve = h.deps.rail!.resolve!;
     h.deps.rail!.resolve = async () => { throw new Error('resolution unavailable'); };
     estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(2);
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('condition recovery failed'));
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('condition resolution failed'));
     h.deps.rail!.resolve = resolve; await h.run(); expect(h.open.size).toBe(0);
   });
   it('only measured same-session rollout recovery clears a frozen episode', async () => {
