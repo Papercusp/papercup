@@ -120,6 +120,12 @@ export interface GetFeedbackRequest {
   originTaskRef?: string | null;
   /** Optional exact durable subject whose transcript mentions must justify routing. */
   subjectRef?: string | null;
+  /** Explicit source refs from the caller, retained in the accepted request payload. */
+  subjectRefs?: string[];
+  /** Public-manual anchors expanded before the request is persisted and dispatched. */
+  resolvedSubjectRefs?: string[];
+  /** Public manual refs that could not be expanded completely; they block floor qualification. */
+  unresolvedSubjectRefs?: string[];
   /** Exclude owners from candidacy — e.g. exhausted-menu decliners on a FRESH
    * re-route (the cascade itself is server-driven now, D-005/P-013: declines
    * and expiries advance the selected menu without a re-call). */
@@ -184,6 +190,10 @@ export interface GetFeedbackDeps {
     question: string;
     /** Exact durable subject (relevance-router `subjectRef`); forwarded from the request. */
     subjectRef?: string | null;
+    /** Full source-ref set, including public-manual `documents:` anchors. */
+    subjectRefs?: string[];
+    /** Unexpanded public-manual document refs; candidates cannot clear the floor with these present. */
+    unresolvedSubjectRefs?: string[];
     excludeOwners?: string[];
   }) => Promise<RouteResult>;
   /** Opens the kind='consult' conversation (bound to openConversation in prod). */
@@ -1154,6 +1164,10 @@ export async function getFeedbackCore(
     requesterId: req.requesterId,
     question: req.question,
     subjectRef: req.subjectRef ?? null,
+    ...((req.resolvedSubjectRefs ?? req.subjectRefs) !== undefined
+      ? { subjectRefs: req.resolvedSubjectRefs ?? req.subjectRefs }
+      : {}),
+    ...(req.unresolvedSubjectRefs?.length ? { unresolvedSubjectRefs: req.unresolvedSubjectRefs } : {}),
     ...(excludeOwners.length ? { excludeOwners } : {}),
   });
   // The production router applies these exclusions in SQL, but the core also

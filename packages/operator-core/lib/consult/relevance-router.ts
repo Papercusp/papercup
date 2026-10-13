@@ -161,6 +161,13 @@ export interface RoutingCandidate {
   /** Independent, bounded evidence about an explicitly named technical subject.
    * Absence is the legacy/general-question contract, not a failed measurement. */
   subjectEvidence?: { subject: string; status: 'supported' | 'mismatch' | 'unmeasured'; score: number | null };
+  /** Every requested source anchor must independently clear its evidence floor. */
+  subjectEvidenceCoverage?: {
+    status: 'supported' | 'mismatch' | 'unmeasured';
+    required: string[];
+    evidence: Array<{ subject: string; status: 'supported' | 'mismatch' | 'unmeasured'; score: number | null }>;
+    unresolved: string[];
+  };
   /**
    * Stage-1 QUALIFICATION score in [0,1] (D-001 §1) — the similarity /
    * verification / authorship blend renormalized by the weight total. Carries
@@ -213,6 +220,10 @@ export interface RoutingSnapshot {
   measurement?: ExpertiseRoutingReceipt;
   /** Set by consultation creation; absent on legacy rows, never inferred. */
   deliveryIntent?: 'dispatch' | 'retrieval-only';
+  /** Complete expanded source refs persisted before the first dispatch. */
+  subjectRefs?: string[];
+  /** Public-manual document refs that could not be fully expanded. */
+  unresolvedSubjectRefs?: string[];
   /**
    * The stage-1 floor actually applied, against `candidate.relevance` (D-001).
    * Deliberately NOT named `floor`: the retired field of that name gated the
@@ -238,7 +249,15 @@ export interface RoutingSnapshot {
   /** Set when the instrument itself was degraded — 'embed-unavailable' means
    * similarity could not be measured at all (≠ measured and found nothing). */
   degraded?: 'embed-unavailable' | 'evidence-unavailable';
-  subjectValidation?: { subject: string; threshold: number; evaluated: number; unmeasured: number; limit: number };
+  subjectValidation?: {
+    subject?: string;
+    subjects: string[];
+    threshold: number;
+    evaluated: number;
+    unmeasured: number;
+    limit: number;
+    unresolved: string[];
+  };
   /** The bounded retrieval leg used while the semantic instrument was down. */
   fallback?: 'lexical';
   /** Min/max responder-selection provenance (consult-min-max-and-rubric-vetting
@@ -414,6 +433,10 @@ export interface ConsultRouteParams {
   question: string;
   /** Optional exact durable subject whose transcript mentions may justify this route. */
   subjectRef?: string | null;
+  /** Every source ref must have supported transcript evidence for floor qualification. */
+  subjectRefs?: string[];
+  /** Refs to public-manual documents whose source anchors could not be read completely. */
+  unresolvedSubjectRefs?: string[];
   /** Internal native acceptance population, applied before retrieval bounds.
    * Registration is a hint; dispatch still resolves the exact live source. */
   nativeConsult?: NativeConsultConstraints;
@@ -681,10 +704,11 @@ export interface RoutingFloors {
  * caller can qualify on the recency-bearing comparison score by mistake.
  */
 export function meetsRoutingFloors(
-  candidate: { relevance: number; signals: { similarity: number }; subjectEvidence?: RoutingCandidate['subjectEvidence'] },
+  candidate: { relevance: number; signals: { similarity: number }; subjectEvidence?: RoutingCandidate['subjectEvidence']; subjectEvidenceCoverage?: RoutingCandidate['subjectEvidenceCoverage'] },
   floors: RoutingFloors,
 ): boolean {
   return (!candidate.subjectEvidence || candidate.subjectEvidence.status === 'supported') &&
+    (!candidate.subjectEvidenceCoverage || candidate.subjectEvidenceCoverage.status === 'supported') &&
     candidate.signals.similarity >= floors.simFloor && candidate.relevance >= floors.relevanceFloor;
 }
 
@@ -704,10 +728,11 @@ export function meetsRoutingFloors(
  */
 export function snapshotCandidateQualifies(
   snapshot: { relevanceFloor?: unknown; floor?: unknown; simFloor?: unknown } | null | undefined,
-  candidate: { relevance?: unknown; score?: unknown; signals?: { similarity?: unknown } | null; subjectEvidence?: { status?: unknown } | null } | null | undefined,
+  candidate: { relevance?: unknown; score?: unknown; signals?: { similarity?: unknown } | null; subjectEvidence?: { status?: unknown } | null; subjectEvidenceCoverage?: { status?: unknown } | null } | null | undefined,
 ): boolean {
   const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   if (candidate?.subjectEvidence && candidate.subjectEvidence.status !== 'supported') return false;
+  if (candidate?.subjectEvidenceCoverage && candidate.subjectEvidenceCoverage.status !== 'supported') return false;
   const simFloor = num(snapshot?.simFloor);
   const similarity = num(candidate?.signals?.similarity) ?? 0;
   // An unreadable floor must never admit anyone: a missing floor is an unknown
@@ -907,9 +932,15 @@ async function routeConsultCore(
   const evidencePerOwner = params.evidencePerOwner ?? 3;
   const subjectRef = params.subjectRef?.trim() || null;
   const subjectPattern = subjectRef ? exactSubjectMentionPattern(subjectRef) : null;
+  const inferredSubject = expertiseSubject(params.question);
+  const subjectRefs = [...new Set((params.subjectRefs !== undefined ? params.subjectRefs : inferredSubject ? [inferredSubject] : [])
+    .map(ref => ref.trim()).filter(Boolean))];
+  const unresolvedSubjectRefs = [...new Set((params.unresolvedSubjectRefs ?? []).map(ref => ref.trim()).filter(Boolean))];
 
   const base: Omit<RoutingSnapshot, 'candidates'> = {
     query: params.question,
+    ...(subjectRefs.length ? { subjectRefs } : {}),
+    ...(unresolvedSubjectRefs.length ? { unresolvedSubjectRefs } : {}),
     relevanceFloor: floors.relevanceFloor,
     simFloor: floors.simFloor,
     weights,
@@ -1194,9 +1225,8 @@ async function routeConsultCore(
   // Similar words and a general completion history do not establish expertise
   // in a named system. Validate a bounded above-floor pool against its primary
   // subject; keep mismatches/unmeasured candidates for labelled minimum fill.
-  const subject = expertiseSubject(params.question);
-  const subjectByOwner = new Map<string, NonNullable<RoutingCandidate['subjectEvidence']>>();
-  if (subject) {
+  const subjectCoverageByOwner = new Map<string, NonNullable<RoutingCandidate['subjectEvidenceCoverage']>>();
+  if (subjectRefs.length || unresolvedSubjectRefs.length) {
     const eligible = owners.filter(ownerId => {
       const similarity = clamp01(Math.max(...byOwner.get(ownerId)!.sims));
       const c = verByOwner.get(ownerId) ?? 0;
@@ -1204,30 +1234,59 @@ async function routeConsultCore(
         verification: c / (c + VERIFICATION_SATURATION_K), authorship: clamp01((authByOwner.get(ownerId) ?? 0) / 2) }, weights),
         signals: { similarity } }, floors);
     }).sort((a, b) => Math.max(...byOwner.get(b)!.sims) - Math.max(...byOwner.get(a)!.sims) || a.localeCompare(b));
-    for (const ownerId of eligible) subjectByOwner.set(ownerId, { subject, status: 'unmeasured', score: null });
+    const unmeasuredEvidence = subjectRefs.map(subject => ({ subject, status: 'unmeasured' as const, score: null }));
+    for (const ownerId of eligible) subjectCoverageByOwner.set(ownerId, {
+      status: 'unmeasured', required: subjectRefs, evidence: unmeasuredEvidence.map(row => ({ ...row })),
+      unresolved: unresolvedSubjectRefs,
+    });
     const boundedOwners = eligible.slice(0, SUBJECT_EVIDENCE_OWNER_LIMIT);
     const passages = boundedOwners.flatMap(ownerId => turnRows.filter(r => r.owner === ownerId)
       .slice(0, Math.min(evidencePerOwner, 3)).map(r => ({ ownerId, text: r.subjectText })));
     const usable = passages.filter(p => typeof p.text === 'string' && p.text.trim());
-    if (usable.length) {
+    if (usable.length && subjectRefs.length) {
       try {
         const deadline = Date.now() + SUBJECT_EVIDENCE_TIMEOUT_MS;
-        const { value: scores } = await measure('evidence', () => withDeadlineFallback(
-          (deps.scoreSubjectEvidence ?? scoreSubjectEvidence)(subject, usable.map(p => p.text), deadline),
-          SUBJECT_EVIDENCE_TIMEOUT_MS, () => usable.map(() => null)));
-        if (scores.length !== usable.length) throw new Error('subject-evidence-score-shape');
+        const { value: scoreBySubject } = await measure('evidence', () => withDeadlineFallback((async () => {
+          const all: Array<Array<number | null>> = [];
+          for (const subject of subjectRefs) {
+            if (Date.now() >= deadline) {
+              all.push(usable.map(() => null));
+              continue;
+            }
+            const scores = await (deps.scoreSubjectEvidence ?? scoreSubjectEvidence)(subject, usable.map(p => p.text), deadline)
+              .catch(() => usable.map(() => null));
+            all.push(scores.length === usable.length ? scores : usable.map(() => null));
+          }
+          return all;
+        })(), SUBJECT_EVIDENCE_TIMEOUT_MS, () => subjectRefs.map(() => usable.map(() => null))));
         for (const ownerId of boundedOwners) {
-          const observed = usable.flatMap((p, i) => p.ownerId === ownerId && typeof scores[i] === 'number' &&
-            Number.isFinite(scores[i]) && scores[i]! >= 0 && scores[i]! <= 1 ? [scores[i] as number] : []);
-          if (!observed.length) continue;
-          const score = Math.max(...observed);
-          subjectByOwner.set(ownerId, { subject, status: score >= SUBJECT_EVIDENCE_MIN_SCORE ? 'supported' : 'mismatch', score });
+          const evidence = subjectRefs.map((subject, subjectIndex) => {
+            const scores = scoreBySubject[subjectIndex] ?? [];
+            const observed = usable.flatMap((p, passageIndex) => p.ownerId === ownerId &&
+              typeof scores[passageIndex] === 'number' && Number.isFinite(scores[passageIndex]) &&
+              scores[passageIndex]! >= 0 && scores[passageIndex]! <= 1 ? [scores[passageIndex] as number] : []);
+            if (!observed.length) return { subject, status: 'unmeasured' as const, score: null };
+            const score = Math.max(...observed);
+            return { subject, status: score >= SUBJECT_EVIDENCE_MIN_SCORE ? 'supported' as const : 'mismatch' as const, score };
+          });
+          const status = unresolvedSubjectRefs.length || evidence.some(row => row.status === 'unmeasured')
+            ? 'unmeasured'
+            : evidence.some(row => row.status === 'mismatch') ? 'mismatch' : 'supported';
+          subjectCoverageByOwner.set(ownerId, { status, required: subjectRefs, evidence, unresolved: unresolvedSubjectRefs });
         }
       } catch { /* unknown remains explicit, including capped or unavailable owners */ }
     }
-    const unmeasured = [...subjectByOwner.values()].filter(r => r.status === 'unmeasured').length;
-    base.subjectValidation = { subject, threshold: SUBJECT_EVIDENCE_MIN_SCORE,
-      evaluated: subjectByOwner.size - unmeasured, unmeasured, limit: SUBJECT_EVIDENCE_OWNER_LIMIT };
+    const coverage = [...subjectCoverageByOwner.values()];
+    const unmeasured = coverage.filter(row => row.status === 'unmeasured').length;
+    base.subjectValidation = {
+      ...(subjectRefs.length === 1 ? { subject: subjectRefs[0] } : {}),
+      subjects: subjectRefs,
+      threshold: SUBJECT_EVIDENCE_MIN_SCORE,
+      evaluated: coverage.length - unmeasured,
+      unmeasured,
+      limit: SUBJECT_EVIDENCE_OWNER_LIMIT,
+      unresolved: unresolvedSubjectRefs,
+    };
     if (unmeasured) base.degraded = 'evidence-unavailable';
   }
 
@@ -1252,7 +1311,12 @@ async function routeConsultCore(
       relevance: relevanceOf(signals, weights),
       newestTs: o.newestTs,
       evidence: o.evidence,
-      ...(subjectByOwner.has(ownerId) ? { subjectEvidence: subjectByOwner.get(ownerId)! } : {}),
+      ...(subjectCoverageByOwner.has(ownerId) ? {
+        subjectEvidenceCoverage: subjectCoverageByOwner.get(ownerId)!,
+        ...(subjectCoverageByOwner.get(ownerId)!.evidence.length === 1
+          ? { subjectEvidence: subjectCoverageByOwner.get(ownerId)!.evidence[0] }
+          : {}),
+      } : {}),
     };
   });
 
@@ -1285,6 +1349,7 @@ async function routeConsultCore(
       signals: { ...s.signals, freshness },
       evidence: s.evidence,
       ...(s.subjectEvidence ? { subjectEvidence: s.subjectEvidence } : {}),
+      ...(s.subjectEvidenceCoverage ? { subjectEvidenceCoverage: s.subjectEvidenceCoverage } : {}),
       ...annotateLiveness(livenessByOwner[s.ownerId]),
     };
   });
