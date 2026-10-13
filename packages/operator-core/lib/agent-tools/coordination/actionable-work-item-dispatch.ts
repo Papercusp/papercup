@@ -690,6 +690,20 @@ export async function resolveStableAgentTarget(
   }
 }
 
+/**
+ * The diagnosis for a stable agent name whose every adopter has no live presence
+ * (WI-6554700010010397). Shared by the required-wake classifier below and by
+ * coord:dispatch (WI-6554700010010992), so every door names the NAME and its repair
+ * instead of one dead session id.
+ */
+export function adopterGoneDiagnosis(name: string, adopters: readonly string[]): string {
+  return (
+    `agent name "${name}" is adopted only by sessions with no live presence ` +
+    `(${adopters.slice(0, 3).join(', ')}${adopters.length > 3 ? `, +${adopters.length - 3} more` : ''}); ` +
+    `launch an agent that runs plan_items:adopt_name { name: "${name}" }, or retarget/disarm the caller`
+  );
+}
+
 export function classifyRequiredWakeFailure(args: {
   target: StableAgentTargetState;
   wake: Pick<WakeRecipientsResult, 'queued' | 'woken' | 'staged' | 'timedOutTargets'>;
@@ -721,11 +735,7 @@ export function classifyRequiredWakeFailure(args: {
       ...base,
       target: name,
       code: 'target_adopter_gone',
-      message:
-        `agent name "${name}" is adopted only by sessions with no live presence ` +
-        `(${adopters.slice(0, 3).join(', ')}${adopters.length > 3 ? `, +${adopters.length - 3} more` : ''}); ` +
-        `launch an agent that runs plan_items:adopt_name { name: "${name}" }, or retarget/disarm the caller. ` +
-        `The assignment is durable and keyed on the name`,
+      message: `${adopterGoneDiagnosis(name, adopters)}. The assignment is durable and keyed on the name`,
     };
   }
   if (!args.target.present && queued === 0) {
