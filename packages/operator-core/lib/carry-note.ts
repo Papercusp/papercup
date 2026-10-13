@@ -1151,7 +1151,7 @@ export function normalizeFlattenedContinuityProbeRow(row: unknown): unknown {
   if (source.probe !== undefined) return inferNestedProbeKind(row, source);
 
   const kind = source.kind;
-  const targetKey = kind === 'tool' ? 'tool' : kind === 'state-cell' ? 'cell' : null;
+  const targetKey = kind === 'tool' ? 'tool' : kind === 'state-cell' ? 'cell' : kind === 'sql' ? 'sql' : null;
   if (!targetKey) return row;
 
   // These are the required fields for both discriminated probe variants;
@@ -1163,7 +1163,9 @@ export function normalizeFlattenedContinuityProbeRow(row: unknown): unknown {
   const probeKeys =
     kind === 'tool'
       ? ['tool', 'args', 'projection', 'schemaRevision', 'expect']
-      : ['cell', 'as', 'schemaRevision', 'expect'];
+      : kind === 'sql'
+        ? ['sql', 'maxRows', 'allowUnscoped', 'schemaRevision', 'expect']
+        : ['cell', 'as', 'schemaRevision', 'expect'];
   const normalized = { ...source };
   for (const key of probeKeys) {
     if (!Object.prototype.hasOwnProperty.call(normalized, key)) continue;

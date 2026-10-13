@@ -72,7 +72,7 @@ import type {
   ScorecardRequirementsCheckRun,
 } from './harness/improvements/observation-types';
 import { managedSpawn } from './task-manager/managed-spawn';
-import { CONTINUITY_PROBE_MAX_PER_WAKE, continuityProbeSchema, runContinuityProbeBatch, type ContinuityProbe } from './continuity-probes';
+import { CONTINUITY_PROBE_MAX_PER_WAKE, SQL_PROBE_TOOL, continuityProbeSchema, runContinuityProbeBatch, type ContinuityProbe } from './continuity-probes';
 
 /** The minimal criterion shape this module reads — key + the optional check. */
 export interface CheckedCriterion {
@@ -285,14 +285,16 @@ export function validateCriterionCheckPaths(
           scopeFailures.push({ criterionKey: c.key, path: `probe[${index}]`, reason: parsed.error.message });
           continue;
         }
-        if (parsed.data.kind === 'tool') {
-          const toolName = parsed.data.tool;
+        // An SQL probe dispatches through SQL_PROBE_TOOL, so the grader must be
+        // able to re-run THAT tool exactly as it must for a direct tool probe.
+        const toolName = parsed.data.kind === 'tool' ? parsed.data.tool : parsed.data.kind === 'sql' ? SQL_PROBE_TOOL : null;
+        if (toolName) {
           const target = listAllProjectedTools().find(tool => tool.expose?.mcp?.name === toolName);
           if (target?.agentRoles && !target.agentRoles.includes('judge')) {
             scopeFailures.push({
               criterionKey: c.key,
               path: `probe[${index}]`,
-              reason: `tool '${parsed.data.tool}' excludes the independent judge role — a rubric probe must be re-runnable by its grader. Choose a judge-readable tool or extend the read-only target's role allowlist before authoring this check`,
+              reason: `tool '${toolName}' excludes the independent judge role — a rubric probe must be re-runnable by its grader. Choose a judge-readable tool or extend the read-only target's role allowlist before authoring this check`,
             });
           }
         }
