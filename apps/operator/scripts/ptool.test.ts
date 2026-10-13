@@ -868,7 +868,7 @@ describe('ptool call deadlines', () => {
       ['coord:whoami', {}],
       ['coord:read', { msg_id: 'coord-send-timeout-regression' }],
       ['scheduler:get_claim_spec', { fleet: 'timeout-regression' }],
-    ]) {
+    ] as const) {
       expect(timeoutForTool(name, args)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
       expect(timeoutForTool('tools:invoke', { name, args }))
         .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
