@@ -2497,6 +2497,18 @@ export type ProtectedPathExclusionPreflight = {
   beyondSymlink: Set<string>;
 };
 
+/** Paths per batched `check-ignore` argv — far below ARG_MAX for repo-relative paths. */
+const CHECK_IGNORE_BATCH_SIZE = 256;
+
+/**
+ * True when argv-mode `git check-ignore` prints this path back byte-for-byte:
+ * printable ASCII with no `"` or `\` (the only printable characters Git C-quotes).
+ * Exported for the batching test in run-git-sync.test.ts.
+ */
+export function isVerbatimCheckIgnorePath(path: string): boolean {
+  return /^[\x20-\x7e]+$/.test(path) && !/["\\]/.test(path);
+}
+
 /**
  * Classify protected paths that cannot safely appear as negative pathspecs.
  *
@@ -2506,16 +2518,29 @@ export type ProtectedPathExclusionPreflight = {
  * remain in the staging command so git-sync does not commit the protected
  * mutation. Conversely, an ignored untracked path is already excluded by Git's
  * normal ignore handling; passing it as a negative pathspec makes `git add`
- * reject the entire command. Probe one path per invocation: `-z` is only valid
- * with `--stdin`, while this injected RunGit seam has no stdin channel, and
- * parsing line-delimited output would be unsafe for legal filenames containing
- * newlines. With one path, the exit status is the answer and `--` keeps leading
- * dashes literal. Exit code 1 means "not ignored". Git exits 128 when the
- * protected path is a descendant of a symlink; `git add -A` does not traverse
- * that symlink, but the explicit negative pathspec makes the entire add fatal,
- * so classify that population separately and omit only those impossible
- * pathspecs. Any other non-zero result fails open by returning no matches and
- * preserving all exclusions for the existing add-failure recovery path.
+ * reject the entire command.
+ *
+ * WI-6554700010010584: BATCH every path Git echoes back verbatim. Each Git call
+ * pays bg-host's admission queue (measured 10-24s per `check-ignore` under load),
+ * and this preflight runs inside the superproject pointer-bump phase, which has no
+ * cooperative-yield boundary. One call per path (8 at a time) turned ~40 live locks
+ * into ~6 sequential rounds: papercusp's commit phase ran 5+ minutes on 2026-10-12
+ * and portal's 2+ minutes on 2026-10-13, outlasting every restart drain that landed
+ * in it. In argv mode (`-z` is rejected without `--stdin` on Git 2.43, and this
+ * RunGit seam has no stdin channel) Git prints each ignored path exactly as given,
+ * one per line, and C-quotes only names holding `"`, `\`, a control character or
+ * (under the default core.quotePath) a non-ASCII byte. Printable-ASCII names
+ * without `"`/`\` therefore map back losslessly; every other name keeps the
+ * one-path probe, where the exit status is the answer.
+ *
+ * Exit code 1 means "not ignored". Git exits 128 when a protected path is a
+ * descendant of a symlink; `git add -A` does not traverse that symlink, but the
+ * explicit negative pathspec makes the entire add fatal, so classify that
+ * population separately and omit only those impossible pathspecs. A 128 fails a
+ * whole batch, so that batch (and any batch whose answer does not map back) is
+ * re-probed one path at a time. `--` keeps leading dashes literal. Any other
+ * non-zero per-path result fails open by returning no matches and preserving all
+ * exclusions for the existing add-failure recovery path.
  */
 export async function classifyProtectedPathExclusions(
   runGit: RunGit,
@@ -2524,15 +2549,30 @@ export async function classifyProtectedPathExclusions(
 ): Promise<ProtectedPathExclusionPreflight> {
   const ignoredUntracked = new Set<string>();
   const beyondSymlink = new Set<string>();
-  // A protected path needs its own check: check-ignore's non-stdin output quotes
-  // unusual filenames, so a batched result cannot be mapped back losslessly.
-  // Bound concurrency instead of serializing one git process per live lock.
+  const singles: string[] = [];
+  const verbatim: string[] = [];
+  for (const path of paths) (isVerbatimCheckIgnorePath(path) ? verbatim : singles).push(path);
+  for (let i = 0; i < verbatim.length; i += CHECK_IGNORE_BATCH_SIZE) {
+    const chunk = verbatim.slice(i, i + CHECK_IGNORE_BATCH_SIZE);
+    const result = await runGit(['check-ignore', '--', ...chunk], repoPath);
+    if (result.code === 1) continue;
+    if (result.code === 0) {
+      const asked = new Set(chunk);
+      const echoed = result.stdout.split('\n').filter((line) => line !== '');
+      if (echoed.every((line) => asked.has(line))) {
+        for (const line of echoed) ignoredUntracked.add(line);
+        continue;
+      }
+    }
+    singles.push(...chunk);
+  }
+  // Bound concurrency instead of serializing one git process per remaining path.
   let next = 0;
   let failed = false;
   await Promise.all(
-    Array.from({ length: Math.min(8, paths.length) }, async () => {
-      while (!failed && next < paths.length) {
-        const path = paths[next++];
+    Array.from({ length: Math.min(8, singles.length) }, async () => {
+      while (!failed && next < singles.length) {
+        const path = singles[next++];
         const result = await runGit(['check-ignore', '--', path], repoPath);
         if (result.code === 0) ignoredUntracked.add(path);
         else if (result.code === 1) continue;
