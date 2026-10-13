@@ -689,6 +689,21 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(loopRows.find(d => d.summary === 'loop-parked')?.status).toBe('pending');
     await store.markDeliveryParked(loopRows.find(d => d.summary === 'loop-parked')!.id, 'host accepted', 60_000);
 
+    // WI-6554700010009881: a work-item dispatch rides the same standing key, but the
+    // assignment it carries is not a coord message — a bulk inbox read never shows it.
+    // Pending and host-parked dispatch wakes must both survive the settle.
+    for (const summary of ['dispatch-pending', 'dispatch-parked']) {
+      const dispatchAwaits = await store.fireAwaitsForKey({ eventKey: key });
+      await store.insertDeliveries({
+        awaits: dispatchAwaits,
+        summary,
+        source: 'system:plan-run-direct-dispatch',
+        payload: { kind: 'actionable-work-item-dispatch', workItemIds: ['WI-' + summary] },
+      });
+    }
+    const dispatchRows = await store.listRecentDeliveries('su-settle', 10);
+    await store.markDeliveryParked(dispatchRows.find(d => d.summary === 'dispatch-parked')!.id, 'host accepted', 60_000);
+
     // A peer's own standing wake, fired at the same moment — must NEVER be touched by
     // MY settle call (subscriber_id-scoped, like ackDelivery).
     const peerKey = `${store.INBOX_WAKE_KEY_PREFIX}su-settle-peer`;
@@ -713,8 +728,10 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(mine.find((d) => d.summary === 'post-cutoff')).toMatchObject({ status: 'pending' });
     expect(mine.find((d) => d.summary === 'loop-pending')).toMatchObject({ status: 'pending' });
     expect(mine.find((d) => d.summary === 'loop-parked')).toMatchObject({ status: 'parked' });
+    expect(mine.find((d) => d.summary === 'dispatch-pending')).toMatchObject({ status: 'pending' });
+    expect(mine.find((d) => d.summary === 'dispatch-parked')).toMatchObject({ status: 'parked' });
 
-    const peer = await store.listRecentDeliveries('su-settle-peer', 10);
+    const peer =await store.listRecentDeliveries('su-settle-peer', 10);
     expect(peer.find((d) => d.summary === 'peer-untouched')).toMatchObject({ status: 'pending' });
 
     // Idempotence: re-settling the same (now-empty) window finds nothing left to do.

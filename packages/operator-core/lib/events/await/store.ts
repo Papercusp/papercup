@@ -3099,7 +3099,13 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
  * Deliveries created AFTER the cutoff are left alone — a message that arrived
  * mid-read must still wake normally next time. Loop-source deliveries also
  * survive: they share the inbox key but reading messages does not execute the
- * scheduled iteration (EI-25610308076916440). Returns rows settled.
+ * scheduled iteration (EI-25610308076916440). Work-item dispatch deliveries
+ * (payload kind 'actionable-work-item-dispatch', written by
+ * assignAndWakeActionableWorkItems for plan runs and coord:dispatch) survive
+ * for the same reason: the assignment they carry is not a coord message, so a
+ * bulk inbox read never shows it, and settling the wake leaves the dispatched
+ * item open with nobody woken to work it (WI-6554700010009881). Returns rows
+ * settled.
  */
 export async function settleCaughtUpInboxWakeDeliveries(input: {
   subscriberId: string;
@@ -3117,6 +3123,7 @@ export async function settleCaughtUpInboxWakeDeliveries(input: {
      WHERE workspace_id = ${ws} AND subscriber_id = ${input.subscriberId}
        AND event_key = ${key}
        AND COALESCE(source, '') NOT LIKE 'loop:%'
+       AND COALESCE(payload->>'kind', '') <> 'actionable-work-item-dispatch'
        AND status IN ('pending', 'parked')
        AND created_at <= ${input.cutoffTs}
     RETURNING id

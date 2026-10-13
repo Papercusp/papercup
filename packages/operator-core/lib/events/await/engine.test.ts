@@ -1745,6 +1745,37 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     expect(h.lastInboxReadAtBatch).toHaveBeenCalledWith(['su-a'], { foldedOnly: true });
   });
 
+  it('WI-6554700010009881: delivers a work-item dispatch wake even when a newer inbox read covers it', async () => {
+    // Incident shape: plan run 1345 dispatched WI-6554700010009869 to a parked executor;
+    // the relaunched CLI's hook read at 05:59:58Z retired the wake as "already covered by
+    // its own coord:inbox read", and the item sat open. An inbox read never shows a
+    // work-item assignment, so the read cursor must not retire this wake.
+    const previousReadAt = h.lastInboxReadAtBatch.getMockImplementation();
+    h.lastInboxReadAtBatch.mockImplementation(async () => new Map([['su-a', new Date(5000).toISOString()]]));
+    try {
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 734675,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          createdAt: new Date(1000).toISOString(),
+          source: 'system:plan-run-direct-dispatch',
+          payload: { kind: 'actionable-work-item-dispatch', workItemIds: ['WI-6554700010009869'] },
+        }),
+      ]);
+
+      const stats = await pumpWakeDeliveries('ws-test');
+
+      expect(h.executeWake).toHaveBeenCalledTimes(1);
+      expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(734675, 'suppressed-redundant', 1);
+      expect(stats.suppressed).toBe(0);
+      expect(stats.delivered).toBe(1);
+    } finally {
+      if (previousReadAt) h.lastInboxReadAtBatch.mockImplementation(previousReadAt);
+      else h.lastInboxReadAtBatch.mockReset();
+    }
+  });
+
   it('retries a psu-host-accepted wake after the inbox read advances, so the pending host text can refresh', async () => {
     const createdAt = new Date(5000).toISOString();
     const acceptedReason = 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable';
