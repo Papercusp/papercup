@@ -32,9 +32,19 @@ test('native ticket integrations list providers and persist isolated source conf
     verifierRunId: basename(dirname(dirname(phase!))),
     testPath: 'apps/operator/e2e/ticket-integrations.native.spec.mts',
     run: async () => {
-      const { stdout, stderr } = await execute('bash',
-        [join(root!, 'scripts/tauri-surface-verify-ticket-integrations.sh')],
-        { cwd: root!, env: process.env, timeout: 210_000, maxBuffer: 4 * 1024 * 1024 });
+      let stdout: string, stderr: string;
+      try {
+        ({ stdout, stderr } = await execute('bash',
+          [join(root!, 'scripts/tauri-surface-verify-ticket-integrations.sh')],
+          { cwd: root!, env: process.env, timeout: 210_000, maxBuffer: 4 * 1024 * 1024 }));
+      } catch (error) {
+        const failure = error as Error & { stdout?: string; stderr?: string; code?: string | number };
+        const output = (failure.stdout ?? '') + (failure.stderr ?? '');
+        await info.attach('ticket-integrations-native-failure', {
+          body: output, contentType: 'text/plain',
+        });
+        throw new Error(`Native ticket assertions failed (${failure.code ?? 'unknown'}):\n${output.slice(-12000)}`, { cause: error });
+      }
       await info.attach('ticket-integrations-native-output', {
         body: stdout + stderr, contentType: 'text/plain',
       });
