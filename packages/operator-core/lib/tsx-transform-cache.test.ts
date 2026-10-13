@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import { createRequire } from 'node:module';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
@@ -97,6 +98,16 @@ function fixture(variant: Variant, { entries = [], side = '+', deferDeletes = fa
   const Cache = vm.runInNewContext(cacheSource(variant, side) + '; ' + variant.className, context) as new () => RuntimeCache;
   return { cache: new Cache(), files, reads, unlinked, writes, scheduled, release, counts };
 }
+
+it('parses all three shipped postimages with the maintained patch-package installer', () => {
+  const { parsePatchFile } = createRequire(import.meta.url)('patch-package/dist/patch/parse.js');
+  const effects = parsePatchFile(patch) as Array<{ type: string; path: string }>;
+  expect(effects.map(effect => [effect.type, effect.path])).toEqual([
+    ['patch', 'node_modules/tsx/dist/cli.mjs'],
+    ['patch', 'node_modules/tsx/dist/index-7AaEi15b.mjs'],
+    ['patch', 'node_modules/tsx/dist/index-gckBtVBf.cjs'],
+  ]);
+});
 
 describe.each(variants)('tsx $name shared transform cache', variant => {
   it('bounds a miss to eight reads without enumerating or creating the shared directory', () => {
