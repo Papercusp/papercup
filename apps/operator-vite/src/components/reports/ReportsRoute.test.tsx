@@ -25,6 +25,7 @@ vi.mock('@/app/_components/inbox/chat-seed', () => ({ seedOperatorChatDraft: vi.
 import ReportsRoute from './ReportsRoute';
 import { reportFullFixture as report, reportSummaryFixture } from './reports-test-fixture';
 import { seedOperatorChatDraft } from '@/app/_components/inbox/chat-seed';
+import { reportsHistoryFilterExpression } from '../../../../../scripts/tauri-surface-verify-reports.mts';
 
 beforeEach(() => {
   fixture.enabled = true; fixture.queries = []; fixture.list = []; fixture.catalog = null; fixture.detail = []; fixture.previous = null;
@@ -58,6 +59,27 @@ describe('Reports route', () => {
     expect(fixture.queries.find(q => q.queryName === 'reports.lineage')?.enabled).toBe(true);
     expect(screen.getByTestId('markdown-preview').textContent).toBe(report.body_md);
     expect(screen.getAllByText('writer')).toHaveLength(2);
+  });
+  it('accepts the native history and subject filter witness from the real button control', () => {
+    const original = { ...report, report_id: 'edition-1', supersedes_report_id: null };
+    const corrected = { ...reportSummaryFixture, title: 'Private audit correction' };
+    fixture.detail = [original];
+    fixture.list = [corrected];
+    fixture.catalog = [corrected];
+    fixture.history = [{ ...reportSummaryFixture, ...original }, corrected];
+    const search = '?kind=audit&subject=plan%3Aexample-plan&q=Private+audit&sel=edition-1&hist=true';
+    mount(search);
+    const expression = reportsHistoryFilterExpression({ originalTitle: original.title,
+      correctedTitle: corrected.title, subjectValue: 'plan:example-plan', subjectLabel: 'Example plan' });
+    const evaluate = (params = search) => new Function('document', 'location', `return ${expression}`)(
+      document, { href: `http://localhost/reports${params}` });
+    const subject = screen.getByRole('button', { name: 'Report subject' }) as HTMLButtonElement;
+    expect(subject.textContent).toBe('About: Example plan ▾');
+    expect(subject.value).toBe('');
+    expect(fixture.queries.find(q => q.queryName === 'reports.list')?.args).toMatchObject({
+      subject: { kind: 'plan', ref: 'example-plan' }, query: original.title,
+    });
+    expect(evaluate()).toBe(true);
   });
   it.each([false, true])('keeps an unknown citation unavailable with an existing report and cached detail=%s', cached => {
     fixture.list = [reportSummaryFixture];
