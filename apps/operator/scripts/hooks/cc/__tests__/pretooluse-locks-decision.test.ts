@@ -80,6 +80,19 @@ beforeAll(async () => {
     req.on("data", (d) => (body += d));
     req.on("end", () => {
       const parsed = JSON.parse(body) as Record<string, any>;
+      // D-004(4): the hook reads tools/list (read-only) to qualify an origin
+      // before it uses the native operation protocol. This stub is an
+      // operation-aware origin, so its lock schemas declare hook_operation.
+      // The read is not a lock request, so it is not recorded in `requests`.
+      if (parsed.method === "tools/list") {
+        const tools = ["locks:acquire", "locks:release", "locks:cancel_wait"].map((name) => ({
+          name,
+          inputSchema: { type: "object", properties: { paths: {}, hook_operation: {} } },
+        }));
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { tools } }));
+        return;
+      }
       const args = parsed.params?.arguments as Record<string, any> | undefined;
       const toolName = parsed.params?.name as string | undefined;
       const operation = args?.hook_operation;
