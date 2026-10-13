@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AttentionNotifyResult, ReplaySafeAttentionNotifyInput } from '../attention-notify';
+import type { SevereEventBroadcast } from '../severe-event-broadcast';
+import type { GreenMainSloQueue } from './green-main-slo';
 import { checkGreenMainSlo, parseLastGreenAtMs, runGreenMainSloPass, type GreenMainSloPassDeps } from './green-main-slo-watchdog';
 
 const HOUR = 60 * 60 * 1000;
@@ -10,6 +12,13 @@ const mocks = vi.hoisted(() => ({
   readFrozenCandidateRepairQueueState: vi.fn(),
   notifyAttentionOnce: vi.fn(),
   recordWatchdogPassOutcome: vi.fn(),
+  broadcastSevereEvent: vi.fn(async () => true),
+  readConditionEnvelopes: vi.fn(async () => []),
+}));
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: mocks.broadcastSevereEvent }));
+vi.mock('../agent-tools/coordination/tools/conditions', () => ({
+  readConditionEnvelopes: mocks.readConditionEnvelopes,
+  computeConditionStates: () => [],
 }));
 vi.mock('./gate-verdict-rate-alarm', () => ({ readVerdictRateWindow: mocks.readVerdictRateWindow }));
 vi.mock('../harness/routines/release-actions', () => ({
@@ -42,6 +51,8 @@ function deps(over: Partial<GreenMainSloPassDeps> = {}): GreenMainSloPassDeps {
     readLastVerdictAtMs: async () => NOW - 1 * HOUR,
     readQueue: async () => null,
     notifyOnce: onceStore().notifyOnce,
+    readConditions: async () => [],
+    rail: { broadcast: async () => true, resolve: async () => true },
     ...over,
   };
 }
@@ -150,7 +161,7 @@ describe('syncTalliesFromDeltaCoverage', () => {
     const ticks = ['green', 'red', 'skipped', 'up-to-date', 'red', 'radius-too-wide', 'missed-opportunity', 'green', 'leg-timeout'].map(
       (status, i) => ({ atMs: NOW - i * 300_000, evaluated: true, status }),
     );
-    expect(syncTalliesFromDeltaCoverage({ coverage: { ticks } })).toEqual([{ fleet: null, judgedBatches: 4, redBatches: 2 }]);
+    expect(syncTalliesFromDeltaCoverage({ coverage: { ticks } })).toEqual([{ fleet: null, judgedBatches: 4, redBatches: 2, observedAtMs: NOW }]);
     expect(syncTalliesFromDeltaCoverage({ coverage: { ticks: [] } })).toEqual([{ fleet: null, judgedBatches: 0, redBatches: 0 }]);
     expect(syncTalliesFromDeltaCoverage(undefined)).toBeNull();
     expect(syncTalliesFromDeltaCoverage({ coverage: { ticks: 'nope' } })).toBeNull();
@@ -176,6 +187,9 @@ describe('parseLastGreenAtMs', () => {
     expect(parseLastGreenAtMs('1791000000000')).toBe(1791000000000);
     expect(parseLastGreenAtMs(1791000000000)).toBe(1791000000000);
     expect(() => parseLastGreenAtMs('not-a-date')).toThrow(/not an epoch ms/);
+    for (const value of [true, false, ' ', ' 1791000000000', {}, NaN, Infinity]) {
+      expect(() => parseLastGreenAtMs(value)).toThrow(/not an epoch ms/);
+    }
   });
 });
 
@@ -209,6 +223,12 @@ describe('checkGreenMainSlo (production wiring)', () => {
       { routineName: 'green-checkpoint', installSlug: 'papercusp' },
       undefined,
     );
+    expect(mocks.broadcastSevereEvent).toHaveBeenCalledWith(expect.objectContaining({
+      oneShot: true,
+      conditionKey: `alarm:green-main-slo:${encodeURIComponent(JSON.stringify([
+        'ws-1', 'papercusp', 'time-since-green', `green-main-slo:papercusp:time-since-green:${lastGreen}`, null,
+      ]))}`,
+    }));
   });
 
   it('an unreadable frozen queue records a FAILED pass instead of reading as "no queue"', async () => {
@@ -227,5 +247,151 @@ describe('checkGreenMainSlo (production wiring)', () => {
     expect(res).toBeNull();
     expect(mocks.notifyAttentionOnce).not.toHaveBeenCalled();
     expect(mocks.recordWatchdogPassOutcome).toHaveBeenCalledWith(expect.anything(), 'green-main-slo', expect.anything(), undefined);
+  });
+});
+
+function railStore() {
+  const states = new Map<string, { condition_key: string; open: boolean; open_since: string; last_seen: string }>();
+  const opens: SevereEventBroadcast[] = [];
+  const closed: string[] = [];
+  let clock = NOW;
+  const broadcast = vi.fn(async (event: SevereEventBroadcast) => {
+    opens.push(event);
+    const at = new Date(clock).toISOString();
+    states.set(event.conditionKey!, { condition_key: event.conditionKey!, open: true, open_since: at, last_seen: at });
+    return true;
+  });
+  const resolve = vi.fn(async ({ conditionKey }: { conditionKey: string }) => {
+    states.get(conditionKey)!.open = false;
+    closed.push(conditionKey);
+    return true;
+  });
+  const run = async (over: Partial<GreenMainSloPassDeps> = {}) => {
+    clock = over.nowMs ?? NOW;
+    return runGreenMainSloPass(deps({ readConditions: async () => [...states.values()].map((s) => ({ ...s })),
+      rail: { broadcast, resolve }, ...over }));
+  };
+  return { run, states, opens, closed, broadcast, resolve };
+}
+
+describe('green-main SLO keyed lifecycle (original producer)', () => {
+  const red = { readLastGreenAtMs: async () => NOW - 13 * HOUR, readLastVerdictAtMs: async () => NOW - 7 * HOUR };
+
+  it('opens independent oneShot episodes before owner dedupe and preserves them across restarted passes', async () => {
+    const h = railStore();
+    const owner = onceStore();
+    const d = { ...red, notifyOnce: owner.notifyOnce };
+    await h.run(d);
+    await h.run(d);
+    expect(h.opens).toHaveLength(2);
+    expect(h.opens.every((e) => e.oneShot)).toBe(true);
+    expect(h.states.size).toBe(2);
+    expect(owner.sent).toHaveLength(2);
+    expect(h.closed).toEqual([]);
+    expect(owner.notifyOnce).toHaveBeenCalledTimes(4);
+  });
+
+  it('recovers the exact measured green independently while a missing verdict preserves its sibling', async () => {
+    const h = railStore();
+    await h.run(red);
+    await h.run({ nowMs: NOW + HOUR, readLastGreenAtMs: async () => NOW + 1,
+      readLastVerdictAtMs: async () => null });
+    expect(h.closed).toHaveLength(1);
+    expect(JSON.parse(decodeURIComponent(h.closed[0].split('alarm:green-main-slo:')[1]))[2]).toBe('time-since-green');
+    expect([...h.states.values()].filter((s) => s.open)).toHaveLength(1);
+  });
+
+  it.each([null, NOW - 1, NOW + 2 * HOUR, NaN, Infinity])('preserves recovery on missing/old/future/invalid green %s', async (stamp) => {
+    const h = railStore();
+    await h.run(red);
+    await h.run({ nowMs: NOW + HOUR, readLastGreenAtMs: async () => stamp, readLastVerdictAtMs: async () => null });
+    expect(h.closed).toEqual([]);
+  });
+
+  it.each([{ workspaceId: 'ws-foreign' }, { installSlug: 'foreign-install' }])('does not resolve another scope %j', async (scope) => {
+    const h = railStore();
+    await h.run(red);
+    await h.run({ ...scope, nowMs: NOW + HOUR, readLastGreenAtMs: async () => NOW + 1, readLastVerdictAtMs: async () => NOW + 1 });
+    expect(h.closed).toEqual([]);
+  });
+
+  it('preserves failed reads and still delivers unrelated breaches', async () => {
+    const h = railStore();
+    await h.run(red);
+    const res = await h.run({ ...red, readLastGreenAtMs: async () => { throw new Error('unreadable'); } });
+    expect(res.readErrors).toEqual([{ input: 'lastGreenAt', message: 'unreadable' }]);
+    expect(res.deliveries).toHaveLength(1);
+    expect(h.closed).toEqual([]);
+  });
+
+  it('a failed condition read/open does not suppress legacy attention or clear anything', async () => {
+    const owner = onceStore();
+    const res = await runGreenMainSloPass(deps({ ...red, notifyOnce: owner.notifyOnce,
+      readConditions: async () => { throw new Error('conditions unavailable'); },
+      rail: { broadcast: async () => false, resolve: vi.fn() } }));
+    expect(owner.sent).toHaveLength(2);
+    expect(res.conditionErrors).toHaveLength(3);
+  });
+
+  it('a failed owner delivery cannot prevent condition opening', async () => {
+    const h = railStore();
+    const res = await h.run({ ...red, notifyOnce: async () => { throw new Error('notification failed'); } });
+    expect(h.opens).toHaveLength(2);
+    expect(res.deliveries.every((d) => d.error === 'notification failed')).toBe(true);
+  });
+
+  it('a refused resolution preserves the durable episode and exposes failure', async () => {
+    const h = railStore();
+    await h.run(red);
+    const res = await h.run({ nowMs: NOW + HOUR, readLastGreenAtMs: async () => NOW + 1,
+      rail: { broadcast: h.broadcast, resolve: async () => false } });
+    expect(res.conditionErrors).toHaveLength(1);
+    expect(h.closed).toEqual([]);
+  });
+
+  it('sync-rate recovery requires fresh counted samples for the same fleet, across day changes', async () => {
+    const h = railStore();
+    await h.run({ readSyncTallies: async () => [{ fleet: 'f1', judgedBatches: 10, redBatches: 5, observedAtMs: NOW }] });
+    for (const tally of [
+      { fleet: 'f2', judgedBatches: 10, redBatches: 0, observedAtMs: NOW + 1 },
+      { fleet: 'f1', judgedBatches: 10, redBatches: 0 },
+      { fleet: 'f1', judgedBatches: 10, redBatches: 0, observedAtMs: NOW - 1 },
+      { fleet: 'f1', judgedBatches: 1, redBatches: 0, observedAtMs: NOW + 1 },
+    ]) {
+      await h.run({ nowMs: NOW + HOUR, readSyncTallies: async () => [tally] });
+      expect(h.closed).toEqual([]);
+    }
+    await h.run({ nowMs: NOW + 24 * HOUR, readSyncTallies: async () => [
+      { fleet: 'f1', judgedBatches: 10, redBatches: 1, observedAtMs: NOW + 24 * HOUR },
+    ] });
+    expect(h.closed).toHaveLength(1);
+  });
+
+  it('queue recovery requires the same candidate and positive later progress for all three queue metrics', async () => {
+    const h = railStore();
+    const queue: GreenMainSloQueue = { candidate: 'candidate-a', phase: 'awaiting-fixer', openedAtMs: NOW - 10 * HOUR,
+      convergenceRounds: [
+        { round: 1, head: 'h1', failingCount: 3, atMs: NOW - 8 * HOUR },
+        { round: 2, head: 'h2', failingCount: 6, atMs: NOW - 4 * HOUR },
+      ],
+      admissions: [{ atMs: NOW - 6 * HOUR, actor: 'a', source: { ref: 'staging', sha: 's' },
+        fromRepairHead: 'h1', toRepairHead: 'h2', paths: ['x.ts'], unchanged: [], blobs: {} }],
+    };
+    await h.run({ readQueue: async () => queue });
+    expect(h.opens).toHaveLength(3);
+    await h.run({ nowMs: NOW + HOUR, readQueue: async () => null });
+    expect(h.closed).toEqual([]);
+    const recovered: GreenMainSloQueue = { ...queue, phase: 'ready-to-promote', fixerSpawnedAtMs: NOW + 1,
+      lastResumeRunStartedAtMs: NOW + 2, lastVerdictAtMs: NOW + 30 * 60_000,
+      convergenceRounds: [...queue.convergenceRounds!,
+        { round: 3, head: 'h3', failingCount: 3, atMs: NOW + 15 * 60_000 },
+        { round: 4, head: 'h4', failingCount: 3, atMs: NOW + 30 * 60_000 }],
+    };
+    await h.run({ nowMs: NOW + HOUR, readQueue: async () => ({ ...recovered, candidate: 'candidate-other' }) });
+    expect(h.closed).toEqual([]);
+    await h.run({ nowMs: NOW + HOUR, readQueue: async () => recovered });
+    expect(h.closed).toHaveLength(3);
+    await h.run({ nowMs: NOW + HOUR, readQueue: async () => recovered });
+    expect(h.opens).toHaveLength(3);
   });
 });

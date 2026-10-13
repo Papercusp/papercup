@@ -63,6 +63,8 @@ export type GreenMainSloQueue = FrozenRepairLatencySource &
 /** One fleet's sync-batch tally from the sync-batch delta check. `fleet: null` = no fleet. */
 export interface SyncBatchFleetTally {
   fleet: string | null;
+  /** Newest measured judged-batch clock; missing clocks cannot establish recovery. */
+  observedAtMs?: number;
   /** Batches the check judged (evaluated green or red). */
   judgedBatches: number;
   /** Of those, batches it judged red. */
@@ -86,13 +88,19 @@ export function syncTalliesFromDeltaCoverage(syncDelta: unknown): SyncBatchFleet
   if (!Array.isArray(ticks)) return null;
   let judgedBatches = 0;
   let redBatches = 0;
+  let observedAtMs: number | undefined;
+  let clocksComplete = true;
   for (const tick of ticks) {
     const status = tick && typeof tick === 'object' ? (tick as { status?: unknown }).status : undefined;
     if (status !== 'green' && status !== 'red') continue;
     judgedBatches += 1;
     if (status === 'red') redBatches += 1;
+    const atMs = (tick as { atMs?: unknown }).atMs;
+    if (typeof atMs !== 'number' || !Number.isFinite(atMs) || atMs <= 0) clocksComplete = false;
+    else observedAtMs = Math.max(observedAtMs ?? 0, atMs);
   }
-  return [{ fleet: null, judgedBatches, redBatches }];
+  return [{ fleet: null, judgedBatches, redBatches,
+    ...(clocksComplete && observedAtMs !== undefined ? { observedAtMs } : {}) }];
 }
 
 export interface GreenMainSloInput {
@@ -147,6 +155,8 @@ export type GreenMainSloBreachMetric =
 
 export interface GreenMainSloBreach {
   metric: GreenMainSloBreachMetric;
+  /** Exact queue or fleet subject; independent of the legacy notification episode key. */
+  subject?: string | null;
   /** `page` = owner page (notifyAttention); `alert` = attention item at normal importance. */
   severity: 'page' | 'alert';
   value: number;
@@ -253,6 +263,7 @@ export function computeGreenMainSlo(input: GreenMainSloInput, thresholds: GreenM
     const lastRound = (queue.convergenceRounds ?? []).reduce((max, r) => Math.max(max, r.round), 0);
     breaches.push({
       metric: 'round-cycle-time',
+      subject: queue.candidate,
       severity: 'alert',
       value: roundCycleTime.lastMs,
       threshold: t.roundCycleAlertMs,
@@ -266,6 +277,7 @@ export function computeGreenMainSlo(input: GreenMainSloInput, thresholds: GreenM
     const idleSince = latency.redAwaitingFixerMs !== null ? latency.stamps.lastRedAtMs : latency.stamps.lastAdmittedAtMs;
     breaches.push({
       metric: 'queue-idle',
+      subject: queue.candidate,
       severity: 'alert',
       value: queueIdleMs,
       threshold: t.queueIdleAlertMs,
@@ -280,6 +292,7 @@ export function computeGreenMainSlo(input: GreenMainSloInput, thresholds: GreenM
   for (const head of admissions?.heads ?? []) {
     breaches.push({
       metric: 'red-adding-admission',
+      subject: queue?.candidate,
       severity: 'alert',
       value: 1,
       threshold: 0,
@@ -292,6 +305,7 @@ export function computeGreenMainSlo(input: GreenMainSloInput, thresholds: GreenM
     if (rate.rate === null || rate.judgedBatches < t.perSyncRedMinBatches || rate.rate <= t.perSyncRedRateAlert) continue;
     breaches.push({
       metric: 'per-sync-red-rate',
+      subject: rate.fleet,
       severity: 'alert',
       value: rate.rate,
       threshold: t.perSyncRedRateAlert,
