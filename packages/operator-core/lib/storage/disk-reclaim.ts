@@ -41,6 +41,7 @@ export interface DiskReclaimReceipt {
   entries: Array<{ path: string; classId: string; status: 'removed' | 'would-remove' | 'protected' | 'changed' | 'failed'; bytes: number; reason?: string }>;
   delegates: Array<{ classId: string; ok: boolean; detail: unknown }>;
   errors: string[];
+  scan?: { inspectedNodes: number; retainedRecentTrees: number; stoppedAtRoot: string | null };
 }
 export interface DiskReclaimOptions {
   dryRun?: boolean; home?: string; policy?: readonly RetentionClass[];
@@ -160,12 +161,16 @@ async function policyRoots(policy: CompiledPolicy, home: string, errors: string[
 }
 
 /** A tree is stale only if EVERY descendant is stale. Capped or unreadable scans refuse deletion. */
-async function inspectEntry(path: string, root: string, classId: string, budget: { left: number; deadline: number }, retainAfterMs?: number): Promise<RetentionEntry | null> {
+interface RetentionScanBudget {
+  left: number; deadline: number;
+  progress: NonNullable<DiskReclaimReceipt['scan']>;
+}
+async function inspectEntry(path: string, root: string, classId: string, budget: RetentionScanBudget, retainAfterMs?: number): Promise<RetentionEntry | null> {
   const first = await lstat(path);
   let newestWriteMs = 0, bytes = 0;
   const stack = [path];
   while (stack.length) {
-    if (--budget.left < 0 || Date.now() > budget.deadline) throw new Error('incomplete tree scan');
+    if (Date.now() > budget.deadline) throw new Error('incomplete tree scan');
     const current = stack.pop()!;
     const s = current === path ? first : await lstat(current);
     if (s.isSymbolicLink() || s.dev !== first.dev) throw new Error('symlink or filesystem boundary');
@@ -173,7 +178,14 @@ async function inspectEntry(path: string, root: string, classId: string, budget:
     // A single recent write proves a max-age tree ineligible. Its remaining
     // descendants cannot change that verdict, so leave them unwalked. Count
     // policies still need the exact newest write across the whole tree.
-    if (retainAfterMs !== undefined && newestWriteMs >= retainAfterMs) return null;
+    if (retainAfterMs !== undefined && newestWriteMs >= retainAfterMs) {
+      budget.progress.retainedRecentTrees++;
+      return null;
+    }
+    // Only unresolved stale-tree nodes consume the deep-inspection count.
+    // Cheap, conclusive retain checks remain bounded by the shared deadline.
+    if (--budget.left < 0) throw new Error('incomplete tree scan');
+    budget.progress.inspectedNodes++;
     bytes += s.blocks * 512;
     if (s.isDirectory()) stack.push(...(await readdir(current)).map((name) => join(current, name)));
   }
@@ -201,21 +213,23 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       // A registered workspace's tool run dirs belong exclusively to scratch-gc.
       const workspaceIds = (options.registeredWorkspaces ?? (() => readRegistry().workspaces.map((x) => x.id)))();
       const protectedPaths = (options.protectedPaths ?? []).map((path) => resolve(path));
-      const budget = { left: options.maxEntries ?? 100_000, deadline: Date.now() + (options.budgetMs ?? 60_000) };
+      const progress = receipt.scan = { inspectedNodes: 0, retainedRecentTrees: 0, stoppedAtRoot: null as string | null };
+      const budget = { left: options.maxEntries ?? 100_000, deadline: Date.now() + (options.budgetMs ?? 60_000), progress };
       const budgetExpired = () => budget.left <= 0 || Date.now() >= budget.deadline;
       let budgetStopped = false;
-      const stopAtBudget = () => {
+      const stopAtBudget = (root: string) => {
         if (!budgetStopped) receipt.errors.push('incomplete tree scan: retention scan budget exhausted');
+        progress.stoppedAtRoot ??= root;
         budgetStopped = true;
       };
       for (const root of roots) {
-        if (budgetExpired()) { stopAtBudget(); break; }
+        if (budgetExpired()) { stopAtBudget(root.path); break; }
         const entries: RetentionEntry[] = [];
         const keep = policy.classes.get(root.classId)?.keep;
         const retainAfterMs = keep?.kind === 'max-age' ? started - keep.maxAgeHours * HOUR : undefined;
         try {
           for (const name of await readdir(root.path)) {
-            if (budgetExpired()) { stopAtBudget(); break; }
+            if (budgetExpired()) { stopAtBudget(root.path); break; }
             const path = join(root.path, name);
             if (root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) continue;
             if (protectedPaths.some((protectedPath) => overlap(path, protectedPath))) continue;
@@ -226,7 +240,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               if (entry) entries.push(entry);
             }
             catch (err) {
-              if (budgetExpired()) { stopAtBudget(); break; }
+              if (budgetExpired()) { stopAtBudget(root.path); break; }
               receipt.errors.push(`inspect:${path}: ${message(err)}`);
             }
           }
@@ -239,7 +253,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const holders = await scan(selected.map((e) => e.path));
         if (!holders.complete) { receipt.errors.push('incomplete process-holder scan'); continue; }
         for (const entry of selected) {
-          if (budgetExpired()) { stopAtBudget(); break; }
+          if (budgetExpired()) { stopAtBudget(root.path); break; }
           const outcome: DiskReclaimReceipt['entries'][number] = { path: entry.path, classId: entry.classId, bytes: entry.bytes, status: 'protected' };
           receipt.entries.push(outcome);
           if (holders.byPath.has(entry.path)) { outcome.reason = 'live process'; continue; }
@@ -259,7 +273,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             await options.record?.('removed', outcome);
           } catch (err) {
             outcome.status = 'failed'; outcome.reason = message(err);
-            if (budgetExpired()) { stopAtBudget(); break; }
+            if (budgetExpired()) { stopAtBudget(root.path); break; }
             receipt.errors.push(`remove:${entry.path}: ${message(err)}`);
           }
         }

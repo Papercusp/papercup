@@ -171,6 +171,25 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
     expect(receipt.entries).toEqual([]); expect(await stat(join(parent, 'child-0'))).toBeTruthy();
   });
+  it('completes the retain census when recent direct entries outnumber the deep-scan budget', async () => {
+    const { root, options } = await setup();
+    await Promise.all(Array.from({ length: 32 }, (_, i) => writeFile(join(root, `recent-${i}`), 'keep')));
+    const receipt = await runDiskReclaimOnce({ ...options, nowMs: Date.now(), maxEntries: 2 });
+    expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+    expect(receipt.entries).toEqual([]);
+    expect(receipt.scan).toEqual({ inspectedNodes: 0, retainedRecentTrees: 32, stoppedAtRoot: null });
+    expect(await stat(join(root, 'recent-31'))).toBeTruthy();
+  });
+  it('keeps the complete newest-write inspection bound for count retention', async () => {
+    const { root, options } = await setup();
+    await Promise.all(Array.from({ length: 32 }, (_, i) => writeFile(join(root, `recent-${i}`), 'keep')));
+    const policy: RetentionClass[] = [{ ...options.policy[0]!, keep: { kind: 'newest', keep: 1 } }];
+    const receipt = await runDiskReclaimOnce({ ...options, policy, nowMs: Date.now(), maxEntries: 2 });
+    expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
+    expect(receipt.entries).toEqual([]);
+    expect(receipt.scan).toEqual({ inspectedNodes: 2, retainedRecentTrees: 0, stoppedAtRoot: root });
+    expect(await stat(join(root, 'recent-31'))).toBeTruthy();
+  });
   it('stops at a recent descendant while preserving an otherwise stale large tree', async () => {
     const { root, options } = await setup();
     const parent = join(root, 'parent'); await mkdir(parent);
