@@ -47,7 +47,7 @@ export default defineTool({
     when:
       'After a first-pass check of local code, docs, or search, Ask once with a concrete question before long re-derivation; include what you tried, observed, and the decision it informs.',
     notWhen:
-      'Reading an existing conversation? use conversations:get { id }. Query live state; coord:ask-owner for owner decisions, coord:send for known agents. Do not consult to meet a quota or when code, docs, or search answer it. Do not open duplicate consults or repeat unchanged questions after no_available_responder; advice is not a handoff.',
+      'Reading an existing conversation? use conversations:get { id }. Query live state; coord:ask-owner for owner decisions, coord:send for known agents. Do not consult to meet a quota or when code, docs, or search answer it. Do not open duplicate consults or repeat unchanged questions after no_available_responder; advice is not a handoff. Parking a reversible judgment call? work_items:set_blocker kind:\'product-decision\' + defaultIfUnanswered + decideBy opens the review for you.',
     chaining:
       "This tool does not read an existing conversation; use conversations:get { id }. The dispatcher already walks allowed model ranks; do not retry. Set latency_contract:'hard-blocked' only if blocked on the answer; declines/expiries advance the cascade. After advice arrives, read the reply and apply relevant findings to your project decision. Receipt or silence does not prove usefulness. With allow_dispatch:false, retrieval-only returns candidates but no answer session.",
     returns:
