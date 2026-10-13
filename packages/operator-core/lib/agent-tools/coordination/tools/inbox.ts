@@ -486,6 +486,50 @@ export function boundInboxEntries<T extends Record<string, unknown>>(
   });
 }
 
+/** P-006 (oversized-tool-results-reduction-2026-10-12): `body` is the flattened
+ *  projection of `sections[].text` (message-fields.ts joins the texts with a
+ *  blank line), and `boundInboxEntries` caps each copy separately. So a bounded
+ *  read of a sectioned message paid for the same prose twice. Measured on 67 real
+ *  coord:inbox spills: 46 of the 63 entries carrying both had duplicated text.
+ *
+ *  When `body` is exactly that join, keep `body` as the single text copy and
+ *  strip `text` from each section, preserving every structural key
+ *  (`authoredFieldsMarker` reads only those). A kept array stays index-aligned
+ *  with the body's blank-line-separated paragraphs and carries
+ *  `sections_text_in_body: true`. If no section keeps a key, the array is dropped.
+ *  An entry whose body is not exactly the join (legacy, malformed) is returned
+ *  untouched. coord:read and coord:thread still return the full sections.
+ *  Pure. */
+export function dropSectionTextDuplicatedInBody<T extends Record<string, unknown>>(
+  entries: readonly T[],
+): Array<Record<string, unknown>> {
+  return entries.map((e) => {
+    const body = e["body"];
+    const raw = e["sections"];
+    if (typeof body !== "string" || !Array.isArray(raw) || raw.length === 0) return e;
+    const texts: string[] = [];
+    for (const s of raw) {
+      if (!s || typeof s !== "object") return e;
+      const text = (s as Record<string, unknown>)["text"];
+      if (typeof text !== "string") return e;
+      texts.push(text);
+    }
+    if (texts.join("\n\n") !== body) return e;
+    const stripped = raw.map((s) => {
+      const { text: _text, ...rest } = s as Record<string, unknown>;
+      return rest;
+    });
+    const out: Record<string, unknown> = { ...e };
+    if (stripped.some((s) => Object.keys(s).length > 0)) {
+      out["sections"] = stripped;
+      out["sections_text_in_body"] = true;
+    } else {
+      delete out["sections"];
+    }
+    return out;
+  });
+}
+
 /** The warning attached to a REMOTE-ORIGIN entry that asserts infrastructure
  *  state. Deliberately names the misreading it prevents AND the destructive act
  *  such alarms prescribe, because both were observed (EI-19493603840800478). */
@@ -1853,7 +1897,11 @@ export default defineTool({
       entries as unknown as Array<Record<string, unknown>>,
       all as unknown as Array<Record<string, unknown>>,
     );
-    const boundEntries = boundInboxEntries(annotatedEntries, effectiveCap).map((entry) => {
+    // P-006: a bounded read keeps ONE copy of a sectioned message's prose (see
+    // dropSectionTextDuplicatedInBody). An unbounded read (cap 0) is left whole.
+    const singleCopyEntries =
+      effectiveCap > 0 ? dropSectionTextDuplicatedInBody(annotatedEntries) : annotatedEntries;
+    const boundEntries = boundInboxEntries(singleCopyEntries, effectiveCap).map((entry) => {
       // P-033 (e): mark which entries carry AUTHORED structure (premises /
       // forYouBecause / youMayNotKnow / couldNotDetermine / clarify). Derived AFTER
       // bounding on purpose: bounding truncates the TEXT of `summary`/`body`/
