@@ -842,6 +842,7 @@ export default defineTool({
           command: execCommand,
           cwd,
           stateDir: ctx.stateDir,
+          dispatchCallId: ctx.dispatchCallId,
           ...(!args.run_in_background ? { onChunk: (chunk: string) => ctx.emit('output', chunk) } : {}),
           sandboxEnabled: runOffline || sandboxPolicy.enabled,
           sandboxRequired: runOffline || sandboxPolicy.required,

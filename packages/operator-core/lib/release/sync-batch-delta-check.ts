@@ -1118,7 +1118,7 @@ export interface SyncBatchDeltaDeps {
    *  `true` = passed, `false` = failed, `null` = not measured. */
   confirmOne(file: string): Promise<ConfirmVerdict>;
   /** File/refresh the deduped work item (assigned to `finding.assignee` when set). */
-  fileRed(finding: RedFinding): Promise<{ ok: boolean; id?: string; adopted?: boolean; error?: string }>;
+  fileRed(finding: RedFinding): Promise<{ ok: boolean; id?: string; adopted?: boolean; assignee?: string | null; error?: string; notificationError?: string }>;
   /** Newest recorded editor per file from the edit-attribution ledger, since `sinceMs`
    *  (P-002). null = unreadable; the red then routes by trailer or files unassigned. */
   lookupEditors?(files: readonly string[], sinceMs: number): Promise<EditorHit[] | null>;
@@ -1136,7 +1136,7 @@ export interface SyncBatchDeltaDeps {
 export async function fileRoutedRed(
   deps: Pick<SyncBatchDeltaDeps, 'fileRed' | 'log'>,
   finding: RedFinding,
-): Promise<{ ok: boolean; id?: string; adopted?: boolean; error?: string }> {
+): Promise<{ ok: boolean; id?: string; adopted?: boolean; assignee?: string | null; error?: string; notificationError?: string }> {
   const res = await deps.fileRed(finding);
   if (res.ok || !finding.assignee) return res;
   deps.log(

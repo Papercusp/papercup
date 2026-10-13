@@ -9,7 +9,8 @@ import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture
 
 const io = vi.hoisted(() => ({ prereg: vi.fn(), committed: vi.fn(), register: vi.fn(),
   upsert: vi.fn(), task: vi.fn(), status: vi.fn(), completion: vi.fn(), events: vi.fn(), snapshot: vi.fn(),
-  legacyBind: vi.fn(), legacyRun: vi.fn(), kill: vi.fn(), list: vi.fn() }));
+  legacyBind: vi.fn(), legacyRun: vi.fn(), kill: vi.fn(), list: vi.fn(), emit: vi.fn() }));
+vi.mock('./reproducibility/emit', () => ({ emitRollout: io.emit }));
 vi.mock('./reproducibility/store', () => ({ getPrereg: io.prereg }));
 vi.mock('./reproducibility/prereg', () => ({ requireCommittedPreregistration: io.committed }));
 vi.mock('../learning-governor/store', async original => ({ ...await original<Record<string, unknown>>(), registerLearningLoop: io.register }));
@@ -83,6 +84,42 @@ describe('current launcher owns its assignment runtime', () => {
     loadBacklog: async () => [task('t2'), task('t1')],
     currentGeneration: { clone: async (t: BenchTask) => ({ dir: `/private/${t.instanceId}`, repo: 'fixture', baseCommit: 'a'.repeat(40), cleanup: async () => {} }),
       extractDiff: async () => 'diff --git a/a b/a' },
+  });
+  it('routes FrontierSWE v2 through the current container arm and persists its graded native evidence', async () => {
+    config.grader.family = 'frontier-swe';
+    const currentTask = vi.fn();
+    const generation = { clone: vi.fn(), extractDiff: vi.fn() };
+    const loadBacklog = vi.fn(async () => [task('t1'), task('t2')].map(value => ({ ...value, benchmark: 'frontier-swe' })));
+    const currentFrontierArm: NonNullable<Parameters<typeof launchBenchRun>[1]>['currentFrontierArm'] = vi.fn(async req => {
+      for (const value of req.backlog!) await req.onResult!({ runId: req.runId, suite: 'frontier-swe',
+        modality: 'in-container', taskId: value.instanceId, arm: 'papercusp', seed: 3,
+        resolved: false, score: 0.5, graderStatus: 'failed', graderFamily: 'frontier-swe', graderVersion: config.grader.version,
+        tokensIn: 10, tokensOut: 20, tokensTotal: 30, costUsd: 0.001, priceTableVersion: config.priceSchedule.version,
+        wallClockMs: 100, turns: 2, budgetTokens: null, capped: false, generationStatus: 'completed', generationError: null,
+        armMeta: { executionPath: 'modernization-launch-adapter', nativeUsage: { stopReason: 'done', tokensCacheRead: 5 },
+          currentExecution: { protocolIdentity: { status: 'matched' } } },
+        modelId: config.arms[0].model, harnessVersion: config.arms[0].runtime.sourceRevision,
+        preregHash: input.current!.preregHash, rolloutId: 'fixture-rollout', createdAt: new Date().toISOString() });
+      return { arm: 'papercusp', runId: req.runId, startedAtMs: 0, finishedAtMs: 100, rows: [],
+        modelCallsSpent: 2, tokensSpent: 60, costUsdSpent: 0.002, budgetExhausted: false,
+        attemptedTaskIds: ['t1', 't2'], skippedTaskIds: [] };
+    });
+    await (await launchBenchRun({ ...input, suite: 'frontier-swe' }, { ...deps(), loadBacklog,
+      currentTask, currentGeneration: generation, currentFrontierArm })).done;
+    expect(loadBacklog).toHaveBeenCalledWith('frontier-swe-v2-custom', ['t1', 't2']);
+    expect(currentTask).not.toHaveBeenCalled(); expect(generation.clone).not.toHaveBeenCalled();
+    expect(io.legacyRun).not.toHaveBeenCalled(); expect(io.legacyBind).not.toHaveBeenCalled();
+    expect(io.emit).toHaveBeenCalledTimes(2);
+    expect(io.emit.mock.calls[0][0]).toMatchObject({ runId: config.runId, modality: 'in-container',
+      generation: { tokensCacheRead: 5, armMeta: { executionPath: 'modernization-launch-adapter' } },
+      grading: { score: 0.5, status: 'failed', family: 'frontier-swe' } });
+    expect(io.task.mock.calls.some(([, row]) => row.taskStatus === 'graded' && row.resolved === false)).toBe(true);
+  });
+  it('refuses an unbound FrontierSWE native reference before persisting a run or selecting a legacy arm', async () => {
+    config.grader.family = 'frontier-swe'; const currentFrontierArm = vi.fn();
+    await expect(launchBenchRun({ ...input, arm: 'baseline', suite: 'frontier-swe' },
+      { ...deps(), currentFrontierArm })).rejects.toThrow(/stock-native reference is not bound/);
+    expect(io.upsert).not.toHaveBeenCalled(); expect(currentFrontierArm).not.toHaveBeenCalled();
   });
   it('passes native-codex to the stock assignment driver and never binds a Queen', async () => {
     const requests: string[] = [];

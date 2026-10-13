@@ -56,7 +56,7 @@
     "retainedNativeTestsPassed": 125,
     "retainedNativeTestsSkipped": 0,
     "scope": "Prior saved local dirty loop-fire.test.ts run; not repeated here.",
-    "sourceCapture": "/home/marsh-office/.papercusp/scratch/papercusp-workspace/byoc-p009-r004-executed-source-20261013.json",
+    "sourceCapture": "~/.papercusp/scratch/papercusp-workspace/byoc-p009-r004-executed-source-20261013.json",
     "latestMatchingLedgerRow": "Not returned by bounded release-operator exact-file/local/since17:34Z read; no absence outside that selector is inferred.",
     "eligibility": "Saved worktreeDirty/config-deps-unavailable remains ineligible for clean canonical reuse."
   },

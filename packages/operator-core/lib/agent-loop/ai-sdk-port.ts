@@ -150,6 +150,12 @@ export function effortProviderOptions(
   provider: AiSdkPortModel['provider'],
   effort: string | null | undefined,
 ): SharedV3ProviderOptions | undefined {
+  // D-016 requires request-level ZDR regardless of reasoning support or
+  // account defaults. Keep it on the shared call seam so streaming, endpoint
+  // failures and injected SDK-model defaults cannot relax the policy.
+  if (provider === 'openrouter') {
+    return { openrouter: { provider: { zdr: true }, ...(effort ? { reasoning: { effort } } : {}) } };
+  }
   if (!effort) return undefined;
   switch (provider) {
     case 'anthropic':
@@ -165,8 +171,6 @@ export function effortProviderOptions(
       return { groq: { reasoningEffort: effort } };
     case 'xai':
       return { xai: { reasoningEffort: effort } };
-    case 'openrouter':
-      return { openrouter: { reasoning: { effort } } };
   }
 }
 

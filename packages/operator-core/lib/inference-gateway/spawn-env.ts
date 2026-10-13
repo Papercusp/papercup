@@ -105,6 +105,20 @@ export function accountRoutingMode(value: unknown): AccountRoutingMode {
   return 'pin';
 }
 
+/** Apply the explicit selector after resolution and before the child env is merged. */
+export function applyExplicitSpawnAccountRoute(env: Record<string, string>, account?: string): void {
+  if (!account?.trim()) return;
+  const mode = accountRoutingMode(account);
+  env.PAPERCUSP_ACCOUNT_ROUTING_MODE = mode;
+  if (mode !== 'pin') env.PAPERCUSP_ACCOUNT_ID = '';
+  if (mode === 'default') {
+    env.PAPERCUSP_CODEX_GATEWAY = '';
+    env.ANTHROPIC_BASE_URL = '';
+    env.ANTHROPIC_CUSTOM_HEADERS = '';
+    env.ANTHROPIC_AUTH_TOKEN = '';
+  }
+}
+
 export interface WakeAccountRoute {
   mode: AccountRoutingMode;
   /** null for direct/default and unpinned auto routing. */
@@ -334,6 +348,8 @@ export async function resolveSpawnGatewayEnv(opts: {
    *                                      the id like the PAPERCUSP_SPAWN_ACCOUNT_PIN env path.
    *  Omitted/'' → today's behavior (env pin → multi-account select → gateway active()). */
   account?: string | null;
+  /** Observe the same provider/override-filtered set used by this resolver. */
+  onResolvedAccounts?: (accountIds: string[]) => void;
 }): Promise<Record<string, string>> {
   const acctOverride = (opts.account ?? '').trim();
   const acctMode = acctOverride.toLowerCase();
@@ -356,7 +372,10 @@ export async function resolveSpawnGatewayEnv(opts: {
   // account-routing-3-options: an explicit `account` override picks the routing MODE up-front.
   // 'default'/'none'/'system' skips the gateway entirely (the operator's "use the system credential"
   // escape hatch) — return before any pool work.
-  if (useDefault) return {};
+  if (useDefault) {
+    opts.onResolvedAccounts?.([]);
+    return {};
+  }
   const backend = interactiveBackendFromSpawnBackend(opts.backend ?? 'claude');
   let ompModelRoute: import('@papercusp/orchestrator/omp-gateway-config').OmpGatewayModelRoute | null = null;
   if (backend === 'omp' && opts.model?.trim()) {
@@ -408,6 +427,7 @@ export async function resolveSpawnGatewayEnv(opts: {
     }
     accountId = explicitPin;
     hardPin = true;
+    opts.onResolvedAccounts?.([explicitPin]);
   } else if (wantAuto) {
     // An explicit auto selection is a contract with the credential pool. Verify
     // there is at least one allowed provider account before emitting an unpinned
@@ -429,6 +449,7 @@ export async function resolveSpawnGatewayEnv(opts: {
         `account route 'auto' has no allowed ${provider} account in the pool; refusing default-system fallback`,
       );
     }
+    opts.onResolvedAccounts?.(candidates.map(candidate => candidate.id));
     accountId = undefined;
   } else {
     // Owner-directed dedicated-account pin (2026-06-23): when PAPERCUSP_SPAWN_ACCOUNT_PIN names a

@@ -3,11 +3,14 @@
  * EI-25841466577299173: exercise the first lazy terminal-event import against
  * real Postgres. The existing queue integration test preloads the engine.
  * This load witness delegates to the real module; no emitter is substituted.
+ * Resolve the DB and registry mocks through the same importActual factories as
+ * store.integration.test.ts, so this control covers that original import path.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { withActiveTestDeadline } from '../../test/_active-test-deadline';
 
 const h = vi.hoisted(() => ({
   sql: null as unknown as postgres.Sql,
@@ -15,15 +18,22 @@ const h = vi.hoisted(() => ({
   engineLoads: 0,
 }));
 
-vi.mock('@papercusp/db-org', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: h.sql }),
-}));
-vi.mock('../workspace-registry', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../workspace-registry')>()),
-  activeWorkspaceId: () => h.ws,
-  backgroundWorkspaceIds: () => [h.ws],
-}));
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return {
+    ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+  };
+});
+vi.mock('../workspace-registry', async () => {
+  const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
+  return {
+    ...actual,
+    activeWorkspaceId: () => h.ws,
+    backgroundWorkspaceIds: () => [h.ws],
+  };
+});
 vi.mock('../events/await/engine', async (importOriginal) => {
   h.engineLoads += 1;
   return importOriginal<typeof import('../events/await/engine')>();
@@ -45,7 +55,7 @@ describe('task terminal cold awaited-event bridge (real PG)', () => {
     await db?.cleanup();
   });
 
-  it('persists concurrent terminal events through the first lazy engine import', async () => {
+  it('persists concurrent terminal events through the first lazy engine import', () => withActiveTestDeadline(async () => {
     // Refuse a warmed control: it cannot distinguish cold import failures.
     expect(h.engineLoads).toBe(0);
     const taskIds = ['task-terminal-cold-a', 'task-terminal-cold-b'];
@@ -93,5 +103,9 @@ describe('task terminal cold awaited-event bridge (real PG)', () => {
          WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND event_key = ${eventKey}
       `).toEqual([{ fire_count: 1 }]);
     }
-  }, 60_000);
+  }, {
+    timeoutMs: 60_000,
+    wallTimeoutMs: 600_000,
+    onTiming: timing => console.info('COLD_TERMINAL_DEADLINE', JSON.stringify(timing)),
+  }), 0); // The measured active deadline owns this test; preserve the cold import.
 });

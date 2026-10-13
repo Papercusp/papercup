@@ -53,6 +53,7 @@ import {
   RESOLVABLE_EXTS,
 } from './deletion-import-guard';
 import { detectWholesaleDeletion } from './wholesale-deletion-guard';
+import { checkIgnoreVerbatimBatches } from './check-ignore-argv';
 import { runSyncBack, type SyncBackConfig, type SyncBackResult } from './sync-back';
 import { detectQuarantineImporters, detectStagedProvidersOfHeldImporters } from './quarantine-import-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
@@ -775,8 +776,14 @@ export type RunGeneratedDeclarationsGenerator = (repoPath: string, dependencies?
 export type GeneratedDeclarationsRepairResult =
   | { status: 'not-needed'; atomicPaths: string[] }
   | { status: 'regenerated'; atomicPaths: string[] }
-  /** The status census was unavailable, so only declaration-related paths are deferred. */
-  | { status: 'deferred'; atomicPaths: string[]; detail: string }
+  /**
+   * Only declaration-related paths are deferred; the rest of the tree commits.
+   * Either the status census was unavailable, or the generator failed
+   * (WI-6554700010010659) — then `compilerErrors` lists the dirty files its
+   * diagnostics named, which are deferred with the declaration surface and
+   * reported as content offenders.
+   */
+  | { status: 'deferred'; atomicPaths: string[]; detail: string; compilerErrors?: DeclarationCompileError[] }
   | { status: 'blocked'; atomicPaths: string[]; detail: string };
 
 export type GeneratedDeclarationsRegenerator = (
@@ -785,8 +792,8 @@ export type GeneratedDeclarationsRegenerator = (
 
 /**
  * Run declaration emit in a bounded child. Unlike the tool-catalog repair, a
- * failure is returned to the caller as `blocked`: committing the source without
- * its generated declaration is the exact torn-snapshot class this seam closes.
+ * failure defers the declaration surface: committing the source without its
+ * generated declaration is the exact torn-snapshot class this seam closes.
  */
 export const defaultRunGeneratedDeclarationsGenerator: RunGeneratedDeclarationsGenerator = (repoPath, dependencies) =>
   runGitSyncUnderInstallBoundary(repoPath, () =>
@@ -874,6 +881,60 @@ const declarationTrackedInventoryArgs = [
   '*.d.mts',
 ];
 
+/** One file the declarations compiler rejected, with its diagnostic line(s). */
+export interface DeclarationCompileError {
+  /** Repo-relative path. */
+  path: string;
+  /** tsc's own diagnostic line(s) for this file, capped. */
+  diagnostic: string;
+}
+
+/** Detector key git-sync reports a compiler-named file under (WI-6554700010010659). */
+export const DECLARATION_COMPILE_DETECTOR_KEY = 'declarations-tsc';
+
+/**
+ * Files named by tsc diagnostics in `output` — `path(line,col): error TSnnnn: …` (tsc's
+ * non-pretty format, which it uses when stdout is not a TTY, as in
+ * `scripts/gen-declarations.ts`). An absolute path inside `repoPath` is made relative; one
+ * outside it is dropped. Sorted by path. WI-6554700010010659.
+ */
+export function declarationCompileErrors(output: string, repoPath: string): DeclarationCompileError[] {
+  const root = repoPath.endsWith('/') ? repoPath : `${repoPath}/`;
+  const byPath = new Map<string, string[]>();
+  for (const match of output.matchAll(/^\s*(.+?)(\(\d+,\d+\): error TS\d+:.*)$/gm)) {
+    let path = match[1].trim();
+    if (path.startsWith('/')) {
+      if (!path.startsWith(root)) continue;
+      path = path.slice(root.length);
+    }
+    if (path.startsWith('./')) path = path.slice(2);
+    if (!path || path.startsWith('../')) continue;
+    const lines = byPath.get(path) ?? [];
+    lines.push(`${path}${match[2]}`.trim());
+    byPath.set(path, lines);
+  }
+  return [...byPath.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([path, lines]) => ({ path, diagnostic: lines.slice(0, 3).join('\n').slice(0, 600) }));
+}
+
+/**
+ * Report each compiler-named file as a content offender, so it is quarantined, escalated
+ * and handed to the content-fixer like any other broken file instead of sitting
+ * uncommitted with only a log line (WI-6554700010010659).
+ */
+export function declarationCompileOffenders(errors: readonly DeclarationCompileError[]): ContentOffender[] {
+  return errors.map((error) => ({
+    file: error.path,
+    detectorKey: DECLARATION_COMPILE_DETECTOR_KEY,
+    error:
+      'the declarations program (tsconfig.declarations.json, run by scripts/gen-declarations.ts) rejects this ' +
+      'file, so git-sync holds it and the generated declarations; fix the error and the next pass commits ' +
+      `them:\n${error.diagnostic}`,
+    fixerRole: 'content-fixer',
+  }));
+}
+
 function declarationAtomicPathsFromTrackedPaths(trackedPaths: ReadonlySet<string>): string[] {
   const atomicPaths = new Set<string>();
   for (const path of [...DECLARATIONS_TRACKED_PATHS, ...DECLARATIONS_PACKAGE_INPUTS]) {
@@ -896,8 +957,10 @@ function declarationAtomicPathsFromTrackedPaths(trackedPaths: ReadonlySet<string
  * repositories and avoids treating hand-written `.d.mts` siblings as generated.
  * `atomicPaths` is consumed by the attribution layer: every affected source and
  * artifact is withheld from per-agent commits and lands together in the single
- * catch-all commit. A failed emit is fail-CLOSED for the superproject commit;
- * publishing a stale pair and relying on the gate to red later is not recovery.
+ * catch-all commit. A failed emit is fail-CLOSED for the declaration surface
+ * (every enrolled pair plus the generator inputs) and for the dirty files the
+ * compiler names; publishing a stale pair and relying on the gate to red later is
+ * not recovery. The rest of the tree still commits (WI-6554700010010659).
  */
 export async function regenerateGeneratedDeclarationsBeforeCommit(
   context: ToolCatalogRegeneratorContext,
@@ -978,14 +1041,30 @@ export async function regenerateGeneratedDeclarationsBeforeCommit(
     }
     if (result.code !== 0) {
       const detail = (result.stderr || result.stdout || `exit ${result.code}`).trim().slice(0, 300);
-      log(
-        `[git-sync] ${repoPath}: declaration regeneration failed (${detail}) — deferring the superproject commit so source and generated artifacts cannot split`,
+      // WI-6554700010010659: this used to return `blocked`, which deferred the WHOLE
+      // superproject commit. The declarations program compiles every TS file its
+      // `.mjs` inputs reach, so one peer's TS error anywhere in that graph froze
+      // every agent's commits (measured 2026-10-13 15:50-17:14Z: a TS5097 in a dirty
+      // verifier-source.ts). Torn pairs are prevented just as well by deferring the
+      // declaration surface — every enrolled source/artifact pair and the generator
+      // inputs — together with the dirty files the compiler names. The rest of the
+      // tree commits, and the failing file stays uncommitted, beside its diagnostic.
+      const surface = declarationAtomicPathsFromTrackedPaths(trackedPaths);
+      const dirty = new Set(dirtyBefore);
+      const compilerErrors = declarationCompileErrors(`${result.stderr}\n${result.stdout}`, repoPath).filter(
+        (error) => dirty.has(error.path) && !surface.includes(error.path),
       );
-      return {
-        status: 'blocked',
-        atomicPaths: [...new Set(affectedPairs.flatMap((pair) => [pair.source, pair.artifact]))],
-        detail,
-      };
+      const compilerNamed = compilerErrors.map((error) => error.path);
+      const atomicPaths = [...new Set([...surface, ...compilerNamed])].sort();
+      log(
+        `[git-sync] ${repoPath}: declaration regeneration failed (${detail}) — deferring ${atomicPaths.length} ` +
+          `declaration-related path(s)` +
+          (compilerNamed.length > 0
+            ? `, including ${compilerNamed.length} dirty file(s) its diagnostics name (${compilerNamed.join(', ')}),`
+            : '') +
+          ' while committing the unlocked remainder',
+      );
+      return { status: 'deferred', atomicPaths, detail, compilerErrors };
     }
 
     // The writer may dirty several outputs after a config/compiler-input change.
@@ -1862,7 +1941,9 @@ export type GitSyncOutcome = {
 export type GitSyncStepRunner = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
 
 /** Where a cooperative yield ({@link RunGitSyncOpts.shouldYield}) ended the pass. */
-export type GitSyncYieldBoundary = 'submodule-batch' | 'before-pointer-bump';
+type GitSyncSuperprojectYieldBoundary = 'before-superproject-stage' | 'before-superproject-publish';
+/** Completed Git boundaries; publication's shared-index refresh and CAS remain together. */
+export type GitSyncYieldBoundary = 'submodule-batch' | 'before-pointer-bump' | GitSyncSuperprojectYieldBoundary;
 
 /**
  * WI-10007606: thrown by {@link runGitSync} when `opts.shouldYield` reports a waiting
@@ -1910,9 +1991,11 @@ export interface RunGitSyncOpts {
    * WI-10007606: cooperative yield to a waiting exclusive (dev:restart's git-sync
    * restart barrier). One papercusp pass can hold the shared barrier for many minutes
    * under load (~41 submodules at ~12s per git call), far past any bounded drain, so
-   * waiting it out never converged. Polled ONLY at submodule-batch boundaries and once
-   * before the pointer-bump phase — never while a git command runs — so a yield cannot
-   * leave an index, merge or commit half done. A non-null reason ends the pass with
+   * waiting it out never converged. Polled at submodule-batch boundaries, before the
+   * pointer-bump phase, and inside superproject preparation/before publication —
+   * never while a git command runs or between shared-index refresh and HEAD CAS.
+   * Private indexes are removed on yield; completed commits remain durable.
+   * A non-null reason ends the pass with
    * {@link GitSyncYieldError}. A probe that throws fails OPEN (the pass continues): a
    * broken probe must never stop commits.
    */
@@ -2497,18 +2580,6 @@ export type ProtectedPathExclusionPreflight = {
   beyondSymlink: Set<string>;
 };
 
-/** Paths per batched `check-ignore` argv — far below ARG_MAX for repo-relative paths. */
-const CHECK_IGNORE_BATCH_SIZE = 256;
-
-/**
- * True when argv-mode `git check-ignore` prints this path back byte-for-byte:
- * printable ASCII with no `"` or `\` (the only printable characters Git C-quotes).
- * Exported for the batching test in run-git-sync.test.ts.
- */
-export function isVerbatimCheckIgnorePath(path: string): boolean {
-  return /^[\x20-\x7e]+$/.test(path) && !/["\\]/.test(path);
-}
-
 /**
  * Classify protected paths that cannot safely appear as negative pathspecs.
  *
@@ -2520,18 +2591,15 @@ export function isVerbatimCheckIgnorePath(path: string): boolean {
  * normal ignore handling; passing it as a negative pathspec makes `git add`
  * reject the entire command.
  *
- * WI-6554700010010584: BATCH every path Git echoes back verbatim. Each Git call
- * pays bg-host's admission queue (measured 10-24s per `check-ignore` under load),
- * and this preflight runs inside the superproject pointer-bump phase, which has no
- * cooperative-yield boundary. One call per path (8 at a time) turned ~40 live locks
- * into ~6 sequential rounds: papercusp's commit phase ran 5+ minutes on 2026-10-12
- * and portal's 2+ minutes on 2026-10-13, outlasting every restart drain that landed
- * in it. In argv mode (`-z` is rejected without `--stdin` on Git 2.43, and this
- * RunGit seam has no stdin channel) Git prints each ignored path exactly as given,
- * one per line, and C-quotes only names holding `"`, `\`, a control character or
- * (under the default core.quotePath) a non-ASCII byte. Printable-ASCII names
- * without `"`/`\` therefore map back losslessly; every other name keeps the
- * one-path probe, where the exit status is the answer.
+ * WI-6554700010010584: BATCH every path Git echoes back verbatim, via
+ * checkIgnoreVerbatimBatches (check-ignore-argv.ts, which documents the argv-mode
+ * quoting rules and why `-z` cannot be used). Each Git call pays bg-host's
+ * admission queue (measured 10-24s per `check-ignore` under load), and this
+ * preflight runs inside the superproject pointer-bump phase. One call per path
+ * (8 at a time) turned ~40 live locks into ~6 sequential rounds: papercusp's commit
+ * phase ran 5+ minutes on 2026-10-12 and portal's 2+ minutes on 2026-10-13,
+ * outlasting every restart drain that landed in it. Names Git would C-quote keep
+ * the one-path probe, where the exit status is the answer.
  *
  * Exit code 1 means "not ignored". Git exits 128 when a protected path is a
  * descendant of a symlink; `git add -A` does not traverse that symlink, but the
@@ -2547,25 +2615,8 @@ export async function classifyProtectedPathExclusions(
   repoPath: string,
   paths: readonly string[],
 ): Promise<ProtectedPathExclusionPreflight> {
-  const ignoredUntracked = new Set<string>();
   const beyondSymlink = new Set<string>();
-  const singles: string[] = [];
-  const verbatim: string[] = [];
-  for (const path of paths) (isVerbatimCheckIgnorePath(path) ? verbatim : singles).push(path);
-  for (let i = 0; i < verbatim.length; i += CHECK_IGNORE_BATCH_SIZE) {
-    const chunk = verbatim.slice(i, i + CHECK_IGNORE_BATCH_SIZE);
-    const result = await runGit(['check-ignore', '--', ...chunk], repoPath);
-    if (result.code === 1) continue;
-    if (result.code === 0) {
-      const asked = new Set(chunk);
-      const echoed = result.stdout.split('\n').filter((line) => line !== '');
-      if (echoed.every((line) => asked.has(line))) {
-        for (const line of echoed) ignoredUntracked.add(line);
-        continue;
-      }
-    }
-    singles.push(...chunk);
-  }
+  const { ignored: ignoredUntracked, unresolved: singles } = await checkIgnoreVerbatimBatches(runGit, repoPath, paths);
   // Bound concurrency instead of serializing one git process per remaining path.
   let next = 0;
   let failed = false;
@@ -4828,8 +4879,9 @@ async function commitPriorityPaths(
  * P-004 (git-sync-dx-hardening): peel each declaring agent's dirty files into its OWN commit
  * (intent subject + a Co-Authored-By trailer), preserving the CI-skip marker. Excluded files
  * (oversized / content offenders) stay quarantined. The catch-all (agent=null) group is left
- * for the caller's existing whole-tree commit. Never throws; a real commit failure returns an
- * error. Exported for the P-004 commit-grouping test (injected runGit, no real repo).
+ * for the caller's existing whole-tree commit. A real commit failure returns an
+ * error; a cooperative yield from beforeCommit propagates after private-index cleanup.
+ * Exported for the P-004 commit-grouping test (injected runGit, no real repo).
  *
  * WI-10006705: each group is built in a PRIVATE index, never the shared one. The
  * shared index is writable by anything on the tree (an agent's `git add`, the merge
@@ -5071,6 +5123,13 @@ interface CommitRepoOpts {
   isTempPackOpen?: (path: string) => Promise<boolean | null>;
   /** Caller-supplied protected paths in THIS repo's relative coordinate space. */
   excludePaths: string[];
+  /**
+   * Offenders a caller already detected (THIS repo's coordinate space), merged with the
+   * content detectors' findings so they get the same exclusion, importer guard,
+   * escalation and content-fixer dispatch. WI-6554700010010659: files the
+   * declarations compiler rejected.
+   */
+  preDetectedContentOffenders?: ContentOffender[];
   /** Protected paths in this repo's coordinate space, with holder provenance. */
   protectedHoldings: GitSyncLockHolding[];
   /** Re-read live holdings immediately before staging this repo. */
@@ -5095,6 +5154,8 @@ interface CommitRepoOpts {
   migrationDependencySubmodulePaths?: readonly string[];
   migrationFenceRoster?: readonly AttributionRosterEntry[];
   loadMigrationFenceRoster?: () => Promise<AttributionRosterEntry[]>;
+  /** Superproject-only safe-boundary probe; the caller retains its anti-starvation cap. */
+  yieldIfRequested?: (boundary: GitSyncSuperprojectYieldBoundary) => Promise<void>;
 }
 
 /** The commit-stage seam for the shared migration reservation admission guard. */
@@ -5583,6 +5644,15 @@ async function commitOneRepoWithScratch(
       log: o.log,
     });
     noteSlowPhase('content detectors');
+    if (o.preDetectedContentOffenders && o.preDetectedContentOffenders.length > 0) {
+      const seen = new Set(contentErrors.map((c) => `${c.file}\0${c.detectorKey}`));
+      for (const offender of o.preDetectedContentOffenders) {
+        const key = `${offender.file}\0${offender.detectorKey}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        contentErrors = [...contentErrors, offender];
+      }
+    }
     // EI-19932544083689229 quarantine-import guard (remedy #1 — ATOMICITY): a file
     // quarantined above (oversized, or excluded by a content detector — i.e. a file
     // that will have ZERO history in HEAD this tick) must not be committed WITHOUT
@@ -5822,6 +5892,10 @@ async function commitOneRepoWithScratch(
     // paths remain protected by their exclusion pathspec.
     const protectedPathPreflight = await classifyProtectedPathExclusions(runGit, repoPath, excludePaths);
     noteSlowPhase('protected path preflight');
+    // EI-258149: a drain can arrive after the outer pointer-bump probe while
+    // preparation is still running. All parallel preflight Git calls have settled;
+    // yield before opening/staging an attributed or catch-all private index.
+    await o.yieldIfRequested?.('before-superproject-stage');
     const ignoredUntrackedExcludes = protectedPathPreflight.ignoredUntracked;
     const beyondSymlinkExcludes = protectedPathPreflight.beyondSymlink;
     const omittedPreflightExcludes = new Set([...ignoredUntrackedExcludes, ...beyondSymlinkExcludes]);
@@ -5844,6 +5918,10 @@ async function commitOneRepoWithScratch(
     // WI-10006705: an attributed group passes the runner bound to its PRIVATE index, so the
     // guard inspects and edits exactly the index that group's commit records.
     const postStageGuard = async (indexRunGit: RunGit = runGit): Promise<PostStageGuardResult> => {
+      // Each caller owns scratch-index cleanup in finally. Stop before a slow
+      // guard if the drain arrived during its completed add, and check again
+      // after the guard. Never split shared-index refresh from publication CAS.
+      await o.yieldIfRequested?.('before-superproject-publish');
       const guard = await guardStagedIndexBeforeCommit({
         runGit: indexRunGit,
         repoPath,
@@ -5871,6 +5949,7 @@ async function commitOneRepoWithScratch(
             ...(holding.heldSince ? { heldSince: holding.heldSince } : {}),
           });
         }
+        await o.yieldIfRequested?.('before-superproject-publish');
       }
       return guard;
     };
@@ -7258,6 +7337,10 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   if (pointerBumpYield) {
     throw new GitSyncYieldError(pointerBumpYield, 'before-pointer-bump', submodulePaths.length, submodulePaths.length);
   }
+  const yieldSuperproject = async (boundary: GitSyncSuperprojectYieldBoundary): Promise<void> => {
+    const reason = await checkYield();
+    if (reason) throw new GitSyncYieldError(reason, boundary, submodulePaths.length, submodulePaths.length);
+  };
 
   // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this
   // commit is what bakes the bumped submodule pointers in). ALWAYS runs.
@@ -7271,6 +7354,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         `[git-sync] ${repo}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`,
       );
     }
+    await yieldSuperproject('before-superproject-stage');
     // WI-39922: close the edit→auto-commit window that let a stale tracked catalog
     // reach the green gate hours later. Keep the catch HERE even though the default
     // implementation is defensive: an injected/future regenerator must never turn
@@ -7282,18 +7366,22 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         `[git-sync] ${repo}: tool-catalog pre-commit repair threw (${String(e)}) — continuing with the commit fail-soft`,
       );
     }
+    await yieldSuperproject('before-superproject-stage');
     // EI-21444216858331991: a scheduled candidate was cut two seconds after an
     // `.mjs` source commit and eleven minutes before its generated `.d.mts` repair.
     // Regenerate here, then force every affected pair past per-agent peeling so
     // the source and projection share the same catch-all commit. Failure is
-    // deliberately fail-closed: a dirty tree is recoverable; a published torn
-    // snapshot can freeze `main` for the entire fleet.
+    // deliberately fail-closed for the declaration surface: a dirty pair is
+    // recoverable; a published torn snapshot can freeze `main` for the entire
+    // fleet. It is NOT fail-closed for the rest of the tree — that froze every
+    // agent's commits on one peer's TS error (WI-6554700010010659).
     let declarationRepair: GeneratedDeclarationsRepairResult;
     try {
       declarationRepair = await generatedDeclarationsRegenerator({ runGit, repoPath: repo, log });
     } catch (e) {
       declarationRepair = { status: 'blocked', atomicPaths: [], detail: String(e).slice(0, 300) };
     }
+    await yieldSuperproject('before-superproject-stage');
     if (declarationRepair.status === 'blocked') {
       const dirtyPathCount = (await dirtyFiles(runGit, repo)).length;
       return {
@@ -7306,16 +7394,16 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         skippedPaths: [],
       };
     }
-    // A failed status census is different from a failed declaration emit: the
-    // latter has a known incoherent projection and must stop the whole commit,
-    // while the former can safely defer the enrolled declaration surface once
-    // its tracked paths have been inventoried. Keep those paths out of both
-    // attribution and catch-all staging so unrelated work still lands.
+    // A failed status census or a failed emit defers the enrolled declaration
+    // surface (plus, for a failed emit, the dirty files its diagnostics name —
+    // WI-6554700010010659). Keep those paths out of both attribution and
+    // catch-all staging so unrelated work still lands. Only a missing inventory
+    // (no safe exclusion set) still blocks the commit above.
     const deferredDeclarationPaths = declarationRepair.status === 'deferred' ? declarationRepair.atomicPaths : [];
     if (declarationRepair.status === 'deferred') {
       log(
-        `[git-sync] ${repo}: declaration status census unavailable — deferring ${deferredDeclarationPaths.length} ` +
-          'declaration-related path(s) while committing the unlocked remainder',
+        `[git-sync] ${repo}: declaration repair deferred (${declarationRepair.detail}) — deferring ` +
+          `${deferredDeclarationPaths.length} declaration-related path(s) while committing the unlocked remainder`,
       );
     }
     const committed = await commitOneRepo(runGit, repo, {
@@ -7328,11 +7416,14 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       ),
       migrationDependencySubmodulePaths: submodulePaths,
       excludePaths: [...superprojectExcludePaths, ...deferredDeclarationPaths],
+      preDetectedContentOffenders:
+        declarationRepair.status === 'deferred' ? declarationCompileOffenders(declarationRepair.compilerErrors ?? []) : [],
       protectedHoldings: superprojectProtectedHoldings,
       refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.('', submodulePaths),
       attribution: attributionMapForRepo(roster, '', repo),
       priorityPaths: superprojectGitlinkPaths,
       forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
+      yieldIfRequested: yieldSuperproject,
     });
     // Persist the proof with the commit phase itself. On a durable replay the
     // current HEAD and wall clock may already belong to a different tick.

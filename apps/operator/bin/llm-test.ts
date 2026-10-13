@@ -30,8 +30,8 @@ import {
 
 import { isLlmAvailable } from '@papercusp/operator-core/lib/llm-testing/llm-client';
 import { operatorRunnerDeps } from '@papercusp/operator-core/lib/llm-testing/deps';
-import { SCENARIOS, getScenario, listScenarioIds } from '@papercusp/operator-core/lib/llm-testing/scenarios';
-import { listTargets } from '@papercusp/operator-core/lib/llm-testing/targets';
+import { SCENARIOS, getScenario, listScenarioIds } from '@papercusp/operator-core/lib/llm-testing/scenarios/index';
+import { listTargets } from '@papercusp/operator-core/lib/llm-testing/targets/index';
 import { findPromotionCandidates, formatCandidatesReport } from '@papercusp/operator-core/lib/llm-testing/promotion/candidates';
 import { promoteShape } from '@papercusp/operator-core/lib/llm-testing/promotion/promote';
 import { replayFixture, reEvaluateRun } from '@papercusp/operator-core/lib/llm-testing/replay';
@@ -50,6 +50,13 @@ import {
   recordLlmScenarioTestRunFailure,
   resolveScenarioSourceFile,
 } from '@papercusp/operator-core/lib/llm-testing/test-run-ledger';
+
+// The registry and fixtures moved together into operator-core. Resolve them
+// from this ESM entry, independently of the caller's working directory.
+const llmTestingRoot = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..', '..', '..', 'packages', 'operator-core', 'lib', 'llm-testing',
+);
 
 type Verb = 'run' | 'promote-candidates' | 'promote' | 'replay' | 'export-fixture' | 'lint';
 
@@ -272,7 +279,6 @@ async function main(): Promise<void> {
   if (args.verb === 'lint') {
     const { lintScenarios, formatViolations } = await import('@papercusp/testing-shell/llm');
     const { existsSync } = await import('node:fs');
-    const { resolve } = await import('node:path');
     const scope = args.scenarioId
       ? [getScenario(args.scenarioId)]
       : args.targetId
@@ -280,7 +286,7 @@ async function main(): Promise<void> {
         : [...SCENARIOS];
     const genericViolations = lintScenarios(scope, {
       fileExists: (p) => existsSync(p),
-      fixtureRoot: resolve(__dirname, '../lib/llm-testing'),
+      fixtureRoot: llmTestingRoot,
       // The lib lint skips the target-registration check when this is absent;
       // pass the operator's registry so unknown-target scenarios still error
       // (matches the pre-P-073 behavior, which imported listTargets directly).
@@ -509,13 +515,12 @@ function resolveScenarioFilePath(scenario: { id: string; target: string }): stri
   // Operator scenarios: 'op-S01-...' → files 'S01-...'
   // Oracle scenarios:   'oracle-O1-...' → files 'O1-...'
   // Architect:          'architect-A1-...' → files 'A1-...'
-  const here = dirname(fileURLToPath(import.meta.url));
   // Scenarios live in operator-core. One file may define many scenarios (S33), so the id
   // is not the basename — resolveScenarioSourceFile maps it (EI-24434635346407728).
   return resolveScenarioSourceFile(
     scenario.id,
     scenario.target,
-    join(here, '..', '..', '..', 'packages', 'operator-core', 'lib', 'llm-testing', 'scenarios'),
+    join(llmTestingRoot, 'scenarios'),
   );
 }
 

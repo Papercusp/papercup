@@ -19,6 +19,7 @@ const liveRuntimeDb = liveRuntime ? await tsImport('@papercusp/db-org', import.m
 // flush lands instead of disabling the sink.
 export default defineVitestConfig({
   layer: 'integration',
+  exclude: ['lib/blueprint/launch-blueprint-account-route.e2e.test.ts'],
   ...(liveRuntime ? {
     readRuntimeEnvironment: async () => {
       const units = ['hono-host:3170'];

@@ -44,9 +44,18 @@ describe('Phase I canary CLI (P-502 real owning authority)', () => {
   it('routes the canary attempt through the existing sink with its real scope and observation', async () => {
     const i = inputs();
     try {
-      const attempt = vi.spyOn(phaseI, 'attemptPhysicalPhaseI').mockResolvedValue({ cliReceipt: true } as never);
+      const receipt: Awaited<ReturnType<typeof phaseI.attemptPhysicalPhaseI>> = {
+        schemaVersion: phaseI.PHASE_I_ATTEMPT_SCHEMA, hostId: 'tower', step: 'live',
+        runId: 'p502-cli-test-run', startedAt: i.snapshot.observedAt, finishedAt: i.snapshot.observedAt,
+        attemptPid: process.pid, hiveId: i.target.hiveId, repoKey: i.target.repoKey,
+        advisory: { provenance: 'drill-supplied-roster-inputs', rosterEpoch: 1, isSelf: true, leaderDevicePubkey: null },
+        deviceSigner: { devicePubkey: i.target.hiveId, verified: true }, ownerKeyMaterialOnHost: false,
+        attempts: [], localCommit: { oid: 'a'.repeat(40), landed: true }, capturedOwnerProof: null,
+        deviceHead: null, deviceHeadAcceptance: null, lost: null,
+      };
+      const attempt = vi.spyOn(phaseI, 'attemptPhysicalPhaseI').mockResolvedValue(receipt);
       const args = ['tower', 'live', i.dir, 'p502-cli-test-run', i.target.hiveId, 'test-device-keychain', i.target.hiveId];
-      expect(await cli(['phase-i-attempt', ...args, ...i.flags, ...i.snapshotFlags])).toEqual({ cliReceipt: true });
+      expect(await cli(['phase-i-attempt', ...args, ...i.flags, ...i.snapshotFlags])).toEqual(receipt);
       expect(attempt.mock.calls[0]![0]).toMatchObject({ repoKey: i.target.repoKey, hiveId: i.target.hiveId, realTargetSnapshot: i.snapshot });
       await expect(cli(['phase-i-attempt', ...args, ...i.flags])).rejects.toThrow(/real-target snapshot/);
       await expect(cli(['phase-i-attempt', ...args.slice(0, 6), generateEd25519KeypairDer().pubkeyBase64, ...i.flags, ...i.snapshotFlags])).rejects.toThrow(/matching hiveId/);

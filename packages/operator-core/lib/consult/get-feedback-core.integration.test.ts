@@ -1260,7 +1260,7 @@ describe('getFeedbackCore — routed', () => {
       const candidate = cand('amendment-reviewer', {
         ...(selection === 'floor' ? {} : { score: 0.1, relevance: 0.1 }),
         ...(selection === 'lexical' ? { fallback: 'lexical' as const } : {}),
-        evidence: [{ session_id: 'old-cleanup-only', turn_idx: 0, sim: 0.86 }],
+        evidence: [{ session_id: 'old-cleanup-only', turn_idx: 0, sim: 0.86, ts: '2026-10-13T00:00:00Z' }],
       });
       const fixture = makeDeps(routeOf(selection === 'floor' ? [candidate] : [], {
         all: [candidate],

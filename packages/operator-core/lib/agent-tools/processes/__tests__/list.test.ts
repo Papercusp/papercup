@@ -79,6 +79,25 @@ function makeTx() {
 }
 
 describe('processes:list structured output', () => {
+  it('dispatch correlation accepts and forwards an exact selector and keeps live recovery compact', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    vi.mocked(listTasks).mockClear();
+    mockResolvedOnceTyped(vi.mocked(reconcileTick), tickResult());
+    const dispatchCallId = 'server-dispatch-for-lost-response';
+    const dispatched = await dispatchProjectedTool(projected, 'processes:list',
+      { dispatchCallId, includeEnded: true, limit: 1, live: true }, {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'processes-list-dispatch-correlation', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true }, transport: 'mcp',
+        requestedFormat: 'json', requestedStructured: true, tx: makeTx(),
+      }, {});
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(vi.mocked(listTasks)).toHaveBeenCalledOnce();
+    expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ dispatchCallId, includeEnded: true, limit: 1 }));
+    expect(JSON.stringify(dispatched)).toContain('global process groups omitted because a task selector is active');
+  });
+
   it('allows the prompted mug lifecycle judge to read evidence', () => {
     expect(projected.agentRoles).toContain('mug');
   });

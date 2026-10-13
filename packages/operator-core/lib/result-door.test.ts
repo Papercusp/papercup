@@ -65,6 +65,31 @@ function longText(chars: number): string {
     .slice(0, chars);
 }
 
+describe('fleet admission receipt recovery', () => {
+  it('keeps the repair header and original full-details cursor through a nested partial-result door', () => {
+    const source = { ok: false, error: 'admission_refused', reason: 'floor-gated',
+      message: 'P-001 / WI-17 is excluded by stopTheLine.', blockingPlanItemIds: ['P-001'],
+      blockingWorkItemIds: ['WI-17'], namedFloors: { stopTheLine: 1 },
+      repairCall: { tool: 'work_items:claim', args: { id: 'WI-17', assignee: 'self', harness: 'papercusp' },
+        effect: 'claim' }, promotionFailsafe: { diagnostic: longText(20_000) } };
+    const first = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(source) }], isError: true },
+      { toolName: 'fleet:launch-on-plan', workspaceId: 'ws-1', runId: RUN_ID });
+    const firstBody = boundedBody(first) as any;
+    const nested = applyResultDoor(first, { toolName: 'tools:invoke', nestedTargetToolName: 'fleet:launch-on-plan',
+      workspaceId: 'ws-1', runId: RUN_ID });
+    const body = boundedBody(nested) as any;
+    expect(JSON.stringify(body).length).toBeLessThanOrEqual(6000);
+    expect(nested.isError).toBe(true);
+    expect(body).toMatchObject({ reason: 'floor-gated', message: source.message,
+      blockingPlanItemIds: ['P-001'], blockingWorkItemIds: ['WI-17'], namedFloors: { stopTheLine: 1 },
+      repairCall: source.repairCall });
+    expect(body._projection.cursor).toEqual(firstBody._projection.cursor);
+    const cursor = body._projection.cursor;
+    const reference = parseScratchReference(readFileSync(cursor.args.file_path))!;
+    expect(JSON.parse(reference.payload.subarray(cursor.bodyOffsetInPayload).toString())).toEqual(source);
+  });
+});
+
 describe('plans:start write receipt recovery', () => {
   const receipt = () => ({
     ok: false, counts: { ok: 0, failed: 1 }, results: [{

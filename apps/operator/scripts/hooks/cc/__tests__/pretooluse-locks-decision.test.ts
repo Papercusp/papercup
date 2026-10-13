@@ -45,6 +45,9 @@ let rejectCoordinationDomain = false;
 let useSse = false;
 /** Simulate an acquire that committed but returned an empty MCP content array. */
 let emptyAcquireContent = false;
+/** WI-6554700010010405: when set, every locks:* tools/call is refused with this
+ * text as an isError tool result, before any authority preparation. */
+let acquireRefusalText: string | null = null;
 /** Recovery responses keyed by tool name; null leaves the existing static reply path. */
 let recoveryQueueInner: unknown | null = null;
 let recoveryReleaseInner: unknown | null = null;
@@ -98,6 +101,14 @@ beforeAll(async () => {
       const operation = args?.hook_operation;
       // The legacy assertions count mutations. The separate operation-fence
       // suite verifies read-only preparation and persistence before HTTP.
+      if (acquireRefusalText !== null && String(toolName ?? "").startsWith("locks:")) {
+        lastRequest = { url: req.url ?? "", body: parsed };
+        requests.push(lastRequest);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { isError: true,
+          content: [{ type: "text", text: acquireRefusalText }] } }));
+        return;
+      }
       if (toolName === 'locks:acquire' && operation && !operation.authority && !rejectCoordinationDomain) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text',
@@ -211,6 +222,7 @@ afterEach(() => {
   rejectCoordinationDomain = false;
   useSse = false;
   emptyAcquireContent = false;
+  acquireRefusalText = null;
   recoveryQueueInner = null;
   recoveryReleaseInner = null;
   lastRequest = null;
@@ -619,7 +631,13 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     });
 
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe("");
+    // WI-6554700010010405: an ambiguous reply still fails open, but never
+    // silently, and never claims a grant the hook could not confirm.
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    const context: string = out.hookSpecificOutput.additionalContext;
+    expect(context).toContain("NOT confirmed lock-protected");
+    expect(context).toContain("no text content in tool result");
     expect(requests.map((request) => request.body.params.name)).toEqual([
       "locks:acquire",
     ]);
@@ -1308,6 +1326,38 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     expect(reason).toContain('paths:["sub/held.ts"]');
     // A deny must NOT have cached any lock (nothing to release).
     expect(fs.existsSync(join(cache, "tu-busy.lock"))).toBe(false);
+  });
+
+  it("denies instead of failing open when the operator refuses the session identity (WI-6554700010010405)", async () => {
+    acquireRefusalText = "request_rejected: superuser_foreign_native_session";
+    const r = await run(editOf("sub/held.ts", "tu-identity-refused"));
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    const reason: string = out.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toContain("superuser_foreign_native_session");
+    expect(reason).toContain("capability:edit");
+    // The authority admitted nothing, so no recovery or settle call may follow.
+    const lockCalls = requests.filter((q) => String(q.body.params?.name ?? "").startsWith("locks:"));
+    expect(lockCalls).toHaveLength(1);
+    expect(fs.existsSync(join(cache, "tu-identity-refused.lock"))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(join(cache, "last-error.json"), "utf8"))).toMatchObject({
+      handler: "pretooluse",
+      phase: "identity-refused",
+      detail: "request_rejected: superuser_foreign_native_session",
+    });
+  });
+
+  it("keeps a transient refusal fail-open but tells the model the edit is not lock-protected (WI-6554700010010405)", async () => {
+    acquireRefusalText = "request_rejected: superuser_native_session_verifier_unavailable";
+    const r = await run(editOf("sub/held.ts", "tu-verifier-unavailable"));
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    const context: string = out.hookSpecificOutput.additionalContext;
+    expect(context).toContain("NOT lock-protected");
+    expect(context).toContain("superuser_native_session_verifier_unavailable");
+    expect(fs.existsSync(join(cache, "tu-verifier-unavailable.lock"))).toBe(false);
   });
 
   it("server refusal with a `reason` (e.g. policy) → deny carrying that reason", async () => {

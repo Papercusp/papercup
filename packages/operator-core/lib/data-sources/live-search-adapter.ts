@@ -270,6 +270,30 @@ async function liveProviderIdentity(
   return rows[0]?.provider_user_id ?? null;
 }
 
+/** Revalidate the exact local binding that authorized a completed provider read. */
+async function liveSearchBindingCurrent(
+  sql: Sql,
+  record: LiveSourceRecord,
+  principalUserId: string,
+  providerUserId: string,
+): Promise<boolean> {
+  const rows = await sql`
+    SELECT 1 FROM harness_shared.data_sources d
+     WHERE d.workspace_id = ${record.workspaceId} AND d.id = ${record.id}::uuid
+       AND d.kind = ${record.kind} AND d.scope = 'organization'
+       AND d.sync_mode = ${LIVE_SEARCH_SYNC_MODE}
+       AND d.status <> ALL(${[...LIVE_SEARCH_EXCLUDED_STATUSES]}::text[])
+       AND d.credential_ref IS NOT DISTINCT FROM ${record.credentialRef}::text
+       AND COALESCE(d.config, '{}'::jsonb) = ${sql.json(record.config)}::jsonb
+       AND EXISTS (
+         SELECT 1 FROM harness_shared.provider_identity_mappings p
+          WHERE p.workspace_id = d.workspace_id
+            AND p.provider = ${normalizePersonalSource(record.kind)}
+            AND p.provider_user_id = ${providerUserId}
+            AND p.user_id = ${principalUserId}::uuid AND p.revoked_at IS NULL)`;
+  return rows.length > 0;
+}
+
 async function withTimeout<T>(ms: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -326,18 +350,18 @@ export async function searchLiveSources(
     const adapter = adapters.get(normalizePersonalSource(record.kind));
     if (!adapter) {
       failed.push({ dataSourceId: record.id, source, reason: 'no_live_search_adapter' });
-      return [];
+      return null;
     }
     const providerUserId = await liveProviderIdentity(sql, params.workspaceId, record.kind, params.principalUserId);
     if (!providerUserId) {
       unmapped.push(source);
-      return [];
+      return null;
     }
     try {
       const hits = await withTimeout(params.timeoutMs ?? LIVE_SEARCH_TIMEOUT_MS, (signal) => adapter.search({
         record, principalUserId: params.principalUserId, providerUserId, query: params.query, limit, signal,
       }));
-      return hits.slice(0, limit).map((hit) => ({
+      return { record, providerUserId, hits: hits.slice(0, limit).map((hit) => ({
         id: liveDocumentId(record.id, hit.externalId),
         source,
         dataSourceId: record.id,
@@ -350,14 +374,30 @@ export async function searchLiveSources(
         metadata: { live: true, permalink: hit.permalink },
         permalink: hit.permalink,
         score: hit.score,
-      }));
+      })) };
     } catch (error) {
       failed.push({ dataSourceId: record.id, source, reason: error instanceof Error ? error.message : String(error) });
-      return [];
+      return null;
     }
   }));
 
-  const hits = perSource.flat().sort((a, b) => b.score - a.score).slice(0, limit);
+  // Check after ALL providers settle: a fast source can be revoked while a
+  // slower source is still pending. A subscription and a stale response never
+  // preserve a revoked local binding or authorize a different source config.
+  const currentHits = await Promise.all(perSource.map(async (result) => {
+    if (!result) return [];
+    if (!(await liveSearchBindingCurrent(sql, result.record, params.principalUserId, result.providerUserId))) {
+      failed.push({ dataSourceId: result.record.id, source: liveSourceKey(result.record), reason: 'live_search_binding_changed' });
+      return [];
+    }
+    return result.hits;
+  }));
+  const currentAuth = await authorizePersonalAccess(
+    sql, ctx, params.workspaceId, params.principalUserId, [ORGANIZATION_CORPUS_SCOPE],
+  );
+  if (!currentAuth.allowed) return { allowed: false, reason: currentAuth.reason ?? 'no_live_grant' };
+
+  const hits = currentHits.flat().sort((a, b) => b.score - a.score).slice(0, limit);
   const disclosed = await discloseDocuments(sql, {
     workspaceId: params.workspaceId,
     userId: params.principalUserId,

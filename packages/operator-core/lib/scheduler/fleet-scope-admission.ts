@@ -64,8 +64,10 @@ function specKindFilterValues(spec: unknown): string[] | undefined {
 /**
  * EI-19393442073558754: true when the spec's OWN kind filter (if any) restricts
  * EXCLUSIVELY to issue-family kinds (bug/change/task) — i.e. an issue-family
- * `matchedByFilter: 0` genuinely means "this spec matches nothing", since the
- * issue family is the ONLY family such a spec could ever reach. False when the
+ * `matchedByFilter: 0` genuinely means "this spec matches nothing" IN THE CLAIMABLE
+ * STATES, since the issue family is the ONLY family such a spec could ever reach.
+ * (It says nothing about terminal, held, or parked rows — those are counted by the
+ * status-floor-free {@link diagnoseFleetScopeTerminalExhaustion}, WI-6554700010010002.) False when the
  * filter has no kind restriction at all (both families structurally reachable —
  * the `fleet:launch-on-plan` plan-scoped shape with no `claimKinds`, D-009) or
  * explicitly includes a non-issue kind: in either case a bare issue-family zero
@@ -1794,7 +1796,7 @@ export interface FeatureFamilyClaimExclusionBreakdown {
   matchedByFilter: number;
   claimable: number;
   /** Each named floor is an overlapping subset of the unique claimFloors total. */
-  excluded: { claimFloors: number; reservedPlanLane: number; stopTheLine?: number };
+  excluded: { claimFloors: number; reservedPlanLane: number; stopTheLine?: number; [floor: string]: number | undefined };
 }
 
 type FeatureFamilyDiagnosticArgs = {
@@ -1820,7 +1822,7 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
     const filterNode = spec.view.filter;
     if (!filterNode) return null;
     const { sql } = getOrgPg();
-    const { claimFloorsWhereSql, reservedPlanLaneExclusionSql } = await import('../work-items');
+    const { claimFloorsWhereSql, featureClaimFloorPredicatesSql, reservedPlanLaneExclusionSql } = await import('../work-items');
     const { stopTheLineExclusionSql } = await import('../work-items-admission');
     const { compileFilter } = await import('./get-next');
     // Keep the diagnostic's shared floors identical to getNextWorkItem's feature claim:
@@ -1834,7 +1836,7 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
     const cooldownAssignee = args.cooldownAssignee === null
       ? undefined
       : args.cooldownAssignee ?? args.scope.ownerId;
-    const floors = claimFloorsWhereSql(sql, {
+    const floorOptions = {
       harness: args.harness,
       workspaceId: ws,
       states: args.states ?? spec.states,
@@ -1843,7 +1845,9 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
       claimantFleetSlug: args.scope.fleetSlug,
       claimSpecReferencesFleet,
       claimSpecReferencesGoal,
-    });
+    };
+    const floors = claimFloorsWhereSql(sql, floorOptions);
+    const namedFloors = featureClaimFloorPredicatesSql(sql, floorOptions);
     const filter = compileFilter(sql, filterNode);
     const stopTheLine = stopTheLineExclusionSql(sql, 'feature-consolidated');
     const states = [...(args.states ?? spec.states ?? ['open'])];
@@ -1857,16 +1861,23 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
       claimSpecReferencesFleet,
       claimSpecReferencesGoal,
     });
-    const rows = await sql<{
+    // Keep the two legacy columns while extending the same predicate registry.
+    // Counts overlap; claimFloors remains the unique excluded-row total.
+    const extraNames = Object.keys(namedFloors).filter(name => !['scope', 'reservedPlanLane', 'stopTheLine'].includes(name));
+    const extraColumns = extraNames.reduce((columns, name) => sql`${columns},
+      count(*) FILTER (WHERE ${filter} AND NOT (${namedFloors[name as keyof typeof namedFloors]}))::int AS ${sql(name)}`,
+    sql``);
+    const rows = await sql<(Record<string, number> & {
       matched: number;
       claimable: number;
       reserved_plan_lane: number;
       stop_the_line: number;
-    }[]>`
+    })[]>`
       SELECT count(*) FILTER (WHERE ${filter})::int AS matched,
              count(*) FILTER (WHERE ${floors} AND ${filter})::int AS claimable,
              count(*) FILTER (WHERE ${filter} AND NOT (${reservationEligible}))::int AS reserved_plan_lane,
              count(*) FILTER (WHERE ${filter} AND NOT (${stopTheLine}))::int AS stop_the_line
+             ${extraColumns}
         FROM harness_shared.harness_features_consolidated
        WHERE ${candidate}`;
     const matchedByFilter = rows[0]?.matched ?? 0;
@@ -1878,6 +1889,7 @@ export async function diagnoseFleetScopeFeatureFamilyExclusions(
         claimFloors: Math.max(0, matchedByFilter - claimable),
         reservedPlanLane: rows[0]?.reserved_plan_lane ?? 0,
         stopTheLine: rows[0]?.stop_the_line ?? 0,
+        ...Object.fromEntries(extraNames.flatMap(name => (rows[0]?.[name] ?? 0) > 0 ? [[name, rows[0][name]]] : [])),
       },
     };
   } catch {
@@ -1995,7 +2007,23 @@ export const FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS = 12_000;
 export interface FleetScopeTerminalExhaustion {
   matchedByFilter: number;
   terminalMatchedByFilter: number;
+  /**
+   * WI-6554700010010002: non-terminal matches already HELD by an agent (`taken_by` set) —
+   * in flight with their holder, never pull-claimable by this member.
+   */
+  inFlightMatchedByFilter: number;
+  /**
+   * WI-6554700010010002: non-terminal, UNHELD matches parked in a state no pull ever claims
+   * ({@link FLEET_SCOPE_PARKED_STATES}). They return to the pool only when their blocker clears.
+   */
+  parkedMatchedByFilter: number;
 }
+
+/**
+ * WI-6554700010010002: non-terminal states no `scheduler:get_next` pull can claim (its `states`
+ * floor only ever admits `open`/`failing`). A matched row parked here is real scope, not a typo.
+ */
+export const FLEET_SCOPE_PARKED_STATES: readonly string[] = ['blocked', 'needs-human'];
 
 export async function diagnoseFleetScopeTerminalExhaustion(args: {
   scope: FleetScopeContext;
@@ -2016,13 +2044,28 @@ export async function diagnoseFleetScopeTerminalExhaustion(args: {
     const operatorScopeSlug = `operator:${issueWs}`;
     const issueKinds = [...ISSUE_FAMILY_KINDS];
     const filter = compileFilter(sql, spec.view.filter);
-    const rows = await sql<{ matched: number; terminal: number }[]>`
+    const settled = [...SETTLED_WORK_ITEM_STATES];
+    // WI-6554700010010002: the three buckets are disjoint by construction (terminal; non-terminal
+    // and held; non-terminal, unheld and parked), so terminal + inFlight + parked === matched
+    // proves no matching row could ever be pulled. A row in none of them keeps the old diagnosis.
+    const rows = await sql<{ matched: number; terminal: number; in_flight: number; parked: number }[]>`
       SELECT
         count(*) FILTER (WHERE ${filter})::int AS matched,
         count(*) FILTER (
           WHERE ${filter}
-            AND wi.status = ANY(${[...SETTLED_WORK_ITEM_STATES]}::text[])
-        )::int AS terminal
+            AND wi.status = ANY(${settled}::text[])
+        )::int AS terminal,
+        count(*) FILTER (
+          WHERE ${filter}
+            AND NOT (wi.status = ANY(${settled}::text[]))
+            AND wi.taken_by IS NOT NULL AND wi.taken_by <> ''
+        )::int AS in_flight,
+        count(*) FILTER (
+          WHERE ${filter}
+            AND NOT (wi.status = ANY(${settled}::text[]))
+            AND (wi.taken_by IS NULL OR wi.taken_by = '')
+            AND wi.status = ANY(${[...FLEET_SCOPE_PARKED_STATES]}::text[])
+        )::int AS parked
         FROM harness_shared.work_items wi
        WHERE (
          (
@@ -2041,6 +2084,8 @@ export async function diagnoseFleetScopeTerminalExhaustion(args: {
     return {
       matchedByFilter,
       terminalMatchedByFilter: rows[0]?.terminal ?? 0,
+      inFlightMatchedByFilter: rows[0]?.in_flight ?? 0,
+      parkedMatchedByFilter: rows[0]?.parked ?? 0,
     };
   } catch {
     return null;
@@ -2278,6 +2323,26 @@ export function fleetScopedMiss(
     opts?.terminalExhaustion != null &&
     opts.terminalExhaustion.matchedByFilter > 0 &&
     opts.terminalExhaustion.terminalMatchedByFilter === opts.terminalExhaustion.matchedByFilter;
+  // WI-6554700010010002: the same status-floor-free read also proves the OTHER honest zero — every
+  // matching row is terminal, HELD by an agent (in flight), or PARKED (blocked/needs-human), with
+  // at least one not yet terminal. Nothing is pull-claimable, but the spec matches real rows, so
+  // `spec_matches_nothing` + "ESCALATE NOW" was a false verdict (observed live: an id tranche of
+  // 16 done + 1 wip held by a peer). Not success-shaped either: the remainder is with its holders.
+  // Safe without feature-family evidence for the same reason as `specExhausted`: the read spans
+  // both families, and every matching row is accounted for by a never-pullable bucket.
+  const te = opts?.terminalExhaustion ?? null;
+  const specInFlight =
+    !paused &&
+    !featureFamilyMiss &&
+    !featureFloorGated &&
+    !planComplete &&
+    !specExhausted &&
+    breakdown != null &&
+    breakdown.matchedByFilter === 0 &&
+    te != null &&
+    te.matchedByFilter > 0 &&
+    te.inFlightMatchedByFilter + te.parkedMatchedByFilter > 0 &&
+    te.terminalMatchedByFilter + te.inFlightMatchedByFilter + te.parkedMatchedByFilter === te.matchedByFilter;
   // EI-19393442073558754: a spec whose filter references `plan`/`plan_item` and is NOT
   // itself restricted to issue-family kinds can genuinely, correctly admit ONLY
   // feature-family rows for long stretches (D-009: a plan-promoted item is feature-family
@@ -2302,7 +2367,7 @@ export function fleetScopedMiss(
   // This applies to both fixed id cohorts and plan scopes; neither can certify a drain
   // or blame the authored filter while its feature-family population is unreadable.
   const unconfirmedFamily =
-    !paused && !specExhausted && !planComplete && !featureFamilyMiss &&
+    !paused && !specExhausted && !specInFlight && !planComplete && !featureFamilyMiss &&
     breakdown?.matchedByFilter === 0 && !evidenceComplete;
   const nonIssueSpecEmpty =
     !paused &&
@@ -2312,6 +2377,7 @@ export function fleetScopedMiss(
     !featureFamilyMiss &&
     !featureFloorGated &&
     !specExhausted &&
+    !specInFlight &&
     !planComplete &&
     specPlanScoped;
   const specEmpty =
@@ -2322,6 +2388,7 @@ export function fleetScopedMiss(
     !featureFamilyMiss &&
     !featureFloorGated &&
     !specExhausted &&
+    !specInFlight &&
     !planComplete &&
     !specPlanScoped;
   // EI-18741523426513509: the spec's filter DID match real rows, but every one is presently
@@ -2415,6 +2482,7 @@ export function fleetScopedMiss(
     fleetPaused: paused,
     planScoped: specPlanScoped,
     drainConfirmed: planComplete || specExhausted,
+    remainderUnclaimable: specInFlight,
     evidenceComplete,
   });
   const claimability = {
@@ -2502,6 +2570,12 @@ export function fleetScopedMiss(
             `view.filter matched ${opts!.terminalExhaustion!.matchedByFilter} row(s) without the claimable-state floor, and all ` +
             `${opts!.terminalExhaustion!.terminalMatchedByFilter} matching row(s) are terminal. This is a successful drain, not a ` +
             'spec-authoring problem: the lane is complete, so stand down and do not re-author or escalate the spec.'
+        : specInFlight
+          ? `NOTHING CLAIMABLE, REMAINDER IN FLIGHT (WI-6554700010010002): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
+            `view.filter matched ${te!.matchedByFilter} row(s) without the claimable-state floor: ${te!.terminalMatchedByFilter} terminal, ` +
+            `${te!.inFlightMatchedByFilter} held by an agent (in flight), ${te!.parkedMatchedByFilter} parked (blocked/needs-human). ` +
+            'The spec matches real rows, so this is NOT a spec-authoring problem — no row is pull-claimable and the unfinished ' +
+            'remainder is with its holders. Do not re-author or escalate the spec.'
         : unconfirmedFamily
           ? 'FEATURE-FAMILY DIAGNOSIS UNAVAILABLE: the issue-family filter matched zero rows, but the feature-family ' +
             'population was not fully measured. This does not establish an empty spec, a drained lane, or a claim-floor cause.'
@@ -2584,6 +2658,10 @@ export function fleetScopedMiss(
     ...(specExhausted
       ? { reason: 'spec_exhausted' as const, terminalExhaustion: opts?.terminalExhaustion }
       : {}),
+    // WI-6554700010010002: every match is terminal, held, or parked — distinct from both
+    // `spec_exhausted` (not complete: the remainder is with its holders) and
+    // `spec_matches_nothing` (the spec does match rows; never escalate it as authoring).
+    ...(specInFlight ? { reason: 'spec_in_flight' as const, terminalExhaustion: te! } : {}),
     ...(planComplete
       ? { reason: 'plan_complete' as const, planTerminality: opts?.planTerminality }
       : {}),
@@ -2647,6 +2725,10 @@ export function fleetScopedMiss(
             ? `Your spec's status-floor-free filter read matched ${opts!.terminalExhaustion!.matchedByFilter} row(s), and all ` +
               `${opts!.terminalExhaustion!.terminalMatchedByFilter} are terminal — the fleet completed its scoped tranche; this is ` +
               'ordinary successful exhaustion, not a spec-authoring failure.'
+            : specInFlight
+            ? `Your spec's status-floor-free filter read matched ${te!.matchedByFilter} row(s): ${te!.terminalMatchedByFilter} terminal, ` +
+              `${te!.inFlightMatchedByFilter} held by an agent, ${te!.parkedMatchedByFilter} parked (blocked/needs-human). None is in a ` +
+              'claimable state, which is why this issue-family breakdown reads 0 — the spec is not empty.'
             : specEmpty
             ? "Your spec's filter matches 0 issue-family row(s) at all — there is nothing for any floor to exclude. " +
               'The SPEC ITSELF is the problem (an over-narrow filter, a stale id allowlist, wrong plan/kind scoping), not the pool.'
@@ -2722,6 +2804,15 @@ export function fleetScopedMiss(
               ? 'If new work later enters your scope, park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn — do not pass targetKind with wake:true; the watch remains armed after a re-miss, the wake is a HINT, and scheduler:get_next remains authoritative.'
               : 'Do NOT park an UNSCOPED work-item:claimable await — this response has no safe payload filter.') +
             ' Do NOT escalate, widen, or re-author the claim spec.'
+          : specInFlight
+          ? 'NOTHING TO CLAIM, NOT A SPEC BUG (reason: "spec_in_flight"): every row your spec matches is terminal, held by an ' +
+            'agent, or parked (blocked/needs-human) — see terminalExhaustion. Checkpoint any final progress, release remaining lane ' +
+            'resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }. ' +
+            'A held or parked row re-enters the pool only through a release or a cleared blocker. ' +
+            (claimablePayloadFilter
+              ? 'To be woken when that happens, park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn — do not pass targetKind with wake:true; the wake is a HINT and scheduler:get_next remains authoritative.'
+              : 'Do NOT park an UNSCOPED work-item:claimable await — this response has no safe payload filter.') +
+            ' Do NOT escalate, widen, or re-author the claim spec. If a holder looks dead or a parked row has no owner, report that row to your fleet leader once.'
           : unconfirmedFamily
           ? 'Do NOT re-author the claim spec, bypass claim floors, or repeat identical pulls on this incomplete diagnostic. ' +
             'Report the exact partial-family evidence to the fleet leader once so the missing diagnosis can be resolved; ' +

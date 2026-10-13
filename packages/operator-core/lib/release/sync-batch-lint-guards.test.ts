@@ -208,6 +208,19 @@ describe('runSyncLintGuardTick', () => {
     expect(r.filed[0]).toMatchObject({ authorSource: 'trailer', assignee: null });
   });
 
+  it.each([undefined, 'wake not queued'])('reports the adopted holder even when notification is %s', async notificationError => {
+    const f = fake({ head: 'h2', prior: allPass('h1'),
+      runs: { 'lint:no-raw-setinterval': setIntervalRed(['apps/new/timer.ts']) },
+      editors: [{ file: 'apps/new/timer.ts', agent: 'su-proposed-author', tsMs: 900_000 }],
+    });
+    f.deps.fileRed = async () => ({ ok: true, id: 'WI-adopted', adopted: true,
+      assignee: 'su-existing-holder', ...(notificationError ? { notificationError } : {}) });
+    const result = await runSyncLintGuardTick(f.deps);
+    expect(result.filed[0]).toMatchObject({ id: 'WI-adopted', adopted: true,
+      assignee: 'su-existing-holder', authorSource: 'edit-ledger:failing-file' });
+    expect(result.deferred).toHaveLength(notificationError ? 1 : 0);
+  });
+
   it('an undetermined guard keeps its prior record and files nothing', async () => {
     const prior = allPass('h1');
     const f = fake({
@@ -246,6 +259,21 @@ describe('runSyncLintGuardTick', () => {
     const retry = await runSyncLintGuardTick(f.deps);
     expect(retry.filed).toHaveLength(1);
     expect(retry.filed[0]).toMatchObject({ path: 'apps/new/timer.ts', id: 'WI-1' });
+    expect((await runSyncLintGuardTick(f.deps)).status).toBe('up-to-date');
+  });
+
+  it('keeps a filed red pending until its notification succeeds at the same head', async () => {
+    const f = fake({ head: 'h2', prior: allPass('h1'),
+      runs: { 'lint:no-raw-setinterval': setIntervalRed(['apps/new/timer.ts']) } });
+    f.deps.fileRed = async () => ({ ok: true, id: 'WI-1', notificationError: 'wake not queued' });
+    const first = await runSyncLintGuardTick(f.deps);
+    expect(first.filed[0]).toMatchObject({ id: 'WI-1', notificationError: 'wake not queued' });
+    expect(first.deferred).toHaveLength(1);
+    expect(first.state?.guards['lint:no-raw-setinterval']?.sha).toBe('h1');
+    f.deps.fileRed = async () => ({ ok: true, id: 'WI-1', adopted: true });
+    const retry = await runSyncLintGuardTick(f.deps);
+    expect(retry.filed[0]).toMatchObject({ id: 'WI-1', adopted: true });
+    expect(retry.deferred).toHaveLength(0);
     expect((await runSyncLintGuardTick(f.deps)).status).toBe('up-to-date');
   });
 

@@ -24,6 +24,7 @@ import { Hono } from 'hono';
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import { isHashedAssetPath } from '../../operator-vite/dist-atomic-writes';
 // P-006: the destination invariant as a POLICY (the prevention leg), kept in one
 // place so this host, the vite dev server and the desktop cannot drift apart.
@@ -32,10 +33,23 @@ import { isHashedAssetPath } from '../../operator-vite/dist-atomic-writes';
 // webview bootstrap, which have no business being loaded server-side.
 // csp-policy.ts imports nothing at all, so it is safe in any environment.
 import { cspHeaders, crossOriginIsolationHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
-import { describeMissingBundle, readBundleIdentity } from '../lib/spa-build-status';
-import { hostedBrowserApiMarker } from "../lib/hosted-browser-api";
+import * as spaBuildStatusModule from '../lib/spa-build-status';
+import * as hostedBrowserApiModule from '../lib/hosted-browser-api';
+// bin/ is ESM for dev sidecars, while these app-library leaves inherit
+// CommonJS. Native tsx exposes their exports under default; Vitest and bundled
+// builds expose the ES namespace. Keep both paths on the same implementations.
+const { describeMissingBundle, readBundleIdentity } = 'default' in spaBuildStatusModule
+  ? spaBuildStatusModule.default as typeof spaBuildStatusModule
+  : spaBuildStatusModule;
+const { hostedBrowserApiMarker } = 'default' in hostedBrowserApiModule
+  ? hostedBrowserApiModule.default as typeof hostedBrowserApiModule
+  : hostedBrowserApiModule;
 export { hostedBrowserApiMarker };
 export type { HostedBrowserApiMarker } from "../lib/hosted-browser-api";
+
+const HOST_MODULE_DIR = typeof __dirname === 'string'
+  ? __dirname
+  : fileURLToPath(new URL('.', import.meta.url));
 
 /**
  * Vite SPA `dist/` root. In dev (host run via `tsx` from source) this
@@ -55,10 +69,10 @@ function resolveSpaDistRoot(): string {
   //    up), fall back to that bundled location instead of the dev-source path,
   //    which does not exist in the bundle. Defense-in-depth: a missing env var
   //    must never blank the desktop UI.
-  const bundled = resolve(__dirname, 'spa');
+  const bundled = resolve(HOST_MODULE_DIR, 'spa');
   if (existsSync(join(bundled, 'index.html'))) return bundled;
   // 3. Dev (host run via `tsx` from source): `bin/` → sibling `operator-vite/dist`.
-  return resolve(__dirname, '..', '..', 'operator-vite', 'dist');
+  return resolve(HOST_MODULE_DIR, '..', '..', 'operator-vite', 'dist');
 }
 const SPA_DIST_ROOT = resolveSpaDistRoot();
 

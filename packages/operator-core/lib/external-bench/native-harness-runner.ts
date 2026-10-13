@@ -42,6 +42,7 @@ import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { DbScope } from './reproducibility/db';
 import type { BenchHarnessOps } from './bench-harness-live';
 import { managedSpawn } from '../task-manager/managed-spawn';
+import { materializeDockerExecWrapper, validateDockerExecTarget } from './container-exec-target';
 import { redactSensitiveText } from '../sensitive-text';
 import type { ChatEvent, RunAgentChatOptions } from '../agent-chat-stream';
 import {
@@ -69,6 +70,12 @@ const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(
 export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx: PapercuspUnifiedToolContext,
   observations: CurrentSuBenchObservations, db: Pick<DbScope, 'sql'> = {}) {
   const common = liveCurrentSuBenchPorts(ctx, observations, opts, db);
+  const containerExec = observations.containerExec && structuredClone(observations.containerExec);
+  if (containerExec) {
+    validateDockerExecTarget(containerExec);
+    if (containerExec.hookBridge || containerExec.sessionRelocation?.sessionEnv !== 'CODEX_HOME' || !containerExec.originRewrites)
+      throw new Error('Stock native container requires a relocated clean home and gateway rewrite without host hooks.');
+  }
   const pending = new Map<string, Promise<void>>();
   const taskFinishes = new Map<string, Promise<void>>();
   const streamErrors = new Map<string, string>();
@@ -96,6 +103,7 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
       if (sessionKey == null) throw new Error('Stock benchmark session enrollment failed; no native process started.');
       const home = codexHomeForSessionKey(sessionKey);
       let child: import('node:child_process').ChildProcess | undefined, taskId: string | undefined;
+      let wrapperDir: string | undefined;
       let nativeSessionId: string | undefined, linked = Promise.resolve();
       let resolveStarted!: (value: string) => void, rejectStarted!: (error: unknown) => void;
       const started = new Promise<string>((resolve, reject) => { resolveStarted = resolve; rejectStarted = reject; });
@@ -144,15 +152,26 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
                 PAPERCUSP_SID: ownerId, PAPERCUSP_OPERATOR_URL: observations.nativeGateway!.baseURL,
                 [SCOPED_INFERENCE_GATEWAY_ENV]: JSON.stringify(observations.nativeGateway) };
               if (task.instanceId !== host.taskId) throw new Error('Stock native task differs from its host assignment.');
-              const sandbox = createScopedNativeSandboxSpawn({ env, cwd: handle.worktreePath });
-              if (!sandbox) throw new Error('Stock native sandbox is unavailable; no process started.');
-              const spawned = await sandbox(command, args, { ...options, cwd: handle.worktreePath, env },
-                async (binary: string, argv: string[], spawnOptions: import('node:child_process').SpawnOptions) => managedSpawn(binary, argv,
+              const register = async (binary: string, argv: string[], spawnOptions: import('node:child_process').SpawnOptions) => managedSpawn(binary, argv,
                   { class: 'agent-session', title: label, argv: [], cwd: handle.worktreePath, harnessSlug: handle.slug,
                     launchedBy: ctx.principal!.slug, workItemId: handle.featureId,
                     runtimeMaxSec: Math.max(1, Math.ceil((opts.driveTimeoutMs ?? 60_000) / 1000)), detail: { label, coordOwnerId: ownerId,
                       executionKind: 'stock-native', assignmentId: currentBenchAssignmentId(opts.runId, opts.armId, task.instanceId, opts.seed) } },
-                  { workspaceId: opts.workspaceId, requireRegistration: true, spawnOptions }));
+                  { workspaceId: opts.workspaceId, requireRegistration: true, spawnOptions });
+              let spawned: Awaited<ReturnType<typeof register>>;
+              if (containerExec) {
+                // Docker is the native OS boundary. Host SRT would conceal its
+                // socket/mounts; the existing wrapper relocates only this clean
+                // home, rewrites its gateway and runs in the task's /app.
+                const wrapper = materializeDockerExecWrapper(containerExec);
+                wrapperDir = wrapper.dir;
+                spawned = await register(wrapper.wrapperPath, ['--no-daemon', ...args],
+                  { ...options, cwd: handle.worktreePath, env });
+              } else {
+                const sandbox = createScopedNativeSandboxSpawn({ env, cwd: handle.worktreePath });
+                if (!sandbox) throw new Error('Stock native sandbox is unavailable; no process started.');
+                spawned = await sandbox(command, args, { ...options, cwd: handle.worktreePath, env }, register);
+              }
               child = spawned.child; taskId = spawned.taskId;
               resolveStarted(taskId!);
               return child!;
@@ -173,6 +192,7 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
           }
           if (child && child.exitCode === null && child.signalCode === null && taskId) await common.killTask(taskId);
           if (taskId && error) streamErrors.set(taskId, error);
+          if (wrapperDir) await fs.rm(wrapperDir, { recursive: true, force: true });
           await markAdvSessionEnded(sessionKey, child?.exitCode ?? null, child?.signalCode ? 'signal' : 'self',
             { signal: child?.signalCode, throwOnError: true });
           if (nativeSessionId) {

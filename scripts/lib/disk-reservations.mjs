@@ -68,7 +68,7 @@ function deviceForPath(path) {
 }
 
 /** Read live pre-upgrade claims without rewriting or losing their identities. */
-function reservationKeys(path, ledger) {
+function reservationKeys(path, ledger, issues) {
   const key = mountKeyForPath(path);
   const keys = new Set(key ? [key] : []);
   const device = deviceForPath(path);
@@ -80,6 +80,7 @@ function reservationKeys(path, ledger) {
     try {
       out = execFileSync('df', ['-Pk', '-a'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) {
+      issues?.push(`legacy-mounts:${error.code || 'unreadable'}`);
       // df reports all readable mounts even when one unrelated mount is denied.
       // Discarding those rows loses known live claims on otherwise healthy disks.
       out = typeof error.stdout === 'string' ? error.stdout : '';
@@ -89,15 +90,18 @@ function reservationKeys(path, ledger) {
       const legacy = mount.replace(/[^A-Za-z0-9]/g, '_');
       if (mount && directories.has(legacy) && deviceForPath(mount) === device) keys.add(legacy);
     }
-  } catch { /* preserve the established fail-open measurement policy */ }
+  } catch (error) {
+    if (error.code !== 'ENOENT') issues?.push(`ledger:${error.code || 'unreadable'}`);
+  }
   return keys;
 }
 
 /** A pid is live only if it exists AND is the same process that made the claim. */
-function ownerStillLive(pid, recordedStart) {
+function ownerStillLive(pid, recordedStart, issues) {
   try {
     process.kill(pid, 0);
-  } catch {
+  } catch (error) {
+    if (error.code !== 'ESRCH') issues?.push(`owner:${error.code || 'unreadable'}`);
     return false; // gone (ESRCH), or not ours to signal (EPERM) — treat as dead
   }
   if (!recordedStart) return true; // no start time recorded (darwin): TTL is the backstop
@@ -107,7 +111,8 @@ function ownerStillLive(pid, recordedStart) {
     // comm can contain spaces and parens: split after the LAST ')'.
     const rest = stat.slice(stat.lastIndexOf(') ') + 2);
     currentStart = rest.split(/\s+/)[19] || '';
-  } catch {
+  } catch (error) {
+    issues?.push(`owner-start:${error.code || 'unreadable'}`);
     return true; // unreadable /proc — fall back to the TTL rather than over-reaping
   }
   if (!currentStart) return true;
@@ -127,28 +132,39 @@ function parseRecord(text) {
  * Total GB other LIVE builds have reserved on the filesystem containing `path`.
  * Read-only: unlike the shell writer this never reaps, so a concurrent build's
  * ledger is never mutated by a mere reader.
+ * @param {string} path
+ * @param {{ env?: NodeJS.ProcessEnv, now?: number, issues?: string[] }} [options]
  */
-export function readReservedGb(path, { env = process.env, now = Date.now() } = {}) {
+export function readReservedGb(path, { env = process.env, now = Date.now(), issues } = {}) {
   const ledger = reservationDir(env);
   let total = 0;
   const nowSec = Math.floor(now / 1000);
-  for (const key of reservationKeys(path, ledger)) {
+  for (const key of reservationKeys(path, ledger, issues)) {
     let entries;
-    try { entries = readdirSync(join(ledger, key)); } catch { continue; }
+    try { entries = readdirSync(join(ledger, key)); } catch (error) {
+      if (error.code !== 'ENOENT') issues?.push(`claims:${error.code || 'unreadable'}`);
+      continue;
+    }
     for (const name of entries) {
       if (!name.endsWith('.res')) continue;
       let rec;
       try {
         rec = parseRecord(readFileSync(join(ledger, key, name), 'utf8'));
-      } catch {
+      } catch (error) {
+        // A concurrently released claim is absent, not an unreadable demand.
+        if (error.code !== 'ENOENT') issues?.push(`claim:${error.code || 'unreadable'}`);
         continue;
       }
       const pid = Number(rec.pid);
       const gb = Number(rec.gb);
-      if (!Number.isInteger(pid) || pid <= 0 || !Number.isFinite(gb) || gb < 0) continue;
       const expires = Number(rec.expires);
+      if (!rec.expires?.trim() || !Number.isFinite(expires) || expires < 0) issues?.push('claim:unknown-expiry');
       if (Number.isFinite(expires) && nowSec > expires) continue;
-      if (!ownerStillLive(pid, rec.start)) continue;
+      if (!Number.isInteger(pid) || pid <= 0 || !Number.isFinite(gb) || gb < 0 || (issues && !rec.gb?.trim())) {
+        issues?.push('claim:invalid-demand');
+        continue;
+      }
+      if (!ownerStillLive(pid, rec.start, issues)) continue;
       total += gb;
     }
   }
@@ -158,6 +174,26 @@ export function readReservedGb(path, { env = process.env, now = Date.now() } = {
 /** Same, in bytes — the unit assessCargoDiskAdmission takes. */
 export function readReservedBytes(path, opts) {
   return readReservedGb(path, opts) * GIB;
+}
+
+/** Read the same ledger for evidence, retaining compatibility-reader uncertainty.
+ * An absent ledger is measured zero. An unreadable/malformed live claim cannot
+ * certify zero demand. This never reserves, reaps, or changes build admission.
+ * @param {string} path
+ * @param {{ env?: NodeJS.ProcessEnv, now?: number }} [options]
+ * @returns {{ state: 'measured' | 'unknown', deviceKey: string, reservedBytes: number | null,
+ *   knownReservedBytes: number | null, issues: string[] }}
+ */
+export function readReservationSnapshot(path, options = {}) {
+  const issues = [];
+  const deviceKey = mountKeyForPath(path);
+  if (!deviceKey.startsWith('dev-')) issues.push('device:unknown');
+  const knownReservedBytes = readReservedGb(path, { ...options, issues }) * GIB;
+  if (!Number.isSafeInteger(knownReservedBytes) || knownReservedBytes < 0) issues.push('claim:invalid-total');
+  return { state: issues.length ? 'unknown' : 'measured', deviceKey,
+    reservedBytes: issues.length ? null : knownReservedBytes,
+    knownReservedBytes: Number.isSafeInteger(knownReservedBytes) && knownReservedBytes >= 0 ? knownReservedBytes : null,
+    issues };
 }
 
 /** Strict evidence admission: combine every destination spending the same device.

@@ -124,6 +124,8 @@ export interface FirstPartyCallersQuery {
   readonly limit?: number;
   /** Reuse this worker's typed program for bounded interface diagnostics and static tool links. */
   readonly includeInterfaces?: boolean;
+  /** Context only: full cited files, with reached dependencies represented as re-export stubs. */
+  readonly contextScope?: 'cited-files';
   /** Already-authorized registry roots; every compiler source/config read is confined to this cohort. */
   readonly authorizedReadRoots?: readonly string[];
   /**
@@ -668,6 +670,11 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   }
   const scope = resolveSearchPaths(q.root, q.paths);
   if (!scope.ok) return answer(q.name, started, now, { error: scope.error });
+  const citedContext = q.contextScope === 'cited-files';
+  if (citedContext && (op !== 'context' || q.includeInterfaces || !q.paths?.length
+    || q.paths.some(path => !/\.[cm]?[jt]sx?$/.test(path)))) {
+    return answer(q.name, started, now, { error: 'Cited-file context requires op:context, explicit source files and no interface enrichment.' });
+  }
   if (op === 'trace' && (!q.target || !IDENTIFIER.test(q.target))) {
     return answer(q.name, started, now, { error: 'trace requires target: one exact symbol identifier' });
   }
@@ -687,7 +694,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   }
   // Transitive callers may never spell the initial name. Traverse a full scoped
   // source program, instead of treating the single-name candidate set as a graph.
-  const search = discovery || op === 'impact' || op === 'trace' || q.includeInterfaces ? traversalSourceFiles(q.root, rgPath, scope.paths)
+  const search = discovery || citedContext || op === 'impact' || op === 'trace' || q.includeInterfaces ? traversalSourceFiles(q.root, rgPath, scope.paths)
     : findCandidateFiles(q.root, q.name, rgPath, scope.paths);
   if (search.error) return answer(q.name, started, now, { error: search.error });
   const partial = [
@@ -719,7 +726,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   // Bodies outside that scope add no certified callers; retain their re-export
   // links without turning a bounded planning advisory into a whole-project load.
   const incomingScope = scope.scoped && op === 'impact' && (q.direction ?? 'downstream') === 'downstream';
-  const declarationScope = (discovery || op === 'callers' || op === 'symbol' || incomingScope) && !q.includeInterfaces;
+  const declarationScope = (discovery || citedContext || op === 'callers' || op === 'symbol' || incomingScope) && !q.includeInterfaces;
   const tree = openScopedTsTree(q.ts, q.root, search.files,
     declarationScope ? undefined : (_ts, _file, text) => text, q.authorizedReadRoots);
   try {
@@ -847,6 +854,7 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
         sourceFingerprint: createHash('sha256').update(JSON.stringify(sources)).digest('hex'),
         paths: scope.paths, supportingFiles: sources.filter(source => supporting.has(source.path)) },
       graphScope: { basis: 'compiler-project', sourceCompleteness: 'unverified', limitations: [
+        ...(citedContext ? ['Context is restricted to the explicitly cited source files; dependency bodies and relationships outside those files are not inspected.'] : []),
         ...partial, declarationScope ? 'Only candidate files are full compiler inputs; other reached files are re-export stubs.'
           : 'Candidate files and reached in-repository dependencies are full compiler snapshots; this is not a repository-wide completeness proof.',
         'Compiler or syntactic relationships do not establish runtime execution; unresolved target bindings remain unknown.' ] },

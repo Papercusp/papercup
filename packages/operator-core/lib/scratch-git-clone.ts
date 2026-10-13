@@ -4,6 +4,7 @@
  * or pull the operator compiler graph. The capability supplies its sandbox runner.
  */
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -12,18 +13,54 @@ import { performance } from 'node:perf_hooks';
 export type ScratchGitRunner = (argv: string[], cwd: string, signal: AbortSignal) =>
   Promise<{ code: number | null; output: string }>;
 
+/** Reuse pc-heavy's cumulative suspension ledger, as the test router does. */
+function admissionFrozenMs(): number | null {
+  const dir = process.env.PC_HEAVY_ADMISSION_DIR;
+  const id = process.env.PC_HEAVY_ADMISSION_ID;
+  if (!dir || !id || !/^[A-Za-z0-9_-]+$/.test(id)) return null;
+  try {
+    const record = readFileSync(join(dir, `${id}.state`), 'utf8');
+    const value = record.split('\n').find(line => line.startsWith('frozen_total_ms='))?.slice(16);
+    if (value === undefined || !/^\d+$/.test(value)) return null;
+    const total = Number(value);
+    return Number.isSafeInteger(total) ? total : null;
+  } catch { return null; }
+}
+
 /** Standalone local-only runner: bounded, no shell, no inherited credentials. */
 export function runLocalGit(argv: string[], cwd: string, signal: AbortSignal):
 Promise<{ code: number | null; output: string }> {
   const timeoutMs = 60_000;
   const started = performance.now();
+  const frozenBefore = admissionFrozenMs();
+  let frozenMs = 0;
+  const elapsed = () => {
+    const durationMs = Math.max(0, Math.round(performance.now() - started));
+    const frozenAfter = frozenBefore === null ? null : admissionFrozenMs();
+    // Missing/reset records are unknown. Keep only suspension actually observed
+    // during this invocation; never extend a budget using earlier admission time.
+    if (frozenAfter !== null && frozenBefore !== null && frozenAfter >= frozenBefore) {
+      frozenMs = Math.max(frozenMs, Math.min(durationMs, frozenAfter - frozenBefore));
+    }
+    return { durationMs, frozenMs, activeDurationMs: Math.max(0, durationMs - frozenMs),
+      freezeMeasurementAvailable: frozenBefore !== null && frozenAfter !== null && frozenAfter >= frozenBefore };
+  };
+  // Preserve an explicit phase receipt outside the disposable checkout without
+  // opening the credential environment or sending trace output to the caller.
+  const tracePath = process.env.GIT_TRACE2_EVENT;
   return new Promise(resolvePromise => {
-    execFile('git', argv, {
-      cwd, signal, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8',
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineExpired = false;
+    const child = execFile('git', argv, {
+      cwd, signal, timeout: frozenBefore === null ? timeoutMs : 0, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8',
       env: { PATH: process.env.PATH, LANG: 'C.UTF-8',
-        GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' },
+        GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0',
+        ...(tracePath && isAbsolute(tracePath) ? { GIT_TRACE2_EVENT: tracePath } : {}) },
     }, (error, stdout, stderr) => {
-      const durationMs = Math.round(performance.now() - started);
+      settled = true;
+      clearTimeout(timer);
+      const timing = elapsed();
       // execFile uses killed for both its deadline and its output limit. A
       // SIGTERM alone therefore cannot prove a timeout; preserve the measured
       // deadline alongside the actual termination instead of guessing a cause.
@@ -37,14 +74,27 @@ Promise<{ code: number | null; output: string }> {
         signal: error.signal ?? null,
         killed: error.killed ?? false,
         aborted,
-        durationMs,
+        ...timing,
         timeoutMs,
-        deadlineReached: durationMs >= timeoutMs,
+        deadlineReached: deadlineExpired || timing.activeDurationMs >= timeoutMs,
+        wallDeadlineReached: timing.durationMs >= timeoutMs,
       };
       resolvePromise({ code: error ? (typeof error.code === 'number' ? error.code : null) : 0,
         output: stdout + stderr + (error ? '\n' + error.message
           + '\n[scratch-git-runner] ' + JSON.stringify(failure) : '') });
     });
+    if (frozenBefore !== null && !settled) {
+      const checkDeadline = () => {
+        if (settled) return;
+        const remainingMs = timeoutMs - elapsed().activeDurationMs;
+        if (remainingMs > 0) timer = setTimeout(checkDeadline, remainingMs);
+        else {
+          deadlineExpired = true;
+          child.kill('SIGTERM');
+        }
+      };
+      timer = setTimeout(checkDeadline, timeoutMs);
+    }
   });
 }
 

@@ -23,9 +23,14 @@ import { Hono } from 'hono';
 import { searchDocs, starlightContentAdapter } from '@papercusp/docs-engine';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isLoopbackHost } from '@papercusp/operator-core/lib/endpoint-route/loopback-guard';
 import { isVmReleaseDistribution } from '@papercusp/operator-core/lib/vm-release-runtime-policy';
 import { crossOriginIsolationHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
+
+const HOST_MODULE_DIR = typeof __dirname === 'string'
+  ? __dirname
+  : fileURLToPath(new URL('.', import.meta.url));
 
 /**
  * Starlight docs root. `__dirname`-relative in dev (host run via `tsx`);
@@ -35,7 +40,7 @@ import { crossOriginIsolationHeaders } from '../../../libs/generic/desktop-ipc/s
  */
 const PUBLIC_DOCS_ROOT = process.env.PAPERCUSP_DOCS_ROOT
   ? resolve(process.env.PAPERCUSP_DOCS_ROOT)
-  : resolve(__dirname, '..', 'public', 'internal', 'docs');
+  : resolve(HOST_MODULE_DIR, '..', 'public', 'internal', 'docs');
 
 // The desktop builder copies and privacy-prunes this sibling of internal-docs.
 // Resolve from the selected package, never cwd/the PG engineering adapter: an
@@ -44,7 +49,7 @@ const searchSource = starlightContentAdapter({
   name: 'docs-mount',
   contentRoot: process.env.PAPERCUSP_DOCS_ROOT
     ? resolve(PUBLIC_DOCS_ROOT, '..', 'apps/operator-docs/src/content/docs')
-    : resolve(__dirname, '..', '..', 'operator-docs', 'src', 'content', 'docs'),
+    : resolve(HOST_MODULE_DIR, '..', '..', 'operator-docs', 'src', 'content', 'docs'),
 });
 
 const EXT_CONTENT_TYPE: Record<string, string> = {

@@ -158,7 +158,9 @@ describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => 
     } else if (change === 'native-turn') {
       deps.readLogTail.mockImplementation((path) => path === 'answerer.jsonl' ? native + '\n' + JSON.stringify({ type: 'user', sessionId: target.sessionId }) : log);
     } else {
-      deps.resolveTarget.mockResolvedValue({ ...target, sessionId: 'new-native' } as never);
+      const resolved = await deps.resolveTarget();
+      if (!resolved.ok) throw new Error('Expected the current answerer fixture to resolve');
+      deps.resolveTarget.mockResolvedValue({ ...resolved, sessionId: 'new-native' });
     }
     expect(await failure?.retire?.()).toBe(false);
     expect(deps.killTask).not.toHaveBeenCalled();

@@ -24,7 +24,7 @@ export async function readPublishedReportProof(path: string): Promise<PublishedR
 }
 
 /** Capture Copy as Markdown without changing the system clipboard. Install before navigation. */
-export async function captureReportClipboard(page: Page): Promise<void> {
+export async function captureReportClipboard(page: { addInitScript(script: string): Promise<unknown> }): Promise<void> {
   // A serialized TypeScript callback can reference tsx's Node-only __name helper.
   // Send browser JavaScript directly so initialization survives either importer.
   await page.addInitScript(`

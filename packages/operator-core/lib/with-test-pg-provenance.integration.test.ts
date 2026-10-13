@@ -136,6 +136,10 @@ describe('isolated PostgreSQL mutation evidence', () => {
   }, 200_000);
 
   it('preserves reporter provenance while replacing ambient product endpoints and identity', async () => {
+    const reporterScope = {
+      PAPERCUSP_TEST_RUN_HARNESS: 'reporter-harness',
+      PAPERCUSP_TEST_RUN_WORKSPACE: 'reporter-workspace',
+    };
     const probe = {
       PAPERCUSP_MUTATION_PROBE: '1',
       PAPERCUSP_MUTATION_PHASE: 'mutant',
@@ -145,10 +149,13 @@ describe('isolated PostgreSQL mutation evidence', () => {
     const child = `
       const keys = ${JSON.stringify(Object.keys(probe))};
       const provenance = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+      const reporterKeys = ${JSON.stringify(['PAPERCUSP_TEST_RUN_HARNESS', 'PAPERCUSP_TEST_RUN_WORKSPACE'])};
+      const reporterScope = Object.fromEntries(reporterKeys.map(key => [key, process.env[key]]));
       const privateDatabase = new URL(process.env.HARNESS_ADMIN_DATABASE_URL).port !== '5432';
       console.log('TEST_PROVENANCE_ENV_RESULT=' + JSON.stringify({
-        provenance, privateDatabase,
+        provenance, reporterScope, privateDatabase,
         isolatedWorkspace: process.env.PAPERCUSP_WORKSPACE_ID.startsWith('test-runtime-'),
+        reporterWorkspaceDiffersFromProduct: process.env.PAPERCUSP_TEST_RUN_WORKSPACE !== process.env.PAPERCUSP_WORKSPACE_ID,
         ambientSocketRemoved: process.env.PAPERCUSP_SUBSTRATE_IPC_SOCKET === undefined,
         ambientEndpointReplaced: process.env.PAPERCUSP_OPERATOR_URL !== 'http://ambient.invalid:3070',
       }));
@@ -156,7 +163,7 @@ describe('isolated PostgreSQL mutation evidence', () => {
     const { stdout } = await run(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
       '--isolated-runtime', '--', process.execPath, '-e', child], {
       cwd: root,
-      env: { ...process.env, ...probe,
+      env: { ...process.env, ...probe, ...reporterScope,
         PAPERCUSP_WORKSPACE_ID: 'ambient-workspace',
         PAPERCUSP_SUBSTRATE_IPC_SOCKET: '/ambient/operator.sock',
         PAPERCUSP_OPERATOR_URL: 'http://ambient.invalid:3070',
@@ -168,7 +175,8 @@ describe('isolated PostgreSQL mutation evidence', () => {
     const line = stdout.split('\n').find(line => line.startsWith('TEST_PROVENANCE_ENV_RESULT='));
     expect(line).toBeDefined();
     expect(JSON.parse(line!.slice('TEST_PROVENANCE_ENV_RESULT='.length))).toEqual({
-      provenance: probe, privateDatabase: true, isolatedWorkspace: true,
+      provenance: probe, reporterScope, privateDatabase: true, isolatedWorkspace: true,
+      reporterWorkspaceDiffersFromProduct: true,
       ambientSocketRemoved: true, ambientEndpointReplaced: true,
     });
     const dataDir = stdout.match(/booting throwaway PG[^\n]*\(datadir ([^\)]+)\)/)?.[1];

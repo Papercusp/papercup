@@ -46,7 +46,7 @@ export interface CapabilityReviewSourceDeps {
   run: typeof getDreamRun;
   verifyPacket: (packet: unknown, input: BuildCapabilityPacketInput) => ReturnType<typeof verifyCapabilityPacket>;
   /** Candidate retrieval only; it never grants novelty or implementation authority. */
-  code?: (root: string, repositoryId: string, tokens: string[], signal?: AbortSignal) => Promise<{ paths: string[]; truncated: boolean; graphStatus?: 'measured' | 'unknown' }>;
+  code?: (root: string, repositoryId: string, tokens: string[], signal?: AbortSignal) => Promise<{ paths: string[]; truncated: boolean; graphStatus?: 'measured' | 'unknown'; graphFailure?: string }>;
   readCode?: typeof readCapabilitySource;
 }
 /** Extend the existing lexical/compiler primitives; no additional index or model call. */
@@ -56,7 +56,7 @@ export async function discoverCapabilityReviewCode(root: string, repositoryId: s
   if (!rg) throw new Error('Code prior retrieval requires the maintained ripgrep binary.');
   signal?.throwIfAborted();
   const found = await new Promise<{ paths: string[]; truncated: boolean }>((resolve, reject) => {
-    const child = spawn(rg, ['--files-with-matches', '--fixed-strings', '--ignore-case', '--glob', FIRST_PARTY_SOURCE_GLOB,
+    const child = spawn(rg, ['--null', '--files-with-matches', '--fixed-strings', '--ignore-case', '--glob', FIRST_PARTY_SOURCE_GLOB,
       ...tokens.flatMap(token => ['-e', token]), '--', '.'], { cwd: root, signal, stdio: ['ignore', 'pipe', 'pipe'] });
     const stdout = createTextCollector(child.stdout, { maxChars: 32_000 });
     const stderr = createTextCollector(child.stderr, { maxChars: 1_000 });
@@ -65,12 +65,20 @@ export async function discoverCapabilityReviewCode(root: string, repositoryId: s
     child.once('close', code => {
       clearTimeout(timer);
       if (code !== 0 && code !== 1) { reject(new Error('Code prior retrieval failed: ' + stderr.text())); return; }
-      const paths = stdout.text().split('\n').filter(Boolean).map(path => path.replace(/^\.\//, '')).sort();
-      resolve({ paths: paths.slice(0, 12), truncated: paths.length > 12 || stdout.bytes > 32_000 });
+      const output = stdout.text();
+      const records = output.split('\0');
+      const truncated = stdout.bytes > 32_000;
+      // The bounded collector retains a tail, which may start inside a path.
+      // Discard that boundary record. NUL framing also preserves newlines in
+      // real filenames; a partial filename must never become source evidence.
+      if (truncated) records.shift();
+      const paths = records.filter(Boolean).map(path => path.replace(/^\.\//, '')).sort();
+      resolve({ paths: paths.slice(0, 12), truncated: paths.length > 12 || truncated });
     });
   });
   const paths = new Set(found.paths);
   let graphStatus: 'measured' | 'unknown' = 'unknown';
+  let graphFailure: string | undefined;
   // One bounded compiler expansion can discover renamed/non-matching helpers.
   // Its edges only supply candidate paths; review still reads actual source.
   const first = found.paths[0];
@@ -82,6 +90,7 @@ export async function discoverCapabilityReviewCode(root: string, repositoryId: s
       const graph = await firstPartyCallersOffthread({ root, repositoryId, vendorDir: LSP_VENDOR_DIR,
         name: declaration[1]!, filePath: first, paths: [first], op: 'context', limit: 12, authorizedReadRoots: [root] }, { budgetMs: 3_000 });
       if (!graph.error && graph.evidence?.graphScope.basis === 'compiler-project') graphStatus = 'measured';
+      if (graph.error) graphFailure = graph.error;
       for (const file of graph.error ? [] : graph.evidence?.sourceScope.supportingFiles ?? []) {
         if (paths.size >= 16) { found.truncated = true; break; }
         if (/\.[cm]?[jt]sx?$/.test(file.path)) paths.add(file.path);
@@ -89,7 +98,7 @@ export async function discoverCapabilityReviewCode(root: string, repositoryId: s
     }
   }
   signal?.throwIfAborted();
-  return { paths: [...paths], truncated: found.truncated, graphStatus };
+  return { paths: [...paths], truncated: found.truncated, graphStatus, ...(graphFailure ? { graphFailure } : {}) };
 }
 const defaultDeps: CapabilityReviewSourceDeps = {
   plans: listPlanRowsMatchingAnyToken,
@@ -333,7 +342,8 @@ export function buildCapabilityReviewSources(
           ' ordinary routed Blender ideas; latest ' +
           RUN_LIMIT +
           ' Dream attempts including rejects. ' +
-          'Compiler candidate expansion: ' + (code.graphStatus ?? 'unknown') + '. ' +
+          'Compiler candidate expansion: ' + (code.graphStatus ?? 'unknown') +
+          ('graphFailure' in code && code.graphFailure ? '; ' + code.graphFailure : '') + '. ' +
           (deps.code ? 'Unretrieved code' : 'Beyond-catalogue code retrieval was unavailable; Unmapped code') +
           ', older evicted attempts and unrouted Scout critique artifacts are outside this search; no edge or match is not proof of absence, and global novelty is not established.',
       };

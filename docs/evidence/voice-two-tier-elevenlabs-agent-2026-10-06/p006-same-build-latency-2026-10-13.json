@@ -1,7 +1,27 @@
 {
   "workItem": "WI-10006879",
   "planItem": "voice-two-tier-elevenlabs-agent-2026-10-06#P-006",
-  "specBinding": { "id": 41974, "specId": "SPEC-P-006", "revision": 1, "testRunId": 21216086 },
+  "specBinding": { "id": 42079, "previousPositiveBinding": 42008, "specId": "SPEC-P-006", "revision": 1, "testRunId": 21216390, "targeted": "SPEC-P-006", "executionResult": "failed" },
+  "closureStatus": {
+    "observedAt": "2026-10-13T19:45:45Z",
+    "runtime": "Frozen test source f280e20310; final evaluator replay on release reader d740fc3802 after current-build verifier failures",
+    "verdict": "fail",
+    "scorecard": "EI-25894735921190940",
+    "scorecardStaleHost": true,
+    "previousPositiveBindingRetracted": 42008,
+    "correctLayer": "pass",
+    "pending": ["falsifiability", "execution-integrity", "freshness", "plan-class-risk-floor", "disclosed-gap"],
+    "note": "A later clean frozen baseline failed the unchanged latency assertion. Historical wins below remain recorded; P-006 is not accepted or closed."
+  },
+  "selectorRegressionProbe": {
+    "subject": "packages/operator-core/lib/agent-tools/operator/converse-toolset.ts",
+    "mutation": "Invert the slim analytical-tool filter in a copy-out overlay",
+    "baselineTestRunId": 21216249,
+    "copyBaselineTestRunId": 21216254,
+    "mutantTestRunId": 21216257,
+    "result": "caught; tracked subject byte-identical after probe",
+    "scope": "Catalog guard only; not the SPEC-P-006 latency falsifier. Default old-release reader withheld mutation descriptor linkage."
+  },
   "scope": "Local current-build brain text stream; no acoustic, release or deployed-main claim",
   "runtime": {
     "healthSha": "1688a36c8c",
@@ -45,6 +65,27 @@
       "medianFirstWordMs": { "standard": 5162, "slim": 4987 },
       "doneMs": { "standard": [6172, 7276, 5805], "slim": [5922, 5035, 5804] },
       "reportedCostUsd": { "standard": [0.01094648, 0.01133648, 0.01136048], "slim": [0.01020448, 0.01047028, 0.01053568] }
+    },
+    {
+      "startedAt": "2026-10-13T19:26:29.334Z",
+      "testRunId": 21216390,
+      "suiteResult": "1 failed, 1 skipped; only the exact latency case selected",
+      "sourceCommit": "f280e203102351cd018178f69cd1acdf5a9a0b10",
+      "worktreeDirty": false,
+      "bundleSha256": "acc04e27db09b627455c110d5d6ff9cf6951f52c994b04d259069b66295f94fb",
+      "firstTextMs": { "standard": [11540, 5630, 4659], "slim": [9871, 5765, 5852] },
+      "firstWordMs": { "standard": [11540, 5630, 4659], "slim": [9871, 5765, 5852] },
+      "medianFirstWordMs": { "standard": 5630, "slim": 5852 },
+      "doneMs": { "standard": [12303, 7528, 6546], "slim": [11154, 8337, 6624] },
+      "reportedCostUsd": { "standard": [0.010574080000000001, 0.011093080000000002, 0.011093080000000002], "slim": [0.009667080000000002, 0.010226280000000003, 0.010264480000000001] },
+      "canonicalProbe": {
+        "invocationId": "bf35bb13-0ecb-4cb3-ad19-5fb3d806a1aa",
+        "leg": "baseline",
+        "result": "harness-error: unmutated baseline failed; mutant was not scored",
+        "trackedFixtureIntegrity": "verified byte-identical",
+        "log": "/tmp/p006-latency-mutation-proof.log"
+      },
+      "interpretation": "This clean sample does not satisfy SPEC-P-006. The captured phase timings do not establish why the profile medians reversed; no cause or universal latency guarantee is asserted."
     }
   ],
   "liveToolEvidence": [

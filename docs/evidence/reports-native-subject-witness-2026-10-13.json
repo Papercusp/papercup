@@ -508,9 +508,129 @@
     ]
   },
   "attemptFingerprint": "exit:6d1d022103f6",
+  "tracedW53Native": {
+    "sourceCommit": "d7eb1bf08cbe92ad12cb09ab022c327a27c003f0",
+    "runGroupId": "reports-native-f146-traced-w53-20261013",
+    "originalTaskId": "0mv71bdadq1yy364w3u",
+    "canonicalTestRun": {
+      "id": 21216337,
+      "table": "harness_shared.test_runs",
+      "filePath": "packages/operator-core/lib/reports-library-native.e2e.test.ts",
+      "status": "pass",
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "collectionFailed": false,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "testLayer": "e2e",
+      "workspaceId": "papercusp-workspace",
+      "startedAt": "2026-10-13T19:13:57.414Z",
+      "finishedAt": "2026-10-13T19:16:07.648Z",
+      "runtimeEnvironmentBeforeCaptureStatus": "captured",
+      "runtimeEnvironmentAfterCaptureStatus": "captured",
+      "configurationFingerprint": "sha256-config-snapshot-v1:88252aeebe695dd542d5f5a3ce6588f3c38eb6422dfd0166a74c529aa8e6171a",
+      "passedCaseTitles": [
+        "Reports library in the isolated native desktop > keeps owned bridge discovery across the runner temp-directory boundary",
+        "Reports library in the isolated native desktop > publishes through the real tool and proves SSE, reader and agent controls in Tauri"
+      ]
+    },
+    "sourceQualification": {
+      "measuredAt": "2026-10-13T19:16:20.688774Z",
+      "manifestPath": "/tmp/reports-f146-native-w53-inputs.json",
+      "sourceReceiptPath": "/tmp/reports-native-f146-traced-w53-20261013/verify-tauri-headless.D5cpRs/verifier-source-receipt.json",
+      "sourceReceiptSha256": "e9af43bf945b183d94ec933bf05bd24b29aded1201d60ff295774a1727971704",
+      "declaredInputCount": 71,
+      "receiptInputCount": 71,
+      "manifestReceiptSetEqual": true,
+      "canonicalEqual": 71,
+      "snapshotEqual": 71,
+      "different": [],
+      "missing": [],
+      "spaGuard": {
+        "result": "pass",
+        "mechanism": "scripts/lib/spa-require-built.sh spa_require_built_gate",
+        "buildStamp": "2026-10-13T18:12:26Z",
+        "requiredPaths": [
+          "apps/operator-vite/src/components/reports",
+          "apps/operator-vite/src/routes/reports.tsx",
+          "apps/operator/app/harness/Combobox.tsx"
+        ],
+        "scope": "These three required paths only; the broad newer-source warning does not establish that a Reports path is stale."
+      }
+    },
+    "nativeEvidence": {
+      "manifestPath": "~/.local/state/verification-harness/reports-library-tauri/20261013T191403Z-211591/phases/native/manifest.json",
+      "manifestSha256": "2b736ae74224e6659001d5bae2fa9f9466b751e6fddb6a5325ce78a66d2e1352",
+      "result": "pass",
+      "manifestStepCounter": 38,
+      "original": "rpt_611195b4-78fb-4657-a622-6dac437192ed",
+      "correction": "rpt_5d40fd2b-5f3a-47ad-867d-0764d2390ef5",
+      "privatePeer": "rpt_1d626406-4fdd-433c-b6dd-9fd583761a23",
+      "retired": "rpt_5d40fd2b-5f3a-47ad-867d-0764d2390ef5",
+      "retirement": {
+        "toolReceipt": "tool-reports-retire-35.json",
+        "toolSucceeded": true,
+        "beforeReportsListSseInvalidations": 4,
+        "afterReportsListSseInvalidations": 6,
+        "withoutRefreshOrNavigation": true,
+        "removalAndPinnedReaderReceipt": "assert-36.json",
+        "readbackReceipt": "tool-reports-get-37.json",
+        "retiredAt": "2026-10-13T19:15:45.681Z",
+        "bodyBytes": 107,
+        "bodySha256": "070a39e6ad0ee26699497cc8b0d37f3d401b517e7d0d4d7d60114c907dd84bef",
+        "bodyMd": "# Findings\n\nA complete private report.\n\n```mermaid\ngraph TD; A[Published] --> B[Reader]\n```\n\nA correction.\n"
+      },
+      "scope": "Original committed isolated native execution, including D-026 retirement delivery and preserved citation. This is not whole-plan acceptance or shipment."
+    },
+    "verificationHarness": {
+      "resultPath": "~/.local/state/verification-harness/verify-tauri-headless/20261013T184909Z-2902573/result.json",
+      "runId": "20261013T184909Z-2902573",
+      "verdict": "pass",
+      "phases": ["prepare:passed", "boot:passed", "assert:passed"],
+      "assertEndedAt": "2026-10-13T19:17:48.023Z",
+      "verdictEndedAt": "2026-10-13T19:17:48.513Z"
+    },
+    "outerTaskTerminal": {
+      "state": "timed_out",
+      "exitCode": 143,
+      "endedAt": "2026-10-13T19:18:56.163Z",
+      "hardDeadline": "2026-10-13T19:18:55.878Z",
+      "observedPhase": "teardown after completed passing verdict",
+      "logPath": ".papercusp/scratch/bash-23f2511a-fca.log",
+      "outerExitReceiptWritten": false,
+      "workItem": "EI-25893300120906465",
+      "rootCause": "unknown",
+      "interpretation": "Preserve both outcomes: canonical native assertions and harness verdict passed; the outer task later timed out during teardown. Do not rerun or restamp the completed proof."
+    },
+    "forkTerminationWitness": {
+      "workItem": "EI-25868427686173697",
+      "parentPid": 131938,
+      "childPid": 205629,
+      "parentElapsedMs": {
+        "stopSent": 132486,
+        "stoppedReceived": 132489,
+        "sigtermSent": 132492,
+        "sigkillSent": 178718,
+        "disconnect": 178719,
+        "exit": 178722,
+        "close": 178722
+      },
+      "exitSignal": "SIGTERM",
+      "rootCause": "unknown",
+      "limitation": "Parent callback elapsed times alone do not establish whether the child remained alive throughout the interval or whether the parent was delayed handling exit."
+    },
+    "bindRaceFollowUp": "EI-25892377387855237",
+    "remaining": [
+      "Bind and evaluate current completed-native evidence against the current Reports clauses.",
+      "Verify whole-plan acceptance and shipment separately.",
+      "Diagnose owned teardown and fork-termination defects without replaying the original native group."
+    ]
+  },
   "limitations": [
     "Whole Reports acceptance and shipment remain open.",
-    "Retirement/SSE/citation phases require a fresh new native group.",
+    "D-026 retirement/SSE/citation now has original committed native proof in tracedW53Native; current bindings and certification remain open.",
+    "The completed native proof does not resolve the separately owned teardown and fork-termination defects.",
     "All old native groups are terminal; never replay them.",
     "No canonical read in flight was established by the original transport count."
   ]

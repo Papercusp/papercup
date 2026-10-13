@@ -379,14 +379,18 @@ describe('generated projection retired by an EARLIER amendment (WI-10004061)', (
       .rejects.toThrow('acceptance_bar_revision_projection_unmapped:AUTO-BAR-R-9-P-001');
   });
 
-  it('still re-projects a terminal clause whose (BAR, item) pair is back in the current map', async () => {
-    // A re-added BAR must not be skipped merely because its old projection was retired.
-    const sql = sqlStub([orphaned({ lifecycle_status: 'superseded', current_revision: 3 })]);
+  it.each(['superseded', 'retired'] as const)(
+    're-enters the draft activation pipeline when a %s clause pair returns to the current map',
+    async (lifecycleStatus) => {
+      // A re-added BAR must not be skipped merely because its old projection was retired.
+      const sql = sqlStub([orphaned({ lifecycle_status: lifecycleStatus, current_revision: 3 })]);
 
-    await runAmendment(sql, { previousTemplateData: seedTemplateData() });
+      await runAmendment(sql, { previousTemplateData: seedTemplateData() });
 
-    const write = writeFor('AUTO-BAR-R-1-P-001');
-    expect(write).toBeDefined();
-    expect(write!.expectedRevision).toBe(3);
-  });
+      const write = writeFor('AUTO-BAR-R-1-P-001');
+      expect(write).toBeDefined();
+      expect(write!.expectedRevision).toBe(3);
+      expect(write!.lifecycleStatus).toBe('draft');
+    },
+  );
 });

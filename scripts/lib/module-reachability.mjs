@@ -375,6 +375,17 @@ export function buildImportGraph({
         resolvedEdges += 1;
         add(importers, target, file);
       }
+
+      // The maintained sidecar spawn planner executes devScriptPath without an
+      // import edge. Resolve its default sibling only when moduleDir is anchored
+      // to this source file and the path is passed to the actual planner call.
+      if (/\bconst\s+moduleDir\s*=\s*dirname\(\s*fileURLToPath\(\s*import\.meta\.url\s*\)\s*\)/.test(text)) {
+        const sidecarPath = /\bresolveSidecarSpawnPlan\s*\(\s*\{[^}]*?\bdevScriptPath\s*:\s*join\(\s*(?:[\w$]+\.moduleDirOverride\s*\?\?\s*)?moduleDir\s*,\s*['"]([\w.-]+\.(?:ts|tsx|mts|js|mjs))['"]\s*\)/g;
+        for (const match of text.matchAll(sidecarPath)) {
+          const target = resolveSpecifier({ specifier: `./${match[1]}`, fromFile: file, fileSet, workspaceDirByName });
+          if (target !== null) add(pathMentions, target, file);
+        }
+      }
     }
 
     for (const mentioned of parseReleasePathMentions(text)) {

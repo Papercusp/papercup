@@ -142,6 +142,11 @@ export interface SpecEvidenceForAdequacy {
   };
   coverageEvidenceRef: number | null;
   testRunId: number | null;
+  /** Store-owned citation and author, never details supplied by a binder. */
+  verifiesBindingId?: number;
+  createdBy?: string;
+  /** Certified by the shared reader from stored citations, pins and lineage. */
+  fixtureAbsenceVerification?: { verifierBindingIds: number[] };
   /** Canonical ledger attributes, independent of author-written evidenceRef prose. */
   testRunProvenance?: {
     filePath: string;
@@ -2262,8 +2267,52 @@ function appendRatingRerunProbes(
  *  25 — execution verdicts reconcile explicit nested and structured test-run IDs/files to the joined ledger row.
  *  26 — shared mutant runs preserve distinct targets and require a measured case for each target.
  *  28 — binder-authored fixtureFree=true no longer establishes fixture absence for test-backed evidence without a fixture fingerprint.
+ *  29 — outside-lineage re-observations can establish fixture absence for the same measured executable proof and selected cases.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 28;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 29;
+
+/**
+ * EI-25889625242363568: a null fixture fingerprint proves nothing by itself.
+ * Reuse the independently authored, source-pinned re-observation of the SAME
+ * executable proof to establish fixture absence. Lineage is resolved by the
+ * server; metadata written by the implementer alone remains insufficient.
+ */
+export async function resolveFixtureAbsenceVerifications(
+  rows: readonly SpecEvidenceForAdequacy[],
+  isIndependent: (reviewer: string, citedAuthor: string, planSlug: string) => Promise<boolean>,
+): Promise<Map<number, number[]>> {
+  const verified = new Map<number, number[]>();
+  const measured = (row: SpecEvidenceForAdequacy) =>
+    row.currentness?.overall === 'current' && row.currentness.provenance === 'server-measured';
+  for (const review of rows) {
+    if (review.evidenceKind !== 'independent-verification' || !review.id ||
+        !review.verifiesBindingId || !review.createdBy || !measured(review) ||
+        detailsOf(review).fixtureFree !== true) continue;
+    const cited = rows.find(row => row.id === review.verifiesBindingId);
+    if (!cited?.id || !cited.createdBy || cited.createdBy === review.createdBy ||
+        !EXECUTABLE_EVIDENCE_KINDS.has(cited.evidenceKind) || !measured(cited) ||
+        detailsOf(cited).fixtureFree !== true ||
+        cited.planSlug !== review.planSlug || cited.specId !== review.specId ||
+        cited.specRevision !== review.specRevision || cited.specFingerprint !== review.specFingerprint ||
+        !cited.testRunId || cited.testRunId !== review.testRunId ||
+        !cited.fingerprints.testFingerprint ||
+        cited.fingerprints.sourceFingerprint !== review.fingerprints.sourceFingerprint ||
+        cited.fingerprints.testFingerprint !== review.fingerprints.testFingerprint ||
+        cited.fingerprints.environmentFingerprint !== review.fingerprints.environmentFingerprint ||
+        cited.fingerprints.fixtureFingerprint !== null || review.fingerprints.fixtureFingerprint !== null) continue;
+    const cases = detailsOf(cited).testCases ?? [];
+    const reviewedCases = new Set(detailsOf(review).testCases ?? []);
+    if (cases.length === 0 || cases.some(title => !reviewedCases.has(title))) continue;
+    try {
+      if (!(await isIndependent(review.createdBy, cited.createdBy, cited.planSlug))) continue;
+    } catch {
+      // An unreadable lineage is uncertainty, never proof of independence.
+      continue;
+    }
+    verified.set(cited.id, [...(verified.get(cited.id) ?? []), review.id]);
+  }
+  return verified;
+}
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -2532,11 +2581,20 @@ export function evaluateSpecTestAdequacy(input: {
   rerunSelection?: { workItemIds?: string[]; evidenceRefs?: string[]; bindingIds?: number[]; planItemIds?: string[] };
   /** Full active clause population for the rubric's universal disclosed-gap check. */
   disclosedGapEvidence?: SpecEvidenceForAdequacy[];
+  /** Server-resolved outside-lineage re-observations, scoped to the selected proof. */
+  fixtureAbsenceVerifications?: ReadonlyMap<number, readonly number[]>;
   /** Work-item classification; `task` is the canonical non-code kind. */
   workItemKind?: string | null;
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;
+  const fixtureAbsenceVerifications = new Map<number, readonly number[]>(input.fixtureAbsenceVerifications);
+  for (const row of input.evidence) {
+    if (row.id && row.currentness?.overall === 'current' && row.currentness.provenance === 'server-measured' &&
+        row.fixtureAbsenceVerification?.verifierBindingIds.length) {
+      fixtureAbsenceVerifications.set(row.id, row.fixtureAbsenceVerification.verifierBindingIds);
+    }
+  }
   const belongsToClause = (row: SpecEvidenceForAdequacy) =>
     row.planSlug === clause.planSlug &&
     row.specId === clause.specId &&
@@ -2648,7 +2706,8 @@ export function evaluateSpecTestAdequacy(input: {
     (row) =>
       row.evidenceKind !== 'operational' &&
       EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) &&
-      row.fingerprints.fixtureFingerprint === null,
+      row.fingerprints.fixtureFingerprint === null &&
+      !(row.id && fixtureAbsenceVerifications.has(row.id) && !fixtureUseRequired),
   );
   const fixtureFreeAttestationUnverified = unresolvedFixtureProof.some(
     (row) => detailsOf(row).fixtureFree === true,
@@ -2692,7 +2751,7 @@ export function evaluateSpecTestAdequacy(input: {
           suggestion: fixtureFreeAttestationUnverified
             ? fixtureUseRequired
               ? 'Bind a measured fixture fingerprint and calibration proof; fixtureFree=true cannot override fixture use declared by the clause.'
-              : 'Fixture-free status needs independent measurement; fixtureFree=true is only binder-authored metadata.'
+              : 'Fixture-free status needs independent measurement: an outside-lineage independent-verification of the same measured source, test, run and selected cases; fixtureFree=true alone is binder-authored metadata.'
             : fixtureUseRequired || fixtureBindings.length > 0 || fixtureUseAttested
               ? 'Bind a measured fixture fingerprint and calibration proof before rating fixture calibration.'
               : 'Fixture absence is not independently measured; bind a measured fixture fingerprint and calibration proof or provide independent fixture-absence evidence.',
@@ -2707,7 +2766,9 @@ export function evaluateSpecTestAdequacy(input: {
         rating: 'not-applicable',
         evidence: executableFixtureFreeProof.length > 0
           ? evidenceWithBindings(
-              `Executable binding(s) explicitly attest fixtureFree=true for ${clauseIdentity(clause)}; fixture calibration is not applicable.`,
+              executableFixtureFreeProof.some(row => row.id && fixtureAbsenceVerifications.has(row.id))
+                ? `Fixture absence for ${clauseIdentity(clause)} is independently verified for the selected measured executable binding(s); fixture calibration is not applicable. Verification citations: ${JSON.stringify(executableFixtureFreeProof.flatMap(row => row.id ? fixtureAbsenceVerifications.get(row.id) ?? [] : []))}.`
+                : `Executable binding(s) explicitly attest fixtureFree=true for ${clauseIdentity(clause)}; fixture calibration is not applicable.`,
               executableFixtureFreeProof,
             )
           : `No fixture-dependent proof is bound for ${clauseIdentity(clause)}; the exact bindings inspected were ${bindingSummary(exactEvidence)}.`,

@@ -4089,7 +4089,7 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
-export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "pending" | "clear" | "cancelled" | "completed";
+export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "pending" | "completed" | "clear" | "cancelled";
 /**
  * A minimal FIFO async mutex serializing the GATED-inject critical section within
  * a single host (EI-8822). Each control-socket connection runs its OWN async

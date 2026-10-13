@@ -204,6 +204,23 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
       expect(r.err).toContain(kind === 'absolute' ? 'absolute-pinned-dependency-link' : 'escaping-pinned-dependency-link');
       expect(existsSync(out)).toBe(false);
     });
+    it('refuses the donor self-link created by relinking a prepared host output', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
+      const modules = join(donor, 'node_modules');
+      const hostModules = join(t, 'host', 'node_modules');
+      write(join(modules, 'p/index.js'), 'preserved package');
+      mkdirSync(dirname(hostModules), { recursive: true });
+      symlinkSync(modules, hostModules);
+      // Legacy caller sequence: bundle-host has prepared host/node_modules;
+      // an unconditional ln follows that directory symlink into the donor.
+      const relink = spawnSync('ln', ['-s', modules, hostModules], { encoding: 'utf8', timeout: 5_000 });
+      expect(relink.status, relink.stderr).toBe(0);
+      expect(readFileSync(join(modules, 'p/index.js'), 'utf8')).toBe('preserved package');
+      const r = runLib(['snapshot', donor, out]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('absolute-pinned-dependency-link:node_modules/node_modules');
+      expect(existsSync(out)).toBe(false);
+    });
     it('requires workspace link targets in the declared source population', () => {
       const t = fixture(); const donor = join(t, 'donor');
       write(join(donor, 'libs/workspace/index.js'), 'workspace'); mkdirSync(join(donor, 'node_modules'));

@@ -10982,7 +10982,10 @@ export function hostThroughPty(o) {
           dropReason = 'fresh-child-owner-input';
           break;
         }
-        if (codexBackendFrameWaitExpired()) {
+        // The startup loop can also end at the overall kickoff deadline before
+        // the banner-relative frame timer expires. A missing frame still
+        // forbids input; terminal marker fallback cannot authorize this child.
+        if (codexMarkerKickoffRequiresFrame() && childBackendFirstFrameAt <= 0) {
           const waitStartedAt = childBackendTuiStartedAt || childStartupFirstOutputAt;
           appendHostEvent(ownerId, 'launch-kickoff-backend-frame-timeout', {
             elapsedMs: waitStartedAt > 0 ? Math.max(0, Date.now() - waitStartedAt) : null,
@@ -11127,6 +11130,12 @@ export function hostThroughPty(o) {
           });
           if (claudeKickoffReadinessAtWrite === 'wait-for-composer') {
             dropReason = 'headless-claude-composer-not-ready';
+            break;
+          }
+          // The backend banner may arrive while the ordinary busy gate or
+          // preparation is pending. Recheck the frame at the actual byte write.
+          if (codexMarkerKickoffRequiresFrame() && childBackendFirstFrameAt <= 0) {
+            dropReason = 'codex-backend-frame-not-observed';
             break;
           }
           // The text is the first step; later steps are delayed submit CRs, so

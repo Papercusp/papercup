@@ -98,6 +98,18 @@ async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, text: 
   return output;
 }
 
+async function openLiveStream() {
+  fixture.path = join(directory, 'rollout.jsonl');
+  writeFileSync(fixture.path, JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'seed' } }) + '\n');
+  fixture.roster = { active: [entry({ nativeSession: { backend: 'codex', rolloutId: 'rollout' }, advSessionId: 123 })], starting: [], pending: [], ended: [] };
+  const controller = new AbortController(); controllers.push(controller);
+  const response = await handler(new Request(`http://localhost/api/device/sessions/${OWNER}/transcript?stream=1`, { signal: controller.signal }), context);
+  expect(response.headers.get('content-type')).toBe('text/event-stream');
+  const reader = response.body!.getReader();
+  await readUntil(reader, 'event: thinking');
+  return reader;
+}
+
 beforeEach(() => {
   fixture.allowed = true;
   fixture.authorityError = false;
@@ -183,30 +195,38 @@ describe('R-5/R-19 — device boundaries', () => {
   });
 });
 
-describe('R-11/R-25/R-32 — live stream', () => {
-  it('delivers a new native turn on the same stream and closes immediately on grant revocation', async () => {
-    fixture.path = join(directory, 'rollout.jsonl');
-    writeFileSync(fixture.path, JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'seed' } }) + '\n');
-    fixture.roster = { active: [entry({ nativeSession: { backend: 'codex', rolloutId: 'rollout' }, advSessionId: 123 })], starting: [], pending: [], ended: [] };
-    const controller = new AbortController(); controllers.push(controller);
-    const response = await handler(new Request(`http://localhost/api/device/sessions/${OWNER}/transcript?stream=1`, { signal: controller.signal }), context);
-    expect(response.headers.get('content-type')).toBe('text/event-stream');
-    const reader = response.body!.getReader();
-    await readUntil(reader, 'event: thinking');
-    appendFileSync(fixture.path, JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'new-live-turn' } }) + '\n');
+describe('R-5/R-11/R-25/R-32 — live stream', () => {
+  // Keep the detectors separate so a redaction mutant cannot stand in as proof
+  // that live-follow or revocation can fail.
+  it('delivers a new native turn on the already-open stream', async () => {
+    const reader = await openLiveStream();
+    appendFileSync(fixture.path!, JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'new-live-turn' } }) + '\n');
     fixture.ticks[0]!();
     expect(await readUntil(reader, 'new-live-turn')).toContain('new-live-turn');
+  });
+
+  it('redacts seeded secrets and drops raw tool arguments and output from live appends', async () => {
+    const reader = await openLiveStream();
     const secret = 'sk-proj-' + 'b9'.repeat(18);
-    appendFileSync(fixture.path, [
-      { type: 'response_item', payload: { type: 'function_call_output', output: 'private-tool-output' } },
+    appendFileSync(fixture.path!, [
+      { type: 'response_item', payload: { type: 'function_call', name: 'read', arguments: JSON.stringify({ api_key: secret, value: 'private-tool-args' }) } },
+      { type: 'response_item', payload: { type: 'function_call_output', output: `private-tool-output ${secret}` } },
       { type: 'event_msg', payload: { type: 'agent_message', message: `token=${secret} final-safe-text` } },
     ].map(row => JSON.stringify(row) + '\n').join(''));
     await new Promise(resolve => setImmediate(resolve));
     fixture.ticks[0]!();
     const redacted = await readUntil(reader, 'final-safe-text');
     expect(redacted).not.toContain(secret);
+    expect(redacted).not.toContain('private-tool-args');
     expect(redacted).not.toContain('private-tool-output');
     expect(redacted).toContain('[redacted]');
+  });
+
+  it('closes an operating stream immediately on grant revocation', async () => {
+    const reader = await openLiveStream();
+    appendFileSync(fixture.path!, JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'before-revoke' } }) + '\n');
+    fixture.ticks[0]!();
+    expect(await readUntil(reader, 'before-revoke')).toContain('before-revoke');
     await changeDeviceSessionGrant('phone-a', WS, false);
     expect(await readUntil(reader, 'access_revoked')).toContain('access_revoked');
     expect(fixture.stop).toHaveBeenCalled();

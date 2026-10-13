@@ -3,9 +3,10 @@
  * or provider credential. This is lifecycle proof, not benchmark performance. */
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
-import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type postgres from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -15,6 +16,9 @@ import { createCurrentStockBenchHarness } from './native-harness-runner';
 import { currentBenchAssignmentId, currentBenchGatewayController, type CurrentSuBenchOptions } from './current-su';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
+import { startBenchEgress, type BenchEgress, type TaskNetworkLease } from './bench-egress';
+import { CONTAINER_CODEX_BIN_PATH, resolveContainerCodexBinary, type DockerExecTarget } from './container-exec-target';
+import { restoreRelocatedSessions } from './frontier-swe-seam';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, homes: '' }));
 vi.mock('@papercusp/db-org', async original => ({ ...await original<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: h.sql }) }));
@@ -26,6 +30,19 @@ vi.mock('../session-archive-hook', () => ({ scheduleArchiveForAdvSession: () => 
 
 const workspaceId = 'private-stock-native';
 let db: OrgTestDb, root: string;
+const execDocker = promisify(execFile);
+async function docker(args: string[], timeout = 30000): Promise<string> {
+  const phase = args.slice(0, 2).join(' '), started = Date.now();
+  console.info('STOCK_NATIVE_DOCKER', JSON.stringify({ phase, state: 'started' }));
+  try {
+    const result = await execDocker('docker', args, { encoding: 'utf8', timeout });
+    console.info('STOCK_NATIVE_DOCKER', JSON.stringify({ phase, state: 'completed', elapsedMs: Date.now() - started }));
+    return result.stdout.trim();
+  } catch (error) {
+    console.info('STOCK_NATIVE_DOCKER', JSON.stringify({ phase, state: 'failed', elapsedMs: Date.now() - started, error: String(error) }));
+    throw error;
+  }
+}
 beforeAll(async () => {
   expect(execFileSync('codex', ['--version'], { encoding: 'utf8' })).toMatch(/codex/i);
   db = await createOrgTestDb(); h.sql = db.adminSql;
@@ -34,7 +51,7 @@ beforeAll(async () => {
 });
 afterAll(async () => { await db?.cleanup(); if (root) rmSync(root, { recursive: true, force: true }); });
 
-async function refusedAssignment(name: string, problemStatement: string) {
+async function refusedAssignment(name: string, problemStatement: string, inContainer = false) {
   const repoRoot = join(root, `protocol-${name}`), checkout = join(root, `checkout-${name}`); mkdirSync(repoRoot); mkdirSync(checkout);
   // Lifecycle proof, not a performance budget: the refusal ends Codex ~0.3s after its first
   // request, but sandboxed cold start (bwrap + SRT + two /v1/models probes) took 2.7-4.3s at
@@ -74,13 +91,38 @@ async function refusedAssignment(name: string, problemStatement: string) {
     agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto', pollIntervalMs: 25, driveTimeoutMs: 45000,
     preregistration: { config, preregHash: frozen.preregHash, repoRoot } };
   const ctx = { workspaceId, principal: { slug: 'authenticated-private-fixture' } } as PapercuspUnifiedToolContext;
+  let egress: BenchEgress | undefined, lease: TaskNetworkLease | undefined, container: string | undefined;
+  let unbind: (() => void) | undefined, containerExec: DockerExecTarget | undefined;
+  let primaryError: unknown;
   try {
+    if (inContainer) {
+      // Preflight every local dependency before creating Docker resources.
+      for (const image of ['alpine', 'nginx:alpine']) await docker(['image', 'inspect', image]);
+      const codex = resolveContainerCodexBinary();
+      const perTaskDir = join(root, `container-homes-${name}`); mkdirSync(perTaskDir);
+      egress = await startBenchEgress({ runId: `stock-native-proof-${randomUUID()}`,
+        endpoints: [{ name: 'gw', listenPort: 8788, perTask: true }] });
+      console.info('STOCK_NATIVE_PHASE', JSON.stringify({ phase: 'egress-ready', runId: egress.runId }));
+      lease = await egress.openTaskNetwork(name);
+      unbind = egress.bindTaskEndpoint(lease.network, 'gw', port);
+      container = await docker(['run', '-d', '--name', `stock-native-fixture-${randomUUID()}`, '--label', `papercusp.stock-proof=${egress.runId}`,
+        '--network', lease.network, '--workdir', '/app',
+        '--mount', `type=bind,src=${codex},dst=${CONTAINER_CODEX_BIN_PATH},readonly`,
+        '--mount', `type=bind,src=${perTaskDir},dst=${h.homes}`, 'alpine', 'sleep', '300'], 60000);
+      containerExec = { kind: 'docker-exec', containerId: container, workdir: '/app', binPath: CONTAINER_CODEX_BIN_PATH,
+        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: h.homes, perTaskDir }] },
+        originRewrites: [{ from: `http://127.0.0.1:${port}`, to: egress.originFor('gw') }] };
+      console.info('STOCK_NATIVE_PHASE', JSON.stringify({ phase: 'native-start', container }));
+    }
     const factory = createCurrentStockBenchHarness(opts, ctx, { ...hosted,
+      ...(containerExec ? { containerExec } : {}),
       admit: async () => ({ admitted: true, receiptRef: 'private-no-spend-admission' }), observeIdentity: async () => null }, { sql: h.sql as never });
     const result = await factory.spinRunAndCost({ blueprintId: 'native-codex',
       task: { benchmark: 'swe-bench-pro', instanceId: 't1', problemStatement, graderMeta: {} },
       checkout: { dir: checkout, repo: 'fixture/private', baseCommit: 'fixture', cleanup: async () => {} },
       budget: config.arms[1].generationBudget });
+    if (inContainer) console.info('STOCK_NATIVE_PHASE', JSON.stringify({ phase: 'native-ended',
+      requests: bodies.length, stopReason: result.telemetry.stopReason, generationError: result.telemetry.generationError }));
     // The listener supplies no model answer or billed identity. Refusal must
     // never become a verified successful generation or a complete free run.
     expect(result.telemetry.stopReason, JSON.stringify(result)).not.toBe('done');
@@ -104,14 +146,49 @@ async function refusedAssignment(name: string, problemStatement: string) {
     const files = await h.sql`SELECT file_path, byte_offset FROM harness_shared.interactive_usage_files WHERE workspace_id=${workspaceId}`;
     expect(files.length).toBeGreaterThan(0);
     expect(files.some(file => file.file_path.includes(join(h.homes, String(rows[0].id), 'sessions')))).toBe(true);
+    if (inContainer) {
+      const home = join(h.homes, String(rows[0].id));
+      expect(egress!.stats().gw.connections).toBeGreaterThan(0);
+      const toml = readFileSync(join(home, 'config.toml'), 'utf8');
+      expect(toml).toContain(egress!.originFor('gw'));
+      expect(toml).not.toContain('mcp_servers');
+      for (const file of ['AGENTS.md', 'hooks.json', 'auth.json']) expect(existsSync(join(home, file))).toBe(false);
+      const request = JSON.stringify(bodies[0].input);
+      expect(request).toContain('<cwd>/app</cwd>');
+      expect(request).not.toContain(checkout);
+    }
     const collector = new GatewayRequestTelemetry();
     const span = collector.begin({ provider: 'codex', protocol: 'openai-responses' });
     span.setCacheShape(Buffer.from(JSON.stringify(bodies[0])));
     const cache = span.finish('gateway-error', 400)!.cache;
     const text = JSON.stringify(bodies[0].input);
     return { cache, checkout, body: bodies[0], checkoutInInput: text.includes(checkout) };
-  } finally { await hosted.stop(); }
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    unbind?.();
+    const cleanupErrors: string[] = [];
+    const clean = async (name: string, operation: () => unknown | Promise<unknown>) => {
+      try { await operation(); } catch (error) { cleanupErrors.push(`${name}: ${String(error)}`); }
+    };
+    if (container) {
+      // Hand root-written session evidence back before the bind mount vanishes.
+      await clean('session ownership', () => docker(['exec', '-u', '0', container!, 'chown', '-R', `${process.getuid!()}:${process.getgid!()}`, h.homes]));
+      await clean('container', () => docker(['rm', '-f', container!]));
+    }
+    if (containerExec) await clean('restore', () => expect(restoreRelocatedSessions(containerExec!.sessionRelocation!.roots).errors).toEqual([]));
+    if (lease) await clean('task network', async () => expect(await lease!.release()).toEqual([]));
+    if (egress) await clean('egress', async () => expect((await egress!.stop()).errors).toEqual([]));
+    await clean('gateway', () => hosted.stop());
+    if (cleanupErrors.length) throw new Error(JSON.stringify({ primaryError: primaryError ? String(primaryError) : null, cleanupErrors }),
+      { cause: primaryError });
+  }
 }
+
+it('runs the clean stock native CLI in /app through internal-network egress with retained native evidence', async () => {
+  await refusedAssignment('container-lifecycle', 'Describe the empty repository.', true);
+}, 240000);
 
 it('retains a real native UUID and terminal ingestion after local refusal without provider forwarding', async () => {
   await refusedAssignment('lifecycle', 'Describe the empty repository.');

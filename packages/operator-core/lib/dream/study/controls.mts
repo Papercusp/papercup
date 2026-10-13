@@ -6,9 +6,19 @@ import { readRoutineSnap, writeRoutineSnap, routineSnapEqual, type RoutineSnap }
 import { computeNextFireAt } from '../../harness/routines/cron.ts';
 
 type Receipt = { ok: boolean; applied?: boolean; reverted?: boolean; verify?: { ok: boolean }; auditId?: string };
+/** Legacy studies restore OFF; a registered comparison may retain an existing ON master. */
+export function requireStudyMasterPreflight(rows: readonly { enabled: boolean }[], runRequested: boolean, retainEnabled = false): boolean {
+  if (rows.length !== 1 || typeof rows[0]!.enabled !== 'boolean')
+    throw new Error('Study master state is unavailable; no controls or provider calls are authorized');
+  if (runRequested && !retainEnabled && rows[0]!.enabled !== false)
+    throw new Error('Expected disabled master; inspect current owner state before this temporary restore protocol');
+  return rows[0]!.enabled;
+}
+
 export type RestorationPorts = {
   disableMaster: () => Promise<Receipt>;
   masterDisabled: () => Promise<boolean>;
+  masterEnabled?: () => Promise<boolean>;
   revertRoutine: (auditId: string) => Promise<Receipt>;
 };
 
@@ -16,6 +26,7 @@ export function studyRestorationPorts(sql: Sql, workspaceId: string, potSlug: st
   const read = () => getPotLearningScope(sql, { workspaceId, potSlug });
   return {
     masterDisabled: async () => (await read())?.enabled === false,
+    masterEnabled: async () => (await read())?.enabled === true,
     disableMaster: async () => {
       // Cleanup uses the same store + audit harness as learning:set-pot-scope.
       // It must not depend on either HTTP host and must never re-enable learning
@@ -36,8 +47,12 @@ export function studyRestorationPorts(sql: Sql, workspaceId: string, potSlug: st
   };
 }
 
-export async function enableStudyMaster(sql: Sql, workspaceId: string, potSlug: string, ownerId: string) {
+export async function enableStudyMaster(sql: Sql, workspaceId: string, potSlug: string, ownerId: string, retainEnabled = false) {
   const read = () => getPotLearningScope(sql, { workspaceId, potSlug });
+  if (retainEnabled) {
+    if ((await read())?.enabled !== true) throw new Error('Retained learning master changed after study preflight');
+    return { ok: true, applied: false, retained: true, verify: { ok: true } };
+  }
   const outcome = await runControlMutation({
     action: 'learning:set-pot-scope', subject: potSlug, actor: ownerId,
     capturePrev: async () => {
@@ -63,9 +78,30 @@ type RoutinePorts = { read: () => Promise<RoutineSnap>; write: (snap: RoutineSna
  * object before apply, so a lost/failed apply receipt cannot erase cleanup. */
 export async function prepareStudyRoutine(
   ports: RoutinePorts, payload: Record<string, unknown>, log: (entry: unknown) => Promise<void>,
+  retainActive = false,
 ) {
   const before = await ports.read();
-  if (before.active) throw new Error('Expected inactive manual Dream routine before study setup');
+  if (before.active) {
+    if (!retainActive) throw new Error('Expected inactive manual Dream routine before study setup');
+    // Direct cycle calls supply their own payload. Borrow the enabled routine
+    // without changing its owner's payload, schedule, group or metadata. The
+    // scheduler and cycle writer may independently advance nextFireAt/metadata.
+    const sameControls = (current: RoutineSnap) => routineSnapEqual(
+      { ...current, nextFireAtIso: null, metadata: {} },
+      { ...before, nextFireAtIso: null, metadata: {} },
+    );
+    await log({ phase: 'routine-retained', subject: ports.subject, before });
+    return {
+      apply: async () => {
+        if (!sameControls(await ports.read())) throw new Error('Retained routine changed after study preflight');
+        return { ok: true, applied: false, retained: true, verify: { ok: true } };
+      },
+      restore: async () => {
+        const ok = sameControls(await ports.read());
+        return { ok, applied: true, retained: true, verify: { ok } };
+      },
+    };
+  }
   const next: RoutineSnap = {
     ...before, active: true, triggerConfig: { ...before.triggerConfig, cron: '0 0 0 1 1 *' },
     // Annual scheduled firing is kept outside this bounded manual study window.
@@ -126,12 +162,19 @@ export function studyRoutinePorts(sql: Sql, workspaceId: string, potSlug: string
  * An uncertain disable is reconciled by reading the real gate, never by assuming
  * a lost response means the write failed. No paid work runs from this helper. */
 export async function restoreStudyControls(
-  state: { masterAttempted: boolean; routineAudit?: string; restoreRoutine?: () => Promise<Receipt> },
+  state: { masterAttempted: boolean; masterRetained?: boolean; routineAudit?: string; restoreRoutine?: () => Promise<Receipt> },
   ports: RestorationPorts,
   log: (entry: unknown) => Promise<void>,
 ) {
   const errors: unknown[] = [];
   const receipts: unknown[] = [];
+  if (state.masterRetained) {
+    try {
+      if (state.masterAttempted) throw new Error('Retained master cannot also be study-owned');
+      if (!ports.masterEnabled || !(await ports.masterEnabled())) throw new Error('Retained learning master is no longer verified ON');
+      receipts.push({ master: { retained: true, enabled: true } });
+    } catch (error) { errors.push(error); }
+  }
   if (state.masterAttempted) {
     let writeError: unknown;
     try { receipts.push({ master: await ports.disableMaster() }); }

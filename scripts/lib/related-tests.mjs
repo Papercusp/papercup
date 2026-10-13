@@ -221,7 +221,9 @@ export function playwrightOwnedTest(rootDir, { readFile } = {}) {
  * @returns {boolean} true when the unit Vitest layer excludes the file
  */
 export function unitExcludedVitestTest(file) {
-  return /\.(?:integration|browser)\.test\.[cm]?[jt]sx?$/.test(file);
+  return /\.(?:integration|browser)\.test\.[cm]?[jt]sx?$/.test(file)
+    // This paid live proof is explicitly excluded by operator-core's ordinary configs.
+    || /(?:^|\/)lib\/blueprint\/launch-blueprint-account-route\.e2e\.test\.ts$/.test(file);
 }
 
 /**

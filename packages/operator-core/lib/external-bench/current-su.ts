@@ -1395,6 +1395,9 @@ export function currentBenchLaunchRequest(opts: CurrentSuBenchOptions, handle: B
     harness: handle.slug, cwd: handle.worktreePath, feature: handle.featureId, workItem: handle.featureId,
     brief: `Resolve the assigned benchmark task in this repository. Preserve your work in the checkout. Use work_items:get or work_items:checkpoint with id=${handle.featureId} and harness=${handle.slug}. When finished, use work_items:complete with that exact id/harness, state="done", assumptions="none", and completion:{summary,testsRun,testResult,verifiedHow,filesChanged}. Name checkout-relative files.\n\n${problem}${context?.contextText ?? ''}`,
     independent: true, headless: true, count: 1, mcpTarget: 'spawn-host',
+    // No human is present at this bounded assignment's console. Independent
+    // launches have no fleet AUTO default; register it explicitly at bootstrap.
+    extraArgs: ['--auto'],
     label: `${attemptLabel(opts.runId, handle)}solver`,
     idempotencyKey: `current-bench:${hash(`${opts.runId}:${handle.slug}`)}`,
     members: [{ role: 'su', agent: opts.agent, model: opts.model, effort: opts.effort, account: opts.account }],

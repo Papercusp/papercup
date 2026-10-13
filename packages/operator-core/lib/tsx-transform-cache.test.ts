@@ -47,8 +47,9 @@ function fixture(variant: Variant, { entries = [], side = '+', deferDeletes = fa
     readFileSync(file: string, _encoding: string) {
       const name = path.basename(file);
       reads.push(name);
-      if (!files.has(name)) throw new Error('ENOENT');
-      return files.get(name);
+      const content = files.get(name);
+      if (content === undefined) throw new Error('ENOENT');
+      return content;
     },
     promises: {
       async writeFile(file: string, content: string) {

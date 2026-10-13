@@ -17,6 +17,72 @@ function childDiagnostic(result: SpawnSyncReturns<string>, startedAt: number): s
 }
 
 describe('private managed task preflight', () => {
+  it('probes a pinned owned bus when the private socket is unusable, without an ambient fallback', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'private-task-pinned-route-'));
+    mkdirSync(join(directory, 'systemd')); mkdirSync(join(directory, 'bin'));
+    const servers = [createServer(socket => socket.destroy()), createServer(socket => socket.destroy())];
+    const paths = [join(directory, 'systemd', 'private'), join(directory, 'bus')];
+    for (const [index, server] of servers.entries()) await new Promise<void>((done, reject) => {
+      server.once('error', reject); server.listen(paths[index], done);
+    });
+    // Replace only the manager protocol: it rejects the stale route, checks
+    // the explicit alias and accepts the owned bus. PG is never allocated.
+    writeFileSync(join(directory, 'bin', 'systemd-run'), `#!${process.execPath}\n` +
+      `const fs = require('node:fs');\n` +
+      `const path = require('node:path');\n` +
+      `const alias = path.join(process.env.XDG_RUNTIME_DIR, 'bus');\n` +
+      `if (process.env.DBUS_SESSION_BUS_ADDRESS !== 'unix:path=' + alias) process.exit(24);\n` +
+      `process.exit(fs.realpathSync(alias) === ${JSON.stringify(paths[1])} ? 0 : 25);\n`, { mode: 0o755 });
+    const entry = join(root, 'scripts/with-test-pg.mjs');
+    const hook = `export async function resolve(specifier, context, next) {
+      if (specifier === 'async-exit-hook') throw new Error('PINNED_MANAGER_PREFLIGHT_REACHED');
+      return next(specifier, context);
+    }`;
+    const script = `import { register } from 'node:module';
+      register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
+      process.argv = [process.execPath, ${JSON.stringify(entry)}, '--isolated-runtime=operator-api', '--managed-tasks',
+        '--', process.execPath, '-e', 'process.exit(91)'];
+      await import(${JSON.stringify(pathToFileURL(entry).href)});`;
+    try {
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+        cwd: root, encoding: 'utf8', timeout: 10000,
+        env: { ...process.env, PATH: join(directory, 'bin') + ':' + process.env.PATH, XDG_RUNTIME_DIR: directory,
+          DBUS_SESSION_BUS_ADDRESS: 'unix:path=/unverified-ambient-bus',
+          PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused-test-ledger.invalid/test' },
+      });
+      const diagnostic = JSON.stringify(result);
+      expect(result.stdout, diagnostic).toContain('managed task preflight passed');
+      expect(result.stderr, diagnostic).toContain('PINNED_MANAGER_PREFLIGHT_REACHED');
+      expect(result.stdout).not.toContain('booting throwaway PG');
+    } finally {
+      for (const server of servers) await new Promise<void>(done => server.close(() => done()));
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!process.env.XDG_RUNTIME_DIR || !existsSync(join(process.env.XDG_RUNTIME_DIR, 'bus')))(
+    'reaches the allocation boundary through the actual user-manager bus with its native protocol', () => {
+      const entry = join(root, 'scripts/with-test-pg.mjs');
+      const hook = `export async function resolve(specifier, context, next) {
+        if (specifier === 'async-exit-hook') throw new Error('NATIVE_MANAGER_PREFLIGHT_REACHED');
+        return next(specifier, context);
+      }`;
+      const script = `import { register } from 'node:module';
+        register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
+        process.argv = [process.execPath, ${JSON.stringify(entry)}, '--isolated-runtime=operator-api', '--managed-tasks',
+          '--', process.execPath, '-e', 'process.exit(91)'];
+        await import(${JSON.stringify(pathToFileURL(entry).href)});`;
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+        cwd: root, encoding: 'utf8', timeout: 15000,
+        env: { ...process.env, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/unverified-ambient-bus',
+          PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused-test-ledger.invalid/test' },
+      });
+      const diagnostic = JSON.stringify(result);
+      expect(result.stdout, diagnostic).toContain('managed task preflight passed');
+      expect(result.stderr, diagnostic).toContain('NATIVE_MANAGER_PREFLIGHT_REACHED');
+      expect(result.stdout).not.toContain('booting throwaway PG');
+    });
+
   it('refuses an owned socket that cannot serve the private manager before PostgreSQL allocation', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'private-task-unusable-'));
     mkdirSync(join(directory, 'systemd'));

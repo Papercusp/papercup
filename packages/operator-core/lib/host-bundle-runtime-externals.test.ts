@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -115,6 +115,47 @@ describe('host runtime packages use the plain Node loader', () => {
       symlinkSync(join(root, 'missing'), join(output, 'node_modules'));
       expect(run).toThrow();
       expect(readlinkSync(join(output, 'node_modules'))).toBe(join(root, 'missing'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('never nests a dependency link when another caller prepares the destination at the create boundary', () => {
+    const root = mkdtempSync(join(tmpdir(), 'host-dependency-link-race-'));
+    try {
+      const repo = join(root, 'checkout');
+      const output = join(root, 'private-output');
+      const donor = join(repo, 'node_modules');
+      const destination = join(output, 'node_modules');
+      mkdirSync(donor, { recursive: true });
+      const bin = join(root, 'bin');
+      mkdirSync(bin);
+      const realLn = execFileSync('sh', ['-c', 'command -v ln'], { encoding: 'utf8' }).trim();
+      // Force the same shape as the P006 double-link incident, exactly between
+      // the producer's absent-path check and its create syscall. Cover both the
+      // old shell create and the atomic Node create so the counterexample fails
+      // with the old producer rather than passing without exercising the race.
+      for (const [name, executable] of [['ln', realLn], ['node', process.execPath]]) {
+        const shim = join(bin, name);
+        writeFileSync(shim, '#!/bin/sh\n"$PAPERCUSP_LINK_REAL_LN" -s "$PAPERCUSP_LINK_RACE_SOURCE" "$PAPERCUSP_LINK_RACE_DEST" || exit 1\nexec "$PAPERCUSP_LINK_REAL_COMMAND" "$@"\n');
+        chmodSync(shim, 0o755);
+        const recipe = readFileSync(resolve(__dirname, '../../../apps/operator/bin/bundle-host.sh'), 'utf8');
+        const prepare = recipe.split('# >>> custom-output runtime dependencies (EI-25510203057543967)\n')[1]!
+          .split('# <<< custom-output runtime dependencies')[0]!;
+        // Only the executable the producer uses is replaced for this run.
+        const selectedBin = join(root, `selected-${name}`);
+        mkdirSync(selectedBin);
+        symlinkSync(shim, join(selectedBin, name));
+        rmSync(destination, { force: true });
+        execFileSync('bash', ['-c', `set -euo pipefail\n${prepare}\nprepare_host_runtime_dependencies "$1" "$2"`, 'test', repo, output], {
+          stdio: 'pipe', timeout: 15_000,
+          env: { ...process.env, PATH: `${selectedBin}:${process.env.PATH}`,
+            PAPERCUSP_LINK_REAL_LN: realLn, PAPERCUSP_LINK_REAL_COMMAND: executable,
+            PAPERCUSP_LINK_RACE_SOURCE: donor, PAPERCUSP_LINK_RACE_DEST: destination },
+        });
+        expect(readlinkSync(destination)).toBe(donor);
+        expect(existsSync(join(donor, 'node_modules'))).toBe(false);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

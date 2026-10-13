@@ -2575,7 +2575,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // in-process ring spans only minutes, so a ten-launch cohort rolls out before it can be assessed.
   // `log` is initialised later in this closure but is only invoked at request-completion time.
   const requestStageTelemetry = new GatewayRequestTelemetry({
-    onStartupEvidence: (line) => log('info', line),
+    onStartupEvidence: (line, record) => {
+      log('info', line);
+      // Reuse the first-request sink and exact owner header; no time-window join.
+      void Promise.all([import('../fleet/spawn-tree'), import('@papercusp/db-org')])
+        .then(([{ recordSpawnFirstGatewayRequest }, { getOrgPg }]) =>
+          recordSpawnFirstGatewayRequest(getOrgPg().sql, {
+            ownerId: record.ownerId, requestId: `${gatewayProcessInstanceId}:${record.requestId}`,
+            requestOrdinal: record.requestId,
+            provider: record.provider, protocol: record.protocol, model: record.model,
+            effort: record.effort ?? null, servingAccountId: record.authorizationScope,
+            outcome: record.outcome, finalStatus: record.finalStatus, startedAt: record.startedAt,
+          }))
+        .catch(error => log('warn', `spawn first-request evidence write failed: ${error instanceof Error ? error.message : String(error)}`));
+    },
   });
   interface RequestTelemetryState {
     span: GatewayRequestSpan;

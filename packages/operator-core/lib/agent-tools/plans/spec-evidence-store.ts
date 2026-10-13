@@ -19,6 +19,7 @@ import { CALIBRATION_LEGS } from '@papercusp/test-config/mutation-descriptor';
 import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
 import { defaultEvidenceRoot } from '@papercusp/verification-harness';
 import { pgTimestampToIso } from '../../pg-timestamp';
+import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from '../../acceptance-author-identity';
 import { planItemRef } from '../../issue-blocks-merge';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
@@ -2157,6 +2158,7 @@ export function mutationFailedCaseTitles(executionDetails?: unknown): string[] |
 }
 
 interface EvidenceRow extends CurrentnessRow {
+  verifies_binding_id?: number | string | null;
   /** P-011: the BAR pin of the bound clause revision, when it was projected from a rubric. */
   source_rubric_slug?: string | null;
   source_rubric_revision?: number | null;
@@ -3195,7 +3197,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            b.spec_revision, c.current_revision, b.spec_fingerprint,
            b.evidence_kind, b.evidence_ref, b.source_fingerprint,
            b.test_fingerprint, b.fixture_fingerprint, b.rubric_fingerprint,
-           b.environment_fingerprint, b.coverage_evidence_ref, b.test_run_id,
+           b.environment_fingerprint, b.coverage_evidence_ref, b.test_run_id, b.verifies_binding_id,
            b.details, b.observed_at, b.binding_fingerprint, b.created_by, b.created_at,
            b.retracted_at, b.retracted_by, b.retraction_reason,
            tr.file_path AS test_run_file_path,
@@ -3710,6 +3712,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       },
       coverageEvidenceRef: row.coverage_evidence_ref === null ? null : Number(row.coverage_evidence_ref),
       testRunId: row.test_run_id === null ? null : Number(row.test_run_id),
+      // This relation is stored separately from binder-authored details.
+      ...(row.verifies_binding_id == null ? {} : { verifiesBindingId: Number(row.verifies_binding_id) }),
       ...(row.test_run_id === null
         ? {}
         : {
@@ -3841,6 +3845,35 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     : classified;
   const allowed = options.currentness ? new Set(options.currentness) : null;
   const result = allowed ? auditOnly.filter((row) => allowed.has(row.currentness.overall)) : auditOnly;
+  // Certify once at the common read seam. Both work-item acceptance and the BAR
+  // ship snapshot consume these rows directly, without the evaluator tool.
+  const absence = new Map<number, number[]>();
+  if (result.some(row => row.evidenceKind === 'independent-verification')) {
+    const { resolveFixtureAbsenceVerifications } = await import('./spec-test-adequacy');
+    const implementers = new Map<string, Promise<string[]>>();
+    const relations = new Map<string, Promise<boolean>>();
+    const certified = await resolveFixtureAbsenceVerifications(result, async (reviewer, citedAuthor, planSlug) => {
+      let authors = implementers.get(planSlug);
+      if (!authors) {
+        authors = resolvePlanImplementerIdentities(planSlug, { workspaceId: scope.workspaceId });
+        implementers.set(planSlug, authors);
+      }
+      for (const author of new Set([...(await authors), citedAuthor])) {
+        if (author === reviewer) return false;
+        const key = `${author}\u0000${reviewer}`;
+        let relation = relations.get(key);
+        if (!relation) {
+          relation = areAcceptanceLineageRelated(author, reviewer, { workspaceId: scope.workspaceId });
+          relations.set(key, relation);
+        }
+        if (await relation) return false;
+      }
+      return true;
+    });
+    for (const [id, verifierIds] of certified) absence.set(id, verifierIds);
+  }
   recordPhase('total', totalStartedAt);
-  return result;
+  return result.map(row => ({ ...row,
+    ...(absence.has(row.id) ? { fixtureAbsenceVerification: { verifierBindingIds: absence.get(row.id)! } } : {}),
+  }));
 }

@@ -306,6 +306,9 @@ async function openRecoverableRetryEscalation(
         `Its required wake failed with ${failure.code} after ${row.attempts} attempts and will retry every ` +
         `${Math.round(RECOVERABLE_RETRY_AFTER_SECONDS / 60)} minutes while recoverable work remains preserved.\n\n` +
         `Binding: ${row.bindingId}\nTarget: ${failure.target ?? 'unknown'}\n` +
+        // The classifier's message names the real cause (e.g. target_adopter_gone lists the
+        // ended adopters of a stable name); without it the escalation reads as a generic outage.
+        (failure.message ? `Cause: ${failure.message}\n` : '') +
         `Action: restore/relaunch the stable target or correct/disarm the binding. The escalation auto-resolves ` +
         `after the binding has no remaining recoverable failed rows.`,
       ...(row.planHarnessSlug ? { harness_slug: row.planHarnessSlug } : {}),

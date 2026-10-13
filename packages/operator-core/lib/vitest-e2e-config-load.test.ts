@@ -2,8 +2,28 @@ import { resolve } from 'node:path';
 import { loadConfigFromFile } from 'vite';
 import { describe, expect, it, vi } from 'vitest';
 import { prepareRuntimeReader } from '../vitest.e2e.config';
+import { unitExcludedVitestTest } from '../../../scripts/lib/related-tests.mjs';
 
 describe('operator e2e config loading', () => {
+  it('selects paid blueprint routing proof only through the explicit e2e lane', async () => {
+    const file = 'lib/blueprint/launch-blueprint-account-route.e2e.test.ts';
+    for (const config of ['vitest.config.ts', 'vitest.integration.config.ts']) {
+      const loaded = await loadConfigFromFile(
+        { command: 'serve', mode: 'test' }, resolve(import.meta.dirname, '..', config),
+      );
+      expect(loaded!.config.test!.exclude).toContain(file);
+    }
+    expect(unitExcludedVitestTest(resolve(import.meta.dirname, '..', file))).toBe(true);
+    expect(unitExcludedVitestTest('lib/blueprint/launch-blueprint.test.ts')).toBe(false);
+    expect(unitExcludedVitestTest('lib/other-existing.e2e.test.ts')).toBe(false);
+    const live = await loadConfigFromFile(
+      { command: 'serve', mode: 'test' }, resolve(import.meta.dirname, '../vitest.e2e.config.ts'),
+    );
+    expect(live!.config.test!.provide!.papercuspTestLayer).toBe('e2e');
+    expect(live!.config.test!.include).toContain('**/*.e2e.test.ts');
+    expect(live!.config.test!.exclude).not.toContain(file);
+  });
+
   it.each(['', 'docs/evidence/app-agent-tasks-durable-execution-2026-10-06/live-e2e-profile-20261007.json'])(
     'loads the optional runtime reader without bundling operator PG code (profile=%s)', async (profile) => {
       vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE', profile);

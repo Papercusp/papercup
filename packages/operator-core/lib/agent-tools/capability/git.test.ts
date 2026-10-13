@@ -11,6 +11,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { capabilityBwrapWorks } from './exec-sandbox';
 import capabilityGit, { createScratchClone, emptyPathspecNote, runGit, runGitReadOnlyEvidence } from './git';
@@ -97,6 +98,8 @@ describe('standalone scratch Git failure diagnostics (EI-25802116941940647)', ()
     ['output-limit', { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER', killed: true }],
     ['spawn-error', { code: 'ENOENT' }],
   ])('preserves %s metadata without interpreting every kill as timeout', async (kind, metadata) => {
+    vi.stubEnv('PC_HEAVY_ADMISSION_DIR', '');
+    vi.stubEnv('PC_HEAVY_ADMISSION_ID', '');
     const failure = Object.assign(new Error('fixture failure'), metadata);
     const mocked = vi.mocked(execFile);
     mocked.mockImplementationOnce(((...args: unknown[]) => {
@@ -114,7 +117,7 @@ describe('standalone scratch Git failure diagnostics (EI-25802116941940647)', ()
       expect(detail.durationMs).toEqual(expect.any(Number));
       expect(detail.durationMs).toBeGreaterThanOrEqual(0);
       expect(mocked.mock.calls.at(-1)?.[2]).toMatchObject({ timeout: 60_000, maxBuffer: 8 * 1024 * 1024 });
-    } finally { mocked.mockClear(); }
+    } finally { mocked.mockClear(); vi.unstubAllEnvs(); }
   });
 
   it('keeps successful output free of failure diagnostics', async () => {
@@ -122,6 +125,118 @@ describe('standalone scratch Git failure diagnostics (EI-25802116941940647)', ()
     expect(result.code).toBe(0);
     expect(result.output).toMatch(/^git version/);
     expect(result.output).not.toContain('[scratch-git-runner]');
+  });
+
+  it.each([0, 70_000])('charges active Git time, excluding %i ms of admission suspension', async (freezeMs) => {
+    const admissionId = 'scratch-deadline-fixture';
+    const record = join(STATE, `${admissionId}.state`);
+    writeFileSync(record, 'frozen_total_ms=500\n');
+    vi.stubEnv('PC_HEAVY_ADMISSION_DIR', STATE);
+    vi.stubEnv('PC_HEAVY_ADMISSION_ID', admissionId);
+    vi.useFakeTimers();
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+    let callback!: (error: Error | null, stdout: string, stderr: string) => void;
+    const kill = vi.fn(() => {
+      callback(Object.assign(new Error('deadline fixture'), { code: null, signal: 'SIGTERM', killed: true }), '', '');
+      return true;
+    });
+    vi.mocked(execFile).mockImplementationOnce(((...args: unknown[]) => {
+      callback = args.at(-1) as typeof callback;
+      return { kill };
+    }) as typeof execFile);
+    try {
+      const result = runLocalGit(['checkout', '--detach', 'fixture'], STATE, never);
+      expect(vi.mocked(execFile).mock.calls.at(-1)?.[2]).toMatchObject({ timeout: 0 });
+      writeFileSync(record, `frozen_total_ms=${500 + freezeMs}\n`);
+      clock.mockReturnValue(60_000 + freezeMs);
+      // Both cases have the same 60 seconds of active execution. The old
+      // execFile wall timer would instead consume the suspended interval.
+      vi.advanceTimersByTime(60_000);
+      expect(kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
+      expect(diagnostic((await result).output)).toMatchObject({
+        durationMs: 60_000 + freezeMs, frozenMs: freezeMs, activeDurationMs: 60_000,
+        deadlineReached: true, wallDeadlineReached: true, freezeMeasurementAvailable: true,
+      });
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([0, 70_000])('distinguishes a stalled checkout from %i ms of measured suspension', async (freezeMs) => {
+    const admissionId = 'scratch-thaw-fixture';
+    const record = join(STATE, `${admissionId}.state`);
+    writeFileSync(record, 'frozen_total_ms=0\n');
+    vi.stubEnv('PC_HEAVY_ADMISSION_DIR', STATE);
+    vi.stubEnv('PC_HEAVY_ADMISSION_ID', admissionId);
+    vi.useFakeTimers();
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+    let callback!: (error: Error | null, stdout: string, stderr: string) => void;
+    const kill = vi.fn(() => {
+      callback(Object.assign(new Error('deadline fixture'), { code: null, signal: 'SIGTERM', killed: true }), '', '');
+      return true;
+    });
+    vi.mocked(execFile).mockImplementationOnce(((...args: unknown[]) => {
+      callback = args.at(-1) as typeof callback;
+      // Model execFile's native wall timer too: the old implementation kills
+      // both controls after thaw; only the suspension-aware runner separates them.
+      const options = args[2] as { timeout: number };
+      if (options.timeout > 0) setTimeout(() => kill(), options.timeout);
+      return { kill };
+    }) as typeof execFile);
+    try {
+      const result = runLocalGit(['checkout', '--detach', 'fixture'], STATE, never);
+      writeFileSync(record, `frozen_total_ms=${freezeMs}\n`);
+      clock.mockReturnValue(100_000);
+      vi.advanceTimersByTime(60_000);
+      if (freezeMs === 0) {
+        expect(kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
+        expect(diagnostic((await result).output)).toMatchObject({ activeDurationMs: 100_000, deadlineReached: true });
+      } else {
+        expect(kill).not.toHaveBeenCalled();
+        clock.mockReturnValue(129_999);
+        callback(null, 'checkout completed', '');
+        expect(await result).toEqual({ code: 0, output: 'checkout completed' });
+        vi.advanceTimersByTime(60_000);
+        expect(kill).not.toHaveBeenCalled();
+      }
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('retains the native bounded deadline when admission measurement is unavailable', async () => {
+    vi.stubEnv('PC_HEAVY_ADMISSION_DIR', STATE);
+    vi.stubEnv('PC_HEAVY_ADMISSION_ID', 'missing-admission-fixture');
+    vi.mocked(execFile).mockImplementationOnce(((...args: unknown[]) => {
+      (args.at(-1) as (error: Error, stdout: string, stderr: string) => void)(
+        Object.assign(new Error('fixture terminated'), { code: null, signal: 'SIGTERM', killed: true }), '', '',
+      );
+    }) as typeof execFile);
+    try {
+      const result = await runLocalGit(['checkout', '--detach', 'fixture'], STATE, never);
+      expect(vi.mocked(execFile).mock.calls.at(-1)?.[2]).toMatchObject({ timeout: 60_000 });
+      expect(diagnostic(result.output)).toMatchObject({ frozenMs: 0, freezeMeasurementAvailable: false });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('writes an explicit phase receipt while keeping the child credential environment scrubbed', async () => {
+    const tracePath = join(STATE, 'phase-trace.jsonl');
+    vi.stubEnv('GIT_TRACE2_EVENT', tracePath);
+    vi.stubEnv('PAPERCUSP_TRACE_TEST_SECRET', 'private-sentinel');
+    try {
+      const result = await runLocalGit([
+        '-c', 'alias.phase-probe=!test -z "$PAPERCUSP_TRACE_TEST_SECRET"', 'phase-probe',
+      ], STATE, never);
+      expect(result.code).toBe(0);
+      expect(result.output).toBe('');
+      const events = readFileSync(tracePath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(events.some(event => event.event === 'start' && event.argv.includes('phase-probe'))).toBe(true);
+      expect(events.some(event => event.event === 'exit' && event.code === 0)).toBe(true);
+    } finally { vi.unstubAllEnvs(); }
   });
 });
 

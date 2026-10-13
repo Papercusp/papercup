@@ -21,13 +21,51 @@ import type { TaskRunResult } from '@papercusp/bench-metrics';
 import type { ProcExec } from './grader/swe-bench-pro';
 import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle } from './frontier-swe-seam';
 import { loadFrontierSweTaskSet } from './task-sets';
+import type { BenchTask } from './types';
 import { appendRunResult, missingTrials, readRunResults } from './frontier-swe-resume';
+import { startFrontierSweLaunchAdapter, type FrontierSweLaunchAdapterConfig } from './frontier-swe-launch-adapter';
 import {
   buildCampaignBundle, campaignEntriesFromFrontierSweResults, writeCampaignBundle, type CampaignMissing,
 } from './reproducibility/campaign-bundle';
 
 const GRADER_FAMILY = 'frontier-swe';
 const SUITE = 'frontier-swe';
+
+/** Current protocol arms: the maintained native launch adapter is owned for the whole run.
+ * The historical injected runAgent surface below remains for recorded historical arms/tests.
+ */
+export async function runFrontierSweCurrentArm(
+  deps: Omit<FrontierSweArmDeps, 'runAgent' | 'seamExec'> & { launch: FrontierSweLaunchAdapterConfig; backlog?: readonly BenchTask[] },
+): Promise<TopologyRunResult> {
+  if (!['papercusp', 'baseline'].includes(deps.spec.arm) || deps.launch.runId !== deps.runId) {
+    throw new Error('Current FrontierSWE arm requires a supported native arm and its exact run id.');
+  }
+  const now = deps.now ?? Date.now;
+  const backlog = deps.backlog ?? loadFrontierSweTaskSet(deps.taskSetId ?? 'frontier-swe-v2-cpu', deps.taskIds);
+  const adapter = await startFrontierSweLaunchAdapter(deps.launch);
+  const result: TopologyRunResult = { arm: deps.spec.arm, runId: deps.runId,
+    startedAtMs: now(), finishedAtMs: now(), rows: [], modelCallsSpent: 0, tokensSpent: 0, costUsdSpent: 0,
+    budgetExhausted: false, attemptedTaskIds: [], skippedTaskIds: [] };
+  try {
+    // Current protocols freeze caps PER assignment. One shared adapter owns the
+    // run; each task gets its own topology pass. The lifetime governor owns the
+    // aggregate cap across tasks, seeds and arms.
+    for (const task of backlog) {
+      if (deps.launch.signal?.aborted) { result.skippedTaskIds.push(task.instanceId); continue; }
+      const pass = await runTopology<FrontierSweEnvHandle>({ ...deps, backlog: [task], cap: 1,
+        seam: adapter.seam, rowMeta: frontierSweRowMeta(deps.rowMeta), now, runAgent: adapter.runAgent });
+      result.rows.push(...pass.rows); result.attemptedTaskIds.push(...pass.attemptedTaskIds);
+      result.skippedTaskIds.push(...pass.skippedTaskIds); result.modelCallsSpent += pass.modelCallsSpent;
+      result.tokensSpent += pass.tokensSpent; result.costUsdSpent += pass.costUsdSpent;
+      result.budgetExhausted ||= pass.budgetExhausted;
+    }
+    result.finishedAtMs = now();
+    return result;
+  } finally {
+    const report = await adapter.stop();
+    if (report.errors.length) throw new Error(`FrontierSWE run cleanup incomplete: ${report.errors.join('; ')}`);
+  }
+}
 
 /** The FrontierSWE-specific run-level row metadata (the rest comes from the caller for pre-registration). */
 export interface FrontierSweRowMetaInput {
@@ -79,6 +117,9 @@ export interface FrontierSweArmDeps {
 
 /** Run ONE FrontierSWE topology arm × one seed over a task-set. Thin: builds the seam + rowMeta, calls runTopology. */
 export function runFrontierSweArm(deps: FrontierSweArmDeps): Promise<TopologyRunResult> {
+  if (deps.spec.arm === 'papercusp') {
+    throw new Error('The current Papercusp FrontierSWE arm requires runFrontierSweCurrentArm; legacy runAgent injection is retired.');
+  }
   const backlog = loadFrontierSweTaskSet(deps.taskSetId ?? 'frontier-swe-cpu', deps.taskIds);
   const seam = makeFrontierSweCloneGradeSeam({ version: deps.rowMeta.version, exec: deps.seamExec });
   return runTopology<FrontierSweEnvHandle>({

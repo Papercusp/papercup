@@ -16,6 +16,11 @@ const h = vi.hoisted(() => ({
   fixtureMeasurementRoot: '',
 }));
 
+vi.mock('../../acceptance-author-identity', () => ({
+  resolvePlanImplementerIdentities: vi.fn(async () => ['su-implementer']),
+  areAcceptanceLineageRelated: vi.fn(async (a: string, b: string) => a === b),
+}));
+
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return {
@@ -1291,6 +1296,56 @@ describe('listSpecEvidence timestamp normalization', () => {
     h.queries = [];
     h.workspaceScopes = [];
     h.planScopeOptions = [];
+  });
+
+  it('exposes the stored independent citation and author instead of assertions in details', async () => {
+    h.rows = [{
+      id: 902, work_item_id: 'WI-review', plan_slug: 'plan-one', spec_id: 'SPEC-1',
+      source_val_id: null, spec_revision: 1, current_revision: 1,
+      spec_fingerprint: 'spec', spec_is_current: true, evidence_kind: 'independent-verification',
+      evidence_ref: 'test/real-subject.test.ts', source_fingerprint: 'source',
+      test_fingerprint: 'test', fixture_fingerprint: null, rubric_fingerprint: null,
+      environment_fingerprint: null, coverage_evidence_ref: null, test_run_id: null,
+      verifies_binding_id: '901', created_by: 'su-reviewer',
+      details: { verifiesBindingId: 999, createdBy: 'su-impostor' },
+      observed_at: '2026-10-13T00:00:00Z', created_at: '2026-10-13T00:00:00Z',
+      binding_fingerprint: 'binding',
+    }];
+    const [row] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+    expect(row.verifiesBindingId).toBe(901);
+    expect(row.createdBy).toBe('su-reviewer');
+    expect(h.queries.find(query => query.sql.includes('SELECT b.id'))?.sql).toContain('b.verifies_binding_id');
+  });
+
+  it('certifies fixture absence at the shared reader for a measured outside-lineage re-observation', async () => {
+    const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'], testPaths: ['test/feature.test.ts'] };
+    const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    const execution = { schemaVersion: 1, root: measurementRoot, filePath: 'test/feature.test.ts',
+      runGroupId: null, workspaceId: 'workspace-test', harnessSlug: 'papercusp',
+      testNamePattern: null, passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+      testLayer: 'unit', passedCaseTitles: ['real repository subject'] };
+    const source = {
+      id: 901, work_item_id: 'WI-proof', plan_slug: 'plan-one', spec_id: 'SPEC-1',
+      source_val_id: null, spec_revision: 1, current_revision: 1, spec_is_current: true,
+      spec_fingerprint: 'spec', evidence_kind: 'test', evidence_ref: 'test/feature.test.ts',
+      source_fingerprint: measured.sourceFingerprint, test_fingerprint: measured.testFingerprint,
+      fixture_fingerprint: null, rubric_fingerprint: null, environment_fingerprint: null,
+      coverage_evidence_ref: null, test_run_id: 43, test_run_present: true,
+      test_run_status: 'pass', test_run_file_path: 'test/feature.test.ts',
+      test_run_commit_sha: null, test_run_worktree_dirty: false, test_run_execution_details: execution,
+      details: { currentMeasurement: recipe, evidencePlane: 'tree',
+        adequacy: { fixtureFree: true, testCases: ['real repository subject'] } },
+      created_by: 'su-implementer', binding_fingerprint: 'source-binding',
+      observed_at: '2026-10-13T00:00:00Z', created_at: '2026-10-13T00:00:00Z',
+    };
+    h.rows = [source, { ...source, id: 902, evidence_kind: 'independent-verification',
+      verifies_binding_id: 901, created_by: 'su-reviewer', binding_fingerprint: 'review-binding' }];
+    const rows = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+    expect(rows[0].currentness).toMatchObject({ overall: 'current', provenance: 'server-measured' });
+    expect(rows[0].fixtureAbsenceVerification).toEqual({ verifierBindingIds: [902] });
+    expect(rows[1].fixtureAbsenceVerification).toBeUndefined();
+    expect(rows[1]).not.toHaveProperty('fixtureAbsenceVerification');
   });
 
   it('pins historical evidence reads to the explicitly supplied workspace', async () => {

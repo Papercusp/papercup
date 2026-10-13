@@ -196,7 +196,7 @@ describe('AI SDK v6 prompt mapping', () => {
     expect(effortProviderOptions('openai', 'xhigh')).toEqual({ openai: { reasoningEffort: 'xhigh' } });
     expect(effortProviderOptions('anthropic', 'high')).toEqual({ anthropic: { effort: 'high' } });
     expect(effortProviderOptions('openrouter', 'high')).toEqual({
-      openrouter: { reasoning: { effort: 'high' } },
+      openrouter: { provider: { zdr: true }, reasoning: { effort: 'high' } },
     });
     expect(effortProviderOptions('google', 'medium')).toEqual({
       google: { thinkingConfig: { thinkingLevel: 'medium' } },
@@ -240,6 +240,61 @@ describe('AI SDK v6 prompt mapping', () => {
       }],
       toolChoice: { type: 'auto' },
     });
+  });
+});
+
+describe('OpenRouter request privacy', () => {
+  it.each([
+    { modelId: 'qwen/qwen3-coder', effort: undefined },
+    { modelId: 'anthropic/claude-sonnet-4.6', effort: 'high' },
+  ])('requires ZDR on the SDK wire for $modelId without relying on account defaults', async ({ modelId, effort }) => {
+    const { createOpenRouter } = await import('@openrouter/ai-sdk-provider');
+    const bodies: Record<string, unknown>[] = [];
+    const model = createOpenRouter({
+      apiKey: 'test-openrouter-key',
+      fetch: async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        const chunks = [
+          { id: 'gen-zdr-test', model: modelId, created: 1,
+            choices: [{ index: 0, delta: { content: 'accepted' }, finish_reason: null }] },
+          { id: 'gen-zdr-test', model: modelId, created: 1,
+            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } },
+        ];
+        return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n',
+          { headers: { 'content-type': 'text/event-stream' } });
+      },
+    }).chat(modelId, { provider: { zdr: false } });
+    const port = createAiSdkPort({ resolveModel: () => ({ provider: 'openrouter', modelId, effort, model }) });
+    const events = [];
+    for await (const event of port.stream({ model: `openrouter/${modelId}`, messages: [
+      { role: 'user', content: [{ type: 'text', text: 'inspect this fixture repository' }] },
+    ] })) events.push(event);
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ model: modelId, stream: true, provider: { zdr: true } });
+    if (effort) expect(bodies[0]).toMatchObject({ reasoning: { effort } });
+    else expect(bodies[0]).not.toHaveProperty('reasoning');
+    expect(events.at(-1)).toMatchObject({ type: 'stop', reason: 'end_turn' });
+  });
+
+  it('surfaces an unavailable ZDR endpoint without relaxing privacy or changing the model', async () => {
+    const { createOpenRouter } = await import('@openrouter/ai-sdk-provider');
+    const bodies: Record<string, unknown>[] = [];
+    const modelId = 'qwen/qwen3-coder';
+    const model = createOpenRouter({ apiKey: 'test-openrouter-key', fetch: async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ error: { code: 404, message: 'No eligible ZDR endpoint' } }),
+        { status: 404, headers: { 'content-type': 'application/json' } });
+    } }).chat(modelId);
+    const port = createAiSdkPort({ resolveModel: () => ({ provider: 'openrouter', modelId, model }) });
+    const events = [];
+    for await (const event of port.stream({ model: `openrouter/${modelId}`, messages: [] })) events.push(event);
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ model: modelId, provider: { zdr: true } });
+    expect(events.at(-1)).toMatchObject({ type: 'error', message: expect.stringContaining('No eligible ZDR endpoint') });
+    expect(events.some(event => event.type === 'stop')).toBe(false);
   });
 });
 

@@ -292,8 +292,9 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
         harness: H,
         workspaceId: WS,
       }),
-    ).resolves.toEqual({ matchedByFilter: 1, terminalMatchedByFilter: 1 });
+    ).resolves.toEqual({ matchedByFilter: 1, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 });
 
+    // An open, unheld row is pull-claimable: it lands in no never-pullable bucket.
     await seedIssue('WI-active', null, 'open');
     await expect(
       diagnoseFleetScopeTerminalExhaustion({
@@ -301,6 +302,59 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
         harness: H,
         workspaceId: WS,
       }),
-    ).resolves.toEqual({ matchedByFilter: 2, terminalMatchedByFilter: 1 });
+    ).resolves.toEqual({ matchedByFilter: 2, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 });
+  });
+
+  it('WI-6554700010010002: counts held and parked matches in disjoint never-pullable buckets', async () => {
+    const makeScope = (ids: string[]) =>
+      ({
+        ownerId: 'su-member',
+        fleetSlug: 'drain-fleet',
+        fleetRole: 'member',
+        workspaceId: WS,
+        record: {
+          source: 'fleet',
+          revision: 1,
+          updatedBy: 'leader',
+          updatedAt: 'now',
+          spec: {
+            specVersion: '1.0',
+            specId: 'id-drain',
+            revision: 3,
+            view: { filter: { field: 'id', op: 'in', value: ids } },
+            rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+            states: ['open'],
+          },
+        },
+      }) as never;
+    const read = (ids: string[]) =>
+      diagnoseFleetScopeTerminalExhaustion({ scope: makeScope(ids), harness: H, workspaceId: WS });
+
+    await seedIssue('WI-done', null, 'done');
+    await seedIssue('WI-done-held', null, 'done');
+    await seedIssue('WI-held-wip', null, 'wip');
+    await seedIssue('WI-held-blocked', null, 'blocked');
+    await seedIssue('WI-blocked', null, 'blocked');
+    await seedIssue('WI-needs-human', null, 'needs-human');
+    await seedIssue('WI-orphan-wip', null, 'wip');
+    await db.sql`
+      UPDATE harness_shared.work_items SET taken_by = 'su-peer'
+       WHERE feature_id IN ('WI-done-held', 'WI-held-wip', 'WI-held-blocked')`;
+
+    // The live shape: terminal rows plus one wip row held by a peer. A terminal row whose
+    // holder was never cleared counts once, as terminal; a held blocked row counts once, as
+    // held. So the buckets sum to matchedByFilter.
+    await expect(read(['WI-done', 'WI-done-held', 'WI-held-wip', 'WI-held-blocked'])).resolves.toEqual({
+      matchedByFilter: 4, terminalMatchedByFilter: 2, inFlightMatchedByFilter: 2, parkedMatchedByFilter: 0,
+    });
+    // Unheld blocked and needs-human rows are parked.
+    await expect(read(['WI-done', 'WI-blocked', 'WI-needs-human'])).resolves.toEqual({
+      matchedByFilter: 3, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 2,
+    });
+    // An unheld wip row is in none of the buckets, so the sum falls short of matchedByFilter.
+    // That keeps the caller's existing zero-match diagnosis instead of certifying a remainder.
+    await expect(read(['WI-done', 'WI-held-wip', 'WI-orphan-wip'])).resolves.toEqual({
+      matchedByFilter: 3, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 1, parkedMatchedByFilter: 0,
+    });
   });
 });

@@ -434,7 +434,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       .rejects.toThrow('ERR_MODULE_NOT_FOUND');
   });
 
-  it.each(['donor-change', 'child-failure', 'frozen-tamper'] as const)
+  it.each(['donor-change', 'child-failure', 'frozen-tamper', 'phase-io-failure'] as const)
     ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
@@ -445,7 +445,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       write(fixture.repo, helper, '#!/bin/bash\nset -eu\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
       write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
       write(fixture.repo, provider, [
-        "import { readFileSync, writeFileSync, rmSync } from 'node:fs';",
+        "import { readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';",
         "import { join } from 'node:path';",
         "import value from '@native-proof/runtime';",
         "const donor = process.argv[2], mode = process.argv[3];",
@@ -458,6 +458,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         "  options: process.env.NODE_OPTIONS, path: process.env.NODE_PATH, flag: process.argv[5] }));",
         "if (mode === 'frozen-tamper') writeFileSync('scripts/provider-fixture.mjs', 'tampered frozen source');",
         "if (mode === 'child-failure') process.exitCode = 37;",
+        "if (mode === 'phase-io-failure') { const path = process.env.VERIFY_TAURI_SOURCE_RECEIPT + '.phases.jsonl'; rmSync(path); mkdirSync(path); }",
       ].join('\n'));
       git(fixture.repo, ['add', preflight, provider, helper, '.gitignore']);
       git(fixture.repo, ['commit', '-qm', 'full verifier command fixture']);
@@ -475,6 +476,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         : runVerifierCommand({ repo: fixture.repo, ref, inputs: [provider], receiptPath, command,
           env: { ...process.env, NODE_OPTIONS: '--import=/nonexistent/ambient-loader', NODE_PATH: '/ambient/dependencies' } });
       if (mode === 'frozen-tamper') await expect(invocation).rejects.toThrow('tampered verification source archive');
+      else if (mode === 'phase-io-failure') await expect(invocation).rejects.toThrow('EISDIR');
       else await expect(invocation).resolves.toBe(mode === 'child-failure' ? 37 : 0);
       const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
       expect(proof).toMatchObject({ value: 'private-snapshot', ref, receipt: receiptPath,
@@ -486,6 +488,25 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(readFileSync(join(fixture.repo, provider), 'utf8')).toBe('peer edit after allocation');
       expect(existsSync(join(fixture.repo, 'node_modules'))).toBe(false);
       expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(ref);
+      const phasePath = receiptPath + '.phases.jsonl';
+      if (mode === 'phase-io-failure') {
+        expect(statSync(phasePath).isDirectory()).toBe(true);
+        return; // Owned-tree absence above proves telemetry failure still cleans.
+      }
+      const phases = readFileSync(phasePath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(statSync(phasePath).mode & 0o777).toBe(0o600);
+      expect(phases.map(row => row.sequence)).toEqual(phases.map((_, index) => index + 1));
+      expect(phases.every(row => Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0)).toBe(true);
+      expect(phases.filter(row => row.event === 'started').map(row => row.phase)).toEqual([
+        'source.freeze', 'receipt.write', 'deps.source.before', 'deps.snapshot',
+        'deps.source.after-snapshot', 'deps.inputs', 'deps.measure', 'deps.source.after-preflight',
+        'child.run', 'source.postverify', 'cleanup',
+      ]);
+      expect(phases.filter(row => row.event === 'failed').map(row => row.phase))
+        .toEqual(mode === 'frozen-tamper' ? ['source.postverify'] : []);
+      expect(phases.find(row => row.phase === 'child.run' && row.event === 'completed'))
+        .toMatchObject({ exitCode: mode === 'child-failure' ? 37 : 0 });
+      expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
     });
 
   it.each(['spawned', 'pending'] as const)('terminal task close cleans a real SIGKILL during synchronous verifier preparation with %s enrollment and preserves peers', async (enrollment) => {
@@ -519,6 +540,10 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       process.kill(-child.pid!, 'SIGKILL');
       expect(await closed).toEqual([null, 'SIGKILL']);
       expect(existsSync(owned)).toBe(true); // The killed process's finally never ran.
+      const phases = readFileSync(options.receiptPath + '.phases.jsonl', 'utf8').trim()
+        .split('\n').map(line => JSON.parse(line));
+      expect(phases.at(-1)).toMatchObject({ phase: 'deps.snapshot', event: 'started', taskId });
+      expect(phases.some(row => row.phase === 'child.run')).toBe(false);
       const scratch = dirname(owned);
       const peer = mkdtempSync(join(scratch, 'verifier-command-'));
       writeFileSync(join(peer, '.verifier-task.json'), JSON.stringify({ ...receipt, taskId: 'peer-task' }));
@@ -599,6 +624,18 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       command: [process.execPath, '-e', 'require("node:fs").writeFileSync(process.argv[1], "allocated")', marker] }))
       .rejects.toThrow('dirty tested-input mismatch: ' + input);
     expect(existsSync(marker)).toBe(false); expect(existsSync(receiptPath)).toBe(false);
+    expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+    const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim()
+      .split('\n').map(line => JSON.parse(line));
+    expect(phases.find(row => row.event === 'failed')).toMatchObject({
+      phase: 'source.freeze', error: expect.stringContaining('dirty tested-input mismatch'),
+    });
+    expect(phases.some(row => row.phase === 'deps.snapshot' || row.phase === 'child.run')).toBe(false);
+    expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+    const retained = readFileSync(receiptPath + '.phases.jsonl', 'utf8');
+    await expect(runVerifierCommand({ repo: fixture.repo, ref, inputs: [input], receiptPath,
+      command: [process.execPath, '-e', 'process.exit(0)'] })).rejects.toThrow('EEXIST');
+    expect(readFileSync(receiptPath + '.phases.jsonl', 'utf8')).toBe(retained);
     expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
     await expect(runCli(['verifier-run', '--repo', fixture.repo, '--ref', ref, '--receipt', receiptPath,
       '--inputs', input, '--'])).rejects.toThrow('and -- <command>');

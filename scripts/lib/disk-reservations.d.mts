@@ -14,13 +14,34 @@ export function mountKeyForPath(path: any): string;
  * Total GB other LIVE builds have reserved on the filesystem containing `path`.
  * Read-only: unlike the shell writer this never reaps, so a concurrent build's
  * ledger is never mutated by a mere reader.
+ * @param {string} path
+ * @param {{ env?: NodeJS.ProcessEnv, now?: number, issues?: string[] }} [options]
  */
-export function readReservedGb(path: any, { env, now }?: {
-    env?: NodeJS.ProcessEnv | undefined;
-    now?: number | undefined;
+export function readReservedGb(path: string, { env, now, issues }?: {
+    env?: NodeJS.ProcessEnv;
+    now?: number;
+    issues?: string[];
 }): number;
 /** Same, in bytes — the unit assessCargoDiskAdmission takes. */
 export function readReservedBytes(path: any, opts: any): number;
+/** Read the same ledger for evidence, retaining compatibility-reader uncertainty.
+ * An absent ledger is measured zero. An unreadable/malformed live claim cannot
+ * certify zero demand. This never reserves, reaps, or changes build admission.
+ * @param {string} path
+ * @param {{ env?: NodeJS.ProcessEnv, now?: number }} [options]
+ * @returns {{ state: 'measured' | 'unknown', deviceKey: string, reservedBytes: number | null,
+ *   knownReservedBytes: number | null, issues: string[] }}
+ */
+export function readReservationSnapshot(path: string, options?: {
+    env?: NodeJS.ProcessEnv;
+    now?: number;
+}): {
+    state: "measured" | "unknown";
+    deviceKey: string;
+    reservedBytes: number | null;
+    knownReservedBytes: number | null;
+    issues: string[];
+};
 /** Strict evidence admission: combine every destination spending the same device.
  * This is a measurement, not a reservation receipt; callers must still reserve.
  * Unlike the build reader, unknown capacity cannot qualify an evidence window.

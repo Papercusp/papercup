@@ -195,6 +195,28 @@ describe('listTasks pushes a label prefix into the query', () => {
 });
 
 describe('listTasks taskId filter', () => {
+  it('dispatch correlation binds the exact identity inside the workspace before a small LIMIT', async () => {
+    const { sql, calls, text } = recordingSql();
+    const dispatchCallId = "dispatch_%' OR true --";
+    await listTasks({ workspaceId: 'own-workspace', dispatchCallId, includeEnded: true, limit: 1 }, sql);
+    expect(text()).toContain("detail ->> 'dispatchCallId' = ?");
+    expect(text()).toContain('workspace_id = ?');
+    expect(text().indexOf("detail ->> 'dispatchCallId' = ?")).toBeLessThan(text().indexOf('LIMIT'));
+    expect(calls.flatMap((c) => c.args)).toContain(dispatchCallId);
+    expect(calls.flatMap((c) => c.args)).toContain('own-workspace');
+    expect(text()).not.toContain(dispatchCallId);
+    expect(text()).not.toMatch(/title\s*(=|LIKE)|dispatchCallId'\s+LIKE/i);
+    expect(calls.at(-1)?.args.at(-1)).toBe(1);
+  });
+
+  it('dispatch correlation leaves legacy unfiltered reads unchanged when identity is absent', async () => {
+    const { sql, text } = recordingSql();
+    await listTasks({ workspaceId: 'own-workspace', limit: 1 }, sql);
+    expect(text()).not.toContain('dispatchCallId');
+    expect(text()).toContain('workspace_id = ?');
+    expect(text()).toContain('ended_at IS NULL');
+  });
+
   it('filters an exact identity batch before ordering and limiting', async () => {
     const { sql, text } = recordingSql();
     sql.array = vi.fn(() => 'bound-task-array') as unknown as typeof sql.array;

@@ -252,8 +252,8 @@ export function requireDreamPilotProtocol(
 /** Called AFTER source/graph verification. Both treatments pay for and verify the
  * same population; only graph hints and the graph field supplied to models differ.
  * Snapshot identity intentionally measures source versions, not that presentation. */
-export function applyDreamGraphTreatment(snapshot: CapabilitySamplingSnapshot, pilot: DreamPilotPin | null) {
-  const ablation = pilot?.protocol && DreamEvaluationProtocolSchema.parse(pilot.protocol).comparison?.graphAblation;
+export function applyDreamGraphTreatment(snapshot: CapabilitySamplingSnapshot, pilot: DreamPilotPin | null): CapabilitySamplingSnapshot {
+  const ablation = pilot?.protocol ? DreamEvaluationProtocolSchema.parse(pilot.protocol).comparison?.graphAblation : undefined;
   if (!ablation) return snapshot;
   const protocol = DreamEvaluationProtocolSchema.parse(pilot!.protocol);
   const ids = snapshot.eligible.map(entry => entry.packet.unit.id).sort();

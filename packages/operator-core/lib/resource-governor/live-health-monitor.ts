@@ -7,13 +7,15 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFile, mkdir, open, readFile, readdir, rename, statfs, unlink, writeFile } from 'node:fs/promises';
-import { arch, cpus, freemem, homedir, platform, release, totalmem } from 'node:os';
+import { appendFile, mkdir, open, readFile, readdir, rename, stat, statfs, unlink, writeFile } from 'node:fs/promises';
+import { arch, cpus, freemem, homedir, platform, release, tmpdir, totalmem } from 'node:os';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { getResourceProfile, type ResourceProfile } from '@papercusp/resource-profile';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { readReservationSnapshot } from '../../../../scripts/lib/disk-reservations.mjs';
+import { diskPolicyFromEnv } from '../storage/disk-space-policy';
 import {
   LIVE_HEALTH_SCHEMA_VERSION,
   LIVE_HEALTH_SIGNAL_SPECS,
@@ -30,6 +32,7 @@ import {
   type LiveHealthReading,
   type LiveHealthSignalKey,
   type LiveHealthSnapshot,
+  type LiveHealthStorageSample,
   type LiveHealthWriter,
 } from './live-health';
 
@@ -448,6 +451,50 @@ export interface HostLiveHealthCounters {
   readonly network: NetworkCounters | null;
   readonly closeWaitCount: number | null;
   readonly diskFreeBytes: number | null;
+  readonly storage?: LiveHealthStorageSample;
+}
+
+interface StorageProbes {
+  filesystem(path: string): Promise<{ dev: number; totalBytes: number; availableBytes: number; totalInodes: number; freeInodes: number }>;
+  reservations(path: string): ReturnType<typeof readReservationSnapshot>;
+}
+
+/** Retain the explicit watched population, including failed paths. Aliases read
+ * one reservation budget; no independent alias sum or failure-as-zero evidence. */
+export async function collectLiveHealthStorage(
+  paths: readonly string[],
+  now: () => number = Date.now,
+  probes: StorageProbes = {
+    filesystem: async (path) => {
+      const [identity, fs] = await Promise.all([stat(path), statfs(path, { bigint: true })]);
+      return { dev: identity.dev, totalBytes: Number(fs.blocks * fs.bsize),
+        availableBytes: Number(fs.bavail * fs.bsize), totalInodes: Number(fs.files), freeInodes: Number(fs.ffree) };
+    },
+    reservations: readReservationSnapshot,
+  },
+): Promise<LiveHealthStorageSample> {
+  const startedAtMs = now();
+  const budgets = new Map<number, ReturnType<typeof readReservationSnapshot>>();
+  const snapshots = await Promise.all([...new Set(paths)].map(async (path) => {
+    try {
+      const fs = await probes.filesystem(path);
+      if (!Object.values(fs).every((n) => Number.isSafeInteger(n) && n >= 0) || fs.totalBytes <= 0 ||
+        fs.availableBytes > fs.totalBytes || fs.freeInodes > fs.totalInodes) throw new Error('invalid-counters');
+      let budget = budgets.get(fs.dev);
+      if (!budget) {
+        budget = probes.reservations(path);
+        budgets.set(fs.dev, budget);
+      }
+      if (budget.deviceKey !== `dev-${fs.dev}`) throw new Error('reservation-device-changed');
+      return { path, state: 'measured' as const, ...fs, reservationState: budget.state,
+        reservedBytes: budget.reservedBytes, issues: budget.issues };
+    } catch (error) {
+      return { path, state: 'unknown' as const, dev: null, totalBytes: null, availableBytes: null,
+        totalInodes: null, freeInodes: null, reservationState: 'unknown' as const, reservedBytes: null,
+        issues: [error instanceof Error ? error.message : String(error)] };
+    }
+  }));
+  return { startedAtMs, collectedAtMs: now(), policy: diskPolicyFromEnv(), snapshots };
 }
 
 async function readTextOrNull(path: string): Promise<string | null> {
@@ -480,6 +527,11 @@ export async function collectHostLiveHealthCounters(
       : [null, null, null, null, null, null, null, null, null];
   const fs = await statfs(paths.rootDir).catch(() => null);
   const diskFreeBytes = fs ? Number(fs.bavail) * Number(fs.bsize) : null;
+  const storage = await collectLiveHealthStorage([
+    '/', paths.rootDir, tmpdir(), ...(currentPlatform === 'linux' ? ['/mnt/data'] : []),
+    process.cwd(),
+    ...(process.env.PAPERCUSP_DISK_ALARM_PATHS ?? '').split(',').map((path) => path.trim()).filter(Boolean),
+  ]);
   return {
     atMs: nowMs,
     cpu: readCpuCounters(cpus()),
@@ -493,6 +545,7 @@ export async function collectHostLiveHealthCounters(
     network: parseNetworkCounters(linuxReads[5]),
     closeWaitCount: parseCloseWaitCount(linuxReads[6], linuxReads[7]),
     diskFreeBytes: Number.isFinite(diskFreeBytes) ? diskFreeBytes : null,
+    storage,
   };
 }
 
@@ -789,6 +842,7 @@ export class LiveHealthMonitor {
       writers,
       observations,
       signals,
+      ...(current.storage ? { storage: current.storage } : {}),
     };
     await this.writeSnapshot(this.paths.snapshotPath, snapshot);
     this.previous = current;

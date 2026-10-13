@@ -784,6 +784,17 @@ const PLANS_START_RECEIPT_RECOVERY =
   'fields already omitted upstream cannot be recovered from that copy. Read plans:get for each preserved ' +
   'slug/harnessSlug and work_items:get for promoted workItemIds to inspect current state before follow-up.';
 
+const FLEET_ADMISSION_RECEIPT_PRESERVE_PATHS = [
+  'ok', 'error', 'reason', 'message', 'blockingPlanItemIds', 'blockingWorkItemIds', 'namedFloors',
+  'repairCall', 'repairCall.tool', 'repairCall.args', 'repairCall.effect', 'blockerCounts',
+  'fleet', 'plan', 'harness',
+] as const;
+
+function isFleetLaunchCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'fleet:launch-on-plan' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'fleet:launch-on-plan');
+}
+
 function isPlansStartCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
   return input.toolName === 'plans:start' ||
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'plans:start');
@@ -832,7 +843,10 @@ const SCORECARDS_EMIT_UNKNOWN_SPILL_RECOVERY =
   'The scorecards:emit write outcome is unknown. Do NOT repeat this non-idempotent emit. Re-read the target or ' +
   'scorecard ledger to resolve whether it committed before any retry.';
 
-function workItemsBulkReceiptBody(result: DoorableResult): JsonObject | undefined {
+function workItemsBulkReceiptBody(
+  result: DoorableResult,
+  accept: (value: JsonObject) => boolean = (value) => Array.isArray(value.results),
+): JsonObject | undefined {
   const textBodies = result.content.filter(isTextItem).map((item) => {
     try {
       return JSON.parse(item.text) as unknown;
@@ -847,7 +861,7 @@ function workItemsBulkReceiptBody(result: DoorableResult): JsonObject | undefine
     }
   });
   return [result.structuredContent, ...textBodies].find(
-    (value): value is JsonObject => isJsonObject(value) && Array.isArray(value.results),
+    (value): value is JsonObject => isJsonObject(value) && accept(value),
   );
 }
 
@@ -2100,24 +2114,38 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
     } as T;
   }
   const startReceipt = isPlansStartCall(input.opts) ? workItemsBulkReceiptBody(input.result) : undefined;
-  if (startReceipt) {
+  const fleetAdmissionReceipt = isFleetLaunchCall(input.opts)
+    ? workItemsBulkReceiptBody(input.result, (value) => value.error === 'admission_refused')
+    : undefined;
+  const admissionReceipt = startReceipt ?? fleetAdmissionReceipt;
+  if (admissionReceipt) {
+    const receiptTool = startReceipt ? 'plans:start' : 'fleet:launch-on-plan';
+    const receiptPaths = startReceipt ? PLANS_START_RECEIPT_PRESERVE_PATHS : FLEET_ADMISSION_RECEIPT_PRESERVE_PATHS;
+    const next = startReceipt ? PLANS_START_RECEIPT_RECOVERY
+      : 'Inspect the preserved repairCall before retrying. Page the original admission and promotion details with capability:read.';
     const recovery: BoundedPayloadRecovery = reference
       ? {
           cursor: { kind: 'scratch-page', tool: 'capability:read', args: { file_path: reference.uri, byte_offset: 0, byte_limit: 3_072 } },
-          next: PLANS_START_RECEIPT_RECOVERY,
+          next,
         }
       : {
           cursor: { kind: 'unavailable', tool: 'plans:get', args: {}, reason: 'spill-write-failed' },
-          next: PLANS_START_RECEIPT_RECOVERY,
+          next,
         };
+    // A nested door must keep the ORIGINAL full-details cursor, rather than
+    // replacing it with a page containing only the already-bounded receipt.
+    const priorProjection = fleetAdmissionReceipt?._projection;
+    const priorRecovery = isJsonObject(priorProjection) && isJsonObject(priorProjection.cursor)
+      ? { cursor: priorProjection.cursor, next: String(priorProjection.next ?? next) } as BoundedPayloadRecovery
+      : undefined;
     return {
       ...input.result,
-      content: [{ type: 'text' as const, text: JSON.stringify(projectBoundedPayload(startReceipt, {
-        toolName: 'plans:start', tier: 'trimmed', forced: true,
+      content: [{ type: 'text' as const, text: JSON.stringify(projectBoundedPayload(admissionReceipt, {
+        toolName: receiptTool, tier: 'trimmed', forced: true,
         originalChars: input.sourceBytes,
         targetChars: input.doorTokens * CHARS_PER_TOKEN_ESTIMATE,
-        preservePaths: PLANS_START_RECEIPT_PRESERVE_PATHS,
-        recovery: preferVolatileScratchRecovery(volatileRecovery, recovery),
+        preservePaths: receiptPaths,
+        recovery: priorRecovery ?? preferVolatileScratchRecovery(volatileRecovery, recovery),
       })) }],
       _meta: { ...(input.result._meta ?? {}), resultDoor: {
         truncated: true, structural: true, spillPath, spillUri,
@@ -3367,6 +3395,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         ? WORK_ITEMS_RELEASE_RECEIPT_PRESERVE_PATHS
         : []),
       ...(isPlansStartCall(opts) ? PLANS_START_RECEIPT_PRESERVE_PATHS : []),
+      ...(isFleetLaunchCall(opts) && bodyShape.json != null &&
+        isJsonObject(bodyShape.json.parsed) && bodyShape.json.parsed.error === 'admission_refused'
+        ? FLEET_ADMISSION_RECEIPT_PRESERVE_PATHS : []),
       ...(opts.preservePaths ?? []),
       // code:run's `summary` is the script's authored return value; `state` is
       // replay support added by the sandbox. The generic identity projector

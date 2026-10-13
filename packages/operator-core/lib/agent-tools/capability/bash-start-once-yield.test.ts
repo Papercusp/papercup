@@ -8,6 +8,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unwrapToolResult } from '@papercusp/tooldef';
+import type { Sql } from 'postgres';
+import * as bashJobs from './bash-jobs';
+import * as enrollSync from '../../task-manager/enroll-sync';
+import * as taskStore from '../../task-manager/store';
+import { listTasks } from '../../task-manager/store';
 
 vi.mock('./exec-sandbox', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./exec-sandbox')>()),
@@ -35,7 +40,7 @@ const bash = bashTool as unknown as Tool;
 const bashOutput = bashOutputTool as unknown as Tool;
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-start-once-'));
 
-function makeCtx(options: { signal?: AbortSignal; codeMode?: boolean; emitted?: string[] } = {}) {
+function makeCtx(options: { signal?: AbortSignal; codeMode?: boolean; emitted?: string[]; dispatchCallId?: string } = {}) {
   return {
     projectDir: STATE,
     stateDir: STATE,
@@ -46,6 +51,7 @@ function makeCtx(options: { signal?: AbortSignal; codeMode?: boolean; emitted?: 
       if (event === 'output') options.emitted?.push(chunk);
     },
     role: 'operator',
+    ...(options.dispatchCallId ? { dispatchCallId: options.dispatchCallId } : {}),
     ...(options.codeMode ? { codeMode: true } : {}),
   } as never;
 }
@@ -71,6 +77,58 @@ afterEach(() => {
 });
 
 describe('capability:bash — start once and yield the same durable job (P-002)', () => {
+  it('dispatch correlation recovers a lost launch response without a second launch or enrollment', async () => {
+    const dispatchCallId = 'server-owned-dispatch';
+    const marker = join(STATE, `dispatch-correlation-${crypto.randomUUID()}.txt`);
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'correlated-shell-task', enrolled: true, confined: false,
+      unconfinedReason: 'no-scope-support', unitKind: 'scope', scopeUnit: null,
+      registrationReady: null, wrap: (binary: string, argv: string[]) => ({ binary, argv }),
+      releaseEnvironmentTransport: () => {},
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    const launch = vi.spyOn(bashJobs, 'startBackground');
+    const liveTasks = vi.spyOn(taskStore, 'listLiveTasks').mockResolvedValue([]);
+    try {
+      // Deliberately discard the entire launch response, including bash_id/task_id.
+      await bash.handler({
+        command: `printf 'once\\n' >> '${marker}'`, timeout: 5_000,
+        run_in_background: true, dispatchCallId: 'client-forged-dispatch',
+      }, makeCtx({ dispatchCallId, codeMode: true }));
+      const enrolled = complete.mock.calls[0]![1];
+      expect(enrolled.detail).toMatchObject({ dispatchCallId });
+      expect(enrolled.detail?.dispatchCallId).not.toBe('client-forged-dispatch');
+      const bashId = String(enrolled.detail?.bashJobId);
+      const original = getJob(bashId)!;
+      await readUntilTerminal(bashId);
+      const queries: string[] = [];
+      const params: unknown[] = [];
+      const sql = ((strings: TemplateStringsArray, ...args: unknown[]) => {
+        const text = Array.from(strings).join('?');
+        queries.push(text); params.push(...args);
+        return Promise.resolve(text.includes('SELECT') ? [{
+          task_id: 'correlated-shell-task', workspace_id: 'papercusp-workspace',
+          root_task_id: 'correlated-shell-task', class: enrolled.class, title: enrolled.title,
+          argv: enrolled.argv, launched_by: enrolled.launchedBy, state: 'exited',
+          detail: enrolled.detail,
+        }] : []);
+      }) as unknown as Sql;
+      const recovered = await listTasks({
+        workspaceId: 'papercusp-workspace', dispatchCallId, includeEnded: true, limit: 1,
+      }, sql);
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0]).toMatchObject({ taskId: original.taskId, detail: { dispatchCallId, bashJobId: bashId } });
+      expect(params).toContain(dispatchCallId);
+      expect(queries.join('\n')).not.toMatch(/INSERT|UPDATE|DELETE/);
+      expect(launch).toHaveBeenCalledOnce();
+      expect(begin).toHaveBeenCalledOnce();
+      expect(complete).toHaveBeenCalledOnce();
+      expect(getJob(bashId)).toBe(original);
+      expect(readFileSync(marker, 'utf8')).toBe('once\n');
+    } finally { liveTasks.mockRestore(); launch.mockRestore(); begin.mockRestore(); complete.mockRestore(); finish.mockRestore(); }
+  });
+
   it('warns that an empty process table cannot prove a host process is gone', async () => {
     const result = await bash.handler(
       { command: 'ps -eo pid --no-headers', timeout: 5_000 },

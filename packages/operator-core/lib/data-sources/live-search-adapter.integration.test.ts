@@ -27,6 +27,7 @@ import { createPersonalGrant } from '../personal-vault/store';
 import {
   ORGANIZATION_CORPUS_SCOPE,
   mapProviderIdentity,
+  revokeProviderIdentityMapping,
   searchOrganizationDocuments,
   searchPotDocuments,
 } from './documents-corpus';
@@ -235,6 +236,141 @@ describe('live (federated) search through the injection path (R-12)', () => {
     expect(await build(alice, 50)).toBeNull();
     expect(calls).toHaveLength(1);
     expect(calls[0]!.signal.aborted).toBe(true);
+  });
+});
+
+describe('authority changes during an in-flight provider read', () => {
+  function blockedAdapter() {
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const adapter: LiveSearchAdapter = {
+      kind: 'slack',
+      async search(input) {
+        calls.push(input);
+        enter();
+        await pending;
+        return [HIT];
+      },
+    };
+    return { entered, release, adapter };
+  }
+
+  async function restrictHits() {
+    await upsertPrivacyRule(org.adminSql, {
+      workspaceId: WS, userId: alice, matchKind: 'source', matchValue: 'slack',
+      level: 'participants', actor: 'owner', authorityRef: null,
+    });
+  }
+
+  async function disclosedIds() {
+    const rows = await org.adminSql<{ document_id: string }[]>`
+      SELECT DISTINCT document_id::text AS document_id
+        FROM harness_shared.personal_disclosures
+       WHERE workspace_id = ${WS}`;
+    return rows.map((row) => row.document_id).sort();
+  }
+
+  function search(adapters: ReadonlyMap<string, LiveSearchAdapter>) {
+    return searchLiveSources(org.adminSql, { workspaceId: WS, role: AGENT_ROLE }, {
+      workspaceId: WS, principalUserId: alice, agentOwnerId: AGENT,
+      query: 'cobalt roadmap', adapters, timeoutMs: 10_000,
+    });
+  }
+
+  it.each([
+    'identity-revoked', 'identity-remapped', 'source-disabled',
+    'source-deleted', 'source-reconfigured',
+  ])('withholds and does not disclose a hit after %s', async (scenario) => {
+    await restrictHits();
+    const barrier = blockedAdapter();
+    const outcomePromise = search(new Map([['slack', barrier.adapter]]));
+    try {
+      await barrier.entered;
+      if (scenario === 'identity-revoked') {
+        await revokeProviderIdentityMapping(org.adminSql, WS, { ...SLACK_ALICE, revokedBy: 'owner' });
+      } else if (scenario === 'identity-remapped') {
+        await revokeProviderIdentityMapping(org.adminSql, WS, { ...SLACK_ALICE, revokedBy: 'owner' });
+        await mapProviderIdentity(org.adminSql, WS, { ...SLACK_ALICE, userId: bob, mappedBy: 'owner' });
+      } else if (scenario === 'source-disabled') {
+        await org.adminSql`UPDATE harness_shared.data_sources SET status = 'disabled' WHERE id = ${dataSourceId}::uuid`;
+      } else if (scenario === 'source-deleted') {
+        await org.adminSql`DELETE FROM harness_shared.data_sources WHERE id = ${dataSourceId}::uuid`;
+      } else {
+        await org.adminSql`UPDATE harness_shared.data_sources
+          SET config = ${org.adminSql.json({ installSlug: 'different-install' })}
+          WHERE id = ${dataSourceId}::uuid`;
+      }
+    } finally {
+      barrier.release();
+    }
+    expect(await outcomePromise).toMatchObject({
+      allowed: true, results: [], disclosed: 0,
+      failed: [{ dataSourceId, source: 'slack', reason: 'live_search_binding_changed' }],
+    });
+    expect(await disclosedIds()).toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('refuses and does not disclose when the organization grant is revoked during the read', async () => {
+    await restrictHits();
+    const barrier = blockedAdapter();
+    const outcomePromise = search(new Map([['slack', barrier.adapter]]));
+    try {
+      await barrier.entered;
+      await org.adminSql`UPDATE harness_shared.personal_grants SET revoked_at = now()
+        WHERE workspace_id = ${WS} AND user_id = ${alice}::uuid`;
+    } finally {
+      barrier.release();
+    }
+    expect(await outcomePromise).toMatchObject({ allowed: false, reason: 'no_live_grant' });
+    expect(await disclosedIds()).toEqual([]);
+  });
+
+  it('returns and discloses a valid hit after a delayed provider read', async () => {
+    await restrictHits();
+    const barrier = blockedAdapter();
+    const outcomePromise = search(new Map([['slack', barrier.adapter]]));
+    await barrier.entered;
+    barrier.release();
+    expect(await outcomePromise).toMatchObject({ allowed: true, failed: [], results: [{ snippet: HIT.text }] });
+    expect(await disclosedIds()).toEqual([liveDocumentId(dataSourceId, HIT.externalId)]);
+  });
+
+  it('rechecks an early result after another provider finishes, preserving the unrelated valid source', async () => {
+    await restrictHits();
+    const [other] = await org.adminSql<{ id: string }[]>`
+      INSERT INTO harness_shared.data_sources (workspace_id, kind, config, status, sync_mode, scope)
+      VALUES (${WS}, 'slack', ${org.adminSql.json({ installSlug: 'other' })}, 'ready', 'federated', 'organization')
+      RETURNING id::text AS id`;
+    const barrier = blockedAdapter();
+    let early!: () => void;
+    const earlyReturned = new Promise<void>((resolve) => { early = resolve; });
+    const adapter: LiveSearchAdapter = {
+      kind: 'slack',
+      async search(input) {
+        if (input.record.id === other!.id) return barrier.adapter.search(input);
+        calls.push(input);
+        early();
+        return [HIT];
+      },
+    };
+    const outcomePromise = search(new Map([['slack', adapter]]));
+    try {
+      await Promise.all([earlyReturned, barrier.entered]);
+      await org.adminSql`UPDATE harness_shared.data_sources SET status = 'disabled' WHERE id = ${dataSourceId}::uuid`;
+    } finally {
+      barrier.release();
+    }
+    const outcome = await outcomePromise;
+    expect(outcome).toMatchObject({
+      allowed: true, results: [{ dataSourceId: other!.id, snippet: HIT.text }],
+      failed: [{ dataSourceId, source: 'slack', reason: 'live_search_binding_changed' }],
+    });
+    if (!outcome.allowed) throw new Error('expected an allowed outcome');
+    expect(outcome.results).toHaveLength(1);
+    expect(await disclosedIds()).toEqual([liveDocumentId(other!.id, HIT.externalId)]);
   });
 });
 

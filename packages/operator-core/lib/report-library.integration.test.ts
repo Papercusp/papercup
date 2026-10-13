@@ -66,6 +66,10 @@ const requestScopeMigration = join(dirname(reportMigration), '1420-report-librar
 // Keep the actual presence store, election and liveness oracle. Only route its
 // connection to this suite's disposable migrated database, like the store reads.
 const oracleDb = vi.hoisted(() => ({ sql: null as Sql | null }));
+// Owner notifications are outside this disposable database's delivery boundary.
+// Preserve the real coord log and assert the envelopes handed to the notifier.
+const ownerNotification = vi.hoisted(() => ({ notify: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('./session-push', () => ({ notifySessionOwnerMessage: ownerNotification.notify }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...await importOriginal<typeof import('@papercusp/db-org')>(),
   getOrgPg: () => {
@@ -428,6 +432,7 @@ describe('report_library store (real PG)', () => {
   });
 
   it('INLINE-REPORT-COMPATIBILITY-P004: real PG send keeps inline fields and structured plans beside canonical delivery', async () => {
+    ownerNotification.notify.mockClear();
     const f = await deliveryFixture();
     const log = new PgCoordLog({ getSql: () => db.adminSql, workspaceId: f.workspaceId, ensureSchema: async () => {} });
     configureCoordLog(log);
@@ -455,6 +460,10 @@ describe('report_library store (real PG)', () => {
       expect(rows.find((row) => row.body.msg_id === structured.msg_id)!.body.report).toEqual(report);
       expect(reference.msg_id).toBe(goalReportDeliveryId(f.workspaceId, f.ref));
       expect(reference.report).toEqual({ plans: [], goalReport: f.ref });
+      await vi.dynamicImportSettled();
+      expect(ownerNotification.notify.mock.calls).toEqual([
+        [inline, f.workspaceId], [structured, f.workspaceId], [reference, f.workspaceId],
+      ]);
     } finally {
       resetCoordLog();
     }

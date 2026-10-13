@@ -795,7 +795,13 @@ export async function synchronizeAcceptanceBarRevision(
       requiredEvidence: preserveRefinements ? clause.required_evidence
         : clause.required_evidence.map((value) => ['tree', 'deployed', 'live'].includes(value) ? criterion.evidencePlane! : value),
       requiredTestLayers, mutationRequired: clause.mutation_required,
-      lifecycleStatus: clause.lifecycle_status, exemption: clause.exemption,
+      // A terminal clause whose pair is current has been re-added to the approved map.
+      // Re-project it into the draft activation pipeline instead of preserving a
+      // terminal lifecycle that would make the restored BAR silently unenforceable.
+      lifecycleStatus: currentPair &&
+        (clause.lifecycle_status === 'superseded' || clause.lifecycle_status === 'retired')
+        ? 'draft' : clause.lifecycle_status,
+      exemption: clause.exemption,
       supersedes: clause.supersedes_spec_id && clause.supersedes_revision
         ? { specId: clause.supersedes_spec_id, revision: clause.supersedes_revision } : null,
       falsifier: preserveRefinements ? clause.falsifier : { observation: criterion.driftMarkers! },

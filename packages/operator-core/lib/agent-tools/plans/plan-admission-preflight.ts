@@ -94,6 +94,8 @@ export interface ExactPlanAdmission {
     holder: string;
     takenAt: string | null;
   }>;
+  /** Exact promoted coverage, including untaken rows excluded by readiness floors. */
+  actionableRows?: Array<{ planItemId: string; workItemId: string }>;
   lane: FleetLaneHealth | null;
   message: string;
 }
@@ -360,6 +362,11 @@ export function evaluateExactPlanAdmission(args: {
     executableWidth,
     seatShortfall,
     blockingRows,
+    actionableRows: activePromotedRows.flatMap((row) =>
+      provenanceIds(row)
+        .filter((planItemId) => actionable.some((item) => item.id === planItemId))
+        .map((planItemId) => ({ planItemId, workItemId: row.id })),
+    ),
     lane: args.laneHealth,
   };
 

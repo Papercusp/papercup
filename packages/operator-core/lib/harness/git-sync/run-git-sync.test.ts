@@ -35,7 +35,6 @@ import {
   defaultRunGeneratedDeclarationsGenerator,
   defaultRunToolRoutingCheck,
   classifyProtectedPathExclusions,
-  isVerbatimCheckIgnorePath,
   addFailureIgnoredPaths,
   addFailureStrayPaths,
   discoverSubmodulesRecursive,
@@ -61,6 +60,8 @@ import {
   guardStagedIndexBeforeCommit,
   DECLARATION_STATUS_MAX_RETRIES,
   regenerateGeneratedDeclarationsBeforeCommit,
+  declarationCompileErrors,
+  declarationCompileOffenders,
   regenerateToolCatalogBeforeCommit,
   expandAtomicLiveLockExclusions,
   expandCargoPackageLiveLockExclusions,
@@ -73,6 +74,7 @@ import {
   type RunGit,
   type GitSyncStepRunner,
 } from './run-git-sync';
+import { isVerbatimCheckIgnorePath } from './check-ignore-argv';
 import { dependencyGenerationRootRecord } from '../../release/dependency-generation-prebuild';
 import type { AttributionRosterEntry, FileAttribution } from './git-sync-attribution';
 import type { ContentDetector } from '../../content-lint/registry';
@@ -767,7 +769,69 @@ describe('EI-21444216858331991 generated declarations pre-commit regeneration', 
     expect(result).toEqual({ status: 'regenerated', atomicPaths: [source, artifact] });
   });
 
-  it('fails closed when the writer cannot produce a coherent projection', async () => {
+  it('WI-6554700010010659: a failed emit defers the declaration surface plus the dirty files tsc names', async () => {
+    const source = 'apps/operator/scripts/psu-launcher.mjs';
+    const artifact = 'apps/operator/scripts/psu-launcher.d.mts';
+    const culprit = 'packages/operator-core/lib/verifier-source.ts';
+    const runGit: RunGit = async (args) => {
+      if (args[0] === 'status') return { code: 0, stdout: ` M ${source}\0 M ${culprit}\0 M docs/other.md\0`, stderr: '' };
+      if (args[0] === 'ls-files') {
+        return {
+          code: 0,
+          stdout: `scripts/gen-declarations.ts\ntsconfig.declarations.json\n${source}\n${artifact}\n`,
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      async () => ({
+        code: 1,
+        stdout: '',
+        stderr:
+          `tsc failed:\n/fake/${culprit}(7,37): error TS5097: An import path can only end with a '.ts' extension.\n` +
+          "scripts/not-dirty.ts(1,1): error TS2304: Cannot find name 'y'.\n",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      status: 'deferred',
+      atomicPaths: [artifact, source, culprit, 'scripts/gen-declarations.ts', 'tsconfig.declarations.json'].sort(),
+      compilerErrors: [
+        {
+          path: culprit,
+          diagnostic: `${culprit}(7,37): error TS5097: An import path can only end with a '.ts' extension.`,
+        },
+      ],
+    });
+  });
+
+  it('WI-6554700010010659: declarationCompileErrors parses tsc diagnostics into repo-relative files', () => {
+    const output = [
+      'tsc failed:',
+      'a/b.ts(1,2): error TS1000: first',
+      '  /repo/a/b.ts(3,4): error TS1001: second',
+      '/repo/./c.ts(5,6): error TS1002: absolute inside root',
+      '/elsewhere/d.ts(1,1): error TS1003: outside root',
+      '../up.ts(1,1): error TS1004: escapes root',
+      'a/b.ts(9,9): warning-like text that is not an error line',
+      'Error: Command failed',
+    ].join('\n');
+
+    expect(declarationCompileErrors(output, '/repo')).toEqual([
+      { path: 'a/b.ts', diagnostic: 'a/b.ts(1,2): error TS1000: first\na/b.ts(3,4): error TS1001: second' },
+      { path: 'c.ts', diagnostic: 'c.ts(5,6): error TS1002: absolute inside root' },
+    ]);
+    expect(declarationCompileOffenders(declarationCompileErrors(output, '/repo/'))[0]).toMatchObject({
+      file: 'a/b.ts',
+      detectorKey: 'declarations-tsc',
+      fixerRole: 'content-fixer',
+    });
+  });
+
+  it('defers the whole declaration surface when the writer fails without naming a file', async () => {
     const source = 'apps/operator/scripts/psu-launcher.mjs';
     const artifact = 'apps/operator/scripts/psu-launcher.d.mts';
     const runGit: RunGit = async (args) => {
@@ -789,11 +853,12 @@ describe('EI-21444216858331991 generated declarations pre-commit regeneration', 
     );
 
     expect(result).toEqual({
-      status: 'blocked',
-      atomicPaths: [source, artifact],
+      status: 'deferred',
+      atomicPaths: [artifact, source, 'scripts/gen-declarations.ts', 'tsconfig.declarations.json'].sort(),
       detail: 'declaration emit failed',
+      compilerErrors: [],
     });
-    expect(logs.join('\n')).toMatch(/deferring the superproject commit/);
+    expect(logs.join('\n')).toMatch(/declaration regeneration failed \(declaration emit failed\) — deferring 4/);
   });
 });
 
@@ -2478,7 +2543,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
-  it('EI-21444216858331991: a failed declaration emit leaves the source uncommitted', async () => {
+  it('EI-21444216858331991 + WI-6554700010010659: a failed declaration emit holds the pair and the compiler-named file, not the tree', async () => {
     const generator = join(repo, 'scripts', 'gen-declarations.ts');
     const config = join(repo, 'tsconfig.declarations.json');
     const sourceRel = 'apps/operator/scripts/psu-launcher.mjs';
@@ -2495,7 +2560,21 @@ describe('runGitSync (real git, no submodule)', () => {
     git(repo, 'commit', '--no-verify', '-m', 'seed declaration fixture');
     git(repo, 'push', 'origin', 'main');
 
+    // WI-6554700010010659: a TS file the declarations program reaches, and an
+    // unrelated file, both tracked before the failing pass.
+    const culpritRel = 'packages/operator-core/lib/verifier-source.ts';
+    const unrelatedRel = 'docs/unrelated.md';
+    mkdirSync(join(repo, 'packages', 'operator-core', 'lib'), { recursive: true });
+    mkdirSync(join(repo, 'docs'), { recursive: true });
+    writeFileSync(join(repo, culpritRel), "export const verifier = 'v1';\n");
+    writeFileSync(join(repo, unrelatedRel), 'unrelated v1\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed culprit and unrelated fixture');
+    git(repo, 'push', 'origin', 'main');
+
     writeFileSync(source, 'export const version = 2;\n');
+    writeFileSync(join(repo, culpritRel), "import { x } from './process-identity.ts';\nexport const verifier = x;\n");
+    writeFileSync(join(repo, unrelatedRel), 'unrelated v2\n');
     const logs: string[] = [];
     const out = await runGitSync('test', {
       repoPath: repo,
@@ -2505,15 +2584,28 @@ describe('runGitSync (real git, no submodule)', () => {
         regenerateGeneratedDeclarationsBeforeCommit(context, async () => ({
           code: 1,
           stdout: '',
-          stderr: 'fixture emit failed',
+          stderr:
+            'tsc failed:\n' +
+            `${culpritRel}(1,19): error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.\n` +
+            // CONTROL: a clean file the compiler names is neither held nor reported.
+            "scripts/clean-elsewhere.ts(3,1): error TS2304: Cannot find name 'y'.\n",
         })),
     });
 
-    expect(out.status).toBe('error');
+    // The rest of the tree commits; the pair and the compiler-named dirty file do not.
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', `main:${unrelatedRel}`)).toContain('unrelated v2');
     expect(git(originDir, 'show', `main:${sourceRel}`)).toContain('version = 1');
     expect(git(originDir, 'show', `main:${artifactRel}`)).toContain('version = 1');
+    expect(git(originDir, 'show', `main:${culpritRel}`)).toContain("'v1'");
     expect(git(repo, 'status', '--porcelain', '--', sourceRel)).toMatch(/psu-launcher\.mjs/);
-    expect(logs.join('\n')).toMatch(/deferring the superproject commit/);
+    expect(git(repo, 'status', '--porcelain', '--', culpritRel)).toMatch(/verifier-source\.ts/);
+    const declarationOffenders = out.contentErrors.filter((row) => row.detectorKey === 'declarations-tsc');
+    expect(declarationOffenders.map((row) => row.file)).toEqual([culpritRel]);
+    expect(declarationOffenders[0]).toMatchObject({ fixerRole: 'content-fixer' });
+    expect(declarationOffenders[0].error).toContain('TS5097');
+    expect(logs.join('\n')).toMatch(/declaration regeneration failed/);
+    expect(logs.join('\n')).toContain(`including 1 dirty file(s) its diagnostics name (${culpritRel})`);
   });
 
   it('WI-39922: a generator failure remains fail-soft and the tool source still commits', async () => {

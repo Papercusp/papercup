@@ -77,6 +77,7 @@
   // An explicit list is also the honest surface: a glob would silently start
   // emitting declarations for every future script in the repo.
   "files": [
+    "scripts/mcp-call.mjs",
     // WI-10007656: native DAO verification and its regression import this fixture.
     "scripts/fixtures/dao-workbench-identity.mjs",
     // EI-25217214806027261 — bundle-host's free-reference guard, imported directly by

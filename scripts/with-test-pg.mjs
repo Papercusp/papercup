@@ -98,35 +98,47 @@ try {
 // dependencies or allocating PG. The worker still receives the private exact
 // environment through the maintained systemd environment transport.
 let managedTaskSocket;
+let managedTaskBusAddress;
 let runtimeRoot = null;
 if (managedTasks) {
   try {
     if (process.platform !== 'linux' || !process.env.XDG_RUNTIME_DIR?.trim()) {
       throw new Error('an explicit Linux user-manager runtime directory is required');
     }
-    managedTaskSocket = join(resolve(process.env.XDG_RUNTIME_DIR), 'systemd', 'private');
-    const socket = await stat(managedTaskSocket);
-    if (!socket.isSocket() || socket.uid !== process.getuid()) {
-      throw new Error('user-manager private control socket must be an owned socket');
-    }
-    // The source directory may also contain a session bus. systemd-run falls
-    // back to that bus when systemd/private is stale, so probing it would admit
-    // a route the isolated worker can never use. Probe the exact private alias
-    // before allocating PG, and retain that directory for the actual worker.
+    const sourceRuntime = resolve(process.env.XDG_RUNTIME_DIR);
+    // Select and probe one exact owned route. Some hosts have a stale private
+    // manager socket while the manager is healthy through the session bus.
+    // Never let the native client fall back to an unprobed ambient bus.
     runtimeRoot = await mkdtemp(join(tmpdir(), 'papercusp-test-runtime-'));
     const privateRuntime = join(runtimeRoot, 'xdg-runtime');
     await mkdir(join(privateRuntime, 'systemd'), { recursive: true, mode: 0o700 });
-    const privateSocket = join(privateRuntime, 'systemd', 'private');
-    if (Buffer.byteLength(privateSocket) > 107) throw new Error('private managed-task socket exceeds native address capacity');
-    await symlink(managedTaskSocket, privateSocket);
-    const probeEnv = { ...process.env, XDG_RUNTIME_DIR: privateRuntime };
-    delete probeEnv.DBUS_SESSION_BUS_ADDRESS;
-    const probe = spawnSync('systemd-run', ['--user', '--scope', '--quiet', '--collect',
-      '--property=CollectMode=inactive-or-failed', '--', 'true'],
-    { env: probeEnv, encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'ignore', 'pipe'] });
-    if (probe.error || probe.status !== 0) {
-      throw new Error(probe.error?.message ?? `private runtime scope probe exited ${probe.status}: ${probe.stderr.trim()}`);
+    const failures = [];
+    for (const relativePath of ['systemd/private', 'bus']) {
+      const candidate = join(sourceRuntime, relativePath);
+      // systemd treats systemd/private as a direct peer, and bus as a
+      // message bus. Aliasing a bus at the peer path selects the wrong protocol.
+      const privateSocket = join(privateRuntime, relativePath);
+      try {
+        if (Buffer.byteLength(privateSocket) > 107) throw new Error('private managed-task socket exceeds native address capacity');
+        const socket = await stat(candidate);
+        if (!socket.isSocket() || socket.uid !== process.getuid()) throw new Error('user-manager control route must be an owned socket');
+        await symlink(candidate, privateSocket);
+        const probeEnv = { ...process.env, XDG_RUNTIME_DIR: privateRuntime,
+          DBUS_SESSION_BUS_ADDRESS: `unix:path=${privateSocket}` };
+        const probe = spawnSync('systemd-run', ['--user', '--scope', '--quiet', '--collect',
+          '--property=CollectMode=inactive-or-failed', '--', 'true'],
+        { env: probeEnv, encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'ignore', 'pipe'] });
+        if (probe.error || probe.status !== 0)
+          throw new Error(probe.error?.message ?? `private runtime scope probe exited ${probe.status}: ${probe.stderr.trim()}`);
+        managedTaskSocket = candidate;
+        managedTaskBusAddress = probeEnv.DBUS_SESSION_BUS_ADDRESS;
+        break;
+      } catch (error) {
+        failures.push(`${candidate}: ${error.message}`);
+        await rm(privateSocket, { force: true });
+      }
     }
+    if (!managedTaskSocket) throw new Error(failures.join('; '));
     console.log('[with-test-pg] managed task preflight passed (private user-manager control socket)');
   } catch (error) {
     if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
@@ -456,6 +468,7 @@ if (runtimeRoot && runtimeId) {
     XDG_CONFIG_HOME: join(runtimeRoot, 'xdg-config'),
     XDG_STATE_HOME: join(runtimeRoot, 'xdg-state'),
     XDG_RUNTIME_DIR: join(runtimeRoot, 'xdg-runtime'),
+    ...(managedTaskBusAddress ? { DBUS_SESSION_BUS_ADDRESS: managedTaskBusAddress } : {}),
     // Original proof receipts must survive this private HOME's teardown.
     // Pin the caller's maintained root before isolating product state; nested
     // wrappers inherit this same absolute root instead of nesting it in HOME.

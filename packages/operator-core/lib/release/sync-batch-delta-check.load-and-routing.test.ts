@@ -17,6 +17,12 @@ const captured = vi.hoisted(() => ({
   sqlCalls: [] as Array<{ text: string; values: unknown[] }>,
   sqlRows: [] as Array<Record<string, unknown>>,
   createArgs: [] as Array<Record<string, unknown>>,
+  messages: [] as Array<Record<string, unknown>>,
+  wakes: [] as Array<{ targets: string[]; options: Record<string, unknown> }>,
+  messagePersisted: false,
+  notificationFails: false,
+  notificationAssignee: 'su-author-1' as string | null,
+  wakeQueued: 1,
 }));
 
 vi.mock('@papercusp/db-org', () => ({
@@ -35,7 +41,27 @@ vi.mock('../agent-tools/work_items/_create-core', () => ({
   },
 }));
 
+vi.mock('../work-items', () => ({
+  getWorkItem: async () => ({ assignee: captured.notificationAssignee }),
+}));
+vi.mock('../agent-tools/coordination/messages', () => ({
+  getMessageById: async () => captured.messagePersisted ? { msg_id: 'persisted' } : null,
+  sendMessage: async (_identity: unknown, options: Record<string, unknown>) => {
+    if (captured.notificationFails) throw new Error('notification store unavailable');
+    captured.messages.push(options);
+    captured.messagePersisted = true;
+    return { msg_id: options.msgId };
+  },
+}));
+vi.mock('../agent-tools/coordination/inbox-wake', () => ({
+  wakeRecipients: async (targets: string[], options: Record<string, unknown>) => {
+    captured.wakes.push({ targets, options });
+    return { queued: captured.wakeQueued, woken: captured.wakeQueued, staged: 0, timedOutTargets: [] };
+  },
+}));
+
 import { buildSyncBatchDeltaDeps, type RunResult } from './sync-batch-delta-check-deps';
+import { buildSyncLintGuardDeps } from './sync-batch-lint-guards-deps';
 import {
   COVERAGE_ALARM_CONDITION_KEY,
   COVERAGE_ALARM_MIN_TICKS,
@@ -362,5 +388,51 @@ describe('author routing (R-3)', () => {
     await deps.fileRed({ title: 't', body: 'b', conditionKey: 'k2', paths: [], assignee: null, authorSource: 'none' } as unknown as RedFinding);
     expect(captured.createArgs[0]?.assign_to).toBe('su-author-1');
     expect('assign_to' in (captured.createArgs[1] ?? {})).toBe(false);
+  });
+
+  it('notifies the actual filed owner and queues the existing required-wake path', async () => {
+    captured.messages.length = captured.wakes.length = 0;
+    captured.messagePersisted = captured.notificationFails = false;
+    captured.notificationAssignee = 'su-current-holder';
+    captured.wakeQueued = 1;
+    const deps = buildSyncLintGuardDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging' });
+    const finding: RedFinding = { title: 'guard red', body: 'fix the measured red', conditionKey: 'guard:k',
+      paths: ['src/timer.ts'], assignee: 'su-author-1', authorSource: 'edit-ledger:failing-file' };
+    expect(await deps.fileRed(finding)).toMatchObject({ ok: true, id: 'WI-77', assignee: 'su-current-holder' });
+    expect(captured.messages[0]).toMatchObject({ to: ['su-current-holder'], files: ['src/timer.ts'] });
+    expect(captured.wakes[0]).toMatchObject({ targets: ['su-current-holder'],
+      options: { requiredWake: true, workspaceId: 'ws-1', payload: { workItemId: 'WI-77' } } });
+    captured.wakeQueued = 0;
+    expect(await deps.fileRed(finding)).toMatchObject({ ok: true, id: 'WI-77',
+      assignee: 'su-current-holder', notificationError: expect.any(String) });
+    captured.wakeQueued = 1;
+    captured.notificationAssignee = 'su-author-1';
+  });
+
+  it.each(['notification-store', 'wake-miss'] as const)('preserves the attributed red for a %s retry', async failure => {
+    captured.messages.length = captured.wakes.length = 0;
+    captured.messagePersisted = false;
+    captured.notificationFails = failure === 'notification-store';
+    captured.notificationAssignee = 'su-author-1';
+    captured.wakeQueued = failure === 'wake-miss' ? 0 : 1;
+    const deps = buildSyncLintGuardDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging' });
+    const finding: RedFinding = { title: 'guard red', body: 'measured red', conditionKey: 'guard:k',
+      paths: ['src/timer.ts'], assignee: 'su-author-1', authorSource: 'edit-ledger:failing-file' };
+    const result = await deps.fileRed(finding);
+    expect(result).toMatchObject({ ok: true, id: 'WI-77', notificationError: expect.any(String) });
+    captured.notificationFails = false;
+    captured.wakeQueued = 1;
+    expect(await deps.fileRed(finding)).not.toHaveProperty('notificationError');
+    expect(captured.messages).toHaveLength(1);
+    expect(captured.wakes.at(-1)?.targets).toEqual(['su-author-1']);
+  });
+
+  it('leaves an unattributed red in the queue without waking a guessed agent', async () => {
+    captured.messages.length = captured.wakes.length = 0;
+    const deps = buildSyncLintGuardDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging' });
+    await deps.fileRed({ title: 'red', body: 'measured red', conditionKey: 'guard:k',
+      paths: [], assignee: null, authorSource: 'none' });
+    expect(captured.messages).toHaveLength(0);
+    expect(captured.wakes).toHaveLength(0);
   });
 });

@@ -660,7 +660,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     }];
     try {
       const result = await callTool('deadlinetest:spill', {}, extra, { progressToken });
-      expect(result.isError).not.toBe(true);
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
       expect(traceEvents(info.mock.calls)).toEqual(expect.arrayContaining([
         expect.objectContaining({
           traceId,
@@ -957,6 +957,16 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
           }),
         }),
       }));
+      const mcpSettlement = settlementMetadata.mcpRequestSettlement as {
+        phaseTimingsMs?: { scratchWrites?: Record<string, unknown> };
+      };
+      expect(mcpSettlement.phaseTimingsMs?.scratchWrites).toEqual(expect.objectContaining({
+        count: 1,
+        totalMs: expect.any(Number),
+        quotaWaitMs: expect.any(Number),
+        writeMs: expect.any(Number),
+      }));
+      expect(persistedBackfill?.sql).toContain("metadata_json #> '{mcpRequestSettlement,phaseTimingsMs}'");
       expect(settlementMetadata).not.toHaveProperty('spillTimeoutCount');
       await vi.waitFor(() => expect(backfillOrder).toEqual([
         'timeout-start', 'timeout-finished', 'settlement-start',

@@ -1,0 +1,59 @@
+/** Real current-su launcher, private current-build operator and task container.
+ * The only model transport is a local refusal listener with no forwarding code. */
+import { fork } from 'node:child_process';
+import { join, resolve } from 'node:path';
+import { mkdir, rm, symlink } from 'node:fs/promises';
+import { expect, it } from 'vitest';
+import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
+  recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
+
+const root = resolve(import.meta.dirname, '../../../..');
+const options = isolatedWorkerOptions(480_000);
+
+it('launches autonomous current-su through the native container adapter without provider forwarding', async context => {
+  const runId = await recordIsolatedIntegrationProof({ root,
+    filePath: 'packages/operator-core/lib/external-bench/current-su-native.integration.test.ts',
+    sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
+      'packages/operator-core/test/current-su-native-http-scenario.ts',
+      'packages/operator-core/test/isolated-integration-proof.ts',
+      'packages/operator-core/lib/external-bench/current-su.ts',
+      'packages/operator-core/lib/external-bench/frontier-swe-launch-adapter.ts',
+      'packages/operator-core/lib/external-bench/frontier-swe-seam.ts',
+      'packages/operator-core/lib/external-bench/container-exec-target.ts',
+      'packages/operator-core/lib/external-bench/codex-hook-bridge.ts',
+      'packages/operator-core/lib/agent-tools/capability/launch-agent.ts',
+      'packages/operator-core/lib/console-spawn.ts', 'apps/operator/scripts/psu-launcher.mjs',
+      'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh'],
+    execute: async (observe, evidenceDir) => {
+      await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+      await mkdir(join(evidenceDir, 'tmp'));
+      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--managed-tasks', '--',
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')],
+      { cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+          STAGING_FIRST_HTTP_SCENARIO: 'current-su-native', STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
+          TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') } });
+      observe(child);
+      child.stdout!.on('data', chunk => {
+        for (const line of String(chunk).split('\n'))
+          if (/^(CURRENT_SU_NATIVE_PHASE|STAGING_FIRST_HTTP_PHASE) /.test(line)) console.info(line);
+      });
+      let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+      try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+      finally { await rm(join(evidenceDir, 'node_modules')); }
+      expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
+        timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      const line = result.output.split('\n').find(row => row.startsWith('CURRENT_SU_NATIVE_RECEIPT '));
+      expect(line, result.output.slice(-4000)).toBeTruthy();
+      const receipt = JSON.parse(line!.slice('CURRENT_SU_NATIVE_RECEIPT '.length));
+      expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/),
+        hostStopped: true, providerForwarding: false, modelRequests: expect.any(Number),
+        nativeSessionId: expect.stringMatching(/^[a-f0-9-]{36}$/), autoRegistered: true,
+        hooksBridged: true, containerWorkdir: '/app', mcpConfined: true });
+      expect(receipt.modelRequests).toBeGreaterThan(0);
+      console.info('CURRENT_SU_NATIVE_VERIFIED ' + JSON.stringify(receipt));
+    },
+  });
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  console.info('CURRENT_SU_NATIVE_PROOF_RUN ' + runId);
+}, options.testTimeoutMs);

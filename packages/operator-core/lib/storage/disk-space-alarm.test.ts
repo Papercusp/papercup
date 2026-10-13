@@ -7,6 +7,7 @@ vi.mock('../attention-notify', () => ({ notifyAttention: vi.fn(async () => {}), 
 import { tmpdir } from 'node:os';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import type { AttentionNotifyInput } from '../attention-notify';
 import { listDiskRootChildrenAsync } from './disk';
 vi.mock('./disk', async (importOriginal) => ({
   ...await importOriginal<typeof import('./disk')>(),
@@ -21,7 +22,7 @@ import {
   diskEscalationTier,
   formatDiskEscalation,
   formatDiskAlarmToast,
-  runDiskSpaceAlarmOnce,
+  runDiskSpaceAlarmOnce as runDiskSpaceAlarmWithDefaults,
   diskPolicyFromEnv,
   watchedPaths,
   sampleDiskSnapshots,
@@ -32,6 +33,11 @@ import {
 } from './disk-space-alarm';
 
 const GIB = 1024 ** 3;
+
+// Unit fixtures never touch the live census/cooldown database.
+function runDiskSpaceAlarmOnce(deps: Parameters<typeof runDiskSpaceAlarmWithDefaults>[0] = {}, policy?: DiskAlarmPolicy) {
+  return runDiskSpaceAlarmWithDefaults({ readContext: async () => ({ devices: [], receipt: null }), recentlyEscalated: async () => false, ...deps }, policy);
+}
 
 function snap(p: Partial<DiskSnapshot> = {}): DiskSnapshot {
   // A healthy default: 500 GB total, 250 GB free (50%), inodes 50% free.
@@ -267,19 +273,19 @@ describe('runDiskSpaceAlarmOnce', () => {
   it('delivers the warning-floor alarm with both persisted device consumers and an exact receipt link', async () => {
     const context: DiskAlarmContext = {
       devices: [
-        { device: '/', complete: true, sampledAt: '2026-10-13T12:00:00Z', consumers: [{ consumer: '/home/builds', kind: 'dir', depth: 2, bytes: 120 * GIB, baselineBytes: null, growth24hBytes: null }] },
+        { device: '/', complete: true, sampledAt: '2026-10-13T12:00:00Z', consumers: [{ consumer: '/home/builduser', kind: 'dir', depth: 2, bytes: 120 * GIB, baselineBytes: null, growth24hBytes: null }] },
         { device: '/mnt/data', complete: true, sampledAt: '2026-10-13T12:00:00Z', consumers: [{ consumer: '/mnt/data/offload', kind: 'dir', depth: 3, bytes: 300 * GIB, baselineBytes: null, growth24hBytes: null }] },
       ],
       receipt: { schemaVersion: 1, id: 'receipt-123', startedAt: '', finishedAt: '2026-10-13T13:00:00Z', dryRun: false, complete: false, policyExhausted: null, devices: [], entries: [], delegates: [], errors: ['protected artifacts remain'] },
     };
-    const escalate = vi.fn(async (_t: { title: string; body: string; importance: string }) => {});
+    const escalate = vi.fn(async (_t: AttentionNotifyInput) => {});
     const emitToast = vi.fn(async (_t: { description: string }) => {});
     const readContext = vi.fn(async () => context);
     const deps = { emitToast, escalate, readContext, recentlyEscalated: async () => false, attributeUsage: async () => ({ entries: [], truncated: false }) };
     const result = await runDiskSpaceAlarmOnce({ ...deps, sample: async () => [snap({ path: '/', freeBytes: 99 * GIB, freePct: 0.198 }), snap({ path: '/mnt/data' })] });
     expect(result.escalated).toBe(true);
     expect(escalate.mock.calls[0]![0].importance).toBe('urgent');
-    for (const text of ['/home/builds', '/mnt/data/offload', '/settings/storage?reclaim=receipt-123', 'partial']) {
+    for (const text of ['/home/builduser', '/mnt/data/offload', '/settings/storage?reclaim=receipt-123', 'partial']) {
       expect(escalate.mock.calls[0]![0].body).toContain(text);
       expect(emitToast.mock.calls[0]![0].description).toContain(text);
     }

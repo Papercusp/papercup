@@ -7,7 +7,8 @@ import { installFlagOverrideStore } from '../../flag-override-store.ts';
 import { productionDreamCycle } from '../../dream/dream-cycle-action.ts';
 import { applyDreamGraphTreatment, dreamEvaluationProtocolHash, requireDreamPilotProtocol } from '../../dream/dream-evaluation.ts';
 import { capabilityHash } from '../../dream/capability-contracts.ts';
-import { rerankCapabilityPriors } from '../../dream/capability-review.ts';
+import { preflightCapabilityReview, rerankCapabilityPriors } from '../../dream/capability-review.ts';
+import { buildCapabilityReviewSources } from '../../dream/capability-review-sources.ts';
 import { getCurrentCapabilityManifest, getPilotCapabilityManifest } from '../../dream/capability-catalog.ts';
 import { buildCapabilityPacket } from '../../dream/capability-packets.ts';
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from '../../dream/capability-sampler.ts';
@@ -18,7 +19,7 @@ import { DEFAULT_DREAM_REVIEW_CONFIG } from '../../dream/dream-config.ts';
 import { getDreamRun } from '../../dream/dream-run-store.ts';
 import { dreamCapabilityRun } from '../../dream/dream-run-provenance.ts';
 import { captureStudyTiming } from './timing.mts';
-import { enableStudyMaster, prepareStudyRoutine, restoreStudyControls, studyRestorationPorts, studyRoutinePorts } from './controls.mts';
+import { enableStudyMaster, prepareStudyRoutine, requireStudyMasterPreflight, restoreStudyControls, studyRestorationPorts, studyRoutinePorts } from './controls.mts';
 import { moduleRepoRoot } from '../../module-repo-root.ts';
 
 // This standalone driver does not inherit the operator service's environment.
@@ -81,7 +82,8 @@ const restoration = studyRestorationPorts(sql, workspaceId, 'papercusp', ownerId
 const master = await sql<Array<{ enabled: boolean }>>`
   SELECT enabled FROM harness_shared.learning_pot_scope
   WHERE workspace_id = ${workspaceId} AND pot_slug = 'papercusp'`;
-if (master.length !== 1 || master[0]!.enabled !== false) throw new Error('Expected disabled master; inspect current owner state before this temporary restore protocol');
+const runRequested = process.argv.includes('--run');
+const masterEnabled = requireStudyMasterPreflight(master, runRequested, graphComparison);
 const totals = await readStudyTotals(sql, workspaceId, blocks);
 const { pilot, cumulative } = prepareStudyPilot(blocks, totals, { pin: frozen.pin, arm,
   ...(treatment ? { graphTreatment: treatment } : {}) });
@@ -116,13 +118,27 @@ requireDreamPilotProtocol(pilot, { sourceSnapshot: snapshot.fingerprint, manifes
   mode: 'manual', samplerMode: sampler.mode, arity: sampler.arity, samplerHash: capabilityHash(JSON.stringify(sampler)),
   cycle: { maxCostUsd: limits.cycleUsd, rolling24hCostUsd: limits.rollingDayUsd } });
 const treatmentSnapshot = applyDreamGraphTreatment(snapshot, pilot);
-const sample = sampleCapabilityCombination(treatmentSnapshot, { ...sampler, seed: frozen.protocol.seed + ':readiness', now: Date.now(), promptVersion: CAPABILITY_DREAM_PROMPT_VERSION });
+const sample = sampleCapabilityCombination(treatmentSnapshot, { ...sampler,
+  seed: graphComparison ? frozen.protocol.seed + ':matched-pair:' + pilot.matchedPairIndex : frozen.protocol.seed + ':readiness',
+  now: Date.now(), promptVersion: CAPABILITY_DREAM_PROMPT_VERSION });
 if (sample.status !== 'selected' || (arm === 'structured-triple' && !sample.selection.c))
   throw new Error('Study sampler cannot supply its declared arm; no settings changed and no provider called');
+// Readiness must exercise the same selected source search as production, not
+// just rerank a historical match set that cannot expose retrieval failures.
+if (graphComparison) {
+  const reviewReadiness = await preflightCapabilityReview({ rootPath: root, manifest, selection: sample.selection,
+    dreamerModel: frozen.protocol.models.generator, config: { model: frozen.protocol.models.reviewer },
+    sources: buildCapabilityReviewSources({ sql, scope: packetScope, rootPath: root, manifest, packets }) });
+  await log({ phase: 'current-review-readiness', result: reviewReadiness });
+  if (!reviewReadiness.ready) {
+    await sql.end();
+    throw new Error('Current comparison review is not ready; no controls or provider calls: ' + reviewReadiness.note);
+  }
+}
 await log({ phase: 'sampling-readiness', arm, annotationHash, sampler, sourceSnapshot: snapshot.fingerprint });
 await log({ phase: 'prepared', arm, block: blockArg, protocolPin: frozen.pin, graphTreatment: pilot.graphTreatment,
-  models: frozen.protocol.models, matchedPairIndex: pilot.matchedPairIndex, masterEnabled: false, priorStudyArms: totals, cumulative });
-if (!process.argv.includes('--run')) {
+  models: frozen.protocol.models, matchedPairIndex: pilot.matchedPairIndex, masterEnabled, priorStudyArms: totals, cumulative });
+if (!runRequested) {
   await log({ phase: 'dry-run', message: 'No settings changed and no provider called. Pass --run for one governed attempt.' });
   await sql.end();
   process.exit(0);
@@ -136,10 +152,10 @@ try {
       cycle: { maxDreamsPerCycle: 1, maxCostUsd: frozen.protocol.limits.cycleUsd, rolling24hCostUsd: frozen.protocol.limits.rollingDayUsd },
       sampler,
       pass: { model: frozen.protocol.models.generator }, review: { model: frozen.protocol.models.reviewer },
-  }, log);
-  await log({ tool: 'routines:set', result: await routine.apply() });
-  masterAttempted = true;
-  await log({ tool: 'learning:set-pot-scope', result: await enableStudyMaster(sql, workspaceId, 'papercusp', ownerId) });
+  }, log, graphComparison);
+  await log({ phase: 'routine-admission', result: await routine.apply() });
+  masterAttempted = !masterEnabled;
+  await log({ phase: 'master-admission', result: await enableStudyMaster(sql, workspaceId, 'papercusp', ownerId, masterEnabled) });
   const result = await productionDreamCycle({ workspaceId, installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: null }, {
     mode: 'manual', pilot,
     cycle: { maxDreamsPerCycle: 1, maxCostUsd: frozen.protocol.limits.cycleUsd, rolling24hCostUsd: frozen.protocol.limits.rollingDayUsd },
@@ -152,7 +168,7 @@ try {
     timingRuns.push({ runId: run.runId, phases: saved ? (dreamCapabilityRun(saved)?.calls ?? []).map(call => call.phase) : [] });
   }
 } finally {
-  try { await restoreStudyControls({ masterAttempted, restoreRoutine: routine?.restore }, restoration, log); }
+  try { await restoreStudyControls({ masterAttempted, masterRetained: masterEnabled, restoreRoutine: routine?.restore }, restoration, log); }
   finally { await sql.end(); }
 }
 // Restoration takes priority over diagnostics. Persist the bounded gateway ring

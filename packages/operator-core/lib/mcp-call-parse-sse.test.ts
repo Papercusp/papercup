@@ -9,7 +9,6 @@ import {
   isConnectionRefusedError,
   parseSse,
   resolveCandidatePorts,
-  // @ts-expect-error — plain .mjs script, no type declarations
 } from '../../../scripts/mcp-call.mjs';
 
 type RetryEvent = { attempt: number; delayMs: number; remainingMs: number };

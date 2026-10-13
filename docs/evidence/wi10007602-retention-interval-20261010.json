@@ -1,4 +1,97 @@
 {
+  "nativeHealthHistoryProducer20261013": {
+    "schemaVersion": 1,
+    "workItem": "WI-6554700010010594",
+    "parent": "WI-10007602",
+    "planItem": "P-002",
+    "scope": "Isolated current-build standalone background producer; no native bg-host or shipment claim.",
+    "route": "node scripts/with-test-pg.mjs --isolated-runtime -- node scripts/test-files.mjs packages/operator-core/lib/resource-governor/live-health-monitor.integration.test.ts",
+    "taskId": "0mv6z21ag1x64rbx16v",
+    "logPath": ".papercusp/scratch/bash-1a8652f1-a17.log",
+    "logSha256": "5acf24c5d6a4d82a2dda4f69f789557f35ff22f686b4cab04006432668c19dd2",
+    "terminal": {
+      "exitCode": 0,
+      "at": "2026-10-13T17:47:28.985Z",
+      "passed": 2,
+      "skipped": 0
+    },
+    "testPath": "packages/operator-core/lib/resource-governor/live-health-monitor.integration.test.ts",
+    "testSha256": "25d08cf6d6ecfb9adea5fea8d5efec4b619fcd4b3ae0f68615355f7b6f095d16",
+    "sourceHashes": [
+      {
+        "path": "packages/operator-core/lib/resource-governor/live-health-monitor.ts",
+        "sha256": "2ef905cbebbb82e08b94648f38631cc40df0491c991e03ac1ddd909a69ad76c0"
+      },
+      {
+        "path": "packages/operator-core/lib/resource-governor/live-health-monitor-main.ts",
+        "sha256": "2ae2cb60d3489b68047041606c95dd1b16b51bae9015b2a6b2d605a6375297b8"
+      },
+      {
+        "path": "packages/operator-core/lib/resource-governor/live-health-monitor-bin.ts",
+        "sha256": "3d2c63f726efda2c62eef9eddd5abf91db2df1a59e1fbf26c6e82f8950e0feda"
+      }
+    ],
+    "producer": {
+      "fixtureWriters": 700,
+      "totalWriters": 701,
+      "currentSnapshotBytes": 351614,
+      "retainedBytes": 46618,
+      "retainedSamples": 2,
+      "childPid": 3953954,
+      "childExitCode": 0,
+      "allWriterObservationsPreserved": true,
+      "latestRetainedEqualsAtomicSnapshot": true,
+      "eachRowWithin262144Bytes": true,
+      "historyWithin16777216Bytes": true,
+      "sourceHashesStableDuringRun": true,
+      "historySkipOrWriteFailureAbsent": true
+    },
+    "privateRuntime": {
+      "workspace": "test-runtime-ad6d0afa-647",
+      "home": "/tmp/pcv/papercusp-test-runtime-1QJ0XX/home",
+      "database": "papercusp",
+      "queriedServerPort": 33761,
+      "runtimeRoot": "/tmp/pcv/papercusp-test-runtime-1QJ0XX",
+      "dataDir": "/tmp/pcv/papercusp-test-pg-1t7y45",
+      "cleanupComplete": true,
+      "runtimeRemovedReceipt": true,
+      "pgDataRemovedReceipt": true,
+      "independentlyObservedRuntimeAbsent": true,
+      "independentlyObservedPgDataAbsent": true
+    },
+    "typecheck": {
+      "engine": "tsc-service",
+      "requestedFiles": 1,
+      "errors": 0,
+      "scopedVerdictIncomplete": false,
+      "scope": "Exact integration test file, not project gate."
+    },
+    "publication": {
+      "head": "3f0a82bf5f",
+      "codecSourceAndUnitTestsMatchHEAD": true,
+      "integrationTestDirtyAtRun": true,
+      "sharedPersistedTestLedgerReceipt": "not configured; use retained task log"
+    },
+    "attemptAudit": {
+      "postId": 1179218,
+      "earlierFailedTask": "0mv6yqxae1jfnlse1qa",
+      "earlierPassed": 1,
+      "earlierFailed": 1,
+      "cause": "Fixture expected BACKGROUND_WORKERS=1, while canonical setup-hermetic-env.ts removes it. Corrected source assertion preserves private state checks and explicit standalone producer.",
+      "stoppedPretestTasks": [
+        "0mv6ycf0k1bs46cl1bc",
+        "0mv6ym0u713yd4294sm"
+      ],
+      "temporaryMitigation": "Existing PC_HEAVY_SCRATCH_ROOT selects /run/user/1000 tmpfs; canonical admission remains intact.",
+      "ownedOpenFollowUp": "EI-25886356691310222"
+    },
+    "remaining": [
+      "Native/shared background history adoption unverified; source child remains open.",
+      "Full storage acceptance remains OPEN: no admission-reservation, inode-floor, data-device or sustained native headroom proof added.",
+      "Existing protected banks, source/private/canonical stores, current D224 and nine .vh-keep roots unchanged.",
+      "Earlier 38 assessor and 8 codec tests and native payload roundtrip remain retained by reference; not replayed."
+    ]
+  },
   "pathNotation": "Home paths are normalized to ~/. Original native receipts retain exact machine paths in the referenced private capture logs and DBOS ledger.",
   "schemaVersion": 1,
   "workItem": "WI-10007602",
@@ -4319,6 +4412,360 @@
       "The script fingerprint is sampled from the maintained file; it does not prove which script bytes every registered native run loaded.",
       "Raw hashed private receipts preserve exact machine custody identity; displayed home paths are normalized and host labels omitted.",
       "This comparison was due after21:32:40.332UTC and the actual20:50 completion; delayed recovery produced the endpoint at23:29UTC. Full acceptance remains OPEN."
+    ]
+  },
+  "nativeHealthHistoryRepair20261013": {
+    "schemaVersion": 1,
+    "workItem": "WI-6554700010010594",
+    "parent": "WI-10007602",
+    "rootCauseHypothesis": "The full attribution snapshot exceeds the per-record history cap; the live snapshot stays fresh while history append refuses the row.",
+    "originalEvidence": {
+      "history": {
+        "sourcePath": "~/.papercusp/runtime/resource-governor/live-health-history.jsonl",
+        "device": 66307,
+        "inode": 18527486,
+        "capturedBytes": 10117709,
+        "capturedSha256": "51bba1dd50377b3fe26564a67448a8428efcf3720a61fcb3f94e5ea0722a0d5c",
+        "fileSizeBefore": 10117709,
+        "fileSizeAfter": 10117709,
+        "partialLeadingRow": false,
+        "partialTrailingRow": false,
+        "parseFailures": 0,
+        "capturedRows": 39,
+        "first": {
+          "at": 1791246191429,
+          "sequence": 2660,
+          "monitorStartedAtMs": 1791240731516,
+          "cadenceMs": 2000,
+          "reading": {
+            "state": "measured",
+            "value": 211236225024,
+            "unit": "bytes",
+            "writerId": "monitor.host:4031006",
+            "observedAtMs": 1791246191429,
+            "collectedAtMs": 1791246191429,
+            "window": {
+              "kind": "instant",
+              "durationMs": 0,
+              "startedAtMs": 1791246191429,
+              "endedAtMs": 1791246191429
+            },
+            "confidence": 1,
+            "reason": null,
+            "lastMeasuredAtMs": 1791246191429
+          },
+          "writer": {
+            "id": "monitor.host:4031006",
+            "kind": "monitor",
+            "instanceId": "f07a8e25-c8d8-402f-937a-7a432db3190b",
+            "pid": 4031006,
+            "platform": "linux",
+            "startedAtMs": 1791240731516
+          }
+        },
+        "last": {
+          "at": 1791246267440,
+          "sequence": 2698,
+          "monitorStartedAtMs": 1791240731516,
+          "cadenceMs": 2000,
+          "reading": {
+            "state": "measured",
+            "value": 211806642176,
+            "unit": "bytes",
+            "writerId": "monitor.host:4031006",
+            "observedAtMs": 1791246267440,
+            "collectedAtMs": 1791246267440,
+            "window": {
+              "kind": "instant",
+              "durationMs": 0,
+              "startedAtMs": 1791246267440,
+              "endedAtMs": 1791246267440
+            },
+            "confidence": 1,
+            "reason": null,
+            "lastMeasuredAtMs": 1791246267440
+          },
+          "writer": {
+            "id": "monitor.host:4031006",
+            "kind": "monitor",
+            "instanceId": "f07a8e25-c8d8-402f-937a-7a432db3190b",
+            "pid": 4031006,
+            "platform": "linux",
+            "startedAtMs": 1791240731516
+          }
+        },
+        "distinctWriterInstances": [
+          "f07a8e25-c8d8-402f-937a-7a432db3190b"
+        ],
+        "hasReservationCounter": false,
+        "recordedSignalKeys": [
+          "latency.monitorTickMs",
+          "progress.heartbeatLagMs",
+          "cpu.hostUtilizationPct",
+          "cpu.processUtilizationPct",
+          "cpu.psiSomePct",
+          "io.psiSomePct",
+          "io.psiFullPct",
+          "io.processReadBytesPerSec",
+          "io.processWriteBytesPerSec",
+          "scheduler.runnableCount",
+          "scheduler.blockedCount",
+          "latency.eventLoopP95Ms",
+          "memory.hostUsedBytes",
+          "memory.workingSetBytes",
+          "memory.workingSetGrowthBytesPerSec",
+          "memory.psiSomePct",
+          "memory.psiFullPct",
+          "memory.gcPauseP95Ms",
+          "memory.minorFaultsPerSec",
+          "memory.majorFaultsPerSec",
+          "memory.swapUsedBytes",
+          "memory.swapInBytesPerSec",
+          "memory.swapOutBytesPerSec",
+          "database.waitP95Ms",
+          "database.activeConnections",
+          "service.waitP95Ms",
+          "descriptor.openCount",
+          "socket.closeWaitCount",
+          "disk.freeBytes",
+          "disk.readBytesPerSec",
+          "disk.writeBytesPerSec",
+          "network.rxBytesPerSec",
+          "network.txBytesPerSec",
+          "provider.waitP95Ms",
+          "provider.rateLimited",
+          "queue.writerLatencyP95Ms",
+          "queue.writerFailureRate",
+          "queue.oldestAgeMs",
+          "queue.arrivalRate",
+          "queue.drainRate",
+          "governor.admissionLatencyP95Ms",
+          "governor.decisionLatencyP95Ms",
+          "governor.persistLatencyP95Ms"
+        ]
+      },
+      "currentSnapshot": {
+        "capturedSha256": "9ff72a86b17a8f8f905bfc8f284e5622ec8d262a1722ff8c333d2c78a82025c5",
+        "observedAt": "2026-10-13T16:37:43.953082Z",
+        "snapshotBytes": 1817699,
+        "perRecordCapBytes": 262144,
+        "historyLastSample": "2026-10-06T00:24:27.440Z"
+      }
+    },
+    "fix": "Extend existing history encoding: legacy snapshots remain readable; oversized complete snapshots use gzip with integrity checks and bounded contiguous parts. Retention counts complete samples and never retains partial encoded frames. Complete selected and writer-scoped observations are preserved; source snapshots and limits remain intact.",
+    "verification": {
+      "canonicalCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/resource-governor/live-health-monitor.test.ts",
+      "passed": 8,
+      "skipped": 0,
+      "terminalExit": 0,
+      "startedAt": "2026-10-13T16:51:01.502Z",
+      "postRunAt": "2026-10-13T16:51:22.190Z",
+      "scope": "Local current source at HEAD32ed5dd2b9; test path uncommitted. No committed or native-service restoration claim.",
+      "initialFailure": "The first new synthetic fixture was 256668 bytes, below the262144-byte threshold; its size precondition failed. Increased fixture to700 writers before final passing full suite. Initial failures did not verify the production refusal."
+    },
+    "nativeCodec": {
+      "sourcePath": "~/.papercusp/runtime/resource-governor/live-health.json",
+      "capturedAtMs": 1791910439364,
+      "snapshotSampledAtMs": 1791910437086,
+      "inputBytes": 1772409,
+      "inputSha256": "21e0350ed820d5b83d469fc993e19beb188a54c76a160d8a5d4c5a260a3d2875",
+      "canonicalInputBytes": 1772408,
+      "appended": true,
+      "historyBytes": 210854,
+      "historyParts": 1,
+      "eachPartWithinCap": true,
+      "wholeWithinCap": true,
+      "fullSnapshotRoundTrip": true,
+      "writerCount": 486,
+      "historyRestoredInNativeService": false,
+      "scope": "Current working-source codec against one captured native snapshot in an owned temporary directory; no native recorder or service mutation."
+    },
+    "nativeCodecCommand": "node_modules/.bin/tsx --eval 'import fs from \"node:fs/promises\"; import crypto from \"node:crypto\"; import os from \"node:os\"; import path from \"node:path\"; import { LiveHealthHistoryWriter, decodeLiveHealthHistorySnapshot } from \"./packages/operator-core/lib/resource-governor/live-health-monitor.ts\"; (async()=>{const source=path.join(process.env.PAPERCUSP_RESOURCE_GOVERNOR_HEALTH_DIR||path.join(os.homedir(),\".papercusp/runtime/resource-governor\"),\"live-health.json\");const raw=await fs.readFile(source);const snapshot=JSON.parse(raw.toString());const dir=await fs.mkdtemp(path.join(os.tmpdir(),\"wi10007602-native-health-codec-\"));try{const writer=new LiveHealthHistoryWriter(path.join(dir,\"history.jsonl\"));const appended=await writer.append(snapshot);const encoded=await fs.readFile(writer.path,\"utf8\");const rows=encoded.trim().split(\"\\n\");const decoded=decodeLiveHealthHistorySnapshot(rows);const original=JSON.stringify(snapshot);const reconstructed=JSON.stringify(decoded);console.log(JSON.stringify({sourcePath:source,capturedAtMs:Date.now(),snapshotSampledAtMs:snapshot.sampledAtMs,inputBytes:raw.length,inputSha256:crypto.createHash(\"sha256\").update(raw).digest(\"hex\"),canonicalInputBytes:Buffer.byteLength(original),appended,historyBytes:Buffer.byteLength(encoded),historyParts:rows.length,eachPartWithinCap:rows.every(x=>Buffer.byteLength(x)+1<=writer.maxRecordBytes),wholeWithinCap:Buffer.byteLength(encoded)<=writer.maxBytes,fullSnapshotRoundTrip:original===reconstructed,writerCount:Object.keys(snapshot.writers).length,historyRestoredInNativeService:false,scope:\"Current working-source codec against one captured native snapshot in an owned temporary directory; no native recorder or service mutation.\"}));}finally{await fs.rm(dir,{recursive:true,force:true});}})();'",
+    "sourceHashes": {
+      "packages/operator-core/lib/resource-governor/live-health-monitor.ts": "2ef905cbebbb82e08b94648f38631cc40df0491c991e03ac1ddd909a69ad76c0",
+      "packages/operator-core/lib/resource-governor/live-health-monitor.test.ts": "26ca95d42654f2ef88730a7894cc2431acf640582b743d57ad150d7faaf52f3a"
+    },
+    "remaining": [
+      "Automatic publication and actual native writer adoption are not verified.",
+      "Healthy monitor data covers the monitor-root filesystem only; no reservations, inode floor or data-device series is supplied.",
+      "Full storage acceptance stays open; no live gate, desktop or policy action."
+    ]
+  },
+  "qualifiedDerivativeReceiptAssessment20261013": {
+    "schemaVersion": 1,
+    "workItems": [
+      "WI-10007602",
+      "WI-10007997",
+      "WI-10007998"
+    ],
+    "instrument": "assessQualifiedDerivativeReceipts",
+    "inputSourceHashes": {
+      "packages/operator-core/lib/storage/retention-interval-evidence.ts": "22d09c54202ba5929520fa34a310a048406c7edbaebcb59c2ec53c0799e346cb",
+      "packages/operator-core/lib/storage/retention-interval-evidence.test.ts": "c79105ebee55f5c48c4a4708c5e06301568f189162c28af28a0ac8467edfd354",
+      ".papercusp/scratch/bash-7473bc86-c13.log": "b863a511cddae18124401c55e85303ce00b5974e45c46f3323756f719921b0db",
+      ".papercusp/scratch/bash-fd233051-acd.log": "8fa69e2c8c0f277f8342aa7baa2a4e543069273b403dd9f0b83736e74890fb3d",
+      ".papercusp/scratch/bash-b2081c77-b2a.log": "e695a1389c1ec5fce608d858ccf9db7fa93b19b624a486af1805abd2ede1b392",
+      ".papercusp/scratch/bash-842eba71-e9e.log": "ede320f6792cb125f1ecab1b80507471c04b3fd4c4c89f4c4a79b783941ac8f1"
+    },
+    "assessment": {
+      "schemaVersion": 1,
+      "kind": "qualified-derivative-receipt-assessment",
+      "receiptStatus": "pass",
+      "observedNetAvailableIncreaseBytes": 57243045888,
+      "checks": [
+        {
+          "id": "qualified-population",
+          "status": "pass",
+          "detail": "Require a nonempty unique candidate population and each recorded directory/device/alias/mount qualification."
+        },
+        {
+          "id": "retained-receipt-population",
+          "status": "pass",
+          "detail": "Require unique retained receipt paths, valid hashes/sizes and the recorded metadata-stability witnesses."
+        },
+        {
+          "id": "protected-path-boundaries",
+          "status": "pass",
+          "detail": "Reject candidate overlap with captured source/receipt paths and overlapping candidate subtrees."
+        },
+        {
+          "id": "interruption-reconciliation",
+          "status": "pass",
+          "detail": "Partition the original population into already absent and still present paths; never repeat the interrupted attempt blindly."
+        },
+        {
+          "id": "resume-path-completion",
+          "status": "pass",
+          "detail": "Require exactly one successful per-path result for each remaining path plus recorded absence and terminal success."
+        },
+        {
+          "id": "recorded-preservation-comparisons",
+          "status": "pass",
+          "detail": "Verify population coverage and empty recorded drift sets for receipts, source identities, markers, links and protected nomination receipts."
+        },
+        {
+          "id": "resume-deletion-audit",
+          "status": "pass",
+          "detail": "Reconcile the recorded original and resumed audit counters; original admission rows are not invented completion receipts."
+        },
+        {
+          "id": "observed-net-available-bytes",
+          "status": "pass",
+          "detail": "Recompute both net changes from retained available-byte counters, without exclusive causality or sustained-capacity claims."
+        },
+        {
+          "id": "original-per-path-completion-audit",
+          "status": "unknown",
+          "detail": "The original interrupted removal has no complete per-path terminal audit; later recorded absence is distinct evidence."
+        },
+        {
+          "id": "protected-payload-reread",
+          "status": "unknown",
+          "detail": "Recorded unchanged comparisons do not establish an independent full protected-payload reread."
+        },
+        {
+          "id": "universal-process-no-use",
+          "status": "unknown",
+          "detail": "Incomplete process visibility cannot establish universal absence of live use."
+        },
+        {
+          "id": "exclusive-reclaim-bytes",
+          "status": "unknown",
+          "detail": "Concurrent allocation and physical sharing were not isolated."
+        },
+        {
+          "id": "continuous-headroom",
+          "status": "unknown",
+          "detail": "Discrete available-byte records do not establish capacity between samples."
+        },
+        {
+          "id": "final-candidate-demand",
+          "status": "unknown",
+          "detail": "No applicable final native candidate admission-demand receipt is assessed."
+        },
+        {
+          "id": "recorder-journal-recovery",
+          "status": "unknown",
+          "detail": "The cleanup receipts do not assess frontend recorder or native journal recovery."
+        },
+        {
+          "id": "final-shipment",
+          "status": "unknown",
+          "detail": "No independently supplied final shipment receipt is assessed."
+        }
+      ],
+      "coverage": {
+        "population": [
+          "qualified-population",
+          "retained-receipt-population",
+          "protected-path-boundaries",
+          "interruption-reconciliation",
+          "resume-path-completion",
+          "recorded-preservation-comparisons",
+          "resume-deletion-audit",
+          "observed-net-available-bytes",
+          "original-per-path-completion-audit",
+          "protected-payload-reread",
+          "universal-process-no-use",
+          "exclusive-reclaim-bytes",
+          "continuous-headroom",
+          "final-candidate-demand",
+          "recorder-journal-recovery",
+          "final-shipment"
+        ],
+        "checked": [
+          "qualified-population",
+          "retained-receipt-population",
+          "protected-path-boundaries",
+          "interruption-reconciliation",
+          "resume-path-completion",
+          "recorded-preservation-comparisons",
+          "resume-deletion-audit",
+          "observed-net-available-bytes"
+        ],
+        "notChecked": [
+          "original-per-path-completion-audit",
+          "protected-payload-reread",
+          "universal-process-no-use",
+          "exclusive-reclaim-bytes",
+          "continuous-headroom",
+          "final-candidate-demand",
+          "recorder-journal-recovery",
+          "final-shipment"
+        ],
+        "notApplicable": [],
+        "residue": [
+          "original-per-path-completion-audit: The original interrupted removal has no complete per-path terminal audit; later recorded absence is distinct evidence.",
+          "protected-payload-reread: Recorded unchanged comparisons do not establish an independent full protected-payload reread.",
+          "universal-process-no-use: Incomplete process visibility cannot establish universal absence of live use.",
+          "exclusive-reclaim-bytes: Concurrent allocation and physical sharing were not isolated.",
+          "continuous-headroom: Discrete available-byte records do not establish capacity between samples.",
+          "final-candidate-demand: No applicable final native candidate admission-demand receipt is assessed.",
+          "recorder-journal-recovery: The cleanup receipts do not assess frontend recorder or native journal recovery.",
+          "final-shipment: No independently supplied final shipment receipt is assessed."
+        ]
+      },
+      "scope": [
+        "Consistency assessment of saved qualification, reconciliation, terminal, per-path and audit records; no host probe or mutation.",
+        "Preservation checks assess the sampler’s recorded comparisons, not an independent reread of protected payload bytes.",
+        "Available-byte subtraction is an observed net change; concurrent writers and physical sharing prevent exclusive reclaim attribution.",
+        "No continuous headroom, candidate admission, recorder/journal recovery or final shipment certification."
+      ]
+    },
+    "inputAssemblyCommand": "node_modules/.bin/tsx --eval 'import fs from \"node:fs\"; import crypto from \"node:crypto\"; import { assessQualifiedDerivativeReceipts } from \"./packages/operator-core/lib/storage/retention-interval-evidence.ts\"; const record=(p)=>fs.readFileSync(p,\"utf8\").split(\"\\n\").flatMap(l=>{try{return [JSON.parse(l)]}catch{return []}}); const resumed=fs.readFileSync(\".papercusp/scratch/bash-b2081c77-b2a.log\",\"utf8\"); const records=record(\".papercusp/scratch/bash-b2081c77-b2a.log\"); const input={before:record(\".papercusp/scratch/bash-7473bc86-c13.log\")[0],reconciliation:record(\".papercusp/scratch/bash-fd233051-acd.log\")[0],resumeBefore:records.find(x=>x.stage===\"pre-resume-guarded-reclaim\"),resumeAfter:records.find(x=>x.stage===\"post-resume-guarded-reclaim\"),pathResults:[...resumed.matchAll(/^GUARDED_DELETE_RESULT exit=(-?\\d+) path=(.+)$/gm)].map(x=>({exit:Number(x[1]),path:x[2]})),resumeTerminalExit:resumed.includes(\"JOB END: status=completed exit=0\")?0:null,audit:record(\".papercusp/scratch/bash-842eba71-e9e.log\")[0]}; const sha=p=>crypto.createHash(\"sha256\").update(fs.readFileSync(p)).digest(\"hex\"); const paths=[\"packages/operator-core/lib/storage/retention-interval-evidence.ts\",\"packages/operator-core/lib/storage/retention-interval-evidence.test.ts\",\".papercusp/scratch/bash-7473bc86-c13.log\",\".papercusp/scratch/bash-fd233051-acd.log\",\".papercusp/scratch/bash-b2081c77-b2a.log\",\".papercusp/scratch/bash-842eba71-e9e.log\"]; console.log(JSON.stringify({instrument:\"assessQualifiedDerivativeReceipts\",inputSourceHashes:Object.fromEntries(paths.map(p=>[p,sha(p)])),assessment:assessQualifiedDerivativeReceipts(input)}));'",
+    "verification": {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/storage/retention-interval-evidence.test.ts",
+      "terminalExit": 0,
+      "passed": 38,
+      "skipped": 0,
+      "startedAt": "2026-10-13T16:15:28.596Z",
+      "postRunAt": "2026-10-13T16:16:14.625Z",
+      "testedHead": "32ed5dd2b9",
+      "provenance": "Local working-source test; the named test path was uncommitted. No committed-source, gate or shipment claim."
+    },
+    "limits": [
+      "This maintained assessor consumes saved records; the original inline native sampler and the input assembly are not retrospectively maintained measurement instruments.",
+      "No acceptance evidence binding or full storage acceptance is asserted. Unknown requirements remain with the existing open storage work-items."
     ]
   },
   "qualifiedDerivativeReclaim20261013": {

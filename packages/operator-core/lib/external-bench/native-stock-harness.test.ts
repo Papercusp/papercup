@@ -2,10 +2,12 @@
  * so these tests never launch a model or spend inference budget. Physical native
  * confinement and SQL binding are covered by their integration suites. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import type { DockerExecTarget } from './container-exec-target';
 import type { RunAgentChatOptions, ChatEvent } from '../agent-chat-stream';
 import type { CurrentStockBenchPorts, CurrentSuBenchOptions, CurrentSuBenchObservations } from './current-su';
 import type { BenchHarnessOps } from './bench-harness-live';
@@ -15,7 +17,7 @@ const h = vi.hoisted(() => ({
   home: '', owner: '', child: undefined as unknown as ChildProcess,
   run: vi.fn<(input: RunAgentChatOptions) => AsyncIterable<ChatEvent>>(),
   record: vi.fn(), reanchor: vi.fn(), bind: vi.fn(), end: vi.fn(), ingest: vi.fn(),
-  managed: vi.fn(), kill: vi.fn(), host: vi.fn(), get: vi.fn(),
+  managed: vi.fn(), kill: vi.fn(), host: vi.fn(), get: vi.fn(), sandbox: vi.fn(),
 }));
 vi.mock('../adv-sessions', () => ({ recordAdvSession: h.record, reanchorAdvSessionNativeId: h.reanchor, markAdvSessionEnded: h.end }));
 vi.mock('../task-manager/store', () => ({ bindLiveAgentSessionTasksToNativeSession: h.bind }));
@@ -25,7 +27,7 @@ vi.mock('../interactive-usage/ingest-claude-transcripts', () => ({ ingestInterac
 vi.mock('../interactive-usage/ingest-adapters', () => ({ defaultAdapters: () => [{ name: 'codex' }] }));
 vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({ codexHomeForSessionKey: () => h.home }));
 vi.mock('@papercusp/orchestrator/fleet-srt-spawn', () => ({
-  createScopedNativeSandboxSpawn: () => (command: string, args: string[], options: unknown, spawn: Function) => spawn(command, args, options),
+  createScopedNativeSandboxSpawn: h.sandbox,
 }));
 vi.mock('./current-su', async (original) => ({
   ...await original<typeof import('./current-su')>(),
@@ -45,8 +47,8 @@ const opts = (): CurrentSuBenchOptions => ({ workspaceId: 'private-stock', runId
 const input = () => ({ handle: { slug: 'stock-private', featureId: 'native-assignment', worktreePath: root },
   task: { benchmark: 'swe-bench-pro' as const, instanceId: 't1', problemStatement: 'Public problem.', graderMeta: {} },
   context: { contextText: '\nShared permitted corpus.' } as Parameters<CurrentStockBenchPorts['launchNative']>[0]['context'] });
-function factory(options = opts()) {
-  const observations = { nativeGateway: { baseURL: 'http://127.0.0.1:32001', token: 'a'.repeat(64) } } as CurrentSuBenchObservations;
+function factory(options = opts(), containerExec?: DockerExecTarget) {
+  const observations = { nativeGateway: { baseURL: 'http://127.0.0.1:32001', token: 'a'.repeat(64) }, containerExec } as CurrentSuBenchObservations;
   const ctx = { workspaceId: options.workspaceId, principal: { slug: 'authenticated-test-caller' } } as PapercuspUnifiedToolContext;
   const value = createCurrentStockBenchHarness(options, ctx, observations) as unknown as { lifecycle: BenchHarnessOps; ports: CurrentStockBenchPorts };
   factories.push(value); return value;
@@ -65,6 +67,7 @@ beforeEach(() => {
   h.reanchor.mockImplementation(async () => ({ owner: h.owner, reanchored: true }));
   h.bind.mockResolvedValue(['stock-task']); h.end.mockResolvedValue(true); h.ingest.mockResolvedValue({});
   h.managed.mockResolvedValue({ child: h.child, taskId: 'stock-task' });
+  h.sandbox.mockImplementation(() => (command: string, args: string[], options: unknown, spawn: Function) => spawn(command, args, options));
   h.get.mockImplementation(async () => ({ taskId: 'stock-task', workspaceId: 'private-stock', state: 'exited', exitCode: 0, detail: {} }));
   h.kill.mockImplementation(async () => { terminal(); return { ok: true, taskId: 'stock-task', action: 'kill' }; });
   h.run.mockImplementation(async function* (input) {
@@ -79,6 +82,51 @@ afterEach(async () => {
 });
 
 describe('current stock native factory', () => {
+  it('executes the container wrapper with a relocated clean home, rewritten gateway and task cwd', async () => {
+    const homes = join(root, 'homes'), perTaskDir = join(root, 'task-homes');
+    h.home = join(homes, '7');
+    const target: DockerExecTarget = { kind: 'docker-exec', containerId: 'private-task-container',
+      workdir: '/app', binPath: '/opt/papercusp/codex',
+      sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir }] },
+      originRewrites: [{ from: 'http://127.0.0.1:32001', to: 'http://papercusp-egress:8788' }] };
+    const argvLog = join(root, 'argv.json');
+    writeFileSync(join(root, 'docker'), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o755 });
+    h.run.mockImplementation(async function* (options) {
+      writeFileSync(join(h.home, 'config.toml'), 'base_url = "http://127.0.0.1:32001/v1"\n');
+      await options.spawnProcess!('codex', ['exec', '--json'], { cwd: root,
+        env: { PATH: `${root}:${process.env.PATH}`, CODEX_HOME: h.home, OPENAI_API_KEY: 'HOST_SECRET_SENTINEL' } });
+      options.onNativeSession!('native-stock'); terminal();
+      yield { type: 'result', finalText: 'done', costUsd: 0, tokensIn: 0, tokensOut: 0 };
+    });
+    h.managed.mockImplementation(async (command, args, _meta, registration) => {
+      const result = spawnSync(command, args, { ...registration.spawnOptions, encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      return { child: h.child, taskId: 'stock-task' };
+    });
+    const value = factory(opts(), target);
+    await value.ports.launchNative(input()); await value.ports.getTask('stock-task');
+    expect(h.sandbox).not.toHaveBeenCalled();
+    const argv = JSON.parse(readFileSync(argvLog, 'utf8'));
+    expect(argv.slice(0, 4)).toEqual(['exec', '-i', '-w', '/app']);
+    expect(argv.slice(-5)).toEqual(['private-task-container', '/opt/papercusp/codex', '--no-daemon', 'exec', '--json']);
+    expect(argv).not.toContain('OPENAI_API_KEY');
+    expect(lstatSync(h.home).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(h.home, 'config.toml'), 'utf8')).toContain('http://papercusp-egress:8788/v1');
+    for (const path of ['AGENTS.md', 'hooks.json', 'auth.json']) expect(existsSync(join(h.home, path))).toBe(false);
+    expect(h.run.mock.calls[0][0].mcpConfig).toBeUndefined();
+    expect(h.run.mock.calls[0][0].systemPromptText).toBeUndefined();
+    expect(h.ingest).toHaveBeenCalledOnce();
+  });
+
+  it('refuses stock targets carrying host hooks or lacking the clean-home rewrite before enrollment', () => {
+    const target: DockerExecTarget = { kind: 'docker-exec', containerId: 'private-task', workdir: '/app', binPath: '/opt/codex',
+      sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: '/tmp/homes', perTaskDir: '/tmp/task-homes' }] },
+      originRewrites: [] };
+    expect(() => factory(opts(), { ...target, hookBridge: { url: 'http://egress:9081', recordDir: '/tmp/private-records' } })).toThrow(/without host hooks/);
+    expect(() => factory(opts(), { ...target, originRewrites: undefined })).toThrow(/gateway rewrite/);
+    expect(h.record).not.toHaveBeenCalled(); expect(h.managed).not.toHaveBeenCalled();
+  });
+
   it('binds exactly the enrolled task and ingests only its retained native home', async () => {
     const value = factory();
     expect(await value.ports.launchNative(input())).toMatchObject({ tasks: [{ taskId: 'stock-task' }] });

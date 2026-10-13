@@ -313,6 +313,7 @@ describe('evaluateExactPlanAdmission', () => {
     expect(verdict.message).toContain('claimFloors=2');
     expect(verdict.message).toContain('reservedPlanLane=2');
     expect(verdict.message).not.toContain('diagnostics do not expose');
+    expect(verdict.actionableRows).toEqual([{ planItemId: 'P-001', workItemId: 'F-1' }]);
   });
 
   it('explains an all-match stop-the-line block and gives the by-ID plan-start route', () => {

@@ -197,14 +197,7 @@ describe('resource-governor live-health out-of-process monitor', () => {
     const ready = await waitForReady(child);
     expect(ready).toContain('resource-governor-live-health-v2');
 
-    const snapshot = JSON.parse(await readFile(join(root, 'live-health.json'), 'utf8')) as {
-      schemaVersion: string;
-      sequence: number;
-      profile: { source: string; effectiveCores: number };
-      writers: Record<string, unknown>;
-      signals: Record<string, { state: string; value: unknown }>;
-      observations: Record<string, Record<string, unknown>>;
-    };
+    const snapshot = JSON.parse(await readFile(join(root, 'live-health.json'), 'utf8')) as LiveHealthSnapshot;
     expect(snapshot.schemaVersion).toBe('resource-governor-live-health-v2');
     expect(snapshot.sequence).toBe(1);
     expect(snapshot.profile).toMatchObject({ source: '@papercusp/resource-profile' });
@@ -213,6 +206,18 @@ describe('resource-governor live-health out-of-process monitor', () => {
     expect(snapshot.signals['memory.hostUsedBytes']).toMatchObject({ state: 'measured' });
     expect(snapshot.signals['database.waitP95Ms']).toEqual(expect.objectContaining({ state: 'unknown', value: null }));
     expect(snapshot.observations['memory.hostUsedBytes']).toBeTruthy();
+    expect(snapshot.storage?.snapshots.find((row) => row.path === '/')).toMatchObject({ state: 'measured' });
+    expect(snapshot.storage?.snapshots.find((row) => row.path === root)).toMatchObject({ state: 'measured' });
+    for (const row of snapshot.storage!.snapshots.filter((row) => row.state === 'measured')) {
+      expect(row.totalBytes).toBeGreaterThan(0);
+      expect(row.totalInodes).toBeGreaterThanOrEqual(0);
+      expect(row.freeInodes).toBeLessThanOrEqual(row.totalInodes!);
+      expect(row.reservationState).toBe('measured');
+    }
+    const historyRows = (await readFile(join(root, 'live-health-history.jsonl'), 'utf8')).trim().split('\n');
+    const first = JSON.parse(historyRows[0]!);
+    const retained = decodeLiveHealthHistorySnapshot(historyRows.slice(0, first.parts ?? 1));
+    expect(retained?.storage).toEqual(snapshot.storage);
 
     child.stdin?.end();
     await waitForExit(child);

@@ -7,6 +7,7 @@ import {
   LiveHealthHistoryWriter,
   LiveHealthMonitor,
   applyHostLiveHealthReadings,
+  collectLiveHealthStorage,
   decodeLiveHealthHistorySnapshot,
   parseCloseWaitCount,
   parseMemoryKernel,
@@ -20,6 +21,7 @@ import {
   LIVE_HEALTH_SCHEMA_VERSION,
   emptyLiveHealthObservations,
   emptyLiveHealthSignals,
+  isLiveHealthSnapshot,
   type LiveHealthSnapshot,
 } from './live-health';
 
@@ -244,6 +246,56 @@ describe('live-health host parsers', () => {
 });
 
 describe('LiveHealthMonitor composition', () => {
+  it('records byte/inode counters and one reservation budget per physical device, retaining failed paths', async () => {
+    const reservations = vi.fn((path: string) => ({ state: 'measured' as const, deviceKey: `dev-${path === '/' ? 1 : 2}`,
+      reservedBytes: path === '/' ? 10 : 20, knownReservedBytes: path === '/' ? 10 : 20, issues: [] }));
+    const storage = await collectLiveHealthStorage(['/', '/data', '/data-alias', '/missing'], () => 2_000, {
+      filesystem: async (path) => {
+        if (path === '/missing') throw new Error('ENOENT');
+        return { dev: path === '/' ? 1 : 2, totalBytes: 1_000, availableBytes: 100, totalInodes: 50, freeInodes: 5 };
+      }, reservations,
+    });
+    expect(reservations).toHaveBeenCalledTimes(2);
+    expect(storage.snapshots.filter((row) => row.dev === 2).map((row) => row.reservedBytes)).toEqual([20, 20]);
+    expect(storage.snapshots.find((row) => row.path === '/missing')).toMatchObject({
+      state: 'unknown', availableBytes: null, totalInodes: null, reservedBytes: null, issues: ['ENOENT'],
+    });
+    const root = await mkdtemp(join(tmpdir(), 'live-health-storage-'));
+    try {
+      const monitor = new LiveHealthMonitor({ paths: PATHS, now: () => 2_000,
+        collectHost: async () => counters({ storage }), readFragments: async () => [],
+        writeSnapshot: async () => {}, writeHistory: async (snapshot) => {
+          await new LiveHealthHistoryWriter(join(root, 'history.jsonl')).append(snapshot);
+        } });
+      const snapshot = await monitor.sampleOnce();
+      expect(snapshot.storage).toEqual(storage);
+      const decoded = decodeLiveHealthHistorySnapshot((await readFile(join(root, 'history.jsonl'), 'utf8')).trim().split('\n'));
+      expect(decoded?.storage).toEqual(storage);
+      expect(decoded?.observations).toEqual(snapshot.observations);
+      const invalid = structuredClone(snapshot);
+      (invalid.storage!.snapshots[3] as { availableBytes: number | null }).availableBytes = 0;
+      expect(isLiveHealthSnapshot(invalid)).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('does not turn unreadable reservations, invalid counters or changed device identity into healthy capacity', async () => {
+    const unknown = await collectLiveHealthStorage(['/'], () => 2_000, {
+      filesystem: async () => ({ dev: 1, totalBytes: 100, availableBytes: 10, totalInodes: 0, freeInodes: 0 }),
+      reservations: () => ({ state: 'unknown', deviceKey: 'dev-1', reservedBytes: null, knownReservedBytes: 0, issues: ['unreadable'] }),
+    });
+    expect(unknown.snapshots[0]).toMatchObject({ state: 'measured', reservationState: 'unknown', reservedBytes: null, totalInodes: 0 });
+    const changed = await collectLiveHealthStorage(['/'], () => 2_000, {
+      filesystem: async () => ({ dev: 1, totalBytes: 100, availableBytes: 10, totalInodes: 5, freeInodes: 1 }),
+      reservations: () => ({ state: 'measured', deviceKey: 'dev-2', reservedBytes: 0, knownReservedBytes: 0, issues: [] }),
+    });
+    expect(changed.snapshots[0]).toMatchObject({ state: 'unknown', reservedBytes: null, issues: ['reservation-device-changed'] });
+    const invalid = await collectLiveHealthStorage(['/'], () => 2_000, {
+      filesystem: async () => ({ dev: 1, totalBytes: 100, availableBytes: 101, totalInodes: 0, freeInodes: 1 }),
+      reservations: () => { throw new Error('must not read invalid counters'); },
+    });
+    expect(invalid.snapshots[0]).toMatchObject({ state: 'unknown', issues: ['invalid-counters'] });
+  });
+
   it('writes one versioned snapshot with resource-profile normalization and explicit observations', async () => {
     const writeSnapshot = vi.fn(async () => {});
     const writeHistory = vi.fn(async () => {});

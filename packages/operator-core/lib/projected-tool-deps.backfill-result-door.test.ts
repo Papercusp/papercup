@@ -175,6 +175,37 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
     ]);
   });
 
+  it('merges late scratch timings into the nested MCP settlement phase snapshot', async () => {
+    const uri = 'papercusp://scratch/papercusp-workspace/x:late-trace/result-door-1.md';
+    const traceId = '2a81dadf-78dc-4eab-96cc-f8193f277c25';
+    const metadataJson = {
+      spillPending: false,
+      spillSettlementStatus: 'persisted',
+      scratchWriteTimings: { count: 1, totalMs: 30_007 },
+      mcpRequestSettlement: {
+        phaseTimingsMs: {
+          scratchWrites: { count: 1, totalMs: 30_007 },
+        },
+      },
+    };
+    await backfillResultDoorOutputRef({
+      workspaceId: 'ws-test',
+      spawnId: 's-test',
+      toolName: 'x:late-trace',
+      mcpRequestTraceId: traceId,
+      outputRef: uri,
+      outputSize: 4200,
+      matchOutputRef: uri,
+      metadataJson,
+    });
+
+    expect(unsafeCalls[1].sql).toContain("metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $3::jsonb ||");
+    expect(unsafeCalls[1].sql).toContain("metadata_json #> '{mcpRequestSettlement,phaseTimingsMs}'");
+    expect(unsafeCalls[1].sql).toContain("jsonb_typeof($3::jsonb #> '{mcpRequestSettlement,phaseTimingsMs}') = 'object'");
+    expect(unsafeCalls[1].params[2]).toBe(JSON.stringify(metadataJson));
+    expect(unsafeCalls[1].params.slice(7)).toEqual([uri, traceId]);
+  });
+
   it('backfills a result-door spill by exact MCP request trace id beyond the ordinary recency window', async () => {
     const uri = 'papercusp://scratch/papercusp-workspace/x:trace/result-door-1.md';
     const traceId = '640b0562-af01-4850-88e9-8ed54f9a032a';
@@ -344,6 +375,7 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
     expect(unsafeCalls[0].params).toEqual(['ws-test']);
     expect(unsafeCalls[1].sql).toContain('UPDATE harness_shared.tool_invocations');
     expect(unsafeCalls[1].sql).toContain("metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4");
+    expect(unsafeCalls[1].sql).toContain("metadata_json #> '{mcpRequestSettlement,phaseTimingsMs}'");
     expect(unsafeCalls[1].sql).toContain('ORDER BY invoked_at DESC');
     expect(unsafeCalls[1].sql).not.toContain("interval '30 seconds'");
     expect(unsafeCalls[1].sql).toContain('invoked_at >= now() - make_interval(secs => $5::int)');

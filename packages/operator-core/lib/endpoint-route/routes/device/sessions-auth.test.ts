@@ -106,3 +106,21 @@ describe.each(DOORS)('session auth matrix: %s %s', (method, path) => {
     expect((await request(method, path, token)).status).toBe(403);
   });
 });
+
+describe.each(DOORS.filter(([, path]) => path.includes('/su-target/')))(
+  'workspace authority matrix: %s %s', (method, path) => {
+    it('refuses a foreign-workspace owner with a valid capable device JWT before history or actions', async () => {
+      f.grant = true;
+      // Prove this door works for the authenticated device's own workspace.
+      expect((await request(method, path, token)).status).toBe(200);
+      f.history.mockClear(); f.send.mockClear(); f.end.mockClear();
+      f.roster.mockClear().mockResolvedValue({ active: [{ ownerId: 'su-target', workspaceId: 'foreign-workspace',
+        role: 'su', label: 'Foreign agent', sessionState: 'parked', nativeSession: { backend: 'codex' } }],
+      starting: [], pending: [], ended: [] });
+      expect((await request(method, path, token)).status).toBe(404);
+      expect(f.roster).toHaveBeenCalledWith({ workspaceId: WS });
+      expect(f.history).not.toHaveBeenCalled();
+      expect(f.send).not.toHaveBeenCalled(); expect(f.end).not.toHaveBeenCalled();
+    });
+  },
+);

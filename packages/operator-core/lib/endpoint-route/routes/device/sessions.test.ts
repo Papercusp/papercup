@@ -240,6 +240,39 @@ describe('R-20 — row fields', () => {
   });
 });
 
+describe('R-5 — roster payload minimisation', () => {
+  it('redacts seeded secrets in active and ended rows while preserving safe roster text', async () => {
+    const secret = 'sk-proj-' + 'r8'.repeat(18);
+    const snapshot = base();
+    snapshot.active = [entry('su-redacted', { label: `api_key=${secret}`, intent: `token=${secret} safe-intent` })];
+    snapshot.ended = [ended(3, { label: `token=${secret} safe-ended` })];
+    serve(snapshot);
+    const { status, body } = await getJson();
+    expect(status).toBe(200);
+    expect(body.sessions).toHaveLength(4);
+    expect(JSON.stringify(body)).not.toContain(secret);
+    expect(body.sessions.find((row: { ownerId: string }) => row.ownerId === 'su-redacted').intent).toContain('safe-intent');
+    expect(body.sessions.find((row: { key: string }) => row.key === 'ended:3').label).toContain('safe-ended');
+    expect(JSON.stringify(body)).toContain('[redacted]');
+  });
+
+  it('redacts seeded secrets in degraded roster metadata on the route and cached query', async () => {
+    const secret = 'sk-proj-' + 'm2'.repeat(18);
+    serve({ ...base(), degradedFields: [{ field: 'ended', kind: 'timeout', reason: `token=${secret} roster read failed` }] });
+    const { body } = await getJson();
+    expect(body.sessions.length).toBeGreaterThan(0);
+    expect(body.degradedFields[0]).toMatchObject({ field: 'ended', kind: 'timeout' });
+    expect(body.degradedFields[0].reason).toContain('roster read failed');
+    expect(JSON.stringify(body)).not.toContain(secret);
+    expect(body.degradedFields[0].reason).toContain('[redacted]');
+    const cached = await restQuery(new Request('http://localhost/api/device/rest-query?name=deviceSessions.list'), context).then(response => response.json());
+    expect(cached.rows.length).toBeGreaterThan(0);
+    expect(cached.degradedFields[0]).toMatchObject({ field: 'ended', kind: 'timeout' });
+    expect(JSON.stringify(cached)).not.toContain(secret);
+    expect(cached.degradedFields[0].reason).toContain('[redacted]');
+  });
+});
+
 describe('R-21 — session state is the presence oracle verdict', () => {
   it('reports the oracle state per owner, not heartbeat liveness', async () => {
     const oracle = new Map<string, State>([

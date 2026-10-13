@@ -418,6 +418,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       sourceValId: null,
       coverageEvidenceRef: null,
       testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
       bindingFingerprint: 'sha256:binding-19999',
       createdBy: 'su-test',
       specRevision: 1,
@@ -543,6 +544,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       sourceValId: null,
       coverageEvidenceRef: null,
       testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
       bindingFingerprint: 'sha256:binding-19999',
       createdBy: 'su-test',
       specRevision: 1,
@@ -1113,6 +1115,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       coverageEvidenceRef: null,
       testRunId: null,
       testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
       details: { evidencePlane: 'live' },
       observedAt: '2026-10-01T12:00:00Z',
       bindingFingerprint: 'sha256:binding',
@@ -1244,19 +1247,24 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
   });
 
   it.each([1, 29])('replays a %s-binding diagnostic cohort with a larger clause-wide disclosure population', async (selectedCount) => {
-    const pool = Array.from({ length: 31 }, (_, index) => ({
+    const pool = Array.from({ length: 31 }, (_, index): EvidenceRow => ({
       id: 39000 + index,
       workItemId: index < selectedCount ? 'WI-selected' : 'WI-other',
-      planSlug: 'plan-a', specId: 'SPEC-001', specRevision: 1,
+      planSlug: 'plan-a', specId: 'SPEC-001', sourceValId: null, specRevision: 1, currentRevision: 1,
       specFingerprint: 'sha256:spec-001',
       evidenceKind: 'test', evidenceRef: `test-run:${39000 + index}`,
       fingerprints: {
         sourceFingerprint: 'sha256:source', testFingerprint: 'sha256:test',
         fixtureFingerprint: null, rubricFingerprint: null, environmentFingerprint: null,
       },
-      coverageEvidenceRef: null, testRunId: 39000 + index,
+      coverageEvidenceRef: null, testRunId: 39000 + index, testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
+      observedAt: '2026-09-07T00:00:00.000Z',
+      bindingFingerprint: `sha256:binding-${39000 + index}`,
+      createdBy: 'su-test', createdAt: '2026-09-07T00:00:00.000Z',
       testRunExecution: {
         status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        filePath: 'packages/operator-core/lib/reconnect.test.ts',
         testLayer: 'integration', passedCaseTitles: ['SPEC-001 selected test'],
       },
       details: { adequacy: {
@@ -1265,10 +1273,11 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       } },
       currentness: {
         overall: 'current', provenance: 'server-measured', comparisonSupplied: true,
-        dimensions: { spec: 'current', source: 'current', test: 'current' },
+        dimensions: { spec: 'current', source: 'current', test: 'current',
+          fixture: 'current', rubric: 'current', environment: 'current', coverageEvidence: 'current', testRun: 'current' },
         staleReasons: [], unknownReasons: [],
       },
-    })) as EvidenceRow[];
+    }));
     listClauses.mockResolvedValue([clause('active')]);
     listEvidence.mockImplementation(async (options) => pool.filter((row) =>
       (!options.workItemIds || options.workItemIds.includes(row.workItemId!)) &&
@@ -1287,7 +1296,10 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     // Both bounded store reads must fit the persisted recipe. Raising the ceiling
     // must preserve the selected cohort and the universal disclosure check.
     const replay = await call(tool.args.parse(recipe));
-    expect(replay).toMatchObject({ ok: true, selectedEvidenceCount: selectedCount });
+    expect(replay.ok).toBe(true);
+    expect(listEvidence.mock.calls.at(-2)?.[0]).toMatchObject({
+      workItemIds: ['WI-selected'], bindingIds: recipe.bindingIds,
+    });
     expect(replay.rows[0].verdict).toBe(initial.rows[0].verdict);
     expect(replay.rows[0].ratings['disclosed-gap'].rating).toBe(initial.rows[0].ratings['disclosed-gap'].rating);
     expect(listEvidence.mock.calls.at(-1)?.[0]).not.toHaveProperty('bindingIds');
@@ -1448,6 +1460,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       coverageEvidenceRef: null,
       testRunId: null,
       testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
       details: {},
       observedAt: '2026-10-01T12:00:00Z',
       bindingFingerprint: 'sha256:binding',

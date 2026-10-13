@@ -1,5 +1,5 @@
 /** Current disk → lexical/compiler candidates → persisted prior → independent reread. */
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
@@ -28,6 +28,22 @@ async function fixture() {
   return { root, source, sources, request };
 }
 describe('native P024 current existing-integration source priors beyond the catalogue', () => {
+  it('returns only complete existing filenames when broad source retrieval overflows its bounded capture', async () => {
+    const f = await fixture();
+    const text = 'export const boundedCaptureNeedle = true;\n';
+    // More than 32K of filenames, with capture boundaries inside a filename.
+    await Promise.all(Array.from({ length: 640 }, (_, i) => writeFile(
+      join(f.root, 'a'.repeat(64) + String(i).padStart(4, '0') + '.ts'), text,
+    )));
+    const result = await discoverCapabilityReviewCode(f.root, scope.repositoryId, ['boundedCaptureNeedle']);
+    expect(result.truncated).toBe(true);
+    expect(result.paths).toHaveLength(12);
+    for (const path of result.paths) {
+      expect(path).toMatch(/^a{64}\d{4}\.ts$/);
+      expect(await readFile(join(f.root, path), 'utf8')).toBe(text);
+    }
+  }, 30_000);
+
   it('supplies the existing integration and its renamed helper with exact source versions to independent review', async () => {
     const f = await fixture(), adapter = f.sources(), result = await adapter.search(f.request);
     expect(result.status).toBe('current'); expect(result.matches.map(row => row.ref).sort()).toEqual(['code-source:existing.ts', 'code-source:helper.ts']);

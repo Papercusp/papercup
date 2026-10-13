@@ -1446,6 +1446,7 @@ describe('current native benchmark execution', () => {
     expect(f.ports.launch).toHaveBeenCalledWith(expect.objectContaining({
       harness: handle.slug, cwd: handle.worktreePath, feature: handle.featureId, workItem: handle.featureId,
       independent: true, headless: true, count: 1, mcpTarget: 'spawn-host',
+      extraArgs: ['--auto'],
       members: [{ role: 'su', agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto' }],
     }));
     const args = vi.mocked(f.ports.launch).mock.calls[0][0];

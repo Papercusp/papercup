@@ -41,7 +41,12 @@ export async function readDeviceSessionRows(
     rows: deviceSessionRows(snapshot, workspaceId).map(row => Object.fromEntries(
       Object.entries(row).map(([key, value]) => [key, typeof value === 'string' ? redactSensitiveText(value) : value]),
     ) as unknown as DeviceSessionRow),
-    ...(snapshot.degradedFields ? { degradedFields: snapshot.degradedFields } : {}),
+    ...(snapshot.degradedFields ? {
+      degradedFields: snapshot.degradedFields.map(field => ({
+        ...field,
+        reason: redactSensitiveText(field.reason),
+      })),
+    } : {}),
   };
 }
 

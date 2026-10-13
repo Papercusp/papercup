@@ -39,7 +39,7 @@ import { operatorResolveExtends } from './installed-blueprints';
 import { loopbackFetch, describeFetchError } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 import { operatorApiBase } from '../operator-api-base';
-import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
+import { recordSpawn, finishSpawn, recordSpawnAccountRoute, spawnAccountRouteFromLaunch } from '../fleet/spawn-tree';
 import { agentProducedTurn } from '../fleet/invoke-outcome';
 import {
   isReleaseFixerNoTurnFailure,
@@ -389,6 +389,28 @@ function buildInvokeBody(
   return body;
 }
 
+/** Both direct fires and durable requests resolve the same declared role route. */
+async function resolveLaunchInput(target: LaunchTarget, input: FireLaunchInput): Promise<FireLaunchInput> {
+  const { resolveRoleLaunchLive } = await import('../fleet/role-launch');
+  const blueprint = await _resolver(target.blueprintId);
+  const account = input.bodyExtra?.account;
+  if (account !== undefined && account !== null && typeof account !== 'string') {
+    throw new Error('launch account route must be a string or null');
+  }
+  const launch = await resolveRoleLaunchLive(target.role, {
+    workspaceId: input.workspaceId,
+    installSlug: input.installSlug,
+    blueprintRole: blueprint.roles.find((entry) => entry.id === target.role),
+    account,
+  });
+  const bodyExtra = { ...input.bodyExtra };
+  if (bodyExtra.spawnModel == null && launch.spawnModel) bodyExtra.spawnModel = launch.spawnModel;
+  if (bodyExtra.spawnBackend == null && launch.backend) bodyExtra.spawnBackend = launch.backend;
+  if (bodyExtra.account === undefined && launch.account !== null) bodyExtra.account = launch.account;
+  if (launch.conflict) console.warn(`[backend-conflict] launch-blueprint role '${target.role}': ${launch.conflict.note}`);
+  return { ...input, bodyExtra };
+}
+
 /**
  * Resolve a launch blueprint + build its /invoke fire as a DURABLE-SPAWN REQUEST,
  * WITHOUT firing it (EI-403-A). The auto-implement lane uses this from inside its
@@ -405,16 +427,17 @@ export async function buildLaunchSpawnRequest(
   idempotencyKey: string,
 ): Promise<DurableSpawnFireInput> {
   const target = await resolveLaunchTarget(blueprintId, input);
-  const effectiveInput = withDefaultLaunchTimeout(input, target.role);
+  const effectiveInput = await resolveLaunchInput(target, withDefaultLaunchTimeout(input, target.role));
   // EI-403 round-2: the durable path otherwise records NO spawned_agents row, so the
   // implement worker ran invisibly (round 1's fire-and-forget fallback DID record it,
   // via the WI-108 fix below). Opt INTO recordSpawn so the durably-fired worker shows
   // in fleet:tree — `durableSpawnFireImpl` writes/finishes the row (stable id =
   // durable-spawn:<key>). The implement lane's itemId rides bodyExtra.improvementDispatch.
   const dispatch = (input.bodyExtra?.improvementDispatch ?? undefined) as { itemId?: string } | undefined;
+  const body = buildInvokeBody(target.blueprintId, effectiveInput);
   return {
     url: target.url,
-    body: buildInvokeBody(target.blueprintId, effectiveInput),
+    body,
     idempotencyKey,
     label: `${input.installSlug}/${target.role}`,
     spawnRecord: {
@@ -424,6 +447,7 @@ export async function buildLaunchSpawnRequest(
       parentRole: input.parent?.role ?? 'operator',
       parentSpawnId: input.parent?.spawnId ?? null,
       itemId: dispatch?.itemId ?? null,
+      accountRoute: spawnAccountRouteFromLaunch(body, `durable-spawn:${idempotencyKey}`) ?? undefined,
     },
   };
 }
@@ -511,6 +535,8 @@ const defaultFire = async (
         runId,
         status: 'running',
       });
+      const accountRoute = spawnAccountRouteFromLaunch(body, spawnId);
+      if (accountRoute) await recordSpawnAccountRoute(db, spawnId, accountRoute);
       // EI-21144257978207759: a release-fixer can be fired by the short-lived
       // green-checkpoint CLI.  Without pre-handoff provenance that CLI could exit before
       // its fire-and-forget /invoke request admitted a child, leaving a fresh-heartbeat
@@ -861,32 +887,7 @@ export async function fireLaunchBlueprint(
   //
   // Explicit caller / bench pins still win: each field is written only when the
   // caller left it unset.
-  if (fireInput.bodyExtra?.spawnModel == null || fireInput.bodyExtra?.spawnBackend == null) {
-    try {
-      const { resolveRoleLaunchLive } = await import('../fleet/role-launch');
-      const launch = await resolveRoleLaunchLive(target.role, {
-        workspaceId: input.workspaceId,
-        installSlug: input.installSlug,
-      });
-      const bodyExtra = { ...fireInput.bodyExtra };
-      if (bodyExtra.spawnModel == null && launch.spawnModel) bodyExtra.spawnModel = launch.spawnModel;
-      if (bodyExtra.spawnBackend == null && launch.backend) bodyExtra.spawnBackend = launch.backend;
-      fireInput = { ...fireInput, bodyExtra };
-
-      // P-005: a contradiction is reported, never silently resolved. WARN rather
-      // than throw — this runs on every autonomous launch, and a hard refusal would
-      // take the fleet down over a config disagreement the caller cannot fix
-      // mid-flight. The precedence itself is deliberate (WI-4640); this only makes
-      // the losing side visible, which is the half that was missing when nine
-      // release-fixers (2026-09-03 00:32Z→01:27Z) spawned onto a usage-walled codex
-      // account while `roleBackends['release-fixer']` said 'claude-code'.
-      if (launch.conflict) {
-        console.warn(`[backend-conflict] launch-blueprint role '${target.role}': ${launch.conflict.note}`);
-      }
-    } catch {
-      /* fail-soft: leave the role on its committed default if config is unreadable */
-    }
-  }
+  fireInput = await resolveLaunchInput(target, fireInput);
 
   const fire = _fire ?? defaultFire;
   const fired = (await fire({ ...fireInput, ...target })) as LaunchSpawnInfo | undefined;

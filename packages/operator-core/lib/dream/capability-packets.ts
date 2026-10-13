@@ -21,7 +21,7 @@ import {
   type CapabilityPacketGraph,
 } from './capability-contracts';
 
-export const CAPABILITY_EXTRACTION_RECIPE = 'scanned-anchors-and-radius-v3';
+export const CAPABILITY_EXTRACTION_RECIPE = 'scanned-anchors-and-cited-context-v4';
 export const CAPABILITY_SUMMARY_PROMPT = 'manifest-facets-v1';
 const MAX_SOURCE_BYTES = 512 * 1024;
 const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
@@ -80,6 +80,11 @@ export async function readCapabilitySource(rootPath: string, path: string): Prom
   return readBounded(await withinRoot(root, path), MAX_SOURCE_BYTES);
 }
 
+/** Compiler context over the exact cited files, under the packet's fixed deadline. */
+export const queryCapabilityGraph: NonNullable<CapabilityPacketDeps['graph']> =
+  (root, repositoryId, name, filePath, paths) => firstPartyCallersOffthread({ root, repositoryId,
+    vendorDir: LSP_VENDOR_DIR, name, filePath, paths, op: 'context', contextScope: 'cited-files', limit: 12 }, { budgetMs: 6_000 });
+
 const defaultDeps: CapabilityPacketDeps = {
   cache: new PgL2Store(),
   pack: (rootPath, include) => packerFacade('pack', { rootPath, include, format: 'xml', compress: false }),
@@ -88,8 +93,7 @@ const defaultDeps: CapabilityPacketDeps = {
   resolveSymbol: (rootPath, file, line1, character) =>
     lspFacade('symbol', { rootPath, file, line1, character, limit: 4 }),
   neighbors: (direction, repositoryId, name) => gitnexusFacade(direction, { repo: repositoryId, name, limit: 12 }),
-  graph: (root, repositoryId, name, filePath, paths) => firstPartyCallersOffthread({ root, repositoryId,
-    vendorDir: LSP_VENDOR_DIR, name, filePath, paths, op: 'context', limit: 12 }, { budgetMs: 6_000 }),
+  graph: queryCapabilityGraph,
   readArtifact: async (path) => {
     const root = await realpath(join(homedir(), '.papercusp', 'scratch', 'packs'));
     const artifact = await withinRoot(root, path);
@@ -249,12 +253,20 @@ async function inspectCapabilityGraph(root: string, repositoryId: string, source
     if (!declaration) { result.unmapped.push('No declared symbol at implementation anchor ' + source.id); continue; }
     let answer: CodeIntelAnswer;
     try { answer = await graph(root, repositoryId, declaration[1]!, source.path, paths); }
-    catch { result.unmapped.push('Compiler discovery unavailable for ' + source.id); continue; }
+    catch (error) {
+      result.unmapped.push('Compiler discovery unavailable for ' + source.id + ': '
+        + (error instanceof Error ? error.message.slice(0, 400) : 'unknown failure'));
+      continue;
+    }
     const evidence = answer.evidence;
     if (answer.error || evidence?.graphScope.basis !== 'compiler-project'
       || evidence.sourceScope.repositoryId !== repositoryId || !evidence.sourceScope.sourceFingerprint) {
-      result.unmapped.push('Current scoped compiler evidence unavailable for ' + source.id); continue;
+      result.unmapped.push('Current scoped compiler evidence unavailable for ' + source.id
+        + (answer.error ? ': ' + answer.error.slice(0, 400) : ': source scope or compiler evidence did not match'));
+      continue;
     }
+    for (const limitation of evidence.graphScope.limitations)
+      if (!result.unmapped.includes(limitation)) result.unmapped.push(limitation);
     const supported = (site: { site: { path: string; line1: number | null }; contentHash: string }) =>
       site.site.line1 !== null && sources.some(cited => cited.path === site.site.path && cited.sourceHash === site.contentHash)
       && evidence.sourceScope.supportingFiles.some(file => file.path === site.site.path

@@ -817,6 +817,11 @@ describe('external trigger durable dispatch', () => {
       retryEscalationMsgId: 'esc-trigger-retry-1',
     });
     expect(openEscalation).toHaveBeenCalledTimes(1);
+    // WI-6554700010010397: the escalation carries the classifier's cause, not only the code.
+    expect(openEscalation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ body: expect.stringContaining('Cause: no live adopting session') }),
+    );
 
     // Parked means paced: an immediate routine tick does not hot-loop or consume
     // the queued successful replay.

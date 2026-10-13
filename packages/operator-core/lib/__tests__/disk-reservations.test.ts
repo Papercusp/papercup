@@ -28,6 +28,7 @@ import {
   mountKeyForPath,
   assessAllocationDiskAdmission,
   readReservedGb,
+  readReservationSnapshot,
   reservationDir,
   // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
 } from '../../../../scripts/lib/disk-reservations.mjs';
@@ -61,6 +62,48 @@ function seedReservation(
 }
 
 describe('disk reservation ledger — Node reader', () => {
+  it('distinguishes measured absence from unreadable and malformed reservation evidence', () => {
+    const root = scratch(), target = scratch();
+    const ledger = join(root, 'ledger');
+    const env = { ...process.env, PAPERCUSP_DISK_RESERVATION_DIR: ledger };
+    expect(readReservationSnapshot(target, { env })).toMatchObject({ state: 'measured', reservedBytes: 0, issues: [] });
+    writeFileSync(ledger, 'not a directory');
+    expect(readReservationSnapshot(target, { env })).toMatchObject({ state: 'unknown', reservedBytes: null });
+    expect(readReservedGb(target, { env })).toBe(0); // Existing admission semantics.
+    rmSync(ledger);
+    seedReservation(ledger, mountKeyForPath(target), 'invalid.res', {
+      pid: process.pid, gb: 'invalid', expires: Math.floor(Date.now() / 1000) + 600,
+    });
+    expect(readReservationSnapshot(target, { env })).toMatchObject({
+      state: 'unknown', reservedBytes: null, issues: ['claim:invalid-demand'],
+    });
+    expect(readReservedGb(target, { env })).toBe(0);
+  });
+
+  it('retains known live demand on aliases while an additional live claim remains unknown', () => {
+    const root = scratch(), ledger = scratch(), alias = join(root, 'alias');
+    mkdirSync(alias);
+    const env = { ...process.env, PAPERCUSP_DISK_RESERVATION_DIR: ledger };
+    const key = mountKeyForPath(root), expires = Math.floor(Date.now() / 1000) + 600;
+    seedReservation(ledger, key, 'known.res', { pid: process.pid, gb: 2, expires });
+    expect(readReservationSnapshot(alias, { env })).toMatchObject({ state: 'measured', deviceKey: key, reservedBytes: 2 * GIB });
+    seedReservation(ledger, key, 'unknown.res', { pid: process.pid, gb: 'bad', expires });
+    expect(readReservationSnapshot(alias, { env })).toMatchObject({ state: 'unknown', reservedBytes: null, knownReservedBytes: 2 * GIB });
+    expect(readReservedGb(root, { env })).toBe(2);
+  });
+
+  it.each(['blank-demand', 'blank-expiry', 'expired'])('does not interpret a %s record as healthy live evidence', (scenario) => {
+    const target = scratch(), ledger = scratch();
+    const env = { ...process.env, PAPERCUSP_DISK_RESERVATION_DIR: ledger };
+    seedReservation(ledger, mountKeyForPath(target), 'claim.res', {
+      pid: process.pid, gb: scenario === 'blank-demand' ? '' : 'invalid',
+      expires: scenario === 'blank-expiry' ? '' : Math.floor(Date.now() / 1000) + (scenario === 'expired' ? -10 : 600),
+    });
+    const result = readReservationSnapshot(target, { env });
+    expect(result).toMatchObject(scenario === 'expired' ? { state: 'measured', reservedBytes: 0 } : { state: 'unknown', reservedBytes: null });
+    expect(readReservedGb(target, { env })).toBe(0);
+  });
+
   it('R11 CLI dry-run groups all destinations and preserves the full window budget without reserving', () => {
     const root = scratch();
     const ledger = join(root, 'ledger');

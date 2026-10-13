@@ -1427,6 +1427,27 @@ export async function flushPendingTelemetry(): Promise<void> {
 }
 
 /**
+ * Deep-merge the MCP settlement phase map while leaving every other invocation
+ * metadata key's existing shallow-merge semantics intact. The late scratch
+ * backfill and dispatch settlement can reach the same row in either order.
+ */
+function mergeMcpRequestSettlementJsonb(existing: string, incoming: string): string {
+  const phaseTimingsPath = "'{mcpRequestSettlement,phaseTimingsMs}'";
+  return [
+    "CASE WHEN ", incoming, " ? 'mcpRequestSettlement' THEN ",
+    "jsonb_build_object('mcpRequestSettlement', ",
+    "COALESCE(", existing, "->'mcpRequestSettlement', '{}'::jsonb) || ",
+    "COALESCE(", incoming, "->'mcpRequestSettlement', '{}'::jsonb) || ",
+    "CASE WHEN jsonb_typeof(", incoming, " #> ", phaseTimingsPath, ") = 'object' ",
+    "THEN jsonb_build_object('phaseTimingsMs', ",
+    "COALESCE(", existing, " #> ", phaseTimingsPath, ", '{}'::jsonb) || ",
+    "COALESCE(", incoming, " #> ", phaseTimingsPath, ", '{}'::jsonb)) ",
+    "ELSE '{}'::jsonb END) ",
+    "ELSE '{}'::jsonb END",
+  ].join("");
+}
+
+/**
  * EI-19389431406847252: `output_ref` is NULL on every `tool_invocations` row
  * (324,661/324,661 measured over 36h) even for calls that demonstrably
  * SPILLED a result to scratch — because the door's own spill decision
@@ -1467,8 +1488,8 @@ export async function backfillResultDoorOutputRef(input: {
   /** Exact URI already reserved on a pending row; allows a late settlement update
    *  to match that row after the ordinary 30-second backfill window. */
   matchOutputRef?: string | null;
-  /** Door-only facts unavailable when the dispatcher snapshots the row. Shallow
-   * merged so handler-authored run metadata is preserved. */
+  /** Door-only facts unavailable when the dispatcher snapshots the row. Top-level
+   * keys are shallow merged so handler-authored run metadata is preserved. */
   metadataJson?: Record<string, unknown>;
 }): Promise<void> {
   // Captured into locals so the narrowing survives into the `sql.begin`
@@ -1491,7 +1512,8 @@ export async function backfillResultDoorOutputRef(input: {
         `UPDATE harness_shared.tool_invocations
             SET output_ref = COALESCE($1, output_ref),
                 output_size = COALESCE($2, output_size),
-                metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $3::jsonb
+                metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $3::jsonb ||
+                  ${mergeMcpRequestSettlementJsonb('metadata_json', '$3::jsonb')}
           WHERE id = (
             SELECT id FROM harness_shared.tool_invocations
              WHERE workspace_id = $4 AND spawn_id = $5 AND tool_name = $6
@@ -1569,6 +1591,9 @@ async function backfillToolInvocationMetadataByExactSelector(input: {
   const selectorSql = input.selector.kind === 'dispatch-call-id'
     ? "metadata_json->'schedulerTimeout'->>'dispatchCallId' = $4"
     : "metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4";
+  const settlementMergeSql = input.selector.kind === 'mcp-request-trace-id'
+    ? ` || ${mergeMcpRequestSettlementJsonb('metadata_json', '$1::jsonb')}`
+    : '';
   const windowSec = EXACT_BACKFILL_WINDOW_SEC[input.selector.kind];
   try {
     await flushPendingTelemetry();
@@ -1577,7 +1602,7 @@ async function backfillToolInvocationMetadataByExactSelector(input: {
       await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
       await tx.unsafe(
         `UPDATE harness_shared.tool_invocations
-            SET metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $1::jsonb
+            SET metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $1::jsonb${settlementMergeSql}
           WHERE id = (
             SELECT id FROM harness_shared.tool_invocations
              WHERE workspace_id = $2

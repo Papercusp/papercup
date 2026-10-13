@@ -45,6 +45,7 @@ import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
 import { trackDetached } from '../../../detached-imports';
 import { resolveInvokeProjectDir } from './invoke-project-dir';
 import { observeFallback } from '../../../degradation/fallback-observations';
+import { bareModelId, resolveCodexModel } from '../../../model-context-budget.mjs';
 
 /**
  * launch-path-argv-reconstruction (WI-1343), extended to the hive/overwatch invoke
@@ -70,6 +71,23 @@ export function reconstructHiveLaunchArgv(o: {
   ];
   if (o.modelPin) argv.push(`--model=${o.modelPin}`);
   return argv;
+}
+
+/** The production /invoke JSON boundary, shared by the deterministic routing bridge. */
+export function parseBlueprintInvokeRequest(value: unknown): {
+  extra: string[]; spawnModelPin: string; spawnBackendPin: 'claude-code' | 'omp' | 'codex' | undefined;
+  account: string | undefined;
+} {
+  const body = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+  if (body.account != null && typeof body.account !== 'string') throw new TypeError('account route must be a string or null');
+  const backend = body.spawnBackend;
+  return {
+    extra: Array.isArray(body.extra) ? body.extra.filter((entry): entry is string => typeof entry === 'string') : [],
+    spawnModelPin: typeof body.spawnModel === 'string' ? body.spawnModel.trim() : '',
+    spawnBackendPin: backend === 'claude-code' || backend === 'omp' || backend === 'codex' ? backend : undefined,
+    account: typeof body.account === 'string' ? body.account.trim() : undefined,
+  };
 }
 
 const launch = defineTool({
@@ -303,6 +321,9 @@ const invoke = defineTool({
       }
     }
     const body = await req.json().catch(() => ({} as any));
+    let parsedBody: ReturnType<typeof parseBlueprintInvokeRequest>;
+    try { parsedBody = parseBlueprintInvokeRequest(body); }
+    catch (error) { return Response.json({ error: 'invalid_account_route', message: String(error) }, { status: 400 }); }
     const spawnRecordId = extractSpawnRecordId((body as any)?.spawnRecordId);
     const invokeDir = resolveInvokeProjectDir({ projectPath: project.path, role, body });
     if (!invokeDir.ok) {
@@ -344,11 +365,7 @@ const invoke = defineTool({
       }
     }
     const timeoutMs = resolveInvokeTimeoutMs((body as any)?.timeoutMs, isHiveLaunch || isOverwatchLaunch);
-    const extra: string[] = Array.isArray((body as any)?.extra)
-      ? (body as any).extra.filter((s: any) => typeof s === 'string')
-      : [];
-    const spawnModelPin =
-      typeof (body as any)?.spawnModel === 'string' ? ((body as any).spawnModel as string).trim() : '';
+    const { extra, spawnModelPin, spawnBackendPin } = parsedBody;
     // WI-2142846: an explicit per-fire backend override — set by launch-blueprint.ts's
     // live readAgentConfig() role-backend resolution (bodyExtra.spawnBackend), the
     // SAME channel shape spawnModel already uses. Validated against the same 3-value
@@ -356,11 +373,6 @@ const invoke = defineTool({
     // an override can name); an unrecognized value is dropped rather than trusted, so
     // this route can never be handed a spawnBackend the rest of the resolution chain
     // (applyBackendSwap's DEFAULT_BACKEND_CMDS lookup) does not know how to honor.
-    const rawSpawnBackend = (body as any)?.spawnBackend;
-    const spawnBackendPin =
-      rawSpawnBackend === 'claude-code' || rawSpawnBackend === 'omp' || rawSpawnBackend === 'codex'
-        ? rawSpawnBackend
-        : undefined;
     let routeBackendModel = resolveSpawnBackendModel(role, spawnModelPin || undefined, spawnBackendPin);
     let routeBackend = routeBackendModel.backend;
     // Set below only when the omp→claude-code tracked-launch rescue (D-fix
@@ -740,18 +752,40 @@ const invoke = defineTool({
     // (unchanged direct egress). Lazy-import keeps the route module registration side-effect-free
     // (cf. the orchestrator-runner import above).
     {
-      const { resolveSpawnGatewayEnv } = await import('../../../inference-gateway/spawn-env');
+      const { resolveSpawnGatewayEnv, applyExplicitSpawnAccountRoute } = await import('../../../inference-gateway/spawn-env');
+      let resolvedAccountIds: string[] = [];
       Object.assign(
         env,
         await resolveSpawnGatewayEnv({
           workspaceId: activeWorkspaceId(),
           slug: project.slug,
-          ownerId: hiveSpawnId ?? undefined,
+          ownerId: childOwnerId,
+          account: parsedBody.account,
           backend: routeBackend,
           role, // gateway-priority-tiers: role → admission tier (flag-gated header)
           model: routeBackendModel.model || undefined, // P-005/WI-951: per-role Claude model fidelity through the gateway — the /invoke chokepoint (mirrors operator-spawn.ts:1220), closing the second-chokepoint drift
+          onResolvedAccounts: ids => { resolvedAccountIds = ids; },
         }),
       );
+      // Explicit routes shadow ambient operator settings, including an old pin.
+      // Empty strings survive buildInvokeOnce's env merge and clear inherited keys.
+      const account = parsedBody.account;
+      applyExplicitSpawnAccountRoute(env, account);
+      if (spawnRecordId && account && routeBackendModel.model) {
+        const { recordSpawnAccountRoute } = await import('../../../fleet/spawn-tree');
+        const spec = routeBackendModel.model;
+        const model = bareModelId(routeBackend === 'codex' ? resolveCodexModel(spec) : spec);
+        const effort = bareModelId(spec) === spec ? null : spec.slice(spec.lastIndexOf(':') + 1);
+        const requestedSpec = spawnModelPin || spec;
+        await recordSpawnAccountRoute(getOrgPg().sql, spawnRecordId, {
+          ownerId: childOwnerId, accountRoute: account,
+          requestedBackend: spawnBackendPin ?? routeBackend,
+          requestedModel: bareModelId(requestedSpec),
+          requestedEffort: bareModelId(requestedSpec) === requestedSpec ? null : requestedSpec.slice(requestedSpec.lastIndexOf(':') + 1),
+          launchedBackend: routeBackend, launchedModel: model, launchedEffort: effort,
+          resolvedAccountIds,
+        });
+      }
     }
     // Load the launch-row writers once per correlated invoke. Both callbacks
     // below must target spawnRecordId (the durable release-fixer row), even when

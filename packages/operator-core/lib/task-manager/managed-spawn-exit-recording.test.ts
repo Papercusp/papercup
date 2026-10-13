@@ -33,6 +33,7 @@ const L = vi.hoisted(() => ({
   closed: [] as { taskId: string; state: string; exitCode: number | null; exitReason: string | null }[],
   marked: [] as { cgroupPath: string | null; confined: boolean }[],
   terminal: [] as unknown[],
+  markDelay: undefined as (() => Promise<void>) | undefined,
   // Rest-typed so the pass-through mocks below can spread their `unknown[]` args in:
   // a zero-parameter vi.fn() makes `L.fn(...args)` a TS2556 spread error.
   inspectTaskUnitTerminals: vi.fn(async (..._args: unknown[]) => new Map()),
@@ -53,6 +54,7 @@ vi.mock('./store', () => ({
   }),
   markSpawned: async (_id: string, v: { cgroupPath: string | null; confined: boolean }) => {
     L.marked.push(v);
+    await L.markDelay?.();
   },
   closeTask: async (taskId: string, v: { state: string; exitCode?: number | null; exitReason: string | null }) => {
     L.closed.push({ taskId, state: v.state, exitCode: v.exitCode ?? null, exitReason: v.exitReason });
@@ -155,12 +157,33 @@ describe('confined task exit recording (WI-37509)', () => {
     L.closed.length = 0;
     L.marked.length = 0;
     L.terminal.length = 0;
+    L.markDelay = undefined;
     L.inspectTaskUnitTerminals.mockReset().mockResolvedValue(new Map());
     L.resetFailedTaskUnit.mockReset().mockResolvedValue(false);
   });
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it('records a child that exits while the post-spawn ledger write is pending', async () => {
+    const { emitter, child } = makeChild();
+    let entered!: () => void;
+    let release!: () => void;
+    const marking = new Promise<void>((resolve) => { entered = resolve; });
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    L.markDelay = async () => { entered(); await pending; };
+    const launching = managedSpawn('true', [], SIDECAR_SPEC, {
+      confine: false, spawnFn: (() => child) as unknown as typeof nodeSpawn,
+    });
+    await marking;
+    emitter.emit('exit', 0, null);
+    release();
+    const result = await launching;
+    await flush();
+    expect(L.closed).toEqual([{
+      taskId: result.taskId, state: 'exited', exitCode: 0, exitReason: null,
+    }]);
   });
 
   it('does NOT close the row when the client dies but the scope still holds processes', async () => {

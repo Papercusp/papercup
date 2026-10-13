@@ -44,6 +44,7 @@ const admissionMocks = vi.hoisted(() => ({
   // right count/expiry out) instead of replicating postgres.js's nested tagged-
   // template fragment composition in a fake sql tag.
   claimFloorsWhereSql: vi.fn(),
+  featureClaimFloorPredicatesSql: vi.fn(),
   reservedPlanLaneExclusionSql: vi.fn(),
   stopTheLineExclusionSql: vi.fn(),
   releaseCooldownSec: vi.fn(),
@@ -74,6 +75,7 @@ vi.mock('../work-items', () => ({
   releaseWorkItem: admissionMocks.releaseWorkItem,
   readHeldDependencyEscapeContext: admissionMocks.readHeldDependencyEscapeContext,
   claimFloorsWhereSql: admissionMocks.claimFloorsWhereSql,
+  featureClaimFloorPredicatesSql: admissionMocks.featureClaimFloorPredicatesSql,
   reservedPlanLaneExclusionSql: admissionMocks.reservedPlanLaneExclusionSql,
   releaseCooldownSec: admissionMocks.releaseCooldownSec,
   // EI-19393442073558754: specIsIssueFamilyOnly (fleet-scope-admission.ts) imports the REAL
@@ -220,6 +222,7 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
   beforeEach(() => {
     for (const mock of Object.values(admissionMocks)) mock.mockReset();
     admissionMocks.stopTheLineExclusionSql.mockReturnValue('STOP_THE_LINE_FLOOR');
+    admissionMocks.featureClaimFloorPredicatesSql.mockReturnValue({ reservedPlanLane: 'RESERVATION_FLOOR', stopTheLine: 'STOP_THE_LINE_FLOOR' });
   });
 
   it('explicit null omits the reading leader from the feature-family cooldown floor', async () => {
@@ -240,6 +243,17 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
       admissionMocks.sql,
       expect.objectContaining({ cooldownAssignee: undefined }),
     );
+  });
+
+  it('names additional excluding floors from the same feature claim predicate registry', async () => {
+    admissionMocks.claimFloorsWhereSql.mockReturnValue('SHARED_FLOORS');
+    admissionMocks.featureClaimFloorPredicatesSql.mockReturnValue({ scope: 'SCOPE', rig: 'RIG_FLOOR', claimHold: 'HOLD_FLOOR' });
+    admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
+    admissionMocks.sql.mockResolvedValue([{ matched: 3, claimable: 0, reserved_plan_lane: 0, stop_the_line: 0, rig: 2, claimHold: 1 }]);
+    const result = await diagnoseFleetScopeFeatureFamilyExclusions({ scope: populationScope, harness: 'papercusp', workspaceId: 'papercusp-workspace', cooldownAssignee: null });
+    expect(result).toMatchObject({ matchedByFilter: 3, claimable: 0, excluded: { claimFloors: 3, rig: 2, claimHold: 1 } });
+    expect(admissionMocks.featureClaimFloorPredicatesSql).toHaveBeenCalledWith(admissionMocks.sql, expect.objectContaining({ cooldownAssignee: undefined, claimantFleetSlug: 'fleet-x' }));
+    expect(result?.excluded).not.toHaveProperty('scope');
   });
 
   it('returns matched, claimable, and overlapping reservation-floor counts', async () => {
@@ -1412,7 +1426,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     it('EI-20186990913643457: reports successful exhaustion when every status-floor-free match is terminal', () => {
       const miss = fleetScopedMiss(issueScope, [], {
         issueBreakdown: zeroMatchBreakdown,
-        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 2 },
+        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 2, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 },
       });
 
       expect(miss.reason).toBe('spec_exhausted');
@@ -1437,13 +1451,15 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect((miss as { terminalExhaustion?: unknown }).terminalExhaustion).toEqual({
         matchedByFilter: 2,
         terminalMatchedByFilter: 2,
+        inFlightMatchedByFilter: 0,
+        parkedMatchedByFilter: 0,
       });
     });
 
     it('P-008: "release remaining lane resources" keeps a held blocked item held and defers its wake to loop:end', () => {
       const miss = fleetScopedMiss(issueScope, [], {
         issueBreakdown: zeroMatchBreakdown,
-        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 2 },
+        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 2, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 },
       });
 
       // The release instruction must not read as "drop the blocked item you still hold".
@@ -1585,15 +1601,100 @@ describe('fleet scope assignment admission (P-016)', () => {
     });
 
     it('keeps the spec-authoring verdict when the status-floor-free matches are mixed terminal and active', () => {
+      // The non-terminal row is neither held nor parked, so no never-pullable bucket explains it.
       const miss = fleetScopedMiss(issueScope, [], {
         issueBreakdown: zeroMatchBreakdown,
-        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 1 },
+        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 },
       });
 
       expect(miss.reason).toBe('spec_matches_nothing');
       expect(miss.error).toMatch(/SPEC MATCHES NOTHING/);
       expect(miss.error).toMatch(/ESCALATE to your fleet leader NOW/);
       expect(miss.advice).toMatch(/spec_matches_nothing/);
+    });
+
+    describe('WI-6554700010010002: a remainder held by agents or parked is not an empty spec', () => {
+      // Observed live (gate-lint-green, claim spec rev 8): an id allowlist of 17 rows, 16 done and
+      // 1 wip held by a peer. The claimable-state breakdown read 0, so every idle member was told
+      // "SPEC MATCHES NOTHING ... ESCALATE to your fleet leader NOW" about a spec that was correct.
+      const heldRemainder = { matchedByFilter: 17, terminalMatchedByFilter: 16, inFlightMatchedByFilter: 1, parkedMatchedByFilter: 0 };
+
+      it('reports spec_in_flight with drain advice when the only non-terminal match is held by an agent', () => {
+        const miss = fleetScopedMiss(issueScope, [], {
+          issueBreakdown: zeroMatchBreakdown,
+          terminalExhaustion: heldRemainder,
+        });
+
+        expect(miss.reason).toBe('spec_in_flight');
+        expect(miss.windDown).toBe(true);
+        expect(miss.error).toMatch(/NOTHING CLAIMABLE, REMAINDER IN FLIGHT/);
+        expect(miss.error).toMatch(/16 terminal, 1 held by an agent \(in flight\), 0 parked/);
+        expect(miss.error).toMatch(/NOT a spec-authoring problem/);
+        expect(miss.error).not.toMatch(/SPEC MATCHES NOTHING/);
+        expect(miss.error).not.toMatch(/ESCALATE to your fleet leader NOW/);
+        expect(miss.advice).toMatch(/NOTHING TO CLAIM, NOT A SPEC BUG/);
+        expect(miss.advice).toMatch(/spec_in_flight/);
+        expect(miss.advice).toMatch(/Do NOT escalate, widen, or re-author/);
+        expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
+        expect(miss.advice).toMatch(/release remaining lane resources \(a blocked item you still hold stays held/);
+        expect(miss.advice).toMatch(/park the standing watch `watch:create/);
+        expect(miss.advice).toMatch(/work-item:claimable/);
+        expect(miss.advice).toMatch(/payload_filter/);
+        expect(miss.advice).not.toMatch(/ESCALATE to your fleet leader NOW/);
+        expect(miss.advice).not.toMatch(/events:await/);
+        expect(miss.excludedBreakdownSummary).toMatch(/16 terminal, 1 held by an agent, 0 parked/);
+        expect(miss.excludedBreakdownSummary).toMatch(/the spec is not empty/);
+        expect(miss.excludedBreakdownSummary).not.toMatch(/SPEC ITSELF is the problem/);
+        expect(miss.claimability.interpretation).toMatchObject({
+          state: 'drained',
+          exactness: { status: 'exact', reason: expect.stringMatching(/held by an agent, or parked/) },
+        });
+        expect((miss as { terminalExhaustion?: unknown }).terminalExhaustion).toEqual(heldRemainder);
+      });
+
+      it('reports spec_in_flight when the non-terminal remainder is parked (blocked/needs-human) or wholly held', () => {
+        const parked = fleetScopedMiss(issueScope, [], {
+          issueBreakdown: zeroMatchBreakdown,
+          terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 1 },
+        });
+        expect(parked.reason).toBe('spec_in_flight');
+        expect(parked.error).toMatch(/1 terminal, 0 held by an agent \(in flight\), 1 parked \(blocked\/needs-human\)/);
+
+        // No terminal row at all: every match is still in flight with a holder.
+        const allHeld = fleetScopedMiss(issueScope, [], {
+          issueBreakdown: zeroMatchBreakdown,
+          terminalExhaustion: { matchedByFilter: 3, terminalMatchedByFilter: 0, inFlightMatchedByFilter: 3, parkedMatchedByFilter: 0 },
+        });
+        expect(allHeld.reason).toBe('spec_in_flight');
+      });
+
+      it('does not certify the remainder without a measured zero breakdown, or while paused', () => {
+        // A degraded (null) issue-floor breakdown cannot prove that no row is claimable.
+        const degraded = fleetScopedMiss(issueScope, [], { terminalExhaustion: heldRemainder });
+        expect(degraded.reason).not.toBe('spec_in_flight');
+
+        // A claimable-state breakdown that matched rows means the spec is reaching open work.
+        const reachable = fleetScopedMiss(issueScope, [], {
+          issueBreakdown: { ...zeroMatchBreakdown, matchedByFilter: 1 },
+          terminalExhaustion: heldRemainder,
+        });
+        expect(reachable.reason).not.toBe('spec_in_flight');
+
+        const paused = fleetScopedMiss(issueScope, [], {
+          pausedReason: 'owner pause',
+          issueBreakdown: zeroMatchBreakdown,
+          terminalExhaustion: heldRemainder,
+        });
+        expect(paused.reason).not.toBe('spec_in_flight');
+      });
+
+      it('keeps spec_exhausted for an all-terminal tranche', () => {
+        const miss = fleetScopedMiss(issueScope, [], {
+          issueBreakdown: zeroMatchBreakdown,
+          terminalExhaustion: { matchedByFilter: 17, terminalMatchedByFilter: 17, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 },
+        });
+        expect(miss.reason).toBe('spec_exhausted');
+      });
     });
 
     it('is mutually exclusive with the divergent (claim-path bug) case by construction', () => {

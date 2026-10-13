@@ -41,6 +41,7 @@ import type { ConsultReviewerModel } from './get-feedback-core';
 import { resolveExpertModelAllowlist, type AllowedExpertModel } from './expert-model-allowlist';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
 import { analyzeClaudeResumeTranscriptFile } from '../claude-resume-tool-references.mjs';
+import { isTerminalState, type TaskState } from '../task-manager/types';
 
 /** One candidate's verdict from the check-approver screen. */
 export type AmendmentReviewerScreen = (
@@ -316,6 +317,8 @@ export type FreshAmendmentReviewerResult =
       ownerId?: string;
       nativeRef?: string;
       firstReply?: 'observed' | 'pending' | 'unreadable';
+      /** Dead reviewer tasks (ended with no answer) this launch replaced. */
+      relaunchedAfter?: string[];
     }
   | {
       state: 'blocked';
@@ -327,10 +330,50 @@ export type FreshAmendmentReviewerResult =
       answerOn: FreshReviewerAnswerTarget;
       ownerId?: string;
       nativeRef: string;
-      reason: 'account-walled' | 'first-turn-rejected';
+      reason: 'account-walled' | 'first-turn-rejected' | 'reviewer-ended';
       evidence: string;
+      /** Dead reviewer tasks (ended with no answer) this call walked past. */
+      relaunchedAfter?: string[];
     }
   | { state: 'not-launched'; reason: string };
+
+/**
+ * WI-6554700010010527: launch-agent's idempotencyKey returns the SAME task even
+ * after it ended, so a reviewer that died before answering was replayed on every
+ * re-preview and no live reviewer could be routed for that post. A deduped task
+ * that is terminal with no answer on the preview's thread is re-keyed as
+ * `<key>:after:<deadTaskId>`. The chain is deterministic, so repeated dry runs
+ * walk the same dead tasks and launch at most one new reviewer per call.
+ */
+export const MAX_DEAD_REVIEWER_CHAIN = 4;
+
+async function readLedgerTaskState(taskId: string): Promise<TaskState | null> {
+  const { getTask } = await import('../task-manager/store');
+  return (await getTask(taskId))?.state ?? null;
+}
+
+/** True when anyone (or `authorId`, when known) posted on the preview post's
+ * thread after it: the reviewer's verdict, or a reply worth not stomping on. */
+async function previewThreadHasLaterPost(args: {
+  workspaceId: string;
+  previewPostRef: string;
+  authorId?: string;
+}): Promise<boolean> {
+  const postId = PREVIEW_POST_REF.test(args.previewPostRef) ? args.previewPostRef.slice('thread-post:'.length) : null;
+  if (!postId) return false;
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const sql = getOrgPg().sql;
+  const rows = await sql<Array<{ id: string }>>`
+    SELECT p.id::text AS id
+      FROM harness_shared.coord_thread_posts pv
+      JOIN harness_shared.coord_thread_posts p
+        ON p.workspace_id = pv.workspace_id AND p.thread_id = pv.thread_id AND p.id > pv.id
+     WHERE pv.workspace_id = ${args.workspaceId}
+       AND pv.id = ${postId}::bigint
+       AND (${args.authorId ?? null}::text IS NULL OR p.author_id = ${args.authorId ?? null})
+     LIMIT 1`;
+  return rows.length > 0;
+}
 
 export interface FreshAmendmentReviewerInput extends AmendmentReviewBriefInput {
   applierId: string;
@@ -451,6 +494,8 @@ export async function launchFreshAmendmentReviewer(
     analyzeTranscript?: typeof analyzeClaudeResumeTranscriptFile;
     nowMs?: () => number;
     sleepMs?: (ms: number) => Promise<void>;
+    readTaskState?: (taskId: string) => Promise<TaskState | null>;
+    hasReviewerAnswer?: typeof previewThreadHasLaterPost;
   } = {},
 ): Promise<FreshAmendmentReviewerResult> {
   const previewPostRef = input.previewPostRef.trim();
@@ -464,6 +509,8 @@ export async function launchFreshAmendmentReviewer(
       reason: `${previewPostRef} is not a post on a work-item thread, so a fresh reviewer would have nowhere to answer. Post the preview with work_items:comment.`,
     };
   }
+  // Hoisted helpers below do not see the narrowing above; bind it non-null.
+  const target: FreshReviewerAnswerTarget = answerOn;
   const rubricId = input.rubricRef.trim().replace(/^plan:/i, '').trim();
   if (input.reviewerModel) await (deps.assertAllowed ?? assertReviewerModelAllowed)(input.workspaceId, input.reviewerModel);
   const reviewerModel = input.reviewerModel ?? await (deps.resolveSteeredModel ?? resolveFreshReviewerModelForAccountSteer)(input.workspaceId);
@@ -485,10 +532,50 @@ export async function launchFreshAmendmentReviewer(
   const label = `bar-amendment-review:${identity.slice(0, 12)}`;
   const launch: LaunchHandler =
     deps.launch ?? ((await import('../agent-tools/capability/launch-agent')).default.handler as unknown as LaunchHandler);
-  const result = (await launch(
+  const readTaskState = deps.readTaskState ?? readLedgerTaskState;
+  const hasReviewerAnswer = deps.hasReviewerAnswer ?? previewThreadHasLaterPost;
+  const relaunchedAfter: string[] = [];
+  let attemptKey = idempotencyKey;
+  let attemptLabel = label;
+  let result: LaunchResult;
+  for (;;) {
+    result = await launchOnce(attemptKey, attemptLabel);
+    if (result?.isError || result?.data?.deduped !== true) break;
+    const deadTask = result.data?.launch?.tasks?.[0];
+    const deadTaskId = typeof deadTask?.taskId === 'string' ? deadTask.taskId : null;
+    if (!deadTaskId) break;
+    const state = await readTaskState(deadTaskId);
+    if (!state || !isTerminalState(state)) break;
+    const authorId = typeof deadTask?.ownerId === 'string' ? deadTask.ownerId : undefined;
+    if (await hasReviewerAnswer({ workspaceId: input.workspaceId, previewPostRef, ...(authorId ? { authorId } : {}) })) break;
+    relaunchedAfter.push(deadTaskId);
+    if (relaunchedAfter.length >= MAX_DEAD_REVIEWER_CHAIN) {
+      return {
+        state: 'blocked',
+        launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
+        taskId: deadTaskId,
+        label: attemptLabel,
+        idempotencyKey: attemptKey,
+        deduped: true,
+        answerOn,
+        ...(authorId ? { ownerId: authorId } : {}),
+        nativeRef: typeof deadTask?.kickoffProof?.nativeRef === 'string' ? deadTask.kickoffProof.nativeRef : 'unknown',
+        reason: 'reviewer-ended',
+        evidence: `${relaunchedAfter.length} reviewer(s) for this preview ended without answering (${relaunchedAfter.join(', ')}); ` +
+          'reviewer launches are failing, so read their task logs (processes:list { taskId }) before re-running',
+        relaunchedAfter,
+      };
+    }
+    attemptKey = `${idempotencyKey}:after:${deadTaskId}`;
+    attemptLabel = `${label}.r${relaunchedAfter.length}`;
+  }
+  return finishFreshReviewerLaunch(result, attemptKey, attemptLabel);
+
+  async function launchOnce(key: string, attemptLabelArg: string): Promise<LaunchResult> {
+    return (await launch(
     {
-      brief: buildAmendmentReviewBrief({ ...input, previewPostRef }, answerOn),
-      ...(answerOn.harness ? { harness: answerOn.harness } : {}),
+      brief: buildAmendmentReviewBrief({ ...input, previewPostRef }, target),
+      ...(target.harness ? { harness: target.harness } : {}),
       headless: true,
       // Never the requester's fleet, and routed through the inference gateway
       // so one walled credential cannot strand an unattended reviewer
@@ -498,23 +585,22 @@ export async function launchFreshAmendmentReviewer(
       count: 1,
       // role:'judge' is harness-scoped; launch-agent refuses it without one
       // (EI-23414612968722239), so it rides only with a resolved harness.
-      ...(answerOn.harness || reviewerModel ? { members: [{
-        ...(answerOn.harness ? { role: 'judge' } : {}),
+      ...(target.harness || reviewerModel ? { members: [{
+        ...(target.harness ? { role: 'judge' } : {}),
         ...(reviewerModel ?? {}),
       }] } : {}),
-      label,
-      idempotencyKey,
+      label: attemptLabelArg,
+      idempotencyKey: key,
     } as never,
-    freshReviewerLaunchCtx(input.launchCtx, input.workspaceId, answerOn.harness) as never,
-  )) as {
-    isError?: boolean;
-    content?: Array<{ text?: string }>;
-    data?: { deduped?: boolean; launch?: { tasks?: Array<{
-      taskId?: unknown;
-      ownerId?: unknown;
-      kickoffProof?: { nativeRef?: unknown };
-    }> } };
-  };
+    freshReviewerLaunchCtx(input.launchCtx, input.workspaceId, target.harness) as never,
+    )) as LaunchResult;
+  }
+
+  async function finishFreshReviewerLaunch(
+    result: LaunchResult,
+    effectiveKey: string,
+    effectiveLabel: string,
+  ): Promise<FreshAmendmentReviewerResult> {
   if (result?.isError) {
     const text = (result.content ?? []).map((c) => c.text ?? '').join(' ').trim();
     return { state: 'not-launched', reason: `launch refused: ${clip(text || 'no detail', 400)}` };
@@ -526,12 +612,13 @@ export async function launchFreshAmendmentReviewer(
   const retained = {
     launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
     taskId: typeof taskId === 'string' ? taskId : null,
-    label,
-    idempotencyKey,
+    label: effectiveLabel,
+    idempotencyKey: effectiveKey,
     deduped: result?.data?.deduped === true,
-    answerOn,
+    answerOn: target,
     ...(ownerId ? { ownerId } : {}),
     ...(nativeRef ? { nativeRef } : {}),
+    ...(relaunchedAfter.length > 0 ? { relaunchedAfter: [...relaunchedAfter] } : {}),
   };
   // A submitted kickoff is not a successful provider reply. Reuse the consult
   // transcript analyzer: synthetic billing/context/tool errors count, quoted
@@ -566,7 +653,18 @@ export async function launchFreshAmendmentReviewer(
     }
   }
   return { state: 'launched', ...retained };
+  }
 }
+
+type LaunchResult = {
+  isError?: boolean;
+  content?: Array<{ text?: string }>;
+  data?: { deduped?: boolean; launch?: { tasks?: Array<{
+    taskId?: unknown;
+    ownerId?: unknown;
+    kickoffProof?: { nativeRef?: unknown };
+  }> } };
+};
 
 /**
  * The preview post must carry the approval the CURRENT delta produces. This is
@@ -682,7 +780,13 @@ export async function openAcceptanceBarAmendmentReview(
       ? `No eligible reviewer could be routed, so ${freshReviewer.launcherId} ${freshReviewer.deduped ? 'already launched' : 'launched'} a fresh outside-lineage reviewer ` +
         `(label ${freshReviewer.label}${freshReviewer.taskId ? `, task ${freshReviewer.taskId}` : ''}). It answers with one work_items:comment on ${freshReviewer.answerOn.workItemId}: ` +
         `\`approve ${previewPostRef}\` or an objection. Read it with work_items:get { id:'${freshReviewer.answerOn.workItemId}', threadLimit:5 }, then apply with the same patch plus approvalRef:'thread-post:<that post id>'. ` +
-        'Re-running this dry run reuses the same reviewer; if it ended without posting, post the preview again and pass the new post to launch another.'
+        (freshReviewer.relaunchedAfter?.length
+          ? `Earlier reviewer task(s) ${freshReviewer.relaunchedAfter.join(', ')} ended without answering, so this one replaces them. `
+          : '') +
+        'Re-running this dry run reuses a live reviewer, and relaunches one if the last ended without answering; do not post a duplicate preview.'
+      : freshReviewer.state === 'blocked' && freshReviewer.reason === 'reviewer-ended'
+        ? `Every fresh reviewer launched for ${previewPostRef} ended without answering: ${freshReviewer.evidence}. ` +
+          'No decision was obtained. Fix the launch failure those task logs show before re-running this dry run; posting another preview only adds another dying reviewer.'
       : freshReviewer.state === 'blocked'
         ? `The retained outside-lineage reviewer is blocked (${freshReviewer.reason}): ${freshReviewer.evidence}. ` +
           `Task ${freshReviewer.taskId ?? 'unknown'}, transcript ${freshReviewer.nativeRef}. ` +

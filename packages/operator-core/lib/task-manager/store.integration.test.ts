@@ -108,6 +108,53 @@ beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.adv_sessions`;
 });
 
+describe('dispatch correlation real SQL recovery', () => {
+  async function insertDispatchTask(taskId: string, workspaceId: string, dispatchCallId: string | null, ageMinutes: number) {
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, confined, state, started_at, ended_at, detail
+      ) VALUES (
+        ${taskId}, ${workspaceId}, ${taskId}, 'bash-job', 'same shell command',
+        '[]'::jsonb, 'test', true, 'exited',
+        now() - ${ageMinutes} * interval '1 minute', now(),
+        jsonb_build_object('dispatchCallId', ${dispatchCallId}::text)
+      )
+    `;
+  }
+
+  it('dispatch correlation recovers an older exact task before a small LIMIT without another enrollment', async () => {
+    const dispatchCallId = "dispatch_%' OR true --";
+    await insertDispatchTask('original-dispatch', WS, dispatchCallId, 10);
+    await insertDispatchTask('foreign-same-dispatch', 'foreign-workspace', dispatchCallId, 0);
+    await insertDispatchTask('same-command-other-dispatch', WS, 'other-dispatch', 1);
+    await insertDispatchTask('literal-near-match', WS, "dispatch_X' OR true --", 2);
+    await insertDispatchTask('legacy-no-dispatch', WS, null, 3);
+
+    const countBefore = await db.sql`SELECT count(*)::int AS count FROM harness_shared.task_ledger`;
+    const filter = { workspaceId: WS, dispatchCallId, includeEnded: true, limit: 1 };
+    expect((await store.listTasks(filter)).map((task) => task.taskId)).toEqual(['original-dispatch']);
+    expect((await store.listTasks(filter)).map((task) => task.taskId)).toEqual(['original-dispatch']);
+    expect(await db.sql`SELECT count(*)::int AS count FROM harness_shared.task_ledger`).toEqual(countBefore);
+
+    // The legacy top row is a decoy: filtering an already-limited result cannot recover the original.
+    expect((await store.listTasks({ workspaceId: WS, includeEnded: true, limit: 1 })).map((task) => task.taskId))
+      .toEqual(['same-command-other-dispatch']);
+  });
+
+  it('dispatch correlation never returns a foreign-workspace match and retains missing-identity rows in legacy reads', async () => {
+    await insertDispatchTask('foreign-only-match', 'foreign-workspace', 'foreign-only-dispatch', 0);
+    await insertDispatchTask('legacy-own-task', WS, null, 1);
+
+    expect(await store.listTasks({ workspaceId: WS, dispatchCallId: 'foreign-only-dispatch', includeEnded: true, limit: 1 }))
+      .toEqual([]);
+    expect((await store.listTasks({ workspaceId: 'foreign-workspace', dispatchCallId: 'foreign-only-dispatch', includeEnded: true, limit: 1 }))
+      .map((task) => task.taskId)).toEqual(['foreign-only-match']);
+    expect((await store.listTasks({ workspaceId: WS, includeEnded: true, limit: 1 })).map((task) => task.taskId))
+      .toEqual(['legacy-own-task']);
+  });
+});
+
 describe('agent-session native-id binding (EI-21268871278252116)', () => {
   it('links the exact initial native session after a real short child has exited (EI-25609725859690051)', async () => {
     const { managedSpawn } = await import('./managed-spawn');

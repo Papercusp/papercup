@@ -47,7 +47,7 @@ function transactionalRig(
       version: concurrentVersion, contentHash: witness.contentHash, opStatus: null, planStatus: null,
       templateData: null, inputSchema: null, outputSchema: null, nowNote: null,
       latestRevision: { seq: witness.seq, body: witness.shippedBody },
-    });
+    }, scope);
     if (outcome.newBody !== null) {
       await opts.inTransaction?.(receipt as never, outcome.newBody, scope, outcome.value);
       await opts.revisionInTransaction?.(receipt as never, outcome.newBody, scope, null, 19);

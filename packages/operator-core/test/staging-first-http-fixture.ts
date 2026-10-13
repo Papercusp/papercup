@@ -128,6 +128,15 @@ async function main() {
   }
   assert.equal(health?.service, 'papercusp-operator', 'private operator never became ready');
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native') {
+    const receipt = await (await import('./current-su-native-http-scenario')).measureCurrentSuNativeScenario({
+      workspace, base, evidenceDir,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('CURRENT_SU_NATIVE_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'compaction-warm') {
     const receipt = await (await import('./compaction-warm-http-scenario')).measureCompactionWarmScenario({
       workspace, harness, base, headers, evidenceDir,

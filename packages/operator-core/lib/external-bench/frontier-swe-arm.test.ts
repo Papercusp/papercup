@@ -81,6 +81,12 @@ function clock() {
 }
 
 describe('runFrontierSweArm', () => {
+  it('refuses a current Papercusp arm using legacy injected runAgent before cloning or spending', () => {
+    expect(() => runFrontierSweArm({ spec: { ...SPEC, arm: 'papercusp' }, runAgent: fakeRunAgent,
+      budget: { maxModelCalls: 1000 }, seed: 0, runId: 'fixture-current', rowMeta: ROW_META,
+    })).toThrow(/legacy runAgent injection is retired/);
+  });
+
   it('runs the arm over the cpu task-set → one frontier-swe row per task with the seam-read score', async () => {
     const res = await runFrontierSweArm({
       spec: SPEC,

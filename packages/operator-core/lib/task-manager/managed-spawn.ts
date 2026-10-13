@@ -59,6 +59,8 @@ export interface ManagedSpawnOptions {
   requireRegistration?: boolean;
   /** Optional launch tracer; observes the existing spawn path without secrets. */
   stage?: (name: string) => void;
+  /** Observe the child synchronously before post-fork ledger writes can outlive it. */
+  onSpawn?: (child: ChildProcess, taskId: string) => void;
   /** Anything `child_process.spawn` takes. `detached` is honoured — a detached
    *  child still cannot leave its cgroup, which is the point. */
   spawnOptions?: SpawnOptions;
@@ -251,6 +253,7 @@ export async function managedSpawn(
     if (opts.requireRegistration) throw new Error('Required task enrollment is disabled; no process started.');
     opts.stage?.('spawn-fork');
     const child = spawnFn(command, args as string[], opts.spawnOptions ?? {});
+    opts.onSpawn?.(child, taskId);
     return {
       taskId,
       row: unledgeredRow(taskId, { ...spec, argv: [command, ...args] }, opts.workspaceId, child.pid ?? null),
@@ -536,13 +539,16 @@ export async function managedSpawn(
     await attemptRegistrationRecovery();
   };
 
+  // A short child can finish while markSpawned waits on PG. Both ledger and
+  // caller observers must be installed before that await; events are not replayed.
+  wireExit(child, taskId, scopeOk, scopeUnit, scopeCgroupPath, fs, persistCloseWhenRegistered);
+  opts.onSpawn?.(child, taskId);
+
   if (ledgered) {
     opts.stage?.('spawn-mark-running');
     await markSpawnedRow();
   }
   else scheduleRegistrationRetry();
-
-  wireExit(child, taskId, scopeOk, scopeUnit, scopeCgroupPath, fs, persistCloseWhenRegistered);
 
   return {
     taskId,

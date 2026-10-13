@@ -462,6 +462,8 @@ const ROLE_LAUNCH_ROW = (over: Partial<RoleLaunch> = {}): RoleLaunch => ({
   backendSource: 'model-shape',
   why: 'assessment reality control',
   conflict: null,
+  account: null,
+  backups: [],
   ...over,
 });
 const ROLE_LAUNCH = (rows: readonly Partial<RoleLaunch>[]) => roleLaunchVerdict(rows.map((r) => ROLE_LAUNCH_ROW(r)));

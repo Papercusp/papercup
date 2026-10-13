@@ -588,6 +588,13 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
         return JSON.parse(process.env.FIXTURE_RESULT);
       }
     `);
+    writeFileSync(join(root, 'packages/operator-core/lib/serving-generation.ts'), `
+      export async function assertRequiredServingMigrationsApplied() {
+        if (process.env.MISSING_REQUIRED_MIGRATION) {
+          throw new Error('serving schema is missing code-required migration(s): ' + process.env.MISSING_REQUIRED_MIGRATION);
+        }
+      }
+    `);
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
@@ -603,6 +610,32 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('restart-requested');
     expect(JSON.parse(readFileSync(join(root, 'trace'), 'utf8')).sqlDir).toBe(join(root, 'libs/papercusp/libs/db/sql'));
+  });
+
+  it('blocks cutover for an unapplied code-required migration but ignores unrelated drafts', () => {
+    const sqlDir = join(root, 'libs/papercusp/libs/db/sql');
+    mkdirSync(sqlDir, { recursive: true });
+    writeFileSync(join(sqlDir, '1490-unrelated.sql.DRAFT'), '-- intentionally parked');
+
+    const blocked = runFn(['prepare_staging_schema'],
+      'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
+        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'blocked-trace'),
+          FIXTURE_RESULT: '{"applied":0,"failed":[]}',
+          MISSING_REQUIRED_MIGRATION: '1489-fallback-observations-samples.sql' },
+      });
+    expect(blocked.status).toBe(1);
+    expect(blocked.stderr).toContain('1489-fallback-observations-samples.sql');
+    expect(blocked.stdout).not.toContain('restart-requested');
+    expect(existsSync(join(root, 'blocked-trace'))).toBe(true);
+
+    const ready = runFn(['prepare_staging_schema'],
+      'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
+        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'ready-trace'),
+          FIXTURE_RESULT: '{"applied":0,"failed":[]}' },
+      });
+    expect(ready.status).toBe(0);
+    expect(ready.stdout).toContain('restart-requested');
+    expect(existsSync(join(root, 'ready-trace'))).toBe(true);
   });
 
   it('refuses schema preparation when the candidate environment cannot be loaded', () => {

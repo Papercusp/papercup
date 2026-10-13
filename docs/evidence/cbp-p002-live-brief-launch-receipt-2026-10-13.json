@@ -30,7 +30,7 @@
     {
       "id": "answering-session-launched-live",
       "passed": true,
-      "evidence": "coord:presence 06:28:26Z: su-6b774762 sessionState live, startedAt 2026-10-13 02:27:26-04, host main-server-Precision-7865-Tower; adv_sessions 42201 agent claude, launch_parent_owner su-f4fac2af (the asker)."
+      "evidence": "coord:presence 06:28:26Z: su-6b774762 sessionState live, startedAt 2026-10-13 02:27:26-04, host [build-host]; adv_sessions 42201 agent claude, launch_parent_owner su-f4fac2af (the asker)."
     },
     {
       "id": "kickoff-cites-expert-turns",

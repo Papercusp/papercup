@@ -1,12 +1,50 @@
 import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { homedir, hostname, tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { readDiskAlarmContext, runDiskSpaceAlarmOnce } from './disk-space-alarm';
+import { writeCensusRun } from './disk-consumer-census';
+import type { AttentionNotifyInput } from '../attention-notify';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { readReclaimReceipt, runDiskReclaimOnce, writeReclaimAudit, type ReclaimSql } from './disk-reclaim';
+import { nativeRetentionCommand, readReclaimReceipt, runDiskReclaimOnce, writeReclaimAudit, type ReclaimSql } from './disk-reclaim';
 import { type RetentionClass } from './retention-policy';
+import { createFreshPgDb, applyEventSubstrateMigrationsForTest, COORD_SUBSCRIPTION_SUBSTRATE } from '../../test/_pg-helpers';
+
+const nativeDb = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined }));
+vi.mock('@papercusp/db-org', async (original) => ({
+  ...await original<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => {
+    if (!nativeDb.sql) throw new Error('native retention fixture database is not prepared');
+    return { sql: nativeDb.sql };
+  },
+}));
+vi.mock('../workspace-registry', async (original) => ({
+  ...await original<typeof import('../workspace-registry')>(), activeWorkspaceId: () => 'default',
+}));
+vi.mock('../task-manager/enabled', async (original) => ({
+  ...await original<typeof import('../task-manager/enabled')>(), isTaskManagerEnabled: async () => true,
+}));
+
+const fixtureMutex = vi.hoisted(() => ({
+  name: `disk-retention-fixture-${crypto.randomUUID()}`,
+  requested: [] as string[],
+}));
+// Exercise the real mutex on fixture resources. Other infrastructure mutexes
+// retain their original identity; the scheduled actor owns the production name.
+vi.mock('../../../../scripts/lib/fs-mutex.mjs', async (original) => {
+  const actual = await original<typeof import('../../../../scripts/lib/fs-mutex.mjs')>();
+  return {
+    ...actual,
+    withFsMutex: (...args: Parameters<typeof actual.withFsMutex>) => {
+      fixtureMutex.requested.push(args[0]);
+      return actual.withFsMutex(args[0] === 'papercusp-disk-retention' ? fixtureMutex.name : args[0], args[1], args[2]);
+    },
+  };
+});
 
 let fixture: string | undefined;
 afterEach(async () => { if (fixture) await rm(fixture, { recursive: true, force: true }); fixture = undefined; });
@@ -22,11 +60,98 @@ async function setup() {
 }
 
 describe('retention on a real fixture tree', () => {
+  it('runs the native cargo delegate repeatedly with captured receipts and no missed completion', async () => {
+    fixture = await mkdtemp(join(tmpdir(), 'disk-retention-cargo-'));
+    const shared = join(fixture, 'target');
+    const dead = join(fixture, 'target-pid99999999');
+    await mkdir(join(dead, 'debug'), { recursive: true });
+    await writeFile(join(dead, 'debug', 'marker'), 'expired fixture');
+    const old = new Date(Date.now() - 7200_000);
+    await utimes(join(dead, 'debug'), old, old); await utimes(dead, old, old);
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    // Reuse the desktop slot suite's Cargo configuration fixture: the shared
+    // root resolver intentionally ignores CARGO_TARGET_DIR (an already-claimed slot).
+    await mkdir(join(fixture, '.cargo'));
+    await mkdir(join(fixture, 'src-tauri', 'src'), { recursive: true });
+    await writeFile(join(fixture, '.cargo', 'config.toml'), `[build]\ntarget-dir = ${JSON.stringify(shared)}\n`);
+    await writeFile(join(fixture, 'src-tauri', 'Cargo.toml'), '[package]\nname = "retention-native-fixture"\nversion = "0.1.0"\nedition = "2021"\n');
+    await writeFile(join(fixture, 'src-tauri', 'src', 'lib.rs'), '');
+    const args = [
+      '-u', 'CARGO_BUILD_TARGET_DIR', `HOME=${fixture}`, 'CARGO_TARGET_DIR=',
+      `CARGO_HOME=${join(fixture, '.cargo')}`, `RUSTUP_HOME=${process.env.RUSTUP_HOME ?? join(homedir(), '.rustup')}`,
+      `PAPERCUSP_DESKTOP_TARGET_ROOT=${fixture}`,
+      `PAPERCUSP_RELEASE_RETENTION_ROOT=${join(fixture, 'retention')}`,
+      '/bin/bash', join(repoRoot, 'papercusp-desktop/bin/reap-private-target-slots.sh'),
+    ];
+    const db = await createFreshPgDb('disk-retention-native');
+    nativeDb.sql = db.sql;
+    try {
+      await applyEventSubstrateMigrationsForTest(db.sql, {
+        label: 'disk-reclaim.integration.test.ts native delegate', ...COORD_SUBSCRIPTION_SUBSTRATE,
+        extra: [...COORD_SUBSCRIPTION_SUBSTRATE.extra,
+          '696-task-ledger.sql', '700-task-ledger-bash-job-id-idx.sql', '774-task-ledger-ended-unobserved-state.sql'],
+      });
+      const listed = await nativeRetentionCommand(repoRoot, '/usr/bin/env', [...args, '--dry-run']);
+      expect(listed, JSON.stringify(listed)).toMatchObject({ ok: true });
+      expect(listed.detail).toMatchObject({ code: 0, output: expect.stringContaining(`would reap: ${dead}`) });
+      await expect(stat(dead)).resolves.toBeDefined();
+      const removed = await nativeRetentionCommand(repoRoot, '/usr/bin/env', args);
+      expect(removed, JSON.stringify(removed)).toMatchObject({ ok: true });
+      expect(removed.detail).toMatchObject({ code: 0, output: expect.stringContaining(`reaped dead private target slot ${dead}`) });
+      await expect(stat(dead)).rejects.toMatchObject({ code: 'ENOENT' });
+      const repeated = await nativeRetentionCommand(repoRoot, '/usr/bin/env', args);
+      expect(repeated, JSON.stringify(repeated)).toMatchObject({ ok: true });
+      const { getTask } = await import('../task-manager/store');
+      for (const result of [listed, removed]) {
+        const id = (result.detail as { taskId: string }).taskId;
+        await expect.poll(async () => (await getTask(id))?.state).toBe('exited');
+        expect(await getTask(id)).toMatchObject({ exitCode: 0 });
+      }
+    } finally {
+      await db.cleanup(); nativeDb.sql = undefined;
+    }
+  }, 120_000);
+
   it('removes expired files even without low-space samples and returns the exact path receipt', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
     const receipt = await runDiskReclaimOnce(options);
+    expect(receipt.errors).toEqual([]);
+    expect(fixtureMutex.requested.at(-1)).toBe('papercusp-disk-retention');
     expect(receipt.complete).toBe(true);
     expect(receipt.entries).toEqual([expect.objectContaining({ path, status: 'removed', classId: 'fixture' })]);
+    await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it('serializes overlapping fixture passes with the real mutex and preserves the losing pass', async () => {
+    const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
+    let signalEntered = () => {}; let releaseFirst = () => {};
+    const entered = new Promise<void>(resolve => { signalEntered = resolve; });
+    const release = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const first = runDiskReclaimOnce({ ...options, scanHolders: async () => {
+      signalEntered(); await release; return { complete: true, byPath: new Map<string, string[]>() };
+    } });
+    try {
+      await entered;
+      const second = await runDiskReclaimOnce(options);
+      expect(second.complete).toBe(false);
+      expect(second.errors.join(' ')).toContain('Timed out after 1000ms waiting for fs-mutex');
+      expect(second.entries).toEqual([]);
+      expect(await stat(path)).toBeTruthy();
+    } finally { releaseFirst(); }
+    const receipt = await first;
+    expect(receipt.errors).toEqual([]); expect(receipt.complete).toBe(true);
+    expect(receipt.entries).toEqual([expect.objectContaining({ path, status: 'removed' })]);
+    await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it('enforces expiry when both disks already exceed the 100 GiB target (D-005)', async () => {
+    const { root, options } = await setup(); const path = join(root, 'expired'); await writeFile(path, 'expired');
+    const gib = 1024 ** 3;
+    const receipt = await runDiskReclaimOnce({ ...options, expectedDevices: ['/', '/mnt/data'],
+      sample: async () => ['/', '/mnt/data'].map((device) => ({ path: device, totalBytes: 500 * gib,
+        freeBytes: 120 * gib, freePct: 0.24, totalInodes: 0, freeInodes: 0, freeInodesPct: 0 })),
+    });
+    expect(receipt.errors).toEqual([]); expect(receipt.complete).toBe(true);
+    expect(receipt.devices.map((d) => d.atTarget)).toEqual([true, true]);
+    expect(receipt.entries).toEqual([expect.objectContaining({ path, status: 'removed' })]);
     await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
   });
   it('protects a stale parent with a recently written descendant', async () => {
@@ -36,6 +161,36 @@ describe('retention on a real fixture tree', () => {
     await utimes(parent, new Date(0), new Date(0));
     const receipt = await runDiskReclaimOnce(options);
     expect(receipt.entries).toEqual([]); expect(await stat(child)).toBeTruthy();
+  });
+  it('retains a fresh large tree without spending the candidate budget on its descendants', async () => {
+    const { root, options } = await setup();
+    const parent = join(root, 'fresh'); await mkdir(parent);
+    await Promise.all(Array.from({ length: 64 }, (_, i) => writeFile(join(parent, `child-${i}`), 'keep')));
+    await utimes(parent, new Date(options.nowMs), new Date(options.nowMs));
+    const receipt = await runDiskReclaimOnce({ ...options, maxEntries: 2 });
+    expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+    expect(receipt.entries).toEqual([]); expect(await stat(join(parent, 'child-0'))).toBeTruthy();
+  });
+  it('stops at a recent descendant while preserving an otherwise stale large tree', async () => {
+    const { root, options } = await setup();
+    const parent = join(root, 'parent'); await mkdir(parent);
+    // Reverse traversal visits this recent file before the large older subtree.
+    const older = join(parent, 'a-older'); await mkdir(older);
+    await Promise.all(Array.from({ length: 64 }, (_, i) => writeFile(join(older, `child-${i}`), 'keep')));
+    const recent = join(parent, 'z-recent'); await writeFile(recent, 'keep');
+    await utimes(recent, new Date(options.nowMs), new Date(options.nowMs));
+    const receipt = await runDiskReclaimOnce({ ...options, maxEntries: 3 });
+    expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+    expect(receipt.entries).toEqual([]); expect(await stat(join(older, 'child-0'))).toBeTruthy();
+  });
+  it('still refuses an expired large tree when its complete scan exceeds the same budget', async () => {
+    const { root, options } = await setup();
+    const parent = join(root, 'expired'); await mkdir(parent);
+    await Promise.all(Array.from({ length: 64 }, (_, i) => writeFile(join(parent, `child-${i}`), 'keep')));
+    const receipt = await runDiskReclaimOnce({ ...options, maxEntries: 3 });
+    expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
+    expect(receipt.errors).toEqual(['incomplete tree scan: retention scan budget exhausted']);
+    expect(receipt.entries).toEqual([]); expect(await stat(join(parent, 'child-0'))).toBeTruthy();
   });
   it('never follows a symlink into owner data', async () => {
     const { root, options } = await setup(); const owner = join(fixture!, 'owner'); await mkdir(owner); await writeFile(join(owner, 'data'), 'keep');
@@ -54,6 +209,21 @@ describe('retention on a real fixture tree', () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'keep');
     const receipt = await runDiskReclaimOnce({ ...options, maxEntries: 0 });
     expect(receipt.complete).toBe(false); expect(receipt.errors.join(' ')).toContain('incomplete tree scan'); expect(await stat(path)).toBeTruthy();
+  });
+  it.each([{ maxEntries: 1 }, { budgetMs: 0 }])('stops an exhausted scan with bounded evidence and keeps the partial class (%j)', async (bound) => {
+    const { root, options } = await setup();
+    const paths = Array.from({ length: 32 }, (_, i) => join(root, `expired-${i}`));
+    await Promise.all(paths.map((path) => writeFile(path, 'expired')));
+    const delegate = vi.fn(async () => ({ ok: true, detail: 'independent owner completed' }));
+    const receipt = await runDiskReclaimOnce({ ...options, ...bound,
+      delegates: [{ classId: 'independent-owner', run: delegate }],
+    });
+    expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
+    expect(receipt.errors).toEqual(['incomplete tree scan: retention scan budget exhausted']);
+    expect(receipt.entries).toEqual([]);
+    expect(delegate).toHaveBeenCalledOnce();
+    expect(receipt.delegates).toEqual([{ classId: 'independent-owner', ok: true, detail: 'independent owner completed' }]);
+    for (const path of paths) expect(await stat(path)).toBeTruthy();
   });
   it('dry-run gives a deletion plan while preserving the selected file', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'keep');
@@ -105,6 +275,30 @@ describe('retention on a real fixture tree', () => {
       await writeReclaimAudit(sql, 'fixture-workspace', dry.id, 'receipt', dry);
       expect(await readReclaimReceipt(sql, 'fixture-workspace')).toEqual(receipt);
       expect(await readReclaimReceipt(sql, 'fixture-workspace', dry.id)).toEqual(dry);
+      // The production alarm context reads both device censuses and the same
+      // receipt the owner follows; no fixture object replaces this PG join.
+      await sql.unsafe(await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1472-disk-consumer-census.sql', import.meta.url), 'utf8'));
+      const at = new Date(); const gib = 1024 ** 3;
+      for (const [device, consumer] of [['/', '/home/builduser'], ['/mnt/data', '/mnt/data/offload']]) {
+        await writeCensusRun(sql as never, { runId: crypto.randomUUID(), host: hostname(),
+          device: { device: device!, majorMinor: '0:0', sizeBytes: 500 * gib, usedBytes: 401 * gib, availBytes: 99 * gib },
+          startedAt: at, finishedAt: at, attributedBytes: 401 * gib, complete: true, note: null,
+          consumers: [{ consumer: consumer!, kind: 'dir', depth: 2, bytes: 401 * gib }],
+        });
+      }
+      const context = await readDiskAlarmContext(sql, 'fixture-workspace');
+      expect(context.receipt).toEqual(receipt);
+      const notifications: AttentionNotifyInput[] = [];
+      const alarm = await runDiskSpaceAlarmOnce({
+        readContext: () => readDiskAlarmContext(sql, 'fixture-workspace'),
+        sample: async () => [{ path: '/', totalBytes: 500 * gib, freeBytes: 99 * gib, freePct: 0.198, totalInodes: 0, freeInodes: 0, freeInodesPct: 0 }],
+        emitToast: async () => {}, attributeUsage: async () => ({ entries: [], truncated: false }),
+        escalate: async (input) => { notifications.push(input); }, recentlyEscalated: async () => false,
+        broadcast: async () => true,
+      });
+      expect(alarm.escalated).toBe(true);
+      expect(notifications).toHaveLength(1);
+      for (const expected of ['/home/builduser', '/mnt/data/offload', `/settings/storage?reclaim=${receipt.id}`]) expect(notifications[0]!.body).toContain(expected);
       await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await sql.end({ timeout: 5 });

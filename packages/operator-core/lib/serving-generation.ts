@@ -13,9 +13,21 @@ import {
 } from './migration-drift';
 import { getServingHostIdentity } from './serving-host-identity';
 
+/**
+ * Schema migrations required by the operator code in this source generation.
+ * Keep this explicit: parked `.DRAFT` files are not applied, and unrelated
+ * drafts must not prevent a candidate from serving. The fallback-observation
+ * writer and readers use `fallback_observations.samples`, added by migration
+ * 1489.
+ */
+export const REQUIRED_SERVING_MIGRATIONS = [
+  '1489-fallback-observations-samples.sql',
+] as const;
+
 export type ServingGenerationUnknownReason =
   | 'build-sha-unknown'
   | 'applied-migrations-unknown'
+  | 'required-migrations-unapplied'
   | 'tool-registry-revision-unknown';
 
 export interface KnownServingGeneration {
@@ -30,6 +42,7 @@ export interface UnknownServingGeneration {
   state: 'unknown';
   reason: ServingGenerationUnknownReason;
   migrationReason?: 'query-failed' | 'malformed-ledger';
+  missingRequiredMigrations?: string[];
 }
 
 export type ServingGeneration = KnownServingGeneration | UnknownServingGeneration;
@@ -43,6 +56,35 @@ export interface ServingGenerationInputs {
   toolRegistryRevision: string | null | undefined;
 }
 
+type KnownAppliedMigrations = Extract<AppliedMigrationLedgerIdentity, { state: 'known' }>;
+
+function missingRequiredServingMigrations(appliedMigrations: KnownAppliedMigrations): string[] {
+  const applied = new Set(appliedMigrations.rows.map(({ filename }) => filename));
+  return REQUIRED_SERVING_MIGRATIONS.filter((filename) => !applied.has(filename));
+}
+
+/**
+ * Candidate startup calls this after applying armed migrations and before
+ * replacing the currently serving process. Unknown ledger state and a missing
+ * code-required migration both fail closed, while unrelated `.DRAFT` files are
+ * outside this explicit requirement set.
+ */
+export async function assertRequiredServingMigrationsApplied(
+  readAppliedMigrations: () => Promise<AppliedMigrationLedgerIdentity> = readAppliedMigrationLedgerIdentity,
+): Promise<void> {
+  const appliedMigrations = await readAppliedMigrations();
+  if (appliedMigrations.state !== 'known') {
+    throw new Error(`required serving migration check unavailable: ${appliedMigrations.reason}`);
+  }
+
+  const missingRequiredMigrations = missingRequiredServingMigrations(appliedMigrations);
+  if (missingRequiredMigrations.length > 0) {
+    throw new Error(
+      `serving schema is missing code-required migration(s): ${missingRequiredMigrations.join(', ')}`,
+    );
+  }
+}
+
 export function composeServingGeneration(input: ServingGenerationInputs): ServingGeneration {
   if (!input.buildSha?.trim()) return { state: 'unknown', reason: 'build-sha-unknown' };
   if (input.appliedMigrations.state !== 'known') {
@@ -50,6 +92,14 @@ export function composeServingGeneration(input: ServingGenerationInputs): Servin
       state: 'unknown',
       reason: 'applied-migrations-unknown',
       migrationReason: input.appliedMigrations.reason,
+    };
+  }
+  const missingRequiredMigrations = missingRequiredServingMigrations(input.appliedMigrations);
+  if (missingRequiredMigrations.length > 0) {
+    return {
+      state: 'unknown',
+      reason: 'required-migrations-unapplied',
+      missingRequiredMigrations,
     };
   }
   if (!input.toolRegistryRevision?.trim() || input.toolRegistryRevision === 'unknown') {

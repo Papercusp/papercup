@@ -862,6 +862,8 @@ export interface ListTasksFilter {
   taskId?: string;
   /** Exact identities, filtered before the result cap. Empty means no matches. */
   taskIds?: string[];
+  /** Server-owned launch dispatch identity; exact match inside the workspace before LIMIT. */
+  dispatchCallId?: string;
   /** Match one exact systemd scope/service unit before the result limit is applied. */
   scopeUnit?: string;
   /** Match one exact systemd InvocationID stored in terminal provenance. */
@@ -945,6 +947,7 @@ export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Pro
        ${filter.coordOwnerId ? sql`AND detail ->> 'coordOwnerId' = ${filter.coordOwnerId}` : sql``}
        ${filter.taskId ? sql`AND task_id = ${filter.taskId}` : sql``}
        ${filter.taskIds ? sql`AND task_id = ANY(${sql.array(filter.taskIds, 25)})` : sql``}
+       ${filter.dispatchCallId ? sql`AND detail ->> 'dispatchCallId' = ${filter.dispatchCallId}` : sql``}
        ${
          filter.scopeUnit
            ? sql`AND (scope_unit = ${filter.scopeUnit} OR detail #>> '{terminalProvenance,scopeUnit}' = ${filter.scopeUnit})`

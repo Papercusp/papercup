@@ -86,7 +86,7 @@ describe.skipIf(!baseUrl)('voice converse same-build latency acceptance', () => 
     expect(expectedSha, 'explicit containing runtime SHA is required').toBeTruthy();
     const before = await buildSha();
     expect(before).toBe(expectedSha);
-    const samples = [];
+    const samples: Awaited<ReturnType<typeof measure>>[] = [];
     // Alternate order to avoid handing all cold starts to the baseline.
     for (const order of [['standard', 'slim'], ['slim', 'standard'], ['standard', 'slim']] as Profile[][]) {
       for (const profile of order) {

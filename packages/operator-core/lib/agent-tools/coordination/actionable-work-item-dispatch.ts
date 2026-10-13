@@ -122,6 +122,13 @@ export interface StableAgentTargetState {
   wakeable: boolean | null;
   /** Acting-as user carried by the presence row, when available. */
   userId?: string;
+  /**
+   * Every session that adopted `requested` as a stable name, newest first. Set only
+   * when `present` is false: the name is adopted, but no adopter has a presence row,
+   * so a wake cannot reach anyone until a live agent adopts the name again
+   * (WI-6554700010010397).
+   */
+  adoptedBy?: string[];
 }
 
 export interface StableAgentTargetDeps {
@@ -136,7 +143,12 @@ const defaultTargetDeps: StableAgentTargetDeps = {
   listSessions: listSessionsForAgentName,
 };
 
-export type RequiredWakeFailureCode = 'target_dead' | 'target_absent' | 'target_unwakeable' | 'wake_delivery_unknown';
+export type RequiredWakeFailureCode =
+  | 'target_dead'
+  | 'target_absent'
+  | 'target_adopter_gone'
+  | 'target_unwakeable'
+  | 'wake_delivery_unknown';
 
 export interface RequiredWakeFailure {
   code: RequiredWakeFailureCode;
@@ -656,6 +668,7 @@ export async function resolveStableAgentTarget(
         present: false,
         sessionState: null,
         wakeable: false,
+        ...(adoptions.length > 0 ? { adoptedBy: candidateOwnerIds } : {}),
       };
     }
     return {
@@ -697,6 +710,22 @@ export function classifyRequiredWakeFailure(args: {
       ...base,
       code: 'target_dead',
       message: `${target} has sessionState=${args.target.sessionState}; assignment is durable but the target must be relaunched`,
+    };
+  }
+  const adopters = args.target.adoptedBy ?? [];
+  if (!args.target.present && queued === 0 && adopters.length > 0) {
+    // The stable name outlived every session that adopted it. Name the NAME, not one
+    // dead session id: the repair is a live agent re-adopting it (WI-6554700010010397).
+    const name = args.target.requested;
+    return {
+      ...base,
+      target: name,
+      code: 'target_adopter_gone',
+      message:
+        `agent name "${name}" is adopted only by sessions with no live presence ` +
+        `(${adopters.slice(0, 3).join(', ')}${adopters.length > 3 ? `, +${adopters.length - 3} more` : ''}); ` +
+        `launch an agent that runs plan_items:adopt_name { name: "${name}" }, or retarget/disarm the caller. ` +
+        `The assignment is durable and keyed on the name`,
     };
   }
   if (!args.target.present && queued === 0) {

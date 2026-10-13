@@ -789,6 +789,10 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // ALSO masking strings dropped 8 rows, every one real code and not one a phantom. So it
     // cannot pass probeStringLiteralBlindness and is correctly absent from the cases table
     // above — "migrate it to the full stripper" is a REGRESSION, and its own header says so.
+    // Reviewed WI-10006055: this wrapper matches Vite process diagnostics and
+    // delegates generated HTML/asset inspection to bundle-budget.mjs. Its file
+    // reads are build output; it never text-matches code tokens against source.
+    'check-bundle-budget.mjs',
     'check-generic-first.mjs',
     // check-github-identity-terms.mjs STAYS (audited 2026-08-10, WI-37717) — and this entry is
     // the "exposure considered" kind, not the "needs a stripper" kind. Its corpus is `.md`/`.mdx`
@@ -901,6 +905,10 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // ⚠ The MARKER window still reads RAW text: a justification is normally written AS a comment
     // (`// sql-snippet-justified: …`), so masking it would blank every justification in the repo
     // and turn the guard into a false-positive machine. `--self-test` case 4 pins that.
+    // Reviewed WI-10006055: every readFileSync parses a package.json manifest;
+    // includes() tests CLI argv. The quoted .mjs is an imported helper, not a
+    // JS/TS scan target. A source masker would change none of these inputs.
+    'check-partial-install.mjs',
     'check-systemd-startlimit-placement.mjs',
     // ⚠ KNOWN FALSE POSITIVE, not debt — remove this entry when EI-20077125623815751 lands.
     // This guard never reads JS/TS source: it reads `package.json` and regex-tests

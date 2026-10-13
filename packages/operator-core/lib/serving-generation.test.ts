@@ -1,16 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { digestAppliedMigrationRows } from './migration-drift';
 import {
+  assertRequiredServingMigrationsApplied,
   composeServingGeneration,
   describeServingGeneration,
   readServingGeneration,
+  REQUIRED_SERVING_MIGRATIONS,
   type ServingGenerationInputs,
 } from './serving-generation';
 
 const appliedMigrations = {
   state: 'known' as const,
-  rows: [{ filename: '001-core.sql', sha256: 'sha-core' }],
-  digest: digestAppliedMigrationRows([{ filename: '001-core.sql', sha256: 'sha-core' }]),
+  rows: [
+    { filename: '001-core.sql', sha256: 'sha-core' },
+    { filename: '1489-fallback-observations-samples.sql', sha256: 'sha-1489' },
+  ],
+  digest: digestAppliedMigrationRows([
+    { filename: '001-core.sql', sha256: 'sha-core' },
+    { filename: '1489-fallback-observations-samples.sql', sha256: 'sha-1489' },
+  ]),
 };
 
 function inputs(overrides: Partial<ServingGenerationInputs> = {}): ServingGenerationInputs {
@@ -60,6 +69,39 @@ describe('serving generation', () => {
       state: 'unknown',
       reason: 'tool-registry-revision-unknown',
     });
+  });
+
+  it('refuses a serving generation when the code-required migration is absent', async () => {
+    const requiredMigration = REQUIRED_SERVING_MIGRATIONS[0];
+    const rowsWithoutRequiredMigration = appliedMigrations.rows.filter(
+      ({ filename }) => filename !== requiredMigration,
+    );
+    const missingMigrationIdentity = {
+      state: 'known' as const,
+      rows: rowsWithoutRequiredMigration,
+      digest: digestAppliedMigrationRows(rowsWithoutRequiredMigration),
+    };
+
+    expect(REQUIRED_SERVING_MIGRATIONS).toEqual([requiredMigration]);
+    expect(composeServingGeneration(inputs({ appliedMigrations: missingMigrationIdentity }))).toEqual({
+      state: 'unknown',
+      reason: 'required-migrations-unapplied',
+      missingRequiredMigrations: [requiredMigration],
+    });
+    await expect(assertRequiredServingMigrationsApplied(async () => missingMigrationIdentity))
+      .rejects.toThrow(/1489-fallback-observations-samples\.sql/);
+    await expect(assertRequiredServingMigrationsApplied(async () => ({
+      state: 'unknown',
+      reason: 'query-failed',
+    }))).rejects.toThrow(/check unavailable: query-failed/);
+
+    // This code generation requires the samples column used by the writer;
+    // this cross-file assertion keeps the migration declaration load-bearing.
+    const fallbackWriter = readFileSync(
+      new URL('./degradation/fallback-observations.ts', import.meta.url),
+      'utf8',
+    );
+    expect(fallbackWriter).toContain("'correlation_id', 'observed_at', 'samples'");
   });
 
   it('reads injected inputs and renders an honest prompt marker', async () => {

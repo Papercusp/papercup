@@ -2,6 +2,8 @@
  * insight-staleness tests (learning-system-audit-improvements-2026-06-09 P-051).
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { describe, it, expect } from 'vitest';
 import {
   extractCitedPaths,
@@ -15,6 +17,11 @@ import {
 } from './insight-staleness';
 
 const insight = (slug: string, raw: string, status = 'active') => ({ slug, status, raw });
+
+// Keep the real filesystem/Git assertion without crossing the production
+// process-admission seam, whose ledger opens Postgres (forbidden in unit tests).
+const runLocalGit: typeof import('../../fleet/git-via-sidecar').execFileViaSidecar =
+  (command, args, opts) => promisify(execFile)(command, args, { timeout: opts.timeoutMs });
 
 describe('extractCitedPaths — conservative repo-file extraction', () => {
   it('keeps anchored repo files with extensions; drops globs, placeholders, URLs, dirs', () => {
@@ -450,7 +457,7 @@ describe('listIgnoredPaths — bounded sidecar probe routing', () => {
 // wiring (no throw, well-formed signals, the deterministic .mdx path shape).
 describe('collectInsightStalenessSignals — fs glue over the real docs tree', () => {
   it('resolves to an array of well-formed insight-staleness signals', async () => {
-    const signals = await collectInsightStalenessSignals();
+    const signals = await collectInsightStalenessSignals(runLocalGit);
     expect(Array.isArray(signals)).toBe(true);
     for (const s of signals) {
       expect(s.source).toBe('insight-staleness');
@@ -476,7 +483,7 @@ describe('collectInsightStalenessSignals — fs glue over the real docs tree', (
   it('never reports a gitignored (generated) path as missing', async () => {
     const { execFileSync } = await import('node:child_process');
     const { REPO_ROOT } = await import('../../agent-tools/docs/_repo-paths');
-    const signals = await collectInsightStalenessSignals();
+    const signals = await collectInsightStalenessSignals(runLocalGit);
     const blamed = signals.flatMap((s) =>
       [...(s.body ?? '').matchAll(/^ {2}- `([^`]+)`$/gm)].map((m) => m[1]),
     );

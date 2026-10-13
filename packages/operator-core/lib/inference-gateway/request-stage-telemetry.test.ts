@@ -3,6 +3,18 @@ import { channel } from 'node:diagnostics_channel';
 import http from 'node:http';
 
 describe('provider identity observations', () => {
+  it('delivers exact owner/request/model/effort/account evidence to the maintained startup sink', () => {
+    const records: unknown[] = [];
+    const collector = new GatewayRequestTelemetry({ onStartupEvidence: (_line, record) => records.push(record) });
+    const span = collector.begin({ provider: 'codex', protocol: 'openai-responses', ownerId: 's-primary' });
+    span.setModel('gpt-5.4');
+    span.setCacheShape(Buffer.from('{"reasoning":{"effort":"high"}}'));
+    span.setServingAccount('pool-a');
+    span.finish('ok', 200);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ ownerId: 's-primary', requestId: span.requestId,
+      model: 'gpt-5.4', effort: 'high', authorizationScope: 'pool-a', finalStatus: 200 });
+  });
   it('keeps request controls separate from the provider model and clones returned evidence', () => {
     const collector = new GatewayRequestTelemetry();
     const span = collector.begin({ provider: 'codex', protocol: 'openai-responses', ownerId: 'su-observed' });

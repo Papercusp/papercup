@@ -94,7 +94,7 @@ test('report clipboard capture initializes without Node transpiler globals', asy
       expect(typeof script).toBe('string');
       browserScript = script as string;
     },
-  } as Page);
+  });
   const navigator: { clipboard?: { writeText(value: string): Promise<void> } } = {};
   const window: { reportProofMarkdown?: string } = {};
   runInNewContext(browserScript!, { navigator, window });

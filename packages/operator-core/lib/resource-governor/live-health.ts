@@ -458,6 +458,26 @@ export interface LiveHealthSnapshot {
   readonly observations: Readonly<Record<LiveHealthSignalKey, Readonly<Record<string, LiveHealthReading>>>>;
   /** Newest reading per key for bounded orientation/state summaries. Not a verdict. */
   readonly signals: Readonly<Record<LiveHealthSignalKey, LiveHealthReading>>;
+  /** Optional only for legacy snapshots. Discrete observations never imply capacity between samples. */
+  readonly storage?: LiveHealthStorageSample;
+}
+
+export interface LiveHealthStorageSample {
+  readonly startedAtMs: number;
+  readonly collectedAtMs: number;
+  readonly policy: import('../storage/disk-space-policy').DiskAlarmPolicy;
+  readonly snapshots: readonly {
+    readonly path: string;
+    readonly state: 'measured' | 'unknown';
+    readonly dev: number | null;
+    readonly totalBytes: number | null;
+    readonly availableBytes: number | null;
+    readonly totalInodes: number | null;
+    readonly freeInodes: number | null;
+    readonly reservationState: 'measured' | 'unknown';
+    readonly reservedBytes: number | null;
+    readonly issues: readonly string[];
+  }[];
 }
 
 export interface LiveHealthFragment {
@@ -465,6 +485,39 @@ export interface LiveHealthFragment {
   readonly publishedAtMs: number;
   readonly writer: LiveHealthWriter;
   readonly signals: Partial<Record<LiveHealthSignalKey, LiveHealthReading>>;
+}
+
+function isLiveHealthStorage(value: unknown): value is LiveHealthStorageSample {
+  if (!isRecord(value) || !finite(value.startedAtMs) || !finite(value.collectedAtMs) || value.collectedAtMs < value.startedAtMs ||
+    !isRecord(value.policy) || !Array.isArray(value.snapshots) || value.snapshots.length === 0) return false;
+  for (const key of ['freePctMin', 'freeBytesMin', 'freeInodesPctMin', 'criticalFreePctMin', 'criticalFreeBytesMin', 'criticalFreeBytesCap']) {
+    if (!finite(value.policy[key]) || value.policy[key] < 0) return false;
+  }
+  const paths = new Set<string>();
+  const devices = new Map<number, Record<string, unknown>>();
+  for (const row of value.snapshots) {
+    if (!isRecord(row) || typeof row.path !== 'string' || !row.path || paths.has(row.path) ||
+      !Array.isArray(row.issues) || !row.issues.every((issue) => typeof issue === 'string')) return false;
+    paths.add(row.path);
+    if (row.state === 'unknown') {
+      if (row.reservationState !== 'unknown' || row.reservedBytes !== null ||
+        !['dev', 'totalBytes', 'availableBytes', 'totalInodes', 'freeInodes'].every((key) => row[key] === null)) return false;
+      continue;
+    }
+    if (row.state !== 'measured' || !['dev', 'totalBytes', 'availableBytes', 'totalInodes', 'freeInodes'].every(
+      (key) => finite(row[key]) && Number.isSafeInteger(row[key]) && row[key] >= 0)) return false;
+    if ((row.totalBytes as number) <= 0 || (row.availableBytes as number) > (row.totalBytes as number) ||
+      (row.freeInodes as number) > (row.totalInodes as number)) return false;
+    if (row.reservationState === 'unknown') {
+      if (row.reservedBytes !== null) return false;
+    } else if (row.reservationState !== 'measured' || !finite(row.reservedBytes) || !Number.isSafeInteger(row.reservedBytes) || row.reservedBytes < 0) {
+      return false;
+    }
+    const prior = devices.get(row.dev as number);
+    if (prior && ['totalBytes', 'reservedBytes', 'reservationState'].some((key) => row[key] !== prior[key])) return false;
+    devices.set(row.dev as number, row);
+  }
+  return true;
 }
 
 export function clampLiveHealthConfidence(value: number): number {
@@ -692,6 +745,7 @@ function isSyntheticUnknownWriter(key: LiveHealthSignalKey, reading: LiveHealthR
 export function isLiveHealthSnapshot(value: unknown): value is LiveHealthSnapshot {
   if (!isRecord(value)) return false;
   if (value.schemaVersion !== LIVE_HEALTH_SCHEMA_VERSION) return false;
+  if (value.storage !== undefined && !isLiveHealthStorage(value.storage)) return false;
   if (!finite(value.sequence) || !Number.isInteger(value.sequence) || value.sequence < 1) return false;
   if (!finite(value.sampledAtMs) || !finite(value.monitorStartedAtMs) || value.monitorStartedAtMs > value.sampledAtMs) {
     return false;

@@ -153,12 +153,13 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
 }>;
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
- * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>> }} options
+ * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner }} options
  */
-export function prepareVerifierDependencies({ donor, dest, receipt }: {
+export function prepareVerifierDependencies({ donor, dest, receipt, runPhase }: {
     donor: string;
     dest: string;
     receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
+    runPhase?: VerifierPhaseRunner;
 }): Promise<void>;
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
@@ -623,6 +624,7 @@ export type PublicRepositoryLicenseRow = {
     licenses: PublicRepositoryLicense[];
     errors: string[];
 };
+export type VerifierPhaseRunner = <T>(phase: string, operation: () => T | Promise<T>) => Promise<T>;
 /**
  * Where an export is published (plan open-source-release-2026-09-29 P-002/P-003).
  * - preview: the private, invite-only evaluation snapshot. Replaced WHOLESALE by one

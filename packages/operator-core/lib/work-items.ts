@@ -6348,7 +6348,7 @@ export function watchdogRecoveryWindowExclusionSql(sql: OrgSql) {
   )`;
 }
 
-export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
+export function featureClaimFloorPredicatesSql(sql: OrgSql, opts: ClaimFloorsOpts) {
   // work-item-status-full-unify (2026-07-19) P-004/P-005: the claimable-floor DEFAULT is the
   // single unified token ['open'] — `open` is the claimable status for BOTH families now
   // (feature `todo`→`open` applied by migration 638; the create-path + reaper write 'open';
@@ -6391,109 +6391,34 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
           )
         )`
       : sql`TRUE`;
-  return sql`
-    harness_slug = ${opts.harness}
-    AND workspace_id = ${opts.workspaceId}
-    -- Release-cooldown floor (mig 485 / EI-6956 + migration 1055): retain the
-    -- legacy single-stamp fallback and AND the keyed per-agent sidecar anti-join.
-    -- Rows released by another agent remain eligible for this caller; a peer can
-    -- no longer overwrite this caller's cooldown in the shared row stamp.
-    AND ${releaseCooldownFloor}
-    -- Feature-family agent work only: not issue-routed, and nature work / audience agent
-    -- through the single work predicate (frontierPlacementKindClause, P-009 / D-022).
-    AND ${frontierPlacementKindClause(sql, opts.workspaceId)}
-    -- G2 admission (shared-hive-trust-admission P-002): never self-select a remote,
-    -- un-admitted item — the same gate the feature frontier enforces (P-010 trust leg,
-    -- ws-scoped via the same ws this query filters on).
-    AND ${autoPickableWhereSql(sql, opts.workspaceId)}
-    -- P-002 born-pending: pending items stay out of every feature self-select path.
-    AND ${admittedWhereSql(sql)}
-    -- P-013/D-012 stop-the-line: while this harness's gate-red-streak condition item has
-    -- been open >24h, feature-family self-select on the harness pauses entirely (the
-    -- consolidated view has no condition_key column and placement kinds carry no repair
-    -- lane — repair flows through the issue family's exempt classes). By-id claims and
-    -- other harnesses are unaffected. Same shared fragment as the issue family's
-    -- ok_stop_line, composed for this relation's unaliased context.
-    AND ${stopTheLineExclusionSql(sql, 'feature-consolidated')}
-    AND (taken_by IS NULL OR taken_by = '')
-    AND (CASE WHEN status = 'todo' THEN 'open' ELSE status END) = ANY(${states}::text[])
-    -- P-006 (fleet-deltas-leader-primitives): the claim-hold floor, extended to the
-    -- FEATURE family. The issue-family claim already honors payload._claimHold
-    -- (claimHoldExclusionSql, WI-2797) — but the incident class that motivated
-    -- held_open_by (EI-8993: a leader-held FEATURE like WI-3548 getting claim_next'd
-    -- off the leader the moment its claim lapsed) lived on THIS path, which never
-    -- read the tag. Same COALESCE-for-NULL-safety shape, unaliased (this fragment
-    -- runs in harness_features_consolidated context).
-    AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
-    -- D-003/P-004: work awaiting peer review, or returned to its submitter for revision,
-    -- belongs exclusively to the agent-review lifecycle. Approval re-admits the row.
-    AND ${intakeStageClaimFloorSql(sql, 'payload')}
-    -- EI-19441925633833456: the HIVE-CANARY floor. A canary (payload.canary=true) is a
-    -- MEASUREMENT INSTRUMENT for "does the autonomous loop carry queued work end-to-end?",
-    -- so an agent self-selecting it and completing it does not answer that question — it
-    -- fabricates a pass. Observed: scheduler:get_next served F-CANARY-20260803 to an su on
-    -- 2026-08-03, and F-CANARY-20260802 was su-completed 58s after creation while the Hive
-    -- was owner-paused and no cup could possibly have run.
-    --
-    -- ⚠ This floor belongs HERE (self-select) and NOWHERE ELSE. Do NOT add it to
-    -- fetchFrontierRows (pot/survey.ts) and do NOT express it via payload._claimHold: that tag is
-    -- honored by BOTH this path and the Mug's placement frontier, so using it would make the
-    -- canary un-placeable and the detector would report a loop failure every day, forever —
-    -- breaking the instrument in the exact way it exists to detect. The requirement is
-    -- deliberately asymmetric: agents NO, cups YES.
-    --
-    -- NULL-safe via COALESCE, and scoped to a key only canary rows carry, so every ordinary
-    -- item passes unchanged. A canary remains claimable by explicit id for maintenance.
-    AND COALESCE(payload, '{}'::jsonb) ->> 'canary' IS DISTINCT FROM 'true'
-    -- WI-5343: the reserved-plan-lane floor, extended to the FEATURE family. The issue-family
-    -- claim has honored a plan-active / live-plan_item_claims-lease reservation since WI-2118 —
-    -- but this path (getNextWorkItem tiers 1/2 + claimNextWorkItem) never read the payload.plan_item
-    -- back-pointer, so a feature-family item promoted onto a live plan lane (e.g. WI-5137, bound to
-    -- an active plan) was self-selectable out from under the lane's own driving agent. Same
-    -- predicate as the issue family (reservedPlanLaneExclusionSql), unaliased (runs in
-    -- harness_features_consolidated context). opts.cooldownAssignee already carries the claiming
-    -- agent's ownerId (see its own doc comment) so it doubles for free as the owner-exemption arg —
-    -- a lease THIS agent itself holds must not block its own re-claim.
-    AND ${reservedPlanLaneExclusionSql(sql, opts.cooldownAssignee ?? '', 'payload', {
+
+  // The claim path and its diagnostics compose the same named predicates.
+  // Caller-relative cooldown/verification and fleet/goal reservations retain
+  // their existing options; this registry never widens eligibility.
+  return {
+    scope: sql`harness_slug = ${opts.harness} AND workspace_id = ${opts.workspaceId}`,
+    releaseCooldown: releaseCooldownFloor,
+    frontierKind: frontierPlacementKindClause(sql, opts.workspaceId),
+    trust: autoPickableWhereSql(sql, opts.workspaceId),
+    admission: admittedWhereSql(sql),
+    stopTheLine: stopTheLineExclusionSql(sql, 'feature-consolidated'),
+    taken: sql`(taken_by IS NULL OR taken_by = '')`,
+    claimState: sql`(CASE WHEN status = 'todo' THEN 'open' ELSE status END) = ANY(${states}::text[])`,
+    claimHold: sql`COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'`,
+    intakeStage: intakeStageClaimFloorSql(sql, 'payload'),
+    // Canary instruments remain excluded only at self-select, not placement.
+    canary: sql`COALESCE(payload, '{}'::jsonb) ->> 'canary' IS DISTINCT FROM 'true'`,
+    reservedPlanLane: reservedPlanLaneExclusionSql(sql, opts.cooldownAssignee ?? '', 'payload', {
       claimantFleetSlug: opts.claimantFleetSlug,
       claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
       claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
-    })}
-    -- P-007 / D-021: a verification task never self-selects to its own reporter or
-    -- implementer. Claimant-specific, so it is a claim-door filter, not a claim floor.
-    AND NOT ${verificationTaskConflictSql(sql, opts.cooldownAssignee ?? '', 'payload')}
-    -- EI-14806: the cross-machine-rig floor, extended to the FEATURE family. The issue-family
-    -- claim has honored payload.needs_2_machine_rig since WI-2796, but a FEATURE-family item can
-    -- ALSO carry the tag (WI-3487, a p2p rig-readiness feature) and this path — getNextWorkItem
-    -- tiers 1/2 + claimNextWorkItem — never read it, so a no-rig caller (DEFAULT_CLAIM_SPEC or any
-    -- feature-view spec) self-selected un-runnable rig work. Same predicate as the issue family,
-    -- unaliased (runs in harness_features_consolidated context). Omitted rigAvailable ⇒ excluded.
-    AND ${crossMachineRigExclusionSql(sql, opts.rigAvailable, 'payload')}
-    AND ${opts.swarmId ? sql`(swarm_affinity IS NULL OR swarm_affinity = ${opts.swarmId})` : sql`TRUE`}
-    -- P-014: under the redundancy flag, high-stakes (redundancy > 1) items fan out via
-    -- claim_replica to N Swarms, so an exactly-once claim must NOT grab them. Flag OFF ⇒
-    -- clause omitted, the claim never reads the redundancy column, byte-identical to before.
-    AND ${opts.excludeRedundant ? sql`(redundancy IS NULL OR redundancy <= 1)` : sql`TRUE`}
-    -- P-005 (F1 fix): RESPECT blocking — never self-select a row that has a PRESENT,
-    -- NON-TERMINAL blocker, the SAME readiness the orchestrator frontier enforces
-    -- (frontier-readiness.ts / work-item-blocking.ts). The block edges live in the
-    -- dedicated work_item_deps table (dep_type='blocks'), keyed by harness-qualified refs
-    -- ('<harness>#<feature_id>' for features, bare 'EI-<n>' for issues — featureRef /
-    -- issues:link), in the single coordination workspace ('default'). A blocker is
-    -- SATISFIED iff TERMINAL or ABSENT; we exclude the row only when a present blocker is
-    -- non-terminal — feature terminal = status IN ('passed','deprecated','done','dropped');
-    -- issue terminal = state IN ('resolved','closed','done','dropped') (the cross-family set,
-    -- transitional legacy∪unified per work-item-status-full-unify — narrow to done/dropped at
-    -- cleanup). An
-    -- absent blocker ref (no matching feature/issue row) never blocks.
-    --
-    -- P-005 maintained-readiness cutover (SCHEDULER_MAINTAINED_READY): when ON, the SAME predicate
-    -- is read from the maintained work_item_blocked sidecar (an indexed anti-join, presence = not
-    -- ready) the wir_ triggers keep exact, instead of recomputing the correlated subquery per claim.
-    -- The two forms are equivalent (the sidecar is materialized from this exact predicate + a
-    -- reconciliation oracle); OFF is the byte-identical inline form.
-    AND ${
-      opts.useMaintainedReady
+    }),
+    verificationConflict: sql`NOT ${verificationTaskConflictSql(sql, opts.cooldownAssignee ?? '', 'payload')}`,
+    rig: crossMachineRigExclusionSql(sql, opts.rigAvailable, 'payload'),
+    swarm: opts.swarmId ? sql`(swarm_affinity IS NULL OR swarm_affinity = ${opts.swarmId})` : sql`TRUE`,
+    redundancy: opts.excludeRedundant ? sql`(redundancy IS NULL OR redundancy <= 1)` : sql`TRUE`,
+    // Keep inline and maintained readiness identical, including blocker authority.
+    dependencies: opts.useMaintainedReady
         ? sql`NOT EXISTS (
       SELECT 1
         FROM harness_shared.work_item_blocked wb
@@ -6545,8 +6470,13 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
                 )
            )
          )
-    )`
-    }`;
+    )`,
+  };
+}
+
+export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
+  return Object.values(featureClaimFloorPredicatesSql(sql, opts))
+    .reduce((all, floor) => sql`${all} AND (${floor})`, sql`TRUE`);
 }
 
 /**

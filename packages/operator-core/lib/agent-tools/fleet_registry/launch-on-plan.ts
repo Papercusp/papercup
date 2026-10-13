@@ -108,7 +108,9 @@ import { checkPlanStartable, startVerdictForRow } from '../plans/plan-start-gate
 import {
   buildExactPlanClaimSpec,
   claimableStatesForKinds as exactPlanClaimableStatesForKinds,
+  type ExactPlanAdmission,
 } from '../plans/plan-admission-preflight';
+import { applyResultDoorAsync } from '../../result-door';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
 import { fleetLaunchAbortCompletionReceipt } from './launch-abort-completion';
 import { extractWorkItemIds, TERMINAL_WORK_ITEM_STATES } from '../work_items/mirror-guard';
@@ -252,6 +254,80 @@ async function readCallerLaunchMode(workspaceId: string, ownerId: string): Promi
  * A zero-promoted result is normally an idempotent no-op, but the spec-triad
  * refusal is different: the open items are not covered and the lane is empty.
  */
+/** Keep the action ahead of promotion/spec diagnostics and freeze oversized detail. */
+export async function fleetAdmissionRefusalResult(args: {
+  fleet: string;
+  plan: string;
+  harness: string;
+  admission: ExactPlanAdmission | null;
+  admissionError?: string | null;
+  promotionFailsafe: unknown;
+  workspaceId: string;
+  ownerId: string;
+}) {
+  const admission = args.admission;
+  const duplicateRows = admission?.promotion?.duplicateActionable ?? [];
+  const rows = [
+    ...duplicateRows.flatMap((row) => row.workItemIds.map((workItemId) => ({
+      planItemId: row.planItemId, workItemId,
+    }))),
+    ...(admission?.blockingRows ?? []),
+    ...(admission?.actionableRows ?? []),
+  ];
+  const planItemIds = [...new Set([
+    ...rows.map((row) => row.planItemId),
+    ...(admission?.promotion?.missingActionableItemIds ?? []),
+    ...(admission?.parallelism?.nonReadyItems ?? []).flatMap((item) => [item.itemId, ...item.blockerIds]),
+  ])];
+  const workItemIds = [...new Set(rows.map((row) => row.workItemId))];
+  const excluded = admission?.lane?.effective.excluded;
+  // claimFloors is a union count, not the name of a floor.
+  const namedFloors = excluded == null ? null : Object.fromEntries(
+    Object.entries(excluded).filter(([name, count]) => name !== 'claimFloors' && count > 0),
+  );
+  const held = new Set((admission?.blockingRows ?? []).map((row) => row.workItemId));
+  const claimId = workItemIds.find((id) => !held.has(id));
+  const canClaim = admission?.reason === 'floor-gated' && claimId &&
+    Object.keys(namedFloors ?? {}).length > 0 &&
+    Object.keys(namedFloors ?? {}).every((name) => ['stopTheLine', 'reservedPlanLane', 'releaseCooldown',
+      'claimHold', 'claimState', 'verificationConflict', 'rig', 'swarm', 'redundancy', 'dependencies'].includes(name));
+  const repairCall = canClaim
+    ? { tool: 'work_items:claim', args: { id: claimId, assignee: 'self', harness: args.harness },
+        effect: 'claim', note: 'Claim this exact row with readiness advisories, then retry the plan start.' }
+    : workItemIds.length > 0
+      ? { tool: 'work_items:get', args: { ids: workItemIds.slice(0, 16), harness: args.harness },
+          effect: 'inspect', note: duplicateRows.length
+            ? 'Compare the exact duplicate rows before choosing a canonical survivor; do not run whole-corpus dedup.'
+            : 'Read the exact blockers and their holders before repairing their recorded prerequisite.' }
+      : { tool: 'plans:get', args: { slug: args.plan, harness: args.harness },
+          effect: 'inspect', note: 'Repair the exact plan prerequisites shown by this read, then retry.' };
+  const message = admission
+    ? `Exact-plan admission refused before fleet creation: ${admission.message}`
+    : `Exact-plan admission could not be measured before fleet creation: ${args.admissionError ?? 'unknown error'}`;
+  return applyResultDoorAsync(json({
+    ok: false,
+    error: 'admission_refused',
+    reason: admission?.reason ?? 'lane-unknown',
+    message,
+    blockingPlanItemIds: planItemIds.slice(0, 16),
+    blockingWorkItemIds: workItemIds.slice(0, 16),
+    namedFloors,
+    repairCall,
+    blockerCounts: { planItems: planItemIds.length, workItems: workItemIds.length },
+    fleet: args.fleet,
+    plan: args.plan,
+    harness: args.harness,
+    promotionFailsafe: args.promotionFailsafe,
+    admission,
+    ...(args.admissionError ? { admissionError: args.admissionError } : {}),
+  }, true), {
+    toolName: 'fleet:launch-on-plan', workspaceId: args.workspaceId, ownerId: args.ownerId,
+    preservePaths: ['ok', 'error', 'reason', 'message', 'blockingPlanItemIds', 'blockingWorkItemIds',
+      'namedFloors', 'repairCall', 'repairCall.tool', 'repairCall.args', 'repairCall.effect',
+      'blockerCounts', 'fleet', 'plan', 'harness'],
+  });
+}
+
 function promotionFailsafeWarning(
   planSlug: string,
   result: (PromotePlanResult & { ran: boolean }) | null,
@@ -2156,6 +2232,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     let modelResolution: ReturnType<typeof resolveLaunchModelAlias> | null = null;
+    const memberAliasResolutions: Array<ReturnType<typeof resolveLaunchModelAlias> | undefined> = [];
     const requestedDefaultEffort = args.effort;
     try {
       if (args.model) {
@@ -2166,12 +2243,13 @@ export default defineTool({
         args = { ...args, model: modelResolution.model, effort: modelResolution.effort ?? undefined, agent: args.agent ?? modelResolution.agent ?? undefined };
       }
       if (args.members) {
-        args = { ...args, members: args.members.map(member => {
+        args = { ...args, members: args.members.map((member, i) => {
           if (!member.model) return member;
           const resolved = resolveLaunchModelAlias(member.model, {
             effort: member.effort ?? requestedDefaultEffort,
             agent: member.agent ?? (isOmpLocalModel(member.model) ? 'omp' : undefined),
           });
+          memberAliasResolutions[i] = resolved;
           return { ...member, model: resolved.model, effort: resolved.effort ?? undefined, agent: member.agent ?? resolved.agent ?? undefined };
         }) };
       }
@@ -2974,22 +3052,10 @@ export default defineTool({
         admissionError = (error as Error).message;
       }
       if (!admission?.ready) {
-        return json(
-          {
-            ok: false,
-            error: 'admission_refused',
-            fleet: fleetSlug,
-            plan: planSlug,
-            harness: planHarnessSlug,
-            promotionFailsafe,
-            admission,
-            ...(admissionError ? { admissionError } : {}),
-            message: admission
-              ? `Exact-plan admission refused before fleet creation: ${admission.message}`
-              : `Exact-plan admission could not be measured before fleet creation: ${admissionError ?? 'unknown error'}`,
-          },
-          true,
-        );
+        return fleetAdmissionRefusalResult({
+          fleet: fleetSlug, plan: planSlug, harness: planHarnessSlug,
+          promotionFailsafe, admission, admissionError, workspaceId, ownerId,
+        });
       }
     }
 
@@ -4861,6 +4927,23 @@ export default defineTool({
     // Back-compat: `command` (singular) is reported/reused where every member is
     // identical (the common case — no perMemberLaunchContext).
     const command = memberCommands[0] ?? '';
+    const memberModelResolutions = Array.from({ length: openCount }, (_v, i) => {
+      const config = resolvedMemberConfig(memberSpecIndex(i));
+      const model = composeModelSpec(config.model, config.effort);
+      if (!model) return null;
+      const requested = memberAliasResolutions[memberSpecIndex(i)] ?? modelResolution;
+      return {
+        requested: requested?.requested ?? model,
+        agent: config.agent ?? null,
+        model,
+        effort: (model.match(/:(low|medium|high|xhigh|max)$/i)?.[1] ?? null) as ReturnType<typeof resolveLaunchModelAlias>['effort'],
+        alias: requested?.alias ?? null,
+      };
+    });
+    const firstModelResolution = memberModelResolutions[0] ?? null;
+    const effectiveModelResolution = memberModelResolutions.every(resolved =>
+      resolved?.model === firstModelResolution?.model && resolved?.agent === firstModelResolution?.agent &&
+      resolved?.effort === firstModelResolution?.effort) ? firstModelResolution : null;
     // P-004 per-member disclosure: the fully-resolved config each member actually got
     // (precedence member > fleet > system), so the leader confirms it WITHOUT diffing raw
     // command strings. Only built when a declarative `members` spec was passed (a homogeneous
@@ -5889,7 +5972,8 @@ export default defineTool({
     return json(
       {
         ok: launchTransaction.verifiedMemberIds.length > 0 || spawnedLeader?.registered === true,
-        modelResolution,
+        modelResolution: effectiveModelResolution,
+        memberModelResolutions,
         fleet: fleetSlug,
         // WI-10004545: which goal the launching agent attributed the plan to (null = not a
         // goal launch / nothing attributed); `error` is set when the best-effort stamp threw.

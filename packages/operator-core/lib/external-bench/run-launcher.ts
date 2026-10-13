@@ -28,7 +28,7 @@
  * (Not a "module-scoped state Map" in the storage-policy sense: a live promise +
  * cancel flag cannot be serialized; PG is the source of truth.)
  */
-import type { BenchTask, TaskCheckout } from './types';
+import type { BenchTask, TaskCheckout, GenerationStopReason } from './types';
 import type { FleetTaskResult, HiveBacklogResult, HiveBacklogRunRequest } from './hive-backlog';
 import { runHiveBacklog } from './hive-backlog';
 import { bindRealQueenBacklogDriver, dissolveBenchHive } from './hive-backlog-realqueen';
@@ -47,7 +47,7 @@ import {
 } from './run-store';
 import { loadBenchTaskSet } from './task-sets';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { defaultBenchResultsDir } from './preserved-runs';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
@@ -66,9 +66,16 @@ import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGate
   currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
   type CurrentBenchLockStateAllocation,
   type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions } from './current-su';
-import { registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
+import { getLearningSpendPositions, registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
+import type { FrontierSweNativeAssignment } from './frontier-swe-launch-adapter';
+import type { FrontierSweEnvHandle } from './frontier-swe-seam';
+import type { RunAgentInput } from './run-topology';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
 import { CURRENT_STOCK_CODEX_BLUEPRINT } from './current-su';
+import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
+import { resolveCoordinationSpec } from './coordination-topology';
+import { emitRollout } from './reproducibility/emit';
+import type { runFrontierSweCurrentArm } from './frontier-swe-arm';
 
 /** A run actively executing in THIS host process (ephemeral; PG is durable truth). */
 interface ActiveRun {
@@ -150,6 +157,8 @@ export interface LaunchDeps {
   /** Assignment-local runtime seam; production starts the maintained native gateway/driver. */
   currentTask?: (input: CurrentTaskInput) => Promise<{ driver: BenchHarnessDriver; stop(): Promise<void> }>;
   currentGeneration?: Pick<import('./types').GenerationPorts, 'clone' | 'extractDiff'>;
+  /** Host-owned in-container run seam; never taken from the launch JSON. */
+  currentFrontierArm?: typeof runFrontierSweCurrentArm;
 }
 
 export interface CurrentTaskInput {
@@ -653,7 +662,9 @@ function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningRese
   return resources;
 }
 
-async function liveCurrentTask(input: CurrentTaskInput) {
+/** The shared production assignment authority used by host and in-container native runs. */
+export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput): Promise<
+  Pick<FrontierSweNativeAssignment, 'options' | 'observations' | 'stop' | 'readModelCalls'>> {
   const { options, protocol, task, context, scope, resources, loopId } = input;
   const capture = await currentBenchTaskProviderCapture(input);
   const currentArm = protocol.arms.find(arm => arm.id === options.armId)!;
@@ -666,16 +677,103 @@ async function liveCurrentTask(input: CurrentTaskInput) {
     authenticateProvider: auth.authenticateProvider, captureProviderInput: capture.captureProviderInput },
     { enabled: async () => true, getSql: async () => resolveDb(scope).sql });
   let host: Awaited<ReturnType<typeof controller.startNativeGateway>> | undefined;
-  const stop = async () => { auth.revoke(); controller.revoke(); await host?.stop(); };
+  let stopping: Promise<void> | undefined;
+  const stop = () => {
+    auth.revoke(); controller.revoke();
+    return stopping ??= Promise.resolve().then(() => host?.stop());
+  };
   try {
     host = await controller.startNativeGateway(context.log);
     const observeIdentity = currentBenchObservationReader({ ...scope, ...input.observation,
       workspaceId: options.workspaceId, gatewayBaseUrl: host.nativeGateway.baseURL }, undefined, host);
-    const create = options.armId === 'baseline' ? createCurrentStockBenchHarness : createCurrentSuBenchHarness;
-    const driver = create(options, context, { ...host, observeIdentity,
-      admit: async () => ({ admitted: !options.signal?.aborted, receiptRef: `governor:${options.workspaceId}/${loopId}#${options.preregistration.preregHash}` }) });
-    return { driver, stop };
+    const observations = { ...host, observeIdentity,
+      admit: async () => ({ admitted: !options.signal?.aborted, receiptRef: `governor:${options.workspaceId}/${loopId}#${options.preregistration.preregHash}` }) };
+    return { options, observations, stop, readModelCalls: () => readCurrentBenchTaskModelCalls(input, capture) };
   } catch (error) { await stop(); throw error; }
+}
+
+/** Count admitted native requests from the complete governor census, bound to private host captures. */
+export async function readCurrentBenchTaskModelCalls(input: CurrentTaskInput,
+  capture: Pick<Awaited<ReturnType<typeof currentBenchTaskProviderCapture>>, 'readCapture'>): Promise<number> {
+  const { options, scope, loopId, task } = input;
+  const { sql, ws } = resolveDb(scope);
+  if (ws !== options.workspaceId) throw new Error('Native request census workspace differs from its assignment.');
+  const assignmentId = currentBenchAssignmentId(options.runId, options.armId, task.instanceId, options.seed);
+  const { census } = await getLearningSpendPositions(sql,
+    { workspaceId: options.workspaceId, loopId, includeReservations: true });
+  if (!census || census.status !== 'complete') throw new Error('Native model request census is unavailable.');
+  const ids = new Set<string>();
+  let calls = 0;
+  for (const row of census.reservations) {
+    if (row.workspaceId !== options.workspaceId || row.loopId !== loopId || ids.has(row.id))
+      throw new Error('Native model request census has duplicate or foreign reservations.');
+    ids.add(row.id);
+    if (row.resources?.armId !== assignmentId) continue;
+    const note = JSON.parse(row.note ?? 'null'), attempt = note?.nativeGatewayAttempt;
+    if (!attempt || attempt.attemptId !== row.id || attempt.armId !== assignmentId ||
+        attempt.manifestSha256 !== options.preregistration.preregHash || !capture.readCapture(row.id))
+      throw new Error('Native model request census differs from its frozen input capture.');
+    // Each reservation is one admitted native model request. Include retries,
+    // failed responses and refused sends; do not infer calls from agent turns.
+    calls++;
+  }
+  return calls;
+}
+
+async function liveCurrentTask(input: CurrentTaskInput) {
+  const assignment = await startCurrentBenchTaskAssignment(input);
+  try {
+    const create = input.options.armId === 'baseline' ? createCurrentStockBenchHarness : createCurrentSuBenchHarness;
+    return { driver: create(assignment.options, input.context, assignment.observations), stop: assignment.stop };
+  } catch (error) { await assignment.stop(); throw error; }
+}
+
+/** Observer metadata lives on the host; the solver's repository remains only in /app. */
+export async function startFrontierSweCurrentAssignment(
+  input: RunAgentInput<FrontierSweEnvHandle>,
+  host: Omit<CurrentTaskInput, 'task' | 'checkout'>,
+  ports: {
+    start?: typeof startCurrentBenchTaskAssignment;
+    observer?: (task: BenchTask) => Promise<TaskCheckout>;
+  } = {},
+): Promise<FrontierSweNativeAssignment> {
+  const { task, handle, attemptBudget } = input;
+  const options = { ...host.options, preregistration: { ...host.options.preregistration,
+    config: structuredClone(host.options.preregistration.config) } };
+  const protocol = currentBenchmarkProtocolSchema.parse(host.protocol);
+  const arm = protocol.arms.find(arm => arm.id === options.armId);
+  if (!arm || input.arm !== options.armId || !['papercusp', 'baseline'].includes(options.armId) || options.agent !== 'codex' ||
+      task.benchmark !== 'frontier-swe' || task.instanceId !== handle.instanceId ||
+      !handle.inContainerCodex || !handle.taskNetwork || !protocol.taskIds.includes(task.instanceId) ||
+      options.runId !== protocol.runId || !protocol.seeds.includes(options.seed) ||
+      options.model !== arm.model || options.effort !== arm.effort || options.account !== arm.account ||
+      canonicalJson(options.preregistration.config) !== canonicalJson(protocol) ||
+      options.workspaceId !== host.context.workspaceId || !host.context.principal?.slug ||
+      options.signal?.aborted || !['worker', 'solver'].includes(input.role) || input.candidates?.length)
+    throw new Error('FrontierSWE host assignment differs from its frozen native task.');
+  const remaining = { maxUsd: attemptBudget.maxCostUsd, maxTokens: attemptBudget.maxTokens,
+    maxWallClockMs: attemptBudget.maxWallMs };
+  for (const key of ['maxUsd', 'maxTokens', 'maxWallClockMs'] as const) {
+    const cap = arm.generationBudget[key], left = remaining[key];
+    if (cap !== undefined && (left === undefined || !Number.isFinite(left) || left <= 0 || left > cap))
+      throw new Error('FrontierSWE assignment budget is missing, exhausted or wider than the frozen cap.');
+    // Cost/token caps stay exact: each host pass runs one frozen assignment.
+    if (key !== 'maxWallClockMs' && cap !== left)
+      throw new Error('FrontierSWE assignment requires the exact frozen cost and token cap.');
+  }
+  options.driveTimeoutMs = Math.min(options.driveTimeoutMs ?? Infinity,
+    remaining.maxWallClockMs ?? arm.generationBudget.maxWallClockMs);
+  const checkout = await (ports.observer ?? (async (task: BenchTask) => {
+    const parent = defaultBenchResultsDir();
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const dir = mkdtempSync(join(parent, 'frontier-observer-'));
+    return { dir, repo: `frontier-swe:${task.instanceId}`, baseCommit: protocol.grader.version,
+      cleanup: async () => { rmSync(dir, { recursive: true, force: true }); } };
+  }))(task);
+  try {
+    const assignment = await (ports.start ?? startCurrentBenchTaskAssignment)({ ...host, options, protocol, task, checkout });
+    return { ...assignment, checkout, generationBudget: { ...arm.generationBudget } };
+  } catch (error) { await checkout.cleanup(); throw error; }
 }
 
 /** Restart/cancel recovery uses durable native task labels, independently of a vanished gateway. */
@@ -693,10 +791,12 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
   const prereg = await getPrereg({ runId: current.protocolRunId, preregHash: current.preregHash }, scope);
   if (!prereg) throw new Error('Current benchmark pre-registration was not found.');
   const { protocol, arm, runId } = currentBenchLaunchSelection(input, prereg.config);
+  const frontier = input.suite === 'frontier-swe';
+  if (frontier && protocol.grader.family !== 'frontier-swe') throw new Error('FrontierSWE requires its frozen official grader.');
   if (!['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(arm.effort)) throw new Error('Unsupported frozen native effort.');
   const registration = { preregHash: prereg.preregHash, config: protocol, repoRoot: deps.currentRepoRoot };
   await requireCommittedPreregistration(protocol.runId, registration, { ...scope, repoRoot: deps.currentRepoRoot });
-  const loaded = await (deps.loadBacklog ?? loadBenchTaskSet)('custom', protocol.taskIds);
+  const loaded = await (deps.loadBacklog ?? loadBenchTaskSet)(frontier ? 'frontier-swe-v2-custom' : 'custom', protocol.taskIds);
   if (canonicalJson(loaded.map(task => task.instanceId).sort()) !== canonicalJson([...protocol.taskIds].sort()) ||
       loaded.some(task => task.benchmark !== (input.suite ?? 'swe-bench-pro'))) throw new Error('Current benchmark task loader differs from the frozen roster/suite.');
   const backlog = protocol.taskIds.map(id => loaded.find(task => task.instanceId === id)!);
@@ -726,6 +826,57 @@ async function launchCurrentBenchRun(input: LaunchBenchRunInput, deps: LaunchDep
   activeRuns.set(runId, active);
   const run = async (req: HiveBacklogRunRequest): Promise<HiveBacklogResult> => {
     const taskResults: FleetTaskResult[] = [];
+    if (frontier) {
+      const execute = deps.currentFrontierArm ?? (await import('./frontier-swe-arm')).runFrontierSweCurrentArm;
+      const options: CurrentSuBenchOptions = { workspaceId: ws, runId: protocol.runId, armId: arm.id, seed: current.seed,
+        agent: arm.agent, model: arm.model, effort: arm.effort as CurrentSuBenchOptions['effort'], account: arm.account,
+        preregistration: registration, signal: abort.signal, driveTimeoutMs: arm.generationBudget.maxWallClockMs };
+      const frozenBudget = arm.generationBudget;
+      await execute({ spec: resolveCoordinationSpec({ id: arm.id, spine: { claimModel: 'self-claim-fifo' } }),
+        runId, seed: current.seed, backlog, cap: 1,
+        budget: { maxCostUsd: frozenBudget.maxUsd, maxTokens: frozenBudget.maxTokens, maxWallMs: frozenBudget.maxWallClockMs },
+        rowMeta: { version: protocol.grader.version, modelId: arm.model,
+          harnessVersion: arm.runtime.sourceRevision, preregHash: prereg.preregHash, rolloutId: runId,
+          priceTableVersion: protocol.priceSchedule.version },
+        launch: { runId, protocolRunId: protocol.runId, context, signal: abort.signal,
+          mcpOrigin: resolveSpawnHostOperatorBaseUrl(), hookRecordDir: join(defaultBenchResultsDir(), 'frontier-hooks', runId),
+          startAssignment: async trial => {
+            await upsertBenchRunTask(runId, { instanceId: trial.task.instanceId, taskStatus: 'in_progress' }, scope);
+            const assignment = await startFrontierSweCurrentAssignment(trial,
+              { options, protocol, context, scope, resources, loopId, hostRunId: runId, observation: current.observation });
+            active.stopCurrent = assignment.stop;
+            return { ...assignment, stop: async () => { try { await assignment.stop(); } finally { active.stopCurrent = undefined; } } };
+          } },
+        onResult: async row => {
+          const native = row.armMeta?.nativeUsage as { stopReason?: GenerationStopReason; tokensCacheRead?: number; tokensCacheWrite?: number } | undefined;
+          const stopReason = row.generationStatus === 'error' ? 'error' : row.generationStatus === 'timeout' ? 'timeout' :
+            native?.stopReason ?? (row.capped ? 'budget-exhausted' : 'done');
+          const result: FleetTaskResult = { attempt: { arm: arm.id,
+            blueprintId: arm.id === 'baseline' ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT,
+            instanceId: row.taskId, seed: String(current.seed), diff: '', tokensIn: row.tokensIn, tokensOut: row.tokensOut,
+            tokensCacheRead: native?.tokensCacheRead, tokensCacheWrite: native?.tokensCacheWrite,
+            costUsd: row.costUsd, turns: row.turns, wallClockMs: row.wallClockMs, trajectoryRef: row.traceRefs?.[0] ?? '',
+            stopReason, generationError: row.generationError ?? undefined,
+            armMeta: { ...row.armMeta, score: row.score, graderStatus: row.graderStatus, graderDetail: row.graderDetail } },
+            cupId: currentBenchAssignmentId(protocol.runId, arm.id, row.taskId, current.seed),
+            placedAtMs: Date.now() - row.wallClockMs, startedAtMs: Date.now() - row.wallClockMs,
+            finishedAtMs: Date.now(), disposition: 'spawn' };
+          await emitRollout({ runId: protocol.runId, preregHash: prereg.preregHash, suite: 'frontier-swe', taskId: row.taskId,
+            arm: arm.id, seed: current.seed, modality: 'in-container', fleetRunId: runId,
+            generation: { status: row.generationStatus, error: row.generationError, tokensIn: row.tokensIn, tokensOut: row.tokensOut,
+              tokensTotal: row.tokensTotal, tokensCacheRead: native?.tokensCacheRead ?? null, tokensCacheWrite: native?.tokensCacheWrite ?? null,
+              wallClockMs: row.wallClockMs, turns: row.turns, budgetTokens: row.budgetTokens, capped: row.capped,
+              modelId: arm.model, harnessVersion: row.harnessVersion, trajectoryRef: result.attempt.trajectoryRef,
+              trajectoryKind: 'native-codex', armMeta: result.attempt.armMeta },
+            grading: { resolved: row.resolved, status: row.graderStatus, family: protocol.grader.family,
+              version: protocol.grader.version, score: row.score, structuredOutput: row.graderDetail },
+            provenance: { configSnapshot: protocol, harnessGitSha: arm.runtime.sourceRevision } }, scope);
+          taskResults.push(result);
+          await upsertBenchRunTask(runId, { ...taskRowFromFleetResult(result), taskStatus: 'graded', resolved: row.resolved }, scope);
+        } });
+      return { arm: req.arm, suite: req.suite, runId, seed: current.seed, startedAtMs: active.startedAtMs,
+        finishedAtMs: Date.now(), taskResults, coordEvents: [], peakConcurrentBees: taskResults.length ? 1 : 0, runError: null };
+    }
     for (const task of backlog) {
       if (abort.signal.aborted) break;
       await upsertBenchRunTask(runId, { instanceId: task.instanceId, taskStatus: 'in_progress' }, scope);

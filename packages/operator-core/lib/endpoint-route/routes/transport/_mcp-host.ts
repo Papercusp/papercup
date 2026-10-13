@@ -5072,6 +5072,7 @@ export function registerMcpHost(server: McpServer): void {
                   }),
                   onLateScratchWriteSettled: (settlement) => {
                     const settledAt = new Date().toISOString();
+                    const scratchWriteTimings = raced.phaseTimingsMs.scratchWrites;
                     return backfillResultDoorOutputRef({
                       workspaceId: dispatchSpawnCtx.workspaceId,
                       spawnId: dispatchSpawnCtx.spawnId,
@@ -5092,8 +5093,15 @@ export function registerMcpHost(server: McpServer): void {
                         spillErrorCode: settlement.errorCode ?? null,
                         spillSettlementStatus: settlement.status,
                         spillSettledAt: settledAt,
-                        ...(raced.phaseTimingsMs.scratchWrites
-                          ? { scratchWriteTimings: { ...raced.phaseTimingsMs.scratchWrites } }
+                        ...(scratchWriteTimings
+                          ? {
+                              scratchWriteTimings: { ...scratchWriteTimings },
+                              mcpRequestSettlement: {
+                                phaseTimingsMs: {
+                                  scratchWrites: { ...scratchWriteTimings },
+                                },
+                              },
+                            }
                           : {}),
                         resultDoorReason: settlement.reason,
                         aggregateOutputEscape: settlement.aggregateOutputEscape,

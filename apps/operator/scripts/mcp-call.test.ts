@@ -38,7 +38,6 @@ import {
   buildUnreachableDiagnostic,
   buildConnectionRetryDiagnostic,
   fetchWithConnectionRecovery,
-  // @ts-expect-error -- plain .mjs launcher script, no type declarations.
 } from '../../../scripts/mcp-call.mjs';
 
 describe('mcp-call argument parsing', () => {

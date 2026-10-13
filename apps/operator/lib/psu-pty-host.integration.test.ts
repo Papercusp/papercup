@@ -205,7 +205,7 @@ describe('managed-pty integration evidence isolation', () => {
       confirm = options.onConfirmed;
       return false;
     });
-    const { io } = fakeIo();
+    const { captured, io } = fakeIo();
     const done = hostThroughPty({
       command: execPath,
       args: ['-e', "const fs=require('fs');let input='';process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write('model: GPT-6.1-Sol medium\\nReady · GPT-6.1-Sol medium · Context 100% left\\n');process.stdin.on('data',d=>{input+=d;fs.appendFileSync(process.env.INPUT_FILE,d);if(input.includes('BEGIN_ACCEPTED_OPERATION'))process.exit(0);});"],
@@ -221,14 +221,18 @@ describe('managed-pty integration evidence isolation', () => {
       onRespawn, signalSource, onExit: () => undefined,
     });
     try {
-      await vi.waitFor(() => expect(onRespawn).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(onRespawn).toHaveBeenCalledOnce(), { timeout: 8000 });
+      await vi.waitFor(() => expect(captured()).toContain('Ready · GPT-6.1-Sol medium'), { timeout: 8000 });
       const discovery = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
       expect(discovery.nativeSessionId).toBe(nativeId);
       expect(resolveNativeId).toHaveBeenCalledWith(discovery.ptyPid);
       await new Promise(resolve => setTimeout(resolve, 50));
       expect(existsSync(inputFile)).toBe(false);
       confirm!();
-      await vi.waitFor(() => expect(readFileSync(inputFile, 'utf8')).toContain('BEGIN_ACCEPTED_OPERATION'));
+      await vi.waitFor(() => {
+        expect(existsSync(inputFile)).toBe(true);
+        expect(readFileSync(inputFile, 'utf8')).toContain('BEGIN_ACCEPTED_OPERATION');
+      }, { timeout: 8000 });
       expect(onRespawn.mock.calls[0][0]).toBe(nativeId);
       expect(await done).toBe(0);
       expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
@@ -241,37 +245,57 @@ describe('managed-pty integration evidence isolation', () => {
   });
 
   it.each([
-    { phase: 'native binding', reason: 'successor-native-id-missing', label: 'respawn binding' },
-    { phase: 'backend frame', reason: 'codex-backend-frame-not-observed', label: 'launch kickoff' },
-  ])('preserves startup evidence when the $phase times out before first-turn injection (WI-10007305)', async ({ phase, reason, label }) => {
+    { phase: 'native binding', reason: 'successor-native-id-missing', label: 'respawn binding', fallbackMs: 50 },
+    { phase: 'backend frame', reason: 'codex-backend-frame-not-observed', label: 'launch kickoff', fallbackMs: 50 },
+    // The overall kickoff budget can expire before the frame timer, whose
+    // clock starts only when the child paints its banner. Neither allows input.
+    { phase: 'backend frame after kickoff deadline', reason: 'codex-backend-frame-not-observed', label: 'launch kickoff', fallbackMs: 500 },
+  ])('preserves startup evidence when the $phase times out before first-turn injection (WI-10007305)', async ({ phase, reason, label, fallbackMs }) => {
     const root = mkdtempSync(join(tmpdir(), 'psu-missing-native-snapshot-'));
     const codexHome = join(root, 'codex-home');
     const inputFile = join(root, 'input.txt');
     const ownerId = `su-missing-native-${process.pid}-${Math.floor(performance.now())}`;
     mkdirSync(join(codexHome, 'log'), { recursive: true });
     writeFileSync(join(codexHome, 'log', 'codex-tui.log'), 'isolated startup phase did not assign a native id\n');
-    const onRespawn = vi.fn();
-    const { io } = fakeIo();
+    const gatedKickoff = phase === 'backend frame after kickoff deadline';
+    let confirmNativeReady: (() => void) | undefined;
+    const onRespawn = vi.fn((_id: string, options: { onConfirmed: () => void }) => {
+      confirmNativeReady = options.onConfirmed;
+      return false;
+    });
+    const { captured, io } = fakeIo();
+    const signalSource = new EventEmitter();
     const initialOutput = phase === 'native binding'
       ? 'model: GPT-6.1-Sol medium\nReady · GPT-6.1-Sol medium · Context 100% left\n'
       : '\x1b[6n│ >_ OpenAI Codex (v0.156.1) │\n│ model: loading /model to change │\n› Ask Codex to do anything\n';
     const done = hostThroughPty({
       command: execPath,
-      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write(process.env.INITIAL_OUTPUT);process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));setTimeout(()=>process.exit(0),1500);"],
+      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write(process.env.INITIAL_OUTPUT);process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));"],
       cwd: root,
       env: {
         ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome,
         INPUT_FILE: inputFile, INITIAL_OUTPUT: initialOutput,
         PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '500',
-        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: String(fallbackMs),
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10',
       },
       ownerId, io, bridgeTty: false,
       kickoff: '⟦turn-origin:fleet-kickoff nonce:abcdef0123456789⟧\nMUST_REMAIN_UNSUBMITTED',
-      resolveRespawnNativeId: phase === 'native binding' ? () => null : undefined,
-      onRespawn, signalSource: new EventEmitter(), onExit: () => undefined,
+      resolveRespawnNativeId: phase === 'native binding' ? () => null
+        : gatedKickoff ? () => '01a117cf-6942-7bc3-9aee-1ff8ac3963b7' : undefined,
+      onRespawn, signalSource, onExit: () => undefined,
     });
     try {
+      if (gatedKickoff) {
+        // Establish this case's banner precondition before starting its small
+        // kickoff budget, independently of real child boot/scheduling latency.
+        await vi.waitFor(() => {
+          expect(onRespawn).toHaveBeenCalledOnce();
+          expect(captured()).toContain('OpenAI Codex');
+        });
+        expect(existsSync(inputFile)).toBe(false);
+        confirmNativeReady!();
+      }
       await vi.waitFor(() => {
         const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
           .trim().split('\n').map(line => JSON.parse(line));
@@ -288,11 +312,11 @@ describe('managed-pty integration evidence isolation', () => {
           expect(snapshot.procs).toContainEqual(expect.objectContaining({ pid: snapshot.rootPid }));
         }
       }, { timeout: 1000 });
-      expect(existsSync(inputFile) ? readFileSync(inputFile, 'utf8') : '')
-        .not.toContain('MUST_REMAIN_UNSUBMITTED');
-      expect(onRespawn).not.toHaveBeenCalled();
-      expect(await done).toBe(0);
+      expect(existsSync(inputFile) ? readFileSync(inputFile, 'utf8') : '').toBe('');
+      if (gatedKickoff) expect(onRespawn).toHaveBeenCalledOnce();
+      else expect(onRespawn).not.toHaveBeenCalled();
     } finally {
+      signalSource.emit('SIGTERM');
       await done.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
@@ -405,8 +429,8 @@ describe('plain launch kickoff turn-start proof', () => {
       "function publishNative(){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:composer}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'viewport-1'}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id:'viewport-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));setTimeout(()=>process.stdout.write('SUBMITTED\\n'),75);}",
       "function submit(){if(submitted){setTimeout(()=>process.stdout.write('RESUBMIT_ACK\\n'),75);return;}submitted=true;fs.writeFileSync(process.env.SUBMIT_FILE,composer);if(process.env.NATIVE_PUBLICATION==='gated'){const gate=setInterval(()=>{if(fs.existsSync(process.env.NATIVE_RELEASE_FILE)){clearInterval(gate);publishNative();}},5);}else publishNative();}",
       "process.stdin.on('data',d=>{if(d.includes('\x04'))process.exit(0);wire+=d;while(wire){if(wire.startsWith(start)){const at=wire.indexOf(end,start.length);if(at<0)break;composer+=wire.slice(start.length,at);wire=wire.slice(at+end.length);repaint();continue;}if(start.startsWith(wire))break;const next=wire.indexOf(start);const take=next<0?wire.length:next;const text=wire.slice(0,take);wire=wire.slice(take);for(const c of text){if(c==='\\r')submit();else composer+=c;}repaint();}});",
-      'setTimeout(()=>process.exit(0),4000);',
     ].join('');
+    const signalSource = new EventEmitter();
     let done: Promise<number> | undefined;
     try {
       done = hostThroughPty({
@@ -428,7 +452,7 @@ describe('plain launch kickoff turn-start proof', () => {
         },
         ownerId, io, bridgeTty: false, kickoff,
         nativePersistenceTimeoutMs: 500,
-        signalSource: new EventEmitter(), onExit: () => undefined,
+        signalSource, onExit: () => undefined,
       });
       await vi.waitFor(() => expect(existsSync(submitFile), captured()).toBe(true), { timeout: 2500 });
       expect(readFileSync(submitFile, 'utf8')).toBe(kickoff);
@@ -464,7 +488,9 @@ describe('plain launch kickoff turn-start proof', () => {
         expect(readFileSync(proofPath, 'utf8')).toBe('reserved');
       }
     } finally {
-      if (existsSync(sock)) await rawInject(sock, '\x04');
+      // Keep the fixture alive until the parent finishes proof assertions;
+      // fixed child lifetimes race the gated transcript publication and cleanup.
+      signalSource.emit('SIGTERM');
       await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
@@ -532,8 +558,8 @@ describe('plain launch kickoff turn-start proof', () => {
       await rawInject(sock, 'QUIT\n');
       expect(await done).toBe(0);
     } finally {
-      await done?.catch(() => undefined);
       if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   }, 12_000);
@@ -550,6 +576,7 @@ describe('plain launch kickoff turn-start proof', () => {
     const marker = '⟦turn-origin:fleet-kickoff nonce:abcdef0123456789⟧';
     const kickoff = `${marker}\nBEGIN_FAST_KICKOFF`;
     const { captured, io } = fakeIo();
+    const signalSource = new EventEmitter();
     const childCode = [
       "const fs=require('fs'),path=require('path');",
       "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
@@ -557,7 +584,6 @@ describe('plain launch kickoff turn-start proof', () => {
       "let input='',seen=0,echoScheduled=false;process.stdout.write('62% context left\\n');",
       "const printKickoffCount=seen=>{const emit=()=>process.stdout.write('KICKOFF_COUNT_'+seen+'\\n');const delay=Number(process.env.KICKOFF_COUNT_STDOUT_DELAY_MS);if(delay>0)setTimeout(emit,delay);else emit();};",
       "process.stdin.on('data',d=>{input+=d;const matches=input.match(/BEGIN_FAST_KICKOFF/g)||[];if(!echoScheduled&&matches.length){echoScheduled=true;const echo=input;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+echo+'\\n'),75);}while(seen<matches.length){seen++;if(seen===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const at=new Date().toISOString();const turn='fast-'+seen;const rows=[{type:'response_item',timestamp:at,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:at,payload:{type:'task_started',turn_id:turn}},{type:'response_item',timestamp:at,payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'done'}]}},{type:'event_msg',timestamp:at,payload:{type:'task_complete',turn_id:turn}}];fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));}fs.appendFileSync(process.env.COUNT_FILE,seen+'\\n');printKickoffCount(seen);}if(seen>0&&d.includes('\\r'))process.stdout.write('RESUBMIT_ACK\\n');if(input.includes('QUIT'))process.exit(0);});",
-      'setTimeout(()=>process.exit(0),5000);',
     ].join('');
     let done;
     try {
@@ -589,12 +615,17 @@ describe('plain launch kickoff turn-start proof', () => {
         bridgeTty: false,
         kickoff,
         nativePersistenceTimeoutMs: 2_000,
-        signalSource: new EventEmitter(),
+        signalSource,
         onExit: () => undefined,
       });
 
-      const deadline = Date.now() + 3_000;
-      while ((!existsSync(countFile) || !captured().includes('KICKOFF_COUNT_1')) && Date.now() < deadline) await sleep(10);
+      await vi.waitFor(() => {
+        expect(existsSync(countFile), captured()).toBe(true);
+        expect(captured()).toContain('KICKOFF_COUNT_1');
+        const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .split('\n').filter(Boolean).map(line => JSON.parse(line));
+        expect(events.some(event => event.kind === 'turn-delivered' && event.confirmed === 'native')).toBe(true);
+      }, { timeout: 8000 });
       const phaseEvidence = JSON.stringify({
         count: existsSync(countFile) ? readFileSync(countFile, 'utf8').trim() : null,
         nativePublished: existsSync(nativeFile),
@@ -611,8 +642,8 @@ describe('plain launch kickoff turn-start proof', () => {
       expect(output.indexOf(`COMPOSER_ECHO:${marker}`)).toBeGreaterThanOrEqual(0);
       expect(output.indexOf(`COMPOSER_ECHO:${marker}`)).toBeLessThan(output.indexOf('KICKOFF_COUNT_1'));
     } finally {
+      signalSource.emit('SIGTERM');
       await done?.catch(() => undefined);
-      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
       rmSync(root, { recursive: true, force: true });
     }
   }, 10_000);
@@ -747,8 +778,8 @@ describe('plain launch kickoff turn-start proof', () => {
       expect(await done).toBe(0);
       expect(existsSync(submitFile)).toBe(false);
     } finally {
-      await done?.catch(() => undefined);
       if (existsSync(sock)) await rawInject(sock, 'QUIT\\n');
+      await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   }, 10_000);
@@ -809,8 +840,8 @@ describe('plain launch kickoff turn-start proof', () => {
       await rawInject(sock, 'QUIT\\n');
       expect(await done).toBe(0);
     } finally {
-      await done?.catch(() => undefined);
       if (existsSync(sock)) await rawInject(sock, 'QUIT\\n');
+      await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   }, 12_000);
@@ -869,8 +900,8 @@ describe('Claude launch kickoff bracketed-paste regression (EI-24141825238362808
       await controlInject(sock, 'raw', '\x04');
       expect(await done).toBe(0);
     } finally {
-      await done?.catch(() => undefined);
       if (existsSync(sock)) await controlInject(sock, 'raw', '\x04');
+      await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
@@ -1387,6 +1418,7 @@ describe('session-port managed seed + native persistence helpers', () => {
   const runCodexStartingKickoff = (name: string, childCode: string, env: Record<string, string>) => {
     const ownerId = `su-codex-${name}-itest-${process.pid}-${Math.floor(performance.now())}`;
     const { captured, io } = fakeIo();
+    const signalSource = new EventEmitter();
     const done = hostThroughPty({
       command: execPath,
       args: ['-e', childCode],
@@ -1410,7 +1442,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       ownerId,
       io,
       bridgeTty: false,
-      signalSource: new EventEmitter(),
+      signalSource,
       kickoff: '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧\nKICKOFF-HELD',
       onExit: () => undefined,
     });
@@ -1419,7 +1451,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       if (!existsSync(path)) return [];
       return readFileSync(path, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
     };
-    return { ownerId, sock: socketPathFor(ownerId), captured, done, hostEvents };
+    return { ownerId, sock: socketPathFor(ownerId), captured, done, hostEvents, signalSource };
   };
 
   it('holds a fresh Codex kickoff past its budget while the footer reads Starting, then delivers on the frame', async () => {
@@ -1480,18 +1512,26 @@ describe('session-port managed seed + native persistence helpers', () => {
   }, 20_000);
 
   it('ends a held Codex kickoff when the host tears down instead of polling until the ceiling', async () => {
-    const run = runCodexStartingKickoff('starting-host-end', codexStartingChild(null, 2500), {
+    const run = runCodexStartingKickoff('starting-host-end', codexStartingChild(null, 25_000), {
       PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1000',
       PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '600000',
     });
-    await run.done;
-    const ended = await vi.waitFor(() => {
-      const row = run.hostEvents().find((e) => e.kind === 'kickoff-codex-frame-hold-ended');
-      expect(row).toBeDefined();
-      return row;
-    }, { timeout: 3000 });
-    expect(ended).toMatchObject({ label: 'launch kickoff', outcome: 'host-ended' });
-    expect(run.hostEvents().some((e) => e.kind === 'startup-turn-dropped')).toBe(false);
+    try {
+      await vi.waitFor(() => expect(run.hostEvents().some((e) => e.kind === 'kickoff-held-for-codex-frame'))
+        .toBe(true), { timeout: 8000 });
+      run.signalSource.emit('SIGTERM');
+      await run.done;
+      const ended = await vi.waitFor(() => {
+        const row = run.hostEvents().find((e) => e.kind === 'kickoff-codex-frame-hold-ended');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 3000 });
+      expect(ended).toMatchObject({ label: 'launch kickoff', outcome: 'host-ended' });
+      expect(run.hostEvents().some((e) => e.kind === 'startup-turn-dropped')).toBe(false);
+    } finally {
+      run.signalSource.emit('SIGTERM');
+      await run.done;
+    }
   }, 15_000);
 
   // WI-10004943: in 4 of 4 production cases a Codex footer read `Starting` for
@@ -2597,14 +2637,14 @@ describe('hostThroughPty real round-trip', () => {
       const meta = metaPathFor(ownerId);
       const { captured, io } = fakeIo();
 
-      // Child reads stdin, echoes "ECHO:<line>" per newline-terminated line, then
-      // exits after a bounded window so the test can't hang.
+      // Child acknowledges its installed reader and exits on the test's command.
       const childCode =
         "process.stdin.setEncoding('utf8');let b='';" +
-        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
-        'setTimeout(()=>process.exit(0),3000);';
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);if(line==='QUIT')process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
+        "process.stdout.write('READER_READY\\n');";
 
       let exitCode: number | null = null;
+      const signalSource = new EventEmitter();
       const done = hostThroughPty({
         command: execPath,
         args: ['-e', childCode],
@@ -2614,32 +2654,37 @@ describe('hostThroughPty real round-trip', () => {
         advSessionId: 4242,
         io,
         bridgeTty: false,
+        signalSource,
         onExit: (c: number) => { exitCode = c; },
       });
 
-      await sleep(400);
-      // Created on start
-      expect(existsSync(sock)).toBe(true);
-      expect(existsSync(meta)).toBe(true);
-      const m = JSON.parse(readFileSync(meta, 'utf8'));
-      expect(m.ownerId).toBe(ownerId);
-      expect(m.advSessionId).toBe('4242');
-      expect(m.sock).toBe(sock);
-      expect(typeof m.pid).toBe('number');
+      try {
+        await vi.waitFor(() => expect(captured()).toContain('READER_READY'), { timeout: 8000 });
+        // Created on start
+        expect(existsSync(sock)).toBe(true);
+        expect(existsSync(meta)).toBe(true);
+        const m = JSON.parse(readFileSync(meta, 'utf8'));
+        expect(m.ownerId).toBe(ownerId);
+        expect(m.advSessionId).toBe('4242');
+        expect(m.sock).toBe(sock);
+        expect(typeof m.pid).toBe('number');
 
-      // Inject a line via the control socket → the child reads it from stdin.
-      await rawInject(sock, 'hello-wake\n');
-      await sleep(500);
-      expect(captured()).toContain('ECHO:hello-wake');
+        // Inject a line via the control socket → the child reads it from stdin.
+        await rawInject(sock, 'hello-wake\n');
+        await vi.waitFor(() => expect(captured()).toContain('ECHO:hello-wake'), { timeout: 8000 });
 
-      // Let the child's own timeout end it; wait for host resolution.
-      const code = await done;
-      expect(code).toBe(0);
-      expect(exitCode).toBe(0);
+        await rawInject(sock, 'QUIT\n');
+        const code = await done;
+        expect(code).toBe(0);
+        expect(exitCode).toBe(0);
 
-      // Cleaned up on exit
-      expect(existsSync(sock)).toBe(false);
-      expect(existsSync(meta)).toBe(false);
+        // Cleaned up on exit
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+      }
     },
     20_000,
   );
@@ -2653,9 +2698,10 @@ describe('hostThroughPty real round-trip', () => {
       const { captured, io } = fakeIo();
 
       const childCode =
-        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
-        'setTimeout(()=>process.exit(0),4000);';
+        "process.stdout.write('MISDELIVERY_CHILD_READY\\n');";
+      const signalSource = new EventEmitter();
 
       const done = hostThroughPty({
         command: execPath,
@@ -2665,37 +2711,38 @@ describe('hostThroughPty real round-trip', () => {
         ownerId,
         advSessionId: 4243,
         io,
+        signalSource,
         bridgeTty: false,
         onExit: () => undefined,
       });
 
       try {
-        await sleep(400);
+        await vi.waitFor(() => expect(captured()).toContain('MISDELIVERY_CHILD_READY'), { timeout: 2000 });
         expect(existsSync(sock)).toBe(true);
 
         // Addressed to a DIFFERENT agent — the host must refuse to run it, no
         // matter that the socket write itself succeeds (same-UID trust boundary
         // only guards WHO can connect, not WHOM the message is for).
         await envelopeInject(sock, { mode: 'raw', data: 'should-not-land\n', ownerId: 'su-someone-else' });
-        await sleep(500);
+        await vi.waitFor(() => {
+          const events = readFileSync(eventLog, 'utf8')
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((l) => JSON.parse(l));
+          const rejected = events.find(
+            (e) => e.kind === 'control-payload-rejected' && e.reason === 'ownerId-mismatch',
+          );
+          expect(rejected).toMatchObject({ expected: ownerId, got: 'su-someone-else', mode: 'raw' });
+        }, { timeout: 2000 });
         expect(captured()).not.toContain('ECHO:should-not-land');
-        const events = readFileSync(eventLog, 'utf8')
-          .trim()
-          .split('\n')
-          .filter(Boolean)
-          .map((l) => JSON.parse(l));
-        const rejected = events.find(
-          (e) => e.kind === 'control-payload-rejected' && e.reason === 'ownerId-mismatch',
-        );
-        expect(rejected).toMatchObject({ expected: ownerId, got: 'su-someone-else', mode: 'raw' });
 
         // The host itself is otherwise unharmed: a correctly-addressed (or
         // unaddressed, pre-EI-153-shaped) message still lands normally.
         await envelopeInject(sock, { mode: 'raw', data: 'should-land\n', ownerId });
-        await sleep(500);
-        expect(captured()).toContain('ECHO:should-land');
+        await vi.waitFor(() => expect(captured()).toContain('ECHO:should-land'), { timeout: 2000 });
       } finally {
-        // The child self-exits on its own 4s timeout — just wait for host resolution.
+        signalSource.emit('SIGTERM');
         await done.catch(() => undefined);
       }
     },
@@ -2807,8 +2854,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       });
 
       try {
-        await sleep(600);
-        expect(captured()).toContain('BOOT:');
+        await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 8000 });
         await envelopeInject(sock, {
           mode: 'carry-respawn',
           data: 'CARRIED',
@@ -3267,11 +3313,14 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
       // terminal fallback, the host skipped its delivery loop entirely and never
       // once tried to write — so a healthy successor sat at its prompt, silent,
       // while every wake was deferred and the agent was dead until a human typed.
+      const root = mkdtempSync(join(tmpdir(), 'psu-zero-output-ready-'));
+      const readerReady = join(root, 'reader-ready');
+      const signalSource = new EventEmitter();
       const childCode =
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
-        'setTimeout(()=>process.exit(0),15000);';
+        "require('fs').writeFileSync(process.env.READER_READY,'ready');";
 
       const done = hostThroughPty({
         command: execPath,
@@ -3280,6 +3329,7 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
         env: {
           ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
+          READER_READY: readerReady,
           // A backend whose readiness marker this child will never emit, plus a
           // short fallback window — so the ONLY thing that can deliver the carry
           // is the terminal fallback itself.
@@ -3311,24 +3361,31 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
         ownerId,
         io,
         bridgeTty: false,
+        signalSource,
         onExit: () => {},
       });
 
-      await sleep(600);
-      // Precondition, asserted rather than assumed: the child really is silent.
-      // If it ever starts emitting, this test would still pass while no longer
-      // testing the zero-output path at all — a vacuous guard.
-      expect(captured()).toBe('');
+      try {
+        // A file proves the silent child's reader exists without adding stdout.
+        await vi.waitFor(() => expect(existsSync(readerReady)).toBe(true), { timeout: 8000 });
+        // Precondition, asserted rather than assumed: the child really is silent.
+        // If it ever starts emitting, this test would still pass while no longer
+        // testing the zero-output path at all — a vacuous guard.
+        expect(captured()).toBe('');
 
-      await controlInject(sock, 'recycle', 'CARRIED');
-      await sleep(2500);
+        await controlInject(sock, 'recycle', 'CARRIED');
 
-      // The continuation turn started with no human input. This is the item's
-      // acceptance criterion stated as an assertion.
-      expect(captured()).toContain('ECHO:CARRIED');
+        // The continuation turn started with no human input. This is the item's
+        // acceptance criterion stated as an assertion.
+        await vi.waitFor(() => expect(captured()).toContain('ECHO:CARRIED'), { timeout: 8000 });
 
-      await rawInject(sock, 'QUIT\n');
-      await done;
+        await rawInject(sock, 'QUIT\n');
+        await done;
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+        rmSync(root, { recursive: true, force: true });
+      }
     },
     25_000,
   );
@@ -3468,6 +3525,16 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
       "if(n>1&&!starting){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');}",
       "process.stdout.write('ECHO:'+line+'\\n');}});setTimeout(()=>process.exit(0),8000);",
     ].join('');
+    // This test exercises a child with a KNOWN Starting/Ready footer. Pause its
+    // deadline clock only during OS process boot, until its actual first output
+    // reaches the host. The separate zero-output test covers the unobserved-boot
+    // fallback. Keep the 600ms stuck threshold and 1500ms budget unchanged.
+    const wallNow = Date.now.bind(Date);
+    let bootStartedAt: number | null = null;
+    let bootTimeMs = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() =>
+      (bootStartedAt ?? wallNow()) - bootTimeMs);
+    const signalSource = new EventEmitter();
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: root,
       env: {
@@ -3485,12 +3552,31 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
       },
-      ownerId, io, bridgeTty: false, signalSource: new EventEmitter(),
+      ownerId, io, bridgeTty: false, signalSource,
+      spawnPty: (file, args, options, realSpawn) => {
+        bootStartedAt = wallNow();
+        const spawned = realSpawn(file, args, options);
+        return new Proxy(spawned, {
+          get(target, property) {
+            if (property === 'onData') {
+              return (handler: (data: string) => void) => target.onData((data: string) => {
+                if (bootStartedAt !== null) {
+                  bootTimeMs += wallNow() - bootStartedAt;
+                  bootStartedAt = null;
+                }
+                handler(data);
+              });
+            }
+            const value = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      },
       mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId: null, launchContextPath: '/test/carry.md' }),
       onRespawn: report, emitCompacted: emit, nativePersistenceTimeoutMs: 200, onExit: () => {},
     });
     try {
-      await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 4000 });
+      await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 8000 });
       await envelopeInject(sock, {
         mode: 'carry-respawn', ownerId, data: `${marker}\nContinue saved work`,
         systemPromptAddendum: 'verified carry completion',
@@ -3540,7 +3626,8 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
       await rawInject(sock, 'QUIT\n');
       expect(await done).toBe(0);
     } finally {
-      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      clock.mockRestore();
+      signalSource.emit('SIGTERM');
       await done.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }

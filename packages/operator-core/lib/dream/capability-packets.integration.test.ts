@@ -12,7 +12,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 import { DEFAULT_PACKER_EFFECTS, packerFacade } from '../code-intelligence/packer-facade';
 import type { CodeIntelAnswer } from '../code-intelligence/contracts';
 import { getPilotCapabilityManifest, getCurrentCapabilityManifest } from './capability-catalog';
-import { buildCapabilityPacket, verifyCapabilityPacket, type CapabilityPacketDeps } from './capability-packets';
+import { buildCapabilityPacket, verifyCapabilityPacket, queryCapabilityGraph, type CapabilityPacketDeps } from './capability-packets';
 import { firstPartyCallersOffthread } from '../code-intelligence/first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from '../code-intelligence/lsp-adapter';
 import { capabilityHash } from './capability-contracts';
@@ -90,7 +90,7 @@ describe('capability packets through the pinned secret-scanned packer', () => {
   it('P023: supplies version-bound sampler hints from real compiler packets while keeping disconnected random candidates', async () => {
     const f = await fixture();
     f.deps.graph = (root, repositoryId, name, filePath, paths) => firstPartyCallersOffthread({
-      root, repositoryId, vendorDir: LSP_VENDOR_DIR, name, filePath, paths, op: 'context', limit: 12,
+      root, repositoryId, vendorDir: LSP_VENDOR_DIR, name, filePath, paths, op: 'context', contextScope: 'cited-files', limit: 12,
     }, { budgetMs: 20_000 });
     const packets = [];
     for (const [name, domain] of [['producer', 'memory'], ['consumer', 'code'], ['disconnected', 'planning']] as const) {
@@ -205,10 +205,11 @@ describe('capability packets through the pinned secret-scanned packer', () => {
     await writeFile(join(f.root, implementation.path), code.replace('value * 2', 'value * 3'));
     expect((await verifyCapabilityPacket(result.packet, f.input, f.deps)).fresh).toBe(false);
   }, 120_000);
-  it.each(getCurrentCapabilityManifest().units.slice(getPilotCapabilityManifest().units.length))(
+  it.each(getCurrentCapabilityManifest().units)(
     'DREAM-CATALOGUE-EVIDENCE: builds and revalidates current repository evidence for $id',
     async (unit) => {
       const f = await fixture();
+      f.deps.graph = queryCapabilityGraph;
       const input = { ...f.input, rootPath: resolve(import.meta.dirname, '../../../..'), unit, manifestRevision: getCurrentCapabilityManifest().revision };
       const result = await buildCapabilityPacket(input, f.deps);
       expect(result.status, JSON.stringify(result)).toBe('ready');
@@ -217,6 +218,18 @@ describe('capability packets through the pinned secret-scanned packer', () => {
       expect(result.packet.sources.some(s => s.kind === 'test')).toBe(true);
       expect(result.packet.coverage.status).toBe('partial');
       expect(result.packet.extraction.securityScan).toBe('passed');
+      // This CAS packet cites an if-clause, not a declaration. Keep it in the
+      // population with explicit unknown graph evidence rather than inventing a boundary.
+      if (unit.id === 'capability:plans.spec-revisions') {
+        expect(result.packet.graph).toMatchObject({ status: 'unknown', candidates: [], relationships: [],
+          unmapped: ['No declared symbol at implementation anchor revision-code'], claimValidation: 'manifest-evidence-only' });
+      } else {
+        expect(result.packet.graph, JSON.stringify(result.packet.graph)).toMatchObject({ status: 'measured',
+          claimValidation: 'manifest-evidence-only' });
+        expect(result.packet.graph!.candidates.length).toBeGreaterThan(0);
+        expect(result.packet.graph!.candidates.every(candidate => candidate.capabilityStatus === 'candidate-only')).toBe(true);
+        expect(result.packet.graph!.unmapped.join(' ')).toContain('dependency bodies and relationships outside those files are not inspected');
+      }
       expect(await verifyCapabilityPacket(result.packet, input, f.deps)).toEqual({ fresh: true });
     }, 120_000,
   );

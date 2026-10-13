@@ -33,6 +33,7 @@ import {
   assertNoActiveRun,
   _resetActiveRunsForTests,
   currentBenchTaskProviderCapture,
+  readCurrentBenchTaskModelCalls,
   freezeCurrentBenchTaskProviderReservation,
   type CurrentTaskInput,
 } from './run-launcher';
@@ -194,6 +195,20 @@ describe('current provider capture host checkpoint', () => {
     if (settled) expect((await settleLearningSpend(sql, { workspaceId: WS, reservationId: attempt.attemptId,
       disposition: 'used', usedUsd: 0.002 })).ok).toBe(true);
   }
+  it('counts every admitted request including an incomplete response from the real governor ledger', async () => {
+    const f = await fixture();
+    expect(await readCurrentBenchTaskModelCalls(f.input, f.capture)).toBe(0);
+    await recordedReservation(f, f.request());
+    await recordedReservation(f, f.request(), { settled: false, completed: false });
+    expect(await readCurrentBenchTaskModelCalls(f.input, f.capture)).toBe(2);
+    const otherArm = { ...f.input, options: { ...f.input.options, armId: 'baseline' } };
+    expect(await readCurrentBenchTaskModelCalls(otherArm, f.capture)).toBe(0);
+  });
+  it('refuses an admitted request with altered host input evidence rather than inferring count from usage', async () => {
+    const f = await fixture(), attempt = f.request(); await recordedReservation(f, attempt);
+    await sql`UPDATE harness_shared.learning_spend_reservations SET note = '{}' WHERE id = ${attempt.attemptId}`;
+    await expect(readCurrentBenchTaskModelCalls(f.input, f.capture)).rejects.toThrow(/frozen input capture/);
+  });
   it('settled reservation freezes exact final note bytes in the existing checkpoint after checkout cleanup', async () => {
     const f = await fixture(), attempt = f.request(); await recordedReservation(f, attempt);
     await sql`UPDATE harness_shared.bench_runs SET status = 'done' WHERE id = ${f.input.hostRunId} AND workspace_id = ${WS}`;

@@ -7,16 +7,21 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { mockReturnTyped } from '../../testing/typed-mock';
+
+// The recorder consumes only the SQL client; keep its real isolated driver.
+const { orgPgMock } = vi.hoisted(() => ({
+  orgPgMock: vi.fn<() => Pick<ReturnType<typeof import('@papercusp/db-org').getOrgPg>, 'sql'>>(),
+}));
 
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
-  getOrgPg: vi.fn(),
+  getOrgPg: orgPgMock,
 }));
 vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: () => 'telemetry-privacy-test',
 }));
 
-import { getOrgPg } from '@papercusp/db-org';
 import { registerRoute, type RouteDefinition } from '../define-route';
 import { createHostedRouteStack } from '../hosted-route-stack';
 
@@ -49,14 +54,14 @@ describe('mounted route telemetry PostgreSQL failure confidentiality', () => {
     `);
     // Use the real transaction and driver; capture its rejected Error without
     // changing the Error or replacing the recorder.
-    vi.mocked(getOrgPg).mockReturnValue({
-      sql: {
-        begin: async (fn: (tx: import('postgres').TransactionSql) => Promise<unknown>) => {
-          try { return await db.sql.begin(fn); }
-          catch (error) { rejected.push(error); throw error; }
-        },
+    const observedSql = new Proxy(db.sql, {
+      get(target, property, receiver) {
+        if (property !== 'begin') return Reflect.get(target, property, receiver);
+        return (...args: unknown[]) => Promise.resolve(Reflect.apply(target.begin, target, args))
+          .catch((error: unknown) => { rejected.push(error); throw error; });
       },
-    } as never);
+    });
+    mockReturnTyped(orgPgMock, { sql: observedSql });
   }, 180_000);
 
   afterAll(async () => {

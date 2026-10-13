@@ -443,7 +443,7 @@ export async function listIgnoredPaths(
 }
 
 /** Thin fs glue — reads the agent-insights dir + checks cited paths against the repo tree. */
-export async function collectInsightStalenessSignals(): Promise<WatchdogSignal[]> {
+export async function collectInsightStalenessSignals(runExecFile?: SidecarExecFile): Promise<WatchdogSignal[]> {
   // Lazy-import so the pure scan stays import-cheap for tests.
   const { DOCS_CONTENT_ROOT, REPO_ROOT } = await import('../../agent-tools/docs/_repo-paths');
   const dir = path.join(DOCS_CONTENT_ROOT, 'agent-insights');
@@ -486,7 +486,7 @@ export async function collectInsightStalenessSignals(): Promise<WatchdogSignal[]
   const cheapResolver = makeCitationResolver({ trackedFiles: tracked, existsOnDisk });
   const cited = [...new Set(insights.flatMap((i) => extractCitedPaths(i.raw)))];
   const unresolved = cited.filter((p) => !cheapResolver(p));
-  const ignoredPaths = [...(await listIgnoredPaths(REPO_ROOT, unresolved))];
+  const ignoredPaths = [...(await listIgnoredPaths(REPO_ROOT, unresolved, runExecFile))];
   const existsFn = makeCitationResolver({
     trackedFiles: tracked,
     ignoredPaths,

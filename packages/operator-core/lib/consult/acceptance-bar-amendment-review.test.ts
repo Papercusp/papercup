@@ -13,6 +13,7 @@ import {
   buildAmendmentReviewBrief,
   filterAmendmentReviewRoute,
   launchFreshAmendmentReviewer,
+  MAX_DEAD_REVIEWER_CHAIN,
   openAcceptanceBarAmendmentReview,
   routeAcceptanceBarAmendmentReview,
   selectFreshReviewerModelForAccountSteer,
@@ -458,9 +459,58 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
       launch: vi.fn().mockResolvedValue(launched),
       assertAllowed: vi.fn(async () => {}),
       resolveSteeredModel: vi.fn(async () => undefined),
+      // A deduped reviewer is live unless a test says it ended.
+      readTaskState: vi.fn(async () => 'running' as const),
+      hasReviewerAnswer: vi.fn(async () => false),
       ...overrides,
     };
   }
+
+  describe('a deduped reviewer that ended without answering (WI-6554700010010527)', () => {
+    const dedupedTo = (taskId: string) => ({ data: { deduped: true, launch: { tasks: [{ taskId, ownerId: `judge-${taskId}` }] } } });
+    const fresh = (taskId: string) => ({ data: { deduped: false, launch: { tasks: [{ taskId }] } } });
+
+    it('reuses a live deduped reviewer and launches nothing new', async () => {
+      const d = deps({ launch: vi.fn().mockResolvedValue(dedupedTo('task-1')) });
+      expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', taskId: 'task-1', deduped: true });
+      expect(d.launch).toHaveBeenCalledTimes(1);
+      expect(d.hasReviewerAnswer).not.toHaveBeenCalled();
+    });
+
+    it('relaunches under a key derived from the dead task, so the dry run gets a live reviewer', async () => {
+      const launch = vi.fn().mockResolvedValueOnce(dedupedTo('task-1')).mockResolvedValueOnce(fresh('task-2'));
+      const d = deps({ launch, readTaskState: vi.fn(async () => 'ended_unobserved' as const) });
+      const result = await launchFreshAmendmentReviewer(input, d as never);
+      expect(launch).toHaveBeenCalledTimes(2);
+      const firstKey = (launch.mock.calls[0]![0] as { idempotencyKey: string }).idempotencyKey;
+      expect((launch.mock.calls[1]![0] as { idempotencyKey: string }).idempotencyKey).toBe(`${firstKey}:after:task-1`);
+      expect(d.hasReviewerAnswer).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42', authorId: 'judge-task-1' });
+      expect(result).toMatchObject({ state: 'launched', taskId: 'task-2', deduped: false, relaunchedAfter: ['task-1'],
+        idempotencyKey: `${firstKey}:after:task-1` });
+    });
+
+    it('keeps the ended reviewer when it already answered on the thread', async () => {
+      const d = deps({ launch: vi.fn().mockResolvedValue(dedupedTo('task-1')),
+        readTaskState: vi.fn(async () => 'exited' as const), hasReviewerAnswer: vi.fn(async () => true) });
+      expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', taskId: 'task-1', deduped: true });
+      expect(d.launch).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops walking a chain of dead reviewers and reports reviewer-ended', async () => {
+      let n = 0;
+      const d = deps({ launch: vi.fn(async () => dedupedTo(`task-${++n}`)), readTaskState: vi.fn(async () => 'stranded' as const) });
+      const result = await launchFreshAmendmentReviewer(input, d as never);
+      expect(d.launch).toHaveBeenCalledTimes(MAX_DEAD_REVIEWER_CHAIN);
+      expect(result).toMatchObject({ state: 'blocked', reason: 'reviewer-ended', taskId: `task-${MAX_DEAD_REVIEWER_CHAIN}`,
+        relaunchedAfter: Array.from({ length: MAX_DEAD_REVIEWER_CHAIN }, (_, i) => `task-${i + 1}`) });
+    });
+
+    it('treats an unknown ledger state as live rather than relaunching', async () => {
+      const d = deps({ launch: vi.fn().mockResolvedValue(dedupedTo('task-1')), readTaskState: vi.fn(async () => null) });
+      expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', taskId: 'task-1' });
+      expect(d.launch).toHaveBeenCalledTimes(1);
+    });
+  });
 
   it('launches ONE headless, independent judge under the system principal, never as the requester', async () => {
     const d = deps();

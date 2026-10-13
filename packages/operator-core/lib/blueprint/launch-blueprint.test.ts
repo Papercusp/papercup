@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeComposedResolveExtends } from '@papercusp/blueprint-distribution';
@@ -109,6 +109,18 @@ const getOwnerSteering = vi.fn(async (_ws?: string, _slug?: string) => ({
 vi.mock('../owner-steering', () => ({ getOwnerSteering: (...a: unknown[]) => getOwnerSteering(...(a as [string, string])) }));
 const readAgentConfig = vi.fn(async () => ({ models: {}, tiers: [] as unknown[], tierCeilings: {} as Record<string, string> }));
 vi.mock('../agent-config', () => ({ readAgentConfig: () => readAgentConfig() }));
+const routingFixture = vi.hoisted(() => ({ enabled: false }));
+vi.mock('@papercusp/flags/server', async original => ({
+  ...(await original<typeof import('@papercusp/flags/server')>()), getFlag: async () => routingFixture.enabled,
+}));
+vi.mock('../deployment/account-pool-store', async original => ({
+  ...(await original<typeof import('../deployment/account-pool-store')>()),
+  loadAccountPool: async () => ({ accounts: [{ id: 'pool-a', provider: 'codex' }, { id: 'pool-b', provider: 'codex' }] }),
+}));
+vi.mock('../deployment/account-session-override', async original => ({
+  ...(await original<typeof import('../deployment/account-session-override')>()),
+  getAccountOverride: async () => ({ excludeAccounts: ['pool-b'], forcedAccounts: [] }),
+}));
 
 // WI-269 (durable-spawn workspace-pin): resolveLaunchTarget must resolve a `*`
 // workspace to a concrete one and never bake `ws=*` into the /invoke URL (a persisted
@@ -129,6 +141,7 @@ vi.mock('../workspace-registry', async (orig) => ({
 }));
 
 afterEach(() => {
+  routingFixture.enabled = false;
   setLaunchBlueprintFire(null);
   setLaunchBlueprintResolver(null);
   resetLaunchBlueprintTriggerMap();
@@ -254,6 +267,94 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       parentRole: 'operator', // parentless system launch
       itemId: 'EI-9',
     });
+  });
+
+  it('declared account route reaches direct and durable requests', async () => {
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    await fireLaunchBlueprint('release-fix', opts);
+    expect(fired[0]!.bodyExtra?.account).toBe('auto');
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'route:primary');
+    expect(request.body.account).toBe('auto');
+  });
+
+  it('primary spawn persists resolved route and stable owner correlation', async () => {
+    const request = await buildLaunchSpawnRequest('release-fix', {
+      ...opts, bodyExtra: { account: 'auto', spawnBackend: 'codex', spawnModel: 'gpt-5.4:high' },
+    }, 'route:primary-exact');
+    expect(request.spawnRecord?.accountRoute).toEqual({
+      ownerId: 'durable-spawn:route:primary-exact', accountRoute: 'auto',
+      requestedBackend: 'codex', requestedModel: 'gpt-5.4', requestedEffort: 'high',
+      launchedBackend: 'codex', launchedModel: 'gpt-5.4', launchedEffort: 'high', resolvedAccountIds: [],
+    });
+    const { assertSpawnAccountRoute } = await import('../fleet/spawn-tree');
+    expect(() => assertSpawnAccountRoute('foreign-owner', request.spawnRecord!.accountRoute!)).toThrow(/owner/);
+    expect(() => assertSpawnAccountRoute('durable-spawn:route:primary-exact', {
+      ...request.spawnRecord!.accountRoute!, requestedBackend: '',
+    })).toThrow(/backend\/model/);
+  });
+
+  it.each(['auto', 'default'])('operator request and backend parser bridge writes actual %s config', async account => {
+    routingFixture.enabled = true;
+    vi.stubEnv('PAPERCUSP_CODEX_GATEWAY', undefined as unknown as string);
+    vi.stubEnv('PAPERCUSP_ACCOUNT_ID', 'ambient-pin');
+    const request = await buildLaunchSpawnRequest('release-fix', {
+      ...opts, bodyExtra: { account, spawnBackend: 'codex', spawnModel: 'gpt-5.4:high' },
+    }, `bridge:${account}`);
+    const { parseBlueprintInvokeRequest } = await import('../endpoint-route/routes/harness/spawn');
+    const parsed = parseBlueprintInvokeRequest(JSON.parse(JSON.stringify(request.body)));
+    const { resolveSpawnGatewayEnv, applyExplicitSpawnAccountRoute } = await import('../inference-gateway/spawn-env');
+    let resolvedAccounts: string[] | null = null;
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws_test', slug: 'papercup', ownerId: 's-bridge',
+      backend: parsed.spawnBackendPin, model: parsed.spawnModelPin, account: parsed.account,
+      onResolvedAccounts: ids => { resolvedAccounts = ids; } });
+    applyExplicitSpawnAccountRoute(env, parsed.account);
+    const { buildInvokeOnce } = await import('../harness-invoke-once');
+    const invocation = buildInvokeOnce({ projectDir: '/fixture/project', stateDir: '/fixture/state',
+      harnessDir: '/fixture/harness', role: 'release-fixer', extras: parsed.extra,
+      extraEnv: { ...env, PAPERCUSP_SPAWN_MODEL: parsed.spawnModelPin, PAPERCUSP_SPAWN_BACKEND: parsed.spawnBackendPin! } });
+    vi.stubEnv('PAPERCUSP_SPAWN_MODEL', invocation.env.PAPERCUSP_SPAWN_MODEL);
+    vi.stubEnv('AGENT_BACKEND', invocation.env.AGENT_BACKEND);
+    const { resolveModel } = await import('../../../../libs/papercusp/packages/orchestrator/src/invoke');
+    const { resolveAgentBackend, normalizeModelForBackend } = await import('../../../../libs/papercusp/packages/orchestrator/src/env');
+    const backend = resolveAgentBackend(invocation.env.AGENT_CMD!);
+    const model = resolveModel({}, 'release-fixer');
+    expect(backend).toBe('codex');
+    expect(model).toBe('gpt-5.4:high');
+    expect(normalizeModelForBackend(model, backend)).toBe('gpt-5.4');
+    const { writeSignedSpawnCodexHome } = await import('../../../../libs/papercusp/packages/orchestrator/src/spawn-mcp');
+    const handle = await writeSignedSpawnCodexHome({ harnessSlug: 'papercup', workspaceId: 'ws_test', role: 'release-fixer',
+      runId: 'bridge', spawnId: 's-bridge', clientId: 's-bridge', operatorUrl: 'http://127.0.0.1:3070' }, {
+      model, gatewayEnv: invocation.env, probe: async () => true,
+      pg: (async () => [{ value_b64: Buffer.alloc(32, 7).toString('base64'), rotated_at: new Date('2026-08-25') }]) as never,
+    });
+    try {
+      const config = readFileSync(join(handle.codexHome, 'config.toml'), 'utf8');
+      expect(config).toContain('model = "gpt-5.4"');
+      expect(config).toContain('model_reasoning_effort = "high"');
+      expect(config).not.toContain('ambient-pin');
+      if (account === 'auto') {
+        expect(config).toContain('model_provider = "papercusp-codex-gateway"');
+        expect(config).not.toContain('x-papercusp-account');
+        expect(resolvedAccounts).toEqual(['pool-a']);
+      } else {
+        expect(config).not.toContain('papercusp-codex-gateway');
+        expect(resolvedAccounts).toEqual([]);
+      }
+    } finally { handle.cleanup(); }
+    expect(() => parseBlueprintInvokeRequest({ ...request.body, account: 42 })).toThrow(/route/);
+  });
+
+  it('caller account override precedes role route on direct and durable requests', async () => {
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => { fired.push(input); });
+    const input = { ...opts, bodyExtra: { account: 'default', spawnModel: 'gpt-5.4:high', spawnBackend: 'codex' } };
+    await fireLaunchBlueprint('release-fix', input);
+    expect(fired[0]!.bodyExtra?.account).toBe('default');
+    const request = await buildLaunchSpawnRequest('release-fix', input, 'route:override');
+    expect(request.body).toMatchObject(input.bodyExtra);
+    await expect(buildLaunchSpawnRequest('release-fix', { ...opts, bodyExtra: { account: 42 } }, 'route:invalid'))
+      .rejects.toThrow('launch account route must be a string or null');
   });
 
   it('buildLaunchSpawnRequest stamps a bounded timeout on Queen durable requests by default', async () => {

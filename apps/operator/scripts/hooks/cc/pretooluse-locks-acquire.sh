@@ -123,6 +123,29 @@ def now_iso():
 
 
 compatibility_advisory = None
+# WI-6554700010010405: the operator ANSWERED, but its reply carried no grant,
+# and the hook fails open. That edit lands without a lock, so the model must be
+# told. Otherwise a fail-open looks exactly like a healthy grant, and every edit
+# of the session goes unprotected without a word.
+fail_open_advisory = None
+
+
+def _note_fail_open(detail, ambiguous=False):
+    global fail_open_advisory
+    if ambiguous:
+        # An unreadable reply is not a refusal: the operator may have committed
+        # a grant this hook never saw. "NOT protected" would then be false, and
+        # implying protection is worse, so state what is known and what to assume.
+        fail_open_advisory = (
+            'file-lock fail-open: this edit is NOT confirmed lock-protected (non-blocking). '
+            f'The lock operator reply was ambiguous ({detail}), so any grant it committed '
+            'is unconfirmed; do not rely on it.'
+        )
+        return
+    fail_open_advisory = (
+        'file-lock fail-open: this edit is NOT lock-protected (non-blocking). '
+        f'The lock operator answered without a grant: {detail}'
+    )
 
 
 def allow():
@@ -136,6 +159,14 @@ def allow():
             'permissionDecision': 'allow',
             'permissionDecisionReason': 'file-lock compatibility fallback (non-blocking)',
             'additionalContext': compatibility_advisory,
+        }}, sys.stdout)
+        sys.exit(0)
+    if fail_open_advisory:
+        json.dump({'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'permissionDecision': 'allow',
+            'permissionDecisionReason': 'file-lock fail-open (non-blocking)',
+            'additionalContext': fail_open_advisory,
         }}, sys.stdout)
         sys.exit(0)
     # Exit 0, no stdout → no decision, client proceeds with normal flow.
@@ -1395,6 +1426,34 @@ def _coordination_domain_rejection(value):
     return text[:300]
 
 
+# WI-6554700010010405: a refusal of the CALLER'S IDENTITY is deterministic, not a
+# transport failure. A retry fails the same way, and the authority admitted
+# nothing. Failing open would let every edit of this session land unlocked and
+# without a word, so deny it. Keep the match narrow. Any other refusal, such as
+# the transient superuser_native_session_verifier_unavailable, keeps the
+# fail-open, with a visible advisory.
+_IDENTITY_REFUSAL_RE = re.compile(
+    r'\brequest_rejected:\s*(superuser_foreign_native_session|superuser_native_session_unverified)\b')
+
+
+def _rejection_text(value):
+    """The human text of an MCP refusal: a JSON-RPC error's message, or the
+    first text content of an isError tool result. Capped at 300 chars."""
+    text = None
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, dict):
+        message = value.get('message')
+        if isinstance(message, str) and message.strip():
+            text = message
+        else:
+            for item in value.get('content') or []:
+                if isinstance(item, dict) and isinstance(item.get('text'), str) and item['text'].strip():
+                    text = item['text']
+                    break
+    return text.strip()[:300] if text else None
+
+
 def _is_conn_refused(exc):
     # The :3070 host has no hot-reload, so picking up a lib/** edit means a
     # RESTART; during that few-second boot the port REFUSES connections. That
@@ -1608,8 +1667,19 @@ def _locks_acquire_once(request):
                 '_hook_compatibility_error': True,
                 '_detail': compatibility_error,
             }
-        detail = 'MCP tool returned isError:true' if phase == 'is-error' else 'JSON-RPC error in response'
+        detail = _rejection_text(rpc_error) or (
+            'MCP tool returned isError:true' if phase == 'is-error' else 'JSON-RPC error in response')
+        identity_refusal = _IDENTITY_REFUSAL_RE.search(detail)
+        if identity_refusal:
+            # Nothing was admitted, so there is nothing to recover or settle.
+            mark_error('identity-refused', detail)
+            _batch_deny(
+                f'locks: the operator refused this session identity ({identity_refusal.group(1)}), '
+                'so this edit cannot be lock-protected and is blocked. Relaunch through psu so the '
+                'native session is registered to its owner, or edit via capability:edit / capability:write.',
+                settle=False)
         mark_error('parse', detail)
+        _note_fail_open(detail)
         _recover_ambiguous_acquire(operation_started_at)
         if batch_info:
             return {
@@ -1623,6 +1693,7 @@ def _locks_acquire_once(request):
             'no-text': 'no text content in tool result',
         }.get(phase, 'unparseable operator response')
         mark_error('parse', detail)
+        _note_fail_open(detail, ambiguous=True)
         _recover_ambiguous_acquire(operation_started_at)
         if batch_info:
             return {

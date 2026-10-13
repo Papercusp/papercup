@@ -46,10 +46,11 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
+import { promises as fs, appendFileSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { constants, homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
@@ -658,12 +659,45 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
   }
 }
 
+/** @typedef {<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>} VerifierPhaseRunner */
+
+/** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
+ * must leave the last started phase readable without claiming it completed.
+ * @param {string} path
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {VerifierPhaseRunner}
+ */
+function verifierPhaseRunner(path, env) {
+  writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
+  const started = performance.now();
+  let sequence = 0;
+  const record = (phase, event, fields = {}) => appendFileSync(path, `${JSON.stringify({
+    schemaVersion: 'verifier-phase-v1', sequence: ++sequence,
+    taskId: env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID ?? null,
+    phase, event, elapsedMs: Math.round(performance.now() - started), ...fields,
+  })}\n`);
+  return async (phase, operation) => {
+    const before = performance.now();
+    record(phase, 'started');
+    try {
+      const result = await operation();
+      record(phase, 'completed', { durationMs: Math.round(performance.now() - before),
+        ...(phase === 'child.run' ? { exitCode: result } : {}) });
+      return result;
+    } catch (error) {
+      record(phase, 'failed', { durationMs: Math.round(performance.now() - before),
+        error: String(error?.message ?? error).slice(0, 2000) });
+      throw error;
+    }
+  };
+}
+
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
- * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>> }} options
+ * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner }} options
  */
-export async function prepareVerifierDependencies({ donor, dest, receipt }) {
-  await verifyVerifierSource(dest, receipt);
+export async function prepareVerifierDependencies({ donor, dest, receipt, runPhase = async (_phase, operation) => operation() }) {
+  await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt));
   const env = { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' };
   const run = (command, args) => {
     const result = spawnSync(command, args, { cwd: dest, env, encoding: 'utf8',
@@ -672,17 +706,19 @@ export async function prepareVerifierDependencies({ donor, dest, receipt }) {
       throw new PreviewError(`verifier dependency preflight failed: ${result.error?.message || result.stderr || result.stdout || result.status}`, 2);
     return result.stdout;
   };
-  run('bash', [join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
-    'snapshot-locked', realpathSync(donor), realpathSync(dest), 'hardlink']);
-  await verifyVerifierSource(dest, receipt, { runtimeArtifacts: true });
+  await runPhase('deps.snapshot', () => run('bash', [join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
+    'snapshot-locked', realpathSync(donor), realpathSync(dest), 'hardlink']));
+  await runPhase('deps.source.after-snapshot', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
   const script = join(dest, 'scripts/source-preview.mjs');
-  run(process.execPath, [script, 'verifier-inputs-check', '--repo', dest,
-    '--ref', receipt.sourceCommit, '--inputs', receipt.testedInputs.map(input => input.path).join(',')]);
-  const bytes = run(process.execPath, [script, 'verifier-measure', '--repo', dest,
-    '--ref', receipt.sourceCommit]).trim();
-  if (!/^\d+$/.test(bytes) || Number(bytes) <= 0)
-    throw new PreviewError('verifier dependency preflight returned no source size', 2);
-  await verifyVerifierSource(dest, receipt, { runtimeArtifacts: true });
+  await runPhase('deps.inputs', () => run(process.execPath, [script, 'verifier-inputs-check', '--repo', dest,
+    '--ref', receipt.sourceCommit, '--inputs', receipt.testedInputs.map(input => input.path).join(',')]));
+  await runPhase('deps.measure', () => {
+    const bytes = run(process.execPath, [script, 'verifier-measure', '--repo', dest,
+      '--ref', receipt.sourceCommit]).trim();
+    if (!/^\d+$/.test(bytes) || Number(bytes) <= 0)
+      throw new PreviewError('verifier dependency preflight returned no source size', 2);
+  });
+  await runPhase('deps.source.after-preflight', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
 }
 
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
@@ -698,32 +734,47 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   await fs.mkdir(scratch, { recursive: true });
   const owned = await fs.mkdtemp(join(scratch, 'verifier-command-'));
   const root = join(owned, 'invoked-source');
+  /** @type {VerifierPhaseRunner} */
+  let runPhase = async (_phase, operation) => operation();
   try {
     writeVerifierTaskReceipt(owned, donor, env);
     assertOutsideArchive(owned, resolve(receiptPath));
-    const receipt = await prepareVerifierSource({ repo: donor, ref, dest: root,
-      inputs, inputsFile, tauriInputs, gitCheckout: true });
-    await fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
-    await prepareVerifierDependencies({ donor, dest: root, receipt });
+    runPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env);
+    const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: donor, ref, dest: root,
+      inputs, inputsFile, tauriInputs, gitCheckout: true }));
+    await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
+    await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase });
     const childEnv = verifierSourceChildEnv({ root, receiptPath,
       env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
         VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } });
-    const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv, stdio: 'inherit' });
-    const onInt = () => child.kill('SIGINT'), onTerm = () => child.kill('SIGTERM');
-    process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
-    let exitCode;
-    try {
-      exitCode = await new Promise((done, reject) => {
-        child.once('error', reject);
-        child.once('close', (code, signal) => done(code ?? (128 + (constants.signals[signal] || 0))));
-      });
-    } finally {
-      process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
-    }
-    await verifyVerifierSource(root, receipt, { runtimeArtifacts: true });
+    const exitCode = await runPhase('child.run', async () => {
+      const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv, stdio: 'inherit' });
+      const onInt = () => child.kill('SIGINT'), onTerm = () => child.kill('SIGTERM');
+      process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
+      try {
+        /** @type {Promise<number>} */
+        const closed = new Promise((done, reject) => {
+          child.once('error', reject);
+          child.once('close', (code, signal) => done(code ?? (128 + (constants.signals[signal] || 0))));
+        });
+        return await closed;
+      } finally {
+        process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
+      }
+    });
+    await runPhase('source.postverify', () => verifyVerifierSource(root, receipt, { runtimeArtifacts: true }));
     return exitCode;
   } finally {
-    await fs.rm(owned, { recursive: true, force: true });
+    let cleaned = false;
+    try {
+      await runPhase('cleanup', async () => {
+        await fs.rm(owned, { recursive: true, force: true });
+        cleaned = true;
+      });
+    } finally {
+      // A phase-receipt IO failure must never prevent owned-tree cleanup.
+      if (!cleaned) await fs.rm(owned, { recursive: true, force: true });
+    }
   }
 }
 

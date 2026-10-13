@@ -489,6 +489,8 @@ export interface StartupCacheEvidenceRecord {
   protocol: GatewayTelemetryProtocol;
   transport: GatewayTelemetryTransport;
   model: string | null;
+  /** The effort actually forwarded by the gateway, rather than the launch declaration. */
+  effort?: string | null;
   authorizationScope: string | null;
   tools: GatewayCacheFingerprint | null;
   instructions: GatewayCacheFingerprint | null;
@@ -517,6 +519,7 @@ export function startupCacheEvidenceRecord(timeline: GatewayRequestTimeline): St
     protocol: timeline.protocol,
     transport: timeline.transport,
     model: timeline.model,
+    effort: timeline.forwardedEffort ?? null,
     authorizationScope: cache.servingAccountId,
     tools: cache.tools ? { ...cache.tools } : null,
     instructions: cache.instructions ? { ...cache.instructions } : null,
@@ -1290,14 +1293,14 @@ export class GatewayRequestTelemetry {
   private readonly sampleCapacity: number;
   private readonly recentCapacity: number;
   private readonly now: () => number;
-  private readonly onStartupEvidence: ((line: string) => void) | undefined;
+  private readonly onStartupEvidence: ((line: string, record: StartupCacheEvidenceRecord) => void) | undefined;
 
   constructor(opts: {
     sampleCapacity?: number;
     recentCapacity?: number;
     now?: () => number;
     /** Durable sink for first-request-per-owner startup evidence (the gateway journal). Never throws into the request path. */
-    onStartupEvidence?: (line: string) => void;
+    onStartupEvidence?: (line: string, record: StartupCacheEvidenceRecord) => void;
   } = {}) {
     this.sampleCapacity = Math.max(1, Math.floor(opts.sampleCapacity ?? 4096));
     this.recentCapacity = Math.max(1, Math.floor(opts.recentCapacity ?? 256));
@@ -1365,7 +1368,7 @@ export class GatewayRequestTelemetry {
     if (this.onStartupEvidence) {
       try {
         const record = startupCacheEvidenceRecord(timeline);
-        if (record) this.onStartupEvidence(formatStartupCacheEvidenceLine(record));
+        if (record) this.onStartupEvidence(formatStartupCacheEvidenceLine(record), record);
       } catch {
         // Durable evidence capture is best-effort and must never fail a completed request.
       }

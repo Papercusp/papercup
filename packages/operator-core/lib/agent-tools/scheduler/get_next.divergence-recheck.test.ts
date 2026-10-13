@@ -171,14 +171,15 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     const zeroMatches = { matchedByFilter: 0, claimable: 0, excluded: {} as never };
     getNextForBeeM.mockResolvedValue(null);
     issueFloorMissM.mockResolvedValue(zeroMatches);
-    terminalExhaustionM.mockResolvedValue({ matchedByFilter: 2, terminalMatchedByFilter: 2 });
+    const exhaustion = { matchedByFilter: 2, terminalMatchedByFilter: 2, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 };
+    terminalExhaustionM.mockResolvedValue(exhaustion);
 
     const res = await call();
 
     expect(res.ok).toBe(false);
     expect(getNextForBeeM).toHaveBeenCalledTimes(1);
     expect(terminalExhaustionM).toHaveBeenCalledTimes(1);
-    expect(missOpts()?.terminalExhaustion).toEqual({ matchedByFilter: 2, terminalMatchedByFilter: 2 });
+    expect(missOpts()?.terminalExhaustion).toEqual(exhaustion);
   });
 
   it('passes plan terminality and leader liveness to the zero-match miss verdict', async () => {

@@ -199,6 +199,30 @@ describe('P007 first-party symbol/context/callees', () => {
     expect(capped.evidence!.siteIdentities).toHaveLength(1);
   });
 
+  it('limits cited context to full cited files and does not certify uncited dependency bodies', () => {
+    const query = { ts, root, op: 'context' as const, contextScope: 'cited-files' as const,
+      name: 'compose', filePath: 'src/compose.ts', paths: ['src/compose.ts'] };
+    const scoped = firstPartyCallers(query);
+    expect(scoped.error).toBeNull();
+    expect(scoped.evidence!.relationships.some(edge => edge.kind === 'definition')).toBe(true);
+    expect(scoped.evidence!.graphScope.sourceCompleteness).toBe('unverified');
+    expect(scoped.evidence!.graphScope.limitations.join(' ')).toContain('dependency bodies and relationships outside those files are not inspected');
+    expect(scoped.evidence!.sourceScope.supportingFiles.some(file => file.path === 'src/dependency.ts' && file.representation === 'full-source')).toBe(false);
+    expect(scoped.evidence!.relationships.some(edge => edge.target?.site.path === 'src/dependency.ts' && edge.target.versionedSymbolId)).toBe(false);
+    const included = firstPartyCallers({ ...query, paths: ['src/compose.ts', 'src/dependency.ts'] });
+    expect(included.error).toBeNull();
+    expect(included.evidence!.relationships.some(edge => edge.kind === 'callees' && edge.target?.site.path === 'src/dependency.ts' && edge.target.versionedSymbolId)).toBe(true);
+    expect(included.evidence!.sourceScope.supportingFiles.find(file => file.path === 'src/dependency.ts')?.representation).toBe('full-source');
+  });
+
+  it('refuses cited context without explicit source files or with broader enrichment', () => {
+    const query = { ts, root, name: 'compose', op: 'context' as const, contextScope: 'cited-files' as const };
+    for (const overrides of [{}, { paths: ['src'] }, { paths: ['src/compose.ts'], op: 'symbol' as const },
+      { paths: ['src/compose.ts'], includeInterfaces: true }]) {
+      expect(firstPartyCallers({ ...query, ...overrides }).error).toContain('Cited-file context requires');
+    }
+  });
+
   it('re-resolves the outgoing target version after a dependency edit at an unchanged call site', () => {
     const before = firstPartyCallers({ ts, root, op: 'callees', name: 'compose' });
     const dependency = FILES['src/dependency.ts']!;

@@ -223,6 +223,11 @@ export function stampRequestSent(env = process.env, write = writeFileSync, now =
   }
 }
 
+/**
+ * @param {string | URL | Request} url
+ * @param {RequestInit} init
+ * @param {{fetchImpl?: typeof fetch, retryWindowMs?: number, retryDelayMs?: number, sleepImpl?: (ms: number) => Promise<unknown>, now?: () => number, onRetry?: (event: {attempt: number, delayMs: number, remainingMs: number}) => void}} [options]
+ */
 export async function fetchWithConnectionRecovery(
   url,
   init,
@@ -280,7 +285,13 @@ export function toCamelCaseFlag(key) {
   return key.replace(/-+([a-z0-9])/gi, (_match, char) => char.toUpperCase());
 }
 
+/**
+ * @typedef {{raw?: boolean, allWorkspaces?: boolean, help?: boolean, allowPartial?: boolean, json?: string, jsonFile?: string, client?: string, workspace?: string, harness?: string, port?: string, idempotencyKey?: string}} McpCallFlags
+ * @param {string[]} argv
+ * @returns {{tool: string | undefined, jsonArgs: string | undefined, flags: McpCallFlags}}
+ */
 export function parseArgs(argv) {
+  /** @type {McpCallFlags} */
   const flags = {};
   const pos = [];
   for (let i = 0; i < argv.length; i++) {
@@ -313,6 +324,7 @@ export function parseArgs(argv) {
  * matching the ptool contract; the legacy positional form remains supported.
  * The source selection is pure so every quoting-safe path is testable without
  * spawning a shell or contacting the operator.
+ * @param {{jsonArgs?: string, flags?: McpCallFlags}} [input]
  */
 export function jsonSourceKind({ jsonArgs, flags = {} } = {}) {
   if (flags.jsonFile) return 'file';
@@ -325,6 +337,8 @@ export function jsonSourceKind({ jsonArgs, flags = {} } = {}) {
 /**
  * Read and parse the selected JSON args source. `readFile` is injectable for
  * tests; descriptor 0 is used for the `--json -` stdin sentinel.
+ * @param {{jsonArgs?: string, flags?: McpCallFlags}} [input]
+ * @param {{readFile?: (path: string | number, encoding: 'utf8') => string}} [options]
  */
 export function readJsonArgs(
   { jsonArgs, flags = {} } = {},
@@ -581,6 +595,7 @@ export function buildConnectionRetryDiagnostic({ port, attempt, delayMs, remaini
  * maintained VM-rig driver correctly rejects.
  * Forward the launched role as an admission hint for bounded judge calls;
  * signed principal verification remains the authorization boundary.
+ * @param {{client: string, workspace: string, harness?: string, role?: string, origin?: string, allWorkspaces?: boolean, nativeSessionOverride?: string | null, env?: NodeJS.ProcessEnv}} options
  */
 export function buildMcpSessionQuery({
   client, workspace, harness, role, origin, allWorkspaces = false,
@@ -621,7 +636,10 @@ export function isForeignNativeSessionRejection(result) {
       block?.type === 'text' && block.text === 'request_rejected: superuser_foreign_native_session');
 }
 
-/** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative. */
+/** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative.
+ * @param {unknown} result
+ * @param {{client?: string, query?: URLSearchParams, env?: NodeJS.ProcessEnv}} [options]
+ */
 export function shouldRetryWithoutNativeSession(result, { client, query, env = process.env } = {}) {
   return isForeignNativeSessionRejection(result) &&
     Boolean(String(env.CODEX_SESSION_ID ?? '').trim()) &&
@@ -637,6 +655,9 @@ export function shouldRetryWithoutNativeSession(result, { client, query, env = p
  * `arguments` would send it to the target tool schema, where it is either
  * ignored or rejected as an unrecognized tool argument instead of enabling
  * result replay after an unknown outcome.
+ * @param {string} tool
+ * @param {unknown} args
+ * @param {{idempotencyKey?: string, outputGroupId?: string}} [options]
  */
 export function buildMcpCallParams(tool, args, { idempotencyKey, outputGroupId } = {}) {
   return {
@@ -653,6 +674,8 @@ export function buildMcpCallParams(tool, args, { idempotencyKey, outputGroupId }
  * first-party tenant tools keep their workspace transaction. The explicit
  * `--all-workspaces` escape is the only CLI path that selects the unscoped
  * superuser session required by cross-workspace tools.
+ * @param {McpCallFlags} [flags]
+ * @param {NodeJS.ProcessEnv} [env]
  */
 export function resolveMcpWorkspace(flags = {}, env = process.env) {
   if (flags.allWorkspaces && flags.workspace !== undefined) {
@@ -670,6 +693,9 @@ export function resolveMcpWorkspace(flags = {}, env = process.env) {
  * not; using only the PID strands work-item ownership between calls. Preserve
  * an explicit client or full session identity first, then reuse the launch id
  * before falling back to the legacy per-process identity for ordinary shells.
+ * @param {McpCallFlags} [flags]
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {number} [pid]
  */
 export function resolveMcpClientId(
   flags = {},
@@ -719,6 +745,9 @@ export function resolveMcpRole(env = process.env) {
  * deploy invokes `/tmp/mcp-call.mjs`, while `import.meta.url` canonicalizes to
  * `/private/tmp/mcp-call.mjs`. Comparing their raw URLs suppresses main() and
  * produces a false-success, zero-byte result.
+ * @param {string | undefined} argv1
+ * @param {string | URL} moduleUrl
+ * @param {(path: string) => string} [resolveRealpath]
  */
 export function isInvokedDirectly(
   argv1,

@@ -226,6 +226,21 @@ describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)',
     });
   });
 
+  it.each([
+    ['rig', { needs_2_machine_rig: true }],
+    ['canary', { canary: true }],
+    ['claimHold', { _claimHold: true }],
+  ] as const)('names %s using the same predicate that excludes the feature, with a ready control', async (name, payload) => {
+    await seedItem('WI-gated', { payload });
+    await seedItem('WI-ready');
+    const scope = planScopeFor('su-member');
+    scope.record.spec.view.filter = { field: 'id', op: 'in', value: ['WI-gated', 'WI-ready'] };
+    const breakdown = await diagnoseFleetScopeFeatureFamilyExclusions({ scope, harness: H, workspaceId: WS });
+    expect(breakdown).toMatchObject({ matchedByFilter: 2, claimable: 1, excluded: { claimFloors: 1, [name]: 1 } });
+    expect(Object.entries(breakdown!.excluded).filter(([, count]) => count && count > 0).map(([floor]) => floor).sort())
+      .toEqual(['claimFloors', name].sort());
+  });
+
   it.each(['claim-hold', 'peer-claim'] as const)('diagnoses a non-plan feature behind %s without an authoring false alarm', async (floor) => {
     await seedItem('WI-held-feature', floor === 'claim-hold'
       ? { payload: { _claimHold: true } }
@@ -240,7 +255,8 @@ describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)',
     ] };
     const featureBreakdown = await diagnoseFleetScopeFeatureFamilyExclusions({ scope, harness: H, workspaceId: WS });
     expect(featureBreakdown).toEqual({
-      matchedByFilter: 1, claimable: 0, excluded: { claimFloors: 1, reservedPlanLane: 0, stopTheLine: 0 },
+      matchedByFilter: 1, claimable: 0, excluded: { claimFloors: 1, reservedPlanLane: 0, stopTheLine: 0,
+        ...(floor === 'claim-hold' ? { claimHold: 1 } : { taken: 1 }) },
     });
     const opts = {
       featureBreakdown,

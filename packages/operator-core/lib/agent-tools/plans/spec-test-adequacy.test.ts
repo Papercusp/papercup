@@ -12,6 +12,7 @@ import {
   classifySpecEvidenceLineage,
   crossGenerationAuditProbeArgs,
   evaluateSpecTestAdequacy,
+  resolveFixtureAbsenceVerifications,
   isNonCodeWorkItemKind,
   latestLogicalEvidence,
   mutationMeasuredFailedCase,
@@ -3390,7 +3391,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(28);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(29);
   });
 
   it('keeps fixture calibration unknown when a null fingerprint has no independent fixture-free measurement', () => {
@@ -3523,6 +3524,96 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       'Binder-authored fixtureFree=true does not establish fixture absence',
     );
     expect(result.ratings['fixture-calibration'].suggestion).toContain('independent measurement');
+  });
+
+  describe('independently verified fixture absence', () => {
+    function proofPair() {
+      const base = evidence();
+      const cited = evidence({
+        id: 901, createdBy: 'su-implementer', evidenceKind: 'test',
+        evidenceRef: 'test:real-repository-subject',
+        fingerprints: { ...base.fingerprints, fixtureFingerprint: null },
+        details: { adequacy: { ...base.details.adequacy as Record<string, unknown>,
+          fixtureFree: true, fixtureCalibrated: undefined } },
+      });
+      const review = evidence({ ...cited, id: 902, createdBy: 'su-reviewer',
+        evidenceKind: 'independent-verification', verifiesBindingId: cited.id });
+      return { cited, review };
+    }
+
+    it('accepts a current outside-lineage review of the same measured source, test, run and cases', async () => {
+      const { cited, review } = proofPair();
+      const fixtureAbsenceVerifications = await resolveFixtureAbsenceVerifications([cited, review], async () => true);
+      expect(fixtureAbsenceVerifications.get(cited.id!)).toEqual([review.id]);
+      const result = evaluateSpecTestAdequacy({ clause: clause({ requiredEvidence: ['tree'] }),
+        evidence: [cited, review], classRef: 'plan-class-feature-ship', fixtureAbsenceVerifications });
+      expect(result.ratings['fixture-calibration'].rating).toBe('not-applicable');
+      expect(result.ratings['fixture-calibration'].evidence).toContain('independently verified');
+      expect(result.ratings['fixture-calibration'].evidence).toContain('902');
+    });
+
+    it('rejects self review, related lineages, and unreadable lineage', async () => {
+      const { cited, review } = proofPair();
+      const self = { ...review, createdBy: cited.createdBy };
+      expect((await resolveFixtureAbsenceVerifications([cited, self], async () => true)).size).toBe(0);
+      expect((await resolveFixtureAbsenceVerifications([cited, review], async () => false)).size).toBe(0);
+      expect((await resolveFixtureAbsenceVerifications([cited, review], async () => { throw new Error('unavailable'); })).size).toBe(0);
+    });
+
+    it('accepts the shared reader certificate without evaluator-tool-only arguments', () => {
+      const { cited, review } = proofPair();
+      const certified = { ...cited, fixtureAbsenceVerification: { verifierBindingIds: [review.id!] } };
+      const result = evaluateSpecTestAdequacy({ clause: clause({ requiredEvidence: ['tree'] }),
+        evidence: [certified, review], classRef: 'plan-class-feature-ship' });
+      expect(result.ratings['fixture-calibration'].rating).toBe('not-applicable');
+      const binderClaim = { ...cited, details: { ...cited.details,
+        fixtureAbsenceVerification: { verifierBindingIds: [review.id!] } } };
+      expect(evaluateSpecTestAdequacy({ clause: clause({ requiredEvidence: ['tree'] }),
+        evidence: [binderClaim, review], classRef: 'plan-class-feature-ship' })
+        .ratings['fixture-calibration'].rating).toBe('unknown');
+    });
+
+    it('rejects changed source, test, run, clause, stale proof, or incomplete reviewed case coverage', async () => {
+      const { cited, review } = proofPair();
+      const mismatches: SpecEvidenceForAdequacy[] = [
+        { ...review, fingerprints: { ...review.fingerprints, sourceFingerprint: 'other-source' } },
+        { ...review, fingerprints: { ...review.fingerprints, testFingerprint: 'other-test' } },
+        { ...review, testRunId: 99 },
+        { ...review, specRevision: 99 },
+        { ...review, currentness: { ...review.currentness, overall: 'stale' } },
+        { ...review, currentness: { ...review.currentness, provenance: 'attested-current' } },
+        { ...review, details: { adequacy: { fixtureFree: true, testCases: ['unrelated case'] } } },
+      ];
+      for (const candidate of mismatches) {
+        expect((await resolveFixtureAbsenceVerifications([cited, candidate], async () => true)).size).toBe(0);
+      }
+    });
+
+    it('cannot certify an unreviewed sibling or override declared fixture use', async () => {
+      const { cited, review } = proofPair();
+      const sibling = { ...cited, id: 903, evidenceRef: 'test:unreviewed-subject' };
+      const fixtureAbsenceVerifications = await resolveFixtureAbsenceVerifications([cited, review, sibling], async () => true);
+      for (const subject of [
+        { clause: clause({ requiredEvidence: ['tree'] }), evidence: [cited, review, sibling] },
+        { clause: clause({ requiredEvidence: ['integration fixture'] }), evidence: [cited, review] },
+      ]) {
+        const result = evaluateSpecTestAdequacy({ ...subject, classRef: 'plan-class-feature-ship', fixtureAbsenceVerifications });
+        expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
+      }
+    });
+
+    it('ignores identity and citation assertions placed only in binder details', async () => {
+      const { cited, review } = proofPair();
+      const forged = { ...review, createdBy: undefined, verifiesBindingId: undefined,
+        details: { ...review.details, createdBy: 'su-reviewer', verifiesBindingId: cited.id } };
+      expect((await resolveFixtureAbsenceVerifications([cited, forged], async () => true)).size).toBe(0);
+    });
+
+    it('keeps partial evidence without currentness unverified', async () => {
+      const { cited, review } = proofPair();
+      const partial = { ...review, currentness: undefined } as unknown as SpecEvidenceForAdequacy;
+      expect((await resolveFixtureAbsenceVerifications([cited, partial], async () => true)).size).toBe(0);
+    });
   });
 
   it('keeps fixture calibration unknown when the falsifier observation declares fixture use despite fixtureFree=true', () => {

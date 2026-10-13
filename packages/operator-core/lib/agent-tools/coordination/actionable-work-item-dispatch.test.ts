@@ -737,6 +737,68 @@ describe('assignAndWakeActionableWorkItems', () => {
     expect(result.ok).toBe(true);
     expect(result.failure).toBeUndefined();
   });
+
+  // WI-6554700010010397: a stable name whose every adopter ended used to fail as a
+  // generic target_absent naming one dead session id, which hid the repair.
+  describe('when the wake reaches nobody', () => {
+    const unreached = () =>
+      vi.fn(async (owners: readonly string[]) => ({
+        targets: [...owners],
+        keys: owners.map((owner) => `coord:inbox-wake:${owner}`),
+        queued: 0,
+        woken: 0,
+        pickupConfirmed: false as const,
+        pickup: [],
+        staged: 0,
+        stagedTargets: [],
+        fanoutCapped: [],
+        timedOutTargets: [],
+      }));
+
+    it('names the stable agent name and its ended adopters as target_adopter_gone', async () => {
+      const d = deps({
+        resolveTarget: vi.fn(async () => ({
+          requested: 'bug-triage',
+          ownerId: 'su-newest-dead',
+          present: false,
+          sessionState: null,
+          wakeable: false,
+          adoptedBy: ['su-newest-dead', 'su-a', 'su-b', 'su-c', 'su-d'],
+        })),
+        wake: unreached(),
+      });
+
+      const result = await assignAndWakeActionableWorkItems(
+        { workItemIds: ['WI-READY'], targetAgent: 'bug-triage' },
+        d,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.assignment.assigned).toEqual(['WI-READY']);
+      expect(result.failure).toMatchObject({
+        code: 'target_adopter_gone',
+        target: 'bug-triage',
+        recoverable: true,
+        queuePreserved: true,
+      });
+      expect(result.failure?.message).toContain('agent name "bug-triage"');
+      expect(result.failure?.message).toContain('su-newest-dead, su-a, su-b, +2 more');
+      expect(result.failure?.message).toContain('plan_items:adopt_name { name: "bug-triage" }');
+    });
+
+    it('keeps target_absent for a raw owner id that was never adopted as a name', async () => {
+      const d = deps({
+        resolveTarget: vi.fn(async ({ targetAgent }) =>
+          target(targetAgent, { present: false, sessionState: null, wakeable: false }),
+        ),
+        wake: unreached(),
+      });
+
+      const result = await assignAndWakeActionableWorkItems({ workItemIds: ['WI-READY'], targetAgent: 'su-raw' }, d);
+
+      expect(result.failure).toMatchObject({ code: 'target_absent', target: 'su-raw' });
+    });
+  });
 });
 
 describe('resolveStableAgentTarget', () => {
@@ -806,6 +868,7 @@ describe('resolveStableAgentTarget', () => {
       ownerId: 'su-newest-dead',
       present: false,
       wakeable: false,
+      adoptedBy: ['su-newest-dead', 'su-live'],
     });
   });
 

@@ -3197,6 +3197,12 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
     const payload = parseHandlerPayload(res);
     expect(payload.ok).toBe(true);
     const cmd = (i: number) => spawnConsoleMock.mock.calls[i][0].envelope.greetingCmd as string;
+    expect(payload.modelResolution).toBeNull();
+    expect(payload.memberModelResolutions).toMatchObject([
+      { requested: 'opus[1m]', agent: 'claude', model: 'opus[1m]:high', effort: 'high' },
+      { requested: 'sonnet', agent: 'claude', model: 'sonnet', effort: null },
+      { requested: 'sonnet', agent: 'claude', model: 'sonnet', effort: null },
+    ]);
     // Member 1: its own model, with effort folded ONTO the spec (psu has no --effort).
     expect(cmd(0)).toContain("--model='opus[1m]:high'");
     expect(cmd(0)).not.toContain('--effort');
@@ -5389,6 +5395,9 @@ function reservesLaneForLaunchingFleet(
     expect(payload).toMatchObject({
       ok: false,
       error: 'admission_refused',
+      reason: 'family-disagreement',
+      message: expect.stringContaining('Actionable promoted families disagree'),
+      repairCall: { tool: 'plans:get', args: { slug: 'my-plan', harness: 'papercusp' } },
       fleet: 'refused-admission',
       plan: 'my-plan',
       promotionFailsafe: { ran: true, promoted: 0, skipped: 3 },

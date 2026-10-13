@@ -274,6 +274,8 @@ export interface SyncLintGuardFiling {
   id?: string;
   adopted?: boolean;
   error?: string;
+  /** Filing succeeded but the targeted wake still needs the next tick. */
+  notificationError?: string;
 }
 
 export interface SyncLintGuardResult {
@@ -335,7 +337,12 @@ export async function runSyncLintGuardTick(
 
   const head = await deps.headSha();
   if (!head) return recordSkip('git-unreadable');
-  if (prior && prior.sha === head) return { ...empty('up-to-date'), state: prior };
+  // A tick may advance its overall sha while a timed-out guard or deferred
+  // filing retains an older per-guard record. Those records still need a
+  // retry at this same head; only a completely measured batch is up to date.
+  if (prior && prior.sha === head && scripts.every((script) => prior.guards[script]?.sha === head)) {
+    return { ...empty('up-to-date'), state: prior };
+  }
 
   // Measure every guard (bounded concurrency; each one idle-priority in the binding).
   const runs = await mapBounded(scripts, GUARD_CONCURRENCY, async (script) => {
@@ -416,13 +423,14 @@ export async function runSyncLintGuardTick(
       script: c.violation.script,
       path,
       conditionKey: finding.conditionKey,
-      assignee: res.ok ? usedAssignee : null,
+      assignee: res.ok ? ('assignee' in res ? res.assignee ?? null : usedAssignee) : null,
       authorSource: author.source,
       ...(res.id ? { id: res.id } : {}),
       ...(res.adopted ? { adopted: true } : {}),
+      ...(res.notificationError ? { notificationError: res.notificationError } : {}),
       ...(res.ok ? {} : { error: res.error ?? 'file-failed' }),
     });
-    if (!res.ok) deferred.push(c.violation);
+    if (!res.ok || res.notificationError) deferred.push(c.violation);
   }
 
   // New records. A deferred offender stays OUT of its guard's baseline so the next tick

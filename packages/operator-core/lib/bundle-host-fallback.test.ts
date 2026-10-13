@@ -151,6 +151,18 @@ describe('bundle-host.sh standalone spawner fallback', () => {
 });
 
 describe('bundle-host.sh last-known-good fallback', () => {
+  it.each([
+    '--import=tsx',
+    `--import=tsx --import=${REPO_ROOT}/scripts/lib/committed-source-loader.mjs`,
+  ])('orders the committed loader before inherited TypeScript hooks (%s)', (nodeOptions) => {
+    const entry = join(dir, 'loader-order-entry.ts');
+    writeFileSync(entry, 'export const loaderOrder: string = "compiled";\n');
+    const result = runBundler(entry, { NODE_OPTIONS: nodeOptions });
+    expect(result.code, result.output).toBe(0);
+    expect(readFileSync(outfile, 'utf8')).toContain('compiled');
+    expect(existsSync(marker)).toBe(false);
+  }, 260_000);
+
   it('retains the accepted dependency graph after cleanup and preserves it on a rejected rebuild', () => {
     const entry = join(dir, 'graph-entry.ts');
     const dependency = join(dir, 'graph-dependency.ts');
