@@ -75,6 +75,19 @@ beforeEach(() => {
 });
 
 describe('docs:author search refresh', () => {
+  it('rejects unbound MDX expression identifiers before persistence or refresh', async () => {
+    const result = await callAuthor({ ...baseArgs, body: 'An optional plan {publisher, product, name}.\n' });
+    const payload = JSON.parse(result.content[0].text) as { ok: boolean; error?: string };
+    expect(result.isError).toBe(true);
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toContain('invalid_mdx');
+    expect(payload.error).toContain('publisher');
+    expect(h.anchorManualDoc).not.toHaveBeenCalled();
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.invalidateEngineeringAdapter).not.toHaveBeenCalled();
+    expect(h.refreshDocPageSections).not.toHaveBeenCalled();
+  });
+
   it('rejects MDX-invalid prose before the canonical write', async () => {
     const result = await callAuthor({
       ...baseArgs,
