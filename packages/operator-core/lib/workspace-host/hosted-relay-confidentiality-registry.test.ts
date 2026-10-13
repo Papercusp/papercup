@@ -316,7 +316,7 @@ describe('hosted relay confidentiality registry (P-001)', () => {
     expect(found.details).toContain('detail');
     expect(Object.keys(HOSTED_CONTROL_PLANE_FIELD_REGISTRY['desktop-audit-row']!).sort()).toEqual(found.row);
     expect(Object.keys(HOSTED_CONTROL_PLANE_FIELD_REGISTRY['hosted-desktop-audit-details']!).sort()).toEqual(found.details);
-    for (const sink of ['desktop-audit-warnings', 'hosted-handler-warnings'] as const) {
+    for (const sink of ['desktop-audit-warnings', 'hosted-handler-warnings', 'customer-host-warnings'] as const) {
       const writer = HOSTED_CONTROL_PLANE_WRITER_REGISTRY[sink];
       const fields = writer.sources.flatMap((path) => consoleArgumentFields(readFileSync(resolve(REPO, path), 'utf8')));
       expect(fields.length, sink + ' positive control').toBeGreaterThan(0);
@@ -353,8 +353,7 @@ describe('hosted relay confidentiality registry (P-001)', () => {
       'connector-tickets': ['route_label', 'audience'],
       'desktop-audit-row': ['actor', 'action', 'subject', 'details'],
       'hosted-desktop-audit-details': ['detail'],
-      'desktop-audit-warnings': ['warn.0.argument.1'],
-      'hosted-handler-warnings': ['warn.0.argument.0', 'warn.0.argument.1', 'warn.1.argument.0', 'warn.1.argument.1'],
+      'customer-host-warnings': ['warn.3.argument.0'],
     };
     for (const [sink, fields] of Object.entries(content)) {
       for (const field of fields) expect(HOSTED_CONTROL_PLANE_FIELD_REGISTRY[sink]![field]!.sensitivity, sink + '.' + field).toBe('content');

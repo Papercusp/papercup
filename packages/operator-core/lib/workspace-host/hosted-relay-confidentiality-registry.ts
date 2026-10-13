@@ -211,13 +211,22 @@ export const HOSTED_CONTROL_PLANE_FIELD_REGISTRY: Readonly<Record<string, Readon
   },
   'desktop-audit-warnings': {
     'warn.0.argument.0': { sensitivity: 'control', note: 'Fixed warning prefix.' },
-    'warn.0.argument.1': { sensitivity: 'content', note: 'Raw database/Drizzle error; may include SQL bound values.' },
+    'warn.0.argument.1': { sensitivity: 'control', note: 'Fixed desktop_audit_write_failed code; never database bindings or error text.' },
   },
   'hosted-handler-warnings': {
-    'warn.0.argument.0': { sensitivity: 'content', note: 'Formatted audit context includes customer/channel identifiers.' },
-    'warn.0.argument.1': { sensitivity: 'content', note: 'Database error message or arbitrary thrown value.' },
-    'warn.1.argument.0': { sensitivity: 'content', note: 'Formatted liveness context includes customer identifiers.' },
-    'warn.1.argument.1': { sensitivity: 'content', note: 'Database error message or arbitrary thrown value.' },
+    'warn.0.argument.0': { sensitivity: 'control', note: 'Fixed desktop audit warning prefix.' },
+    'warn.0.argument.1': { sensitivity: 'control', note: 'Fixed desktop_audit_write_failed code.' },
+    'warn.1.argument.0': { sensitivity: 'control', note: 'Fixed connector liveness warning prefix.' },
+    'warn.1.argument.1': { sensitivity: 'control', note: 'Enumerated alive/gone write failure code; no customer or database text.' },
+  },
+  'customer-host-warnings': {
+    'warn.0.argument.0': { sensitivity: 'control', note: 'Fixed audit warning prefix.' },
+    'warn.0.argument.1': { sensitivity: 'control', note: 'Fixed desktop_audit_write_failed code.' },
+    'warn.1.argument.0': { sensitivity: 'control', note: 'Fixed relay usage warning prefix.' },
+    'warn.1.argument.1': { sensitivity: 'control', note: 'Fixed relay_usage_report_failed code.' },
+    'warn.2.argument.0': { sensitivity: 'control', note: 'Fixed membership warning prefix.' },
+    'warn.2.argument.1': { sensitivity: 'control', note: 'Fixed membership_report_failed code.' },
+    'warn.3.argument.0': { sensitivity: 'content', note: 'Runtime onWarning configuration diagnostics; customer-local input, not approved vendor metadata.' },
   },
   'workspace-host-connections': {
     workspace_id: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
@@ -433,6 +442,11 @@ export const HOSTED_CONTROL_PLANE_WRITER_REGISTRY = {
     console: true,
     sources: ['apps/operator/bin/hosted-handler.ts'],
     placement: 'vendor-hosted-handler-console',
+  },
+  'customer-host-warnings': {
+    console: true,
+    sources: ['packages/operator-core/lib/workspace-host/hosted-workspace-host-runtime.ts'],
+    placement: 'customer-host-console',
   },
   'route-invocations': {
     table: 'harness_shared.route_invocations',
