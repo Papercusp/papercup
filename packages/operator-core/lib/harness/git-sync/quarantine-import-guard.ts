@@ -249,7 +249,9 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
   const quarantinedNormalized = new Set(infectiousPaths.map((p) => normalizeModulePath(p)));
 
   const candidates = [...new Set(dirtyFiles)].filter((f) => isScannableCandidate(f) && !quarantined.has(f));
-  if (candidates.length === 0) return [];
+  // A paired generated declaration is itself an offender (emitted below) even when no other
+  // dirty file remains to scan — short-circuiting on `candidates` alone silently dropped it.
+  if (candidates.length === 0 && pairedDeclarations.length === 0) return [];
 
   // Read every candidate's specifiers ONCE (fixed-point iteration below reuses this —
   // no re-reading a file just because it wasn't infected on an earlier pass).
