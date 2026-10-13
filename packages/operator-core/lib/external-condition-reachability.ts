@@ -1,6 +1,7 @@
 import { EVENT_CATALOG, deriveSubjectScope, familyAdmitsKey, familyKeyPrefix, keyMatchesCatalog } from './events/await/catalog';
 import { findRootAnchor, loadNode } from './events/await/compose-store';
 import { inspectEventKey } from './events/await/store';
+import type { PredicateWatchRow } from './events/await/predicate-watch';
 
 export type ExternalConditionReachabilityVerdict = 'reachable' | 'impossible' | 'unknown';
 export type ExternalConditionReachabilityBasis =
@@ -65,6 +66,34 @@ async function hasActiveComposedRootAnchor(
     return false;
   }
   return (await loadAnchor(rootId)) !== null;
+}
+
+type PredicateWatchLoader = (id: string) => Promise<Pick<PredicateWatchRow, 'eventKey' | 'active'> | null>;
+
+const PREDICATE_KEY_PREFIX = 'predicate:';
+
+/**
+ * Lazy on purpose: predicate-watch.ts pulls in the projected-tool dispatch graph,
+ * which reaches this module through loop:arm. engine.ts loads it the same way.
+ */
+async function loadPredicateWatchRow(id: string): Promise<PredicateWatchRow | null> {
+  const { getPredicateWatch } = await import('./events/await/predicate-watch');
+  return getPredicateWatch(id);
+}
+
+/**
+ * A `predicate:<id>` key is minted at runtime by watch:create / state:subscribe, so no
+ * catalog family can know it. Its producer is the durable predicate_watches row: while
+ * that exact row is active, the poller can still fire the key. This is the same emitter
+ * contract events:await applies (EI-25832685839560534). An inactive row proves nothing
+ * on its own; a fire it already made is read from the fire latch instead.
+ */
+async function hasActivePredicateWatch(eventKey: string, load: PredicateWatchLoader): Promise<boolean> {
+  if (!eventKey.startsWith(PREDICATE_KEY_PREFIX)) return false;
+  const id = eventKey.slice(PREDICATE_KEY_PREFIX.length);
+  if (!id) return false;
+  const row = await load(id);
+  return Boolean(row && row.active && row.eventKey === eventKey);
 }
 
 /**
@@ -175,6 +204,7 @@ export async function readEventConditionReachability(
     now?: Date;
     loadComposedRoot?: ComposedRootLoader;
     loadComposedRootAnchor?: ComposedRootAnchorLoader;
+    loadPredicateWatch?: PredicateWatchLoader;
     /** A durable park needs condition evidence, not merely an emitter that can wake it. */
     requireSpecificCondition?: boolean;
   } = {},
@@ -183,6 +213,7 @@ export async function readEventConditionReachability(
   const inspect = opts.inspect ?? inspectEventKey;
   const loadComposedRoot = opts.loadComposedRoot ?? loadNode;
   const loadComposedRootAnchor = opts.loadComposedRootAnchor ?? findRootAnchor;
+  const loadPredicateWatch = opts.loadPredicateWatch ?? loadPredicateWatchRow;
   try {
     const snapshot = await inspect(eventKey);
     // An announcement is a causal generation boundary. The per-key fire latch
@@ -190,7 +221,13 @@ export async function readEventConditionReachability(
     // when there is no current declaration. Otherwise a fire from generation N
     // would incorrectly satisfy a newly declared generation N+1.
     const currentAnnouncement = snapshot.announcements.find((row) => !row.supersededAt);
-    if (opts.requireSpecificCondition && !eventHasSpecificCondition(eventKey, Boolean(currentAnnouncement))) {
+    // An active predicate watch is a declared producer of one specific condition
+    // (tool, path, op, operand), so it binds the condition the way an announcement does.
+    const predicateWatchLive = await hasActivePredicateWatch(eventKey, loadPredicateWatch);
+    if (
+      opts.requireSpecificCondition &&
+      !eventHasSpecificCondition(eventKey, Boolean(currentAnnouncement) || predicateWatchLive)
+    ) {
       return {
         ...classifyExternalConditionReachability({ registration: 'unmeasured' }, now.toISOString()),
         evidence: `trigger "${eventKey}" may wake a consumer but cannot establish the specific release condition; subject-bound evidence is required`,
@@ -211,7 +248,7 @@ export async function readEventConditionReachability(
     return classifyExternalConditionReachability(
       {
         firedAt,
-        liveResolver: keyMatchesCatalog(eventKey, EVENT_CATALOG) || composedRootReachable,
+        liveResolver: keyMatchesCatalog(eventKey, EVENT_CATALOG) || composedRootReachable || predicateWatchLive,
         registration: latestAnnouncementState(snapshot.announcements, now.getTime()),
       },
       now.toISOString(),
