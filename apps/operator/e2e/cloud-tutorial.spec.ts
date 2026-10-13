@@ -4,8 +4,9 @@
  * This proves product behavior; hosted exact-artifact proof is separate. */
 import { expect, test, type Page } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
-import { installWorkspaceKeyboardDiagnostics, typeWorkspaceNameWithKeyboard,
-  attachWorkspaceKeyboardDiagnostics, withinInputBudget, type KeyboardInputEvidence } from './_keyboard-input';
+import { recordWorkspaceKeyboardDelivery, typeWorkspaceNameWithKeyboard,
+  attachWorkspaceKeyboardDiagnostics, withinInputBudget, type KeyboardInputEvidence,
+  type KeyboardDeliveryEvidence } from './_keyboard-input';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson';
 import { prepareCloudTutorialNetlog } from '@papercusp/test-config/hermetic-tmpdir';
@@ -768,7 +769,8 @@ test('guide speaks current instructions and scoped help with real browser audio 
 for (const existing of [false, true]) for (const accessible of [false, true]) {
   test(`${existing ? 'existing workspace' : 'new user'} completes the actual Cloud first-agent journey${accessible ? ' with narrow enlarged text, reduced motion and keyboard activation' : ''}`, async ({ page }) => {
     const fixture = await setupJourney(page, existing);
-    if (!existing) await page.addInitScript(installWorkspaceKeyboardDiagnostics);
+    const deliveryEvidence: KeyboardDeliveryEvidence[] = [];
+    if (!existing) await recordWorkspaceKeyboardDelivery(page, deliveryEvidence);
     // Run the whole product journey under these settings. Inspecting a narrow
     // row then restoring the desktop viewport does not prove task completion.
     // Focus is seeded at each named control; Tab still verifies form/terminal
@@ -838,7 +840,7 @@ for (const existing of [false, true]) for (const accessible of [false, true]) {
           (window as unknown as { __tutorialKeyboardDiagnostics?: unknown }).__tutorialKeyboardDiagnostics),
         1000, 'renderer input evidence').catch(error => ({ unavailable: String(error) }));
         await attachWorkspaceKeyboardDiagnostics(test.info(), {
-          actions: inputEvidence, renderer,
+          actions: inputEvidence, renderer, delivery: deliveryEvidence,
           hostEventLoopMaxMs: hostLoop.max / 1e6,
           failed: typingFailure !== undefined,
         }).catch(error => {

@@ -3,8 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { attachWorkspaceKeyboardDiagnostics, installWorkspaceKeyboardDiagnostics, typeWorkspaceNameWithKeyboard,
-  withinInputBudget, type KeyboardInputEvidence } from './_keyboard-input';
+import { attachWorkspaceKeyboardDiagnostics, installWorkspaceKeyboardDiagnostics, recordWorkspaceKeyboardDelivery,
+  typeWorkspaceNameWithKeyboard, withinInputBudget, type KeyboardInputEvidence,
+  type KeyboardDeliveryEvidence, type KeyboardRendererEvidence } from './_keyboard-input';
 
 afterEach(() => vi.useRealTimers());
 
@@ -40,6 +41,69 @@ describe('workspace keyboard evidence retention', () => {
         'workspace-keyboard-input-diagnostics.json'), 'utf8'))).toEqual(data);
     } finally {
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('workspace keyboard delivery evidence', () => {
+  it('retains emission and receipt clocks separately, in order and within the cap', async () => {
+    const order: string[] = [];
+    let receive!: (source: unknown, record: KeyboardRendererEvidence) => void;
+    const evidence: KeyboardDeliveryEvidence[] = [];
+    await recordWorkspaceKeyboardDelivery({
+      exposeBinding: async (name, callback) => {
+        expect(name).toBe('__tutorialKeyboardEvidence');
+        order.push('binding'); receive = callback;
+      },
+      addInitScript: async script => {
+        expect(script).toBe(installWorkspaceKeyboardDiagnostics); order.push('init');
+      },
+    }, evidence);
+    vi.useFakeTimers();
+    vi.setSystemTime(53_000);
+    receive({}, { kind: 'input', atMs: 1000, type: 'input', value: 'My wo' });
+    receive({}, { kind: 'heartbeat', atMs: 2000, gapMs: 250 });
+    for (let i = 0; i < 500; i++) receive({}, { kind: 'heartbeat', atMs: i, gapMs: 250 });
+    expect(order).toEqual(['binding', 'init']);
+    expect(evidence).toHaveLength(400);
+    expect(evidence[0]).toEqual({ kind: 'input', atMs: 1000, type: 'input',
+      value: 'My wo', receivedAtMs: 53_000 });
+    // A normal renderer heartbeat arriving late is distinct from a renderer
+    // heartbeat whose own gap spans the stall. Do not collapse these clocks.
+    expect(evidence[1]).toMatchObject({ atMs: 2000, gapMs: 250, receivedAtMs: 53_000 });
+  });
+
+  it('streams only workspace events, bounds heartbeat traffic, and tolerates a failed binding', async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '<input aria-label="Workspace name"><input aria-label="Injected credential reference">';
+    const records: KeyboardRendererEvidence[] = [];
+    const receive = vi.fn((record: KeyboardRendererEvidence) => {
+      records.push(record);
+      if (records.length === 1) throw new Error('binding rejected');
+      return Promise.reject(new Error('binding unavailable'));
+    });
+    Object.assign(window, { __tutorialKeyboardEvidence: receive });
+    vi.stubGlobal('PerformanceObserver', class {
+      static supportedEntryTypes: string[] = [];
+    });
+    try {
+      installWorkspaceKeyboardDiagnostics();
+      const inputs = document.querySelectorAll('input');
+      inputs[1].value = 'secret-credential';
+      inputs[1].dispatchEvent(new Event('input', { bubbles: true }));
+      inputs[0].value = 'My wo';
+      expect(() => inputs[0].dispatchEvent(new Event('input', { bubbles: true }))).not.toThrow();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(records).toHaveLength(2);
+      expect(records[0]).toMatchObject({ kind: 'input', type: 'input', value: 'My wo' });
+      expect(records[1]).toMatchObject({ kind: 'heartbeat', gapMs: 250 });
+      await vi.advanceTimersByTimeAsync(500_000);
+      expect(records).toHaveLength(400);
+      expect(JSON.stringify(records)).not.toContain('secret-credential');
+      expect(inputs[0].value).toBe('My wo');
+    } finally {
+      delete (window as unknown as { __tutorialKeyboardEvidence?: unknown }).__tutorialKeyboardEvidence;
+      vi.unstubAllGlobals(); vi.clearAllTimers(); document.body.replaceChildren();
     }
   });
 });
@@ -119,6 +183,10 @@ describe('workspace keyboard browser evidence', () => {
   it('records only workspace-name events, with bounded evidence', async () => {
     document.body.innerHTML = '<input aria-label="Workspace name"><input aria-label="Injected credential reference">';
     const observers: Array<(entries: { getEntries: () => PerformanceEntry[] }) => void> = [];
+    const streamed: KeyboardRendererEvidence[] = [];
+    Object.assign(window, { __tutorialKeyboardEvidence: async (record: KeyboardRendererEvidence) => {
+      streamed.push(record);
+    } });
     vi.useFakeTimers();
     vi.stubGlobal('PerformanceObserver', class {
       static supportedEntryTypes: string[] = ['longtask'];
@@ -142,7 +210,12 @@ describe('workspace keyboard browser evidence', () => {
       expect(diagnostics.inputs[0]).toMatchObject({ type: 'keyup', key: 'y', value: 'My' });
       expect(JSON.stringify(diagnostics)).not.toContain('secret-credential');
       expect(diagnostics.longTasks).toEqual([{ atMs: performance.timeOrigin + 50, durationMs: 1500 }]);
+      expect(streamed.filter(record => record.kind === 'input')).toHaveLength(100);
+      expect(streamed.at(-1)).toEqual({ kind: 'longtask', atMs: Date.now(),
+        startedAtMs: performance.timeOrigin + 50, durationMs: 1500 });
+      expect(JSON.stringify(streamed)).not.toContain('secret-credential');
     } finally {
+      delete (window as unknown as { __tutorialKeyboardEvidence?: unknown }).__tutorialKeyboardEvidence;
       vi.unstubAllGlobals();
       vi.clearAllTimers();
       document.body.replaceChildren();
