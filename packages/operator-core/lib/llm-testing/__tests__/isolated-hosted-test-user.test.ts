@@ -17,7 +17,7 @@ afterEach(async () => {
   if (errors.length) throw new AggregateError(errors, 'fixture disposal failed');
 });
 
-function fixture(options: { refused?: boolean; brokenImport?: boolean; slowCreate?: boolean; cleanupFailure?: boolean; actualCore?: boolean } = {}) {
+function fixture(options: { refused?: boolean; brokenImport?: boolean; slowImport?: boolean; slowCreate?: boolean; cleanupFailure?: boolean; actualCore?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'isolated-hosted-user-test-'));
   roots.push(root);
   mkdirSync(join(root, 'e2e'));
@@ -42,7 +42,8 @@ function fixture(options: { refused?: boolean; brokenImport?: boolean; slowCreat
       `}
     `);
     writeFileSync(join(root, 'lib/auth/hosted/workspace-admission.ts'), 'export {};');
-    writeFileSync(join(root, 'lib/auth/hosted/workspace-admission-dependencies.ts'), 'export {};');
+    writeFileSync(join(root, 'lib/auth/hosted/workspace-admission-dependencies.ts'),
+      options.slowImport ? 'await new Promise(() => {}); export {};' : 'export {};');
   }
   writeFileSync(join(root, 'e2e/hosted-test-user.ts'), `
     ${record}
@@ -126,6 +127,26 @@ describe('isolated retained hosted TEST admission', () => {
     expect(failure.errors.map((error: Error) => error.message)).toEqual(['revoke failed', 'provider cleanup failed']);
     assertExited(f.events()[0].pid);
     await kit.close();
+  }, 75_000);
+
+  it('retains completed import stages and reaps a child stuck before admission', async () => {
+    const f = fixture({ slowImport: true });
+    const failure = await loadIsolatedHostedTestUserKit({ portalRoot: f.root,
+      environment: f.environment, timeoutMs: 5_000 }).catch(error => error);
+    expect(failure.message).toBe('Hosted TEST fixture preflight timed out at lib/auth/hosted/workspace-admission-dependencies.ts');
+    expect(failure.importStages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'fixture-module-import', phase: 'finished' }),
+      expect.objectContaining({ stage: 'lib/workspace-host/observability-store.ts', phase: 'finished' }),
+      expect.objectContaining({ stage: 'lib/auth/hosted/workspace-admission.ts', phase: 'finished' }),
+      expect.objectContaining({ stage: 'lib/auth/hosted/workspace-admission-dependencies.ts', phase: 'started' }),
+    ]));
+    expect(failure.importStages.some((row: { stage: string; phase: string }) =>
+      row.stage.endsWith('workspace-admission-dependencies.ts') && row.phase === 'finished')).toBe(false);
+    expect(failure.importStages.map((row: { elapsedMs: number }) => row.elapsedMs)).toEqual(
+      [...failure.importStages.map((row: { elapsedMs: number }) => row.elapsedMs)].sort((a, b) => a - b));
+    expect(f.events().map(row => row.event)).not.toContain('kit-load');
+    expect(f.events().map(row => row.event)).not.toContain('create');
+    assertExited(f.events()[0].pid);
   }, 75_000);
 
   it('reaps a child whose admission stops responding', async () => {

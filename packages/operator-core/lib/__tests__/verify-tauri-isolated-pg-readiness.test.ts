@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
@@ -15,7 +15,7 @@ if (start < 0 || end < 0) throw new Error('Isolated PG readiness loop was not fo
 const loop = source.slice(start, end);
 const bootScript = source.match(/<<'PGBOOT'\n([\s\S]*?)\nPGBOOT/)?.[1];
 const stageReporter = bootScript?.match(
-  /function classifyStartupStage\(message\) \{[\s\S]*?\n\}\n\nfunction reportStartupStage\(message, observedStages\) \{[\s\S]*?\n\}/,
+  /function classifyStartupStage\(message\) \{[\s\S]*?\n\}[\s\S]*?\nfunction reportStartupStage\(message, observedStages[^)]*\) \{[\s\S]*?\n\}/,
 )?.[0];
 if (!stageReporter) throw new Error('Isolated PG startup stage reporter was not found');
 
@@ -81,10 +81,82 @@ describe('native isolated PG readiness parent', () => {
     expect(bootScript).toContain('console.log(`PG_PROGRESS migration=${message.slice(6)}`)');
   });
 
+  it('counts distinct completed initdb steps even when stdout arrives in split chunks', () => {
+    const lines: string[] = [];
+    const report = runInNewContext(
+      `(() => { ${stageReporter}; return reportStartupStage; })()`,
+      { console: { log: (line: string) => lines.push(String(line)) } },
+    ) as (message: string, observedStages: Set<string>, log: { pending: string }) => void;
+    const observed = new Set<string>();
+    const log = { pending: '' };
+    report('initialising data dir at /private/run', observed, log);
+    report('pg: creating subdirect', observed, log);
+    report('pg: ories ... ok\ncreating configuration files ... ok\n', observed, log);
+    report('pg: creating subdirectories ... ok\nNOTICE private SQL must not count\n', observed, log);
+    report('pg: running bootstrap script ... ok\nperforming post-bootstrap initialization ... ok\n', observed, log);
+    report('pg: syncing data to disk ... ok\n', observed, log);
+    report('starting postgres on localhost:1234', observed, log);
+    report('pg: creating configuration files ... ok\n', observed, log);
+
+    expect(lines.filter((line) => line.startsWith('PG_PROGRESS '))).toEqual([
+      'PG_PROGRESS startup=initdb-subdirectories',
+      'PG_PROGRESS startup=initdb-configuration',
+      'PG_PROGRESS startup=initdb-bootstrap',
+      'PG_PROGRESS startup=initdb-post-bootstrap',
+      'PG_PROGRESS startup=initdb-sync',
+    ]);
+    expect(lines.join('\n')).not.toMatch(/private|NOTICE|creating subdirectories/);
+  });
+
+  it('retains bounded private startup output outside the disposable data directory', () => {
+    const writerSource = bootScript?.match(/function createStartupDiagnosticWriter\([^\n]*\) \{[\s\S]*?\n\}/)?.[0];
+    expect(writerSource, 'startup output must survive the filtering reporter').toBeDefined();
+    const createWriter = runInNewContext(
+      `(() => { ${writerSource}; return createStartupDiagnosticWriter; })()`,
+      { appendFileSync, writeFileSync, Buffer },
+    ) as (file: string, maxBytes: number) => (message: string) => void;
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-pg-startup-log-'));
+    try {
+      const file = resolve(dir, 'isolated-pgdata.startup.log');
+      const retain = createWriter(file, 64);
+      retain('before-initdb');
+      retain('x'.repeat(100));
+      retain('must not grow after the bound');
+      expect(readFileSync(file, 'utf8')).toBe('before-initdb\n' + 'x'.repeat(50));
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(bootScript).toContain('createStartupDiagnosticWriter(`${dataDir}.startup.log`)');
+      expect(bootScript).toContain('retainStartupDiagnostic(message)');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('captures only the owned PG session process state before teardown removes it', () => {
+    const capture = source.match(/capture_isolated_pg_diagnostics\(\) \{[\s\S]*?\n\}/)?.[0];
+    expect(capture).toBeDefined();
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-pg-process-log-'));
+    try {
+      execFileSync('bash', ['-c', `
+set -euo pipefail
+ISOLATED_PG_PID=123
+ps() { printf '%s\\n' "$*" > "$WORK/ps-args"; printf '123 120 S 42 wait initdb\\n'; }
+${capture}
+capture_isolated_pg_diagnostics
+`], { env: { ...process.env, WORK: dir } });
+      const file = resolve(dir, 'isolated-pg-processes.log');
+      expect(readFileSync(file, 'utf8')).toContain('123 120 S 42 wait initdb');
+      expect(readFileSync(resolve(dir, 'ps-args'), 'utf8')).toBe('--sid 123 -o pid,ppid,stat,etimes,wchan:32,comm\n');
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(source).toContain('capture_isolated_pg_diagnostics\n  write_stop_script');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps an advancing migration boot alive past the initial deadline, then accepts ready', () => {
     const result = run('advancing-ready');
     expect(result).toEqual(expect.stringContaining('READY_VERIFIED'));
-    expect(result).toEqual(expect.stringContaining('PG_BOOT_PROGRESS elapsed=2s'));
+    expect(result).toEqual(expect.stringContaining('PG_BOOT_PROGRESS elapsed=2s progress_steps=2'));
   });
 
   it('rejects a migration boot that stopped advancing', () => {

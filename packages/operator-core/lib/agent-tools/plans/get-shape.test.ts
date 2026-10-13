@@ -403,6 +403,54 @@ describe("shapePlansGet: shipReadiness proof history is summarized, verdict kept
     });
   }
 
+  // Second cut (2026-10-13): a default-tier body still spilled at the door, whose notice
+  // routes to payloadTier:'full', so callers escalated to 98-842KB reads. Falsifier: a long
+  // prose field survives in full, its length is lost, a short one is altered, the revision
+  // pins keep their rows, or the verdict changes.
+  for (const tier of ["trimmed", "standard"] as const) {
+    it(`${tier}: clips bar contract prose to a marked head and turns revision pins into counts`, () => {
+      const input = shipEnvelope();
+      const snap = input.results[0]!.shipReadiness.acceptanceBarContractSnapshot as unknown as Record<string, unknown> & {
+        bars: Array<Record<string, unknown>>;
+      };
+      snap.bars[0]!.requirement = "r".repeat(1_900);
+      snap.bars[0]!.method = "short method";
+      snap.bars[1]!.falsifier = "f".repeat(300);
+      snap.sourceRevisions = {
+        subjectPlan: 7,
+        rubricPlan: 3,
+        clauses: Array.from({ length: 40 }, (_, i) => ({ specId: `S-${i}`, revision: 1, contentHash: "h".repeat(64) })),
+        workContracts: [],
+        scorecardIds: ["sc-1", "sc-2"],
+      };
+      const shaped = shapePlansGet(input, tier) as {
+        results: Array<{ shipReadiness: { satisfied: boolean; code: string; acceptanceBarContractSnapshot: Record<string, unknown> } }>;
+      };
+      const sr = shaped.results[0]!.shipReadiness;
+      expect(sr.satisfied).toBe(false);
+      expect(sr.code).toBe("bar_snapshot_proof_stale");
+      const [bar0, bar1] = barsOf(shaped) as unknown as Array<Record<string, unknown>>;
+      expect(String(bar0!.requirement).length).toBeLessThanOrEqual(160);
+      expect(String(bar0!.requirement)).toMatch(/TRUNCATED/);
+      expect(bar0!.requirement_full_chars).toBe(1_900);
+      expect(bar0!.method).toBe("short method");
+      expect(bar0).not.toHaveProperty("method_full_chars");
+      expect(bar1!.falsifier_full_chars).toBe(300);
+      const outSnap = sr.acceptanceBarContractSnapshot;
+      expect(outSnap.proseCut).toContain("payloadTier:'full'");
+      const revisions = outSnap.sourceRevisions as Record<string, unknown>;
+      expect(revisions.subjectPlan).toBe(7);
+      expect(revisions.clauses).toEqual({ count: 40 });
+      expect(revisions.scorecardIds).toEqual({ count: 2 });
+      expect(revisions.workContracts).toEqual([]);
+      expect(revisions.rowsCut).toContain("payloadTier:'full'");
+      expect(JSON.stringify(shaped)).not.toContain("r".repeat(200));
+      // the caller's object is not mutated (one cached read serves every tier)
+      expect(snap.bars[0]!.requirement).toHaveLength(1_900);
+      expect((snap.sourceRevisions as { clauses: unknown[] }).clauses).toHaveLength(40);
+    });
+  }
+
   it("leaves a bar with an empty history, and a verdict without a snapshot, untouched", () => {
     const shaped = shapePlansGet(shipEnvelope(), "trimmed");
     expect(barsOf(shaped)[1]!.proof.history).toEqual([]);

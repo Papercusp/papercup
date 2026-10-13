@@ -18,15 +18,22 @@ export type IsolatedHostedTestUserKit = {
 // load its entire admission graph in its own process: the caller may already
 // have a different version of the process-global projected tool registry.
 const worker = String.raw`
-  import { tsImport } from 'tsx/esm/api';
+  import { register } from 'tsx/esm/api';
   import { pathToFileURL } from 'node:url';
   import { join, resolve } from 'node:path';
-  const sourceImport = async file => {
-    const m = await tsImport(pathToFileURL(file).href, import.meta.url);
+  // The child owns one candidate graph. Per-call tsImport creates a new
+  // namespace for every import and discards that graph's module cache.
+  const loader = register({ namespace: 'isolated-hosted-test-user' });
+  const started = performance.now();
+  const progress = (id, stage, phase) => process.send({ id, stage, phase,
+    elapsedMs: Math.round(performance.now() - started) });
+  const sourceImport = async (file, id, stage) => {
+    progress(id, stage, 'started');
+    const m = await loader.import(pathToFileURL(file).href, import.meta.url);
+    progress(id, stage, 'finished');
     return { ...m.default, ...m };
   };
   let fixture, kit, user;
-  const progress = (id, stage) => process.send({ id, stage });
   const safeError = error => ({
     name: error?.name ?? 'Error',
     message: String(error?.message ?? error).replace(/sk_(?:test|live)_[A-Za-z0-9]+/g, '[redacted]'),
@@ -39,16 +46,14 @@ const worker = String.raw`
       try {
         let value;
         if (op === 'preflight') {
-          progress(id, 'fixture-module-import');
-          fixture = await sourceImport(resolve('e2e/hosted-test-user.ts'));
+          fixture = await sourceImport(resolve('e2e/hosted-test-user.ts'), id, 'fixture-module-import');
           const workspace = fixture.isolatedHostedWorkspaceContext(process.env);
           const { core } = fixture.hostedTestSourceRoots(process.cwd());
           // These imports previously happened after upstream account creation.
           // Validate their real runtime closure before permitting admission.
           for (const path of ['lib/workspace-host/observability-store.ts',
             'lib/auth/hosted/workspace-admission.ts', 'lib/auth/hosted/workspace-admission-dependencies.ts']) {
-            progress(id, path);
-            await sourceImport(join(core, path));
+            await sourceImport(join(core, path), id, path);
           }
           value = { workspace };
         } else if (op === 'load') {
@@ -115,16 +120,21 @@ export async function loadIsolatedHostedTestUserKit(options: {
         error ? reject(error) : ready(value);
       };
       let stage = op;
+      const importStages: Array<{ stage: string; phase: string; elapsedMs: number }> = [];
       const onMessage = (message: any) => {
         if (message.id !== id) return;
-        if (message.stage) stage = message.stage;
-        else finish(message.error ? restoreError(message.error) : undefined, message.value);
+        if (message.stage) {
+          stage = message.stage;
+          importStages.push({ stage, phase: message.phase, elapsedMs: message.elapsedMs });
+        } else finish(message.error ? Object.assign(restoreError(message.error), { importStages }) : undefined, message.value);
       };
       const onExit = (code: number | null) => finish(new Error(`Hosted TEST fixture exited before ${op}: ${code}`));
       const onError = (error: Error) => finish(error);
       const timeout = op === 'preflight' || op === 'load'
         ? Math.max(1, startupDeadline - Date.now()) : options.timeoutMs ?? 120_000;
-      const timer = setTimeout(() => finish(new Error(`Hosted TEST fixture ${op} timed out at ${stage}`)), timeout);
+      const timer = setTimeout(() => finish(Object.assign(
+        new Error(`Hosted TEST fixture ${op} timed out at ${stage}`), { importStages },
+      )), timeout);
       child.on('message', onMessage); child.once('exit', onExit); child.once('error', onError);
       child.send({ id, op, ...payload }, error => { if (error) finish(error); });
     });

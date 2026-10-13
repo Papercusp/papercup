@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { runInNewContext } from 'node:vm';
-import { createRequire } from 'node:module';
+import { isWorkOnEverything } from '../app/adv/hud/ongoing-work-draft.mts';
 import { basename, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
@@ -203,10 +203,6 @@ async function recordJourney(info: TestInfo, run: () => Promise<void>) {
   await attachNativeEvidence(info, 'native-completed-runtime', { body: JSON.stringify({ completedRuntime,
     runtimeUnits: [`verify-tauri-headless:${process.env.VERIFY_TAURI_PID}`] }), contentType: 'application/json' });
 }
-
-// The app directory is CommonJS; the native spec and e2e helpers are ESM.
-const { isWorkOnEverything }: typeof import('../app/adv/hud/ongoing-work-draft') =
-  createRequire(import.meta.url)('../app/adv/hud/ongoing-work-draft');
 
 function nativeCollectionDocumentReady(editor: string) {
   return `window.__nativeCollectionPreviousDocument !== true && document.readyState === 'complete' && !!document.querySelector(${JSON.stringify(editor)}) && document.querySelector(${JSON.stringify(editor)})?.getBoundingClientRect().height > 0`;

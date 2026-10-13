@@ -217,7 +217,7 @@ describe('SPA shell pre-hydration globals', () => {
     expect(await mutable.text()).toBe('export const runtime = 1;');
   });
 
-  it('traces only the first SessionChatModal CSS response when explicitly enabled', async () => {
+  it('traces the first SessionChatModal CSS response once per Host when explicitly enabled', async () => {
     const previous = process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS;
     process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS = '1';
     const trace = vi.spyOn(console, 'info').mockImplementation(() => {});
@@ -250,6 +250,30 @@ describe('SPA shell pre-hydration globals', () => {
       );
       await second.text();
       expect(trace).toHaveBeenCalledTimes(1);
+
+      const loopbackAlias = await routes.request(
+        'http://127.0.0.1:33701/assets/SessionChatModal-fixture.css',
+        { headers: { host: '127.0.0.1:33701' } },
+      );
+      await loopbackAlias.text();
+      expect(trace).toHaveBeenCalledTimes(2);
+
+      const repeatedHost = await routes.request(
+        'http://localhost:33701/assets/SessionChatModal-fixture.css',
+        { headers: { host: 'localhost:33701' } },
+      );
+      await repeatedHost.text();
+      expect(trace).toHaveBeenCalledTimes(2);
+
+      const secondLogLine = String(trace.mock.calls[1]?.[0]);
+      const secondRecord = JSON.parse(secondLogLine.replace(/^\[spa-css-response\] /, ''));
+      expect(secondRecord).toMatchObject({
+        event: 'spa_css_response',
+        host: '127.0.0.1:33701',
+        path: '/assets/SessionChatModal-fixture.css',
+        status: 200,
+        completion: 'complete',
+      });
     } finally {
       if (previous === undefined) delete process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS;
       else process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS = previous;

@@ -19,7 +19,10 @@ const reuseExisting = process.env.OPERATOR_E2E_REUSE_SERVER === '1';
  * zero tests (WI-10006736). `playwright-config.test.ts` fails if a profile
  * config's testMatch selects a file this default config would still collect.
  */
-export const PROFILE_OWNED_SPECS: RegExp[] = [/hosted-http1-acceptance\.spec\.ts$/];
+export const PROFILE_OWNED_SPECS: RegExp[] = [
+  /hosted-http1-acceptance\.spec\.ts$/,
+  /adv-shell-nav\.spec\.ts$/,
+];
 
 export default defineConfig({
   testDir: './e2e',

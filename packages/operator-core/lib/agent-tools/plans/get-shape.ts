@@ -288,28 +288,80 @@ export function summarizeProofHistory(history: unknown[]): Record<string, unknow
  * The verdict (`satisfied`, `code`, `repairAction`, `message`) and every per-bar
  * count and state are untouched; the shaper runs after the handler, so nothing
  * the handler derived from the full rows changes. Full rows: payloadTier:'full'.
+ *
+ * Second cut, measured 2026-10-13 08:45Z (same plan item, :3170, 12h): after
+ * the history summary a 7-bar default-tier body was still ~45KB, so it spilled
+ * at the result door, whose notice says to pass payloadTier:'full'; every
+ * shipReadiness read since 07:30Z was then an explicit full read (98-842KB, one
+ * owner polling six times in 30 min). Per bar ~4KB of the remainder is contract
+ * PROSE (requirement ~1.9KB, method, falsifier), and sourceRevisions (revision
+ * pins for drift detection) was 13.7KB. Browse tiers keep a marked 160-char
+ * head of each prose field plus its full length, and the pins as counts.
  */
+const BAR_PROSE_KEYS = ["requirement", "method", "falsifier"] as const;
+const BAR_PROSE_HEAD_CHARS = 160;
+const SHIP_READINESS_FULL = "payloadTier:'full'";
+
 function shapeShipReadiness(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const sr = value as Record<string, unknown>;
   const snap = sr.acceptanceBarContractSnapshot as Record<string, unknown> | null | undefined;
   if (!snap || typeof snap !== "object" || !Array.isArray(snap.bars)) return value;
-  let summarized = 0;
+  let changed = 0;
+  let proseClipped = 0;
   const bars = snap.bars.map((bar) => {
     if (!bar || typeof bar !== "object") return bar;
-    const proof = (bar as Record<string, unknown>).proof as Record<string, unknown> | null | undefined;
-    if (!proof || typeof proof !== "object" || !Array.isArray(proof.history) || proof.history.length === 0) {
-      return bar;
+    let out = bar as Record<string, unknown>;
+    for (const key of BAR_PROSE_KEYS) {
+      const text = out[key];
+      if (typeof text === "string" && text.length > BAR_PROSE_HEAD_CHARS) {
+        out = {
+          ...out,
+          [key]: clip(text, BAR_PROSE_HEAD_CHARS, SHIP_READINESS_FULL),
+          [`${key}_full_chars`]: text.length,
+        };
+        proseClipped += 1;
+      }
     }
-    summarized += 1;
-    const { history, ...rest } = proof;
-    return {
-      ...(bar as Record<string, unknown>),
-      proof: { ...rest, historySummary: summarizeProofHistory(history as unknown[]) },
-    };
+    const proof = out.proof as Record<string, unknown> | null | undefined;
+    if (proof && typeof proof === "object" && Array.isArray(proof.history) && proof.history.length > 0) {
+      const { history, ...rest } = proof;
+      out = { ...out, proof: { ...rest, historySummary: summarizeProofHistory(history as unknown[]) } };
+      changed += 1;
+    }
+    return out;
   });
-  if (summarized === 0) return value;
-  return { ...sr, acceptanceBarContractSnapshot: { ...snap, bars } };
+  const revisions = summarizeSourceRevisions(snap.sourceRevisions);
+  if (revisions !== snap.sourceRevisions) changed += 1;
+  if (changed === 0 && proseClipped === 0) return value;
+  return {
+    ...sr,
+    acceptanceBarContractSnapshot: {
+      ...snap,
+      ...(revisions !== snap.sourceRevisions ? { sourceRevisions: revisions } : {}),
+      bars,
+      ...(proseClipped > 0
+        ? {
+            proseCut: `TRUNCATED ${proseClipped} bar prose field(s) (requirement/method/falsifier) to ${BAR_PROSE_HEAD_CHARS} chars; <key>_full_chars is the length — ${SHIP_READINESS_FULL} for the contract text`,
+          }
+        : {}),
+    },
+  };
+}
+
+/** The snapshot's revision PINS (clause and work-contract rows, scorecard ids) feed the
+ *  handler's drift checks, which already ran; a readiness read needs their counts. */
+function summarizeSourceRevisions(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const rev = value as Record<string, unknown>;
+  const lists = ["clauses", "workContracts", "scorecardIds"].filter(
+    (k) => Array.isArray(rev[k]) && (rev[k] as unknown[]).length > 0,
+  );
+  if (lists.length === 0) return value;
+  const out: Record<string, unknown> = { ...rev };
+  for (const k of lists) out[k] = { count: (rev[k] as unknown[]).length };
+  out.rowsCut = `TRUNCATED ${lists.join(", ")} revision rows to counts — ${SHIP_READINESS_FULL} for the pins`;
+  return out;
 }
 
 /** Tier-project a plans:get bulk envelope ({ ok, results, counts }). */

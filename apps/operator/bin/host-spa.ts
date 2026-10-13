@@ -311,7 +311,7 @@ function safeDistPath(rel: string): string | null {
 
 export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): Hono {
   let hostedControlPlaneWorkspaceId: string | null = null;
-  let firstSessionChatCssResponseCaptured = false;
+  const tracedSessionChatCssHosts = new Set<string>();
   if (profile.kind === 'hosted') {
     const configuredWorkspaceId = profile.controlPlaneWorkspaceId.trim();
     if (configuredWorkspaceId.length === 0) {
@@ -327,15 +327,17 @@ export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): H
     response: Response,
     startedAt: bigint,
   ): Response => {
+    const host = request.headers.get('host');
+    const hostKey = host?.toLowerCase() ?? '';
     if (
-      firstSessionChatCssResponseCaptured ||
+      tracedSessionChatCssHosts.has(hostKey) ||
       process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS !== '1' ||
       !/(?:^|\/)SessionChatModal-[^/]+\.css$/i.test(pathname)
     ) {
       return response;
     }
 
-    firstSessionChatCssResponseCaptured = true;
+    tracedSessionChatCssHosts.add(hostKey);
     const reader = response.body?.getReader();
     let traceFinished = false;
     const finishTrace = (completion: 'complete' | 'error' | 'cancelled') => {
@@ -344,7 +346,7 @@ export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): H
       const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
       const entry = {
         event: 'spa_css_response',
-        host: request.headers.get('host'),
+        host,
         path: pathname,
         status: response.status,
         contentLength: response.headers.get('content-length'),
