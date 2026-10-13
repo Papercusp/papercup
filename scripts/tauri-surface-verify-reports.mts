@@ -15,6 +15,7 @@ export interface NativeLiveProfile {
   tauriPID: number;
   nativeTmpDir: string;
   workspaceId: string;
+  nativeChildren?: { script: string; bundle: string; sha256: string }[];
 }
 
 /** Restore only the owned private context after the worker's hermetic scrub. */
@@ -64,12 +65,23 @@ export function nativeTestDatabaseEnvironment(profile: NativeLiveProfile, env = 
 /** Preserve startup stdout/stderr and the original stack in the test failure. */
 export function runNativeChild(profile: NativeLiveProfile, sourceRoot: string, script: string, args: string[] = []) {
   const env = nativeChildEnvironment(profile);
+  const prepared = profile.nativeChildren?.find(child => child.script === script);
+  assert.ok(prepared, 'Native child must be bundled from the verified source before the test starts');
+  assert.match(script, /^scripts\/[\w-]+\.mts$/);
+  const bundle = join(sourceRoot, 'apps/operator/dist-verify', `native-${basename(script, '.mts')}.mjs`);
+  assert.equal(prepared.bundle, bundle, 'Native child bundle must remain in the verified source snapshot');
+  assert.match(prepared.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(createHash('sha256').update(readFileSync(bundle)).digest('hex'), prepared.sha256,
+    'Prepared native child bundle changed before launch');
+  const started = Date.now();
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    execFile(process.execPath, ['--import', 'tsx', join(sourceRoot, script), ...args], {
+    // Compilation belongs to preparation, outside the bounded native journey.
+    // Keep inherited identity/source guards; only the runtime tsx loader goes away.
+    execFile(process.execPath, [bundle, ...args], {
       cwd: sourceRoot, env, timeout: 300_000, maxBuffer: 4 * 1024 * 1024,
     }, (error, stdout, stderr) => {
       if (!error) { resolve({ stdout, stderr }); return; }
-      reject(new Error(`Native child ${script} failed (workspace=${profile.workspaceId}, pid=${profile.tauriPID}):\n`
+      reject(new Error(`Native child ${script} failed (workspace=${profile.workspaceId}, pid=${profile.tauriPID}, elapsedMs=${Date.now() - started}, bundleSha256=${prepared.sha256}):\n`
         + `${error.stack ?? error.message}\nstdout:\n${stdout}\nstderr:\n${stderr}`, { cause: error }));
     });
   });
@@ -77,7 +89,7 @@ export function runNativeChild(profile: NativeLiveProfile, sourceRoot: string, s
 
 /** Run with --e2e inside verify-tauri-headless, before Vitest relocates TMPDIR. */
 export async function runNativeE2e(testFiles = ['packages/operator-core/lib/reports-library-native.e2e.test.ts'],
-  options: { runtimeUnit?: string } = {}) {
+  options: { runtimeUnit?: string; nativeScripts?: string[] } = {}) {
   assert.ok(testFiles.length > 0 && testFiles.every(file => /^packages\/operator-core\/lib\/(?:[\w-]+\/)*[\w-]+(?:\.[\w-]+)*\.(?:e2e|integration)\.test\.ts$/.test(file)),
     'Use maintained operator-core native E2E or integration test files');
   assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Use the isolated native verifier');
@@ -90,10 +102,15 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
   verifyVerifierSourceSync(sourceRoot, receipt, { runtimeArtifacts: true });
   assert.ok(testFiles.every(file => receipt.files.some((entry: { path: string }) => entry.path === file)),
     'Native test selection must belong to the verified source snapshot');
+  const nativeScripts = options.nativeScripts ?? [];
+  assert.ok(new Set(nativeScripts).size === nativeScripts.length && nativeScripts.every(script =>
+    /^scripts\/[\w-]+\.mts$/.test(script) && receipt.files.some((entry: { path: string }) => entry.path === script)),
+  'Native child selection must belong to the verified source snapshot');
   const tauriPID = Number(process.env.VERIFY_TAURI_PID);
   assert.ok(Number.isSafeInteger(tauriPID) && tauriPID > 0, 'Owned native PID required');
   const nativeTmpDir = tmpdir();
-  const profile = { runtimeUnits: [] as string[], tauriPID, nativeTmpDir, workspaceId: process.env.PAPERCUSP_WORKSPACE_ID! };
+  const profile = { runtimeUnits: [] as string[], nativeChildren: [] as NonNullable<NativeLiveProfile['nativeChildren']>,
+    tauriPID, nativeTmpDir, workspaceId: process.env.PAPERCUSP_WORKSPACE_ID! };
   const testEnv = nativeTestDatabaseEnvironment(profile);
   const token = JSON.parse(readFileSync(join(nativeTmpDir, `tauri-dev-bridge-${tauriPID}.token`), 'utf8'));
   assert.equal(token.pid, tauriPID);
@@ -125,6 +142,17 @@ export async function runNativeE2e(testFiles = ['packages/operator-core/lib/repo
       HARNESS_ADMIN_DATABASE_URL: process.env.PAPERCUSP_TEST_RUNS_DB_URL,
       DATABASE_URL: process.env.PAPERCUSP_TEST_RUNS_DB_URL },
   });
+
+  for (const script of nativeScripts) {
+    const bundle = join(sourceRoot, 'apps/operator/dist-verify', `native-${basename(script, '.mts')}.mjs`);
+    execFileSync('bash', [join(sourceRoot, 'apps/operator/bin/bundle-host.sh'), join(sourceRoot, script), bundle],
+      { cwd: sourceRoot, stdio: 'inherit', timeout: 300_000, env: testEnv });
+    const bytes = readFileSync(bundle);
+    assert.ok(bytes.length > 0, 'Native child preparation must produce a non-empty bundle');
+    profile.nativeChildren.push({ script, bundle, sha256: createHash('sha256').update(bytes).digest('hex') });
+  }
+  // Compilers must not move the source boundary while preparing runtime artifacts.
+  verifyVerifierSourceSync(sourceRoot, receipt, { runtimeArtifacts: true });
 
   const profileDir = mkdtempSync(join(nativeTmpDir, 'reports-native-profile-'));
   const profilePath = join(profileDir, 'profile.json');
@@ -400,9 +428,8 @@ async function verifyReports(evidenceDir: string) {
   }
 }
 
-if (isCliEntry(import.meta.url) && process.argv.includes('--e2e')) {
-  await runNativeE2e();
-} else if (isCliEntry(import.meta.url)) {
+async function main() {
+  if (process.argv.includes('--e2e')) { await runNativeE2e(); return; }
   const selection = parseSelectionArgs(process.argv.slice(2));
   const result = await runHarness({ contract: { name: 'reports-library-tauri',
   phases: [{ id: 'native', description: 'Real Reports publication, SSE and native reader' }] },
@@ -412,3 +439,4 @@ if (isCliEntry(import.meta.url) && process.argv.includes('--e2e')) {
   console.log(`REPORTS_LIBRARY_TAURI_${result.verdict.toUpperCase()} evidence=${result.evidenceDir}`);
   process.exitCode = result.verdict === 'pass' ? 0 : 1;
 }
+if (isCliEntry(import.meta.url)) void main().catch(error => { console.error(error); process.exitCode = 1; });

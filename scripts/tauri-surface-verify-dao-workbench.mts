@@ -20,6 +20,7 @@ import { readNativeHostHealth } from './fixtures/dao-workbench-identity.mjs';
 import { WORKBENCH_FIELD_SELECTOR, workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, reviewWorkbenchProposal } from './lib/dao-workbench-controls.mts';
 import { DAO_SECTIONS } from '../apps/operator-vite/src/components/dao/dao-navigation.ts';
 
+async function main() {
 if (process.argv.includes('--check-imports')) {
   assert.equal(typeof authorHivePolicy, 'function'); assert.equal(typeof getPlanRow, 'function');
   console.log('DAO_WORKBENCH_IMPORTS_OK'); process.exit(0);
@@ -30,10 +31,12 @@ if (process.argv.includes('--e2e')) {
   await runNativeE2e([
     'packages/operator-core/lib/dao-workbench-native.e2e.test.ts',
     ...(!viewportOnly ? ['packages/operator-core/lib/dao-workbench-native-signature.integration.test.ts'] : []),
-  ], { runtimeUnit: viewportOnly ? 'dao-workbench-native-narrow' : 'dao-workbench-native-desktop' });
+  ], { runtimeUnit: viewportOnly ? 'dao-workbench-native-narrow' : 'dao-workbench-native-desktop',
+    nativeScripts: ['scripts/tauri-surface-verify-dao-workbench.mts'] });
   process.exit(0);
 }
 const harnessName = viewportOnly ? 'dao-workbench-viewport-tauri' : 'dao-workbench-tauri';
+console.log('DAO_NATIVE_READY at=' + new Date().toISOString());
 const selection = parseSelectionArgs(process.argv.slice(2).filter(arg => arg !== '--viewport-only'));
 const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 'native',
   description: 'Product switch, persisted proposal, real signed member decision and responsive workspaces' }] },
@@ -47,7 +50,13 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
     const sql = postgres(pg.url, { max: 1, onnotice: () => {} });
     const fixture = JSON.parse(readFileSync(process.env.DAO_WORKBENCH_IDENTITY_FIXTURE!, 'utf8'));
     const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN ?? 'tauri-agent-tools';
-    const native = (...args: string[]) => execFileSync(tool, [...args, '--pid', process.env.VERIFY_TAURI_PID!], { encoding: 'utf8', timeout: 65_000 });
+    const native = (...args: string[]) => {
+      const started = Date.now();
+      console.log(`DAO_NATIVE_OPERATION command=${args[0]} status=start at=${new Date(started).toISOString()}`);
+      try {
+        return execFileSync(tool, [...args, '--pid', process.env.VERIFY_TAURI_PID!], { encoding: 'utf8', timeout: 65_000 });
+      } finally { console.log(`DAO_NATIVE_OPERATION command=${args[0]} status=end elapsedMs=${Date.now() - started}`); }
+    };
     const ev = (code: string) => native('eval', code);
     const wait = (code: string) => native('wait', '--eval', code, '--timeout', '60000', '--interval', '500');
     const click = (text: string, scope = 'document') => ev(`(()=>{const b=[...${scope}.querySelectorAll('button')].find(e=>e.textContent.trim()===${JSON.stringify(text)});if(!b)throw Error('Missing button '+${JSON.stringify(text)});b.click();return true})()`);
@@ -169,6 +178,8 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
         'marketplace', 'records', 'settings', 'inbox',
       ], 'Native acceptance must cover every required Workbench area');
       for (const [id, heading] of sections) {
+        ctx.markStep('section-' + id);
+        console.log(`DAO_NATIVE_SECTION id=${id} at=${new Date().toISOString()}`);
         ev(`window.__TSR_ROUTER__.navigate({to:'/daos',search:{dao:${JSON.stringify(slug)},daoSection:${JSON.stringify(id)}}})`);
         wait(`new URLSearchParams(location.search).get('daoSection')===${JSON.stringify(id)} && document.querySelector('.dao-page-header h1')?.textContent===${JSON.stringify(heading)}`);
         if (id === 'work') {
@@ -208,3 +219,5 @@ const result = await runHarness({ contract: { name: harnessName, phases: [{ id: 
 });
 console.log(`P019_TAURI_SURFACE_VERIFY_${result.verdict === 'pass' ? 'OK' : 'FAIL'} leg=dao-workbench output=${result.evidenceDir}`);
 process.exitCode = result.verdict === 'pass' ? 0 : 1;
+}
+void main().catch(error => { console.error(error); process.exitCode = 1; });

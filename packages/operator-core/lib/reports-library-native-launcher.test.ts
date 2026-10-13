@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,7 +96,7 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     const source = 'a'.repeat(40);
     sourceRoot = join(root, 'source');
     const files = ['packages/operator-core/lib/reports-library-native.e2e.test.ts',
-      'packages/operator-core/lib/blueprint/morning-ai-intelligence.native.e2e.test.ts'];
+      'packages/operator-core/lib/blueprint/morning-ai-intelligence.native.e2e.test.ts', 'scripts/native.mts'];
     for (const file of files) {
       mkdirSync(join(sourceRoot, file, '..'), { recursive: true });
       writeFileSync(join(sourceRoot, file), '// committed native test fixture\n');
@@ -122,6 +123,15 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     vi.unstubAllEnvs();
     rmSync(root, { recursive: true, force: true });
   });
+
+  const preparedProfile = () => {
+    const bundle = join(sourceRoot, 'apps/operator/dist-verify/native-native.mjs');
+    mkdirSync(join(bundle, '..'), { recursive: true });
+    writeFileSync(bundle, 'console.log("prepared native child");\n');
+    return { tauriPID: process.pid, nativeTmpDir: nativeRoot, workspaceId: 'verify-tauri-isolated-90',
+      nativeChildren: [{ script: 'scripts/native.mts', bundle,
+        sha256: createHash('sha256').update(readFileSync(bundle)).digest('hex') }] };
+  };
 
   it.each([false, true])('preserves the parent discovery root and removes the profile after runner failure=%s', async (fail) => {
     seams.execute.mockImplementation((_command, args, options) => {
@@ -163,6 +173,49 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
     expect(seams.execute.mock.calls[0][0]).toBe(process.execPath);
     expect(existsSync(options.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE)).toBe(false);
   });
+
+  it('prepares and hashes the frozen child before launching the test runner', async () => {
+    const order: string[] = [];
+    seams.execute.mockImplementation((command, args, options) => {
+      order.push(command);
+      if (command === 'bash') {
+        expect(args).toEqual([join(sourceRoot, 'apps/operator/bin/bundle-host.sh'),
+          join(sourceRoot, 'scripts/native.mts'), join(sourceRoot, 'apps/operator/dist-verify/native-native.mjs')]);
+        expect(options.env.PAPERCUSP_WORKSPACE_ID).toBe('verify-tauri-isolated-90');
+        mkdirSync(join(args[2], '..'), { recursive: true });
+        writeFileSync(args[2], 'console.log("frozen child");\n');
+      }
+      if (command === 'npm') {
+        const profile = JSON.parse(readFileSync(options.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE, 'utf8'));
+        expect(profile.nativeChildren).toEqual([{ script: 'scripts/native.mts',
+          bundle: join(sourceRoot, 'apps/operator/dist-verify/native-native.mjs'),
+          sha256: createHash('sha256').update('console.log("frozen child");\n').digest('hex') }]);
+      }
+      return '';
+    });
+    await runNativeE2e(undefined, { nativeScripts: ['scripts/native.mts'] });
+    expect(order).toEqual([process.execPath, 'bash', 'npm']);
+  });
+
+  it.each(['compiler failure', 'empty bundle', 'source changed'])('refuses %s before the native test runner', async reason => {
+    seams.execute.mockImplementation((command, args) => {
+      if (command !== 'bash') return '';
+      if (reason === 'compiler failure') throw new Error('compiler failed');
+      mkdirSync(join(args[2], '..'), { recursive: true });
+      writeFileSync(args[2], reason === 'empty bundle' ? '' : 'console.log("child");');
+      if (reason === 'source changed') writeFileSync(join(sourceRoot, 'scripts/native.mts'), '// changed after compilation\n');
+      return '';
+    });
+    await expect(runNativeE2e(undefined, { nativeScripts: ['scripts/native.mts'] })).rejects.toThrow();
+    expect(seams.execute.mock.calls.some(([command]) => command === 'npm')).toBe(false);
+  });
+
+  it.each([['../foreign.mts'], ['scripts/missing.mts'], ['scripts/native.mts', 'scripts/native.mts']])(
+    'refuses an unattested or duplicate child selection %j before native effects', async (...nativeScripts) => {
+      await expect(runNativeE2e(undefined, { nativeScripts })).rejects.toThrow('Native child selection');
+      expect(seams.authenticate).not.toHaveBeenCalled();
+      expect(seams.execute).not.toHaveBeenCalled();
+    });
 
   it('admits the owned native postmaster through the existing test-PG seam without disabling the live guard', () => {
     vi.stubEnv('PAPERCUSP_FORBID_LIVE_PG', '1');
@@ -238,10 +291,11 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
   });
 
   it('restores the private workspace after the worker scrub, preserving caller ledger attribution', async () => {
-    const profile = { tauriPID: process.pid, nativeTmpDir: nativeRoot, workspaceId: 'verify-tauri-isolated-90' };
+    const profile = preparedProfile();
     delete process.env.PAPERCUSP_WORKSPACE_ID;
     vi.stubEnv('TMPDIR', runnerRoot);
     seams.child.mockImplementation((_command, _args, options, callback) => {
+      expect(_args).toEqual([profile.nativeChildren[0].bundle]);
       expect(options.env.PAPERCUSP_WORKSPACE_ID).toBe(profile.workspaceId);
       expect(options.env.PAPERCUSP_WORKSPACE).toBe(profile.workspaceId);
       expect(options.env.PAPERCUSP_TEST_RUN_WORKSPACE).toBe('caller-workspace');
@@ -262,8 +316,19 @@ describe('Reports native launcher at the Vitest temp-directory boundary', () => 
   it('retains the child startup stack, stdout and stderr when execution fails', async () => {
     const failure = Object.assign(new Error('child startup'), { code: 1, signal: null });
     seams.child.mockImplementation((_command, _args, _options, callback) => callback(failure, 'child manifest', 'assert.match: undefined workspace'));
-    const profile = { tauriPID: process.pid, nativeTmpDir: nativeRoot, workspaceId: 'verify-tauri-isolated-90' };
+    const profile = preparedProfile();
     await expect(runNativeChild(profile, sourceRoot, 'scripts/native.mts')).rejects.toThrow(
       /child startup[\s\S]*stdout:\nchild manifest[\s\S]*stderr:\nassert.match: undefined workspace/);
   });
+
+  it.each(['missing preparation', 'changed bytes', 'foreign path', 'missing hash'])(
+    'refuses %s without falling back to a runtime compiler', reason => {
+      const profile = preparedProfile();
+      if (reason === 'missing preparation') profile.nativeChildren = [];
+      if (reason === 'changed bytes') writeFileSync(profile.nativeChildren[0].bundle, 'foreign bytes');
+      if (reason === 'foreign path') profile.nativeChildren[0].bundle = join(root, 'foreign.mjs');
+      if (reason === 'missing hash') profile.nativeChildren[0].sha256 = '';
+      expect(() => runNativeChild(profile, sourceRoot, 'scripts/native.mts')).toThrow();
+      expect(seams.child).not.toHaveBeenCalled();
+    });
 });
