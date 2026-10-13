@@ -35,9 +35,13 @@ import { renderHydratedRefs } from '../ref-hydrate';
 import { hydrateRefs, makePlanItemResolver } from '../ref-hydrate-resolve';
 import { DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 import {
+  adopterGoneDiagnosis,
   assignActionableWorkItems,
+  classifyRequiredWakeFailure,
+  resolveStableAgentTarget,
   type ActionableWorkItemAssignment,
   type RequiredWakeFailure,
+  type StableAgentTargetState,
 } from '../actionable-work-item-dispatch';
 import { resolveAgentIdentity } from '../identity';
 import {
@@ -225,6 +229,12 @@ export interface ComposeDispatchDeps {
   assignWorkItems?: typeof assignActionableWorkItems;
   /** Invocation-scoped observer; omitted by pure composition callers. */
   runPhase?: <T>(phase: DispatchPhaseName, operation: () => Promise<T>) => Promise<T>;
+  /**
+   * Stable-name resolver consulted ONLY after the required wake already failed for a
+   * non-canonical `to` (WI-6554700010010992). Omitted by pure composition callers, which
+   * then keep the raw target_absent/target_dead classification.
+   */
+  resolveStableTarget?: (targetAgent: string) => Promise<StableAgentTargetState>;
 }
 
 export type DispatchPhaseName =
@@ -787,6 +797,23 @@ export async function composeDispatch(
       message: `coord:send could not deliver the required dispatch to ${resolvedTo}: ${r0.error ?? 'unknown delivery failure'}`,
     };
   }
+  // WI-6554700010010992: a stable NAME whose every adopter has ended is resolved by
+  // coord:send to one dead session id, so the chain above names that id. Ask the
+  // stable-target resolver once, only on this already-failed path and only for a
+  // non-canonical input. When it confirms the name outlived its adopters, report the
+  // NAME and its plan_items:adopt_name repair (the shared classifier's own branch).
+  if (failure && (failure.code === 'target_absent' || failure.code === 'target_dead') && !exactOwnerId) {
+    let stable: StableAgentTargetState | null = null;
+    try {
+      stable = (await deps.resolveStableTarget?.(args.to)) ?? null;
+    } catch {
+      /* degrade: keep the raw classification */
+    }
+    const reclassified = stable
+      ? classifyRequiredWakeFailure({ target: stable, wake: { queued, staged, timedOutTargets: [] }, queuePreserved })
+      : null;
+    if (reclassified?.code === 'target_adopter_gone') failure = reclassified;
+  }
   if (failure) {
     result.ok = false;
     result.failure = failure;
@@ -844,6 +871,10 @@ export async function composeDispatch(
       'verify a fresh work-item checkpoint or activity timestamp before treating the assigned lane as active.';
     result.warning = result.warning ? `${result.warning} ${pickupWarning}` : pickupWarning;
   }
+  if (failure?.code === 'target_adopter_gone') {
+    // The generic dead/absent warnings above name one session; the repair is the name's.
+    result.warning = `coord:dispatch reached no live adopter: ${failure.message}.`;
+  }
 
   return result;
 }
@@ -857,8 +888,16 @@ export async function runInstrumentedDispatch(
   scope: { workspaceId: string | null; harnessSlug: string | null },
   trace: DispatchPhaseInstrumentation,
 ): Promise<DispatchResult> {
+  const resolveStableTarget =
+    deps.resolveStableTarget ??
+    ((targetAgent: string) =>
+      resolveStableAgentTarget({
+        targetAgent,
+        ...(scope.workspaceId ? { workspaceId: scope.workspaceId } : {}),
+        ...(scope.harnessSlug ? { harness: scope.harnessSlug } : {}),
+      }));
   try {
-    const result = await composeDispatch(args, call, { ...deps, runPhase: trace.run }, caller);
+    const result = await composeDispatch(args, call, { ...deps, resolveStableTarget, runPhase: trace.run }, caller);
     const finalized = await trace.run('finalization', () => finalizePilotDispatchReceipt(args, result, scope));
     trace.finish('completed');
     return finalized;
@@ -960,23 +999,35 @@ export default defineTool({
       const identity = resolveAgentIdentity(ctx);
       const { requestAdmissionRecovery, AdmissionRecoveryRefused } = await import('../../../work-item-admission-recovery');
       const { bindAdmissionAuthority, AdmissionAuthorityRefused } = await import('../../../work-item-admission-authority');
-      const { resolveStableAgentTarget } = await import('../actionable-work-item-dispatch');
       try {
         if (!identity.workspaceId) throw new AdmissionRecoveryRefused('recovery requires a concrete caller workspace');
         // A canonical owner ID is already exact. requestAdmissionRecovery performs
         // fresh presence, workspace, and work-item authorization checks for it;
         // resolve only stable handles here so this path does not read the roster twice.
-        const targetOwnerId = await trace.run('target_resolution', async () =>
+        const resolution = await trace.run('target_resolution', async () =>
           CANONICAL_OWNER_ID_RE.test(dispatchArgs.to)
-            ? dispatchArgs.to
-            : (
-                await resolveStableAgentTarget({
-                  targetAgent: dispatchArgs.to,
-                  workspaceId: identity.workspaceId!,
-                  harness: dispatchArgs.harness,
-                })
-              ).ownerId,
+            ? null
+            : resolveStableAgentTarget({
+                targetAgent: dispatchArgs.to,
+                workspaceId: identity.workspaceId!,
+                harness: dispatchArgs.harness,
+              }),
         );
+        // WI-6554700010010992: a stable name whose every adopter has ended resolves to
+        // one dead session id. Registering recovery for that id strands the item, so
+        // name the NAME and its adopt_name repair instead of passing the dead id on.
+        const adopters = resolution && resolution.present === false ? (resolution.adoptedBy ?? []) : [];
+        if (adopters.length > 0) {
+          trace.finish('completed');
+          return { content: [{ type: 'text' as const, text: JSON.stringify({
+            ok: false, error: 'target_adopter_gone', target: dispatchArgs.to, adoptedBy: adopters,
+            reason: adopterGoneDiagnosis(dispatchArgs.to, adopters),
+            workItemId: dispatchArgs.workItemIds![0], responsibleActor: identity.ownerId,
+            nextAction: `Launch an agent that runs plan_items:adopt_name { name: "${dispatchArgs.to}" }, then retry this same item with resumeAdmission:true.`,
+            pickupConfirmed: false,
+          }) }] };
+        }
+        const targetOwnerId = resolution ? resolution.ownerId : dispatchArgs.to;
         const result = await trace.run('admission_recovery', () => requestAdmissionRecovery({
           workspaceId: identity.workspaceId!, harnessSlug: dispatchArgs.harness!,
           workItemId: dispatchArgs.workItemIds![0]!, caller: identity.ownerId, target: targetOwnerId,

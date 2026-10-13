@@ -15,6 +15,7 @@ import {
 import dispatch from './dispatch';
 import type { HydratableRef, HydratedRef } from '../ref-hydrate';
 import type { RefResolvers } from '../ref-hydrate-resolve';
+import type { StableAgentTargetState } from '../actionable-work-item-dispatch';
 import { AdmissionRecoveryRefused } from '../../../work-item-admission-recovery';
 import { lookupByMcpName, papercuspGateBypass } from '@papercusp/agent-mcp';
 import { runDispatchStack } from '@papercusp/tooldef';
@@ -105,6 +106,22 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
       target: ownerId,
     }));
     expect(result.request).toEqual({ state: 'queued', pickupConfirmed: false });
+  });
+
+  it('WI-6554700010010992: names an adopter-gone stable name instead of registering recovery for a dead session', async () => {
+    recoveryIO.target.mockResolvedValue({
+      requested: 'reviewer', ownerId: 'su-dead-1', present: false, sessionState: null, wakeable: false,
+      adoptedBy: ['su-dead-1'],
+    });
+    const result = await call();
+
+    expect(recoveryIO.request).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: false, error: 'target_adopter_gone', target: 'reviewer', adoptedBy: ['su-dead-1'],
+      workItemId: 'WI-original', pickupConfirmed: false,
+    });
+    expect(result.reason).toContain('plan_items:adopt_name { name: "reviewer" }');
+    expect(result.nextAction).toMatch(/resumeAdmission:true/);
   });
 
   it('returns an original-item remedy, not replacement or pickup, on authority refusal', async () => {
@@ -446,6 +463,83 @@ describe('composeDispatch', () => {
     expect(res.failure).toMatchObject({ code: 'target_dead', queuePreserved: true });
     expect(res.warning).toMatch(/RELAUNCH|relaunch/);
     expect(res.warning).toMatch(/no LIVE session/i);
+  });
+
+  describe('WI-6554700010010992: a stable name whose every adopter ended', () => {
+    const gone: StableAgentTargetState = {
+      requested: 'reviewer',
+      ownerId: 'su-dead-1',
+      present: false,
+      sessionState: null,
+      wakeable: false,
+      adoptedBy: ['su-dead-1', 'su-dead-2'],
+    };
+    const failedSend = (to = 'su-dead-1') =>
+      mockCall({
+        'coord:presence': presence([]),
+        'plan_items:assign': { ok: true, results: [{ ok: true }] },
+        'coord:send': sendEnv(to, { mode: 'required', targets: [to], woken: 0, recipient_absent: true }),
+      });
+
+    it('reports target_adopter_gone naming the NAME and its adopt_name repair', async () => {
+      const { call } = failedSend();
+      const resolveStableTarget = vi.fn(async () => gone);
+      const res = await composeDispatch({ ...baseArgs, to: 'reviewer', items: ['P-001'] }, call, { resolveStableTarget });
+
+      expect(resolveStableTarget).toHaveBeenCalledWith('reviewer');
+      expect(res.ok).toBe(false);
+      expect(res.failure).toMatchObject({ code: 'target_adopter_gone', target: 'reviewer', queuePreserved: true });
+      expect(res.failure?.message).toContain('plan_items:adopt_name { name: "reviewer" }');
+      expect(res.failure?.message).toContain('su-dead-1, su-dead-2');
+      expect(res.warning).toMatch(/no live adopter/);
+      expect(res.warning).toContain('plan_items:adopt_name');
+    });
+
+    it('keeps target_absent when the name is present or was never adopted', async () => {
+      const states: StableAgentTargetState[] = [
+        { ...gone, present: true, sessionState: 'parked', wakeable: true },
+        { requested: 'reviewer', ownerId: 'reviewer', present: false, sessionState: null, wakeable: false },
+      ];
+      for (const state of states) {
+        const { call } = failedSend();
+        const res = await composeDispatch({ ...baseArgs, to: 'reviewer', items: ['P-001'] }, call, {
+          resolveStableTarget: async () => state,
+        });
+        expect(res.failure?.code).toBe('target_absent');
+      }
+    });
+
+    it('never consults the resolver for a canonical owner id or a delivered wake', async () => {
+      const resolveStableTarget = vi.fn(async () => gone);
+      const ownerId = 'su-12345678-abcd-4000-8000-1234567890ab';
+      const canonical = await composeDispatch(
+        { ...baseArgs, to: ownerId, items: ['P-001'] },
+        failedSend(ownerId).call,
+        { resolveStableTarget },
+      );
+      expect(canonical.failure?.code).toBe('target_absent');
+
+      const { call } = mockCall({
+        'coord:presence': presence([]),
+        'plan_items:assign': { ok: true, results: [{ ok: true }] },
+        'coord:send': sendEnv('su-live', { mode: 'required', targets: ['su-live'], queued: 1 }),
+      });
+      const delivered = await composeDispatch({ ...baseArgs, to: 'reviewer', items: ['P-001'] }, call, {
+        resolveStableTarget,
+      });
+      expect(delivered.failure).toBeUndefined();
+      expect(resolveStableTarget).not.toHaveBeenCalled();
+    });
+
+    it('a resolver error degrades to the raw classification', async () => {
+      const { call } = failedSend();
+      const res = await composeDispatch({ ...baseArgs, to: 'reviewer', items: ['P-001'] }, call, {
+        resolveStableTarget: async () => {
+          throw new Error('roster unavailable');
+        },
+      });
+      expect(res.failure?.code).toBe('target_absent');
+    });
   });
 
   it('pure directed wake (no planSlug/items) skips plan_items:assign entirely', async () => {
