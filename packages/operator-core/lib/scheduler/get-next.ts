@@ -100,7 +100,15 @@ import {
   isIssueLocallyClaimableWhereSql,
   liveGateOpsSelfSelectExclusionSql,
   stopTheLineExclusionSql,
+  readGateRedStreakSinceMs,
+  redInflowMemberSelected,
+  redInflowStamp,
+  RED_INFLOW_REPAIR_FIRST_HOURS,
+  type RedInflowStamp,
 } from '../work-items-admission';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { systemDistinctId } from '../flag-distinct-id';
 import { trackDetached } from '../detached-imports';
 import { agentWorkWhereSql, issueFamilyRouteSql } from '../work-nature/agent-work-predicate';
 import {
@@ -203,6 +211,50 @@ export interface GetNextResult {
   workItem: WorkItem;
   /** Provenance (D-003/D-006): WHICH spec revision selected this item. */
   claimedUnder: { specId: string; revision: number };
+  /**
+   * P-017 / D-032: present only when red-gate inflow control shaped this claim (an 8h+
+   * red harness and a fleet member in the repair-first share), so the member can see why
+   * it got a repair item — or that none was claimable and backlog was served instead.
+   */
+  redInflow?: RedInflowStamp;
+}
+
+/**
+ * P-017 / D-032 eligibility for the red-inflow repair preclaim. Returns the red streak's
+ * start (epoch ms) when the preclaim should run, else null. Cheapest checks first: the
+ * caller must be a FLEET member (get_next with a fleet slug is the self-select drain path)
+ * inside the stable repair-first share, then the kill-switch flag, then issue claiming,
+ * and only then one indexed read of the harness's open red-streak item, which must be at
+ * least RED_INFLOW_REPAIR_FIRST_HOURS old. Fail-soft: any error skips the preference and
+ * leaves the normal ladder untouched.
+ */
+export async function redInflowRepairFirstSinceMs(
+  sql: OrgSql,
+  workspaceId: string,
+  opts: Pick<GetNextOpts, 'fleetSlug' | 'harness' | 'signal' | 'acquirePool'>,
+  assignee: string,
+  issueClaimsEnabled: () => Promise<boolean>,
+  nowMs: number = Date.now(),
+): Promise<number | null> {
+  if (!opts.fleetSlug || !opts.harness || !redInflowMemberSelected(assignee)) return null;
+  try {
+    if (!(await getFlag(FLAGS.RED_INFLOW_REPAIR_FIRST, systemDistinctId()))) return null;
+    if (!(await issueClaimsEnabled())) return null;
+    const harness = opts.harness;
+    const sinceMs = await boundedOrgTxn((tx) => readGateRedStreakSinceMs(tx as OrgSql, workspaceId, harness), {
+      client: sql,
+      signal: opts.signal,
+      acquirePool: opts.acquirePool,
+      readOnly: true,
+      acquireTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+      statementTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+      lockTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+    });
+    if (sinceMs == null) return null;
+    return nowMs - sinceMs >= RED_INFLOW_REPAIR_FIRST_HOURS * 3_600_000 ? sinceMs : null;
+  } catch {
+    return null;
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -3084,7 +3136,7 @@ export async function getNextWorkItem(
     ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
       payload: 'payload', id: 'feature_id', harness: 'harness_slug',
     })}`;
-  const claimIssue = (priorityBeforeFeature?: boolean) =>
+  const claimIssue = (priorityBeforeFeature?: boolean, repairFirstOnly?: boolean) =>
     claimNextIssueWorkItem(
       {
         harness: opts.harness,
@@ -3104,10 +3156,19 @@ export async function getNextWorkItem(
         signal: opts.signal,
         acquirePool: opts.acquirePool,
         onResolutionStep: opts.onResolutionStep,
-        issueKinds,
-        ids: idValues,
-        excludeIds: excludeIds.length ? excludeIds : undefined,
-        specFilterSql,
+        // green-main-cycle-time-2026-10-08 D-033: the red-inflow repair preclaim drops the
+        // fleet's LANE (kind narrowing, id allowlist, compiled view filter). Repair items are
+        // harness-wide gate work that matches almost no lane, so keeping the lane would mean
+        // no lane-scoped member ever moves. redInflowRepairItemSql is the whole selection;
+        // every claim floor inside claimNextIssueWorkItem still applies, and the rank is kept.
+        ...(repairFirstOnly
+          ? { repairFirstOnly: true }
+          : {
+              issueKinds,
+              ids: idValues,
+              excludeIds: excludeIds.length ? excludeIds : undefined,
+              specFilterSql,
+            }),
         specOrderSql,
         ...(priorityBeforeFeature
           ? {
@@ -3267,10 +3328,28 @@ export async function getNextWorkItem(
     }
   };
 
-  // Priority preclaim: this is the only issue-family path that runs before the
-  // feature tiers. Equal/worse priorities return null here and preserve feature-first.
   let claimed: WorkItem | null = null;
-  if (hasPriorityRank && (await issueClaimsEnabled())) {
+
+  // P-017 / D-032 red-gate inflow control: past 8h of red, a stable half of FLEET members
+  // claim a repair item (a failing frozen-queue leg or a per-sync red) before anything
+  // else. A preference, not a floor — a miss falls through to the normal ladder below, so
+  // no member idles. The cheap red read runs first so a green harness never pays for the
+  // extra claim query; the claim itself re-checks red per row via redInflowRepairItemSql.
+  let redInflow: RedInflowStamp | undefined;
+  const redInflowSinceMs = await redInflowRepairFirstSinceMs(sql, ws, opts, bee.assignee, issueClaimsEnabled);
+  if (redInflowSinceMs != null) {
+    const startedAtMs = resolutionStep('candidate-red-inflow-repair-preclaim');
+    try {
+      claimed = await claimIssue(false, true);
+    } finally {
+      resolutionStepFinished('candidate-red-inflow-repair-preclaim', startedAtMs);
+    }
+    redInflow = redInflowStamp(claimed != null, redInflowSinceMs);
+  }
+
+  // Priority preclaim: this is the only other issue-family path that runs before the
+  // feature tiers. Equal/worse priorities return null here and preserve feature-first.
+  if (!claimed && hasPriorityRank && (await issueClaimsEnabled())) {
     const startedAtMs = resolutionStep('candidate-priority-issue-preclaim');
     try {
       claimed = await claimIssue(true);
@@ -3442,7 +3521,11 @@ export async function getNextWorkItem(
   void trackDetached(import('../work-items-events'))
     .then((m) => m.emitWorkItemClaimedEvent(claimed!, bee.assignee))
     .catch(() => {});
-  return { workItem: claimed, claimedUnder: { specId: spec.specId, revision: spec.revision } };
+  return {
+    workItem: claimed,
+    claimedUnder: { specId: spec.specId, revision: spec.revision },
+    ...(redInflow ? { redInflow } : {}),
+  };
 }
 
 /** Convenience: claim under the baseline spec (no spec = today's ordering, D-003). */
