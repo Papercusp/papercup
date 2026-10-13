@@ -69,7 +69,11 @@ export function normalizeSlug(
     const parts = s.split('/');
     const leaf = parts.pop() ?? '';
     if (!leaf) return { ok: false, error: 'slug_required' };
-    const sectionRes = normalizeSection(parts.join('/'));
+    // `/branding` (a leading slash and no dir) is docs-root-absolute: route it to the
+    // root explicitly. Left as '' it would fall to the agent-insights default, so
+    // `/branding` and `//branding` would land in different places (WI-6554700010011197).
+    const dir = parts.join('/');
+    const sectionRes = normalizeSection(/^\/*$/.test(dir) ? DOCS_ROOT_SECTION : dir);
     if (!sectionRes.ok) return sectionRes;
     s = leaf;
     if (!/^[a-z0-9][a-z0-9-]*$/.test(s)) {
@@ -83,8 +87,19 @@ export function normalizeSlug(
   return { ok: true, slug: s };
 }
 
-/** Normalize/validate a section dir under the docs root. Default agent-insights. */
+/**
+ * The `section` value that addresses the docs ROOT itself — `index.mdx`, `branding.mdx`,
+ * `performance.mdx` (WI-6554700010011197). It must be explicit: an absent or empty section
+ * keeps the agent-insights default, so a bare slug can never silently land at the root.
+ */
+export const DOCS_ROOT_SECTION = '/';
+
+/**
+ * Normalize/validate a section dir under the docs root. Default agent-insights; an
+ * all-slash value (`'/'`) is the docs root and normalizes to {@link DOCS_ROOT_SECTION}.
+ */
 export function normalizeSection(raw: string | undefined): { ok: true; section: string } | { ok: false; error: string } {
+  if (raw !== undefined && /^\s*\/+\s*$/.test(raw)) return { ok: true, section: DOCS_ROOT_SECTION };
   const s = (raw ?? 'agent-insights').trim().replace(/^\/+|\/+$/g, '');
   if (!s) return { ok: true, section: 'agent-insights' };
   if (s.split('/').some((seg) => seg === '..' || seg === '.' || seg === '')) {
@@ -94,6 +109,16 @@ export function normalizeSection(raw: string | undefined): { ok: true; section: 
     return { ok: false, error: 'section_must_be_kebab_path — lowercase letters, digits, dashes, slashes only' };
   }
   return { ok: true, section: s };
+}
+
+/**
+ * The read ref (`<section>/<slug>`, extensionless) and canonical doc id (`ref.mdx`) for a
+ * normalized section + slug. The docs-root section contributes no dir: `branding`, not
+ * `//branding` — the single place that composition happens, so the two cannot disagree.
+ */
+export function docRefFor(section: string, slug: string): { ref: string; docId: string } {
+  const ref = section === DOCS_ROOT_SECTION ? slug : `${section}/${slug}`;
+  return { ref, docId: `${ref}.mdx` };
 }
 
 /**
@@ -608,7 +633,7 @@ const argsSchema = z.object({
   section: z
     .string()
     .optional()
-    .describe('Docs-root-relative section dir. Default "agent-insights" (the runbook/insight section).'),
+    .describe('Docs-root-relative section dir. Default "agent-insights" (the runbook/insight section). "/" = the docs root itself (e.g. branding.mdx).'),
   status: z
     .enum(['active', 'superseded', 'draft', 'current', 'retired'])
     .optional()
@@ -711,9 +736,8 @@ export default defineTool({
     // forms explicit so a caller can pass the returned `ref` directly to
     // docs:get instead of guessing whether `path` is a filesystem id or a read
     // slug.
-    const ref = `${section}/${slug}`;
-    const docId = `${ref}.mdx`;
-    if (paths.sources?.[section.split('/')[0]]) {
+    const { ref, docId } = docRefFor(section, slug);
+    if (section !== DOCS_ROOT_SECTION && paths.sources?.[section.split('/')[0]]) {
       return err('file_authoritative_source — edit the namespaced corpus source file with its file lock, then harness_docs:anchor/verify; docs:author must not create a second canonical copy');
     }
     const abs = safeJoinUnderRoot(paths.docsRoot, docId);

@@ -316,3 +316,50 @@ describe('docs:author truncated-body guards', () => {
     expect(payload.ok).toBe(true);
   });
 });
+
+// WI-6554700010011197: a ROOT-level page (branding.mdx, index.mdx, performance.mdx) must
+// reach the canonical writer, the projection and the stored-row read under the dir-less
+// doc id — not `agent-insights/branding.mdx`, and not `//branding.mdx`.
+describe('docs:author docs-root section (WI-6554700010011197)', () => {
+  type RootPayload = { ok: boolean; path?: string; ref?: string; section?: string; read?: { slugs: string[] } };
+  const parse = (r: HandlerResult) => JSON.parse(r.content[0].text) as RootPayload;
+
+  it('section "/" writes <docsRoot>/<slug>.mdx with a dir-less ref', async () => {
+    const result = await callAuthor({ ...baseArgs, slug: 'branding', section: '/' });
+
+    expect(result.isError).not.toBe(true);
+    expect(parse(result)).toMatchObject({
+      ok: true,
+      path: 'branding.mdx',
+      ref: 'branding',
+      section: '/',
+      read: { slugs: ['branding'] },
+    });
+    expect(h.safeJoinUnderRoot).toHaveBeenCalledWith('/tmp/docs-author-refresh-test', 'branding.mdx');
+    expect(h.anchorManualDoc).toHaveBeenCalledWith(expect.objectContaining({ docId: 'branding.mdx' }));
+    expect(h.writeFile).toHaveBeenCalledWith('/tmp/docs-author-refresh-test/branding.mdx', expect.any(String), 'utf8');
+  });
+
+  it('an overwrite via a leading-slash slug reads the stored root row by its root doc id', async () => {
+    h.existsSync.mockReturnValue(true);
+    h.getAuthoredDocContent.mockResolvedValue(
+      '---\ntitle: "Branding"\ndescription: "Brand guide."\n---\n\n# Branding\n\nOld body.\n',
+    );
+    const { section: _omitted, ...noSection } = baseArgs;
+
+    const result = await callAuthor({ ...noSection, slug: '/branding.mdx', overwrite: true });
+
+    expect(result.isError).not.toBe(true);
+    expect(h.getAuthoredDocContent).toHaveBeenCalledWith(expect.any(String), 'branding.mdx');
+    expect(parse(result)).toMatchObject({ ok: true, path: 'branding.mdx', ref: 'branding' });
+  });
+
+  it('a bare slug with no section still lands in agent-insights, never the root', async () => {
+    const { section: _omitted, ...noSection } = baseArgs;
+
+    const result = await callAuthor({ ...noSection, slug: 'branding' });
+
+    expect(parse(result)).toMatchObject({ ok: true, path: 'agent-insights/branding.mdx', ref: 'agent-insights/branding' });
+    expect(h.anchorManualDoc).toHaveBeenCalledWith(expect.objectContaining({ docId: 'agent-insights/branding.mdx' }));
+  });
+});
