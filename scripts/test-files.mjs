@@ -13,7 +13,7 @@
  * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
 import { spawn, spawnSync } from 'node:child_process';
@@ -2044,7 +2044,7 @@ export function formatProvenanceDrift(diff) {
  * (measured, nothing moved), `drifted` (a tested path changed mid-run), `unknown` (git unreadable or
  * HEAD moved beyond the named-path measurement radius — NOT a clean bill).
  */
-export function provenanceResultFields(snapshot, diff) {
+export function provenanceResultFields(snapshot, diff, childNotices) {
   const entries = snapshot?.entries ?? [];
   const unknown = entries.filter((e) => e.state === PROVENANCE_UNKNOWN).length;
   const uncommitted = entries.filter((e) => e.state === 'dirty' || e.state === 'untracked').length;
@@ -2060,10 +2060,145 @@ export function provenanceResultFields(snapshot, diff) {
   // APPENDED LAST so `head=`/`uncommittedPaths=`/`provenance=` keep their existing positions for
   // every consumer already tokenising this line.
   const startedAtSuffix = snapshot?.startedAt ? ` startedAt=${snapshot.startedAt}` : '';
+  // WI-6554700010009516 — did a test-spawned node child execute a COMMITTED blob instead of the
+  // working tree? Only main()'s post-run call passes `childNotices`; the dry-run line and this
+  // function's hand-built unit tests omit it, so their output is unchanged. Unreadable is
+  // `unknown`, never 0.
+  const childSuffix =
+    childNotices === undefined
+      ? ''
+      : ` childSubstituted=${childNotices?.unreadable || !childNotices ? PROVENANCE_UNKNOWN : childNotices.records.length}`;
   return (
     `head=${snapshot?.head ?? PROVENANCE_UNKNOWN} ` +
-    `uncommittedPaths=${uncommitted}/${entries.length} provenance=${verdict}${startedAtSuffix}`
+    `uncommittedPaths=${uncommitted}/${entries.length} provenance=${verdict}${startedAtSuffix}${childSuffix}`
   );
+}
+
+/**
+ * WI-6554700010009516 — `npm run test:file` runs under scripts/lib/committed-source-loader.mjs, and
+ * a test that spawns `node <repo script>` passes NODE_OPTIONS through, so that CHILD executes the
+ * HEAD blob of every dirty file it imports. Its notice lands on its own stderr, which the test
+ * captures, so the run read as a working-tree measurement when it was not. The loader also appends
+ * one JSONL record per substituted/refused module to the file named by this variable; main()
+ * points every child at a per-run file and reports what landed.
+ *
+ * Duplicated from the loader's COMMITTED_SOURCE_NOTICE_ENV / _SCHEMA rather than imported:
+ * importing the loader registers its hooks, which the router must not do when it runs without
+ * them (the testing:run route). test-file-provenance.test.ts pins the two copies equal.
+ */
+export const CHILD_SOURCE_NOTICE_ENV = 'PAPERCUSP_COMMITTED_SOURCE_NOTICES';
+export const CHILD_SOURCE_NOTICE_SCHEMA = 'committed-source-notice-v1';
+
+/**
+ * Export a notice file on `env` for every child to inherit. A caller-set path is kept (a nested
+ * router shares its parent's channel) and only bytes appended after `offset` are read back;
+ * otherwise a per-run temp file is created, and `close()` removes it and the variable.
+ */
+export function openChildSourceNoticeSink(env = process.env, { tmpRoot = tmpdir() } = {}) {
+  const inherited = env[CHILD_SOURCE_NOTICE_ENV];
+  if (inherited) {
+    let offset = 0;
+    try {
+      offset = statSync(inherited).size;
+    } catch {
+      offset = 0;
+    }
+    return { path: inherited, offset, owned: false, close() {} };
+  }
+  let dir;
+  try {
+    dir = mkdtempSync(join(tmpRoot, 'papercusp-test-files-notices-'));
+  } catch (error) {
+    return { path: null, offset: 0, owned: false, error: String(error?.message ?? error), close() {} };
+  }
+  const path = join(dir, 'notices.jsonl');
+  env[CHILD_SOURCE_NOTICE_ENV] = path;
+  return {
+    path,
+    offset: 0,
+    owned: true,
+    close() {
+      if (env[CHILD_SOURCE_NOTICE_ENV] === path) delete env[CHILD_SOURCE_NOTICE_ENV];
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+/**
+ * Keep schema-valid records whose checkout `top` is `root` or under it (a submodule). A record
+ * from a test's own scratch checkout describes that fixture, not this run's tested source.
+ */
+export function parseChildSourceNotices(text, root = REPO_ROOT) {
+  let realRoot = root;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    // keep the given root
+  }
+  const records = [];
+  let malformed = 0;
+  for (const line of String(text ?? '').split('\n')) {
+    if (!line.trim()) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      malformed += 1;
+      continue;
+    }
+    if (
+      record?.schemaVersion !== CHILD_SOURCE_NOTICE_SCHEMA ||
+      typeof record.rel !== 'string' ||
+      typeof record.top !== 'string'
+    ) {
+      malformed += 1;
+      continue;
+    }
+    const fromRoot = relative(realRoot, record.top);
+    if (fromRoot === '' || (fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot))) {
+      records.push(record);
+    }
+  }
+  return { records, malformed };
+}
+
+/** Read back what children appended. A missing file means no child wrote anything. */
+export function readChildSourceNotices(sink, root = REPO_ROOT) {
+  if (!sink?.path) return { records: [], malformed: 0, unreadable: true };
+  let bytes;
+  try {
+    bytes = readFileSync(sink.path);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { records: [], malformed: 0, unreadable: false };
+    return { records: [], malformed: 0, unreadable: true };
+  }
+  return { ...parseChildSourceNotices(bytes.subarray(sink.offset).toString('utf8'), root), unreadable: false };
+}
+
+/** The post-run report lines; none when no child substituted or refused anything. */
+export function formatChildSourceNotices(notices) {
+  if (!notices || notices.unreadable) {
+    return [
+      'TEST_FILE_CHILD_SUBSTITUTED count=unknown — the child notice channel was unreadable, so whether a ' +
+        'test-spawned node child executed a COMMITTED blob instead of the working tree is NOT measured.',
+    ];
+  }
+  const { records, malformed } = notices;
+  if (records.length === 0 && malformed === 0) return [];
+  return [
+    `TEST_FILE_CHILD_SUBSTITUTED count=${records.length}${malformed ? ` malformed=${malformed}` : ''}`,
+    ...records.map(
+      (r) =>
+        `  ${r.kind} ${r.via ?? '?'} ${r.rel}  pid=${r.pid ?? '?'} entry=${r.entry ?? '?'}` +
+        (r.reason ? ` reason=${r.reason}` : ''),
+    ),
+    ...(records.length
+      ? [
+          '  ⚠ a test-spawned node child ran the COMMITTED blob of these files (substituted) or refused them: ' +
+            'any assertion that depends on that child measured HEAD, not your working tree.',
+        ]
+      : []),
+  ];
 }
 
 export function parseCli(argv) {
@@ -2981,6 +3116,9 @@ export async function main(
   // them before anything is spawned: every child below receives `process.env`, so leaving them
   // there handed the parent's unique barrier to any test that spawns a nested router.
   const preemptMarkerPaths = consumePreemptMarkerEnv(process.env);
+  // WI-6554700010009516: the child notice channel. Opened after the restricted-hold census (below)
+  // and closed in the finally, so it stays null on every early return before that point.
+  let childSourceNoticeSink = null;
   let cleanupPreemptReadyMarker = null;
   let cleanupPreemptFinalizationMarker = null;
   const cleanupPreemptMarkers = () => {
@@ -3157,6 +3295,12 @@ export async function main(
       process.env[RESTRICTED_HOLD_PREFLIGHT_ENV] = RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER;
     }
   }
+  // WI-6554700010009516: export the child notice channel AFTER the restricted-hold census and
+  // BEFORE the vitest list/run spawns. Every child receives `process.env`, and a node process
+  // under the inherited committed-source loader appends each substituted/refused module there.
+  // The census is a deliberate committed-source closure walk — its substitutions are the
+  // defence working, not the run measuring HEAD — so opening the channel earlier blamed the tests.
+  childSourceNoticeSink = openChildSourceNoticeSink(process.env);
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
   // doc for the full incident). Each iteration always records its outcome and moves on; the final
@@ -3695,6 +3839,8 @@ export async function main(
   const driftMarker = formatProvenanceDrift(provenanceDiff);
   if (driftMarker) console.error(driftMarker);
   console.log(formatProvenanceBanner(provenanceAfter, 'post-run'));
+  const childSourceNotices = readChildSourceNotices(childSourceNoticeSink);
+  for (const line of formatChildSourceNotices(childSourceNotices)) console.log(line);
   // Re-read AFTER the run: a probe that opened its window mid-run is the case the pre-run read missed.
   const probeWindowAfter = readMutationProbeWindow(REPO_ROOT);
   if (probeWindowAfter) console.error(formatMutationProbeWindow(probeWindowAfter, REPO_ROOT));
@@ -3874,7 +4020,7 @@ export async function main(
       : 'unknown';
   console.log(
     `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} ` +
-      `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff)} skippedTests=${skippedField}` +
+      `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff, childSourceNotices)} skippedTests=${skippedField}` +
       (summary.anyFinalizationError ? ' finalizationError=true' : ''),
   );
   if (summary.anyFinalizationError) return TEST_FILE_EXIT_FINALIZATION_ERROR;
@@ -3882,6 +4028,7 @@ export async function main(
   } finally {
     cleanupPreemptMarkers();
     cleanupInjectedReports();
+    childSourceNoticeSink?.close();
   }
 }
 
