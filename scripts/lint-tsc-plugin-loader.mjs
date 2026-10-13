@@ -19,7 +19,7 @@
 
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runTscBaselineGate } from './lib/tsc-baseline-gate.mjs';
+import { runTscBaselineGate, TOOLCHAIN_FAILURE_EXIT_CODE } from './lib/tsc-baseline-gate.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -47,7 +47,8 @@ runTscBaselineGate({
   argv: process.argv.slice(2),
   foreignBaselines: FOREIGN_BASELINES,
 }).catch((err) => {
-  // A failed or interrupted measurement is never a typecheck pass.
+  // A failed or interrupted measurement is never a typecheck pass — and never a regression
+  // either: exit 1 prints status=regressed, so a crash exits EX_SOFTWARE (EI-25816656568127078).
   console.error(err);
-  process.exit(1);
+  process.exit(TOOLCHAIN_FAILURE_EXIT_CODE);
 });
