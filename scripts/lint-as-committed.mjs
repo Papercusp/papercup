@@ -1379,7 +1379,10 @@ function main() {
       } else if (run.status === 0) {
         results.push({ script, status: 'pass' });
       } else {
-        results.push({ script, status: 'fail', note: `exit ${run.status}` });
+        const detail = run.signal
+          ? `terminated by signal ${run.signal} (no exit status)`
+          : `exit ${run.status}`;
+        results.push({ script, status: 'fail', note: detail });
       }
     }
   } finally {
