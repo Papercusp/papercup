@@ -15,6 +15,7 @@
 
 import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
+import { createCache } from "@papercusp/cache";
 import type { CoordEnvelope } from "@papercusp/coordination/core";
 import { COORD_ROLES } from "../roles";
 import { coordLog, coordSql, coordWorkspaceId, coordHasPgFastPath } from "../log";
@@ -28,6 +29,12 @@ import { MESSAGE_GC_RETENTION_DAYS } from "../message-log-gc";
  *  while still capping a genuinely pathological burst. Mirrors
  *  INBOX_FAST_PATH_ROW_CAP (messages.ts). */
 export const CONDITIONS_FAST_PATH_ROW_CAP = 25_000;
+
+// Independent watchdogs can request the same 25k-row window concurrently.
+// Reuse the cache's single-flight primitive, scoped to the actual PG handle
+// AND workspace. Zero hard TTL forbids settled-result reuse; forget also drops
+// the envelope window immediately instead of retaining an expired large value.
+const conditionReads = new WeakMap<ReturnType<typeof coordSql>, ReturnType<typeof createCache>>();
 
 /** One condition's folded state. */
 export interface ConditionState {
@@ -235,27 +242,40 @@ export async function readConditionEnvelopes(): Promise<Record<string, unknown>[
   // GC would have already reaped it.
   if (coordHasPgFastPath()) {
     const sql = coordSql();
-    const sinceBound = new Date(Date.now() - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
-    const rows = await sql<{ body: unknown }[]>`
-      SELECT body
-        FROM harness_shared.coord_event_log
-       WHERE workspace_id = ${coordWorkspaceId()}
-         AND surface = 'messages'
-         AND ts >= ${sinceBound}
-         AND (body ? 'condition_key' OR body ? 'resolves_condition')
-       ORDER BY id DESC
-       LIMIT ${CONDITIONS_FAST_PATH_ROW_CAP}
-    `;
-    // Keep the newest events within the cap so recent resolutions are not
-    // dropped under sustained condition traffic. The fold consumes ascending
-    // events, so restore chronological order after fetching the bounded slice.
-    return rows.reverse().map(
-      (r) =>
-        (typeof r.body === "string" ? JSON.parse(r.body) : r.body) as Record<
-          string,
-          unknown
-        >,
-    );
+    const workspaceId = coordWorkspaceId();
+    let shared = conditionReads.get(sql);
+    if (!shared) {
+      shared = createCache({ maxL1Entries: 1, defaultHardTtlMs: 0 });
+      conditionReads.set(sql, shared);
+    }
+    try {
+      const envelopes = await shared.getOrSet(workspaceId, "conditions", async () => {
+        const sinceBound = new Date(Date.now() - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
+        const rows = await sql<{ body: unknown }[]>`
+          SELECT body
+            FROM harness_shared.coord_event_log
+           WHERE workspace_id = ${workspaceId}
+             AND surface = 'messages'
+             AND ts >= ${sinceBound}
+             AND (body ? 'condition_key' OR body ? 'resolves_condition')
+           ORDER BY id DESC
+           LIMIT ${CONDITIONS_FAST_PATH_ROW_CAP}
+        `;
+        // Keep recent resolutions within the cap, then restore chronological
+        // order for the fold. Transport and JSON parsing happen once per burst.
+        return rows.reverse().map((r) =>
+          (typeof r.body === "string" ? JSON.parse(r.body) : r.body) as Record<string, unknown>,
+        );
+      });
+      // A caller can reorder its window or annotate fold fields independently.
+      return envelopes.map((envelope) => ({
+        ...envelope,
+        ...(Array.isArray(envelope.resolves_conditions)
+          ? { resolves_conditions: [...envelope.resolves_conditions] } : {}),
+      }));
+    } finally {
+      shared.forget(workspaceId, "conditions");
+    }
   }
   const lines = (await coordLog.readLines("messages")) as CoordEnvelope[];
   return (lines as unknown as Record<string, unknown>[]).filter(

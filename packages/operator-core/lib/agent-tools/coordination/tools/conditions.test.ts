@@ -17,16 +17,18 @@ const M = vi.hoisted(() => ({
   readLines: vi.fn(async () => [] as unknown[]),
   pgFastPath: false,
   pgQuery: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
+  workspaceId: "ws-test",
+  pgHandle: null as ((...args: unknown[]) => Promise<unknown[]>) | null,
 }));
 
 vi.mock("../log", () => ({
   coordLog: { readLines: M.readLines },
-  coordSql: () => M.pgQuery,
-  coordWorkspaceId: () => "ws-test",
+  coordSql: () => M.pgHandle ?? M.pgQuery,
+  coordWorkspaceId: () => M.workspaceId,
   coordHasPgFastPath: () => M.pgFastPath,
 }));
 
-import tool, { computeConditionStates } from "./conditions";
+import tool, { computeConditionStates, readConditionEnvelopes } from "./conditions";
 
 const ctx = (): never =>
   ({ ownerId: "owner-a", workspaceId: "ws-test", metadata: vi.fn(), log: vi.fn(), progress: vi.fn() }) as never;
@@ -88,6 +90,100 @@ beforeEach(() => {
   M.readLines.mockImplementation(async () => []);
   M.pgFastPath = false;
   M.pgQuery.mockImplementation(async (..._args: unknown[]) => []);
+  M.workspaceId = "ws-test";
+  M.pgHandle = null;
+});
+
+describe("concurrent PG condition readers", () => {
+  it("shares one bounded query across a watchdog burst without losing the fold", async () => {
+    M.pgFastPath = true;
+    let release!: (rows: unknown[]) => void;
+    const pending = new Promise<unknown[]>((resolve) => { release = resolve; });
+    M.pgQuery.mockImplementation(() => pending);
+    const reads = Array.from({ length: 40 }, () => call());
+    const queriesWhilePending = M.pgQuery.mock.calls.length;
+    release([{ body: JSON.stringify(resolution(2, "shared")) }, { body: alarm(1, "shared") }]);
+    const results = await Promise.all(reads);
+
+    expect(queriesWhilePending).toBe(1);
+    expect(M.pgQuery).toHaveBeenCalledTimes(1);
+    for (const result of results) {
+      expect(result.open_count).toBe(0);
+      expect(result.resolved[0]).toMatchObject({ condition_key: "shared", resolved_at: at(2) });
+    }
+  });
+
+  it("reads fresh state immediately after settlement instead of caching a resolved alarm", async () => {
+    M.pgFastPath = true;
+    M.pgQuery.mockResolvedValueOnce([{ body: alarm(1, "fresh") }]);
+    M.pgQuery.mockResolvedValueOnce([{ body: resolution(2, "fresh") }, { body: alarm(1, "fresh") }]);
+
+    expect((await call()).open_count).toBe(1);
+    expect((await call()).open_count).toBe(0);
+    expect(M.pgQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("propagates a shared query failure and lets the next read retry without a seam fallback", async () => {
+    M.pgFastPath = true;
+    let fail!: (error: Error) => void;
+    M.pgQuery.mockImplementation(() => new Promise<unknown[]>((_resolve, reject) => { fail = reject; }));
+    const reads = [readConditionEnvelopes(), readConditionEnvelopes()];
+    fail(new Error("condition PG unavailable"));
+    const results = await Promise.allSettled(reads);
+    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    expect(M.pgQuery).toHaveBeenCalledTimes(1);
+    expect(M.readLines).not.toHaveBeenCalled();
+
+    M.pgQuery.mockResolvedValue([{ body: alarm(3, "retry") }]);
+    expect((await call()).open[0]?.condition_key).toBe("retry");
+    expect(M.pgQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps simultaneous workspace reads separate and captures each workspace before awaiting", async () => {
+    M.pgFastPath = true;
+    const releases: Array<(rows: unknown[]) => void> = [];
+    M.pgQuery.mockImplementation(() => new Promise<unknown[]>((resolve) => { releases.push(resolve); }));
+    M.workspaceId = "workspace-a";
+    const a = readConditionEnvelopes();
+    M.workspaceId = "workspace-b";
+    const b = readConditionEnvelopes();
+    releases[0]!([{ body: alarm(1, "a") }]);
+    releases[1]!([{ body: alarm(1, "b") }]);
+
+    expect((await a)[0]?.condition_key).toBe("a");
+    expect((await b)[0]?.condition_key).toBe("b");
+    expect(M.pgQuery.mock.calls[0]?.[1]).toBe("workspace-a");
+    expect(M.pgQuery.mock.calls[1]?.[1]).toBe("workspace-b");
+  });
+
+  it("does not share an in-flight read across a replacement PG backend in the same workspace", async () => {
+    M.pgFastPath = true;
+    let release!: (rows: unknown[]) => void;
+    M.pgQuery.mockImplementation(() => new Promise<unknown[]>((resolve) => { release = resolve; }));
+    const original = readConditionEnvelopes();
+    const replacement = vi.fn(async () => [{ body: alarm(2, "replacement") }]);
+    M.pgHandle = replacement;
+    const changed = readConditionEnvelopes();
+    release([{ body: alarm(1, "original") }]);
+
+    expect((await original)[0]?.condition_key).toBe("original");
+    expect((await changed)[0]?.condition_key).toBe("replacement");
+    expect(replacement).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives readers independent envelope arrays and fold fields", async () => {
+    M.pgFastPath = true;
+    let release!: (rows: unknown[]) => void;
+    M.pgQuery.mockImplementation(() => new Promise<unknown[]>((resolve) => { release = resolve; }));
+    const a = readConditionEnvelopes();
+    const b = readConditionEnvelopes();
+    release([{ body: alarm(1, "independent") }]);
+    const [first, second] = await Promise.all([a, b]);
+    first[0]!.condition_key = "changed by caller";
+    first.pop();
+    expect(second).toHaveLength(1);
+    expect(second[0]?.condition_key).toBe("independent");
+  });
 });
 
 describe("computeConditionStates (pure)", () => {
