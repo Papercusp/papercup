@@ -73,13 +73,49 @@ describe('Reports route', () => {
       correctedTitle: corrected.title, subjectValue: 'plan:example-plan', subjectLabel: 'Example plan' });
     const evaluate = (params = search) => new Function('document', 'location', `return ${expression}`)(
       document, { href: `http://localhost/reports${params}` });
-    const subject = screen.getByRole('button', { name: 'Report subject' }) as HTMLButtonElement;
+    const subject = screen.getByRole('button', { name: 'About: Example plan ▾' }) as HTMLButtonElement;
+    expect(document.querySelector('[aria-label="Report subject"]')).toBeNull();
     expect(subject.textContent).toBe('About: Example plan ▾');
     expect(subject.value).toBe('');
     expect(fixture.queries.find(q => q.queryName === 'reports.list')?.args).toMatchObject({
       subject: { kind: 'plan', ref: 'example-plan' }, query: original.title,
     });
     expect(evaluate()).toBe(true);
+    expect(evaluate(search.replace('plan%3Aexample-plan', 'plan%3Aanother-plan'))).toBe(false);
+    expect(evaluate(search.replace('subject=plan%3Aexample-plan&', ''))).toBe(false);
+    expect(evaluate()).toBe(true);
+    const list = document.querySelector('.reports-list-item')!;
+    const reader = document.querySelector('.reports-reader h2')!;
+    const searchInput = screen.getByRole('textbox', { name: 'Search reports' }) as HTMLInputElement;
+    const history = document.querySelector('.reports-history-item')!;
+    const changeText = (node: Element, value: string) => {
+      const saved = node.innerHTML;
+      node.textContent = value;
+      return () => { node.innerHTML = saved; };
+    };
+    const controls = [
+      () => changeText(list, 'Unrelated edition'),
+      () => changeText(reader, 'Unrelated reader'),
+      () => changeText(subject, 'About: another subject ▾'),
+      () => { const saved = searchInput.value; searchInput.value = 'Unrelated search';
+        return () => { searchInput.value = saved; }; },
+      () => { const extra = list.cloneNode(true); list.after(extra); return () => extra.remove(); },
+      () => { const parent = history.parentNode!; const next = history.nextSibling; history.remove();
+        return () => { parent.insertBefore(history, next); }; },
+      () => { const parent = subject.parentNode!; const next = subject.nextSibling; subject.remove();
+        return () => { parent.insertBefore(subject, next); }; },
+    ];
+    for (const applyControl of controls) {
+      const restore = applyControl();
+      try { expect(evaluate()).toBe(false); } finally { restore(); }
+      expect(evaluate()).toBe(true);
+    }
+    const witness = (window as unknown as { __reportsHistoryFilterWitness: {
+      actual: Record<string, unknown>; checks: Record<string, boolean>;
+    } }).__reportsHistoryFilterWitness;
+    expect(witness.actual).toMatchObject({ subjectValue: 'plan:example-plan',
+      subjectLabel: 'About: Example plan ▾', listCount: 1, historyCount: 2 });
+    expect(Object.values(witness.checks)).toEqual(Array(7).fill(true));
   });
   it.each([false, true])('keeps an unknown citation unavailable with an existing report and cached detail=%s', cached => {
     fixture.list = [reportSummaryFixture];
