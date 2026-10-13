@@ -163,6 +163,23 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
     await screen.findByRole("region", { name: "Beginner workspace entry" });
     expectNoHiddenProductWrites();
   });
+  it("offers only the authorized prepared target when the URL names a foreign workspace", async () => {
+    // The HTTP/RLS companion case verifies that B is excluded by the server.
+    // Here the actual page receives that authorized A list, while the URL
+    // attempts to select B. Navigation cannot manufacture a second target.
+    data.rows = [connection, { ...workspace, name: "Authorized workspace", health: { status: "healthy", checks: [] } }];
+    const { router } = mount("/cloud-workspaces?host=foreign-workspace");
+    const entry = await screen.findByRole("region", { name: "Beginner workspace entry" });
+    const choices = within(entry).getAllByRole("button", { name: /Use prepared workspace/ });
+    expect(choices).toHaveLength(1);
+    expect(choices[0].textContent).toContain("Authorized workspace");
+    expect(entry.textContent).not.toContain("foreign-workspace");
+    expectNoHiddenProductWrites();
+    fireEvent.click(choices[0]);
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ host: workspace.id, step: "operate", tab: "cost" }));
+    await screen.findByRole("region", { name: "First agent guide" });
+    expectNoHiddenProductWrites();
+  });
   it.each(["loading", "denied"])("does not offer stale workspace selections while access is %s", async mode => {
     data.rows = [{ ...workspace, health: { status: "healthy", checks: [] } }];
     data.loading = mode === "loading"; data.error = mode === "denied" ? new Error("private access detail") : null;
