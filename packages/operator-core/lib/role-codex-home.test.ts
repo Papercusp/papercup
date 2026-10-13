@@ -1877,6 +1877,19 @@ describe('writeSuCodexHome', () => {
     expect(repaired).toMatchObject({ repaired: true, identityRepaired: true });
     expect(await readFile(ownerSidPath, 'utf8')).toBe('su-repair');
     expect(ownerSidSyncCalls).toEqual([]);
+
+    // WI-6554700010009552: that repair ran in a worker thread, where the node:os
+    // mock does not apply. Its hook paths must come from the CALLER's home (the
+    // fake home), never the worker's own os.homedir() (the real host home).
+    const hooks = JSON.parse(await readFile(join(home.codexHome, 'hooks.json'), 'utf8')) as {
+      hooks: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+    };
+    const scriptCommands = Object.values(hooks.hooks)
+      .flat()
+      .flatMap((group) => (group.hooks ?? []).map((hook) => hook.command ?? ''))
+      .filter((command) => command.includes('/.papercusp/hooks/'));
+    expect(scriptCommands.length).toBeGreaterThan(0);
+    expect(scriptCommands.filter((command) => !command.includes(fakeHome))).toEqual([]);
   });
 
   it('keeps production SU creation and repair paths on the async owner-sid APIs', () => {

@@ -10,6 +10,10 @@ export interface CodexHomeMaterializerJob {
   operation: CodexHomeMaterializerOperation;
   options: object;
   priorSid?: string | null;
+  /** The caller's resolved user home. The worker materializes against this
+   *  rather than its own os.homedir(), so caller and worker cannot disagree
+   *  (WI-6554700010009552). */
+  homeDir?: string;
 }
 
 export interface CodexHomeWorkerLike {

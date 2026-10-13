@@ -173,6 +173,20 @@ describe('rtkSkipReasonForCommand', () => {
     expect(rtkSkipReasonForCommand('git status || head -1 notes.txt')).toBeNull();
   });
 
+  it('never offers grep -h / --no-filename, which rtk grep reads as --help (WI-6554700010009627)', () => {
+    expect(rtkSkipReasonForCommand("grep -h -E 'foo|bar' a.log b.log")).toBe('grep-no-filename');
+    expect(rtkSkipReasonForCommand('grep -hn foo a.log')).toBe('grep-no-filename');
+    expect(rtkSkipReasonForCommand('grep -rh foo src')).toBe('grep-no-filename');
+    expect(rtkSkipReasonForCommand('cd x && egrep -h foo a.log')).toBe('grep-no-filename');
+    expect(rtkSkipReasonForCommand("grep -E 'a|b' -h a.log")).toBe('grep-no-filename');
+    expect(rtkSkipReasonForCommand('grep --no-filename foo a.log b.log')).toBe('grep-no-filename');
+    // not -h: an 'h' inside a pattern, a cluster without h, --help-like long flags, rg
+    expect(rtkSkipReasonForCommand("grep -E 'h|x' a.log")).toBeNull();
+    expect(rtkSkipReasonForCommand('grep -rn hello src')).toBeNull();
+    expect(rtkSkipReasonForCommand('grep --include=*.sh foo .')).toBeNull();
+    expect(rtkSkipReasonForCommand('rg -n foo .')).toBeNull();
+  });
+
   it('lets ordinary commands through', () => {
     expect(rtkSkipReasonForCommand('git status')).toBeNull();
   });

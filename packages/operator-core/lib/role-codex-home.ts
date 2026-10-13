@@ -59,7 +59,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir as osHomedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { parse as parseToml } from '@iarna/toml';
 import {
@@ -79,6 +79,21 @@ import {
   resolveCodexModel,
 } from './model-context-budget.mjs';
 import { runCodexHomeMaterializerJob, type CodexHomeMaterializerJob } from './role-codex-home-offload';
+
+/**
+ * WI-6554700010009552: the async APIs run the synchronous materializers in a
+ * worker thread (role-codex-home-offload.ts). A worker resolves `os.homedir()`
+ * on its own, so it could judge or write a home against a different user home
+ * than the caller resolved: module mocks do not cross the worker boundary, and
+ * a test then read the REAL ~/.papercusp/hooks/cc and ~/.codex. Every
+ * enqueue passes the caller's home as `job.homeDir`, and
+ * executeCodexHomeMaterializerJob scopes it here for that one job. Outside a
+ * job this is plain `os.homedir()`.
+ */
+let materializerHomeOverride: string | undefined;
+function homedir(): string {
+  return materializerHomeOverride ?? osHomedir();
+}
 
 import { dirname as __esmDirname } from 'node:path';
 import { fileURLToPath as __esmFileURLToPath } from 'node:url';
@@ -1448,7 +1463,7 @@ export async function writeRoleCodexHomeAsync(
 ): Promise<RoleCodexHome> {
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
   return withCodexHomeAsyncWriteLock(codexHome, () =>
-    runCodexHomeMaterializerJob<RoleCodexHome>({ operation: 'role-write', options: opts }),
+    runCodexHomeMaterializerJob<RoleCodexHome>({ operation: 'role-write', options: opts, homeDir: homedir() }),
   );
 }
 
@@ -1798,7 +1813,7 @@ export async function ensureSuCodexHomeConfigAsync(
   return withCodexHomeAsyncWriteLock(codexHome, async () => {
     const priorSid = await existingCodexHomeOwnerSidAsync(codexHome);
     const result = await runCodexHomeMaterializerJob<ReturnType<typeof ensureSuCodexHomeConfigImpl>>({
-      operation: 'su-ensure-config', options: opts, priorSid,
+      operation: 'su-ensure-config', options: opts, priorSid, homeDir: homedir(),
     });
     if (result.identityRepaired) await stampCodexHomeOwnerSidAsync(codexHome, opts.sid);
     return result;
@@ -1952,7 +1967,7 @@ export async function writeSuCodexHomeAsync(
     }
     const { isOwnerLive: _isOwnerLive, ...writeOpts } = opts;
     const result = await runCodexHomeMaterializerJob<SuCodexHome>({
-      operation: 'su-write', options: writeOpts, priorSid,
+      operation: 'su-write', options: writeOpts, priorSid, homeDir: homedir(),
     });
     await stampCodexHomeOwnerSidAsync(result.codexHome, opts.sid);
     return result;
@@ -1962,19 +1977,25 @@ export async function writeSuCodexHomeAsync(
 /** Worker entry dispatch. Keep the synchronous implementations here so their
  *  existing filesystem and identity semantics remain the single source of truth. */
 export function executeCodexHomeMaterializerJob(job: CodexHomeMaterializerJob): unknown {
-  switch (job.operation) {
-    case 'role-write':
-      return writeRoleCodexHome(job.options as WriteRoleCodexHomeOptions);
-    case 'su-write':
-      return writeSuCodexHomeImpl(job.options as WriteSuCodexHomeOptions, {
-        priorSid: job.priorSid ?? null,
-        skipStamp: true,
-      });
-    case 'su-ensure-config':
-      return ensureSuCodexHomeConfigImpl(job.options as EnsureSuCodexHomeConfigOptions, {
-        priorSid: job.priorSid ?? null,
-        skipStamp: true,
-      });
+  const previousHome = materializerHomeOverride;
+  materializerHomeOverride = job.homeDir ?? previousHome;
+  try {
+    switch (job.operation) {
+      case 'role-write':
+        return writeRoleCodexHome(job.options as WriteRoleCodexHomeOptions);
+      case 'su-write':
+        return writeSuCodexHomeImpl(job.options as WriteSuCodexHomeOptions, {
+          priorSid: job.priorSid ?? null,
+          skipStamp: true,
+        });
+      case 'su-ensure-config':
+        return ensureSuCodexHomeConfigImpl(job.options as EnsureSuCodexHomeConfigOptions, {
+          priorSid: job.priorSid ?? null,
+          skipStamp: true,
+        });
+    }
+  } finally {
+    materializerHomeOverride = previousHome;
   }
 }
 

@@ -62,6 +62,7 @@ export type RtkSkipReason =
   | 'opt-out'
   | 'vitest'
   | 'early-exit-pipe'
+  | 'grep-no-filename'
   | 'too-long'
   | 'rtk-missing'
   | 'no-equivalent'
@@ -116,6 +117,18 @@ export const RTK_EARLY_EXIT_PIPE =
   /(?:^|[^|])\|(?!\|)&?\s*(?:head\b|(?:rg|[ef]?grep)\b[^|;&\n]*\s(?:-m\s*\d|-[A-Za-z]*m\d|--max-count\b)|sed\b[^|;&\n]*\d+q\b)/;
 
 /**
+ * A grep/egrep/fgrep carrying `-h` in any short-flag cluster (`-h`, `-hn`, `-rh`)
+ * or `--no-filename`. In grep that flag means "no file names"; in `rtk grep` it
+ * means --help, and `rtk rewrite` still proposes the RTK form, so the agent got
+ * RTK's usage text with exit 0 instead of its matches (WI-6554700010009627). The
+ * scan runs to the next `;`/`&`, across `|`, so a quoted `'a|b'` before `-h`
+ * cannot hide it. An over-match only costs compression.
+ * Kept identical to the copy in apps/operator/scripts/hooks/cc/pretooluse-restricted-egress-guard.mjs.
+ */
+export const RTK_GREP_NO_FILENAME =
+  /(?:^|[\s|;&(/])[ef]?grep\s(?:[^;&\n]*\s)?(?:-[A-Za-z0-9]*h[A-Za-z0-9]*|--no-filename)(?=[\s;&|)]|$)/;
+
+/**
  * Commands RTK must never wrap, decided on the command text alone.
  * - vitest: RTK's vitest wrapper dropped a single-file filter and ran the whole
  *   suite when its parser failed (EI-9471: a 20 s check became a 10,385-suite run).
@@ -123,6 +136,7 @@ export const RTK_EARLY_EXIT_PIPE =
  *   `head` closing the pipe no longer ends the producer. Measured 2026-10-13
  *   (WI-6554700010009543): `rg … | head -60` took 0.5 s raw and 28.5 s as
  *   `rtk rg … | head -60`. The agent already bounded that output itself.
+ * - `grep -h`: RTK reads `-h` as --help (RTK_GREP_NO_FILENAME).
  * - the opt-out prefix: the agent asked for raw output.
  */
 export function rtkSkipReasonForCommand(command: string): RtkSkipReason | null {
@@ -130,6 +144,7 @@ export function rtkSkipReasonForCommand(command: string): RtkSkipReason | null {
   if (/(^|[\s;&|(])RTK_DISABLED=1(\s|$)/.test(command)) return 'opt-out';
   if (/\bvitest\b/.test(command)) return 'vitest';
   if (RTK_EARLY_EXIT_PIPE.test(command)) return 'early-exit-pipe';
+  if (RTK_GREP_NO_FILENAME.test(command)) return 'grep-no-filename';
   return null;
 }
 
