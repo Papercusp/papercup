@@ -21,6 +21,7 @@ import {
   parseDfMaxPercent,
   parseDfPercent,
   parseHttpTimesP95Ms,
+  defaultExec,
   parseLoadavg1,
   parseLoopProfileBudgetPct,
   parseMaxPsiAvg,
@@ -264,12 +265,45 @@ describe('papercusp-app-performance instruments (P-010)', () => {
     expect(parseDfMaxPercent('Use%\n')).toBeNull();
   });
 
-  it('computes nearest-rank p95 of curl time_total in ms; any non-number is null', () => {
-    const samples = [...Array.from({ length: 14 }, () => '0.002'), '0.419'].join('\n');
+  it('computes nearest-rank p95 of curl http_code + time_total in ms; a malformed line is null', () => {
+    const samples = [...Array.from({ length: 14 }, () => '200 0.002'), '200 0.419'].join('\n');
     expect(parseHttpTimesP95Ms(samples)).toBe(419);
-    expect(parseHttpTimesP95Ms('0.004\n0.003\n')).toBe(4);
-    expect(parseHttpTimesP95Ms('0.004\ncurl: (7) Failed to connect\n')).toBeNull();
+    expect(parseHttpTimesP95Ms('200 0.004\n200 0.003\n')).toBe(4);
+    expect(parseHttpTimesP95Ms('200 0.004\ncurl: (7) Failed to connect\n')).toBeNull();
+    expect(parseHttpTimesP95Ms('0.004\n')).toBeNull();
     expect(parseHttpTimesP95Ms('')).toBeNull();
+  });
+
+  // WI-6554700010009926: one refused or timed-out request blanked the whole reading (status error,
+  // value null), so a health endpoint that never answered was rated unknown instead of a miss.
+  it('counts a refused, timed-out or non-2xx request as a sample at the cap', () => {
+    const oneDown = [...Array.from({ length: 14 }, () => '200 0.002'), '000 0.001'].join('\n');
+    expect(parseHttpTimesP95Ms(oneDown, 5)).toBe(5000);
+    expect(parseHttpTimesP95Ms('503 0.010\n', 5)).toBe(5000);
+    expect(parseHttpTimesP95Ms('000 5.002\n', 5)).toBe(5002);
+  });
+
+  it('the health instrument keeps sampling past a failed request and judges it in the parser', async () => {
+    const health = getRegisteredInstrument('host:http-health-p95-ms');
+    if (!health || health.evaluator !== 'command') throw new Error('host:http-health-p95-ms is not a command instrument');
+    expect(health.acceptNonZeroExit).toBe(true);
+    expect(health.argv).not.toContain('--fail-early');
+    expect(health.argv).not.toContain('-f');
+    const calls: unknown[][] = [];
+    const reading = await runInstrument('host:http-health-p95-ms', {
+      exec: async (...args) => {
+        calls.push(args);
+        return [...Array.from({ length: 14 }, () => '200 0.002'), '000 0.001'].join('\n');
+      },
+    });
+    expect(calls[0]?.[2]).toEqual({ acceptNonZeroExit: true });
+    expect(reading).toMatchObject({ value: 5000 });
+  });
+
+  it('defaultExec keeps stdout on a non-zero exit only when the instrument opts in', async () => {
+    const argv = ['sh', '-c', 'echo 200 0.001; exit 7'] as const;
+    await expect(defaultExec(argv, 5_000, { acceptNonZeroExit: true })).resolves.toBe('200 0.001\n');
+    await expect(defaultExec(argv, 5_000)).rejects.toThrow();
   });
 
   it('budget utilisation is the WORST sub-target in percent; a non-positive budget is null', () => {

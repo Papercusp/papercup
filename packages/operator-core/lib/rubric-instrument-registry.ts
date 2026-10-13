@@ -50,6 +50,12 @@ export interface CommandInstrument {
   unit: InstrumentUnit;
   /** Executable + arguments, run WITHOUT a shell. */
   argv: readonly [string, ...string[]];
+  /**
+   * Keep stdout when the command exits non-zero: for a command that reports every sub-result on
+   * stdout and folds failures into its exit code (multi-URL curl), so the parser judges them.
+   * A command killed by its timeout still fails.
+   */
+  acceptNonZeroExit?: boolean;
   timeoutMs: number;
   /** One number from stdout, or null when stdout does not carry the expected shape. */
   parse(stdout: string, ctx: InstrumentParseContext): number | null;
@@ -136,13 +142,22 @@ export function parseDfMaxPercent(stdout: string): number | null {
 }
 
 /**
- * `curl -w '%{time_total}\n'` lines (seconds, one per request) → nearest-rank p95 in ms, or null
- * when any line is not a number or there is no line at all.
+ * `curl -w '%{http_code} %{time_total}\n'` lines (one per request) → nearest-rank p95 in ms.
+ * A request that did not answer 2xx (000 = refused or timed out, or an HTTP error) counts as a
+ * `capSeconds` sample, so a failing endpoint reads as slow instead of unmeasured
+ * (WI-6554700010009926). Null when any line is malformed or there is no line at all.
  */
-export function parseHttpTimesP95Ms(stdout: string): number | null {
+export function parseHttpTimesP95Ms(stdout: string, capSeconds = 5): number | null {
   const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
-  if (lines.length === 0 || lines.some((l) => !/^\d+(?:\.\d+)?$/.test(l))) return null;
-  const sorted = lines.map(Number).sort((a, b) => a - b);
+  if (lines.length === 0) return null;
+  const seconds: number[] = [];
+  for (const line of lines) {
+    const m = /^(\d{3}) (\d+(?:\.\d+)?)$/.exec(line);
+    if (!m) return null;
+    const code = Number(m[1]);
+    seconds.push(code >= 200 && code < 300 ? Number(m[2]) : Math.max(capSeconds, Number(m[2])));
+  }
+  const sorted = seconds.sort((a, b) => a - b);
   const p95 = sorted[Math.max(0, Math.ceil(0.95 * sorted.length) - 1)]!;
   return Math.round(p95 * 1000 * 10) / 10;
 }
@@ -308,6 +323,7 @@ const SERVING_ANON_BUDGETS = [
 ] as const;
 const HEALTH_URLS = ['9071', '3070', '3170'].map((port) => `http://127.0.0.1:${port}/api/health`);
 const HEALTH_SAMPLES_PER_PORT = 5;
+const HEALTH_TIMEOUT_S = 5;
 const RELEASE_ROOT = process.env.PAPERCUSP_RELEASE_ROOT || join(homedir(), 'papercupai-workspace', 'papercup-release');
 const SPA_INDEX_HTML = join(RELEASE_ROOT, 'apps', 'operator-vite', 'dist', 'index.html');
 /**
@@ -371,14 +387,16 @@ const APP_PERFORMANCE_INSTRUMENTS: readonly CommandInstrument[] = [
     evaluator: 'command',
     description:
       `Nearest-rank p95 of /api/health time_total in ms over ${HEALTH_SAMPLES_PER_PORT} requests ` +
-      'each to :9071, :3070 and :3170. Any failed request (refused, timeout, HTTP error) is an error.',
+      'each to :9071, :3070 and :3170. A request that does not answer 2xx within the ' +
+      `${HEALTH_TIMEOUT_S} s cap (refused, timed out, HTTP error) counts as a ${HEALTH_TIMEOUT_S * 1000} ms sample.`,
     unit: 'ms',
+    acceptNonZeroExit: true,
     argv: [
-      'curl', '-sS', '-f', '--fail-early', '-m', '5', '-w', '%{time_total}\n',
+      'curl', '-sS', '-m', String(HEALTH_TIMEOUT_S), '-w', '%{http_code} %{time_total}\n',
       ...HEALTH_URLS.flatMap((url) => Array.from({ length: HEALTH_SAMPLES_PER_PORT }, () => ['-o', '/dev/null', url]).flat()),
     ],
-    timeoutMs: 60_000,
-    parse: (stdout) => parseHttpTimesP95Ms(stdout),
+    timeoutMs: 90_000,
+    parse: (stdout) => parseHttpTimesP95Ms(stdout, HEALTH_TIMEOUT_S),
   },
   {
     key: 'host:loop-profile-budget-pct',
@@ -530,16 +548,26 @@ export interface InstrumentReading {
 
 export interface InstrumentRunDeps {
   /** Runs argv without a shell; resolves stdout. Defaults to child_process.execFile. */
-  exec?: (argv: readonly [string, ...string[]], timeoutMs: number) => Promise<string>;
+  exec?: (
+    argv: readonly [string, ...string[]],
+    timeoutMs: number,
+    opts?: { acceptNonZeroExit?: boolean },
+  ) => Promise<string>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
 
-function defaultExec(argv: readonly [string, ...string[]], timeoutMs: number): Promise<string> {
+export function defaultExec(
+  argv: readonly [string, ...string[]],
+  timeoutMs: number,
+  opts: { acceptNonZeroExit?: boolean } = {},
+): Promise<string> {
   const [file, ...args] = argv;
   return new Promise((resolve, reject) => {
     execFile(file, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024, shell: false }, (error, stdout) => {
-      if (error) reject(error);
+      // A numeric code is a normal non-zero exit; a timeout kill carries a signal and still fails.
+      const exitedNonZero = typeof (error as { code?: unknown } | null)?.code === 'number';
+      if (error && !(opts.acceptNonZeroExit && exitedNonZero && String(stdout).length > 0)) reject(error);
       else resolve(String(stdout));
     });
   });
@@ -562,7 +590,9 @@ export async function runInstrument(key: string, deps: InstrumentRunDeps = {}): 
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const base = { key: instrument.key, unit: instrument.unit, argv: instrument.argv };
   const sampleOnce = async (): Promise<{ value: number | null; at: number; stdout: string }> => {
-    const stdout = await exec(instrument.argv, instrument.timeoutMs);
+    const stdout = instrument.acceptNonZeroExit
+      ? await exec(instrument.argv, instrument.timeoutMs, { acceptNonZeroExit: true })
+      : await exec(instrument.argv, instrument.timeoutMs);
     const at = now();
     return { value: instrument.parse(stdout, { now: at }), at, stdout };
   };
