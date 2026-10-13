@@ -4,7 +4,7 @@
  *   capture trigger → git_export_outbox → drainer → .papercusp/state/<…> file,
  * the echo-loop guard (remote-origin writes skipped), and DELETE → file removal.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -210,6 +210,54 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
       expect(await db.sql`
         SELECT content, updated_at FROM harness_shared.harness_text_artifacts
          WHERE harness_slug = ${SLUG} AND rel_path = ${key}`).toEqual([{ content, updated_at }]);
+    }
+  });
+
+  it('a skipped stale artifact remains a valid file when another hydrate file is malformed', async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), 'git-artifact-partial-'));
+    const partialSlug = 'partial-artifacts';
+    const key = 'audits/partial.json';
+    try {
+    await db.sql`
+      INSERT INTO harness_shared.harness_text_artifacts
+        (workspace_id, harness_slug, rel_path, content, updated_at)
+      VALUES (${WS}, ${partialSlug}, ${key}, 'new evidence', 200)`;
+    const good = join(artifactRoot, gitFilePath('harness_text_artifacts', key));
+    await mkdir(dirname(good), { recursive: true });
+    await writeFile(good, serializeRow('harness_text_artifacts', {
+      rel_path: key, content: 'old evidence', updated_at: 100,
+    }), 'utf8');
+    const malformed = serializeRow('harness_text_artifacts', {
+      rel_path: 'audits/bad.json', content: 'bad file', unexpected_column: true,
+    });
+    await writeFile(join(artifactRoot, gitFilePath('harness_text_artifacts', 'audits/bad.json')), malformed, 'utf8');
+    const opts = {
+      sql: db.sql, harnessRoot: artifactRoot, table: 'harness_text_artifacts',
+      conflictCols: ['harness_slug', 'rel_path'], workspaceId: WS, harnessSlug: partialSlug,
+    };
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(hydrateGitTable(opts)).resolves.toBe(0);
+      expect(warning).toHaveBeenCalledOnce();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('skipped 1 of 2 file(s), loaded 0'));
+    } finally {
+      warning.mockRestore();
+    }
+    expect(await db.sql`
+      SELECT content, updated_at FROM harness_shared.harness_text_artifacts
+       WHERE harness_slug = ${partialSlug} AND rel_path = ${key}`).toEqual([{ content: 'new evidence', updated_at: 200 }]);
+
+    const badRoot = await mkdtemp(join(tmpdir(), 'git-artifact-invalid-'));
+    const bad = join(badRoot, gitFilePath('harness_text_artifacts', 'audits/bad.json'));
+    await mkdir(dirname(bad), { recursive: true });
+    await writeFile(bad, malformed, 'utf8');
+    await expect(hydrateGitTable({ ...opts, harnessRoot: badRoot })).rejects.toThrow(/unknown column/);
+    } finally {
+      // This test intentionally leaves an export pending. Keep that fixture
+      // out of both subsequent export counts and the orphan-GC population.
+      await db.sql`
+        DELETE FROM harness_shared.git_export_outbox
+         WHERE workspace_id = ${WS} AND harness_slug = ${partialSlug}`;
     }
   });
 

@@ -77,6 +77,7 @@ export async function hydrateGitTable(opts: HydrateGitTableOpts): Promise<number
   }
 
   let n = 0;
+  let validFiles = 0;
   // EI-19900345996596896: a single unusable file must NOT cost this harness its
   // git-export drain loop. The caller (bootGitExportForHarness) hydrates every table
   // BEFORE calling startGitExportDrain, and catches per HARNESS — so a throw from one
@@ -136,6 +137,7 @@ export async function hydrateGitTable(opts: HydrateGitTableOpts): Promise<number
           params as never[],
         );
         n += applied.length;
+        validFiles += 1;
       } catch (e) {
         if (firstError === null) firstError = e;
         failures.push({ file: f, message: e instanceof Error ? e.message : String(e) });
@@ -148,7 +150,8 @@ export async function hydrateGitTable(opts: HydrateGitTableOpts): Promise<number
     // EVERY file failed ⇒ the cause is systemic (schema drift, dead connection,
     // wholesale corruption), not one bad document. Surface that as a boot failure
     // rather than reporting a silent, empty success.
-    if (n === 0) throw firstError instanceof Error ? firstError : new Error(String(firstError));
+    // A valid stale revision is intentionally skipped, not a failed file.
+    if (validFiles === 0) throw firstError instanceof Error ? firstError : new Error(String(firstError));
     console.warn(
       `[git-export] hydrate ${table}: skipped ${failures.length} of ${files.length} file(s), ` +
         `loaded ${n} — ` +
