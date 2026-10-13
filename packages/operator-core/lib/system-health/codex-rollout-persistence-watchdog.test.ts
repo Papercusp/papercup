@@ -232,6 +232,19 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
     expect(lifecycleMocks.endSession).not.toHaveBeenCalled();
   });
 
+  it('does not re-alarm on a provider failure streak whose latest terminal is stale', async () => {
+    const staleAt = new Date(now - 3 * 60 * 60_000).toISOString();
+    await writeFile(rollout, [
+      providerTaskCompleteLine('old-1', 'usageLimitExceeded', 'quota exceeded', staleAt),
+      providerTaskCompleteLine('old-2', 'usageLimitExceeded', 'quota exceeded', staleAt),
+      providerTaskCompleteLine('old-3', 'usageLimitExceeded', 'quota exceeded', staleAt),
+    ].join('\n') + '\n');
+    await setTimes(now, now);
+    const result = await pass();
+    expect(result.providerFailureSessionIds).toEqual([]);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
   it('does not retire legacy markers after failed resolution', async () => {
     remember(); await success(); resolve.mockResolvedValue(false);
     await pass(); expect(resolve).toHaveBeenCalledTimes(2); expect(updates).toEqual([]);
@@ -244,17 +257,27 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
   });
 });
 
-function providerErrorLine(turn: string, code = 'usageLimitExceeded', message = 'provider failed'): string {
+function providerErrorLine(
+  turn: string,
+  code = 'usageLimitExceeded',
+  message = 'provider failed',
+  timestamp = new Date().toISOString(),
+): string {
   return JSON.stringify({
-    timestamp: `2026-08-27T00:00:0${turn}Z`,
+    timestamp,
     type: 'event_msg',
     payload: { type: 'error', codex_error_info: code, message, turn_id: turn },
   });
 }
 
-function providerTaskCompleteLine(turn: string, code = 'usageLimitExceeded', message = 'provider failed'): string {
+function providerTaskCompleteLine(
+  turn: string,
+  code = 'usageLimitExceeded',
+  message = 'provider failed',
+  timestamp = new Date().toISOString(),
+): string {
   return JSON.stringify({
-    timestamp: `2026-08-27T00:00:1${turn}Z`,
+    timestamp,
     type: 'event_msg',
     payload: {
       type: 'task_complete',
@@ -380,6 +403,7 @@ describe('checkCodexRolloutPersistence provider preservation', () => {
       'utf8',
     );
     const queries: string[] = [];
+    let escalationClaimed = false;
     const sql = (async (strings: TemplateStringsArray): Promise<unknown[]> => {
       const query = strings.join('');
       queries.push(query);
@@ -387,18 +411,35 @@ describe('checkCodexRolloutPersistence provider preservation', () => {
         return [{ id: 42, owner_id: 'owner-42', pid: 123, workspace_id: 'workspace-1' }];
       }
       if (query.includes('INSERT INTO harness_shared.harness_escalations')) {
-        return [{ phase: 'codex-provider-failure:42' }];
+        if (!escalationClaimed) {
+          escalationClaimed = true;
+          return [{ phase: 'codex-provider-failure:42' }];
+        }
+        return [];
       }
       return [];
     }) as unknown;
 
     try {
-      const result = await checkCodexRolloutPersistence(sql as never, { pidAlive: () => true });
+      const providerConditionKey = codexRolloutConditionKey('provider', 'workspace-1', '42', 'owner-42');
+      let providerConditionOpen = false;
+      const opts: CodexRolloutPersistenceWatchdogOptions = {
+        pidAlive: () => true,
+        readOpenConditions: async () => providerConditionOpen
+          ? [{ conditionKey: providerConditionKey, openedAtMs: Date.now() - 1000 }]
+          : [],
+      };
+      const result = await checkCodexRolloutPersistence(sql as never, opts);
+      providerConditionOpen = true;
+      const repeated = await checkCodexRolloutPersistence(sql as never, opts);
       expect(result.providerFailureSessionIds).toEqual(['42']);
       expect(result.providerAlarmed).toEqual(['42']);
       expect(result.providerPreservedSessionIds).toEqual(['42']);
       expect(result.providerEndedSessionIds).toEqual([]);
       expect(result.providerCleanupFailed).toEqual([]);
+      expect(repeated.providerFailureSessionIds).toEqual(['42']);
+      expect(repeated.providerAlarmed).toEqual([]);
+      expect(lifecycleMocks.broadcast).toHaveBeenCalledTimes(1);
       expect(lifecycleMocks.endSession).not.toHaveBeenCalled();
       expect(lifecycleMocks.cancelInboxWake).not.toHaveBeenCalled();
       expect(lifecycleMocks.cancelClaimable).not.toHaveBeenCalled();
@@ -406,7 +447,7 @@ describe('checkCodexRolloutPersistence provider preservation', () => {
       expect(lifecycleMocks.releaseWorkItems).not.toHaveBeenCalled();
       expect(lifecycleMocks.notifyAttention).toHaveBeenCalledTimes(1);
       expect(warnSpy).toHaveBeenCalledWith('[codex-rollout-watchdog] PROVIDER ALARM: owner-42 (session 42)');
-      expect(queries.filter((query) => query.includes('INSERT INTO harness_shared.harness_escalations'))).toHaveLength(1);
+      expect(queries.filter((query) => query.includes('INSERT INTO harness_shared.harness_escalations'))).toHaveLength(2);
     } finally {
       if (previousHome === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
       else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = previousHome;
