@@ -24296,6 +24296,34 @@ mod tests {
         }
     }
 
+    /// consult-backed-parking-2026-10-12 P-012 (R-11/R-25): every backend's
+    /// ended session reopens through `psu --resume <id>` in its own cwd, and the
+    /// pane is HELD on exit (no `close_on_exit`), so a psu resume refusal stays
+    /// readable in the pane instead of vanishing with it.
+    #[test]
+    fn resume_spec_reopens_every_backend_and_holds_the_pane_on_exit() {
+        let a = App::new();
+        for agent in ["claude", "codex", "omp"] {
+            let spec = a
+                .resume_spec(&ended_resumable_entry(agent))
+                .unwrap_or_else(|| panic!("{agent}: expected a resume spec"));
+            assert_eq!(spec.argv, vec!["psu", "--resume", "42"], "{agent}");
+            assert_eq!(spec.cwd.as_deref(), Some("/repo"), "{agent}");
+            assert_eq!(spec.title.as_deref(), Some(format!("resume · {agent}").as_str()));
+            assert!(!spec.close_on_exit, "{agent}: a refusal must stay visible");
+            match a.resolve_agent_route(&ended_resumable_entry(agent)) {
+                AgentRoute::Resume { spec: routed } => {
+                    assert_eq!(routed.argv, spec.argv, "{agent}");
+                }
+                other => panic!("{agent}: expected Resume, got {other:?}"),
+            }
+        }
+        // No launch record → nothing to resume.
+        let mut bare = ended_resumable_entry("omp");
+        bare.adv_session_id = None;
+        assert!(a.resume_spec(&bare).is_none());
+    }
+
     #[test]
     fn route_menu_when_dead_and_not_resumable() {
         let a = App::new();
