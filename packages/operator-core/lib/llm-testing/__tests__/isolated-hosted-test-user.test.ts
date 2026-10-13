@@ -77,7 +77,7 @@ function assertExited(pid: number) {
 describe('isolated retained hosted TEST admission', () => {
   it('keeps an incompatible parent registry intact and preflights candidate imports before account creation', async () => {
     const parent: ProjectedTool = { pluginName: 'fixture', description: 'parent version', inputSchema: { type: 'object' },
-      capabilities: [], expose: { mcp: { name: 'goals:create' } }, fn: async () => ({}) };
+      capabilities: [], expose: { mcp: { name: 'goals:create' } }, fn: async () => ({ content: [] }) };
     registerProjectedTool(parent);
     expect(() => registerProjectedTool({ ...parent, description: 'candidate version',
       inputSchema: { type: 'object', properties: { candidate: { type: 'string' } } } })).toThrow(/MCP tool name.*registered twice/);
@@ -97,7 +97,7 @@ describe('isolated retained hosted TEST admission', () => {
   it('imports the actual candidate observability and admission closure without registering candidate tools in the parent', async () => {
     const parent: ProjectedTool = { pluginName: 'legacy', description: 'incompatible parent goals',
       inputSchema: { type: 'object', properties: { parentOnly: { type: 'boolean' } } }, capabilities: [],
-      expose: { mcp: { name: 'goals:create' } }, fn: async () => ({}) };
+      expose: { mcp: { name: 'goals:create' } }, fn: async () => ({ content: [] }) };
     registerProjectedTool(parent);
     const f = fixture({ actualCore: true });
     const kit = await loadIsolatedHostedTestUserKit({ portalRoot: f.root, environment: f.environment });

@@ -56,17 +56,14 @@ import { listMcpProjections } from '@papercusp/agent-mcp';
 import { normalizeSuContextSize } from './su-context-size.mjs';
 
 /**
- * The response-payload tier (`?ctx_tier=`) every MCP URL this module builds asks for. The MCP
- * host reads it as the session's default `payloadTier`; with no tier a call resolves to the
- * unshaped 'full' payload (resolvePayloadTier: callTier ?? ctxTier ?? 'full').
- *
- * The rule is the one psu-launcher's contextTrimmingEnv records: TRIMMED for every launch,
- * every agent [owner 2026-08-10]. Before WI-6554700010009993 only Claude psu sessions got it
- * (their user-level URL env-expands PAPERCUSP_CONTEXT_TIER). Codex su homes and role-scoped
- * spawns such as judges take their URL from here and sent no tier. Measured 2026-10-13 over 3h:
- * 46K untiered su calls (594MB) and 2.9K untiered judge calls, versus 8.5K tiered su calls.
+ * The response-payload tier (`?ctx_tier=`) every MCP URL this module builds asks for. Single
+ * source: `@papercusp/orchestrator/agent-session-context-tier`, shared with the orchestrator's
+ * spawn-mcp.ts builders (WI-6554700010010138). Before WI-6554700010009993 only Claude psu
+ * sessions got a tier (their user-level URL env-expands PAPERCUSP_CONTEXT_TIER); Codex su homes
+ * and role-scoped spawns such as judges take their URL from here and sent none.
  */
-export const AGENT_SESSION_CONTEXT_TIER = 'trimmed' as const;
+import { AGENT_SESSION_CONTEXT_TIER } from '@papercusp/orchestrator/agent-session-context-tier';
+export { AGENT_SESSION_CONTEXT_TIER };
 
 /**
  * gui-chat-session-controls-2026-07-25 P-010: chat:ask_choice UNCONDITIONALLY
