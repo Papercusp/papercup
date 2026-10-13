@@ -3433,24 +3433,125 @@ async function syncAgentChats(sql: Sql, budget: { turns: number }): Promise<numb
 /* Retention                                                            */
 /* ------------------------------------------------------------------ */
 
+/** Rows per retention DELETE statement. Each statement stays short, so the
+ * daily tick never holds one long lock over the bulkiest tables. */
+const PRUNE_BATCH_ROWS = 5000;
+/** Wall-clock budget per table per tick. This REPLACES a fixed 40-batch
+ * ceiling (40 x 5000 = 200k rows/run): session_turn_parts takes ~470k rows/day
+ * (sampled 2026-10-13, ingest days 10-01..10-12), so that ceiling deleted
+ * exactly 200k every day and the 14-day window was never reached — 1.37M rows
+ * past it accumulated while the workflow reported SUCCESS (WI-6554700010009718).
+ * A budget bounds the tick's duration without bounding its throughput below
+ * the inflow. */
+const PRUNE_TABLE_BUDGET_MS = 10 * 60_000;
+
+/** What one table's prune did. `exhausted` = the budget ran out while batches
+ * were still full, i.e. rows past the window REMAIN — the signal a capped
+ * prune never gave. */
+export interface PruneTableReport {
+  deleted: number;
+  batches: number;
+  exhausted: boolean;
+}
+
+/** One table's two-pass prune. `tailDeleted` = rows only the exact,
+ * seq-scanning tail pass removed. It is normally the handful ingested late; a
+ * large value means the indexed bulk pass stopped short and the slow pass did
+ * its work. */
+export interface PrunePassesReport extends PruneTableReport {
+  tailDeleted: number;
+}
+
+export interface SessionTurnsPruneReport {
+  deleted: number;
+  partsDeleted: number;
+  turns: PrunePassesReport;
+  parts: PrunePassesReport;
+}
+
+export interface PruneSessionTurnsOptions {
+  batchRows?: number;
+  budgetMs?: number;
+  now?: () => number;
+}
+
+/** Run `deleteBatch` until a short batch proves nothing is left, or the
+ * deadline passes. Never stops on an iteration count. */
+export async function drainInBatches(
+  deleteBatch: (limit: number) => Promise<number>,
+  opts: { batchRows: number; deadline: number; now: () => number },
+): Promise<PruneTableReport> {
+  let deleted = 0;
+  let batches = 0;
+  for (;;) {
+    if (opts.now() >= opts.deadline) return { deleted, batches, exhausted: true };
+    const n = await deleteBatch(opts.batchRows);
+    deleted += n;
+    batches += 1;
+    if (n < opts.batchRows) return { deleted, batches, exhausted: false };
+  }
+}
+
+/** Two passes against one table, sharing one deadline:
+ *  1. BULK, through the table's `ingested_at` btree. `COALESCE(ts, ingested_at)`
+ *     cannot use an index, so the old single pass seq-scanned for every batch
+ *     (measured 2026-10-13: 1,219 ms per 5,000-row candidate scan on
+ *     session_turn_parts, 17 s mean on session_turns; the indexed form is 15 ms
+ *     and 42 ms). The exact predicate is kept as a filter, so this pass only
+ *     ever deletes rows the contract says are expired.
+ *  2. TAIL, the exact predicate alone: rows ingested recently whose own `ts`
+ *     is already past the window (2,338 of 1.37M when measured). One seq scan,
+ *     normally a single short batch. Together the passes delete exactly
+ *     `COALESCE(ts, ingested_at) < now() - window`. */
+async function prunePastWindow(
+  bulk: (limit: number) => Promise<number>,
+  tail: (limit: number) => Promise<number>,
+  opts: { batchRows: number; budgetMs: number; now: () => number },
+): Promise<PrunePassesReport> {
+  const deadline = opts.now() + opts.budgetMs;
+  const first = await drainInBatches(bulk, { ...opts, deadline });
+  if (first.exhausted) return { ...first, tailDeleted: 0 };
+  const second = await drainInBatches(tail, { ...opts, deadline });
+  return {
+    deleted: first.deleted + second.deleted,
+    batches: first.batches + second.batches,
+    exhausted: second.exhausted,
+    tailDeleted: second.deleted,
+  };
+}
+
 /** Batched retention prune — the index stays bounded; the JSONL stays the
  * archive. Called from the daily retention tick (periodic-workflows.ts). */
-export async function pruneSessionTurnsOnce(): Promise<{ deleted: number; partsDeleted: number }> {
+export async function pruneSessionTurnsOnce(
+  options: PruneSessionTurnsOptions = {},
+): Promise<SessionTurnsPruneReport> {
   const { sql } = getOrgPg();
-  let deleted = 0;
-  let partsDeleted = 0;
-  for (let i = 0; i < 40; i += 1) {
-    const r = await sql`
+  const opts = {
+    batchRows: options.batchRows ?? PRUNE_BATCH_ROWS,
+    budgetMs: options.budgetMs ?? PRUNE_TABLE_BUDGET_MS,
+    now: options.now ?? Date.now,
+  };
+  const turns = await prunePastWindow(
+    async (limit) => (await sql`
+      DELETE FROM harness_shared.session_turns
+       WHERE ctid IN (
+         SELECT ctid FROM harness_shared.session_turns
+          WHERE ingested_at < now() - make_interval(days => ${RETENTION_DAYS})
+            AND COALESCE(ts, ingested_at) < now() - make_interval(days => ${RETENTION_DAYS})
+          ORDER BY ingested_at
+          LIMIT ${limit}
+       )
+    `).count ?? 0,
+    async (limit) => (await sql`
       DELETE FROM harness_shared.session_turns
        WHERE ctid IN (
          SELECT ctid FROM harness_shared.session_turns
           WHERE COALESCE(ts, ingested_at) < now() - make_interval(days => ${RETENTION_DAYS})
-          LIMIT 5000
+          LIMIT ${limit}
        )
-    `;
-    deleted += r.count ?? 0;
-    if ((r.count ?? 0) < 5000) break;
-  }
+    `).count ?? 0,
+    opts,
+  );
   // Bookkeeping rows for files idle past the window are dead weight.
   await sql`
     DELETE FROM harness_shared.session_ingest_state
@@ -3470,20 +3571,30 @@ export async function pruneSessionTurnsOnce(): Promise<{ deleted: number; partsD
   // this window the pane degrades to text turns, then to session_archives —
   // each tier strictly cheaper and lossier, and none of them a dead click.
   // Batched exactly like the turns prune above: one unbounded DELETE over the
-  // bulkiest table in the corpus is a long lock on the daily tick.
-  for (let i = 0; i < 40; i += 1) {
-    const r = await sql`
+  // bulkiest table in the corpus is a long lock on the daily tick. Its own
+  // budget, so a slow session_turns pass can never starve this one.
+  const parts = await prunePastWindow(
+    async (limit) => (await sql`
+      DELETE FROM harness_shared.session_turn_parts
+       WHERE ctid IN (
+         SELECT ctid FROM harness_shared.session_turn_parts
+          WHERE ingested_at < now() - make_interval(days => ${PART_RETENTION_DAYS})
+            AND COALESCE(ts, ingested_at) < now() - make_interval(days => ${PART_RETENTION_DAYS})
+          ORDER BY ingested_at
+          LIMIT ${limit}
+       )
+    `).count ?? 0,
+    async (limit) => (await sql`
       DELETE FROM harness_shared.session_turn_parts
        WHERE ctid IN (
          SELECT ctid FROM harness_shared.session_turn_parts
           WHERE COALESCE(ts, ingested_at) < now() - make_interval(days => ${PART_RETENTION_DAYS})
-          LIMIT 5000
+          LIMIT ${limit}
        )
-    `;
-    partsDeleted += r.count ?? 0;
-    if ((r.count ?? 0) < 5000) break;
-  }
-  return { deleted, partsDeleted };
+    `).count ?? 0,
+    opts,
+  );
+  return { deleted: turns.deleted, partsDeleted: parts.deleted, turns, parts };
 }
 
 /* ------------------------------------------------------------------ */

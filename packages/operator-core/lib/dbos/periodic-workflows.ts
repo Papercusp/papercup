@@ -1887,17 +1887,35 @@ DBOS.registerScheduled(turnProvenanceBackfillWorkflow, {
 
 // Daily 05:20 (after the 03:00–05:00 GC cluster): session_turns retention prune —
 // the index stays bounded (~45d window); the JSONL files remain the archive.
+//
+// The step RETURNS its report, so every run's outcome is durable in
+// dbos.operation_outputs (function_name 'session-turns-prune'). It used to return
+// nothing and log only when it deleted something: a run that hit its cap, or that
+// failed and was swallowed here, left the same SUCCESS row and no output, and the
+// next day's journal could not show which (WI-6554700010009718). An error stays
+// non-fatal, but is now recorded in the output instead of vanishing.
 async function sessionTurnsPruneTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
       try {
         const { pruneSessionTurnsOnce } = await import('../search/session-ingest');
         const r = await pruneSessionTurnsOnce();
-        if (r.deleted > 0 || r.partsDeleted > 0) {
-          console.log(`[session-turns-prune] pruned ${r.deleted} indexed turn(s), ${r.partsDeleted} faithful part(s)`);
+        const line =
+          `[session-turns-prune] pruned ${r.deleted} indexed turn(s) in ${r.turns.batches} batch(es), ` +
+          `${r.partsDeleted} faithful part(s) in ${r.parts.batches} batch(es)`;
+        if (r.turns.exhausted || r.parts.exhausted) {
+          console.warn(
+            `${line} — BUDGET EXHAUSTED with rows still past the window ` +
+              `(turns=${r.turns.exhausted}, parts=${r.parts.exhausted}); the next run continues`,
+          );
+        } else {
+          console.log(line);
         }
+        return { ok: true as const, ...r };
       } catch (err) {
-        console.warn(`[session-turns-prune] run skipped (non-fatal): ${(err as Error).message}`);
+        const error = (err as Error).message;
+        console.warn(`[session-turns-prune] run skipped (non-fatal): ${error}`);
+        return { ok: false as const, error };
       }
     },
     { name: 'session-turns-prune' },
