@@ -37,6 +37,7 @@ import { stagingFirstBlockerProblem } from '../plans/staging-first-activation-gu
 import { pureWorkItemDependencyReferents, workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
 import { linkWorkItemRefDependencies } from './work-item-ref-blocker-edges';
 import { workItemRefDependencyRefusal } from './work-item-ref-dependency-refusal';
+import { OWNER_AUTHORITY_TOPICS, type OwnerAuthorityTopic } from '../../consult/decision-review';
 
 // Older callers used the missing capability as `kind` (for example,
 // `kind:'credential'`). Keep accepting those inputs at the tool boundary, but
@@ -69,6 +70,8 @@ type BlockerInput = {
   defaultIfUnanswered?: string;
   decideBy?: string;
   defaultAction?: OwnerAskDefaultAction;
+  /** consult-backed-parking R-14: a product-decision park on an owner-authority topic. */
+  ownerAuthorityTopic?: OwnerAuthorityTopic;
   clear?: boolean;
   harness?: string;
   migrateWorkItemRefs?: boolean;
@@ -123,6 +126,10 @@ const fields = {
     .describe(
       "Typed, machine-executable form of defaultIfUnanswered, applied ONCE by the reaper after decideBy passes with no owner answer. stay_parked: ask stays active, item stays parked. release_to_agents: ask cleared, item returns to the claimable pool. Needs decideBy; the free-text default is never parsed.",
     ),
+  ownerAuthorityTopic: z
+    .enum(OWNER_AUTHORITY_TOPICS)
+    .optional()
+    .describe('product-decision parks only: the owner-authority topic. Such a park never resolves to proceed without the owner.'),
   clear: z.boolean().optional(),
   harness: z.string().max(80).optional(),
   migrateWorkItemRefs: z
@@ -365,6 +372,7 @@ export default defineTool({
       defaultIfUnanswered: z.string().max(500).optional(),
       decideBy: z.string().max(40).optional(),
       defaultAction: fields.defaultAction,
+      ownerAuthorityTopic: fields.ownerAuthorityTopic,
       clear: z.boolean().optional(),
       harness: z.string().max(80).optional(),
       migrateWorkItemRefs: fields.migrateWorkItemRefs,
@@ -426,6 +434,7 @@ export default defineTool({
       activeBlockers: z.array(z.unknown()).optional(),
       capabilityDispositions: z.unknown().optional(),
       lifecycle: z.unknown().optional(),
+      park: z.unknown().optional(),
       error: z.string().optional(),
     })
     .passthrough(),
@@ -446,6 +455,7 @@ export default defineTool({
             defaultIfUnanswered: args.defaultIfUnanswered,
             decideBy: args.decideBy,
             defaultAction: args.defaultAction,
+            ownerAuthorityTopic: args.ownerAuthorityTopic,
             clear: args.clear,
             harness: args.harness,
             migrateWorkItemRefs: args.migrateWorkItemRefs,
@@ -621,13 +631,50 @@ export default defineTool({
           }
         }
 
+        // consult-backed-parking-2026-10-12 P-005 (R-3, R-13, R-14): a NEW product-decision
+        // blocker is a park. It opens a decision-review consult, and the stored blocker ref
+        // becomes consult:<id>. Re-asserting an active park (ref already consult:<id>) skips this.
+        let parkOpened: import('../../consult/park-door').ParkOpened | null = null;
+        if (!input.clear && input.kind === 'human' && input.capability === 'product-decision') {
+          const parkDoor = await import('../../consult/park-door');
+          const activeRefs = activeExternalBlockers(workItem.payload).map((blocker) => blocker.ref);
+          if (!parkDoor.isParkReassertion(input.ref, activeRefs)) {
+            if (input.defaultAction !== undefined) {
+              return {
+                ok: false as const,
+                id: input.id,
+                code: 'park_default_action_unsupported',
+                error:
+                  `work_item '${input.id}' product-decision park rejected — \`defaultAction\` belongs to owner asks; ` +
+                  'a park resolves through its decision-review consult. Omit defaultAction. Blocker was not written.',
+              };
+            }
+            const park = await parkDoor.openDecisionReviewPark(
+              {
+                workItemId: input.id,
+                setterId: identity.ownerId,
+                question: input.summary?.trim() || input.ref || input.id,
+                defaultIfUnanswered: input.defaultIfUnanswered,
+                decideBy: input.decideBy,
+                ownerAuthorityTopic: input.ownerAuthorityTopic ?? null,
+                callerRef: input.ref,
+              },
+              parkDoor.makeProdParkDoorDeps(identity),
+            );
+            if (!park.ok) {
+              return { ok: false as const, id: input.id, code: park.code, error: `work_item '${input.id}' ${park.error}` };
+            }
+            parkOpened = park.park;
+          }
+        }
+
         // A clear-only request may omit kind when the ref points to exactly one
         // active blocker. Keep the (kind, ref) identity strict when a ref is
         // reused across different blocker kinds, rather than clearing the wrong
         // dependency. The schema already rejects kind-less set requests; this
         // guard is defensive for callers that bypass parsing.
         let resolvedKind = input.kind;
-        let resolvedRef = input.ref;
+        let resolvedRef = parkOpened ? parkOpened.blockerRef : input.ref;
         if (input.clear && !resolvedRef) {
           const active = activeExternalBlockers(workItem.payload);
           const candidates = resolvedKind ? active.filter((blocker) => blocker.kind === resolvedKind) : active;
@@ -707,11 +754,11 @@ export default defineTool({
             capability: input.capability,
             ref: resolvedRef,
             summary: input.summary,
-            evidence: input.evidence,
+            evidence: parkOpened ? [input.evidence, parkOpened.evidence].filter(Boolean).join('\n') : input.evidence,
             nextVerb: input.nextVerb,
             recheckAt: input.recheckAt,
             defaultIfUnanswered: input.defaultIfUnanswered,
-            decideBy: input.decideBy,
+            decideBy: parkOpened ? parkOpened.deadlineAt : input.decideBy,
             defaultAction: input.defaultAction,
             clear: input.clear,
           },
@@ -876,6 +923,7 @@ export default defineTool({
           ),
           autoCleared: history.autoCleared,
           lifecycle,
+          ...(parkOpened ? { park: parkOpened } : {}),
           ...(resolvedKind === 'event' && !input.clear && !history.autoCleared ? { await: { event: resolvedRef } } : {}),
         };
       },
