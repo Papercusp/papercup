@@ -7,7 +7,8 @@ export function allCapabilities(toggle: 'on' | 'off'): ArmControl['capabilities'
 
 /**
  * One solver frozen across every topology: the stock-native reference, solo,
- * independent, coordinated, a coordinated single-capability ablation and an ensemble.
+ * independent, coordinated, a coordinated single-capability ablation, an ensemble
+ * and a fresh-session baseline paired to the coordinated treatment.
  */
 export function controlledProtocolFixture(): CurrentBenchmarkProtocol {
   const protocol = currentProtocolFixture();
@@ -24,6 +25,8 @@ export function controlledProtocolFixture(): CurrentBenchmarkProtocol {
     arm('ensemble', { topology: 'ensemble', ...shared, capabilities: allCapabilities('on'), ensemble: {
       candidates: 3, isolation: 'independent',
       selector: { id: 'fixture-judge', kind: 'judge-agent', charged: true, onUnavailable: 'first-candidate' } } }),
+    arm('repeated-session', { topology: 'repeated-session', ...shared, capabilities: allCapabilities('off'), repeatedSession: {
+      matchedCostOf: 'coordinated', maxSessions: 4, workspace: 'same-task', sessionContext: 'fresh-native', submission: 'last-session' } }),
   ];
   return protocol;
 }

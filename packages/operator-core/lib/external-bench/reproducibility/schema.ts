@@ -58,7 +58,7 @@ const capabilityToggles = z.object(Object.fromEntries(
 ) as Record<BenchmarkCapability, typeof capabilityToggle>).strict();
 
 /** stock-native-reference = the unmodified agent CLI; the others hold the solver fixed and vary coordination. */
-export const ARM_TOPOLOGIES = ['stock-native-reference', 'solo', 'independent', 'coordinated', 'ensemble'] as const;
+export const ARM_TOPOLOGIES = ['stock-native-reference', 'solo', 'independent', 'coordinated', 'ensemble', 'repeated-session'] as const;
 export type ArmTopology = typeof ARM_TOPOLOGIES[number];
 
 const armControl = z.object({
@@ -80,6 +80,14 @@ const armControl = z.object({
       charged: z.literal(true),
       onUnavailable: z.literal('first-candidate'),
     }).strict(),
+  }).strict().optional(),
+  /** Fresh native sessions continue one workspace; no candidate selection or conversational carry. */
+  repeatedSession: z.object({
+    matchedCostOf: pin,
+    maxSessions: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    workspace: z.literal('same-task'),
+    sessionContext: z.literal('fresh-native'),
+    submission: z.literal('last-session'),
   }).strict().optional(),
 }).strict();
 export type ArmControl = z.infer<typeof armControl>;
@@ -129,6 +137,21 @@ function armControlIssues(arms: ReadonlyArray<ProtocolArm>): Array<{ path: (stri
     if ((control.topology === 'ensemble') !== (control.ensemble !== undefined)) {
       issues.push({ path, message: 'An ensemble block is required exactly when the topology is ensemble.' });
     }
+    if ((control.topology === 'repeated-session') !== (control.repeatedSession !== undefined)) {
+      issues.push({ path, message: 'A repeatedSession block is required exactly when the topology is repeated-session.' });
+    }
+    if (control.topology === 'repeated-session') {
+      if (Object.values(control.capabilities).some(toggle => toggle !== 'off')) {
+        issues.push({ path, message: 'The stock repeated-session baseline runs with every product capability off.' });
+      }
+      if (control.ablation) issues.push({ path, message: 'The repeated-session baseline is not an ablation.' });
+      const treatment = control.repeatedSession && byId.get(control.repeatedSession.matchedCostOf);
+      if (!treatment || treatment === arm || !treatment.control || treatment.control.ablation ||
+          ['repeated-session', 'stock-native-reference'].includes(treatment.control.topology) ||
+          treatment.control.solverGroup !== control.solverGroup) {
+        issues.push({ path, message: 'A repeated-session baseline must match an existing distinct full treatment arm in the same solver group.' });
+      }
+    }
     if (control.topology === 'stock-native-reference') {
       if (Object.values(control.capabilities).some(toggle => toggle !== 'off')) {
         issues.push({ path, message: 'The stock-native reference runs with every product capability off.' });
@@ -153,15 +176,14 @@ function armControlIssues(arms: ReadonlyArray<ProtocolArm>): Array<{ path: (stri
         baseControl.capabilities[treatment] !== 'on' || control.capabilities[treatment] !== 'off') {
       issues.push({ path, message: `An ablation must switch off exactly ${treatment} relative to its control.` });
     }
-    // R-14 (benchmark-coverage-frontierswe-v2-2026-10-10#D-022): a capability lift is only claimable against a
-    // matched-cost repeated-session baseline. That is an independent ensemble of the SAME solver (one solver
-    // group freezes the per-assignment generationBudget, so cost is matched by construction). It must be a
-    // full arm distinct from the ablation's own control; a control cannot strictly beat itself.
+    // R-14 / D-037: equal frozen ceilings alone do not match cumulative actual spend.
+    // Require the fresh-session, same-workspace control paired to this exact full treatment;
+    // an independent ensemble with candidate selection is a separate experiment.
     const hasBaseline = arms.some(candidate => candidate !== base && candidate !== arm &&
       candidate.control!.solverGroup === control.solverGroup && !candidate.control!.ablation &&
-      candidate.control!.topology === 'ensemble' && candidate.control!.ensemble?.isolation === 'independent');
+      candidate.control!.topology === 'repeated-session' && candidate.control!.repeatedSession?.matchedCostOf === base.id);
     if (!hasBaseline) {
-      issues.push({ path, message: `An ablation needs a repeated-session baseline: an independent ensemble arm in solver group ${control.solverGroup}, distinct from its control.` });
+      issues.push({ path, message: `An ablation needs a repeated-session baseline in solver group ${control.solverGroup}, matched to its full control ${base.id}.` });
     }
   });
   return issues;

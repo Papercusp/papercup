@@ -26,10 +26,10 @@ const launch = (protocol: Protocol, armId: string, topology?: string) => require
   runId: 'run-1', armId, taskId: 't1', seed: 1, agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto',
   budget: { maxUsd: 3, maxWallClockMs: 100 }, topology: topology as never,
 });
-const SAME_SOLVER_TOPOLOGIES = ['solo', 'independent', 'coordinated', 'ensemble'] as const;
+const SAME_SOLVER_TOPOLOGIES = ['solo', 'independent', 'coordinated', 'ensemble', 'repeated-session'] as const;
 
 describe('AUTO-BAR-R-4-P-004: controlled arms freeze one solver across every topology', () => {
-  it('accepts the stock-native reference, solo, independent, coordinated, an ablation and an ensemble together', () => {
+  it('accepts the stock reference, solver topologies, an ablation and a sequential fresh-session baseline together', () => {
     const protocol = controlledProtocolFixture();
     expect(issuesOf(protocol)).toEqual([]);
     expect(requireSameSolverComparison(protocol, [...SAME_SOLVER_TOPOLOGIES])).toBe('fixture-solver');
@@ -89,7 +89,7 @@ describe('BM-P-004-equal-solver: one mismatched solver field breaks the same-sol
   });
 
   it('refuses a comparison across solver groups, unknown arms, uncontrolled arms or a single arm', () => {
-    // Regroup a non-baseline arm: the ensemble is the ablation's R-14 baseline and must stay in fixture-solver.
+    // Regroup a non-baseline arm: the sequential control must stay in fixture-solver.
     const regrouped = controlledProtocolFixture(); controlOf(regrouped, 'independent').solverGroup = 'other-solver';
     expect(issuesOf(regrouped)).toEqual([]);
     expect(() => requireSameSolverComparison(regrouped, [...SAME_SOLVER_TOPOLOGIES])).toThrow(/share one solver group/);
@@ -127,14 +127,14 @@ describe('BM-P-004-ablation: an ablation switches off exactly one capability of 
     ['stock reference declared as an ablation', p => { controlOf(p, 'stock').ablation = { of: 'solo', treatment: 'locks' }; }, /not an ablation/],
     ['ensemble without its block', p => { delete controlOf(p, 'ensemble').ensemble; }, /exactly when the topology is ensemble/],
     ['ensemble block on a solo arm', p => { controlOf(p, 'solo').ensemble = structuredClone(controlOf(p, 'ensemble').ensemble); }, /exactly when the topology is ensemble/],
-    // R-14 (benchmark-coverage-frontierswe-v2-2026-10-10#D-022): every ablation's solver group carries a
-    // matched-cost repeated-session baseline — an independent ensemble arm distinct from the ablation's control.
-    ['no repeated-session baseline', p => { p.arms = p.arms.filter(arm => arm.id !== 'ensemble'); }, /repeated-session baseline/],
-    ['baseline only in another solver group', p => { controlOf(p, 'ensemble').solverGroup = 'other-solver'; }, /repeated-session baseline/],
+    // R-14 / D-037: independent candidate selection cannot substitute for continuing one workspace.
+    ['an ensemble without a repeated-session baseline', p => { p.arms = p.arms.filter(arm => arm.id !== 'repeated-session'); }, /repeated-session baseline/],
+    ['baseline only in another solver group', p => { controlOf(p, 'repeated-session').solverGroup = 'other-solver'; }, /repeated-session baseline/],
+    ['baseline matched to another treatment', p => { controlOf(p, 'repeated-session').repeatedSession!.matchedCostOf = 'solo'; }, /repeated-session baseline/],
     ['baseline that is the ablation\'s own control', p => {
       const ablation = controlOf(p, 'coordinated-no-locks');
-      ablation.topology = 'ensemble'; ablation.ensemble = structuredClone(controlOf(p, 'ensemble').ensemble);
-      ablation.ablation = { of: 'ensemble', treatment: 'locks' };
+      ablation.topology = 'repeated-session'; ablation.repeatedSession = structuredClone(controlOf(p, 'repeated-session').repeatedSession);
+      ablation.ablation = { of: 'repeated-session', treatment: 'locks' };
     }, /repeated-session baseline/],
   ];
 
@@ -162,6 +162,40 @@ describe('BM-P-004-ablation: an ablation switches off exactly one capability of 
       ablation.ablation = { of: 'coordinated', treatment };
       expect(issuesOf(protocol)).toEqual([]);
     }
+  });
+});
+
+describe('P-019 repeated-session protocol', () => {
+  const defects: Array<[string, (protocol: Protocol) => void, RegExp]> = [
+    ['missing session policy', p => { delete controlOf(p, 'repeated-session').repeatedSession; }, /exactly when the topology is repeated-session/],
+    ['session policy on a solo arm', p => { controlOf(p, 'solo').repeatedSession = structuredClone(controlOf(p, 'repeated-session').repeatedSession); }, /exactly when the topology is repeated-session/],
+    ['unknown cost target', p => { controlOf(p, 'repeated-session').repeatedSession!.matchedCostOf = 'missing'; }, /existing distinct full treatment/],
+    ['self as cost target', p => { controlOf(p, 'repeated-session').repeatedSession!.matchedCostOf = 'repeated-session'; }, /existing distinct full treatment/],
+    ['stock reference as cost target', p => { controlOf(p, 'repeated-session').repeatedSession!.matchedCostOf = 'stock'; }, /existing distinct full treatment/],
+    ['ablation as cost target', p => { controlOf(p, 'repeated-session').repeatedSession!.matchedCostOf = 'coordinated-no-locks'; }, /existing distinct full treatment/],
+    ['product carry on', p => { controlOf(p, 'repeated-session').capabilities['carry-respawn'] = 'on'; }, /every product capability off/],
+  ];
+  it.each(defects)('rejects %s', (_name, mutate, message) => {
+    const protocol = controlledProtocolFixture(); mutate(protocol);
+    expect(issuesOf(protocol)).toContainEqual(expect.stringMatching(message));
+  });
+  it.each([
+    ['zero sessions', (p: Protocol) => { controlOf(p, 'repeated-session').repeatedSession!.maxSessions = 0; }],
+    ['fractional sessions', (p: Protocol) => { controlOf(p, 'repeated-session').repeatedSession!.maxSessions = 1.5; }],
+    ['independent workspaces', (p: Protocol) => { (controlOf(p, 'repeated-session').repeatedSession as Record<string, unknown>).workspace = 'independent'; }],
+    ['conversation carry', (p: Protocol) => { (controlOf(p, 'repeated-session').repeatedSession as Record<string, unknown>).sessionContext = 'carry'; }],
+    ['winner selection', (p: Protocol) => { (controlOf(p, 'repeated-session').repeatedSession as Record<string, unknown>).submission = 'best-candidate'; }],
+  ])('rejects %s', (_name, mutate) => {
+    const protocol = controlledProtocolFixture(); mutate(protocol);
+    expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(false);
+  });
+  it('freezes the actual-cost pairing and session count into preregistration', () => {
+    const protocol = controlledProtocolFixture(), frozen = computePreregHash(protocol);
+    controlOf(protocol, 'repeated-session').repeatedSession!.maxSessions++;
+    expect(computePreregHash(protocol)).not.toBe(frozen);
+    controlOf(protocol, 'repeated-session').repeatedSession!.maxSessions--;
+    controlOf(protocol, 'repeated-session').repeatedSession!.matchedCostOf = 'solo';
+    expect(computePreregHash(protocol)).not.toBe(frozen);
   });
 });
 
