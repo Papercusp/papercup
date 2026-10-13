@@ -810,7 +810,7 @@ export async function composeDispatch(
       /* degrade: keep the raw classification */
     }
     const reclassified = stable
-      ? classifyRequiredWakeFailure({ target: stable, wake: { queued, staged, timedOutTargets: [] }, queuePreserved })
+      ? classifyRequiredWakeFailure({ target: stable, wake: { queued, woken, staged, timedOutTargets: [] }, queuePreserved })
       : null;
     if (reclassified?.code === 'target_adopter_gone') failure = reclassified;
   }

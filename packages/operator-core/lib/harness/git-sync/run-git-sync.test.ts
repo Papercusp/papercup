@@ -3205,6 +3205,9 @@ describe('runGitSync (real git, no submodule)', () => {
       runGit,
       submodulePaths: [],
       config: { ...cfg, pushSubmodules: true, pushSubmoduleOrigins: false },
+      // WI-6554700010011004: pin the holder probe. The real one (fuser, then a /proc
+      // scan) answers UNKNOWN on a slow process table, and UNKNOWN rightly keeps the lock.
+      isGitLockOpen: async () => false,
     });
 
     expect(out.status).toBe('synced');
@@ -3212,6 +3215,53 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(existsSync(lockPath)).toBe(false);
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('real-work.txt');
   }, 30_000);
+
+  it.each([
+    ['unknown', null],
+    ['still open', true],
+  ] as const)(
+    'WI-6554700010011004: a config.lock whose holder is %s is preserved while the retried sync still lands',
+    async (_label, holder) => {
+      writeFileSync(join(repo, 'real-work.txt'), 'agents work here\n');
+      const lockPath = join(repo, '.git', 'config.lock');
+      writeFileSync(lockPath, '');
+      const tenMinAgo = (Date.now() - 10 * 60_000) / 1000;
+      utimesSync(lockPath, tenMinAgo, tenMinAgo);
+
+      let urlSyncAttempts = 0;
+      const probed: string[] = [];
+      const runGit: RunGit = async (args, cwd) => {
+        if (args.join(' ') === 'submodule sync --recursive' && urlSyncAttempts++ === 0) {
+          return {
+            code: 1,
+            stdout: '',
+            stderr: `error: could not lock config file ${join(repo, '.git', 'config')}: File exists`,
+          };
+        }
+        const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+        return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+      };
+
+      const out = await runGitSync('test', {
+        repoPath: repo,
+        runGit,
+        submodulePaths: [],
+        config: { ...cfg, pushSubmodules: true, pushSubmoduleOrigins: false },
+        isGitLockOpen: async (path) => {
+          probed.push(path);
+          return holder;
+        },
+      });
+
+      // The exact signature first seen under load: the retried sync lands, the guard keeps the lock.
+      expect(out.status).toBe('synced');
+      expect(urlSyncAttempts).toBe(2);
+      expect(probed.length).toBeGreaterThan(0);
+      expect(probed.every((path) => path.endsWith('config.lock'))).toBe(true);
+      expect(existsSync(lockPath)).toBe(true);
+    },
+    30_000,
+  );
 
   it('isIndexLockFailure matches the git fatal (and only it)', () => {
     expect(
