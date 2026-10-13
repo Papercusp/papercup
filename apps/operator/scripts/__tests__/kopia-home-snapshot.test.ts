@@ -116,6 +116,67 @@ describe('kopia-home-snapshot bounded execution contract', () => {
     }
   });
 
+  it('bounds a stalled privileged SIGKILL and removes the PID marker after timeout', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kopia-home-snapshot-timeout-'));
+    const stateDir = join(root, 'state');
+    const procRoot = join(root, 'proc');
+    const exactPid = '4444';
+    const fakeKopia = join(root, 'kopia');
+    const sudoStub = join(root, 'sudo-stub.sh');
+    const killLog = join(root, 'kill.log');
+    const pidFile = join(stateDir, 'home-snapshot.kopia.pid');
+
+    try {
+      mkdirSync(stateDir);
+      mkdirSync(join(procRoot, exactPid), { recursive: true });
+      writeFileSync(fakeKopia, 'fixture');
+      symlinkSync(fakeKopia, join(procRoot, exactPid, 'exe'));
+      writeFileSync(
+        join(procRoot, exactPid, 'cmdline'),
+        Buffer.from(fakeKopia + '\0snapshot\0create\0--parallel=1\0'),
+      );
+      writeFileSync(
+        sudoStub,
+        [
+          '#!/usr/bin/env bash',
+          '[ "$1" = -n ] && shift',
+          '[ "$1" = -- ] && shift',
+          "printf '%s\\n' \"$*\" >>\"$KOPIA_TEST_KILL_LOG\"",
+          'case " $* " in',
+          '  *" -KILL "*) [ "$KOPIA_TEST_HANG_ON_KILL" != 1 ] || exec sleep 5 ;;',
+          'esac',
+          'exit 0',
+          '',
+        ].join('\n'),
+      );
+      chmodSync(sudoStub, 0o755);
+      writeFileSync(pidFile, exactPid + '\n');
+
+      const stopped = spawnSync('bash', [resolve(__dirname, '..', 'systemd', 'kopia-home-snapshot.sh'), '--cleanup'], {
+        encoding: 'utf8',
+        timeout: 5_000,
+        env: {
+          ...process.env,
+          KOPIA_HOME_SNAPSHOT_LOG_DIR: stateDir,
+          KOPIA_HOME_SNAPSHOT_PROC_ROOT: procRoot,
+          KOPIA_HOME_SNAPSHOT_SUDO: sudoStub,
+          KOPIA_HOME_SNAPSHOT_BIN: fakeKopia,
+          KOPIA_TEST_HANG_ON_KILL: '1',
+          KOPIA_TEST_KILL_LOG: killLog,
+          KOPIA_HOME_SNAPSHOT_FLUSH_GRACE_SEC: '0',
+        },
+      });
+
+      expect(stopped.error).toBeUndefined();
+      expect(stopped.status).toBe(0);
+      expect(readFileSync(killLog, 'utf8')).toContain('-KILL ' + exactPid);
+      expect(readFileSync(join(stateDir, 'home-snapshot.log'), 'utf8')).toContain('WARN: failed to kill exact Kopia PID ' + exactPid);
+      expect(existsSync(pidFile)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   testIfInstalled('cleanup kills a ROOT-owned Kopia child whose /proc exe link the user unit cannot read', () => {
     // WI-10002636: the Kopia child runs as root, and /proc/<pid>/exe of a root process is
     // unreadable to the user unit, so the unprivileged readlink returns nothing and the match

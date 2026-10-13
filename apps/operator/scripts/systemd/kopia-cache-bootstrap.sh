@@ -117,7 +117,7 @@ kopia_as_root() {
 kopia_stop_flushing() {
   local pid="$1" grace="${2:-15}" ticks=0 max_ticks=0
   [[ "$grace" =~ ^[0-9]+$ ]] || grace=15
-  "$SUDO_BIN" -n -- "$KILL_BIN" -TERM "$pid" >/dev/null 2>&1 || true
+  /usr/bin/timeout --kill-after=1s 1s "$SUDO_BIN" -n -- "$KILL_BIN" -TERM "$pid" >/dev/null 2>&1 || true
   max_ticks=$((grace * 5))
   while [ -d "$PROC_ROOT/$pid" ] && [ "$ticks" -lt "$max_ticks" ]; do
     sleep 0.2
@@ -125,6 +125,6 @@ kopia_stop_flushing() {
   done
   # A zombie keeps its /proc dir but no readable exe, so it fails the match: gone.
   kopia_pid_matches "$pid" || return 0
-  "$SUDO_BIN" -n -- "$KILL_BIN" -KILL "$pid" >/dev/null 2>&1 || return 1
+  /usr/bin/timeout --kill-after=1s 1s "$SUDO_BIN" -n -- "$KILL_BIN" -KILL "$pid" >/dev/null 2>&1 || return 1
   return 2
 }
