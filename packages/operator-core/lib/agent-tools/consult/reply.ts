@@ -17,6 +17,7 @@ import type { IdleRecipientReport } from '../coordination/inbox-wake';
 import { COORD_REPLY_ROLES } from '../coordination/roles';
 import { hardText } from '../limits';
 import { consultPostAbortCompletionReceipt } from './abort-completion';
+import { DECISION_REVIEW_POSITIONS, OBJECTION_BASES, OWNER_AUTHORITY_TOPICS } from '../../consult/decision-review';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
@@ -81,6 +82,29 @@ export default defineTool({
         .max(16)
         .optional()
         .describe('Transcript grounding [{ session_id, turn_idx, note? }] — REQUIRED for kind=answer (D-004).'),
+      stance: z
+        .object({
+          position: z.enum(DECISION_REVIEW_POSITIONS),
+          basis: z.enum(OBJECTION_BASES).optional(),
+          reason: z.string().max(2000).optional(),
+          alternative: z.string().max(2000).optional(),
+          evidence: z.array(z.string().min(1).max(500)).max(16).optional(),
+          topic: z.enum(OWNER_AUTHORITY_TOPICS).optional(),
+        })
+        .optional()
+        .describe(
+          "Decision-review consults (a parked product decision) ONLY, and REQUIRED there on every reviewer reply: support | no-view, or object with basis 'alternative' (reason + alternative), 'hazard' (reason + evidence refs) or 'owner-authority' (topic).",
+        ),
+      parkResponse: z
+        .object({
+          kind: z.enum(['adopt', 'rebut']),
+          text: z.string().min(1).max(4000),
+          objectionId: z.string().min(1).max(200).optional(),
+        })
+        .optional()
+        .describe(
+          "Parked agent (requester of a decision review) ONLY: answer an objection — adopt (take the alternative) or rebut (keep your default, with reasoning). Omitting objectionId answers the latest standing objection.",
+        ),
     })
     .refine((a) => a.kind !== 'answer' || (a.evidence?.length ?? 0) > 0, {
       message: 'kind=answer requires evidence — cite the transcript turns the answer rests on',
@@ -111,6 +135,8 @@ export default defineTool({
         kind: args.kind,
         body: args.body,
         evidence: args.evidence,
+        stance: args.stance,
+        parkResponse: args.parkResponse,
       },
       {
         getSql: () => getOrgPg().sql,
@@ -149,6 +175,15 @@ export default defineTool({
           harnessSlug: ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
           launchedBy: identity.ownerId,
         }),
+        // consult-backed-parking P-006 (R-6/R-16): resolve the park after the reply.
+        onDecisionReviewReply: async ({ workspaceId: ws, conversationId, now }) => {
+          const [{ runParkTriggersForConsult }, { makeProdParkSeams }] = await Promise.all([
+            import('../../consult/park-adapters'),
+            import('../../consult/park-prod'),
+          ]);
+          const sql = getOrgPg().sql;
+          await runParkTriggersForConsult(sql, ws, conversationId, makeProdParkSeams(sql, ws), now);
+        },
       },
     );
     return ok(result as unknown as Record<string, unknown>);

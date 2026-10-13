@@ -66,6 +66,16 @@ export const RTK_BIN_ENV = 'PAPERCUSP_RTK_BIN';
 export const RTK_REWRITE_TIMEOUT_MS = 2000;
 const RTK_MAX_COMMAND_CHARS = 16384;
 
+/**
+ * A pipe (`|` or `|&`, never `||`) into a consumer that stops reading early:
+ * `head`, `grep`/`rg` with a match limit, or `sed … Nq`. RTK collects the whole
+ * output before printing, so the producer would no longer be stopped early
+ * (WI-6554700010009543: `rg … | head -60` 0.5 s raw vs 28.5 s through rtk).
+ * Kept identical to RTK_EARLY_EXIT_PIPE in packages/operator-core/lib/agent-tools/capability/rtk-rewrite.ts.
+ */
+export const RTK_EARLY_EXIT_PIPE =
+  /(?:^|[^|])\|(?!\|)&?\s*(?:head\b|(?:rg|[ef]?grep)\b[^|;&\n]*\s(?:-m\s*\d|-[A-Za-z]*m\d|--max-count\b)|sed\b[^|;&\n]*\d+q\b)/;
+
 function isExecutable(file) {
   try {
     accessSync(file, fsConstants.X_OK);
@@ -99,7 +109,8 @@ export function resolveRtkBin(env = process.env) {
 /**
  * The RTK form of a native Bash command, or null to leave it unchanged.
  * Never offered: vitest commands (EI-9471: rtk's vitest wrapper once dropped a
- * single-file filter and ran the whole suite), commands carrying the
+ * single-file filter and ran the whole suite), commands piping into an
+ * early-exit consumer (RTK_EARLY_EXIT_PIPE), commands carrying the
  * `RTK_DISABLED=1` opt-out, and oversized commands. rtk exits 0 (rewritten),
  * 3 (rewritten, rtk would ask; this hook does not delegate permission to rtk),
  * 1 (no equivalent) or 2 (denied by rtk's rules: leave it alone).
@@ -111,6 +122,7 @@ export function rtkRewriteSync(command, opts = {}) {
   if (!command || command.length > RTK_MAX_COMMAND_CHARS) return null;
   if (/(^|[\s;&|(])RTK_DISABLED=1(\s|$)/.test(command)) return null;
   if (/\bvitest\b/.test(command)) return null;
+  if (RTK_EARLY_EXIT_PIPE.test(command)) return null;
   const bin = resolveRtkBin(opts.env ?? process.env);
   if (!bin) return null;
   try {

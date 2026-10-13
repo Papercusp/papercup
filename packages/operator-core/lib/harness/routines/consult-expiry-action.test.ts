@@ -6,6 +6,17 @@ const seams = vi.hoisted(() => ({
   register: vi.fn(),
   sweep: vi.fn(async (_deps: ExpirySweepDeps) => undefined),
   send: vi.fn(async () => undefined),
+  sweepParks: vi.fn(async (_args: unknown) => undefined),
+  pollParks: vi.fn(async (_args: unknown) => undefined),
+  makeSeams: vi.fn(() => ({})),
+}));
+vi.mock('../../consult/park-adapters', () => ({
+  sweepDueParks: seams.sweepParks,
+  pollParkOwnerAnswers: seams.pollParks,
+}));
+vi.mock('../../consult/park-prod', () => ({
+  makeProdParkSeams: seams.makeSeams,
+  readParkOwnerAnswer: vi.fn(),
 }));
 vi.mock('./system-actions', () => ({ registerSystemAction: seams.register }));
 vi.mock('@papercusp/db-org', async (original) => ({
@@ -32,6 +43,13 @@ describe('consult expiry production wiring', () => {
     // P-014: prod binds the review conversion leg; without it silent review
     // consults would keep cascading.
     expect(deps.fileReviewWorkItem).toBeTypeOf('function');
+    // consult-backed-parking P-006: the same tick polls owner answers to open park
+    // questions and resolves parks past their deadline, with per-workspace prod seams.
+    expect(seams.pollParks).toHaveBeenCalledOnce();
+    expect(seams.sweepParks).toHaveBeenCalledOnce();
+    const parkArgs = seams.sweepParks.mock.calls[0]![0] as { seamsFor: (ws: string) => unknown };
+    parkArgs.seamsFor('ws-1');
+    expect(seams.makeSeams).toHaveBeenCalledWith(expect.anything(), 'ws-1');
     seams.send.mockImplementationOnce(async () => {
       expect(currentRequestWorkspaceId()).toBe('row-workspace');
     });

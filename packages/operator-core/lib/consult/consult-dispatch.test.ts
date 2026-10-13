@@ -37,6 +37,10 @@ import {
   launchLogFailureReason,
   makeConsultReachDispatcher,
   planDispatchOperation,
+  renderCitedTurnsBlock,
+  BRIEF_FALLBACK_REASONS,
+  BRIEF_TURN_TEXT_MAX,
+  BRIEF_TOTAL_TEXT_MAX,
   SOURCE_COOLDOWN_MS,
   SOURCE_FAILURE_LOOKBACK_MS,
   SOURCE_LAUNCH_FAILURE_THRESHOLD,
@@ -210,6 +214,9 @@ function makeFakes(
     // The first-turn wait (WI-10004645) never sleeps for real in unit tests.
     sleepMs: async () => {},
     loadRanks: async () => RANKS,
+    // P-002: a brief launch quotes the cited turns; never read real transcripts here.
+    readCitedTurns: async (_ws: string, _sessionId: string, turnIndices: readonly number[]) =>
+      turnIndices.map((turn_idx) => ({ turn_idx, speaker: 'assistant', ts: null, text: `fixture cited turn ${turn_idx}` })),
     ...over,
   } as unknown as Partial<ConsultDispatchDeps>;
   return { deps, calls };
@@ -387,9 +394,12 @@ describe('dispatchConsultResponder — the fork leg', () => {
     }
   });
 
-  it.each([null, { coordOwnerId: 'su-other-owner', sessionId: 'sess-1', startedAt: '2026-09-22T00:00:00Z' },
+  // P-002 / D-008: an untracked binding is briefed instead (see the brief suite
+  // below); a binding naming ANOTHER owner contests the turns' attribution and
+  // still refuses before any launch.
+  it.each([{ coordOwnerId: 'su-other-owner', sessionId: 'sess-1', startedAt: '2026-09-22T00:00:00Z' },
     { coordOwnerId: 'su-expert', sessionId: 'different-native-session', startedAt: '2026-09-22T00:00:00Z' }])
-  ('refuses an untracked or mismatched source binding before launch (%j)', async (binding) => {
+  ('refuses a source binding that contests the evidence attribution before launch (%j)', async (binding) => {
     const { deps, calls } = makeFakes({}, { source: { binding } });
     const result = await dispatchConsultResponder(OPTS, CTX, deps);
     expect(result.dispatched).toBe(false);
@@ -1137,16 +1147,22 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(r.attempts.every((a) => a.outcome === 'skipped')).toBe(true);
   });
 
-  it('skips non-plain conversion sources before spawning, while retaining native forks', async () => {
+  it('skips non-plain conversion sources before any conversion spawn, briefs them instead, while retaining native forks', async () => {
     const blocked = makeFakes({
       probeBackendAvailable: async (agent: string) => ({ available: agent !== 'claude', detail: 'provider capacity' }),
       checkPortTranscript: async () => { throw new Error('role refusal must precede transcript reads'); },
     }, { source: { role: 'reviewer' } });
     const result = await dispatchConsultResponder(OPTS, CTX, blocked.deps);
-    expect(result.dispatched).toBe(false);
-    expect(result.attempts.map((a) => a.reason)).toEqual(['account-walled', 'conversion-unavailable']);
+    // The conversion path still refuses a non-plain source before reading or launching it …
+    expect(result.attempts.slice(0, 2).map((a) => a.reason)).toEqual(['account-walled', 'conversion-unavailable']);
     expect(result.attempts[1].detail).toContain('plain tracked SU');
-    expect(blocked.calls.spawn).toHaveLength(0);
+    // … and P-002 / D-008 answers that intentional skip with a fresh briefed session.
+    // Only the rank the port skipped ON PURPOSE is briefed; the already-walled rank is not retried.
+    expect(result).toMatchObject({ dispatched: true, operation: 'brief', agent: 'codex' });
+    expect(result.attempts.filter((a) => a.operation === 'brief').map((a) => [a.agent, a.outcome]))
+      .toEqual([['codex', 'dispatched']]);
+    expect(blocked.calls.spawn).toHaveLength(1);
+    expect(blocked.calls.spawn[0]!.envelope.greetingCmd).not.toContain('--fork');
 
     const fork = makeFakes({}, { source: { role: 'reviewer' } });
     expect(await dispatchConsultResponder(OPTS, CTX, fork.deps)).toMatchObject({ dispatched: true, operation: 'fork' });
@@ -1191,7 +1207,8 @@ describe('dispatchConsultResponder — the walk', () => {
     writeFileSync(path, JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null,
       message: { role: 'user', content: 'eligible evidence' } }) + '\n');
     try {
-      const rejected = makeFakes({}, { source: { role: 'reviewer' } });
+      // No readable cited turns, so the P-002 brief fallback cannot answer this source either.
+      const rejected = makeFakes({ readCitedTurns: async () => [] }, { source: { role: 'reviewer' } });
       rejected.deps.loadRanks = async () => [RANKS[1]];
       const first = await makeConsultReachDispatcher(CTX, rejected.deps)({
         responder: OPTS.sourceOwnerId, conversationId: OPTS.conversationId,
@@ -1923,5 +1940,112 @@ describe('answer-window failure records (WI-10003199, P-003)', () => {
     // Not a reset: failed launches on either side of it still add up to the threshold.
     const cd = sourceCooldownFrom([launchFail(1), expiry(2), launchFail(3), launchFail(4)], T0);
     expect(cd?.failures).toBe(SOURCE_LAUNCH_FAILURE_THRESHOLD);
+  });
+});
+
+// consult-backed-parking-2026-10-12 P-002 / D-008: a source the session port
+// skips ON PURPOSE (untracked native, non-plain-SU) is answered by a FRESH
+// session under its own identity, briefed with the expert's cited turns.
+describe('cited-turn brief launch for unforkable sources (P-002, D-008)', () => {
+  it('covers exactly the two intentional session-port skips', () => {
+    expect([...BRIEF_FALLBACK_REASONS].sort()).toEqual(['conversion-unavailable', 'source-session-untracked']);
+  });
+
+  it('launches a fresh briefed session for an untracked native source instead of refusing', async () => {
+    const reads: Array<{ sessionId: string; turnIndices: readonly number[] }> = [];
+    const { deps, calls } = makeFakes({
+      readCitedTurns: async (_ws: string, sessionId: string, turnIndices: readonly number[]) => {
+        reads.push({ sessionId, turnIndices });
+        return [{ turn_idx: 1, speaker: 'assistant', ts: '2026-09-22T00:00:01Z', text: 'the expert explained the lock order' }];
+      },
+    }, { source: { binding: null } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result).toMatchObject({ dispatched: true, operation: 'brief', agent: 'claude', model: 'opus' });
+    expect(reads).toEqual([{ sessionId: 'sess-1', turnIndices: [1] }]);
+    // Every port rank is still recorded as skipped before the brief rank dispatches.
+    expect(result.attempts.filter((a) => a.reason === 'source-session-untracked').length).toBeGreaterThan(0);
+    expect(result.attempts.at(-1)).toMatchObject({ operation: 'brief', outcome: 'dispatched' });
+    expect(calls.spawn).toHaveLength(1);
+    const spawn = calls.spawn[0]!;
+    // A distinct answering identity, never the expert's session.
+    expect(spawn.coordOwnerId).not.toBe(OPTS.sourceOwnerId);
+    expect(spawn.envelope.greetingCmd).not.toContain('--fork');
+    expect(spawn.envelope.greetingCmd).not.toContain('sess-1');
+    expect(spawn.envelope.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN).toBeUndefined();
+    expect(spawn.envelope.env.CODEX_HOME).toBeUndefined();
+    // The kickoff carries the quoted turn and says it is evidence, not history.
+    const kickoff = spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT ?? '';
+    expect(kickoff).toContain('the expert explained the lock order');
+    expect(kickoff).toContain('sess-1#1');
+    expect(kickoff).toContain('NOT your own history');
+  });
+
+  it('records evidence-span-unavailable per brief rank when no evidence span was supplied', async () => {
+    const { deps, calls } = makeFakes({}, { source: { binding: null } });
+    const { evidence: _omit, ...noEvidence } = OPTS;
+    const result = await dispatchConsultResponder(noEvidence, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    const briefs = result.attempts.filter((a) => a.operation === 'brief');
+    expect(briefs.length).toBe(RANKS.length);
+    expect(briefs.every((a) => a.outcome === 'skipped' && a.reason === 'evidence-span-unavailable')).toBe(true);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it.each([
+    ['empty', async () => []],
+    ['throwing', async () => { throw new Error('archive offline'); }],
+  ] as const)('records evidence-span-unavailable when the cited-turn read is %s', async (_label, readCitedTurns) => {
+    const { deps, calls } = makeFakes({ readCitedTurns }, { source: { binding: null } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    const briefs = result.attempts.filter((a) => a.operation === 'brief');
+    expect(briefs.length).toBe(RANKS.length);
+    expect(briefs.every((a) => a.reason === 'evidence-span-unavailable')).toBe(true);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('records account-walled for a brief rank whose backend is walled and briefs the next rank', async () => {
+    const { deps, calls } = makeFakes({
+      probeBackendAvailable: async (agent: string) => ({ available: agent !== 'claude', detail: 'provider capacity' }),
+    }, { source: { binding: null } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result).toMatchObject({ dispatched: true, operation: 'brief', agent: 'codex' });
+    expect(result.attempts.filter((a) => a.operation === 'brief').map((a) => a.reason ?? a.outcome))
+      .toEqual(['account-walled', 'dispatched']);
+    expect(calls.spawn).toHaveLength(1);
+  });
+
+  it('does not brief a source whose binding names another owner', async () => {
+    const { deps, calls } = makeFakes({}, {
+      source: { binding: { coordOwnerId: 'su-other-owner', sessionId: 'sess-1', startedAt: '2026-09-22T00:00:00Z' } },
+    });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    expect(result.attempts.some((a) => a.operation === 'brief')).toBe(false);
+    expect(calls.spawn).toHaveLength(0);
+  });
+});
+
+describe('renderCitedTurnsBlock (P-002 brief evidence)', () => {
+  const source = { ownerId: 'su-expert', sessionId: 'sess-9' };
+
+  it('orders turns by index and labels them as quoted evidence', () => {
+    const out = renderCitedTurnsBlock(source, [
+      { turn_idx: 7, speaker: 'user', ts: null, text: 'second' },
+      { turn_idx: 3, speaker: 'assistant', ts: '2026-10-01T00:00:00Z', text: 'first' },
+    ]);
+    expect(out.indexOf('sess-9#3')).toBeLessThan(out.indexOf('sess-9#7'));
+    expect(out).toContain("quoted from su-expert's session sess-9");
+    expect(out).toContain('you are not that session');
+  });
+
+  it('caps each turn and the total quoted text', () => {
+    const long = 'x'.repeat(BRIEF_TURN_TEXT_MAX + 100);
+    const turns = Array.from({ length: Math.ceil(BRIEF_TOTAL_TEXT_MAX / BRIEF_TURN_TEXT_MAX) + 2 },
+      (_, i) => ({ turn_idx: i, speaker: 'assistant', ts: null, text: long }));
+    const out = renderCitedTurnsBlock(source, turns);
+    expect(out).not.toContain('x'.repeat(BRIEF_TURN_TEXT_MAX + 1));
+    expect(out).toContain('brief cap');
+    expect(out.length).toBeLessThan(BRIEF_TOTAL_TEXT_MAX + 2_000);
   });
 });

@@ -195,7 +195,10 @@ export interface RequestDeliveryHealth {
   dispatchRequested: number;
   retrievalOnly: number;
   legacyIntentUnknown: number;
-  outcomes: { received: number; declined: number; pending: number; unavailable: number; failed: number; unmeasured: number };
+  /** `unlaunchable` (consult-backed-parking P-003, R-2): experts were selected
+   * but no answering session launched for any of them. Distinct from
+   * `unavailable`, which is the measured no_qualified_responder absence. */
+  outcomes: { received: number; declined: number; pending: number; unavailable: number; unlaunchable: number; failed: number; unmeasured: number };
   followThrough: {
     applicable: number; notApplicable: number; applicabilityUnknown: number;
     recorded: Record<ConsultReconciliationDisposition, number>;
@@ -207,7 +210,7 @@ export interface RequestDeliveryHealth {
 function emptyRequestCounts(): RequestDeliveryHealth {
   return {
     requests: 0, dispatchRequested: 0, retrievalOnly: 0, legacyIntentUnknown: 0,
-    outcomes: { received: 0, declined: 0, pending: 0, unavailable: 0, failed: 0, unmeasured: 0 },
+    outcomes: { received: 0, declined: 0, pending: 0, unavailable: 0, unlaunchable: 0, failed: 0, unmeasured: 0 },
     followThrough: {
       applicable: 0, notApplicable: 0, applicabilityUnknown: 0,
       recorded: { confirmed: 0, rescoped: 0, reversed: 0, moot: 0 },
@@ -235,6 +238,7 @@ function requestOutcome(row: RoutingHealthConsultRow, nowMs: number): keyof Requ
   const expiresMs = toMs(row.expires_at);
   const open = ['awaiting_responder', 'active', 'budget_exhausted'].includes(row.state);
   if (open && Number.isFinite(expiresMs) && nowMs < expiresMs) return 'pending';
+  if (row.state === 'no_launchable_responder') return 'unlaunchable';
   if (row.state === 'no_qualified_responder') return 'unavailable';
   const attempts = walks.flatMap((walk) => walk.attempts);
   if (attempts.length > 0 && attempts.every((attempt) =>

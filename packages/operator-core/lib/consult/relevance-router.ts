@@ -264,7 +264,10 @@ export interface RoutingSnapshot {
   nativeConsultSources?: import('./native-consult').NativeConsultSourceObservation[];
   nativeConsultPool?: RoutingCandidate[];
   /** Consumer copy persists so generic decline/expiry/revival keeps its subject. */
-  cascade?: import('./grading-cascade').SourceAuditCascadeMeta | import('./grading-cascade').GradingCascadeMeta;
+  cascade?:
+    | import('./grading-cascade').SourceAuditCascadeMeta
+    | import('./grading-cascade').GradingCascadeMeta
+    | import('./decision-review').DecisionReviewCascadeMeta;
 }
 
 /** How a responder entered the selected set (D-002): 'floor' = cleared both

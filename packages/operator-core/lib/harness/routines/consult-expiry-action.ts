@@ -110,4 +110,20 @@ registerSystemAction('consult-expiry-sweep', async () => {
         }),
     }),
   });
+
+  // consult-backed-parking-2026-10-12 P-006: resolve decision-review parks past their
+  // deadline (R-5/R-17) and read back owner answers to open park questions (R-18). Its
+  // own try: a park fault must never cost the expiry sweep above its tick.
+  try {
+    const sql = getOrgPg().sql as never;
+    const [{ sweepDueParks, pollParkOwnerAnswers }, { makeProdParkSeams, readParkOwnerAnswer }] = await Promise.all([
+      import('../../consult/park-adapters'),
+      import('../../consult/park-prod'),
+    ]);
+    const seamsFor = (workspaceId: string) => makeProdParkSeams(sql, workspaceId);
+    await pollParkOwnerAnswers({ sql, seamsFor, readAnswer: readParkOwnerAnswer });
+    await sweepDueParks({ sql, seamsFor });
+  } catch (e) {
+    console.warn(`[consult-expiry-sweep] park sweep failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 });

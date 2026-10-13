@@ -162,7 +162,7 @@ export interface GetFeedbackRequest {
   /** Internal testing:run constraint, included in the saved payload fingerprint. */
   nativeConsult?: import('./native-consult').NativeConsultConstraints;
   /** Internal consumer metadata, persisted before any delivery or revival. */
-  cascade?: SourceAuditCascadeMeta;
+  cascade?: SourceAuditCascadeMeta | import('./decision-review').DecisionReviewCascadeMeta;
 }
 
 /** P-005 creation-side refusals — structural, BEFORE any conversation/row is
@@ -233,7 +233,7 @@ export interface GetFeedbackDeps {
     /** HOW it was reached, for the requester-facing provenance note. Optional so
      *  a PG-free or legacy binding keeps the plain delivery-count contract. */
     dispatch?: {
-      operation: 'fork' | 'convert' | null;
+      operation: 'fork' | 'convert' | 'brief' | null;
       agent: string | null;
       model: string | null;
       verified: boolean | null;
@@ -428,17 +428,22 @@ export interface GetFeedbackResult {
    * outcome; `state` reports the conversation's lifecycle, which on this path is
    * still genuinely "no responder attached" and is what the DB CHECK persists.
    */
-  verdict: 'routed' | 'no_qualified_responder' | 'served_from_archive' | 'relevance_unmeasured' | 'retrieval_only';
+  /** `no_launchable_responder` (consult-backed-parking P-003, bar R-2): experts
+   * WERE selected but no answering session could be launched for any of them.
+   * That is a dispatch failure, not the measured absence `no_qualified_responder`
+   * reports, so the two never share a verdict or a stored state. */
+  verdict: 'routed' | 'no_qualified_responder' | 'no_launchable_responder' | 'served_from_archive' | 'relevance_unmeasured' | 'retrieval_only';
   /** WHY, honestly (D-003: distinct causes must stay distinguishable).
-   * `embed_unavailable` always accompanies verdict `relevance_unmeasured`; the
-   * other two accompany `no_qualified_responder`. */
+   * `embed_unavailable` / `evidence_unavailable` accompany verdict
+   * `relevance_unmeasured`; `below_floor` accompanies `no_qualified_responder`;
+   * `no_available_responder` accompanies `no_launchable_responder`. */
   reason?: 'below_floor' | 'no_available_responder' | 'embed_unavailable' | 'evidence_unavailable' | 'retrieval_only';
   conversation_id: string;
   thread_id: string;
   /** 'served_from_archive' is a TS-surface state only — the DB row reuses
    * state='closed_answered' with outcome.source='archive' (P-006; no enum
    * widening in migration 834's CHECK). */
-  state: 'awaiting_responder' | 'no_qualified_responder' | 'served_from_archive';
+  state: 'awaiting_responder' | 'no_qualified_responder' | 'no_launchable_responder' | 'served_from_archive';
   responder: RoutingCandidate | null;
   /** How the responder entered the selected set (D-002): 'floor' = cleared the
    * routing floors; 'minimum' = best-available fill below them (weigh the
@@ -479,7 +484,7 @@ export interface GetFeedbackResult {
   dispatch?: {
     sourceOwnerId: string;
     answeringOwnerId: string | null;
-    operation: 'fork' | 'convert' | null;
+    operation: 'fork' | 'convert' | 'brief' | null;
     agent: string | null;
     model: string | null;
     verified: boolean | null;
@@ -1040,6 +1045,33 @@ async function readConsultLineage(
   return parentDepth == null ? null : { parentDepth, owners };
 }
 
+/**
+ * D-002 provenance, stated rather than implied: the requester needs to know
+ * that the reply will come from a NEW session, not from the expert — otherwise
+ * they will read the answer as that agent's considered position and, worse,
+ * expect that agent to remember the exchange.
+ *
+ * consult-backed-parking-2026-10-12 P-002 / D-008: a `brief` launch is a FRESH
+ * session holding only the expert's cited turns — never their session — so it
+ * gets its own wording instead of the fork/convert one.
+ */
+export function renderDispatchProvenanceNote(p: GetFeedbackResult['dispatch'] | null | undefined): string {
+  if (!p) return '';
+  const target = `${p.agent ?? '?'}/${p.model ?? '?'}`;
+  const liveness = p.verified === true ? ' (live)' : ' (booting — the cascade expiry guards the reply)';
+  if (p.operation === 'brief') {
+    return ` 🧭 No agent was woken: launched a FRESH session on ${target}` +
+      `${p.answeringOwnerId ? ` as ${p.answeringOwnerId}` : ''}, briefed with turns cited from ` +
+      `${p.sourceOwnerId}'s transcript${liveness}. ` +
+      `It holds only those quoted turns, not their session; ${p.sourceOwnerId} was not asked and will not remember it.`;
+  }
+  return ` 🧭 No agent was woken: ${p.operation === 'convert' ? 'CONVERTED' : 'FORKED'} ` +
+    `${p.sourceOwnerId}'s session onto ${target}` +
+    `${p.answeringOwnerId && p.answeringOwnerId !== p.sourceOwnerId ? ` as ${p.answeringOwnerId}` : ''}` +
+    `${liveness}. ` +
+    `The answer reasons over their transcript; they were not asked and will not remember it.`;
+}
+
 export async function getFeedbackCore(
   req: GetFeedbackRequest,
   deps: GetFeedbackDeps,
@@ -1532,7 +1564,8 @@ export async function getFeedbackCore(
   let woke = 0;
   let pickupConfirmed = false;
   const briefFor = (candidate: RoutingCandidate, via: SelectionVia | null) => {
-    const auditCopy = req.cascade ? sourceAuditWakeCopy(req.cascade, opened.conversation_id) : null;
+    // consult-backed-parking D-013: a decision-review cascade uses the default consult copy.
+    const auditCopy = req.cascade?.flavor === 'grading-integrity' ? sourceAuditWakeCopy(req.cascade, opened.conversation_id) : null;
     return {
       summary:
         auditCopy?.summary ??
@@ -1681,7 +1714,9 @@ export async function getFeedbackCore(
     //     terminal the old code could not express — it had a revival to try.
     if (queued === 0 && !cascadeContinues) {
       reason = 'no_available_responder';
-      state = 'no_qualified_responder';
+      // P-003 / R-2: experts were selected and every one was attempted, so this
+      // is NOT the measured absence no_qualified_responder reports.
+      state = 'no_launchable_responder';
       expiresAt = null;
       // …and DROP the responder. Nothing was launched, so naming one would
       // promise an answer that is not coming — the park key, the verdict and
@@ -1698,7 +1733,7 @@ export async function getFeedbackCore(
       }
       await sql`
         UPDATE harness_shared.consult_state
-           SET state = 'no_qualified_responder',
+           SET state = 'no_launchable_responder',
                responder_id = NULL,
                expires_at = NULL,
                updated_at = ${now.toISOString()}::timestamptz
@@ -1718,18 +1753,7 @@ export async function getFeedbackCore(
     finalChosen?.fallback === 'lexical'
       ? ' ⚠ Semantic embedding was unavailable: this is a BOUNDED MANUAL-REVIEW pick from lexical text_tsv token matches, not a qualified semantic responder. Validate independently.'
       : '';
-  // D-002 provenance, stated rather than implied: the requester needs to know
-  // that the reply will come from a NEW session reasoning over the expert's
-  // transcript, not from the expert — otherwise they will read the answer as
-  // that agent's considered position and, worse, expect that agent to remember
-  // the exchange.
-  const dispatchNote = dispatchProvenance
-    ? ` 🧭 No agent was woken: ${dispatchProvenance.operation === 'convert' ? 'CONVERTED' : 'FORKED'} ` +
-      `${dispatchProvenance.sourceOwnerId}'s session onto ${dispatchProvenance.agent ?? '?'}/${dispatchProvenance.model ?? '?'}` +
-      `${dispatchProvenance.answeringOwnerId && dispatchProvenance.answeringOwnerId !== dispatchProvenance.sourceOwnerId ? ` as ${dispatchProvenance.answeringOwnerId}` : ''}` +
-      `${dispatchProvenance.verified === true ? ' (live)' : ' (booting — the cascade expiry guards the reply)'}. ` +
-      `The answer reasons over their transcript; they were not asked and will not remember it.`
-    : '';
+  const dispatchNote = renderDispatchProvenanceNote(dispatchProvenance);
   const wakeNote = pickupConfirmed
     ? `answering session live for ${finalChosen?.ownerId}'s transcript`
     : `answering session launched for ${finalChosen?.ownerId}'s transcript; it is still booting — the cascade expiry guards the reply`;
@@ -1770,7 +1794,9 @@ export async function getFeedbackCore(
         ? 'routed'
         : reason === 'embed_unavailable' || reason === 'evidence_unavailable'
           ? 'relevance_unmeasured'
-          : 'no_qualified_responder',
+          : reason === 'no_available_responder'
+            ? 'no_launchable_responder'
+            : 'no_qualified_responder',
     ...(reason ? { reason } : {}),
     conversation_id: opened.conversation_id,
     thread_id: opened.thread_id,

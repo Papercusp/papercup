@@ -93,7 +93,59 @@ export const FIRST_TURN_WAIT_MS = 20_000;
 /** Re-read interval for that wait; the analyzer caches by size + mtime. */
 export const FIRST_TURN_POLL_MS = 500;
 
-export type DispatchOperation = 'fork' | 'convert';
+/**
+ * How the answering session gets the expert's knowledge.
+ *
+ * - `fork`: a same-backend branch of the tracked expert session (full history).
+ * - `convert`: the session port carries the exact evidence span across backends.
+ * - `brief`: consult-backed-parking-2026-10-12 P-002 / D-008. For a source the
+ *   session port skips ON PURPOSE (an untracked native session, a non-plain-SU
+ *   source, an unsupported source backend), a FRESH session is launched under its
+ *   own identity and briefed with the expert's cited transcript turns as quoted
+ *   evidence. It is never presented as transcript continuity.
+ */
+export type DispatchOperation = 'fork' | 'convert' | 'brief';
+
+/** A cited transcript turn quoted into a `brief` launch. */
+export interface CitedTranscriptTurn {
+  turn_idx: number;
+  speaker: string;
+  ts: string | null;
+  text: string;
+}
+
+/** Plan-level skips that D-008 keeps intentional, and that a `brief` launch covers. */
+export const BRIEF_FALLBACK_REASONS: ReadonlySet<DispatchSkipReason> = new Set<DispatchSkipReason>([
+  'source-session-untracked',
+  'conversion-unavailable',
+]);
+
+/** Per-turn and total caps on the quoted evidence a `brief` kickoff carries. */
+export const BRIEF_TURN_TEXT_MAX = 4_000;
+export const BRIEF_TOTAL_TEXT_MAX = 24_000;
+
+/** Render cited turns as the quoted-evidence block of a `brief` kickoff. */
+export function renderCitedTurnsBlock(
+  source: { ownerId: string; sessionId: string },
+  turns: readonly CitedTranscriptTurn[],
+): string {
+  const lines: string[] = [];
+  let total = 0;
+  for (const turn of [...turns].sort((a, b) => a.turn_idx - b.turn_idx)) {
+    const text = turn.text.length > BRIEF_TURN_TEXT_MAX ? `${turn.text.slice(0, BRIEF_TURN_TEXT_MAX)}…` : turn.text;
+    if (total + text.length > BRIEF_TOTAL_TEXT_MAX && lines.length > 0) {
+      lines.push(`[… further cited turns omitted at the ${BRIEF_TOTAL_TEXT_MAX}-character brief cap]`);
+      break;
+    }
+    total += text.length;
+    lines.push(`--- ${source.sessionId}#${turn.turn_idx} · ${turn.speaker}${turn.ts ? ` · ${turn.ts}` : ''}\n${text}`);
+  }
+  return (
+    `CITED TRANSCRIPT TURNS — quoted from ${source.ownerId}'s session ${source.sessionId}. ` +
+    `These are EVIDENCE you were handed, NOT your own history: you did not take these turns ` +
+    `and you are not that session.\n\n${lines.join('\n\n')}`
+  );
+}
 
 export interface ConsultDispatchEvidenceRef {
   session_id: string;
@@ -416,6 +468,43 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   ) => Promise<PersistedDispatchRecord[]>;
   /** Clock seam for the cool-down. */
   nowMs: () => number;
+  /**
+   * P-002 / D-008: the text of the expert's cited turns, for a `brief` launch.
+   * Reads the session_turns index, then the session archive. An empty result
+   * means there is nothing to brief from, which the walk records per rank.
+   */
+  readCitedTurns: (
+    workspaceId: string,
+    sessionId: string,
+    turnIndices: readonly number[],
+  ) => Promise<CitedTranscriptTurn[]>;
+}
+
+async function defaultReadCitedTurns(
+  workspaceId: string,
+  sessionId: string,
+  turnIndices: readonly number[],
+): Promise<CitedTranscriptTurn[]> {
+  const wanted = [...new Set(turnIndices)].filter((i) => Number.isSafeInteger(i) && i >= 0);
+  if (wanted.length === 0) return [];
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const sql = getOrgPg().sql as unknown as Sql;
+  const rows = await sql<{ turn_idx: number; speaker: string; ts: Date | string | null; text: string }[]>`
+    SELECT turn_idx, speaker, ts, text FROM harness_shared.session_turns
+     WHERE workspace_id = ${workspaceId} AND session_id = ${sessionId} AND turn_idx = ANY(${wanted}::int[])
+     ORDER BY turn_idx`;
+  if (rows.length > 0) {
+    return rows.map((r) => ({
+      turn_idx: r.turn_idx,
+      speaker: r.speaker,
+      ts: r.ts == null ? null : new Date(r.ts).toISOString(),
+      text: r.text ?? '',
+    })).filter((t) => t.text.trim());
+  }
+  const { readArchivedSessionTurns } = await import('../session-archive-read');
+  const archived = await readArchivedSessionTurns(sessionId, undefined, undefined, { turnIndices: wanted });
+  return (archived?.turns ?? []).map((t) => ({ turn_idx: t.turn_idx, speaker: t.speaker, ts: t.ts, text: t.text }))
+    .filter((t) => t.text.trim());
 }
 
 /** What {@link ConsultDispatchDeps.recordDispatchAttempts} persists for one walk. */
@@ -1066,6 +1155,7 @@ export async function dispatchConsultResponder(
     readSourceDispatchRecords: defaultReadSourceDispatchRecords,
     nowMs: () => Date.now(),
     sleepMs: (ms: number) => sleep(ms),
+    readCitedTurns: defaultReadCitedTurns,
     ...deps,
   };
   const result = await walkConsultDispatch(opts, ctx, d);
@@ -1143,6 +1233,14 @@ async function walkConsultDispatch(
       Number.isSafeInteger(target.advSessionId) && target.advSessionId > 0 &&
       await d.checkEvidenceIncarnationOwnedBy(target, evidenceSource.sessionId);
     const launchTarget = historical ? { ...target, resumeId: String(target.advSessionId) } : target;
+    // P-002 / D-008: a brief quotes the evidence session's turns as the
+    // expert's. A coord binding that names ANOTHER owner contradicts that
+    // attribution, and so does a binding to a DIFFERENT native session than
+    // the evidence one that the incarnation proof did not cover (historical).
+    // Such a source keeps its untracked refusal unbriefed.
+    const briefAttributionContested =
+      (Boolean(target.binding?.coordOwnerId) && target.binding?.coordOwnerId !== target.ownerId) ||
+      (Boolean(boundNativeId) && evidenceSource !== null && boundNativeId !== evidenceSource.sessionId && !historical);
 
     let transcript: { available: boolean; detail: string; transcriptPath?: string };
     try {
@@ -1263,6 +1361,9 @@ async function walkConsultDispatch(
     // launch, and retain the refusal on each affected rank for the next-expert
     // cascade. Provider walls and native fork eligibility remain independent.
     let portTranscript: BackendAvailability | null = null;
+    // P-002 / D-008: ranks the session port skips ON PURPOSE. When nothing else
+    // dispatches, each is retried as a fresh session briefed with cited turns.
+    const briefRanks: AllowedExpertModel[] = [];
     for (const rank of ranks) {
       const plan = planDispatchOperation(
         {
@@ -1284,6 +1385,7 @@ async function walkConsultDispatch(
           reason: plan.reason,
           detail: plan.detail,
         });
+        if (BRIEF_FALLBACK_REASONS.has(plan.reason) && !briefAttributionContested) briefRanks.push(rank);
         continue;
       }
       const operation = plan.operation;
@@ -1390,6 +1492,62 @@ async function walkConsultDispatch(
       }
     }
 
+    // P-002 / D-008: the expert cannot be forked or converted on purpose, so
+    // launch a FRESH session under its own identity, briefed with the expert's
+    // cited turns. Every brief rank leaves a recorded outcome (R-12).
+    let citedTurns: CitedTranscriptTurn[] | null = null;
+    let citedTurnsFailure: string | null = null;
+    for (const rank of briefRanks) {
+      const base = { rank: rank.rank, agent: rank.agent, model: rank.model, operation: 'brief' as const };
+      if (!evidenceSource) {
+        attempts.push({ ...base, outcome: 'skipped', reason: 'evidence-span-unavailable',
+          detail: 'a cited-turn brief needs router-matched transcript turns; no evidence span was supplied' });
+        continue;
+      }
+      if (citedTurns === null && citedTurnsFailure === null) {
+        try {
+          citedTurns = await d.readCitedTurns(ctx.workspaceId, evidenceSource.sessionId,
+            evidenceSource.evidence.map((ref) => ref.turn_idx));
+          if (citedTurns.length === 0) {
+            citedTurnsFailure = `no text is readable for the cited turns of ${evidenceSource.sessionId} ` +
+              `(${evidenceSource.evidence.map((ref) => ref.turn_idx).join(', ')})`;
+          }
+        } catch (e) {
+          citedTurnsFailure = `reading the cited turns of ${evidenceSource.sessionId} failed: ` +
+            `${(e as Error)?.message ?? String(e)}`;
+        }
+      }
+      if (citedTurnsFailure || !citedTurns || citedTurns.length === 0) {
+        attempts.push({ ...base, outcome: 'skipped', reason: 'evidence-span-unavailable',
+          detail: citedTurnsFailure ?? 'no cited turns' });
+        continue;
+      }
+      const capacity = await d.probeBackendAvailable(rank.agent, ctx.workspaceId);
+      if (!capacity.available) {
+        attempts.push({ ...base, outcome: 'skipped', reason: 'account-walled', detail: capacity.detail });
+        continue;
+      }
+      const attempt = await launchAnsweringSession({
+        ...opts,
+        evidenceSource,
+        citedTurns,
+      }, ctx, d, target, rank, 'brief');
+      attempts.push(attempt.record);
+      if (attempt.record.reason === 'consult-closed') return give(attempt.record.detail);
+      if (attempt.record.outcome === 'dispatched') {
+        return {
+          dispatched: true,
+          answeringOwnerId: attempt.answeringOwnerId,
+          operation: 'brief',
+          agent: rank.agent,
+          model: rank.model,
+          verified: attempt.verified,
+          detail: attempt.record.detail,
+          attempts,
+        };
+      }
+    }
+
     return give(
       `every allowed expert model was exhausted for ${opts.sourceOwnerId} (${attempts.length} rank(s) tried): ` +
         attempts.map((a) => `#${a.rank} ${a.agent}/${a.model} ${a.reason ?? a.outcome}`).join('; '),
@@ -1406,6 +1564,8 @@ async function launchAnsweringSession(
     sourceOwnerId: string;
     conversationId: string;
     evidenceSource?: ConsultEvidenceSource;
+    /** `brief` only: the cited turns quoted into the fresh session's kickoff. */
+    citedTurns?: CitedTranscriptTurn[];
     brief: string | ((operation: DispatchOperation) => string);
     onAnsweringOwner?: (answeringOwnerId: string) => void | Promise<void>;
   },
@@ -1443,7 +1603,19 @@ async function launchAnsweringSession(
 
   let cmd: string;
   try {
-    cmd = d.buildAgentLaunchCommand({
+    cmd = operation === 'brief'
+      // P-002 / D-008: a FRESH session on the rank's backend. It names no source
+      // session, so nothing of the expert's transcript is replayed or ported.
+      ? d.buildAgentLaunchCommand({
+          mode: 'fresh',
+          agent: rank.agent,
+          model: rank.model,
+          modelSource: 'explicit',
+          headless: true,
+          account: providerForBackend(rank.agent) ? 'auto' : 'default',
+          ownerId: answeringOwnerId,
+        })
+      : d.buildAgentLaunchCommand({
       mode: operation === 'fork' ? 'fork' : 'resume',
       sessionId: target.sessionId,
       resumeId: target.resumeId ?? target.sessionId,
@@ -1492,7 +1664,8 @@ async function launchAnsweringSession(
   // Codex stores its rollout in a per-adv-session home; the transcript preflight
   // read that exact root, so carry it through the detached psu boundary or psu
   // can resume against a different home and report the source rollout missing.
-  const codexHome = target.agent === 'codex' ? codexHomeForSessionKey(target.advSessionId) : null;
+  const codexHome = target.agent === 'codex' && operation !== 'brief'
+    ? codexHomeForSessionKey(target.advSessionId) : null;
   // A fork can run its first turn before spawnHeadless returns: it starts the
   // child, then waits for boot/kickoff receipts. Publish the new identity before
   // crossing that boundary so consult:reply already recognizes the child.
@@ -1521,7 +1694,10 @@ async function launchAnsweringSession(
         // inside the console greeting one-liner breaks the shell.
         PAPERCUSP_KICKOFF_PROMPT:
           `${typeof opts.brief === 'function' ? opts.brief(operation) : opts.brief}` +
-          (opts.evidenceSource
+          (operation === 'brief' && opts.evidenceSource
+            ? `\n\n${renderCitedTurnsBlock({ ownerId: opts.sourceOwnerId, sessionId: opts.evidenceSource.sessionId },
+                opts.citedTurns ?? [])}`
+            : opts.evidenceSource
             ? `\n\nEXACT TRANSCRIPT EVIDENCE: ${opts.evidenceSource.evidence
                 .map((ref) => `${ref.session_id}#${ref.turn_idx}`).join('; ')}. ` +
               `These refs belong to this source session; use them as the grounding span.`
@@ -1537,7 +1713,7 @@ async function launchAnsweringSession(
           : {}),
       },
       greetingCmd: cmd,
-      cwd: target.cwd ?? envelope.cwd,
+      cwd: operation === 'brief' ? envelope.cwd : target.cwd ?? envelope.cwd,
     },
     // The envelope contains the superuser MCP door, but spawnHeadless only
     // materializes it in the fork's cwd when explicitly enabled. The answer
@@ -1817,6 +1993,11 @@ export function consultDispatchBrief(input: {
       ? `You are a FORK of ${input.sourceOwnerId}'s session: their history is above, and you are a NEW ` +
         `identity running alongside them. They were NOT notified and must not be — you answer from the ` +
         `transcript you inherited.`
+      : input.operation === 'brief'
+      ? `You are a FRESH answering session, briefed with turns CITED from ${input.sourceOwnerId}'s transcript. ` +
+        `You did NOT inherit or continue their session: you have only the quoted turns below, as evidence. ` +
+        `You are a NEW identity; their claims, locks, modes and work stay with them. They were NOT notified ` +
+        `and must not be. Answer from the cited turns, and say so when they do not cover the question.`
       : `You are an isolated answering session using ${input.sourceOwnerId}'s exact transcript: their history ` +
         `was carried across as evidence. You are a NEW identity; their claims, locks, modes and work stay ` +
         `with them. They were NOT notified and must not be. Answer from the transcript.`;

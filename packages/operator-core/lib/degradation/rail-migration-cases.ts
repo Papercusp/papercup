@@ -1240,7 +1240,7 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
       const query = parts.join('');
       if (query.includes('SELECT f.status, f.payload')) {
         if (unknown) throw new Error('exact subject unreadable');
-        return omitted ? [] : [{ status: healthy ? 'done' : 'open', holder_live: false, downstream: 1, payload: {} }];
+        return omitted ? [] : [{ status: healthy ? 'done' : 'failing', holder_live: false, downstream: 1, payload: {} }];
       }
       if (query.includes('FROM harness_shared.adv_sessions')) return healthy || omitted ? [] : [{ coord_owner_id: 'fixture-mug' }];
       if (query.includes('AS last_recovery_ms')) return placements;

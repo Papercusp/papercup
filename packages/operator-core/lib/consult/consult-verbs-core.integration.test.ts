@@ -728,6 +728,7 @@ describe('consultReplyCore — requester follow-up wake (budget REMOVED, consult
     if ('error' in r) throw new Error(r.error);
     expect(r.role).toBe('requester');
     expect(r.wake).toEqual({ attempted: true, woke: 1 }); // no budget surfaces at all
+    expect(r.hint).toContain('responder wake queued; turn pickup not confirmed');
     expect(reached).toEqual([{ responder: RESPONDER, conversationId: id }]);
     expect(emits).toHaveLength(0); // requester posts never fire the park key
     expect((await stateRow(id)).wakes_used).toBe(2);

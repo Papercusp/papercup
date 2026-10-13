@@ -345,6 +345,7 @@ export function selectPendingGoalConsults(rows: readonly GoalConsultArtifactRow[
 
 const TERMINAL_UNAVAILABLE_STATES = new Set([
   'no_qualified_responder',
+  'no_launchable_responder',
   'closed_cant_help',
   'declined',
   'graduated',

@@ -227,6 +227,8 @@ describe('routingHealthFromRows request cohort', () => {
       make('pending', { state: 'awaiting_responder', expires_at: iso(NOW + H) }),
       make('capacity', { state: 'no_available_responder', dispatch_attempts: [{ at: iso(T0 + H), dispatched: false, attempts: [{ outcome: 'skipped', reason: 'account-walled' }] }] }),
       make('failure', { state: 'expired', dispatch_attempts: [answerFailure(T0 + H, 'answerer', 'answer-window-expired')] }),
+      // Experts were selected but none could be launched: its own bucket, not 'unavailable' (R-2).
+      make('unlaunchable', { state: 'no_launchable_responder', dispatch_attempts: [launch(T0 + H, 'answerer', [{ outcome: 'failed', reason: 'launch-failed' }])] }),
       make('unknown-result'),
       make('old', { created_at: iso(T0 - H), has_feedback: true }),
       make('future', { created_at: iso(UNTIL), has_feedback: true }),
@@ -234,17 +236,17 @@ describe('routingHealthFromRows request cohort', () => {
     const health = routingHealthFromRows(population, { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
     const counts = health.requestCohort.totals;
     expect(counts).toEqual({
-      requests: 9, dispatchRequested: 7, retrievalOnly: 1, legacyIntentUnknown: 1,
-      outcomes: { received: 2, declined: 1, pending: 1, unavailable: 1, failed: 1, unmeasured: 1 },
+      requests: 10, dispatchRequested: 8, retrievalOnly: 1, legacyIntentUnknown: 1,
+      outcomes: { received: 2, declined: 1, pending: 1, unavailable: 1, unlaunchable: 1, failed: 1, unmeasured: 1 },
       followThrough: {
-        applicable: 9, notApplicable: 0, applicabilityUnknown: 0,
+        applicable: 10, notApplicable: 0, applicabilityUnknown: 0,
         recorded: { confirmed: 0, rescoped: 0, reversed: 0, moot: 0 },
-        unknown: 9, invalid: 0, recordedWithFeedback: 0, recordedWithoutFeedback: 0,
+        unknown: 10, invalid: 0, recordedWithFeedback: 0, recordedWithoutFeedback: 0,
       },
     });
     expect(counts.dispatchRequested + counts.retrievalOnly + counts.legacyIntentUnknown).toBe(counts.requests);
     expect(Object.values(counts.outcomes).reduce((sum, value) => sum + value, 0)).toBe(counts.dispatchRequested);
-    expect(health.totals.failed).toBe(2); // The distinct launch-attempt population is preserved.
+    expect(health.totals.failed).toBe(3); // The distinct launch-attempt population is preserved (incl. the unlaunchable row's failed launch).
     expect(health.requestCohort.window.cohort).toBe('request-time');
   });
 

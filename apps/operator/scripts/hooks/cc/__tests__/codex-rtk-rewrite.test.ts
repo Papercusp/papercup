@@ -35,6 +35,7 @@ function fakeRtk() {
 case "$2" in
   "git status") echo "rtk git status"; exit 0 ;;
   "cd /tmp && git log -n 3") echo "cd /tmp && rtk git log -n 3"; exit 3 ;;
+  "rg -n x . | "*) echo "rtk $2"; exit 0 ;;
   deny*) exit 2 ;;
   *vitest*) echo "rtk vitest"; exit 0 ;;
   *) exit 1 ;;
@@ -127,6 +128,20 @@ describe('decideCodexRtk', () => {
       expect(cmd('deny this')).toBeNull();
       expect(cmd('echo hi')).toBeNull();
       expect(cmd('RTK_DISABLED=1 git status')).toBeNull();
+    } finally {
+      fake.cleanup();
+    }
+  });
+
+  it('leaves a pipe into head alone, though rtk would rewrite it (WI-6554700010009543)', () => {
+    const fake = fakeRtk();
+    try {
+      const env = { [RTK_BIN_ENV]: fake.bin };
+      const cmd = (command: string) =>
+        decideCodexRtk({ toolName: 'Bash', toolInput: { command }, env })?.hookSpecificOutput.updatedInput.command ?? null;
+      // control: the fake rewrites this pipe shape, so a null below is the skip rule, not the fake
+      expect(cmd('rg -n x . | tail -5')).toBe('rtk rg -n x . | tail -5');
+      expect(cmd('rg -n x . | head -5')).toBeNull();
     } finally {
       fake.cleanup();
     }

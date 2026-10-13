@@ -344,8 +344,8 @@ export default defineTool({
     // counted against the 1500-char prompt-weight budget and is demand-loaded via
     // tools:find instead of baked into every system prompt (the WI-9334 pattern).
     returns:
-      'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), and lifecycle. Clearing the LAST blocker returns a feature blocked→todo, or drops the issue-family claim hold. Internal work-item dependencies are not represented here — those stay in work_items:link{rel:\'blocks\'} and plan blocked-by.',
-    when: 'Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Omitted legacy rows infer live-dependency, human rows product-decision. Use a stable ref and name the concrete nextVerb when one exists.',
+      'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), and lifecycle. Clearing the LAST blocker returns a feature blocked→todo, or drops the issue-family claim hold. Internal work-item dependencies are not represented here — those stay in work_items:link{rel:\'blocks\'} and plan blocked-by. Omitted legacy rows infer live-dependency; human rows infer product-decision.',
+    when: "Work cannot proceed until a named event fires, a gate changes, runtime/external state is ready, or a human capability is available. A reversible judgment call is a park: kind:'product-decision' + defaultIfUnanswered + decideBy opens a peer review that proceeds on silence. Use a stable ref; name nextVerb when one exists.",
     notWhen:
       "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source). A vague concern with no actual stop condition is a comment, not a blocker. Do not block ordinary implementation on main/:3070/green-checkpoint — staging/current-build is the acceptance plane; only final shipment or a named deployed-only property waits on the release plane.",
     chaining:
@@ -637,7 +637,9 @@ export default defineTool({
         let parkOpened: import('../../consult/park-door').ParkOpened | null = null;
         if (!input.clear && input.kind === 'human' && input.capability === 'product-decision') {
           const parkDoor = await import('../../consult/park-door');
-          const activeRefs = activeExternalBlockers(workItem.payload).map((blocker) => blocker.ref);
+          const activeRefs = activeExternalBlockers(workItem.payload)
+            .filter((blocker) => blocker.kind === 'human' && blocker.capability === 'product-decision')
+            .map((blocker) => blocker.ref);
           if (!parkDoor.isParkReassertion(input.ref, activeRefs)) {
             if (input.defaultAction !== undefined) {
               return {

@@ -272,6 +272,9 @@ decision, `coord:ask-owner`.)
 
 Interactive (human-present) PSU sessions can still take a fast redirect from the owner, but the default is resolve-don't-relay.
 
+**A reversible judgment call you could make yourself is not an owner wall — park it.** Call `work_items:set_blocker { id, kind:'product-decision', ref, defaultIfUnanswered, decideBy }`: it opens a peer review of your default, objections must carry an alternative, and silence by the deadline means proceed. Only owner-authority topics (spend, destructive, publish, credentials, security) wait for the owner.
+
+
 ⛔ **Before reporting an OWNER-GATED credential/permission wall, exhaust the privilege you hold — here `sudo -n` is `NOPASSWD: ALL`.** Escalating after probing only the *unprivileged* path hands the owner a chore you could have done.
 
 ```bash
