@@ -17,8 +17,17 @@
  * The capture trigger FUNCTION is stubbed no-op (its real body drags the whole
  * outbox dependency chain in; the wire SHAPE is asserted via to_jsonb directly).
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
+
+// These tests exercise the store's SQL and eviction ranking against a throwaway
+// database. Owner notices are covered by notify-evicted.test.ts; letting this
+// suite send them through the real coord adapter escapes the fixture and can
+// reach the protected live org-admin pool.
+vi.mock('./notify-evicted', () => ({
+  notifyEvictedFactOwners: async () => [],
+}));
+
 import {
   assertFact,
   retractFact,

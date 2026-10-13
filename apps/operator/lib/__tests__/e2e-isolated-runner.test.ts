@@ -22,7 +22,18 @@ const ISOLATED_WS = 'verify-tauri-isolated-99';
 
 const dirs: string[] = [];
 afterEach(() => {
-  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+  while (dirs.length) {
+    const dir = dirs.pop()!;
+    const timingPath = join(dir, 'harness-timing.txt');
+    if (existsSync(timingPath)) {
+      const timing = readFileSync(timingPath, 'utf8');
+      const rows = timing.trim().split('\n');
+      if (rows.at(-1)?.startsWith('start ')) {
+        console.info(`OPEN_HARNESS_PHASE dir=${dir}\n${timing}`);
+      }
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color' = 'bare') {
@@ -133,6 +144,7 @@ function run(
   f: ReturnType<typeof fixture>,
   args: string[],
   env: Record<string, string> = {},
+  timeoutMs = 30_000,
 ) {
   const base: NodeJS.ProcessEnv = { ...process.env };
   for (const k of [
@@ -165,15 +177,25 @@ function run(
       OPERATOR_E2E_PLAYWRIGHT: f.pw,
       OPERATOR_E2E_NETNS_WRAPPER: f.netns,
       E2E_FIXTURE_VITE_CWD: f.viteCwd,
+      OPERATOR_E2E_HARNESS_EVIDENCE_ROOT: join(f.dir, 'evidence'),
+      VH_TSX: f.harnessTsx,
       PATH: `${f.dir}:${base.PATH ?? ''}`,
       ...env,
     },
     encoding: 'utf8',
-    timeout: 30_000,
+    timeout: timeoutMs,
   });
   const recorded = existsSync(f.record) ? JSON.parse(readFileSync(f.record, 'utf8')) : null;
   const viteCwd = existsSync(f.viteCwd) ? readFileSync(f.viteCwd, 'utf8').trim() : null;
-  return { status: res.status, out: `${res.stdout}\n${res.stderr}`, recorded, viteCwd };
+  const errorCode = res.error && 'code' in res.error ? res.error.code : null;
+  const harnessTiming = existsSync(f.harnessTiming)
+    ? readFileSync(f.harnessTiming, 'utf8') : 'harness CLI never started';
+  const processResult = `RUNNER_PROCESS_RESULT ${JSON.stringify({ status: res.status, signal: res.signal, errorCode })}`;
+  return {
+    status: res.status, signal: res.signal, errorCode,
+    out: `${res.stdout}\n${res.stderr}\n${processResult}\n${harnessTiming}`,
+    recorded, viteCwd, harnessTiming,
+  };
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
