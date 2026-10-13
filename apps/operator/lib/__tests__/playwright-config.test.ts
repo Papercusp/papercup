@@ -6,6 +6,13 @@ import { preparePlaywrightTempDirectory } from '../../../../scripts/ensure-playw
 
 const OPERATOR_DIR = resolve(__dirname, '../..');
 const E2E_DIR = join(OPERATOR_DIR, 'e2e');
+// Budget for each Playwright CLI child below. Each child transforms its spec graph through
+// Playwright's Babel loader, whose cache (under os.tmpdir(), keyed by file path and content) is
+// cold in the gate's isolated checkout. Measured 2026-10-13 (WI-6554700010009809) at load ~380
+// on 128 cores: the native-collection graph run took 75.6s with a fresh cache and 13.5s warm, so
+// the former 30s cap failed cold gate runs while passing on warm dev trees. 180s mirrors the
+// gate's VITEST_UNIT_TIMEOUT_MS budget for cold heavy imports; a real hang still fails, later.
+const PLAYWRIGHT_CHILD_TIMEOUT_MS = 180_000;
 
 type WebServerConfig = {
   command?: string;
@@ -26,7 +33,7 @@ describe('Playwright temporary allocation admission (EI-25339618434256268)', () 
     const listing = execFileSync(process.execPath, [
       require.resolve('@playwright/test/cli'), 'test', '--list',
       'e2e/ongoing-work-ui.spec.ts', 'e2e/ongoing-work-native-collection.spec.mts', '--reporter=list',
-    ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: 30000 });
+    ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: PLAYWRIGHT_CHILD_TIMEOUT_MS });
     expect(listing).toContain('native collection fixture writer graph loads');
     expect(listing).toContain('native declared collections persist controls');
     expect(listing).toContain('declared plans collection preserves owner order');
@@ -40,11 +47,11 @@ describe('Playwright temporary allocation admission (EI-25339618434256268)', () 
       require.resolve('@playwright/test/cli'), 'test',
       'e2e/ongoing-work-ui.spec.ts', 'e2e/ongoing-work-native-collection.spec.mts', '--workers=1',
       '--grep', 'native collection fixture writer graph loads',
-    ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: 30000,
+    ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: PLAYWRIGHT_CHILD_TIMEOUT_MS,
       env: { ...process.env, OPERATOR_E2E_REUSE_SERVER: '1', OPERATOR_E2E_SKIP_WARMUP: '1',
         PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '0' } });
     expect(run).toMatch(/1 passed/);
-  });
+  }, 2 * PLAYWRIGHT_CHILD_TIMEOUT_MS + 10_000);
 
   const healthy = { type: 1, bsize: 4096, blocks: 1048576, bfree: 1048576, bavail: 1048576, files: 10000, ffree: 9000 };
 
@@ -104,10 +111,10 @@ describe('Playwright isolated webServer contract', () => {
   it('loads the preflight through Playwright native config transformation before collecting specs', () => {
     const listing = execFileSync(process.execPath, [
       require.resolve('@playwright/test/cli'), 'test', '--list', 'e2e/plan-audit.spec.ts', '--reporter=list',
-    ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: 30000 });
+    ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: PLAYWRIGHT_CHILD_TIMEOUT_MS });
     expect(listing).toContain('sidebar audit opens report, navigates evidence, and reopens history');
     expect(listing).toMatch(/Total: 1 test in 1 file/);
-  });
+  }, PLAYWRIGHT_CHILD_TIMEOUT_MS + 10_000);
 
   it('passes the selected port strictly and preserves Vite startup diagnostics', async () => {
     const previousPort = process.env.OPERATOR_E2E_PORT;
