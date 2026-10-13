@@ -202,6 +202,9 @@ async function resolveBin(name: string): Promise<string | null> {
   return null;
 }
 
+/** Absolute path of an executable on PATH, or null. */
+export const resolveCensusBin = resolveBin;
+
 export interface DuRun {
   summary: DuTreeSummary;
   deniedCount: number;
@@ -211,6 +214,57 @@ export interface DuRun {
   error?: string;
   /** The walk ran as root (via sudo, or the process is root): every store root was readable to du. */
   privileged?: boolean;
+  /** How the walk ran when that matters to the reader (detached, adopted after a restart, relaunched). */
+  walkNote?: string;
+}
+
+/**
+ * Incremental parser for one du walk: NUL-separated `<bytes>\t<path>` records on stdout
+ * into the consumer tree, `Permission denied` lines on stderr into a count + sample.
+ * Shared by the piped walk (runDuTree) and the detached walk that reads its files back.
+ */
+export class DuOutputParser {
+  deniedCount = 0;
+  readonly deniedSample: string[] = [];
+  private pending = '';
+  private errPending = '';
+
+  constructor(private readonly acc: DuTreeAccumulator) {}
+
+  stdout(chunk: string): void {
+    this.pending += chunk;
+    const parts = this.pending.split('\0');
+    this.pending = parts.pop() ?? '';
+    for (const record of parts) this.acc.addRecord(record);
+  }
+
+  stderr(chunk: string): void {
+    this.errPending += chunk;
+    const lines = this.errPending.split('\n');
+    this.errPending = lines.pop() ?? '';
+    for (const line of lines) this.deniedLine(line);
+  }
+
+  /** Flush the unterminated tails; call once, after both streams ended. */
+  end(): DuTreeSummary {
+    if (this.pending) this.acc.addRecord(this.pending);
+    this.pending = '';
+    if (this.errPending) this.deniedLine(this.errPending);
+    this.errPending = '';
+    return this.acc.result();
+  }
+
+  private deniedLine(line: string): void {
+    if (!/Permission denied/.test(line)) return;
+    this.deniedCount += 1;
+    const m = /'([^']+)'/.exec(line);
+    if (m && this.deniedSample.length < 10) this.deniedSample.push(m[1]!);
+  }
+}
+
+/** du arguments for one census walk: one filesystem, NUL-separated, byte units, `maxDepth` levels. */
+export function censusDuArgs(root: string, maxDepth: number = CENSUS_MAX_DEPTH): string[] {
+  return ['-x', '-0', '-B1', `--max-depth=${maxDepth}`, root];
 }
 
 /** Run du over one mount at low priority and stream it into a consumer tree. */
@@ -221,7 +275,7 @@ export async function runDuTree(
   const floorBytes = opts.floorBytes ?? CENSUS_FLOOR_BYTES;
   const maxDepth = opts.maxDepth ?? CENSUS_MAX_DEPTH;
   const acc = new DuTreeAccumulator(root, { floorBytes, maxDepth });
-  const duArgs = ['-x', '-0', '-B1', `--max-depth=${maxDepth}`, root];
+  const duArgs = censusDuArgs(root, maxDepth);
   const privileged = Boolean(opts.sudo) || process.getuid?.() === 0;
   // Best-effort I/O at the lowest level, not the idle class: see CENSUS_IONICE_ARGS.
   // sudo relays the timeout's SIGTERM to du, so the 90 min cap still ends the walk.
@@ -231,10 +285,7 @@ export async function runDuTree(
     sudo: opts.sudo ?? null,
   });
   return new Promise<DuRun>((resolve) => {
-    let deniedCount = 0;
-    const deniedSample: string[] = [];
-    let pending = '';
-    let errPending = '';
+    const parser = new DuOutputParser(acc);
     let timedOut = false;
     let error: string | undefined;
     const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -243,34 +294,19 @@ export async function runDuTree(
       child.kill('SIGTERM');
     }, opts.timeoutMs ?? CENSUS_DU_TIMEOUT_MS);
     child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      pending += chunk;
-      const parts = pending.split('\0');
-      pending = parts.pop() ?? '';
-      for (const record of parts) acc.addRecord(record);
-    });
+    child.stdout.on('data', (chunk: string) => parser.stdout(chunk));
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => {
-      errPending += chunk;
-      const lines = errPending.split('\n');
-      errPending = lines.pop() ?? '';
-      for (const line of lines) {
-        if (!/Permission denied/.test(line)) continue;
-        deniedCount += 1;
-        const m = /'([^']+)'/.exec(line);
-        if (m && deniedSample.length < 10) deniedSample.push(m[1]!);
-      }
-    });
+    child.stderr.on('data', (chunk: string) => parser.stderr(chunk));
     child.on('error', (err) => {
       error = err.message;
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (pending) acc.addRecord(pending);
+      const summary = parser.end();
       resolve({
-        summary: acc.result(),
-        deniedCount,
-        deniedSample,
+        summary,
+        deniedCount: parser.deniedCount,
+        deniedSample: parser.deniedSample,
         timedOut,
         exitCode: code,
         privileged,
@@ -568,75 +604,126 @@ export function censusPhaseNote(walkMs: number, attributionMs: number, ownFilesD
   return `phases: walk ${s(walkMs)} s, attribution ${s(attributionMs)} s (${ownFilesDirs} own-files dir(s))`;
 }
 
-/** One census pass over every watched device, then the 30-day prune. Never throws per device. */
-export async function runDiskConsumerCensusOnce(
-  deps: CensusDeps = {},
-): Promise<{ skipped?: string; runs: CensusRunResult[]; failures: Array<{ device: string; error: string }>; pruned: number }> {
-  if (process.platform !== 'linux' && !deps.runDu) return { skipped: `unsupported platform ${process.platform}`, runs: [], failures: [], pruned: 0 };
+/**
+ * What one census pass resolves once before walking its devices. Plain JSON, so the
+ * durable workflow records it as a step result and replays the SAME device list after a
+ * restart instead of re-resolving it.
+ */
+export interface CensusPass {
+  host: string;
+  devices: CensusDevice[];
+  stores: Array<ApiSizedStore | null>;
+  /** sudo binary for a privileged walk, or null for unprivileged. */
+  sudo: string | null;
+}
+
+export type CensusDeviceOutcome =
+  | { run: CensusRunResult; failure?: undefined }
+  | { run?: undefined; failure: { device: string; error: string } };
+
+/** Resolve one pass: the devices, the API-sized stores, and the walk's privilege (probed once). */
+export async function prepareCensusPass(deps: CensusDeps = {}): Promise<{ skipped: string } | CensusPass> {
+  if (process.platform !== 'linux' && !deps.runDu) return { skipped: `unsupported platform ${process.platform}` };
   const sql = deps.sql ?? (await defaultSql());
-  const host = deps.host ?? hostname();
-  const now = deps.now ?? (() => new Date());
-  const floorBytes = deps.floorBytes ?? CENSUS_FLOOR_BYTES;
-  const maxDepth = deps.maxDepth ?? CENSUS_MAX_DEPTH;
   const devices = deps.devices ?? (await resolveCensusDevices());
   const stores = await Promise.all([
     (deps.measurePostgres ?? measurePostgres)(sql).catch(() => null),
     (deps.measureDocker ?? measureDocker)().catch(() => null),
   ]);
   const sudo = await (deps.resolveSudo ?? resolveCensusSudo)().catch(() => null);
+  return { host: deps.host ?? hostname(), devices, stores, sudo };
+}
+
+/** One census pass over every watched device, then the 30-day prune. Never throws per device. */
+export async function runDiskConsumerCensusOnce(
+  deps: CensusDeps = {},
+): Promise<{ skipped?: string; runs: CensusRunResult[]; failures: Array<{ device: string; error: string }>; pruned: number }> {
+  const pass = await prepareCensusPass(deps);
+  if ('skipped' in pass) return { skipped: pass.skipped, runs: [], failures: [], pruned: 0 };
   const runs: CensusRunResult[] = [];
   const failures: Array<{ device: string; error: string }> = [];
+  for (const resolved of pass.devices) {
+    const outcome = await censusOneDevice(pass, resolved, deps);
+    if (outcome.run) runs.push(outcome.run);
+    else failures.push(outcome.failure);
+  }
+  const pruned = await pruneCensusPass(deps);
+  return { runs, failures, pruned };
+}
+
+/** The pass's closing 30-day prune of run rows; returns the runs removed. */
+export async function pruneCensusPass(deps: CensusDeps = {}): Promise<number> {
+  const sql = deps.sql ?? (await defaultSql());
+  return pruneDiskCensus(sql, (deps.now ?? (() => new Date()))());
+}
+
+/**
+ * Walk one device, attribute it, and write its run row in one transaction. Never throws:
+ * a failure is returned. The durable census runs this as one step per device, so a
+ * recovered workflow skips every device whose row is already written.
+ */
+export async function censusOneDevice(
+  pass: CensusPass,
+  resolved: CensusDevice,
+  deps: CensusDeps = {},
+): Promise<CensusDeviceOutcome> {
+  const { host, stores, sudo } = pass;
+  const now = deps.now ?? (() => new Date());
+  const floorBytes = deps.floorBytes ?? CENSUS_FLOOR_BYTES;
+  const maxDepth = deps.maxDepth ?? CENSUS_MAX_DEPTH;
   const statDevice = deps.statDevice === null ? null : (deps.statDevice ?? statCensusDevice);
-  for (const resolved of devices) {
-    const startedAt = now();
-    try {
-      // Devices are resolved once per pass but walked one after another (a `/` walk takes
-      // ~40 min), so the resolved used bytes are stale by the time a later device is walked.
-      // Re-sample statfs around this walk and reconcile against the midpoint.
-      const before = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
-      const walkStarted = Date.now();
-      const du = await (deps.runDu ?? runDuTree)(resolved.device, { floorBytes, maxDepth, sudo });
-      const walkMs = Date.now() - walkStarted;
-      const after = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
-      const { device, note: usageNote } = reconcileWalkUsage(resolved, before, after);
-      const attributionStarted = Date.now();
-      const { consumers, attributedBytes, unattributedBytes, ownFilesNotes } = await buildDeviceConsumers(
-        device,
-        du,
-        stores,
-        floorBytes,
-        { sudo, ...(deps.listOwnFiles ? { listOwnFiles: deps.listOwnFiles } : {}) },
-      );
-      const attributionMs = Date.now() - attributionStarted;
-      const finishedAt = now();
-      const complete = !du.timedOut && !du.error && du.summary.rootBytes !== null;
-      const notes = [
-        du.privileged ? 'du walked as root (sudo -n)' : 'du walked unprivileged (sudo -n unavailable)',
-        censusPhaseNote(walkMs, attributionMs, du.summary.ownFiles.length),
-        ...ownFilesNotes,
-        usageNote,
-        du.timedOut ? 'du timed out; sizes are lower bounds' : null,
-        du.error ? `du failed: ${du.error}` : null,
-        du.deniedCount > 0 ? `${du.deniedCount} unreadable path(s), e.g. ${du.deniedSample.slice(0, 5).join(', ')}` : null,
-        // Shared extents (XFS/btrfs reflink clones) are counted once per FILE by du but
-        // once on disk, so consumer sizes can sum past the device's used bytes.
-        attributedBytes > device.usedBytes
-          ? `attributed exceeds used by ${((attributedBytes - device.usedBytes) / 1024 ** 3).toFixed(1)} GiB: shared (reflinked) extents are counted per file`
-          : null,
-      ].filter(Boolean);
-      const runId = randomUUID();
-      await writeCensusRun(sql, {
-        runId,
-        host,
-        device,
-        startedAt,
-        finishedAt,
-        attributedBytes,
-        complete,
-        note: notes.length ? notes.join('; ') : null,
-        consumers,
-      });
-      runs.push({
+  const startedAt = now();
+  try {
+    const sql = deps.sql ?? (await defaultSql());
+    // Devices are resolved once per pass but walked one after another (a `/` walk takes
+    // ~40 min), so the resolved used bytes are stale by the time a later device is walked.
+    // Re-sample statfs around this walk and reconcile against the midpoint.
+    const before = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
+    const walkStarted = Date.now();
+    const du = await (deps.runDu ?? runDuTree)(resolved.device, { floorBytes, maxDepth, sudo });
+    const walkMs = Date.now() - walkStarted;
+    const after = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
+    const { device, note: usageNote } = reconcileWalkUsage(resolved, before, after);
+    const attributionStarted = Date.now();
+    const { consumers, attributedBytes, unattributedBytes, ownFilesNotes } = await buildDeviceConsumers(
+      device,
+      du,
+      stores,
+      floorBytes,
+      { sudo, ...(deps.listOwnFiles ? { listOwnFiles: deps.listOwnFiles } : {}) },
+    );
+    const attributionMs = Date.now() - attributionStarted;
+    const finishedAt = now();
+    const complete = !du.timedOut && !du.error && du.summary.rootBytes !== null;
+    const notes = [
+      du.privileged ? 'du walked as root (sudo -n)' : 'du walked unprivileged (sudo -n unavailable)',
+      censusPhaseNote(walkMs, attributionMs, du.summary.ownFiles.length),
+      du.walkNote ?? null,
+      ...ownFilesNotes,
+      usageNote,
+      du.timedOut ? 'du timed out; sizes are lower bounds' : null,
+      du.error ? `du failed: ${du.error}` : null,
+      du.deniedCount > 0 ? `${du.deniedCount} unreadable path(s), e.g. ${du.deniedSample.slice(0, 5).join(', ')}` : null,
+      // Shared extents (XFS/btrfs reflink clones) are counted once per FILE by du but
+      // once on disk, so consumer sizes can sum past the device's used bytes.
+      attributedBytes > device.usedBytes
+        ? `attributed exceeds used by ${((attributedBytes - device.usedBytes) / 1024 ** 3).toFixed(1)} GiB: shared (reflinked) extents are counted per file`
+        : null,
+    ].filter(Boolean);
+    const runId = randomUUID();
+    await writeCensusRun(sql, {
+      runId,
+      host,
+      device,
+      startedAt,
+      finishedAt,
+      attributedBytes,
+      complete,
+      note: notes.length ? notes.join('; ') : null,
+      consumers,
+    });
+    return {
+      run: {
         runId,
         device: device.device,
         complete,
@@ -645,13 +732,11 @@ export async function runDiskConsumerCensusOnce(
         attributedBytes,
         unattributedBytes,
         durationMs: finishedAt.getTime() - startedAt.getTime(),
-      });
-    } catch (err) {
-      failures.push({ device: resolved.device, error: (err as Error)?.message ?? String(err) });
-    }
+      },
+    };
+  } catch (err) {
+    return { failure: { device: resolved.device, error: (err as Error)?.message ?? String(err) } };
   }
-  const pruned = await pruneDiskCensus(sql, now());
-  return { runs, failures, pruned };
 }
 
 export async function writeCensusRun(
