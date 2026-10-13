@@ -11,14 +11,23 @@ import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 import {
   auditInstrumentBindings,
+  budgetUtilisationPct,
   getRegisteredInstrument,
   instrumentRegistry,
   isManualInstrumentKey,
+  memoryPagingBudgetPct,
+  parseAnonBudgetPct,
   parseCgroupUsageUsec,
+  parseDfMaxPercent,
   parseDfPercent,
+  parseHttpTimesP95Ms,
   parseLoadavg1,
+  parseLoopProfileBudgetPct,
+  parseMaxPsiAvg,
   parseOldestDockerAgeSec,
+  parsePsiAvg,
   parsePsiAvg10,
+  parseSpaInitialJsBudgetPct,
   platformComputedInstrumentKeys,
   registeredInstrumentKeys,
   runInstrument,
@@ -232,5 +241,116 @@ describe('auditInstrumentBindings (the authoring guard)', () => {
     expect(refusal?.error).toContain("b → 'testing:run'");
     expect(refusal?.registeredKeys).toContain('host:psi-cpu-some-avg10-pct');
     expect(refusal?.next).toContain("instrumentKey:'none'");
+  });
+});
+
+// test-rubric-unification-2026-10-12 P-010 (R-10, plan D-009): the papercusp-app-performance
+// instruments. Each parser is pinned in BOTH directions — a budget breach reads above 100 and a
+// reshaped/missing input reads null (an error row), never a low value that would rate "meets".
+describe('papercusp-app-performance instruments (P-010)', () => {
+  const NOW = Date.parse('2026-10-13T12:00:00Z');
+  const CG_PSI = (some60: number) => `some avg10=0.00 avg60=${some60.toFixed(2)} avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n`;
+
+  it('reads PSI at any window, and the worst serving cgroup only when every file parsed', () => {
+    expect(parsePsiAvg(PSI_SAMPLE, 'some', 'avg300')).not.toBeNull();
+    expect(parsePsiAvg('some avg10=1.00 total=3', 'some', 'avg60')).toBeNull();
+    expect(parseMaxPsiAvg(CG_PSI(0.5) + CG_PSI(7.25) + CG_PSI(1), 'some', 'avg60', 3)).toBe(7.25);
+    // A stopped service contributes no file: two lines where three were expected is not "low".
+    expect(parseMaxPsiAvg(CG_PSI(0.5) + CG_PSI(1), 'some', 'avg60', 3)).toBeNull();
+  });
+
+  it('takes the fullest filesystem from a multi-row df', () => {
+    expect(parseDfMaxPercent('Use%\n 95%\n 91%\n  1%\n')).toBe(95);
+    expect(parseDfMaxPercent('Use%\n')).toBeNull();
+  });
+
+  it('computes nearest-rank p95 of curl time_total in ms; any non-number is null', () => {
+    const samples = [...Array.from({ length: 14 }, () => '0.002'), '0.419'].join('\n');
+    expect(parseHttpTimesP95Ms(samples)).toBe(419);
+    expect(parseHttpTimesP95Ms('0.004\n0.003\n')).toBe(4);
+    expect(parseHttpTimesP95Ms('0.004\ncurl: (7) Failed to connect\n')).toBeNull();
+    expect(parseHttpTimesP95Ms('')).toBeNull();
+  });
+
+  it('budget utilisation is the WORST sub-target in percent; a non-positive budget is null', () => {
+    expect(budgetUtilisationPct([{ value: 765, budget: 500 }, { value: 30, budget: 60 }])).toBe(153);
+    expect(budgetUtilisationPct([{ value: 10, budget: 0 }])).toBeNull();
+    expect(budgetUtilisationPct([])).toBeNull();
+  });
+
+  it('counts only last-24h saturation profiles and reads the worst p95 lag', () => {
+    const name = (agoH: number, p95: number) => `loop-saturation-${NOW - agoH * 3600_000}-pid1-p95_${p95}ms.cpuprofile`;
+    const listing = ['stalls', name(1, 30), name(2, 989), name(30, 5000)].join('\n');
+    // 2 in window (40% of 5/day), worst 989 ms (197.8% of 500 ms) → 197.8
+    expect(parseLoopProfileBudgetPct(listing, { now: NOW }, { maxPerDay: 5, maxP95Ms: 500 })).toBe(197.8);
+    expect(parseLoopProfileBudgetPct('stalls\n', { now: NOW }, { maxPerDay: 5, maxP95Ms: 500 })).toBe(0);
+  });
+
+  it('reads anon (never anon_thp or file) per service in argv order; a missing service is null', () => {
+    const stat = (anon: number) => `anon ${anon}\nfile 99999999999\nanon_thp 5\n`;
+    expect(parseAnonBudgetPct(stat(12.9e9) + stat(3.4e9), [6e9, 4e9])).toBe(215);
+    expect(parseAnonBudgetPct(stat(3e9) + stat(2e9), [6e9, 4e9])).toBe(50);
+    expect(parseAnonBudgetPct(stat(3e9), [6e9, 4e9])).toBeNull();
+  });
+
+  it('memory paging takes the worse of PSI avg60 and the swap-in rate between two samples', () => {
+    const sample = (psi60: number, pswpin: number) =>
+      `some avg10=0.00 avg60=${psi60.toFixed(2)} avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\nnr_free_pages 1\npswpin ${pswpin}\n`;
+    // 6,103 pages × 4096 B over 5 s = 5.0 MB/s → 500% of 1 MB/s; PSI 1% → 20% of 5%.
+    expect(memoryPagingBudgetPct(sample(1, 1000), sample(1, 7103), 5000, { maxPsiPct: 5, maxSwapInMBps: 1 })).toBe(500);
+    expect(memoryPagingBudgetPct(sample(2.5, 1000), sample(2.5, 1000), 5000, { maxPsiPct: 5, maxSwapInMBps: 1 })).toBe(50);
+    expect(memoryPagingBudgetPct(sample(1, 1000), 'nonsense', 5000, { maxPsiPct: 5, maxSwapInMBps: 1 })).toBeNull();
+  });
+
+  it('reads the SPA script output as the worse of gzip KB and file count', () => {
+    expect(parseSpaInitialJsBudgetPct('{"files":183,"rawBytes":2376000,"gzipBytes":765000}', { maxGzipKB: 500, maxFiles: 60 })).toBe(305);
+    expect(parseSpaInitialJsBudgetPct('{"files":20,"gzipBytes":250000}', { maxGzipKB: 500, maxFiles: 60 })).toBe(50);
+    expect(parseSpaInitialJsBudgetPct('not json', { maxGzipKB: 500, maxFiles: 60 })).toBeNull();
+  });
+
+  it('registers every key D-009 binds, each as a runnable command instrument', () => {
+    for (const key of [
+      'host:psi-cpu-some-avg300-pct',
+      'host:psi-io-some-avg60-pct',
+      'host:cgroup-serving-cpu-pressure-some-avg60-max-pct',
+      'host:memory-paging-budget-pct',
+      'host:df-max-used-pct',
+      'host:http-health-p95-ms',
+      'host:loop-profile-budget-pct',
+      'host:serving-anon-budget-pct',
+      'static:spa-initial-js-budget-pct',
+    ]) {
+      expect(getRegisteredInstrument(key)?.evaluator, key).toBe('command');
+    }
+  });
+
+  it('a raw two-sample instrument hands BOTH stdouts to combine after the interval', async () => {
+    const outputs = [
+      'some avg10=0.00 avg60=1.00 avg300=0.00 total=1\npswpin 1000\n',
+      'some avg10=0.00 avg60=1.00 avg300=0.00 total=1\npswpin 7103\n',
+    ];
+    const times = [NOW, NOW + 5000];
+    const slept: number[] = [];
+    const reading = await runInstrument('host:memory-paging-budget-pct', {
+      exec: async () => outputs.shift()!,
+      now: () => times.shift()!,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    expect(slept).toEqual([5000]);
+    expect(reading).toMatchObject({ key: 'host:memory-paging-budget-pct', unit: '%', value: 500 });
+    expect(reading.error).toBeUndefined();
+  });
+
+  it('a raw two-sample instrument whose second sample is reshaped reads null with an error', async () => {
+    const outputs = ['some avg10=0.00 avg60=1.00 avg300=0.00 total=1\npswpin 1000\n', 'garbage'];
+    const reading = await runInstrument('host:memory-paging-budget-pct', {
+      exec: async () => outputs.shift()!,
+      now: () => NOW,
+      sleep: async () => {},
+    });
+    expect(reading.value).toBeNull();
+    expect(reading.error).toBe('second sample did not parse');
   });
 });
