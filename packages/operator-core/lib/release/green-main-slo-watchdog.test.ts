@@ -340,6 +340,27 @@ describe('green-main SLO keyed lifecycle (original producer)', () => {
     expect(res.deliveries.every((d) => d.error === 'notification failed')).toBe(true);
   });
 
+  it('a malformed condition census preserves legacy delivery and reports the missing instrument', async () => {
+    const res = await runGreenMainSloPass(deps({ ...red, readConditions: async () => ({}) as never }));
+    expect(res.deliveries).toHaveLength(2);
+    expect(res.conditionErrors).toEqual(['read conditions: invalid condition census']);
+  });
+
+  it.each([
+    { judgedBatches: 5, redBatches: 6 },
+    { judgedBatches: -1, redBatches: 0 },
+    { judgedBatches: 5, redBatches: -1 },
+    { judgedBatches: NaN, redBatches: 0 },
+    { judgedBatches: 5, redBatches: 0, observedAtMs: NOW + 1 },
+  ])('invalid sync measurements cannot open or resolve rate episodes: %j', async (tally) => {
+    const h = railStore();
+    await h.run({ readSyncTallies: async () => [{ fleet: 'f', judgedBatches: 5, redBatches: 3, observedAtMs: NOW }] });
+    const res = await h.run({ readSyncTallies: async () => [{ fleet: 'f', ...tally }] });
+    expect(h.opens).toHaveLength(1);
+    expect(h.closed).toEqual([]);
+    expect(res.readErrors).toEqual([{ input: 'syncTallies', message: 'invalid syncTallies measurement' }]);
+  });
+
   it('a refused resolution preserves the durable episode and exposes failure', async () => {
     const h = railStore();
     await h.run(red);
@@ -388,6 +409,8 @@ describe('green-main SLO keyed lifecycle (original producer)', () => {
         { round: 4, head: 'h4', failingCount: 3, atMs: NOW + 30 * 60_000 }],
     };
     await h.run({ nowMs: NOW + HOUR, readQueue: async () => ({ ...recovered, candidate: 'candidate-other' }) });
+    expect(h.closed).toEqual([]);
+    await h.run({ nowMs: NOW + HOUR, readQueue: async () => ({ ...recovered, lastVerdictAtMs: NOW + 2 * HOUR }) });
     expect(h.closed).toEqual([]);
     await h.run({ nowMs: NOW + HOUR, readQueue: async () => recovered });
     expect(h.closed).toHaveLength(3);

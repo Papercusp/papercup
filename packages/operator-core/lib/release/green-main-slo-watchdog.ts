@@ -179,7 +179,11 @@ export async function runGreenMainSloPass(deps: GreenMainSloPassDeps): Promise<G
     read('lastGreenAt', deps.readLastGreenAtMs, null, (v) => v === null || epoch(v, deps.nowMs)),
     read('lastVerdictAt', deps.readLastVerdictAtMs, null, (v) => v === null || epoch(v, deps.nowMs)),
     read('queue', deps.readQueue, null, (v) => measuredQueue(v, deps.nowMs)),
-    deps.readSyncTallies ? read('syncTallies', deps.readSyncTallies, null) : Promise.resolve(null),
+    deps.readSyncTallies ? read('syncTallies', deps.readSyncTallies, null, (v) => v === null ||
+      (Array.isArray(v) && v.every((t) => t && (t.fleet === null || typeof t.fleet === 'string') &&
+        Number.isInteger(t.judgedBatches) && t.judgedBatches >= 0 && Number.isInteger(t.redBatches) &&
+        t.redBatches >= 0 && t.redBatches <= t.judgedBatches &&
+        (t.observedAtMs === undefined || epoch(t.observedAtMs, deps.nowMs))))) : Promise.resolve(null),
   ]);
 
   const slo = computeGreenMainSlo(
@@ -194,7 +198,7 @@ export async function runGreenMainSloPass(deps: GreenMainSloPassDeps): Promise<G
     conditions = await (deps.readConditions ?? readSloConditions)();
     if (!Array.isArray(conditions)) throw new Error('invalid condition census');
   }
-  catch (e) { conditionErrors.push(`read conditions: ${message(e)}`); }
+  catch (e) { conditions = null; conditionErrors.push(`read conditions: ${message(e)}`); }
   for (const breach of slo.breaches) {
     const key = conditionKey(deps, breach.metric, breach.episodeKey, breach.subject);
     // A historical admission can remain in the SLO panel after a later round fixed it.
