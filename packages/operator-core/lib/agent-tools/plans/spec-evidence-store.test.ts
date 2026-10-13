@@ -271,6 +271,15 @@ describe('completed isolated runtime certification', () => {
     state.row.test_run_present = false;
     expect((await read()).currentness.dimensions.environment).toBe('unknown');
   });
+  // EI-25847620673275477: the judge's re-observation of this same run read environment=unknown,
+  // which made the bar proof_uncertain and refused grading.
+  it.each([['independent-verification', 'current'], ['manual', 'unknown']] as const)(
+    'certifies a %s row carrying the same completed run only when it is test or independent-verification',
+    async (kind, expected) => {
+      const state = await setupIsolated();
+      (state.row as any).evidence_kind = kind;
+      expect((await read()).currentness.dimensions.environment).toBe(expected);
+    });
   it('certifies runtime execution when the reporter-derived start follows harness preparation', async () => {
     const state = await setupIsolated();
     // The reporter subtracts rounded duration from its later completion clock.
@@ -345,6 +354,13 @@ describe('completed isolated runtime certification', () => {
     expect(evidence.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
       dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
   });
+  it.each([['independent-verification', 'current'], ['manual', 'unknown']] as const)(
+    'certifies a completed harness run on a %s row only for test or independent-verification (EI-25847620673275477)',
+    async (kind, expected) => {
+      const state = await setup();
+      (state.row as any).evidence_kind = kind;
+      expect((await read()).currentness.dimensions.environment).toBe(expected);
+    });
   // EI-25420516419064831: the maintained browser driver wraps the whole
   // verifier, rather than writing a native journey manifest inside the test.
   async function setupOperatorE2e() {

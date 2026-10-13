@@ -1181,6 +1181,8 @@ export type BindSpecEvidenceResult =
       status: Extract<IndependentVerificationRefusalStatus, 'independent_fingerprint_mismatch'>;
       verifiesBindingId: number;
       mismatched: Array<'source' | 'environment'>;
+      /** The cited binding's test run, when its proof is a recorded execution (EI-25847620673275477). */
+      citedTestRunId?: number;
       message: string;
     }
   | {
@@ -1357,6 +1359,29 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         return { status: 'coverage_evidence_not_found', coverageEvidenceRef: input.coverageEvidenceRef };
       }
     }
+    // EI-25847620673275477: an independent-verification row re-observes the SAME proof the
+    // implementer bound. When that proof is a recorded test execution, its environment
+    // fingerprint was derived from THAT run's receipts, so a re-observation that omits the
+    // run could never match it (independent_fingerprint_mismatch [environment]). Adopt the
+    // cited binding's run when the caller names none; its plane and run identity are copied
+    // onto the row below so the read side certifies the same execution.
+    let citedProof: { test_run_id: string | number | null; details: Record<string, unknown> | null } | undefined;
+    if (input.evidenceKind === 'independent-verification' && input.verifiesBindingId != null) {
+      [citedProof] = await tx<{ test_run_id: string | number | null; details: Record<string, unknown> | null }[]>`
+        SELECT test_run_id, details
+          FROM harness_shared.spec_evidence_bindings
+         WHERE id = ${input.verifiesBindingId}
+           AND workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND plan_slug = ${planSlug}
+           AND spec_id = ${identity.spec_id}
+           AND retracted_at IS NULL
+           AND evidence_kind <> 'independent-verification'`;
+      if (citedProof?.test_run_id != null && input.testRunId == null) {
+        input = { ...input, testRunId: Number(citedProof.test_run_id) };
+      }
+    }
+    const citedTestRunId = citedProof?.test_run_id != null ? Number(citedProof.test_run_id) : null;
     let executionRuntimeFingerprint: string | null = null;
     const runtimeRecipe = measurementFromDetails(input.details ?? {});
     const runtimeUnits = runtimeRecipe?.runtimeUnits;
@@ -1587,6 +1612,18 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       }
     }
 
+    // EI-25847620673275477: a re-observation of the cited run carries that run's plane and
+    // identity, which completed-runtime certification requires to read environment=current.
+    if (citedTestRunId != null && input.testRunId === citedTestRunId) {
+      const cited = citedProof?.details ?? {};
+      if (details.evidencePlane === undefined && cited.evidencePlane !== undefined) {
+        details = { ...details, evidencePlane: cited.evidencePlane };
+      }
+      if (details.testRun === undefined && cited.testRun !== undefined) {
+        details = { ...details, testRun: cited.testRun };
+      }
+    }
+
     // P-008 (D-005): an independent-verification row is a non-implementer re-observing the
     // SAME thing the implementer bound. It must cite a live, non-independent binding on the
     // same clause, and both fingerprints must match that row exactly — a re-observation of a
@@ -1637,7 +1674,12 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
           message:
             `independent-verification refused: ${mismatched.join(' and ')} fingerprint differs from cited binding ` +
             `${verifiesBindingId}. Re-observe the same source and environment the implementer bound, or re-bind ` +
-            'the implementer proof first.',
+            'the implementer proof first.' +
+            (mismatched.includes('environment') && citedTestRunId != null && input.testRunId !== citedTestRunId
+              ? ` The cited binding is backed by test-run ${citedTestRunId}; omit testRunId (it is adopted) or ` +
+                `pass ${citedTestRunId}, so the environment is derived from that same execution.`
+              : ''),
+          ...(citedTestRunId != null ? { citedTestRunId } : {}),
         };
       }
     }
@@ -2802,6 +2844,16 @@ async function retainCompletedRuntimeArtifacts(recipe: RepoFilesEvidenceMeasurem
 }
 
 /**
+ * Rows whose recorded test execution completed-runtime certification may re-verify: the
+ * implementer's own `test` row, and an `independent-verification` row re-observing that
+ * same run (EI-25847620673275477). bindSpecEvidence admits the latter only with source and
+ * environment fingerprints equal to the cited row's, carrying its run, plane and identity.
+ */
+function certifiesCompletedTestRow(kind: string): boolean {
+  return kind === 'test' || kind === 'independent-verification';
+}
+
+/**
  * A disposed verifier cannot be re-probed through /proc. Certify its completed
  * execution from the retained harness lifecycle and independently rehashed source
  * instead. This opt-in applies only to clean native/LLM test receipts on the live
@@ -2827,7 +2879,7 @@ export async function measureCompletedTestRuntime(
     || (selector?.kind === 'llm-in-process' && execution?.harnessSlug === null
       && row.test_run_present
       && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
-  if (!selector || !recipe.runtimeUnits || row.evidence_kind !== 'test'
+  if (!selector || !recipe.runtimeUnits || !certifiesCompletedTestRow(row.evidence_kind)
     || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
     || !(selector.kind === 'llm-in-process' ? row.test_run_framework === 'llm-test'
       : selector.kind === 'verification-harness' ? ['vitest', 'playwright'].includes(row.test_run_framework ?? '')
@@ -2971,7 +3023,7 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
       && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
   if (selector?.kind !== 'isolated-integration' || !execution?.isolatedRuntimeReceipts || !recipe.runtimeUnits
     || !row.test_run_present
-    || row.evidence_kind !== 'test' || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
+    || !certifiesCompletedTestRow(row.evidence_kind) || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
     || row.test_run_framework !== 'vitest' || (execution.testLayer !== 'integration' && execution.testLayer !== 'e2e')
     || row.test_run_worktree_dirty !== false || execution.worktreeDirty || execution.collectionFailed
     || execution.failed !== 0 || execution.skipped !== 0 || execution.passed !== selector.runIds.length
