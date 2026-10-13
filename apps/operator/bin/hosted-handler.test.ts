@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { serve } from "@hono/node-server";
 import { WebSocket } from "ws";
 import { EventEmitter } from "node:events";
+import { DrizzleQueryError } from "drizzle-orm/errors";
+import * as desktopAudit from "@papercusp/operator-core/lib/desktop/desktop-audit";
 import { createTextCollector } from "@papercusp/operator-core/lib/child-output";
 import { BYOC_SEALED_PROTOCOL } from "@papercusp/operator-core/lib/workspace-host/byoc-sealed-channel";
 import type { AssembledHostedControlPlane } from "@papercusp/operator-core/lib/endpoint-route/hosted-control-plane";
@@ -110,6 +112,51 @@ function fixture(connectorGateway?: HostedWorkspaceConnectorGateway) {
 }
 
 describe("hosted handler", () => {
+  it.each(['byoc', 'papercusp'] as const)('censuses %s desktop audit and liveness warning applicability through the composed broker', async (hosting) => {
+    const marker = 'CUSTOMER_AUDIT_CONTENT_7d31';
+    const hostPayload = 'CUSTOMER_FRAME_CONTENT_b884';
+    const databaseError = new DrizzleQueryError('insert into audit_log (details) values ($1)', [marker], new Error('constraint failure'));
+    const gateway = { recordLiveness: vi.fn<HostedWorkspaceConnectorGateway['recordLiveness']>(async (_binding, _alive, onError) => { onError?.(databaseError); }) } as unknown as HostedWorkspaceConnectorGateway;
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const audit = vi.spyOn(desktopAudit, 'recordDesktopAudit').mockImplementation((_event, deps) => { deps!.onError!(databaseError); });
+    const hosted = fixture(gateway);
+    const host = Object.assign(new EventEmitter(), { OPEN: 1, readyState: 1, frames: [] as Record<string, unknown>[],
+      send(data: string | Buffer) { this.frames.push(JSON.parse(data.toString())); },
+      close() { this.readyState = 3; host.emit('close'); } });
+    const browser = Object.assign(new EventEmitter(), { OPEN: 1, readyState: 1,
+      send() {}, close() { this.readyState = 3; browser.emit('close'); } });
+    const binding = { controlPlaneWorkspaceId: 'control', organizationId: 'org-1', customerWorkspaceId: 'workspace-1',
+      hostId: 'host-1', routeLabel: 'alpha', generation: 1, state: 'active' as const, transport: 'websocket' as const, hosting };
+    try {
+      hosted.relay.attachConnector(binding, host);
+      hosted.relay.attachBrowser({ ...binding, kind: 'session', audience: 'workspace-operator', userId: 'user-1',
+        hostedSessionId: 'session-1', expiresAt: new Date(Date.now() + 60_000) }, browser,
+      { kind: 'desktop', desktopSessionId: marker, desktopMode: 'watch' });
+      const open = host.frames.find((frame) => frame.type === 'relay.open');
+      if (hosting === 'byoc') {
+        expect(open).toBeUndefined();
+        expect(browser.readyState).toBe(3);
+        expect(audit).not.toHaveBeenCalled();
+      } else {
+        expect(open).toBeDefined();
+        host.emit('message', Buffer.from(JSON.stringify({ type: 'relay', channelId: open!.channelId,
+          payload: { type: 'desktop.ready', action: 'watch', detail: hostPayload } })), false);
+        expect(audit).toHaveBeenCalledWith(expect.objectContaining({ details: expect.objectContaining({ detail: `desktop=${marker}` }) }),
+          expect.objectContaining({ idPrefix: 'hosted-relay-vnc' }));
+        expect(JSON.stringify(audit.mock.calls.map(([event]) => event))).not.toContain(hostPayload);
+      }
+      // Both hosting classes report connector liveness through the actual handler callback.
+      expect(gateway.recordLiveness).toHaveBeenCalled();
+      expect(warning.mock.calls).toContainEqual(['[hosted-relay] connector liveness write failed:', 'connector_alive_write_failed']);
+      if (hosting === 'papercusp') expect(warning.mock.calls).toContainEqual(['[hosted-relay] desktop audit write failed:', 'desktop_audit_write_failed']);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(marker);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain('insert into');
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(hostPayload);
+    } finally {
+      browser.close(); host.close(); hosted.relay.dispose(); audit.mockRestore(); warning.mockRestore();
+    }
+  });
+
   it("refuses an offline sealed phone before WebSocket upgrade with a typed 503", async () => {
     const hosted = fixture();
     const server = serve({ fetch: hosted.handler, port: 0, hostname: "127.0.0.1" });

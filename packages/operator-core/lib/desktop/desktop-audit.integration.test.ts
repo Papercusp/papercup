@@ -170,10 +170,11 @@ describe('recordDesktopAudit — the default (uninjected) Postgres write path', 
       recordDesktopAudit({ ...event, actor: null as unknown as string }, { workspaceId: () => ws() });
       await waitFor(() => warning.mock.calls.length > 0);
       expect(warning).toHaveBeenCalledTimes(1);
-      const [prefix, error] = warning.mock.calls[0]!;
+      const [prefix, code] = warning.mock.calls[0]!;
       expect(prefix).toBe('[desktop-audit] write failed:');
-      expect(errorChainText(error)).toMatch(/not-null|null value in column/i);
-      expect(error).toMatchObject({ params: expect.arrayContaining([expect.stringContaining(marker)]) });
+      expect(code).toBe('desktop_audit_write_failed');
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(marker);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain('insert into');
     } finally {
       warning.mockRestore();
     }

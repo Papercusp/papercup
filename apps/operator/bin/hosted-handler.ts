@@ -226,19 +226,19 @@ export function createHostedHandler(
       recordDesktopAudit(hostedDesktopAuditRow(event), {
         idPrefix: "hosted-relay-vnc",
         workspaceId: () => event.controlPlaneWorkspaceId,
-        onError: (error) =>
+        onError: () =>
           console.warn(
-            `[hosted-relay] could not record ${event.action} for ${event.customerWorkspaceId} channel ${event.channelId ?? "?"}:`,
-            error instanceof Error ? error.message : error,
+            '[hosted-relay] desktop audit write failed:',
+            'desktop_audit_write_failed',
           ),
       });
     },
     onConnectorLiveness: (binding, alive) => {
       if (!gateway) return;
-      void gateway.recordLiveness(binding, alive, (error) => {
+      void gateway.recordLiveness(binding, alive, () => {
         console.warn(
-          `[hosted-relay] could not record connector liveness (${alive ? "alive" : "gone"}) for ${binding.customerWorkspaceId} gen ${binding.generation}:`,
-          error instanceof Error ? error.message : error,
+          '[hosted-relay] connector liveness write failed:',
+          alive ? 'connector_alive_write_failed' : 'connector_gone_write_failed',
         );
       });
     },
