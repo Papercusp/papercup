@@ -1,5 +1,18 @@
 # P-401 GO/NO-GO — PRE-DRAFT (UNSIGNED)
 
+> **Current audit pin — 2026-10-13, WI-10004684 (su-3ecaf532).**
+> D-223/D-224 nominate the PRIVATE candidate at superproject
+> `faa5abc1730ded04d2dfe5fcf829edec6b7b93bb`, build identity `2018b667`.
+> Manifest SHA256: `b613a6186c18fa89c16a72b15fc7a51436ebed3df85b68d455be883bbc2e10af`.
+> Evidence bank: `/mnt/data/offload/papercusp-private-release-evidence/su-07164/wi10007067-d223-20261013T0241Z`.
+> This pin supersedes the 0.0.28-alpha pin below for the current independent
+> P-401 audit. The older rows remain historical evidence, requiring individual
+> reconciliation before signing; their GO-eligible label is not a current verdict.
+> D-179 separates this audit from publication; D-224 excludes ARM and requires
+> P-521 on these exact bytes. Publication, tagging, seed-census and managed-release
+> checks remain in the publication lane. P-521 completion and independent review
+> are pending. **UNSIGNED: no GO or publication approval is asserted here.**
+
 > **STATUS: DRAFT. NOT A SIGNATURE. NOT A VERDICT.** Pre-synthesized under endgame
 > `p2p-public-release-endgame-2026-09-01#D-117` lane L4 (WI-2039882) by su-84e43fbb, 2026-10-01.
 > The governing signed verdict is still the head block of `RELEASE-READINESS.md`

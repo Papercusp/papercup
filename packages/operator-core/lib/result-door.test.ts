@@ -576,6 +576,64 @@ describe('applyResultDoor', () => {
     expect(projected.results[0]?.threadWindow?.posts?.[0]).toMatchObject({ id: 41, body: selectedBody });
   });
 
+  it('tools:invoke work_items:get keeps post bodies when projection selects the enclosing threadWindow', () => {
+    const selectedBody = 'The reviewer requested the full comment text.';
+    const source = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'WI-nested-parent-pick',
+        checkpoint: 'C'.repeat(10_000),
+        checkpointBody: { notes: Array.from({ length: 20 }, () => 'N'.repeat(350)) },
+        threadWindow: {
+          posts: [{
+            id: 42,
+            thread_id: 'thread-42',
+            author_id: 'su-reviewer',
+            body: selectedBody,
+            created_ts: '2026-10-08T05:00:00.000Z',
+          }],
+          shown: 1,
+          total: 4,
+          topics: [],
+          createdAt: null,
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const text = JSON.stringify(source);
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'work_items:get',
+        workspaceId: 'ws-1',
+        runId: '22222222-3333-4444-8555-666666666669',
+        preservePaths: ['results[].checkpoint', 'results[].threadWindow'],
+      },
+    );
+    const projected = JSON.parse((doored.content[0] as { type: 'text'; text: string }).text) as {
+      results: Array<{ threadWindow?: { total?: number; posts?: Array<{
+        id?: number;
+        thread_id?: string;
+        author_id?: string;
+        body?: string;
+        created_ts?: string;
+      }> } }>;
+    };
+
+    expect(projected.results[0]?.threadWindow?.total).toBe(4);
+    expect(projected.results[0]?.threadWindow?.posts?.[0]).toMatchObject({
+      id: 42,
+      thread_id: 'thread-42',
+      author_id: 'su-reviewer',
+      body: selectedBody,
+      created_ts: '2026-10-08T05:00:00.000Z',
+    });
+  });
+
   it('recipes:run nested work-item rows retain identity, state, and full-detail recovery through both shapers', () => {
     const recipeId = 'read-existing-agent-operability-work-items';
     const expectedIds = Array.from({ length: 10 }, (_, i) => 'WI-' + (4600 + i));

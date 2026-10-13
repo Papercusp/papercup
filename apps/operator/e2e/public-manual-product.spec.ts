@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { spawn } from 'node:child_process';
+import { loadIsolatedHostedTestUserKit } from '../../../packages/operator-core/lib/llm-testing/isolated-hosted-test-user.mts';
 import { tsImport } from 'tsx/esm/api';
 import { capturePublicManualFailure, withPublicManualFailureEvidence } from '../lib/public-manual-failure-evidence.mts';
 
@@ -15,61 +15,11 @@ const portalRoot = process.env.PUBLIC_MANUAL_PRODUCT_PORTAL_ROOT;
 test.use({ channel: 'chrome', trace: 'off', video: 'off',
   ignoreHTTPSErrors: !!origin && new URL(origin).hostname === 'localhost' });
 
-// The retained Portal owns its fixture dependencies, including Playwright's
-// expect. Keep that runner in a separate process while reusing its admission
-// and cleanup rather than loading a second runner into this test worker.
+// Share the retained fixture's isolated import/admission/cleanup boundary with
+// the Vitest readiness case. No candidate tool graph enters this worker.
 async function createHostedUser(opts: Record<string, unknown>) {
-  const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', String.raw`
-    import { tsImport } from 'tsx/esm/api';
-    import { pathToFileURL } from 'node:url';
-    import { resolve } from 'node:path';
-    const imported = tsImport(pathToFileURL(resolve('e2e/hosted-test-user.ts')).href, import.meta.url)
-      .then(m => ({ ...m.default, ...m }));
-    let user;
-    process.on('message', async ({ id, op, opts, origin, reason }) => {
-      try {
-        const m = await imported;
-        let value;
-        if (op === 'preflight') value = { workspace: m.isolatedHostedWorkspaceContext(process.env) };
-        else if (op === 'create') {
-          const kit = await m.loadHostedTestUserKit(process.cwd());
-          user = await kit.create(opts);
-          value = { sessionId: user.sessionId, organizationId: user.organizationId,
-            workspaceId: user.workspaceId, cookie: user.cookie(origin) };
-        } else if (op === 'cleanup') await user?.cleanup(reason);
-        process.send({ id, value }, () => { if (op === 'cleanup') process.exit(0); });
-      } catch (error) {
-        const message = String(error.message ?? error).replace(/sk_(?:test|live)_[A-Za-z0-9]+/g, '[redacted]');
-        process.send({ id, error: message }, () => process.exit(1));
-      }
-    });
-  `], { cwd: portalRoot!, env: process.env, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
-  async function request(op: string, payload: Record<string, unknown> = {}) {
-    const id = randomUUID();
-    return await new Promise<any>((resolve, reject) => {
-      const finish = (error?: Error, value?: unknown) => {
-        clearTimeout(timer); child.off('message', onMessage); child.off('exit', onExit); child.off('error', onError);
-        error ? reject(error) : resolve(value);
-      };
-      const onMessage = (message: any) => {
-        if (message.id === id) finish(message.error ? new Error(message.error) : undefined, message.value);
-      };
-      const onExit = (code: number | null) => finish(new Error(`Hosted TEST fixture exited before ${op}: ${code}`));
-      const onError = (error: Error) => finish(error);
-      const timer = setTimeout(() => finish(new Error(`Hosted TEST fixture ${op} timed out`)), 120_000);
-      child.on('message', onMessage); child.once('exit', onExit); child.once('error', onError);
-      child.send({ id, op, ...payload }, error => { if (error) finish(error); });
-    });
-  }
-  try {
-    // Automatic pre-run check: import the retained fixture and validate its
-    // private database context before it can create an upstream TEST account.
-    await request('preflight');
-    const value = await request('create', { opts, origin });
-    return { ...value, cookie: () => value.cookie, cleanup: async (reason: string) => {
-      try { await request('cleanup', { reason }); } finally { child.kill('SIGTERM'); }
-    } };
-  } catch (error) { child.kill('SIGTERM'); throw error; }
+  const kit = await loadIsolatedHostedTestUserKit({ portalRoot: portalRoot! });
+  return await kit.create(opts);
 }
 
 async function fixture(page: any) {

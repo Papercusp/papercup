@@ -431,4 +431,16 @@ describe('ALLOWLIST hygiene', () => {
     // guard has drifted back into rubber-stamp territory and needs re-scoping.
     expect(allow.size).toBeLessThanOrEqual(40);
   });
+
+  it('every entry still fires a trigger — a dead entry only spends the review budget', () => {
+    // WI-6554700010009949: seven entries whose files no longer call spawn/fork at all
+    // sat here and pushed a legitimate new category-(2) entry past the ceiling above.
+    // A file that fires no trigger already passes without an entry, so its entry only
+    // consumes the budget, and would silently re-cover the file if it ever spawned again.
+    for (const [path] of allow) {
+      const t = spawnTriggers(path, readFileSync(join(REPO_ROOT, path), 'utf8'));
+      expect(t.detachedNotFalse || t.storedOnProperty || t.selfDaemonizing,
+        `${path} fires no trigger — remove its ALLOWLIST entry`).toBe(true);
+    }
+  });
 });

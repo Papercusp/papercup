@@ -23,7 +23,7 @@ import {
   type FreshPgDb,
   COORD_SUBSCRIPTION_SUBSTRATE,
 } from '../../test/_pg-helpers';
-import type { TaskReleaseReceiptInput, TaskReleaseReceiptState } from './store';
+import type { CloseTaskEffects, TaskReleaseReceiptInput, TaskReleaseReceiptState } from './store';
 import type { TaskTerminalProvenance } from './types';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -556,14 +556,44 @@ describe('P-012 terminal provenance writer', () => {
   it("records a cgroup-cap OOM as killed/137/exit_reason='oom-kill' with its exact unit identity", async () => {
     const max = 32 * 1024 * 1024;
     const row = await liveTask('oomtask', { memoryMaxBytes: max });
+    // Classification and persistence use the awaited effect seam; the real
+    // terminal-event bridge is exercised by its own integration suite.
+    let emittedAfterClose = false;
+    const emitTerminal = vi.fn<NonNullable<CloseTaskEffects['emitTerminal']>>(async (event) => {
+      await Promise.resolve();
+      const [closed] = await db.sql`
+        SELECT state, exit_code, exit_reason, ended_at
+          FROM harness_shared.task_ledger WHERE task_id = ${event.taskId}
+      `;
+      expect(closed).toMatchObject({
+        state: 'killed',
+        exit_code: 137,
+        exit_reason: 'oom-kill',
+      });
+      expect(closed!.ended_at).not.toBeNull();
+      emittedAfterClose = true;
+    });
+    const effects: CloseTaskEffects = { emitTerminal };
 
     await expect(
       store.closeTask('oomtask', {
         state: 'exited',
         exitCode: 1,
         terminalProvenance: terminal(row.scopeUnit!),
-      }),
+      }, undefined, effects),
     ).resolves.toBe(true);
+    expect(emittedAfterClose).toBe(true);
+    expect(emitTerminal).toHaveBeenCalledTimes(1);
+    expect(emitTerminal).toHaveBeenCalledWith({
+      taskId: 'oomtask',
+      workspaceId: WS,
+      harnessSlug: null,
+      taskClass: 'bash-job',
+      launchedBy: 'test',
+      state: 'killed',
+      exitCode: 137,
+      exitReason: 'oom-kill',
+    });
 
     const [stored] = await db.sql`
       SELECT state, exit_code, exit_reason, memory_max_bytes::text,

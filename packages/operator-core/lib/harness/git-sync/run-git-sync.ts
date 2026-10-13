@@ -727,6 +727,33 @@ export function generatedDeclarationPair(path: string): DeclarationPair | null {
   return null;
 }
 
+/** Expand a live-held generated declaration half to its enrolled source/artifact pair. */
+export function expandGeneratedDeclarationPairHolds(
+  heldPaths: readonly string[],
+  generatedDeclarationPaths: readonly string[],
+): { paths: string[]; pairs: Array<{ source: string; artifact: string; heldPath: string }> } {
+  const generated = new Set(generatedDeclarationPaths.map((path) => path.trim()).filter(Boolean));
+  const held = heldPaths.map((path) => path.trim()).filter(Boolean);
+  const paths = new Set<string>();
+  const pairs = new Map<string, { source: string; artifact: string; heldPath: string }>();
+  for (const candidate of generated) {
+    if (!candidate.endsWith('.mjs')) continue;
+    const pair = generatedDeclarationPair(candidate);
+    if (!pair || !generated.has(pair.source) || !generated.has(pair.artifact)) continue;
+    const heldPath = [pair.source, pair.artifact].find((member) =>
+      held.some((path) => gitSyncPathsOverlap(member, path)),
+    );
+    if (!heldPath) continue;
+    paths.add(pair.source);
+    paths.add(pair.artifact);
+    pairs.set(pair.source, { ...pair, heldPath });
+  }
+  return {
+    paths: [...paths].sort(),
+    pairs: [...pairs.values()].sort((a, b) => a.source.localeCompare(b.source)),
+  };
+}
+
 /** Inputs whose dirty working-tree bytes may change the tracked declaration projection. */
 export function affectsGeneratedDeclarations(path: string): boolean {
   return (
@@ -1525,7 +1552,12 @@ export function expandAtomicLiveLockExclusions(
   dirtyFiles: readonly string[],
   holdings: readonly GitSyncLockHolding[],
   attribution?: ReadonlyMap<string, FileAttribution>,
-): { paths: string[]; groups: Array<{ key: string; owner: string; goalRef: string; paths: string[] }> } {
+  generatedDeclarationPaths: readonly string[] = [],
+): {
+  paths: string[];
+  groups: Array<{ key: string; owner: string; goalRef: string; paths: string[] }>;
+  generatedDeclarationPairs: Array<{ source: string; artifact: string; heldPath: string }>;
+} {
   const dirty = [...new Set(dirtyFiles.map((path) => path.trim()).filter(Boolean))];
   const groups = new Map<string, { owner: string; goalRef: string; paths: Set<string> }>();
   const directPaths = new Set<string>();
@@ -1558,6 +1590,15 @@ export function expandAtomicLiveLockExclusions(
     }
   }
 
+  // Declaration repairs are forced through the catch-all commit so each
+  // generated source/artifact pair normally lands atomically. A live lock can
+  // arrive after the initial census, though, and exclude only one staged half
+  // at the post-stage guard. The regenerator supplies this enrolled pair set;
+  // close any overlapping live hold over both exact paths before either
+  // attribution or catch-all staging can publish a torn pair.
+  const declarationClosure = expandGeneratedDeclarationPairHolds([...directPaths], generatedDeclarationPaths);
+  for (const path of declarationClosure.paths) directPaths.add(path);
+
   const paths = new Set(directPaths);
   const outputGroups: Array<{ key: string; owner: string; goalRef: string; paths: string[] }> = [];
   for (const [key, group] of groups) {
@@ -1566,7 +1607,11 @@ export function expandAtomicLiveLockExclusions(
     outputGroups.push({ key, owner: group.owner, goalRef: group.goalRef, paths: pathsForGroup });
   }
   outputGroups.sort((a, b) => a.key.localeCompare(b.key));
-  return { paths: [...paths].sort(), groups: outputGroups };
+  return {
+    paths: [...paths].sort(),
+    groups: outputGroups,
+    generatedDeclarationPairs: declarationClosure.pairs,
+  };
 }
 
 /**
@@ -4103,6 +4148,8 @@ export async function guardStagedIndexBeforeCommit(opts: {
   excludedDependencyReasons?: ReadonlyMap<string, string>;
   /** Live-lock/cohort paths remain infectious even when an older copy exists in HEAD. */
   alwaysInfectiousDependencies?: readonly string[];
+  /** Enrolled source/artifact pairs forced into this commit's catch-all staging. */
+  generatedDeclarationPaths?: readonly string[];
   log: (message: string) => void;
 }): Promise<PostStageGuardResult> {
   const { runGit, repoPath, scope, log } = opts;
@@ -4145,6 +4192,17 @@ export async function guardStagedIndexBeforeCommit(opts: {
       byPath.set(lockPath, { ...holding, path: lockPath });
     }
     lateLockedHoldings = [...byPath.values()];
+  }
+
+  // Close a post-stage lock over both generated declaration halves before
+  // the index is pruned. Otherwise the source can be held while its projection
+  // still lands, leaving a torn declaration snapshot at HEAD.
+  const lateDeclarationClosure = expandGeneratedDeclarationPairHolds(
+    [...lateLocked],
+    opts.generatedDeclarationPaths ?? [],
+  );
+  for (const path of lateDeclarationClosure.paths) {
+    if (stagedSet.has(path)) lateLocked.add(path);
   }
 
   // 3. Working-tree drift, AFTER the census.
@@ -5601,7 +5659,12 @@ async function commitOneRepoWithScratch(
     const directSkippedHoldings = protectedHoldings.filter((holding) =>
       dirty.some((file) => gitSyncPathsOverlap(file, holding.path)),
     );
-    const atomicExclusions = expandAtomicLiveLockExclusions(dirty, protectedHoldings, o.attribution);
+    const atomicExclusions = expandAtomicLiveLockExclusions(
+      dirty,
+      protectedHoldings,
+      o.attribution,
+      o.forceCatchAllPaths,
+    );
     const directSkippedPaths = directSkippedHoldings.map((holding) => ({
       scope: o.scope,
       path: holding.path,
@@ -5638,6 +5701,15 @@ async function commitOneRepoWithScratch(
     // every route that imports the hub).
     for (const [path, reason] of describeLiveLockExclusions(atomicExclusions, protectedHoldings)) {
       noteExclusion(path, reason);
+    }
+    for (const pair of atomicExclusions.generatedDeclarationPairs) {
+      const holding = protectedHoldings.find((entry) => gitSyncPathsOverlap(pair.heldPath, entry.path.trim()));
+      if (holding) {
+        noteExclusion(
+          pair.source === pair.heldPath ? pair.artifact : pair.source,
+          `generated declaration pair with live-held ${pair.heldPath} (${holding.owner}: ${holding.intent})`,
+        );
+      }
     }
     if (atomicExclusions.paths.length > 0) {
       const liveLockImporterErrors = await detectQuarantineImporters({
@@ -5740,6 +5812,7 @@ async function commitOneRepoWithScratch(
         readText: (rel) => o.readText(repoPath, rel),
         excludedDependencies: excludePaths,
         excludedDependencyReasons: exclusionReasons,
+        generatedDeclarationPaths: o.forceCatchAllPaths,
         alwaysInfectiousDependencies: [
           ...protectedHoldings.map((holding) => holding.path),
           ...atomicExclusions.paths,

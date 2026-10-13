@@ -56,6 +56,8 @@ import {
   migrationDependencyFenceSkips,
   checkToolRoutingBeforeCommit,
   generatedDeclarationPair,
+  expandGeneratedDeclarationPairHolds,
+  guardStagedIndexBeforeCommit,
   DECLARATION_STATUS_MAX_RETRIES,
   regenerateGeneratedDeclarationsBeforeCommit,
   regenerateToolCatalogBeforeCommit,
@@ -421,6 +423,7 @@ describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', ()
         goalRef: 'WI-1834529',
         paths: ['source.test.ts', 'source.ts'],
       }],
+      generatedDeclarationPairs: [],
     });
   });
 
@@ -436,7 +439,31 @@ describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', ()
         [{ path: 'source.ts', owner: 'su-peer', intent: 'editing source' }],
         attribution,
       ),
-    ).toEqual({ paths: ['source.ts'], groups: [] });
+    ).toEqual({ paths: ['source.ts'], groups: [], generatedDeclarationPairs: [] });
+  });
+
+  it('expands a live lock over both enrolled generated declaration paths only', () => {
+    const source = 'scripts/proc-guard.mjs';
+    const artifact = 'scripts/proc-guard.d.mts';
+    const paths = [source, artifact];
+
+    expect(expandGeneratedDeclarationPairHolds([source], paths)).toEqual({
+      paths: [artifact, source],
+      pairs: [{ source, artifact, heldPath: source }],
+    });
+    expect(expandGeneratedDeclarationPairHolds([source], [source])).toEqual({ paths: [], pairs: [] });
+    expect(
+      expandAtomicLiveLockExclusions(
+        paths,
+        [{ path: source, owner: 'su-peer', intent: 'editing declaration source' }],
+        undefined,
+        paths,
+      ),
+    ).toEqual({
+      paths: [artifact, source],
+      groups: [],
+      generatedDeclarationPairs: [{ source, artifact, heldPath: source }],
+    });
   });
 
   it('requires both the lock owner and work-item to match before expanding a cohort', () => {
@@ -461,6 +488,7 @@ describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', ()
         goalRef: 'WI-atomic',
         paths: ['source.test.ts', 'source.ts'],
       }],
+      generatedDeclarationPairs: [],
     });
   });
 });
@@ -1377,6 +1405,45 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
     expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('deliberately-protected mutation\n');
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
+  });
+
+  it('WI-6554700010009254: a late source lock unstages its generated declaration pair together', async () => {
+    const pairRepo = mkdtempSync(join(tmpdir(), 'git-sync-declaration-pair-lock-'));
+    const source = 'scripts/proc-guard.mjs';
+    const artifact = 'scripts/proc-guard.d.mts';
+    try {
+      execFileSync('git', ['init', '-q', pairRepo], { encoding: 'utf8' });
+      configUser(pairRepo);
+      mkdirSync(join(pairRepo, 'scripts'), { recursive: true });
+      writeFileSync(join(pairRepo, source), 'export const value = 1;\n');
+      writeFileSync(join(pairRepo, artifact), 'export declare const value: 1;\n');
+      git(pairRepo, 'add', source, artifact);
+      git(pairRepo, 'commit', '--no-verify', '-m', 'seed generated declaration pair');
+
+      writeFileSync(join(pairRepo, source), 'export const value = 2;\n');
+      writeFileSync(join(pairRepo, artifact), 'export declare const value: 2;\n');
+      git(pairRepo, 'add', source, artifact);
+      const result = await guardStagedIndexBeforeCommit({
+        runGit: directRunGit,
+        repoPath: pairRepo,
+        scope: 'superproject',
+        refreshLiveLockHoldings: async () => [{
+          path: source,
+          owner: 'su-peer',
+          intent: 'editing declaration source',
+        }],
+        generatedDeclarationPaths: [source, artifact],
+        readText: async () => null,
+        log: () => {},
+      });
+
+      if (!result.ok) throw new Error(result.error);
+      expect(result.unstaged.sort()).toEqual([artifact, source].sort());
+      expect(git(pairRepo, 'diff', '--cached', '--name-only')).toBe('');
+      expect(git(pairRepo, 'diff', '--name-only').split('\n').sort()).toEqual([artifact, source].sort());
+    } finally {
+      rmSync(pairRepo, { recursive: true, force: true });
+    }
   });
 
   it('WI-10006725: a guard-held path a peer re-stages before the catch-all commit is not committed', async () => {
