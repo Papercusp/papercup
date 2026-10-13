@@ -441,14 +441,36 @@ export async function fetchWakeability(
          AND event_key = ${COORD_INBOX_WAKE_PREFIX} || subscriber_id
          AND fired_at IS NULL AND cancelled_at IS NULL
          AND (expires_ts IS NULL OR expires_ts > now())`,
+    // Two newest-row lookups per owner, NOT a GROUP BY over the window
+    // (papercusp-performance-audit-2026-10-12 P-007, migration 1487). The
+    // aggregate form walked every activity row each owner wrote in the 7-day
+    // window to compute two maxima — measured live for a 300-owner roster:
+    // 112,553 rows, 116,604 buffers, 162 ms, at ~3.5 calls/s. Each LATERAL
+    // below is one descent of agent_activity_owner_created_idx /
+    // agent_activity_owner_lifecycle_idx (~42 ms for the same roster, result
+    // set identical). Owners with no activity in the window are omitted, as
+    // the GROUP BY omitted them.
     sql<{ owner_id: string; last_any: string | null; last_end: string | null }[]>`
-      SELECT owner_id,
-             max(created_at) AS last_any,
-             max(created_at) FILTER (WHERE kind = 'lifecycle' AND summary = ${SESSION_END_MARKER}) AS last_end
-        FROM harness_shared.agent_activity
-       WHERE owner_id = ANY(${ownerIds}::text[])
-         AND created_at > now() - make_interval(secs => ${activityWindowSec})
-       GROUP BY owner_id`,
+      SELECT o.owner_id, a.last_any, e.last_end
+        FROM (SELECT DISTINCT unnest(${ownerIds}::text[]) AS owner_id) o
+        CROSS JOIN LATERAL (
+          SELECT aa.created_at AS last_any
+            FROM harness_shared.agent_activity aa
+           WHERE aa.owner_id = o.owner_id
+             AND aa.created_at > now() - make_interval(secs => ${activityWindowSec})
+           ORDER BY aa.created_at DESC
+           LIMIT 1
+        ) a
+        LEFT JOIN LATERAL (
+          SELECT ae.created_at AS last_end
+            FROM harness_shared.agent_activity ae
+           WHERE ae.owner_id = o.owner_id
+             AND ae.kind = 'lifecycle'
+             AND ae.summary = ${SESSION_END_MARKER}
+             AND ae.created_at > now() - make_interval(secs => ${activityWindowSec})
+           ORDER BY ae.created_at DESC
+           LIMIT 1
+        ) e ON true`,
     sql<{ owner_id: string; attempt_at: string | null }[]>`
       SELECT owner_id, max(attempt_at) AS attempt_at
         FROM (
