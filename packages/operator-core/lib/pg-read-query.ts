@@ -23,6 +23,8 @@
  */
 
 import {
+  acquireSnapshot,
+  acquireTicketSnapshot,
   DEFAULT_TX_ACQUIRE_DEADLINE_MS,
   DbCallDeadlineError,
   getOrgPg,
@@ -30,6 +32,8 @@ import {
   pgbouncerEnabled,
   retryOnRetryableDbDeadline,
   withAcquisitionDeadline,
+  type AcquireSnapshot,
+  type AcquireTicketSnapshot,
 } from '@papercusp/db-org';
 
 /** The postgres-js client type the org handle exposes. */
@@ -73,6 +77,32 @@ export class PgReadQueryTimeoutError extends PgReadQueryError {
     super(message);
     this.name = 'PgReadQueryTimeoutError';
   }
+}
+
+export type PgReadTxnTimeoutPhase = 'acquire' | 'setup' | 'callback' | 'commit';
+
+/** Bounded, local-only diagnostics attached when boundedPgReadTxn times out. */
+export interface PgReadTxnTimeoutContext {
+  phase: PgReadTxnTimeoutPhase;
+  acquirePool: string | null;
+  /** Null means the transaction's pool could not be identified by this process. */
+  acquireSnapshot: AcquireSnapshot | null;
+  /** Null means the transaction's pool could not be identified by this process. */
+  acquireTicketSnapshot: AcquireTicketSnapshot | null;
+}
+
+function attachBoundedPgReadTxnTimeoutContext(
+  error: DbCallDeadlineError | PgReadQueryTimeoutError,
+  context: PgReadTxnTimeoutContext,
+): void {
+  (error as Error & { boundedPgReadTxn?: PgReadTxnTimeoutContext }).boundedPgReadTxn = context;
+  // Most call sites persist only Error.message. Carry compact, sanitized local
+  // acquire evidence there as well as on the structured error object.
+  error.message +=
+    ` boundedPgReadTxn timeout context: phase=${context.phase}, ` +
+    `acquirePool=${context.acquirePool ?? 'unmeasured'}, ` +
+    `acquireSnapshot=${JSON.stringify(context.acquireSnapshot)}, ` +
+    `acquireTicketSnapshot=${JSON.stringify(context.acquireTicketSnapshot)}.`;
 }
 
 /** The diagnostic fields worth surfacing from a failed query. */
@@ -3728,9 +3758,12 @@ export async function boundedPgReadTxn<T>(
   // expired() guard prevents a late transaction from ever invoking fn, so retrying
   // this PRE-callback phase cannot execute a read twice.
   return retryOnRetryableDbDeadline(async () => {
+    let phase: PgReadTxnTimeoutPhase = 'acquire';
     const work = withAcquisitionDeadline(
       ({ disarm, expired }) =>
         sql.begin(async (tx) => {
+          // BEGIN has returned; setup is still covered by the acquisition deadline.
+          phase = 'setup';
           // READ ONLY must be the first transaction setting before the query.
           await tx.unsafe('SET TRANSACTION READ ONLY');
           await tx`SELECT set_config('statement_timeout', ${`${timeoutMs}ms`}, true)`;
@@ -3746,12 +3779,36 @@ export async function boundedPgReadTxn<T>(
             );
           }
           disarm();
-          return fn(tx as unknown as OrgSql);
+          phase = 'callback';
+          const result = await fn(tx as unknown as OrgSql);
+          // postgres-js commits after its begin callback resolves.
+          phase = 'commit';
+          return result;
         }),
       { ms: acquireTimeoutMs, label: 'boundedPgReadTxn:acquire(admin)', pool: acquirePool },
     );
-    await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(timeoutMs, callDeadlineMs));
-    return (await work) as T;
+    try {
+      await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(timeoutMs, callDeadlineMs));
+      return (await work) as T;
+    } catch (error) {
+      if (error instanceof DbCallDeadlineError || error instanceof PgReadQueryTimeoutError) {
+        // DbCallDeadlineError captures tickets before the acquisition seam releases
+        // its timed-out ticket. Preserve that breach-time view; for a whole-call
+        // timeout, take the current bounded in-memory view while the txn is pending.
+        const tickets = error instanceof DbCallDeadlineError && error.acquisitionTickets
+          ? error.acquisitionTickets
+          : acquirePool
+            ? acquireTicketSnapshot(acquirePool)
+            : null;
+        attachBoundedPgReadTxnTimeoutContext(error, {
+          phase,
+          acquirePool: acquirePool ?? null,
+          acquireSnapshot: acquirePool ? acquireSnapshot(acquirePool) : null,
+          acquireTicketSnapshot: tickets,
+        });
+      }
+      throw error;
+    }
   });
 }
 
