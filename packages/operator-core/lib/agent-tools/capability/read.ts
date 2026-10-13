@@ -7,7 +7,8 @@
  * (`agent-capability-confinement-2026-06-13`).
  */
 
-import { closeSync, createReadStream, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
+import { open, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -506,19 +507,19 @@ async function readLargeLineWindow(
 }
 
 /** Read one exact byte page without materializing the rest of a large file. */
-function readBytePage(abs: string, offset: number, limit: number): Buffer {
-  const fd = openSync(abs, 'r');
+async function readBytePage(abs: string, offset: number, limit: number): Promise<Buffer> {
+  const fd = await open(abs, 'r');
   try {
     const page = Buffer.alloc(limit);
     let bytesRead = 0;
     while (bytesRead < limit) {
-      const count = readSync(fd, page, bytesRead, limit - bytesRead, offset + bytesRead);
+      const { bytesRead: count } = await fd.read(page, bytesRead, limit - bytesRead, offset + bytesRead);
       if (count === 0) break;
       bytesRead += count;
     }
     return page.subarray(0, bytesRead);
   } finally {
-    closeSync(fd);
+    await fd.close();
   }
 }
 
@@ -527,26 +528,27 @@ function readBytePage(abs: string, offset: number, limit: number): Buffer {
  * Detect its magic prefix and fail closed before a streaming line read could
  * expose an owner/workspace-scoped payload as ordinary text.
  */
-function startsWithScratchReference(abs: string): boolean {
+async function startsWithScratchReference(abs: string): Promise<boolean> {
   const magic = Buffer.from(SCRATCH_REFERENCE_MAGIC, 'utf8');
-  let fd: number | undefined;
   try {
-    fd = openSync(abs, 'r');
-    const prefix = Buffer.alloc(magic.length);
-    const count = readSync(fd, prefix, 0, magic.length, 0);
-    return count === magic.length && prefix.equals(magic);
+    const fd = await open(abs, 'r');
+    try {
+      const prefix = Buffer.alloc(magic.length);
+      const { bytesRead } = await fd.read(prefix, 0, magic.length, 0);
+      return bytesRead === magic.length && prefix.equals(magic);
+    } finally {
+      await fd.close();
+    }
   } catch {
     return false;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
   }
 }
 
-function renderByteWindow(
+async function renderByteWindow(
   abs: string,
   args: ByteReadArgs,
   totalBytes: number,
-  readPage: (offset: number, limit: number) => Buffer,
+  readPage: (offset: number, limit: number) => Buffer | Promise<Buffer>,
   reference?: ScratchReferenceManifest,
 ) {
   const effectiveLimit = doorSafePageBytes(abs, args.byte_limit!, reference);
@@ -566,7 +568,7 @@ function renderByteWindow(
     );
   }
   const start = Math.min(args.byte_offset!, totalBytes);
-  const page = readPage(start, effectiveLimit);
+  const page = await readPage(start, effectiveLimit);
   const nextOffset = start + page.length;
   return {
     content: [{
@@ -730,10 +732,10 @@ export default defineTool({
       return err('invalid_path', msg);
     }
 
-    let stat: ReturnType<typeof statSync>;
+    let fileStat: Awaited<ReturnType<typeof stat>>;
     try {
-      stat = statSync(abs);
-      if (stat.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
+      fileStat = await stat(abs);
+      if (fileStat.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return err('read_failed', msg);
@@ -755,8 +757,8 @@ export default defineTool({
 
     const byteMode = args.byte_offset !== undefined || args.byte_limit !== undefined;
     const boundedLineRead = args.offset !== undefined || args.limit !== undefined || args.tail !== undefined;
-    if (stat.size > MAX_FILE_BYTES) {
-      if (startsWithScratchReference(abs)) {
+    if (fileStat.size > MAX_FILE_BYTES) {
+      if (await startsWithScratchReference(abs)) {
         return err(
           'too_large',
           `${abs} is a large scratch reference; use its emitted reference cursor instead of reading the container as a plain file.`,
@@ -773,10 +775,10 @@ export default defineTool({
           if (args.raw) {
             return err('mixed_window_modes', 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.');
           }
-          return renderByteWindow(
+          return await renderByteWindow(
             abs,
             args as ByteReadArgs,
-            stat.size,
+            fileStat.size,
             (offset, limit) => readBytePage(abs, offset, limit),
           );
         }
@@ -792,12 +794,12 @@ export default defineTool({
         const msg = e instanceof Error ? e.message : String(e);
         return err('read_failed', msg);
       }
-      return err('too_large', `${abs} is ${stat.size} bytes (> ${MAX_FILE_BYTES}). Read a bounded slice with capability:read (offset/limit/tail) or capability:bash.`);
+      return err('too_large', `${abs} is ${fileStat.size} bytes (> ${MAX_FILE_BYTES}). Read a bounded slice with capability:read (offset/limit/tail) or capability:bash.`);
     }
 
     let bytes: Buffer;
     try {
-      bytes = readFileSync(abs);
+      bytes = await readFile(abs);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return err('read_failed', msg);
