@@ -64,7 +64,13 @@ import {
 import { gatherOnDesktopSessions } from '../../../desktop-window-liveness';
 import { setOnDesktopWindowsCache, type WindowsDesktopWindow } from '../../../windows-desktop-windows';
 import { readOmpConfig } from '../../../omp-config';
-import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '../../../session-port/types';
+import {
+  SESSION_PORT_BACKENDS,
+  SESSION_PORT_PROTOCOL_VERSION,
+  SESSION_PORT_SUPPORTED_PAIRS,
+  SESSION_PORT_TRANSFORM_VERSION,
+  isSessionPortBackend,
+} from '../../../session-port/types';
 import { evidenceIncarnationOwnedBy } from '../../../session-port/source';
 export { evidenceIncarnationOwnedBy } from '../../../session-port/source';
 import { normalizeSuContextSize } from '../../../su-context-size.mjs';
@@ -232,8 +238,10 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     return { response: json({ ok: false, error: 'sourceAdvSessionId must be a positive integer' }, 400) } as const;
   }
   const targetBackend = body.targetBackend;
-  if (targetBackend !== 'claude' && targetBackend !== 'codex' && targetBackend !== 'omp') {
-    return { response: json({ ok: false, error: 'targetBackend must be claude|codex|omp' }, 400) } as const;
+  // Keep this refusal's wording: launchers that meet an operator without
+  // /port/capabilities read the accepted target list back out of it.
+  if (!isSessionPortBackend(targetBackend)) {
+    return { response: json({ ok: false, error: `targetBackend must be ${SESSION_PORT_BACKENDS.join('|')}` }, 400) } as const;
   }
   const normalizedContextSize = normalizeSuContextSize(body.contextSize);
   if (!normalizedContextSize.ok) {
@@ -2249,6 +2257,25 @@ const onDesktopWindows = defineTool({
   },
 });
 
+/** Capability advertisement: which source→target pairs THIS build can port.
+ * The launcher reads it before building its resume picker, so it offers only
+ * targets the serving operator accepts instead of failing after the pick
+ * (WI-6554700010011137). Static and side-effect free — no auth-sensitive data. */
+const sessionPortCapabilities = defineTool({
+  method: 'GET',
+  path: '/adv/sessions/port/capabilities',
+  auth: 'loopback',
+  async handler() {
+    return json({
+      ok: true,
+      protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+      transformVersion: SESSION_PORT_TRANSFORM_VERSION,
+      backends: SESSION_PORT_BACKENDS,
+      pairs: SESSION_PORT_SUPPORTED_PAIRS,
+    });
+  },
+});
+
 /** Read-only stage: stable snapshot + omissions/redactions/budget disclosure.
  * No summarizer call, artifact, or lifecycle row is created here; the only
  * write is content-free audit telemetry. */
@@ -2556,4 +2583,4 @@ const sessionPortDelivery = defineTool({
   },
 });
 
-export default [list, focus, closeWindow, rename, alive, state, search, ended, searchTranscripts, resumable, rematerialize, rematerializeStatus, ensureClaudeConfig, ensureCodexHome, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];
+export default [list, focus, closeWindow, rename, alive, state, search, ended, searchTranscripts, resumable, rematerialize, rematerializeStatus, ensureClaudeConfig, ensureCodexHome, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortCapabilities, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];
