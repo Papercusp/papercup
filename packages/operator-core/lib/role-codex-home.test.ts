@@ -154,6 +154,63 @@ function installOwnerRuntimeProof(owner: string) {
   writeFileSync(join(dir, `owner-${safe}-last-success.json`), JSON.stringify({ ts: new Date().toISOString(), owner }));
 }
 
+describe('fresh Codex home transcript custody', () => {
+  it.each(['writeRoleCodexHome', 'writeSuCodexHome', 'writeSuCodexHomeAsync'] as const)(
+    '%s retains original native transcripts while rebuilding generated launch files',
+    async (writerName) => {
+      const mod = await loadMod();
+      const writer = mod[writerName];
+      const opts = { sessionKey: 'native-custody', sid: 'su-native-custody', mcpUrl: 'http://x/?sig=old', promptText: 'OLD PROMPT' };
+      const first = await writer(opts);
+      const bytes = Buffer.from('{"type":"response_item","text":"original receipt — $literal"}\n');
+      const transcripts = [
+        join(first.codexHome, 'sessions', '2026', '10', '09', 'rollout-2026-10-09T00-00-00-01a12212-c9fe-7921-bc00-6644cf505bab.jsonl'),
+        join(first.codexHome, 'archived_sessions', 'rollout-earlier.jsonl'),
+      ];
+      for (const transcript of transcripts) {
+        mkdirSync(join(transcript, '..'), { recursive: true });
+        writeFileSync(transcript, bytes);
+      }
+      writeFileSync(join(first.codexHome, 'STALE.txt'), 'disposable launch state');
+      const second = await writer({ ...opts, promptText: 'CURRENT PROMPT', mcpUrl: 'http://x/?sig=current' });
+      for (const transcript of transcripts) expect(readFileSync(transcript)).toEqual(bytes);
+      expect(second.codexHome).toBe(first.codexHome);
+      expect(readFileSync(second.agentsPath, 'utf8')).toContain('CURRENT PROMPT');
+      expect(readFileSync(second.configPath, 'utf8')).toContain('sig=current');
+      expect(existsSync(join(second.codexHome, 'STALE.txt'))).toBe(false);
+      // Keeping the original rollout also keeps the existing archive guard
+      // effective: a later retention pass cannot mistake this for an empty home.
+      const { findUnarchivedSessionDirs, planSessionDirGc } = await import('./session-dir-gc');
+      const candidates = [{ path: second.codexHome, keyKind: 'session' as const, key: 'native-custody', mtimeMs: 0 }];
+      const readStamp = vi.fn(async () => null);
+      const unarchivedPaths = await findUnarchivedSessionDirs(candidates, { store: { readStamp } });
+      expect(readStamp).toHaveBeenCalledWith('codex', '01a12212-c9fe-7921-bc00-6644cf505bab');
+      const plan = planSessionDirGc({ candidates, protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set() },
+        nowMs: 2 * 86400_000, retentionMs: 86400_000, unarchivedPaths });
+      expect(plan.remove).toEqual([]);
+      expect(plan.keptUnarchived).toEqual(candidates);
+    },
+  );
+
+  it.each(['sessions', 'archived_sessions'])(
+    'refuses a symlinked %s transcript root before deleting generated launch files',
+    async (name) => {
+      const writer = await load();
+      const opts = { sessionKey: 'linked-custody', mcpUrl: 'http://x/?sig=original', promptText: 'ORIGINAL PROMPT' };
+      const first = writer(opts);
+      const elsewhere = join(fakeHome, 'other-native-history');
+      mkdirSync(elsewhere);
+      const transcript = join(elsewhere, 'original.jsonl');
+      writeFileSync(transcript, 'original receipt');
+      symlinkSync(elsewhere, join(first.codexHome, name), 'dir');
+      expect(() => writer({ ...opts, promptText: 'REPLACEMENT' })).toThrow(/transcript root.*real directory/);
+      expect(readFileSync(first.agentsPath, 'utf8')).toContain('ORIGINAL PROMPT');
+      expect(lstatSync(join(first.codexHome, name)).isSymbolicLink()).toBe(true);
+      expect(readFileSync(transcript, 'utf8')).toBe('original receipt');
+    },
+  );
+});
+
 describe('writeRoleCodexHome', () => {
   it('repairs a role home in place while preserving its exact native transcript and SQLite data', async () => {
     const writer = await load();

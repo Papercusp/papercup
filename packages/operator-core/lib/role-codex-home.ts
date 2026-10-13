@@ -155,8 +155,8 @@ const CODEX_RTK_REWRITE_MATCHER = '^Bash$';
  *    consistent with the claude/omp isolation.
  *  - `[features] memories = false` — disable codex's native memory tool so the
  *    agent doesn't read/write the native `memories_*.sqlite` store and instead uses
- *    `memory:*`. (Cross-session that store is ALSO neutralized by `freshCodexHome`
- *    wiping the home each launch; this stops within-session use.) The flag was
+ *    `memory:*`. (A fresh launch also resets generated home state and its
+ *    SQLite companion, retaining native transcripts; this stops within-session use.) The flag was
  *    `memory_tool` through codex 0.137; codex 0.142 renamed it to `memories` and
  *    `memory_tool` is now a deprecated legacy alias that prints a boot warning
  *    (`codex doctor`: "legacy alias memory_tool -> memories"). We write the modern
@@ -217,11 +217,30 @@ function resolveWorkspaceRoot(): string {
   return process.env.PAPERCUSP_WORKSPACE_ROOT || resolve(__dirname, '..', '..', '..', '..');
 }
 
-/** Rebuild a per-session codex home dir fresh + share the ChatGPT OAuth
- *  login via a SYMLINK (never a copy — a copied single-use refresh token
- *  can log the user out). Returns the home path. */
+/** Rebuild generated launch state, retaining native transcript custody.
+ *  Only the archive/retention path may retire transcripts. A retry of a fresh
+ *  launch can reuse an ADV home containing earlier native sessions.
+ *  Share ChatGPT OAuth via a SYMLINK (never copy a single-use refresh token). */
 function freshCodexHome(codexHome: string, inheritAmbientContext = true): string {
-  rmSync(codexHome, { recursive: true, force: true });
+  if (existsSync(codexHome)) {
+    if (!lstatSync(codexHome).isDirectory()) {
+      throw new Error('Cannot rebuild Codex home: expected a real directory');
+    }
+    const entries = readdirSync(codexHome, { withFileTypes: true });
+    const transcriptRoots = new Set(['sessions', 'archived_sessions']);
+    // Validate every retained root before removing ANY generated file. Never
+    // follow a symlink into another home or silently discard native history.
+    for (const entry of entries) {
+      if (transcriptRoots.has(entry.name) && !entry.isDirectory()) {
+        throw new Error(`Cannot rebuild Codex home: transcript root ${entry.name} must be a real directory`);
+      }
+    }
+    for (const entry of entries) {
+      if (!transcriptRoots.has(entry.name)) {
+        rmSync(join(codexHome, entry.name), { recursive: true, force: true });
+      }
+    }
+  }
   mkdirSync(codexHome, { recursive: true });
   if (inheritAmbientContext) inheritUserCodexHome(codexHome);
   ensureCodexSkillWatchRoots({ codexHome });
@@ -1635,10 +1654,9 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
  * REPAIR an existing CODEX_HOME's `config.toml` in place — the resume-leg
  * counterpart to `writeSuCodexHome`, and deliberately NOT that function.
  *
- * `writeSuCodexHome` starts with `freshCodexHome`, which rm -rf's the directory.
- * That is right for preparing a session, and catastrophic for repairing one: the
- * home holds every `sessions/**​/rollout-*.jsonl` the resume is about to read, so
- * rebuilding it would destroy the very transcripts being resumed. This repairs
+ * `writeSuCodexHome` rebuilds generated launch files while retaining native
+ * transcripts. A resume must also retain its prompt, auth and SQLite state;
+ * it must not run the fresh-launch reset. This repairs
  * only managed launch files in place: config.toml plus identity-bearing hooks /
  * diagnostics when their owner has drifted. Rollouts, prompts and auth survive.
  *
@@ -1869,10 +1887,9 @@ function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexH
   // EI-11366: a live Codex psu host was once found split across two identities
   // — the physical host process/PAPERCUSP_SID/socket stayed with its ORIGINAL
   // sid while CODEX_HOME/hooks.json on disk had been silently regenerated for a
-  // DIFFERENT sid. `freshCodexHome` below unconditionally rm -rf's + rebuilds
-  // whatever is at `targetHome` (intentional — see the "rebuilds fresh" test —
-  // for the ordinary case of re-preparing the SAME logical session). The gap is
-  // that nothing ever checked whether the directory it is about to destroy is
+  // DIFFERENT sid. `freshCodexHome` below rebuilds generated launch files but
+  // retains native transcripts, including on re-preparing the SAME logical
+  // session. The identity guard still checks whether the home being rebuilt is
   // still the ACTIVE home of a DIFFERENT, currently-live session. If a future
   // caller (a retry path, a sessionKey computed by different code, an operator
   // debug script) ever passes a sessionKey that collides with a still-live
