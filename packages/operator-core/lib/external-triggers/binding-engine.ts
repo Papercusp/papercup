@@ -1008,6 +1008,9 @@ export async function dispatchPendingTriggerRuns(
   };
 
   for (const row of rows) {
+    // Set once a launch-plan action has a plan run, so a failure AFTER the launch (an agentic
+    // dispatch whose target is absent) still records which run this receipt launched.
+    let launchedPlanRunId: number | null = null;
     try {
       const type = actionType(row.action);
       if (!SUPPORTED_TRIGGER_ACTIONS.has(type)) {
@@ -1171,6 +1174,15 @@ export async function dispatchPendingTriggerRuns(
         throw new Error('external_trigger_plan_run_not_started');
       }
       if (execution && (!launched.dispatch || !launched.dispatch.ok)) {
+        // Best effort: a failed lookup must not replace the dispatch error, whose
+        // recoverable classification decides whether this receipt keeps retrying.
+        launchedPlanRunId = await resolvePlanRunId(
+          sql,
+          row.workspaceId,
+          row.planHarnessSlug,
+          launched.instanceSlug,
+          launched.runId,
+        ).catch(() => null);
         if (launched.dispatch) throw new ExternalTriggerAgenticDispatchError(launched.dispatch);
         throw new Error('external_trigger_agentic_dispatch_failed:missing_dispatch_result');
       }
@@ -1240,9 +1252,15 @@ export async function dispatchPendingTriggerRuns(
         : planRunRefusal
           ? planRunRefusalOutcome(planRunRefusal)
           : {};
+      // The run exists even though dispatch failed: its work-item stays queued for the target
+      // while this receipt retries, and whoever executes it reads the trigger payload by
+      // planRunId. Leaving the ref NULL made that read fail with
+      // trigger_payload_run_not_found (WI-6554700010010446, plan run 1347). A failure before
+      // any launch keeps whatever ref an earlier attempt recorded.
       await sql`
         UPDATE harness_shared.trigger_runs
            SET status = 'failed', error = ${error},
+               plan_run_ref = COALESCE(${launchedPlanRunId == null ? null : String(launchedPlanRunId)}::text, plan_run_ref),
                outcome = outcome || ${JSON.stringify(outcomePatch)}::text::jsonb,
                next_attempt_at = now() + make_interval(secs => ${retryAfterSeconds}),
                completed_at = now(), updated_at = now()

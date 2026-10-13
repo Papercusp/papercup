@@ -21,6 +21,7 @@ import {
   type TriggerDispatchDeps,
 } from './binding-engine';
 import type { ScheduledPlanFireRefusal, ScheduledPlanFireStartedResult } from '../harness/routines/plan-run-action';
+import { readTriggerPlanRunPayload } from './plan-run-payload';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -199,6 +200,9 @@ describe('external trigger durable dispatch', () => {
         operations: [{
           id: consumer.operationId, version: '1', target: { kind: 'work-item', itemKind: 'feature' },
           execution: { kind: 'agent', role: 'worker' },
+          // An agent work-item operation must pin the worker identity it will bind
+          // (validate.ts operation-unpinned-agent; same fixture fix as WI-10008190).
+          policy: { identity: { kind: 'identity', ref: `${consumer.harness}-worker`, revision: '1.0.0', contentHash: 'c'.repeat(64) } },
           inputSchema: { type: 'object', required: [consumer.field], additionalProperties: false,
             properties: { [consumer.field]: { type: typeof consumer.value === 'number' ? 'integer' : 'string' },
               trigger: { type: 'object' } } },
@@ -233,6 +237,16 @@ describe('external trigger durable dispatch', () => {
     const eventItemIds = triggerRows.map((row) => row.outcome.blueprintOperation.target.id);
     expect(new Set(eventItemIds).size).toBe(2);
     for (const consumer of consumers) {
+      // A routine fire is admitted only for an ACTIVE routine row with this id
+      // (operation-routine-admission.ts); the fixture predates that check.
+      await sql`
+        INSERT INTO harness_shared.routines
+          (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role, payload_template, concurrency, active)
+        VALUES (${`routine:${consumer.harness}`}, ${WS}, ${consumer.harness}, ${consumer.harness}, 'cron',
+                ${JSON.stringify({ costCapCents: 200 })}::text::jsonb, 'system:blueprint-operation',
+                ${JSON.stringify({ operationHarnessSlug: consumer.harness, operationId: consumer.operationId })}::text::jsonb,
+                'skip', true)
+        ON CONFLICT (id) DO NOTHING`;
       const first = await runBlueprintOperationAction({
         workspaceId: WS, installSlug: consumer.harness, routineId: `routine:${consumer.harness}`,
         workflowId: `routine-fire:${consumer.harness}:first`, triggerConfig: {},
@@ -492,12 +506,19 @@ describe('external trigger durable dispatch', () => {
       succeeded: 0,
       failed: 1,
     });
-    const failed = await sql<Array<{ status: string; error: string }>>`
-      SELECT status, error FROM harness_shared.trigger_runs
+    const failed = await sql<Array<{ status: string; error: string; plan_run_ref: string | null }>>`
+      SELECT status, error, plan_run_ref FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    // The run launched before its dispatch failed, so the receipt names it and whoever
+    // executes the still-queued work-item can read the payload (WI-6554700010010446).
     expect(failed[0]).toMatchObject({
       status: 'failed',
       error: 'external_trigger_agentic_dispatch_failed:target_absent',
+      plan_run_ref: '9001',
+    });
+    await expect(readTriggerPlanRunPayload(sql, WS, 9001)).resolves.toMatchObject({
+      triggerRunId,
+      externalId: 'dispatch-1',
     });
 
     await expect(dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork })).resolves.toMatchObject({

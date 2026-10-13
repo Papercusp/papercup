@@ -108,10 +108,13 @@ function string(value: unknown): string {
  * boundary is the same one `mail:reply { planRunId }` relies on: a caller must
  * name a `planRunId` that resolves inside its OWN workspace.
  *
- * `status = 'succeeded'` is the correct predicate even though the agent reads
- * this at the START of its work: the binding engine marks the trigger run
- * succeeded as soon as the plan LAUNCHES (it records `plan_run_ref` in the same
- * write), not when the agent finishes.
+ * `plan_run_ref` alone is the predicate, NOT the receipt's status. The binding
+ * engine writes the ref only from a path that launched that run: on success, on a
+ * no-consumer skip, and on a dispatch that failed AFTER the launch. In the last
+ * case the receipt is `failed` (or `running` mid-retry) while the run's work-item
+ * is still queued and can be executed. Requiring `succeeded` refused exactly that
+ * executor (trigger_payload_run_not_found, WI-6554700010010446). The mail, chat
+ * and ticket reply verbs resolve their receipt the same way.
  */
 export async function readTriggerPlanRunPayload(
   sql: Db,
@@ -125,7 +128,6 @@ export async function readTriggerPlanRunPayload(
       FROM harness_shared.trigger_runs tr
      WHERE tr.workspace_id = ${workspaceId}
        AND tr.plan_run_ref = ${String(planRunId)}
-       AND tr.status = 'succeeded'
      ORDER BY tr.completed_at DESC NULLS LAST, tr.id
      LIMIT 1`;
   const row = rows[0];

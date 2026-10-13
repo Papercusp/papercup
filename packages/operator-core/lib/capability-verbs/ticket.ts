@@ -131,7 +131,6 @@ async function readRun(sql: postgres.Sql | postgres.TransactionSql, workspaceId:
       JOIN harness_shared.trigger_pack_installations i ON i.workspace_id = b.workspace_id AND i.id = b.pack_installation_id
      WHERE tr.workspace_id = ${workspaceId}
        AND tr.plan_run_ref = ${String(planRunId)}
-       AND tr.status = 'succeeded'
      ORDER BY tr.completed_at DESC NULLS LAST, tr.id
      LIMIT 1
      ${lock ? sql`FOR UPDATE OF tr` : sql``}`;

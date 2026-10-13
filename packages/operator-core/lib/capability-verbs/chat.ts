@@ -199,7 +199,6 @@ export async function replyToTriggerRun(
           ON s.workspace_id = b.workspace_id AND s.id = b.source_id
        WHERE tr.workspace_id = ${workspaceId}
          AND tr.plan_run_ref = ${String(planRunId)}
-         AND tr.status = 'succeeded'
        ORDER BY tr.completed_at DESC NULLS LAST, tr.id
        LIMIT 1
        FOR UPDATE OF tr`;

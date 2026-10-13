@@ -373,7 +373,6 @@ export async function replyToTriggerPlanRun(
         FROM harness_shared.trigger_runs tr
        WHERE tr.workspace_id = ${params.workspaceId}
          AND tr.plan_run_ref = ${String(planRunId)}
-         AND tr.status = 'succeeded'
        ORDER BY tr.completed_at DESC NULLS LAST, tr.id
        LIMIT 1
        FOR UPDATE OF tr`;

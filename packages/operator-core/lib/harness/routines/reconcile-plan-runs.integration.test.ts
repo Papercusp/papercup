@@ -431,6 +431,112 @@ describe('reconcileAndGovern — orphaned-run reclamation on the tick', () => {
 });
 
 /**
+ * WI-6554700010010446 — the orphan sweep's verdict is provisional. It fails a run that made
+ * no progress for 30 min so concurrency='skip' can fire again, but it never saw the work
+ * finish, and it leaves the run's work-items open (each is a real request; a recoverable
+ * dispatch failure keeps one queued for its target while the trigger retries). Before this,
+ * reconcile only read `running` runs, so a late completion never reached the ledger: the run
+ * stayed failed with a NULL outcome forever.
+ */
+describe('reconcileAndGovern — an orphan verdict is provisional', () => {
+  async function orphan(planSlug: string, wiStatus: string | null): Promise<number> {
+    const id = await seedRun(planSlug);
+    if (wiStatus) await seedWi(id, wiStatus);
+    await sql`UPDATE harness_shared.plan_runs
+                 SET updated_at = ${Date.now() - PLAN_RUN_ORPHAN_FAIL_MS - 60_000}
+               WHERE id = ${id}`;
+    return id;
+  }
+
+  async function wiStatuses(runId: number): Promise<string[]> {
+    const rows = await sql<{ status: string }[]>`
+      SELECT status FROM harness_shared.harness_features_consolidated
+       WHERE harness_slug = ${HARNESS} AND payload -> 'plan_run' ->> 'runId' = ${String(runId)}`;
+    return rows.map((r) => r.status);
+  }
+
+  async function note(runId: number): Promise<string | null> {
+    const [r] = await sql<{ note: string | null }[]>`SELECT note FROM harness_shared.plan_runs WHERE id = ${runId}`;
+    return r.note;
+  }
+
+  it('fails the run with a NULL outcome and a provisional note, and leaves its work-items open', async () => {
+    const id = await orphan('p-prov', 'todo');
+
+    const res = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect(res.orphaned).toBe(1);
+    expect(await runRow(id)).toMatchObject({ status: 'failed', outcome: null, finished_at: null });
+    expect(await note(id)).toMatch(/provisional/);
+    expect(await wiStatuses(id)).toEqual(['todo']);
+  });
+
+  it('records the real outcome once the work-items terminate after the sweep', async () => {
+    const id = await orphan('p-late', 'todo');
+    await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    await sql`UPDATE harness_shared.harness_features_consolidated SET status = 'done'
+               WHERE harness_slug = ${HARNESS} AND payload -> 'plan_run' ->> 'runId' = ${String(id)}`;
+    const res = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect(res.reconciled).toBe(1);
+    expect(res.orphaned).toBe(0);
+    const row = await runRow(id);
+    expect(row).toMatchObject({ status: 'done', outcome: 'success' });
+    expect(row.finished_at).not.toBeNull();
+    expect(await note(id)).toMatch(/orphan verdict superseded/);
+  });
+
+  it('records partial when a late completion is mixed', async () => {
+    const id = await orphan('p-late-mixed', 'todo');
+    await seedWi(id, 'todo');
+    await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    const fids = await sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.harness_features_consolidated
+       WHERE harness_slug = ${HARNESS} AND payload -> 'plan_run' ->> 'runId' = ${String(id)}
+       ORDER BY feature_id`;
+    await sql`UPDATE harness_shared.harness_features_consolidated SET status = 'done' WHERE harness_slug = ${HARNESS} AND feature_id = ${fids[0].feature_id}`;
+    await sql`UPDATE harness_shared.harness_features_consolidated SET status = 'dropped' WHERE harness_slug = ${HARNESS} AND feature_id = ${fids[1].feature_id}`;
+    await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect(await runRow(id)).toMatchObject({ status: 'done', outcome: 'partial' });
+  });
+
+  it('keeps the orphan verdict while any work-item is still open', async () => {
+    const id = await orphan('p-still-open', 'todo');
+    await seedWi(id, 'done');
+    await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    const res = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect(res.reconciled).toBe(0);
+    expect(await runRow(id)).toMatchObject({ status: 'failed', outcome: null });
+  });
+
+  it('keeps the verdict of an orphan with no work-items (no new evidence)', async () => {
+    const id = await seedRun('p-orphan-empty');
+    await sql`UPDATE harness_shared.plan_runs SET status = 'failed', outcome = NULL WHERE id = ${id}`;
+
+    const res = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect(res.reconciled).toBe(0);
+    expect(await runRow(id)).toMatchObject({ status: 'failed', outcome: null });
+  });
+
+  it('never re-settles a failed run that already carries an outcome', async () => {
+    const id = await seedRun('p-settled-failed');
+    await seedWi(id, 'done');
+    await sql`UPDATE harness_shared.plan_runs SET status = 'failed', outcome = 'failed' WHERE id = ${id}`;
+
+    const res = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
+
+    expect(res.reconciled).toBe(0);
+    expect(await runRow(id)).toMatchObject({ status: 'failed', outcome: 'failed' });
+  });
+});
+
+/**
  * WI-6554700010009851 — a settled run's instance plan must be retired WHOEVER settled the
  * run. The status-only settlers (the orphan sweep, `sweepPlanRuns` on the read path, a
  * manual archive) never retired it, and the retire guard only matched `active`, so an
@@ -499,7 +605,11 @@ describe('reconcileAndGovern — settled-run instance convergence', () => {
                WHERE harness_slug = ${HARNESS} AND payload -> 'plan_run' ->> 'runId' = ${String(id)}`;
     const second = await reconcileAndGovern({ sql, harnessSlug: HARNESS });
 
-    expect(second.instancesRetired).toBe(1);
+    // Reconcile re-settles the orphan with its real outcome (WI-6554700010010446) and retires
+    // the instance inline, so the convergence sweep behind it finds nothing left to do.
+    expect(second.reconciled).toBe(1);
+    expect(second.instancesRetired).toBe(0);
+    expect(await runRow(id)).toMatchObject({ status: 'failed', outcome: 'failed' });
     expect(await instanceState(slug)).toEqual({
       status: 'superseded',
       itemStatuses: ['dropped'],
