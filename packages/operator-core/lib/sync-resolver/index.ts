@@ -1991,9 +1991,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // budget can only be proved to fire by moving it, and a resolver's only
       // input is its wire args — so the knob had to become a function parameter
       // rather than a client-visible field. That module's header carries the
-      // full reasoning and the per-leg policy.
-      const { readAdvRoster, projectAdvRoster } = await import('./adv-roster-read');
-      return [projectAdvRoster(await readAdvRoster({ workspaceId, endedLimit }), view)];
+      // full reasoning and the per-leg policy. Read through the shared
+      // owner-sessions entry point so the device session list
+      // (mobile-agent-sessions-2026-10-12 P-001/P-002) is this same roster.
+      const { readSessionRoster } = await import('../owner-sessions/roster');
+      return [await readSessionRoster({ workspaceId, endedLimit, view })];
     },
   },
 

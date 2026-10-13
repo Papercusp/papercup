@@ -38,7 +38,8 @@ fail() {
   echo "P007_TAURI_SURFACE_VERIFY_FAIL leg=$LEG output=$OUT_DIR"
   exit 1
 }
-ev() { "$T" eval --pid "$VERIFY_TAURI_PID" "$1" 2>&1; }
+# eval stdout is a value protocol; CLI diagnostics must remain on stderr.
+ev() { "$T" eval --pid "$VERIFY_TAURI_PID" "$1"; }
 unq() { sed -e 's/^"//' -e 's/"$//'; }
 body() { ev "(document.querySelector('main') || document.body).innerText.slice(0, 900) + ' | url=' + location.pathname + location.search"; }
 waitjs() {

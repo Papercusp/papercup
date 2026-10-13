@@ -95,6 +95,7 @@ import type {
   evaluateCriterionTestChecks,
   CriterionCheckRun,
 } from '../../rubrics-criterion-checks';
+import type { recordRubricCheckResults } from '../../check-results-ledger';
 import { REPO_ROOT } from '../docs/_repo-paths';
 
 type EvaluateChecks = typeof evaluateCriterionTestChecks;
@@ -419,15 +420,26 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     const evaluateProbeChecks = vi.fn<typeof evaluateCriterionProbeChecks>().mockResolvedValue(accepted
       ? { ok: true, checkRuns: { 'det-outcome': run } }
       : { ok: false, error: 'probe_contradicted', criterionKey: 'det-outcome', rating: RATINGS['det-outcome'].rating, run, detail: 'ALL child predicate failed' });
-    const result = await emitScorecard(emitArgs() as never, EMIT_INPUT, { evaluateProbeChecks });
+    // test-rubric-unification-2026-10-12 P-006 (R-6): every executed probe child writes one
+    // results-ledger row — the contradicted run that refuses this emit included.
+    const recordCheckResults = vi.fn<typeof recordRubricCheckResults>().mockResolvedValue([101, 102]);
+    const result = await emitScorecard(emitArgs() as never, EMIT_INPUT, { evaluateProbeChecks, recordCheckResults });
     expect(evaluateProbeChecks).toHaveBeenCalledOnce();
     expect(evaluateProbeChecks.mock.calls[0][0].criteria[1].check).toEqual({ kind: 'probe', all });
+    expect(recordCheckResults).toHaveBeenCalledOnce();
+    const [ledgerResults, ledgerScope] = recordCheckResults.mock.calls[0]!;
+    expect(ledgerScope).toMatchObject({ workspaceId: 'ws-test' });
+    expect(ledgerResults.map((r) => [r.check.id, r.check.rubricRef, r.check.kind, r.check.value, r.check.unit, r.verdict])).toEqual([
+      ['det-outcome:0', CHECKED_RUBRIC.rubricId, 'probe', count, null, count === 2 ? 'pass' : 'fail'],
+      ['det-outcome:1', CHECKED_RUBRIC.rubricId, 'probe', failed, null, failed === 0 ? 'pass' : 'fail'],
+    ]);
     expect(result.ok).toBe(accepted);
     if (!accepted) {
       expect(captureImprovement).not.toHaveBeenCalled();
       expect(result).toMatchObject({ checkRefusal: { error: 'probe_contradicted' } });
       return;
     }
+    expect(result).toMatchObject({ checkLedger: { recorded: 2, testRunIds: [101, 102] } });
     const observation = captureImprovement.mock.calls[0][0].payloadExtra.observation;
     const expected = {
       kind: 'probe', verdict: 'pass', status: 'fresh', executed: true,
@@ -439,6 +451,27 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     expect(observation.checkRuns['det-outcome']).toMatchObject(expected);
     expect(asStructuredObservation(observation)?.checkRuns?.['det-outcome']).toEqual(observation.checkRuns['det-outcome']);
     expect(result).toMatchObject({ checkRuns: { 'det-outcome': expected } });
+  });
+
+  it('reports a results-ledger write failure without changing the probe-checked verdict (P-006)', async () => {
+    const probe = {
+      kind: 'tool' as const, tool: 'acceptance:read', args: {},
+      schemaRevision: 'synthetic-read-revision', expect: { path: '$.count', op: 'eq' as const, value: 2 },
+    };
+    getRubric.mockResolvedValue({
+      ...CHECKED_RUBRIC,
+      criteria: [CHECKED_RUBRIC.criteria[0], { ...CHECKED_RUBRIC.criteria[1], check: { kind: 'probe', probe } }],
+    });
+    const run = { kind: 'probe' as const, probe, observed: 2, verdict: 'pass' as const, status: 'fresh' as const,
+      executed: true as const, measuredAt: '2026-10-03T07:00:00Z' };
+    const evaluateProbeChecks = vi.fn<typeof evaluateCriterionProbeChecks>()
+      .mockResolvedValue({ ok: true, checkRuns: { 'det-outcome': run } });
+    const recordCheckResults = vi.fn<typeof recordRubricCheckResults>().mockRejectedValue(new Error('connection refused'));
+    const result = await emitScorecard(emitArgs() as never, EMIT_INPUT, { evaluateProbeChecks, recordCheckResults });
+    expect(recordCheckResults).toHaveBeenCalledOnce();
+    expect(recordCheckResults.mock.calls[0]![0].map((r) => r.check.id)).toEqual(['det-outcome:0']);
+    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({ checkLedger: { recorded: 0, error: expect.stringMatching(/results-ledger write failed: connection refused/) } });
   });
 
   it('files a five-file card through the real evaluator and request-bound recovery seam', async () => {

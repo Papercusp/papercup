@@ -2991,7 +2991,10 @@ export default defineTool({
       : res?.revisionAdoption
         ? { ...basePayload, revisionAdoption: res.revisionAdoption }
         : basePayload;
-    const payload = retiredSoloPlanSpec ? { ...lanePayload, retiredSoloPlanSpec } : lanePayload;
+    // P-017 / D-032: say when red-gate inflow control shaped this claim, so a member that
+    // got a repair item (or fell back to backlog) can see why.
+    const inflowPayload = res?.redInflow ? { ...lanePayload, redInflow: res.redInflow } : lanePayload;
+    const payload = retiredSoloPlanSpec ? { ...inflowPayload, retiredSoloPlanSpec } : inflowPayload;
     // P-003: `tool_invocations` has no inline result JSON. Stamp the one fact a
     // later launch verifier needs — claimed vs diagnosed no-claim — onto the
     // invocation's existing metadata writer. This is intentionally the only

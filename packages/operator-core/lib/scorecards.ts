@@ -26,9 +26,9 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY, measureGateReuseAuditWindow } from './release/gate-fire-ledger';
 import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
+import { platformComputedInstrumentKeys } from './rubric-instrument-registry';
 import {
   collectGoalHolderBehaviorMetrics,
-  HOLDER_BEHAVIOR_INSTRUMENT_KEYS,
   holderBehaviorCriterionForInstrument,
   rateGoalHolderBehavior,
   readHolderPlanToolCounts,
@@ -38,7 +38,6 @@ import {
 import {
   collectGoalModeComputedMetrics,
   GOAL_MODE_COMPUTED_VERSION,
-  GOAL_MODE_INSTRUMENT_KEYS,
   goalModeCriterionForInstrument,
   goalModeMeasureSummary,
   rateGoalModeComputed,
@@ -404,8 +403,9 @@ export async function resolveScorecardInstrumentSnapshots(
       value.provenance === 'platform-computed' ? { ...value, provenance: 'self-reported' as const } : { ...value },
     ]),
   );
-  const registered = new Set(['woe.goal-mode-base-scorecard', GATE_REUSE_AUDIT_INSTRUMENT_KEY,
-    ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS), ...Object.values(GOAL_MODE_INSTRUMENT_KEYS)]);
+  // test-rubric-unification-2026-10-12 P-005: one key list — the instrument registry owns it,
+  // so authoring (rubrics:propose/amend) and this resolver can never disagree on a key.
+  const registered = new Set(platformComputedInstrumentKeys());
   // P-003 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): the goal-mode-e2e
   // mechanical criteria and trigger census are measured once per call, like the holder metrics.
   let goalModeRatings: Promise<

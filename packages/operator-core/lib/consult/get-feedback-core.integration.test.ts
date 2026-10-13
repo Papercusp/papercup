@@ -85,6 +85,11 @@ const MIGRATION_1225 = fileURLToPath(
 const MIGRATION_1242 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/1242-text-chunks.sql', import.meta.url),
 );
+// consult-backed-parking P-003: widens consult_state's state CHECK with
+// 'no_launchable_responder' (selected experts, none launchable).
+const MIGRATION_1484 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/1484-consult-state-no-launchable-responder.sql', import.meta.url),
+);
 const GEMMA_QUERY_PROFILE = resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!;
 
 let rootSql: Sql;
@@ -116,6 +121,7 @@ beforeAll(async () => {
   await rootSql.unsafe(readFileSync(MIGRATION_847, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_1225, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_1242, 'utf8'));
+  await rootSql.unsafe(readFileSync(MIGRATION_1484, 'utf8'));
   await rootSql.unsafe(`
     ALTER TABLE harness_shared.consult_state
       ADD COLUMN query_embedding_mode text,
@@ -1098,7 +1104,9 @@ describe('recoverable interactive feedback requests', () => {
       const stored = await stateRow(accepted.conversation_id);
       expect(stored.routing).toMatchObject({ request: {
         key: request.requestKey, payload: request, leaseToken: null, leaseUntil: null,
-        result: { verdict: scenario === 'refill-launched' ? 'routed' : 'no_qualified_responder' },
+        // Experts WERE selected and none launched: a dispatch failure, stored apart
+        // from the measured absence (consult-backed-parking R-2).
+        result: { verdict: scenario === 'refill-launched' ? 'routed' : 'no_launchable_responder' },
       } });
       if (scenario === 'refill-launched') {
         expect(stored.routing).toMatchObject({ selection: { selected: [
@@ -2970,20 +2978,23 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
     });
   });
 
-  it('every selectee exhausted — the honest terminal is no_available_responder, settled NOW rather than left to expiry', async () => {
+  it('every selectee exhausted — the honest terminal is no_launchable_responder, settled NOW rather than left to expiry', async () => {
     const second = cand('expert-b', { score: 0.65 });
     const { deps, reached } = makeDispatchDeps(routeOf([deadExpert, second]), [0, 0]);
     const res = asOk(await getFeedbackCore({ ...baseReq, maxResponders: 2 }, deps));
     expect(reached.map((d) => d.responder)).toEqual(['dead-x', 'expert-b']);
     // No session was launched, so no responder is named and nothing is coming.
-    expect(res.verdict).toBe('no_qualified_responder');
+    // Experts WERE selected, so this is a dispatch failure, stored apart from
+    // the measured absence `no_qualified_responder` (consult-backed-parking R-2).
+    expect(res.verdict).toBe('no_launchable_responder');
+    expect(res.state).toBe('no_launchable_responder');
     expect(res.reason).toBe('no_available_responder');
     expect(res.responder).toBeNull();
     expect(res.expires_at).toBeNull();
     expect(res.park_key).toBeNull();
     expect(res.hint).toContain('Nothing is coming, so do not park');
     const row = await stateRow(res.conversation_id);
-    expect(row.state).toBe('no_qualified_responder');
+    expect(row.state).toBe('no_launchable_responder');
     expect(row.responder_id).toBeNull();
     expect(row.expires_at).toBeNull();
     // The retrieval fallback survives: the refs are still the caller's next move.
@@ -3005,12 +3016,12 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
     const { deps, reached } = makeDispatchDeps(routeOf([onlyOne]), [0]);
     const res = asOk(await getFeedbackCore(baseReq, deps));
     expect(reached.map((d) => d.responder)).toEqual(['sole-expert']);
-    expect(res.verdict).toBe('no_qualified_responder');
+    expect(res.verdict).toBe('no_launchable_responder');
     expect(res.reason).toBe('no_available_responder');
     expect(res.responder).toBeNull();
     expect(res.wake).toEqual({ attempted: true, queued: 0, woke: 0, pickupConfirmed: false });
     const row = await stateRow(res.conversation_id);
-    expect(row.state).toBe('no_qualified_responder');
+    expect(row.state).toBe('no_launchable_responder');
   });
 
   it('WI-6554700010008590: a single-seat menu refused pre-launch refills from the untried pool instead of ending no_available_responder', async () => {
@@ -3043,7 +3054,7 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
     );
     const res = asOk(await getFeedbackCore({ ...baseReq, minResponders: 0 }, deps));
     expect(reached.map((d) => d.responder)).toEqual(['dead-x']);
-    expect(res.verdict).toBe('no_qualified_responder');
+    expect(res.verdict).toBe('no_launchable_responder');
     expect(res.reason).toBe('no_available_responder');
   });
 

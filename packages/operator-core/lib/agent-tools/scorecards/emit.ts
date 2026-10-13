@@ -123,6 +123,14 @@ import {
   type CriterionCheckRunner,
   type CriterionCheckRunnerResult,
 } from '../../rubrics-criterion-checks';
+import {
+  probeCheckResults,
+  readLatestRubricCheckResults,
+  recordCheckResultsReported,
+  type CheckLedgerOutcome,
+  type recordRubricCheckResults,
+} from '../../check-results-ledger';
+import { fillRatingsFromLedger } from '../../scorecard-ledger-fill';
 import { getEffectiveItemAudits, getLatestActivationAudit, getPlanItemStatuses } from '../../plan-audits';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
 import { resolvePlanHarness } from '../plans/source';
@@ -636,6 +644,17 @@ const scorecardEmitBaseShape = {
         "The EXACT independent scorecard this acceptance verdict responds to (its issue id, e.g. 'EI-123…'). Valid only alongside `acceptance`. Naming it lets you omit `ratings`: the server re-reads that card, re-checks it against the same independence, completeness and current-revision rails the scan applies, and adopts its ratings verbatim into your card, stamping ratingsProvenance so the adoption stays auditable. Prefer it over omitting the reference — without it the server accepts whatever independent card it finds first, which may not be the one you read.",
       ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
+    fromLedger: z
+      .boolean()
+      .optional()
+      .describe('Rate probe/instrument-checked criteria from their latest results-ledger rows; rate only the rest.'),
+    ledgerDispositions: z
+      .record(
+        z.string().min(1),
+        scorecardRatingEntrySchema.pick({ remediation: true, disregard: true, suggestion: true, attribution: true }),
+      )
+      .optional()
+      .describe('With fromLedger: remediation/disregard for a poor ledger-rated criterion, without a rating.'),
     current: z
       .array(evidenceCurrentInputSchema)
       .max(2000)
@@ -1528,6 +1547,10 @@ export async function emitScorecard(
     evaluateProbeChecks?: typeof evaluateCriterionProbeChecks;
     /** Host-bound direct dispatcher used by ContinuityProbe checks. */
     dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+    /** Injectable results-ledger writer (P-006); production writes harness_shared.test_runs. */
+    recordCheckResults?: typeof recordRubricCheckResults;
+    /** Injectable latest-result read for `fromLedger` (P-007); production reads test_runs. */
+    readLatestCheckResults?: typeof readLatestRubricCheckResults;
     /** Injectable seam for tests — production runs the native Cargo crate runner. */
     evaluateCargoChecks?: typeof evaluateCriterionCargoChecks;
     evaluateCoverageChecks?: typeof evaluateCriterionCoverageChecks;
@@ -2140,7 +2163,48 @@ export async function emitScorecard(
         },
       },
     );
-    const suppliedRatings = (computedAdoption?.ratings ?? args.ratings ?? adoptedRatings) as ObservationRatings | undefined;
+    // test-rubric-unification-2026-10-12 P-007 (D-004 rule 2): fromLedger rates every executable
+    // (probe / command-instrument) criterion from its latest results-ledger row and asks the
+    // caller only for the rest; see scorecard-ledger-fill.ts for the rating rules.
+    let ledgerOwnedKeys = new Set<string>();
+    let ledgerFillSummary: { filled: string[]; unrecorded: string[] } | null = null;
+    let ledgerRatings: ObservationRatings | undefined;
+    if (args.ledgerDispositions && !args.fromLedger) {
+      return {
+        ok: false as const,
+        error: 'ledgerDispositions routes ledger-rated criteria; pass it with fromLedger:true, or put remediation/disregard on each rating.',
+      };
+    }
+    if (args.fromLedger) {
+      if (acceptanceOf || computedAdoption) {
+        return {
+          ok: false as const,
+          error: 'fromLedger rates from the results ledger; it cannot be combined with acceptanceOf or a computed-card supersede.',
+        };
+      }
+      const latest = await (deps.readLatestCheckResults ?? readLatestRubricCheckResults)({
+        rubricRef: rubric.rubricId,
+        workspaceId: rubric.workspaceId ?? null,
+      });
+      const fill = fillRatingsFromLedger({
+        criteria: rubric.criteria,
+        rubricRatingScale: rubric.ratingScale,
+        callerRatings: args.ratings as ObservationRatings | undefined,
+        latest,
+        dispositions: args.ledgerDispositions,
+      });
+      if (!fill.ok) {
+        return {
+          ok: false as const,
+          error: fill.detail,
+          ledgerFillRefusal: { error: fill.error, criterionKeys: fill.criterionKeys },
+        };
+      }
+      ledgerRatings = fill.ratings;
+      ledgerOwnedKeys = new Set([...fill.ledgerFilled, ...fill.unrecorded]);
+      ledgerFillSummary = { filled: fill.ledgerFilled, unrecorded: fill.unrecorded };
+    }
+    const suppliedRatings = (ledgerRatings ?? computedAdoption?.ratings ?? args.ratings ?? adoptedRatings) as ObservationRatings | undefined;
     if (suppliedRatings === undefined) {
       return {
         ok: false as const,
@@ -2172,7 +2236,16 @@ export async function emitScorecard(
     // scorecard-poor-rating-disposition (owner-directed 2026-08-31): a poor rating
     // on a standard rubric must carry `remediation` (WI-/EI-/F- ref) or an explicit
     // `disregard` — the agent-facing emit door enforces what the schema teaches.
-    validateScorecardPoorRatingDisposition(observationForValidation, rubric);
+    try {
+      validateScorecardPoorRatingDisposition(observationForValidation, rubric);
+    } catch (error) {
+      // P-007: a ledger-rated poor result is routed without retyping its rating.
+      if (ledgerFillSummary && error instanceof Error) {
+        error.message +=
+          ' With fromLedger, route a ledger-rated criterion via ledgerDispositions:{ <key>: { remediation | disregard } } — no rating needed.';
+      }
+      throw error;
+    }
     try {
       validateRubricRatingContracts(args.rubricRef, ratings);
     } catch (error) {
@@ -3270,6 +3343,8 @@ export async function emitScorecard(
     // and BEFORE the write so a card is only ever filed with its live check verdicts
     // stamped (observation.checkRuns). Criteria without a tests-check are untouched.
     let checkRuns: Record<string, import('../../rubrics-criterion-checks').CriterionCheckRun> | undefined;
+    /** P-006: where this emit's executed checks landed in the results ledger (null = none executed). */
+    let checkLedger: CheckLedgerOutcome | null = null;
     const testCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'tests');
     if (testCheckedCriteria.length > 0) {
       const evaluateChecks = deps.evaluateChecks ?? evaluateCriterionTestChecks;
@@ -3328,14 +3403,33 @@ export async function emitScorecard(
     // and bounded batch executor as carried checks. They run after unchanged
     // evidence deduplication and before persistence, so every filed card keeps
     // the live predicate result that justified its rating.
-    const probeCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'probe');
+    // A ledger-owned criterion (P-007 fromLedger) is rated from its recorded run, so it is not
+    // re-executed here: a fresh live run would become the latest row the rating did not see.
+    const probeCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'probe' && !ledgerOwnedKeys.has(c.key));
     if (probeCheckedCriteria.length > 0) {
       const evaluateProbe = deps.evaluateProbeChecks ?? evaluateCriterionProbeChecks;
       const probeEvaluation = await evaluateProbe({
-        criteria: rubric.criteria,
+        criteria: rubric.criteria.filter((c) => !ledgerOwnedKeys.has(c.key)),
         ratings,
         dispatchTool: deps.dispatchTool,
       });
+      // test-rubric-unification-2026-10-12 P-006 (D-004 rule 1): every EXECUTED probe writes one
+      // results-ledger row, pass or fail — including the one that contradicted its rating and
+      // refuses this emit. A ledger fault is reported, never allowed to change the verdict.
+      const executedProbeRuns = probeEvaluation.ok
+        ? probeEvaluation.checkRuns
+        : probeEvaluation.error === 'probe_contradicted' && 'run' in probeEvaluation && probeEvaluation.run
+          ? { [probeEvaluation.criterionKey]: probeEvaluation.run }
+          : {};
+      checkLedger = await recordCheckResultsReported(
+        probeCheckResults(rubric.rubricId, executedProbeRuns),
+        {
+          workspaceId: rubric.workspaceId ?? null,
+          harnessSlug: rubric.subjectHarnessSlug ?? null,
+          ...(input.checkRoot ? { root: input.checkRoot } : {}),
+        },
+        deps.recordCheckResults,
+      );
       if (!probeEvaluation.ok) {
         return {
           ok: false as const,
@@ -3517,6 +3611,7 @@ export async function emitScorecard(
       payloadExtra: {
         observation: {
           rubricRef: args.rubricRef,
+          ...(ledgerFillSummary ? { ledgerFilled: true } : {}),
           ...(rubricRevision != null ? { rubricRevision } : {}),
           ...(criteriaHash != null ? { criteriaHash } : {}),
           ...(rubricMeaningRevision != null ? { rubricMeaningRevision } : {}),
@@ -3686,6 +3781,8 @@ export async function emitScorecard(
       created: result.created,
       issueId: result.issue?.id ?? null,
       evidenceFingerprint,
+      ...(checkLedger ? { checkLedger } : {}),
+      ...(ledgerFillSummary ? { ledgerFill: ledgerFillSummary } : {}),
       ...(gradedGeneration
         ? {
             gradedGeneration,

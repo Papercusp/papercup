@@ -18,6 +18,7 @@ import {
   RESTRICTED_EGRESS_MATCHER,
   RTK_BIN_ENV,
   RTK_EARLY_EXIT_PIPE,
+  RTK_GREP_NO_FILENAME,
   decideEgress,
   egressTexts,
   prefilterHits,
@@ -25,7 +26,10 @@ import {
   rtkRewriteSync,
   sandboxedBashCommand,
 } from '../pretooluse-restricted-egress-guard.mjs';
-import { RTK_EARLY_EXIT_PIPE as CAPABILITY_BASH_EARLY_EXIT_PIPE } from '../../../../../../packages/operator-core/lib/agent-tools/capability/rtk-rewrite';
+import {
+  RTK_EARLY_EXIT_PIPE as CAPABILITY_BASH_EARLY_EXIT_PIPE,
+  RTK_GREP_NO_FILENAME as CAPABILITY_BASH_GREP_NO_FILENAME,
+} from '../../../../../../packages/operator-core/lib/agent-tools/capability/rtk-rewrite';
 
 /** A stand-in for `rtk rewrite <cmd>` covering the exit codes rtk uses. */
 function fakeRtk() {
@@ -39,6 +43,7 @@ case "$2" in
   "git status") echo "rtk git status"; exit 0 ;;
   "git log -n 3") echo "warn" >&2; echo "rtk git log -n 3"; exit 3 ;;
   "rg -n x . | "*) echo "rtk $2"; exit 0 ;;
+  "grep "*) echo "rtk $2"; exit 0 ;;
   deny*) exit 2 ;;
   *vitest*) echo "rtk vitest"; exit 0 ;;
   *) exit 1 ;;
@@ -388,6 +393,28 @@ describe('rtkRewriteSync', () => {
   it('keeps its early-exit rule identical to capability:bash (rtk-rewrite.ts)', () => {
     expect(RTK_EARLY_EXIT_PIPE.source).toBe(CAPABILITY_BASH_EARLY_EXIT_PIPE.source);
     expect(RTK_EARLY_EXIT_PIPE.flags).toBe(CAPABILITY_BASH_EARLY_EXIT_PIPE.flags);
+  });
+
+  it('never offers grep -h / --no-filename, which rtk grep reads as --help (WI-6554700010009627)', () => {
+    const fake = fakeRtk();
+    try {
+      const env = { [RTK_BIN_ENV]: fake.bin };
+      // control: the fake rewrites any grep, and a grep without -h still gets the RTK form
+      expect(rtkRewriteSync('grep -n foo a.log', { env })).toBe('rtk grep -n foo a.log');
+      expect(rtkRewriteSync("grep -E 'h|x' a.log", { env })).toBe("rtk grep -E 'h|x' a.log");
+      expect(rtkRewriteSync("grep -h -E 'foo|bar' a.log b.log", { env })).toBeNull();
+      expect(rtkRewriteSync('grep -hn foo a.log', { env })).toBeNull();
+      expect(rtkRewriteSync('grep -rh foo src', { env })).toBeNull();
+      expect(rtkRewriteSync("grep -E 'a|b' -h a.log", { env })).toBeNull();
+      expect(rtkRewriteSync('grep --no-filename foo a.log b.log', { env })).toBeNull();
+    } finally {
+      fake.cleanup();
+    }
+  });
+
+  it('keeps its grep -h rule identical to capability:bash (rtk-rewrite.ts)', () => {
+    expect(RTK_GREP_NO_FILENAME.source).toBe(CAPABILITY_BASH_GREP_NO_FILENAME.source);
+    expect(RTK_GREP_NO_FILENAME.flags).toBe(CAPABILITY_BASH_GREP_NO_FILENAME.flags);
   });
 
   it('never picks up the host binary implicitly under vitest', () => {

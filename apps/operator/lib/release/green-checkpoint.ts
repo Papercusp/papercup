@@ -149,9 +149,12 @@ import {
   CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
   CHECKPOINT_SCHEDULED_RUN_ENV,
   checkpointPidIdentity,
+  probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationRunnerProgress,
   reserveStoredQualificationRunner,
+  type QualificationPhysicalRunner,
+  type RunnerLiveness,
   type StoredQualificationMutation,
 } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
@@ -1348,6 +1351,13 @@ export interface CheckpointDeps {
     disposition: FreezeAndConvergeDisposition,
   ): Promise<void>;
   /**
+   * WI-6554700010009615: called once per return-funnel pass, AFTER the admission refire (the last
+   * branch that can start another suite) and before the post-verdict steps. The CLI wires it to
+   * tighten its self-watchdog to POST_VERDICT_WATCHDOG_MS. ABSENT means nothing happens.
+   * Synchronous and best-effort: a throw is logged, never fatal.
+   */
+  enterPostVerdictPhase?(): void;
+  /**
    * P-008: the per-tick BACKSTOP for the dep above. `converging` and `none` are recorded by
    * no branch, and the stored record is shallow-merged and never cleared, so without this a
    * tick that converges or clears leaves the previous `held`/`retired` record standing and a
@@ -1927,6 +1937,58 @@ export async function retireInFlightCandidateAfterResult(
   if (result.reason === "skipped-locked") return false;
   await clear();
   return true;
+}
+
+/**
+ * WI-6554700010009570 — a fire whose qualification-runner attachment is refused with `conflict`
+ * because a DIFFERENT, demonstrably live physical runner already holds the attempt lost a launch
+ * race. Measured 2026-10-13 02:14-02:15Z: a manual release:checkpoint-run and a scheduled tick 36s
+ * apart on the same candidate. The scheduled runner attached first, and the manual CLI threw into
+ * the crash path: reason 'error', crashed:true, a no-verdict tick, and a terminal cleanup that
+ * retires the in-flight candidate marker the LIVE holder still owns. Losing the attach race is the
+ * same situation as losing the per-root run lock, so it ends on the same `skipped-locked` terminal
+ * (see retireInFlightCandidateAfterResult above).
+ *
+ * Returns the incumbent ONLY on positive liveness evidence (`live`). `dead`/`unknown`, a runner
+ * that is this process, or a non-conflict status return null. That keeps the loud crash path for
+ * every case where no live run is provably carrying the verdict.
+ */
+export async function liveIncumbentAfterAttachConflict(
+  activation: {
+    status: string;
+    transaction?: {
+      runId: string | null;
+      candidate: string | null;
+      currentPhysicalRunner: QualificationPhysicalRunner | null;
+    };
+  },
+  self: { pid: number; runId: string },
+  probe: (runner: QualificationPhysicalRunner) => Promise<RunnerLiveness> = (runner) => probeRunnerLiveness(runner),
+): Promise<{ runner: QualificationPhysicalRunner; runId: string | null; candidate: string | null } | null> {
+  if (activation.status !== "conflict") return null;
+  const transaction = activation.transaction;
+  const runner = transaction?.currentPhysicalRunner;
+  if (!transaction || !runner) return null;
+  if (runner.pid != null && runner.pid === self.pid) return null;
+  if (transaction.runId && transaction.runId === self.runId) return null;
+  const liveness = await probe(runner).catch((): RunnerLiveness => "unknown");
+  if (liveness !== "live") return null;
+  return { runner, runId: transaction.runId, candidate: runner.candidate ?? transaction.candidate };
+}
+
+/** The `skipped-locked` summary for a fire that lost the qualification attach race (WI-6554700010009570). */
+export function attachRaceSkipSummary(incumbent: {
+  runner: Pick<QualificationPhysicalRunner, "pid" | "unit">;
+  runId: string | null;
+  candidate: string | null;
+}): string {
+  const who = [
+    incumbent.runId ? `runId ${incumbent.runId.slice(0, 8)}` : null,
+    incumbent.runner.pid != null ? `pid ${incumbent.runner.pid}` : null,
+    incumbent.runner.unit ? `unit ${incumbent.runner.unit}` : null,
+  ].filter(Boolean).join(", ");
+  const on = incumbent.candidate ? ` on ${incumbent.candidate.slice(0, 12)}` : "";
+  return `another live checkpoint runner (${who || "identity unrecorded"})${on} already holds this qualification attempt; it owns the verdict, so this fire stood down instead of crashing (lost the attach race, WI-6554700010009570)`;
 }
 
 /**
@@ -2564,6 +2626,33 @@ export const MATERIALIZATION_HEARTBEAT_MAX_DURATION_MS =
  *  lock) before a peer attempt would need to force-reclaim it. */
 export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
 
+/** WI-6554700010009615 stage 1: once runGreenCheckpoint passes the admission refire in its return
+ *  funnel, no further suite can start in this process, so the remaining post-verdict work
+ *  (freeze-disposition write, leg routing, an `awaiting-fixer` tick's P-009 repair-tick legs, the
+ *  terminal emit) gets at most this long. Run b874ad21 recorded its verdict, then sat ~2h until
+ *  SELF_WATCHDOG_MS fired. Sized for a full P-009 leg pass (setupTree + the cheap legs), the only
+ *  long post-verdict step. It only ever pulls the ceiling IN, so the ordering chain
+ *  (suite < self-watchdog < stale-reclaim) is preserved. */
+export const POST_VERDICT_WATCHDOG_MS = 60 * 60_000;
+
+/** WI-6554700010009615 stage 2: from the CLI finalizer's entry (every leg is done) to the verdict
+ *  marker. Pure proof capture then cancels the watchdog and runs on its own bounded budget. */
+export const POST_VERDICT_FINALIZE_WATCHDOG_MS = 15 * 60_000;
+
+/** What armSelfWatchdog returns. */
+export interface SelfWatchdogHandle {
+  cancel: () => void;
+  /** Real phase/command/output progress: resets the idle budget, never the absolute ceiling. */
+  progress: () => void;
+  /**
+   * WI-6554700010009615: pull the absolute ceiling IN to `now + hardCeilingMs`. Run b874ad21
+   * recorded its verdict, then sat ~2h in the return funnel until the 180m ceiling fired;
+   * nothing past the verdict needs that budget. Never extends a deadline, and progress() re-arms
+   * against the tightened one, so it cannot push past it. True only when the deadline moved.
+   */
+  tighten: (opts: { hardCeilingMs: number; reason: string }) => boolean;
+}
+
 /** The two ways a progress-aware self-watchdog can terminate a run. */
 export type SelfWatchdogFireReason = "idle-timeout" | "absolute-hard-ceiling";
 
@@ -2944,7 +3033,7 @@ export function armSelfWatchdog(
      *  Defaults to SELF_WATCHDOG_ONFIRE_GRACE_MS. */
     onFireGraceMs?: number;
   } = {},
-): { cancel: () => void; progress: () => void } {
+): SelfWatchdogHandle {
   const ms = Math.max(1, opts.ms ?? SELF_WATCHDOG_MS);
   const hardCeilingMs = Math.max(1, opts.hardCeilingMs ?? SELF_WATCHDOG_MS);
   const pid = opts.pid ?? process.pid;
@@ -2961,7 +3050,10 @@ export function armSelfWatchdog(
         : null);
   const onFireGraceMs = opts.onFireGraceMs ?? SELF_WATCHDOG_ONFIRE_GRACE_MS;
   const startedAtMs = Date.now();
-  const hardDeadlineAtMs = startedAtMs + hardCeilingMs;
+  // WI-6554700010009615: mutable because tighten() can pull the ceiling IN (never out).
+  let hardDeadlineAtMs = startedAtMs + hardCeilingMs;
+  let effectiveHardCeilingMs = hardCeilingMs;
+  let tightenedBecause: string | null = null;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let hardTimer: ReturnType<typeof setTimeout> | undefined;
   let cancelled = false;
@@ -2987,11 +3079,12 @@ export function armSelfWatchdog(
         : "presumed-dead parent (release-actions.ts's runScript never landed its SIGTERM+SIGKILL)";
     const deadlineDetail =
       reason === "absolute-hard-ceiling"
-        ? `absolute hard ceiling elapsed after ${formatSelfWatchdogDuration(hardCeilingMs)}`
+        ? `absolute hard ceiling elapsed after ${formatSelfWatchdogDuration(effectiveHardCeilingMs)}` +
+          (tightenedBecause ? ` (tightened: ${tightenedBecause})` : "")
         : `idle progress budget elapsed after ${formatSelfWatchdogDuration(ms)}`;
     log(
       `self-watchdog fired after ${formatSelfWatchdogDuration(
-        reason === "absolute-hard-ceiling" ? hardCeilingMs : ms,
+        reason === "absolute-hard-ceiling" ? effectiveHardCeilingMs : ms,
       )} with no normal exit — ${deadlineDetail}; ${triggerDetail}; ` +
         `releasing the run-lock and killing this process's ACTUAL group ` +
         `(pid ${pid}, pgid ${processGroupId}) so no orphan can outlive it`,
@@ -3071,6 +3164,25 @@ export function armSelfWatchdog(
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = undefined;
       scheduleIdleTimer();
+    },
+    tighten: ({ hardCeilingMs: capMs, reason }) => {
+      if (cancelled || firedAlready) return false;
+      const nowMs = Date.now();
+      const cappedAtMs = nowMs + Math.max(1, capMs);
+      if (cappedAtMs >= hardDeadlineAtMs) return false;
+      hardDeadlineAtMs = cappedAtMs;
+      effectiveHardCeilingMs = cappedAtMs - startedAtMs;
+      tightenedBecause = reason;
+      clearTimers();
+      // Same order as arming: the absolute timer first, so a tie is never classed idle.
+      hardTimer = setTimeout(() => fire("absolute-hard-ceiling"), cappedAtMs - nowMs);
+      unref(hardTimer);
+      scheduleIdleTimer();
+      log(
+        `self-watchdog tightened (${reason}): absolute ceiling now ` +
+          `${formatSelfWatchdogDuration(cappedAtMs - nowMs)} from now`,
+      );
+      return true;
     },
   };
 }
@@ -16604,6 +16716,16 @@ export async function runGreenCheckpoint(
   // in-flight-retriage recursion both call this function, and a backstop wired at the
   // entrypoint would miss both. The implementation no-ops when a branch already recorded a
   // disposition, so the recursion's own (inner, final) record wins over the outer frame's.
+  // WI-6554700010009615: from here on the tick is post-verdict (the admission refire above is the
+  // last branch that can start another suite), so the self-watchdog ceiling is pulled in. Run
+  // b874ad21 stalled past this point for ~2h with nothing bounding it but the 180m ceiling.
+  try {
+    deps.enterPostVerdictPhase?.();
+  } catch (e) {
+    deps.log(
+      `warn: post-verdict watchdog tighten failed: ${e instanceof Error ? e.message : e}`,
+    );
+  }
   if (deps.recordDerivedFreezeDisposition) {
     await recordDerivedFreezeDispositionWithDeadline(async () => {
       await deps.recordDerivedFreezeDisposition?.({
@@ -23407,6 +23529,26 @@ if (require.main === module) {
         pid: process.pid,
       });
       if (activation.status !== 'not-qualifying' && activation.status !== 'updated' && activation.status !== 'idempotent') {
+        // WI-6554700010009570: a refusal because a DIFFERENT live runner already holds this attempt
+        // is a lost launch race, not a crash. Stand down on the lock-loser terminal so the no-verdict
+        // streak does not advance and the holder's in-flight candidate marker survives.
+        const incumbent = await liveIncumbentAfterAttachConflict(activation, { pid: process.pid, runId });
+        if (incumbent) {
+          const summary = attachRaceSkipSummary(incumbent);
+          console.log(`${orchestratorStdoutTag()} ${summary}`);
+          await emitResult({
+            advanced: false,
+            candidate: incumbent.candidate ?? qualificationCandidate ?? cfg.integrationBranch,
+            from: null,
+            green: null,
+            reason: "skipped-locked",
+            summary,
+            candidateSource,
+            ...(diagnostic ? { diagnostic } : {}),
+            ...(gateFireId ? { gateFireId } : {}),
+          });
+          process.exit(0);
+        }
         throw new Error(`checkpoint qualification runner attachment refused: ${activation.status}`);
       }
       qualificationProgress = startCheckpointQualificationProgress({
@@ -23731,6 +23873,13 @@ if (require.main === module) {
         gateFireId,
       );
       flushTerminalEvents = checkpointDeps.flushTerminalEvents;
+      // WI-6554700010009615 stage 1: past the admission refire the run is post-verdict.
+      checkpointDeps.enterPostVerdictPhase = () => {
+        watchdog.tighten({
+          hardCeilingMs: POST_VERDICT_WATCHDOG_MS,
+          reason: "post-verdict return funnel",
+        });
+      };
       // Same durable verdict target/ledger as normal recording. The reader is memoized for
       // auto-refires; direct realCheckpointDeps test callers never gain a new ambient DB read.
       let previousSuiteReplay: Promise<GateSuiteVerdictReplay | null> | undefined;
@@ -23770,7 +23919,15 @@ if (require.main === module) {
         ...(diagnostic ? { diagnostic } : {}),
         noPush: process.argv.includes("--no-push"),
       })
-        .then(finalizeNormalResult)
+        .then((result) => {
+          // WI-6554700010009615 stage 2: every leg is done; only the terminal emit is left before
+          // pure proof capture cancels the watchdog and runs on its own budget.
+          watchdog.tighten({
+            hardCeilingMs: POST_VERDICT_FINALIZE_WATCHDOG_MS,
+            reason: "terminal finalize",
+          });
+          return finalizeNormalResult(result);
+        })
         .catch(async (e) => {
           // The same awaited finalizer serves ordinary promise rejection and process-level fatal
           // events, so neither path can drift back to a bare exit without the typed marker.

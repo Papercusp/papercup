@@ -15,7 +15,13 @@ import { canonicalJson } from '@papercusp/hash-chain';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import {
+  auditInstrumentBindings,
+  unregisteredInstrumentRefusal,
+  type InstrumentBindingAudit,
+} from '../../rubric-instrument-registry';
+import {
   amendRubric,
+  applyRubricAmendment,
   getRubric,
   mintAmendmentIdempotencyKey,
   previewAcceptanceBarAmendment,
@@ -741,8 +747,30 @@ async function settleWithin<T>(run: Promise<T>, budgetMs: number, signal?: Abort
   }
 }
 
+/**
+ * P-005 (plan D-006): audit the instrument bindings the amendment would leave, against the
+ * stored revision. Null when there is no stored rubric or the amendment does not apply — the
+ * real amend reports that input error itself, so this pre-check never masks it.
+ */
+async function auditAmendInstrumentBindings(input: AmendRubricInput): Promise<InstrumentBindingAudit | null> {
+  const stored = await getRubric(input.rubricId);
+  if (!stored) return null;
+  let amendedCriteria: ReturnType<typeof applyRubricAmendment>['criteria'];
+  try {
+    amendedCriteria = applyRubricAmendment(stored, input).criteria;
+  } catch {
+    return null;
+  }
+  return auditInstrumentBindings({ prior: stored.criteria, next: amendedCriteria });
+}
+
 /** The synchronous amend: apply, then build the response payload. */
 async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise<Record<string, unknown>> {
+  // test-rubric-unification-2026-10-12 P-005 (plan D-006): the amended criteria may not bind a
+  // NEW or CHANGED unregistered instrument; a key carried unchanged is grandfathered.
+  const instrumentAudit = await auditAmendInstrumentBindings(input);
+  const instrumentRefusal = instrumentAudit ? unregisteredInstrumentRefusal(instrumentAudit) : null;
+  if (instrumentRefusal) return instrumentRefusal;
   let rubric: Awaited<ReturnType<typeof amendRubric>>;
   try {
     rubric = await amendRubric(input);

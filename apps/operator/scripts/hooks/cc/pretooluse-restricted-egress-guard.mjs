@@ -76,6 +76,15 @@ const RTK_MAX_COMMAND_CHARS = 16384;
 export const RTK_EARLY_EXIT_PIPE =
   /(?:^|[^|])\|(?!\|)&?\s*(?:head\b|(?:rg|[ef]?grep)\b[^|;&\n]*\s(?:-m\s*\d|-[A-Za-z]*m\d|--max-count\b)|sed\b[^|;&\n]*\d+q\b)/;
 
+/**
+ * A grep/egrep/fgrep carrying `-h` (any short-flag cluster) or `--no-filename`.
+ * `rtk grep` reads `-h` as --help, so the RTK form printed usage text with exit 0
+ * instead of matches (WI-6554700010009627).
+ * Kept identical to RTK_GREP_NO_FILENAME in packages/operator-core/lib/agent-tools/capability/rtk-rewrite.ts.
+ */
+export const RTK_GREP_NO_FILENAME =
+  /(?:^|[\s|;&(/])[ef]?grep\s(?:[^;&\n]*\s)?(?:-[A-Za-z0-9]*h[A-Za-z0-9]*|--no-filename)(?=[\s;&|)]|$)/;
+
 function isExecutable(file) {
   try {
     accessSync(file, fsConstants.X_OK);
@@ -123,6 +132,7 @@ export function rtkRewriteSync(command, opts = {}) {
   if (/(^|[\s;&|(])RTK_DISABLED=1(\s|$)/.test(command)) return null;
   if (/\bvitest\b/.test(command)) return null;
   if (RTK_EARLY_EXIT_PIPE.test(command)) return null;
+  if (RTK_GREP_NO_FILENAME.test(command)) return null;
   const bin = resolveRtkBin(opts.env ?? process.env);
   if (!bin) return null;
   try {

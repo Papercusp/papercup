@@ -27,6 +27,7 @@ export declare const RTK_BIN_ENV: string;
 export declare const RTK_REWRITE_TIMEOUT_MS: number;
 
 export declare const RTK_EARLY_EXIT_PIPE: RegExp;
+export declare const RTK_GREP_NO_FILENAME: RegExp;
 
 export declare function resolveRtkBin(env?: NodeJS.ProcessEnv): string | null;
 

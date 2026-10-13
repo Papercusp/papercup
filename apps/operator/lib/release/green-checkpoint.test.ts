@@ -152,6 +152,8 @@ import {
   formatGateLineageLine,
   computeGateLineage,
   retireInFlightCandidateAfterResult,
+  liveIncumbentAfterAttachConflict,
+  attachRaceSkipSummary,
   matchFailingFilesToChanged,
   unmatchedFailingFiles,
   failingFilesUncommitted,
@@ -1113,6 +1115,51 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
     expect(logs).toContain(
       "frozen-repair leg routing failed: condition bridge down",
     );
+  });
+
+  it("WI-6554700010009615: the return funnel enters the post-verdict phase before its post-verdict steps", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    const order: string[] = [];
+    deps.enterPostVerdictPhase = () => {
+      order.push("enter");
+    };
+    deps.recordDerivedFreezeDisposition = async () => {
+      order.push("disposition");
+    };
+    deps.routeFrozenRepairLegsToAgents = async () => {
+      order.push("route");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result.green).toBe(true);
+    expect(order).toEqual(["enter", "disposition", "route"]);
+  });
+
+  it("WI-6554700010009615: a throwing post-verdict hook is logged and never fails the tick", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+    deps.enterPostVerdictPhase = () => {
+      throw new Error("watchdog gone");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result.green).toBe(true);
+    expect(logs).toContain("warn: post-verdict watchdog tighten failed: watchdog gone");
   });
 });
 
@@ -3704,6 +3751,74 @@ describe("in-flight candidate retirement ownership", () => {
   );
 });
 
+describe("qualification attach race (WI-6554700010009570)", () => {
+  const incumbentRunner = {
+    id: "gate-fire-scheduled",
+    candidate: "0a16d4a6fa0000000000000000000000000000aa",
+    reservedAtMs: 1,
+    evidenceRefs: [],
+    pid: 3842170,
+    pidIdentity: "start:123",
+    unit: "papercup-green-checkpoint-scheduled",
+  };
+  const conflict = (runner: typeof incumbentRunner | null, runId: string | null = "4bbfb5d7-run") => ({
+    status: "conflict",
+    transaction: { runId, candidate: "0a16d4a6fa0000000000000000000000000000aa", currentPhysicalRunner: runner },
+  });
+  const self = { pid: 4000001, runId: "8d95fde3-run" };
+
+  it("names a LIVE different runner so the losing fire stands down instead of crashing", async () => {
+    const probe = vi.fn(async () => "live" as const);
+    const incumbent = await liveIncumbentAfterAttachConflict(conflict(incumbentRunner), self, probe);
+    expect(incumbent).toEqual({
+      runner: incumbentRunner,
+      runId: "4bbfb5d7-run",
+      candidate: "0a16d4a6fa0000000000000000000000000000aa",
+    });
+    expect(probe).toHaveBeenCalledWith(incumbentRunner);
+    const summary = attachRaceSkipSummary(incumbent!);
+    expect(summary).toContain("runId 4bbfb5d7");
+    expect(summary).toContain("pid 3842170");
+    expect(summary).toContain("on 0a16d4a6fa00");
+  });
+
+  it.each(["dead", "unknown"] as const)("keeps the crash path when the incumbent is %s", async (liveness) => {
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict(incumbentRunner), self, async () => liveness),
+    ).resolves.toBeNull();
+  });
+
+  it("keeps the crash path when the liveness probe throws", async () => {
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict(incumbentRunner), self, async () => {
+        throw new Error("systemctl unavailable");
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("never treats this process, its own runId, a missing runner or a non-conflict refusal as an incumbent", async () => {
+    const live = vi.fn(async () => "live" as const);
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict({ ...incumbentRunner, pid: self.pid }), self, live),
+    ).resolves.toBeNull();
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict(incumbentRunner, self.runId), self, live),
+    ).resolves.toBeNull();
+    await expect(liveIncumbentAfterAttachConflict(conflict(null), self, live)).resolves.toBeNull();
+    await expect(
+      liveIncumbentAfterAttachConflict({ ...conflict(incumbentRunner), status: "terminal" }, self, live),
+    ).resolves.toBeNull();
+    await expect(liveIncumbentAfterAttachConflict({ status: "missing-identity" }, self, live)).resolves.toBeNull();
+    expect(live).not.toHaveBeenCalled();
+  });
+
+  it("stands down on the lock-loser terminal, which never retires the holder's in-flight marker", async () => {
+    const clear = vi.fn(async () => {});
+    await expect(retireInFlightCandidateAfterResult({ reason: "skipped-locked" }, clear)).resolves.toBe(false);
+    expect(clear).not.toHaveBeenCalled();
+  });
+});
+
 describe("acquireCheckpointRunLock", () => {
   it('uses the scheduled wrapper runId for its child and preserves legacy sentinel behavior', () => {
     const shared = 'ae4f7c6c-56c6-4bb6-8d38-633a23f94a4f';
@@ -4222,6 +4337,69 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     expect(onFire).toHaveBeenCalledWith("absolute-hard-ceiling");
     expect(release).toHaveBeenCalledTimes(1);
     expect(kill).toHaveBeenCalledWith(-999, "SIGKILL");
+  });
+
+  it("WI-6554700010009615: tighten pulls the absolute ceiling in, and progress cannot push past it", () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    const onFire = vi.fn();
+    const logs: string[] = [];
+    const watchdog = armSelfWatchdog(
+      { release },
+      {
+        ms: 10_000,
+        hardCeilingMs: 10_000,
+        kill,
+        pid: 999,
+        log: (m) => logs.push(m),
+        onFire,
+      },
+    );
+
+    vi.advanceTimersByTime(1000);
+    expect(
+      watchdog.tighten({ hardCeilingMs: 2000, reason: "post-verdict return funnel" }),
+    ).toBe(true);
+    expect(logs.some((l) => l.startsWith("self-watchdog tightened (post-verdict return funnel)"))).toBe(true);
+
+    // Real progress resets the idle budget but re-arms against the TIGHTENED ceiling.
+    vi.advanceTimersByTime(1500);
+    watchdog.progress();
+    vi.advanceTimersByTime(499);
+    expect(onFire).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1);
+    expect(onFire).toHaveBeenCalledWith("absolute-hard-ceiling");
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith(-999, "SIGKILL");
+    // The fire line names the tightening, so a post-verdict kill is not misread as a 3h overrun.
+    expect(logs.some((l) => l.includes("(tightened: post-verdict return funnel)"))).toBe(true);
+  });
+
+  it("WI-6554700010009615: tighten never extends a deadline and is inert once cancelled", () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    const onFire = vi.fn();
+    const watchdog = armSelfWatchdog(
+      { release },
+      { ms: 5000, hardCeilingMs: 5000, kill, pid: 999, log: () => {}, onFire },
+    );
+
+    vi.advanceTimersByTime(1000);
+    expect(watchdog.tighten({ hardCeilingMs: 60_000, reason: "looser" })).toBe(false);
+    vi.advanceTimersByTime(3999);
+    expect(onFire).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onFire).toHaveBeenCalledTimes(1);
+
+    const cancelled = armSelfWatchdog(
+      { release },
+      { ms: 5000, hardCeilingMs: 5000, kill, pid: 999, log: () => {}, onFire },
+    );
+    cancelled.cancel();
+    expect(cancelled.tighten({ hardCeilingMs: 10, reason: "after cancel" })).toBe(false);
+    vi.advanceTimersByTime(10_000);
+    expect(onFire).toHaveBeenCalledTimes(1);
   });
 
   it("releases the lock and SIGKILLs its own process GROUP (negative pid) once the deadline elapses", () => {
