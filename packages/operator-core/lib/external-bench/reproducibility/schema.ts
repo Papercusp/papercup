@@ -167,6 +167,38 @@ function armControlIssues(arms: ReadonlyArray<ProtocolArm>): Array<{ path: (stri
   return issues;
 }
 
+/**
+ * A native-CLI reference arm: the declared stock-native topology or, in an uncontrolled protocol,
+ * the `baseline` arm the launcher routes to the stock CLI driver.
+ */
+export function isNativeCliReferenceArm(arm: Pick<ProtocolArm, 'id' | 'control'>): boolean {
+  return arm.control ? arm.control.topology === 'stock-native-reference' : arm.id === 'baseline';
+}
+
+/**
+ * benchmark-coverage-frontierswe-v2-2026-10-10#P-018: harness lift is attributable only with the model
+ * held fixed. Every native-CLI reference runs a model some Papercusp arm runs, and every Papercusp arm
+ * has a reference on its own model. A study without both kinds of arm is not a lift comparison.
+ */
+function nativeReferenceModelIssues(arms: ReadonlyArray<ProtocolArm>): Array<{ path: (string | number)[]; message: string }> {
+  const issues: Array<{ path: (string | number)[]; message: string }> = [];
+  const references = arms.filter(isNativeCliReferenceArm);
+  const treatments = arms.filter(arm => !isNativeCliReferenceArm(arm));
+  if (references.length === 0 || treatments.length === 0) return issues;
+  const treatmentModels = new Set(treatments.map(arm => arm.model));
+  const referenceModels = new Set(references.map(arm => arm.model));
+  arms.forEach((arm, index) => {
+    if (isNativeCliReferenceArm(arm)) {
+      if (!treatmentModels.has(arm.model)) {
+        issues.push({ path: ['arms', index, 'model'], message: `Native-CLI reference arm ${arm.id} runs ${arm.model}; harness lift needs a Papercusp arm on the same model.` });
+      }
+    } else if (!referenceModels.has(arm.model)) {
+      issues.push({ path: ['arms', index, 'model'], message: `Papercusp arm ${arm.id} runs ${arm.model} with no native-CLI reference on the same model.` });
+    }
+  });
+  return issues;
+}
+
 /** Current runs extend the existing prereg config; historical configs retain their original schema. */
 export const currentBenchmarkProtocolSchema = z.object({
   schemaVersion: z.literal(1),
@@ -244,6 +276,7 @@ export const currentBenchmarkProtocolSchema = z.object({
   const cap = canonicalJson(protocol.arms[0].generationBudget);
   if (protocol.arms.some(arm => canonicalJson(arm.generationBudget) !== cap)) issue(['arms'], 'Matched arms require equal generation caps.');
   for (const { path, message } of armControlIssues(protocol.arms)) issue(path, message);
+  for (const { path, message } of nativeReferenceModelIssues(protocol.arms)) issue(path, message);
   if (protocol.maxInFlightUsd > protocol.aggregateBudgetUsd) issue(['maxInFlightUsd'], 'In-flight exposure cannot exceed the aggregate cap.');
   const modelRates = protocol.priceSchedule.rates.map(rate => rate.model);
   if (!distinct(modelRates) || protocol.arms.some(arm => !modelRates.includes(arm.model))) issue(['priceSchedule'], 'Every arm model needs one frozen price rate.');
