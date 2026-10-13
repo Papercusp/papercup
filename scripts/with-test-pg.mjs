@@ -36,6 +36,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
+import { resolveFsMutexLockRoot } from './lib/fs-mutex.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -416,6 +417,10 @@ if (runtimeRoot && runtimeId) {
     ...(claudeAsset ? { CLAUDE_CODE_EXECPATH: claudeAsset } : {}),
     HOME: home,
     PAPERCUSP_HOME: papercuspHome,
+    // The mutex coordinates mutations against the shared checkout and host
+    // package cache. Keep its caller's account-wide root even though this
+    // isolated child has a private HOME; otherwise it can split the lock domain.
+    PAPERCUSP_FS_MUTEX_LOCK_DIR: resolveFsMutexLockRoot(process.env),
     PAPERCUSP_IDENTITY_DIR: join(papercuspHome, 'identity'),
     PAPERCUSP_WORKSPACES_ROOT: workspacesRoot,
     PAPERCUSP_WORKSPACE: runtimeId,
