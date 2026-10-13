@@ -99,7 +99,7 @@ describe('Reports route', () => {
       () => changeText(subject, 'About: another subject ▾'),
       () => { const saved = searchInput.value; searchInput.value = 'Unrelated search';
         return () => { searchInput.value = saved; }; },
-      () => { const extra = list.cloneNode(true); list.after(extra); return () => extra.remove(); },
+      () => { const extra = list.cloneNode(true); list.after(extra); return () => extra.parentNode?.removeChild(extra); },
       () => { const parent = history.parentNode!; const next = history.nextSibling; history.remove();
         return () => { parent.insertBefore(history, next); }; },
       () => { const parent = subject.parentNode!; const next = subject.nextSibling; subject.remove();
