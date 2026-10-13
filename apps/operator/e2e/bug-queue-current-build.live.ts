@@ -32,20 +32,16 @@ test('real reserved candidate stays a candidate with unknown execution through r
   expect(initial.presentation.workEvidence.reservation?.owner).toBeTruthy();
   expect(initial.presentation.workEvidence.nativeAttestation.status).toBe('unknown');
 
-  const observedDetails: unknown[] = [];
-  page.on('response', async (response) => {
-    const url = new URL(response.url());
-    if (!url.pathname.endsWith('/rest-query') || url.searchParams.get('name') !== 'workItems.detail') return;
-    if (JSON.parse(url.searchParams.get('args') ?? '{}').id !== itemId) return;
-    if (response.ok()) observedDetails.push((await response.json()).rows[0]);
-  });
   await page.setViewportSize({ width: 1920, height: 1200 });
   await page.goto(`/adv?tab=harnesses&slug=${encodeURIComponent(harness!)}&scope=self&welcome=0&sel=${encodeURIComponent(itemId!)}`);
   // A real harness restores its existing dock layout, which may select a chat
   // beside Detail. Activate the actual tab as the owner would; deep-linking an
   // item does not imply the persisted dock group's selected tab is Detail.
-  await page.getByText('Detail', { exact: true }).last().click();
-  await expect.poll(() => observedDetails.length, { message: 'The browser must consume its actual detail response', timeout: 30_000 }).toBeGreaterThan(0);
+  const activateDetail = async () => {
+    // The dock title gains the selected item id after the detail loads.
+    await page.getByText(/^Detail(?: · WI-[0-9]+)?$/).last().click({ timeout: 30_000 });
+  };
+  await activateDetail();
   const detail = page.locator('.pc-adv-detail').filter({ has: page.locator('.pc-adv-detail__id', { hasText: itemId! }) }).first();
   const assertTruthfulDetail = async () => {
     await expect(detail.locator('.pc-adv-detail__id')).toHaveText(itemId!, { timeout: 30_000 });
@@ -58,14 +54,20 @@ test('real reserved candidate stays a candidate with unknown execution through r
   };
   await assertTruthfulDetail();
 
-  const readback = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return url.pathname.endsWith('/rest-query') && url.searchParams.get('name') === 'workItems.detail'
-      && JSON.parse(url.searchParams.get('args') ?? '{}').id === itemId;
-  });
   await page.reload();
-  await page.getByText('Detail', { exact: true }).last().click();
-  const reloaded = (await (await readback).json()).rows[0];
+  await activateDetail();
+  await assertTruthfulDetail();
+  // The UI subscription may arrive by SSE or cache. Independently read its
+  // actual browser origin rather than demand a particular delivery transport.
+  const readback = await page.evaluate(async (args) => {
+    const query = new URLSearchParams({ name: 'workItems.detail', args: JSON.stringify(args) });
+    const response = await fetch(`/api/zero-harness/rest-query?${query}`);
+    return { status: response.status, payload: await response.json() };
+  }, args);
+  expect(readback.status).toBe(200);
+  expect(readback.payload.rows).toHaveLength(1);
+  const reloaded = readback.payload.rows[0];
+  expect(reloaded.id).toBe(itemId);
   expect(reloaded.presentation.stage).toBe('candidate');
   expect(reloaded.presentation.workEvidence.reservation?.owner).toBe(initial.presentation.workEvidence.reservation.owner);
   expect(reloaded.presentation.workEvidence.nativeAttestation.status).toBe('unknown');
@@ -76,7 +78,7 @@ test('real reserved candidate stays a candidate with unknown execution through r
     body: JSON.stringify({ schemaVersion: 1, harness, itemId, before, after,
       initial: { id: initial.id, state: initial.state, presentation: initial.presentation },
       reloaded: { id: reloaded.id, state: reloaded.state, presentation: reloaded.presentation },
-      browserDetailResponses: observedDetails.length,
+      browserReadbackStatus: readback.status,
       scope: 'One real reserved candidate; no validator-adoption, population, or shipment claim' }),
     contentType: 'application/json',
   });
