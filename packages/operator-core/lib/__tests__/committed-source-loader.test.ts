@@ -15,7 +15,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
@@ -392,6 +392,34 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(readAudit(audit).find((record) => record.via === 'cjs' && record.rel === 'c-dirty.cjs')).toMatchObject({
       kind: 'substituted', refused: true,
     });
+  }, 60_000);
+
+  // WI-6554700010009516: a test that spawns `node` inherits NODE_OPTIONS (so this loader) and
+  // captures the child's stderr, so the substituted/refused line never reaches the launcher that
+  // prints the verdict. The notice channel records ONLY modules that did not run as read.
+  it('appends one notice per substituted or refused module to PAPERCUSP_COMMITTED_SOURCE_NOTICES, none for committed ones', () => {
+    const NOTICE_ENV = 'PAPERCUSP_COMMITTED_SOURCE_NOTICES';
+    const notices = join(scratch, 'child.notices');
+    const { prefix, env } = censusPrefix();
+    const withNotices = { ...env, [NOTICE_ENV]: notices };
+    expect(run([...prefix, 'entry.mjs'], withNotices).stdout).toContain('V=HEAD');
+    expect(run([...prefix, 'new-entry.mjs'], withNotices).status).not.toBe(0);
+    expect(run([...prefix, 'req-entry.mjs', './c-dirty.cjs'], withNotices).status).not.toBe(0);
+    expect(run([...prefix, 'door.mjs'], withNotices).stdout).toContain('DOOR=HEAD');
+    const records = readFileSync(notices, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    const top = realpathSync(fixture);
+    const base = { schemaVersion: 'committed-source-notice-v1', top, pid: expect.any(Number) };
+    expect(records).toEqual([
+      { ...base, kind: 'substituted', via: 'esm', rel: 'mod.mjs', entry: 'entry.mjs' },
+      { ...base, kind: 'refused', via: 'esm', rel: 'new.mjs', reason: 'uncommitted', entry: 'new-entry.mjs' },
+      { ...base, kind: 'refused', via: 'cjs', rel: 'c-dirty.cjs', reason: 'differs-from-head', entry: 'req-entry.mjs' },
+      { ...base, kind: 'substituted', via: 'esm', rel: 'door.mjs', entry: 'door.mjs' },
+    ]);
+    // Control: the channel is opt-in — the same substitution with the variable unset adds no line.
+    const before = readFileSync(notices, 'utf8');
+    const loaded = run([...prefix, 'entry.mjs'], env);
+    expect(loaded.stderr).toContain('COMMITTED_SOURCE substituted mod.mjs');
+    expect(readFileSync(notices, 'utf8')).toBe(before);
   }, 60_000);
 
   it('refuses an uncommitted checkout CommonJS module', () => {

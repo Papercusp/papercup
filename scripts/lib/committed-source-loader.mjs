@@ -46,6 +46,18 @@ import { threadId } from 'node:worker_threads';
 export const COMMITTED_SOURCE_AUDIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_AUDIT';
 /** Prefix of every line this loader writes to stderr. */
 export const COMMITTED_SOURCE_MARKER = 'COMMITTED_SOURCE';
+/**
+ * When set to a file path, one JSON line is appended there for every checkout module this loader
+ * did NOT run as read: a substitution (its HEAD bytes ran instead) or a refusal
+ * (WI-6554700010009516). The stderr line says the same, but stderr goes wherever the process's
+ * parent sends it, and a test that spawns `node` (inheriting NODE_OPTIONS, so this loader) captures
+ * its child's stderr: the launcher that prints the verdict never sees it. Unlike the audit channel
+ * this stays silent for committed modules, so a launcher can collect it from every process it
+ * starts at the cost of one line per dirty module.
+ */
+export const COMMITTED_SOURCE_NOTICE_ENV = 'PAPERCUSP_COMMITTED_SOURCE_NOTICES';
+/** `schemaVersion` of every notice line. */
+export const COMMITTED_SOURCE_NOTICE_SCHEMA = 'committed-source-notice-v1';
 
 const HOOKS_QUERY = 'committed-source-hooks';
 const GIT_TIMEOUT_MS = 60_000;
@@ -159,6 +171,27 @@ function audit(record) {
   if (target) appendFileSync(target, `${JSON.stringify(record)}\n`);
 }
 
+/**
+ * Append one notice line (see COMMITTED_SOURCE_NOTICE_ENV). Reporting must never change what runs,
+ * so a failed append is said on stderr rather than thrown into the module load.
+ * `top` is the checkout the module belongs to, so a reader can tell its own tree from a scratch one.
+ * @param {{ kind: 'substituted' | 'refused', via: 'esm' | 'cjs', rel: string, top: string, reason?: string }} record
+ */
+function notice(record) {
+  const target = process.env[COMMITTED_SOURCE_NOTICE_ENV];
+  if (!target) return;
+  const line = JSON.stringify({
+    schemaVersion: COMMITTED_SOURCE_NOTICE_SCHEMA, ...record, pid: process.pid, entry: entryLabel,
+  });
+  try {
+    appendFileSync(target, `${line}\n`);
+  } catch (error) {
+    process.stderr.write(
+      `${COMMITTED_SOURCE_MARKER} notice-unrecorded ${record.rel}: could not append to ${target} (${error?.code ?? error})\n`,
+    );
+  }
+}
+
 function toBuffer(source) {
   if (typeof source === 'string') return Buffer.from(source, 'utf8');
   if (source instanceof ArrayBuffer) return Buffer.from(source);
@@ -193,11 +226,13 @@ export async function load(url, context, nextLoad) {
     verdict.kind === 'substituted' ? verdict.head : input;
   auditLoad(file, result, verdict, input, returned);
   if (verdict.kind === 'uncommitted') {
+    notice({ kind: 'refused', via: 'esm', rel: verdict.rel, top: verdict.top, reason: 'uncommitted' });
     throw new Error(
       `${COMMITTED_SOURCE_MARKER} refused ${verdict.rel}: it has no committed version and git does not ignore it, so it may be a held restricted write (checkout ${verdict.top})`,
     );
   }
   if (verdict.kind === 'substituted') {
+    notice({ kind: 'substituted', via: 'esm', rel: verdict.rel, top: verdict.top });
     process.stderr.write(`${formatSubstitutedLine(verdict.rel, process.pid, entryLabel)}\n`);
     return { ...result, source: verdict.head };
   }
@@ -262,6 +297,12 @@ function guardCommonJs() {
     }
     const refused = verdict.kind === 'substituted' || verdict.kind === 'uncommitted';
     audit({ via: 'cjs', kind: verdict.kind, file: filename, rel: verdict.rel, refused });
+    if (refused) {
+      notice({
+        kind: 'refused', via: 'cjs', rel: verdict.rel, top: verdict.top,
+        reason: verdict.kind === 'uncommitted' ? 'uncommitted' : 'differs-from-head',
+      });
+    }
     if (verdict.kind === 'uncommitted') {
       throw new Error(
         `${COMMITTED_SOURCE_MARKER} refused ${verdict.rel}: a checkout module loaded through CommonJS has no committed version and git does not ignore it, so it may be a held restricted write (checkout ${verdict.top})`,
@@ -281,6 +322,9 @@ function guardCommonJs() {
 if (!new URL(import.meta.url).searchParams.has(HOOKS_QUERY)) {
   const hooks = new URL(import.meta.url);
   hooks.searchParams.set(HOOKS_QUERY, '1');
-  register(hooks.href, { data: { entry: describeEntry(process.argv[1]) } });
+  // This (registering) thread's instance labels its own CommonJS notices; the hooks thread's
+  // instance receives the same label through `initialize`.
+  entryLabel = describeEntry(process.argv[1]);
+  register(hooks.href, { data: { entry: entryLabel } });
   guardCommonJs();
 }
