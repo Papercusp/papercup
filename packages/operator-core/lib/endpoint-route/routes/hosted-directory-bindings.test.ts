@@ -108,4 +108,60 @@ describe('hosted directory binding routes', () => {
     expect(failed.status).toBe(503);
     expect(await failed.json()).toEqual({ error: { code: 'directory_binding_unavailable' } });
   });
+
+  const mappingRequest = (method: string, payload: Record<string, unknown>) => new Request(
+    'https://app.papercusp.com/api/hosted/organizations/org/directory-group-mappings',
+    { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  const routeAt = (manager: Partial<HostedDirectoryBindingManager>, method: string, suffix: string) =>
+    createHostedDirectoryBindingRoutes(manager as HostedDirectoryBindingManager)
+      .find((route) => route.method === method && route.path.endsWith(suffix))!;
+
+  it('binds group mappings to the path organization and refuses body authority overrides', async () => {
+    const setGroupMapping = vi.fn(async () => ({ mappingId: 'm', status: 'active', revokedMembershipIds: [] }));
+    const removeGroupMapping = vi.fn(async () => ({ mappingId: 'm', status: 'removed', revokedMembershipIds: ['x'] }));
+    const put = routeAt({ setGroupMapping } as never, 'PUT', '/directory-group-mappings');
+    const del = routeAt({ removeGroupMapping } as never, 'DELETE', '/directory-group-mappings');
+    const mapping = { directoryId: 'dir', groupId: 'group', role: 'member', purpose: 'Approve engineering' };
+    const response = await put.handler(mappingRequest('PUT', mapping), context());
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(setGroupMapping.mock.calls[0]).toEqual([context().principal, { organizationId: 'org', ...mapping }]);
+    expect((await del.handler(mappingRequest('DELETE', { directoryId: 'dir', groupId: 'group', purpose: 'Retire' }), context())).status).toBe(200);
+    expect(removeGroupMapping.mock.calls[0]?.[1]).toEqual({ organizationId: 'org', directoryId: 'dir', groupId: 'group', purpose: 'Retire' });
+    // A role on DELETE, a foreign organization in the body, or a foreign session never reaches the manager.
+    expect((await del.handler(mappingRequest('DELETE', { ...mapping }), context())).status).toBe(400);
+    expect((await put.handler(mappingRequest('PUT', { ...mapping, organizationId: 'foreign' }), context())).status).toBe(400);
+    expect((await put.handler(mappingRequest('PUT', mapping), context('foreign'))).status).toBe(403);
+    expect((await put.handler(mappingRequest('PUT', mapping), context('org', ['workspace:view']))).status).toBe(403);
+    expect(setGroupMapping).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['directory_group_mapping_forbidden_role', 403], ['directory_group_mapping_not_found', 404],
+    ['directory_group_mapping_convergence_limit', 409], ['directory_group_mapping_invalid:role', 400],
+    ['connection to db password=secret refused', 503],
+  ])('maps group mapping refusal %s without leaking internals', async (code, status) => {
+    const put = routeAt({ setGroupMapping: vi.fn().mockRejectedValue(new Error(code)) } as never, 'PUT', '/directory-group-mappings');
+    const response = await put.handler(mappingRequest('PUT', { directoryId: 'd', groupId: 'g', role: 'admin', purpose: 'p' }), context());
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error: { code: status === 503 ? 'directory_group_mapping_unavailable' : code } });
+  });
+
+  it('provisions only the named directory user and maps refusals to stable codes', async () => {
+    const provisionFromDirectory = vi.fn(async () => ({ membershipId: 'mem', role: 'member', mappedGroupIds: ['g'] }));
+    const post = routeAt({ provisionFromDirectory } as never, 'POST', '/members/directory-provision');
+    const input = { userId: 'u', directoryId: 'dir', directoryUserId: 'du', purpose: 'Onboard' };
+    const response = await post.handler(mappingRequest('POST', input), context());
+    expect(response.status).toBe(200);
+    expect(provisionFromDirectory.mock.calls[0]?.[1]).toEqual({ organizationId: 'org', ...input });
+    expect((await post.handler(mappingRequest('POST', { ...input, role: 'admin' }), context())).status).toBe(400);
+    expect(provisionFromDirectory).toHaveBeenCalledTimes(1);
+    for (const [code, status] of [['directory_provision_membership_exists', 409], ['directory_provision_not_observed', 409],
+      ['directory_provision_forbidden_role', 403], ['directory_provision_user_not_found', 404], ['boom', 503]] as const) {
+      const failing = routeAt({ provisionFromDirectory: vi.fn().mockRejectedValue(new Error(code)) } as never, 'POST', '/members/directory-provision');
+      const refused = await failing.handler(mappingRequest('POST', input), context());
+      expect(refused.status).toBe(status);
+      expect(await refused.json()).toEqual({ error: { code: status === 503 ? 'directory_provision_unavailable' : code } });
+    }
+  });
 });

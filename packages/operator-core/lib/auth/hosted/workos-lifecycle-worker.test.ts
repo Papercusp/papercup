@@ -78,12 +78,20 @@ describe('WorkosLifecycleWorker', () => {
     expect(workosDirectoryIdentitySubject('a:b', 'c', 'd')).not.toBe(workosDirectoryIdentitySubject('a', 'b:c', 'd'));
   });
 
-  it('never turns active directory users or added groups into local grants', () => {
+  it('turns active directory users and added groups into observations, never local grants', () => {
     const identity = { userSubject: 'user', directorySubject: 'directory', organizationSubject: 'organization' };
-    expect(projectWorkosLifecycleMutation({ ...base('active'), ...identity, kind: 'directory.user.changed', state: 'active' }))
-      .toMatchObject({ kind: 'ignore-external-authority', cause: 'directory-user-active' });
+    const active = projectWorkosLifecycleMutation({ ...base('active'), ...identity, kind: 'directory.user.changed', state: 'active' });
+    expect(active).toEqual({
+      kind: 'observe-directory-membership', provider: 'workos', userSubject: 'user',
+      externalOrganizationId: 'organization', directorySubject: 'directory',
+    });
     expect(projectWorkosLifecycleMutation({ ...base('added'), ...identity, kind: 'directory.group.membership', groupSubject: 'group', direction: 'added' }))
-      .toMatchObject({ kind: 'ignore-external-authority', cause: 'directory-group-added' });
+      .toEqual({
+        kind: 'observe-directory-membership', provider: 'workos', userSubject: 'user',
+        externalOrganizationId: 'organization', directorySubject: 'directory', groupSubject: 'group',
+      });
+    // An observation carries no role, grant, or membership material.
+    expect(Object.keys(active)).not.toContain('role');
     expect(projectWorkosLifecycleMutation({ ...base('removed'), ...identity, kind: 'directory.group.membership', groupSubject: 'group', direction: 'removed' }))
       .toMatchObject({ kind: 'reduce-directory-access', groupSubject: 'group' });
   });

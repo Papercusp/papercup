@@ -158,7 +158,7 @@ export type WorkosLifecycleMutation =
       provider: 'workos';
       userSubject: string;
       externalOrganizationId: string;
-      cause: 'membership-upsert' | 'external-role-grant-or-elevation' | 'directory-user-active' | 'directory-group-added';
+      cause: 'membership-upsert' | 'external-role-grant-or-elevation';
     }
   | {
       kind: 'reduce-directory-access';
