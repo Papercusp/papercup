@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -66,6 +66,31 @@ describe('container exec target against a live container', () => {
     );
     expect(r.status).toBe(0);
     expect(r.stdout.trim().split('\n')).toEqual(['/tmp', cid.slice(0, 12), '/codex-home-from-host|unset']);
+  });
+
+  it('relocated session home: the container reads and writes it through a same-path per-task mount and sees no other session', () => {
+    const base = mkdtempSync(join(root, 'reloc-'));
+    const homes = join(base, 'su-codex-homes'), perHomes = join(base, 'task-homes');
+    const sqlite = join(base, 'codex-sqlite-homes'), perSqlite = join(base, 'task-sqlite');
+    for (const d of [join(homes, 'session-7'), join(homes, 'session-8'), perHomes, perSqlite]) mkdirSync(d, { recursive: true });
+    writeFileSync(join(homes, 'session-7', 'config.toml'), 'model = "frozen"\n');
+    writeFileSync(join(homes, 'session-8', 'auth.json'), '{"token":"other-session"}\n');
+    // The seam mounts each per-task dir over its shared root, at the same absolute path.
+    const cid = startContainer(['-v', `${perHomes}:${homes}`, '-v', `${perSqlite}:${sqlite}`]);
+    const { wrapperPath } = materializeDockerExecWrapper(
+      { kind: 'docker-exec', containerId: cid, workdir: '/', binPath: '/bin/sh',
+        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }, { hostRoot: sqlite, perTaskDir: perSqlite }] } },
+      { dir: mkdtempSync(join(root, 'r-')) },
+    );
+    const script = 'cat "$CODEX_HOME/config.toml"; ls "$(dirname "$CODEX_HOME")"; echo from-container > "$CODEX_HOME/rollout.jsonl"';
+    const r = spawnSync(wrapperPath, ['-c', script], {
+      env: { PATH: process.env.PATH ?? '', CODEX_HOME: join(homes, 'session-7') }, encoding: 'utf8' });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('model = "frozen"');
+    // Only this session is visible inside the container; session-8 and its token stay on the host.
+    expect(r.stdout.split('\n').filter(l => l.startsWith('session-'))).toEqual(['session-7']);
+    // Host readers (rollout/usage ingest) see the container's write through the symlink.
+    expect(readFileSync(join(homes, 'session-7', 'rollout.jsonl'), 'utf8')).toBe('from-container\n');
   });
 
   it("returns the in-container process's exit code", () => {

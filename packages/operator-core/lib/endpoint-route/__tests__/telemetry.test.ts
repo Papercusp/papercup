@@ -7,6 +7,7 @@
  * `finally`.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
 
 let unsafeCalls: Array<{ sql: string; params: unknown[] }> = [];
 const sqlBegin = vi.fn(async (fn: (tx: { unsafe: (sql: string, params?: unknown[]) => Promise<unknown> }) => Promise<void>) => {
@@ -27,7 +28,8 @@ vi.mock('../../workspace-registry', () => ({
 import { recordRouteInvocation } from '../telemetry';
 import { getOrgPg } from '@papercusp/db-org';
 import type { RouteExecution } from '../route-stack';
-import type { RouteDefinition } from '../define-route';
+import { registerRoute, type RouteDefinition } from '../define-route';
+import { createHostedRouteStack } from '../hosted-route-stack';
 
 function execWith(
   over: Partial<RouteDefinition> & { status?: RouteExecution['status']; url?: string; responseBytes?: number | null } = {},
@@ -129,6 +131,37 @@ describe('recordRouteInvocation — resolved path + response bytes (EI-7069)', (
     // response_bytes is the last bound param; assert it's specifically null,
     // not just "params contains null somewhere" (principal fields are also null here).
     expect(params[params.length - 1]).toBeNull();
+  });
+});
+
+describe('mounted hosted route telemetry confidentiality census', () => {
+  it('records the actual pathname but omits query, request body and response content', async () => {
+    const pathMarker = 'census-path-marker';
+    const queryMarker = 'census-query-marker';
+    const bodyMarker = 'census-request-body-marker';
+    const responseMarker = 'census-response-body-marker';
+    const app = new Hono().basePath('/api');
+    const def: RouteDefinition = {
+      method: 'POST', path: '/hosted/workspaces/:workspaceId', auth: 'public', sampleRate: 1,
+      handler: () => Response.json({ content: responseMarker }),
+    };
+    // Exercise registerRoute -> hosted stack -> actual finally recorder. Only
+    // the PG transport is captured; telemetry and its call site are not mocked.
+    registerRoute(app, def, createHostedRouteStack(async () => ({ ok: false, reason: 'session_cookie_missing' })));
+    const response = await app.request('/api/hosted/workspaces/' + pathMarker + '?query=' + queryMarker, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: bodyMarker }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ content: responseMarker });
+    await vi.waitFor(() => {
+      const { params } = findInsertCall();
+      expect(params).toContain(def.path);
+      expect(params).toContain('/api/hosted/workspaces/' + pathMarker);
+      const persisted = JSON.stringify(params);
+      expect(persisted).toContain(pathMarker);
+      for (const marker of [queryMarker, bodyMarker, responseMarker]) expect(persisted).not.toContain(marker);
+    });
   });
 });
 

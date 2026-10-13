@@ -219,6 +219,9 @@ export const HOSTED_CONTROL_PLANE_FIELD_REGISTRY: Readonly<Record<string, Readon
     'warn.1.argument.0': { sensitivity: 'control', note: 'Fixed connector liveness warning prefix.' },
     'warn.1.argument.1': { sensitivity: 'control', note: 'Enumerated alive/gone write failure code; no customer or database text.' },
   },
+  'route-invocation-warnings': {
+    'warn.0.argument.0': { sensitivity: 'content', note: 'Interpolated route method/path and raw database error text; a failure diagnostic can contain arbitrary bound values.' },
+  },
   'customer-host-warnings': {
     'warn.0.argument.0': { sensitivity: 'control', note: 'Fixed audit warning prefix.' },
     'warn.0.argument.1': { sensitivity: 'control', note: 'Fixed desktop_audit_write_failed code.' },
@@ -447,6 +450,11 @@ export const HOSTED_CONTROL_PLANE_WRITER_REGISTRY = {
     console: true,
     sources: ['packages/operator-core/lib/workspace-host/hosted-workspace-host-runtime.ts'],
     placement: 'customer-host-console',
+  },
+  'route-invocation-warnings': {
+    console: true,
+    sources: ['packages/operator-core/lib/endpoint-route/telemetry.ts'],
+    placement: 'serving-operator-console',
   },
   'route-invocations': {
     table: 'harness_shared.route_invocations',

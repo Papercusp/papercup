@@ -1690,6 +1690,10 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
   const metadataJson = (() => {
     const reaction = input.ctx.reactionCause;
     const requestOrigin = input.ctx.requestOrigin;
+    // WI-6554700010010307: how a caller projection/view materialized this call's
+    // source (e.g. promoted it to the full tier). args_json cannot show it — the
+    // host strips `projection` before dispatch.
+    const sourceMaterialization = input.ctx.sourceMaterialization;
     const kernel =
       input.executionRevision || input.kernelPreflight || input.kernelEnforcement
         ? {
@@ -1699,11 +1703,13 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
           }
         : null;
     const meta =
-      input.metadataJson || reaction || requestOrigin || kernel
+      input.metadataJson || reaction || requestOrigin || kernel || sourceMaterialization
         ? {
             ...(input.metadataJson ?? {}),
             ...(requestOrigin ? { requestOrigin } : {}),
             ...(reaction ? { reaction } : {}),
+            // Framework-owned like `kernel`: applied after handler metadata.
+            ...(sourceMaterialization ? { sourceMaterialization } : {}),
             // Framework-owned kernel fields are applied after handler metadata
             // so a tool cannot spoof what revision actually ran.
             ...(kernel ? { kernel } : {}),

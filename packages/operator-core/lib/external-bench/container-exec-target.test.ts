@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -144,5 +144,72 @@ describe('the generated wrapper, executed', () => {
     const r = spawnSync(wrapperPath, [], { env, encoding: 'utf8' });
     expect(r.status).toBe(127);
     expect(r.stderr).toMatch(/papercusp container-exec: cannot run/);
+  });
+});
+
+describe('session-dir relocation (D-026 step 3)', () => {
+  function layout() {
+    const base = mkdtempSync(join(root, 'reloc-'));
+    const homes = join(base, 'su-codex-homes'), sqlite = join(base, 'codex-sqlite-homes');
+    const perHomes = join(base, 'task-homes'), perSqlite = join(base, 'task-sqlite');
+    mkdirSync(join(homes, 'session-7'), { recursive: true });
+    writeFileSync(join(homes, 'session-7', 'config.toml'), 'model = "x"\n');
+    mkdirSync(join(homes, 'session-8'), { recursive: true });
+    const relocated: DockerExecTarget = { ...target, sessionRelocation: { sessionEnv: 'CODEX_HOME',
+      roots: [{ hostRoot: homes, perTaskDir: perHomes }, { hostRoot: sqlite, perTaskDir: perSqlite }] } };
+    const run = (home: string) => {
+      const { wrapperPath } = materializeDockerExecWrapper(relocated, { dir: mkdtempSync(join(root, 'rw-')), dockerBin: fakeDocker });
+      return spawnSync(wrapperPath, ['--version'], { env: { CODEX_HOME: home, PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+    };
+    return { homes, sqlite, perHomes, perSqlite, run };
+  }
+
+  it('moves the session home into the per-task dir, leaves a host symlink, and pre-creates the SQLite home', () => {
+    const l = layout();
+    const r = l.run(join(l.homes, 'session-7'));
+    expect(r.status).toBe(0);
+    expect(lstatSync(join(l.homes, 'session-7')).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(l.homes, 'session-7', 'config.toml'), 'utf8')).toBe('model = "x"\n');
+    expect(readFileSync(join(l.perHomes, 'session-7', 'config.toml'), 'utf8')).toBe('model = "x"\n');
+    expect(lstatSync(join(l.sqlite, 'session-7')).isSymbolicLink()).toBe(true);
+    expect(statSync(join(l.perSqlite, 'session-7')).isDirectory()).toBe(true);
+    // Other sessions under the shared root are never touched, so the container cannot see them.
+    expect(lstatSync(join(l.homes, 'session-8')).isDirectory()).toBe(true);
+    expect(existsSync(join(l.perHomes, 'session-8'))).toBe(false);
+    // CODEX_HOME still crosses by name and still names the host path the mount stands in for.
+    expect(readFileSync(envLog, 'utf8').split('\n')[0]).toBe(join(l.homes, 'session-7'));
+  });
+
+  it('is idempotent on resume: an existing symlink to the per-task dir is reused', () => {
+    const l = layout();
+    expect(l.run(join(l.homes, 'session-7')).status).toBe(0);
+    const r = l.run(join(l.homes, 'session-7'));
+    expect(r.status).toBe(0);
+    expect(readFileSync(join(l.homes, 'session-7', 'config.toml'), 'utf8')).toBe('model = "x"\n');
+  });
+
+  it('fails closed (126) instead of running when the session dir cannot be placed', () => {
+    const l = layout();
+    const outside = l.run(join(root, 'elsewhere', 'session-7'));
+    expect(outside.status).toBe(126);
+    expect(outside.stderr).toMatch(/is not directly under/);
+    // A foreign symlink at the session path is never followed or replaced.
+    symlinkSync(join(root), join(l.homes, 'session-9'));
+    const foreign = l.run(join(l.homes, 'session-9'));
+    expect(foreign.status).toBe(126);
+    expect(foreign.stderr).toMatch(/symlink to somewhere other than/);
+    // An occupied per-task dir is never merged into.
+    mkdirSync(join(l.perHomes, 'session-8'), { recursive: true });
+    const occupied = l.run(join(l.homes, 'session-8'));
+    expect(occupied.status).toBe(126);
+    expect(occupied.stderr).toMatch(/already exists/);
+    expect(lstatSync(join(l.homes, 'session-8')).isDirectory()).toBe(true);
+  });
+
+  it('refuses a relocation whose per-task dir overlaps its shared root', () => {
+    expect(() => validateDockerExecTarget({ ...target, sessionRelocation: { sessionEnv: 'CODEX_HOME',
+      roots: [{ hostRoot: '/h/roots', perTaskDir: '/h/roots/task-1' }] } })).toThrow(/disjoint/);
+    expect(() => validateDockerExecTarget({ ...target, sessionRelocation: { sessionEnv: 'codex home', roots: [] } }))
+      .toThrow(/not an env name/);
   });
 });

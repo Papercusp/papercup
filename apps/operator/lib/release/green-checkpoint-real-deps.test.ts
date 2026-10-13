@@ -560,6 +560,57 @@ describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocati
     }
   });
 });
+describe("WI-6554700010010213: real post-verdict deadline recorder", () => {
+  const GH = "@papercusp/operator-core/lib/release/gate-health-merge";
+  const PE = "@papercusp/operator-core/lib/harness/git-sync/pipeline-events";
+  const ENV_KEYS = ["PAPERCUSP_GATE_VERDICT_WORKSPACE", "PAPERCUSP_GATE_VERDICT_HARNESS"] as const;
+  const info = { label: "frozen-repair leg routing", deadlineMs: 60_000, elapsedMs: 60_004 };
+
+  async function runRecorder(env: Record<string, string>) {
+    const merge = vi.fn(async () => {});
+    const append = vi.fn(async () => {});
+    vi.doMock(GH, () => ({ mergeGateHealth: merge }));
+    vi.doMock(PE, async (orig) => ({ ...(await orig<Record<string, unknown>>()), appendPipelineEvent: append }));
+    const saved = ENV_KEYS.map((k) => process.env[k]);
+    for (const k of ENV_KEYS) delete process.env[k];
+    Object.assign(process.env, env);
+    try {
+      const { exec } = makeExec([]);
+      await realCheckpointDeps(cfg, exec).recordPostVerdictStepDeadline!(info);
+    } finally {
+      ENV_KEYS.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
+      vi.doUnmock(GH);
+      vi.doUnmock(PE);
+    }
+    return { merge, append };
+  }
+
+  it("writes the gate_health marker AND the dedicated-kind event for the env-scoped gate", async () => {
+    const target = { workspaceId: "ws-fixture", installSlug: "hive-fixture" };
+    const { merge, append } = await runRecorder({
+      PAPERCUSP_GATE_VERDICT_WORKSPACE: target.workspaceId,
+      PAPERCUSP_GATE_VERDICT_HARNESS: target.installSlug,
+    });
+    expect(merge).toHaveBeenCalledOnce();
+    expect(merge).toHaveBeenCalledWith(target, {
+      lastPostVerdictDeadline: expect.objectContaining({ ...info, at: expect.any(String) }),
+    });
+    expect(append).toHaveBeenCalledOnce();
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({
+      ...target,
+      kind: "green_checkpoint_post_verdict",
+      status: "deadline-exceeded",
+      detail: expect.objectContaining(info),
+    }));
+  });
+
+  it("records nothing for a non-recording run with no gate target", async () => {
+    const { merge, append } = await runRecorder({});
+    expect(merge).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+  });
+});
+
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(" ");
 
 describe("WI-41720 / D-073: dependency-selection fatal path reaches the real CLI terminal controller", () => {

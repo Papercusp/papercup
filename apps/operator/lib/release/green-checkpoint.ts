@@ -1360,6 +1360,13 @@ export interface CheckpointDeps {
    */
   enterPostVerdictPhase?(): void;
   /**
+   * WI-6554700010010213: record ONE post-verdict step that hit its deadline (production: a
+   * `green_checkpoint_post_verdict` pipeline event). Called at most once per overrun, bounded by
+   * POST_VERDICT_DEADLINE_RECORD_BOUND_MS; a throw is logged, never fatal. ABSENT means the
+   * overrun is only logged.
+   */
+  recordPostVerdictStepDeadline?(info: PostVerdictStepDeadline): Promise<void>;
+  /**
    * P-008: the per-tick BACKSTOP for the dep above. `converging` and `none` are recorded by
    * no branch, and the stored record is shallow-merged and never cleared, so without this a
    * tick that converges or clears leaves the previous `held`/`retired` record standing and a
@@ -16601,28 +16608,87 @@ export const FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS = 60_000;
  * through here logs `<label> started` BEFORE it awaits, so a future stall names its own step,
  * and it resolves `false` at the deadline instead of hanging. The step's promise is abandoned,
  * not cancelled; the run's normal exit (`releaseAndExit` → `process.exit`) ends it.
+ *
+ * WI-6554700010010213: a deadline overrun is also handed to `onDeadline` (production: one
+ * `green_checkpoint_post_verdict` pipeline event). Without it the bound turned a hang into a
+ * skip that only the checkpoint log recorded, so a step timing out on EVERY run stayed silent.
+ * The recorder is itself bounded by {@link POST_VERDICT_DEADLINE_RECORD_BOUND_MS} and
+ * non-fatal, so a hung recorder cannot re-create the hang the deadline exists to cut.
  */
 export async function runPostVerdictStepWithDeadline(
   label: string,
   step: () => Promise<unknown>,
   log: (line: string) => void,
   deadlineMs: number,
+  onDeadline?: PostVerdictDeadlineRecorder,
 ): Promise<boolean> {
   const startedAt = Date.now();
   log(`${label} started (deadline ${deadlineMs}ms)`);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let completed: boolean;
   try {
-    const completed = await Promise.race([
+    completed = await Promise.race([
       step().then(() => true),
       new Promise<boolean>((resolve) => {
         timer = setTimeout(() => resolve(false), deadlineMs);
       }),
     ]);
     log(`${label} ${completed ? 'completed' : 'deadline-exceeded'} in ${Date.now() - startedAt}ms`);
-    return completed;
   } catch (error) {
     log(`${label} failed: ${error instanceof Error ? error.message : error}`);
     return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  if (!completed && onDeadline) {
+    await recordPostVerdictDeadline(
+      onDeadline,
+      { label, deadlineMs, elapsedMs: Date.now() - startedAt },
+      log,
+    );
+  }
+  return completed;
+}
+
+/** WI-6554700010010213: what one post-verdict deadline overrun reports. */
+export interface PostVerdictStepDeadline {
+  label: string;
+  deadlineMs: number;
+  elapsedMs: number;
+}
+
+export type PostVerdictDeadlineRecorder = (
+  info: PostVerdictStepDeadline,
+) => Promise<void> | void;
+
+/** WI-6554700010010213: ceiling for recording one deadline overrun. A single best-effort
+ * INSERT: milliseconds normally, and never allowed to hold the run for longer than this. */
+export const POST_VERDICT_DEADLINE_RECORD_BOUND_MS = 5_000;
+
+async function recordPostVerdictDeadline(
+  onDeadline: PostVerdictDeadlineRecorder,
+  info: PostVerdictStepDeadline,
+  log: (line: string) => void,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const recorded = await Promise.race([
+      Promise.resolve()
+        .then(() => onDeadline(info))
+        .then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), POST_VERDICT_DEADLINE_RECORD_BOUND_MS);
+      }),
+    ]);
+    if (!recorded) {
+      log(
+        `${info.label} deadline record did not finish within ${POST_VERDICT_DEADLINE_RECORD_BOUND_MS}ms; abandoned`,
+      );
+    }
+  } catch (error) {
+    log(
+      `${info.label} deadline record failed: ${error instanceof Error ? error.message : error}`,
+    );
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -16634,12 +16700,14 @@ export async function recordDerivedFreezeDispositionWithDeadline(
   write: () => Promise<void>,
   log: (line: string) => void,
   deadlineMs = DERIVED_FREEZE_DISPOSITION_DEADLINE_MS,
+  onDeadline?: PostVerdictDeadlineRecorder,
 ): Promise<boolean> {
   return runPostVerdictStepWithDeadline(
     "derived freeze-disposition write",
     write,
     log,
     deadlineMs,
+    onDeadline,
   );
 }
 
@@ -16921,17 +16989,27 @@ export async function runGreenCheckpoint(
       `warn: post-verdict watchdog tighten failed: ${e instanceof Error ? e.message : e}`,
     );
   }
+  // WI-6554700010010213: every bounded post-verdict step reports a deadline overrun here.
+  const recordDeadline = deps.recordPostVerdictStepDeadline;
+  const onPostVerdictDeadline: PostVerdictDeadlineRecorder | undefined = recordDeadline
+    ? (info) => recordDeadline.call(deps, info)
+    : undefined;
   if (deps.recordDerivedFreezeDisposition) {
-    await recordDerivedFreezeDispositionWithDeadline(async () => {
-      await deps.recordDerivedFreezeDisposition?.({
-        flagEnabled:
-          (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
-        repairQueue: finalResult.repairQueue ?? null,
-        repairQueueRead: finalResult.repairQueueRead,
-        summary: finalResult.summary ?? null,
-        green: finalResult.green ?? null,
-      });
-    }, deps.log);
+    await recordDerivedFreezeDispositionWithDeadline(
+      async () => {
+        await deps.recordDerivedFreezeDisposition?.({
+          flagEnabled:
+            (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
+          repairQueue: finalResult.repairQueue ?? null,
+          repairQueueRead: finalResult.repairQueueRead,
+          summary: finalResult.summary ?? null,
+          green: finalResult.green ?? null,
+        });
+      },
+      deps.log,
+      DERIVED_FREEZE_DISPOSITION_DEADLINE_MS,
+      onPostVerdictDeadline,
+    );
   }
   // P-013 (green-main-cycle-time-2026-10-08, D-028/D-029): route each failing leg of the
   // queue this tick ended holding to its own claimable item, from the same funnel every
@@ -16961,6 +17039,7 @@ export async function runGreenCheckpoint(
         }),
       deps.log,
       FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS,
+      onPostVerdictDeadline,
     );
   }
   // P-009: an `awaiting-fixer` hold tick renders no suite verdict for hours — keep the
@@ -21197,6 +21276,43 @@ export function realCheckpointDeps(
     // lifetime (the caller stays alive to record the pipeline_event, so the fire is durable).
     emitEvent: terminalEvents.emit,
     flushTerminalEvents: terminalEvents.flush,
+    // WI-6554700010010213: a post-verdict deadline overrun becomes one durable pipeline event, so
+    // a step that times out on every run is queryable rather than a line in one run's log. Its
+    // own kind (migration 1491): on 'green_checkpoint' it would read as a gate outcome. A
+    // non-recording CLI run (no gate target) records nothing, like the disposition writer.
+    // The gate_health marker puts the newest overrun on routines:list health (which surfaces
+    // every gate_health key) beside the event. No counter: the recurrence count is DERIVED from
+    // the events, and a read-modify-write tally on this shallow-merge path would race.
+    async recordPostVerdictStepDeadline(info) {
+      if (!repairTarget) return;
+      const [{ appendPipelineEvent }, { mergeGateHealth }] = await Promise.all([
+        import("@papercusp/operator-core/lib/harness/git-sync/pipeline-events"),
+        import("@papercusp/operator-core/lib/release/gate-health-merge"),
+      ]);
+      const at = new Date().toISOString();
+      await Promise.all([
+        mergeGateHealth(repairTarget, {
+          lastPostVerdictDeadline: {
+            label: info.label,
+            deadlineMs: info.deadlineMs,
+            elapsedMs: info.elapsedMs,
+            at,
+          },
+        }),
+        appendPipelineEvent({
+          workspaceId: repairTarget.workspaceId,
+          installSlug: repairTarget.installSlug,
+          kind: "green_checkpoint_post_verdict",
+          status: "deadline-exceeded",
+          detail: {
+            label: info.label,
+            deadlineMs: info.deadlineMs,
+            elapsedMs: info.elapsedMs,
+            pipeline: pipelineName(cfg.integrationRoot),
+          },
+        }),
+      ]);
+    },
     // EI-13992: real wiring for the migration-currency preflight (see
     // CheckpointDeps.ensureMigrationsCurrent doc) — applies to the SAME dev PG
     // db-boot-migrate targets at operator boot, just without its once-per-process

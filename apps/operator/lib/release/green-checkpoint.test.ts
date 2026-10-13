@@ -26,6 +26,8 @@ import {
   archivePureProofCapture,
   recordDerivedFreezeDispositionWithDeadline,
   runPostVerdictStepWithDeadline,
+  POST_VERDICT_DEADLINE_RECORD_BOUND_MS,
+  type PostVerdictStepDeadline,
   emitInconclusiveCheckpointVerdict,
   checkpointVerdictSiblingKeys,
   checkpointCandidateProvenance,
@@ -251,6 +253,72 @@ it("WI-6554700010009547: a stalled post-verdict step names itself on entry and r
     expect(logs).toEqual([
       "frozen-repair leg routing started (deadline 40ms)",
       "frozen-repair leg routing deadline-exceeded in 40ms",
+    ]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("WI-6554700010010213: a post-verdict deadline overrun is recorded once, not only logged", async () => {
+  vi.useFakeTimers();
+  try {
+    const recorded: PostVerdictStepDeadline[] = [];
+    const running = runPostVerdictStepWithDeadline(
+      "frozen-repair leg routing",
+      () => new Promise(() => {}),
+      () => {},
+      40,
+      async (info) => {
+        recorded.push(info);
+      },
+    );
+    await vi.advanceTimersByTimeAsync(40);
+    expect(await running).toBe(false);
+    expect(recorded).toEqual([
+      { label: "frozen-repair leg routing", deadlineMs: 40, elapsedMs: 40 },
+    ]);
+
+    // A step that completes in time records nothing.
+    const quiet: PostVerdictStepDeadline[] = [];
+    expect(
+      await runPostVerdictStepWithDeadline(
+        "derived freeze-disposition write",
+        async () => {},
+        () => {},
+        40,
+        async (info) => {
+          quiet.push(info);
+        },
+      ),
+    ).toBe(true);
+    expect(quiet).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("WI-6554700010010213: a hung deadline recorder cannot re-hang the post-verdict step", async () => {
+  vi.useFakeTimers();
+  try {
+    const logs: string[] = [];
+    let settled = false;
+    const running = recordDerivedFreezeDispositionWithDeadline(
+      () => new Promise(() => {}),
+      (line) => logs.push(line),
+      30,
+      () => new Promise(() => {}),
+    ).then((completed) => {
+      settled = true;
+      return completed;
+    });
+    await vi.advanceTimersByTimeAsync(30);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(POST_VERDICT_DEADLINE_RECORD_BOUND_MS);
+    expect(await running).toBe(false);
+    expect(logs).toEqual([
+      "derived freeze-disposition write started (deadline 30ms)",
+      "derived freeze-disposition write deadline-exceeded in 30ms",
+      `derived freeze-disposition write deadline record did not finish within ${POST_VERDICT_DEADLINE_RECORD_BOUND_MS}ms; abandoned`,
     ]);
   } finally {
     vi.useRealTimers();

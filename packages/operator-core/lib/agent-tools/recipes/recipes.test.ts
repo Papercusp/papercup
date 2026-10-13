@@ -14,7 +14,12 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listAllProjectedTools, roleScopedToolNames } from '@papercusp/agent-mcp';
-import { deriveRecipeAuthority, recipeRevision, validateRecipeAuthorityProof } from '../../recipe-authority';
+import {
+  deriveRecipeAuthority,
+  recipeRevision,
+  recipeRevisionDiagnostics,
+  validateRecipeAuthorityProof,
+} from '../../recipe-authority';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 
@@ -955,6 +960,18 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     );
     const staleBody = JSON.parse((stale as { content: { text: string }[] }).content[0].text);
     expect(staleBody.results[0]).toMatchObject({ ok: false, error: 'authority_stale_revision' });
+    expect(staleBody.results[0].authorityDiagnostics).toMatchObject({
+      version: 1,
+      computedRevision: recipeRevision(script, updatedAt),
+      suppliedRevision: '0'.repeat(64),
+      updatedAt,
+      inputFingerprints: {
+        script: expect.stringMatching(/^[a-f0-9]{64}$/),
+        bindingSchema: null,
+        capabilityManifest: null,
+      },
+    });
+    expect(JSON.stringify(staleBody.results[0].authorityDiagnostics)).not.toContain(script);
   });
 
   it('accepts the authority metadata emitted by recipes:get and still revalidates the live lane', async () => {
@@ -1041,6 +1058,7 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
   };
 
   it('inline { id } → one result with the recipe (script included)', async () => {
+    const updatedAt = '2026-08-22T22:00:00.000Z';
     getRecipeMock.mockResolvedValue({
       id: 'r1',
       workspaceId: 'ws-test',
@@ -1048,6 +1066,7 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
       title: 't',
       description: 'd',
       script: 'return 1;',
+      updatedAt,
       authorRole: 'operator',
       toolsUsed: [],
       runCount: 0,
@@ -1078,6 +1097,23 @@ describe('recipes:get HANDLER (bulk keyed-array)', () => {
         capabilityManifest: { version: 1, representation: 'recipe-script' },
       },
     });
+    expect(b.results[0].recipe.authorityDiagnostics).toEqual(recipeRevisionDiagnostics({
+      script: 'return 1;',
+      updatedAt,
+      contract: {
+        bindingSchema: { version: 1, properties: {}, additionalProperties: false },
+        capabilityManifest: {
+          version: 1,
+          representation: 'recipe-script',
+          topology: { premises: ['host:same'] },
+          requirements: [],
+          lifecycle: { allowed: ['foreground'], default: 'foreground' },
+          replay: { class: 'read-only' },
+          content: { emits: ['text'] },
+        },
+      },
+    }));
+    expect(JSON.stringify(b.results[0].recipe.authorityDiagnostics)).not.toContain('return 1;');
   });
 
   it('ids:[…] → many; a not-found id fails only itself', async () => {

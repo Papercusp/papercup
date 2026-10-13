@@ -112,6 +112,7 @@ import {
   PROJECTION_ARG,
   applyNamedViewToResult,
   applyResultProjection,
+  describeSourceMaterialization,
   parseProjection,
   projectionMaterializationFormat,
   takeNamedViewFromArgs,
@@ -2504,7 +2505,17 @@ function projectionMaterializationContext(
   // as a non-JSON body. Keep the tier decision separate: an explicit target
   // tier remains authoritative, while the in-process materialization is JSON
   // whenever the projection needs structured fields.
-  if (!needsFullSource && !needsStructuredSource) return ctx;
+  // Audit-only (WI-6554700010010307): the host strips `projection`/`view` from
+  // the dispatched args, so without this stamp the invocation ledger cannot
+  // tell a projection-promoted full-tier call from an ordinary one.
+  const sourceMaterialization = describeSourceMaterialization({
+    sourceProjection,
+    needsFullSource,
+    needsStructuredSource,
+  });
+  if (!needsFullSource && !needsStructuredSource) {
+    return sourceMaterialization ? { ...ctx, sourceMaterialization } : ctx;
+  }
   const promoted = needsFullSource
     ? {
         contextTier: 'full' as const,
@@ -2515,6 +2526,7 @@ function projectionMaterializationContext(
   return {
     ...ctx,
     ...(sourceProjection ? { sourceProjection } : {}),
+    ...(sourceMaterialization ? { sourceMaterialization } : {}),
     // `pick` classifies the materialized text as JSON. MCP's implicit compact
     // default may select TOON, so force JSON only for this in-process source;
     // the caller's explicit format remains the final wire-format choice.

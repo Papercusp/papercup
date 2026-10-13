@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { registerProjectedTool, lookupByMcpName, _resetProjectionRegistryForTests } from '@papercusp/tooldef';
+import type { ProjectedTool } from '@papercusp/tooldef';
 import { loadIsolatedHostedTestUserKit } from '../isolated-hosted-test-user.mts';
 
 const roots: string[] = [];
@@ -75,7 +76,7 @@ function assertExited(pid: number) {
 
 describe('isolated retained hosted TEST admission', () => {
   it('keeps an incompatible parent registry intact and preflights candidate imports before account creation', async () => {
-    const parent = { pluginName: 'fixture', description: 'parent version', inputSchema: { type: 'object' },
+    const parent: ProjectedTool = { pluginName: 'fixture', description: 'parent version', inputSchema: { type: 'object' },
       capabilities: [], expose: { mcp: { name: 'goals:create' } }, fn: async () => ({}) };
     registerProjectedTool(parent);
     expect(() => registerProjectedTool({ ...parent, description: 'candidate version',
@@ -94,7 +95,7 @@ describe('isolated retained hosted TEST admission', () => {
   }, 75_000);
 
   it('imports the actual candidate observability and admission closure without registering candidate tools in the parent', async () => {
-    const parent = { pluginName: 'legacy', description: 'incompatible parent goals',
+    const parent: ProjectedTool = { pluginName: 'legacy', description: 'incompatible parent goals',
       inputSchema: { type: 'object', properties: { parentOnly: { type: 'boolean' } } }, capabilities: [],
       expose: { mcp: { name: 'goals:create' } }, fn: async () => ({}) };
     registerProjectedTool(parent);

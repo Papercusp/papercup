@@ -56,7 +56,14 @@ export type PipelineEventKind =
   /** P-018 (green-main-cycle-time-2026-10-08): one standing gate-invariant evaluation, appended
    *  on any status transition and at least hourly (migration 1425). A distinct kind so no
    *  consumer of green_checkpoint / green_checkpoint_fire mistakes it for a gate outcome or fire. */
-  | 'gate_invariants';
+  | 'gate_invariants'
+  /** WI-6554700010010213: one row per observational post-verdict step of a green-checkpoint run
+   *  that hit its deadline (status 'deadline-exceeded'; detail { label, deadlineMs, elapsedMs }).
+   *  Before this kind existed the overrun was only a checkpoint log line, so a step that timed out
+   *  on every run was invisible. A distinct kind, for the same reason as the rows above: on the
+   *  'green_checkpoint' stream it would read as a gate outcome. Admitted by the DB CHECK once
+   *  migration 1491 applies; until then inserts best-effort warn-and-noop. */
+  | 'green_checkpoint_post_verdict';
 
 function db(sql?: Sql): Sql {
   return sql ?? (getOrgPg().sql as unknown as Sql);
