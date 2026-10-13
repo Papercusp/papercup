@@ -51,6 +51,7 @@ import {
   readJobOutput,
   runForeground,
   startBackground,
+  BashTaskConfinementRequiredError,
 } from './bash-jobs';
 import { augmentedSpawnPath } from '../../plugin-spawn-impl';
 import { taskManagerEnabledSync } from '../../task-manager/enabled';
@@ -582,6 +583,53 @@ describe('credential-SHAPE output redaction + owner-only spill (WI-10003538)', (
 });
 
 describe('background jobs', () => {
+  it.each(['flag-off', 'probe-pending', 'no-scope-support', 'caller-veto', 'scope-unit-missing'] as const)(
+    'required task confinement refuses %s before command or wrapper execution', (reason) => {
+      const marker = join(STATE, `required-confinement-${reason}`);
+      const wrap = vi.fn((binary: string, argv: string[]) => ({ binary, argv }));
+      const release = vi.fn();
+      const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+        taskId: 'required-confinement-refused',
+        enrolled: reason !== 'flag-off',
+        confined: reason === 'scope-unit-missing',
+        unconfinedReason: reason === 'scope-unit-missing' ? null : reason,
+        unitKind: 'service', scopeUnit: null, registrationReady: null,
+        wrap, releaseEnvironmentTransport: release,
+      });
+      try {
+        expect(() => startBackground({
+          command: `touch ${marker}`, cwd: STATE, stateDir: STATE, requireTaskConfinement: true,
+        }, 5_000)).toThrow(BashTaskConfinementRequiredError);
+        expect(wrap).not.toHaveBeenCalled();
+        expect(existsSync(marker)).toBe(false);
+        expect(release).toHaveBeenCalledOnce();
+      } finally { begin.mockRestore(); }
+    },
+  );
+
+  it('required task confinement preserves a successful bounded launch', async () => {
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'required-confinement-success', enrolled: true, confined: true,
+      unconfinedReason: null, unitKind: 'service', scopeUnit: 'required-confinement-success.service',
+      registrationReady: null,
+      wrap: (binary: string, argv: string[]) => ({ binary, argv }),
+      releaseEnvironmentTransport: () => {},
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground({
+        command: 'printf confined-result', cwd: STATE, stateDir: STATE, requireTaskConfinement: true,
+      }, 5_000);
+      await waitForStatus(job.id);
+      expect(begin).toHaveBeenCalledWith({ class: 'bash-job', runtimeMaxSec: 5 });
+      expect(job.status).toBe('completed');
+      expect(job.exitCode).toBe(0);
+      expect(readJobOutput(job)).toBe('confined-result');
+      expect(job.timeoutMs).toBe(5_000);
+    } finally { begin.mockRestore(); complete.mockRestore(); finish.mockRestore(); }
+  });
+
   it('records observed spawn and pipe phases in the durable log without changing command output', async () => {
     const job = startBackground({ command: 'printf phase-proof', cwd: STATE, stateDir: STATE }, 30_000);
     await waitForStatus(job.id);

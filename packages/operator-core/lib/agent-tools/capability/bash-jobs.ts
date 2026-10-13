@@ -2073,6 +2073,8 @@ export interface RunOptions {
   sandboxEnabled?: boolean;
   /** Confined profile: wrapper unavailability refuses before the command starts. */
   sandboxRequired?: boolean;
+  /** Refuse before fork unless the bounded job has a managed task cgroup. */
+  requireTaskConfinement?: boolean;
   /** Server-owned wrapper overrides — never exposed as a tool argument. Tests use it
    *  as a deterministic seam; capability:bash sets `{ denyAllEgress: true, srtBin: null }`
    *  for a caller holding a personal disclosure (WI-10005589, BAR R-11). */
@@ -2099,6 +2101,13 @@ export interface ForegroundResult {
   truncated: boolean;
   logPath: string;
   durationMs: number;
+}
+
+export class BashTaskConfinementRequiredError extends Error {
+  constructor(readonly reason: string) {
+    super(`Required task confinement unavailable (${reason}); no command started.`);
+    this.name = 'BashTaskConfinementRequiredError';
+  }
 }
 
 /**
@@ -2606,6 +2615,15 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   const isTestRun = isBackgroundTestCommand(opts.command);
   const testBudget = isTestRun ? { memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES, tasksMax: BASH_TEST_TASKS_MAX } : {};
   const enrolment = beginSyncEnrolment({ class: 'bash-job', runtimeMaxSec, ...testBudget });
+  if (opts.requireTaskConfinement && (!enrolment.enrolled || !enrolment.confined || !enrolment.scopeUnit)) {
+    enrolment.releaseEnvironmentTransport();
+    const reason = !enrolment.enrolled
+      ? 'flag-off'
+      : !enrolment.confined
+        ? enrolment.unconfinedReason ?? 'confinement-unavailable'
+        : 'scope-unit-missing';
+    throw new BashTaskConfinementRequiredError(reason);
+  }
   const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'bash-job');
   const runnerOwnsLog = enrolment.confined && enrolment.unitKind === 'service';
 

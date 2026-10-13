@@ -31,6 +31,7 @@ import bashTool from './bash';
 import { __resetBashJobs, getJob, waitForJobResponse } from './bash-jobs';
 import { generateToolFacadeTypes, lookupByMcpName } from '@papercusp/agent-mcp';
 import { unwrapToolResult } from '@papercusp/tooldef';
+import * as enrollSync from '../../task-manager/enroll-sync';
 
 type ToolResultish = {
   content: Array<{ text: string }>;
@@ -64,6 +65,27 @@ afterEach(() => {
 });
 
 describe('capability:bash — result shape for a code:run script (EI-20066912585022608)', () => {
+  it.each([false, true])('required task confinement returns a no-fork refusal (background=%s)', async (background) => {
+    const wrap = vi.fn((binary: string, argv: string[]) => ({ binary, argv }));
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'required-public-confinement-refused', enrolled: true, confined: false,
+      unconfinedReason: 'probe-pending', unitKind: 'service', scopeUnit: null,
+      registrationReady: null, wrap, releaseEnvironmentTransport: () => {},
+    });
+    try {
+      const args = (bashTool as unknown as { args: BashArgsSchema }).args;
+      expect(args.safeParse({ command: 'echo should-not-run', require_task_confinement: true }).success).toBe(true);
+      const result = await bash.handler({
+        command: 'echo should-not-run', require_task_confinement: true, run_in_background: background,
+      }, makeCtx({ codeMode: true }));
+      expect(result.isError).toBe(true);
+      expect(unwrapToolResult(result as never)).toMatchObject({
+        ok: false, reason: 'task_confinement_unavailable', unconfined_reason: 'probe-pending', command_started: false,
+      });
+      expect(wrap).not.toHaveBeenCalled();
+    } finally { begin.mockRestore(); }
+  });
+
   it('advertises the code-mode result fields in the generated tools facade', () => {
     const registered = lookupByMcpName('capability:bash');
     expect(registered).toBeDefined();

@@ -40,6 +40,7 @@ import {
   MAX_BACKGROUND_TIMEOUT_MS,
   snapshotJobResult,
   startBackground,
+  BashTaskConfinementRequiredError,
   waitForJobResponse,
 } from './bash-jobs';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from './foreground-transport-cap';
@@ -368,6 +369,9 @@ const integrationEnvSchema = z
 const bashResultSchema = z
   .object({
     ok: z.boolean(),
+    reason: z.string().optional(),
+    unconfined_reason: z.string().optional(),
+    command_started: z.boolean().optional(),
     bash_id: z.string().optional(),
     task_id: z.string().optional(),
     status: z.enum(['running', 'completed', 'failed', 'killed', 'timed_out']).optional(),
@@ -513,6 +517,9 @@ export default defineTool({
       .describe(
         'Return the durable job immediately instead of waiting for fast completion. Ordinary calls already yield the same job automatically at yield_after_ms. Read later output via capability:bash_output.',
       ),
+    require_task_confinement: z.boolean().optional().describe(
+      'Require managed task enrollment and cgroup confinement before fork. Refuse without starting the command if unavailable; timeout still bounds the whole task.',
+    ),
     allow_duplicate: z
       .boolean()
       .optional()
@@ -828,21 +835,39 @@ export default defineTool({
     // CAP-CONTRACT-P002-YIELD-SAME-JOB@1: every admitted call forks exactly
     // once through the existing durable background/task seam. The only mode
     // difference is how long this request waits before returning that handle.
-    const job = startBackground(
-      {
-        command: execCommand,
-        cwd,
-        stateDir: ctx.stateDir,
-        ...(!args.run_in_background ? { onChunk: (chunk: string) => ctx.emit('output', chunk) } : {}),
-        sandboxEnabled: runOffline || sandboxPolicy.enabled,
-        sandboxRequired: runOffline || sandboxPolicy.required,
-        ...(runOffline ? { sandboxBuildOpts: { denyAllEgress: true, srtBin: null } } : {}),
-        ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
-        ...(redactValues.length > 0 ? { redactValues } : {}),
-        ...provenance,
-      },
-      executionTimeoutMs,
-    );
+    let job: ReturnType<typeof startBackground>;
+    try {
+      job = startBackground(
+        {
+          command: execCommand,
+          cwd,
+          stateDir: ctx.stateDir,
+          ...(!args.run_in_background ? { onChunk: (chunk: string) => ctx.emit('output', chunk) } : {}),
+          sandboxEnabled: runOffline || sandboxPolicy.enabled,
+          sandboxRequired: runOffline || sandboxPolicy.required,
+          requireTaskConfinement: args.require_task_confinement,
+          ...(runOffline ? { sandboxBuildOpts: { denyAllEgress: true, srtBin: null } } : {}),
+          ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
+          ...(redactValues.length > 0 ? { redactValues } : {}),
+          ...provenance,
+        },
+        executionTimeoutMs,
+      );
+    } catch (error) {
+      if (!(error instanceof BashTaskConfinementRequiredError)) throw error;
+      const payload = {
+        ok: false,
+        reason: 'task_confinement_unavailable',
+        unconfined_reason: error.reason,
+        command_started: false,
+        message: error.message,
+      };
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+        isError: true,
+        ...(ctx.codeMode || ctx.requestedStructured ? { structuredContent: payload } : {}),
+      };
+    }
 
     if (args.run_in_background) {
       // EI-19915289191989412: a command whose LAST pipeline stage is a buffering
