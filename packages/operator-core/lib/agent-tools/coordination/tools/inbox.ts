@@ -82,6 +82,18 @@ import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
 import { fetchUnansweredDirected, type UnansweredDirectedEntry } from "../unanswered-directed";
 import { authoredFieldsMarker } from "../message-fields";
+import {
+  asSevereEventEmitter,
+  renderSevereEventEmitter,
+  SEVERE_EVENT_EMITTER_RULE,
+} from "../../../severe-event-emitter";
+import {
+  BAKED_DOOR_CONSTANTS,
+  CHARS_PER_TOKEN_ESTIMATE,
+  computeTurnDoors,
+  type DoorConstants,
+} from "../../../context-doors";
+import { getDoorConstantsSync } from "../../../context-doors-config";
 import { annotateMessageAge } from "../message-age";
 import {
   DEFAULT_INBOX_LIMIT,
@@ -530,6 +542,92 @@ export function dropSectionTextDuplicatedInBody<T extends Record<string, unknown
   });
 }
 
+/** P-006 (oversized-tool-results-reduction-2026-10-12): a severe-event alarm's body
+ *  ends with the emitter trailer (renderSevereEventEmitter): about 260 chars that
+ *  restate the entry's structured `emitter` field plus one fixed interpretation
+ *  rule. Bounded reads clip a body from the HEAD (tail-biased, because an agent
+ *  message puts its ask last), so a default read kept the identical trailer on
+ *  every clipped alarm and dropped the alarm's own text. Measured 2026-10-13 on a
+ *  no-args read: 42 of 50 entries were clipped, and every clipped body kept only
+ *  the trailer.
+ *
+ *  Strip the trailer only when it is exactly what the renderer produces for the
+ *  entry's own `emitter`, so that field still carries pid / startedAt / uptimeSec
+ *  / cwd. `body_full_chars` then measures the body without its trailer, and
+ *  coord:read still returns the stored body. Returns how many were stripped so the
+ *  caller states the rule once per result. Pure. */
+export function stripSevereEventEmitterTrailer<T extends Record<string, unknown>>(
+  entries: readonly T[],
+): { entries: Array<Record<string, unknown>>; stripped: number } {
+  let stripped = 0;
+  const out = entries.map((e): Record<string, unknown> => {
+    const body = e["body"];
+    const emitter = asSevereEventEmitter(e["emitter"]);
+    if (typeof body !== "string" || !emitter) return e;
+    const trailer = renderSevereEventEmitter(emitter);
+    if (!body.endsWith(trailer)) return e;
+    stripped++;
+    return { ...e, body: body.slice(0, body.length - trailer.length) };
+  });
+  return { entries: out, stripped };
+}
+
+/** The once-per-result note that replaces N stripped emitter trailers. */
+export function severeEventEmitterNote(stripped: number): string {
+  return (
+    `${stripped} alarm bod${stripped === 1 ? "y omits its" : "ies omit their"} emitter trailer; ` +
+    "each entry's emitter.startedAt is when its emitting process started. " +
+    SEVERE_EVENT_EMITTER_RULE
+  );
+}
+
+/** P-006 D-002 (oversized-tool-results-reduction-2026-10-12): share of the caller's
+ *  result door a DEFAULT read may spend on entries. The rest covers summary,
+ *  injection and recent, plus annotations added after the fit (authored,
+ *  superseded, age, blocked-on). */
+export const INBOX_DEFAULT_WINDOW_DOOR_SHARE = 0.6;
+
+/** Chars a default read's entries may fill: a share of the caller's own result door,
+ *  from the same constants the result-door enforcer uses (result-door.ts). */
+export function inboxDefaultWindowChars(ownerId?: string | null): number {
+  let constants: DoorConstants = BAKED_DOOR_CONSTANTS;
+  try {
+    constants = getDoorConstantsSync(ownerId);
+  } catch {
+    // The baked floor is the enforcer's own fallback.
+  }
+  return Math.floor(
+    computeTurnDoors(0, constants).resultEach * CHARS_PER_TOKEN_ESTIMATE * INBOX_DEFAULT_WINDOW_DOOR_SHARE,
+  );
+}
+
+/** P-006 D-002: a no-args read returned 50 entries at p50 61KB against a ~6KB door, so
+ *  every default read spilled and the agent saw a mid-JSON prefix. Trim the default
+ *  window, in priority order, to what fits `budgetChars` once shaped at `cap`. Each
+ *  entry is measured after the same single-copy and bounding steps the read applies.
+ *  Keeps at least one entry, and stops at the first that does not fit so the kept set
+ *  stays a priority prefix. The caller runs this BEFORE read receipts and the shown
+ *  watermark, so a trimmed entry is never reported to its sender as seen. Pure. */
+export function fitInboxWindowToChars<T extends Record<string, unknown>>(
+  window: readonly T[],
+  cap: number,
+  budgetChars: number,
+): { kept: T[]; omitted: number } {
+  const kept: T[] = [];
+  let used = 0;
+  for (const e of window) {
+    const shaped = boundInboxEntries(
+      stripSevereEventEmitterTrailer(dropSectionTextDuplicatedInBody([e])).entries,
+      cap,
+    )[0];
+    const n = JSON.stringify(shaped).length + 1;
+    if (kept.length > 0 && used + n > budgetChars) break;
+    kept.push(e);
+    used += n;
+  }
+  return { kept, omitted: window.length - kept.length };
+}
+
 /** The warning attached to a REMOTE-ORIGIN entry that asserts infrastructure
  *  state. Deliberately names the misreading it prevents AND the destructive act
  *  such alarms prescribe, because both were observed (EI-19493603840800478). */
@@ -761,7 +859,7 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) window (default 50). Ambient system broadcasts are excluded by default; include_ambient shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
+    "Read messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) window (default: what fits one result). Ambient system broadcasts are excluded unless include_ambient. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — ignore it. An entry with `superseded_by` was corrected — follow that msg_id. " +
       COORD_KIND_FILTER_DESCRIPTION +
       " `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`)." +
       " This is a VIEW, not a delta: re-reading the same window does not empty it.",
@@ -960,7 +1058,7 @@ export default defineTool({
       .max(500)
       .optional()
       .describe(
-        `Max entries in the priority-ranked window; newest-first overall is not guaranteed. Default ${DEFAULT_INBOX_LIMIT}.`,
+        `Max entries in the priority-ranked window; newest-first overall is not guaranteed. Default: what fits one result, max ${DEFAULT_INBOX_LIMIT}.`,
       ),
     include_ambient: z
       .boolean()
@@ -1380,10 +1478,25 @@ export default defineTool({
 
     // P-009: order by priority BEFORE slicing, so actionable asks survive a
     // low-priority flood even when they are older than the newest status rows.
-    const entries = prioritizedInboxWindow(
+    const priorityWindow = prioritizedInboxWindow(
       coalesced as unknown as Array<Record<string, unknown>>,
       limit,
-    ) as unknown as typeof filtered;
+    );
+    // P-006 D-002: a DEFAULT read (no limit, no max_body_chars, no explicit full
+    // tier) is fitted to the caller's result door at the cap it will be bounded at.
+    // Done here, before receipts and the shown watermark, so `returned`/`truncated`
+    // and every read receipt describe what the agent actually receives.
+    const doorFitCap =
+      args.limit === undefined && args.max_body_chars === undefined && !explicitFullRequest
+        ? priorityWindow.length > 0
+          ? Math.min(tierDefaults.bodyChars, Math.floor(INBOX_ENTRY_BUDGET / priorityWindow.length))
+          : tierDefaults.bodyChars
+        : undefined;
+    const doorFit =
+      doorFitCap === undefined
+        ? undefined
+        : fitInboxWindowToChars(priorityWindow, doorFitCap, inboxDefaultWindowChars(identity.ownerId));
+    const entries = (doorFit ? doorFit.kept : priorityWindow) as unknown as typeof filtered;
     const truncated = Math.max(0, coalesced.length - entries.length);
 
     const byKind: Record<string, number> = {};
@@ -1393,6 +1506,10 @@ export default defineTool({
       total: filtered.length,
       returned: entries.length,
       truncated,
+      // P-006 D-002: say when the default window was fitted to one result.
+      ...(doorFit && doorFit.omitted > 0
+        ? { fitted_to_result: { omitted: doorFit.omitted, more: "pass limit for more, or coord:read { msg_id }" } }
+        : {}),
       // P-012: mark a tier-tightened read so the cap is never silent (D-004) —
       // pass an explicit `limit`/`max_body_chars` (or payloadTier:"full") for more.
       ...(sessionTier && sessionTier !== "full"
@@ -1884,6 +2001,8 @@ export default defineTool({
         ? args.max_body_chars
         : explicitFullRequest
           ? 0
+        : doorFitCap !== undefined
+          ? doorFitCap
         : entries.length > 0
           ? Math.min(
               tierDefaults.bodyChars,
@@ -1899,9 +2018,13 @@ export default defineTool({
     );
     // P-006: a bounded read keeps ONE copy of a sectioned message's prose (see
     // dropSectionTextDuplicatedInBody). An unbounded read (cap 0) is left whole.
-    const singleCopyEntries =
-      effectiveCap > 0 ? dropSectionTextDuplicatedInBody(annotatedEntries) : annotatedEntries;
-    const boundEntries = boundInboxEntries(singleCopyEntries, effectiveCap).map((entry) => {
+    // P-006: and drops the per-alarm emitter trailer (see stripSevereEventEmitterTrailer);
+    // the rule it carried is stated once, as `emitter_note`.
+    const singleCopy =
+      effectiveCap > 0
+        ? stripSevereEventEmitterTrailer(dropSectionTextDuplicatedInBody(annotatedEntries))
+        : { entries: annotatedEntries, stripped: 0 };
+    const boundEntries = boundInboxEntries(singleCopy.entries, effectiveCap).map((entry) => {
       // P-033 (e): mark which entries carry AUTHORED structure (premises /
       // forYouBecause / youMayNotKnow / couldNotDetermine / clarify). Derived AFTER
       // bounding on purpose: bounding truncates the TEXT of `summary`/`body`/
@@ -2009,6 +2132,9 @@ export default defineTool({
             // P-015: the ≥80% loud gauge, exposed OUT of `injection` so the PostToolUse
             // hook can inject it even when there are no new entries (empty-inbox turns).
             context_gauge: contextGauge,
+            ...(singleCopy.stripped > 0
+              ? { emitter_note: severeEventEmitterNote(singleCopy.stripped) }
+              : {}),
           }),
         },
       ],
