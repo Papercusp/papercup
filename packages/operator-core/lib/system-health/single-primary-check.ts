@@ -862,8 +862,9 @@ export interface PrimaryGuardDeps {
   count?: () => Promise<number>;
   /** Age in seconds of the most recent active-routine fire (null = unknown). The evidence
    *  that turns a count-0 blocker into an advisory when background work is demonstrably
-   *  still running — see the header note. */
-  routineFireAgeSec?: () => Promise<number | null>;
+   *  still running — see the header note. Receives the workspace the default reads, so an
+   *  injected reader can vary by it (WI-6554700010009519). */
+  routineFireAgeSec?: (ws: string) => Promise<number | null>;
   /** D-026: active cut + restore evidence. Omitted in pure/unit callers; the scheduled
    * live guard wires readD026QuiescenceEvidence explicitly so tests never shell out. */
   d026Quiescence?: () => D026QuiescenceEvidence | Promise<D026QuiescenceEvidence>;
@@ -888,8 +889,9 @@ export interface PrimaryGuardDeps {
   pageResolved?: (keys: string[]) => Promise<void>;
   /** WI-7291: the `single-primary:*` conditions currently OPEN in durable state — the
    *  input that lets ANY process all-clear a recovery, not only the one that alarmed.
-   *  Default: the real workspace-scoped PG read. */
-  openConditions?: () => Promise<string[]>;
+   *  Default: the real workspace-scoped PG read. Receives that workspace, so an injected
+   *  reader can vary by it (WI-6554700010009519). */
+  openConditions?: (ws: string) => Promise<string[]>;
 }
 
 async function defaultPage(verdict: PrimaryVerdict, streak: number, count: number, ws: string): Promise<void> {
@@ -958,7 +960,7 @@ export async function runSinglePrimaryCheck(
   if (count !== 1) {
     try {
       const age = deps.routineFireAgeSec
-        ? await deps.routineFireAgeSec()
+        ? await deps.routineFireAgeSec(ws)
         : await lastRoutineFireAgeSec(getOrgPg().sql as SqlLike, ws);
       // WI-7317: a null here is the read finding NOTHING, which is categorically different
       // from the read FAILING below — and both are different from observing a stale age.
@@ -1049,7 +1051,7 @@ export async function runSinglePrimaryCheck(
     let durablyOpen: string[] = [];
     try {
       durablyOpen = deps.openConditions
-        ? await deps.openConditions()
+        ? await deps.openConditions(ws)
         : await openSinglePrimaryConditions(getOrgPg().sql as SqlLike, ws);
     } catch {
       durablyOpen = [];
@@ -1113,7 +1115,7 @@ export async function runSinglePrimaryCheck(
   if (pagedBefore) {
     try {
       const stillOpen = deps.openConditions
-        ? await deps.openConditions()
+        ? await deps.openConditions(ws)
         : await openSinglePrimaryConditions(getOrgPg().sql as SqlLike, ws);
       peerFalsifiedOurReading = !stillOpen.includes(`${CONDITION_PREFIX}${verdict.key}`);
     } catch {

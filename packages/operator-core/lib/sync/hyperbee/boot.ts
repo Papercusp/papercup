@@ -814,9 +814,10 @@ export interface BootHarnessOpts {
    * that never settles) or fail, without touching the real scoped corestore.
    * The scoped init is best-effort and runs OFF the join critical path — this
    * seam exists to prove that property (a stalled scoped dep must never block
-   * `swarm.join`).
+   * `swarm.join`). Receives the same store opts the default would open with, so an
+   * override can vary by them (WI-6554700010009519).
    */
-  scopedStoreOverride?: () => Promise<unknown>;
+  scopedStoreOverride?: (storeOpts: HarnessStoreOpts) => Promise<unknown>;
   /**
    * Bound (ms) on the post-join wait for the P-006 scoped-log init to settle
    * before `joinForBinding` returns (default 10s). Normally the init settles
@@ -6061,7 +6062,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const scopedInitDone = (async () => {
         try {
           const scopedStore = opts.scopedStoreOverride
-            ? await opts.scopedStoreOverride()
+            ? await opts.scopedStoreOverride(storeOpts)
             : await getHarnessScopedStore(storeOpts);
           if (!scopeRegistry) {
             // Narrowed at the boundary (scope-cores.ts convention): Corestore
