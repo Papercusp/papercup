@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { readSuperuserToken, superuserTokenPath } from '../superuser-token';
 import type { Sql } from 'postgres';
 import type { IncomingMessage } from 'node:http';
 import { withTimeout } from '../../../../libs/testing-shell/src/llm/runner';
@@ -57,6 +61,89 @@ export function assertPublicManualHostedRuntimeBudget(
   const remainingMs = Math.min(...values.map(Number)) - now;
   if (remainingMs < workMs + cleanupMs) throw new Error('hosted_fixture_runtime_budget_insufficient');
   return { remainingMs, workMs, cleanupMs };
+}
+
+/** Transport the supervisor's private filesystem bindings before admission or locks. */
+export function publicManualHostedRuntimeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const home = environment.HOME;
+  if (!home || !isAbsolute(home)) throw new Error('hosted_fixture_private_home_required');
+  const runtimeRoot = dirname(realpathSync(home));
+  if (!/^papercusp-test-runtime-[^/]+$/.test(basename(runtimeRoot))
+    || resolve(home) !== join(runtimeRoot, 'home') || realpathSync(home) !== resolve(home))
+    throw new Error('hosted_fixture_private_home_mismatch');
+  const bindings = {
+    HOME: join(runtimeRoot, 'home'),
+    TMPDIR: join(runtimeRoot, 'tmp'),
+    PAPERCUSP_HOME: join(runtimeRoot, 'home/.papercusp'),
+    PAPERCUSP_WORKSPACES_ROOT: join(runtimeRoot, 'workspaces'),
+  };
+  for (const [key, expected] of Object.entries(bindings)) {
+    const supplied = environment[key];
+    const ownedRegistryAlias = key === 'PAPERCUSP_WORKSPACES_ROOT' && supplied !== undefined
+      && resolve(supplied) === join(bindings.HOME, '.papercusp-workspaces')
+      && realpathSync(supplied) === expected;
+    if ((supplied !== undefined && resolve(supplied) !== expected && !ownedRegistryAlias)
+      || realpathSync(expected) !== expected || lstatSync(expected).isSymbolicLink())
+      throw new Error(`hosted_fixture_private_binding_mismatch:${key}`);
+  }
+  const workspace = environment.PAPERCUSP_WORKSPACE;
+  if (!workspace || !/^test-runtime-[a-zA-Z0-9-]+$/.test(workspace)
+    || (environment.PAPERCUSP_WORKSPACE_ID !== undefined && environment.PAPERCUSP_WORKSPACE_ID !== workspace)
+    || (environment.PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID !== undefined
+      && environment.PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID !== workspace))
+    throw new Error('hosted_fixture_private_workspace_mismatch');
+  const registryPath = join(bindings.PAPERCUSP_WORKSPACES_ROOT, 'registry.json');
+  if (realpathSync(registryPath) !== registryPath || !lstatSync(registryPath).isFile())
+    throw new Error('hosted_fixture_private_registry_mismatch');
+  const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
+  if (registry.current !== workspace || !Array.isArray(registry.workspaces)
+    || !registry.workspaces.some((entry: { id?: string }) => entry.id === workspace))
+    throw new Error('hosted_fixture_private_registry_mismatch');
+  const source = environment.PAPERCUSP_TEST_OPERATOR_SOURCE_ROOT;
+  if (!source || !isAbsolute(source)) throw new Error('hosted_fixture_operator_source_required');
+  const integrationRoot = realpathSync(source);
+  if (!existsSync(join(integrationRoot, 'apps/operator/bin/hono-host.ts'))
+    || (environment.PAPERCUSP_INTEGRATION_ROOT !== undefined
+      && realpathSync(environment.PAPERCUSP_INTEGRATION_ROOT) !== integrationRoot))
+    throw new Error('hosted_fixture_operator_source_mismatch');
+  if (!environment.PAPERCUSP_SID) throw new Error('hosted_fixture_session_required');
+  assertPublicManualHostedRuntimeBudget([environment.PAPERCUSP_TEST_HOSTED_RUNTIME_DEADLINE_EPOCH_MS]);
+  return { ...environment, ...bindings,
+    PAPERCUSP_WORKSPACES_ROOT: environment.PAPERCUSP_WORKSPACES_ROOT ?? bindings.PAPERCUSP_WORKSPACES_ROOT,
+    PAPERCUSP_WORKSPACE_ID: workspace,
+    PAPERCUSP_INTEGRATION_ROOT: integrationRoot };
+}
+
+/** Create only this verified TEST runtime's credential; never borrow a live token. */
+export function preparePublicManualHostedRuntime() {
+  const environment = publicManualHostedRuntimeEnvironment(process.env);
+  // The supervisor registry is a sibling of HOME. Give its exact bytes the
+  // conventional private-HOME spelling supported by the existing lock API.
+  // Neither the operator registry nor any lock authorization is changed.
+  const registryRoot = realpathSync(environment.PAPERCUSP_WORKSPACES_ROOT!);
+  const registryAlias = join(environment.HOME!, '.papercusp-workspaces');
+  try { symlinkSync(registryRoot, registryAlias, 'dir'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  if (!lstatSync(registryAlias).isSymbolicLink() || realpathSync(registryAlias) !== registryRoot)
+    throw new Error('hosted_fixture_private_registry_alias_mismatch');
+  Object.assign(process.env, environment, { PAPERCUSP_WORKSPACES_ROOT: registryAlias });
+  const tokenPath = superuserTokenPath();
+  if (dirname(tokenPath) !== environment.PAPERCUSP_HOME)
+    throw new Error('hosted_fixture_private_token_path_mismatch');
+  let tokenCreated = false;
+  try {
+    const fd = openSync(tokenPath, 'wx', 0o600);
+    try { writeFileSync(fd, randomUUID(), 'utf8'); tokenCreated = true; }
+    finally { closeSync(fd); }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  const stat = lstatSync(tokenPath);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600
+    || (process.getuid && stat.uid !== process.getuid()) || !readSuperuserToken())
+    throw new Error('hosted_fixture_private_token_invalid');
+  // The receipt deliberately contains only custody, never the bearer value.
+  return { tokenPath, tokenCreated };
 }
 
 export interface PublicManualHostedFixtureBinding {
