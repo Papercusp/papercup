@@ -39,7 +39,7 @@ import type { SessionState } from '../agent-tools/coordination/presence-wakeabil
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
 import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting } from './cascade-core';
 import { selectConsultEvidenceSource } from './consult-dispatch';
-import { consultResponderVerbMenu } from './responder-verb-menu';
+import { consultAmendmentReviewContext, consultResponderVerbMenu } from './responder-verb-menu';
 import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, type SourceAuditCascadeMeta } from './grading-cascade';
 import { proseProfilePredicateSql } from '../search/prose-vector-dims';
 
@@ -1587,6 +1587,7 @@ export async function getFeedbackCore(
   const briefFor = (candidate: RoutingCandidate, via: SelectionVia | null) => {
     // consult-backed-parking D-013: a decision-review cascade uses the default consult copy.
     const auditCopy = req.cascade?.flavor === 'grading-integrity' ? sourceAuditWakeCopy(req.cascade, opened.conversation_id) : null;
+    const reviewCopy = consultAmendmentReviewContext(req.policy);
     return {
       summary:
         auditCopy?.summary ??
@@ -1595,6 +1596,8 @@ export async function getFeedbackCore(
       // that implies); the verb menu does NOT. Keeping the menu out of the ternary is the point
       // of EI-21761566265989000: three inline copies is how all three came to omit the READ door.
       body: auditCopy?.body ?? (
+        `QUESTION: ${req.question}\n` +
+        (reviewCopy ? `${reviewCopy}\n` : '') +
         (candidate.fallback === 'lexical'
           ? `The semantic embedder is UNAVAILABLE. You are the bounded MANUAL-REVIEW pick from lexical text_tsv evidence (token overlap only; this is NOT a qualified semantic route).\n` +
             `Lexical evidence: ${evidenceLine(candidate)}. Review the question independently, state what you can and cannot ground, and do not present token overlap as expertise.\n`
@@ -1603,10 +1606,10 @@ export async function getFeedbackCore(
             `This is a FIRST-PRINCIPLES review request, not a claim the transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n`
           : `Routed by transcript relevance (relevance ${candidate.relevance.toFixed(2)}, sim ${candidate.signals.similarity.toFixed(2)}).\n` +
             `Why this transcript: ${evidenceLine(candidate)} — sessions:read resolves the refs.\n` +
-            `Validate relevance FIRST; decline cheaply if the context doesn't cover it. Answer FROM the transcript, citing evidence.\n`) +
+            (reviewCopy ? '' : `Validate relevance FIRST; decline cheaply if the context doesn't cover it. Answer FROM the transcript, citing evidence.\n`)) +
         consultResponderVerbMenu({
           conversationId: opened.conversation_id,
-          ...(via === 'minimum'
+          ...(reviewCopy || via === 'minimum'
             ? { evidenceNote: 'answer requires evidence — labeled first-principles reasoning is admissible here' }
             : {}),
           ...(candidate.fallback !== 'lexical' && via !== 'minimum'

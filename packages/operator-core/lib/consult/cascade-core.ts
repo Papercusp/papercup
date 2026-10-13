@@ -22,7 +22,7 @@ import type { Sql } from 'postgres';
 import { randomUUID } from 'node:crypto';
 import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 import { qualifyingScoreOf, snapshotCandidateQualifies } from './relevance-router';
-import { consultResponderVerbMenu } from './responder-verb-menu';
+import { consultAmendmentReviewContext, consultResponderVerbMenu } from './responder-verb-menu';
 import { gradingCascadeMetaFromRouting, gradingCascadeWakeCopy, sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy } from './grading-cascade';
 
 /** Chain events a digest entry can record: the responder reply kinds, plus
@@ -157,6 +157,8 @@ export function refillRoundLaunchedNothing(refill: unknown, digest: CascadeDiges
  */
 export interface CascadeWakeContext {
   question: string;
+  /** Existing persisted selection policy, used only to render review context. */
+  policy?: string;
   conversationId: string;
   /** 1-based position in the menu of the responder being woken. */
   position: number;
@@ -190,10 +192,12 @@ export type CascadeWakeCopyWriter = (ctx: CascadeWakeContext) => CascadeWakeCopy
  * and the typed-reply protocol. */
 export function cascadeWakeBody(input: CascadeWakeContext): string {
   const { next } = input;
+  const reviewCopy = consultAmendmentReviewContext(input.policy);
   const why =
     next.via === 'minimum'
       ? `Selected as BEST-AVAILABLE reviewer (relevance ${qualifyingScoreOf(next).toFixed(2)}, sim ${next.similarity.toFixed(2)} — BELOW the relevance floor). This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context.`
-      : `Routed to you by transcript relevance (relevance ${qualifyingScoreOf(next).toFixed(2)}, sim ${next.similarity.toFixed(2)}). Validate relevance first; answer FROM your transcript, citing evidence.`;
+      : `Routed to you by transcript relevance (relevance ${qualifyingScoreOf(next).toFixed(2)}, sim ${next.similarity.toFixed(2)}).` +
+        (reviewCopy ? '' : ' Validate relevance first; answer FROM your transcript, citing evidence.');
   const digestLines =
     input.digest.length === 0
       ? '(none yet — every earlier selectee declined or expired unanswered)'
@@ -203,6 +207,7 @@ export function cascadeWakeBody(input: CascadeWakeContext): string {
   return (
     `Consult cascade — you are reviewer ${input.position}/${input.menuSize} (the chain advances after each reply, decline, or expiry; D-005).\n` +
     `QUESTION: ${input.question}\n` +
+    (reviewCopy ? `${reviewCopy}\n` : '') +
     `${why}\n` +
     `FEEDBACK SO FAR (build on it or contest it — the full thread is conversation ${input.conversationId}):\n` +
     `${digestLines}\n` +
@@ -239,7 +244,12 @@ export function cascadeWakeCopyForRouting(routing: unknown): CascadeWakeCopyWrit
   const audit = sourceAuditCascadeMetaFromRouting(routing);
   if (audit) return (ctx) => sourceAuditWakeCopy(audit, ctx.conversationId);
   const grading = gradingCascadeMetaFromRouting(routing);
-  return grading ? gradingCascadeWakeCopy(grading) : consultCascadeWakeCopy;
+  if (grading) return gradingCascadeWakeCopy(grading);
+  let snapshot: { policy?: unknown } | null;
+  try { snapshot = (typeof routing === 'string' ? JSON.parse(routing) : routing) as typeof snapshot; }
+  catch { snapshot = null; }
+  const policy = typeof snapshot?.policy === 'string' ? snapshot.policy : undefined;
+  return policy ? (ctx) => consultCascadeWakeCopy({ ...ctx, policy }) : consultCascadeWakeCopy;
 }
 
 /**
