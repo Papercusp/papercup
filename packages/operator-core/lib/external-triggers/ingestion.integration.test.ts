@@ -53,6 +53,42 @@ describe('external trigger ingestion core', () => {
     expect(rows.every((row) => isCompilableSchema(row.payload_schema))).toBe(true);
   });
 
+  it('distinguishes the old nature selector from the curated selector on the same ticket-seeded catalog', async () => {
+    // createOrgTestDb applies 1332, which seeds these real registered ticket natures.
+    const tickets = await sql<{ id: string; nature: string }[]>`
+      SELECT id, nature FROM harness_shared.datatype_registry
+       WHERE workspace_id = 'papercusp-workspace'
+         AND id IN ('ticket', 'ticket-comment', 'ticket-status-change')
+       ORDER BY id`;
+    expect(tickets).toEqual([
+      { id: 'ticket', nature: 'record' },
+      { id: 'ticket-comment', nature: 'document' },
+      { id: 'ticket-status-change', nature: 'event' },
+    ]);
+
+    // The historical selector includes all three tickets, so its old six-ID
+    // equality fails. Both controls read this one migrated throwaway database.
+    const historicalRows = await sql<{ id: string }[]>`
+      SELECT id FROM harness_shared.datatype_registry
+       WHERE workspace_id = 'papercusp-workspace' AND nature != 'work'
+       ORDER BY id`;
+    const curatedRows = await sql<{ id: string; payload_schema: Record<string, unknown> }[]>`
+      SELECT id, payload_schema FROM harness_shared.datatype_registry
+       WHERE workspace_id = 'papercusp-workspace'
+         AND id IN ('calendar-event', 'chat-message', 'contact', 'email-message', 'social-post', 'webhook-payload')
+       ORDER BY id`;
+    const historicalIds = historicalRows.map((row) => row.id);
+    const curatedIds = curatedRows.map((row) => row.id);
+    expect(curatedIds).toEqual([
+      'calendar-event', 'chat-message', 'contact', 'email-message', 'social-post', 'webhook-payload',
+    ]);
+    expect(historicalIds).toEqual(expect.arrayContaining([
+      ...curatedIds, 'ticket', 'ticket-comment', 'ticket-status-change',
+    ]));
+    expect(historicalIds).not.toEqual(curatedIds);
+    expect(curatedRows.every((row) => isCompilableSchema(row.payload_schema))).toBe(true);
+  });
+
   it('normalizes once, emits a derived key, and fans the same event to a second sink', async () => {
     const normalize = vi.fn(() => ({
       id: 'm-1',
