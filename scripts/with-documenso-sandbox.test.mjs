@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, waitForSandboxPostgres, registerSandboxReaper, cleanupSandboxResources } from './with-documenso-sandbox.mjs';
+import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, cleanupSandboxResources } from './with-documenso-sandbox.mjs';
 
 async function withReaperServer(handler, run) {
   const sockets = new Set();
@@ -76,6 +76,82 @@ test('sandbox refuses ports published outside loopback', () => {
   for (const value of ['0.0.0.0:33199', '[::]:33199', '127.0.0.1:0', '127.0.0.1:65536']) {
     assert.throws(() => loopbackPort(value), /loopback/);
   }
+});
+
+test('cached immutable sandbox images do not need a registry request', async () => {
+  const inspected = [];
+  assert.equal(await prepareSandboxImages('documenso/documenso@sha256:' + 'a'.repeat(64), {
+    inspect: ref => inspected.push(ref), pull: () => assert.fail('cache hit must not pull'),
+  }), true);
+  assert.equal(inspected.length, 4);
+  assert.equal(new Set(inspected).size, 4);
+  for (const ref of inspected) assert.match(ref, /@sha256:[a-f0-9]{64}$/);
+});
+
+test('missing reaper image is pulled by its exact digest and verified after the request completes', async () => {
+  let present = false, releasePull, completed = false;
+  const calls = [];
+  const ready = prepareSandboxImages('documenso/documenso@sha256:' + 'a'.repeat(64), {
+    inspect: ref => {
+      calls.push(['inspect', ref]);
+      if (ref.startsWith('testcontainers/ryuk@') && !present) throw new Error('No such image');
+    },
+    pull: ref => { calls.push(['pull', ref]); return new Promise(done => { releasePull = () => { present = true; done(); }; }); },
+  }).then(value => { completed = true; return value; });
+  assert.equal(completed, false, 'preparation must wait for the daemon pull');
+  assert.equal(typeof releasePull, 'function');
+  releasePull();
+  assert.equal(await ready, true);
+  const reaper = 'testcontainers/ryuk@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0';
+  assert.deepEqual(calls.slice(-3), [['inspect', reaper], ['pull', reaper], ['inspect', reaper]]);
+});
+
+test('image preparation refuses mutable references, a failed pull, and a pull that did not install its digest', async () => {
+  await assert.rejects(prepareSandboxImages('documenso/documenso:latest', {
+    inspect: () => assert.fail('unsafe image must be refused before Docker'),
+  }), /pinned/);
+  const image = 'documenso/documenso@sha256:' + 'a'.repeat(64);
+  await assert.rejects(prepareSandboxImages(image, {
+    inspect: () => { throw new Error('No such image'); },
+    pull: async ref => { assert.equal(ref, image); throw new Error('registry unavailable'); },
+  }), /registry unavailable/);
+  await assert.rejects(prepareSandboxImages(image, {
+    inspect: () => { throw new Error('digest still absent'); }, pull: async () => {},
+  }), /digest still absent/);
+});
+
+test('stop during an image pull joins the request and prevents subsequent preparation', async () => {
+  let stopped = false, pulls = 0, inspections = 0;
+  assert.equal(await prepareSandboxImages('documenso/documenso@sha256:' + 'a'.repeat(64), {
+    inspect: () => { inspections++; throw new Error('No such image'); },
+    pull: async () => { pulls++; stopped = true; }, isStopped: () => stopped,
+  }), false);
+  assert.equal(pulls, 1);
+  assert.equal(inspections, 1);
+});
+
+test('actual sandbox entry refuses provider allocation when pinned image preparation fails', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'daohr-image-preparation-'));
+  const calls = join(directory, 'calls.jsonl');
+  try {
+    writeFileSync(join(directory, 'docker'), '#!' + process.execPath + '\n' +
+      'const fs=require("node:fs"); const args=process.argv.slice(2);\n' +
+      'fs.appendFileSync(process.env.DAOHR_IMAGE_TEST_CALLS,JSON.stringify(args)+"\\n");\n' +
+      'process.stderr.write(args[0]==="pull"?"registry unavailable":"No such image"); process.exit(1);\n', { mode: 0o700 });
+    const result = spawnSync(process.execPath, ['scripts/with-documenso-sandbox.mjs',
+      '--image=documenso/documenso@sha256:' + 'a'.repeat(64), '--', process.execPath, '-e', 'process.exit(91)'], {
+      encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, PATH: directory + ':' + process.env.PATH, DAOHR_IMAGE_TEST_CALLS: calls },
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /registry unavailable/);
+    const requests = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(requests, [
+      ['image', 'inspect', 'documenso/documenso@sha256:' + 'a'.repeat(64)],
+      ['pull', 'documenso/documenso@sha256:' + 'a'.repeat(64)],
+    ]);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('provider config routes mail and data into the isolated fixture', () => {
