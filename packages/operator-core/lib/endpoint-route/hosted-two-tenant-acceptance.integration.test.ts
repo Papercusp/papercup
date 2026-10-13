@@ -701,6 +701,52 @@ describe.sequential('assembled hosted two-tenant acceptance', () => {
     }
   });
 
+  it('limits beginner workspace selection to the persisted tenant even when a foreign target has the same name', async () => {
+    // The authorized and foreign rows both exist, with identical display names
+    // and running lifecycle states. A missing fixture cannot explain exclusion.
+    const server = serve({ fetch: plane.app.fetch, hostname: '127.0.0.1', port: 0 });
+    const query = `/api${HOSTED_BROWSER_REST_QUERY_PATH}?name=${HOSTED_BROWSER_QUERY_NAME}`;
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('private hosted HTTP address unavailable');
+      const base = `http://127.0.0.1:${address.port}`;
+      const read = (session: HostedSession, args: Record<string, string> = {}) =>
+        fetch(`${base}${query}&args=${encodeURIComponent(JSON.stringify(args))}`, {
+          headers: { cookie: cookie(plane, session) },
+        });
+      for (const [session, visibleHost, foreignHost] of [
+        [sessionA, HOST_A, HOST_B],
+        [sessionB, HOST_B, HOST_A],
+      ] as const) {
+        const response = await read(session);
+        expect(response.status).toBe(200);
+        const rows = (await response.json() as { rows: Array<{ kind: string; id: string; name?: string }> }).rows;
+        const workspaces = rows.filter(row => row.kind === 'workspace');
+        expect(workspaces).toHaveLength(1);
+        expect(workspaces[0]).toMatchObject({ id: visibleHost, name: 'Same workspace name' });
+        expect(workspaces.map(row => row.id)).not.toContain(foreignHost);
+      }
+      // Naming B in a request authenticated as A cannot change the server's
+      // tenant binding. Both supported scope inputs are refused explicitly.
+      const argsAttack = await read(sessionA, { workspaceId: WORKSPACE_B });
+      expect(argsAttack.status).toBe(403);
+      await expect(argsAttack.json()).resolves.toMatchObject({ error: 'workspace_binding_mismatch' });
+      const headerAttack = await fetch(`${base}${query}&args=%7B%7D`, {
+        headers: { cookie: cookie(plane, sessionA), 'x-papercusp-workspace': WORKSPACE_B },
+      });
+      expect(headerAttack.status).toBe(403);
+      await expect(headerAttack.json()).resolves.toMatchObject({ error: 'workspace_binding_mismatch' });
+      // Verify the authenticated A read still works after both denials.
+      const retained = await read(sessionA, { workspaceId: WORKSPACE_A });
+      expect(retained.status).toBe(200);
+      const rows = (await retained.json() as { rows: Array<{ kind: string; id: string }> }).rows;
+      expect(rows.filter(row => row.kind === 'workspace').map(row => row.id)).toEqual([HOST_A]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it.each(['expired', 'revoked'] as const)('rejects a %s persisted session over HTTP while the other tenant remains live', async (state) => {
     const dependencies = runtimeDependencies();
     const startProvisioning = vi.fn(dependencies.hostedBrowser!.startProvisioning!);
