@@ -550,6 +550,13 @@ export function consultSubjectKeys(question: string): string[] {
   // digit run must not be capped below that: a capped run plus \b matches nothing.
   const explicitIds = /\b((?:WI|EI|F|D)-\d{1,20})\b/gi;
   for (const match of question.matchAll(explicitIds)) keys.add(`id:${match[1].toUpperCase()}`);
+  // A review of the same subject can become stale when its criteria change.
+  // Keep explicitly requested revision/digest pins in the archive identity too;
+  // an unpinned answer cannot stand in for a pinned construction review.
+  const revisionPin = /\b(?:rev(?:ision)?)[\s:#=]*(\d+)\b/gi;
+  for (const match of question.matchAll(revisionPin)) keys.add(`revision:${match[1]}`);
+  const hashPin = /\b(?:criteria[\s_-]*)?hash[\s:#=]*([a-f0-9]{7,64})\b/gi;
+  for (const match of question.matchAll(hashPin)) keys.add(`hash:${match[1].toLowerCase()}`);
   return [...keys].sort();
 }
 
