@@ -1536,7 +1536,7 @@ export async function resumeReviewRun(input: {
     const resumedRows = await tx<RawRunRow[]>`
       UPDATE harness_shared.attention_bulk_runs
          SET phase = 'pending', resolver_owner = ${input.resolverOwner}, error = NULL,
-             finished_at = NULL, heartbeat_at = NULL, updated_at = now()
+             finished_at = NULL, heartbeat_at = NULL, started_at = now(), updated_at = now()
        WHERE workspace_id = ${ws} AND run_id = ${input.runId}
       RETURNING ${tx.unsafe(RUN_COLUMNS)}
     `;
@@ -1587,6 +1587,8 @@ export async function resumeReviewRun(input: {
  * The launch settings are NOT re-derived from current defaults: `launch_snapshot` stays
  * on the row untouched (D-003), so the restarted run relaunches with the owner's
  * click-time configuration rather than whatever the defaults happen to be now.
+ * `started_at` marks the new attempt, giving it a fresh grace period before the
+ * first heartbeat; the original `created_at` remains unchanged.
  */
 export async function restartRun(input: {
   runId: string;
@@ -1605,6 +1607,7 @@ export async function restartRun(input: {
            error = NULL,
            finished_at = NULL,
            heartbeat_at = NULL,
+           started_at = now(),
            updated_at = now()
      WHERE workspace_id = ${ws}
        AND run_id = ${input.runId}

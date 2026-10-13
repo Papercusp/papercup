@@ -811,6 +811,11 @@ describe('attention bulk-run store (real PG)', () => {
     });
     await settleRunPhase({ runId: run.runId, resolverOwner: 'su-prior' });
 
+    await (h.sql as typeof db.adminSql)`
+      UPDATE harness_shared.attention_bulk_runs
+         SET started_at = now() - interval '1 hour',
+             heartbeat_at = now() - interval '1 hour'
+       WHERE workspace_id = ${h.ws} AND run_id = ${run.runId}`;
     const resumed = await resumeReviewRun({
       runId: run.runId,
       itemIds: ['smoke-fail:resume-review-3', 'not-in-snapshot'],
@@ -821,6 +826,13 @@ describe('attention bulk-run store (real PG)', () => {
       requeuedIds: ['smoke-fail:resume-review-3'],
       preservedOutcomes: 2,
       run: { phase: 'pending', resolverOwner: 'su-next', finishedAt: null },
+    });
+    if (!resumed.ok) return;
+    expect(resumed.run.heartbeatAt).toBeNull();
+    expect(classifyRunLiveness(resumed.run)).toMatchObject({ state: 'live' });
+    expect(await restartRun({ runId: run.runId, resolverOwner: 'su-racer' })).toMatchObject({
+      ok: false,
+      reason: 'not_restartable',
     });
     const items = await getRunItems(run.runId);
     expect(items).toHaveLength(3);
@@ -1467,6 +1479,47 @@ describe('attention bulk-run store (real PG)', () => {
       // and nothing moved
       expect((await getRun(run.runId, ws()))!.heartbeatAt).not.toBeNull();
     });
+
+    it.each(['pending', 'running', 'failed'] as const)(
+      'gives a restarted %s run a fresh grace period before its first heartbeat',
+      async (phase) => {
+        const run = await createRun({ items: seed(`rs-grace-${phase}`) });
+        await unsafeSetRunPhaseForFixtures({ runId: run.runId, phase });
+        await (h.sql as typeof db.adminSql)`
+          UPDATE harness_shared.attention_bulk_runs
+             SET created_at = now() - interval '2 hours',
+                 started_at = now() - interval '1 hour',
+                 heartbeat_at = now() - interval '1 hour'
+           WHERE workspace_id = ${ws()} AND run_id = ${run.runId}`;
+        const oldRun = (await getRun(run.runId, ws()))!;
+        if (phase !== 'failed') {
+          expect(classifyRunLiveness(oldRun)).toMatchObject({ state: 'stale' });
+        }
+
+        const restarted = await restartRun({ runId: run.runId, resolverOwner: 'su-fresh' });
+        expect(restarted.ok).toBe(true);
+        if (!restarted.ok) return;
+        expect(restarted.run.heartbeatAt).toBeNull();
+        expect(restarted.run.createdAt).toBe(oldRun.createdAt);
+        expect(restarted.run.startedAt).not.toBe(oldRun.startedAt);
+        expect(classifyRunLiveness(restarted.run)).toMatchObject({ state: 'live' });
+
+        // The SQL restart guard and watchdog classifier must agree: a second
+        // restart cannot rotate the new owner during startup, even before a beat.
+        expect(await restartRun({ runId: run.runId, resolverOwner: 'su-racer' })).toEqual({
+          ok: false,
+          reason: 'not_restartable',
+          phase: 'pending',
+        });
+        const running = await setRunPhase({
+          runId: run.runId,
+          phase: 'running',
+          resolverOwner: 'su-fresh',
+        });
+        expect(running!.startedAt).toBe(restarted.run.startedAt);
+        expect(classifyRunLiveness(running!)).toMatchObject({ state: 'live' });
+      },
+    );
 
     it('restarts a STALE executing run, preserving completed outcomes and NOT widening membership', async () => {
       const run = await createRun({ items: seed('rs-stale'), runId: `rs-stale-${Date.now()}` });
