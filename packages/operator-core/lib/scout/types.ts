@@ -437,8 +437,10 @@ export interface ProposalConsultation {
    * here until EI-21485716602970457 — but only one of them justifies a retry.
    * `retrieval_only` means the caller forbade any responder launch, so the core
    * returned its ranked menu without attempting a review: also 'unavailable', and
-   * not a failed launch. */
-  verdict: 'routed' | 'served_from_archive' | 'no_qualified_responder' | 'relevance_unmeasured' | 'retrieval_only' | 'failed';
+   * not a failed launch. `no_launchable_responder` means experts WERE selected but
+   * no answering session could be launched for any of them: a dispatch failure,
+   * not a measured absence. */
+  verdict: 'routed' | 'served_from_archive' | 'no_qualified_responder' | 'no_launchable_responder' | 'relevance_unmeasured' | 'retrieval_only' | 'failed';
   /** Selected/answering reviewer when known. */
   reviewerId?: string;
   /** Critique folded into the routed artifact once an answer is available. */

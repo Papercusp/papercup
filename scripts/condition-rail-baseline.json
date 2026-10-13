@@ -11,7 +11,6 @@
     "bespoke-watchdog|packages/operator-core/lib/inference-gateway/watchdog.mjs|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/memory-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/overwatch/watchdog.ts|<module>|1",
-    "bespoke-watchdog|packages/operator-core/lib/pot/placement-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/pot/watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1",

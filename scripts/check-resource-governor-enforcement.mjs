@@ -483,15 +483,18 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008; third start reviewed under WI-10007542; fourth under WI-6554700010008629; fifth under WI-6554700010008580): this is a disposable isolated Tauri Reports Library acceptance driver, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1 and a concrete native PID and polling helper. Two of its four execFileSync sites invoke the native bridge and DOM poll helper with 60s/90s deadlines. The third is one awaited `npm run test:file -- <native e2e test files>` run inside the verifier source snapshot (cwd OPERATOR_SOURCE_ROOT), which verifyVerifierSourceSync first checks against the source receipt (EI-25545705752593070 replaced the earlier `lint:as-committed --ref=<receipt commit>` form, which needs Git inside the archive). Its test child is admitted upstream, because test:file enters scripts/test-files.mjs, which runs each file under runGovernedTestProcess. The fourth is one awaited `node --import tsx -e` child with a 60s timeout that publishes the native executable's kernel-measured runtime-vintage witness to the test-runs ledger database and exits; it starts no further process. The fifth is runNativeChild's single execFile of the Node executable and an explicit source-root script, awaited through its callback-backed Promise with a 300s deadline and 4MiB output bound. Its nativeChildEnvironment first verifies isolation, the owned rig PID and private workspace, then restores the native discovery directory. Each child is awaited to exit before the next call. The script creates no detached worker or resident queue and exits after the bounded verification phase, so it adds no independently managed application capacity for Governor.admit to meter.",
+      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008; third start reviewed under WI-10007542; fourth under WI-6554700010008629; fifth under WI-6554700010008580; sixth under EI-25822025814936255): disposable isolated Tauri acceptance, with no resident queue or detached worker. The two native bridge/poll execFileSync sites have 60s/90s deadlines. The third runs the exact frozen native test files through test:file, admitted upstream by runGovernedTestProcess. The fourth publishes the kernel-measured native runtime witness in one awaited Node child with a 60s deadline. The fifth runs only a prepared source-snapshot bundle with its recorded SHA-256 checked before execFile, preserving the owned private workspace and discovery directory, a 300s deadline, and 4MiB output bound. The sixth invokes the maintained frozen bundle-host.sh synchronously for unique receipt-attested script inputs before the test runner starts, with a 300s preparation deadline and the same verified private test environment. That recipe retains its dependency-reader mutex and restricted-source checks. verifyVerifierSourceSync checks the archive before and after compilation; profile entries bind the resulting bytes to their source-root paths. Preparation does not consume or widen the native journey's 300s limit. All children are awaited and exit within the enclosing isolated verifier operation; none adds independent managed serving capacity.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
-      return resourceStartCallCount(source) === 5 &&
-        [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 4 &&
+      return resourceStartCallCount(source) === 6 &&
+        [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 5 &&
         [...code.matchAll(/\bexecFile\s*\(/g)].length === 1 &&
         // Fifth start: the awaited native child, with its owned profile restored.
         source.includes("const env = nativeChildEnvironment(profile);") &&
-        source.includes("execFile(process.execPath, ['--import', 'tsx', join(sourceRoot, script), ...args], {") &&
+        source.includes("execFile(process.execPath, [bundle, ...args], {") &&
+        source.includes("assert.ok(prepared, 'Native child must be bundled from the verified source before the test starts')") &&
+        source.includes("assert.equal(prepared.bundle, bundle,") &&
+        source.includes("digest('hex'), prepared.sha256,") &&
         source.includes("cwd: sourceRoot, env, timeout: 300_000, maxBuffer: 4 * 1024 * 1024,") &&
         source.includes("return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {") &&
         source.includes("if (!error) { resolve({ stdout, stderr }); return; }") &&
@@ -504,6 +507,12 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
         source.includes("PAPERCUSP_TEST_PG_ADMIN_URL: address.toString()") &&
         source.includes("recordedDataDir === dataDir && port === address.port") &&
         source.includes("command[command.indexOf('-D') + 1] === dataDir") &&
+        // Sixth start: finite frozen-source preparation, with no compiler fallback.
+        source.includes("execFileSync('bash', [join(sourceRoot, 'apps/operator/bin/bundle-host.sh'), join(sourceRoot, script), bundle],") &&
+        source.includes("{ cwd: sourceRoot, stdio: 'inherit', timeout: 300_000, env: testEnv }") &&
+        source.includes("new Set(nativeScripts).size === nativeScripts.length") &&
+        source.includes("receipt.files.some((entry: { path: string }) => entry.path === script)") &&
+        source.split("verifyVerifierSourceSync(sourceRoot, receipt").length - 1 === 2 &&
         // Fourth start (WI-6554700010008629): the bounded runtime-vintage witness child.
         source.includes("await import('./packages/operator-core/lib/runtime-vintage.ts');") &&
         source.includes("cwd: sourceRoot, stdio: 'inherit', timeout: 60_000, env: { ...process.env,") &&

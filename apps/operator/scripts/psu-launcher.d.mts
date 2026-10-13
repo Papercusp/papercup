@@ -4011,6 +4011,37 @@ export function sessionPortRequestBody(source: any, target: any, account: any, a
     sourceAdvSessionId: number;
 };
 export function formatSessionPortInspection(result: any): any[];
+/**
+ * WI-3758 (owner directive 2026-07-10): a resume SHOWS the session's
+ * last-active model and lets you pick the one to resume with. Returns the psu
+ * model spec to thread into resumeArgsFor, or null for the agent default (no
+ * flag — the pre-WI-3758 behavior).
+ *
+ *   - `--model=<spec>` (already validated + normalized by parseArgs) wins —
+ *     no prompt, like every other resume flag.
+ *   - interactive (the default) → announce the last-active model + a select:
+ *     keep it (an EXPLICIT flag — CLI flags don't persist into resumes, so
+ *     "keep" must re-pass it) / agent default / type a different spec
+ *     (validateModelSpec-checked, same guard as parseArgs' --model).
+ *   - `--no-picker` scripting → no prompt, announce only (mirrors
+ *     chooseResumeAccount's no-prompt gating) — agent default, exactly the old
+ *     behavior.
+ */
+/** PURE (exported for tests): the first-step rows of the interactive resume
+ * picker. Row 0 is always a NATIVE target — the session's own backend, with its
+ * last-active model when the transcript names one — so a PUI resume pane (a TTY,
+ * so `args.picker` is true) reopens in its original backend TUI on Enter
+ * (consult-backed-parking-2026-10-12 P-012, bar R-11). The cross-backend escape
+ * is last and never the default.
+ * @param {{ agent: string }} session
+ * @param {string | null} last
+ * @returns {Array<{ name: string, value: any }>} */
+export function resumeFirstStepChoices(session: {
+    agent: string;
+}, last: string | null): Array<{
+    name: string;
+    value: any;
+}>;
 /** WI-3859 F4: the archive-at-death lifecycle DELETES an ended session's
  *  transcript ~15s after end (it lives on in harness_shared.session_archives).
  *  The wake-executor rematerializes on ITS resume path, but a direct

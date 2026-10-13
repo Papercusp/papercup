@@ -15242,6 +15242,33 @@ export function formatSessionPortInspection(result) {
  *     chooseResumeAccount's no-prompt gating) — agent default, exactly the old
  *     behavior.
  */
+/** PURE (exported for tests): the first-step rows of the interactive resume
+ * picker. Row 0 is always a NATIVE target — the session's own backend, with its
+ * last-active model when the transcript names one — so a PUI resume pane (a TTY,
+ * so `args.picker` is true) reopens in its original backend TUI on Enter
+ * (consult-backed-parking-2026-10-12 P-012, bar R-11). The cross-backend escape
+ * is last and never the default.
+ * @param {{ agent: string }} session
+ * @param {string | null} last
+ * @returns {Array<{ name: string, value: any }>} */
+export function resumeFirstStepChoices(session, last) {
+  return [
+    ...(last
+      ? [
+          {
+            name: `Native ${session.agent}: keep last active — ${last}`,
+            value: { targetAgent: session.agent, modelSpec: last },
+          },
+        ]
+      : []),
+    {
+      name: `Native ${session.agent}: backend default (no model flag)`,
+      value: { targetAgent: session.agent, modelSpec: null },
+    },
+    { name: "Choose a different model…", value: CHOOSE_MODEL },
+  ];
+}
+
 async function chooseResumeTarget(session, args) {
   let last = null;
   try {
@@ -15263,21 +15290,7 @@ async function chooseResumeTarget(session, args) {
   const { select, input, search } = await import("@inquirer/prompts");
   const picked = await select({
     message: "Continue this session with which backend/model?",
-    choices: [
-      ...(last
-        ? [
-            {
-              name: `Native ${session.agent}: keep last active — ${last}`,
-              value: { targetAgent: session.agent, modelSpec: last },
-            },
-          ]
-        : []),
-      {
-        name: `Native ${session.agent}: backend default (no model flag)`,
-        value: { targetAgent: session.agent, modelSpec: null },
-      },
-      { name: "Choose a different model…", value: CHOOSE_MODEL },
-    ],
+    choices: resumeFirstStepChoices(session, last),
   });
   if (picked !== CHOOSE_MODEL)
     return resolveResumeTarget(session, args, picked);
@@ -16116,7 +16129,11 @@ export async function launchSessionPort(
  * empty target (consult-backed-parking-2026-10-12 P-011, bar R-23). It refuses
  * a single session only — never a backend pair (D-009): an OMP source with a
  * transcript ports like any other. Same-backend (native) resumes keep their own
- * path and are not judged here. `home` is injectable for tests. */
+ * path and are not judged here. `home` is injectable for tests.
+ * @param {any} source
+ * @param {any} target
+ * @param {{ tracked?: boolean, home?: string }} [options]
+ * @returns {string | null} */
 export function unresumableSourceCause(
   source,
   target,
