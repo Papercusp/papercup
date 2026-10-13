@@ -85,7 +85,8 @@ export type WatchdogPassName =
   | 'stranded-repair-fixer-silence'
   | 'stranded-repair-queue'
   | 'idle-repair-queue'
-  | 'gate-live-invariants';
+  | 'gate-live-invariants'
+  | 'green-main-slo';
 
 export interface WatchdogPassScope {
   /** `routines.name` of the routine this pass watches. */

@@ -135,7 +135,31 @@ interface GitPipelineSnapshot {
     } | null;
     // P-013: where the latest round's time went. Null/absent = not measured this round.
     roundPhases?: { breakdown: string } | null;
+    // green-main-cycle-time-2026-10-08 P-016: the green-main SLO, computed by the same
+    // function the watchdog pages from. Null/absent = not computed (an older server).
+    slo?: GreenMainSloView | null;
   };
+}
+interface GreenMainSloView {
+  metrics: {
+    timeSinceGreenMs: number | null;
+    timeSinceVerdictMs: number | null;
+    roundCycleTime: { lastMs: number | null; medianMs: number | null; intervals: number };
+    queueIdleMs: number | null;
+    roundsToConverge: { rounds: number; converged: false } | null;
+    redAddingAdmissions: { count: number; judged: number; heads: string[] } | null;
+    perSyncRedRate: { fleet: string | null; judgedBatches: number; redBatches: number; rate: number | null }[] | null;
+  };
+  breaches: { metric: string; severity: 'page' | 'alert'; title: string; detail: string; episodeKey: string }[];
+  thresholds: {
+    redPageMs: number;
+    noVerdictPageMs: number;
+    roundCycleAlertMs: number;
+    queueIdleAlertMs: number;
+    perSyncRedRateAlert: number;
+  };
+  /** Inputs the server could not read: their metrics are UNKNOWN, not healthy. */
+  unreadable: string[];
 }
 interface RepairManifestView {
   candidate: string;
@@ -182,6 +206,18 @@ function fmtRel(ts: number | null | undefined): string {
   if (d < 86_400_000) return `${Math.round(d / 3_600_000)}h ago`;
   return `${Math.round(d / 86_400_000)}d ago`;
 }
+function fmtDur(ms: number | null | undefined): string {
+  if (ms == null) return '—';
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  if (ms < 48 * 3_600_000) return `${(ms / 3_600_000).toFixed(1)}h`;
+  return `${(ms / 86_400_000).toFixed(1)}d`;
+}
+/** good under half the threshold, warn up to it, bad at or past it; neutral when unknown. */
+function thresholdTone(value: number | null | undefined, threshold: number): Tone {
+  if (value == null) return 'neutral';
+  if (value >= threshold) return 'bad';
+  return value >= threshold / 2 ? 'warn' : 'good';
+}
 function pct(n: number, d: number): string {
   if (d <= 0) return '—';
   return `${Math.round((n / d) * 100)}%`;
@@ -220,6 +256,89 @@ function Stat({ label, value, tone, sub }: { label: string; value: React.ReactNo
       <div className="pc-git__stat-v">{value}</div>
       <div className="pc-git__stat-l">{label}</div>
       {sub && <div className="pc-git__stat-s">{sub}</div>}
+    </div>
+  );
+}
+
+/** P-016: the green-main SLO — the same numbers and breaches the watchdog pages the owner from. */
+export function GreenMainSloCard({ slo }: { slo: GreenMainSloView }) {
+  const m = slo.metrics;
+  const t = slo.thresholds;
+  const verdictUnknown = slo.unreadable.includes('lastVerdictAt');
+  const sync = m.perSyncRedRate;
+  const worstSync = sync?.filter((r) => r.rate !== null).sort((a, b) => (b.rate ?? 0) - (a.rate ?? 0))[0] ?? null;
+  return (
+    <div className="pc-git__card" style={{ gridColumn: '1 / -1' }} data-testid="gate-green-main-slo">
+      <div className="pc-git__card-h">
+        green-main SLO{' '}
+        {slo.breaches.length === 0 ? (
+          <StatusPill tone="good" label="within SLO" />
+        ) : (
+          slo.breaches.map((b) => (
+            <span key={b.episodeKey}>
+              <StatusPill tone={b.severity === 'page' ? 'bad' : 'warn'} label={`${b.severity}: ${b.metric}`} />{' '}
+            </span>
+          ))
+        )}
+      </div>
+      <div className="pc-git__stats">
+        <Stat
+          label="since green"
+          value={fmtDur(m.timeSinceGreenMs)}
+          tone={thresholdTone(m.timeSinceGreenMs, t.redPageMs)}
+          sub={`page at ${fmtDur(t.redPageMs)}`}
+        />
+        <Stat
+          label="since any verdict"
+          value={verdictUnknown ? 'unknown' : fmtDur(m.timeSinceVerdictMs)}
+          tone={verdictUnknown ? 'warn' : thresholdTone(m.timeSinceVerdictMs, t.noVerdictPageMs)}
+          sub={verdictUnknown ? 'ledger unreadable' : `page at ${fmtDur(t.noVerdictPageMs)}`}
+        />
+        <Stat
+          label="round cycle"
+          value={fmtDur(m.roundCycleTime.lastMs)}
+          tone={thresholdTone(m.roundCycleTime.lastMs, t.roundCycleAlertMs)}
+          sub={m.roundCycleTime.intervals > 0 ? `median ${fmtDur(m.roundCycleTime.medianMs)} · ${m.roundCycleTime.intervals} interval(s)` : 'no repair rounds'}
+        />
+        <Stat
+          label="queue idle"
+          value={m.queueIdleMs === null ? 'no queue' : fmtDur(m.queueIdleMs)}
+          tone={thresholdTone(m.queueIdleMs, t.queueIdleAlertMs)}
+          sub={`alert past ${fmtDur(t.queueIdleAlertMs)}`}
+        />
+        <Stat
+          label="rounds so far"
+          value={m.roundsToConverge ? m.roundsToConverge.rounds : 'no queue'}
+          sub={m.roundsToConverge ? 'not yet converged' : undefined}
+        />
+        <Stat
+          label="red-adding admissions"
+          value={m.redAddingAdmissions ? `${m.redAddingAdmissions.count} of ${m.redAddingAdmissions.judged}` : '—'}
+          tone={m.redAddingAdmissions && m.redAddingAdmissions.count > 0 ? 'warn' : undefined}
+          sub="judged per admission window"
+        />
+        <Stat
+          label="per-sync red rate"
+          value={sync === null ? 'not measured' : worstSync ? pct(worstSync.redBatches, worstSync.judgedBatches) : '—'}
+          tone={worstSync?.rate != null ? thresholdTone(worstSync.rate, t.perSyncRedRateAlert * 2) : undefined}
+          sub={
+            worstSync
+              ? `${worstSync.redBatches} of ${worstSync.judgedBatches} batches · ${worstSync.fleet ?? 'all agents'}`
+              : sync === null
+                ? 'delta-check ledger unread'
+                : 'no judged batches'
+          }
+        />
+      </div>
+      {slo.breaches.length > 0 && (
+        <ul className="pc-git__muted" data-testid="gate-green-main-slo-breaches">
+          {slo.breaches.map((b) => (
+            <li key={b.episodeKey}>
+              <strong>{b.title}</strong> — {b.detail}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -749,6 +868,9 @@ export default function GitClient() {
                   </span>
                 </div>
               </div>
+
+              {/* green-main-cycle-time-2026-10-08 P-016: the green-main SLO card. */}
+              {st.gate.slo && <GreenMainSloCard slo={st.gate.slo} />}
 
               {/* frozen-candidate-stays-frozen-through-all-fixes-2026-09-03 P-021 (D-007 #1):
                   the frozen candidate's REPAIR MANIFEST — one row per leg with its subject

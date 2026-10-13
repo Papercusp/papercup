@@ -3929,6 +3929,11 @@ export function startGreenStallWatchdog(
     void import('./gate-live-invariants')
       .then(({ checkGateLiveInvariants }) => checkGateLiveInvariants(sql))
       .catch((err: unknown) => console.warn('[gate-live-invariants] import failed:', err));
+    // P-016 (green-main-cycle-time-2026-10-08, D-030): the green-main SLO pages — main red ≥ 12h,
+    // no verdict ≥ 6h — delivered once per episode. The pass records its own failure.
+    void import('./green-main-slo-watchdog')
+      .then(({ checkGreenMainSlo }) => checkGreenMainSlo(sql))
+      .catch((err: unknown) => console.warn('[green-main-slo] import failed:', err));
   };
 
   run(); // boot check

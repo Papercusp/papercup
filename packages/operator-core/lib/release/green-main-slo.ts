@@ -19,8 +19,10 @@
  *  - redAddingAdmissions  admissions whose next round recorded MORE failures than the round
  *                     before them. Attribution is per admission WINDOW (every admission between
  *                     two rounds shares that window's outcome); `attribution:'window'` says so.
- *  - perSyncRedRate   per fleet: git-sync batches the sync-batch delta check judged red, over
- *                     the batches it judged. Unjudged batches are not in either count.
+ *  - perSyncRedRate   git-sync batches the sync-batch delta check judged red, over the batches
+ *                     it judged (`syncTalliesFromDeltaCoverage`). Unjudged batches are in neither
+ *                     count. One row per fleet when attributed; today one `fleet: null` row
+ *                     covering every agent, because the check's ticks carry no agent (D-031).
  *
  * Pages (AUTO-BAR-R-14): main red ≥ 12h, or no verdict of any kind ≥ 6h. Each breach carries an
  * EPISODE key derived from the clock that started it (`lastGreenAt` / `lastVerdictAt`), so a
@@ -65,6 +67,32 @@ export interface SyncBatchFleetTally {
   judgedBatches: number;
   /** Of those, batches it judged red. */
   redBatches: number;
+}
+
+/**
+ * Per-sync tallies from the sync-batch delta check's OWN coverage ledger
+ * (`routines(name='sync-batch-delta-check').metadata.sync_delta.coverage.ticks`, 24h retention).
+ * A judged batch is a tick whose status is `green` or `red`; every other status (skipped,
+ * up-to-date, nothing-selected, radius-too-wide, leg-timeout, missed-opportunity) judged no
+ * change and is in neither count. Ticks carry no agent attribution, so the tally covers every
+ * agent (`fleet: null`); a per-fleet split needs the check to record each window's
+ * Papercusp-Agent trailers (D-031). Null when the ledger is absent or malformed: unknown, never [].
+ */
+export function syncTalliesFromDeltaCoverage(syncDelta: unknown): SyncBatchFleetTally[] | null {
+  if (!syncDelta || typeof syncDelta !== 'object') return null;
+  const coverage = (syncDelta as { coverage?: unknown }).coverage;
+  if (!coverage || typeof coverage !== 'object') return null;
+  const ticks = (coverage as { ticks?: unknown }).ticks;
+  if (!Array.isArray(ticks)) return null;
+  let judgedBatches = 0;
+  let redBatches = 0;
+  for (const tick of ticks) {
+    const status = tick && typeof tick === 'object' ? (tick as { status?: unknown }).status : undefined;
+    if (status !== 'green' && status !== 'red') continue;
+    judgedBatches += 1;
+    if (status === 'red') redBatches += 1;
+  }
+  return [{ fleet: null, judgedBatches, redBatches }];
 }
 
 export interface GreenMainSloInput {
@@ -267,8 +295,8 @@ export function computeGreenMainSlo(input: GreenMainSloInput, thresholds: GreenM
       severity: 'alert',
       value: rate.rate,
       threshold: t.perSyncRedRateAlert,
-      episodeKey: key('per-sync-red-rate', `${rate.fleet ?? 'unfleeted'}:${Math.floor(nowMs / (24 * HOUR_MS))}`),
-      title: `${rate.fleet ?? 'Unfleeted agents'}: ${Math.round(rate.rate * 100)}% of syncs red on ${installSlug}`,
+      episodeKey: key('per-sync-red-rate', `${rate.fleet ?? 'all'}:${Math.floor(nowMs / (24 * HOUR_MS))}`),
+      title: `${rate.fleet ?? 'All agents'}: ${Math.round(rate.rate * 100)}% of syncs red on ${installSlug}`,
       detail: `${rate.redBatches} of ${rate.judgedBatches} judged git-sync batches went red (target ≤ ${Math.round(t.perSyncRedRateAlert * 100)}%).`,
     });
   }

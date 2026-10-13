@@ -53,6 +53,8 @@ import { resolveWorkspaceForHarness } from './harness/workspace-for-harness';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
 import { parseRepairTickLegs, type StoredRepairTickLegs } from './release/repair-tick-legs-snapshot';
 import { readFreezeAndConverge, type FreezeAndConvergeGateHealth } from './release/freeze-disposition';
+import { computeGreenMainSlo, syncTalliesFromDeltaCoverage, type GreenMainSlo } from './release/green-main-slo';
+import { readVerdictRateWindow } from './release/gate-verdict-rate-alarm';
 import { pipelineName } from './release/pipeline-name';
 import { isAdmissionSyntheticCommitDate } from './release/admission-commit-date';
 import {
@@ -364,6 +366,18 @@ export interface GitPipelineSnapshot {
      * queue is healthy, and NOT that it is stuck.
      */
     convergence?: StoredFrozenRepairConvergence | null;
+    /**
+     * P-016 (green-main-cycle-time-2026-10-08, AUTO-BAR-R-13; D-030): the green-main SLO —
+     * time since green, time since any verdict, repair-round cycle time, queue idle time,
+     * rounds so far, red-adding admissions, per-fleet sync red rate — plus the breaches that
+     * page or alert. Computed by the SAME pure function the watchdog pages from
+     * (`computeGreenMainSlo`), over the same `lastGreenAt` and persisted queue this snapshot
+     * reads, so the panel and the page cannot disagree.
+     *
+     * `unreadable` names inputs that could not be read this snapshot: their metrics are null
+     * because they are UNKNOWN, not because they are healthy. Null `slo` = not computed.
+     */
+    slo?: (GreenMainSlo & { unreadable: Array<'lastVerdictAt'> }) | null;
     /**
      * P-013 (plan gate-file-level-test-reuse-2026-09-27): what per-test-file pass reuse did in
      * the latest gate round — files reused of candidates, a lower bound on test time saved, any
@@ -1434,7 +1448,7 @@ export async function gitPipelineSnapshot(
     SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at, group_slug
       FROM harness_shared.routines
      WHERE install_slug = ${slug}
-       AND name IN ('git-sync', 'green-checkpoint', 'release-trigger')
+       AND name IN ('git-sync', 'green-checkpoint', 'release-trigger', 'sync-batch-delta-check')
   `.catch(() => [] as RoutineRow[]));
   const openConflictRowsPromise = observe('conflicts', sql<
     {
@@ -1458,6 +1472,12 @@ export async function gitPipelineSnapshot(
     .then((workspaceId) => reconstructGateFireDays(sql, { workspaceId, installSlug: slug }, { sinceDays: 1 }))
     .then(summarizeGateFireHistory)
     .catch(() => null));
+  // P-016: the newest verdict-bearing ledger row (green OR red), for the SLO's no-verdict clock.
+  // `undefined` = unreadable (the SLO reports it as unknown), `null` = no verdict ever recorded.
+  const lastVerdictPromise = observe('last-verdict', resolveWorkspaceForHarness(slug)
+    .then((workspaceId) => readVerdictRateWindow(sql, { workspaceId, installSlug: slug }))
+    .then((w): number | null | undefined => w.lastVerdictBearingAtMs)
+    .catch((): undefined => undefined));
 
   // The three pipeline routines + git-sync's latest metadata, in one read.
   const routineRows = await routineRowsPromise;
@@ -1728,6 +1748,22 @@ export async function gitPipelineSnapshot(
   });
   const freezeAndConverge = repairQueueProjection.freezeAndConverge;
 
+  // P-016: the SLO over the same lastGreenAt + persisted queue read above. Per-sync red rate comes
+  // from the sync-batch delta check's own coverage ledger; absent/malformed → null (unknown).
+  const lastVerdictAtMs = await lastVerdictPromise;
+  const syncDeltaMeta = (byName('sync-batch-delta-check')?.metadata ?? {}) as Record<string, unknown>;
+  const slo: NonNullable<GitPipelineSnapshot['gate']['slo']> = {
+    ...computeGreenMainSlo({
+      installSlug: slug,
+      nowMs: Date.now(),
+      lastGreenAtMs: num(gateHealth.lastGreenAt),
+      lastVerdictAtMs: lastVerdictAtMs ?? null,
+      queue: persistedRepairQueue,
+      syncTallies: syncTalliesFromDeltaCoverage(syncDeltaMeta.sync_delta),
+    }),
+    unreadable: lastVerdictAtMs === undefined ? ['lastVerdictAt'] : [],
+  };
+
   // P-001: "judging vs idle" — probe the live checkpoint unit ONLY when opted in
   // (the dev.gitPipeline derived-read producer; see the interface note). Best-effort:
   // a probe failure yields null (not probed), never a broken snapshot.
@@ -1908,6 +1944,7 @@ export async function gitPipelineSnapshot(
       // this to JSON null when a cycle retires, so an absent/null/unrecognized blob must
       // read as "not measured" rather than as a convergence summary with holes in it.
       convergence: parseFrozenRepairConvergence(gateHealth['convergence']),
+      slo,
       // P-013: same shape-checked discipline — an absent or wrong-typed blob reads as null.
       testPassReuse: parseTestPassReuseHealth(gateHealth['testPassReuse']),
       roundPhases: parseGateRoundPhases(gateHealth['roundPhases']),

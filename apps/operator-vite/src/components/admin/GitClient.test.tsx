@@ -270,3 +270,83 @@ describe('bridge pill helpers (P-009)', () => {
     expect(bridgeLabel({ hiveGitMode: 'bridged', bridge: errs })).toBe('bridged · 3 err');
   });
 });
+
+// green-main-cycle-time-2026-10-08 P-016: the green-main SLO card.
+describe('GreenMainSloCard', () => {
+  const HOUR = 3_600_000;
+  const thresholds = {
+    redPageMs: 12 * HOUR,
+    noVerdictPageMs: 6 * HOUR,
+    roundCycleAlertMs: 2 * HOUR,
+    queueIdleAlertMs: HOUR,
+    perSyncRedRateAlert: 0.2,
+  };
+  const healthy = {
+    metrics: {
+      timeSinceGreenMs: 2 * HOUR,
+      timeSinceVerdictMs: 30 * 60_000,
+      roundCycleTime: { lastMs: null, medianMs: null, intervals: 0 },
+      queueIdleMs: null,
+      roundsToConverge: null,
+      redAddingAdmissions: null,
+      perSyncRedRate: null,
+    },
+    breaches: [],
+    thresholds,
+    unreadable: [],
+  };
+
+  it('renders a healthy SLO as within-SLO with every metric labelled, and sync rate "not measured"', () => {
+    mockResult = { data: [{ ...snapshot, gate: { ...snapshot.gate, slo: healthy } }], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    const card = screen.getByTestId('gate-green-main-slo');
+    expect(card.textContent).toContain('within SLO');
+    expect(card.textContent).toContain('since green');
+    expect(card.textContent).toContain('2.0h');
+    expect(card.textContent).toContain('30m');
+    expect(card.textContent).toContain('no queue');
+    expect(card.textContent).toContain('not measured');
+    expect(screen.queryByTestId('gate-green-main-slo-breaches')).toBeNull();
+  });
+
+  it('renders page and alert breaches with their titles, and an unreadable verdict ledger as unknown (never healthy)', async () => {
+    const { GreenMainSloCard } = await import('./GitClient');
+    render(
+      <GreenMainSloCard
+        slo={{
+          ...healthy,
+          metrics: {
+            ...healthy.metrics,
+            timeSinceGreenMs: 245 * HOUR,
+            timeSinceVerdictMs: null,
+            roundCycleTime: { lastMs: 3 * HOUR, medianMs: 2.5 * HOUR, intervals: 4 },
+            queueIdleMs: 90 * 60_000,
+            roundsToConverge: { rounds: 7, converged: false },
+            redAddingAdmissions: { count: 2, judged: 9, heads: ['aaaa', 'bbbb'] },
+          },
+          breaches: [
+            { metric: 'time-since-green', severity: 'page', title: 'Main has been red 245.0h on papercusp', detail: 'No green verdict since …', episodeKey: 'k1' },
+            { metric: 'queue-idle', severity: 'alert', title: 'Frozen repair queue idle 1.5h on papercusp', detail: 'The newest red has waited 1.5h for a fixer.', episodeKey: 'k2' },
+          ],
+          unreadable: ['lastVerdictAt'],
+        }}
+      />,
+    );
+    const card = screen.getByTestId('gate-green-main-slo');
+    expect(card.textContent).toContain('page: time-since-green');
+    expect(card.textContent).toContain('alert: queue-idle');
+    expect(card.textContent).not.toContain('within SLO');
+    expect(card.textContent).toContain('10.2d');
+    expect(card.textContent).toContain('unknown');
+    expect(card.textContent).toContain('ledger unreadable');
+    expect(card.textContent).toContain('2 of 9');
+    expect(card.textContent).toContain('median 2.5h · 4 interval(s)');
+    expect(screen.getByTestId('gate-green-main-slo-breaches').textContent).toContain('Main has been red 245.0h on papercusp');
+  });
+
+  it('is absent for an older snapshot that carries no slo', () => {
+    mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    expect(screen.queryByTestId('gate-green-main-slo')).toBeNull();
+  });
+});
