@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 vi.mock('../pot-control-policy', () => ({ placementOverride: () => undefined }));
 import { reconcileOnePot, placementConditionKey, placementConfig, type PlacementConditionDeps } from './placement-watchdog';
 
@@ -30,7 +31,7 @@ function fixture() {
 
 describe('placement durable condition recovery', () => {
   beforeEach(() => { vi.spyOn(console, 'warn').mockImplementation(() => {}); });
-  afterEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => { expect(readRealPgRailBlocks().blocked).toBe(0); vi.restoreAllMocks(); });
   it('recovers an exact terminal subject after restart without its old Mug or cup', async () => {
     const h = fixture(); await h.run();
     expect(h.open.size).toBe(0); expect(h.resolve).toHaveBeenCalledTimes(1);
@@ -43,13 +44,14 @@ describe('placement durable condition recovery', () => {
 
   it.each(['missing', 'duplicate', 'failed-query', 'failed-ledger', 'foreign-workspace', 'foreign-pot',
     'future-episode', 'unknown-clock', 'invalid-key', 'unknown-kind', 'unknown-harness', 'parked',
-    'claim-parked', 'unknown-holder', 'future-now', 'quiet-subject'])('preserves %s evidence', async kind => {
+    'claim-parked', 'unknown-holder', 'unknown-status', 'unknown-ledger', 'unknown-now', 'quiet-subject'])('preserves %s evidence', async kind => {
     const h = fixture();
     if (kind === 'missing') h.rows([]);
     if (kind === 'duplicate') h.rows([{ status: 'done', holder_live: false, downstream: 0 },
       { status: 'done', holder_live: false, downstream: 0 }]);
     if (kind === 'failed-query') h.fail();
     if (kind === 'failed-ledger') h.deps.readOpenConditions = async () => { throw new Error('rail unreadable'); };
+    if (kind === 'unknown-ledger') h.deps.readOpenConditions = async () => undefined as never;
     if (kind === 'future-episode') h.open.set(h.key, NOW + 1);
     if (kind === 'unknown-clock') h.open.set(h.key, Number.NaN);
     if (kind === 'invalid-key' || kind === 'unknown-kind' || kind === 'unknown-harness') {
@@ -61,9 +63,10 @@ describe('placement durable condition recovery', () => {
     if (kind === 'claim-parked') h.rows([{ status: 'open', holder_live: true, downstream: 1,
       payload: { _claimHold: true } }]);
     if (kind === 'unknown-holder') h.rows([{ status: 'open', holder_live: 'true' as unknown as boolean, downstream: 1 }]);
+    if (kind === 'unknown-status') h.rows([{ status: 'unknown', holder_live: true, downstream: 1 }]);
     if (kind === 'quiet-subject') h.rows([{ status: 'open', holder_live: false, downstream: 1 }]);
     await h.run(kind === 'foreign-workspace' ? 'other' : 'workspace', kind === 'foreign-pot' ? 'other' : 'pot',
-      kind === 'future-now' ? Number.NaN : NOW);
+      kind === 'unknown-now' ? Number.NaN : NOW);
     expect(h.open.size).toBe(1); expect(h.resolve).not.toHaveBeenCalled();
     if (kind === 'failed-query' || kind === 'invalid-key') expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining('condition recovery failed'));
@@ -86,6 +89,13 @@ describe('placement durable condition recovery', () => {
     const h = fixture(); h.resolve.mockRejectedValueOnce(new Error('resolve unavailable'));
     await h.run(); expect(h.open.size).toBe(1);
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('resolve unavailable'));
+    await h.run(); expect(h.open.size).toBe(0);
+  });
+
+  it('a blocker returning to a recognized working state clears its stuck episode without completing downstream', async () => {
+    const h = fixture(); h.open.clear();
+    const key = placementConditionKey('workspace', 'pot', 'harness', 'WI-1', 'stranded');
+    h.open.set(key, NOW - 1); h.rows([{ status: 'wip', holder_live: false, downstream: 1 }]);
     await h.run(); expect(h.open.size).toBe(0);
   });
 });

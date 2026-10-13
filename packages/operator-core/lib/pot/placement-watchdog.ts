@@ -50,7 +50,7 @@ import { liveHolderFragment, STALE_CLAIM_GRACE_MS } from '../work-items-stale-cl
 import { listStartedPots, mugKettleSystemEnabled } from './started';
 import { workItemCheckpointScope } from '../work-item-checkpoint';
 import { checkpointDeclaresTerminal } from '../checkpoint-terminal-claim';
-import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { ANY_FAMILY_TERMINAL_STATES, FEATURE_FAMILY_STATES } from '../work-item-dispatch-states';
 import { isClaimHoldParked } from '../work-items';
 import { reconcileLinkedWorkItemsForPlanItem } from '../plan-items/reconcile-linked-work-items';
 import { getPlanRow } from '../agent-tools/plans/source';
@@ -98,6 +98,7 @@ async function recoverPlacementConditions(sql: Sql, workspaceId: string, install
   let episodes: Array<{ conditionKey: string; openedAtMs: number }>;
   try { episodes = await (deps.readOpenConditions ?? readOpenPlacementConditions)(); }
   catch { return; }
+  if (!Array.isArray(episodes)) return;
   for (const episode of episodes) {
     try {
       if (!episode?.conditionKey?.startsWith('alarm:pot-placement:') ||
@@ -129,9 +130,12 @@ async function recoverPlacementConditions(sql: Sql, workspaceId: string, install
         WHERE f.workspace_id = ${workspaceId} AND f.harness_slug = ${harness} AND f.feature_id = ${unitId}`;
       if (rows.length !== 1) continue;
       const row = rows[0];
+      const knownActive = FEATURE_FAMILY_STATES.includes(row.status) &&
+        !isUnitParkedForReconcile(row.status, row.payload);
       const recovered = isUnitTerminal(row.status) || (kind === 'stranded'
-        ? Number.isSafeInteger(row.downstream) && row.downstream === 0
-        : row.holder_live === true && !isUnitParkedForReconcile(row.status, row.payload));
+        ? (knownActive && !isStuckBlockerState(row.status)) ||
+          (Number.isSafeInteger(row.downstream) && row.downstream === 0)
+        : row.holder_live === true && knownActive);
       if (recovered) await resolveAlarm(episode.conditionKey, 'pot-placement-watchdog', deps.rail);
     } catch (error) {
       console.warn(`[pot-placement-watchdog] condition recovery failed: ${error instanceof Error ? error.message : String(error)}`);
