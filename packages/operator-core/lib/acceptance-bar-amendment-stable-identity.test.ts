@@ -205,6 +205,52 @@ describe('P-001 stable clause identity across acceptance-BAR amendments', () => 
     });
   });
 
+  // WI-6554700010009658: an approved amendment that rewords a BAR AND removes its
+  // layers took the full-rewrite path, whose `criterion.requiredTestLayers ??
+  // clause.required_test_layers` fallback kept the removed parent layer. The clause
+  // then made an explicitly-manual BAR "owe automated proof" and plans:start refused
+  // (mobile-agent-sessions-2026-10-12 R-17: iPhone -> iOS reword + e2e removed).
+  it.each([
+    { authored: [] as string[], expected: [] as string[] },
+    { authored: ['integration'], expected: ['integration'] },
+  ])('drops a removed parent layer when the same amendment also rewords the BAR, keeping authored extras %j', async ({ authored, expected }) => {
+    type Bar = Criterion & { model?: string; requiredTestLayers?: string[]; check?: unknown };
+    const priorCriteria = (template.criteria as Bar[]).map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const automated = { ...criterion, requiredTestLayers: ['e2e'] };
+      return { ...automated, barHash: computeAcceptanceBarHash(automated as never) };
+    });
+    const priorR1 = priorCriteria.find((criterion) => criterion.barKey === 'R-1')!;
+    const amendedCriteria = priorCriteria.map((criterion) => {
+      if (criterion.barKey !== 'R-1') return criterion;
+      const { requiredTestLayers: _removed, ...rest } = criterion;
+      const manual = {
+        ...rest,
+        model: `${criterion.model ?? ''} (reworded)`,
+        check: { kind: 'instrument' as const, instrumentKey: 'none' },
+      };
+      return { ...manual, barHash: computeAcceptanceBarHash(manual as never) };
+    });
+    const amendedR1 = amendedCriteria.find((criterion) => criterion.barKey === 'R-1')!;
+    // Fixture sanity: restoring the prior layers + check does NOT reproduce the prior
+    // hash, so this exercises the full-rewrite branch, not the layers-only one.
+    expect(computeAcceptanceBarHash({ ...amendedR1, requiredTestLayers: priorR1.requiredTestLayers, check: priorR1.check } as never))
+      .not.toBe(priorR1.barHash);
+    const row = storedClause('R-1', 'P-001', { barHash: priorR1.barHash, requiredTestLayers: ['e2e', ...authored] });
+    const rows = [row, storedClause('R-2', 'P-002')];
+    const priorTemplate = { ...template, criteria: priorCriteria, barSetHash: computeAcceptanceBarSetHash(priorCriteria as never) };
+    const amendedTemplate = { ...template, criteria: amendedCriteria, barSetHash: computeAcceptanceBarSetHash(amendedCriteria as never) };
+    await synchronizeAcceptanceBarRevision(sqlStub(rows, rows, subjectPlan(), [
+      formatRubricRevisionSnapshot('', { ...priorTemplate, barSetHash: OLD_SET_HASH }, null, 3),
+    ]) as never, {
+      workspaceId: 'workspace', harnessSlug: 'papercusp', rubricSlug: RUBRIC, rubricRevision: 4,
+      templateData: amendedTemplate, previousTemplateData: priorTemplate, actorId: 'amender',
+    });
+    const write = h.setSpecClause.mock.calls.find(([candidate]) => candidate.specId === row.spec_id)?.[0];
+    expect(write).toMatchObject({ requiredTestLayers: expected, mutationRequired: false });
+    expect(write?.behaviorClass).toBe(expected.length === 0 ? 'non-automated' : 'happy-path');
+  });
+
   it.each([
     { behaviorClass: 'concurrency' as const },
     { mutationRequired: true },

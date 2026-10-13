@@ -768,8 +768,14 @@ export async function synchronizeAcceptanceBarRevision(
         === clause.source_bar_hash;
     const preserveRefinements = unchangedBar || layersOnly;
     // Replace the parent's layer requirements while retaining any extra layers
-    // authored on this atomic clause. This also respects an approved removal.
-    const requiredTestLayers = unchangedBar ? clause.required_test_layers : layersOnly
+    // authored on this atomic clause. This also respects an approved removal, on
+    // EVERY re-projection from the prior BAR, not only a layers-only change: an
+    // amendment that rewords a BAR and also drops its layers must not carry the
+    // dropped layers forward through the `??` fallback below. That kept an
+    // explicitly-manual BAR "owing automated proof" (WI-6554700010009658).
+    // layersOnly implies projectedFromPrior, so the layers-only path is unchanged.
+    const projectedFromPrior = prior !== undefined && prior.barHash === clause.source_bar_hash;
+    const requiredTestLayers = unchangedBar ? clause.required_test_layers : projectedFromPrior
       ? [...new Set([
           ...clause.required_test_layers.filter((layer) => !prior!.requiredTestLayers?.includes(layer)),
           ...(criterion.requiredTestLayers ?? []),
