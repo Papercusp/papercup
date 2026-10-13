@@ -33,6 +33,7 @@ export const PHONE_DEVICE_PATHS = [
 ] as const;
 
 export const PHONE_DEVICE_PATH_SHAPES: ReadonlyArray<RegExp> = [
+  /^\/api\/device\/sessions\/[A-Za-z0-9_-][A-Za-z0-9._-]*\/transcript$/,
   /^\/api\/device\/devices\/[A-Za-z0-9_-]+$/,
   /^\/api\/device\/harnesses\/[A-Za-z0-9._-]+(?:\/(?:replan|smoke-test|cleanup|log\/stream))?$/,
   /^\/api\/device\/plans\/[A-Za-z0-9._-]+(?:\/items\/P-\d{3,}\/status)?$/,
