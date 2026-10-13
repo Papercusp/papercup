@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { createServer, createConnection } from 'node:net';
-import { getContainerRuntimeClient } from 'testcontainers';
+import { getContainerRuntimeClient, Wait } from 'testcontainers';
 
 const PG_IMAGE = 'postgres@sha256:5a65324fe84dc41709ff914e90b07f3e2f577073ed27bf917d4873aca0c9ec51';
 const MAIL_IMAGE = 'maildev/maildev@sha256:180ef51f65eefebb0e7122d8308813c1fd7bff164bc440ce5a3c2feee167a810';
@@ -62,29 +62,46 @@ export async function registerSandboxReaper({ port, owner, onDisconnect = () => 
   } catch (error) { closing = true; socket.destroy(); throw error; }
 }
 
-async function startSandboxReaper(owner, docker, onDisconnect) {
+export async function startSandboxReaper(owner, docker, onDisconnect, {
+  getClient = getContainerRuntimeClient, allocate = dockerAllocation,
+  waitStrategy = Wait.forLogMessage(/.*Started.*/).withStartupTimeout(30_000),
+  register = registerSandboxReaper,
+  diagnosticRun = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 }),
+} = {}) {
   if (process.env.TESTCONTAINERS_RYUK_DISABLED === 'true') {
     throw new Error('Documenso sandbox requires external-kill cleanup; Ryuk cannot be disabled');
   }
-  const client = await getContainerRuntimeClient();
+  const client = await getClient();
   const name = owner + '-reaper';
   // The reaper itself is outside the wrapper's process scope. --rm and its
   // no-client timeout also cover wrapper death before the registration ACK.
-  await dockerAllocation(['run', '-d', '--rm', '--pull=missing', '--name', name,
+  const containerId = await allocate(['run', '-d', '--rm', '--pull=missing', '--name', name,
     '--label', 'papercusp.test.reaper=' + owner, '-p', '127.0.0.1::8080', '--mount',
     'type=bind,src=' + client.info.containerRuntime.remoteSocketPath + ',dst=/var/run/docker.sock',
     '-e', 'RYUK_CONNECTION_TIMEOUT=30s', '-e', 'RYUK_RECONNECTION_TIMEOUT=1s', REAPER_IMAGE]);
+  // Docker can publish a proxy port before Ryuk listens. Use upstream's
+  // startup signal before opening the ownership connection; an ACK remains
+  // mandatory and connection loss after it still stops further allocation.
+  try {
+    await waitStrategy.waitUntilReady(client.container.getById(containerId));
+  } catch (error) {
+    throw new Error('Sandbox cleanup reaper did not become ready: ' +
+      sandboxFailureDiagnostic(name, diagnosticRun, [], error.message), { cause: error });
+  }
   const port = loopbackPort(docker(['port', name, '8080/tcp']));
   const deadline = Date.now() + 30_000;
   for (;;) {
     try {
-      const connection = await registerSandboxReaper({ port, owner, onDisconnect });
+      const connection = await register({ port, owner, onDisconnect });
       console.error('[documenso-sandbox-reaper] ' + JSON.stringify({ network: owner, container: name, image: REAPER_IMAGE }));
       return connection;
     } catch (error) {
       // A published Docker port can precede the server's listen. Only that
       // pre-listen refusal is retryable; never allocate without an ACK.
-      if (error.code !== 'ECONNREFUSED' || Date.now() >= deadline) throw error;
+      if (error.code !== 'ECONNREFUSED' || Date.now() >= deadline) {
+        throw new Error('Sandbox cleanup reaper registration failed: ' +
+          sandboxFailureDiagnostic(name, diagnosticRun, [], error.message), { cause: error });
+      }
       await new Promise(done => setTimeout(done, 100));
     }
   }

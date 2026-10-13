@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, cleanupSandboxResources } from './with-documenso-sandbox.mjs';
+import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources } from './with-documenso-sandbox.mjs';
 
 async function withReaperServer(handler, run) {
   const sockets = new Set();
@@ -17,6 +17,50 @@ async function withReaperServer(handler, run) {
   try { await run(server.address().port); }
   finally { for (const socket of sockets) socket.destroy(); await new Promise(done => server.close(done)); }
 }
+
+test('reaper startup waits for its Started signal before reading the published port or registering ownership', { timeout: 5000 }, async () => {
+  const owner = 'daohr-documenso-12345678-abc';
+  let ready, waiting, registered = false, portRead = false;
+  const atReadiness = new Promise(done => { waiting = done; });
+  const connection = { close() {} };
+  const pending = startSandboxReaper(owner, args => {
+    assert.equal(args[0], 'port'); portRead = true; return '127.0.0.1:33199';
+  }, () => {}, {
+    getClient: async () => ({ info: { containerRuntime: { remoteSocketPath: '/var/run/docker.sock' } },
+      container: { getById: id => ({ id }) } }),
+    allocate: async () => 'owned-reaper-id',
+    waitStrategy: { waitUntilReady: async container => {
+      assert.equal(container.id, 'owned-reaper-id'); waiting();
+      await new Promise(done => { ready = done; });
+    } },
+    register: async args => {
+      assert.equal(args.port, 33199); assert.equal(args.owner, owner);
+      registered = true; return connection;
+    },
+  });
+  await atReadiness;
+  assert.equal(portRead, false, 'a published proxy is not a ready cleanup server');
+  assert.equal(registered, false, 'no ownership request before the startup signal');
+  ready(); assert.equal(await pending, connection);
+});
+
+test('reaper readiness failure retains state and logs without opening an ownership connection', { timeout: 5000 }, async () => {
+  await assert.rejects(startSandboxReaper('daohr-documenso-12345678-abc',
+    () => assert.fail('must not inspect a published port after startup failure'), () => {}, {
+      getClient: async () => ({ info: { containerRuntime: { remoteSocketPath: '/var/run/docker.sock' } },
+        container: { getById: id => ({ id }) } }),
+      allocate: async () => 'owned-reaper-id',
+      waitStrategy: { waitUntilReady: async () => { throw new Error('startup log stream ended'); } },
+      register: async () => assert.fail('must not register after readiness failure'),
+      diagnosticRun: args => ({ status: 0, stdout: args[0] === 'logs' ? 'daemon connection failed' :
+        JSON.stringify({ Status: 'exited', ExitCode: 2 }) }),
+    }), error => {
+      assert.match(error.message, /startup log stream ended/);
+      assert.match(error.message, /daemon connection failed/);
+      assert.match(error.message, /exited/);
+      assert.equal(error.cause.message, 'startup log stream ended'); return true;
+    });
+});
 
 test('cleanup registration waits for ACK and sends only the exact sandbox ownership label', { timeout: 5000 }, async () => {
   const owner = 'daohr-documenso-12345678-abc';
