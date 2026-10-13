@@ -46,6 +46,9 @@
 #   - NEVER touch running containers or in-use images. Docker itself refuses,
 #     but the age filters below mean we do not even try: an image or cache
 #     layer that a live build/test is using is by definition recent.
+#     The ONE exception is step 4: a container labelled org.testcontainers=true
+#     that has gone unused past an idle threshold AND has no established
+#     connection (WI-6554700010009309). No other container is ever a candidate.
 #
 #   - AGE FILTERS, so an in-flight build or test suite is never disturbed.
 #     Another agent may be mid-`docker build` or mid-integration-test on this
@@ -73,6 +76,12 @@
 #   IMAGE_MAX_AGE=168h        unreferenced images older than this are removed
 #   VOLUME_MAX_AGE_SECS=86400 anonymous dangling volumes older than this go
 #   SKIP_IMAGES=1             skip the image sweep (keep re-pull cost at zero)
+#   SKIP_TESTCONTAINERS=1     skip the leaked-testcontainer sweep (step 4)
+#   TESTCONTAINER_IDLE_MAX_SECS=86400  a testcontainer unused this long with no
+#                             established connection is removed (floor 3600)
+#   PAPERCUSP_TESTCONTAINERS_LAST_USED_DIR  last-use marker dir (default
+#                             /tmp/pcv/testcontainers-last-used, shared with
+#                             libs/test-config)
 #   RECLAIM_MIN_FREE_PCT=100  only sweep when free% is below this (default 100
 #                             = always sweep; the age filters already make a
 #                             healthy box a cheap no-op)
@@ -188,6 +197,101 @@ while IFS= read -r vol; do
 done < <("${DOCKER[@]}" volume ls -qf dangling=true 2>/dev/null | grep -E '^[0-9a-f]{64}$')
 
 log "anonymous volumes removed=${anon_removed} skipped_too_young=${anon_skipped_young} (named volumes never touched)"
+
+# ── 4. Leaked testcontainers (WI-6554700010009309) ───────────────────────────
+# libs/test-config starts every shared test container with `.withReuse()` and
+# the integration layer runs with Ryuk disabled, so nothing else ever removes
+# one. A container whose reuse hash stops matching (an image bump, a moved
+# generation label, a duplicate from a start race) leaks forever: on 2026-10-13
+# up to 5 of the 9 running testcontainers had been idle for days, the oldest 17.
+#
+# Each start in libs/test-config stamps $TESTCONTAINERS_LAST_USED_DIR/<id>
+# (libs/test-config/src/testcontainer-last-used.ts). A container is removed only
+# when ALL of these hold:
+#   - it carries the label org.testcontainers=true (nothing else is a candidate);
+#   - its last-use marker is older than TESTCONTAINER_IDLE_MAX_SECS. A container
+#     with NO marker is stamped now and never removed on first sight, so even a
+#     container whose users cannot write markers gets a full idle window;
+#   - no established TCP connection touches any of its published host ports.
+#     A connection counts as use and refreshes the marker.
+# `docker rm -f -v` also drops the container's own anonymous data volumes.
+TESTCONTAINER_IDLE_MAX_SECS="${TESTCONTAINER_IDLE_MAX_SECS:-86400}"
+TESTCONTAINERS_LAST_USED_DIR="${PAPERCUSP_TESTCONTAINERS_LAST_USED_DIR:-/tmp/pcv/testcontainers-last-used}"
+SKIP_TESTCONTAINERS="${SKIP_TESTCONTAINERS:-0}"
+if (( TESTCONTAINER_IDLE_MAX_SECS < 3600 )); then
+  log "TESTCONTAINER_IDLE_MAX_SECS=${TESTCONTAINER_IDLE_MAX_SECS} below the 3600s floor — using 3600"
+  TESTCONTAINER_IDLE_MAX_SECS=3600
+fi
+
+testcontainer_connections() {
+  local id="$1" port n total=0
+  while IFS= read -r port; do
+    [[ -z "$port" ]] && continue
+    n="$(ss -Htn state established "( sport = :$port or dport = :$port )" 2>/dev/null | wc -l)"
+    total=$(( total + n ))
+  done < <("${DOCKER[@]}" port "$id" 2>/dev/null | sed -nE 's/.*:([0-9]+)$/\1/p' | sort -u)
+  echo "$total"
+}
+
+if [[ "$SKIP_TESTCONTAINERS" == "1" ]]; then
+  log "SKIP_TESTCONTAINERS=1 — skipping leaked-testcontainer sweep"
+elif ! command -v ss >/dev/null 2>&1; then
+  # Without ss the connection guard cannot run, so nothing is provably idle.
+  log "ss not found — skipping leaked-testcontainer sweep"
+elif ! tc_ids="$("${DOCKER[@]}" ps -aq --no-trunc --filter label=org.testcontainers=true 2>/dev/null)"; then
+  log "docker ps failed — skipping leaked-testcontainer sweep"
+else
+  [[ "$DRY_RUN" == "1" ]] || mkdir -p "$TESTCONTAINERS_LAST_USED_DIR" 2>/dev/null
+  tc_removed=0; tc_recent=0; tc_busy=0; tc_first_seen=0
+  NOW_EPOCH="$(date +%s)"
+  while IFS= read -r id; do
+    [[ "$id" =~ ^[0-9a-f]{64}$ ]] || continue
+    marker="$TESTCONTAINERS_LAST_USED_DIR/$id"
+    desc="$("${DOCKER[@]}" inspect -f '{{.Name}} {{.Config.Image}} created={{.Created}}' "$id" 2>/dev/null)"
+    if [[ ! -e "$marker" ]]; then
+      tc_first_seen=$(( tc_first_seen + 1 ))
+      if [[ "$DRY_RUN" == "1" ]]; then
+        log "DRY_RUN no last-use marker for ${desc:-$id} — would stamp it now (idle window starts)"
+      else
+        touch "$marker" 2>/dev/null
+      fi
+      continue
+    fi
+    used_epoch="$(stat -c %Y "$marker" 2>/dev/null || echo "$NOW_EPOCH")"
+    idle=$(( NOW_EPOCH - used_epoch ))
+    if (( idle < TESTCONTAINER_IDLE_MAX_SECS )); then
+      tc_recent=$(( tc_recent + 1 ))
+      continue
+    fi
+    conns="$(testcontainer_connections "$id")"
+    if (( conns > 0 )); then
+      tc_busy=$(( tc_busy + 1 ))
+      [[ "$DRY_RUN" == "1" ]] || touch "$marker" 2>/dev/null
+      log "testcontainer ${desc:-$id} idle-marked ${idle}s but has ${conns} established connection(s) — kept, marker refreshed"
+      continue
+    fi
+    if [[ "$DRY_RUN" == "1" ]]; then
+      log "DRY_RUN would remove leaked testcontainer ${desc:-$id} (unused for ${idle}s)"
+    elif "${DOCKER[@]}" rm -f -v "$id" >/dev/null 2>&1; then
+      tc_removed=$(( tc_removed + 1 ))
+      rm -f "$marker"
+      log "removed leaked testcontainer ${desc:-$id} (unused for ${idle}s)"
+    else
+      log "step failed (non-fatal): docker rm -f -v $id"
+    fi
+  done <<< "$tc_ids"
+
+  # Drop markers whose container is gone so the directory cannot grow forever.
+  if [[ "$DRY_RUN" != "1" && -d "$TESTCONTAINERS_LAST_USED_DIR" ]]; then
+    for marker in "$TESTCONTAINERS_LAST_USED_DIR"/*; do
+      [[ -e "$marker" ]] || continue
+      name="${marker##*/}"
+      [[ "$name" =~ ^[0-9a-f]{64}$ ]] || continue
+      grep -qx "$name" <<< "$tc_ids" || rm -f "$marker"
+    done
+  fi
+  log "testcontainers removed=${tc_removed} recently_used=${tc_recent} busy=${tc_busy} first_seen=${tc_first_seen} (idle threshold ${TESTCONTAINER_IDLE_MAX_SECS}s)"
+fi
 fi
 
 # Podman does not share Docker's daemon/storage or its anonymous-volume contract.
