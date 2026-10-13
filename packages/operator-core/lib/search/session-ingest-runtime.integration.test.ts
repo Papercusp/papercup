@@ -11,7 +11,7 @@ const source = resolve(root, 'packages/operator-core/lib/search/session-ingest.t
 
 describe('current-build ingestion on a private background runtime', () => {
   const options = isolatedWorkerOptions(180_000);
-  isolatedIntegrationCases('attributes a fixed incremental workload with CPU sampling=%s and removes its database and home', async (sampleCpu, context) => {
+  isolatedIntegrationCases('attributes a fixed incremental workload with CPU sampling=%s and removes its database and home', { timeout: options.testTimeoutMs }, async (sampleCpu, context) => {
     const sourceHash = createHash('sha256').update(readFileSync(source)).digest('hex');
     // An optional frozen local tail exercises real mixed record sizes without
     // checking private transcripts into the repository. Only hashes and counts
@@ -771,5 +771,5 @@ describe('current-build ingestion on a private background runtime', () => {
       },
     });
     Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
-  }, options.testTimeoutMs);
+  });
 });
