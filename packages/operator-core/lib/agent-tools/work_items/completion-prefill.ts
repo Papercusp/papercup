@@ -30,7 +30,7 @@ export interface CompletionPrefill {
   /** Set when filesChanged was filled from a capped list: listed < total. */
   filesChangedTruncated?: { listed: number; total: number };
   /** The verdict behind a prefilled testResult. */
-  testVerdict?: 'all-pass' | 'failing';
+  testVerdict?: 'all-pass' | 'all-skipped' | 'failing';
   note: string;
 }
 
@@ -107,7 +107,13 @@ export function prefillCompletionFromMechanics<C extends object>(
     if (!completionSuppliesField(completion, 'testResult')) {
       testVerdict = mechanics.tests.verdict;
       fill.testResult =
-        `${testVerdict === 'all-pass' ? 'all passing' : 'FAILING'} — ` +
+        `${
+          testVerdict === 'all-pass'
+            ? 'all passing'
+            : testVerdict === 'all-skipped'
+              ? 'NOT RUN — every related run was skipped; none passed'
+              : 'FAILING'
+        } — ` +
         latest.map(describeRun).join('; ') +
         ' (matched by path and claim window; not proof the holder ran them)';
       fields.push('testResult');

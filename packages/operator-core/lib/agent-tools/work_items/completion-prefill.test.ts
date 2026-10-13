@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkItemMechanics } from './_mechanics';
+import { testVerdict, type WorkItemMechanics } from './_mechanics';
 import { completionSuppliesField, prefillCompletionFromMechanics } from './completion-prefill';
 
 const verificationOf = (c: object) => (c as { verification?: Record<string, unknown> }).verification ?? {};
@@ -31,6 +31,20 @@ function mechanics(over: Partial<WorkItemMechanics> = {}): WorkItemMechanics {
   };
 }
 
+describe('testVerdict — nothing passed is not a pass (blind review #14 G-3)', () => {
+  const run = (status: string) => ({ file: `lib/${status}.test.ts`, status, at: null, passed: null, failed: null, dirtyTree: false, commitSha: null });
+  it('every related run skipped derives all-skipped, not all-pass', () => {
+    expect(testVerdict([run('skip'), run('skip')] as never)).toBe('all-skipped');
+  });
+  it('CONTROL: one executed pass among skips derives all-pass', () => {
+    expect(testVerdict([run('pass'), run('skip')] as never)).toBe('all-pass');
+  });
+  it('CONTROL: a failure among skips is failing, and no rows is none', () => {
+    expect(testVerdict([run('skip'), run('fail')] as never)).toBe('failing');
+    expect(testVerdict([])).toBe('none');
+  });
+});
+
 describe('completion prefill — fills absent fields from the ledgers', () => {
   it('fills filesChanged, testsRun and testResult when the completion omits all three', () => {
     const { completion, prefill } = prefillCompletionFromMechanics({ summary: 'done' } as Record<string, unknown>, mechanics());
@@ -60,6 +74,21 @@ describe('completion prefill — fills absent fields from the ledgers', () => {
     const { completion, prefill } = prefillCompletionFromMechanics({}, m);
     expect(verificationOf(completion).testResult).toMatch(/^FAILING — lib\/a\.test\.ts: fail \(3 passed, 1 failed\)/);
     expect(prefill?.testVerdict).toBe('failing');
+  });
+
+  it('blind review #14 G-3: a skip-only ledger is reported as NOT RUN, never as passing', () => {
+    const m = mechanics({
+      tests: {
+        attribution: 'path-and-claim-window',
+        latest: [{ file: 'lib/a.test.ts', status: 'skip', at: null, passed: 0, failed: 0, dirtyTree: false, commitSha: null }],
+        verdict: 'all-skipped',
+      },
+    });
+    const { completion, prefill } = prefillCompletionFromMechanics({}, m);
+    const result = String(verificationOf(completion).testResult);
+    expect(result).toMatch(/^NOT RUN — every related run was skipped; none passed — lib\/a\.test\.ts: skip/);
+    expect(result).not.toMatch(/all passing/);
+    expect(prefill?.testVerdict).toBe('all-skipped');
   });
 
   it('discloses a capped filesChanged list as truncated', () => {
