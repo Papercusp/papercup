@@ -110,15 +110,26 @@ async function loadPortalFixtureModules(portalRoot: string, phase = publicManual
     const loaded = await import(/* @vite-ignore */ pathToFileURL(path).href);
     return { ...loaded.default, ...loaded };
   };
-  const { loadHostedTestUserKit, cleanupHostedTestResources } = await phase('portal-fixture-module-import',
+  const { loadHostedTestUserKit, cleanupHostedTestResources, isolatedHostedWorkspaceContext } = await phase('portal-fixture-module-import',
     () => sourceImport(join(portalRoot, 'e2e/hosted-test-user.ts')), 10_000);
   const { resolveServedRelease } = await phase('portal-served-artifact-import',
     () => sourceImport(join(portalRoot, 'e2e/served-artifact.ts')), 10_000);
   return {
     loadHostedTestUserKit: loadHostedTestUserKit as (portalRoot: string) => Promise<PortalHostedTestUserKit>,
+    isolatedHostedWorkspaceContext: isolatedHostedWorkspaceContext as
+      (env: Readonly<Record<string, string | undefined>>) => string,
     cleanupHostedTestResources,
     resolveServedRelease,
   };
+}
+
+async function loadHostedPortalTestKitAfterRuntimeCheck<T>(options: {
+  environment: Readonly<Record<string, string | undefined>>;
+  runtimeCheck: (env: Readonly<Record<string, string | undefined>>) => string;
+  load: () => Promise<T>;
+}) {
+  const controlWorkspace = options.runtimeCheck(options.environment);
+  return { controlWorkspace, kit: await options.load() };
 }
 
 // Structural subset of portal/e2e/hosted-test-user.ts (HostedTestUser /
@@ -1189,6 +1200,57 @@ describe('public manual Portal fixture preparation', () => {
     'validates the selected Portal entry and cleanup authority before account creation', async () => {
       await verifyPortalRuntimePreconditions(process.env.PAPERCUSP_TEST_PORTAL_CANDIDATE_ROOT!);
     }, 30_000);
+  it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT)).each([
+    {
+      label: 'a shared workspace',
+      environment: {
+        PAPERCUSP_WORKSPACE: 'papercusp-workspace',
+        PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+        HARNESS_ADMIN_DATABASE_URL: 'postgresql://harness_admin:fixture@localhost:45671/private',
+        HARNESS_DATABASE_URL: 'postgresql://harness_app:fixture@localhost:45671/private',
+      },
+      error: 'hosted_test_workspace_requires_private_runtime',
+    },
+    {
+      label: 'the shared database port',
+      environment: {
+        PAPERCUSP_WORKSPACE: 'test-runtime-portal-fixture',
+        PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+        HARNESS_ADMIN_DATABASE_URL: 'postgresql://harness_admin:fixture@localhost:5432/papercusp',
+        HARNESS_DATABASE_URL: 'postgresql://harness_app:fixture@localhost:5432/papercusp',
+      },
+      error: 'hosted_test_workspace_requires_private_database',
+    },
+  ])('refuses $label before loading the hosted TEST kit', async ({ environment, error }) => {
+    const portalRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);
+    const modules = await loadPortalFixtureModules(portalRoot);
+    const load = vi.fn(async () => ({ create: vi.fn() }));
+    await expect(loadHostedPortalTestKitAfterRuntimeCheck({
+      environment,
+      runtimeCheck: modules.isolatedHostedWorkspaceContext,
+      load,
+    })).rejects.toThrow(error);
+    expect(load).not.toHaveBeenCalled();
+  }, 30_000);
+  it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
+    'loads the hosted TEST kit only after a private runtime is accepted', async () => {
+      const portalRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);
+      const modules = await loadPortalFixtureModules(portalRoot);
+      const kit = { create: vi.fn() };
+      const load = vi.fn(async () => kit);
+      const environment = {
+        PAPERCUSP_WORKSPACE: 'test-runtime-portal-fixture',
+        PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+        HARNESS_ADMIN_DATABASE_URL: 'postgresql://harness_admin:fixture@localhost:45671/private',
+        HARNESS_DATABASE_URL: 'postgresql://harness_app:fixture@localhost:45671/private',
+      };
+      await expect(loadHostedPortalTestKitAfterRuntimeCheck({
+        environment,
+        runtimeCheck: modules.isolatedHostedWorkspaceContext,
+        load,
+      })).resolves.toEqual({ controlWorkspace: 'test-runtime-portal-fixture', kit });
+      expect(load).toHaveBeenCalledOnce();
+    }, 30_000);
   it.runIf(process.env.PAPERCUSP_TEST_PUBLIC_PORTAL === '1')(
     'authenticates the real hosted TEST connection before browser acceptance', async () => {
       const portalRoot = realpathSync(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT!);
@@ -2140,10 +2202,14 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     expect(['127.0.0.1', 'localhost']).toContain(new URL(baseUrl!).hostname);
     const { entry: portalEntry, metadata } = await verifyPortalRuntimePreconditions(candidateRoot!);
     const repoRoot = resolve(import.meta.dirname, '../../../../..');
-    const { loadHostedTestUserKit, resolveServedRelease } = await loadPortalFixtureModules(portalRoot!);
-    const kit = await loadHostedTestUserKit(portalRoot!);
+    const portalFixture = await loadPortalFixtureModules(portalRoot!);
+    const { controlWorkspace, kit } = await loadHostedPortalTestKitAfterRuntimeCheck({
+      environment: process.env,
+      runtimeCheck: portalFixture.isolatedHostedWorkspaceContext,
+      load: () => portalFixture.loadHostedTestUserKit(portalRoot!),
+    });
+    const { resolveServedRelease } = portalFixture;
     let user: { sessionId: string; organizationId: string; cleanup(reason: string): Promise<void> } | undefined;
-    const controlWorkspace = process.env.PAPERCUSP_WORKSPACE || 'papercusp-workspace';
     const connectionId = `manual-connection-${randomUUID()}`;
     const hostId = `manual-host-${randomUUID()}`;
     const evidenceDir = join(llmBatteryEvidenceRoot(), `public-manual-portal-${randomUUID()}`);
