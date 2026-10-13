@@ -12,7 +12,6 @@
     "bespoke-watchdog|packages/operator-core/lib/memory-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/overwatch/watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/pot/watchdog.ts|<module>|1",
-    "bespoke-watchdog|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1",
     "bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1",
     "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|readGoalPlanFleetObservation|1",
@@ -22,7 +21,6 @@
     "log-only-fallback|packages/operator-core/lib/pot/watchdog.ts|armFallbackPotWake|1",
     "log-only-fallback|packages/operator-core/lib/pot/watchdog.ts|claimWatchdogFire|1",
     "log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts|handler|1",
-    "log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|maybeForceRespawn|1",
     "owner-only-alarm|packages/operator-core/lib/harness/routines/stalled-loops-guard.ts|sweepStalledLoops|1"
   ],
   "amendments": [

@@ -131,7 +131,6 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|packages/operator-core/lib/overwatch/watchdog.ts': migrate('P-015'),
   'log-only-fallback|packages/operator-core/lib/pot/watchdog.ts': migrate('P-015'),
   'log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts': migrate('P-011'),
-  'log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts': migrate('P-014'),
   'log-only-fallback|scripts/check-optional-seam-strands.mjs': NA_LINT,
   'log-only-fallback|scripts/check-partial-index-alignment.mjs': NA_LINT,
   'log-only-fallback|scripts/check-sidecar-fallback-reported.mjs': NA_LINT,
@@ -218,7 +217,6 @@ export const DISPOSITIONS = Object.freeze({
   'bespoke-watchdog|packages/operator-core/lib/scout/watchdog-health-lane.ts': na(
     'digest lane that summarizes the system watchdog’s persisted ticks for the scout digest; a reader of watchdog output, not a watchdog',
   ),
-  'bespoke-watchdog|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|scripts/lib/batch-watchdog.mjs': na(
