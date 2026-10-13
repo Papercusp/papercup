@@ -50,9 +50,22 @@ interface WindowSummary {
   };
   deploy: { total: number; ok: number; rolledBack: number; failed: number; refused: number };
 }
+/**
+ * The kinds this pane has a bespoke label/detail for. The SERVER appends more kinds than these
+ * (`PipelineEventKind` in operator-core pipeline-events.ts: green_checkpoint_fire, gate_invariants,
+ * green_checkpoint_post_verdict, …) and `recentPipelineEvents` returns every one of them, so `kind`
+ * stays an open string: an unlabelled kind must still render its own name, never a blank chip
+ * (WI-6554700010010213 — a post-verdict deadline overrun rendered as an empty row).
+ */
+type KnownPipelineEventKind =
+  | 'git_sync'
+  | 'merge_resolver'
+  | 'green_checkpoint'
+  | 'green_checkpoint_post_verdict'
+  | 'deploy';
 interface PipelineEvent {
   id: string;
-  kind: 'git_sync' | 'merge_resolver' | 'green_checkpoint' | 'deploy';
+  kind: KnownPipelineEventKind | (string & {});
   status: string;
   detail: Record<string, unknown>;
   createdAtMs: number;
@@ -232,6 +245,7 @@ function statusTone(s: string | null): Tone {
     case 'conflict':
     case 'not-green':
     case 'failed':
+    case 'deadline-exceeded':
       return 'warn';
     case 'error':
     case 'create-failed':
@@ -240,12 +254,17 @@ function statusTone(s: string | null): Tone {
       return 'neutral';
   }
 }
-const KIND_LABEL: Record<PipelineEvent['kind'], string> = {
+const KIND_LABEL: Record<KnownPipelineEventKind, string> = {
   git_sync: 'git-sync',
   merge_resolver: 'resolver',
   green_checkpoint: 'green-check',
+  green_checkpoint_post_verdict: 'post-verdict',
   deploy: 'deploy',
 };
+/** The chip label for any event kind — a kind without a bespoke label renders its own name. */
+export function kindLabel(kind: string): string {
+  return (KIND_LABEL as Record<string, string>)[kind] ?? kind.replace(/_/g, '-');
+}
 
 function Dot({ on }: { on: boolean }) {
   return <span className={`pc-git__dot ${on ? 'is-on' : 'is-off'}`} aria-hidden="true" />;
@@ -1017,7 +1036,7 @@ export default function GitClient() {
               <div className="pc-git__timeline">
                 {st.recent.map((e) => (
                   <div key={e.id} className="pc-git__event">
-                    <span className={`pc-git__chip is-${statusTone(e.status)}`}>{KIND_LABEL[e.kind]}</span>
+                    <span className={`pc-git__chip is-${statusTone(e.status)}`}>{kindLabel(e.kind)}</span>
                     <span className="pc-git__event-status">{e.status}</span>
                     <span className="pc-git__event-detail">{eventDetail(e)}</span>
                     <span className="pc-git__event-time">{fmtRel(e.createdAtMs)}</span>
@@ -1058,6 +1077,14 @@ function eventDetail(e: PipelineEvent): string {
     if (typeof d.candidate === 'string') parts.push(`@${d.candidate}`);
     if (d.green === false) parts.push('not green');
     return parts.join(' ');
+  }
+  if (e.kind === 'green_checkpoint_post_verdict') {
+    // WI-6554700010010213: a bounded post-verdict step that hit its deadline and was skipped.
+    const parts: string[] = [];
+    if (typeof d.label === 'string') parts.push(d.label);
+    if (typeof d.deadlineMs === 'number') parts.push(`deadline ${d.deadlineMs}ms`);
+    if (typeof d.elapsedMs === 'number') parts.push(`waited ${d.elapsedMs}ms`);
+    return parts.join(' · ');
   }
   if (e.kind === 'deploy') {
     const parts: string[] = [];

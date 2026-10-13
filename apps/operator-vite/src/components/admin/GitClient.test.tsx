@@ -67,7 +67,7 @@ vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
 }));
 
-import GitClient from './GitClient';
+import GitClient, { kindLabel } from './GitClient';
 
 afterEach(() => cleanup());
 
@@ -348,5 +348,33 @@ describe('GreenMainSloCard', () => {
     mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
     render(<GitClient />);
     expect(screen.queryByTestId('gate-green-main-slo')).toBeNull();
+  });
+});
+
+// WI-6554700010010213: the server appends more pipeline-event kinds than this pane has bespoke
+// labels for, and `recentPipelineEvents` returns all of them. A post-verdict deadline overrun
+// used to render as an empty chip with no detail — the opposite of "loud".
+describe('timeline: every event kind is labelled (WI-6554700010010213)', () => {
+  it('kindLabel names a known kind by its label and an unknown kind by its own name', () => {
+    expect(kindLabel('green_checkpoint_post_verdict')).toBe('post-verdict');
+    expect(kindLabel('git_sync')).toBe('git-sync');
+    expect(kindLabel('gate_invariants')).toBe('gate-invariants');
+  });
+
+  it('renders a post-verdict deadline overrun with its step, deadline and wait, and labels an unmapped kind', () => {
+    const withOverrun = {
+      ...snapshot,
+      recent: [
+        { id: '9', kind: 'green_checkpoint_post_verdict', status: 'deadline-exceeded', detail: { label: 'frozen-repair leg routing', deadlineMs: 60000, elapsedMs: 60004 }, createdAtMs: Date.now() - 60000 },
+        { id: '8', kind: 'gate_invariants', status: 'ok', detail: {}, createdAtMs: Date.now() - 90000 },
+        ...snapshot.recent,
+      ],
+    };
+    mockResult = { data: [withOverrun], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    const chip = screen.getByText('post-verdict');
+    expect(chip.className).toContain('is-warn');
+    expect(screen.getByText('frozen-repair leg routing · deadline 60000ms · waited 60004ms')).toBeTruthy();
+    expect(screen.getByText('gate-invariants')).toBeTruthy();
   });
 });
