@@ -583,6 +583,30 @@ describe('credential-SHAPE output redaction + owner-only spill (WI-10003538)', (
 });
 
 describe('background jobs', () => {
+  it.each([undefined, 'server-dispatch-enrollment'])('dispatch correlation preserves enrollment identity %s', async (dispatchCallId) => {
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'dispatch-enrollment-task', enrolled: true, confined: false,
+      unconfinedReason: 'no-scope-support', unitKind: 'scope', scopeUnit: null,
+      registrationReady: null, wrap: (binary: string, argv: string[]) => ({ binary, argv }),
+      releaseEnvironmentTransport: () => {},
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground({ command: 'printf correlation', cwd: STATE, stateDir: STATE,
+        ...(dispatchCallId ? { dispatchCallId } : {}),
+      }, 5_000);
+      await waitForStatus(job.id);
+      expect(job.status).toBe('completed');
+      expect(job.exitCode).toBe(0);
+      expect(complete).toHaveBeenCalledOnce();
+      const detail = complete.mock.calls[0]![1].detail;
+      expect(detail).toMatchObject({ bashJobId: job.id });
+      if (dispatchCallId) expect(detail).toHaveProperty('dispatchCallId', dispatchCallId);
+      else expect(detail).not.toHaveProperty('dispatchCallId');
+    } finally { begin.mockRestore(); complete.mockRestore(); finish.mockRestore(); }
+  });
+
   it.each(['flag-off', 'probe-pending', 'no-scope-support', 'caller-veto', 'scope-unit-missing'] as const)(
     'required task confinement refuses %s before command or wrapper execution', (reason) => {
       const marker = join(STATE, `required-confinement-${reason}`);

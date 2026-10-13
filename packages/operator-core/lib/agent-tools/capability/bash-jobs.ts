@@ -2062,6 +2062,8 @@ export interface RunOptions {
   command: string;
   cwd: string;
   stateDir: string | undefined;
+  /** Server-owned dispatch identity for recovery when the launch response is lost. */
+  dispatchCallId?: string;
   env?: Record<string, string>;
   /** Exact secret values that must never reach streamed output, retained output,
    *  or spill logs. Redaction happens before every one of those sinks and keeps
@@ -2862,6 +2864,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       logPath,
       detail: {
         bashJobId: id,
+        ...(opts.dispatchCallId ? { dispatchCallId: opts.dispatchCallId } : {}),
         sandboxed: Boolean(opts.sandboxEnabled),
         goalRef: opts.goalRef ?? null,
         workloadClass: isTestRun ? 'test-run' : 'other',
