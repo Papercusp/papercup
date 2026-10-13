@@ -69,6 +69,40 @@ beforeEach(() => {
 });
 
 describe('dev:pg_query — P-005 guard wiring', () => {
+  it('bounds default advisory prose and restores it only for an explicit full request', async () => {
+    const advisory = '⚠ tenant scope: ' + '界'.repeat(4000);
+    advisoryMock.mockResolvedValue(advisory);
+    const args = { sql: 'SELECT 1', allowUnscoped: true } as never;
+    const compact = payloadOf(await pgQueryTool.handler(args, {} as never) as never);
+    expect(compact).toMatchObject(OK_RESULT);
+    expect(String(compact.advisory)).toContain('TRUNCATED');
+    expect(String(compact.advisory)).toContain("name:'dev:pg_query'");
+    expect(String(compact.advisory)).toContain("payloadTier:'full'");
+    expect(Buffer.byteLength(String(compact.advisory), 'utf8')).toBeLessThanOrEqual(4096);
+
+    const full = payloadOf(await pgQueryTool.handler(args, { payloadTierOverride: 'full' } as never) as never);
+    expect(full.advisory).toBe(advisory);
+    const projected = payloadOf(await pgQueryTool.handler(args, {
+      payloadTierOverride: 'full', sourceMaterialization: { promotedToFull: true },
+    } as never) as never);
+    expect(projected.advisory).toBe(compact.advisory);
+  });
+
+  it('bounds error advisories while retaining the database error and its recovery', async () => {
+    const advisory = '⚠ scan: ' + 'x'.repeat(5000);
+    jsonTextSearchAdvisoryMock.mockReturnValue(advisory);
+    pgReadQueryMock.mockRejectedValue(Object.assign(new Error('syntax error'), { code: '42601' }));
+    const args = { sql: 'SELECT 1', allowUnboundedJsonSearch: true } as never;
+    const compactResult = await pgQueryTool.handler(args, {} as never);
+    expect(compactResult).toHaveProperty('isError', true);
+    const compact = payloadOf(compactResult as never);
+    expect(compact).toMatchObject({ error: 'syntax error', code: '42601' });
+    expect(String(compact.advisory)).toContain('TRUNCATED');
+    expect(String(compact.advisory).length).toBeLessThanOrEqual(1024);
+    const full = payloadOf(await pgQueryTool.handler(args, { payloadTierOverride: 'full' } as never) as never);
+    expect(full.advisory).toBe(advisory);
+  });
+
   // EI-21924434989535557: an acceptance-rubric grader launches as role `judge` and
   // needs this READ-ONLY query surface (read-only txn, row cap, statement timeout —
   // no write path) to RE-MEASURE a criterion instead of quoting the implementer's

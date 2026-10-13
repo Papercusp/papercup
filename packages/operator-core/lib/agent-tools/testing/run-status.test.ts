@@ -69,6 +69,30 @@ describe('testing:run-status handler', () => {
     expect(String(out.data.message)).toContain('not evidence that the test passed');
   });
 
+  it('bounds repeated provenance output and recovers the stored output without rerunning tests', async () => {
+    const snapshot: RunSnapshot = {
+      runId: 'run-large', kind: 'vitest', label: 'large provenance',
+      command: ['node', 'scripts/test-files.mjs'], status: 'fail', exitCode: 1,
+      startedAt: 123, finishedAt: 456, truncated: true,
+      output: 'TEST_FILE_PROVENANCE ' + 'scope warning\n'.repeat(1000),
+    };
+    getRunMock.mockResolvedValue(snapshot);
+    const compact = await call(snapshot.runId);
+    const output = (compact.data.snapshot as RunSnapshot).output;
+    expect(output.length).toBeLessThanOrEqual(2048);
+    expect(output).toContain('TRUNCATED');
+    expect(output).toContain("name:'testing:run-status'");
+    expect(compact.data.snapshot).toMatchObject({ status: 'fail', exitCode: 1, truncated: true });
+
+    const full = await tool.handler({ runId: snapshot.runId } as never,
+      { payloadTierOverride: 'full' } as never) as Output;
+    expect(full.data.snapshot).toEqual(snapshot);
+    const projected = await tool.handler({ runId: snapshot.runId } as never,
+      { payloadTierOverride: 'full', sourceMaterialization: { promotedToFull: true } } as never) as Output;
+    expect((projected.data.snapshot as RunSnapshot).output).toBe(output);
+    expect(snapshot.output).not.toContain('TRUNCATED');
+  });
+
   it('returns retryable snapshot_unavailable when the durable store cannot be read', async () => {
     getRunMock.mockRejectedValue(new TestingRunSnapshotUnavailableError());
 

@@ -16,6 +16,7 @@
 import { Buffer } from 'node:buffer';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { clipWithMarker, payloadTierRecoveryHint } from '../plans/shape-clip';
 import {
   pgReadQuery,
   extractPgErrorInfo,
@@ -94,6 +95,7 @@ export type PgQueryMode = (typeof PG_QUERY_MODE)[keyof typeof PG_QUERY_MODE];
 
 /** A successful JSON payload in the MCP content shape. */
 export const PG_QUERY_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const ADVISORY_SUMMARY_MAX_CHARS = 1024;
 
 const PG_QUERY_MAX_JSON_DEPTH = 256;
 
@@ -789,6 +791,20 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    // Reuse the existing explicit full tier; an internal projection promotion
+    // does not request the advisory prose the caller chose to omit.
+    const fullAdvisoryRequested =
+      ctx.payloadTierOverride === 'full' && ctx.sourceMaterialization?.promotedToFull !== true;
+    const advisoryText = (entries: (string | null)[]) => {
+      const unique = [...new Set(entries.filter((entry): entry is string => Boolean(entry)))];
+      const text = unique.join(' ');
+      if (!text || fullAdvisoryRequested || text.length <= ADVISORY_SUMMARY_MAX_CHARS) return text || null;
+      // Put every warning heading ahead of the bounded prose. Otherwise an
+      // early long warning can hide a later tenant/absence warning entirely.
+      const headings = unique.map((entry) => entry.split(':', 1)[0]!.slice(0, 24)).join('; ');
+      return clipWithMarker(`${headings}\n${text}`, ADVISORY_SUMMARY_MAX_CHARS,
+        payloadTierRecoveryHint('dev:pg_query'));
+    };
     const requestedTimeoutMs = Math.max(
       100,
       Math.min(PG_READ_QUERY_HARD_TIMEOUT_MS, Math.trunc(args.timeoutMs ?? PG_READ_QUERY_DEFAULT_TIMEOUT_MS)),
@@ -1188,7 +1204,7 @@ export default defineTool({
         positiveControlAdvisory,
         toolRoutingAdvisory,
       ];
-      const advisory = deliveredAdvisories.filter(Boolean).join(' ') || null;
+      const advisory = advisoryText(deliveredAdvisories);
       // WI-10002035 (P-003): never awaited and never throws — the caller is
       // already holding their query result.
       recordAdvisoryFiresDetached({
@@ -1266,7 +1282,7 @@ export default defineTool({
         ...sqlShapeAdvisories,
         toolRoutingAdvisory,
       ];
-      const errorAdvisory = deliveredErrorAdvisories.filter(Boolean).join(' ') || null;
+      const errorAdvisory = advisoryText(deliveredErrorAdvisories);
       if (errorAdvisory) payload.advisory = errorAdvisory;
       // WI-10002035 (P-003): a failed query still DELIVERS its shape advisories
       // — a query's shape is no less true for having failed to run, per the
