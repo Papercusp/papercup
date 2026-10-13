@@ -22,9 +22,13 @@ import {
   computeIntentDivergent,
   computeIntentStale,
   computeLastActiveSecAgo,
+  deriveIntent,
   deriveLastActive,
   fetchPresenceTier1,
+  INTENT_STALE_SEC,
   stripDerivationInputs,
+  type IntentDerivedFrom,
+  type IntentSource,
   type PresenceTier1Joins,
 } from '../agent-tools/coordination/presence-tier1';
 import {
@@ -148,6 +152,13 @@ export interface FleetRosterEntry extends AgentAssignment {
   intentStale: boolean | null;
   /** TRUE means genuine activity is fresh but the declared intent text is old. */
   intentDivergent: boolean | null;
+  /** derived-status-not-hand-written-2026-10-12#D-006: 'derived' when `intent` is the
+   *  held work item standing in for a missing or stale declaration (the same
+   *  deriveIntent rule as coord:presence); null when the declared text is unusable
+   *  and nothing is held. */
+  intentSource: IntentSource | null;
+  /** Present only when `intentSource` is 'derived'. */
+  intentDerivedFrom?: IntentDerivedFrom;
   claimedItems: string[];
   model: string | null;
   awaitingEvent: boolean;
@@ -302,6 +313,9 @@ export function foldFleetRoster(
       computeIntentStale(lastActiveSecAgo),
       sessionState,
     );
+    // #D-006: a held work item stands in for a missing or stale declaration,
+    // through the one rule coord:presence uses (no second rule here).
+    const derivedIntent = deriveIntent(base.intent, intentAgeSec, tier?.heldWorkIntent, INTENT_STALE_SEC);
     out.push({
       ...base,
       alive,
@@ -337,6 +351,12 @@ export function foldFleetRoster(
       intentDivergent: computeIntentDivergent(intentAgeSec, lastActiveSecAgo),
       ...EMPTY_TIER1,
       ...stripDerivationInputs(tier1.get(id)),
+      // After the joins spread so neither the base row nor a join can shadow it.
+      // The type says string; deriveIntent returns null only for a null declaration.
+      intent: derivedIntent.intent ?? base.intent,
+      intentSource: derivedIntent.intentSource,
+      // Absent (not undefined) unless derived, so the common row shape is unchanged.
+      ...(derivedIntent.intentDerivedFrom ? { intentDerivedFrom: derivedIntent.intentDerivedFrom } : {}),
     });
   }
   return out.sort(

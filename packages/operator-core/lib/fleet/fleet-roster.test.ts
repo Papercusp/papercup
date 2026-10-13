@@ -396,6 +396,35 @@ describe('foldFleetRoster', () => {
     expect(e.intentDivergent).toBe(false);
   });
 
+  // derived-status-not-hand-written-2026-10-12#D-006 (WI-6554700010009431): the
+  // fleet roster reports a held work item as the intent exactly as coord:presence does.
+  it('derives intent from a held work item when the declaration is empty, and strips the input', () => {
+    const p = pres({ ownerId: 'su-held', intent: '' });
+    const [e] = foldFleetRoster(
+      [p],
+      [],
+      tier1({ 'su-held': { heldWorkIntent: { workItemId: 'WI-77', title: 'Fix the roster', planItemRef: 'plan-a#P-002' } } }),
+      NOW,
+    );
+    expect(e.intent).toBe('Fix the roster (WI-77 · plan-a#P-002)');
+    expect(e.intentSource).toBe('derived');
+    expect(e.intentDerivedFrom).toEqual({ workItemId: 'WI-77', planItemRef: 'plan-a#P-002' });
+    expect(e).not.toHaveProperty('heldWorkIntent');
+  });
+
+  it('keeps a fresh declared intent over a held work item, with no intentDerivedFrom', () => {
+    const p = pres({ ownerId: 'su-decl', intent: 'auditing the gate', intentDeclaredAt: new Date(NOW - 60_000).toISOString() });
+    const [e] = foldFleetRoster(
+      [p],
+      [],
+      tier1({ 'su-decl': { heldWorkIntent: { workItemId: 'WI-78', title: 'Other work' } } }),
+      NOW,
+    );
+    expect(e.intent).toBe('auditing the gate');
+    expect(e.intentSource).toBe('declared');
+    expect(e).not.toHaveProperty('intentDerivedFrom');
+  });
+
   it('includes a presence-only idle member with empty work-detail + its fleet label', () => {
     const p = pres({ ownerId: 'su-idle', intent: 'thinking', fleetSlug: 'ui-fleet', fleetRole: 'member' });
     const [e] = foldFleetRoster([p], [], tier1({}), NOW);

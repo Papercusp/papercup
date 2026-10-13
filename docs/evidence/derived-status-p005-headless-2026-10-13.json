@@ -1,55 +1,32 @@
 {
   "schemaVersion": 1,
-  "kind": "headless-tauri-drive",
+  "kind": "operational-test-evidence",
+  "name": "P-005 plan dashboard renders derivedStatus and a dated Now note, marking a note the plan has moved past (headless Tauri shell)",
+  "framework": "shell",
+  "command": ["scripts/verify-tauri-headless.sh", "--", "bash", ".papercusp/scratch/p005-headless.sh"],
+  "environment": {
+    "VERIFY_TAURI_SOURCE_REF": "6a0f8070d6832d81e7519793579ad01d81b109b6",
+    "VERIFY_TAURI_SOURCE_INPUTS": "apps/operator/app/_components/plans/PlanDashboard.tsx,apps/operator/app/_components/plans/plan-dashboard-derive.ts,apps/operator/app/_components/plans/PlanDashboardHost.tsx,apps/operator/app/_components/plans/plan-dashboard.css",
+    "P005_REQUIRE_MOVED_PAST": "1",
+    "P005_OUT": ".papercusp/scratch/p005-headless-out2"
+  },
+  "exitCode": 0,
+  "startedAt": "2026-10-13T02:59:06Z",
+  "finishedAt": "2026-10-13T03:16:43Z",
+  "summary": "verify-tauri-headless booted papercusp-desktop from committed source 6a0f8070d683 on its own Xvfb display and ran the read-only drive script (navigation + DOM reads, no writes). It opened /adv?pdash=papercusp::derived-status-not-hand-written-2026-10-12 and read the plan dashboard. Setup before the run: plans:set-now stored a Now note (plan rev 36), then P-005 moved todo->wip (rev 37), so the stored note predates one item-status change. The run was strict (P005_REQUIRE_MOVED_PAST=1): it fails unless the Now card reports moved-past with both the stale class and the stale chip. Observed: the Status card rendered one derived row (in-flight P-005, held by su-e8ac9) and the Now card reported data-note-age=moved-past with class plan-dash__now--stale, the plan-dash-now-stale chip, and the age line 'moved past, written 22m ago, 1 status change since this note was written'. HARNESS_RESULT verdict=pass passed=3 failed=0 run=20261013T025912Z-1552420; script printed ASSERT_PASS rows=1 noteAge=moved-past. This supersedes run 20261013T022141Z-4104148, which observed noteAge=unknown and so never exercised the moved-past rendering.",
+  "assertions": [
+    { "id": "status-card-renders", "passed": true, "evidence": "state.json status=true: [data-testid=plan-dash-status] present on the plan dashboard." },
+    { "id": "status-card-derived-rows", "passed": true, "evidence": "state.json rows=[{kind:'in-flight', item:'P-005', text:'in flight P-005 held by su-e8ac9'}]: the row is derived from the held work-item, not hand-written." },
+    { "id": "now-card-note-age-valid", "passed": true, "evidence": "[data-testid=plan-dash-now] data-note-age='moved-past', one of current|moved-past|unknown|none." },
+    { "id": "moved-past-note-marked-stale", "passed": true, "evidence": "now.staleClass=true (class plan-dash__now--stale) and now.staleChip=true ([data-testid=plan-dash-now-stale]); ageLine 'moved past, written 22m ago, 1 status change since this note was written'." },
+    { "id": "strict-moved-past-required", "passed": true, "evidence": "P005_REQUIRE_MOVED_PAST=1; drive script printed ASSERT_PASS rows=1 noteAge=moved-past gate=null." },
+    { "id": "harness-verdict", "passed": true, "evidence": "HARNESS_RESULT harness=verify-tauri-headless verdict=pass run=20261013T025912Z-1552420 first_failure=none passed=3 failed=0 blocked=0 skipped=0; FINAL rc=0 finished=2026-10-13T03:16:43Z. Evidence dir: $HOME/.local/state/verification-harness/verify-tauri-headless/20261013T025912Z-1552420." }
+  ],
+  "evidencePlane": "current-build",
   "plan": "derived-status-not-hand-written-2026-10-12",
   "planItem": "P-005",
-  "workItem": "WI-6554700010009034",
   "specIds": ["AUTO-BAR-R-4-P-005@3", "SPEC-P-005@1"],
-  "recordedBy": "su-e8ac915f-5cb9-4405-a669-9e1c13c88bfb",
-  "harness": "verify-tauri-headless",
-  "runId": "20261013T022141Z-4104148",
-  "evidenceDir": "$HOME/.local/state/verification-harness/verify-tauri-headless/20261013T022141Z-4104148",
-  "verdict": "pass",
-  "counts": { "passed": 3, "failed": 0, "blocked": 0, "skipped": 0 },
-  "phases": [
-    { "phase": "prepare", "status": "passed", "startedAt": "2026-10-13T02:21:43.576Z", "endedAt": "2026-10-13T02:36:55.993Z" },
-    { "phase": "boot", "status": "passed", "startedAt": "2026-10-13T02:36:56.023Z", "endedAt": "2026-10-13T02:38:47.988Z" },
-    { "phase": "assert", "status": "passed", "startedAt": "2026-10-13T02:38:48.030Z", "endedAt": "2026-10-13T02:40:32.262Z" }
-  ],
-  "source": {
-    "mode": "committed",
-    "env": "VERIFY_TAURI_SOURCE_REF=$(git rev-parse HEAD) at 2026-10-13T02:21Z",
-    "inputs": [
-      "apps/operator/app/_components/plans/PlanDashboard.tsx",
-      "apps/operator/app/_components/plans/plan-dashboard-derive.ts",
-      "apps/operator/app/_components/plans/PlanDashboardHost.tsx",
-      "apps/operator/app/_components/plans/plan-dashboard.css"
-    ]
-  },
-  "drive": {
-    "script": ".papercusp/scratch/p005-headless.sh",
-    "navigation": "/adv?pdash=papercusp::derived-status-not-hand-written-2026-10-12",
-    "checks": [
-      "[data-testid=plan-dash-status] is present and has at least one [data-testid=plan-dash-status-row]",
-      "[data-testid=plan-dash-now] carries a data-note-age in {current, moved-past, unknown, none}",
-      "a moved-past note carries both the plan-dash__now--stale class and the stale chip"
-    ],
-    "assertLine": "ASSERT_PASS rows=1 noteAge=unknown gate=null"
-  },
-  "observedState": {
-    "href": "http://127.0.0.1:33701/adv?pdash=papercusp%3A%3Aderived-status-not-hand-written-2026-10-12&ws=papercusp-workspace&scope=all",
-    "status": true,
-    "rows": [{ "kind": "actionable", "item": "P-005", "text": "next upP-005held by su-e8ac9" }],
-    "gate": null,
-    "now": {
-      "noteAge": "unknown",
-      "staleClass": false,
-      "staleChip": false,
-      "ageLine": "note age unknown: the note was not written through plans:set-now"
-    }
-  },
-  "disclosedGaps": [
-    "The live plan's note was never written through plans:set-now, so the drive observed the 'unknown' note age. The moved-past styling (stale class + chip) was not exercised in this drive; PlanDashboard.test.tsx ('marks the note stale when transitionsSinceNote is above zero') covers it at unit layer.",
-    "No ship-gate step was rendered for the plan's state at drive time (gate=null); plan-dashboard-derive.test.ts covers the gate projection."
-  ]
+  "subjectCommit": "6a0f8070d6832d81e7519793579ad01d81b109b6",
+  "workItemId": "WI-6554700010009034",
+  "recordedBy": "su-e8ac915f-5cb9-4405-a669-9e1c13c88bfb"
 }
