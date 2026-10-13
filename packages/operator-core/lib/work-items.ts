@@ -6627,6 +6627,24 @@ export function lastIssuesClaimableFlagReadError(): string | null {
 }
 
 /**
+ * WI-6554700010009932: index prefilters for the two execution-route decision legs of
+ * {@link reservedPlanLaneExclusionSql}. Each is an exact superset of its leg's regex, and each
+ * MUST match its GIN index expression byte-for-byte, or the planner silently falls back to
+ * regex-scanning every decision body (measured: 1,034 ms for the master leg, 516-587 ms for
+ * Route A). Exported so the integration suite can prove each one is index-usable.
+ *
+ * - Master leg: the regex needs the whitespace-delimited words "owns" and "execution";
+ *   index `plan_decisions_execution_tokens_idx` (migration 1364).
+ * - Route A leg: every word of the sentence is a token of LOWER(body); index
+ *   `plan_decisions_lower_execution_tokens_idx` (migration 1490).
+ */
+export const MASTER_DECISION_TOKEN_PREFILTER =
+  "regexp_split_to_array(d.body, '[^A-Za-z0-9_-]+') @> ARRAY['owns', 'execution']::text[]";
+export const ROUTE_A_DECISION_TOKEN_PREFILTER =
+  "regexp_split_to_array(lower(d.body), '[^a-z0-9_-]+')" +
+  " @> ARRAY['route', 'a', 'this', 'session', 'implements', 'the', 'plan']::text[]";
+
+/**
  * WI-2118 (the P-009 leak): the "reserved plan-lane" self-select EXCLUSION floor for issue-family
  * claims. An issue-family work-item can carry a `payload.plan_item` back-pointer binding it to a
  * plan-item LANE (P-NNN of some plan). When that lane is being ACTIVELY driven — the parent plan is
@@ -7080,11 +7098,8 @@ export function reservedPlanLaneExclusionSql(
         FROM ${masterDecisions} d,
              LATERAL regexp_matches(d.body,
                '(^|[^A-Za-z0-9_-])(WI-[0-9]+)[[:space:]]+owns execution([[:space:]]+and([[:space:]]|$)|[.;]|$)', 'g') AS master(ref)
-       -- WI-6554700010009932: the regex needs the whitespace-delimited words "owns" and
-       -- "execution", so this containment test on migration 1364's token index is an exact
-       -- superset. Without it every admissible read regex-scanned the whole decision corpus
-       -- (1,034 ms, 38,354 buffers, 14,805 decisions) to find the 1 row; with it, 7 ms.
-       WHERE regexp_split_to_array(d.body, '[^A-Za-z0-9_-]+') @> ARRAY['owns', 'execution']::text[]
+       -- WI-6554700010009932: token prefilter on migration 1364's index (see the constant).
+       WHERE ${sql.unsafe(MASTER_DECISION_TOKEN_PREFILTER)}
          AND ${affirmativeDirectRoute}
          AND ${decisionCandidates ? sql`master.ref[2] = ANY(${[...decisionCandidates.ids]}::text[])` : sql`TRUE`}
     ), FALSE)
@@ -7094,11 +7109,8 @@ export function reservedPlanLaneExclusionSql(
     -- plan_item_assignments surface is per-item and is not populated by this ruling.
     OR COALESCE((${wsCol}, ${col}->'plan_item'->>'plan_slug') IN (
       SELECT d.workspace_id, d.plan_slug FROM ${candidatePlanDecisions} d
-       -- WI-6554700010009932: every word of the sentence is a token of LOWER(body), so this
-       -- containment test on migration 1490's lowercase token index is an exact superset of
-       -- the regex. Without it the leg was a 516-587 ms sequential scan of every decision.
-       WHERE regexp_split_to_array(lower(d.body), '[^a-z0-9_-]+')
-               @> ARRAY['route', 'a', 'this', 'session', 'implements', 'the', 'plan']::text[]
+       -- WI-6554700010009932: token prefilter on migration 1490's index (see the constant).
+       WHERE ${sql.unsafe(ROUTE_A_DECISION_TOKEN_PREFILTER)}
          AND LOWER(d.body) ~ '(^|[^a-z0-9_-])route[[:space:]]+a:[[:space:]]+this session[[:space:]]+[(]su-[a-f0-9-]{8,36}[)][[:space:]]+implements the plan([[:space:].;]|$)'
     ), FALSE)
   )`;
