@@ -138,8 +138,8 @@ export function isTestFile(file) {
 
 /** Config basenames Playwright is allowed to declare its ownership in. */
 const PLAYWRIGHT_CONFIG_NAMES = [
-  "playwright.config.ts",
   "playwright.config.mts",
+  "playwright.config.ts",
   "playwright.config.js",
   "playwright.config.mjs",
 ];

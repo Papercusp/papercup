@@ -688,6 +688,15 @@ describe('playwrightOwnedTest — ownership by runner, not by extension', () => 
     );
   });
 
+  it('reads the ESM config before a compatibility TypeScript entry', () => {
+    const isOwned = owned({
+      '/ws/playwright.config.ts': "export { default } from './playwright.config.mts';",
+      '/ws/playwright.config.mts': PW_CONFIG,
+    });
+    expect(isOwned('/ws/e2e/docs-routes.spec.ts')).toBe(true);
+    expect(isOwned('/ws/lib/thing.test.ts')).toBe(false);
+  });
+
   it('leaves a vitest .test.ts in the same workspace alone', () => {
     const isOwned = owned({ '/ws/playwright.config.ts': PW_CONFIG });
     expect(isOwned('/ws/lib/thing.test.ts')).toBe(false);

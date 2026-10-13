@@ -218,6 +218,7 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(sourceRef).toBe(head.stdout.trim());
     expect(JSON.parse(readFileSync(inputsPath, 'utf8'))).toEqual([
       'apps/operator/e2e/ongoing-work-ui.spec.ts',
+      'apps/operator/playwright.config.mts',
       'apps/operator/playwright.config.ts',
     ]);
 

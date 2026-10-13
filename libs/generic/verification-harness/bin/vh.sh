@@ -93,14 +93,30 @@ _vh_disable() { # <reason>
     "${VH_NAME:-?}" "$1" >&2
 }
 
-_vh_tsx() {
-  if [ -n "${VH_TSX:-}" ]; then echo "$VH_TSX"; return; fi
-  local d="$VH_LIB_DIR"
+_vh_cli() {
+  if [ -n "${VH_TSX:-}" ]; then
+    "$VH_TSX" "$VH_LIB_DIR/src/cli.ts" "$@"
+    return $?
+  fi
+  local d="$VH_LIB_DIR" tsx_bin="" loader
   while [ "$d" != "/" ]; do
-    [ -x "$d/node_modules/.bin/tsx" ] && { echo "$d/node_modules/.bin/tsx"; return; }
+    if [ -x "$d/node_modules/.bin/tsx" ]; then
+      tsx_bin="$d/node_modules/.bin/tsx"
+      break
+    fi
     d="$(dirname "$d")"
   done
-  echo tsx
+  [ -n "$tsx_bin" ] || tsx_bin="$(command -v tsx)" || return $?
+  # Load the maintained module directly: the tsx CLI opens an IPC socket below
+  # TMPDIR before main(), which can exceed the Unix socket path limit.
+  # Resolve from the real executable so local, global and symlinked installs work.
+  loader="$(node -e '
+    const { realpathSync } = require("node:fs");
+    const { createRequire } = require("node:module");
+    const { pathToFileURL } = require("node:url");
+    console.log(pathToFileURL(createRequire(realpathSync(process.argv[1])).resolve("tsx")).href);
+  ' "$tsx_bin")" || return $?
+  node --import "$loader" "$VH_LIB_DIR/src/cli.ts" "$@"
 }
 
 _vh_json_str() {
@@ -274,7 +290,7 @@ vh_init() {
   # release/build phases. Disk-pressure pruning is independent of VH_KEEP_RUNS and
   # refuses to remove latest, live, unfinished, or .vh-keep-protected evidence.
   local retention_line=""
-  if retention_line="$("$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" retain --evidence-root "$root")"; then
+  if retention_line="$(_vh_cli retain --evidence-root "$root")"; then
     [ -z "$retention_line" ] || _vh_say "$retention_line"
   else
     local retention_rc=$?
@@ -320,7 +336,7 @@ vh_init() {
     printf '],"scopeTags":[%s]}\n' "$tags"
   } > "$VH_RUN_DIR/contract.json"
   local plan
-  plan="$("$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" plan --run-dir "$VH_RUN_DIR" ${sel[@]+"${sel[@]}"})" \
+  plan="$(_vh_cli plan --run-dir "$VH_RUN_DIR" ${sel[@]+"${sel[@]}"})" \
     || { _vh_init_failed "plan-command-failed"; return $?; }
   local p a r
   while IFS=$'\t' read -r p a r; do
@@ -441,7 +457,7 @@ _vh_preflight_body() {
   local out="" line grc=0 greason="" gdetail=""
   if [ "${#VH_SCOPE_TAGS[@]}" -gt 0 ]; then
     vh_step guard-rails
-    out="$("$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" guard-rails --run-dir "$VH_RUN_DIR")" || grc=$?
+    out="$(_vh_cli guard-rails --run-dir "$VH_RUN_DIR")" || grc=$?
     while IFS= read -r line; do
       case "$line" in
         "VH_GUARD_RAILS_FAILED "*)
@@ -514,9 +530,9 @@ vh_finish() {
   VH_FINALIZED=1
   local rc=0
   if [ "${VH_LOG_FD:-1}" = 2 ]; then
-    "$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" >&2 || rc=$?
+    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" >&2 || rc=$?
   else
-    "$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" || rc=$?
+    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" || rc=$?
   fi
   VH_FINISH_RC="$rc"
   return "$rc"

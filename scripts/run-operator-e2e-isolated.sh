@@ -166,7 +166,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 const repoRoot = resolve(process.argv[2]);
 const operatorRoot = resolve(repoRoot, 'apps/operator');
-const inputs = new Set(['apps/operator/playwright.config.ts']);
+const inputs = new Set(['apps/operator/playwright.config.mts', 'apps/operator/playwright.config.ts']);
 const specPath = /\.(?:spec|test)\.[cm]?[jt]sx?$/i;
 const valueOptions = new Set([
   '--grep', '-g', '--grep-invert', '--project', '-p', '--workers', '-j',

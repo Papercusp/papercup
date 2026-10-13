@@ -6,7 +6,7 @@ import { capturePublicManualFailure, withPublicManualFailureEvidence } from './p
 describe('hosted manual failure evidence', () => {
   it('collects both hosted journeys through the actual Playwright ESM loader without running fixtures', () => {
     const listing = execFileSync(process.execPath, [
-      require.resolve('@playwright/test/cli'), 'test', 'e2e/public-manual-product.spec.ts',
+      require.resolve('@playwright/test/cli'), 'test', '--config', 'playwright.config.mts', 'e2e/public-manual-product.spec.ts',
       '--list', '--reporter=list',
     ], { cwd: resolve(__dirname, '..'), encoding: 'utf8', timeout: 30_000,
       env: { ...process.env, PUBLIC_MANUAL_PRODUCT_E2E: '0', OPERATOR_E2E_REUSE_SERVER: '1',
