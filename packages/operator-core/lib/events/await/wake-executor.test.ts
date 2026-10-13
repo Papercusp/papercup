@@ -3451,13 +3451,17 @@ describe('executeWake — the liveness ladder', () => {
       stdoutTail: '{"type":"turn.completed","usage":{}}',
       stderrTail: '',
     });
-    expect(observedExit).toEqual({
-      exitCode: 0,
-      signal: null,
-      stdoutTail: '{"type":"turn.completed","usage":{}}',
-      stderrTail: '',
-      outputProtocol: 'codex-jsonl',
-    });
+    // Every Codex exit now awaits the rollout overflow analyzer before reporting
+    // (WI-6554700010008894), so the outcome handler fires asynchronously.
+    await vi.waitFor(() =>
+      expect(observedExit).toEqual({
+        exitCode: 0,
+        signal: null,
+        stdoutTail: '{"type":"turn.completed","usage":{}}',
+        stderrTail: '',
+        outputProtocol: 'codex-jsonl',
+      }),
+    );
   });
 
   it('exited codex with NO recoverable home → park, never a bare --last (P-009)', async () => {
