@@ -4008,6 +4008,15 @@ describe('P-303: signed gate-verdict producer', () => {
     }
   });
 
+  it('WI-6554700010009547: a zero budget never starts the publisher (the self-watchdog record path)', async () => {
+    const logs: string[] = [];
+    const publish = vi.fn(async () => ({ published: 1, skipped: 0 }));
+    expect(await publishSignedGateVerdictsWithDeadline(publish, (line) => logs.push(line), 0))
+      .toEqual({ published: 0, skipped: 0, reason: 'skipped-no-budget' });
+    expect(publish).not.toHaveBeenCalled();
+    expect(logs).toEqual(['signed gate shard publication skipped (no time budget)']);
+  });
+
   function deps(overrides: Partial<import('./release-actions').SignedGateVerdictPublishDeps> = {}) {
     const inserted: Array<{ target: typeof target; hiveHomeSlug: string | null; signed: import('../../sync/pot-git/gate/verdicts').GateVerdict; verdictId: string }> = [];
     const base: import('./release-actions').SignedGateVerdictPublishDeps = {
