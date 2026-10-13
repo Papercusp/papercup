@@ -604,7 +604,7 @@ export default defineTool({
     'Grade affected current spec revisions against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns per-clause verdicts with every would-block reason. detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; never files a verdict. evidenceRefs selects immutable refs; bindingIds pins exact persisted rows, even when refs repeat. limit caps evidence rows, not clauses (default 1000); raise it above the filtered cohort when needed. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. For historical audit, pass scorecardId with planSlug; the evaluator replays the card’s stored recipe as of creation and marks historicalAuditOnly provenance, never a current ship-read. Check ok and rows.length before indexing.',
   guidance: {
     returns:
-      'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. The system ad-hoc scope instead requires exactly one workItemId and uses its explicit completion-class attestation, limited to its resolved BehaviorContract clauses; classRefSource is work-item-completion-attestation. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. The optional limit caps evidence rows across the filtered scope, not the number of selected clauses; its default is 1000. When loaded rows reach the ceiling, evidence_selection_hit_limit returns ok:false with error, count, limit and remedy and NO rows field because the cohort may be truncated. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full". To learn why a clause fails, follow nonPassingDetail (present when any criterion is not pass/not-applicable): the same re-call narrowed by criteria to the non-passing ones, without the draft. When a live evaluation has passing rows, certifyPassing is the ready plans:certify-spec-clauses call that files those cards.',
+      'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. The system ad-hoc scope instead requires exactly one workItemId and uses its explicit completion-class attestation, limited to its resolved BehaviorContract clauses; classRefSource is work-item-completion-attestation. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. The optional limit caps evidence rows across the filtered scope, not the number of selected clauses; its default is 1000. When loaded rows reach the ceiling, evidence_selection_hit_limit returns ok:false with error, count, limit and remedy and NO rows field because the cohort may be truncated. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full", where each criterion text sits once, in the draft (rows[].ratings[c].evidenceAt points there). To learn why a clause fails, follow nonPassingDetail (present when any criterion is not pass/not-applicable): the same re-call narrowed by criteria to the non-passing ones, without the draft. When a live evaluation has passing rows, certifyPassing is the ready plans:certify-spec-clauses call that files those cards.',
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing passing cards — plans:certify-spec-clauses (certifyPassing), not a full read plus hand scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
     chaining:
@@ -1207,12 +1207,33 @@ export default defineTool({
             draggingBindingIds: pickCriteria(row.draggingBindingIds) as R['draggingBindingIds'],
           }
         : row;
+    // P-006 (WI-6554700010009314): without criteria every full row carried each criterion's
+    // evidence twice — rows[].ratings[c].evidence and the emit-ready
+    // scorecardDraft.ratings[c].evidence (the same text plus any scorecard notes). Measured
+    // 2026-10-13 on :3170: a one-clause full body was 60 KB, 28.3 KB in each copy; 120 of 124
+    // full reads in 12h overflowed the result cap. The draft stays intact (callers pass it to
+    // scorecards:emit); the row copy points at it, and only when the draft text provably
+    // contains it, so no text is lost.
+    const pointRowEvidenceAtDraft = <R extends (typeof scorecardRows)[number]>(row: R): R => ({
+      ...row,
+      ratings: Object.fromEntries(
+        Object.entries(row.ratings).map(([criterion, entry]) => {
+          const drafted = (row.scorecardDraft?.ratings as Record<string, { evidence?: unknown }> | undefined)?.[criterion]
+            ?.evidence;
+          if (typeof entry.evidence !== 'string' || typeof drafted !== 'string' || !drafted.startsWith(entry.evidence)) {
+            return [criterion, entry];
+          }
+          const { evidence: _inDraft, ...rest } = entry;
+          return [criterion, { ...rest, evidenceAt: `scorecardDraft.ratings['${criterion}'].evidence` }];
+        }),
+      ) as R['ratings'],
+    });
     const fullRows = criteriaFilter
       ? scorecardRows.map((row) => {
           const { scorecardDraft: _omittedDraft, ...rest } = filterRow(row);
           return { ...rest, scorecardDraftOmitted: 'criteria filter: a partial draft cannot be emitted; omit criteria for it' };
         })
-      : scorecardRows;
+      : scorecardRows.map(pointRowEvidenceAtDraft);
     const nonPassingCriteria = [
       ...new Set(
         rows.flatMap((row) =>

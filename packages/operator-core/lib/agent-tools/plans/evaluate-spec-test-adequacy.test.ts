@@ -1000,7 +1000,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       if (entry.rating === 'pass' || entry.rating === 'not-applicable') {
         expect(entry).not.toHaveProperty('evidence');
       } else {
-        expect(entry.evidence).toBe(full.rows[0].ratings[criterion].evidence);
+        expect(full.rows[0].scorecardDraft.ratings[criterion].evidence.startsWith(entry.evidence as string)).toBe(true);
       }
     }
 
@@ -1008,7 +1008,15 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(full).toMatchObject({ ok: true, detail: 'full' });
     expect(full).not.toHaveProperty('fullBody');
     expect(full.rows[0].scorecardDraft).toBeTruthy();
-    expect(Object.values(full.rows[0].ratings).every((r: any) => typeof r.evidence === 'string')).toBe(true);
+    // P-006 (WI-6554700010009314): each criterion's evidence is carried ONCE, in the emit-ready
+    // draft; the row rating points at it. Falsifier: a row rating still carries the text, the
+    // pointer is missing, or the draft lost the evidence.
+    for (const [criterion, entry] of Object.entries(full.rows[0].ratings) as Array<[string, Record<string, unknown>]>) {
+      expect(entry).not.toHaveProperty('evidence');
+      expect(entry.evidenceAt).toBe(`scorecardDraft.ratings['${criterion}'].evidence`);
+      expect(full.rows[0].scorecardDraft.ratings[criterion].evidence).toEqual(expect.any(String));
+      expect(full.rows[0].scorecardDraft.ratings[criterion].evidence.length).toBeGreaterThan(0);
+    }
 
     // Same verdicts either way — the summary drops prose, never a rating the replay gates read.
     expect(compact).toMatchObject({
@@ -1022,8 +1030,17 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       expect(compact.ratings[criterion].rating).toBe(entry.rating);
     }
 
-    // And it is materially smaller.
-    expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(full).length / 2);
+    // And it is smaller. P-006 (WI-6554700010009314): the full body carries each criterion's
+    // evidence text exactly once, in the draft. Before the dedupe every string appeared twice
+    // (rows[].ratings and scorecardDraft.ratings) and summary < full/2 held only because of
+    // that copy. Falsifier: any evidence string occurs more often than the draft carries it.
+    expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(full).length);
+    const fullJson = JSON.stringify(full);
+    const drafted = (Object.values(full.rows[0].scorecardDraft.ratings) as Array<{ evidence: string }>).map((r) => r.evidence);
+    for (const evidence of new Set(drafted)) {
+      const needle = JSON.stringify(evidence);
+      expect(fullJson.split(needle).length - 1).toBe(drafted.filter((e) => e === evidence).length);
+    }
   });
 
   // oversized-tool-results-reduction-2026-10-12 P-006: following the summary to learn WHY a
@@ -1050,7 +1067,11 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     const narrowed = await call(tool.args.parse(summary.nonPassingDetail.args));
     expect(Object.keys(narrowed.rows[0].ratings).sort()).toEqual([...nonPassing].sort());
     for (const criterion of nonPassing) {
-      expect(narrowed.rows[0].ratings[criterion]).toEqual(full.rows[0].ratings[criterion]);
+      const { evidenceAt: _pointer, ...fullEntry } = full.rows[0].ratings[criterion];
+      expect(narrowed.rows[0].ratings[criterion]).toEqual({
+        ...fullEntry,
+        evidence: full.rows[0].scorecardDraft.ratings[criterion].evidence,
+      });
     }
     expect(narrowed.rows[0]).not.toHaveProperty('scorecardDraft');
     expect(narrowed.rows[0].scorecardDraftOmitted).toEqual(expect.any(String));
