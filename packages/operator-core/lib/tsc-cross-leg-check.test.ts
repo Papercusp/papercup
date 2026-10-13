@@ -292,6 +292,24 @@ describe('runCrossLegChecks', () => {
     ]);
   });
 
+  it('routes a clean leg that compiled none of the named files to notMember, never clean', async () => {
+    // WI-6554700010009515: a members=0 clean is vacuous, since that leg checked nothing.
+    const byLeg: Record<string, { status: number | null; stdout: string; stderr: string }> = {
+      member: outcomes.clean,
+      nonMember: { status: 0, stdout: `${CROSS_LEG_MARKER} leg=x status=clean members=0 nonMembers=2 regressed=0\n`, stderr: '' },
+      legacyNoMembersField: { status: 0, stdout: `${CROSS_LEG_MARKER} leg=x status=clean\n`, stderr: '' },
+    };
+    const report = await runCrossLegChecks({
+      root,
+      plans: Object.keys(byLeg).map(plan),
+      spawnChild: async (child: { npmScript: string }) => byLeg[child.npmScript],
+    });
+    expect(report.clean).toEqual(['member', 'legacyNoMembersField']);
+    expect(report.notMember).toEqual(['nonMember']);
+    expect(report.red).toEqual([]);
+    expect(report.undetermined).toEqual([]);
+  });
+
   it('runs at most `concurrency` children at once, and each plan exactly once', async () => {
     let inFlight = 0;
     let peak = 0;
@@ -341,7 +359,27 @@ describe('formatCrossLegReport', () => {
   it('summarises the fan-out on one machine-readable line', () => {
     expect(
       formatCrossLegReport({ clean: ['lint:tsc'], red: [], undetermined: [], uncheckable: ['lint:tsc:workspaces'] }),
-    ).toEqual([`${CROSS_LEG_MARKER} checked=1 clean=lint:tsc red=- undetermined=- uncheckable=lint:tsc:workspaces`]);
+    ).toEqual([
+      `${CROSS_LEG_MARKER} checked=1 clean=lint:tsc red=- undetermined=- uncheckable=lint:tsc:workspaces notMember=-`,
+    ]);
+  });
+
+  it('names a notMember leg separately and never counts it as checked', () => {
+    const lines = formatCrossLegReport({
+      clean: ['lint:tsc'],
+      notMember: ['lint:tsc:operator-vite', 'lint:tsc:orchestrator'],
+      red: [],
+      undetermined: [],
+      uncheckable: [],
+    });
+    expect(lines[0]).toBe(
+      `${CROSS_LEG_MARKER} checked=1 clean=lint:tsc red=- undetermined=- uncheckable=- ` +
+        'notMember=lint:tsc:operator-vite,lint:tsc:orchestrator',
+    );
+    expect(lines).toContain(
+      'ⓘ cross-leg: lint:tsc:operator-vite compiles none of the named files; nothing was checked there (it cannot red on them).',
+    );
+    expect(lines.filter((line) => line.startsWith('ⓘ cross-leg:'))).toHaveLength(2);
   });
 
   it('quotes the red leg evidence and names an undetermined leg as unchecked', () => {
@@ -352,7 +390,7 @@ describe('formatCrossLegReport', () => {
       uncheckable: [],
     });
     expect(lines[0]).toBe(
-      `${CROSS_LEG_MARKER} checked=1 clean=- red=lint:tsc:scripts undetermined=lint:tsc:operator uncheckable=-`,
+      `${CROSS_LEG_MARKER} checked=1 clean=- red=lint:tsc:scripts undetermined=lint:tsc:operator uncheckable=- notMember=-`,
     );
     expect(lines).toContain('   ❌ red');
     expect(lines).toContain('      a/src/f.ts(1,1): error TS2307: missing');

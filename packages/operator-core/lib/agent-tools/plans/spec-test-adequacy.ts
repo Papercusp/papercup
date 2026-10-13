@@ -2360,10 +2360,16 @@ function mutationTargetMatchesMeasuredCase(
     (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
     row.testRunId === mutation.testRunId &&
     row.evidenceRef === mutation.evidenceRef;
+  const targetRequirement = mutationTargetRequirement(clause);
   const targetsOnRun = new Set(evidence
     .filter(sameRun)
     .map((row) => detailsOf(row).targeted)
-    .filter((value): value is string => typeof value === 'string' && value.length > 0));
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    // Exact and historical lowercase self-clause IDs name one target. Scenario IDs
+    // remain case-sensitive, so distinct scenarios still need distinct failed cases.
+    .map((value) => targetRequirement.selfTarget !== null && targetRequirement.acceptedTargets.includes(value)
+      ? targetRequirement.selfTarget
+      : value));
   if (targetsOnRun.size <= 1) return true;
 
   const separator = caseTitle.lastIndexOf(' > ');

@@ -2951,12 +2951,30 @@ export function vitestConfigLoaderPolicy(args, env = process.env, execArgv = pro
   return { configLoaderArgs: selected === null ? [] : ['--configLoader', selected], vitestArgs: remaining };
 }
 
+/** Select the maintained immutable command route before collecting a committed
+ * private proof. Ordinary local guards remain runnable from working source. */
+export function privateIntegrationVerifierInputs(root, files, env = process.env, execArgv = process.execArgv) {
+  if (!`${env.NODE_OPTIONS ?? ''} ${execArgv.join(' ')}`.includes('committed-source-loader.mjs')
+    || existsSync(join(root, '.verifier-source.json'))) return null;
+  const selected = files.map(file => relative(root, resolve(root, file)));
+  if (selected.some(file => !file || isAbsolute(file) || file === '..' || file.startsWith(`..${sep}`)))
+    throw new Error('private verification test inputs must belong to the selected repository');
+  const privateProof = selected.some(file => {
+    const source = readFileSync(join(root, file), 'utf8');
+    return source.includes('isolated-integration-proof') && /\brecordIsolatedIntegrationProof\s*\(/.test(source);
+  });
+  return privateProof ? [...new Set([...selected, 'scripts/test-files.mjs',
+    'packages/operator-core/test/isolated-integration-proof.ts',
+    'packages/operator-core/test/private-http-workspace-preflight.ts'])].sort() : null;
+}
+
 export async function main(
   argv = process.argv.slice(2),
   {
     runCapturedTestProcessImpl = runCapturedTestProcess,
     runVitestListImpl = runVitestList,
     restrictedHoldPreflightImpl = runRestrictedHoldPreflight,
+    runPrivateVerifierImpl = async options => (await import('./source-preview.mjs')).runVerifierCommand(options),
   } = {},
 ) {
   // EI-25671809770924720: pc-heavy addresses these two marker paths to THIS router alone. Take
@@ -3073,6 +3091,36 @@ export async function main(
   }
 
   const groups = groupRoutes(routes);
+  if (!dry) {
+    try {
+      const inputs = privateIntegrationVerifierInputs(REPO_ROOT, testFiles);
+      if (inputs) {
+        const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: REPO_ROOT });
+        const ref = head?.stdout?.trim();
+        if (head?.error || head?.status !== 0 || !/^[a-f0-9]{40}$/.test(ref ?? ''))
+          throw new Error('private verification requires a measured source commit');
+        const receiptDir = mkdtempSync(join(tmpdir(), 'private-proof-source-'));
+        const receiptPath = join(receiptDir, 'verifier-source.json');
+        const sourceArgs = new Map(testFiles.map(file => [file, relative(REPO_ROOT, resolve(REPO_ROOT, file))]));
+        console.error(`TEST_FILE_VERIFIER_SOURCE ref=${ref} receipt=${receiptPath}`);
+        try {
+          return await runPrivateVerifierImpl({ repo: REPO_ROOT, ref, receiptPath, inputs,
+            // The frozen router takes over this same logical invocation's
+            // barriers; ordinary test children still never inherit them.
+            env: { ...process.env,
+              ...(preemptMarkerPaths.readyFile ? { PC_HEAVY_PREEMPT_READY_FILE: preemptMarkerPaths.readyFile } : {}),
+              ...(preemptMarkerPaths.finalizationFile ? { PC_HEAVY_PSI_FINALIZATION_FILE: preemptMarkerPaths.finalizationFile } : {}) },
+            command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs',
+              ...argv.map(arg => sourceArgs.get(arg) ?? arg)] });
+        } finally {
+          if (!existsSync(receiptPath)) rmSync(receiptDir, { recursive: true, force: true });
+        }
+      }
+    } catch (error) {
+      console.error(formatRouteError(error instanceof Error ? error.message : String(error)));
+      return 2;
+    }
+  }
   const nameFilter = nameFilterFrom(vitestArgs);
   let listTimeoutMs;
   try {

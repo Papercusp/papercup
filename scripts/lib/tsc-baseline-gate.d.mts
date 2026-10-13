@@ -1073,9 +1073,12 @@ export function runCrossLegConsumer({ root, tscCommand, baselineFile, foreignBas
  * Run the planned consumer legs as child gate processes, at most `concurrency` at once: each one
  * builds a full program (3-23 s and 1-2 GB, measured 2026-10-12). A child is RED only when it
  * exits 1 with a `status=regressed` marker; any other outcome is UNDETERMINED, never clean.
+ * A clean child whose marker says `members=0` compiled NONE of the named files, so it checked
+ * nothing: it goes to `notMember`, never `clean` (WI-6554700010009515). A vacuous clean would
+ * read as "verified in this leg". A marker with no `members=` field stays clean.
  *
  * @param {{root: string, plans: {npmScript: string, scriptPath: string, files: string[]}[], concurrency?: number, spawnChild?: (plan: {npmScript: string, scriptPath: string, files: string[]}) => Promise<{status: number | null, stdout: string, stderr: string}>}} opts
- * @returns {Promise<{clean: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[]}>}
+ * @returns {Promise<{clean: string[], notMember: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[]}>}
  */
 export function runCrossLegChecks({ root, plans, concurrency, spawnChild }: {
     root: string;
@@ -1096,6 +1099,7 @@ export function runCrossLegChecks({ root, plans, concurrency, spawnChild }: {
     }>;
 }): Promise<{
     clean: string[];
+    notMember: string[];
     red: {
         npmScript: string;
         stderr: string;
@@ -1108,12 +1112,15 @@ export function runCrossLegChecks({ root, plans, concurrency, spawnChild }: {
 /**
  * The parent's disclosure of a cross-leg fan-out: one machine-readable summary line, then the
  * evidence for each red leg and an explicit line for each leg whose view went unchecked.
+ * `checked=` counts only legs that compiled at least one named file; a `notMember` leg compiled
+ * none, so it is named separately and never counted as checked.
  *
- * @param {{clean: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[], uncheckable: string[]}} report
+ * @param {{clean: string[], notMember?: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[], uncheckable: string[]}} report
  * @returns {string[]}
  */
-export function formatCrossLegReport({ clean, red, undetermined, uncheckable }: {
+export function formatCrossLegReport({ clean, notMember, red, undetermined, uncheckable }: {
     clean: string[];
+    notMember?: string[];
     red: {
         npmScript: string;
         stderr: string;

@@ -68,6 +68,7 @@ import {
   publishPreemptReadyMarker,
   transformFailureMarker,
   perGroupVitestArgs,
+  privateIntegrationVerifierInputs,
   runCapturedTestProcess,
   runGovernedTestFileProcess,
   runTestFilesCli,
@@ -117,6 +118,49 @@ afterEach(() => {
 });
 
 describe('test-files router', () => {
+  it('routes committed private proof inputs through the existing freezer before collection', () => {
+    const root = mkdtempSync(join(tmpdir(), 'private-verifier-route-'));
+    const env = { NODE_OPTIONS: '--import=/repo/scripts/lib/committed-source-loader.mjs' };
+    try {
+      writeFileSync(join(root, 'private.test.ts'), "import { recordIsolatedIntegrationProof } from './isolated-integration-proof';\nrecordIsolatedIntegrationProof({});");
+      writeFileSync(join(root, 'guard.test.ts'), "import { captureIsolatedWorker } from './isolated-integration-proof';");
+      expect(privateIntegrationVerifierInputs(root, ['private.test.ts'], env)).toEqual([
+        'packages/operator-core/test/isolated-integration-proof.ts',
+        'packages/operator-core/test/private-http-workspace-preflight.ts', 'private.test.ts', 'scripts/test-files.mjs',
+      ]);
+      expect(privateIntegrationVerifierInputs(root, ['private.test.ts'], {})).toBeNull();
+      expect(privateIntegrationVerifierInputs(root, ['private.test.ts'], {},
+        ['--import=/repo/scripts/lib/committed-source-loader.mjs'])).toEqual(expect.arrayContaining(['private.test.ts']));
+      expect(() => privateIntegrationVerifierInputs(root, ['../foreign.test.ts'], env))
+        .toThrow(/must belong to the selected repository/);
+      expect(privateIntegrationVerifierInputs(root, ['guard.test.ts'], env)).toBeNull();
+      writeFileSync(join(root, '.verifier-source.json'), '{}');
+      expect(privateIntegrationVerifierInputs(root, ['private.test.ts'], env)).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('hands the private command to verifier-run before any list or test child is started', async () => {
+    const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
+    const oldOptions = process.env.NODE_OPTIONS;
+    const list = vi.fn(), run = vi.fn(); let receiptDir: string | undefined;
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      const frozen = vi.fn(async options => { receiptDir = join(options.receiptPath, '..'); return 7; });
+      expect(await main([resolve(REPO_ROOT, file), '--', '--testNamePattern=private Create'], {
+        runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
+      })).toBe(7);
+      expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+      expect(frozen).toHaveBeenCalledWith(expect.objectContaining({ repo: REPO_ROOT,
+        ref: expect.stringMatching(/^[a-f0-9]{40}$/), inputs: expect.arrayContaining([file]),
+        command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs', file,
+          '--', '--testNamePattern=private Create'],
+      }));
+    } finally {
+      if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
+      warning.mockRestore(); if (receiptDir) rmSync(receiptDir, { recursive: true, force: true });
+    }
+  });
   it('keeps guarded config imports native for both collection and execution', () => {
     const guarded = { NODE_OPTIONS: '--import=/checkout/scripts/lib/committed-source-loader.mjs' };
     expect(vitestConfigLoaderPolicy(['-t', 'selected'], guarded, [])).toEqual({

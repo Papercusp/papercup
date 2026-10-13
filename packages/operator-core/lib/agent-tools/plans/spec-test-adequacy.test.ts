@@ -1911,6 +1911,39 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
   });
 
+  it('pairs exact and lowercase self-clause targets with the same measured mutation case', () => {
+    const testPath = 'packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts';
+    const mutationFor = (id: number, targeted: string) => negativeEvidence({
+      id,
+      evidenceKind: 'mutation',
+      evidenceRef: 'test-run 21169433 mutation-probe mutant fail report-source.integration.test.ts',
+      testRunId: 21169433,
+      testRunProvenance: {
+        filePath: testPath,
+        commitSha: 'abc123',
+        worktreeDirty: false,
+        mutationFailedCaseTitles: [DEFAULT_MUTATION_TEST_CASE],
+      },
+      details: {
+        adequacy: {
+          targeted,
+          outcome: 'caught',
+          collected: true,
+          skipped: false,
+          executed: true,
+        },
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [successfulTestBinding(testPath), mutationFor(40095, 'SPEC-003-01'), mutationFor(40096, 'spec-003-01')],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability.rating).toBe('pass');
+    expect(result.ratings['plan-class-risk-floor'].rating).toBe('pass');
+  });
+
   it('preserves same-run mutation targets and credits only the measured scenario case', () => {
     const testPath = 'packages/operator-core/lib/dao-hr/work-profile.integration.test.ts';
     const evidenceRef = 'test-run 21094686 mutation-probe mutant fail packages/operator-core/lib/dao-hr/work-profile.integration.test.ts @484a585cc8a6+dirty';

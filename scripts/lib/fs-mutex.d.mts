@@ -17,10 +17,11 @@ export function resolveFsMutexTimeoutMs(env?: NodeJS.ProcessEnv): number;
  * /tmp/pcv/fs-mutex-locks and /tmp/pcv/pcv/fs-mutex-locks, allowing two root
  * reifiers to hollow shared packages concurrently (WI-40965 / D-031).
  *
- * Keep the existing Linux/macOS default path so already-running default-env
- * callers retain lock continuity. Windows has no guaranteed /tmp, so use the
- * account home there. PAPERCUSP_FS_MUTEX_LOCK_DIR remains the explicit test /
- * operator override on every platform.
+ * Default the small control-plane markers to the account home instead of bulk
+ * scratch. The old Linux/macOS path is aliased to this root only after a
+ * read-only census proves that no active or unknown legacy lease remains.
+ * PAPERCUSP_FS_MUTEX_LOCK_DIR remains the explicit test / operator override on
+ * every platform.
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @param {{ platform?: NodeJS.Platform, homeDir?: string }} [options]
@@ -29,6 +30,25 @@ export function resolveFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
     platform?: NodeJS.Platform;
     homeDir?: string;
 }): string;
+/**
+ * Prepare the resolved mutex root and preserve the old lock identity across the
+ * migration. A legacy root is moved aside only after a complete read-only
+ * census finds zero active and zero unknown leases; its stale markers remain in
+ * a sibling quarantine directory, and the old path becomes a symlink to the
+ * account-home root. An explicit override is authoritative and bypasses this
+ * migration.
+ *
+ * The optional legacyRoot and homeDir values are deterministic test seams; the
+ * production callers use the platform defaults.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string }} [options]
+ */
+export function ensureFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
+    platform?: NodeJS.Platform;
+    homeDir?: string;
+    legacyRoot?: string;
+}): Promise<string>;
 /**
  * Run `fn` while holding an exclusive, cross-process, filesystem-local mutex
  * named `name`. Blocks (retrying every `retryMs`) until acquired, a stale/dead

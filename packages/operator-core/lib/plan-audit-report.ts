@@ -17,6 +17,9 @@ export function renderPlanAuditReport(document: PlanAuditDocument): string {
     PLAN_AUDIT_VIEWER_SCRIPT + '</script></body></html>';
 }
 
+// Keep this template pure ASCII: write any other char as a \uXXXX escape inside a JS string
+// literal. A literal non-ASCII char inside String.raw makes the host bundle's ascii-escape
+// pass skip the WHOLE bundle (WI-6554700010009506).
 export const PLAN_AUDIT_VIEWER_SCRIPT = String.raw`
 const audit=JSON.parse(document.getElementById('audit').textContent);
 const all=audit.rows,el=id=>document.getElementById(id);

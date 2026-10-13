@@ -144,6 +144,12 @@ export const SEPARATE_PROCESS_ALLOWLIST = new Set([
   // packaged installs, so it cannot import @papercusp/scheduled-registry (a .ts main), and a
   // registry entry would sit in an inventory schedule:inventory never serves (WI-6554700010008641).
   'scripts/with-test-pg.mjs',
+  // The cleanup half of that same wrapper, extracted into a helper module: its
+  // pg-stop-waiting stage timer is armed only inside the with-test-pg.mjs process (its
+  // sole importer), under the same bare-`node` constraint. Measured red on frozen gate
+  // candidate 0a16d4a6 (WI-10006055) after the extraction moved the timer out of the
+  // allowlisted wrapper.
+  'scripts/lib/with-test-pg-cleanup.mjs',
 ]);
 
 /** Permanently-allowed individual files (rare; prefer ALLOWLIST_DIRS). */

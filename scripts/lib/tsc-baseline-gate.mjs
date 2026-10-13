@@ -2392,9 +2392,12 @@ export async function runCrossLegConsumer({
  * Run the planned consumer legs as child gate processes, at most `concurrency` at once: each one
  * builds a full program (3-23 s and 1-2 GB, measured 2026-10-12). A child is RED only when it
  * exits 1 with a `status=regressed` marker; any other outcome is UNDETERMINED, never clean.
+ * A clean child whose marker says `members=0` compiled NONE of the named files, so it checked
+ * nothing: it goes to `notMember`, never `clean` (WI-6554700010009515). A vacuous clean would
+ * read as "verified in this leg". A marker with no `members=` field stays clean.
  *
  * @param {{root: string, plans: {npmScript: string, scriptPath: string, files: string[]}[], concurrency?: number, spawnChild?: (plan: {npmScript: string, scriptPath: string, files: string[]}) => Promise<{status: number | null, stdout: string, stderr: string}>}} opts
- * @returns {Promise<{clean: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[]}>}
+ * @returns {Promise<{clean: string[], notMember: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[]}>}
  */
 export async function runCrossLegChecks({ root, plans, concurrency = 2, spawnChild }) {
   const spawnOne =
@@ -2428,12 +2431,13 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, spawnChi
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, plans.length)) }, worker));
 
-  const report = { clean: [], red: [], undetermined: [] };
+  const report = { clean: [], notMember: [], red: [], undetermined: [] };
   plans.forEach((plan, index) => {
     const { status, stdout, stderr } = outcomes[index];
     const marker = stdout.split(/\r?\n/).filter((line) => line.startsWith(`${CROSS_LEG_MARKER} `)).at(-1) ?? '';
     const verdict = /\bstatus=(\S+)/.exec(marker)?.[1] ?? null;
-    if (status === 0 && verdict === 'clean') report.clean.push(plan.npmScript);
+    const members = /\bmembers=(\d+)\b/.exec(marker)?.[1];
+    if (status === 0 && verdict === 'clean') (members === '0' ? report.notMember : report.clean).push(plan.npmScript);
     else if (status === 1 && verdict === 'regressed') report.red.push({ npmScript: plan.npmScript, stderr });
     else {
       report.undetermined.push({
@@ -2448,17 +2452,23 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, spawnChi
 /**
  * The parent's disclosure of a cross-leg fan-out: one machine-readable summary line, then the
  * evidence for each red leg and an explicit line for each leg whose view went unchecked.
+ * `checked=` counts only legs that compiled at least one named file; a `notMember` leg compiled
+ * none, so it is named separately and never counted as checked.
  *
- * @param {{clean: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[], uncheckable: string[]}} report
+ * @param {{clean: string[], notMember?: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[], uncheckable: string[]}} report
  * @returns {string[]}
  */
-export function formatCrossLegReport({ clean, red, undetermined, uncheckable }) {
+export function formatCrossLegReport({ clean, notMember = [], red, undetermined, uncheckable }) {
   const names = (list) => (list.length > 0 ? list.join(',') : '-');
   const lines = [
     `${CROSS_LEG_MARKER} checked=${clean.length + red.length} clean=${names(clean)} ` +
       `red=${names(red.map((entry) => entry.npmScript))} ` +
-      `undetermined=${names(undetermined.map((entry) => entry.npmScript))} uncheckable=${names(uncheckable)}`,
+      `undetermined=${names(undetermined.map((entry) => entry.npmScript))} uncheckable=${names(uncheckable)} ` +
+      `notMember=${names(notMember)}`,
   ];
+  for (const npmScript of notMember) {
+    lines.push(`ⓘ cross-leg: ${npmScript} compiles none of the named files; nothing was checked there (it cannot red on them).`);
+  }
   for (const entry of red) {
     lines.push(`❌ cross-leg: ${entry.npmScript} reaches a named file by import and reports a regression there:`);
     for (const line of entry.stderr.split(/\r?\n/).filter((text) => text.trim() !== '')) lines.push(`   ${line}`);

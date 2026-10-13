@@ -19,14 +19,18 @@
 // `libs/generic/fs-mutex` package instead of a third copy.
 import { randomUUID } from "node:crypto";
 import { homedir, hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
+  lstat,
   mkdir,
+  opendir,
   readFile,
   readdir,
+  readlink,
   rename,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { readFileSync } from "node:fs";
@@ -34,6 +38,8 @@ import { readFileSync } from "node:fs";
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_STALE_MS = 10 * 60_000;
 const DEFAULT_RETRY_MS = 250;
+const LEGACY_FS_MUTEX_LOCK_ROOT = "/tmp/pcv/fs-mutex-locks";
+const LEGACY_ROOT_CENSUS_LIMIT = 10_000;
 
 /**
  * Host-wide reader/writer boundary for package-manager cache access.
@@ -85,10 +91,11 @@ function sleep(ms) {
  * /tmp/pcv/fs-mutex-locks and /tmp/pcv/pcv/fs-mutex-locks, allowing two root
  * reifiers to hollow shared packages concurrently (WI-40965 / D-031).
  *
- * Keep the existing Linux/macOS default path so already-running default-env
- * callers retain lock continuity. Windows has no guaranteed /tmp, so use the
- * account home there. PAPERCUSP_FS_MUTEX_LOCK_DIR remains the explicit test /
- * operator override on every platform.
+ * Default the small control-plane markers to the account home instead of bulk
+ * scratch. The old Linux/macOS path is aliased to this root only after a
+ * read-only census proves that no active or unknown legacy lease remains.
+ * PAPERCUSP_FS_MUTEX_LOCK_DIR remains the explicit test / operator override on
+ * every platform.
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @param {{ platform?: NodeJS.Platform, homeDir?: string }} [options]
@@ -96,11 +103,301 @@ function sleep(ms) {
 export function resolveFsMutexLockRoot(env = process.env, options = {}) {
   const platform = options.platform ?? process.platform;
   const homeDir = options.homeDir ?? homedir();
-  const stableDefault =
-    platform === "win32"
-      ? join(homeDir, ".papercusp", "fs-mutex-locks")
-      : "/tmp/pcv/fs-mutex-locks";
+  const stableDefault = join(homeDir, ".papercusp", "fs-mutex-locks");
   return resolve(env.PAPERCUSP_FS_MUTEX_LOCK_DIR ?? stableDefault);
+}
+
+function staleMsFromEnv(env) {
+  const configured = Number(env.PAPERCUSP_FS_MUTEX_STALE_MS);
+  return env.PAPERCUSP_FS_MUTEX_STALE_MS &&
+    Number.isFinite(configured) &&
+    configured > 0
+    ? configured
+    : DEFAULT_STALE_MS;
+}
+
+function emptyLegacyCensus() {
+  const stateCounts = () => ({ active: 0, stale: 0, unknown: 0 });
+  return {
+    writer: stateCounts(),
+    reader: stateCounts(),
+    queue: stateCounts(),
+    otherUnknown: 0,
+    scanned: 0,
+    complete: true,
+  };
+}
+
+function totalLegacyCensus(census, state) {
+  return census.writer[state] + census.reader[state] + census.queue[state] +
+    (state === "unknown" ? census.otherUnknown : 0);
+}
+
+function legacyRootError(code, message, census, cause) {
+  const error = new Error(message);
+  error.code = code;
+  if (census) error.census = census;
+  if (cause) error.cause = cause;
+  return error;
+}
+
+async function legacyLeaseState(markerDir, staleMs) {
+  let markerStat;
+  try {
+    markerStat = await lstat(markerDir);
+  } catch {
+    return "unknown";
+  }
+  if (!markerStat.isDirectory()) return "unknown";
+
+  let owner;
+  try {
+    owner = JSON.parse(await readFile(join(markerDir, "owner.json"), "utf8"));
+  } catch {
+    return Date.now() - markerStat.mtimeMs > staleMs ? "stale" : "unknown";
+  }
+
+  if (
+    !owner ||
+    !Number.isInteger(owner.pid) ||
+    owner.pid <= 0 ||
+    typeof owner.host !== "string" ||
+    owner.host.length === 0
+  ) {
+    return Date.now() - markerStat.mtimeMs > staleMs ? "stale" : "unknown";
+  }
+  if (owner.host !== hostname()) return "unknown";
+
+  try {
+    process.kill(owner.pid, 0);
+  } catch (error) {
+    return error?.code === "ESRCH" ? "stale" : "unknown";
+  }
+
+  const current = processIdentity(owner.pid);
+  if (
+    current &&
+    ((Number.isInteger(current.tgid) && current.tgid !== owner.pid) ||
+      (owner.startTicks && current.startTicks && owner.startTicks !== current.startTicks) ||
+      (owner.bootId && current.bootId && owner.bootId !== current.bootId))
+  ) {
+    return "stale";
+  }
+  return "active";
+}
+
+async function censusLegacyContainer(containerPath, type, suffix, census, staleMs) {
+  let directory;
+  try {
+    directory = await opendir(containerPath);
+  } catch {
+    census.otherUnknown++;
+    census.complete = false;
+    return;
+  }
+
+  try {
+    for await (const entry of directory) {
+      if (census.scanned >= LEGACY_ROOT_CENSUS_LIMIT) {
+        census.otherUnknown++;
+        census.complete = false;
+        return;
+      }
+      census.scanned++;
+      if (!entry.isDirectory() || !entry.name.endsWith(suffix)) {
+        census.otherUnknown++;
+        continue;
+      }
+      census[type][await legacyLeaseState(join(containerPath, entry.name), staleMs)]++;
+    }
+  } catch {
+    census.otherUnknown++;
+    census.complete = false;
+  }
+}
+
+async function censusLegacyFsMutexRoot(legacyRoot, staleMs) {
+  const census = emptyLegacyCensus();
+  let directory;
+  try {
+    directory = await opendir(legacyRoot);
+  } catch {
+    census.otherUnknown++;
+    census.complete = false;
+    return census;
+  }
+
+  try {
+    for await (const entry of directory) {
+      if (census.scanned >= LEGACY_ROOT_CENSUS_LIMIT) {
+        census.otherUnknown++;
+        census.complete = false;
+        return census;
+      }
+      census.scanned++;
+      const entryPath = join(legacyRoot, entry.name);
+      if (entry.name.endsWith(".readers") && entry.isDirectory()) {
+        await censusLegacyContainer(entryPath, "reader", ".lock", census, staleMs);
+      } else if (entry.name.endsWith(".queue") && entry.isDirectory()) {
+        await censusLegacyContainer(entryPath, "queue", ".ticket", census, staleMs);
+      } else if (entry.name.endsWith(".lock")) {
+        census.writer[await legacyLeaseState(entryPath, staleMs)]++;
+      } else {
+        census.otherUnknown++;
+      }
+    }
+  } catch {
+    census.otherUnknown++;
+    census.complete = false;
+  }
+  return census;
+}
+
+async function legacyAliasPointsTo(legacyRoot, root) {
+  try {
+    const link = await readlink(legacyRoot);
+    return resolve(dirname(legacyRoot), link) === resolve(root);
+  } catch {
+    return false;
+  }
+}
+
+async function restoreLegacyRoot(quarantineRoot, legacyRoot) {
+  if (!quarantineRoot) return;
+  try {
+    await lstat(legacyRoot);
+    return;
+  } catch (error) {
+    if (error?.code !== "ENOENT") return;
+  }
+  await rename(quarantineRoot, legacyRoot).catch(() => {});
+}
+
+/**
+ * Prepare the resolved mutex root and preserve the old lock identity across the
+ * migration. A legacy root is moved aside only after a complete read-only
+ * census finds zero active and zero unknown leases; its stale markers remain in
+ * a sibling quarantine directory, and the old path becomes a symlink to the
+ * account-home root. An explicit override is authoritative and bypasses this
+ * migration.
+ *
+ * The optional legacyRoot and homeDir values are deterministic test seams; the
+ * production callers use the platform defaults.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string }} [options]
+ */
+export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const root = resolveFsMutexLockRoot(env, options);
+  const hasOverride =
+    env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== undefined &&
+    env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== null;
+  const legacyRootValue =
+    options.legacyRoot ?? (platform === "win32" ? null : LEGACY_FS_MUTEX_LOCK_ROOT);
+
+  if (hasOverride || legacyRootValue === null) {
+    await mkdir(root, { recursive: true });
+    return root;
+  }
+
+  const legacyRoot = resolve(legacyRootValue);
+  if (legacyRoot === root) {
+    await mkdir(root, { recursive: true });
+    return root;
+  }
+
+  let legacyStat = null;
+  try {
+    legacyStat = await lstat(legacyRoot);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw legacyRootError(
+        "ELEGACYFSLOCKBUSY",
+        "Refusing fs-mutex root migration because the legacy root cannot be inspected: " + legacyRoot,
+        emptyLegacyCensus(),
+        error,
+      );
+    }
+  }
+
+  if (legacyStat?.isSymbolicLink()) {
+    if (!(await legacyAliasPointsTo(legacyRoot, root))) {
+      throw legacyRootError(
+        "ELEGACYFSLOCKBUSY",
+        "Refusing fs-mutex root migration because the legacy path is an unexpected symlink: " + legacyRoot,
+        { ...emptyLegacyCensus(), otherUnknown: 1 },
+      );
+    }
+    await mkdir(root, { recursive: true });
+    return root;
+  }
+
+  let census = emptyLegacyCensus();
+  if (legacyStat) {
+    if (!legacyStat.isDirectory()) {
+      census.otherUnknown++;
+      throw legacyRootError(
+        "ELEGACYFSLOCKBUSY",
+        "Refusing fs-mutex root migration because the legacy path is not a directory: " + legacyRoot,
+        census,
+      );
+    }
+    census = await censusLegacyFsMutexRoot(legacyRoot, staleMsFromEnv(env));
+    const active = totalLegacyCensus(census, "active");
+    const unknown = totalLegacyCensus(census, "unknown");
+    if (!census.complete || unknown > 0) {
+      throw legacyRootError(
+        "ELEGACYFSLOCKBUSY",
+        "Refusing fs-mutex root migration: legacy leases active=" + active +
+          " unknown=" + unknown + " at " + legacyRoot,
+        census,
+      );
+    }
+    // Known live leases have an unambiguous lock identity. Keep new callers on
+    // that same root until they drain; only uncertainty fails closed.
+    if (active > 0) return legacyRoot;
+  }
+
+  await mkdir(root, { recursive: true });
+  let quarantineRoot = null;
+  if (legacyStat) {
+    quarantineRoot =
+      legacyRoot + ".legacy-" + Date.now() + "-" + process.pid + "-" + randomUUID();
+    try {
+      await rename(legacyRoot, quarantineRoot);
+    } catch (error) {
+      if (await legacyAliasPointsTo(legacyRoot, root)) return root;
+      if (error?.code !== "ENOENT") {
+        throw legacyRootError(
+          "ELEGACYFSALIASFAILED",
+          "Could not preserve the quiesced legacy mutex root: " + legacyRoot,
+          census,
+          error,
+        );
+      }
+    }
+  }
+
+  try {
+    await mkdir(dirname(legacyRoot), { recursive: true });
+    await symlink(root, legacyRoot, "dir");
+  } catch (error) {
+    if (await legacyAliasPointsTo(legacyRoot, root)) return root;
+    try {
+      if ((await lstat(legacyRoot)).isDirectory()) return legacyRoot;
+    } catch {
+      // Preserve the original failure when neither the alias nor root is usable.
+    }
+    await restoreLegacyRoot(quarantineRoot, legacyRoot);
+    throw legacyRootError(
+      "ELEGACYFSALIASFAILED",
+      "Could not alias the legacy mutex path to the canonical root: " + legacyRoot,
+      census,
+      error,
+    );
+  }
+  return root;
 }
 
 function lockRoot() {
@@ -375,7 +672,7 @@ export async function withFsMutex(name, fn, opts = {}) {
     return fn();
   }
 
-  const root = lockRoot();
+  const root = await ensureFsMutexLockRoot();
   const lockDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
   const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
@@ -576,7 +873,7 @@ export async function withFsMutex(name, fn, opts = {}) {
 export async function withFsMutexRead(name, fn, opts = {}) {
   if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === "1") return fn();
 
-  const root = lockRoot();
+  const root = await ensureFsMutexLockRoot();
   const writerDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
   const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
@@ -687,11 +984,25 @@ export async function withFsMutexRead(name, fn, opts = {}) {
  * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, acquiredAt?: string, runningAt?: string, phase?: 'draining-readers' | 'running', name?: string, intent?: Record<string, string | number | boolean> }, lockDir: string }}
  */
 export function peekFsMutexSync(name) {
-  const lockDir = join(lockRoot(), `${safeName(name)}.lock`);
-  try {
-    const raw = readFileSync(join(lockDir, "owner.json"), "utf8");
-    return { held: true, owner: JSON.parse(raw), lockDir };
-  } catch {
-    return { held: false, lockDir };
+  const lockName = safeName(name) + ".lock";
+  const defaultLockDir = join(lockRoot(), lockName);
+  const hasOverride =
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== undefined &&
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== null;
+  const roots =
+    hasOverride || process.platform === "win32"
+      ? [defaultLockDir]
+      : [join(LEGACY_FS_MUTEX_LOCK_ROOT, lockName), defaultLockDir];
+  const seen = new Set();
+  for (const lockDir of roots) {
+    if (seen.has(lockDir)) continue;
+    seen.add(lockDir);
+    try {
+      const raw = readFileSync(join(lockDir, "owner.json"), "utf8");
+      return { held: true, owner: JSON.parse(raw), lockDir };
+    } catch {
+      // A failed peek is intentionally non-blocking and fails open.
+    }
   }
+  return { held: false, lockDir: defaultLockDir };
 }
