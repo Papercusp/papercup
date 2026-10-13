@@ -280,8 +280,12 @@ function isOwnerAttributionReportedAgentMention(line: string): boolean {
  */
 const PEER_ROLE_OWNER_NOUN = String.raw`(?:gate|fleet|plan|peer|root|storage|work[-\s]?item)`;
 const PEER_ROLE_OWNER_PREFIX_RE = new RegExp(String.raw`\b${PEER_ROLE_OWNER_NOUN}\s*$`, 'i');
+// U+2019 (right single quote) is spliced in from its code point, never typed literally: a
+// non-ASCII char inside String.raw makes the host bundle's ascii-escape pass skip the WHOLE
+// bundle (WI-6554700010009506). The built RegExp source is byte-identical to the typed form.
+const RIGHT_SINGLE_QUOTE = String.fromCharCode(0x2019);
 const PEER_ROLE_OWNER_POSSESSIVE_SUFFIX_RE = new RegExp(
-  String.raw`^['’]s\s+${PEER_ROLE_OWNER_NOUN}\b`,
+  String.raw`^['${RIGHT_SINGLE_QUOTE}]s\s+${PEER_ROLE_OWNER_NOUN}\b`,
   'i',
 );
 

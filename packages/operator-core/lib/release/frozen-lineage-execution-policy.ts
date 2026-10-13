@@ -850,8 +850,14 @@ const CARRY_COMPARATIVE_SOURCE_BEFORE =
 const CARRY_JUDGED_EXPLICIT =
   /\bjudged\s+(?:candidate|worktree)\b|\bcanonical\s+(?:test|verification|verdict|run)\b/i;
 const CARRY_DIRECTIVE_VERBS = String.raw`(?:re-?)?(?:use|select|choose|take|derive|pin|cut|base|set|treat|resolve|create|check\s*out|checkout|launch|run|test|verify|judge|evaluate|fire|point|switch|make|move|advance|reset|retarget|promote|trigger)\b`;
+// U+2022 (bullet), U+2014 (em dash) and U+2013 (en dash) are never typed literally: a literal
+// non-ASCII char inside String.raw makes the host bundle's ascii-escape pass skip the WHOLE
+// bundle (WI-6554700010009506). They are spliced in from their code points, so the built
+// RegExp source is byte-identical to the typed form.
+const CARRY_BULLET = String.fromCharCode(0x2022);
+const CARRY_DASHES = String.fromCharCode(0x2014, 0x2013);
 const CARRY_IMPERATIVE_LEAD = new RegExp(
-  String.raw`^(?:[-+•]\s*|\d+[.)]\s*)?(?:(?:next(?:\s+action)?|then|now|todo|action|step\s*\d+)\s*[:—–-]\s*)?` +
+  String.raw`^(?:[-+${CARRY_BULLET}]\s*|\d+[.)]\s*)?(?:(?:next(?:\s+action)?|then|now|todo|action|step\s*\d+)\s*[:${CARRY_DASHES}-]\s*)?` +
     // A leading condition/purpose phrase: "If the gate is red, run …", "To re-judge, use …".
     String.raw`(?:(?:if|when|once|after|before|to|for|on|until)\b[^,]{0,80},\s*)?` +
     String.raw`(?:(?:and\s+)?(?:then|now|please|also|first|next)\s+)*${CARRY_DIRECTIVE_VERBS}`,
