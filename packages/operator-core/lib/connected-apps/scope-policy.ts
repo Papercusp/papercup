@@ -346,8 +346,10 @@ export interface AppScopeChainExplanation {
   listable: boolean;
   /** Null for an allowed call or a missing chain. */
   blockingScopeId: string | null;
+  /** A token scope can retain its parent's row id; position distinguishes them. */
+  blockingScopeIndex: number | null;
   /** Only identifiers and decisions, never the raw grants or credential-bearing rows. */
-  decisions: Array<{ scopeId: string; verdict: AppScopeVerdict }>;
+  decisions: Array<{ scopeId: string; scopeIndex: number; verdict: AppScopeVerdict }>;
 }
 
 /**
@@ -364,12 +366,14 @@ export function evaluateAppScopeChain(
       verdict: { allow: false, code: 'key_unknown', reason: 'no app scope rows were supplied' },
       listable: false,
       blockingScopeId: null,
+      blockingScopeIndex: null,
       decisions: [],
     };
   }
   const now = input.now ?? new Date();
-  const decisions = rows.map((row) => ({
+  const decisions = rows.map((row, scopeIndex) => ({
     scopeId: row.id,
+    scopeIndex,
     verdict: evaluateAppScope({ ...input, now }, row),
   }));
   const blocking = decisions.find((decision) => !decision.verdict.allow);
@@ -377,6 +381,7 @@ export function evaluateAppScopeChain(
     verdict: blocking?.verdict ?? { allow: true },
     listable: decisions.every(({ verdict }) => verdict.allow || verdict.code === 'harness_required_by_scope'),
     blockingScopeId: blocking?.scopeId ?? null,
+    blockingScopeIndex: blocking?.scopeIndex ?? null,
     decisions,
   };
 }

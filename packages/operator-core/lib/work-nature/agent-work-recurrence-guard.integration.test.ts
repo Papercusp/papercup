@@ -29,7 +29,7 @@
  *   npm run test:file -- packages/operator-core/lib/work-nature/agent-work-recurrence-guard.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type postgres from 'postgres';
+import postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,6 +43,7 @@ import {
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { WORK_SELECTION_CENSUS, WORK_SELECTION_SEED_ROWS, type WorkSelectionSeedRow } from '../work-selection-census';
 import { isAgentWork } from './agent-work-predicate';
+import type { ResolutionStepEvent } from '../scheduler/get-next';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -81,6 +82,7 @@ const WS = 'default';
 const H = 'papercup';
 
 const wi = await import('../work-items');
+const { getOrgPg } = await import('@papercusp/db-org');
 const { getNextWorkItemDefault, readIssueClaimability } = await import('../scheduler/get-next');
 
 // ---------------------------------------------------------------------------
@@ -170,7 +172,13 @@ const DRAIN_DOORS: DrainDoor[] = [
   {
     name: 'getNextWorkItemDefault (scheduler:get_next)',
     census: ['get-next-issue'],
-    next: async () => (await getNextWorkItemDefault({ assignee: 'drain-probe' }, { harness: H }))?.workItem.id ?? null,
+    next: async () => (await getNextWorkItemDefault({ assignee: 'drain-probe' }, {
+      harness: H,
+      onResolutionStep(step, event) {
+        resolutionSteps.push({ step, event });
+        if (resolutionSteps.length > 64) resolutionSteps.shift();
+      },
+    }))?.workItem.id ?? null,
   },
 ];
 
@@ -184,7 +192,19 @@ const COVERED_BY: Record<string, string> = {
 async function drain(door: DrainDoor): Promise<string[]> {
   const served: string[] = [];
   for (let i = 0; i <= SEEDS.length; i++) {
-    const id = await door.next();
+    let id: string | null;
+    try {
+      id = await door.next();
+    } catch (error) {
+      // EI-25821274890357735: an acquisition deadline alone cannot distinguish an
+      // unreachable client from queued transactions. Measure this isolated fixture,
+      // using a separate diagnostic connection so the failing pool cannot hide it.
+      console.error('[agent-work-fixture-diagnostic]', JSON.stringify({
+        door: door.name, served, transactions: fixtureTransactions.slice(-16),
+        resolutionSteps: resolutionSteps.slice(-24), database: await fixtureDatabaseWaits(),
+      }));
+      throw error;
+    }
     if (id === null) return served;
     if (served.includes(id)) throw new Error(`${door.name} served ${id} twice — the claim did not stick`);
     served.push(id);
@@ -195,10 +215,50 @@ async function drain(door: DrainDoor): Promise<string[]> {
 // ---------------------------------------------------------------------------
 
 let db: FreshPgDb;
+const resolutionSteps: Array<{ step: string; event: ResolutionStepEvent }> = [];
+interface FixtureTransaction {
+  requestedAt: number;
+  acquiredAt?: number;
+  settledAt?: number;
+}
+const fixtureTransactions: FixtureTransaction[] = [];
+
+async function fixtureDatabaseWaits(): Promise<unknown> {
+  const probe = postgres(db.url, {
+    max: 1, connect_timeout: 3, prepare: false,
+    connection: { application_name: 'agent-work-fixture-diagnostic', statement_timeout: 1500 },
+  });
+  try {
+    return await probe`
+      SELECT pid, state, wait_event_type, wait_event,
+             extract(epoch FROM (clock_timestamp() - query_start)) AS query_age_seconds,
+             split_part(ltrim(query), ' ', 1) AS statement,
+             pg_blocking_pids(pid) AS blocked_by
+        FROM pg_stat_activity
+       WHERE datname = current_database() AND pid <> pg_backend_pid()
+       ORDER BY pid LIMIT 12`;
+  } catch (error) {
+    return { unavailable: error instanceof Error ? error.message : String(error) };
+  } finally {
+    await probe.end({ timeout: 1 });
+  }
+}
 
 beforeAll(async () => {
   db = await createFreshPgDb('agent-work-recurrence-guard');
   h.sql = db.sql;
+  // Preserve the real client's transaction semantics; only record request,
+  // callback entry (connection acquired), and settlement in this test process.
+  const begin = db.sql.begin.bind(db.sql) as (...args: unknown[]) => Promise<unknown>;
+  db.sql.begin = ((...args: unknown[]) => {
+    const callback = args.at(-1) as (tx: postgres.TransactionSql) => unknown;
+    const measurement: FixtureTransaction = { requestedAt: Date.now() };
+    fixtureTransactions.push(measurement);
+    return begin(...args.slice(0, -1), async (tx: postgres.TransactionSql) => {
+      measurement.acquiredAt = Date.now();
+      return callback(tx);
+    }).finally(() => { measurement.settledAt = Date.now(); });
+  }) as typeof db.sql.begin;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
@@ -240,6 +300,9 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  expect(getOrgPg().sql).toBe(db.sql);
+  resolutionSteps.length = 0;
+  fixtureTransactions.length = 0;
   await db.sql`
     TRUNCATE harness_shared.work_items,
              harness_shared.event_awaits,
@@ -254,6 +317,15 @@ beforeEach(async () => {
 });
 
 describe('P-012: the seed population and the door table are complete', () => {
+  it('the transaction client uses the isolated fixture database', async () => {
+    const expectedDatabase = decodeURIComponent(new URL(db.url).pathname.slice(1));
+    const rows = await getOrgPg().sql.begin((tx) => tx`SELECT current_database() AS database`);
+    expect(rows[0]?.database).toBe(expectedDatabase);
+    expect(fixtureTransactions).toHaveLength(1);
+    expect(fixtureTransactions[0].acquiredAt).toBeDefined();
+    expect(fixtureTransactions[0].settledAt).toBeDefined();
+  });
+
   it('seeds every nature, a human-audience work row, and agrees with the predicate twin', () => {
     expect(new Set(SEEDS.map((s) => s.nature))).toEqual(new Set(NATURES));
     expect(SEEDS.some((s) => s.nature === 'work' && s.audience === 'human')).toBe(true);

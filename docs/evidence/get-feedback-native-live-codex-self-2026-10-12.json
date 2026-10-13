@@ -1394,6 +1394,133 @@
     "limits": ["Fixture coverage is not retained production history or physical native attribution.", "Native matrix, universal source/filesystem immutability, original R6 cohort/decision and exact R7 shipment remain open.", "Rubric9 vetting is settled in the separately retained corrected card/independent audit, with its Git execution ceiling disclosed; no author-audit or card replay."],
     "next": "Qualify only this new guard when actual committed bytes match. Continue independent native/D006/R6/R7 work and preserve settled checks without HEAD-only replay."
   },
+  "d006PlanClaimCommittedQualification": {
+    "priorArtifactSha256": "28b0ad93c5adf015672b30409ff16ecff9b5f7947eb170fa3d837c519455eaa9",
+    "evidencePlane": "committed-snapshot-disposable-postgres-copy-out",
+    "commitSha": "2998298920a789179489753fd7cb06d7c5fc4922",
+    "snapshot": "/tmp/pcv/papercusp-lint-as-committed-2998298920-kExi8C",
+    "method": "Maintained lint-as-committed materialization of the exact new guard, followed by with-test-pg and mutation-probe overlay. Exact source/test hashes and clean snapshot were checked before PG allocation. Whole line416 mutant bytes were independently compared against the saved mutation before launch.",
+    "subject": {
+      "path": "packages/operator-core/lib/plan-items/claims.ts",
+      "sha256": "14c682a012949ac5f6b6fca993296ee06beef6fb5d516665d0a782410348ad2f"
+    },
+    "detector": {
+      "path": "packages/operator-core/lib/plan-items/claims.integration.test.ts",
+      "sha256": "412da6f09dd3726a9480668c16b3e541ccec2c547c5317c47148eb63af2410c9"
+    },
+    "fullSuite": {
+      "testRunId": 21168666,
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0,
+      "processExit": 0,
+      "source": "local",
+      "worktreeDirty": false,
+      "isScratchConfig": false
+    },
+    "causalQualification": {
+      "filter": "D-006 plan-only claim isolation.*answerer operations",
+      "baseline": {
+        "testRunId": 21168680,
+        "passed": 1,
+        "failed": 0,
+        "unselected": 25
+      },
+      "unchangedCopy": {
+        "testRunId": 21168697,
+        "passed": 1,
+        "failed": 0,
+        "unselected": 25
+      },
+      "mutant": {
+        "testRunId": 21168707,
+        "passed": 0,
+        "failed": 1,
+        "unselected": 25
+      },
+      "mutation": "Remove exactly the deleteClaimLocal owner predicate at line416 through the saved perl -Mstrict -pe command.",
+      "mutantSha256": "1c5179f0c0b7276100ceae5954dbd323137dd714e231bc2d16ed5ac5a8c341be",
+      "predictedControl": "Foreign release returns false and preserves the source claim; selected case passes.",
+      "predictedMutant": "Foreign release returns true and the source-preservation assertion fails.",
+      "actualObservation": "Both controls pass; mutant fails at claims.integration.test.ts:327:100 with expected true to be false. The later reversion and system-CAS assertions are not independently falsified by this mutant.",
+      "verdict": "caught",
+      "probeExit": 0,
+      "guardExit": 1,
+      "mutantParse": "unchecked",
+      "ledgerReadback": "All three exact mutation-probe receipts were independently read and record worktreeDirty:false, isScratchConfig:false, papercusp/papercusp-workspace and commit2998298920. They are not CI gate failures.",
+      "descriptor": "Withheld by maintained compatibility check because the serving reader predates the mutation-descriptor parser; no descriptor linkage claimed.",
+      "treeIntegrity": "Maintained overlay kept the original snapshot file; post-run named source and detector SHA-256 equal the pre-run hashes."
+    },
+    "evidence": {
+      "prefix": "/dev/shm/get-feedback-d006-plan-claims-committed-20261013T0019",
+      "materializationLog": "/dev/shm/get-feedback-d006-plan-claims-materialize-20261013T0016.log",
+      "fullLogSha256": "79e6528b81d5e639c8ff3726f06147cc64de0a9e81e527a4e014f141bc2678e7",
+      "mutationLogSha256": "28873b779b12d794424aa8b2c621dfae895657c218b1da8844be774f6e527160",
+      "commandReceiptSha256": "76bce5d9fac4defc88c82d93b9d63276260ec7eaf5024d541d8d557360eef1eb",
+      "privatePgLogSha256": "68ef426ef3bdbfbed2cb0b4b8e12a7b983791bc9c67ec20d2e31b4f71191d8a8",
+      "phaseReceipt": "/dev/shm/get-feedback-d006-plan-claims-committed-20261013T0019-phases.json",
+      "cleanup": "Private Postgres shutdown observed; qualification exec96651 completed exit0 and was drained."
+    },
+    "sourceCapture": "UNMEASURED: caller set map/result output paths but omitted PC_EXECUTED_SOURCE_MAP_WORKSPACE, which is required to arm capture. No map/result files were produced. Named source/test pre/post hashes are established; no full executed graph or opaque-input qualification follows. The omission was captured as caller friction.",
+    "limits": [
+      "Only the newly added guard was qualified; settled guards were not replayed for HEAD.",
+      "The original dirty receipts and d006PlanClaimExtension remain unchanged and separately scoped. Its open-at-that-cut committedQualification field is historical; this later supplement supplies the clean evidence.",
+      "Fixture application_name tags are controlled identities, not physical native actors or retained production transition history.",
+      "No native matrix, universal immutability, R6 cohort/decision, independent acceptance or R7 shipment credit."
+    ],
+    "next": "Continue the already accepted native Claude-fork receipt-removal request and remaining native/D006/R6/R7 acceptance; do not replay this committed guard solely for HEAD."
+  },
+  "nativeContinuation20261013": {
+    "observedAt": "2026-10-13T00:40:40Z",
+    "priorArtifactSha256": "a60e9cae02d345c4463c1b9d3e3b786f94a3de6110c724fbfad66d79dac2342f",
+    "evidencePlane": "staging-operator",
+    "runtime": {
+      "endpoint": "http://127.0.0.1:3170",
+      "buildSha": "8a48ea8e80",
+      "containment": "dev:pipeline_position measured the native-consult path contained on staging; currentBuildTestRoute operator-api ready. No final-release credit."
+    },
+    "receiptRemoval": {
+      "requestKey": "get-feedback-native-r6-receipt-removal-e16e0-20261013-v1",
+      "conversationId": "conv-request-4a705aa78d6ff3498a5c3007a9a3a90e4a6a9db6a63cc1ac24b1d6bd7602c215",
+      "requestPrefix": "/dev/shm/get-feedback-native-r6-fork-20261013T0031",
+      "constraints": {
+        "sourceBackend": "claude",
+        "targetBackend": "claude",
+        "sourceState": "ended"
+      },
+      "stateAtRead": "awaiting_responder",
+      "sourceOwner": "su-56e2f83b-010d-4f42-b750-19bc8fde6ea5",
+      "answeringOwner": "su-c48906b7-51d2-4b95-9c57-19f2a99726da",
+      "operation": "convert",
+      "nativeSession": "8490f093-0200-44c6-a9ab-30a667d2a933",
+      "portId": "6a1977bf-ee6f-4473-ab8f-bb2928682d01",
+      "nativeFrame": "sessions:read exact native turn0 contains the untrusted session-port frame, source/target-backend claude and a fresh session identity. No original source-prefix comparison or complete physical-call binding is inferred.",
+      "pickup": "Exact native turns1/2 state the consult-only task and sanctioned CLI fallback. Targeted presence is live; dev:session_detail has attributed successful rubric/query reads plus refused query attempts. A reply has not been observed. Attribution of these reads is not a complete native-actor audit.",
+      "operationWriter": "consult-dispatch.ts planDispatchOperation chooses fork only for Claude/Claude and !source.historical; this historical source conversion does not fulfill the required native fork.",
+      "terminalClassification": "pending, not a success"
+    },
+    "liveFork": {
+      "requestKey": "get-feedback-native-live-claude-d006-e16e0-20261013-v1",
+      "conversationId": "conv-request-22e782f8814948cef7714a9a56f9590827951b142267b2e3bbe73d82961b4795",
+      "requestPrefix": "/dev/shm/get-feedback-native-live-claude-d006-20261013T0040",
+      "constraints": {
+        "sourceBackend": "claude",
+        "targetBackend": "claude",
+        "sourceState": "live"
+      },
+      "acceptedState": "routing",
+      "stateAtRead": "no_qualified_responder",
+      "responderId": null,
+      "wakesUsed": 0,
+      "posts": [],
+      "interpretation": "No qualified live-Claude source was retained for this exact question under its constraints. No dispatch or native child is established. This does not prove global source absence or an account-capacity wall; do not replay this terminal request key."
+    },
+    "limits": [
+      "The native requests answer separate existing R6 and D006 acceptance questions; neither backfills the immutable original cohort4/shortfall4.",
+      "No new source actor, native fork, universal immutability, independent acceptance or R7 shipment claim.",
+      "Root/P002 retain their12 check rows; the new clean guard is retained on P011 as its ninth check. Loop12 unchanged."
+    ]
+  },
   "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, and receipt-removal replication", "Exact R7 shipment"],
   "limits": ["No failed or closed native request was retried or relabelled.", "The prior live Codex-to-Claude no-child artifact remains unchanged.", "The original R6 population/cut is unchanged; this supplemental request earns no cohort credit.", "This artifact makes no universal immutability, full native-matrix, acceptance or shipment claim."]
 }

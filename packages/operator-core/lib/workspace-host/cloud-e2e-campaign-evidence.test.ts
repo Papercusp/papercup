@@ -273,6 +273,24 @@ describe('cloud campaign measured evidence contradictions', () => {
     expect(evaluateCloudCampaignEvidence(data, context).problems['R-4'].length).toBeGreaterThan(0);
   });
 
+  it('rejects a committed defect with only its originating fix reference removed', () => {
+    const { data, context } = completeFixture();
+    expect(evaluateCloudCampaignEvidence(data, context).passed).toBe(true);
+    const defect = data.acceptanceEvidence.defects[0]!;
+    delete defect.originatingFixRef;
+    const result = evaluateCloudCampaignEvidence(data, context);
+    expect(result.problems['R-4']).toEqual([`unverified-repair:${defect.id}`]);
+  });
+
+  it('rejects a committed defect with only its recurrence detector reference removed', () => {
+    const { data, context } = completeFixture();
+    expect(evaluateCloudCampaignEvidence(data, context).passed).toBe(true);
+    const defect = data.acceptanceEvidence.defects[0]!;
+    delete defect.regressionDetectorId;
+    const result = evaluateCloudCampaignEvidence(data, context);
+    expect(result.problems['R-4']).toEqual([`missing-regression-or-triggering-journey:${defect.id}`]);
+  });
+
   it('accounts for owned deferred residue while refusing final shipment', () => {
     const { data, context } = completeFixture();
     Object.assign(data.acceptanceEvidence.defects[0]!, { state: 'deferred', assignee: 'residue-owner', completionAuthority: 'unknown', rootCauseVerification: undefined, originatingFixRef: undefined });

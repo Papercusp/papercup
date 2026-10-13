@@ -131,7 +131,7 @@ describe('pg_textsearch (BM25) configuration page', () => {
     expect(compaction).toContain(`crontab \`${cron![1]}\``);
 
     expect(compaction).toContain(`${BM25_MAX_BLOAT_RATIO}x its estimated live bytes`);
-    expect(compaction).toContain(`at least ${BM25_RECLAIM_MIN_BYTES / (1024 * 1024)} MB`);
+    expect(compaction).toContain(`at least ${BM25_RECLAIM_MIN_BYTES} bytes (${BM25_RECLAIM_MIN_BYTES / 1024} KiB)`);
   });
 
   it('marks the older ts_rank_cd page superseded and points it at this page', () => {

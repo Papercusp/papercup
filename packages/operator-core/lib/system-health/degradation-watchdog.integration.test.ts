@@ -35,10 +35,14 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { recordGateReuseDecision } from '../../../../scripts/lib/test-pass-reuse.mjs';
+import { armTargetedTaskReuse } from '../../../../scripts/lib/targeted-task-reuse.mjs';
 
 const WS = 'ws-degradation-watchdog-it';
 const H = 'papercusp';
@@ -67,7 +71,7 @@ vi.mock('../blueprint/operation-worker-binding', async (importOriginal) => {
 });
 
 // Imported AFTER the mocks are registered (vi.mock is hoisted).
-const { observeFallback, flushFallbackObservations, _resetFallbackObservationsForTests } = await import(
+const { observeFallback, flushFallbackObservations, readFallbackWindowsByScope, _resetFallbackObservationsForTests } = await import(
   '../degradation/fallback-observations'
 );
 const { runDegradationSweepOnce, degradationConditionKey, getDegradationMechanism, _resetDegradationPruneClockForTests } =
@@ -151,6 +155,91 @@ beforeEach(async () => {
 });
 
 describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
+  it('uses disjoint adjacent windows at the boundary', async () => {
+    const boundary = new Date(Date.now() - 5 * 60_000);
+    expect(observeFallback(MECHANISM, { eligible: 1, applied: 0, reason: 'otherRunner', scope: 'boundary-task' }, {
+      workspaceId: WS, observedAt: boundary,
+    })).toBe(true);
+    expect(await flushFallbackObservations()).toMatchObject({ written: 1, failed: 0 });
+
+    const prior = await readFallbackWindowsByScope(MECHANISM, 60_000, {
+      sql: db.adminSql, workspaceId: WS, now: boundary,
+    });
+    const current = await readFallbackWindowsByScope(MECHANISM, 60_000, {
+      sql: db.adminSql, workspaceId: WS, now: new Date(boundary.getTime() + 60_000),
+    });
+    expect(prior).toEqual([]);
+    expect(current).toMatchObject([{ scope: 'boundary-task', window: { eligible: 1, applied: 0 } }]);
+  }, 120_000);
+
+  it('drives armTargetedTaskReuse through its proof-read timeout and bridges the yield-decline condition to one owner item', async () => {
+    const task = '@fixture/lane-ws::test:lane-stateful';
+    const key = degradationConditionKey(MECHANISM, task, 'yield-decline');
+    const priorAt = new Date(Date.now() - 70 * 60_000);
+    for (let i = 0; i < 20; i++) {
+      expect(observeFallback(MECHANISM, { eligible: 1, applied: 1, reason: 'applied', scope: task }, {
+        workspaceId: WS, observedAt: priorAt,
+      })).toBe(true);
+    }
+    expect(await flushFallbackObservations()).toMatchObject({ written: 20, failed: 0 });
+
+    const root = mkdtempSync(join(tmpdir(), 'degradation-watchdog-reuse-it-'));
+    let armed: Awaited<ReturnType<typeof armTargetedTaskReuse>> | undefined;
+    try {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fixture-root', workspaces: ['packages/*'] }));
+      const pkgDir = join(root, 'packages/lane-ws');
+      mkdirSync(pkgDir, { recursive: true });
+      writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+        name: '@fixture/lane-ws',
+        scripts: { 'test:lane-stateful': 'vitest run --passWithNoTests' },
+      }));
+      const laneSplit = join(root, 'libs/test-config/src');
+      mkdirSync(laneSplit, { recursive: true });
+      writeFileSync(join(laneSplit, 'lane-split.ts'), [
+        'export function isUnitTestFile(file) { return file.endsWith(".test.ts"); }',
+        'export function classifyLanes(_root, files) { return { stateful: files }; }',
+      ].join('\n'));
+
+      const writer = { observeFallback, flushFallbackObservations };
+      armed = await armTargetedTaskReuse({
+        root,
+        workspace: '@fixture/lane-ws',
+        script: 'test:lane-stateful',
+        expectedSha: 'a'.repeat(40),
+        env: {
+          GREEN_CHECKPOINT: '1',
+          PAPERCUSP_WORKSPACE_ID: WS,
+          AFFECTED_TEST_REUSE_AUDIT_RATE: '0',
+          AFFECTED_RECORD_EXECUTED_SOURCES: '0',
+        },
+        deps: {
+          git: (_root, args) => args[0] === 'rev-parse' ? `${'a'.repeat(40)}\n` : '',
+          runnerIdentity: () => 'proof-v3 test-runner',
+          connect: async () => ({ end: async () => undefined }) as never,
+          loadProofs: async () => new Promise(() => undefined),
+          recordReuse: (label, decision) => recordGateReuseDecision(label, decision, writer),
+        },
+      });
+
+      expect(armed.reused).toBe(0);
+      expect(armed.lines[0]).toMatch(/applied=false reason=proofs-unavailable\(reuse-proof_read_timed_out\)/);
+      const sweep = await runDegradationSweepOnce({ prune: null });
+      expect(sweep.errors).toEqual([]);
+      expect(sweep.opened).toEqual([key]);
+      expect(await alarmCount(key)).toBe(1);
+
+      await tick();
+      const items = await holdersOf(key);
+      expect(items).toHaveLength(1);
+      const [item] = await degradedItems();
+      expect(item).toMatchObject({ feature_id: items[0], status: expect.not.stringMatching(/done|closed|resolved/) });
+      expect(item.title).toContain(key);
+    } finally {
+      armed?.finish();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 180_000);
+
   it('P-004: shared full-suite/repair recorder, durable window and real bridge detect otherRunner collapse and settle recovery', async () => {
     const task = '@fixture/operator-core::test:lane-stateful';
     const key = degradationConditionKey(MECHANISM, task, 'otherRunner');

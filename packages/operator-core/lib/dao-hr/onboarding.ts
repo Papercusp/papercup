@@ -27,7 +27,8 @@ export interface OnboardingDeps {
   sql?: Sql; chain?: OnboardingChain;
   identity?: () => Promise<CandidateIdentity>;
   wallet?: () => Promise<WalletBindingHostedResult>;
-  adminPerson?: () => Promise<string>;
+  /** Substitutes resolveHiringActor(key, …), so it receives the same hive/offer key. */
+  adminPerson?: (key: Key) => Promise<string>;
   admit?: typeof upsertHiveMember;
   scope?: typeof resolveFederatedPotScope;
 }
@@ -171,7 +172,7 @@ export async function verifyOnboardingIdentity(key: Key, deps: OnboardingDeps = 
   });
 }
 export async function prepareHireProposal(key: Key, policy: HivePolicy, deps: OnboardingDeps = {}) {
-  const sql=db(deps),actor=await (deps.adminPerson?.() ?? resolveHiringActor(key,{sql}));
+  const sql=db(deps),actor=await (deps.adminPerson?.(key) ?? resolveHiringActor(key,{sql}));
   const contract=await row(key,deps),offer=await getHiringOffer(key,deps),profile=await getWorkProfile({...key,personId:offer.personId},deps);
   if(!profile) fail('wallet_required','Verify the candidate wallet first.');
   const c=await chain(deps),bound=binding(policy),inspection=await inspectEquity(c,bound);
@@ -217,7 +218,7 @@ async function requirePlan(key:Key,policy:HivePolicy,deps:OnboardingDeps) {
   unchanged(contract.hire_plan,policy);return {contract,p:contract.hire_plan,c:await chain(deps)};
 }
 export async function recordHireProposal(key:Key,policy:HivePolicy,hash:Hex,deps:OnboardingDeps={}) {
-  const actor=await (deps.adminPerson?.()??resolveHiringActor(key,{sql:db(deps)}));
+  const actor=await (deps.adminPerson?.(key)??resolveHiringActor(key,{sql:db(deps)}));
   const {contract,p,c}=await requirePlan(key,policy,deps);
   const {receipt}=await confirmedCall(c,p,hash,true,'propose',[p.targets,p.values,p.calldatas,p.description]);
   if(!event(receipt.logs,p,true,'ProposalCreated',{proposalId:p.proposalId})) fail('invalid_proof','The frozen hire proposal was not created.');
@@ -278,7 +279,7 @@ export async function admitHire(key:Key,policy:HivePolicy,hash:Hex,deps:Onboardi
   });return proof;
 }
 export async function reconcileFailedHire(key:Key,policy:HivePolicy,deps:OnboardingDeps={}) {
-  const actor=await (deps.adminPerson?.()??resolveHiringActor(key,{sql:db(deps)})),{contract,p,c}=await requirePlan(key,policy,deps);
+  const actor=await (deps.adminPerson?.(key)??resolveHiringActor(key,{sql:db(deps)})),{contract,p,c}=await requirePlan(key,policy,deps);
   if(contract.hire_proposal_ref!==p.proposalId||contract.hire_execution_proof) fail('invalid_stage','Only a recorded unexecuted proposal can lapse.');
   const state=Number(await read(c,p,'state',[BigInt(p.proposalId)],await c.getBlockNumber(),true));
   if(![2,3,6].includes(state)) fail('invalid_stage','The hire proposal is still pending, active, passed or queued.');
@@ -304,7 +305,7 @@ export function onboardingChecklist(contract:OnboardingContract,profile:WorkProf
 export async function readOnboarding(key: Key, policy: HivePolicy, deps: OnboardingDeps = {}) {
   const contract = await row(key, deps);
   let isAdmin = false, isCandidate = false;
-  try { await (deps.adminPerson?.() ?? resolveHiringActor(key, { sql: db(deps) })); isAdmin = true; }
+  try { await (deps.adminPerson?.(key) ?? resolveHiringActor(key, { sql: db(deps) })); isAdmin = true; }
   catch (error) { if (!(error instanceof HiringError && error.code === 'not_admin')) throw error; }
   try { await candidate(contract, deps); isCandidate = true; }
   catch (error) { if (!isAdmin || !(error instanceof OnboardingError)) throw error; }

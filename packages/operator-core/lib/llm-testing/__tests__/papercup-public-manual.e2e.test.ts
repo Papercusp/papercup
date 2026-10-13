@@ -2142,7 +2142,22 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         PAPERCUSP_SHARED_OPERATOR: '0', PORTAL_HOME: temporaryHome, PORT: String(port), HOSTNAME: '127.0.0.1' };
       const envFile = join(temporaryHome, 'hosted.env');
       writeFileSync(envFile, Object.entries(overrides).map(([key, value]) => `${key}=${value}`).join('\n'), { mode: 0o600 });
-      child = spawn(process.execPath, ['--import', 'tsx', join(repoRoot, 'apps/operator/scripts/systemd/portal-hosted-launcher.ts')], {
+      // The repository root is CommonJS by default. Launching this checkout
+      // .ts file there makes tsx transform it through the committed-source
+      // CommonJS hook, which correctly refuses transformed bytes. Run an exact
+      // copy as ESM from the owned temp home; keep node_modules linked to this
+      // checkout so package resolution and the source guard remain active.
+      const launcherRelative = 'apps/operator/scripts/systemd/portal-hosted-launcher.ts';
+      const launcherSource = readFileSync(join(repoRoot, launcherRelative));
+      const committedLauncher = await runPtool('git', ['show', `HEAD:${launcherRelative}`], {
+        cwd: repoRoot, encoding: 'buffer',
+      });
+      expect(Buffer.from(committedLauncher.stdout)).toEqual(launcherSource);
+      const launcherEntry = join(temporaryHome, 'portal-hosted-launcher.ts');
+      writeFileSync(launcherEntry, launcherSource, { mode: 0o600 });
+      writeFileSync(join(temporaryHome, 'package.json'), JSON.stringify({ type: 'module' }));
+      symlinkSync(join(repoRoot, 'node_modules'), join(temporaryHome, 'node_modules'), 'dir');
+      child = spawn(process.execPath, ['--import', 'tsx', launcherEntry], {
         cwd: repoRoot,
         env: { ...process.env, PAPERCUSP_PORTAL_ROOT: candidateRoot!,
           PAPERCUSP_PORTAL_START_WEB: portalEntry,

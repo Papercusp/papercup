@@ -97,6 +97,7 @@ import {
   gitInertGlobalChange,
   loadExecutedSourceMap,
   loadPassDurations,
+  loadReuseProofFiles,
   loadReuseProofs,
 } from "./lib/executed-source-map.mjs";
 import { gitSchemaDriftJudge } from "./lib/schema-symbol-drift.mjs";
@@ -5883,6 +5884,7 @@ async function armTestPassReuse(taskList) {
   // may be older than the selector carried by the gate runner.
   const judgedProofFormat = judgedTreeProofFormat(ROOT);
   const loaded = new Map();
+  const proofFilesByWorkspace = new Map();
   /** @type {{ tasks: number, summaries: Record<string, number>[], savedMs: number | null, unmeasured: number }} */
   const reuseTotals = { tasks: 0, summaries: [], savedMs: 0, unmeasured: 0 };
   // WI-10004617: classify with the SAME function each lane's vitest config uses (lane-split.ts),
@@ -5895,46 +5897,97 @@ async function armTestPassReuse(taskList) {
   };
   try {
     for (const t of unitTasks) {
-      if (!loaded.has(t.ws.name)) {
+      const wsRel = relative(ROOT, join(ROOT, t.ws.dir)).replaceAll("\\", "/");
+      const prefix = wsRel === "" ? "" : `${wsRel}/`;
+      const lane = laneOfTaskScript(t.script);
+      const requestedFiles = Array.isArray(t.relatedFiles) && t.relatedFiles.length > 0
+        ? reuseCandidates({ wsRel, relatedFiles: t.relatedFiles, proofFiles: [] })
+        : null;
+      const cacheKey = JSON.stringify([
+        t.ws.name,
+        lane,
+        requestedFiles == null ? null : [...requestedFiles].sort(),
+      ]);
+      if (!loaded.has(cacheKey)) {
         let out;
         try {
-          out = await Promise.race([
-            loadReuseProofs({ client, workspaceName: t.ws.name, runContext }),
+          out = await Promise.race([(
+            async () => {
+              let files = requestedFiles;
+              let laneOf = null;
+              let laneNote = "";
+              if (lane !== null) {
+                let laneCandidates = files;
+                if (laneCandidates == null) {
+                  if (!proofFilesByWorkspace.has(t.ws.name)) {
+                    proofFilesByWorkspace.set(
+                      t.ws.name,
+                      loadReuseProofFiles({ client, workspaceName: t.ws.name, runContext })
+                        .then((listed) => listed.files),
+                    );
+                  }
+                  laneCandidates = await proofFilesByWorkspace.get(t.ws.name);
+                }
+                try {
+                  laneOf = await laneClassifier(
+                    join(ROOT, t.ws.dir),
+                    laneCandidates
+                      .filter((file) => prefix === "" || file.startsWith(prefix))
+                      .map((file) => file.slice(prefix.length)),
+                  );
+                  const scoped = laneScopedCandidates({ candidates: laneCandidates, wsRel, lane, laneOf });
+                  files = scoped.candidates;
+                  laneNote = ` lane=${lane} otherLane=${scoped.otherLane}`;
+                } catch (err) {
+                  laneOf = null;
+                  laneNote = ` lane=${lane} laneFilter=unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`;
+                  // A targeted file list is already a safe reduction. A broad lane falls back
+                  // to the prior all-proof read if classification is unavailable.
+                  files = requestedFiles;
+                }
+              }
+              const loadedProofs = await loadReuseProofs({
+                client,
+                workspaceName: t.ws.name,
+                runContext,
+                ...(files == null ? {} : { files }),
+              });
+              return { ...loadedProofs, error: null, laneOf, laneNote };
+            }
+          )(),
             new Promise((_, reject) =>
               setTimeout(() => reject(new Error("reuse-proof read timed out")), 15_000).unref(),
             ),
           ]);
-          out = { ...out, error: null };
         } catch (err) {
           out = { proofs: new Map(), rows: 0, error: String((err && err.message) || err).replace(/\s+/g, "_") };
         }
-        loaded.set(t.ws.name, out);
+        loaded.set(cacheKey, out);
       }
-      const { proofs, rows, error } = loaded.get(t.ws.name);
+      const { proofs, rows, error, laneOf: preclassifiedLaneOf, laneNote: preclassifiedLaneNote } = loaded.get(cacheKey);
       const label = `${t.ws.name}::${t.script}`;
       if (error) {
         outSync(`TEST_PASS_REUSE ws=${label} applied=false reason=proofs-unavailable(${error})`);
         await recordGateReuseDecision(label, { offReason: 'proofs-unavailable', eligible: t.relatedFiles?.length });
         continue;
       }
-      const wsRel = relative(ROOT, join(ROOT, t.ws.dir)).replaceAll("\\", "/");
-      const prefix = wsRel === "" ? "" : `${wsRel}/`;
       let candidates = reuseCandidates({ wsRel, relatedFiles: t.relatedFiles, proofFiles: proofs.keys() });
       // WI-10004617: a lane task's selection covers BOTH lanes; count only the files it can run.
-      const lane = laneOfTaskScript(t.script);
-      let laneNote = "";
+      let laneNote = preclassifiedLaneNote;
       if (lane !== null) {
         try {
-          const laneOf = await laneClassifier(
+          const laneOf = preclassifiedLaneOf ?? await laneClassifier(
             join(ROOT, t.ws.dir),
-            candidates.map((f) => f.slice(prefix.length)),
+            candidates
+              .filter((file) => prefix === "" || file.startsWith(prefix))
+              .map((file) => file.slice(prefix.length)),
           );
           const scoped = laneScopedCandidates({ candidates, wsRel, lane, laneOf });
           candidates = scoped.candidates;
-          laneNote = ` lane=${lane} otherLane=${scoped.otherLane}`;
+          if (preclassifiedLaneOf == null) laneNote = ` lane=${lane} otherLane=${scoped.otherLane}`;
         } catch (err) {
           // Fail-open: the unfiltered list only over-counts noProof; it never skips a wrong file.
-          laneNote = ` lane=${lane} laneFilter=unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`;
+          laneNote ??= ` lane=${lane} laneFilter=unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`;
         }
       }
       const { skip, summary, watch } = selectReusablePasses({

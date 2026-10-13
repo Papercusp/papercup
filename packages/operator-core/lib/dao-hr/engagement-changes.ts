@@ -45,7 +45,7 @@ async function admitted(key: Key, policy: HivePolicy, deps: OnboardingDeps) {
   assertHireDeployment(contract.hire_plan,policy);
   return {contract,plan:contract.hire_plan,chain:await onboardingChain(deps)};
 }
-async function admin(key: Key, deps: OnboardingDeps) { return deps.adminPerson ? deps.adminPerson() : resolveHiringActor(key,{sql:db(deps)}); }
+async function admin(key: Key, deps: OnboardingDeps) { return deps.adminPerson ? deps.adminPerson(key) : resolveHiringActor(key,{sql:db(deps)}); }
 /** Retained signer records remain readable after membership revocation. Never
  * return source documents, email snapshots or generic writable lifecycle flags. */
 export async function readEngagement(key: Key, deps: OnboardingDeps = {}) {

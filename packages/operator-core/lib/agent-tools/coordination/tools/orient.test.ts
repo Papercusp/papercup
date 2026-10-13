@@ -27,6 +27,7 @@ import { FLEET_DELTA_SCHEMA_VERSION, fingerprintFleet } from './fleet-monitor-de
 import type { InnerCall } from '../../_compound-dispatch';
 import type { GoalPortfolioBrief } from '../../../goal-launch-settings';
 import { lookupByMcpName, runToolOrchestration, type ProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { createPhaseTracker } from '@papercusp/tooldef';
 import { MCP_TRANSPORT_CAP_MS } from '../../capability/foreground-transport-cap';
 
 // Unit handler cases do not own an org PG pool. Keep the new root SU receipt's
@@ -868,6 +869,78 @@ describe('coord:orient args', () => {
       expect.any(Object),
     );
     expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith(ownerId, 'ws-test', 5);
+  });
+
+  // papercusp-performance-audit-2026-10-12 P-001 (PERF-P001-PHASES): orient must track
+  // its phases on the DISPATCHER's per-call tracker (ctx.phases), because only that
+  // tracker is persisted into tool_invocations.metadata_json.handlerPhases. A private
+  // tracker would time the phases and then drop them on every completed call.
+  it('tracks its named phases on the dispatcher tracker passed as ctx.phases', async () => {
+    const ownerId = 'su-orient-handler-phases-test';
+    const recovery = {
+      selfRecall: "sessions:search { session: 'self' }",
+      control: { generation: 7 },
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    };
+    inProcessCallMock.mockReturnValue(async (name: string) => {
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error(`unexpected sub-call: ${name}`);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    buildCompactionRecoveryMock.mockResolvedValue(recovery);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+
+    const phases = createPhaseTracker();
+    const result = (await orientTool.handler(
+      {
+        afterCompaction: true,
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'su',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+        phases,
+      } as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(result.data).toMatchObject({ ok: true });
+    const tracked = phases.intervals().map((p) => p.phase);
+    expect(tracked).toEqual(
+      expect.arrayContaining([
+        'handler:preflight',
+        'composeOrient',
+        'handler:compactionRecovery',
+        'handler:recordOrientDisclosures',
+        'handler:acknowledgeControlTransition',
+        'handler:bindOutputResult',
+      ]),
+    );
+    const record = phases.toMetadata();
+    expect(record).toMatchObject({ schemaVersion: 'handler-phases-v1', pending: [] });
+    expect(record!.phases.length).toBe(tracked.length);
   });
 
   it('keeps Judge assignment reads self-scoped afterCompaction even when a fleet route is recovered', async () => {

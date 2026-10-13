@@ -3328,7 +3328,13 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // nor a growing discovery seed can widen an exact native launch ceiling.
   if (spawnRes.kind === 'ok') {
     try {
-      const ownerId = resolveAgentIdentity(spawnRes.ctx).ownerId;
+      const ownerId = resolveAgentIdentity({
+        ...spawnRes.ctx,
+        // Bearer sessions carry their principal separately; signed-spawn and
+        // superuser sessions retain their existing transport owner attribution.
+        principal: spawnRes.ctx.authenticatedPrincipal
+          ? synthesizeTransportPrincipal(spawnRes.ctx) : undefined,
+      }).ownerId;
       const confinement = await readSessionConfinement(ownerId, spawnRes.ctx.workspaceId);
       if (confinement) result = result.filter(listing =>
         evaluateSessionConfinement({ toolName: listing.name, confinement, purpose: 'listing' }).allowed);
@@ -5793,7 +5799,11 @@ export function registerMcpHost(server: McpServer): void {
       const spawn = await tryBuildSpawnContext(extra);
       if (spawn.kind === 'failed') return { allowed: false, spawn };
       if (spawn.kind !== 'ok') return { allowed: true, spawn };
-      const ownerId = resolveAgentIdentity(spawn.ctx).ownerId;
+      const ownerId = resolveAgentIdentity({
+        ...spawn.ctx,
+        principal: spawn.ctx.authenticatedPrincipal
+          ? synthesizeTransportPrincipal(spawn.ctx) : undefined,
+      }).ownerId;
       const confinement = await readSessionConfinement(ownerId, spawn.ctx.workspaceId);
       return { allowed: confinement?.denyAmbientContext === undefined, spawn };
     } catch { return { allowed: false, spawn: null }; }

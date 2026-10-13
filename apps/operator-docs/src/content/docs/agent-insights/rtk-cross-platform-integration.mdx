@@ -17,7 +17,7 @@ generated:
 
 **Status (verified 2026-10-12, WI-6554700010009291 and WI-6554700010009447, owner directives #1759 / #1764):** RTK is installed and wired into all three agent shells on the Linux dev box.
 
-* Binary: `~/.local/bin/rtk`, **v0.51.0**, provisioned by `apps/operator/scripts/install-rtk.sh` (pinned release, sha256-verified).
+* Binary: `~/.local/bin/rtk`, **v0.51.0**, provisioned by `apps/operator/scripts/install-rtk.sh` (pinned release, sha256-verified). Desktop installs run the same script (WI-6554700010009448, see Provisioning).
 * Native Claude `Bash`: a fresh `git status` came back in RTK form and rtk's ledger gained a row (15 -> 16) once `install-standalone-mcp.sh` had re-copied the hooks.
 * `capability:bash`: on the staging build (:3170) the result header carried `rtk-compressed (prefix RTK_DISABLED=1 for raw output)`, and rtk's ledger recorded `git status -- apps/operator/scripts/install-rtk.sh` (48 tokens saved). The release build (:3070) serves `capability:bash` without the seam until the next deploy.
 * Codex native shell: a real `codex exec` (0.162.1, through the Papercusp Codex gateway) executed `/bin/bash -lc 'rtk git status'` after our hook's output, PostToolUse saw `rtk git status`, the output was RTK's compressed form, and the ledger gained a row (2026-10-12 23:38:26Z). See "Codex native shell" below for what this does and does not reach.
@@ -79,13 +79,17 @@ Codex's hook contract differs from Claude's in ways that each cost a silent no-o
 
 ## Provisioning: `install-rtk.sh`
 
-`apps/operator/scripts/install-rtk.sh` installs a **pinned** release (`RTK_VERSION=0.51.0`), sha256-verified, to `~/.local/bin/rtk`, outside any package manager's prefix. It is idempotent (a binary already at the pin is left alone) and is called from `install-standalone-mcp.sh` step 4i on every install. Pinned platforms: Linux x86_64 (musl), Linux aarch64, macOS x86_64, macOS arm64. Any other platform exits 2 and RTK stays disabled, failing open. Exit codes: `0` installed or current · `1` download/verify/install failed · `2` unsupported platform.
+`apps/operator/scripts/install-rtk.sh` installs a **pinned** release (`RTK_VERSION=0.51.0`), sha256-verified, to `~/.local/bin/rtk`, outside any package manager's prefix. It is idempotent (a binary already at the pin is left alone) and is the ONE source of the version and hashes for both install paths. Pinned platforms: Linux x86_64 (musl), Linux aarch64, macOS x86_64, macOS arm64. Any other platform exits 2 and RTK stays disabled, failing open. Exit codes: `0` installed or current · `1` download/verify/install failed · `2` unsupported platform.
 
-**Upgrading:** bump `RTK_VERSION`, replace every pinned hash with the `.tar.gz` lines from that release's `checksums.txt`, then run `apps/operator/scripts/__tests__/install-rtk.test.ts`.
+* **Dev box:** `install-standalone-mcp.sh` step 4i calls it on every install.
+* **Desktop:** `build-desktop-sidecar.sh` ships the script to `sidecar/apps/operator/scripts/install-rtk.sh`, and `installPapercuspFiles` (`packages/operator-core/lib/desktop-install/papercusp-files.ts`, `provisionRtk`) runs it. Because the installer runs on launch paths, it never blocks one: if `~/.local/bin/rtk --version` already reports the script's `RTK_VERSION`, nothing runs; otherwise the script starts in the BACKGROUND (one run per process, 5-minute ceiling), and a failure is logged and retried on the next install. `InstallResult.rtkProvision.status` reports `current`, `started`, `in-flight`, `unsupported-platform` (Windows), `script-missing`, or `home-override`. Only the real user's home is provisioned, because every seam reads rtk from `$HOME`; a test or sandbox install with an overridden `home` installs nothing and never downloads.
+* **Windows:** no pinned asset, deliberately. Windows is not an agent target, the RTK hooks are bash/node, and the script needs bash.
+
+**Upgrading:** bump `RTK_VERSION`, replace every pinned hash with the `.tar.gz` lines from that release's `checksums.txt`, then run `apps/operator/scripts/__tests__/install-rtk.test.ts`. Both install paths pick the new pin up from the script.
 
 ⚠ **Never `cargo install rtk`.** crates.io's `rtk` is "Rust Type Kit", an unrelated FFI tool with no `hook` or `rewrite` subcommand. If you must build from source: `cargo install --git https://github.com/rtk-ai/rtk`.
 
-The desktop installer (`papercusp-files.ts`) copies the hooks (including the Codex one, mode 0755) but does not provision the binary yet (WI-6554700010009448); the liveness alarm below covers detection there. Both installers refuse to publish an uncommitted hook source, so a new hook reaches `~/.papercusp/hooks/cc/` only after git-sync commits it.
+Both installers refuse to publish an uncommitted hook source, so a new hook reaches `~/.papercusp/hooks/cc/` only after git-sync commits it.
 
 ## The alarms: making a silent loss loud
 
@@ -103,7 +107,8 @@ The desktop installer (`papercusp-files.ts`) copies the hooks (including the Cod
 | `capability:bash` stops spawning the RTK form | `packages/operator-core/lib/agent-tools/capability/rtk-rewrite.test.ts` (drives the real `bash.handler`) |
 | The Codex hook drops `permissionDecision: 'allow'`, or starts rewriting code-mode script calls | `apps/operator/scripts/hooks/cc/__tests__/codex-rtk-rewrite.test.ts` |
 | The Codex registration is removed, gets the wrong matcher, a second Codex rewriter is added, or resumed homes stop being repaired | `packages/operator-core/lib/role-codex-home.test.ts` ("Codex RTK rewrite": "registers exactly one ^Bash$ rewrite on SU and role homes", the resume-repair test, and an end-to-end test through `~/.local/bin/rtk`) |
-| The installer stops provisioning rtk | `apps/operator/scripts/__tests__/install-rtk.test.ts` ("install-standalone-mcp.sh provisions rtk") |
+| The dev-box installer stops provisioning rtk | `apps/operator/scripts/__tests__/install-rtk.test.ts` ("install-standalone-mcp.sh provisions rtk") |
+| The desktop installer stops provisioning rtk, provisions a non-real home, or the sidecar stops shipping the script | `packages/operator-core/lib/desktop-install/__tests__/papercusp-files.test.ts` ("RTK binary provisioning", including an end-to-end run of the real script against a fake release) |
 | The alarms stop firing | `packages/operator-core/lib/system-health/rtk-liveness.test.ts` |
 
 Every guard above was proven falsifiable with `scripts/mutation-probe.sh` (copy-out; every mutant caught). For the Codex seam: wrong matcher, resume repair dropped, `allow` dropped, nested-call skip dropped. ⚠ A probe whose replacement contains Perl's `$'` post-match variable produces a SYNTAX-ERROR mutant whose "caught" proves nothing; use `${1}` capture references and check `mutant_parse=ok` in the result.
@@ -116,7 +121,6 @@ rtk prints `[rtk] warning: failed to parse permissions from <repo>/.claude/setti
 
 ## Open follow-ups
 
-* Desktop installer: provision the pinned binary (WI-6554700010009448).
 * Codex output volume is dominated by code-mode `exec` output, which no shell compressor reaches by design (WI-6554700010008932).
 * Measured savings so far are modest (about 5% of input tokens across the first ~34 commands on 2026-10-12). D-023/D-026 of plan `token-efficiency-prompts-cache-and-behavior-2026-10-11` hold the volume analysis.
 
@@ -132,4 +136,4 @@ These rows describe RTK 0.43.0 via Homebrew, before the August loss. They were n
 
 * `agent-insights/pretooluse-updatedinput-evades-deny-patterns` (WI-3159): why denies are judged on the original command.
 * The 2026-09-05 absence finding: EI-22418311654376080.
-* Reintegration: WI-6554700010009291 (owner #1759 / #1764). Codex seam: WI-6554700010009447.
+* Reintegration: WI-6554700010009291 (owner #1759 / #1764). Codex seam: WI-6554700010009447. Desktop provisioning: WI-6554700010009448.

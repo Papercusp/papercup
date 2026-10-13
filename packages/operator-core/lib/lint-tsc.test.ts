@@ -615,28 +615,51 @@ describe('concurrent-edit regression guard (EI-20211153048499132)', () => {
 // WI-6554700010009284 — a compile that produced NO output is a toolchain failure: nothing was
 // measured. It used to `process.exit(1)`, and exit 1 is the gate's CONSIDERED failure, so the
 // LINT_TSC_RESULT marker told the caller `status=regressed` (observed when pc-heavy's detached
-// scope could not reach the user D-Bus: PC_HEAVY_RESULT status=undetermined exit=75).
-describe('a no-output toolchain failure never reads as regressed (WI-6554700010009284)', () => {
+// scope could not reach the user D-Bus: PC_HEAVY_RESULT status=undetermined exit=75). The same
+// exit-1 mislabel sat on three more never-measured paths, pinned below: a crash whose output is
+// a trace with no parseable diagnostics, an unreadable baseline, and a refused `--seed`.
+describe('a toolchain, input or usage failure never reads as regressed (WI-6554700010009284)', () => {
   let dir = '';
   afterEach(() => {
     if (dir) rmSync(dir, { recursive: true, force: true });
     dir = '';
   });
 
-  function runGateWithSilentCompiler(compilerExit: number) {
+  // `baseline: null` writes no baseline file. `compilerStdout` is printed by the fake compiler
+  // before it exits with `compilerExit`.
+  function runGateWithFakeCompiler({
+    compilerExit,
+    compilerStdout = '',
+    baseline = { files: {} },
+    argv = [],
+    foreignBaselines,
+  }: {
+    compilerExit: number;
+    compilerStdout?: string;
+    baseline?: { files: Record<string, number> } | null;
+    argv?: string[];
+    foreignBaselines?: { prefix: string; baselineFile: string; label: string }[];
+  }) {
     dir = mkdtempSync(join(tmpdir(), 'tsc-toolchain-failure-'));
     const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
     const gateUrl = pathToFileURL(join(repoRoot, 'scripts/lib/tsc-baseline-gate.mjs')).href;
     mkdirSync(join(dir, 'src'), { recursive: true });
     writeFileSync(join(dir, 'src/entry.ts'), 'export const answer = 42;\n');
-    writeFileSync(join(dir, 'baseline.json'), JSON.stringify({ files: {} }));
-    writeFileSync(join(dir, 'fake-tsc.mjs'), `process.exit(${compilerExit});\n`);
+    if (baseline !== null) writeFileSync(join(dir, 'baseline.json'), JSON.stringify(baseline));
+    writeFileSync(
+      join(dir, 'fake-tsc.mjs'),
+      (compilerStdout ? `process.stdout.write(${JSON.stringify(compilerStdout)});\n` : '') +
+        `process.exit(${compilerExit});\n`,
+    );
     writeFileSync(
       join(dir, 'run.mjs'),
       `import { runTscBaselineGate } from ${JSON.stringify(gateUrl)};\n` +
         `await runTscBaselineGate({ root: ${JSON.stringify(dir)}, ` +
         `tscCommand: ${JSON.stringify(`${process.execPath} ${join(dir, 'fake-tsc.mjs')}`)}, ` +
-        `baselineFile: ${JSON.stringify(join(dir, 'baseline.json'))}, label: 'fixture', argv: [] });\n`,
+        `baselineFile: ${JSON.stringify(join(dir, 'baseline.json'))}, label: 'fixture', ` +
+        `argv: ${JSON.stringify(argv)}` +
+        (foreignBaselines ? `, foreignBaselines: ${JSON.stringify(foreignBaselines)}` : '') +
+        ` });\n`,
     );
     let status: number | null = 0;
     let stdout = '';
@@ -651,6 +674,20 @@ describe('a no-output toolchain failure never reads as regressed (WI-65547000100
     }
     return { status, stdout, stderr };
   }
+
+  function runGateWithSilentCompiler(compilerExit: number) {
+    return runGateWithFakeCompiler({ compilerExit });
+  }
+
+  // Without this, every `not.toContain('status=regressed')` below could pass vacuously.
+  it('positive control: a real new diagnostic still exits 1 as regressed', () => {
+    const { status, stdout } = runGateWithFakeCompiler({
+      compilerExit: 1,
+      compilerStdout: "src/entry.ts(1,14): error TS2322: Type 'number' is not assignable to type 'string'.\n",
+    });
+    expect(status).toBe(1);
+    expect(stdout).toContain('status=regressed');
+  });
 
   it("passes the compiler's own abnormal exit through (pc-heavy EX_TEMPFAIL 75 -> error(75))", () => {
     const { status, stdout, stderr } = runGateWithSilentCompiler(75);
@@ -676,6 +713,62 @@ describe('a no-output toolchain failure never reads as regressed (WI-65547000100
       expect(code).toBe(TOOLCHAIN_FAILURE_EXIT_CODE);
       expect(formatLintTscResultMarker({ label: 'x', scope: 'all', code })).toContain(`status=error(${code})`);
     }
+  });
+
+  // The OOM shape (WI-37485): tsc aborts with a V8 heap trace and no TS diagnostic. The trace makes
+  // the output non-empty, so this reaches the zero-parseable-diagnostics guard, not the no-output one.
+  it('a crash that prints only a heap trace fails with its own code (134), never regressed', () => {
+    const { status, stdout, stderr } = runGateWithFakeCompiler({
+      compilerExit: 134,
+      compilerStdout:
+        'FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory\n',
+    });
+    expect(status).toBe(134);
+    expect(stdout).toContain('status=error(134)');
+    expect(stdout).not.toContain('status=regressed');
+    expect(stderr).toContain('ZERO parseable diagnostics');
+  });
+
+  it('a crash trace with a plain exit 1 still fails, but as error(70), never regressed', () => {
+    const { status, stdout } = runGateWithFakeCompiler({ compilerExit: 1, compilerStdout: 'Segmentation fault\n' });
+    expect(status).toBe(TOOLCHAIN_FAILURE_EXIT_CODE);
+    expect(stdout).toContain(`status=error(${TOOLCHAIN_FAILURE_EXIT_CODE})`);
+    expect(stdout).not.toContain('status=regressed');
+  });
+
+  // Input and usage refusals judge nothing either: sysexits EX_NOINPUT (66) and EX_USAGE (64).
+  it('an unreadable baseline file fails as error(66), never regressed', () => {
+    const { status, stdout, stderr } = runGateWithFakeCompiler({ compilerExit: 0, baseline: null });
+    expect(status).toBe(66);
+    expect(stdout).toContain('status=error(66)');
+    expect(stdout).not.toContain('status=regressed');
+    expect(stderr).toContain('Failed to read baseline file');
+  });
+
+  it('--seed against a populated baseline is refused as error(64), never regressed', () => {
+    const { status, stdout, stderr } = runGateWithFakeCompiler({
+      compilerExit: 0,
+      baseline: { files: { 'src/entry.ts': 1 } },
+      argv: ['--seed'],
+    });
+    expect(status).toBe(64);
+    expect(stdout).toContain('status=error(64)');
+    expect(stdout).not.toContain('status=regressed');
+    expect(stderr).toContain('--seed refused');
+  });
+
+  it('--seed with an unreadable owning baseline is refused as error(66), never regressed', () => {
+    const { status, stdout, stderr } = runGateWithFakeCompiler({
+      compilerExit: 0,
+      argv: ['--seed'],
+      foreignBaselines: [
+        { prefix: 'src/', baselineFile: '/nonexistent-papercusp-fixture/owner-baseline.json', label: 'owner' },
+      ],
+    });
+    expect(status).toBe(66);
+    expect(stdout).toContain('status=error(66)');
+    expect(stdout).not.toContain('status=regressed');
+    expect(stderr).toContain('owning baseline(s) could not be read');
   });
 });
 

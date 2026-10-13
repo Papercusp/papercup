@@ -1,7 +1,7 @@
 # pg_textsearch (BM25) configuration: preload is mandatory, name the index, compact by hand
 URL: /internal/docs/agent-insights/pg-textsearch-bm25-configuration
 
-How Papercusp's BM25 lexical ranking (pg_textsearch) is configured and why it silently falls back to ts_rank_cd: the library must be preloaded (CREATE EXTENSION is not enough), every query names its index through to_bm25query, indexes use compaction = 'manual' under the bm25Maintenance workflow, and work_items and session_turns also merge a legacy exact list into the BM25 list (D-016, interleaved per D-032), so they keep their tsvector columns. Covers the kill-switch, the lock_timeout trap and host checks.
+How Papercusp's BM25 lexical ranking (pg_textsearch) is configured and why it silently falls back to ts_rank_cd: the library must be preloaded, every query names the index, indexes use manual compaction, and work_items, session_turns, and harness_plans merge bounded exact lists into BM25 so their tsvector columns and GIN indexes stay available. Covers the kill-switch, retirement gates, lock_timeout trap and host checks.
 
 ## The one-line version
 
@@ -56,13 +56,16 @@ Do not hand-write this. The lexical seam, `packages/operator-core/lib/search/lex
 
 pg\_textsearch 1.5.1 has only `to_bm25query`: OR semantics, with no AND, phrase or proximity operator. On a long document whose terms are each common, BM25 alone can rank a verbatim fragment's target far down (measured: ranks 11 to over 500), where the legacy `plainto_tsquery` AND filter with `ts_rank_cd` cover density ranks it first or second. So, whenever BM25 is live, the `work_item` and `session_turn` sources of `search:semantic` (`packages/operator-core/lib/agent-tools/search/sources.ts`) also run the legacy AND query as an **exact list**, and merge it with the BM25 list by interleaving over row identity: `mergeExactAndBm25()` in `rank.ts`. The merged order is BM25 row 1, exact row 1, BM25 row 2, exact row 2, and so on; a row both lists hold appears once, at its earlier slot, so a row at rank r in either list lands at position 2r or better. Until plan decision D-032 the merge was reciprocal-rank fusion, which sorts a row only one list found below every row both lists found. On R-13 run 12 that put a fragment's exact rank-1 target at position 22 of the merged list, outside the hybrid top 10.
 
-The exact list is gated. A capped GIN probe counts the AND set first, and the list runs only when that count is above 0 and at most `EXACT_LIST_MAX_AND_ROWS` (`5000`), defined in `rank.ts`. A larger AND set skips the exact list and returns the BM25 list alone.
+Each exact list is gated. A capped GIN probe counts the AND set first, and the list runs only when that count is above 0 and at most `EXACT_LIST_MAX_AND_ROWS` (`5000`), defined in `rank.ts`. A larger AND set skips the exact list and returns the BM25 list alone.
 
-The kept corpora are `harness_shared.work_items` (`_search`) and `harness_shared.session_turns` (`text_tsv`).
+A scoped Papercusp plan-fragment sample exposed the same risk in `harness_plans`: the fragment target ranked lower with BM25 than with the legacy AND + `ts_rank_cd` exact ranking. As a follow-up, `createPlanSearchSource()` also fuses a bounded exact list with BM25 (`packages/operator-core/lib/agent-tools/search/knowledge-sources.ts`, WI-6554700010008535). Rows use the full `(workspace_id, harness_slug, plan_slug)` identity, and the source filter is reused for candidate counting, exact ranking, and hydration.
 
-* The exact list reads the stored legacy tsvector column and its GIN index, so these corpora keep both. The registry marks them `keepLegacyColumn: 'exact-list'` (`corpora.ts`), and retirement skips them (step 6 below).
+The kept corpora are `harness_shared.work_items` (`_search`), `harness_shared.session_turns` (`text_tsv`), and `harness_shared.harness_plans` (`_search`).
+
+* Each exact list reads its corpus's stored legacy tsvector and GIN index, so these three corpora keep both. The registry marks them `keepLegacyColumn: 'exact-list'` (`corpora.ts`), and retirement skips them (step 6 below). The plans source applies the same workspace, harness, template, audience, exclusion and currentness filter when counting and hydrating the exact list.
 * `corpora.test.ts` pins the kept set to the exact-list sources in both directions. If an exact list is removed, that test fails until `keepLegacyColumn` is dropped too, which returns the column to retirement.
-* The other BM25 sources rank with BM25 alone. Whether they lose fragment queries is unmeasured; WI-6554700010008535 owns that. Reclaiming the two kept columns once pg\_textsearch can express AND or phrase matching is WI-6554700010008546.
+* The remaining BM25 sources still rank with BM25 alone; caller-by-caller sampling and classification remain under WI-6554700010008535.
+* The original D-016 reclamation item, WI-6554700010008546, covers `work_items._search` and `session_turns.text_tsv`. The plan-source retention added by WI-6554700010008535 must also be included when the future AND/phrase-capability trigger is met.
 
 ## Compaction is manual, and maintenance owns it
 

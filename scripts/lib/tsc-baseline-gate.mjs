@@ -17,7 +17,7 @@
  * (operator-vite) for the two thin per-project CLIs built on this.
  */
 
-import { execSync, execFileSync } from 'node:child_process';
+import { execFile, execSync, execFileSync } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -2016,12 +2016,14 @@ export function coveragePrefixesFromGateModule(mod, { onCoverageError } = {}) {
  *
  * @param {string} root Absolute repo root.
  * @param {{exclude?: string[]}} [opts] npm-script names to skip (e.g. the gate doing the asking).
- * @returns {Promise<{gates: {npmScript: string, prefixes: string[]}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
+ * @returns {Promise<{gates: {npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
+ *   `scriptPath` is the repo-relative entrypoint; `tscCommand` is the gate's single-project
+ *   command, or null for a multi-project GATE_COVERAGE gate that cannot act as a cross-leg consumer.
  *   `rosterReadable: false` means the root package.json itself could not be read — the roster is
  *   entirely unknown, so NO absence claim of any strength is available.
  */
 export async function discoverSiblingTypecheckGates(root, { exclude = [] } = {}) {
-  /** @type {{npmScript: string, prefixes: string[]}[]} */
+  /** @type {{npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null}[]} */
   const gates = [];
   /** @type {{npmScript: string, reason: string}[]} */
   const unresolved = [];
@@ -2080,7 +2082,14 @@ export async function discoverSiblingTypecheckGates(root, { exclude = [] } = {})
       });
       continue;
     }
-    gates.push({ npmScript, prefixes });
+    // WI-6554700010009433 — a single-project gate can also judge FOREIGN files as a cross-leg
+    // consumer (see runCrossLegConsumer). Only a gate with its own `-p` command can: a
+    // GATE_COVERAGE fan-out (workspaces, papercusp-libs) spans many programs, so it reports null.
+    const tscCommand =
+      typeof mod?.TSC_COMMAND === 'string' && projectPrefixFromTscCommand(mod.TSC_COMMAND) !== null
+        ? mod.TSC_COMMAND
+        : null;
+    gates.push({ npmScript, prefixes, scriptPath: entry[1], tscCommand });
   }
 
   return { gates, unresolved, rosterReadable: true };
@@ -2233,6 +2242,234 @@ export function runAutoTypecheckRoutes({ root, routes, execFile = execFileSync, 
     }
   }
   return firstFailure;
+}
+
+/**
+ * WI-6554700010009433 — set on a child gate to make it a CROSS-LEG CONSUMER: judge the named
+ * files inside its own program against its own baseline, with no full compile (see
+ * runCrossLegConsumer). A parent's fan-out sets it; nothing else should.
+ */
+export const CROSS_LEG_CONSUMER_ENV = 'PAPERCUSP_TSC_CROSS_LEG_CONSUMER';
+/** `PAPERCUSP_TSC_CROSS_LEG=0` skips the cross-leg fan-out of a scoped run, like `--no-cross-leg`. */
+export const CROSS_LEG_ENV = 'PAPERCUSP_TSC_CROSS_LEG';
+export const CROSS_LEG_MARKER = 'LINT_TSC_CROSS_LEG';
+
+/**
+ * Only a TypeScript or JavaScript SOURCE file can be a member of a consumer leg's program. A
+ * non-source path (`CLAUDE.md`, a `.json` fixture) can never regress there, yet planning it
+ * costs a full compile of every sibling leg: an all-uncovered `--files=CLAUDE.md` run took 84s
+ * instead of ~1s and then reported five legs `clean` for a file none of them contains
+ * (WI-6554700010009433, measured 2026-10-12).
+ */
+const CROSS_LEG_SOURCE_FILE_RE = /\.[cm]?[jt]sx?$/i;
+
+/**
+ * Which consumer legs must judge which named files.
+ *
+ * A file's OWNING leg judges it on the normal path (this gate's own compile, or the routed
+ * delegate). Every other single-project leg can reach the file by import, and that is where an
+ * ambient declaration visible only through the owner's include glob goes missing: three such reds
+ * reached the gate at once (WI-6554700010009424). So each consumer-capable leg gets the named
+ * files it does NOT own. A multi-project GATE_COVERAGE gate (tscCommand null) cannot act as a
+ * consumer; it is returned in `uncheckable` so the report names it rather than implying a check.
+ *
+ * @param {{gates: {npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null}[], files: Iterable<string>}} opts
+ * @returns {{plans: {npmScript: string, scriptPath: string, files: string[]}[], uncheckable: string[]}}
+ */
+export function planCrossLegChecks({ gates, files }) {
+  const named = [...files]
+    .map((file) => String(file).replace(/^\.\//, ''))
+    .filter((file) => CROSS_LEG_SOURCE_FILE_RE.test(file));
+  const owners = new Map(named.map((file) => [file, gateCoveringFile(gates, file)?.npmScript ?? null]));
+  /** @type {{npmScript: string, scriptPath: string, files: string[]}[]} */
+  const plans = [];
+  /** @type {string[]} */
+  const uncheckable = [];
+  for (const gate of gates ?? []) {
+    if (typeof gate.tscCommand !== 'string') {
+      uncheckable.push(gate.npmScript);
+      continue;
+    }
+    const consumerFiles = named.filter((file) => owners.get(file) !== gate.npmScript);
+    if (consumerFiles.length > 0) {
+      plans.push({ npmScript: gate.npmScript, scriptPath: gate.scriptPath, files: consumerFiles });
+    }
+  }
+  return { plans, uncheckable };
+}
+
+/**
+ * ONE consumer leg's verdict: each MEMBER file's error count in this leg against this leg's
+ * effective baseline (its own row, else the owning package's row via `foreignBaselines`, else 0).
+ * A non-member is not this leg's to judge. A TS1xxx diagnostic hard-fails regardless of baseline,
+ * exactly as on the full path.
+ *
+ * @param {{members: string[], errors: TscErrorEntry[], baselineByFile: Record<string, number>, foreignBaselines?: {prefix: string, files: Record<string, number>}[]}} opts
+ * @returns {{regressed: {file: string, current: number, baseline: number}[], broken: string[]}}
+ */
+export function judgeCrossLegMembers({ members, errors, baselineByFile, foreignBaselines = [] }) {
+  const memberSet = new Set(members);
+  const memberErrors = errors.filter((error) => error.file !== null && memberSet.has(error.file));
+  const currentByFile = countByFile(memberErrors);
+  const { effective } = effectiveBaselineByFile({ baselineByFile, currentByFile, foreignBaselines });
+  /** @type {{file: string, current: number, baseline: number}[]} */
+  const regressed = [];
+  for (const file of members) {
+    const current = currentByFile[file] ?? 0;
+    const baseline = effective[file] ?? 0;
+    if (current > baseline) regressed.push({ file, current, baseline });
+  }
+  return { regressed, broken: hardFailFiles(memberErrors) };
+}
+
+/**
+ * CONSUMER mode: judge the named files inside THIS leg's program and print one
+ * `LINT_TSC_CROSS_LEG leg=… status=…` line for the parent. No preflight, no coverage routing (the
+ * files are foreign by construction), no full compile, no ratchet. A baseline or program failure
+ * prints `status=undetermined` and a non-1 code, so the parent can never read it as clean or red.
+ *
+ * @param {{root: string, tscCommand: string, baselineFile: string, foreignBaselines?: {prefix: string, baselineFile: string}[], label: string, files: string[], diagnose?: (args: {root: string, tscCommand: string, files: string[]}) => {members: string[], nonMembers: string[], output: string}, log?: (line: string) => void, warn?: (line: string) => void}} opts
+ * @returns {Promise<number>} The exit code: 0 clean, 1 regressed, 66/70 undetermined.
+ */
+export async function runCrossLegConsumer({
+  root,
+  tscCommand,
+  baselineFile,
+  foreignBaselines = [],
+  label,
+  files,
+  diagnose,
+  log = (line) => console.log(line),
+  warn = (line) => console.error(line),
+}) {
+  let baseline;
+  try {
+    baseline = JSON.parse(readFileSync(baselineFile, 'utf-8'));
+  } catch {
+    warn(`❌ ${label} cross-leg consumer could not read its baseline ${baselineFile}: UNMEASURED.`);
+    log(`${CROSS_LEG_MARKER} leg=${label} status=undetermined reason=baseline-unreadable`);
+    return INPUT_UNREADABLE_EXIT_CODE;
+  }
+  const loadedForeign = [];
+  for (const source of foreignBaselines) {
+    try {
+      loadedForeign.push({ ...source, files: JSON.parse(readFileSync(source.baselineFile, 'utf-8')).files ?? {} });
+    } catch {
+      warn(`⚠ ${label} cross-leg consumer could not read ${source.baselineFile}; files under ${source.prefix} fall back to a 0 baseline.`);
+    }
+  }
+  let result;
+  try {
+    const legDiagnostics = diagnose ?? (await import('./tsc-cross-leg-check.mjs')).legFileDiagnostics;
+    result = legDiagnostics({ root, tscCommand, files });
+  } catch (error) {
+    warn(`❌ ${label} cross-leg consumer could not build its program: ${String(error?.message ?? error)}`);
+    log(`${CROSS_LEG_MARKER} leg=${label} status=undetermined reason=program-failed`);
+    return TOOLCHAIN_FAILURE_EXIT_CODE;
+  }
+  const { regressed, broken } = judgeCrossLegMembers({
+    members: result.members,
+    errors: parseTscErrors(result.output),
+    baselineByFile: baseline.files ?? {},
+    foreignBaselines: loadedForeign,
+  });
+  const failing = new Set([...regressed.map((entry) => entry.file), ...broken]);
+  for (const entry of regressed) {
+    warn(`❌ ${label}: ${entry.file} has ${entry.current} error(s) in this leg (baseline ${entry.baseline}); this leg reaches it by import.`);
+  }
+  for (const file of broken) warn(`❌ ${label}: ${file} has a hard-failing TS1xxx diagnostic in this leg.`);
+  const quoted = result.output.split('\n').filter((line) => [...failing].some((file) => line.startsWith(`${file}(`)));
+  for (const line of quoted.slice(0, 20)) warn(`   ${line}`);
+  if (quoted.length > 20) warn(`   … ${quoted.length - 20} more`);
+  log(
+    `${CROSS_LEG_MARKER} leg=${label} status=${failing.size > 0 ? 'regressed' : 'clean'} ` +
+      `members=${result.members.length} nonMembers=${result.nonMembers.length} regressed=${failing.size}`,
+  );
+  return failing.size > 0 ? 1 : 0;
+}
+
+/**
+ * Run the planned consumer legs as child gate processes, at most `concurrency` at once: each one
+ * builds a full program (3-23 s and 1-2 GB, measured 2026-10-12). A child is RED only when it
+ * exits 1 with a `status=regressed` marker; any other outcome is UNDETERMINED, never clean.
+ *
+ * @param {{root: string, plans: {npmScript: string, scriptPath: string, files: string[]}[], concurrency?: number, spawnChild?: (plan: {npmScript: string, scriptPath: string, files: string[]}) => Promise<{status: number | null, stdout: string, stderr: string}>}} opts
+ * @returns {Promise<{clean: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[]}>}
+ */
+export async function runCrossLegChecks({ root, plans, concurrency = 2, spawnChild }) {
+  const spawnOne =
+    spawnChild ??
+    ((plan) =>
+      new Promise((done) => {
+        execFile(
+          process.execPath,
+          [plan.scriptPath, `--files=${plan.files.join(',')}`],
+          {
+            cwd: root,
+            encoding: 'utf-8',
+            maxBuffer: 64 * 1024 * 1024,
+            env: { ...process.env, [CROSS_LEG_CONSUMER_ENV]: '1', [AUTO_TYPECHECK_ROUTE_ENV]: '1' },
+          },
+          (error, stdout, stderr) => {
+            const code = /** @type {any} */ (error)?.code;
+            done({ status: error ? (Number.isInteger(code) ? code : null) : 0, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+          },
+        );
+      }));
+  /** @type {{status: number | null, stdout: string, stderr: string}[]} */
+  const outcomes = new Array(plans.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < plans.length) {
+      const index = next;
+      next += 1;
+      outcomes[index] = await spawnOne(plans[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, plans.length)) }, worker));
+
+  const report = { clean: [], red: [], undetermined: [] };
+  plans.forEach((plan, index) => {
+    const { status, stdout, stderr } = outcomes[index];
+    const marker = stdout.split(/\r?\n/).filter((line) => line.startsWith(`${CROSS_LEG_MARKER} `)).at(-1) ?? '';
+    const verdict = /\bstatus=(\S+)/.exec(marker)?.[1] ?? null;
+    if (status === 0 && verdict === 'clean') report.clean.push(plan.npmScript);
+    else if (status === 1 && verdict === 'regressed') report.red.push({ npmScript: plan.npmScript, stderr });
+    else {
+      report.undetermined.push({
+        npmScript: plan.npmScript,
+        reason: verdict === null ? `exit ${status ?? 'signal'}, no ${CROSS_LEG_MARKER} marker` : `exit ${status ?? 'signal'}, status=${verdict}`,
+      });
+    }
+  });
+  return /** @type {any} */ (report);
+}
+
+/**
+ * The parent's disclosure of a cross-leg fan-out: one machine-readable summary line, then the
+ * evidence for each red leg and an explicit line for each leg whose view went unchecked.
+ *
+ * @param {{clean: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[], uncheckable: string[]}} report
+ * @returns {string[]}
+ */
+export function formatCrossLegReport({ clean, red, undetermined, uncheckable }) {
+  const names = (list) => (list.length > 0 ? list.join(',') : '-');
+  const lines = [
+    `${CROSS_LEG_MARKER} checked=${clean.length + red.length} clean=${names(clean)} ` +
+      `red=${names(red.map((entry) => entry.npmScript))} ` +
+      `undetermined=${names(undetermined.map((entry) => entry.npmScript))} uncheckable=${names(uncheckable)}`,
+  ];
+  for (const entry of red) {
+    lines.push(`❌ cross-leg: ${entry.npmScript} reaches a named file by import and reports a regression there:`);
+    for (const line of entry.stderr.split(/\r?\n/).filter((text) => text.trim() !== '')) lines.push(`   ${line}`);
+  }
+  for (const entry of undetermined) {
+    lines.push(`⚠ cross-leg: ${entry.npmScript} UNDETERMINED (${entry.reason}); that leg's view of the named files was NOT checked.`);
+  }
+  if (red.length > 0) {
+    lines.push('   The owning leg can pass while these fail: the full gate runs every leg. Skip with --no-cross-leg only to debug.');
+  }
+  return lines;
 }
 
 /**
@@ -2678,6 +2915,15 @@ export function formatLintTscResultMarker({
 /** EX_SOFTWARE (sysexits.h): the fallback when a no-output toolchain failure carries no abnormal code of its own. */
 export const TOOLCHAIN_FAILURE_EXIT_CODE = 70;
 
+// WI-6554700010009284 — the same rule for the gate's own input and usage refusals. Exit 1 is the
+// considered failure the LINT_TSC_RESULT marker labels `regressed`; a run that could not read a
+// baseline, or refused its flags, judged nothing, so it exits a sysexits code and reads `error(N)`.
+// Deliberately NOT exported: these change no declared surface (scripts/lib/tsc-baseline-gate.d.mts).
+/** EX_USAGE (sysexits.h): the invocation asked for something this gate refuses to do. */
+const USAGE_REFUSED_EXIT_CODE = 64;
+/** EX_NOINPUT (sysexits.h): a baseline this run needed could not be read. */
+const INPUT_UNREADABLE_EXIT_CODE = 66;
+
 /**
  * WI-6554700010009284 — the exit code for a run in which tsc produced NO output: a toolchain
  * failure (the compiler never ran, was withheld by pc-heavy, or died before printing anything).
@@ -2943,15 +3189,19 @@ export async function runTscBaselineGate({
   );
   // EI-19421388108187854 — also record it on disk, so a later process can ask
   // whether the standing verdict still covers the current tree. Best-effort:
-  // never let marker bookkeeping fail a typecheck.
-  writeLintTscRunMarker({
-    root,
-    label,
-    runStartIso,
-    headSha: headShaAtStart,
-    scope: runStampScope,
-    files: runStampFiles,
-  });
+  // never let marker bookkeeping fail a typecheck. Never from a cross-leg CONSUMER child
+  // (WI-6554700010009433): it inherits the caller's PAPERCUSP_SID, so its later, narrower stamp
+  // would replace the parent's record of the run the caller actually asked for.
+  if (process.env[CROSS_LEG_CONSUMER_ENV] !== '1') {
+    writeLintTscRunMarker({
+      root,
+      label,
+      runStartIso,
+      headSha: headShaAtStart,
+      scope: runStampScope,
+      files: runStampFiles,
+    });
+  }
 
   // EI-22438149246482169 — an explicit selector is a caller assertion that each named path is
   // real. A typo in `--files=` used to survive normalization and project-coverage checks, then
@@ -2979,6 +3229,50 @@ export async function runTscBaselineGate({
       preflightFailed = true;
       process.exit(1);
       return;
+    }
+  }
+
+  // WI-6554700010009433 — CONSUMER mode: a parent's cross-leg fan-out asked THIS leg to judge
+  // named files it does not own. Judge them inside this leg's program and stop, before the
+  // coverage refusal below (the files are foreign by construction) and the full compile.
+  if (process.env[CROSS_LEG_CONSUMER_ENV] === '1') {
+    if (explicitFiles === null || explicitFiles.size === 0) {
+      console.error(`❌ ${label}: ${CROSS_LEG_CONSUMER_ENV}=1 requires --files; refusing a whole-program consumer run.`);
+      preflightFailed = true;
+      process.exit(USAGE_REFUSED_EXIT_CODE);
+      return;
+    }
+    process.exit(
+      await runCrossLegConsumer({ root, tscCommand, baselineFile, foreignBaselines, label, files: [...explicitFiles] }),
+    );
+    return;
+  }
+
+  // WI-6554700010009433 — CROSS-LEG fan-out. The owning-leg verdict below can pass while every
+  // OTHER leg that reaches a named file by import reds, when the file leans on an ambient
+  // declaration only its owner's include glob provides (WI-6554700010009424: three at once).
+  // Ask each other single-project leg to judge the named files it reaches, BEFORE the compile so
+  // a red lands in seconds. Never inside a routed or consumer child (no recursion), never on a
+  // baseline write. A red exits 1 with `routed-failed`: the failure came from another leg.
+  if (
+    explicitFiles !== null &&
+    explicitFiles.size > 0 &&
+    process.env[AUTO_TYPECHECK_ROUTE_ENV] !== '1' &&
+    process.env[CROSS_LEG_ENV] !== '0' &&
+    !argv.includes('--no-cross-leg') &&
+    !updateFlag &&
+    !argv.includes('--seed')
+  ) {
+    const { gates } = await discoverSiblingTypecheckGates(root);
+    const { plans, uncheckable } = planCrossLegChecks({ gates, files: explicitFiles });
+    if (plans.length > 0) {
+      const crossLeg = await runCrossLegChecks({ root, plans });
+      for (const line of formatCrossLegReport({ ...crossLeg, uncheckable })) console.log(line);
+      if (crossLeg.red.length > 0) {
+        autoRouted = true;
+        process.exit(1);
+        return;
+      }
     }
   }
 
@@ -3368,12 +3662,17 @@ export async function runTscBaselineGate({
   // gate's whole job is refusing to report clean on. Fail loudly instead of silently ratcheting
   // every file's baseline to 0.
   if (tscThrew && errors.length === 0) {
+    // WI-6554700010009284 — the same toolchain failure as the no-output guard above, so the same
+    // exit: the child's own abnormal code (an OOM abort is 134), else EX_SOFTWARE. Never 1, which
+    // the LINT_TSC_RESULT marker reads as `regressed` about a compile that measured nothing.
+    const toolchainExit = toolchainFailureExitCode({ status: tscChildStatus, signal: tscChildSignal });
     console.error(
       '❌ tsc exited non-zero (crashed) but produced ZERO parseable diagnostics — ' +
-        'toolchain failure (e.g. an OOM crash), not a clean run. Raw output follows:',
+        `toolchain failure (e.g. an OOM crash), not a clean run. Exiting ${toolchainExit}: the verdict is ` +
+        `error(${toolchainExit}), UNMEASURED, not a type regression. Raw output follows:`,
     );
     console.error(tscOutput.slice(0, 4000));
-    process.exit(1);
+    process.exit(toolchainExit);
   }
 
   // Reconcile the actual measured program with the caller's own named files. Already-routed
@@ -3411,8 +3710,11 @@ export async function runTscBaselineGate({
   try {
     baseline = JSON.parse(readFileSync(baselineFile, 'utf-8'));
   } catch {
-    console.error(`❌ Failed to read baseline file: ${baselineFile}`);
-    process.exit(1);
+    console.error(
+      `❌ Failed to read baseline file: ${baselineFile} — exiting ${INPUT_UNREADABLE_EXIT_CODE}: ` +
+        `error(${INPUT_UNREADABLE_EXIT_CODE}), UNMEASURED, not a type regression.`,
+    );
+    process.exit(INPUT_UNREADABLE_EXIT_CODE);
     return;
   }
   const ownBaselineByFile = baseline.files ?? {};
@@ -3460,7 +3762,7 @@ export async function runTscBaselineGate({
         `❌ --seed refused: ${baselineFile} already has ${Object.keys(ownBaselineByFile).length} file(s) recorded. ` +
           `--seed is ONLY for a brand-new, empty baseline (files: {}) — use --update to ratchet an existing one.`,
       );
-      process.exit(1);
+      process.exit(USAGE_REFUSED_EXIT_CODE);
       return;
     }
     if (brokenFiles.length > 0) {
@@ -3480,7 +3782,7 @@ export async function runTscBaselineGate({
         `❌ --seed refused: ${unavailableForeign.length} owning baseline(s) could not be read. ` +
           `Restore them before partitioning inherited and consumer-context diagnostics.`,
       );
-      process.exit(1);
+      process.exit(INPUT_UNREADABLE_EXIT_CODE);
       return;
     }
 

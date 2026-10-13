@@ -53,7 +53,6 @@ import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
-import { stampTerminalNowBlock } from './terminal-now-stamp';
 import { parseRequirementBars } from '../../acceptance-bar-seed';
 import { productShapingWriteAdvisory } from './product-shaping';
 
@@ -112,7 +111,6 @@ export type SetContentValue =
       slug: string;
       contentHash: string;
       warning?: string;
-      nowStamped?: boolean;
       parseFeedback: ItemParseSummary;
       /**
        * WI-40825: plan items whose SEMANTIC text this write changed or removed.
@@ -515,17 +513,6 @@ export async function evaluateSetContent(
     };
   }
 
-  // WI-38303: raw-content writers may still edit prose on an already-terminal
-  // plan. Preserve the terminal-Now invariant in the shared evaluator before
-  // lint and derived indexes are written. Idempotent and prepend-only; an
-  // absent Now block remains absent.
-  const terminalStamp = stampTerminalNowBlock(body, proposed.frontmatter.status ?? '');
-  const nowStamped = terminalStamp !== null;
-  if (terminalStamp !== null) {
-    body = terminalStamp;
-    proposed = parsePlan(body, { filePath });
-  }
-
   // A raw edit may change the BAR source without crossing a lifecycle gate.
   // Ratchet a previously parseable Requirements section here, at the shared
   // write path, so a malformed nested fence cannot sit in the plan until a
@@ -607,7 +594,6 @@ export async function evaluateSetContent(
       slug,
       contentHash: hashPlanContent(body),
       ...(warning ? { warning } : {}),
-      ...(nowStamped ? { nowStamped: true } : {}),
       parseFeedback,
       ...(itemTextChanges.length > 0 ? { itemTextChanges } : {}),
       ...(planDrainTransitionChanged ? { planDrainTransitionChanged: true } : {}),
@@ -775,7 +761,6 @@ export default defineTool({
             // Surfacing (EI-83 fix #2): present only when the write removed
             // items/decisions — so even an allowed shrink is visible.
             ...(v.warning ? { warning: v.warning } : {}),
-            ...(v.nowStamped ? { nowStamped: true } : {}),
             version: result.version,
             filePath: result.filePath,
             // Item-parse feedback (WI-3363), computed in evaluateSetContent.

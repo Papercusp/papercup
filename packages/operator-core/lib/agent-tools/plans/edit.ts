@@ -245,7 +245,6 @@ export default defineTool({
             slug: v.slug,
             contentHash: v.contentHash,
             ...(v.planDrainTransitionChanged ? { planDrainTransitionChanged: true } : {}),
-            ...(v.nowStamped ? { nowStamped: true } : {}),
             version: result.version,
             filePath: result.filePath,
             revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,

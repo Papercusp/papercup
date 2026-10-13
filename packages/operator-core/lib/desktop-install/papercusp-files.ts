@@ -21,7 +21,8 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import * as TOML from '@iarna/toml';
 import { fileURLToPath } from 'node:url';
-import { createTextCollector } from '../child-output';
+import { collectChildOutput, createTextCollector } from '../child-output';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { filterInstallSources, describeRefusals } from './install-source-guard';
 // Single definition, shared with the pot-git ext:: transport (EI-20078551747038927).
 // Re-exported below so existing importers of this module keep resolving it here.
@@ -177,6 +178,10 @@ export interface InstallResult extends InstallPaths {
   /** True when [tui].status_line was merged into an existing ~/.codex/config.toml this call
    *  (false when codex isn't set up here or the user already configured their own status line). */
   codexStatusLineMerged: boolean;
+  /** The pinned RTK binary at ~/.local/bin/rtk (WI-6554700010009448): already current, a
+   *  background install started, or why nothing was attempted. Never a failure: the install
+   *  itself runs after this call returns, and the rtk-liveness alarm reports a lasting miss. */
+  rtkProvision: RtkProvisionResult;
 }
 
 export interface InstallOpts {
@@ -198,6 +203,8 @@ export interface InstallOpts {
    * resolution. Tests set this to a fake tree.
    */
   operatorAppRoot?: string;
+  /** RTK binary provisioning (WI-6554700010009448). Defaults to `provisionRtk`; tests inject. */
+  provisionRtk?: (deps: ProvisionRtkDeps) => Promise<ProvisionRtkHandle>;
 }
 
 /**
@@ -3714,6 +3721,167 @@ async function installCodexStatusLine(home: string): Promise<{ merged: boolean }
   }
 }
 
+// ── RTK binary (WI-6554700010009448) ───────────────────────────────────────────
+//
+// Provision the pinned RTK binary at ~/.local/bin/rtk on a DESKTOP install: the job
+// install-standalone-mcp.sh step 4i does on the dev box. Every RTK seam (the
+// native-Bash egress guard, capability:bash, the Codex rewrite hook) looks for it
+// there and fails OPEN without it, so a desktop install used to run with no
+// compression at all and only alarm:rtk-liveness:<host> said so.
+//
+// ONE pin source: this runs apps/operator/scripts/install-rtk.sh (shipped into the
+// sidecar by build-desktop-sidecar.sh) and reads RTK_VERSION from it for the fast
+// path. Never copy the version or the sha256s into TypeScript.
+//
+// Never blocks a launch: installPapercuspFiles runs on launch paths (console
+// launcher, plugin spawn, host bootstrap), so a missing or outdated binary starts the
+// script in the BACKGROUND and the call returns at once. The steady state costs one
+// `rtk --version` (2 s cap). One run at a time per process; a failure is logged and
+// the next install retries. Fail-soft throughout: Windows (no pinned asset and no
+// bash), a missing script, offline, or a bad download only report a status.
+//
+// Only the REAL user's home: the seams resolve rtk from $HOME / homedir(), so an
+// install into an overridden `home` (tests, sandboxes) would place a binary nothing
+// reads, and would download from inside a test. Those calls report 'home-override'.
+
+/**
+ * - `current`: the pinned version is already at ~/.local/bin/rtk
+ * - `started`: install-rtk.sh is now running in the background
+ * - `in-flight`: an earlier call's run is still going
+ * - `unsupported-platform`: Windows (install-rtk.sh has no pinned asset there)
+ * - `script-missing`: no install-rtk.sh shipped in this layout
+ * - `home-override`: `home` is not the real user's home, so nothing is installed
+ */
+export type RtkProvisionStatus =
+  | 'current'
+  | 'started'
+  | 'in-flight'
+  | 'unsupported-platform'
+  | 'script-missing'
+  | 'home-override';
+
+export interface RtkProvisionResult {
+  status: RtkProvisionStatus;
+  /** The install-rtk.sh that was (or would be) run; empty when none resolved. */
+  script: string;
+  /** RTK_VERSION read from that script; empty when it was not read. */
+  pinnedVersion: string;
+}
+
+export interface RtkInstallOutcome {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stderrTail: string;
+}
+
+export interface ProvisionRtkDeps {
+  home: string;
+  /** install-rtk.sh, already resolved through installPapercuspFiles' source guard. */
+  script: string | null;
+  platform?: NodeJS.Platform;
+  /** The real user's home. Provisioning is skipped for any other `home`. */
+  realHome?: string;
+  /** The version `<binary> --version` reports, or null when it does not run. */
+  probeVersion?: (binary: string) => Promise<string | null>;
+  /** Runs install-rtk.sh to completion. Must resolve, never reject. */
+  runScript?: (script: string, home: string) => Promise<RtkInstallOutcome>;
+}
+
+export interface ProvisionRtkHandle {
+  result: RtkProvisionResult;
+  /** The background run when one is going (`started` / `in-flight`), else null. */
+  done: Promise<RtkInstallOutcome> | null;
+}
+
+/** Hard ceiling for one background install (download + verify + copy). */
+const RTK_PROVISION_TIMEOUT_MS = 5 * 60_000;
+
+const rtkProvisionState = pinModuleState('@papercusp/operator-core.rtk-provision', () => ({
+  inFlight: null as Promise<RtkInstallOutcome> | null,
+}));
+
+/** The pinned RTK_VERSION in install-rtk.sh's text, or '' when absent. */
+export function readPinnedRtkVersion(scriptText: string): string {
+  return /^RTK_VERSION="([^"]+)"/m.exec(scriptText)?.[1] ?? '';
+}
+
+/** install-rtk.sh sits two levels above the cc hook dir in every shipped layout. */
+export function rtkInstallerCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
+  return ccHookDirCandidates(operatorAppRoot, explicitRoot).map((dir) => path.join(dir, '..', '..', 'install-rtk.sh'));
+}
+
+async function probeRtkVersion(binary: string): Promise<string | null> {
+  const { execFile } = await import('node:child_process');
+  return new Promise((resolve) => {
+    execFile(binary, ['--version'], { timeout: 2_000 }, (err, stdout) => {
+      if (err) return resolve(null);
+      // `rtk 0.51.0` -> `0.51.0` (install-rtk.sh reads field 2 the same way).
+      resolve(String(stdout).trim().split(/\s+/)[1] ?? null);
+    });
+  });
+}
+
+async function runInstallRtkScript(script: string, home: string): Promise<RtkInstallOutcome> {
+  const { spawn } = await import('node:child_process');
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn('bash', [script], {
+        env: { ...process.env, HOME: home },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: RTK_PROVISION_TIMEOUT_MS,
+      });
+    } catch (err) {
+      resolve({ exitCode: null, signal: null, stderrTail: String(err) });
+      return;
+    }
+    const out = collectChildOutput(child);
+    child.on('error', (err) => resolve({ exitCode: null, signal: null, stderrTail: String(err) }));
+    child.on('close', (exitCode, signal) =>
+      resolve({ exitCode, signal, stderrTail: out.stderr.text().slice(-600) }),
+    );
+  });
+}
+
+/** Provision ~/.local/bin/rtk from install-rtk.sh without blocking (see the block comment above). */
+export async function provisionRtk(deps: ProvisionRtkDeps): Promise<ProvisionRtkHandle> {
+  const script = deps.script ?? '';
+  const settled = (status: RtkProvisionStatus, pinnedVersion = ''): ProvisionRtkHandle => ({
+    result: { status, script, pinnedVersion },
+    done: null,
+  });
+  if ((deps.platform ?? process.platform) === 'win32') return settled('unsupported-platform');
+  if (path.resolve(deps.home) !== path.resolve(deps.realHome ?? os.homedir())) return settled('home-override');
+  if (!deps.script) return settled('script-missing');
+
+  const pinnedVersion = readPinnedRtkVersion(await fs.readFile(deps.script, 'utf8').catch(() => ''));
+  const probe = deps.probeVersion ?? probeRtkVersion;
+  if (pinnedVersion && (await probe(path.join(deps.home, '.local', 'bin', 'rtk'))) === pinnedVersion) {
+    return settled('current', pinnedVersion);
+  }
+  if (rtkProvisionState.inFlight) {
+    return { result: { status: 'in-flight', script, pinnedVersion }, done: rtkProvisionState.inFlight };
+  }
+
+  const run = deps.runScript ?? runInstallRtkScript;
+  const done = run(deps.script, deps.home)
+    .then((outcome) => {
+      if (outcome.exitCode !== 0) {
+        const last = outcome.stderrTail.trim().split('\n').pop() ?? '';
+        console.warn(
+          `[desktop-install] install-rtk.sh ended with ${outcome.exitCode ?? outcome.signal ?? 'no status'}: ${last} ` +
+            '(RTK stays off until the next install retries; alarm:rtk-liveness reports it)',
+        );
+      }
+      return outcome;
+    })
+    .finally(() => {
+      rtkProvisionState.inFlight = null;
+    });
+  rtkProvisionState.inFlight = done;
+  return { result: { status: 'started', script, pinnedVersion }, done };
+}
+
 export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<InstallResult> {
   const home = opts.home ?? os.homedir();
   const explicitRoot = !!opts.operatorAppRoot;
@@ -3970,6 +4138,12 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // run resolves it (PAPERCUSP_SIDECAR_BIN set), so the link lands regardless.
   await ensureBundledNodeLinked(home);
 
+  // WI-6554700010009448: the pinned RTK binary every RTK seam looks for. Resolved
+  // through the same scratch-source guard as the hooks; the install itself runs in the
+  // background (see provisionRtk), so this never delays a launch.
+  const rtkScript = await resolveSource('rtk installer', rtkInstallerCandidates(operatorAppRoot, explicitRoot));
+  const rtkProvision = (await (opts.provisionRtk ?? provisionRtk)({ home, script: rtkScript })).result;
+
   // macOS Tutorial.app wrapper (WI-2197): only where it means something (darwin)
   // and only once the dispatcher it invokes actually landed — a DMG install has
   // no postinstall-script hook, so this is provisioned here at first boot,
@@ -4032,6 +4206,7 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     injectionHooksInstalled: injectionHooks,
     claudeSettingsMerged: claudeHooks.settingsMerged,
     codexStatusLineMerged: codexStatusLine.merged,
+    rtkProvision,
   };
 }
 

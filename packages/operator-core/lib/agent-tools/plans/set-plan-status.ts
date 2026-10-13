@@ -26,8 +26,6 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
-import { stampTerminalNowBlock } from './terminal-now-stamp';
-import { stampGreenlitNowBlock } from './greenlit-now-stamp';
 import { stampForcedPastWaiver, type ForcedPastRecord } from './forced-past-stamp';
 import {
   evaluateSupersedeItemGate,
@@ -225,7 +223,6 @@ type SetPlanStatusValue =
       oldStatus: string | null;
       newStatus: string;
       changed: boolean;
-      nowStamped?: boolean;
       /** True when this write appended a forced-ship waiver — see forced-past-stamp.ts. */
       forcedPastStamped?: boolean;
     }
@@ -270,56 +267,35 @@ export function flipPlanFrontmatterStatus(
 }
 
 /**
- * Apply a plan-level lifecycle target and the Now-block invariants as one pure
- * mutation. Unlike {@link flipPlanFrontmatterStatus}, an already-terminal (or
- * already-`ready`) target is not necessarily a no-op: it repairs an unstamped
- * `## Now` block. That makes the existing bulk status verb a safe, idempotent
- * backfill path for BOTH directions — a plan that closed while its Now still
- * read live, and a greenlit draft whose Now still reads "not active until
- * greenlit" (WI-39804).
+ * Apply a plan-level lifecycle target as one pure mutation: the frontmatter
+ * status line flips and nothing else in the body changes.
+ *
+ * derived-status-not-hand-written-2026-10-12 P-006: the terminal and greenlit
+ * Now stamps that used to ride on this flip are retired. The Now is a dated
+ * note, not a status claim — readers get the plan's lifecycle from
+ * `derivedStatus` (P-001) and see how many transitions a note predates (P-003)
+ * — so an already-at-target flip is a plain no-op, never a repair stamp.
  */
 export function applyPlanStatusBody(
   body: string,
   target: string,
   expectedCurrent?: string,
-  today: Date = new Date(),
 ): {
   newBody: string | null;
   oldStatus: string | null;
   code?: 'no_status_line' | 'unexpected_status' | 'noop';
   changed: boolean;
-  nowStamped: boolean;
 } {
   const flip = flipPlanFrontmatterStatus(body, target, expectedCurrent);
-  if (flip.code === 'no_status_line' || flip.code === 'unexpected_status') {
-    return { ...flip, changed: false, nowStamped: false };
-  }
-
-  const statusChanged = flip.code !== 'noop';
-  const candidate = flip.newBody ?? body;
-  // The two stamps are mutually exclusive by target — terminal covers
-  // shipped/superseded, greenlit covers ready — so the first non-null wins and
-  // neither can ever see a body the other rewrote.
-  const stamped =
-    stampTerminalNowBlock(candidate, target, today) ??
-    stampGreenlitNowBlock(candidate, target, today);
-  if (!statusChanged && stamped === null) {
-    return { ...flip, changed: false, nowStamped: false };
-  }
-  return {
-    newBody: stamped ?? flip.newBody,
-    oldStatus: flip.oldStatus,
-    changed: statusChanged,
-    nowStamped: stamped !== null,
-  };
+  return { ...flip, changed: flip.code === undefined && flip.newBody !== null };
 }
 
 /**
  * Whether the acceptance gate must run before a lifecycle write.
  *
- * A caller that supplies expectedCurrent:'shipped' is performing the
- * idempotent terminal-Now repair pass (WI-38303), not entering the shipped
- * state.  The CAS guard is enforced inside the plan lock, so skipping the
+ * A caller that supplies expectedCurrent:'shipped' is re-applying the status
+ * to a plan that is already shipped (an idempotent no-op since P-006 retired
+ * the terminal-Now repair stamp), not entering the shipped state.  The CAS guard is enforced inside the plan lock, so skipping the
  * preflight here is safe: a plan that is not already shipped simply refuses
  * with `unexpected_status` and is never mutated.  Without this distinction a
  * repair replay needlessly evaluates the completion gate (and may launch an
@@ -1039,8 +1015,8 @@ export default defineTool({
             const waived = stampForcedPastWaiver(mutation.newBody ?? current, forcedPast);
             const finalBody = waived ?? mutation.newBody;
             if (finalBody === null) {
-              // Already at the target and already stamped (or non-terminal),
-              // with no waiver to record — success, nothing written.
+              // Already at the target with no waiver to record — success,
+              // nothing written.
               return {
                 newBody: null,
                 value: {
@@ -1048,22 +1024,17 @@ export default defineTool({
                   oldStatus: mutation.oldStatus,
                   newStatus: status,
                   changed: false,
-                  nowStamped: false,
                   forcedPastStamped: false,
                 },
               };
             }
             return {
-              // A terminal flip — or an idempotent re-application to an old
-              // terminal plan — stamps the cold-resume anchor in this SAME
-              // locked write. See terminal-now-stamp.ts / WI-38303.
               newBody: bumpUpdatedDate(finalBody),
               value: {
                 ok: true,
                 oldStatus: mutation.oldStatus,
                 newStatus: status,
                 changed: mutation.changed,
-                nowStamped: mutation.nowStamped,
                 forcedPastStamped: waived !== null,
               },
             };

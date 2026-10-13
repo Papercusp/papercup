@@ -4225,9 +4225,14 @@ export function launchSessionPort(source: any, target: any, account: any, args: 
  * empty target (consult-backed-parking-2026-10-12 P-011, bar R-23). It refuses
  * a single session only — never a backend pair (D-009): an OMP source with a
  * transcript ports like any other. Same-backend (native) resumes keep their own
- * path and are not judged here. `home` is injectable for tests. */
+ * path and are not judged here. `home` is injectable for tests.
+ * @param {any} source
+ * @param {any} target
+ * @param {{ tracked?: boolean, home?: string }} [options]
+ * @returns {string | null} */
 export function unresumableSourceCause(source: any, target: any, { tracked, home }?: {
-    home?: string | undefined;
+    tracked?: boolean;
+    home?: string;
 }): string | null;
 export function resumeFlow(args?: {}, { apiImpl, launchResolvedResumeImpl }?: {
     apiImpl?: typeof api | undefined;

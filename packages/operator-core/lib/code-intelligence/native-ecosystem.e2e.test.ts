@@ -21,12 +21,15 @@ describe('native P018 private operator CLI incident claim and resume', () => {
     // refused by the committed-source guard.
     const artifactRoot = mkdtempSync(join(tmpdir(), 'native-incident-handler-'));
     const handlerPath = join(artifactRoot, 'handler.mjs');
-    const build = spawnSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/host-handler.ts', handlerPath], {
-      cwd: root, env: process.env, encoding: 'utf8', timeout: 120_000,
-    });
-    expect(build.status, build.stdout + build.stderr).toBe(0);
-    const handlerHash = createHash('sha256').update(readFileSync(handlerPath)).digest('hex');
     try {
+    // Keep the producer's own deadline and evidence; kill its entire process
+    // group and remove its artifacts even when this precondition fails.
+    const build = await nativeFixtureProcess('bash',
+      [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/host-handler.ts', handlerPath], {
+        cwd: root, env: process.env, timeoutMs: 120_000,
+      });
+    expect(build.code, `signal=${build.signal ?? 'none'}\n${build.output}`).toBe(0);
+    const handlerHash = createHash('sha256').update(readFileSync(handlerPath)).digest('hex');
     let pendingStage = '';
     let result;
       result = await nativeFixtureProcess(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),

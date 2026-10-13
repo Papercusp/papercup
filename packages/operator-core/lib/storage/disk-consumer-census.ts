@@ -25,12 +25,13 @@
  *
  * Linux-only (GNU du flags, /proc/self/mountinfo); other platforms skip with a reason.
  */
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants, promises as fsp, statfs as statfsCb } from 'node:fs';
 import { request } from 'node:http';
 import { hostname } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
+import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 import { watchedPaths } from './disk-space-alarm';
 import {
@@ -38,13 +39,15 @@ import {
   CENSUS_COVERAGE_GAP_BYTES,
   CENSUS_FLOOR_BYTES,
   CENSUS_MAX_DEPTH,
+  censusCommand,
   censusDepth,
-  censusDuCommand,
+  censusOwnFilesArgs,
   deviceMountRoot,
   devToMajorMinor,
   DuTreeAccumulator,
   joinCensusGrowth,
   parseMountInfo,
+  parseOwnFilesRecord,
   sortCensusRows,
   type CensusConsumer,
   type CensusConsumerKind,
@@ -222,7 +225,7 @@ export async function runDuTree(
   const privileged = Boolean(opts.sudo) || process.getuid?.() === 0;
   // Best-effort I/O at the lowest level, not the idle class: see CENSUS_IONICE_ARGS.
   // sudo relays the timeout's SIGTERM to du, so the 90 min cap still ends the walk.
-  const [cmd, args] = censusDuCommand(duArgs, {
+  const [cmd, args] = censusCommand('du', duArgs, {
     ionice: await resolveBin('ionice'),
     nice: await resolveBin('nice'),
     sudo: opts.sudo ?? null,
@@ -277,25 +280,86 @@ export async function runDuTree(
   });
 }
 
-/** The immediate regular files of `dir` with their ALLOCATED size (du's unit). */
-async function listOwnFiles(dir: string): Promise<Array<{ path: string; bytes: number }>> {
-  let names: string[];
-  try {
-    names = await fsp.readdir(dir);
-  } catch {
-    return [];
-  }
-  const out: Array<{ path: string; bytes: number }> = [];
-  for (const name of names) {
-    const path = dir === '/' ? `/${name}` : `${dir}/${name}`;
+/** Bound on listing one directory's own files; a 427,868-entry directory lists in ~15 s. */
+export const CENSUS_OWN_FILES_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Spawns one census subprocess with stdin ignored and stdout/stderr piped. */
+export type CensusSpawn = (cmd: string, args: string[]) => ChildProcessByStdio<null, Readable, Readable>;
+
+const defaultCensusSpawn: CensusSpawn = (cmd, args) => spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+export interface OwnFilesListing {
+  /** The directory's immediate regular files at or above the floor, ALLOCATED bytes (du's unit). */
+  files: Array<{ path: string; bytes: number }>;
+  /** Why the listing may be partial (find failed, exited non-zero, or timed out); absent when complete. */
+  error?: string;
+}
+
+/**
+ * The immediate regular files of `dir` at or above `floorBytes`, through ONE find
+ * subprocess run like the du walk (sudo -n when resolved, best-effort I/O level 7,
+ * nice 19). Never a per-entry stat on the event loop: that ran at ~106 entries/s on
+ * bg-host and took ~67 min for one 427,868-file directory (WI-6554700010009487).
+ * Never throws; a partial listing carries `error`.
+ */
+export async function listOwnFiles(
+  dir: string,
+  opts: { floorBytes: number; sudo?: string | null; timeoutMs?: number; spawn?: CensusSpawn },
+): Promise<OwnFilesListing> {
+  const [cmd, args] = censusCommand('find', censusOwnFilesArgs(dir), {
+    ionice: await resolveBin('ionice'),
+    nice: await resolveBin('nice'),
+    sudo: opts.sudo ?? null,
+  });
+  const timeoutMs = opts.timeoutMs ?? CENSUS_OWN_FILES_TIMEOUT_MS;
+  return new Promise<OwnFilesListing>((resolve) => {
+    const files: OwnFilesListing['files'] = [];
+    let pending = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const take = (record: string): void => {
+      const file = parseOwnFilesRecord(record);
+      if (file && file.bytes >= opts.floorBytes) files.push(file);
+    };
+    const settle = (error?: string): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(error ? { files, error } : { files });
+    };
+    let child: ReturnType<CensusSpawn>;
     try {
-      const st = await fsp.lstat(path);
-      if (st.isFile()) out.push({ path, bytes: Number(st.blocks) * 512 });
-    } catch {
-      continue;
+      child = (opts.spawn ?? defaultCensusSpawn)(cmd, args);
+    } catch (err) {
+      settle(`find failed: ${(err as Error)?.message ?? String(err)}`);
+      return;
     }
-  }
-  return out;
+    timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, timeoutMs);
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      pending += chunk;
+      const parts = pending.split('\0');
+      pending = parts.pop() ?? '';
+      for (const record of parts) take(record);
+    });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      if (stderr.length < 4096) stderr += chunk;
+    });
+    child.on('error', (err: Error) => settle(`find failed: ${err.message}`));
+    child.on('close', (code: number | null) => {
+      if (pending) take(pending);
+      const firstErr = stderr.split('\n').find((l) => l.trim())?.trim();
+      if (timedOut) settle(`find timed out after ${Math.round(timeoutMs / 1000)} s`);
+      else if (code !== 0) settle(`find exited ${code}${firstErr ? `: ${firstErr}` : ''}`);
+      else settle();
+    });
+  });
 }
 
 /** A store sized through its own API because the operator user cannot read its files. */
@@ -455,6 +519,8 @@ export interface CensusDeps {
   resolveSudo?: () => Promise<string | null>;
   /** statfs sampler used around each walk; null keeps the resolved device numbers (synthetic devices in tests). */
   statDevice?: ((mountRoot: string) => Promise<CensusDeviceUsage>) | null;
+  /** Lists a max-depth directory's own files; defaults to the single-find-subprocess lister. */
+  listOwnFiles?: typeof listOwnFiles;
   floorBytes?: number;
   maxDepth?: number;
   now?: () => Date;
@@ -471,9 +537,17 @@ export async function buildDeviceConsumers(
   du: DuRun,
   stores: ReadonlyArray<ApiSizedStore | null>,
   floorBytes: number,
-): Promise<{ consumers: CensusConsumer[]; attributedBytes: number; unattributedBytes: number }> {
+  opts: { sudo?: string | null; listOwnFiles?: typeof listOwnFiles } = {},
+): Promise<{ consumers: CensusConsumer[]; attributedBytes: number; unattributedBytes: number; ownFilesNotes: string[] }> {
   const consumers: CensusConsumer[] = [...du.summary.consumers];
-  for (const own of du.summary.ownFiles) consumers.push(...attributeOwnFiles(own, await listOwnFiles(own.dir), floorBytes));
+  const ownFilesNotes: string[] = [];
+  const list = opts.listOwnFiles ?? listOwnFiles;
+  for (const own of du.summary.ownFiles) {
+    // Listed with the walk's privilege: a root-owned directory the walk measured must not list as empty.
+    const listing = await list(own.dir, { floorBytes, sudo: opts.sudo ?? null });
+    if (listing.error) ownFilesNotes.push(`own files of ${own.dir} may be incomplete (${listing.error})`);
+    consumers.push(...attributeOwnFiles(own, listing.files, floorBytes));
+  }
   const api = await apiStoreConsumers(device, stores, du.privileged === true);
   consumers.push(...api);
   // A killed walk never printed the mount total; the depth-1 directories it did finish are a lower bound.
@@ -485,7 +559,13 @@ export async function buildDeviceConsumers(
   if (unattributedBytes > 0) {
     consumers.push({ consumer: unattributedKey(device.device), kind: 'unattributed', depth: 0, bytes: unattributedBytes });
   }
-  return { consumers, attributedBytes, unattributedBytes };
+  return { consumers, attributedBytes, unattributedBytes, ownFilesNotes };
+}
+
+/** The run note's phase timings, so a slow phase is visible on the row itself. */
+export function censusPhaseNote(walkMs: number, attributionMs: number, ownFilesDirs: number): string {
+  const s = (ms: number) => (ms / 1000).toFixed(1);
+  return `phases: walk ${s(walkMs)} s, attribution ${s(attributionMs)} s (${ownFilesDirs} own-files dir(s))`;
 }
 
 /** One census pass over every watched device, then the 30-day prune. Never throws per device. */
@@ -514,14 +594,26 @@ export async function runDiskConsumerCensusOnce(
       // ~40 min), so the resolved used bytes are stale by the time a later device is walked.
       // Re-sample statfs around this walk and reconcile against the midpoint.
       const before = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
+      const walkStarted = Date.now();
       const du = await (deps.runDu ?? runDuTree)(resolved.device, { floorBytes, maxDepth, sudo });
+      const walkMs = Date.now() - walkStarted;
       const after = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
       const { device, note: usageNote } = reconcileWalkUsage(resolved, before, after);
-      const { consumers, attributedBytes, unattributedBytes } = await buildDeviceConsumers(device, du, stores, floorBytes);
+      const attributionStarted = Date.now();
+      const { consumers, attributedBytes, unattributedBytes, ownFilesNotes } = await buildDeviceConsumers(
+        device,
+        du,
+        stores,
+        floorBytes,
+        { sudo, ...(deps.listOwnFiles ? { listOwnFiles: deps.listOwnFiles } : {}) },
+      );
+      const attributionMs = Date.now() - attributionStarted;
       const finishedAt = now();
       const complete = !du.timedOut && !du.error && du.summary.rootBytes !== null;
       const notes = [
         du.privileged ? 'du walked as root (sudo -n)' : 'du walked unprivileged (sudo -n unavailable)',
+        censusPhaseNote(walkMs, attributionMs, du.summary.ownFiles.length),
+        ...ownFilesNotes,
         usageNote,
         du.timedOut ? 'du timed out; sizes are lower bounds' : null,
         du.error ? `du failed: ${du.error}` : null,

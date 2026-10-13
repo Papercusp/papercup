@@ -198,18 +198,48 @@ export function rowsToReuseProofs(rows) {
  * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
  * @param {string} o.workspaceName
  * @param {string} o.runContext
+ * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @returns {Promise<{ proofs: Map<string, import('./test-pass-reuse.mjs').ReuseProof>, rows: number }>}
  */
-export async function loadReuseProofs({ client, workspaceName, runContext }) {
+export async function loadReuseProofs({ client, workspaceName, runContext, files }) {
+  const selectedFiles = Array.isArray(files)
+    ? [...new Set(files.filter((file) => typeof file === "string" && file.length > 0))]
+    : null;
+  if (selectedFiles?.length === 0) return { proofs: new Map(), rows: 0 };
+  const fileFilter = selectedFiles ? "AND test_file = ANY($3::text[])" : "";
   const { rows } = await client.query(
     `SELECT DISTINCT ON (test_file) test_file, recorded_sha, recorded_at, executed_modules,
             read_paths, inputs_captured, opaque_reasons, run_context, runner_identity
        FROM harness_shared.test_executed_sources
-      WHERE workspace_name = $1 AND run_context = $2
+      WHERE workspace_name = $1 AND run_context = $2 ${fileFilter}
       ORDER BY test_file, recorded_at DESC`,
-    [workspaceName, runContext],
+    selectedFiles ? [workspaceName, runContext, selectedFiles] : [workspaceName, runContext],
   );
   return { proofs: rowsToReuseProofs(rows), rows: rows.length };
+}
+
+/**
+ * List only the test-file keys with pass proofs for one workspace and run context. Lane callers
+ * use this narrow result to classify membership before fetching the wide proof arrays.
+ *
+ * @param {object} o
+ * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
+ * @param {string} o.workspaceName
+ * @param {string} o.runContext
+ * @returns {Promise<{ files: string[], rows: number }>}
+ */
+export async function loadReuseProofFiles({ client, workspaceName, runContext }) {
+  const { rows } = await client.query(
+    `SELECT DISTINCT test_file
+       FROM harness_shared.test_executed_sources
+      WHERE workspace_name = $1 AND run_context = $2
+      ORDER BY test_file`,
+    [workspaceName, runContext],
+  );
+  return {
+    files: rows.map((row) => row?.test_file).filter((file) => typeof file === "string" && file.length > 0),
+    rows: rows.length,
+  };
 }
 
 /**

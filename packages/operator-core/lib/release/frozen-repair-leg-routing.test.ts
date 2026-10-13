@@ -125,10 +125,14 @@ describe('routeFrozenRepairLegs', () => {
       entries: ['new/x.test.ts'],
     });
     expect(deps.broadcastOpen).toHaveBeenCalledTimes(1);
-    expect(deps.broadcastOpen.mock.calls[0]![0]).toMatchObject({ conditionKey: key('new/x.test.ts') });
-    expect((deps.broadcastOpen.mock.calls[0]![0] as { body: string }).body).toContain('boom');
+    // `...over` widens each field to the deps signature, so read the calls through vi.mocked.
+    const opened = vi.mocked(deps.broadcastOpen).mock.calls[0]![0];
+    expect(opened).toMatchObject({ conditionKey: key('new/x.test.ts') });
+    expect(opened.body).toContain('boom');
     expect(deps.broadcastResolved).toHaveBeenCalledTimes(1);
-    expect(deps.broadcastResolved.mock.calls[0]![0]).toMatchObject({ conditionKeys: [key('old/gone.test.ts')] });
+    expect(vi.mocked(deps.broadcastResolved).mock.calls[0]![0]).toMatchObject({
+      conditionKeys: [key('old/gone.test.ts')],
+    });
     expect(out).toMatchObject({ opened: [key('new/x.test.ts')], resolved: [key('old/gone.test.ts')] });
   });
 

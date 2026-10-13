@@ -97,7 +97,7 @@ Indexes are created `WITH (text_config = ..., compaction = 'manual')` (`bm25_ind
 2. **ORPHANS** (step 2a): drops the INVALID `<index>_ccnew` / `<index>_ccold` copies that a REINDEX CONCURRENTLY left behind when it died. Such a copy still takes every write.
 3. **BUILD**: at most one `CREATE INDEX CONCURRENTLY` per run. Never-attempted builds go before ones that already failed, so one failing index cannot starve the rest. An INVALID index is dropped first, because the DDL is `IF NOT EXISTS` and would otherwise skip it forever.
 4. **COMPACT**: `bm25_compact_step(idx)` while `bm25_needs_compaction(idx)` is true, up to a per-run step budget.
-5. **RECLAIM** (plan decision D-010): compaction merges segments but never shrinks the index file. An index whose file exceeds 1.4x its estimated live bytes (and is at least 8 MB) is rebuilt with `REINDEX INDEX CONCURRENTLY`, at most one per run.
+5. **RECLAIM** (plan decision D-010): compaction merges segments but never shrinks the index file. An index whose file exceeds 1.4x its estimated live bytes (and is at least 8192 bytes (8 KiB)) is rebuilt with `REINDEX INDEX CONCURRENTLY`, at most one per run.
 6. **RETIRE**: once migration 1452 is armed, swaps each legacy stored tsvector column for a VIRTUAL generated column (D-012) when its corpus has a valid BM25 index. The exact-list corpora are skipped and reported `kept:exact-list` (D-016), because their exact list reads the stored column and its GIN index.
 
 The workflow runs whether or not the flag is on. The indexes take every write either way, so turning the flag back on never lands on a degraded index.

@@ -197,7 +197,12 @@ export interface LostRunSweepDeps {
   nowMs?: number;
   selfPid?: number;
   pidAlive?: (pid: number) => boolean | null;
-  probeQualificationRunner?: RunnerLivenessProber;
+  /** Substitutes the whole probeRunnerLiveness verdict, whose reservation-ceiling and
+   *  launch-grace checks are judged against the sweep clock, so it receives `nowMs` too. */
+  probeQualificationRunner?: (
+    runner: Parameters<RunnerLivenessProber>[0],
+    nowMs: number,
+  ) => ReturnType<RunnerLivenessProber>;
   hostFleetSlug?: string | null;
   claim?: typeof claimLostRunAlarm;
   readHolder?: (installSlug: string) => Promise<string | null>;
@@ -266,7 +271,7 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
     const transaction = parseCheckpointQualificationTransaction(row.qualification);
     const runner = transaction?.currentPhysicalRunner;
     const liveness = runner ? await (deps.probeQualificationRunner
-      ? deps.probeQualificationRunner(runner) : probeRunnerLiveness(runner, nowMs)) : 'unknown';
+      ? deps.probeQualificationRunner(runner, nowMs) : probeRunnerLiveness(runner, nowMs)) : 'unknown';
     const qualification = transaction && transaction.phase !== 'terminal' && runner
       ? projectCheckpointQualificationState(transaction, nowMs, liveness)
       : null;

@@ -68,6 +68,15 @@ export interface DegradationThresholds {
   dominantShare: number;
 }
 
+export interface YieldDropThresholds {
+  /** Minimum eligible units in the preceding window before it can establish a healthy baseline. */
+  minPreviousEligible: number;
+  /** Applied rate at or above which the preceding window counts as healthy. */
+  healthyAppliedRate: number;
+  /** Minimum absolute applied-rate-point decline that raises the distinct yield alarm. */
+  dropRate: number;
+}
+
 export const DEFAULT_DEGRADATION_THRESHOLDS: Readonly<DegradationThresholds> = Object.freeze({
   minEligible: DEGRADATION_MIN_ELIGIBLE,
   minEligibleByReason: Object.freeze({}),
@@ -92,6 +101,8 @@ export interface DegradationMechanism {
   scopeKeyed?: boolean;
   windowMs?: number;
   thresholds?: Partial<DegradationThresholds>;
+  /** Optional adjacent-window detector for sudden applied-rate declines. */
+  yieldDrop?: YieldDropThresholds;
 }
 
 interface RegistryState {
@@ -140,6 +151,11 @@ registerDegradationMechanism({
     'green-checkpoint pass reuse: tasks whose prior passing proof could have been reused instead of re-running. ' +
     'A collapse means the gate is re-running work it should be reusing (run 762a13a6 reused 0 of ~7,689).',
   scopeKeyed: true,
+  yieldDrop: {
+    minPreviousEligible: DEGRADATION_MIN_ELIGIBLE,
+    healthyAppliedRate: DEGRADATION_RECOVER_RATE,
+    dropRate: 0.5,
+  },
   thresholds: {
     // Ordinary candidate buckets need a useful sample. A hard fail-open reason is itself
     // sufficient evidence for that task: these observations deliberately carry one eligible
@@ -496,6 +512,37 @@ export function judgeDegradation(
 }
 
 /**
+ * PURE: identify a sharp yield drop from a sufficiently sampled healthy prior window.
+ * The current window needs at least one eligible decision; a single hard fail-open
+ * after a healthy baseline is useful evidence and must not be hidden by a larger floor.
+ */
+export function judgeYieldDrop(
+  previous: FallbackWindow,
+  current: FallbackWindow,
+  target: { mechanism: string; scope?: string | null },
+  thresholds: YieldDropThresholds,
+): Extract<DegradationVerdict, { kind: 'collapsed' }> | null {
+  if (
+    previous.appliedRate === null ||
+    previous.eligible < thresholds.minPreviousEligible ||
+    previous.appliedRate < thresholds.healthyAppliedRate - EPS ||
+    current.appliedRate === null ||
+    current.eligible < 1 ||
+    previous.appliedRate - current.appliedRate < thresholds.dropRate - EPS
+  ) return null;
+
+  const top = current.reasons.find((r) => r.fellBack > 0) ?? null;
+  return {
+    kind: 'collapsed',
+    appliedRate: current.appliedRate,
+    reason: 'yield-decline',
+    topReason: top?.reason ?? null,
+    topShare: top && current.eligible > 0 ? top.fellBack / current.eligible : 0,
+    conditionKey: degradationConditionKey(target.mechanism, target.scope ?? null, 'yield-decline'),
+  };
+}
+
+/**
  * PURE: turn a verdict plus the currently-open keys into the rail actions.
  *   collapsed -> open its key unless already open; resolve sibling keys of that
  *                mechanism/scope (the dominant reason changed).
@@ -555,12 +602,41 @@ export function renderDegradationAlarm(
   };
 }
 
+function renderYieldDropAlarm(
+  m: DegradationMechanism,
+  scope: string | null,
+  previous: FallbackWindow,
+  current: FallbackWindow,
+  verdict: Extract<DegradationVerdict, { kind: 'collapsed' }>,
+  thresholds: YieldDropThresholds,
+): Pick<SevereEventBroadcast, 'summary' | 'body'> {
+  const where = scope ? `${m.mechanism} (${scope})` : m.mechanism;
+  const previousRate = previous.appliedRate ?? 0;
+  const currentRate = current.appliedRate ?? 0;
+  const drop = previousRate - currentRate;
+  return {
+    summary: `Sharp yield decline: ${where} fell from ${pct(previousRate)} to ${pct(currentRate)} applied`,
+    body:
+      `${m.description}\n\n` +
+      `Adjacent windows: previous ${previous.applied}/${previous.eligible} applied ` +
+      `(rate ${previousRate.toFixed(3)}, ${previous.samples} batch(es)); current ` +
+      `${current.applied}/${current.eligible} applied (rate ${currentRate.toFixed(3)}, ` +
+      `${current.samples} batch(es)). The applied rate dropped ${drop.toFixed(3)}; ` +
+      `alarm threshold ${thresholds.dropRate.toFixed(3)}, with at least ` +
+      `${thresholds.minPreviousEligible} prior eligible units and prior healthy rate ` +
+      `>= ${thresholds.healthyAppliedRate.toFixed(3)}. Current leading fallback reason: ` +
+      `${verdict.topReason ?? '(none)'}.`,
+  };
+}
+
 // ── Sweep ──────────────────────────────────────────────────────────────────
 
 export interface DegradationSweepDeps {
   mechanisms: () => readonly DegradationMechanism[];
   /** One window per scope (scope-keyed) or one unscoped window. */
   readWindows: (m: DegradationMechanism, windowMs: number, now: Date) => Promise<ScopedFallbackWindow[]>;
+  /** Previous adjacent window for mechanisms with a yieldDrop detector. */
+  readPreviousWindows: (m: DegradationMechanism, windowMs: number, now: Date) => Promise<ScopedFallbackWindow[]>;
   /** Every currently-OPEN `degraded:` key, from the durable condition fold. */
   readOpenConditionKeys: () => Promise<string[]>;
   broadcast: (ev: SevereEventBroadcast) => Promise<boolean>;
@@ -583,6 +659,17 @@ async function defaultReadWindows(m: DegradationMechanism, windowMs: number, now
   const fo = await import('../degradation/fallback-observations');
   if (m.scopeKeyed) return fo.readFallbackWindowsByScope(m.mechanism, windowMs, { now });
   return [{ scope: null, window: await fo.readFallbackWindow(m.mechanism, windowMs, { now }) }];
+}
+
+async function defaultReadPreviousWindows(
+  m: DegradationMechanism,
+  windowMs: number,
+  now: Date,
+): Promise<ScopedFallbackWindow[]> {
+  const fo = await import('../degradation/fallback-observations');
+  const previousEnd = new Date(now.getTime() - windowMs);
+  if (m.scopeKeyed) return fo.readFallbackWindowsByScope(m.mechanism, windowMs, { now: previousEnd });
+  return [{ scope: null, window: await fo.readFallbackWindow(m.mechanism, windowMs, { now: previousEnd }) }];
 }
 
 async function defaultReadOpenConditionKeys(): Promise<string[]> {
@@ -613,6 +700,7 @@ function sweepDeps(overrides: Partial<DegradationSweepDeps>): DegradationSweepDe
   return {
     mechanisms: listDegradationMechanisms,
     readWindows: defaultReadWindows,
+    readPreviousWindows: defaultReadPreviousWindows,
     readOpenConditionKeys: defaultReadOpenConditionKeys,
     broadcast: defaultBroadcast,
     resolve: defaultResolve,
@@ -666,9 +754,22 @@ export async function runDegradationSweepOnce(
       out.errors.push(`${m.mechanism}: ${errMsg(e)}`);
       continue;
     }
+    let previousByScope = new Map<string | null, FallbackWindow>();
+    if (m.yieldDrop) {
+      try {
+        const previousWindows = await deps.readPreviousWindows(m, windowMs, now);
+        previousByScope = new Map(previousWindows.map(({ scope, window }) => [scope, window]));
+      } catch (e) {
+        out.errors.push(`${m.mechanism} previous-window: ${errMsg(e)}`);
+      }
+    }
     for (const { scope: rawScope, window } of windows) {
       const scope = m.scopeKeyed ? rawScope : null;
-      const verdict = judgeDegradation(window, { mechanism: m.mechanism, scope }, t);
+      const previous = previousByScope.get(scope);
+      const yieldDrop = previous && m.yieldDrop
+        ? judgeYieldDrop(previous, window, { mechanism: m.mechanism, scope }, m.yieldDrop)
+        : null;
+      const verdict = yieldDrop ?? judgeDegradation(window, { mechanism: m.mechanism, scope }, t);
       out.evaluated.push({ mechanism: m.mechanism, scope, verdict: verdict.kind });
       const prefix = degradationKeyPrefix(m.mechanism, scope);
       const plan = planDegradationActions(verdict, prefix, openKeys);
@@ -686,7 +787,9 @@ export async function runDegradationSweepOnce(
         } else out.errors.push(`resolve failed: ${key}`);
       }
       if (plan.open && verdict.kind === 'collapsed') {
-        const text = renderDegradationAlarm(m, scope, window, verdict, t);
+        const text = yieldDrop && previous
+          ? renderYieldDropAlarm(m, scope, previous, window, verdict, m.yieldDrop!)
+          : renderDegradationAlarm(m, scope, window, verdict, t);
         const ok = await deps.broadcast({
           ...text,
           category: 'degradation',

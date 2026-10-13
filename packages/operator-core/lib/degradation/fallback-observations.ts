@@ -421,7 +421,11 @@ export async function readFallbackWindowsByScope(
   opts: { sql?: Sql; workspaceId?: string; now?: Date } = {},
 ): Promise<ScopedFallbackWindow[]> {
   const sql = opts.sql ?? getOrgPg().sql;
-  const since = new Date((opts.now ?? new Date()).getTime() - windowMs);
+  // Half-open windows make two adjacent reads disjoint: [now - windowMs, now).
+  // Without the upper bound, a boundary observation appears in both the current
+  // and previous windows and can soften a real yield drop.
+  const until = opts.now ?? new Date();
+  const since = new Date(until.getTime() - windowMs);
   const ws = opts.workspaceId ?? null;
   const name = mechanism.trim();
   const rows = await sql<Array<{ scope: string | null; reason: string; samples: number | string; eligible: number | string; applied: number | string }>>`
@@ -433,6 +437,7 @@ export async function readFallbackWindowsByScope(
       FROM harness_shared.fallback_observations
      WHERE mechanism = ${name}
        AND observed_at >= ${since}
+       AND observed_at < ${until}
        AND (${ws}::text IS NULL OR workspace_id = ${ws}::text)
      GROUP BY scope, reason
   `;

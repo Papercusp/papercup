@@ -19,6 +19,7 @@ import {
   gitChangedBetween,
   loadExecutedSourceMap,
   loadPassDurations,
+  loadReuseProofFiles,
   loadReuseProofs,
   resolveExecutedMapPgUrl,
   resolveTaskReportExpectation,
@@ -262,15 +263,15 @@ describe('env toggles + database precedence', () => {
   });
 
   it('every live test-ledger writer resolves the dedicated ledger URL before the app admin URL', () => {
-    // The writers are separate `??` chains, not one shared function, so this pins their
-    // ORDER: a writer that reverts to HARNESS_ADMIN_DATABASE_URL-first silently sends an
+    // Pin the ORDER whether a writer uses process.env directly or delegates to a small env
+    // resolver. A writer that reverts to HARNESS_ADMIN_DATABASE_URL-first silently sends an
     // isolated run's rows into the throwaway database (WI-10006736).
     const writers = [
       'libs/test-config/src/admin-test-runs-reporter.ts',
       'packages/operator-core/lib/testing-playwright-reporter.ts',
       'apps/operator/scripts/prune-test-runs.ts',
     ];
-    const chain = /process\.env\.(PAPERCUSP_TEST_RUNS_DB_URL|HARNESS_ADMIN_DATABASE_URL)\s*\?\?\s*process\.env\.(PAPERCUSP_TEST_RUNS_DB_URL|HARNESS_ADMIN_DATABASE_URL)\s*\?\?/g;
+    const chain = /(?:process\.env|env)\.(PAPERCUSP_TEST_RUNS_DB_URL|HARNESS_ADMIN_DATABASE_URL)(?:\?\.trim\(\))?\s*(?:\?\?|\|\|)\s*(?:process\.env|env)\.(PAPERCUSP_TEST_RUNS_DB_URL|HARNESS_ADMIN_DATABASE_URL)(?:\?\.trim\(\))?\s*(?:\?\?|\|\|)/g;
     for (const rel of writers) {
       const src = readFileSync(join(REPO_ROOT, rel), 'utf8');
       const chains = [...src.matchAll(chain)].map((m) => `${m[1]}>${m[2]}`);
@@ -307,6 +308,23 @@ describe('scripts/affected-tests.mjs wiring (source pins)', () => {
 
   it('feeds the selector the map, the judged sha and the drift seam', () => {
     expect(source).toMatch(/selectRelatedTests\(\{[\s\S]*?executedMap: executedMap\.map,[\s\S]*?judgedSha: executedMapContext\.judgedSha,[\s\S]*?changedBetween: executedMapContext\.changedBetween,/);
+  });
+
+  it('classifies lane candidates before fetching wide proof rows', () => {
+    const scopeStart = source.indexOf('const requestedFiles =');
+    const laneRead = source.indexOf('const loadedProofs = await loadReuseProofs', scopeStart);
+    const scope = source.slice(scopeStart, laneRead);
+    const laneFilter = scope.indexOf('const scoped = laneScopedCandidates');
+    const laneClassify = scope.indexOf('await laneClassifier');
+    expect(scope).toContain('loadReuseProofFiles');
+    expect(laneFilter).toBeGreaterThanOrEqual(0);
+    expect(laneClassify).toBeGreaterThanOrEqual(0);
+    expect(laneRead).toBeGreaterThan(scopeStart);
+    expect(laneClassify).toBeLessThan(laneFilter);
+    expect(scopeStart + laneFilter).toBeLessThan(laneRead);
+    expect(source.slice(laneRead, source.indexOf('const label =', laneRead))).toContain(
+      '...(files == null ? {} : { files })',
+    );
   });
 
   it('stamps the reporter arming env on unit and integration vitest tasks, and prints one line per workspace', () => {
@@ -401,6 +419,60 @@ describe('reuse proofs loader', () => {
     expect(calls[0]?.text).toMatch(/DISTINCT ON \(test_file\)/);
     expect(calls[0]?.text).toMatch(/run_context = \$2/);
     expect(calls[0]?.text).toMatch(/ORDER BY test_file, recorded_at DESC/);
+  });
+
+  it('loads only the requested proof files when a targeted task supplies a scope', async () => {
+    const calls: Array<{ text: string; values?: unknown[] }> = [];
+    const client = {
+      query: async (text: string, values?: unknown[]) => {
+        calls.push({ text, values });
+        return { rows: [row()] };
+      },
+    };
+    const out = await loadReuseProofs({
+      client,
+      workspaceName: '@papercusp/x',
+      runContext: 'green-checkpoint',
+      files: ['pkg/a.test.ts', 'pkg/a.test.ts', ''],
+    });
+    expect(out.rows).toBe(1);
+    expect(out.proofs.has('pkg/a.test.ts')).toBe(true);
+    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint', ['pkg/a.test.ts']]);
+    expect(calls[0]?.text).toMatch(/test_file = ANY\(\$3::text\[\]\)/);
+    expect(calls[0]?.text).toMatch(/DISTINCT ON \(test_file\)/);
+  });
+
+  it('does not query wide proof rows for an empty lane scope', async () => {
+    let queried = false;
+    const client = {
+      query: async () => {
+        queried = true;
+        return { rows: [] };
+      },
+    };
+    const out = await loadReuseProofs({
+      client,
+      workspaceName: '@papercusp/x',
+      runContext: 'green-checkpoint',
+      files: [],
+    });
+    expect(out).toEqual({ proofs: new Map(), rows: 0 });
+    expect(queried).toBe(false);
+  });
+
+  it('lists lane candidate keys without fetching wide proof arrays', async () => {
+    const calls: Array<{ text: string; values?: unknown[] }> = [];
+    const client = {
+      query: async (text: string, values?: unknown[]) => {
+        calls.push({ text, values });
+        return { rows: [{ test_file: 'pkg/a.test.ts' }, { test_file: 'pkg/b.test.ts' }] };
+      },
+    };
+    const out = await loadReuseProofFiles({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint' });
+    expect(out).toEqual({ files: ['pkg/a.test.ts', 'pkg/b.test.ts'], rows: 2 });
+    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint']);
+    expect(calls[0]?.text).toMatch(/SELECT DISTINCT test_file/);
+    expect(calls[0]?.text).not.toMatch(/executed_modules|read_paths/);
   });
 
   it('loadPassDurations reads the newest CI PASS per file, and drops unusable durations (P-013)', async () => {

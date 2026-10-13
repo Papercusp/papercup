@@ -46,7 +46,9 @@ vi.mock('./disk', () => ({
 import {
   attributeOwnFiles,
   censusDepth,
-  censusDuCommand,
+  censusCommand,
+  censusOwnFilesArgs,
+  parseOwnFilesRecord,
   computeStorageUsage,
   deviceMountRoot,
   devToMajorMinor,
@@ -268,35 +270,70 @@ describe('disk consumer census attribution', () => {
     // idle-class census du spent 26.4 s of every 30 s waiting in the scheduler and its walk
     // of / did not finish inside the 90 min cap. See CENSUS_IONICE_ARGS.
     const duArgs = ['-x', '-0', '-B1', '--max-depth=6', '/'];
-    const [cmd, args] = censusDuCommand(duArgs, { ionice: '/usr/bin/ionice', nice: '/usr/bin/nice' });
+    const [cmd, args] = censusCommand('du', duArgs, { ionice: '/usr/bin/ionice', nice: '/usr/bin/nice' });
     expect(cmd).toBe('/usr/bin/ionice');
     expect(args).toEqual(['-c2', '-n7', '/usr/bin/nice', '-n', '19', 'du', ...duArgs]);
     expect(args).not.toContain('-c3');
 
-    expect(censusDuCommand(duArgs, { ionice: null, nice: '/usr/bin/nice' })).toEqual([
+    expect(censusCommand('du', duArgs, { ionice: null, nice: '/usr/bin/nice' })).toEqual([
       '/usr/bin/nice',
       ['-n', '19', 'du', ...duArgs],
     ]);
-    expect(censusDuCommand(duArgs, { ionice: '/usr/bin/ionice', nice: null })).toEqual([
+    expect(censusCommand('du', duArgs, { ionice: '/usr/bin/ionice', nice: null })).toEqual([
       '/usr/bin/ionice',
       ['-c2', '-n7', 'du', ...duArgs],
     ]);
-    expect(censusDuCommand(duArgs, { ionice: null, nice: null })).toEqual(['du', duArgs]);
+    expect(censusCommand('du', duArgs, { ionice: null, nice: null })).toEqual(['du', duArgs]);
   });
 
   it('wraps the whole prioritized walk in a non-interactive sudo when one is given', () => {
     // R-1: a root-owned tree the operator user cannot read hides consumers above 10 GiB
     // (measured 2026-10-12: ~2.78 TB of /mnt/data unattributed on an unprivileged walk).
     const duArgs = ['-x', '-0', '-B1', '--max-depth=6', '/mnt/data'];
-    expect(censusDuCommand(duArgs, { ionice: '/usr/bin/ionice', nice: '/usr/bin/nice', sudo: '/usr/bin/sudo' })).toEqual([
+    expect(censusCommand('du', duArgs, { ionice: '/usr/bin/ionice', nice: '/usr/bin/nice', sudo: '/usr/bin/sudo' })).toEqual([
       '/usr/bin/sudo',
       ['-n', '--', '/usr/bin/ionice', '-c2', '-n7', '/usr/bin/nice', '-n', '19', 'du', ...duArgs],
     ]);
     // -n is what keeps a missing NOPASSWD rule from hanging the census on a password prompt.
-    expect(censusDuCommand(duArgs, { ionice: null, nice: null, sudo: '/usr/bin/sudo' })).toEqual([
+    expect(censusCommand('du', duArgs, { ionice: null, nice: null, sudo: '/usr/bin/sudo' })).toEqual([
       '/usr/bin/sudo',
       ['-n', '--', 'du', ...duArgs],
     ]);
-    expect(censusDuCommand(duArgs, { ionice: null, nice: null, sudo: null })).toEqual(['du', duArgs]);
+    expect(censusCommand('du', duArgs, { ionice: null, nice: null, sudo: null })).toEqual(['du', duArgs]);
+  });
+
+  it('runs the own-files find through the same privileged, deprioritized wrapper as the walk', () => {
+    // A directory the root walk measured must list as root too, or its big files vanish
+    // into the `files` remainder (WI-6554700010009487).
+    const findArgs = censusOwnFilesArgs('/mnt/data/Debug');
+    expect(censusCommand('find', findArgs, { ionice: '/usr/bin/ionice', nice: '/usr/bin/nice', sudo: '/usr/bin/sudo' })).toEqual([
+      '/usr/bin/sudo',
+      ['-n', '--', '/usr/bin/ionice', '-c2', '-n7', '/usr/bin/nice', '-n', '19', 'find', ...findArgs],
+    ]);
+  });
+});
+
+describe('own-files listing (find)', () => {
+  it('lists only immediate regular files with ALLOCATED size, never prefiltered on apparent size', () => {
+    const args = censusOwnFilesArgs('/mnt/data/Debug');
+    expect(args).toEqual(['/mnt/data/Debug', '-maxdepth', '1', '-type', 'f', '-printf', '%b %p\\0']);
+    // -size tests the apparent size; XFS preallocation can push the allocation past it.
+    expect(args).not.toContain('-size');
+  });
+
+  it('parses `<512-byte blocks> <path>` records, keeping spaces in the path', () => {
+    expect(parseOwnFilesRecord('2097152 /mnt/data/a big file.bin')).toEqual({
+      path: '/mnt/data/a big file.bin',
+      bytes: 2097152 * 512,
+    });
+    expect(parseOwnFilesRecord('0 /mnt/data/empty')).toEqual({ path: '/mnt/data/empty', bytes: 0 });
+  });
+
+  it('rejects malformed records instead of inventing a size', () => {
+    expect(parseOwnFilesRecord('')).toBeNull();
+    expect(parseOwnFilesRecord(' /no/blocks')).toBeNull();
+    expect(parseOwnFilesRecord('12x /bad/blocks')).toBeNull();
+    expect(parseOwnFilesRecord('12 ')).toBeNull();
+    expect(parseOwnFilesRecord('-1 /negative')).toBeNull();
   });
 });

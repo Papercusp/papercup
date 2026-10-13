@@ -11,7 +11,7 @@ Slack, Gmail, and Google Calendar use outbound-only transports suitable for a de
 
 ## Connect Slack
 
-Install the **Slack** package from the Cupboard and connect it on **Settings → Integrations**; the steps, the app definition and the token rules are in [Slack setup](/internal/docs/reference/slack-external-trigger-setup). To file bug reports from Slack, install the **Bug triage** trigger pack from the Cupboard and set it up on the same page. Tool output never includes Slack credential values. The `/admin/triggers/slack/connect` route remains only for the in-app report-bug gestures; do not use it for a Slack app connected through the package.
+Install the **Slack** package from the Cupboard and connect it on **Settings → Integrations**; the steps, the app definition and the token rules are in [Slack setup](/internal/docs/reference/slack-external-trigger-setup). To file bug reports from Slack, install the **Bug triage** trigger pack from the Cupboard and set it up on the same page. Tool output never includes Slack credential values. The same package handles the **Report a bug** shortcut, the :bug: reaction and bug mentions; Bug triage files each one (see [Slack setup](/internal/docs/reference/slack-external-trigger-setup#report-a-bug-from-slack)).
 
 ## Connect Google Workspace
 
@@ -49,7 +49,7 @@ When live provider credentials are unavailable, run the real-Postgres flagship i
 ```bash
 cd packages/operator-core
 npx vitest run --config vitest.integration.config.ts \
-  lib/external-triggers/slack-flagship.integration.test.ts \
+  lib/providers/slack/slack-package.integration.test.ts \
   lib/providers/connector-runtime.integration.test.ts
 ```
 

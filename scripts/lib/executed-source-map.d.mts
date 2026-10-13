@@ -92,9 +92,33 @@ export function rowsToReuseProofs(rows: Array<Record<string, unknown>>): Map<str
  * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
  * @param {string} o.workspaceName
  * @param {string} o.runContext
+ * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @returns {Promise<{ proofs: Map<string, import('./test-pass-reuse.mjs').ReuseProof>, rows: number }>}
  */
-export function loadReuseProofs({ client, workspaceName, runContext }: {
+export function loadReuseProofs({ client, workspaceName, runContext, files }: {
+    client: {
+        query: (text: string, values?: unknown[]) => Promise<{
+            rows: any[];
+        }>;
+    };
+    workspaceName: string;
+    runContext: string;
+    files?: string[] | undefined;
+}): Promise<{
+    proofs: Map<string, import("./test-pass-reuse.mjs").ReuseProof>;
+    rows: number;
+}>;
+/**
+ * List only the test-file keys with pass proofs for one workspace and run context. Lane callers
+ * use this narrow result to classify membership before fetching the wide proof arrays.
+ *
+ * @param {object} o
+ * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
+ * @param {string} o.workspaceName
+ * @param {string} o.runContext
+ * @returns {Promise<{ files: string[], rows: number }>}
+ */
+export function loadReuseProofFiles({ client, workspaceName, runContext }: {
     client: {
         query: (text: string, values?: unknown[]) => Promise<{
             rows: any[];
@@ -103,7 +127,7 @@ export function loadReuseProofs({ client, workspaceName, runContext }: {
     workspaceName: string;
     runContext: string;
 }): Promise<{
-    proofs: Map<string, import("./test-pass-reuse.mjs").ReuseProof>;
+    files: string[];
     rows: number;
 }>;
 /**

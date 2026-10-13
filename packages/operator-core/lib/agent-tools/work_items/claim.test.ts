@@ -104,6 +104,24 @@ vi.mock('./release-force-guard', () => ({
   notifyForceTransition: vi.fn(async () => {}),
   recordForceTransitionAudit: vi.fn(async () => {}),
 }));
+// green-main-cycle-time-2026-10-08 P-013 (D-028(4)): the real gate-singleton decision runs;
+// only its two reads (condition_key, the claimant's re-wake verdict) are faked, so this file
+// stays hermetic and pins the wiring — guard before mutation, keyed on the CLAIMANT.
+const gateSingleton = vi.hoisted(() => ({
+  conditionKey: null as string | null,
+  rewake: { guaranteed: true, reason: null } as import('../loop/next-wake').LoopNextWakeVerdict,
+  readRewake: vi.fn((_claimant: string) => undefined),
+}));
+vi.mock('./gate-singleton-claim-guard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./gate-singleton-claim-guard')>()),
+  defaultGateSingletonClaimReader: () => ({
+    readConditionKey: async () => gateSingleton.conditionKey,
+    readRewake: async (claimant: string) => {
+      gateSingleton.readRewake(claimant);
+      return gateSingleton.rewake;
+    },
+  }),
+}));
 vi.mock('../../pilot-participant-receipts', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   persistPilotParticipantBindingReceipt: (...args: unknown[]) => pilotReceipts.persistBinding(...args),
@@ -172,6 +190,48 @@ beforeEach(() => {
   releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue(null);
   premisePort.get.mockReset().mockResolvedValue(null);
   pilotReceipts.persistBinding.mockReset();
+  gateSingleton.conditionKey = null;
+  gateSingleton.rewake = { guaranteed: true, reason: null };
+});
+
+describe('work_items:claim gate-red singleton guard (green-main-cycle-time-2026-10-08 P-013, D-028(4))', () => {
+  it('refuses a gate-red-streak singleton before mutation when the CLAIMANT has no guaranteed re-wake', async () => {
+    gateSingleton.conditionKey = 'gate-red-streak:papercup';
+    gateSingleton.rewake = { guaranteed: false, reason: 'no-active-loop' };
+    const b = await body({ id: 'EI-red', assignee: 'bee-7' });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      id: 'EI-red',
+      error: 'gate_singleton_requires_long_lived_owner',
+      conditionKey: 'gate-red-streak:papercup',
+      claimant: 'bee-7',
+      rewakeReason: 'no-active-loop',
+    });
+    expect(b.results[0].hint).toMatch(/loop:arm/);
+    expect(b.results[0].hint).toMatch(/frozen-repair-leg:/);
+    // The verdict is read for the assignee the item would land on, not the caller ('me').
+    expect(gateSingleton.readRewake).toHaveBeenCalledWith('bee-7');
+    expect(claimM).not.toHaveBeenCalled();
+    expect(fleetAdmission.notify).not.toHaveBeenCalled();
+  });
+
+  it('admits the frozen-repair-convergence singleton for a claimant with a guaranteed re-wake', async () => {
+    gateSingleton.conditionKey = 'frozen-repair-convergence:papercup';
+    gateSingleton.rewake = { guaranteed: true, reason: null };
+    const b = await body({ id: 'EI-conv' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-conv' });
+    expect(gateSingleton.readRewake).toHaveBeenCalledWith('me');
+    expect(claimM).toHaveBeenCalledOnce();
+  });
+
+  it('never guards a per-leg frozen-repair-leg item, even for a claimant with no loop (D-028(2))', async () => {
+    gateSingleton.conditionKey = 'frozen-repair-leg:papercup:packages/x/a.test.ts';
+    gateSingleton.rewake = { guaranteed: false, reason: 'no-active-loop' };
+    const b = await body({ id: 'EI-leg' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-leg' });
+    expect(gateSingleton.readRewake).not.toHaveBeenCalled();
+    expect(claimM).toHaveBeenCalledOnce();
+  });
 });
 
 describe('work_items:claim idempotent-completion opt-in (EI-21593186656422114)', () => {

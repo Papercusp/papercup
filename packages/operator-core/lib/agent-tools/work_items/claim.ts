@@ -411,6 +411,21 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     });
     if (!scope.allowed) return workScopeRefusal(scope, { id: it.id });
   }
+  // green-main-cycle-time-2026-10-08 P-013, D-028(4): a gate-red singleton
+  // (gate-red-streak: / frozen-repair-convergence:) is claimable only by an owner whose claim
+  // outlives its turn — a guaranteed re-wake, the verdict loop:status reports. Checked for
+  // the CLAIMANT, before mutation. Per-leg frozen-repair-leg: items are never guarded.
+  {
+    const [{ checkGateSingletonClaim, defaultGateSingletonClaimReader }, { activeWorkspaceId }] = await Promise.all([
+      import('./gate-singleton-claim-guard'),
+      import('../../workspace-registry'),
+    ]);
+    const refusal = await checkGateSingletonClaim(
+      { id: it.id, harness: claimScopeHarness, claimant: claimer },
+      defaultGateSingletonClaimReader(identity.workspaceId ?? activeWorkspaceId()),
+    );
+    if (refusal) return { ok: false, id: it.id, ...refusal };
+  }
   const admission = await admitWorkItemForFleetTarget({
     target: claimer,
     workItemId: it.id,

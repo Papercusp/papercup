@@ -44,10 +44,10 @@ describe('evaluateAppScopeChain — restrictive parent/token explanation', () =>
 
   it('permits the shared grant and reports both governing rows without raw grants', () => {
     expect(evaluateAppScopeChain(input, [parent, child])).toEqual({
-      verdict: { allow: true }, listable: true, blockingScopeId: null,
+      verdict: { allow: true }, listable: true, blockingScopeId: null, blockingScopeIndex: null,
       decisions: [
-        { scopeId: 'parent', verdict: { allow: true } },
-        { scopeId: 'child', verdict: { allow: true } },
+        { scopeId: 'parent', scopeIndex: 0, verdict: { allow: true } },
+        { scopeId: 'child', scopeIndex: 1, verdict: { allow: true } },
       ],
     });
   });
@@ -69,7 +69,20 @@ describe('evaluateAppScopeChain — restrictive parent/token explanation', () =>
   it('an empty chain refuses invocation and listing', () => {
     expect(evaluateAppScopeChain(input, [])).toEqual({
       verdict: { allow: false, code: 'key_unknown', reason: 'no app scope rows were supplied' },
-      listable: false, blockingScopeId: null, decisions: [],
+      listable: false, blockingScopeId: null, blockingScopeIndex: null, decisions: [],
+    });
+  });
+
+  it('attributes a narrowed token when its loaded row retains the parent app id', () => {
+    const sharedIdToken = { ...parent, scopes: { tools: ['plans:list'] } };
+    const result = evaluateAppScopeChain(input, [parent, sharedIdToken]);
+    expect(result).toMatchObject({
+      verdict: { allow: false, code: 'tool_not_in_scope' },
+      blockingScopeId: 'parent', blockingScopeIndex: 1,
+      decisions: [
+        { scopeId: 'parent', scopeIndex: 0, verdict: { allow: true } },
+        { scopeId: 'parent', scopeIndex: 1, verdict: { allow: false } },
+      ],
     });
   });
 

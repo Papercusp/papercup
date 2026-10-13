@@ -895,7 +895,9 @@ export function coveragePrefixesFromGateModule(mod: Record<string, unknown>, { o
  *
  * @param {string} root Absolute repo root.
  * @param {{exclude?: string[]}} [opts] npm-script names to skip (e.g. the gate doing the asking).
- * @returns {Promise<{gates: {npmScript: string, prefixes: string[]}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
+ * @returns {Promise<{gates: {npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
+ *   `scriptPath` is the repo-relative entrypoint; `tscCommand` is the gate's single-project
+ *   command, or null for a multi-project GATE_COVERAGE gate that cannot act as a cross-leg consumer.
  *   `rosterReadable: false` means the root package.json itself could not be read — the roster is
  *   entirely unknown, so NO absence claim of any strength is available.
  */
@@ -905,6 +907,8 @@ export function discoverSiblingTypecheckGates(root: string, { exclude }?: {
     gates: {
         npmScript: string;
         prefixes: string[];
+        scriptPath: string;
+        tscCommand: string | null;
     }[];
     unresolved: {
         npmScript: string;
@@ -980,6 +984,146 @@ export function runAutoTypecheckRoutes({ root, routes, execFile, onUnchecked }: 
     execFile?: Function;
     onUnchecked?: (count: number) => void;
 }): number;
+/**
+ * Which consumer legs must judge which named files.
+ *
+ * A file's OWNING leg judges it on the normal path (this gate's own compile, or the routed
+ * delegate). Every other single-project leg can reach the file by import, and that is where an
+ * ambient declaration visible only through the owner's include glob goes missing: three such reds
+ * reached the gate at once (WI-6554700010009424). So each consumer-capable leg gets the named
+ * files it does NOT own. A multi-project GATE_COVERAGE gate (tscCommand null) cannot act as a
+ * consumer; it is returned in `uncheckable` so the report names it rather than implying a check.
+ *
+ * @param {{gates: {npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null}[], files: Iterable<string>}} opts
+ * @returns {{plans: {npmScript: string, scriptPath: string, files: string[]}[], uncheckable: string[]}}
+ */
+export function planCrossLegChecks({ gates, files }: {
+    gates: {
+        npmScript: string;
+        prefixes: string[];
+        scriptPath: string;
+        tscCommand: string | null;
+    }[];
+    files: Iterable<string>;
+}): {
+    plans: {
+        npmScript: string;
+        scriptPath: string;
+        files: string[];
+    }[];
+    uncheckable: string[];
+};
+/**
+ * ONE consumer leg's verdict: each MEMBER file's error count in this leg against this leg's
+ * effective baseline (its own row, else the owning package's row via `foreignBaselines`, else 0).
+ * A non-member is not this leg's to judge. A TS1xxx diagnostic hard-fails regardless of baseline,
+ * exactly as on the full path.
+ *
+ * @param {{members: string[], errors: TscErrorEntry[], baselineByFile: Record<string, number>, foreignBaselines?: {prefix: string, files: Record<string, number>}[]}} opts
+ * @returns {{regressed: {file: string, current: number, baseline: number}[], broken: string[]}}
+ */
+export function judgeCrossLegMembers({ members, errors, baselineByFile, foreignBaselines }: {
+    members: string[];
+    errors: TscErrorEntry[];
+    baselineByFile: Record<string, number>;
+    foreignBaselines?: {
+        prefix: string;
+        files: Record<string, number>;
+    }[];
+}): {
+    regressed: {
+        file: string;
+        current: number;
+        baseline: number;
+    }[];
+    broken: string[];
+};
+/**
+ * CONSUMER mode: judge the named files inside THIS leg's program and print one
+ * `LINT_TSC_CROSS_LEG leg=… status=…` line for the parent. No preflight, no coverage routing (the
+ * files are foreign by construction), no full compile, no ratchet. A baseline or program failure
+ * prints `status=undetermined` and a non-1 code, so the parent can never read it as clean or red.
+ *
+ * @param {{root: string, tscCommand: string, baselineFile: string, foreignBaselines?: {prefix: string, baselineFile: string}[], label: string, files: string[], diagnose?: (args: {root: string, tscCommand: string, files: string[]}) => {members: string[], nonMembers: string[], output: string}, log?: (line: string) => void, warn?: (line: string) => void}} opts
+ * @returns {Promise<number>} The exit code: 0 clean, 1 regressed, 66/70 undetermined.
+ */
+export function runCrossLegConsumer({ root, tscCommand, baselineFile, foreignBaselines, label, files, diagnose, log, warn, }: {
+    root: string;
+    tscCommand: string;
+    baselineFile: string;
+    foreignBaselines?: {
+        prefix: string;
+        baselineFile: string;
+    }[];
+    label: string;
+    files: string[];
+    diagnose?: (args: {
+        root: string;
+        tscCommand: string;
+        files: string[];
+    }) => {
+        members: string[];
+        nonMembers: string[];
+        output: string;
+    };
+    log?: (line: string) => void;
+    warn?: (line: string) => void;
+}): Promise<number>;
+/**
+ * Run the planned consumer legs as child gate processes, at most `concurrency` at once: each one
+ * builds a full program (3-23 s and 1-2 GB, measured 2026-10-12). A child is RED only when it
+ * exits 1 with a `status=regressed` marker; any other outcome is UNDETERMINED, never clean.
+ *
+ * @param {{root: string, plans: {npmScript: string, scriptPath: string, files: string[]}[], concurrency?: number, spawnChild?: (plan: {npmScript: string, scriptPath: string, files: string[]}) => Promise<{status: number | null, stdout: string, stderr: string}>}} opts
+ * @returns {Promise<{clean: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[]}>}
+ */
+export function runCrossLegChecks({ root, plans, concurrency, spawnChild }: {
+    root: string;
+    plans: {
+        npmScript: string;
+        scriptPath: string;
+        files: string[];
+    }[];
+    concurrency?: number;
+    spawnChild?: (plan: {
+        npmScript: string;
+        scriptPath: string;
+        files: string[];
+    }) => Promise<{
+        status: number | null;
+        stdout: string;
+        stderr: string;
+    }>;
+}): Promise<{
+    clean: string[];
+    red: {
+        npmScript: string;
+        stderr: string;
+    }[];
+    undetermined: {
+        npmScript: string;
+        reason: string;
+    }[];
+}>;
+/**
+ * The parent's disclosure of a cross-leg fan-out: one machine-readable summary line, then the
+ * evidence for each red leg and an explicit line for each leg whose view went unchecked.
+ *
+ * @param {{clean: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[], uncheckable: string[]}} report
+ * @returns {string[]}
+ */
+export function formatCrossLegReport({ clean, red, undetermined, uncheckable }: {
+    clean: string[];
+    red: {
+        npmScript: string;
+        stderr: string;
+    }[];
+    undetermined: {
+        npmScript: string;
+        reason: string;
+    }[];
+    uncheckable: string[];
+}): string[];
 /**
  * The banner for `--files=` entries this run cannot judge.
  *
@@ -1347,6 +1491,15 @@ export const LANDING_RACE_WINDOW_SEC: number;
  * @type {number}
  */
 export const TSC_HEAP_MB: number;
+/**
+ * WI-6554700010009433 — set on a child gate to make it a CROSS-LEG CONSUMER: judge the named
+ * files inside its own program against its own baseline, with no full compile (see
+ * runCrossLegConsumer). A parent's fan-out sets it; nothing else should.
+ */
+export const CROSS_LEG_CONSUMER_ENV: "PAPERCUSP_TSC_CROSS_LEG_CONSUMER";
+/** `PAPERCUSP_TSC_CROSS_LEG=0` skips the cross-leg fan-out of a scoped run, like `--no-cross-leg`. */
+export const CROSS_LEG_ENV: "PAPERCUSP_TSC_CROSS_LEG";
+export const CROSS_LEG_MARKER: "LINT_TSC_CROSS_LEG";
 /** EX_SOFTWARE (sysexits.h): the fallback when a no-output toolchain failure carries no abnormal code of its own. */
 export const TOOLCHAIN_FAILURE_EXIT_CODE: 70;
 /** Where the standing-verdict marker lives, relative to the repo root. */
