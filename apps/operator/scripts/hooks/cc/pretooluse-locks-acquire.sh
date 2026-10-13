@@ -106,16 +106,49 @@ def mark_success():
         write_marker(owner_marker_name('success'), value)
 
 
-def mark_error(phase, detail):
-    value = {
-        'ts': now_iso(), 'handler': 'pretooluse', 'phase': phase,
-        'detail': str(detail)[:200], 'operator_url': operator_url,
-    }
+# WI-6554700010011017: this invocation's PRIMARY error record. The marker has
+# one slot, and a recovery step that runs after a failed acquire (the
+# locks:queue read, a locks:release) can fail too. Writing that second failure
+# over the first erased WHY the edit failed open, leaving only the recovery
+# refusal. Recovery failures are appended to the primary record instead.
+_primary_error = None
+RECOVERY_ERROR_LIMIT = 3
+
+
+def _write_error_record(value):
     write_marker('last-error.json', value)
     owner_value = globals().get('owner')
     if isinstance(owner_value, str) and owner_value:
-        value['owner'] = owner_value
-        write_marker(owner_marker_name('error'), value)
+        write_marker(owner_marker_name('error'), dict(value, owner=owner_value))
+
+
+def mark_error(phase, detail):
+    global _primary_error
+    _primary_error = {
+        'ts': now_iso(), 'handler': 'pretooluse', 'phase': phase,
+        'detail': str(detail)[:200], 'operator_url': operator_url,
+    }
+    _write_error_record(_primary_error)
+
+
+def mark_recovery_error(phase, detail):
+    """Record a failed recovery step without replacing the primary error.
+
+    The primary record keeps its own phase, detail and ts. Failures are
+    appended to its bounded `recovery` list (most recent RECOVERY_ERROR_LIMIT),
+    and `recovery_dropped` counts any that were shifted out, so a truncated list
+    is never mistaken for a complete one. With no primary error in this
+    invocation, the recovery failure is itself the record."""
+    if _primary_error is None:
+        mark_error(phase, detail)
+        return
+    entries = list(_primary_error.get('recovery') or [])
+    entries.append({'ts': now_iso(), 'phase': phase, 'detail': str(detail)[:200]})
+    overflow = max(0, len(entries) - RECOVERY_ERROR_LIMIT)
+    _primary_error['recovery'] = entries[overflow:]
+    if overflow:
+        _primary_error['recovery_dropped'] = _primary_error.get('recovery_dropped', 0) + overflow
+    _write_error_record(_primary_error)
 
 
 def now_iso():
@@ -1744,11 +1777,11 @@ def _recover_ambiguous_acquire(started_at):
     }
     queued, rpc_error, phase, exc = _best_effort_tool('locks:queue', queue_arguments)
     if exc is not None:
-        mark_error('recovery-queue', exc)
+        mark_recovery_error('recovery-queue', exc)
         return
     if rpc_error is not None or phase != 'ok' or not isinstance(queued, dict):
         if rpc_error is not None:
-            mark_error('recovery-queue', rpc_error)
+            mark_recovery_error('recovery-queue', rpc_error)
         return
 
     rows = queued.get('active_locks')
@@ -1805,11 +1838,11 @@ def _recover_ambiguous_acquire(started_at):
                 'locks:release', release_arguments,
             )
         if release_exc is not None:
-            mark_error('recovery-release', release_exc)
+            mark_recovery_error('recovery-release', release_exc)
         elif release_error is not None or release_phase != 'ok' or not isinstance(released, dict):
-            mark_error('recovery-release', release_error or release_phase)
+            mark_recovery_error('recovery-release', release_error or release_phase)
         elif released.get('ok') is False:
-            mark_error('recovery-release', released)
+            mark_recovery_error('recovery-release', released)
 
 
 def _grant(granted):
