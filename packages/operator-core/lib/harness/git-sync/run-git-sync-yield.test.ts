@@ -3,8 +3,8 @@
  * git-sync restart barrier). One papercusp pass held the shared barrier for 11+ minutes
  * under load while dev:restart's drain is capped at 120s, so bg-host could not be
  * restarted at all. These tests pin the yield contract:
- *   - the probe runs only at submodule-batch boundaries and before pointer-bump, never
- *     while a git command is in flight;
+ *   - the probe runs at completed batch/preparation/private-index boundaries, never
+ *     while a git command is in flight or during shared-index publication;
  *   - a yield stops the walk (no further submodule or superproject git work) and throws
  *     GitSyncYieldError carrying where it stopped;
  *   - a crash-replay of the checkpointed submodule phase yields again rather than
@@ -12,6 +12,10 @@
  *   - a throwing probe fails OPEN (the pass completes).
  */
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { runGitSync, GitSyncYieldError, type RunGit, type GitSyncStepRunner } from './run-git-sync';
 
 const SUBMODULES = ['libs/s0', 'libs/s1', 'libs/s2', 'libs/s3', 'libs/s4', 'libs/s5', 'libs/s6', 'libs/s7', 'libs/s8'];
@@ -165,5 +169,93 @@ describe('WI-10007606 runGitSync cooperative yield', () => {
     expect(git.calls.some((c) => c.cwd === '/fake/libs/a')).toBe(true);
     expect(git.calls.some((c) => c.cwd === '/fake' && c.command.startsWith('status'))).toBe(true);
     expect(logs.join('\n')).toContain('shouldYield probe failed (pg down)');
+  });
+
+  it.each([
+    ['protected-path preflight', 'before-superproject-stage'],
+    ['private catch-all stage', 'before-superproject-publish'],
+    ['private post-stage guard', 'before-superproject-publish'],
+    ['private attributed stage', 'before-superproject-publish'],
+  ])('EI-258149: yields when a drain first arrives during %s, then commits on the next pass', async (arrival, boundary) => {
+    const repo = mkdtempSync(join(tmpdir(), 'git-sync-late-drain-'));
+    const git = (...args: string[]): string => {
+      const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8', timeout: 30_000 });
+      if (result.status !== 0) throw new Error(String(result.stderr));
+      return String(result.stdout).trim();
+    };
+    try {
+      git('init', '-b', 'main');
+      git('config', 'user.email', 'test@papercusp.local');
+      git('config', 'user.name', 'late drain test');
+      git('config', 'commit.gpgsign', 'false');
+      writeFileSync(join(repo, 'protected.txt'), 'original held file\n');
+      writeFileSync(join(repo, 'ordinary.txt'), 'original ordinary file\n');
+      git('add', '-A');
+      git('commit', '-m', 'baseline');
+      const baseline = git('rev-parse', 'HEAD');
+      writeFileSync(join(repo, 'protected.txt'), 'live held edit\n');
+      writeFileSync(join(repo, 'ordinary.txt'), 'pending ordinary edit\n');
+      writeFileSync(join(repo, 'new.txt'), 'pending new file\n');
+      let waiting = false;
+      let inFlight = 0;
+      const probesInFlight: number[] = [];
+      const privateIndexes = new Set<string>();
+      const runGit: RunGit = async (args, cwd, options) => {
+        inFlight++;
+        try {
+          if (options?.env?.GIT_INDEX_FILE) privateIndexes.add(options.env.GIT_INDEX_FILE);
+          const result = spawnSync('git', args, {
+            cwd, encoding: 'utf8', timeout: 30_000,
+            env: { ...process.env, ...options?.env },
+          });
+          if (result.status === 0 || result.status === 1) {
+            if (arrival === 'protected-path preflight' && args[0] === 'check-ignore' && args.includes('protected.txt')) waiting = true;
+            if ((arrival === 'private catch-all stage' || arrival === 'private attributed stage') && args[0] === 'add' && options?.env?.GIT_INDEX_FILE) waiting = true;
+            if (arrival === 'private post-stage guard' && args[0] === 'ls-files' && args.includes('--stage') && options?.env?.GIT_INDEX_FILE) waiting = true;
+          }
+          return { code: result.status ?? -1, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
+        } finally {
+          inFlight--;
+        }
+      };
+      const opts = {
+        repoPath: repo, runGit, submodulePaths: [], excludePaths: ['protected.txt'],
+        config: { push: false, pushSubmoduleOrigins: false },
+        contentDetectors: [], deletionGuard: false, diffSubjects: false, log: () => {},
+        ...(arrival === 'private attributed stage' ? {
+          loadRoster: async () => [{ agent: 'su-test', intent: 'pending ordinary edit', files: ['ordinary.txt', 'new.txt'] }],
+        } : {}),
+      };
+      const error = await runGitSync('test', {
+        ...opts,
+        shouldYield: async () => {
+          probesInFlight.push(inFlight);
+          return waiting ? 'late exclusive drain' : null;
+        },
+      }).catch((error: unknown) => error);
+
+      expect(error).toBeInstanceOf(GitSyncYieldError);
+      expect((error as GitSyncYieldError).boundary).toBe(boundary);
+      expect(waiting).toBe(true);
+      expect(probesInFlight.every((n) => n === 0)).toBe(true);
+      expect(git('rev-parse', 'HEAD')).toBe(baseline);
+      expect(git('show', 'HEAD:protected.txt')).toBe('original held file');
+      expect(readFileSync(join(repo, 'new.txt'), 'utf8')).toBe('pending new file\n');
+      if (arrival.startsWith('private')) expect(privateIndexes.size).toBeGreaterThan(0);
+      expect(readdirSync(join(repo, '.git')).filter((name) => name.startsWith('papercusp-git-sync-'))).toEqual([]);
+
+      // The action's existing anti-starvation rule omits shouldYield on the next
+      // pass. The still-waiting drain must not prevent the pending commit.
+      const resumed = await runGitSync('test', opts);
+      expect(resumed.committedCount).toBe(1);
+      expect(git('show', 'HEAD:ordinary.txt')).toBe('pending ordinary edit');
+      expect(git('show', 'HEAD:new.txt')).toBe('pending new file');
+      expect(git('show', 'HEAD:protected.txt')).toBe('original held file');
+      expect(readFileSync(join(repo, 'protected.txt'), 'utf8')).toBe('live held edit\n');
+      expect(git('rev-list', '--count', `${baseline}..HEAD`)).toBe('1');
+      expect(readdirSync(join(repo, '.git')).filter((name) => name.startsWith('papercusp-git-sync-'))).toEqual([]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
