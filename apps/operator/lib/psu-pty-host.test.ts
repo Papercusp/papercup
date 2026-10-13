@@ -187,6 +187,7 @@ const {
   unwrapWholePaste,
   observeKickoffModelTurnStart,
   carryTurnProofRequiresNativeId,
+  carryExhaustionDefersToNativeProof,
   shouldRetryCarryOnFreshEpoch,
   shouldRetryLaunchKickoffOnFreshChild,
   isUnbindableChild,
@@ -4161,6 +4162,38 @@ describe('verifyNativeTurnStartWithRetry (EI-216539 execution-backed kickoff)', 
     } finally {
       nodeFs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('carryExhaustionDefersToNativeProof (WI-6554700010009740)', () => {
+  const exhausted = {
+    delivered: false,
+    reason: 'submit-verification-exhausted',
+    nativeSubmitted: true,
+  };
+
+  it('hands a submitted tagged carry whose verifier exhausted to the native turn-start proof', () => {
+    expect(carryExhaustionDefersToNativeProof(exhausted)).toBe(true);
+  });
+
+  it('keeps every other verdict', () => {
+    // Drills keep their PTY-level contract and never run the native proof.
+    expect(carryExhaustionDefersToNativeProof({ ...exhausted, drillId: 'drill-1' })).toBe(false);
+    // No CR reached this child, or the turn is not native-verifiable.
+    expect(carryExhaustionDefersToNativeProof({ ...exhausted, nativeSubmitted: false })).toBe(false);
+    // Human input and quota walls are not missing-proof timeouts.
+    expect(carryExhaustionDefersToNativeProof({
+      ...exhausted,
+      reason: 'submit-verification-aborted-human-input',
+    })).toBe(false);
+    expect(carryExhaustionDefersToNativeProof({
+      ...exhausted,
+      reason: 'submit-verification-aborted-quota-blocked',
+    })).toBe(false);
+    expect(carryExhaustionDefersToNativeProof({ ...exhausted, reason: 'never-settled' })).toBe(false);
+    // An already-delivered carry has nothing to defer.
+    expect(carryExhaustionDefersToNativeProof({ ...exhausted, delivered: true })).toBe(false);
+    expect(carryExhaustionDefersToNativeProof()).toBe(false);
   });
 });
 

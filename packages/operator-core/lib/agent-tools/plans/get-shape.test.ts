@@ -12,7 +12,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { applyPayloadTier, PAYLOAD_TIER_HARD_CEILING_CHARS } from "@papercusp/tooldef";
-import { shapePlansGet } from "./get-shape";
+import { shapePlansGet, summarizeProofHistory } from "./get-shape";
 
 function envelope() {
   return {
@@ -306,5 +306,118 @@ describe("shapePlansGet: narrowed decision reads keep COMPLETE bodies (EI-215732
     expect(decisions).toHaveLength(1);
     expect(decisions[0]!.body).toBe("short");
     expect(decisions[0]!.body_truncated).toBeUndefined();
+  });
+});
+
+// oversized-tool-results-reduction-2026-10-12 P-006: shipReadiness carries the BAR
+// snapshot, whose bars[].proof.history re-listed every evidence row with raw
+// `details` (measured ~93% of a 1.5MB snapshot). Browse tiers summarize the rows.
+describe("shapePlansGet: shipReadiness proof history is summarized, verdict kept", () => {
+  function proofRow(id: number, specId: string, overall: string, reasons: string[], active = true) {
+    return {
+      id,
+      specId,
+      evidenceKind: "test",
+      activeAttempt: active,
+      details: { measurementPin: "m".repeat(2_000) },
+      currentness: { overall, staleReasons: reasons, unknownReasons: [], dimensions: { spec: overall } },
+    };
+  }
+  function shipEnvelope() {
+    return {
+      ok: true,
+      results: [
+        {
+          ok: true,
+          slug: "plan-x",
+          shipReadiness: {
+            satisfied: false,
+            code: "bar_snapshot_proof_stale",
+            repairAction: "rebind",
+            acceptanceBarContractSnapshot: {
+              contentHash: "h",
+              bars: [
+                {
+                  barKey: "R-1",
+                  readiness: { state: "blocked" },
+                  proof: {
+                    state: "stale",
+                    currentEvidence: 1,
+                    staleEvidence: 3,
+                    history: [
+                      proofRow(1, "S-1", "stale", ["spec-stale"]),
+                      proofRow(2, "S-2", "stale", ["spec-stale", "source-stale"]),
+                      proofRow(3, "S-1", "stale", ["spec-stale"]),
+                      proofRow(4, "S-3", "current", []),
+                      proofRow(5, "S-1", "stale", ["spec-stale"], false),
+                    ],
+                  },
+                },
+                { barKey: "R-2", proof: { state: "missing", currentEvidence: 0, staleEvidence: 0, history: [] } },
+              ],
+            },
+          },
+        },
+      ],
+    };
+  }
+  type Bar = { barKey: string; readiness?: unknown; proof: Record<string, unknown> };
+  const barsOf = (shaped: unknown) =>
+    ((shaped as { results: Array<{ shipReadiness: { acceptanceBarContractSnapshot: { bars: Bar[] } } }> })
+      .results[0]!.shipReadiness.acceptanceBarContractSnapshot.bars);
+
+  for (const tier of ["trimmed", "standard"] as const) {
+    it(`${tier}: replaces rows with an in-band summary of the ACTIVE rows`, () => {
+      const input = shipEnvelope();
+      const shaped = shapePlansGet(input, tier) as { results: Array<{ shipReadiness: Record<string, unknown> }> };
+      const sr = shaped.results[0]!.shipReadiness;
+      expect(sr.satisfied).toBe(false);
+      expect(sr.code).toBe("bar_snapshot_proof_stale");
+      expect(sr.repairAction).toBe("rebind");
+      const [bar] = barsOf(shaped);
+      expect(bar!.readiness).toEqual({ state: "blocked" });
+      expect(bar!.proof.history).toBeUndefined();
+      expect(bar!.proof.staleEvidence).toBe(3);
+      const summary = bar!.proof.historySummary as {
+        rows: number;
+        activeRows: number;
+        byCurrentness: Record<string, number>;
+        reasons: Array<{ reason: string; count: number; sampleSpecIds: string[]; sampleIds: unknown[] }>;
+        rowsCut: string;
+      };
+      expect(summary.rows).toBe(5);
+      expect(summary.activeRows).toBe(4);
+      expect(summary.byCurrentness).toEqual({ stale: 3, current: 1 });
+      expect(summary.reasons[0]).toEqual({
+        reason: "spec-stale",
+        count: 3,
+        sampleSpecIds: ["S-1", "S-2"],
+        sampleIds: [1, 2, 3],
+      });
+      expect(summary.reasons[1]).toMatchObject({ reason: "source-stale", count: 1, sampleIds: [2] });
+      expect(summary.rowsCut).toContain("TRUNCATED 5 proof rows");
+      expect(summary.rowsCut).toContain("payloadTier:'full'");
+      expect(JSON.stringify(shaped)).not.toContain("m".repeat(100));
+      // the caller's object is not mutated (one cached read serves every tier)
+      expect(input.results[0]!.shipReadiness.acceptanceBarContractSnapshot.bars[0]!.proof.history).toHaveLength(5);
+    });
+  }
+
+  it("leaves a bar with an empty history, and a verdict without a snapshot, untouched", () => {
+    const shaped = shapePlansGet(shipEnvelope(), "trimmed");
+    expect(barsOf(shaped)[1]!.proof.history).toEqual([]);
+    const unavailable = {
+      ok: true,
+      results: [{ ok: true, slug: "p", shipReadiness: { satisfied: false, unavailableReason: "resolver-unavailable" } }],
+    };
+    const out = shapePlansGet(unavailable, "trimmed") as { results: Array<{ shipReadiness: unknown }> };
+    expect(out.results[0]!.shipReadiness).toBe(unavailable.results[0]!.shipReadiness);
+  });
+
+  it("caps reason groups per bar and says how many were omitted", () => {
+    const rows = Array.from({ length: 11 }, (_, i) => proofRow(i, `S-${i}`, "stale", [`reason-${i}`]));
+    const summary = summarizeProofHistory(rows) as { reasons: unknown[]; reasonsOmitted?: number };
+    expect(summary.reasons).toHaveLength(8);
+    expect(summary.reasonsOmitted).toBe(3);
   });
 });

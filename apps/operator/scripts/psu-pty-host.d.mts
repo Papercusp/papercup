@@ -847,6 +847,27 @@ export function observeKickoffModelTurnStart({ lastOutputAt, wait, pollMs, polls
  * the post-respawn mtime floor is the strongest available native proof. Unknown
  * backends stay fail-closed. */
 export function carryTurnProofRequiresNativeId(agent: any): boolean;
+/** WI-6554700010009740: does the native turn-start proof, not the generic
+ * submit verifier, own this carry's delivery verdict? Since c727419b0a the
+ * verifier requires native confirmation for a tagged turn and reports
+ * `submit-verification-exhausted` when the exact row has not persisted by its
+ * deadline. A production carry already runs the stronger proof
+ * (verifyNativeTurnStartWithRetry: one CR, then a fresh epoch), so treating
+ * that exhaustion as a terminal drop skipped the EI-21561923024113260 retries.
+ * Only the exhaustion of a submitted, native-verifiable, non-drill carry
+ * defers; human input, quota and every other reason keep their verdict. Pure.
+ * @param {object} [opts]
+ * @param {string} [opts.drillId]
+ * @param {boolean} [opts.delivered]
+ * @param {string} [opts.reason]
+ * @param {boolean} [opts.nativeSubmitted] the tagged carry's CR reached this child
+ */
+export function carryExhaustionDefersToNativeProof({ drillId, delivered, reason, nativeSubmitted, }?: {
+    drillId?: string | undefined;
+    delivered?: boolean | undefined;
+    reason?: string | undefined;
+    nativeSubmitted?: boolean | undefined;
+}): boolean;
 /** Is a carry failure safe to retry on a freshly minted child? Only transient
  * fresh-child failures qualify. Missing provenance/native-id is deterministic,
  * owner input must never be overwritten, and drills remain one-shot.

@@ -17,6 +17,7 @@ vi.mock('@papercusp/db-org', () => ({
 const mod = await import('./fallback-observations');
 const {
   FALLBACK_BUFFER_MAX,
+  FALLBACK_COALESCE_SPAN_MS,
   FALLBACK_FLUSH_BATCH,
   fallbackDecisionProblem,
   fallbackObservationCounters,
@@ -59,6 +60,80 @@ beforeEach(() => {
 afterEach(() => {
   _resetFallbackObservationsForTests();
   vi.restoreAllMocks();
+});
+
+describe('coalescing identical decisions (WI-6554700010009713)', () => {
+  it('folds identical decisions into ONE row whose counts are the sums', async () => {
+    const f = fakeSql();
+    for (let i = 0; i < 3; i++) {
+      observeFallback('cache-l2-operation', { eligible: 2, applied: 1, reason: 'applied', scope: 'get' }, { sql: f.sql });
+    }
+    expect(_pendingFallbackObservationCount()).toBe(1);
+    expect(fallbackObservationCounters().coalesced).toBe(2);
+    expect(await flushFallbackObservations()).toMatchObject({ written: 1, failed: 0 });
+    expect(f.inserts.flat()).toEqual([
+      expect.objectContaining({ mechanism: 'cache-l2-operation', reason: 'applied', scope: 'get', eligible: 6, applied: 3, samples: 3 }),
+    ]);
+  });
+
+  it('keeps rows apart when any key field or the handle differs, and never folds a correlated decision', async () => {
+    const f = fakeSql();
+    const g = fakeSql();
+    const base = { eligible: 1, applied: 1, reason: 'applied', scope: 'get' };
+    const id = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
+    observeFallback('m', base, { sql: f.sql });
+    observeFallback('m2', base, { sql: f.sql });
+    observeFallback('m', { ...base, reason: 'other' }, { sql: f.sql });
+    observeFallback('m', { ...base, scope: 'set' }, { sql: f.sql });
+    observeFallback('m', base, { sql: f.sql, processTag: 'p' });
+    observeFallback('m', base, { sql: f.sql, workspaceId: 'ws-coalesce-b' });
+    observeFallback('m', base, { sql: f.sql, correlationId: id });
+    observeFallback('m', base, { sql: f.sql, correlationId: id });
+    observeFallback('m', base, { sql: g.sql });
+    expect(_pendingFallbackObservationCount()).toBe(9);
+    expect(fallbackObservationCounters().coalesced).toBe(0);
+    await flushFallbackObservations();
+    expect(f.inserts.flat()).toHaveLength(8);
+    expect(g.inserts.flat()).toHaveLength(1);
+    expect([...f.inserts.flat(), ...g.inserts.flat()].every((r) => r.samples === 1)).toBe(true);
+  });
+
+  it('starts a new row once event times are further apart than the coalesce span', async () => {
+    const f = fakeSql();
+    const t0 = new Date('2026-10-13T00:00:00Z').getTime();
+    const d = { eligible: 1, applied: 0, reason: 'backend-error', scope: 'get' };
+    observeFallback('m', d, { sql: f.sql, observedAt: new Date(t0) });
+    observeFallback('m', d, { sql: f.sql, observedAt: new Date(t0 + FALLBACK_COALESCE_SPAN_MS) });
+    observeFallback('m', d, { sql: f.sql, observedAt: new Date(t0 + FALLBACK_COALESCE_SPAN_MS + 1) });
+    expect(_pendingFallbackObservationCount()).toBe(2);
+    await flushFallbackObservations();
+    expect(f.inserts.flat().map((r) => r.samples)).toEqual([2, 1]);
+  });
+
+  it('never folds into a row that a flush has already taken (the fold would be lost)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const written: Array<Record<string, unknown>> = [];
+    const sql = ((first: unknown, ...rest: unknown[]) => {
+      if (Array.isArray(first) && 'raw' in (first as object)) {
+        const m = rest.find((v) => v && typeof v === 'object' && (v as { __values?: unknown }).__values) as
+          | { __values: Array<Record<string, unknown>> }
+          | undefined;
+        if (m) written.push(...m.__values);
+        return gate.then(() => Object.assign([], { count: 0 }));
+      }
+      return { __values: first, __cols: rest };
+    }) as unknown as Sql;
+    const d = { eligible: 1, applied: 1, reason: 'applied' };
+    observeFallback('m', d, { sql });
+    const flushing = flushFallbackObservations();
+    observeFallback('m', d, { sql });
+    expect(_pendingFallbackObservationCount()).toBe(1);
+    release();
+    await flushing;
+    await flushFallbackObservations();
+    expect(written.map((r) => r.samples)).toEqual([1, 1]);
+  });
 });
 
 describe('summarizeFallbackWindow', () => {
@@ -156,8 +231,9 @@ describe('observeFallback + flushFallbackObservations', () => {
 
   it('flushes on its own once a full batch is buffered', async () => {
     const f = fakeSql();
+    // Distinct reasons: identical decisions would coalesce into one row and never fill a batch.
     for (let i = 0; i < FALLBACK_FLUSH_BATCH; i++) {
-      observeFallback('m', { eligible: 1, applied: 1, reason: 'applied' }, { sql: f.sql });
+      observeFallback('m', { eligible: 1, applied: 1, reason: `r${i}` }, { sql: f.sql });
     }
     await vi.waitFor(() => expect(f.inserts.flat()).toHaveLength(FALLBACK_FLUSH_BATCH));
     expect(_pendingFallbackObservationCount()).toBe(0);

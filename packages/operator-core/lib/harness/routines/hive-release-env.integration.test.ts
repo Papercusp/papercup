@@ -4,7 +4,7 @@
  * resolveHiveReleaseGate runs against the REAL built-in blueprints (coding/work); the
  * registry + operator-home slug are mocked for resolveHiveReleaseEnv. No PG, no network.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -54,6 +54,15 @@ function makeHiveDir(extendsId: string, opts: { git?: boolean; extraKnobs?: stri
   if (opts.git) mkdirSync(join(d, '.git'), { recursive: true });
   return d;
 }
+
+// The FIRST import of ./hive-release-env transforms its whole import graph — measured at
+// 26s of vite transform under fleet load (2026-10-13, WI-6554700010009501), which alone
+// nearly fills the 30s per-test budget and timed the first case out twice. vi.resetModules()
+// below clears evaluated modules, not the transform cache, so paying that cold cost once
+// here, under its own explicit budget, keeps it out of every test's measured budget.
+beforeAll(async () => {
+  await import('./hive-release-env');
+}, 180_000);
 
 beforeEach(() => {
   vi.resetModules();

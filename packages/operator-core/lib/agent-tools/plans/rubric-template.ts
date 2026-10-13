@@ -18,7 +18,7 @@
  * for side-effect (belt-and-suspenders + discoverability).
  */
 import { z } from 'zod';
-import { CONTINUITY_PROBE_MAX_PER_WAKE } from '../limits';
+import { CONTINUITY_PROBE_MAX_PER_WAKE, RUBRIC_PROBE_MAX_PER_EMIT } from '../limits';
 import { normalizeRequirementSections } from '../../requirement-contract';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 import { SERVING_RUNTIME_IDS, RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE, type RuntimeVintageEvidenceRuntimeId } from '../../serving-runtimes';
@@ -1268,8 +1268,8 @@ export function isForbiddenMandatoryPassRating(value: string): boolean {
  */
 const canonicalRubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superRefine((d, ctx) => {
   const probeCount = d.criteria.reduce((n, c) => n + (c.check?.kind === 'probe' ? (c.check.all?.length ?? 1) : 0), 0);
-  if (probeCount > CONTINUITY_PROBE_MAX_PER_WAKE) {
-    ctx.addIssue({ code: 'custom', path: ['criteria'], message: `rubric declares ${probeCount} probes; execution cap is ${CONTINUITY_PROBE_MAX_PER_WAKE}` });
+  if (probeCount > RUBRIC_PROBE_MAX_PER_EMIT) {
+    ctx.addIssue({ code: 'custom', path: ['criteria'], message: `rubric declares ${probeCount} probes; execution cap is ${RUBRIC_PROBE_MAX_PER_EMIT}` });
   }
   if (rubricKindOf(d) !== 'acceptance') return;
 

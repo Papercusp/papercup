@@ -2193,6 +2193,30 @@ export function carryTurnProofRequiresNativeId(agent) {
   return String(agent ?? '').trim().toLowerCase() !== 'codex';
 }
 
+/** WI-6554700010009740: does the native turn-start proof, not the generic
+ * submit verifier, own this carry's delivery verdict? Since c727419b0a the
+ * verifier requires native confirmation for a tagged turn and reports
+ * `submit-verification-exhausted` when the exact row has not persisted by its
+ * deadline. A production carry already runs the stronger proof
+ * (verifyNativeTurnStartWithRetry: one CR, then a fresh epoch), so treating
+ * that exhaustion as a terminal drop skipped the EI-21561923024113260 retries.
+ * Only the exhaustion of a submitted, native-verifiable, non-drill carry
+ * defers; human input, quota and every other reason keep their verdict. Pure.
+ * @param {object} [opts]
+ * @param {string} [opts.drillId]
+ * @param {boolean} [opts.delivered]
+ * @param {string} [opts.reason]
+ * @param {boolean} [opts.nativeSubmitted] the tagged carry's CR reached this child
+ */
+export function carryExhaustionDefersToNativeProof({
+  drillId = '',
+  delivered = false,
+  reason = '',
+  nativeSubmitted = false,
+} = {}) {
+  return !drillId && !delivered && nativeSubmitted && reason === 'submit-verification-exhausted';
+}
+
 /** Is a carry failure safe to retry on a freshly minted child? Only transient
  * fresh-child failures qualify. Missing provenance/native-id is deterministic,
  * owner input must never be overwritten, and drills remain one-shot.
@@ -15496,6 +15520,12 @@ export function hostThroughPty(o) {
         // recreate a stale discovery file after cleanup removed it.
         if (!cleaned) writeMeta();
       };
+      // WI-6554700010009740: record whether this tagged carry's CR reached the
+      // child, so the native proof below can own an exhausted verifier verdict.
+      const carryNativeProofAvailable = !drillId &&
+        Boolean(leadingTurnOriginMarker(carryText)) &&
+        nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
+      let carryNativeSubmission = null;
       let carryResult = await injectTurnAtPrompt({
         text: carryText,
         label: drillId ? `carry-drill ${drillId} first prompt` : 'recycle carry-note',
@@ -15525,6 +15555,9 @@ export function hostThroughPty(o) {
         // Decide whether a failed fresh epoch is retryable before recording a
         // terminal carry drop; a retry must not increment the drop counter.
         onDrop: () => {},
+        onSubmitted: (submission) => {
+          if (carryNativeProofAvailable) carryNativeSubmission = submission;
+        },
         // A recycled Claude su session can arrive while the native Papercusp
         // MCP endpoint is still reconnecting. Keep the carry out of the composer
         // until the closed-loop reconnect check proves papercusp-su ready.
@@ -15594,6 +15627,18 @@ export function hostThroughPty(o) {
           carryProofRetryCount: carryProofRetryCount + 1,
         });
       };
+      if (carryExhaustionDefersToNativeProof({
+        drillId,
+        delivered: carryResult.delivered,
+        reason: carryResult.reason,
+        nativeSubmitted: carryNativeSubmission?.child === child,
+      })) {
+        // The verifier spent its CR budget without the exact native row. The
+        // turn-start proof below decides: a late row is delivered, a missing
+        // one is turn-start-unverified and gets one fresh epoch.
+        const { reason: _deferredReason, ...submittedCarry } = carryResult;
+        carryResult = { ...submittedCarry, delivered: true };
+      }
       if (!carryResult.delivered) {
         const retry = retryOnFreshEpoch(carryResult.reason);
         if (retry) return retry;

@@ -13,7 +13,8 @@ import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
-const { readFallbackWindow, pruneFallbackObservations } = await import('./fallback-observations');
+const { readFallbackWindow, readFallbackWindowsByScope, pruneFallbackObservations, observeFallback, flushFallbackObservations } =
+  await import('./fallback-observations');
 
 const MODULE_URL = new URL('./fallback-observations.ts', import.meta.url).href;
 const WS = 'ws-fallback-observations-it';
@@ -119,6 +120,29 @@ describe('fallback observations — durable and readable across processes (real 
        WHERE workspace_id = ${WS} AND mechanism = 'retention.default'
     `;
     expect(left.map((r) => r.reason)).toEqual(['inside-bound']);
+  });
+
+  it('coalesced decisions land as ONE row, and both readers count them as their samples (migration 1489)', async () => {
+    for (let i = 0; i < 3; i++) {
+      observeFallback('coalesce.mechanism', { eligible: 2, applied: 1, reason: 'partial', scope: 'op' }, { sql: db.adminSql, workspaceId: WS });
+    }
+    observeFallback('coalesce.mechanism', { eligible: 1, applied: 1, reason: 'applied', scope: 'op' }, { sql: db.adminSql, workspaceId: WS });
+    expect(await flushFallbackObservations()).toMatchObject({ written: 2, failed: 0 });
+    const rows = await db.adminSql<Array<{ reason: string; samples: number; eligible: number; applied: number }>>`
+      SELECT reason, samples, eligible, applied FROM harness_shared.fallback_observations
+       WHERE workspace_id = ${WS} AND mechanism = 'coalesce.mechanism' ORDER BY reason
+    `;
+    expect(rows).toEqual([
+      { reason: 'applied', samples: 1, eligible: 1, applied: 1 },
+      { reason: 'partial', samples: 3, eligible: 6, applied: 3 },
+    ]);
+    const hour = 60 * 60 * 1000;
+    const w = await readFallbackWindow('coalesce.mechanism', hour, { sql: db.adminSql, workspaceId: WS });
+    expect(w.samples).toBe(4);
+    expect(w.eligible).toBe(7);
+    expect(w.reasons.find((r) => r.reason === 'partial')).toMatchObject({ samples: 3, eligible: 6, fellBack: 3 });
+    const scoped = await readFallbackWindowsByScope('coalesce.mechanism', hour, { sql: db.adminSql, workspaceId: WS });
+    expect(scoped.map((s) => [s.scope, s.window.samples])).toEqual([['op', 4]]);
   });
 
   it('the table refuses an applied count above eligible', async () => {

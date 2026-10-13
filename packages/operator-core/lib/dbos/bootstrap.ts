@@ -117,10 +117,33 @@ export function resolvePgLaunchRetryMs(env: NodeJS.ProcessEnv = process.env): nu
  * database in a DBOSInitializationError. Keep the retry decision independent
  * of the SDK's concrete error class: the wrapped `error.code` is the stable
  * SQLSTATE, while the message is the only signal older pg clients sometimes
- * preserve. Only the transient lock-timeout class is retryable here; a broken
- * registration, schema, or configuration must still reach host-bootstrap's
- * loud failure path.
+ * preserve. Two transient classes are retryable here; a broken registration,
+ * schema, or configuration must still reach host-bootstrap's loud failure path.
+ *
+ * 1. Lock timeout (EI-22022209900260112).
+ * 2. Connection-establishment failure (WI-6554700010009759). On 2026-10-13 the
+ *    00:15Z bg-host boot passed the reachability probe, then `DBOS.launch()`
+ *    threw "Connection terminated due to connection timeout" under boot load.
+ *    The predicate only knew lock timeouts, so the error was rethrown and
+ *    swallowed by host-bootstrap. The process stayed up with ZERO DBOS
+ *    workflows (every routine and every DBOS-hosted alarm) for ~2h, until an
+ *    unrelated restart. A connect failure says nothing about the code or
+ *    schema, so it gets the same bounded retry as the probe miss.
  */
+const RETRYABLE_SQLSTATES = new Set([
+  '55P03', // lock_not_available / lock_timeout
+  '08000', // connection_exception
+  '08001', // sqlclient_unable_to_establish_sqlconnection
+  '08003', // connection_does_not_exist
+  '08004', // sqlserver_rejected_establishment_of_sqlconnection
+  '08006', // connection_failure
+  '57P03', // cannot_connect_now (server starting up / recovering)
+  '53300', // too_many_connections
+]);
+const RETRYABLE_ERRNOS = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN']);
+const RETRYABLE_MESSAGE =
+  /lock(?:[_ ]timeout|[_ ]not[_ ]available)|connection terminated (?:due to connection timeout|unexpectedly)|timeout exceeded when trying to connect|connect(?:ion)? timeout|too many clients already|the database system is (?:starting up|in recovery mode|shutting down)/i;
+
 export function isRetryableDbosLaunchError(error: unknown): boolean {
   const seen = new Set<object>();
   const visit = (value: unknown): boolean => {
@@ -135,8 +158,10 @@ export function isRetryableDbosLaunchError(error: unknown): boolean {
       cause?: unknown;
       originalError?: unknown;
     };
-    if (candidate.code === '55P03') return true; // lock_not_available / lock_timeout
-    if (typeof candidate.message === 'string' && /lock(?:[_ ]timeout|[_ ]not[_ ]available)/i.test(candidate.message)) {
+    if (typeof candidate.code === 'string' && (RETRYABLE_SQLSTATES.has(candidate.code) || RETRYABLE_ERRNOS.has(candidate.code))) {
+      return true;
+    }
+    if (typeof candidate.message === 'string' && RETRYABLE_MESSAGE.test(candidate.message)) {
       return true;
     }
     return visit(candidate.error) || visit(candidate.cause) || visit(candidate.originalError);
@@ -507,11 +532,12 @@ async function startDbosOnce(): Promise<void> {
       throw err;
     }
 
+    const reason = err instanceof Error ? err.message : String(err);
     console.warn(
-      '[dbos] transient system-database lock timeout during launch; ' +
+      `[dbos] transient system-database failure during launch (${reason}); ` +
         'executor cleaned up and a bounded retry is armed',
     );
-    armPgLaunchRetry('DBOS system-database initialization lock timeout');
+    armPgLaunchRetry(`DBOS launch transient failure: ${reason}`);
     return;
   }
   G.__papercuspDbosStarted = true;

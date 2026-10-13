@@ -57,6 +57,7 @@ import { derivePlanLifecycle, derivePlanStatusTransition, parsePlan } from '@pap
 import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { withPlanLock } from './with-plan-lock';
 import { ensureAcceptanceDrainCarryInTransaction } from './acceptance-drain-filing';
+import { isPlanRunInstanceSlug } from './run-instance-slug';
 import { evaluateBlindReviewGate, type BlindReviewGateCode } from '../../blind-review-gate';
 
 /** Why a transition did not happen — every non-applied outcome is named, so a
@@ -79,6 +80,12 @@ export type PlanDrainTransitionSkip =
    *  with fresher bytes. Retrying here would queue behind a write whose result
    *  invalidates the decision we queued to make. */
   | 'busy'
+  /** The plan is a `<template>@run-<token>` run INSTANCE (WI-6554700010009790). Its
+   *  lifecycle belongs to the run reconciler, which retires a settled instance with a
+   *  guard on `status = 'active'`. Moving it to awaiting-acceptance here strands it
+   *  there forever and files an acceptance carry for a plan nobody authored. The
+   *  periodic sweep excludes instances for the same reason (plan-drain-sweep.ts). */
+  | 'plan_run_instance'
   /** P-006 (D-006, D-039): the graph warrants awaiting-acceptance, but the blind gap
    *  review door refused it. The plan stays where it is until a counted review is
    *  recorded and every gap is dispositioned; the next item flip or sweep re-tries. */
@@ -145,12 +152,16 @@ export function planDrainTransitionMutation(current: string | null): {
  * that can move a plan to awaiting-acceptance (plans:set-status in its lock, and
  * applyPlanDrainTransition). A refused move writes nothing and names the door's code.
  * Template 'rubric' plans are skipped, like the acceptance carry filing.
+ * Plan-run INSTANCES are never moved at all: see the `plan_run_instance` skip.
  */
 export async function planDrainTransitionMutationGated(
   current: string | null,
   scope: { planSlug: string; harnessSlug?: string | null; workspaceId?: string },
   deps: { evaluate?: typeof evaluateBlindReviewGate } = {},
 ): Promise<{ newBody: string | null; value: PlanDrainTransitionResult }> {
+  if (isPlanRunInstanceSlug(scope.planSlug)) {
+    return { newBody: null, value: { applied: false, skipped: 'plan_run_instance' } };
+  }
   const out = planDrainTransitionMutation(current);
   if (!out.value.applied || out.value.to !== 'awaiting-acceptance' || out.newBody === null) return out;
   if (parsePlan(out.newBody).frontmatter.template === 'rubric') return out;

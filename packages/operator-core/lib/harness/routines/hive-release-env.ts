@@ -19,13 +19,14 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../../agent-tools/blueprint/_resolve';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { resolveSiblingTreeRoot } from '../../release/sibling-tree-root';
 
 /** Fallback green command when a hive has neither an explicit releaseGate.greenCmd nor a
  *  detected `testCommand` knob — gate on "it at least builds", never an unconditional FF. */
@@ -237,7 +238,6 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   }
 
   const misconfiguration = gateMisconfiguration(gate);
-  const parent = dirname(entry.path);
   // Per-hive owner override (P-014): top precedence over the blueprint knob / detected
   // testCommand / build fallback, so editing the green command on /admin/git actually
   // changes what the gate runs. Best-effort — a DB hiccup must never break gate routing.
@@ -255,8 +255,10 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     PAPERCUSP_INTEGRATION_BRANCH: gate.integrationBranch,
     PAPERCUSP_RELEASE_REF: gate.releaseRef,
     PAPERCUSP_GREEN_CMD: greenCmd,
-    PAPERCUSP_RELEASE_ROOT: join(parent, `${slug}-release`),
-    PAPERCUSP_CHECKPOINT_ROOT: join(parent, `${slug}-checkpoint`),
+    // WI-6554700010009501: a hive nested inside another git work tree (the drill lives at
+    // papercusp/apps/<slug>) must not get these trees derived inside that enclosing tree.
+    PAPERCUSP_RELEASE_ROOT: resolveSiblingTreeRoot({ integrationRoot: entry.path, name: `${slug}-release` }),
+    PAPERCUSP_CHECKPOINT_ROOT: resolveSiblingTreeRoot({ integrationRoot: entry.path, name: `${slug}-checkpoint` }),
     PAPERCUSP_CHECKPOINT_LOG_DIR: join(homedir(), '.papercusp', 'checkpoint-logs', slug),
   };
   // WI-2828: ALWAYS thread the resolved value (now always a string — resolveHiveReleaseGate

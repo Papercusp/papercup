@@ -185,6 +185,9 @@ function shapeResult(res: unknown, tier: TierName): unknown {
     }
   }
 
+  const shipReadiness = shapeShipReadiness(r.shipReadiness);
+  if (shipReadiness !== r.shipReadiness) out.shipReadiness = shipReadiness;
+
   // trimmed only: the UI decoration map (feature badges) is a per-item object
   // an agent placing work rarely needs — drop it LOUDLY.
   if (tier === "trimmed") {
@@ -205,6 +208,108 @@ function shapeResult(res: unknown, tier: TierName): unknown {
   }
 
   return out;
+}
+
+/** Reason groups kept per bar, and sample ids kept per reason, in a proof-history summary. */
+const PROOF_REASONS_PER_BAR = 8;
+const PROOF_SAMPLES_PER_REASON = 3;
+
+interface ProofReasonGroup {
+  reason: string;
+  count: number;
+  sampleSpecIds: string[];
+  sampleIds: unknown[];
+}
+
+/**
+ * Summarize one bar's `proof.history`: counts of the ACTIVE rows by currentness,
+ * and each stale/unknown reason with its count plus a few spec ids and evidence
+ * ids to start a repair from. The marker is in band (`TRUNCATED`) so a
+ * `projection.pick` of the summary alone still says rows were cut.
+ */
+export function summarizeProofHistory(history: unknown[]): Record<string, unknown> {
+  const active = history.filter(
+    (row): row is Record<string, unknown> =>
+      !!row && typeof row === "object" && (row as { activeAttempt?: unknown }).activeAttempt === true,
+  );
+  const byCurrentness: Record<string, number> = {};
+  const groups = new Map<string, ProofReasonGroup>();
+  for (const row of active) {
+    const currentness = (row.currentness ?? null) as {
+      overall?: unknown;
+      staleReasons?: unknown;
+      unknownReasons?: unknown;
+    } | null;
+    const overall = typeof currentness?.overall === "string" ? currentness.overall : "unrecorded";
+    byCurrentness[overall] = (byCurrentness[overall] ?? 0) + 1;
+    const reasons = [
+      ...(Array.isArray(currentness?.staleReasons) ? currentness.staleReasons : []),
+      ...(Array.isArray(currentness?.unknownReasons) ? currentness.unknownReasons : []),
+    ];
+    for (const raw of reasons) {
+      const reason = typeof raw === "string" ? raw : JSON.stringify(raw);
+      let group = groups.get(reason);
+      if (!group) {
+        group = { reason, count: 0, sampleSpecIds: [], sampleIds: [] };
+        groups.set(reason, group);
+      }
+      group.count += 1;
+      const specId = row.specId;
+      if (
+        typeof specId === "string" &&
+        group.sampleSpecIds.length < PROOF_SAMPLES_PER_REASON &&
+        !group.sampleSpecIds.includes(specId)
+      ) {
+        group.sampleSpecIds.push(specId);
+      }
+      if (group.sampleIds.length < PROOF_SAMPLES_PER_REASON) group.sampleIds.push(row.id);
+    }
+  }
+  const ranked = [...groups.values()].sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+  return {
+    rows: history.length,
+    activeRows: active.length,
+    byCurrentness,
+    reasons: ranked.slice(0, PROOF_REASONS_PER_BAR),
+    ...(ranked.length > PROOF_REASONS_PER_BAR ? { reasonsOmitted: ranked.length - PROOF_REASONS_PER_BAR } : {}),
+    rowsCut: `[TRUNCATED ${history.length} proof rows summarized — recover: ${SHAPE_RECOVER_HINT}]`,
+  };
+}
+
+/**
+ * `shipReadiness` (opt-in) carries the acceptance BAR contract snapshot, and
+ * each bar's `proof.history` re-lists EVERY evidence row ever bound to it, raw
+ * `details` included. Measured 2026-10-13 (oversized-tool-results-reduction-
+ * 2026-10-12 P-006; 24h, transport=mcp): 125 shipReadiness reads were 4% of
+ * plans:get calls but 43% of its bytes (p50 228KB, p90 615KB), and
+ * proof.history was ~93% of the snapshot in the largest spills. Replacing the
+ * rows with summarizeProofHistory cut those snapshots 78-93%.
+ *
+ * The verdict (`satisfied`, `code`, `repairAction`, `message`) and every per-bar
+ * count and state are untouched; the shaper runs after the handler, so nothing
+ * the handler derived from the full rows changes. Full rows: payloadTier:'full'.
+ */
+function shapeShipReadiness(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const sr = value as Record<string, unknown>;
+  const snap = sr.acceptanceBarContractSnapshot as Record<string, unknown> | null | undefined;
+  if (!snap || typeof snap !== "object" || !Array.isArray(snap.bars)) return value;
+  let summarized = 0;
+  const bars = snap.bars.map((bar) => {
+    if (!bar || typeof bar !== "object") return bar;
+    const proof = (bar as Record<string, unknown>).proof as Record<string, unknown> | null | undefined;
+    if (!proof || typeof proof !== "object" || !Array.isArray(proof.history) || proof.history.length === 0) {
+      return bar;
+    }
+    summarized += 1;
+    const { history, ...rest } = proof;
+    return {
+      ...(bar as Record<string, unknown>),
+      proof: { ...rest, historySummary: summarizeProofHistory(history as unknown[]) },
+    };
+  });
+  if (summarized === 0) return value;
+  return { ...sr, acceptanceBarContractSnapshot: { ...snap, bars } };
 }
 
 /** Tier-project a plans:get bulk envelope ({ ok, results, counts }). */

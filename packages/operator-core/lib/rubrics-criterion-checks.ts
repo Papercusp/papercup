@@ -73,6 +73,7 @@ import type {
 } from './harness/improvements/observation-types';
 import { managedSpawn } from './task-manager/managed-spawn';
 import { CONTINUITY_PROBE_MAX_PER_WAKE, SQL_PROBE_TOOL, continuityProbeSchema, runContinuityProbeBatch, type ContinuityProbe } from './continuity-probes';
+import { RUBRIC_PROBE_MAX_PER_EMIT } from './agent-tools/limits';
 
 /** The minimal criterion shape this module reads — key + the optional check. */
 export interface CheckedCriterion {
@@ -269,8 +270,8 @@ export function validateCriterionCheckPaths(
   const normalizedCargoByKey: Record<string, NormalizedCargoCheckPaths> = {};
   let checked = 0;
   const probeCount = criteria.reduce((n, c) => n + (c.check?.kind === 'probe' ? (c.check.all?.length ?? 1) : 0), 0);
-  if (probeCount > CONTINUITY_PROBE_MAX_PER_WAKE) {
-    scopeFailures.push({ criterionKey: '(probe batch)', path: 'all', reason: `${probeCount} probes exceed the execution cap of ${CONTINUITY_PROBE_MAX_PER_WAKE}` });
+  if (probeCount > RUBRIC_PROBE_MAX_PER_EMIT) {
+    scopeFailures.push({ criterionKey: '(probe batch)', path: 'all', reason: `${probeCount} probes exceed the execution cap of ${RUBRIC_PROBE_MAX_PER_EMIT}` });
   }
   for (const c of criteria) {
     if (c.check?.kind === 'probe') {
@@ -815,9 +816,9 @@ export async function evaluateCriterionProbeChecks(input: {
     }
   }
   if (planned.length === 0) return { ok: true, checkRuns: {} };
-  if (planned.length > CONTINUITY_PROBE_MAX_PER_WAKE) return {
+  if (planned.length > RUBRIC_PROBE_MAX_PER_EMIT) return {
     ok: false, error: 'probe_invalid', criterionKey: planned[0]!.key,
-    detail: `${planned.length} declared probes exceed execution cap ${CONTINUITY_PROBE_MAX_PER_WAKE}; no probe was dispatched`,
+    detail: `${planned.length} declared probes exceed execution cap ${RUBRIC_PROBE_MAX_PER_EMIT}; no probe was dispatched`,
   };
   if (!input.dispatchTool) {
     return {
@@ -840,10 +841,18 @@ export async function evaluateCriterionProbeChecks(input: {
       probe: item.probe,
     },
   }));
-  const batch = await runContinuityProbeBatch(sources, {
-    dispatchTool: input.dispatchTool,
-    timeoutMs: input.probeTimeoutMs ?? CRITERION_PROBE_TIMEOUT_MS,
-  });
+  // The shared batch runner executes at most CONTINUITY_PROBE_MAX_PER_WAKE probes per call and
+  // truncates the rest, so a rubric's larger probe set runs in chunks of that size. Each source
+  // keeps its global checkIndex, which the runner copies onto its result.
+  const batch: { results: Awaited<ReturnType<typeof runContinuityProbeBatch>>['results']; truncated: number } = { results: [], truncated: 0 };
+  for (let start = 0; start < sources.length; start += CONTINUITY_PROBE_MAX_PER_WAKE) {
+    const chunk = await runContinuityProbeBatch(sources.slice(start, start + CONTINUITY_PROBE_MAX_PER_WAKE), {
+      dispatchTool: input.dispatchTool,
+      timeoutMs: input.probeTimeoutMs ?? CRITERION_PROBE_TIMEOUT_MS,
+    });
+    batch.results.push(...chunk.results);
+    batch.truncated += chunk.truncated;
+  }
   if (batch.truncated > 0 || batch.results.length !== planned.length) {
     return {
       ok: false,
