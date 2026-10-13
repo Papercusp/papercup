@@ -370,7 +370,7 @@ describe('original compaction durable episodes', () => {
     expect(h.resolvedKeys).toEqual(expect.arrayContaining(h.openedKeys));
   });
   it.each(['foreign-workspace', 'foreign-owner', 'duplicate', 'invalid-limit', 'invalid-estimate',
-    'future-episode', 'unknown-clock', 'failed-ledger', 'unknown-ledger'])('preserves %s recovery', async kind => {
+    'future-episode', 'unknown-clock', 'failed-ledger', 'unknown-ledger', 'unexpected-subject', 'duplicate-episode'])('preserves %s recovery', async kind => {
     const h = fixture(); h.open.set(h.key('over-limit'), Date.now() - 100);
     estimateMock.mockResolvedValue(50_000);
     if (kind === 'foreign-workspace') h.row.workspace_id = 'other';
@@ -381,6 +381,11 @@ describe('original compaction durable episodes', () => {
     if (kind === 'unknown-clock') h.open.set(h.key('over-limit'), Number.NaN);
     if (kind === 'failed-ledger') h.deps.readOpenConditions = async () => { throw new Error('ledger unreadable'); };
     if (kind === 'unknown-ledger') h.deps.readOpenConditions = async () => undefined as never;
+    if (kind === 'unexpected-subject') { h.open.clear(); h.open.set(h.key('over-limit', 'foreign-session'), Date.now() - 100); }
+    if (kind === 'duplicate-episode') h.deps.readOpenConditions = async () => [
+      { conditionKey: h.key('over-limit'), openedAtMs: Date.now() - 100 },
+      { conditionKey: h.key('over-limit'), openedAtMs: Date.now() - 100 },
+    ];
     await h.run(kind === 'duplicate' ? [h.row, h.row] : [h.row]);
     expect(h.open.size).toBe(1); expect(h.resolvedKeys).toHaveLength(0);
   });
