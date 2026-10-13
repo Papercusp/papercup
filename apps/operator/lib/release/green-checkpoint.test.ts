@@ -1002,6 +1002,67 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
       repairHead: frozen,
     });
   });
+
+  it("P-013: the terminal handler routes the failing legs of the queue the tick ended holding", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-test",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      attempts: 0,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+      signature: [],
+    };
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.dispatchFrozenRepairFixer = async () => ({
+      spawnId: "fixer",
+      runId: "run",
+    });
+    const route = vi.fn(async (_input: unknown) => undefined);
+    deps.routeFrozenRepairLegsToAgents = route;
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(route).toHaveBeenCalled();
+    expect(route.mock.calls.at(-1)?.[0]).toMatchObject({
+      pipeline: expect.any(String),
+      queue: {
+        candidate: frozen,
+        repairHead: frozen,
+        failingTests: ["lib/broken.test.ts"],
+      },
+    });
+  });
+
+  it("P-013: a green tick routes queue:null so every open leg item resolves", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    const route = vi.fn(async (_input: unknown) => undefined);
+    deps.routeFrozenRepairLegsToAgents = route;
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result.green).toBe(true);
+    expect(route).toHaveBeenCalled();
+    expect(route.mock.calls.at(-1)?.[0]).toMatchObject({ queue: null });
+  });
 });
 
 describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
@@ -1026,11 +1087,16 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.recordDerivedFreezeDisposition = async (value) => {
       observation = value;
     };
+    // P-013: an unreadable queue is NOT "no queue" — routing it as null would resolve
+    // every open leg item on a read fault, so the terminal handler must skip routing.
+    const routeLegs = vi.fn(async (_input: unknown) => undefined);
+    deps.routeFrozenRepairLegsToAgents = routeLegs;
 
     const result = await runGreenCheckpoint(cfg(), deps, {
       candidate,
       noPush: true,
     });
+    expect(routeLegs).not.toHaveBeenCalled();
 
     expect(result).toMatchObject({
       advanced: false,
@@ -14547,10 +14613,12 @@ describe("P-005: post-suite low-memory scheduling and timing evidence", () => {
 
       expect(seen.get("lint:plane-producers")).toBe("postgresql://op@localhost:5432/papercusp");
       expect(seen.get("lint:plane-ratchet")).toBe("postgresql://op@localhost:5432/papercusp");
+      // WI-6554700010009206: lint:migrations is a live-plane lint too (its PG leg reads the
+      // reservation ledger from the operator DB), so it gets the DSN as well.
+      expect(seen.get("lint:migrations")).toBe("postgresql://op@localhost:5432/papercusp");
       // Every other leg stays DSN-free: the candidate suite must never reach the host DB.
       expect(seen.has("lint:tsc")).toBe(true);
       expect(seen.get("lint:tsc")).toBeUndefined();
-      expect(seen.get("lint:migrations")).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -16373,5 +16441,94 @@ describe("P-021: bounded frozen-queue life — retire, re-cut and carry", () => 
     await runGreenCheckpoint(cfg(), second.deps, { noPush: true });
     expect(second.deps.retireFrozenRepairQueueForBoundedLife).not.toHaveBeenCalled();
     expect(second.escalations.filter((line) => line.includes("bounded-life"))).toHaveLength(0);
+  });
+});
+
+// green-main-cycle-time-2026-10-08 P-012: a fresh cut (no frozen queue) judges the newest staging
+// commit the per-sync batch check passed, when that commit is on the tip's lineage and strictly
+// ahead of the green pin. Every fresh candidate's verdict records where it came from (freezeCut)
+// and which legs were red in its first round (redLegsAtR1).
+describe("P-012: fresh cut from the newest known-good point", () => {
+  async function knownGoodLineage() {
+    const ready = await commit("a", "1", "green pin");
+    await git(repo, ["branch", "ready", ready]);
+    const knownGood = await commit("b", "2", "per-sync check passed here");
+    const tip = await commit("c", "3", "unjudged by the per-sync check");
+    return { ready, knownGood, tip };
+  }
+
+  it("judges the known-good commit instead of the bare tip and records the cut on the verdict", async () => {
+    const lineage = await knownGoodLineage();
+    const { deps } = stubDeps(true);
+    deps.resolveKnownGoodRecutTarget = async () => lineage.knownGood;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.candidate).toBe(lineage.knownGood);
+    expect(result.freezeCut).toEqual({
+      source: "known-good",
+      reason: "known-good-selected",
+      candidate: lineage.knownGood,
+      tip: lineage.tip,
+      knownGood: lineage.knownGood,
+    });
+    expect(result.redLegsAtR1).toEqual({ candidate: lineage.knownGood, source: "known-good", legs: [] });
+  });
+
+  it("falls back to the tip when the known-good commit is the green pin (never re-judges main)", async () => {
+    const lineage = await knownGoodLineage();
+    const { deps } = stubDeps(true);
+    deps.resolveKnownGoodRecutTarget = async () => lineage.ready;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.candidate).toBe(lineage.tip);
+    expect(result.freezeCut).toMatchObject({
+      source: "staging-tip",
+      reason: "known-good-not-ahead-of-green",
+      candidate: lineage.tip,
+      knownGood: lineage.ready,
+    });
+  });
+
+  it("judges the tip with the reason recorded when the known-good reader throws", async () => {
+    const lineage = await knownGoodLineage();
+    const { deps } = stubDeps(true);
+    deps.resolveKnownGoodRecutTarget = async () => {
+      throw new Error("routines row unreadable");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.candidate).toBe(lineage.tip);
+    expect(result.freezeCut).toMatchObject({ source: "staging-tip", reason: "known-good-unreadable" });
+  });
+
+  it("records the red legs of a known-good candidate's first round", async () => {
+    const lineage = await knownGoodLineage();
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    const suite = deps.runGreen;
+    // The real runner maps each failing file to its workspace (`failingFiles`); that is what
+    // makes the suite leg red rather than unattributed.
+    deps.runGreen = async (...args) => ({
+      ...(await suite(...args)),
+      failingFiles: [{ workspace: "@papercusp/operator", file: "lib/broken.test.ts" }],
+    });
+    deps.resolveKnownGoodRecutTarget = async () => lineage.knownGood;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.green).toBe(false);
+    expect(result.redLegsAtR1).toEqual({ candidate: lineage.knownGood, source: "known-good", legs: ["suite"] });
+  });
+
+  it("a red round that names no failing file and no failed leg is recorded as unattributed", async () => {
+    const lineage = await knownGoodLineage();
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    deps.resolveKnownGoodRecutTarget = async () => lineage.knownGood;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.redLegsAtR1?.legs).toEqual(["unattributed"]);
   });
 });
