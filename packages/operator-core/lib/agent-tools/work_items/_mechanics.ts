@@ -83,7 +83,7 @@ export interface WorkItemMechanics {
     attribution: 'path-and-claim-window';
     latest: MechanicsTestResult[];
     /** 'none' = no related run in the window, which is not the same as passing. */
-    verdict: 'none' | 'all-pass' | 'failing';
+    verdict: 'none' | 'all-pass' | 'all-skipped' | 'failing';
   };
   openBlockers: Array<{ kind: string | null; ref: string | null; summary: string | null }>;
   sources: string[];
@@ -151,7 +151,10 @@ export function latestRunPerFile(rows: readonly MechanicsTestRunRow[]): Mechanic
 
 export function testVerdict(latest: readonly MechanicsTestResult[]): WorkItemMechanics['tests']['verdict'] {
   if (latest.length === 0) return 'none';
-  return latest.every((t) => t.status === 'pass' || t.status === 'skip') ? 'all-pass' : 'failing';
+  if (!latest.every((t) => t.status === 'pass' || t.status === 'skip')) return 'failing';
+  // Blind review #14 G-3: a set in which nothing passed is not a passing set. When every
+  // related run was skipped, no test executed, so the verdict says so instead of 'all-pass'.
+  return latest.some((t) => t.status === 'pass') ? 'all-pass' : 'all-skipped';
 }
 
 export interface DeriveMechanicsInput {
