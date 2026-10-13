@@ -23,12 +23,44 @@ import { liveProcExec } from './grader/index';
 import { liveBuildVerifierCommand, livePrepareSeparateVerifier, liveReadReward } from './grader/frontier-swe-live';
 import { makeFrontierSweGrader, type FrontierSweGraderConfig } from './grader/frontier-swe';
 import { checkContainerEvidenceIntegrity, FRONTIER_SWE_PROTECTED_PATHS, type EvidenceIntegrity } from './evidence-integrity';
+import { CONTAINER_CODEX_BIN_PATH, resolveContainerCodexBinary } from './container-exec-target';
+import { codexHomesRoot, codexSqliteHomesRoot } from '@papercusp/orchestrator/session-launch-dirs';
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, renameSync, rmSync, unlinkSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 
 /** The opaque environment handle for a FrontierSWE task — a live Docker container the arm operated. */
 export interface FrontierSweEnvHandle {
   containerId: string;
   image: string;
   instanceId: string;
+  /**
+   * Present when the arm runs its Codex CLI inside this container (D-026 / D-029). The runAgent adapter builds
+   * the docker-exec wrapper's `sessionRelocation` from `roots` (sessionEnv CODEX_HOME) and points the wrapper
+   * at `binPath`.
+   */
+  inContainerCodex?: InContainerCodexMounts;
+}
+
+/** The per-task mounts clone() made for an in-container Codex arm. */
+export interface InContainerCodexMounts {
+  /** Where the musl Codex is mounted read-only inside the container. */
+  binPath: string;
+  /** Each shared host root and the per-task dir bind-mounted over it at the same absolute path. Homes root first. */
+  roots: { hostRoot: string; perTaskDir: string }[];
+  /** Host uid:gid that teardown hands the mounted files back to (the container may write them as root). */
+  hostOwner: { uid: number; gid: number };
+}
+
+/** Optional overrides for {@link FrontierSweSeamConfig.inContainerCodex}. Production uses the defaults. */
+export interface InContainerCodexConfig {
+  /** Default {@link codexHomesRoot} — the root the operator writes every Codex session home under. */
+  homesRoot?: string;
+  /** Default {@link codexSqliteHomesRoot}. */
+  sqliteRoot?: string;
+  /** Default {@link resolveContainerCodexBinary} — the static musl Codex from the host's own install. */
+  codexBinary?: string;
+  /** Default the operator's own uid/gid. */
+  hostOwner?: { uid: number; gid: number };
 }
 
 export interface FrontierSweSeamConfig {
@@ -70,6 +102,14 @@ export interface FrontierSweSeamConfig {
   repoDir?: string;
   /** Override the separate-verifier lifecycle (tests); production uses {@link livePrepareSeparateVerifier}. */
   prepareVerifierEnv?: FrontierSweGraderConfig['prepareVerifierEnv'];
+  /**
+   * The arm runs its Codex CLI INSIDE the task container (D-026; session homes per D-029). clone() then mints one
+   * per-task dir beside each shared Codex root, bind-mounts it over that root at the same absolute path (the
+   * container sees only this task's sessions, never another session's home or tokens), and mounts the static musl
+   * Codex read-only at {@link CONTAINER_CODEX_BIN_PATH}. teardown() hands the mounted files back to the host user,
+   * moves every relocated session dir back into its shared root, and removes the per-task dirs.
+   */
+  inContainerCodex?: true | InContainerCodexConfig;
 }
 
 /** The seam never reads host files through the grader — the reward is read out of a container. */
@@ -141,12 +181,119 @@ export function frontierSweAgentNetworkArgs(task: BenchTask, opts: { allowlistNe
   throw new Error(`FrontierSWE clone: task ${task.instanceId} declares network_mode '${mode}', which this seam cannot enforce — refusing an unrestricted run`);
 }
 
+interface ResolvedInContainerCodex {
+  roots: [string, string];
+  codexBinary: string;
+  hostOwner: { uid: number; gid: number };
+}
+
+/** Is `p` equal to or inside `base`? */
+function within(base: string, p: string): boolean {
+  const rel = relative(base, p);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * Resolve and validate the in-container Codex config ONCE, at seam construction, so a bad config fails before any
+ * container starts. Refuses non-absolute paths, a ',' in a path (`--mount` is comma-separated; a comma would
+ * silently change the mount), and nested roots (one mount would shadow the other).
+ */
+export function resolveInContainerCodexConfig(c: true | InContainerCodexConfig): ResolvedInContainerCodex {
+  const o: InContainerCodexConfig = c === true ? {} : c;
+  const homesRoot = o.homesRoot ?? codexHomesRoot();
+  const sqliteRoot = o.sqliteRoot ?? codexSqliteHomesRoot();
+  const codexBinary = o.codexBinary ?? resolveContainerCodexBinary();
+  for (const [name, p] of [['homesRoot', homesRoot], ['sqliteRoot', sqliteRoot], ['codexBinary', codexBinary]] as const) {
+    if (!isAbsolute(p)) throw new Error(`FrontierSWE seam: inContainerCodex.${name} must be absolute (got ${JSON.stringify(p)})`);
+    if (p.includes(',')) throw new Error(`FrontierSWE seam: inContainerCodex.${name} contains ',' — refusing an ambiguous --mount (${p})`);
+  }
+  if (within(homesRoot, sqliteRoot) || within(sqliteRoot, homesRoot)) {
+    throw new Error(`FrontierSWE seam: the Codex homes root and SQLite root must not nest (${homesRoot}, ${sqliteRoot}) — one mount would shadow the other`);
+  }
+  const hostOwner = o.hostOwner ?? { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 };
+  return { roots: [homesRoot, sqliteRoot], codexBinary, hostOwner };
+}
+
+/**
+ * Mint the per-task dir for one shared root: a fresh sibling of the root, so it is on the same filesystem and the
+ * wrapper's rename() works. Also ensures the root itself exists (the operator writes the session home there).
+ */
+function mintPerTaskDir(root: string, instanceId: string): string {
+  mkdirSync(root, { recursive: true });
+  const tag = instanceId.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 48);
+  return mkdtempSync(join(dirname(root), `${basename(root)}.bench-${tag}-`));
+}
+
+/** The `docker run` mount flags for an in-container Codex arm (exported for tests). */
+export function inContainerCodexMountArgs(m: InContainerCodexMounts, codexBinary: string): string[] {
+  const args: string[] = [];
+  for (const { hostRoot, perTaskDir } of m.roots) {
+    if (perTaskDir.includes(',')) throw new Error(`FrontierSWE seam: per-task dir contains ',' (${perTaskDir})`);
+    args.push('--mount', `type=bind,source=${perTaskDir},target=${hostRoot}`);
+  }
+  args.push('--mount', `type=bind,source=${codexBinary},target=${m.binPath},readonly`);
+  return args;
+}
+
+export interface RestoreReport {
+  /** Session dirs moved back into their shared root (host paths). */
+  restored: string[];
+  /** Per-task dirs removed. */
+  removed: string[];
+  /** Non-fatal failures; teardown never throws. A per-task dir that could not be removed is listed here. */
+  errors: string[];
+}
+
+/**
+ * Undo the wrapper's relocation after the container is gone (D-029 step 4). For each root, every entry of the
+ * per-task dir whose host path is a symlink pointing at it is moved back into the shared root (the symlink is
+ * replaced by the real dir). That keeps the session's Codex transcript and lets session-dir-gc own its lifecycle
+ * as for a native session. Anything else in the per-task dir (no host symlink, so no host reference) is removed
+ * with the dir. Never throws.
+ */
+export function restoreRelocatedSessions(roots: readonly { hostRoot: string; perTaskDir: string }[]): RestoreReport {
+  const report: RestoreReport = { restored: [], removed: [], errors: [] };
+  for (const { hostRoot, perTaskDir } of roots) {
+    let names: string[] = [];
+    try {
+      names = readdirSync(perTaskDir);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') report.errors.push(`read ${perTaskDir}: ${(e as Error).message}`);
+      continue;
+    }
+    for (const name of names) {
+      const target = join(perTaskDir, name);
+      const link = join(hostRoot, name);
+      try {
+        if (!lstatSync(link).isSymbolicLink() || readlinkSync(link) !== target) continue;
+      } catch {
+        continue; // no host reference — removed with the per-task dir
+      }
+      try {
+        unlinkSync(link);
+        renameSync(target, link);
+        report.restored.push(link);
+      } catch (e) {
+        report.errors.push(`restore ${target} -> ${link}: ${(e as Error).message}`);
+      }
+    }
+    try {
+      rmSync(perTaskDir, { recursive: true, force: true });
+      report.removed.push(perTaskDir);
+    } catch (e) {
+      report.errors.push(`remove ${perTaskDir}: ${(e as Error).message}`);
+    }
+  }
+  return report;
+}
+
 export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): CloneGradeSeam<FrontierSweEnvHandle> {
   const netOverride = cfg.extraRunArgs?.find((a) => NETWORK_FLAG.test(a));
   if (netOverride) {
     throw new Error(`FrontierSWE seam: extraRunArgs may not set the network (${netOverride}) — the task's declared network_mode decides it`);
   }
   const exec = cfg.exec ?? liveProcExec;
+  const codex = cfg.inContainerCodex ? resolveInContainerCodexConfig(cfg.inContainerCodex) : null;
   const grader = makeFrontierSweGrader(
     {
       version: cfg.version,
@@ -174,14 +321,35 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
       // solve.sh exec; without it the gold control fails on missing reference material, not on the solution.
       // Agent rollouts (oracle=false) never carry it, so they never see a /solution.
       if (cfg.oracle && cfg.oracleFlag) runArgs.push('-e', `HARBOR_ORACLE_FLAG=${cfg.oracleFlag}`);
+      // In-container Codex (D-026 / D-029): per-task dirs mounted over the shared roots at the same paths, plus the
+      // musl Codex read-only. Minted only after every refusal above, and released again if `docker run` fails.
+      let mounts: InContainerCodexMounts | undefined;
+      if (codex) {
+        const roots: InContainerCodexMounts['roots'] = [];
+        try {
+          for (const root of codex.roots) roots.push({ hostRoot: root, perTaskDir: mintPerTaskDir(root, task.instanceId) });
+          mounts = { binPath: CONTAINER_CODEX_BIN_PATH, roots, hostOwner: codex.hostOwner };
+          runArgs.push(...inContainerCodexMountArgs(mounts, codex.codexBinary));
+        } catch (e) {
+          restoreRelocatedSessions(roots);
+          throw e;
+        }
+      }
       // Keep the container alive so the topology runtime can exec the agent into the baked-in /app workspace.
       runArgs.push(image, 'sleep', 'infinity');
-      const r = await exec('docker', runArgs);
+      let r: Awaited<ReturnType<ProcExec>>;
+      try {
+        r = await exec('docker', runArgs);
+      } catch (e) {
+        if (mounts) restoreRelocatedSessions(mounts.roots);
+        throw e;
+      }
       const containerId = r.stdout.trim().split('\n').pop() ?? '';
       if (r.code !== 0 || !containerId) {
+        if (mounts) restoreRelocatedSessions(mounts.roots);
         throw new Error(`FrontierSWE clone: docker run failed for ${task.instanceId} (${image}) — exit ${r.code}: ${r.stderr.slice(0, 300)}`);
       }
-      return { containerId, image, instanceId: task.instanceId };
+      return { containerId, image, instanceId: task.instanceId, ...(mounts ? { inContainerCodex: mounts } : {}) };
     },
 
     async grade(task: BenchTask, handle: FrontierSweEnvHandle) {
@@ -227,10 +395,27 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
 
     async teardown(handle: FrontierSweEnvHandle): Promise<void> {
       // Never-throw: teardown is ALWAYS called (success / capability-fail / infra-fail) — must not leak a container.
+      const m = handle.inContainerCodex;
+      if (m) {
+        // The container may have written the mounted session files as root. Hand them back to the host user from
+        // inside (as uid 0) BEFORE removing the container, so the host can move them and session-dir-gc can delete
+        // them later. Best effort: a failure leaves root-owned files the host cannot remove (reported below).
+        try {
+          await exec('docker', ['exec', '-u', '0', handle.containerId, 'chown', '-R', `${m.hostOwner.uid}:${m.hostOwner.gid}`, ...m.roots.map((x) => x.hostRoot)]);
+        } catch {
+          /* swallow — reported via restore errors if it mattered */
+        }
+      }
       try {
         await exec('docker', ['rm', '-f', handle.containerId]);
       } catch {
         /* swallow — a teardown failure must never break the run */
+      }
+      if (m) {
+        const report = restoreRelocatedSessions(m.roots);
+        if (report.errors.length) {
+          console.warn(`[frontier-swe-seam] teardown ${handle.instanceId}: ${report.errors.length} restore error(s): ${report.errors.join('; ').slice(0, 500)}`);
+        }
       }
     },
   };

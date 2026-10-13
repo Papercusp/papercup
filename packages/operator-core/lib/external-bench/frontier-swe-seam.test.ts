@@ -1,7 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type { BenchTask } from './types';
 import type { ProcExec } from './grader/swe-bench-pro';
-import { checkFrontierSweIntegrity, makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle } from './frontier-swe-seam';
+import {
+  checkFrontierSweIntegrity,
+  makeFrontierSweCloneGradeSeam,
+  restoreRelocatedSessions,
+  type FrontierSweEnvHandle,
+} from './frontier-swe-seam';
 
 function task(over: Record<string, unknown> = {}): BenchTask {
   return {
@@ -221,6 +229,140 @@ describe('makeFrontierSweCloneGradeSeam', () => {
     await expect(
       makeFrontierSweCloneGradeSeam({ version: 'v', exec: failing.exec }).teardown({ containerId: 'cid', image: 'i', instanceId: 't' }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('in-container Codex session mounts (D-026 / D-029)', () => {
+  const made: string[] = [];
+  afterEach(() => {
+    for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  /** Real temp roots shaped like production: the homes and SQLite roots live in different parents. */
+  function roots() {
+    const base = mkdtempSync(join(tmpdir(), 'fswe-seam-codex-'));
+    made.push(base);
+    const homesRoot = join(base, 'home', '.papercusp', 'su-codex-homes');
+    const sqliteRoot = join(base, 'tmp', 'papercusp-codex-sqlite-homes');
+    return { base, homesRoot, sqliteRoot, codexBinary: join(base, 'codex-musl') };
+  }
+  const owner = { uid: 4242, gid: 4343 };
+  /** Stand in for the docker-exec wrapper: relocate a session dir into the per-task dir and leave the symlink. */
+  function relocate(hostRoot: string, perTaskDir: string, name: string, file?: string) {
+    const target = join(perTaskDir, name);
+    mkdirSync(target, { recursive: true });
+    if (file) writeFileSync(join(target, file), file);
+    symlinkSync(target, join(hostRoot, name));
+  }
+
+  it('clone mints a per-task dir beside each shared root, mounts it over the root at the same path, mounts the musl Codex read-only, and exposes the mounts on the handle', async () => {
+    const r = roots();
+    const { exec, calls } = fakeDocker({});
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner } });
+    const h = await seam.clone(task());
+    const m = h.inContainerCodex!;
+    expect(m.binPath).toBe('/opt/papercusp/codex');
+    expect(m.hostOwner).toEqual(owner);
+    expect(m.roots.map((x) => x.hostRoot)).toEqual([r.homesRoot, r.sqliteRoot]);
+    for (const { hostRoot, perTaskDir } of m.roots) {
+      // A sibling of the root (same filesystem, so the wrapper's rename works) that exists and is empty.
+      expect(dirname(perTaskDir)).toBe(dirname(hostRoot));
+      expect(perTaskDir).not.toBe(hostRoot);
+      expect(existsSync(perTaskDir)).toBe(true);
+      expect(existsSync(hostRoot)).toBe(true);
+    }
+    const run = calls.find((c) => c[0] === 'run')!;
+    const mounts = run.flatMap((a, i) => (a === '--mount' ? [run[i + 1]] : []));
+    expect(mounts).toEqual([
+      `type=bind,source=${m.roots[0].perTaskDir},target=${r.homesRoot}`,
+      `type=bind,source=${m.roots[1].perTaskDir},target=${r.sqliteRoot}`,
+      `type=bind,source=${r.codexBinary},target=/opt/papercusp/codex,readonly`,
+    ]);
+    // The shared roots themselves are never a mount source: no other session's home reaches the container.
+    expect(run.some((a) => a.includes(`source=${r.homesRoot},`) || a.includes(`source=${r.sqliteRoot},`))).toBe(false);
+    // Mounts precede the image (docker run flag order).
+    expect(run.indexOf('--mount')).toBeLessThan(run.indexOf(task().graderMeta!['dockerImage'] as string));
+  });
+
+  it('a seam without inContainerCodex adds no mounts, no handle field, and no teardown exec', async () => {
+    const { exec, calls } = fakeDocker({});
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec });
+    const h = await seam.clone(task());
+    expect(h.inContainerCodex).toBeUndefined();
+    expect(calls.find((c) => c[0] === 'run')!.includes('--mount')).toBe(false);
+    await seam.teardown(h);
+    expect(calls.filter((c) => c[0] === 'exec')).toEqual([]);
+  });
+
+  it('a failed docker run releases the per-task dirs instead of leaking them', async () => {
+    const r = roots();
+    const { exec } = fakeDocker({}, { runCode: 125 });
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner } });
+    await expect(seam.clone(task())).rejects.toThrow(/docker run failed/);
+    for (const root of [r.homesRoot, r.sqliteRoot]) {
+      const siblings = readdirSync(dirname(root)).filter((n) => n.includes('.bench-'));
+      expect(siblings).toEqual([]);
+    }
+  });
+
+  it('teardown hands the mounts back to the host user inside the container BEFORE removing it, then moves each relocated session back into its shared root', async () => {
+    const r = roots();
+    const { exec, calls } = fakeDocker({});
+    const seam = makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner } });
+    const h = await seam.clone(task());
+    const [homes, sqlite] = h.inContainerCodex!.roots;
+    // Another session that never ran in this container.
+    mkdirSync(join(r.homesRoot, 'session-3'));
+    writeFileSync(join(r.homesRoot, 'session-3', 'config.toml'), 'other');
+    relocate(homes.hostRoot, homes.perTaskDir, 'session-7', 'rollout.jsonl');
+    relocate(sqlite.hostRoot, sqlite.perTaskDir, 'session-7', 'state.sqlite');
+    // Something the container wrote at the mount root, with no host reference.
+    writeFileSync(join(homes.perTaskDir, 'stray.txt'), 'x');
+
+    await seam.teardown(h);
+
+    const chownAt = calls.findIndex((c) => c[0] === 'exec' && c.includes('chown'));
+    const rmAt = calls.findIndex((c) => c[0] === 'rm');
+    expect(chownAt).toBeGreaterThanOrEqual(0);
+    expect(chownAt).toBeLessThan(rmAt);
+    expect(calls[chownAt]).toEqual(['exec', '-u', '0', h.containerId, 'chown', '-R', '4242:4343', r.homesRoot, r.sqliteRoot]);
+    // The relocated session is a real dir in its shared root again, with its contents.
+    for (const [root, file] of [[r.homesRoot, 'rollout.jsonl'], [r.sqliteRoot, 'state.sqlite']] as const) {
+      const p = join(root, 'session-7');
+      expect(lstatSync(p).isSymbolicLink()).toBe(false);
+      expect(readFileSync(join(p, file), 'utf8')).toBe(file);
+    }
+    expect(readFileSync(join(r.homesRoot, 'session-3', 'config.toml'), 'utf8')).toBe('other');
+    expect(existsSync(homes.perTaskDir)).toBe(false);
+    expect(existsSync(sqlite.perTaskDir)).toBe(false);
+    expect(existsSync(join(r.homesRoot, 'stray.txt'))).toBe(false);
+  });
+
+  it('restore only follows a host symlink that points into the per-task dir; a foreign symlink is left alone', () => {
+    const r = roots();
+    mkdirSync(r.homesRoot, { recursive: true });
+    const perTaskDir = mkdtempSync(join(dirname(r.homesRoot), 'su-codex-homes.bench-t-'));
+    mkdirSync(join(perTaskDir, 'session-9'));
+    const elsewhere = join(r.base, 'elsewhere');
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(r.homesRoot, 'session-9'));
+    const report = restoreRelocatedSessions([{ hostRoot: r.homesRoot, perTaskDir }]);
+    expect(report.restored).toEqual([]);
+    expect(report.errors).toEqual([]);
+    expect(readlinkSync(join(r.homesRoot, 'session-9'))).toBe(elsewhere);
+    expect(existsSync(perTaskDir)).toBe(false);
+    // Idempotent: a second pass over a removed per-task dir is a no-op, not an error.
+    expect(restoreRelocatedSessions([{ hostRoot: r.homesRoot, perTaskDir }]).errors).toEqual([]);
+  });
+
+  it('refuses a bad config at construction, before any container starts', () => {
+    const r = roots();
+    const { exec, calls } = fakeDocker({});
+    const mk = (over: Record<string, unknown>) => () =>
+      makeFrontierSweCloneGradeSeam({ version: 'v', exec, inContainerCodex: { ...r, hostOwner: owner, ...over } });
+    expect(mk({ homesRoot: 'relative/homes' })).toThrow(/must be absolute/);
+    expect(mk({ codexBinary: join(r.base, 'co,dex') })).toThrow(/contains ','/);
+    expect(mk({ sqliteRoot: join(r.homesRoot, 'sqlite') })).toThrow(/must not nest/);
+    expect(calls).toEqual([]);
   });
 });
 
