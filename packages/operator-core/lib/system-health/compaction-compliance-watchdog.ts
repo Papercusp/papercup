@@ -2675,6 +2675,12 @@ export async function checkCompactionCompliance(
         liveWindow = await estimateContextWindowForOwner(r.owner_id);
         if (liveWindow != null && (!Number.isFinite(liveWindow) || liveWindow <= 0)) liveWindow = null;
         if (liveWindow != null && liveWindow > MODEL_WINDOW_DEFAULT) await recover('default-1m-served-small');
+        if (liveWindow != null && liveWindow <= MODEL_WINDOW_DEFAULT) {
+          const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
+          const { spec } = await derivedSeedLimitForOwner(sql, r.owner_id, tierMenu, fleetMember);
+          if (spec && isDefault1mModelSpec(spec)) await raiseCompactionCondition(r.workspace_id, r.owner_id,
+            'default-1m-served-small', `Measured ${liveWindow}-token window for ${spec}.`, deps);
+        }
         if (liveWindow != null) {
           const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
           const safeLimit = defaultCompactionLimitForWindow(liveWindow, { fleetMember });
@@ -2733,7 +2739,6 @@ export async function checkCompactionCompliance(
               if (spec != null && isDefault1mModelSpec(spec)) {
                 const hit = { owner: r.owner_id, spec, from: r.compaction_limit, to: apply, window: liveWindow };
                 out.default1mServedSmall.push(hit);
-                await raiseCompactionCondition(r.workspace_id, r.owner_id, 'default-1m-served-small', `Measured ${liveWindow}-token window for ${spec}.`, deps);
                 await escalateDefault1mServedSmall({ ownerId: r.owner_id, ownerLabel: r.owner_label, ...hit });
               }
             }
@@ -3148,9 +3153,10 @@ async function escalateStaleCutoverProcess(
   processStartedAtMs: number,
   cutoverAtMs: number,
   note: string,
+  deps: CompactionConditionDeps = {},
 ): Promise<void> {
   await raiseCompactionCondition(DEFAULT_COORD_WORKSPACE, `${hostname()}:${process.argv[1]}`, 'stale-cutover',
-    `Process booted at ${processStartedAtMs}, before cutover ${cutoverId} at ${cutoverAtMs}.`, {}, cutoverId);
+    `Process booted at ${processStartedAtMs}, before cutover ${cutoverId} at ${cutoverAtMs}.`, deps, cutoverId);
   if (staleCutoverEscalated.has(cutoverId)) return;
   staleCutoverEscalated.add(cutoverId);
   const bootIso = new Date(processStartedAtMs).toISOString();
@@ -3201,7 +3207,7 @@ async function escalateStaleCutoverProcess(
  */
 export function startCompactionComplianceWatchdog(
   sql: Sql,
-  opts: { intervalMs?: number } = {},
+  opts: CompactionConditionDeps & { intervalMs?: number } = {},
 ): void {
   if (process.env.PAPERCUSP_COMPACTION_WATCHDOG === '0') return;
   // EI-16190: version/boot stamp, logged once at start — makes a stale
@@ -3212,14 +3218,14 @@ export function startCompactionComplianceWatchdog(
   // Resolve only this exact runtime's known cutovers from its measured boot.
   // A different process/host, unknown cutover or missing boot is not recovery.
   void (async () => {
-    const episodes = await compactionEpisodeReader({});
+    const episodes = await compactionEpisodeReader(opts);
     const runtimeEpisodes = episodes(DEFAULT_COORD_WORKSPACE, `${hostname()}:${process.argv[1]}`, 'stale-cutover');
     for (const episode of runtimeEpisodes) {
       try {
         const scope = JSON.parse(decodeURIComponent(episode.conditionKey.slice('alarm:compaction-compliance:'.length)));
         const cutover = WATCHDOG_BEHAVIOR_CUTOVERS.find(row => row.id === scope[3]);
         if (cutover && Number.isFinite(processStartedAtMs) && processStartedAtMs >= cutover.atMs) {
-          await recoverCompactionEpisodes(runtimeEpisodes.filter(row => row.conditionKey === episode.conditionKey), Date.now(), {});
+          await recoverCompactionEpisodes(runtimeEpisodes.filter(row => row.conditionKey === episode.conditionKey), Date.now(), opts);
         }
       } catch { /* unknown cutover preserves */ }
     }
@@ -3229,7 +3235,7 @@ export function startCompactionComplianceWatchdog(
       (stale.length === 0 ? ' — up to date with all known behavior cutovers.' : ''),
   );
   for (const c of stale) {
-    void escalateStaleCutoverProcess(c.id, processStartedAtMs, c.atMs, c.note);
+    void escalateStaleCutoverProcess(c.id, processStartedAtMs, c.atMs, c.note, opts);
   }
   const intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
   if (watchdogTimer) watchdogTimer.stop();
@@ -3237,7 +3243,7 @@ export function startCompactionComplianceWatchdog(
     'compaction-compliance-watchdog',
     intervalMs,
     () => {
-      void checkCompactionCompliance(sql);
+      void checkCompactionCompliance(sql, opts);
     },
     { category: 'watchdog' },
   );

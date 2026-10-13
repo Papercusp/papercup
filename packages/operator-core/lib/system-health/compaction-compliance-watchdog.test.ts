@@ -13,6 +13,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 import { tmpdir } from 'node:os';
+import { hostname } from 'node:os';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { join } from 'node:path';
 
 const {
@@ -195,6 +197,7 @@ import {
   resetStaleCutoverEscalationsForTests,
   resetCompactionStrandingForTests,
   startCompactionComplianceWatchdog,
+  WATCHDOG_BEHAVIOR_CUTOVERS,
   discoverPresencelessLoopOwners,
   carryRespawnLoopEscalationBody,
   carryRespawnStreakVerdict,
@@ -467,6 +470,22 @@ describe('original compaction durable episodes', () => {
       await h.run(); expect(h.open.has(h.key('force-unavailable'))).toBe(true);
       estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(0);
     });
+  it('runtime cutover recovery survives restart and only clears the same known host/entrypoint after a measured boot', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const h = fixture(); const cutover = WATCHDOG_BEHAVIOR_CUTOVERS[0];
+    const runtime = `${hostname()}:${process.argv[1]}`;
+    const exact = compactionConditionKey(DEFAULT_COORD_WORKSPACE, runtime, 'stale-cutover', cutover.id);
+    const foreign = compactionConditionKey(DEFAULT_COORD_WORKSPACE, 'other-host:entry', 'stale-cutover', cutover.id);
+    const unknown = compactionConditionKey(DEFAULT_COORD_WORKSPACE, runtime, 'stale-cutover', 'unknown-cutover');
+    const opened = cutover.atMs - 1_000;
+    h.open.set(exact, opened); h.open.set(foreign, opened); h.open.set(unknown, opened);
+    vi.setSystemTime(cutover.atMs + 1_000); vi.spyOn(process, 'uptime').mockReturnValue(0);
+    try {
+      startCompactionComplianceWatchdog(fakeSql({}), { ...h.deps, intervalMs: 999_999_999 });
+      await vi.waitFor(() => expect(h.open.has(exact)).toBe(false));
+      expect(h.open.has(foreign)).toBe(true); expect(h.open.has(unknown)).toBe(true);
+    } finally { const { stopManaged } = await import('@papercusp/scheduled-registry'); stopManaged('compaction-compliance-watchdog'); }
+  });
 });
 
 describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () => {

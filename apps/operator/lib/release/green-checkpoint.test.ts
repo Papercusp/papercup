@@ -25,6 +25,7 @@ import {
   runGreenCheckpoint,
   archivePureProofCapture,
   recordDerivedFreezeDispositionWithDeadline,
+  runPostVerdictStepWithDeadline,
   emitInconclusiveCheckpointVerdict,
   checkpointVerdictSiblingKeys,
   checkpointCandidateProvenance,
@@ -220,6 +221,30 @@ it("WI-10003241: a stalled optional freeze disposition cannot retain the checkpo
     expect(logs).toEqual([
       "derived freeze-disposition write started (deadline 30ms)",
       "derived freeze-disposition write deadline-exceeded in 30ms",
+    ]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("WI-6554700010009547: a stalled post-verdict step names itself on entry and resolves at its deadline", async () => {
+  vi.useFakeTimers();
+  try {
+    const logs: string[] = [];
+    const running = runPostVerdictStepWithDeadline(
+      "frozen-repair leg routing",
+      () => new Promise(() => {}),
+      (line) => logs.push(line),
+      40,
+    );
+    // The entry line is written BEFORE the step is awaited: a run killed mid-stall still
+    // names the step it was stuck in.
+    expect(logs).toEqual(["frozen-repair leg routing started (deadline 40ms)"]);
+    await vi.advanceTimersByTimeAsync(40);
+    expect(await running).toBe(false);
+    expect(logs).toEqual([
+      "frozen-repair leg routing started (deadline 40ms)",
+      "frozen-repair leg routing deadline-exceeded in 40ms",
     ]);
   } finally {
     vi.useRealTimers();
@@ -1062,6 +1087,32 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
     expect(result.green).toBe(true);
     expect(route).toHaveBeenCalled();
     expect(route.mock.calls.at(-1)?.[0]).toMatchObject({ queue: null });
+  });
+
+  it("WI-6554700010009547: leg routing runs through the bounded, entry-logged post-verdict step", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+    deps.routeFrozenRepairLegsToAgents = async () => {
+      throw new Error("condition bridge down");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    // A routing failure stays non-fatal, and the step is attributable from the run log.
+    expect(result.green).toBe(true);
+    expect(logs).toContain(
+      "frozen-repair leg routing started (deadline 60000ms)",
+    );
+    expect(logs).toContain(
+      "frozen-repair leg routing failed: condition bridge down",
+    );
   });
 });
 
