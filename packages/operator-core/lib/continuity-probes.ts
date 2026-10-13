@@ -625,6 +625,26 @@ function candidateFields(tool: ProjectedTool | undefined, probe: ContinuityProbe
   return known.sort((a, b) => score(a) - score(b) || a.localeCompare(b)).slice(0, 5);
 }
 
+/** Characters of an error result's text a failed probe's diagnostic carries. */
+const TOOL_ERROR_EXCERPT_CHARS = 300;
+
+/**
+ * A bounded excerpt of an error result's text, so an unjudgeable probe names what the tool said
+ * (a timeout, a scope refusal, a SQL error) instead of only that it failed. Empty when the result
+ * carries no text.
+ */
+function toolErrorExcerpt(result: Record<string, unknown>): string {
+  const content = Array.isArray(result.content) ? result.content : [];
+  const text = content
+    .map((entry) => (entry && typeof entry === 'object' ? (entry as { text?: unknown }).text : undefined))
+    .filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  return `: ${text.length > TOOL_ERROR_EXCERPT_CHARS ? `${text.slice(0, TOOL_ERROR_EXCERPT_CHARS)}…` : text}`;
+}
+
 function decodeToolResult(result: unknown): unknown {
   if (!result || typeof result !== 'object') return result;
   const row = result as Record<string, unknown>;
@@ -754,7 +774,7 @@ async function runOne(
       ...base,
       status: 'error',
       executed: true,
-      diagnostic: { code: 'tool_error', message: `read-only probe ${name} returned an error` },
+      diagnostic: { code: 'tool_error', message: `read-only probe ${name} returned an error${toolErrorExcerpt(result)}` },
     };
   }
   const decoded = decodeToolResult(dispatched.value);
