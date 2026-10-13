@@ -1521,6 +1521,56 @@
       "Root/P002 retain their12 check rows; the new clean guard is retained on P011 as its ninth check. Loop12 unchanged."
     ]
   },
-  "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, and receipt-removal replication", "Exact R7 shipment"],
+  "receiptRemovalOutcome20261013": {
+    "observedAt": "2026-10-13T03:24:00Z",
+    "priorArtifactSha256": "3b9abd5ce37a91b4721862ae11ca9e18807625e19e0afc593fc71b4a90abfd4f",
+    "conversationId": "conv-request-4a705aa78d6ff3498a5c3007a9a3a90e4a6a9db6a63cc1ac24b1d6bd7602c215",
+    "answerPost": 1177915,
+    "answerSha256": "b273af5602a1033e19a79bf3e05f5e6391f718dddcaf7e2acdb21cd14826ed58",
+    "answeringOwner": "su-c48906b7-51d2-4b95-9c57-19f2a99726da",
+    "targetAdvSessionId": 41894,
+    "operation": "convert",
+    "sourceRelevanceDisclosure": "The selected historical P-022 transcript was unrelated to R6; the responder answered by reading the named artifacts and ledgers. Transport reachability does not establish source selection quality.",
+    "requesterDisposition": {
+      "state": "closed_answered",
+      "postId": 1178110,
+      "interpretation": "The bounded receipt-removal question is answered. This does not settle native-fork, full source isolation, matrix, cohort or shipment acceptance."
+    },
+    "originalArtifact": {
+      "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+      "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+      "unchanged": true,
+      "population": 4,
+      "shortfall": 4,
+      "unknownRequesterDecisions": 1
+    },
+    "independentReadback": {
+      "originalAnswerPost": 1175213,
+      "originalAnswerInvocation": 36499010,
+      "invocationScope": { "workspaceId": "papercusp-workspace", "harnessSlug": "*" },
+      "originalAnswerSha256": "b116e8fec432f895e9971e6c7989471235d4a914f4b9be6cefdafd8d6aac80d9",
+      "originalTargetOwner": "su-1e20c419-dfb9-40ed-a730-8735e9b2e03e",
+      "originalTargetAdvSessionId": 41032,
+      "originalPortId": "d4ee2e1a-43ee-46de-bed2-b271f4af4047",
+      "originalPortStatus": "delivered",
+      "originalRenderedHash": "8022840a4a256defa2192e87ffd0d13c2a5e0ebfc32dea00cb16dcf7b1c7d242",
+      "originalNativePathExists": false,
+      "convertedNativeRootExists": false,
+      "indexedOriginalKickoff": { "sourceKind": "codex", "sessionId": "01a12d6b-0886-7550-8bd0-96d72dec936d", "turnIdx": 1, "chars": 8000, "hasPortId": true, "hasFrameChecksum": false }
+    },
+    "counterexample": {
+      "answerReceiptRemoval": "Answer existence, target-owner attribution and exact body hash remain supported by independent post and invocation receipts; native physical-call byte confirmation is unavailable.",
+      "kickoffReceiptRemoval": "Delivered port and rendered hash remain ledger-attested. Missing native frame/prefix bytes prevent renewed native byte-level verification; the indexed kickoff omits the checksum.",
+      "historicalEvidence": "Previously observed native calls and hashes remain historical evidence. Later file absence does not falsify those recorded observations or supply current native-byte proof."
+    },
+    "ownedFollowup": "EI-25832751993763782",
+    "limits": [
+      "File cleanup root cause is not established; the owned followup covers durable receipt retention and its recurrence guard.",
+      "The converted child ended at 2026-10-13T00:54:36.053887Z; no ongoing child monitor is needed.",
+      "The required tracked Claude native fork and terminal live-source request remain open or unavailable as previously scoped; no terminal request was replayed.",
+      "No original cohort backfill, universal isolation, full native actor census, independent acceptance or R7 shipment credit."
+    ]
+  },
+  "openAcceptance": ["Complete D-006 canonical mutation/system-direct/wake census", "Required native-fork and remaining matrix observations", "Original R6 immutable cohort population 4 and shortfall 4, unknown requester decision, and durable native receipt retention", "Exact R7 shipment"],
   "limits": ["No failed or closed native request was retried or relabelled.", "The prior live Codex-to-Claude no-child artifact remains unchanged.", "The original R6 population/cut is unchanged; this supplemental request earns no cohort credit.", "This artifact makes no universal immutability, full native-matrix, acceptance or shipment claim."]
 }
