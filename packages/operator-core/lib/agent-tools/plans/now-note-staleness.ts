@@ -73,8 +73,36 @@ function stalenessText(s: Omit<NoteStaleness, 'text'>): string {
  */
 export function summarizeNoteStaleness(
   events: readonly PlanEventLike[],
-  opts: { windowFull: boolean },
+  opts: { windowFull: boolean; noteWrittenAt?: string | null },
 ): NoteStaleness {
+  // Blind review #14 G-2: the baseline is the DISPLAYED note's own write time. A content edit
+  // writes a replacement note with no now_updated event, so the latest now_updated can predate
+  // the note a reader sees; counting from that event mislabels the note's age (and a
+  // content-written note with no event history read as "unknown"). The event-log search below
+  // is only the fallback for a legacy note that carries no write time.
+  const baseline = opts.noteWrittenAt ? Date.parse(opts.noteWrittenAt) : Number.NaN;
+  if (Number.isFinite(baseline)) {
+    let itemStatusChanges = 0;
+    let planStatusChanges = 0;
+    for (const e of events) {
+      if (!(Date.parse(e.ts) > baseline)) continue;
+      if (e.event === 'item_status_changed') itemStatusChanges++;
+      else if (e.event === 'status_changed') planStatusChanges++;
+    }
+    // A full newest-N window whose oldest event is already after the note may have dropped
+    // earlier post-note changes: the count is then a floor.
+    const oldest = events.length > 0 ? Date.parse(events[0]!.ts) : Number.NaN;
+    const truncatedByLimit = opts.windowFull && !(oldest <= baseline);
+    const base = {
+      transitionsSinceNote: itemStatusChanges + planStatusChanges,
+      noteWrittenAt: new Date(baseline).toISOString(),
+      basis: truncatedByLimit ? ('note-before-window' as const) : ('events-after-note' as const),
+      itemStatusChanges,
+      planStatusChanges,
+      truncatedByLimit,
+    };
+    return { ...base, text: stalenessText(base) };
+  }
   let noteIndex = -1;
   for (let i = events.length - 1; i >= 0; i--) {
     if (events[i]!.event === 'now_updated') {
@@ -138,11 +166,12 @@ async function defaultReadPlanEvents(opts: { planSlugs: string[]; limit: number 
 export async function readNoteStaleness(
   planSlug: string,
   deps: { read?: ReadPlanEventsForNote } = {},
+  noteWrittenAt: string | null = null,
 ): Promise<NoteStaleness> {
   const read = deps.read ?? defaultReadPlanEvents;
   try {
     const events = await read({ planSlugs: [planSlug], limit: NOTE_STALENESS_READ_LIMIT });
-    return summarizeNoteStaleness(events, { windowFull: events.length >= NOTE_STALENESS_READ_LIMIT });
+    return summarizeNoteStaleness(events, { windowFull: events.length >= NOTE_STALENESS_READ_LIMIT, noteWrittenAt });
   } catch {
     return unavailableNoteStaleness();
   }
@@ -162,7 +191,9 @@ export async function attachNoteStaleness(
       const now = result.now;
       const slug = result.slug;
       if (!now || typeof now !== 'object' || typeof slug !== 'string') return;
-      const staleness = await readNoteStaleness(slug, deps);
+      // The displayed note's write time, when plans:get exposed it (`now.note.writtenAt`).
+      const writtenAt = (now as { note?: { writtenAt?: unknown } }).note?.writtenAt;
+      const staleness = await readNoteStaleness(slug, deps, typeof writtenAt === 'string' ? writtenAt : null);
       result.now = { ...(now as Record<string, unknown>), staleness };
     }),
   );

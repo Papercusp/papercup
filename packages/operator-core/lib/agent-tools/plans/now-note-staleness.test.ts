@@ -91,6 +91,39 @@ describe('transitionsSinceNote — counted from the plan-event log', () => {
   });
 });
 
+describe('transitionsSinceNote — measured from the displayed note (blind review #14 G-2)', () => {
+  const at = (minute: number) => `2026-10-12T10:${String(minute).padStart(2, '0')}:00.000Z`;
+  it('a replacement note counts only changes after ITS write time, not after the older now_updated', () => {
+    const events = [ev('now_updated', 1), ev('item_status_changed', 2), ev('item_status_changed', 4)];
+    const s = summarizeNoteStaleness(events, { windowFull: false, noteWrittenAt: at(3) });
+    expect(s.transitionsSinceNote).toBe(1);
+    expect(s.noteWrittenAt).toBe(at(3));
+    expect(s.basis).toBe('events-after-note');
+  });
+  it('CONTROL: without the note write time the count falls back to the latest now_updated', () => {
+    const events = [ev('now_updated', 1), ev('item_status_changed', 2), ev('item_status_changed', 4)];
+    expect(summarizeNoteStaleness(events, { windowFull: false }).transitionsSinceNote).toBe(2);
+  });
+  it('a content-written note with no now_updated in the log has a known age, not unknown', () => {
+    const s = summarizeNoteStaleness([ev('item_status_changed', 1), ev('status_changed', 5)], { windowFull: false, noteWrittenAt: at(3) });
+    expect(s.transitionsSinceNote).toBe(1);
+    expect(s.planStatusChanges).toBe(1);
+    expect(s.basis).toBe('events-after-note');
+  });
+  it('a full window that starts after the note reports a floor, never a total', () => {
+    const s = summarizeNoteStaleness([ev('item_status_changed', 5), ev('item_status_changed', 6)], { windowFull: true, noteWrittenAt: at(3) });
+    expect(s.transitionsSinceNote).toBe(2);
+    expect(s.truncatedByLimit).toBe(true);
+    expect(s.basis).toBe('note-before-window');
+  });
+  it('attachNoteStaleness measures from now.note.writtenAt when plans:get exposes it', async () => {
+    const read = vi.fn(async () => [ev('now_updated', 1), ev('item_status_changed', 2), ev('item_status_changed', 4)]);
+    const results: Array<Record<string, unknown>> = [{ ok: true, slug: 'p', now: { state: 's', next: 'n', note: { writtenAt: at(3) } } }];
+    await attachNoteStaleness(results, { read: read as never });
+    expect((results[0]!.now as { staleness: { transitionsSinceNote: number } }).staleness.transitionsSinceNote).toBe(1);
+  });
+});
+
 describe('readNoteStaleness / attachNoteStaleness', () => {
   it('reads one plan through the bounded single-plan reader and derives the count', async () => {
     const read = vi.fn(async () => [ev('now_updated', 1), ev('item_status_changed', 2)]);
