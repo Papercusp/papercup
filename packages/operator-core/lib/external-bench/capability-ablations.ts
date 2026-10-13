@@ -46,7 +46,9 @@ const NO_SCOPED_CONTROL = 'No verified assignment-scoped native control yet (D-0
 
 /** Shared across every pair (D-018 common control). */
 export const ABLATION_COMMON_FREEZE: readonly string[] = [
-  'task, image and grader', 'seeds', 'model gpt-6-luna at effort max (D-014)', 'account route',
+  'task, image and grader', 'seeds',
+  'the evaluated model and effort max pinned by benchmark-coverage-frontierswe-v2-2026-10-10#D-014 (resolved, never named here)',
+  'account route',
   'initial corpus and memory snapshot', 'submission policy', 'concurrency',
   'aggregate dollar, call, token and wall caps counting every worker, leader, consult participant and restart',
 ];
