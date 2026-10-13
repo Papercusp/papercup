@@ -60,6 +60,8 @@ import {
   guardStagedIndexBeforeCommit,
   DECLARATION_STATUS_MAX_RETRIES,
   regenerateGeneratedDeclarationsBeforeCommit,
+  isDeclarationsGraphCandidate,
+  defaultListDeclarationsGraphMembers,
   declarationCompileErrors,
   declarationCompileOffenders,
   regenerateToolCatalogBeforeCommit,
@@ -859,6 +861,151 @@ describe('EI-21444216858331991 generated declarations pre-commit regeneration', 
       compilerErrors: [],
     });
     expect(logs.join('\n')).toMatch(/declaration regeneration failed \(declaration emit failed\) — deferring 4/);
+  });
+});
+
+describe('WI-6554700010011061 declarations program-graph sources trigger the commit-time emit', () => {
+  const inGraph = 'packages/operator-core/lib/verifier-source.ts';
+  const outOfGraph = 'packages/operator-core/lib/unrelated.ts';
+  const source = 'apps/operator/scripts/psu-launcher.mjs';
+  const artifact = 'apps/operator/scripts/psu-launcher.d.mts';
+  const inventory = `scripts/gen-declarations.ts\ntsconfig.declarations.json\n${source}\n${artifact}\n`;
+
+  /** A git double whose status is `dirty` before the emit and `after` once it ran; it records every call. */
+  function declarationGit(dirty: string[], after: string[] = dirty) {
+    const calls: string[] = [];
+    let statusReads = 0;
+    const runGit: RunGit = async (args) => {
+      calls.push(args[0]);
+      if (args[0] === 'status') {
+        statusReads += 1;
+        const paths = statusReads === 1 ? dirty : after;
+        return { code: 0, stdout: paths.map((path) => ` M ${path}\0`).join(''), stderr: '' };
+      }
+      if (args[0] === 'ls-files') return { code: 0, stdout: inventory, stderr: '' };
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+    return { runGit, calls };
+  }
+
+  it('classifies only source files outside node_modules as graph candidates', () => {
+    expect(isDeclarationsGraphCandidate(inGraph)).toBe(true);
+    expect(isDeclarationsGraphCandidate('scripts/lib/x.mjs')).toBe(true);
+    expect(isDeclarationsGraphCandidate('libs/generic/deployment-driver/src/a.mts')).toBe(true);
+    expect(isDeclarationsGraphCandidate('docs/README.md')).toBe(false);
+    expect(isDeclarationsGraphCandidate('node_modules/pkg/index.ts')).toBe(false);
+    expect(isDeclarationsGraphCandidate('../sibling/a.ts')).toBe(false);
+  });
+
+  it('runs the emit for a dirty in-graph TS file when no enrolled input is dirty', async () => {
+    const { runGit } = declarationGit([inGraph, 'docs/other.md']);
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const listGraphMembers = vi.fn(async (_repo: string, candidates: readonly string[]) =>
+      candidates.filter((path) => path === inGraph),
+    );
+    const logs: string[] = [];
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: (message) => logs.push(message) },
+      runGenerator,
+      listGraphMembers,
+    );
+
+    expect(listGraphMembers).toHaveBeenCalledExactlyOnceWith('/fake', [inGraph]);
+    expect(runGenerator).toHaveBeenCalledOnce();
+    // The source is not forced into the catch-all: no projection changed here.
+    expect(result).toEqual({ status: 'regenerated', atomicPaths: [] });
+    expect(logs.join('\n')).toMatch(/0 dirty pair\(s\), 1 dirty program-graph source\(s\)/);
+  });
+
+  it('a regenerated projection is still committed atomically with its enrolled source', async () => {
+    const { runGit } = declarationGit([inGraph], [inGraph, artifact]);
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      async () => ({ code: 0, stdout: '', stderr: '' }),
+      async () => [inGraph],
+    );
+    expect(result).toEqual({ status: 'regenerated', atomicPaths: [source, artifact] });
+  });
+
+  it('a dirty TS file outside the graph runs nothing and skips the inventory read', async () => {
+    const { runGit, calls } = declarationGit([outOfGraph]);
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      runGenerator,
+      async () => [],
+    );
+
+    expect(result).toEqual({ status: 'not-needed', atomicPaths: [] });
+    expect(runGenerator).not.toHaveBeenCalled();
+    expect(calls).toEqual(['status']);
+  });
+
+  it('a repository without the graph helper behaves exactly as before', async () => {
+    const { runGit, calls } = declarationGit([inGraph]);
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      runGenerator,
+      async () => null,
+    );
+
+    expect(result).toEqual({ status: 'not-needed', atomicPaths: [] });
+    expect(runGenerator).not.toHaveBeenCalled();
+    expect(calls).toEqual(['status']);
+    // The real default resolves null when the helper is absent, without spawning.
+    await expect(defaultListDeclarationsGraphMembers('/nonexistent-wi11061-repo', [inGraph])).resolves.toBeNull();
+  });
+
+  it('a failed graph lookup is fail-soft and says so', async () => {
+    const { runGit } = declarationGit([inGraph]);
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const logs: string[] = [];
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: (message) => logs.push(message) },
+      runGenerator,
+      async () => {
+        throw new Error('tsc --listFilesOnly exited 1');
+      },
+    );
+
+    expect(result).toEqual({ status: 'not-needed', atomicPaths: [] });
+    expect(runGenerator).not.toHaveBeenCalled();
+    expect(logs.join('\n')).toMatch(/declarations program-graph lookup failed \(Error: tsc --listFilesOnly exited 1\)/);
+  });
+
+  it('a failing emit holds back the in-graph file tsc names while the rest commits', async () => {
+    const { runGit } = declarationGit([inGraph, 'docs/other.md']);
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      async () => ({
+        code: 1,
+        stdout: '',
+        stderr: `/fake/${inGraph}(7,37): error TS5097: An import path can only end with a '.ts' extension.\n`,
+      }),
+      async () => [inGraph],
+    );
+    expect(result).toMatchObject({
+      status: 'deferred',
+      atomicPaths: [artifact, source, inGraph, 'scripts/gen-declarations.ts', 'tsconfig.declarations.json'].sort(),
+      compilerErrors: [{ path: inGraph }],
+    });
+  });
+
+  it('an enrolled pair still triggers the emit when the graph lookup is unavailable', async () => {
+    const { runGit } = declarationGit([source, inGraph], [source, artifact, inGraph]);
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      runGenerator,
+      async () => null,
+    );
+    expect(runGenerator).toHaveBeenCalledOnce();
+    expect(result).toEqual({ status: 'regenerated', atomicPaths: [source, artifact] });
   });
 });
 
@@ -5206,6 +5353,37 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       expect(out.errors[0].message).toMatch(/commit failed/i);
     }
     expect(commitAttempts).toBe(1 + 3); // initial attempt + bounded live-contention retries
+  });
+
+  it('EI-258149: a publication failure remains an error when another dirty path is live-held', async () => {
+    let commitAttempts = 0;
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain -z')) return { code: 0, stdout: ' M file.txt\0 M held.txt\0' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n M held.txt\n' };
+      if (j.startsWith('rev-parse --absolute-git-dir')) return { code: 1, stderr: 'not a git directory' };
+      if (j.startsWith('commit')) {
+        commitAttempts++;
+        return { code: 1, stderr: "fatal: Unable to create '.git/index.lock': File exists" };
+      }
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      liveLockHoldings: [{ path: 'held.txt', owner: 'peer', intent: 'active edit' }],
+      config: { push: false, pushSubmodules: false },
+    });
+
+    expect(commitAttempts).toBe(4);
+    expect(out.skippedPaths).toEqual(expect.arrayContaining([expect.objectContaining({ path: 'held.txt', owner: 'peer' })]));
+    expect(out.status).toBe('error');
+    if (out.status === 'error') {
+      expect(out.errors).toEqual(expect.arrayContaining([expect.objectContaining({ scope: 'superproject', message: expect.stringContaining('commit failed') })]));
+    }
   });
 
   it('EI-21210284687094143: catch-all commit retries a transient live index.lock instead of red-sticking git-sync', async () => {

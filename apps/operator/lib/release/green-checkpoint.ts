@@ -59,6 +59,7 @@ import {
   type SelectionBaseResult,
 } from "./selection-base";
 import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
+import { redactSensitiveText } from "@papercusp/operator-core/lib/sensitive-text";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import {
   buildRedLegsAtR1,
@@ -3732,6 +3733,16 @@ export function checkpointRunIdFromScheduledEnv(value: string | undefined, mint:
 }
 
 /** Keep the exact scheduled runner visibly alive through quiet suite phases. */
+function safeQualificationProgressErrorDetail(error: unknown): string | undefined {
+  if (error == null) return undefined;
+  const message = error instanceof Error ? error.message : String(error);
+  const detail = redactSensitiveText(sanitizeCheckpointLogText(message))
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+  return detail || undefined;
+}
+
 export function startCheckpointQualificationProgress(
   input: {
     target: GateVerdictTarget | null;
@@ -3765,10 +3776,12 @@ export function startCheckpointQualificationProgress(
         attemptId, runnerId, runId: input.runId, pidIdentity, phase: phaseAtReport, nowMs,
       });
       if (result.status !== 'updated' && result.status !== 'idempotent' && result.status !== 'terminal') {
-        console.warn(`${orchestratorStdoutTag()} scheduled runner progress refused: ${result.status}`);
+        const detail = safeQualificationProgressErrorDetail("error" in result ? result.error : undefined);
+        console.warn(`${orchestratorStdoutTag()} scheduled runner progress refused: ${result.status}${detail ? `; detail: ${detail}` : ''}`);
       }
     }).catch((error) => {
-      console.warn(`${orchestratorStdoutTag()} scheduled runner progress failed: ${error instanceof Error ? error.message : error}`);
+      const detail = safeQualificationProgressErrorDetail(error);
+      console.warn(`${orchestratorStdoutTag()} scheduled runner progress failed${detail ? `: ${detail}` : ''}`);
     });
   };
   const timer = managedSetInterval(

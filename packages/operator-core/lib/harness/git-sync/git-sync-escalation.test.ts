@@ -6,6 +6,7 @@ import {
   CONTENT_QUARANTINE_REALARM_TICKS,
   decideContentQuarantineNotice,
   decideGitSyncEscalation,
+  effectivePublishRefusal,
   oversizedKey,
   PUSH_FAILURE_ESCALATION_TICKS,
   selectContentNoticeRecipients,
@@ -297,6 +298,71 @@ describe('decideGitSyncEscalation — own-head publish refusal (EI-2123001158930
   it('combines with the other reasons rather than replacing them', () => {
     const d = decideGitSyncEscalation({ ...base, oversized: [big], publishRefusal: refusal });
     expect(d.reasons).toEqual(expect.arrayContaining(['oversized-blobs', 'publish-refused']));
+  });
+});
+
+/**
+ * WI-6554700010010939 — a stale refusal re-broadcast. On 2026-10-13 the own-head publish
+ * was refused at 19:42:25Z; a secrets exemption added at 19:45Z cleared it; the next
+ * tick (one-tick lag, ~35 min on papercusp) still broadcast "egress is FROZEN" at
+ * 20:16:22Z, 50 s before that same tick's publish leg retried and published.
+ */
+describe('effectivePublishRefusal — exemption newer than the refusal (WI-6554700010010939)', () => {
+  const refusedAt = Date.parse('2026-10-13T19:42:25Z');
+  const exemptedAt = Date.parse('2026-10-13T19:45:00Z');
+  const secrets = { refused: 'secrets', blockedAtCommit: '6c1f826a7a90aaaaaaaaaaaaaaaaaaaaaaaaaaaa', atMs: refusedAt };
+
+  it('drops a secrets refusal recorded BEFORE the latest exemption (the measured incident)', () => {
+    expect(effectivePublishRefusal(secrets, exemptedAt)).toBeNull();
+  });
+
+  it('the incident tick therefore neither escalates nor broadcasts', () => {
+    const d = decideGitSyncEscalation({
+      ...base,
+      status: 'synced',
+      publishRefusal: effectivePublishRefusal(secrets, exemptedAt),
+      prevPublishBlockedAtCommit: null,
+    });
+    expect(d.reasons).not.toContain('publish-refused');
+    expect(d.broadcast).toBeNull();
+  });
+
+  it('keeps a refusal recorded AFTER the latest exemption — the retry failed again', () => {
+    const later = { ...secrets, atMs: exemptedAt + 60_000 };
+    expect(effectivePublishRefusal(later, exemptedAt)).toEqual({
+      refused: 'secrets',
+      blockedAtCommit: secrets.blockedAtCommit,
+    });
+    // And because the superseded tick recorded no freeze point, the repeat refusal at
+    // the SAME commit still broadcasts instead of being treated as a persisting freeze.
+    const d = decideGitSyncEscalation({
+      ...base,
+      publishRefusal: effectivePublishRefusal(later, exemptedAt),
+      prevPublishBlockedAtCommit: null,
+    });
+    expect(d.broadcast).toContain('6c1f826a7a90');
+  });
+
+  it('keeps the refusal when no exemption exists or either timestamp is unreadable (fail loud)', () => {
+    expect(effectivePublishRefusal(secrets, null)).not.toBeNull();
+    expect(effectivePublishRefusal(secrets, Number.NaN)).not.toBeNull();
+    expect(effectivePublishRefusal({ ...secrets, atMs: null }, exemptedAt)).not.toBeNull();
+  });
+
+  it('an exemption cannot supersede a non-secrets refusal', () => {
+    expect(effectivePublishRefusal({ ...secrets, refused: 'oversized' }, exemptedAt)).toEqual({
+      refused: 'oversized',
+      blockedAtCommit: secrets.blockedAtCommit,
+    });
+  });
+
+  it('an empty or absent refusal stays null', () => {
+    expect(effectivePublishRefusal(null, exemptedAt)).toBeNull();
+    expect(effectivePublishRefusal({ ...secrets, refused: '' }, exemptedAt)).toBeNull();
+  });
+
+  it('an exemption at the SAME instant as the refusal does not supersede it', () => {
+    expect(effectivePublishRefusal(secrets, refusedAt)).not.toBeNull();
   });
 });
 

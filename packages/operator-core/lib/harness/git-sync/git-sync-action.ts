@@ -240,6 +240,7 @@ import { emitAwaitedEvent } from '../../events/await/engine';
 import {
   decideContentQuarantineNotice,
   decideGitSyncEscalation,
+  effectivePublishRefusal,
   oversizedKey,
   selectContentNoticeRecipients,
   type ContentQuarantineNotice,
@@ -1848,6 +1849,8 @@ async function readEscalationCounters(
       cpt: number;
       pubrefused: string | null;
       pubblocked: string | null;
+      pubat: string | number | null;
+      lastexempt: string | number | null;
       lastpub: string | null;
       lastyield?: string | number | null;
       lastsynced?: string | number | null;
@@ -1863,6 +1866,11 @@ async function readEscalationCounters(
            coalesce((metadata->>'consecutive_cumulative_peel_ticks')::int, 0) AS cpt,
            metadata->'own_head_publish'->>'refused' AS pubrefused,
            metadata->'own_head_publish'->>'blockedAtCommit' AS pubblocked,
+           metadata->'own_head_publish'->>'at' AS pubat,
+           -- WI-6554700010010939: an exemption newer than the refusal supersedes it.
+           (SELECT (extract(epoch FROM max(e.created_at)) * 1000)::bigint
+              FROM harness_shared.secrets_guard_path_exemptions e
+             WHERE e.workspace_id = ${workspaceId}) AS lastexempt,
            metadata->>'last_publish_blocked_at' AS lastpub
       FROM harness_shared.routines
      WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
@@ -1879,7 +1887,12 @@ async function readEscalationCounters(
     contentTicks: rows[0]?.ct ?? 0,
     contentSignature: rows[0]?.cs ?? null,
     cumulativePeelTicks: rows[0]?.cpt ?? 0,
-    publishRefusal: refused ? { refused, blockedAtCommit: rows[0]?.pubblocked ?? null } : null,
+    publishRefusal: effectivePublishRefusal(
+      refused
+        ? { refused, blockedAtCommit: rows[0]?.pubblocked ?? null, atMs: epochMsOrNull(rows[0]?.pubat) }
+        : null,
+      epochMsOrNull(rows[0]?.lastexempt),
+    ),
     prevPublishBlockedAtCommit: rows[0]?.lastpub ?? null,
     lastYieldAt: epochMsOrNull(rows[0]?.lastyield),
     lastSyncedAt: epochMsOrNull(rows[0]?.lastsynced),

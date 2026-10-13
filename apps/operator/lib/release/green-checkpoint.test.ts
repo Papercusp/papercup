@@ -3987,6 +3987,42 @@ describe("acquireCheckpointRunLock", () => {
     progress.note('phase:suite');
     expect(record).toHaveBeenCalledTimes(3);
   });
+  it("logs bounded, redacted details for scheduled qualification progress failures", async () => {
+    const unsafeError = `database unavailable\npassword=unit-test-secret ${"x".repeat(400)}`;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
+      const refused = vi.fn(async (..._args: unknown[]) => ({
+        status: 'unreadable' as const,
+        error: unsafeError,
+      }));
+      const refusedProgress = startCheckpointQualificationProgress({
+        target, attemptId: 'attempt-1', gateFireId: 'fire-1', runId: 'run-1', pid: process.pid,
+      }, refused, 60_000);
+      refusedProgress.note('phase:suite');
+      await refusedProgress.stop();
+
+      const rejected = vi.fn(async (..._args: unknown[]) => { throw new Error(unsafeError); });
+      const rejectedProgress = startCheckpointQualificationProgress({
+        target, attemptId: 'attempt-2', gateFireId: 'fire-2', runId: 'run-2', pid: process.pid,
+      }, rejected, 60_000);
+      rejectedProgress.note('phase:suite');
+      await rejectedProgress.stop();
+
+      expect(warn).toHaveBeenCalledTimes(2);
+      const lines = warn.mock.calls.map(([message]) => String(message));
+      expect(lines[0]).toContain('scheduled runner progress refused: unreadable');
+      expect(lines[1]).toContain('scheduled runner progress failed');
+      for (const line of lines) {
+        expect(line).toContain('database unavailable');
+        expect(line).not.toContain('unit-test-secret');
+        expect(line).not.toMatch(/[\r\n]/);
+        expect(line.length).toBeLessThan(400);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
   it("keeps qualification progress fresh while dependency preflight is pending", async () => {
     vi.useFakeTimers();
     try {

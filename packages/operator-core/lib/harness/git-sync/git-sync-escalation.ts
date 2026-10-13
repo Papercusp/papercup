@@ -174,6 +174,38 @@ const formatMegabytes = (bytes: number): string =>
 
 export const oversizedKey = (f: ScopedOversized): string => `${f.scope}:${f.path}`;
 
+/**
+ * WI-6554700010010939: the own-head-publish refusal this tick escalates on, or null when a
+ * secrets path exemption was added AFTER that refusal was recorded.
+ *
+ * The refusal comes from the PREVIOUS tick's publish leg (see `publishRefusal`), and on
+ * papercusp a tick can take ~35 min. On 2026-10-13 the publish was refused at 19:42:25Z,
+ * the exemption that cleared it landed at 19:45Z, and the next tick still broadcast
+ * "egress is FROZEN" at 20:16:22Z, 50 s before that same tick's publish leg retried and
+ * published. An exemption newer than the refusal means the remedy has already been
+ * applied and the retry is pending, so this tick treats the publish as not refused.
+ *
+ * This also keeps `last_publish_blocked_at` at null (the caller records the effective
+ * value), so if the retry is refused again at the same commit, the next tick still
+ * broadcasts: its refusal record is then newer than the exemption.
+ *
+ * Only `secrets` refusals are affected (an exemption cannot clear any other code). A
+ * missing or non-numeric timestamp on either side keeps the refusal (fail loud).
+ */
+export function effectivePublishRefusal(
+  refusal: { refused: string; blockedAtCommit: string | null; atMs: number | null } | null | undefined,
+  latestExemptionAtMs: number | null | undefined,
+): { refused: string; blockedAtCommit: string | null } | null {
+  if (!refusal?.refused) return null;
+  const kept = { refused: refusal.refused, blockedAtCommit: refusal.blockedAtCommit };
+  if (refusal.refused !== 'secrets') return kept;
+  const at = refusal.atMs;
+  const ex = latestExemptionAtMs;
+  if (typeof at !== 'number' || !Number.isFinite(at)) return kept;
+  if (typeof ex !== 'number' || !Number.isFinite(ex)) return kept;
+  return ex > at ? null : kept;
+}
+
 export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision {
   const reasons: EscalationReason[] = [];
   if (i.consecutiveErrorTicks >= PUSH_FAILURE_ESCALATION_TICKS) reasons.push('push-failure');

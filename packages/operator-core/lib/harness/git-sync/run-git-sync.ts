@@ -45,7 +45,12 @@ import { scanProcForOpenFile } from './proc-open-file-scan';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 import { gitReplayIsSafe, isSidecarPostDispatchFault, sidecarPostDispatchUnknownResult } from '../../fleet/sidecar-dispatch-fault';
-import { detectContentOffenders, parseDirtyPaths, type ContentOffender } from './content-guard';
+import {
+  detectContentOffenders,
+  detectUnscannedStagedOffenders,
+  parseDirtyPaths,
+  type ContentOffender,
+} from './content-guard';
 import {
   detectStagedDeletionsStillImported,
   detectUnsafeDeletions,
@@ -765,6 +770,82 @@ export function affectsGeneratedDeclarations(path: string): boolean {
   );
 }
 
+/**
+ * WI-6554700010011061 — the declarations program compiles every source file its
+ * enrolled `.mjs` inputs reach (~270 files), so a dirty TS file in that graph can fail
+ * the emit or change a generated `.d.mts` without touching any path
+ * `affectsGeneratedDeclarations` names. The edit hook covers Edit/Write edits; this
+ * covers the rest (Bash writes, hook-less clients) at commit time.
+ *
+ * The graph rule and its shared 15-minute cache are owned by the edit hook, which this
+ * process asks out of band. That keeps one implementation and one cache, and keeps
+ * the synchronous 3-5s tsc listing off the bg-host event loop. The hook stays a
+ * self-contained file because it is installed by byte copy into
+ * ~/.papercusp/hooks/cc, so it cannot import a shared module.
+ */
+export const DECLARATIONS_GRAPH_HELPER_PATH = 'apps/operator/scripts/hooks/cc/regenerate-declaration-before-lock-release.mjs';
+const DECLARATIONS_GRAPH_CANDIDATE = /\.(?:[cm]?[jt]sx?)$/;
+
+/** A dirty path that COULD be a declarations program-graph source; only the graph lookup decides. */
+export function isDeclarationsGraphCandidate(path: string): boolean {
+  return DECLARATIONS_GRAPH_CANDIDATE.test(path) && !path.startsWith('../') && !path.split('/').includes('node_modules');
+}
+
+/**
+ * The subset of `candidates` that are program-graph sources. Resolves `null` when this
+ * repository has no graph helper, which means the lookup does not apply here; it is
+ * not an empty answer. Rejects when the lookup itself failed.
+ */
+export type ListDeclarationsGraphMembers = (repoPath: string, candidates: readonly string[]) => Promise<string[] | null>;
+
+export const defaultListDeclarationsGraphMembers: ListDeclarationsGraphMembers = async (repoPath, candidates) => {
+  const helper = join(repoPath, DECLARATIONS_GRAPH_HELPER_PATH);
+  try {
+    await lstat(helper);
+  } catch {
+    return null;
+  }
+  const timeoutMs = envMs('PAPERCUSP_GIT_SYNC_DECLARATIONS_GRAPH_TIMEOUT_MS', 90_000);
+  const result = await new Promise<GeneratedDeclarationsGeneratorResult>((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [helper, '--declarations-graph-members', '--repo-root', repoPath, ...candidates.flatMap((path) => ['--path', path])],
+      { cwd: repoPath, env: process.env },
+    );
+    const out = collectChildOutput(child);
+    let settled = false;
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killer);
+      resolve({ code, stdout: out.stdout.text(), stderr: out.stderr.text() });
+    };
+    const killer = setTimeout(() => {
+      out.stderr.append(`${out.stderr.peek() ? '\n' : ''}declarations graph lookup timed out after ${timeoutMs}ms`);
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+      finish(-1);
+    }, timeoutMs);
+    killer.unref?.();
+    child.on('error', (e) => {
+      out.stderr.append(`${out.stderr.peek() ? '\n' : ''}${String(e)}`);
+      finish(-1);
+    });
+    child.on('close', (code) => finish(code ?? -1));
+  });
+  if (result.code !== 0) {
+    throw new Error((result.stderr || result.stdout || `exit ${result.code}`).trim().slice(0, 300));
+  }
+  const parsed: unknown = JSON.parse(result.stdout.trim() || 'null');
+  if (!Array.isArray(parsed) || !parsed.every((path): path is string => typeof path === 'string')) {
+    throw new Error(`declarations graph lookup printed a non-array: ${result.stdout.trim().slice(0, 200)}`);
+  }
+  return parsed;
+};
+
 export interface GeneratedDeclarationsGeneratorResult {
   code: number;
   stdout: string;
@@ -961,10 +1042,19 @@ function declarationAtomicPathsFromTrackedPaths(trackedPaths: ReadonlySet<string
  * (every enrolled pair plus the generator inputs) and for the dirty files the
  * compiler names; publishing a stale pair and relying on the gate to red later is
  * not recovery. The rest of the tree still commits (WI-6554700010010659).
+ *
+ * A dirty source file in the declarations program graph also triggers the emit
+ * (WI-6554700010011061), even when no enrolled pair or generator input is dirty. A
+ * failing emit then holds that file back through the compiler-named deferral above,
+ * instead of committing it and leaving the gate to red `main`. Such a source is
+ * deliberately NOT added to `atomicPaths`: forcing it into the catch-all would strip
+ * its attribution on every pass, and its projection change (if any) already lands in
+ * the same sweep.
  */
 export async function regenerateGeneratedDeclarationsBeforeCommit(
   context: ToolCatalogRegeneratorContext,
   runGenerator: RunGeneratedDeclarationsGenerator = defaultRunGeneratedDeclarationsGenerator,
+  listGraphMembers: ListDeclarationsGraphMembers = defaultListDeclarationsGraphMembers,
 ): Promise<GeneratedDeclarationsRepairResult> {
   const { runGit, repoPath, log } = context;
   try {
@@ -1005,7 +1095,31 @@ export async function regenerateGeneratedDeclarationsBeforeCommit(
       return { status: 'deferred', atomicPaths, detail: status.detail };
     }
     const dirtyBefore = status.paths;
-    if (!dirtyBefore.some(affectsGeneratedDeclarations)) return { status: 'not-needed', atomicPaths: [] };
+    const directInput = dirtyBefore.some(affectsGeneratedDeclarations);
+    const graphCandidates = dirtyBefore.filter(isDeclarationsGraphCandidate);
+    if (!directInput && graphCandidates.length === 0) return { status: 'not-needed', atomicPaths: [] };
+    // At most one program-graph lookup per pass, and only when a decision needs it.
+    // A failed lookup is fail-SOFT: it only means this pass behaves as it did before
+    // the graph trigger existed, and the gate's gen:declarations:check still detects.
+    let graphLookup: Promise<string[]> | undefined;
+    const graphMembers = (): Promise<string[]> => {
+      graphLookup ??= (async () => {
+        if (graphCandidates.length === 0) return [];
+        try {
+          return (await listGraphMembers(repoPath, graphCandidates)) ?? [];
+        } catch (error) {
+          log(
+            `[git-sync] ${repoPath}: declarations program-graph lookup failed (${String(error).slice(0, 300)}) — ` +
+              'dirty sources outside the enrolled declaration inputs are not compiled this pass',
+          );
+          return [];
+        }
+      })();
+      return graphLookup;
+    };
+    // Settle the graph BEFORE the inventory when it is the only possible trigger, so a
+    // repository without the graph helper never pays for the inventory read.
+    if (!directInput && (await graphMembers()).length === 0) return { status: 'not-needed', atomicPaths: [] };
 
     // One bounded inventory read gives us both canonical-surface proof and the
     // enrolled source/artifact pairs. Git's `*.mjs` pathspec recurses here.
@@ -1031,7 +1145,16 @@ export async function regenerateGeneratedDeclarationsBeforeCommit(
     const affectedPairs = dirtyBefore
       .map(generatedDeclarationPair)
       .filter((pair): pair is DeclarationPair => pair !== null && isTrackedPair(pair));
-    if (!hasMetaInput && affectedPairs.length === 0) return { status: 'not-needed', atomicPaths: [] };
+    let graphInputCount = 0;
+    if (!hasMetaInput && affectedPairs.length === 0) {
+      // Enrolled pairs are already handled above; a graph source is anything else.
+      const graphInputs = (await graphMembers()).filter((path) => {
+        const pair = generatedDeclarationPair(path);
+        return !(pair && isTrackedPair(pair));
+      });
+      if (graphInputs.length === 0) return { status: 'not-needed', atomicPaths: [] };
+      graphInputCount = graphInputs.length;
+    }
 
     let result: GeneratedDeclarationsGeneratorResult;
     try {
@@ -1094,7 +1217,8 @@ export async function regenerateGeneratedDeclarationsBeforeCommit(
       }
     }
     log(
-      `[git-sync] ${repoPath}: regenerated tracked declarations before commit (${affectedPairs.length} dirty pair(s), ${atomicPaths.size} atomic path(s))`,
+      `[git-sync] ${repoPath}: regenerated tracked declarations before commit (${affectedPairs.length} dirty pair(s), ` +
+        `${graphInputCount} dirty program-graph source(s), ${atomicPaths.size} atomic path(s))`,
     );
     return { status: 'regenerated', atomicPaths: [...atomicPaths] };
   } catch (error) {
@@ -4241,6 +4365,12 @@ export async function guardStagedIndexBeforeCommit(opts: {
   alwaysInfectiousDependencies?: readonly string[];
   /** Enrolled source/artifact pairs forced into this commit's catch-all staging. */
   generatedDeclarationPaths?: readonly string[];
+  /**
+   * EI-21230011589307899: judge staged blobs the pre-stage content guard never saw (a
+   * file created between that scan and the add). Each returned offender is held back like
+   * a drifted path. Receives the index-bound runner. A throw fails open (logged).
+   */
+  rescanStagedContent?: (staged: readonly string[], indexRunGit: RunGit) => Promise<ContentOffender[]>;
   log: (message: string) => void;
 }): Promise<PostStageGuardResult> {
   const { runGit, repoPath, scope, log } = opts;
@@ -4339,7 +4469,26 @@ export async function guardStagedIndexBeforeCommit(opts: {
     }
   }
 
-  const held = [...new Set([...lateLocked, ...drifted, ...gitlinkGuard.paths])];
+  // 4. EI-21230011589307899: staged blobs the pre-stage content guard never judged. The index
+  // is fixed since the add, so this may run after the census. Paths already held are skipped.
+  const contentHeld = new Map<string, string>();
+  if (opts.rescanStagedContent) {
+    const candidates = staged.filter((path) => !lateLocked.has(path) && !drifted.has(path));
+    try {
+      for (const offender of await opts.rescanStagedContent(candidates, runGit)) {
+        if (stagedSet.has(offender.file) && !contentHeld.has(offender.file)) {
+          contentHeld.set(offender.file, `content guard (post-stage): ${offender.detectorKey}`);
+          log(`[git-sync] ${scope}: post-stage content guard holds ${offender.file}: ${offender.detectorKey}: ${offender.error}`);
+        }
+      }
+    } catch (error) {
+      // FAILS OPEN like the pre-stage content guard: a detector bug must never wedge the commit.
+      const detail = error instanceof Error ? error.message : String(error);
+      log(`[git-sync] ${scope}: post-stage content rescan failed (fail-open) — ${detail}`);
+    }
+  }
+
+  const held = [...new Set([...lateLocked, ...drifted, ...gitlinkGuard.paths, ...contentHeld.keys()])];
   const packageClosure =
     held.length > 0 ? await expandCargoPackageLiveLockExclusions(staged, held, opts.readText) : { paths: [], packages: [] };
   // An attributed commit's private index may omit a tracked provider whose edit
@@ -4373,6 +4522,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
     ...lateLocked,
     ...drifted,
     ...gitlinkGuard.paths,
+    ...contentHeld.keys(),
     ...packageClosure.paths,
     ...changedTrackedModulesOutsideIndex,
   ]);
@@ -4409,6 +4559,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
   };
   notePostStage(lateLocked, 'locked after staging');
   notePostStage(drifted, 'changed on disk after staging');
+  for (const [path, reason] of contentHeld) notePostStage([path], reason);
   notePostStage(gitlinkGuard.paths, 'gitlink guard');
   notePostStage(packageClosure.paths, 'package-closure exclusion');
   notePostStage(changedTrackedModulesOutsideIndex, 'changed tracked module outside this commit\'s index');
@@ -4465,6 +4616,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
     log(
       `[git-sync] ${scope}: post-stage guard held back ${unstage.paths.length} staged path(s) from this commit — ` +
         `late-locked [${[...lateLocked].join(', ')}], drifted after staging [${[...drifted].join(', ')}]` +
+        (contentHeld.size > 0 ? `, content guard (post-stage) [${[...contentHeld.keys()].join(', ')}]` : '') +
         (packageClosure.paths.length > 0
           ? `, same Cargo package [${packageClosure.paths.join(', ')}]`
           : '') +
@@ -5635,6 +5787,9 @@ async function commitOneRepoWithScratch(
     // from this commit and left dirty for the content-fixer — so one broken file
     // never stalls the rest of the tree's commit (quarantine, don't stall). Fails
     // OPEN: a throwing detector is skipped, never a blocker.
+    // EI-21230011589307899: what this pass judged, so the post-stage guard can judge any
+    // staged blob it did not see (a file created between this scan and the add).
+    const contentScanned = new Map<string, string>();
     contentErrors = await detectContentOffenders({
       runGit,
       repoPath,
@@ -5642,6 +5797,7 @@ async function commitOneRepoWithScratch(
       writeText: (rel, text) => o.writeText(repoPath, rel, text),
       detectors: o.contentDetectors,
       log: o.log,
+      scanned: contentScanned,
     });
     noteSlowPhase('content detectors');
     if (o.preDetectedContentOffenders && o.preDetectedContentOffenders.length > 0) {
@@ -5936,6 +6092,15 @@ async function commitOneRepoWithScratch(
           ...atomicExclusions.paths,
           ...cargoPackageClosure.paths,
         ],
+        rescanStagedContent: (staged, guardRunGit) =>
+          detectUnscannedStagedOffenders({
+            runGit: guardRunGit,
+            repoPath,
+            staged,
+            scanned: contentScanned,
+            detectors: o.contentDetectors,
+            log: o.log,
+          }),
         log: o.log,
       });
       if (guard.ok) {
@@ -7443,15 +7608,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     committedCount: commitRes.committedCount,
   };
   let repoResult: RepoSyncResult;
-  if (commitRes.skippedPaths && commitRes.skippedPaths.length > 0 && !commitRes.committedLocal) {
-    repoResult = {
-      status: 'skipped-locked',
-      ...commitMetrics,
-      skippedPaths: commitRes.skippedPaths,
-      oversized: commitRes.oversized,
-      contentErrors: commitRes.contentErrors,
-    };
-  } else if (commitRes.error) {
+  // A partial pass may have both held paths and a failed publication. Keep the
+  // failure visible; an ordinary lock skip must not hide an index/CAS error.
+  if (commitRes.error) {
     repoResult = {
       status: 'error',
       ...commitMetrics,
@@ -7459,6 +7618,14 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       oversized: commitRes.oversized,
       contentErrors: commitRes.contentErrors,
       skippedPaths: commitRes.skippedPaths,
+    };
+  } else if (commitRes.skippedPaths && commitRes.skippedPaths.length > 0 && !commitRes.committedLocal) {
+    repoResult = {
+      status: 'skipped-locked',
+      ...commitMetrics,
+      skippedPaths: commitRes.skippedPaths,
+      oversized: commitRes.oversized,
+      contentErrors: commitRes.contentErrors,
     };
   } else if (pushBlocked) {
     // Committed locally (or there was nothing to commit); the network half waits for a
