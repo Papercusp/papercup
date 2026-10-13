@@ -127,6 +127,26 @@ export const HOSTED_CONTROL_PLANE_FIELD_REGISTRY: Readonly<Record<string, Readon
     customerWorkspaceId: { sensitivity: 'control', note: 'tenant id' },
     detail: { sensitivity: 'control', note: 'refusal code or `<method> <status>`; never path/header/key/body' },
   },
+  /**
+   * Both INSERT writers in endpoint-route/telemetry.ts. Classification is not
+   * permission to persist content vendor-side: customer-only fields still need
+   * an applicable hosting boundary and an assembled sink check (carrier R-7).
+   */
+  'route-invocations': {
+    workspace_id: { sensitivity: 'control', note: 'workspace identity' },
+    method: { sensitivity: 'control', note: 'registered HTTP method or INTERNAL' },
+    path: { sensitivity: 'control', note: 'registered route template or fixed internal routing label' },
+    status: { sensitivity: 'control', note: 'execution outcome' },
+    duration_ms: { sensitivity: 'control', note: 'elapsed time' },
+    invoked_at: { sensitivity: 'control', note: 'invocation timestamp' },
+    principal_kind: { sensitivity: 'control', note: 'principal class, not principal credentials' },
+    principal_auth_method: { sensitivity: 'control', note: 'authentication method, not its credential' },
+    principal_trust: { sensitivity: 'control', note: 'principal trust class' },
+    response_bytes: { sensitivity: 'control', note: 'response size, never response bytes' },
+    resolved_path: { sensitivity: 'content', note: 'customer-selected path parameters; customer-side unless an exact metadata allowlist is enforced' },
+    error_message: { sensitivity: 'content', note: 'route writer emits status labels, but internal routing writer supplies receipt.errorCode; requires field-level allowlisting before vendor persistence' },
+    metadata_json: { sensitivity: 'content', note: 'complete expertise routing receipt; transitive customer fields are not approved by the table name' },
+  },
 };
 
 /**
