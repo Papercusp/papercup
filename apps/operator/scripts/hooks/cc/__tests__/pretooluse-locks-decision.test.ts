@@ -882,6 +882,7 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
             source: `const result = await tools.apply_patch(${JSON.stringify(parentPatch)}); text(result);`,
           },
           tool_use_id: `tu-parent-${parentToolName.replace(/\W/g, "-")}`,
+          tool_response: { status: 'completed' },
           session_id: "s",
           cwd: repo,
         },
@@ -989,6 +990,7 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
           source: `await tools.apply_patch(${JSON.stringify(patch)});`,
         },
         tool_use_id: "tu-parent-queue-unknown",
+        tool_response: { status: 'completed' },
         session_id: "s",
         cwd: repo,
       },
@@ -1767,19 +1769,21 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     const spillPath = join(scratchRoot, ...relative);
     const grant = { ok: true, lock_id: 'spilled-hook-lock', newly_held: ['sub/spilled.ts'] };
     fs.mkdirSync(dirname(spillPath), { recursive: true });
-    fs.writeFileSync(spillPath, `result-door magic\nmanifest\n${JSON.stringify({
-      content: [
-        { type: 'text', text: 'See also: locks:release' },
-        { type: 'text', text: JSON.stringify(grant) },
-      ],
-    })}\n`);
-    nextInner = {
+    nextInner = (operation: { id: string }) => {
+      fs.writeFileSync(spillPath, `result-door magic\nmanifest\n${JSON.stringify({
+        content: [
+          { type: 'text', text: 'See also: locks:release' },
+          { type: 'text', text: JSON.stringify({ ...grant, operation_id: operation.id }) },
+        ],
+      })}\n`);
+      return {
       schemaVersion: 'papercusp.output-envelope/v1',
       content: [{
         kind: 'reference',
         uri: `papercusp://scratch/${relative.join('/')}`,
         preview: '{"ok":false,"reason":"preview is not authoritative"}',
       }],
+      };
     };
 
     const r = await run(editOf('sub/spilled.ts', 'tu-spilled'), {
