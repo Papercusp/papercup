@@ -37,7 +37,9 @@ function collectAttention(value: unknown, into: AttentionRecord[] = []): Attenti
     return into;
   }
   const record = value as AttentionRecord;
-  if (record.kind === 'coord-message' && typeof record.id === 'string') {
+  if ((record.kind === 'coord-message' ||
+      (typeof record.id === 'string' && record.id.startsWith('coord-message:'))) &&
+      typeof record.id === 'string') {
     into.push(record);
     return into;
   }
@@ -53,7 +55,8 @@ function findMessage(result: unknown, msgId: string): AttentionRecord | null {
 
 function summarizeAttention(result: unknown, targetMsgIds: string[]) {
   const records = collectAttention(result);
-  const messages = records.filter((item) => item.kind === 'coord-message');
+  const messages = records.filter((item) => item.kind === 'coord-message' ||
+    (typeof item.id === 'string' && item.id.startsWith('coord-message:')));
   const targetIds = new Set(targetMsgIds);
   const summarize = (item: AttentionRecord) => ({
     id: item.id ?? null,
@@ -166,7 +169,11 @@ test('native Inbox acknowledgement removes only the selected message after refre
   }
 
   const measure = (expression: string) => native('eval', `JSON.stringify(${expression})`);
-  const feedArgs = { output: 'feed', harness: 'papercusp', limit: 200 };
+  // The full feed can exceed mcp-call's output door and arrive as an incomplete
+  // evidence envelope instead of the records. Use its compact complete-ref view,
+  // narrowed server-side to messages sent by this acceptance session; the exact
+  // fixture IDs remain available as coord-message:<msgId> without copying bodies.
+  const attentionArgs = { output: 'refs', harness: 'papercusp', ownerAgentId: sessionId };
 
   async function captureCache(label: string) {
     const stats = await invoke('dev:cache_stats', { tool: 'plans:attention' });
@@ -211,7 +218,7 @@ test('native Inbox acknowledgement removes only the selected message after refre
     // the assertion so a timeout receipt shows whether the feed was empty,
     // stale, or missing only these message IDs.
     await expect.poll(async () => {
-      const beforeAckFeed = await invoke('plans:attention', feedArgs);
+      const beforeAckFeed = await invoke('plans:attention', attentionArgs);
       selectedItem = findMessage(beforeAckFeed, selectedMsgId);
       neighborItem = findMessage(beforeAckFeed, neighborMsgId);
       evidence.beforeAckFeed = summarizeAttention(beforeAckFeed, [selectedMsgId, neighborMsgId]);
@@ -242,7 +249,7 @@ test('native Inbox acknowledgement removes only the selected message after refre
     let selectedAfterAck: AttentionRecord | null = null;
     let neighborAfterAck: AttentionRecord | null = null;
     await expect.poll(async () => {
-      const afterAckFeed = await invoke('plans:attention', feedArgs);
+      const afterAckFeed = await invoke('plans:attention', attentionArgs);
       selectedAfterAck = findMessage(afterAckFeed, selectedMsgId);
       neighborAfterAck = findMessage(afterAckFeed, neighborMsgId);
       evidence.afterAckFeed = summarizeAttention(afterAckFeed, [selectedMsgId, neighborMsgId]);
