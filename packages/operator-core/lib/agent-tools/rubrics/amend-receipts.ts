@@ -1,6 +1,7 @@
 /** Shared receipts: status polls may land on any operator worker. */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { TERMINAL_TASK_STATES } from '../../task-manager/types';
 
 export type AmendReceiptState = 'running' | 'committed' | 'previewed' | 'failed';
 
@@ -106,6 +107,22 @@ export async function trackAmendRun(
            AND result_json->>'ok' = 'true' AND result_json->>'dryRun' = 'true'
            AND result_json #>> '{review,state}' = 'no-eligible-reviewer'
            AND result_json #>> '{review,freshReviewer,state}' IS DISTINCT FROM 'launched')
+         -- WI-6554700010010527: a launched reviewer whose task ENDED with nothing
+         -- posted after the preview is dead, not pending. Replaying it stranded the
+         -- review until the receipt aged out; re-running reaches the launcher, which
+         -- re-keys past the dead task.
+         OR (state = 'previewed'
+           AND result_json #>> '{review,freshReviewer,state}' = 'launched'
+           AND EXISTS (
+             SELECT 1 FROM harness_shared.task_ledger tl
+              WHERE tl.task_id = result_json #>> '{review,freshReviewer,taskId}'
+                AND tl.state = ANY(${[...TERMINAL_TASK_STATES]}::text[]))
+           AND NOT EXISTS (
+             SELECT 1 FROM harness_shared.coord_thread_posts pv
+               JOIN harness_shared.coord_thread_posts p
+                 ON p.workspace_id = pv.workspace_id AND p.thread_id = pv.thread_id AND p.id > pv.id
+              WHERE pv.workspace_id = ${workspaceId}
+                AND pv.id = substring(result_json #>> '{review,previewPostRef}' from '^thread-post:([0-9]+)$')::bigint))
          OR (state = 'running' AND started_at < now() - make_interval(secs => ${leaseSeconds})))
     RETURNING idempotency_key
   `;

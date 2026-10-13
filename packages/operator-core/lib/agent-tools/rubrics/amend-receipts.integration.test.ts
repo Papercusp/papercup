@@ -156,6 +156,39 @@ describe('rubric amend receipts in shared Postgres', () => {
     expect(executions).toBe(2);
   });
 
+  it('re-runs a launched-reviewer preview once its task ended with no answer, but replays it while live or answered (WI-6554700010010527)', async () => {
+    const ws = activeWorkspaceId();
+    const rubric = 'acceptance-receipt-dead-reviewer';
+    const thread = 'issue-thread-WI-dead-reviewer';
+    await h.sql`INSERT INTO harness_shared.coord_thread_posts (id, thread_id, workspace_id) VALUES (990001, ${thread}, ${ws})`;
+    const preview = (taskId: string) => ({
+      ok: true, dryRun: true, preview: { approvalRequired: true },
+      review: { state: 'no-eligible-reviewer', previewPostRef: 'thread-post:990001', freshReviewer: { state: 'launched', taskId } },
+    });
+    const ledger = (taskId: string, state: string) => h.sql`
+      INSERT INTO harness_shared.task_ledger (task_id, workspace_id, root_task_id, class, title, launched_by, state)
+      VALUES (${taskId}, ${ws}, ${taskId}, 'agent', 'bar-amendment-review', 'system:acceptance-bar-amendment-review', ${state})`;
+    let executions = 0;
+    const runWith = (key: string, result: Record<string, unknown>) =>
+      trackAmendRun(key, rubric, async () => { executions++; return result; });
+
+    // Live reviewer: replayed, never duplicated.
+    await ledger('rev-live', 'running');
+    await runWith('live', preview('rev-live'));
+    expect(await runWith('live', { ok: false, error: 'duplicate reviewer' })).toEqual(preview('rev-live'));
+    // Dead reviewer, nothing posted after the preview: the next same-key call RE-RUNS.
+    await ledger('rev-dead', 'ended_unobserved');
+    await runWith('dead', preview('rev-dead'));
+    expect(await runWith('dead', preview('rev-new'))).toEqual(preview('rev-new'));
+    expect(await getAmendReceipt(rubric, 'dead')).toMatchObject({ state: 'previewed', result: preview('rev-new') });
+    // Dead reviewer that DID answer (a later post on the thread): replayed.
+    await ledger('rev-answered', 'exited');
+    await runWith('answered', preview('rev-answered'));
+    await h.sql`INSERT INTO harness_shared.coord_thread_posts (id, thread_id, workspace_id) VALUES (990002, ${thread}, ${ws})`;
+    expect(await runWith('answered', { ok: false, error: 'duplicate reviewer' })).toEqual(preview('rev-answered'));
+    expect(executions).toBe(4);
+  });
+
   it('atomically reclaims a legacy preview that started no reviewer across workers', async () => {
     const key = 'legacy-unstaffed-preview';
     const rubric = 'acceptance-receipt-legacy';
