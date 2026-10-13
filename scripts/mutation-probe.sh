@@ -2820,6 +2820,7 @@ REPLAY_RECORD="$(
     # Perl receives argv and environment values as bytes. Decode text before
     # JSON::PP encodes it; otherwise UTF-8 is encoded a second time as mojibake.
     @ARGV = map { decode("UTF-8", $_, FB_CROAK | LEAVE_SRC) } @ARGV;
+    my %text_env;
     for my $key (qw(
       MUTATION_PROBE_RUNNER_PATH MUTATION_PROBE_RUNNER_SHA256
       MUTATION_PROBE_RUNNER_COMMIT MUTATION_PROBE_REPLAY_CWD
@@ -2831,33 +2832,34 @@ REPLAY_RECORD="$(
       MUTATION_PROBE_REPLAY_DESCRIPTOR_EXPORT MUTATION_PROBE_REPLAY_READER_HEALTH_URL
       MUTATION_PROBE_REPLAY_READER_REPO MUTATION_PROBE_REPLAY_HARNESS
     )) {
-      $ENV{$key} = decode("UTF-8", $ENV{$key}, FB_CROAK | LEAVE_SRC);
+      # %ENV is tied: storing decoded text there turns it back into bytes.
+      $text_env{$key} = decode("UTF-8", $ENV{$key}, FB_CROAK | LEAVE_SRC);
     }
     print encode_json({
       schemaVersion => 1,
-      runnerPath => $ENV{MUTATION_PROBE_RUNNER_PATH},
-      runnerSha256 => $ENV{MUTATION_PROBE_RUNNER_SHA256},
-      runnerCommit => $ENV{MUTATION_PROBE_RUNNER_COMMIT},
-      cwd => $ENV{MUTATION_PROBE_REPLAY_CWD},
+      runnerPath => $text_env{MUTATION_PROBE_RUNNER_PATH},
+      runnerSha256 => $text_env{MUTATION_PROBE_RUNNER_SHA256},
+      runnerCommit => $text_env{MUTATION_PROBE_RUNNER_COMMIT},
+      cwd => $text_env{MUTATION_PROBE_REPLAY_CWD},
       argv => \@ARGV,
       environment => {
-        PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT => $ENV{MUTATION_PROBE_REPLAY_DESCRIPTOR_EXPORT},
-        PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL => $ENV{MUTATION_PROBE_REPLAY_READER_HEALTH_URL},
-        PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO => $ENV{MUTATION_PROBE_REPLAY_READER_REPO},
-        PAPERCUSP_TEST_RUN_HARNESS => $ENV{MUTATION_PROBE_REPLAY_HARNESS},
+        PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT => $text_env{MUTATION_PROBE_REPLAY_DESCRIPTOR_EXPORT},
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL => $text_env{MUTATION_PROBE_REPLAY_READER_HEALTH_URL},
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO => $text_env{MUTATION_PROBE_REPLAY_READER_REPO},
+        PAPERCUSP_TEST_RUN_HARNESS => $text_env{MUTATION_PROBE_REPLAY_HARNESS},
       },
       result => {
-        verdict => $ENV{MUTATION_PROBE_VERDICT},
-        expected => $ENV{MUTATION_PROBE_EXPECTED},
-        target => $ENV{MUTATION_PROBE_TARGET},
-        baselineExit => 0 + $ENV{MUTATION_PROBE_BASELINE_EXIT},
-        guardExit => 0 + $ENV{MUTATION_PROBE_GUARD_EXIT},
-        mutantParse => $ENV{MUTATION_PROBE_MUTANT_PARSE},
-        assertionEvidence => $ENV{MUTATION_PROBE_ASSERTION_EVIDENCE},
-        relocation => $ENV{MUTATION_PROBE_RELOCATION},
-        baselineLedger => $ENV{MUTATION_PROBE_BASELINE_LEDGER},
-        copyBaselineLedger => $ENV{MUTATION_PROBE_COPY_BASELINE_LEDGER},
-        mutantLedger => $ENV{MUTATION_PROBE_MUTANT_LEDGER},
+        verdict => $text_env{MUTATION_PROBE_VERDICT},
+        expected => $text_env{MUTATION_PROBE_EXPECTED},
+        target => $text_env{MUTATION_PROBE_TARGET},
+        baselineExit => 0 + $text_env{MUTATION_PROBE_BASELINE_EXIT},
+        guardExit => 0 + $text_env{MUTATION_PROBE_GUARD_EXIT},
+        mutantParse => $text_env{MUTATION_PROBE_MUTANT_PARSE},
+        assertionEvidence => $text_env{MUTATION_PROBE_ASSERTION_EVIDENCE},
+        relocation => $text_env{MUTATION_PROBE_RELOCATION},
+        baselineLedger => $text_env{MUTATION_PROBE_BASELINE_LEDGER},
+        copyBaselineLedger => $text_env{MUTATION_PROBE_COPY_BASELINE_LEDGER},
+        mutantLedger => $text_env{MUTATION_PROBE_MUTANT_LEDGER},
       },
     });
   ' -- "${ORIGINAL_ARGS[@]}"
