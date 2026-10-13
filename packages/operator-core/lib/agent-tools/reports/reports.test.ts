@@ -473,6 +473,47 @@ describe('reports:get — judge-only scorecard citation scope', () => {
     expect(out.results[0]).toMatchObject({ ok: true, id: 'rpt_private' });
   });
 
+  it('accepts a bare report id in evidenceRef only when it matches exactly', async () => {
+    readScorecardEvidenceM.mockResolvedValue({
+      kind: 'found',
+      scorecard: {
+        criteria: [{
+          key: 'evidence',
+          rating: 'pass',
+          evidence: 'See the attached report.',
+          evidenceRef: 'rpt_private',
+        }],
+      },
+    });
+    getReportM.mockResolvedValue(record({ reportId: 'rpt_private' }));
+
+    const exact = body(await getTool.handler({
+      id: 'rpt_private',
+      scorecardIssueId: 'EI-123',
+    } as never, judgeCtx as never) as Out);
+    expect(exact.results[0]).toMatchObject({ ok: true, id: 'rpt_private' });
+
+    readScorecardEvidenceM.mockResolvedValue({
+      kind: 'found',
+      scorecard: {
+        criteria: [{
+          key: 'evidence',
+          rating: 'pass',
+          evidence: 'See the attached report.',
+          evidenceRef: 'rpt_private-extra',
+        }],
+      },
+    });
+    getReportM.mockClear();
+
+    const prefix = body(await getTool.handler({
+      id: 'rpt_private',
+      scorecardIssueId: 'EI-123',
+    } as never, judgeCtx as never) as Out);
+    expect(prefix.results[0]).toMatchObject({ ok: false, id: 'rpt_private', error: 'not_found' });
+    expect(getReportM).not.toHaveBeenCalled();
+  });
+
   it('does not grant the scoped path to other roles or similarly prefixed ids', async () => {
     readScorecardEvidenceM.mockResolvedValue({
       kind: 'found',
