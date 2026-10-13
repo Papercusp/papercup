@@ -1,5 +1,5 @@
-/** Current-tree browser proof. Only authenticated network boundaries are
- * replaced: actual Cloud forms, Joyride, connector parser, launcher, owner
+/** Current-tree native-shell browser proof. Shell bootstrap and authenticated
+ * network boundaries are replaced: actual Cloud forms, Joyride, connector parser, launcher, owner
  * resolver, transcript stream and chat renderer all run in Chromium.
  * This proves product behavior; hosted exact-artifact proof is separate. */
 import { expect, test, type Page } from './_egress';
@@ -67,6 +67,7 @@ async function setupJourney(page: Page, existing: boolean, speech = false, targe
   const writes: Array<{ path: string; body: Record<string, any> }> = [];
   const socketMessages: Record<string, unknown>[] = [];
   const apiHits: string[] = [];
+  const shellWrites: Array<{ path: string; body: Record<string, unknown> }> = [];
   const unmodelledRequests: UnmodelledFixtureRequest[] = [];
   fixtureRequestChecks.set(page, { actual: unmodelledRequests, expected: expectedUnmodelledRequests });
   const browserErrors: string[] = [];
@@ -89,7 +90,21 @@ async function setupJourney(page: Page, existing: boolean, speech = false, targe
       if (event.message.includes('ResizeObserver loop')) resizeErrors.push({ at: performance.now(), message: event.message });
     });
   });
-  // Fail closed for unmodelled API traffic; no test writes reach the real
+  // This spec runs operator-vite's native __root, not the portal's hosted
+  // shell. Its chrome has its own read and diagnostic-write contracts. Keep
+  // these separate from tutorial/product writes: the hosted marker selects
+  // the tutorial transport, but does not replace the native React shell.
+  // Sources: EnvSwitcherBar, VersionBadge, NotificationCenter,
+  // useCurrentUserIdentity, WorkspaceSwitcher and PostHogProvider.
+  const shellReads: Record<string, unknown> = {
+    '/api/desktop/dev-operators': { ok: true, operators: [], selfPort: null },
+    '/api/desktop/version': { appVersion: 'fixture', sidecarSha: 'tutorial-shell-fixture', sidecarStartedAtMs: 0, nowMs: 0, isDesktop: true },
+    '/api/desktop/telemetry-config': { enabled: false, reason: 'user-opt-out' },
+    '/api/profile': { toast_last_seen_ms: 0 },
+    '/api/auth/me': { user: { id: scope.userId, username: 'tutorial-user', display_name: 'Tutorial user' }, available: [] },
+    '/api/workspaces': { current: scope.workspaceId, workspaces: [{ id: scope.workspaceId, name: 'Tutorial customer', createdAt: 0 }] },
+  };
+  // Fail closed for unmodelled API traffic; no intercepted writes reach the real
   // control plane. The shared sync stub, registered after this handler, models
   // only workspaceHosts.control and asserts it was actually consumed.
   await page.route('**/api/**', async route => {
@@ -97,6 +112,28 @@ async function setupJourney(page: Page, existing: boolean, speech = false, targe
     const path = new URL(request.url()).pathname;
     apiHits.push(path);
     const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (request.method() === 'GET' && Object.hasOwn(shellReads, path)) return json(shellReads[path]);
+    // UiPresenceProvider/UiIntentDispatcher and useStateSnapshots subscribe
+    // at the native root. No pending intents or open cards are seeded here.
+    if (request.method() === 'GET' && (path === '/api/ui/intents/stream' || path === '/api/operator/state-snapshot')) {
+      return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': native-shell-fixture\n\n' });
+    }
+    if (request.method() === 'POST' && (path === '/api/toast-log' || path === '/api/ui/presence')) {
+      const body = request.postDataJSON();
+      if (path === '/api/toast-log') {
+        // ToastHistoryRecorder logs the rendered toast, including failures;
+        // record it rather than silently swallowing any write to this path.
+        expect(['default', 'info', 'success', 'warning', 'error', 'loading']).toContain(body.level);
+        expect(typeof body.message).toBe('string');
+        expect(body.message.trim().length).toBeGreaterThan(0);
+      } else {
+        expect(typeof body.client_id).toBe('string');
+        expect(body.client_id.length).toBeGreaterThanOrEqual(8);
+        expect(new URL(body.url).origin).toBe(new URL(page.url()).origin);
+      }
+      shellWrites.push({ path, body });
+      return json(path === '/api/toast-log' ? { id: shellWrites.length, createdAt: 0 } : { ok: true });
+    }
     if (path.endsWith('/onboarding/select-workspace')) return json({ error: 'workspace_already_selected' }, 409);
     if (path.endsWith('/onboarding/tutorial-help')) {
       assistance.push({ path, body: request.postDataJSON() });
@@ -212,7 +249,7 @@ async function setupJourney(page: Page, existing: boolean, speech = false, targe
     setTimeout(() => socket.send(JSON.stringify({ type: 'session.bound', protocol: 'papercusp-hosted-workspace.v1', channelId: 'tutorial-channel', role: 'observer', binding: { generation: 1, hostedSessionId: 'tutorial-session' } })), 20);
     socket.onMessage(raw => { socketMessages.push(JSON.parse(String(raw))); });
   });
-  return { writes, socketMessages, apiHits, unmodelledRequests, browserErrors, assistance, sync,
+  return { writes, shellWrites, socketMessages, apiHits, unmodelledRequests, browserErrors, assistance, sync,
     setProgressStatus: (status: number) => { progressStatus = status; },
     setHelpStatus: (status: number) => { helpStatus = status; },
     setActionStatus: (status: number) => { actionStatus = status; },
@@ -231,17 +268,36 @@ test.afterEach(async ({ page }, testInfo) => {
 
 test('browser fixture detects an unmodelled API request even when its 501 is ignored', async ({ page }) => {
   const path = '/api/hosted/browser/unmodelled-fixture-control';
-  const fixture = await setupJourney(page, true, false, 'gcp', [{ path, method: 'POST' }]);
+  const forbiddenShellWrite = '/api/workspaces';
+  const fixture = await setupJourney(page, true, false, 'gcp', [
+    { path, method: 'POST' }, { path: forbiddenShellWrite, method: 'POST' },
+  ]);
   await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
   await fixture.sync.waitForServed(['workspaceHosts.control']);
   await expect(page.getByRole('region', { name: 'Beginner workspace entry' })).toBeVisible();
   expect(fixture.unmodelledRequests).toEqual([]);
+  // The native shell's toast recorder has a positive write-journal control.
+  const diagnosticStatus = await page.evaluate(async () => (await fetch('/api/toast-log', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ level: 'info', message: 'Fixture shell diagnostic control' }),
+  })).status);
+  expect(diagnosticStatus).toBe(200);
+  expect(fixture.shellWrites).toContainEqual({ path: '/api/toast-log', body: { level: 'info', message: 'Fixture shell diagnostic control' } });
   // The fixture intercepts this request; no control-plane write leaves the page.
   const status = await page.evaluate(async path => (await fetch(path, { method: 'POST' })).status, path);
   expect(status).toBe(501);
   expect(fixture.apiHits).toContain(path);
   expect(fixture.writes).toEqual([]); // The old named-write-only oracle would pass.
   expect(fixture.unmodelledRequests).toEqual([{ path, method: 'POST' }]);
+  // Modelling a shell GET must not permit a product mutation at the same URL.
+  const forbiddenStatus = await page.evaluate(async path => (await fetch(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'hidden-workspace' }),
+  })).status, forbiddenShellWrite);
+  expect(forbiddenStatus).toBe(501);
+  expect(fixture.unmodelledRequests).toEqual([
+    { path, method: 'POST' }, { path: forbiddenShellWrite, method: 'POST' },
+  ]);
+  expect(fixture.writes).toEqual([]);
   expect(fixture.browserErrors).toEqual([]);
 });
 
