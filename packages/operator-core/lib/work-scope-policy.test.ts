@@ -3,7 +3,8 @@
  * (plan workspace-work-scope-policy-2026-09-04).
  * Run: cd packages/operator-core && npx vitest run lib/work-scope-policy.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { WorkScopeException, WorkScopeSubject } from './work-scope-policy';
 
 const store: { policy: Record<string, unknown> } = { policy: {} };
 vi.mock('./pot-control-policy', () => ({
@@ -98,6 +99,73 @@ describe('enforce', () => {
     expect(evaluateWorkScope({ harness: 'sidestage', goal: 'g-1' }, p).allowed).toBe(true);
     expect(evaluateWorkScope({ harness: 'sidestage', workItem: 'WI-1' }, p).allowed).toBe(true);
     expect(evaluateWorkScope({ harness: 'sidestage', workItem: 'WI-2' }, p).allowed).toBe(false);
+  });
+});
+
+describe('exception expiry — current decisions and SQL selection', () => {
+  const instant = Date.parse('2030-01-02T03:04:05Z');
+  let nowMs = instant;
+  beforeEach(() => {
+    nowMs = instant;
+    vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const axes = ['harness', 'plan', 'goal', 'workItem'] as const;
+  const boundaries = [['future', 1], ['exact', 0], ['past', -1]] as const;
+  const cases = axes.flatMap((axis) => boundaries.map(([label, offset]) => ({ axis, label, offset })));
+  it.each(cases)('$axis exception at $label boundary agrees with SQL selection', ({ axis, offset }) => {
+    const value = axis === 'harness' ? 'portal' : 'fixture-subject';
+    const exception: WorkScopeException = {
+      [axis]: value, reason: 'temporary grant', expiresAt: new Date(instant + offset).toISOString(),
+    };
+    const subject: WorkScopeSubject = { harness: 'portal', [axis]: value };
+    const policy = { ...ENFORCE, exceptions: [exception] };
+    expect(evaluateWorkScope(subject, policy).allowed).toBe(offset > 0);
+    const terms = workScopeSqlTerms(policy);
+    expect(terms).not.toBeNull();
+    expect(terms?.exceptions !== undefined).toBe(offset > 0);
+  });
+
+  it.each(['not-a-date', '', '2030-01-02', '2030-02-31T00:00:00Z', null, 1893456000000])(
+    'malformed stored expiry %j cannot grant or remove the SQL scope predicate', (expiresAt) => {
+      const exception = { harness: '*', reason: 'invalid grant', expiresAt } as unknown as WorkScopeException;
+      const policy = { ...ENFORCE, exceptions: [exception] };
+      expect(evaluateWorkScope({ harness: 'portal' }, policy).allowed).toBe(false);
+      expect(workScopeSqlTerms(policy)).toEqual(workScopeSqlTerms(ENFORCE));
+    },
+  );
+
+  it('an expired wildcard does not hide a later active exception', () => {
+    const policy = { ...ENFORCE, exceptions: [
+      { harness: '*', reason: 'expired', expiresAt: new Date(instant).toISOString() },
+      { harness: 'portal', reason: 'active', expiresAt: new Date(instant + 1).toISOString() },
+    ] };
+    expect(evaluateWorkScope({ harness: 'portal' }, policy)).toMatchObject({ allowed: true, exception: { reason: 'active' } });
+    expect(evaluateWorkScope({ harness: 'other' }, policy).allowed).toBe(false);
+    expect(workScopeSqlTerms(policy)?.exceptions?.exactHarnesses).toEqual(['portal']);
+  });
+
+  it('the same cached row stops granting at expiry without a cache refresh', () => {
+    const policy = { ...ENFORCE, exceptions: [
+      { harness: '*', reason: 'temporary', expiresAt: new Date(instant + 1).toISOString() },
+    ] };
+    store.policy = { workScope: policy };
+    expect(evaluateWorkScope({ harness: 'portal' }).allowed).toBe(true);
+    expect(workScopeSqlTerms()).toBeNull();
+    nowMs += 1;
+    expect(evaluateWorkScope({ harness: 'portal' }).allowed).toBe(false);
+    expect(workScopeSqlTerms()).toEqual(workScopeSqlTerms(ENFORCE));
+  });
+
+  it('expiry does not remove an independent allow-list grant or an indefinite exception', () => {
+    const policy = { ...ENFORCE, exceptions: [
+      { harness: '*', reason: 'expired', expiresAt: new Date(instant).toISOString() },
+      { harness: 'portal', reason: 'indefinite' },
+    ] };
+    expect(evaluateWorkScope({ harness: 'papercusp' }, policy)).toMatchObject({ allowed: true, reason: 'in-scope' });
+    expect(evaluateWorkScope({ harness: 'portal' }, policy)).toMatchObject({ allowed: true, exception: { reason: 'indefinite' } });
+    expect(workScopeSqlTerms(policy)?.exceptions?.exactHarnesses).toEqual(['portal']);
   });
 });
 

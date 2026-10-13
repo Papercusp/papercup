@@ -20,6 +20,10 @@
  */
 import { placementOverride, readPotControlPolicy, refreshPotControlPolicy, writePotControlPolicy } from './pot-control-policy';
 import type { RefusalContract } from './capability-envelope/identity-refusal-contract';
+import { z } from 'zod';
+
+/** Shared by authoring and cached-policy decisions; malformed stored expiry cannot grant. */
+export const workScopeExceptionExpirySchema = z.string().datetime({ offset: true });
 
 export interface WorkScopeException {
   /** harness slug or glob (`foo/*`) the exception admits */
@@ -32,6 +36,8 @@ export interface WorkScopeException {
   workItem?: string;
   reason: string;
   setBy?: string;
+  /** Optional absolute expiry; an exception stops granting at this instant. */
+  expiresAt?: string;
 }
 
 export type WorkScopeVerdictKind = 'denied' | 'held' | 'rehomed';
@@ -143,6 +149,15 @@ export type WorkScopeDenied = {
 };
 export type WorkScopeVerdict = WorkScopeAllowed | WorkScopeDenied;
 
+function activeWorkScopeExceptions(policy: WorkScopePolicy, nowMs = Date.now()): WorkScopeException[] {
+  return (policy.exceptions ?? []).filter((exception) => {
+    if (!exception || typeof exception !== 'object') return false;
+    if (exception.expiresAt === undefined) return true;
+    const expiry = workScopeExceptionExpirySchema.safeParse(exception.expiresAt);
+    return expiry.success && Date.parse(expiry.data) > nowMs;
+  });
+}
+
 /** Pure decision — no I/O, no ledger. */
 export function evaluateWorkScope(subject: WorkScopeSubject, policy: WorkScopePolicy | null = workScopePolicy()): WorkScopeVerdict {
   if (!policy) return { allowed: true, reason: 'no-policy' };
@@ -150,7 +165,7 @@ export function evaluateWorkScope(subject: WorkScopeSubject, policy: WorkScopePo
   const h = subject.harness?.trim();
   if (!h || h === '*') return { allowed: true, reason: 'unscoped' };
   if (policy.allowHarnesses.some((p) => matchHarnessPattern(p, h))) return { allowed: true, reason: 'in-scope' };
-  const exception = (policy.exceptions ?? []).find(
+  const exception = activeWorkScopeExceptions(policy).find(
     (e) =>
       (!!e.harness && matchHarnessPattern(e.harness, h)) ||
       (!!e.plan && !!subject.plan && e.plan === subject.plan) ||
@@ -345,7 +360,7 @@ export function workScopeSqlTerms(policy: WorkScopePolicy | null = workScopePoli
     goals: [],
     workItems: [],
   };
-  for (const exception of policy.exceptions ?? []) {
+  for (const exception of activeWorkScopeExceptions(policy)) {
     if (appendHarnessSqlTerm(exception.harness, exceptionTerms.exactHarnesses, exceptionTerms.harnessLikePrefixes)) {
       return null;
     }
