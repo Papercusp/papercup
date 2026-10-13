@@ -1,12 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, inject, it } from 'vitest';
 import { assertPublicManualSource } from '../scripts/source-contract.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (file: string) => readFileSync(`${root}/${file}`, 'utf8');
 
 describe('public first-task journey (DOCS-FIRST-TASK)', () => {
+  it('records the executing docs project as a unit test layer', () => {
+    expect(inject('papercuspTestLayer')).toBe('unit');
+  });
+
   it('has a navigable route from the manual to a bounded, approved task and an inspectable result', () => {
     expect(assertPublicManualSource(root).guides).toBeGreaterThanOrEqual(15);
     const home = read('src/content/docs/index.mdx');

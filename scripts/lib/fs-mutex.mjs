@@ -18,7 +18,7 @@
 // the test toolchain. If a THIRD consumer shows up, promote both to one shared
 // `libs/generic/fs-mutex` package instead of a third copy.
 import { randomUUID } from "node:crypto";
-import { homedir, hostname } from "node:os";
+import { userInfo, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   lstat,
@@ -102,7 +102,7 @@ function sleep(ms) {
  */
 export function resolveFsMutexLockRoot(env = process.env, options = {}) {
   const platform = options.platform ?? process.platform;
-  const homeDir = options.homeDir ?? homedir();
+  const homeDir = options.homeDir ?? userInfo().homedir;
   const stableDefault = join(homeDir, ".papercusp", "fs-mutex-locks");
   return resolve(env.PAPERCUSP_FS_MUTEX_LOCK_DIR ?? stableDefault);
 }

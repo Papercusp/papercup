@@ -1,12 +1,24 @@
-import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir, hostname } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const osState = vi.hoisted(() => ({ userHome: null as string | null }));
 const fileWrites = vi.hoisted(() => ({
   beforeWrite: null as null | ((path: string) => Promise<void>),
   beforeSymlink: null as null | ((path: string) => Promise<void>),
 }));
+
+vi.mock('node:os', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return {
+    ...actual,
+    userInfo: (...args: Parameters<typeof actual.userInfo>) => {
+      const info = actual.userInfo(...args);
+      return osState.userHome === null ? info : { ...info, homedir: osState.userHome };
+    },
+  };
+});
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -38,7 +50,9 @@ const originalDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
 afterEach(async () => {
   fileWrites.beforeWrite = null;
   fileWrites.beforeSymlink = null;
-  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = originalDir;
+  osState.userHome = null;
+  if (originalDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = originalDir;
   delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
 });
 
@@ -61,6 +75,33 @@ describe('resolveFsMutexLockRoot', () => {
         { platform: 'linux', homeDir: '/unused' },
       ),
     ).toBe('/operator/serialized-locks');
+  });
+
+  it('accepts a legacy symlink to the OS account root when HOME is private and there is no lock-root override', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-private-home-'));
+    const privateHome = join(temp, 'private-home');
+    const accountHome = join(temp, 'account-home');
+    const accountRoot = join(accountHome, '.papercusp', 'fs-mutex-locks');
+    const legacyRoot = join(temp, 'legacy', 'fs-mutex-locks');
+    const originalHome = process.env.HOME;
+
+    await mkdir(privateHome, { recursive: true });
+    await mkdir(accountRoot, { recursive: true });
+    await mkdir(join(temp, 'legacy'), { recursive: true });
+    await symlink(accountRoot, legacyRoot);
+    process.env.HOME = privateHome;
+    delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    osState.userHome = accountHome;
+
+    try {
+      await expect(ensureFsMutexLockRoot(undefined, { platform: 'linux', legacyRoot }))
+        .resolves.toBe(accountRoot);
+    } finally {
+      osState.userHome = null;
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      await rm(temp, { recursive: true, force: true });
+    }
   });
 });
 

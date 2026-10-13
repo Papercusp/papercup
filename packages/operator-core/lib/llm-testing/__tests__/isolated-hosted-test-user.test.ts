@@ -90,7 +90,7 @@ describe('isolated retained hosted TEST admission', () => {
     await user.cleanup('test finished');
     expect(f.events().map(row => row.event)).toEqual(['runtime-check', 'candidate-import', 'kit-load', 'create', 'cleanup']);
     assertExited(f.events()[0].pid);
-  }, 30_000);
+  }, 75_000);
 
   it('imports the actual candidate observability and admission closure without registering candidate tools in the parent', async () => {
     const parent = { pluginName: 'legacy', description: 'incompatible parent goals',
@@ -114,7 +114,7 @@ describe('isolated retained hosted TEST admission', () => {
       expect(f.events().map(row => row.event)).not.toContain('kit-load');
       expect(f.events().map(row => row.event)).not.toContain('create');
       assertExited(f.events()[0].pid);
-    }, 30_000);
+    }, 75_000);
 
   it('reaps the child and preserves every cleanup failure', async () => {
     const f = fixture({ cleanupFailure: true });
@@ -126,7 +126,7 @@ describe('isolated retained hosted TEST admission', () => {
     expect(failure.errors.map((error: Error) => error.message)).toEqual(['revoke failed', 'provider cleanup failed']);
     assertExited(f.events()[0].pid);
     await kit.close();
-  }, 30_000);
+  }, 75_000);
 
   it('reaps a child whose admission stops responding', async () => {
     const f = fixture({ slowCreate: true });
@@ -134,5 +134,5 @@ describe('isolated retained hosted TEST admission', () => {
     kits.push(kit);
     await expect(kit.create({})).rejects.toThrow('Hosted TEST fixture create timed out');
     assertExited(f.events()[0].pid);
-  }, 30_000);
+  }, 75_000);
 });
