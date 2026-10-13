@@ -62,27 +62,26 @@ type PublicDocsViteConfig = {
   }>;
 };
 
-async function readPublicDocsConfig(): Promise<{ vite?: PublicDocsViteConfig }> {
+async function readPublicDocsModule(): Promise<{
+  default: { vite?: PublicDocsViteConfig };
+  normalizeExternalAstroModuleIds: (projectRoot?: string) => NonNullable<PublicDocsViteConfig['plugins']>[number];
+}> {
   const configPath = resolve(repoRoot, 'apps/papercusp-docs/astro.config.mjs');
-  // Use the producer's config loader. A direct Vitest import eagerly transforms
-  // Starlight's complete integration graph and bypasses Astro's fallback for
-  // non-Node imports such as its .jsonc themes (EI-25875124368917949).
-  const { loadConfigWithVite } = await import(resolve(repoRoot, 'node_modules/astro/dist/core/config/vite-load.js'));
-  return loadConfigWithVite({ root: dirname(configPath), configPath });
-}
-
-async function readCloneAstroNormalizer() {
-  const before = process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE;
+  // Use the producer's maintained Vite fallback, retaining named exports so
+  // shallow/persistent path assertions exercise the same resolver factory.
+  // Direct Vitest imports transform the whole Starlight graph and bypass
+  // Astro's fallback for .jsonc themes (EI-25875124368917949).
+  const [{ createMinimalViteDevServer }, { default: loadFallbackPlugin }] = await Promise.all([
+    import(resolve(repoRoot, 'node_modules/astro/dist/core/createMinimalViteDevServer.js')),
+    import(resolve(repoRoot, 'node_modules/astro/dist/vite-plugin-load-fallback/index.js')),
+  ]);
+  const server = await createMinimalViteDevServer(
+    loadFallbackPlugin({ root: pathToFileURL(dirname(configPath)) }),
+  );
   try {
-    process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE = '1';
-    const plugin = (await readPublicDocsConfig()).vite?.plugins?.find(
-      ({ name }) => name === 'papercusp-clone-astro-id-normalizer',
-    );
-    if (!plugin) throw new Error('public Docs clone config must install its Astro ID normalizer');
-    return plugin;
+    return await server.environments.ssr.runner.import(configPath);
   } finally {
-    if (before === undefined) delete process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE;
-    else process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE = before;
+    await server.close();
   }
 }
 
@@ -320,7 +319,7 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
     ['shallow', resolve(tmpdir(), 'papercusp-lint-as-committed-probe/apps/papercusp-docs')],
     ['persistent', resolve(homedir(), '.papercusp/artifacts/tutorial/replacement/sources/operator/apps/papercusp-docs')],
   ])('resolves injected Astro page imports against the clone root (%s)', async (_geometry, projectRoot) => {
-    const installedNormalizer = await readCloneAstroNormalizer();
+    const { normalizeExternalAstroModuleIds } = await readPublicDocsModule();
     const { pluginPage } = await import(resolve(repoRoot, 'node_modules/astro/dist/vite-plugin-pages/page.js'));
     const sharedRoute = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/routes/static/404.astro'));
     const component = relative(projectRoot, sharedRoute).split(sep).join('/');
@@ -333,21 +332,14 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
     expect(match).not.toBeNull();
     const request = JSON.parse(match![1]);
     expect(request).toContain('/../');
-    // The resolver's root follows its actual installed config. Exercise the
-    // shallow and persistent geometries through Astro's page writer below.
-    const configRoot = resolve(repoRoot, 'apps/papercusp-docs');
-    const normalizer = installedNormalizer;
-    const configuredComponent = relative(configRoot, sharedRoute).split(sep).join('/');
-    const configuredVirtualId = `\0virtual:astro:page:${configuredComponent.replace(/\./g, '@_@')}`;
-    const configuredRequest = `/${configuredComponent}`;
-    expect(normalizer.resolveId(configuredRequest, configuredVirtualId)).toBe(sharedRoute);
-    expect(resolve(projectRoot, `.${request}`)).toBe(sharedRoute);
-    expect(normalizer.resolveId(`${configuredRequest}?astro&type=style&index=0`, configuredVirtualId)).toBe(`/@fs${sharedRoute}?astro&type=style&index=0`);
+    const normalizer = normalizeExternalAstroModuleIds(projectRoot);
+    expect(normalizer.resolveId(request, virtualId)).toBe(sharedRoute);
+    expect(normalizer.resolveId(`${request}?astro&type=style&index=0`, virtualId)).toBe(`/@fs${sharedRoute}?astro&type=style&index=0`);
     const localComponent = 'src/pages/index.astro';
     const localVirtualId = `\0virtual:astro:page:${localComponent.replace(/\./g, '@_@')}`;
     const localPage = pluginPage({ routesList: { routes: [{ component: localComponent, type: 'page' }] } });
     const localRequest = JSON.parse(/import \* as _page from ("(?:[^"\\]|\\.)*");/.exec(localPage.load.handler(localVirtualId).code)![1]);
-    expect(normalizer.resolveId(localRequest, localVirtualId)).toBe(resolve(configRoot, localComponent));
+    expect(normalizer.resolveId(localRequest, localVirtualId)).toBe(resolve(projectRoot, localComponent));
     expect(normalizer.resolveId(sharedRoute)).toBe(sharedRoute);
     expect(normalizer.resolveId(`${sharedRoute}?astro&type=style&index=0`)).toBe(`/@fs${sharedRoute}?astro&type=style&index=0`);
   });
@@ -357,12 +349,12 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
     const before = process.env[envKey];
     try {
       delete process.env[envKey];
-      const normalVite = (await readPublicDocsConfig()).vite;
+      const normalVite = (await readPublicDocsModule()).default.vite;
       expect(normalVite?.resolve?.preserveSymlinks).toBeUndefined();
       expect(normalVite?.plugins?.some(({ name }) => name === 'papercusp-clone-astro-id-normalizer')).toBeFalsy();
 
       process.env[envKey] = '1';
-      const cloneVite = (await readPublicDocsConfig()).vite;
+      const cloneVite = (await readPublicDocsModule()).default.vite;
       expect(cloneVite?.resolve?.preserveSymlinks).toBe(false);
 
       const normalizer = cloneVite?.plugins?.find(({ name }) => name === 'papercusp-clone-astro-id-normalizer');
