@@ -1349,6 +1349,14 @@ async function assertPreparedBundleFreshness(repoRoot: string, preparedRoot: str
   }
 }
 
+function ensureCopiedBundleNodeModules(bundleDir: string, repoRoot: string) {
+  const bundleNodeModules = join(bundleDir, 'node_modules');
+  if (!existsSync(bundleNodeModules))
+    symlinkSync(join(repoRoot, 'node_modules'), bundleNodeModules, 'dir');
+  if (!existsSync(bundleNodeModules))
+    throw new Error('manual_fixture_bundle_dependencies_missing: link node_modules beside the copied ESM bundle');
+}
+
 async function ownFixtureOperator(seedDir: string,
   launch?: (root: string, port: number, logFd: number) => ReturnType<typeof spawn>,
   layout: 'source' | 'standalone' = 'source',
@@ -1403,6 +1411,7 @@ async function ownFixtureOperator(seedDir: string,
       // to artifact preparation; request-host health keeps its bounded deadline.
       const bundleDir = join(root, 'operator');
       cpSync(preparedRoot, bundleDir, { recursive: true });
+      ensureCopiedBundleNodeModules(bundleDir, repoRoot);
       symlinkSync(join(repoRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
       // Background acceptance uses only the maintained isolated-runtime env;
       // importing the installation's secrets would defeat its egress isolation.
@@ -1480,6 +1489,26 @@ describe('public manual owned host lifecycle', () => {
   const launch = (root: string, port: number, logFd: number) => spawn(process.execPath, ['-e',
     "require('node:http').createServer((req,res)=>res.end(JSON.stringify({sha:'1234567'}))).listen(Number(process.env.FIXTURE_PORT),'127.0.0.1')"],
   { cwd: root, env: { ...process.env, FIXTURE_PORT: String(port) }, stdio: ['ignore', logFd, logFd] });
+
+  it('links runtime node_modules beside a copied ESM bundle when absent', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'public-manual-bundle-dependencies-'));
+    const repoRoot = join(root, 'repo');
+    const bundleDir = join(root, 'operator');
+    const packageRoot = join(repoRoot, 'node_modules', '@fixture', 'runtime-dependency');
+    mkdirSync(packageRoot, { recursive: true });
+    mkdirSync(bundleDir, { recursive: true });
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({
+      name: '@fixture/runtime-dependency', type: 'module', exports: './index.mjs',
+    }));
+    writeFileSync(join(packageRoot, 'index.mjs'), "export default 'resolved-from-copied-bundle';\n");
+    const entry = join(bundleDir, 'hono-host.mjs');
+    writeFileSync(entry, "import marker from '@fixture/runtime-dependency'; export default marker;\n");
+    try {
+      ensureCopiedBundleNodeModules(bundleDir, repoRoot);
+      expect(realpathSync(join(bundleDir, 'node_modules'))).toBe(realpathSync(join(repoRoot, 'node_modules')));
+      await expect(import(pathToFileURL(entry).href)).resolves.toMatchObject({ default: 'resolved-from-copied-bundle' });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 
   it('accepts a retained seed after the runner relocates TMPDIR and still rejects canonical or escaped content', async () => {
     const seed = mkdtempSync(join(tmpdir(), 'public-manual-retained-seed-'));
