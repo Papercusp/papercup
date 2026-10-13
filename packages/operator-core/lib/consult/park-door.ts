@@ -202,7 +202,9 @@ export async function openDecisionReviewPark(req: ParkDoorRequest, deps: ParkDoo
 
 /** Is this an active park re-assertion (ref already names the park's consult)? */
 export function isParkReassertion(ref: string | undefined, activeRefs: readonly string[]): boolean {
-  return Boolean(ref && ref.startsWith('consult:') && activeRefs.includes(ref));
+  // Any ref already active as a product-decision blocker is a re-assertion: an active park
+  // (consult:<id>) or a legacy owner ask written before parks existed. Neither opens a new park.
+  return Boolean(ref && activeRefs.includes(ref));
 }
 
 /** Production bindings. */
@@ -211,12 +213,20 @@ export function makeProdParkDoorDeps(identity: import('../agent-tools/coordinati
     now: () => Date.now(),
     async openConsult(input) {
       const { getFeedbackProd } = await import('./get-feedback-prod');
-      const res = (await getFeedbackProd(
-        { question: input.question, originTaskRef: input.originTaskRef, cascade: input.cascade } as Parameters<typeof getFeedbackProd>[0],
+      if (!identity.workspaceId) throw new Error('park needs a workspace-scoped caller to open its decision-review consult');
+      const res = await getFeedbackProd(
+        {
+          workspaceId: identity.workspaceId,
+          requesterId: identity.ownerId,
+          question: input.question,
+          originTaskRef: input.originTaskRef,
+          cascade: input.cascade,
+        },
         identity,
-      )) as { conversationId?: string | null; conversation_id?: string | null; error?: string };
-      const consultId = res.conversationId ?? res.conversation_id ?? null;
-      if (!consultId) throw new Error(res.error ?? 'consult opener returned no conversation id');
+      );
+      if ('error' in res) throw new Error(`decision-review consult refused: ${res.error}`);
+      const consultId = typeof res.conversation_id === 'string' ? res.conversation_id : null;
+      if (!consultId) throw new Error(`decision-review consult opened no conversation (verdict ${String(res.verdict)})`);
       return { consultId };
     },
     async registerVerdictWake(input) {
