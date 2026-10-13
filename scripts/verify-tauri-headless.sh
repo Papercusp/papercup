@@ -631,6 +631,29 @@ NODE
 
 install_in_flight_preflight || exit $?
 
+# The parent script can pass bash -n while its generated launcher passes a
+# literal backslash to env. Reject malformed heredoc continuations before
+# allocating a display, compiling the host, or preparing the isolated database.
+validate_tauri_launcher_preflight() {
+  node - "$0" <<'LAUNCH_PREFLIGHT_JS'
+const fs = require('node:fs');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const launch = source.match(/<<LAUNCH\n([\s\S]*?)\nLAUNCH/)?.[1];
+if (!launch) {
+  console.error('VERIFY_TAURI_LAUNCHER_INVALID: launcher heredoc missing');
+  process.exit(2);
+}
+for (const [index, line] of launch.split('\n').entries()) {
+  const trailing = line.match(/(\\+)$/)?.[1];
+  if (trailing && trailing.length !== 2) {
+    console.error(`VERIFY_TAURI_LAUNCHER_INVALID: heredoc line ${index + 1} has ${trailing.length} source backslashes; expected 2`);
+    process.exit(2);
+  }
+}
+LAUNCH_PREFLIGHT_JS
+}
+validate_tauri_launcher_preflight || exit $?
+
 # EI-20742798527438103 / EI-20961560846717550: the Codex launcher PATH carries
 # the Node runtime but not the managed npm bin directory. The verifier used to
 # spend minutes booting Xvfb + Tauri, then execute a bare `tauri-agent-tools` in
@@ -3610,9 +3633,9 @@ exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET $ISOLATED_UNSET_LINE
   PAPERCUSP_BIND_HOST=127.0.0.1 \\
   PAPERCUSP_DEV_API_TARGET="$DEV_PORT" PAPERCUSP_NATIVE_TERMINAL="$NATIVE_TERMINAL" \\
   PAPERCUSP_VERIFY_TAURI_DEV_URL="$TAURI_DEV_URL" \\
-  PAPERCUSP_DEV_HOST_DIAGNOSTIC_DIR="$OPERATOR_STARTUP_DIAGNOSTIC_DIR" \\\\
-  PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS="$VERIFY_TAURI_TRACE_SESSION_CHAT_CSS" \\\\
-  PAPERCUSP_CLUSTER=0 PAPERCUSP_CLUSTER_WORKERS=0 \\\\
+  PAPERCUSP_DEV_HOST_DIAGNOSTIC_DIR="$OPERATOR_STARTUP_DIAGNOSTIC_DIR" \\
+  PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS="$VERIFY_TAURI_TRACE_SESSION_CHAT_CSS" \\
+  PAPERCUSP_CLUSTER=0 PAPERCUSP_CLUSTER_WORKERS=0 \\
   PAPERCUSP_SPAWNER_SIDECAR=0 PAPERCUSP_SPAWNER_SIDECAR_MODE=0 \\
   PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR=0 \\
   PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR=0 \\
@@ -3626,8 +3649,8 @@ exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET $ISOLATED_UNSET_LINE
   $OPERATOR_SOURCE_ENV_LINE \\
   $SPA_ENV_LINE \\
   $ISOLATED_ENV_LINE \\
-  PAPERCUSP_OPERATOR_BASE="$OPERATOR_DEV_URL" \\\\
-  PAPERCUSP_OPERATOR_URL="$OPERATOR_DEV_URL" \\\\
+  PAPERCUSP_OPERATOR_BASE="$OPERATOR_DEV_URL" \\
+  PAPERCUSP_OPERATOR_URL="$OPERATOR_DEV_URL" \\
   ${LAUNCH_PREFIX[*]} npm run tauri -- dev --no-watch --config '$TAURI_CONFIG'
 LAUNCH
   chmod +x "$WORK/launch.sh"
