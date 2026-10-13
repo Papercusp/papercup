@@ -504,6 +504,39 @@ it('bundles exported Nuqs adapters and pins cross-checkout consumers to one Port
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+it('joins Portal providers and frozen-checkout consumers into the selected Sync context', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-portal-sync-context-'));
+  try {
+    const portal = join(root, 'portal');
+    const operator = join(root, 'invoked-source');
+    for (const checkout of [portal, operator]) {
+      const pkg = join(checkout, 'node_modules/@papercusp/sync');
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(join(pkg, 'package.json'), JSON.stringify({
+        name: '@papercusp/sync', type: 'module', exports: './index.js',
+      }));
+      writeFileSync(join(pkg, 'index.js'), 'export const context = {};');
+    }
+    writeFileSync(join(operator, 'consumer.js'), "export { context } from '@papercusp/sync';");
+    const entry = `import { context as provider } from '@papercusp/sync';
+      import { context as consumer } from ${JSON.stringify(join(operator, 'consumer.js'))};
+      export const shared = provider === consumer;`;
+    const run = async (pinned: boolean) => {
+      const result = await build({ stdin: { contents: entry, resolveDir: portal }, bundle: true,
+        write: false, format: 'cjs', platform: 'browser', metafile: true,
+        plugins: pinned ? [portalBrowserPackagesPlugin(portal, operator)] : [] });
+      const module: { exports: { shared?: boolean } } = { exports: {} };
+      new Function('exports', 'module', result.outputFiles[0].text)(module.exports, module);
+      return { shared: module.exports.shared, inputs: Object.keys(result.metafile!.inputs) };
+    };
+    expect((await run(false)).shared).toBe(false);
+    const pinned = await run(true);
+    expect(pinned.shared).toBe(true);
+    expect(pinned.inputs.some(path => path.includes('/portal/node_modules/@papercusp/sync/'))).toBe(false);
+    expect(pinned.inputs.some(path => path.includes('/invoked-source/node_modules/@papercusp/sync/'))).toBe(true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 it('joins cross-checkout toast producers and observers into one Sonner module store', async () => {
   const root = mkdtempSync(join(tmpdir(), 'private-portal-sonner-'));
   try {

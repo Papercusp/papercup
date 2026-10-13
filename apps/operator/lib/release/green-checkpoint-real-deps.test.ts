@@ -43,6 +43,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as targetedTaskReuse from "../../../../scripts/lib/targeted-task-reuse.mjs";
+import * as testPassReuse from "../../../../scripts/lib/test-pass-reuse.mjs";
 import {
   checkNpmScript,
   buildTerminalFailureCheckpointResult,
@@ -531,6 +532,32 @@ describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocati
       expect(call?.opts?.env?.PC_TEST_REUSE_SKIP_LIST).toBe("/fixture/verified-passes.json");
       expect(finish).toHaveBeenCalledOnce();
     } finally { arm.mockRestore(); }
+  });
+
+  it("records an arming exception as a hard reuse fail-open before running the task", async () => {
+    const tree = fileURLToPath(new URL("../../../../", import.meta.url));
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: tree, encoding: "utf8" });
+    expect(head.status).toBe(0);
+    const sha = head.stdout.trim();
+    const arm = vi.spyOn(targetedTaskReuse, "armTargetedTaskReuse").mockRejectedValue(new Error("fixture arming failure"));
+    const record = vi.spyOn(testPassReuse, "recordGateReuseDecision").mockResolvedValue(true);
+    const { exec, calls } = makeExec([{ code: 0 }]);
+    const deps = realCheckpointDeps({ ...cfg, checkpointRoot: tree }, exec);
+    deps.setupTree = async () => {};
+    try {
+      const result = await deps.runGateAtRef!(sha, ["@papercusp/operator-vite :: test"]);
+      expect(result.pass).toBe(true);
+      expect(record).toHaveBeenCalledWith("@papercusp/operator-vite::test", {
+        offReason: "arming-threw(fixture_arming_failure)",
+      });
+      const call = calls.find(c => c.args.includes("test"));
+      expect(call?.args.slice(0, 2)).toEqual(["run", "test"]);
+      expect(call?.args).not.toContain("--passWithNoTests");
+      expect(call?.opts?.env?.PC_TEST_REUSE_SKIP_LIST).toBeUndefined();
+    } finally {
+      arm.mockRestore();
+      record.mockRestore();
+    }
   });
 });
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(" ");

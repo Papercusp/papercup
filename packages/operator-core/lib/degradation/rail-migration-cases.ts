@@ -1220,6 +1220,237 @@ const dispatchEnvelopeCases: RailMigrationCase[] = [{
 }];
 
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+  id: 'agent-productivity-original-wedge-degenerate-ideate-and-exact-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/agent-productivity-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { runAgentProductivitySweepOnce, IDEATE_PASS_GRACE_MS } = await import('../system-health/agent-productivity-watchdog');
+    const { AGENT_PRODUCTIVITY_GRACE_MS } = await import('../agent-wedge');
+    const now = Date.now(), open = new Map<string, number>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const initial = ['wedge', 'degenerate', 'ideate'].map(ownerId => ({ ownerId, ownerLabel: ownerId,
+      workspaceId: 'fixture', agentRole: 'su', fleetSlug: null, source: 'omp-hook-session', host: null, pid: null,
+      startedAtMs: now - AGENT_PRODUCTIVITY_GRACE_MS - 1000, heartbeatAt: new Date(now).toISOString() }));
+    let candidates = initial, healthy = false, unknown = false;
+    const deps = { now: () => now, flagEnabled: async () => true, readCandidates: async () => candidates,
+      resolveLiveness: async () => new Map(candidates.map(c => [c.ownerId, { ownerId: c.ownerId, sessionState: 'parked',
+        wakeable: true, liveTurn: false, selfWake: 'loop' } as unknown as import('../agent-tools/coordination/liveness-oracle').LivenessVerdict])),
+      readProductivity: async () => new Map(unknown ? [] : candidates.map(c => [c.ownerId, {
+        agentOriginCalls: c.ownerId === 'wedge' && !healthy ? 0 : 100, anyOriginCalls: 120,
+        recentCalls: 100, recentTelemetryCalls: c.ownerId === 'degenerate' && !healthy ? 90 : 10,
+        recentWorkCalls: c.ownerId === 'degenerate' && !healthy ? 1 : 20,
+        recentProgressCalls: c.ownerId === 'degenerate' && !healthy ? 1 : 20,
+      }])), readHeldClaims: async () => new Map(), resolveGraders: async () => new Map(),
+      readIdeateRegistrations: async () => new Map([['ideate', { setAtMs: now - IDEATE_PASS_GRACE_MS - 1000,
+        setBy: 'fixture', ownerDirected: true }]]),
+      readIdeatePasses: async () => new Map(healthy ? [['ideate', now]] : []),
+      escalateWave: async () => { expect(open.size).toBe(3); }, escalateIdeateWave: async () => { expect(open.size).toBe(3); },
+      notifyIdeateWave: async () => {}, escalateDegenerateWakeWave: async () => { expect(open.size).toBe(3); },
+      readOpenConditions: async () => [...open].map(([conditionKey, openedAtMs]) => ({ conditionKey, openedAtMs })),
+      rail: { broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+        expect(event.oneShot).toBe(true); if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+        open.set(event.conditionKey!, now); return true;
+      }, resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false; resolvedKeys.push(event.conditionKey); return true;
+      } },
+    };
+    const sql = {} as import('postgres').Sql;
+    await runAgentProductivitySweepOnce(sql, deps); expect(open.size).toBe(3);
+    candidates = []; await runAgentProductivitySweepOnce(sql, { ...deps }); expect(open.size).toBe(3);
+    candidates = initial; unknown = true; await runAgentProductivitySweepOnce(sql, { ...deps }); expect(open.size).toBe(3);
+    unknown = false; healthy = true; await runAgentProductivitySweepOnce(sql, { ...deps }); expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'resource-health-original-objectives-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: [1, 2, 3, 4].map(ordinal => `health-flag-no-condition|packages/operator-core/lib/resource-governor/health-analysis.ts|#assessObjective|${ordinal}`),
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { RollingHealthAnalyzer } = await import('../resource-governor/health-analysis');
+    const { measuredLiveHealthReading, liveHealthWindow } = await import('../resource-governor/live-health');
+    const openedKeys: string[] = [], resolvedKeys: string[] = [], open = new Map<string, number>();
+    const at = 1_700_000_000_000;
+    const context = { workspaceId: 'fixture', readOpenConditions: async () =>
+      [...open].map(([conditionKey, openedAtMs]) => ({ conditionKey, openedAtMs })),
+      rail: { broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+        expect(event.oneShot).toBe(true);
+        if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+        open.set(event.conditionKey!, open.get(event.conditionKey!) ?? at + 4_000); return true;
+      }, resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false; resolvedKeys.push(event.conditionKey); return true;
+      } } };
+    const sample = (time: number, latency = 5, failed = false) => ({ scopeId: 'original-producer', atMs: time,
+      signals: { 'latency.eventLoopP95Ms': measuredLiveHealthReading({ key: 'latency.eventLoopP95Ms', value: latency,
+        writerId: 'operator:fixture', observedAtMs: time, window: liveHealthWindow('rolling', time - 1_000, time), confidence: 1 }),
+      'provider.rateLimited': measuredLiveHealthReading({ key: 'provider.rateLimited', value: failed,
+        writerId: 'provider-account:fixture', observedAtMs: time, window: liveHealthWindow('instant', time, time), confidence: 1 }) } });
+    const analyzer = new RollingHealthAnalyzer();
+    for (let i = 0; i < 4; i++) analyzer.primeHealthy(sample(at + i * 1_000));
+    await analyzer.evaluate(sample(at + 4_000, 300, true), context);
+    expect(open.size).toBe(2);
+    await analyzer.evaluate({ scopeId: 'original-producer', atMs: at + 5_000, signals: {} }, context);
+    expect(open.size).toBe(2);
+    await new RollingHealthAnalyzer().evaluate(sample(at + 5_000, 300, true), context);
+    expect(open.size).toBe(2);
+    await analyzer.evaluate(sample(at + 6_000), context);
+    expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'perf-budget-original-verdict-caller-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: [1, 2].map(ordinal => `health-flag-no-condition|packages/operator-core/lib/system-health/perf-budgets.ts|evaluatePerfSignals|${ordinal}`),
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { evaluatePerfSignals, perfBudgetConditionKey } = await import('../system-health/perf-budgets');
+    const now = Date.now(), openedKeys: string[] = [], resolvedKeys: string[] = [], open = new Map<string, number>();
+    const context = { workspaceId: 'fixture', hostId: 'host',
+      readOpenConditions: async () => [...open].map(([conditionKey, openedAtMs]) => ({ conditionKey, openedAtMs })),
+      rail: { broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+        expect(event.oneShot).toBe(true); if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+        open.set(event.conditionKey!, now); return true;
+      }, resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false; resolvedKeys.push(event.conditionKey); return true;
+      } } };
+    let sig = { schemaVersion: 'perf-signals-v1', capturedAt: new Date(now).toISOString(), hostState: 'stable', signals: {
+      operator_3070_reachable: false, eventLoopLag: { lag_p95_ms: 0, window_mature: true }, closeWait_3070: 0,
+      psi: { cpu: { some: { avg60: 99 } }, memory: { full: { avg60: 0 } } },
+      inotify: { totalWatches: 100, limits: { maxUserWatches: 1_000_000 } },
+    } };
+    // Run the actual Infra assignment with only dependency seams replaced.
+    const caller = () => execute(original('packages/operator-core/lib/system-health/compute.ts',
+      'perf = await evaluatePerfSignals', 'expression'), { sig, ctx: { ws: 'fixture', now }, deployInProgress: false,
+      perf: null, hostname: () => 'host', evaluatePerfSignals: (sample: typeof sig, clock: number,
+        budgets: undefined, deploy: boolean, scope: { workspaceId: string; hostId: string }) => {
+          expect(scope).toEqual({ workspaceId: 'fixture', hostId: 'host' });
+          return evaluatePerfSignals(sample, clock, budgets, deploy, context);
+        } });
+    await caller(); expect([...open.keys()]).toEqual([
+      perfBudgetConditionKey('operator', 'fixture', 'host'), perfBudgetConditionKey('ambient', 'fixture', 'host')]);
+    await evaluatePerfSignals(null, now, undefined, false, { ...context }); expect(open.size).toBe(2);
+    sig = { ...sig, signals: { ...sig.signals, operator_3070_reachable: true,
+      psi: { cpu: { some: { avg60: 0 } }, memory: { full: { avg60: 0 } } } } };
+    await caller(); expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'identity-activation-original-wedge-census-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/wedged-identity-activation-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { compileAgentSpecification } = await import('@papercusp/orchestrator/blueprint');
+    const { runWedgedIdentitySweepOnce, runUnappliedActivationCensusOnce, identityActivationConditionKey } =
+      await import('../system-health/wedged-identity-activation-watchdog');
+    const artifact = compileAgentSpecification({ source: { id: 'rail-identity', workItem: { kind: 'feature' },
+      spine: { edges: { DONE: { to: 'done' } } } }, prompt: { role: 'worker', text: 'Identity rail fixture.' }, inputClosure: [] });
+    const pair = { specificationRevision: artifact.specificationRevision, stateRevision: 'fixture-state' };
+    const activation = { schemaVersion: 1, attribution: { actorId: 'original-owner', principalId: 'system:superuser',
+      sessionId: 'original-owner' }, desired: pair, prepared: null, applied: pair, status: 'applied' };
+    const ownerId = 'original-owner', workspaceId = 'fixture';
+    const candidate = { ownerId, activation, advSessionId: null as string | null, launchSpec: {
+      workspaceId, harnessSlug: 'papercusp', ...pair, specificationArtifact: artifact } };
+    let candidates = [candidate];
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const key = (kind: 'wedged' | 'unapplied') => identityActivationConditionKey(kind, workspaceId, ownerId);
+    const rail = { broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+      expect(event.oneShot).toBe(true);
+      if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+      open.add(event.conditionKey!); return true;
+    }, resolve: async (event: { conditionKey: string }) => {
+      if (!open.delete(event.conditionKey)) return false;
+      resolvedKeys.push(event.conditionKey); return true;
+    } };
+    const seam = { workspaceId, rail, readOpenConditions: async () => [...open],
+      resolveLiveness: async (ids: string[]) => new Map(ids.map(id => [id, 'live' as const])) };
+    const wedge = { ...seam, loadCandidates: async () => candidates,
+      verdictCache: { verdicts: new Map(), lastReused: 0, lastScanned: 0, lastRetired: 0 },
+      yieldAfterClassified: async (count: number) => count + 1,
+      escalateWedged: async () => { expect(open.has(key('wedged'))).toBe(true); },
+      escalateNotMeasured: async () => {} };
+    await runWedgedIdentitySweepOnce(wedge);
+    candidates = [{ ...candidate, ownerId: 'foreign-owner', advSessionId: '1' }];
+    await runWedgedIdentitySweepOnce(wedge); expect(open.has(key('wedged'))).toBe(true);
+    candidates = [{ ...candidate, advSessionId: '1' }]; await runWedgedIdentitySweepOnce(wedge);
+    expect(open.has(key('wedged'))).toBe(false);
+    let censusRows = [{ ownerId, activation: { ...activation, prepared: pair as typeof pair | null, applied: null as typeof pair | null,
+      status: 'prepared' }, unappliedSince: new Date().toISOString(), turnsSince: 2 }];
+    const census = { ...seam, loadUnapplied: async (owners: readonly string[]) => {
+      if (open.has(key('unapplied'))) expect(owners).toContain(ownerId);
+      return censusRows;
+    }, loadPositiveControl: async () => ({ recentBriefs: 1, recentJournalTurns: 2 }),
+    escalateUnapplied: async () => { expect(open.has(key('unapplied'))).toBe(true); }, escalateNotMeasured: async () => {} };
+    await runUnappliedActivationCensusOnce(census);
+    censusRows = []; await runUnappliedActivationCensusOnce(census); expect(open.has(key('unapplied'))).toBe(true);
+    censusRows = [{ ownerId, activation, unappliedSince: new Date().toISOString(), turnsSince: 0 }];
+    await runUnappliedActivationCensusOnce(census); expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'codex-rollout-original-persistence-provider-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|<module>|1',
+    ...[1, 2].map(ordinal => `owner-only-alarm|packages/operator-core/lib/system-health/codex-rollout-persistence-watchdog.ts|checkCodexRolloutPersistence|${ordinal}`)],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { mkdir, mkdtemp, rm, utimes, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { checkCodexRolloutPersistence, codexRolloutConditionKey } = await import('../system-health/codex-rollout-persistence-watchdog');
+    const root = await mkdtemp(join(tmpdir(), 'codex-rail-matrix-'));
+    const savedHome = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+    process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = root;
+    let now = Date.now() + 1000, tailUnknown = false;
+    const row = { id: 42, owner_id: 'original-codex-owner', workspace_id: 'fixture', pid: 123 };
+    let rows = [row], broadcastCount = 0;
+    const open = new Map<string, number>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const key = (kind: 'persistence' | 'provider') => codexRolloutConditionKey(kind, row.workspace_id, '42', row.owner_id);
+    const day = join(root, 'session-42', 'sessions', '2026', '10', '12');
+    const history = join(root, 'session-42', 'history.jsonl'), rollout = join(day, 'rollout-original.jsonl');
+    const sql = (async (parts: TemplateStringsArray) => {
+      const query = parts.join('');
+      if (query.includes('SELECT id, coord_owner_id AS owner_id')) return rows;
+      if (query.includes('INSERT INTO harness_shared.harness_escalations')) expect(open.size).toBeGreaterThan(0);
+      return []; // Existing legacy escalation coalesces; it must not suppress the keyed alarm.
+    }) as unknown as import('postgres').Sql;
+    const opts = { now: () => now, pidAlive: () => true,
+      readOpenConditions: async () => [...open].map(([conditionKey, openedAtMs]) => ({ conditionKey, openedAtMs })),
+      readRolloutTail: async () => tailUnknown ? null : (await import('node:fs/promises')).readFile(rollout, 'utf8'),
+      rail: { broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+        expect(event.oneShot).toBe(true); broadcastCount++;
+        if (!open.has(event.conditionKey!)) { open.set(event.conditionKey!, now); openedKeys.push(event.conditionKey!); }
+        return true;
+      }, resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true;
+      } },
+    };
+    try {
+      await mkdir(day, { recursive: true }); await writeFile(history, '{}\n');
+      await writeFile(rollout, [1, 2, 3].map(turn => JSON.stringify({ type: 'event_msg',
+        payload: { type: 'task_complete', status: 'error', turn_id: String(turn),
+          error: { codex_error_info: 'usageLimitExceeded', message: 'provider failed' } } })).join('\n') + '\n');
+      await utimes(history, new Date(now - 60_000), new Date(now - 60_000));
+      await utimes(rollout, new Date(now - 17 * 60_000), new Date(now - 17 * 60_000));
+      await checkCodexRolloutPersistence(sql, opts);
+      expect(openedKeys.sort()).toEqual([key('persistence'), key('provider')].sort());
+      await checkCodexRolloutPersistence(sql, opts); expect(broadcastCount).toBe(4);
+      rows = []; await checkCodexRolloutPersistence(sql, opts); expect(resolvedKeys).toEqual([]);
+      now += 1000;
+      await writeFile(rollout, JSON.stringify({ timestamp: new Date(now).toISOString(), type: 'event_msg',
+        payload: { type: 'task_complete', status: 'completed' } }) + '\n');
+      await utimes(history, new Date(now), new Date(now)); await utimes(rollout, new Date(now), new Date(now));
+      rows = [{ ...row, owner_id: 'foreign-owner', workspace_id: 'foreign-workspace' }];
+      await checkCodexRolloutPersistence(sql, opts); expect(resolvedKeys).toEqual([]);
+      rows = [row]; tailUnknown = true;
+      await checkCodexRolloutPersistence(sql, opts); expect(resolvedKeys).toEqual([key('persistence')]);
+      expect(open.has(key('provider'))).toBe(true);
+      tailUnknown = false; await checkCodexRolloutPersistence(sql, opts);
+      expect(open.size).toBe(0);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally {
+      if (savedHome === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+      else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = savedHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+}, {
   id: 'goal-owner-report-original-silence-and-exact-measured-recovery', item: 'P-014', route: 'condition',
   rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/goal-owner-report-watchdog.ts|<module>|1'],
   run: async () => {

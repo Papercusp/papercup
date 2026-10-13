@@ -333,7 +333,7 @@ describe('P-012: the seed population and the door table are complete', () => {
     // Reserve the helper's four real connections, leaving BEGIN queued while a
     // separate diagnostic connection can prove that this same database is reachable.
     const reserved = await Promise.all(Array.from({ length: 4 }, () => db.sql.reserve()));
-    const callback = vi.fn(async (tx: postgres.TransactionSql) => tx`SELECT 1`);
+    const callback = vi.fn(async (tx: typeof db.sql) => tx`SELECT 1`);
     try {
       await expect(boundedOrgTxn(callback, {
         client: db.sql, acquireTimeoutMs: 25, acquireRetries: 0, connectionSetupRetries: 0,

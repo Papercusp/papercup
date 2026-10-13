@@ -648,6 +648,12 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
     assert.ok([...originals.keys()].some(path => path.endsWith('/packages/operator-core/lib/transport-adapters/index.ts')),
       'Dev browser graph requires the real IPC transport barrel through the maintained prefix alias');
   }
+  if (input.conversations || input.createDock) {
+    const syncContexts = [...originals.keys()].filter(path => path.endsWith('/sync/src/SyncContext.ts'));
+    const selectedSync = createRequire(join(operatorRoot, 'package.json')).resolve('@papercusp/sync');
+    assert.deepEqual(syncContexts, [join(dirname(selectedSync), 'SyncContext.ts')],
+      'Aggregate browser provider and panels must use one SyncContext from the selected operator checkout');
+  }
   assert.ok([...originals.keys()].some(path => path.endsWith(input.dev
     ? '/apps/operator-vite/src/routes/dev/index.tsx' : input.conversations
     ? '/apps/operator-vite/src/components/adv/AdvConversationsTab.tsx' : input.createDock

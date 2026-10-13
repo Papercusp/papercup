@@ -431,21 +431,48 @@ export const CENSUS_COVERAGE_GAP_BYTES = 10 * 1024 ** 3;
 export const CENSUS_IONICE_ARGS = ['-c2', '-n7'] as const;
 
 /**
- * argv for one census du walk: best-effort I/O + nice 19 CPU, each only when available.
- * With `bins.sudo` the whole walk runs as root through `sudo -n --` (never prompts), so
- * root-owned trees (/var/lib/postgresql, /var/lib/docker, backup repos on /mnt/data) are
- * measured instead of being lost to "Permission denied" — the R-1 falsifier is a consumer
- * above 10 GiB the census does not list, and an unreadable tree hides exactly those. The
- * walk is read-only (du reads metadata only); the precedent is fleet-logs-gc's sudo census.
+ * argv for one census subprocess — the du walk, or the find that lists a directory's own
+ * files: best-effort I/O + nice 19 CPU, each only when available. With `bins.sudo` the
+ * whole command runs as root through `sudo -n --` (never prompts), so root-owned trees
+ * (/var/lib/postgresql, /var/lib/docker, backup repos on /mnt/data) are measured instead
+ * of being lost to "Permission denied" — the R-1 falsifier is a consumer above 10 GiB the
+ * census does not list, and an unreadable tree hides exactly those. Both programs are
+ * read-only (metadata only); the precedent is fleet-logs-gc's sudo census.
  */
-export function censusDuCommand(
-  duArgs: readonly string[],
+export function censusCommand(
+  program: 'du' | 'find',
+  programArgs: readonly string[],
   bins: { ionice: string | null; nice: string | null; sudo?: string | null },
 ): [string, string[]] {
-  const niced = bins.nice ? [bins.nice, '-n', '19', 'du', ...duArgs] : ['du', ...duArgs];
+  const niced = bins.nice ? [bins.nice, '-n', '19', program, ...programArgs] : [program, ...programArgs];
   const prioritized = bins.ionice ? [bins.ionice, ...CENSUS_IONICE_ARGS, ...niced] : niced;
   const argv = bins.sudo ? [bins.sudo, '-n', '--', ...prioritized] : prioritized;
   return [argv[0]!, argv.slice(1)];
+}
+
+/**
+ * find arguments listing `dir`'s immediate regular files as NUL-terminated
+ * `<512-byte blocks> <path>` records. `%b` is the ALLOCATED size — du's unit — so
+ * attributeOwnFiles' remainder stays exact. There is deliberately no `-size` prefilter:
+ * `-size` tests the APPARENT size, and an allocation can exceed it (XFS speculative
+ * preallocation, fallocate KEEP_SIZE), which would drop a file at or above the floor.
+ *
+ * One subprocess per directory replaces a per-entry lstat awaited on the operator's event
+ * loop, which ran at ~106 entries/s on bg-host: a 427,868-file directory on /mnt/data took
+ * ~67 min that way and 15 s through find (measured 2026-10-12, WI-6554700010009487).
+ */
+export function censusOwnFilesArgs(dir: string): string[] {
+  return [dir, '-maxdepth', '1', '-type', 'f', '-printf', '%b %p\\0'];
+}
+
+/** Parse one censusOwnFilesArgs record (`<blocks> <path>`); null when malformed. */
+export function parseOwnFilesRecord(record: string): { path: string; bytes: number } | null {
+  const sp = record.indexOf(' ');
+  if (sp <= 0) return null;
+  const blocks = record.slice(0, sp);
+  const path = record.slice(sp + 1);
+  if (!/^\d+$/.test(blocks) || !path) return null;
+  return { path, bytes: Number(blocks) * 512 };
 }
 
 /** Depth of `path` below `mountRoot`: 0 for the root itself, null when outside it. */
