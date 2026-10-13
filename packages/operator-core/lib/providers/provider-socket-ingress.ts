@@ -28,7 +28,6 @@ import {
 } from '@papercusp/plugin-sdk';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
-  providerRegistry,
   readyProviderRegistry,
   type ProviderRegistry,
   type RegisteredProvider,
@@ -104,6 +103,12 @@ interface Connection {
   immediate: Promise<void>;
   /** Set when an envelope announced the drop: reconnect at once instead of backing off. */
   reconnectRequested: boolean;
+  /**
+   * The registry the latest reconcile pass awaited ready (WI-10006703): envelope handling reuses it
+   * instead of reading providerRegistry() bare, which is empty on a request-only host until plugin
+   * discovery runs.
+   */
+  registry: ProviderRegistry;
 }
 
 /** Providers in `registry` that declare a socket ingress and the capability that normalizes it. */
@@ -243,14 +248,14 @@ export class ProviderSocketIngressManager {
     this.updateSource(source, { status: terminal ? 'error' : 'degraded', lastError: terminal ? `reconnect_required: ${message}` : message });
   }
 
-  private hostFetch(provider: RegisteredProvider, source: ConnectorSourceRow): HostFetch {
+  private hostFetch(provider: RegisteredProvider, source: ConnectorSourceRow, registry: ProviderRegistry): HostFetch {
     const harness = harnessOf(source);
     if (this.deps.hostFetchFor) return this.deps.hostFetchFor(provider, source, harness);
     return createSourceHostFetch(this.sql(), {
       providerId: provider.descriptor.id,
       workspaceId: source.workspaceId,
       harness,
-      registry: providerRegistry(),
+      registry,
       reconnectRequired: (reason) => new ProviderSyncFailure({ kind: 'auth', message: reason }),
     });
   }
@@ -262,7 +267,7 @@ export class ProviderSocketIngressManager {
     const args: ProviderIngressNormalizeArgs = { envelope, sourceConfig: connection.source.config ?? {} };
     const result = await provider.adapter.invoke(
       { source: connection.source.id, capability: PROVIDER_INGRESS_NORMALIZE_CAPABILITY, args: { ...args } },
-      { fetch: this.hostFetch(provider, connection.source) },
+      { fetch: this.hostFetch(provider, connection.source, connection.registry) },
     );
     const records = (result as { records?: unknown } | null)?.records;
     assertProviderRecords(records, provider);
@@ -272,10 +277,12 @@ export class ProviderSocketIngressManager {
     }
   }
 
-  private attach(source: ConnectorSourceRow, ingress: SocketIngressProvider, socket: IngressSocketLike): void {
+  private attach(
+    source: ConnectorSourceRow, ingress: SocketIngressProvider, socket: IngressSocketLike, registry: ProviderRegistry,
+  ): void {
     const id = key(source);
     const connection: Connection = {
-      source, ingress, socket, processing: Promise.resolve(), immediate: Promise.resolve(), reconnectRequested: false,
+      source, ingress, socket, processing: Promise.resolve(), immediate: Promise.resolve(), reconnectRequested: false, registry,
     };
     this.connections.set(id, connection);
     const { ackField, reconnect, immediate } = ingress.socket;
@@ -354,6 +361,7 @@ export class ProviderSocketIngressManager {
         // The socket can stay open across source edits, but envelope normalization and admission
         // must see the current non-secret config and source metadata on every reconcile.
         existing.source = source;
+        existing.registry = registry;
         continue;
       }
       if ((this.retryAt.get(id) ?? 0) > this.now()) continue;
@@ -368,7 +376,7 @@ export class ProviderSocketIngressManager {
         const url = await openIngressSocketUrl(ingress.socket, credential, this.deps.fetch ?? fetch);
         if (this.stopped) return;
         const create = this.deps.createSocket ?? ((value: string) => new WebSocket(value) as unknown as IngressSocketLike);
-        this.attach(source, ingress, create(url));
+        this.attach(source, ingress, create(url), registry);
       } catch (error) {
         this.scheduleRetry(source, error);
       }
