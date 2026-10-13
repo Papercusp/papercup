@@ -39,7 +39,7 @@ import { describeObserverBlock, pollUntil } from './poll-until';
 import { LatenessMonitor, describeHarnessStall, judgeBudget, type BudgetJudgement, type TimedSample } from './worker-lateness';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
-import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalTurnSettled, nativeInterruptRequest, suToolApproval } from './release-acceptance';
+import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, suToolApproval } from './release-acceptance';
 import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
 import { throwIfProviderRateLimited } from '../su-session-attached-live-rate-limit';
@@ -8012,7 +8012,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
              AND feature_id = ${REAL_APPROVAL_WORK_ITEM}
           RETURNING taken_by`;
         expect(assigned).toEqual([{ taken_by: nativeOwner }]);
-        const approvalRequest = `Task ${REAL_APPROVAL_WORK_ITEM} is assigned to your session ${nativeOwner}. Please verify it with work_items:get. I want a temporary plain-text note at '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline. Create it using Bash.`;
+        const approvalRequest = nativeApprovalRequest({ backend: scriptedEngine.backend,
+          workItem: REAL_APPROVAL_WORK_ITEM, ownerId: nativeOwner,
+          notePath: approvalFixturePath, noteText: approvalResult });
         console.info('PUI_APPROVAL_TASK_ASSIGNMENT', JSON.stringify({ workItem: REAL_APPROVAL_WORK_ITEM, ownerId: nativeOwner }));
         const approvalEventsBefore = first.events.length;
         pane.write(approvalRequest);
@@ -8104,6 +8106,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             event.sequence > (approvalEnd?.sequence ?? -1),
           )).toBe(true);
         }, { timeout: 120_000, interval: 100 });
+        // The host's lifecycle event can arrive before the PUI applies it.
+        // Sending keys in that gap drops the next owner turn. Observe the
+        // installed composer's input affordance before typing the greeting.
+        await pane.waitForSendReady({ timeoutMs: 120_000 });
         frames.approved = pane.screen();
         // Retain this completed clause even if the later OS-restart clause
         // fails and afterAll removes the private native home and note.
@@ -8121,6 +8127,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         }));
       }
       pane.write(greeting);
+      await pane.waitFor(greeting);
       pane.enter();
       await pane.waitForReply(greetingReply);
       const chat = await waitForSavedTurn(greeting);

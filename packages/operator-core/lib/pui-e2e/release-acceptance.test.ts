@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { SuSessionEvent } from '@papercusp/chat-protocol';
 import * as path from 'node:path';
-import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, suToolApproval, type Candidate, type EvidenceRow } from './release-acceptance';
+import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, suToolApproval, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
   legsBlocked, measureCloudDeviceStart, measureRunnerTree, prepareOperatorRuntimePackages, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
@@ -127,6 +127,25 @@ describe('native interruption response budget admission', () => {
 
   it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects invalid line count %s before creating an inference request', (count) => {
     expect(() => nativeInterruptRequest('ordinary-list', count)).toThrow(/numeric lines/);
+  });
+});
+
+describe('native approval tool contract', () => {
+  it.each(['claude', 'codex'])('does not require unavailable framework tools from the bare %s client', (backend) => {
+    const prompt = nativeApprovalRequest({ backend, workItem: 'EI-123', ownerId: 'su-owned',
+      notePath: '/owned/note.txt', noteText: 'exact note' });
+    expect(prompt).not.toContain('work_items:get');
+    expect(prompt).not.toContain('EI-123');
+    expect(prompt).toContain("'/owned/note.txt'");
+    expect(prompt).toContain("'exact note' followed by a newline");
+    expect(prompt).toContain('Create it using Bash');
+  });
+
+  it('retains actual task-owner verification for the framework OMP client', () => {
+    const prompt = nativeApprovalRequest({ backend: 'omp', workItem: 'EI-123', ownerId: 'su-owned',
+      notePath: '/owned/note.txt', noteText: 'exact note' });
+    expect(prompt).toContain('Task EI-123 is assigned to your session su-owned');
+    expect(prompt).toContain('verify it with work_items:get');
   });
 });
 

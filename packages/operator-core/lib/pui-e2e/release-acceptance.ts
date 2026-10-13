@@ -49,6 +49,16 @@ export function nativeInterruptRequest(listId: string, count = 1000): string {
   return `Reply directly in this chat with the numbers from 1 through ${count}, one per line, starting with 1, 2, 3 on separate lines. Continue the sequence in the same reply, with no other text or summary. Do not create or edit files, run commands, or use any tools. (List id: ${listId})`;
 }
 
+/** Bare native clients do not expose Papercusp's framework MCP tool set. */
+export function nativeApprovalRequest(input: {
+  backend: string; workItem: string; ownerId: string; notePath: string; noteText: string;
+}): string {
+  const frameworkTask = input.backend === 'omp'
+    ? `Task ${input.workItem} is assigned to your session ${input.ownerId}. Please verify it with work_items:get. `
+    : '';
+  return frameworkTask + `I want a temporary plain-text note at '${input.notePath}' containing exactly '${input.noteText}' followed by a newline. Create it using Bash.`;
+}
+
 /** Stop a card wait when this turn has actually settled without a pending
  * card. The caller supplies only events received after submitting the turn. */
 export function nativeApprovalTurnSettled(
