@@ -620,6 +620,19 @@ interface OrientOmittedLeg {
   recoverVia: string;
 }
 
+function omittedLegDisclosure(omitted: readonly OrientOmittedLeg[]) {
+  return {
+    reason: 'floor-budget recovery; omissions follow shared orient priority',
+    omitted: omitted.map(({ leg, fields, recoverVia }) => ({
+      leg,
+      recoverVia,
+      // The usual field is the leg name; retain explicit multi-field groups only.
+      ...(fields.length === 1 && fields[0] === leg ? {} : { fields }),
+    })),
+    more: "payloadTier:'full' for the complete result",
+  };
+}
+
 const tightenedMarker = (rung: string, omitted?: readonly OrientOmittedLeg[]) => ({
   rung,
   budgetChars: SHAPER_BUDGET_CHARS,
@@ -644,21 +657,13 @@ function evictOptionalFloorLegs(projected: Record<string, unknown>): Record<stri
     if (fields.length === 0) continue;
     for (const field of fields) delete projected[field];
     omitted.push({ leg: leg.name, tier: leg.tier, fields, recoverVia: leg.recoverVia });
-    projected.optionalLegsOmitted = {
-      reason: 'floor-budget recovery; omissions follow shared orient priority',
-      omitted: [...omitted],
-      more: "payloadTier:'full' for the complete result",
-    };
+    projected.optionalLegsOmitted = omittedLegDisclosure(omitted);
     projected.shaperTightened = tightenedMarker('floor-optional-eviction', omitted);
     if (jsonLen(projected) <= SHAPER_BUDGET_CHARS) return projected;
   }
 
   if (omitted.length > 0) {
-    projected.optionalLegsOmitted = {
-      reason: 'floor-budget recovery; omissions follow shared orient priority',
-      omitted,
-      more: "payloadTier:'full' for the complete result",
-    };
+    projected.optionalLegsOmitted = omittedLegDisclosure(omitted);
   }
   return projected;
 }

@@ -1085,8 +1085,7 @@ describe('EI-20213176698128052: floor-only disclosed optional-leg eviction', () 
     const out = shapeOrient(source, 'trimmed') as Record<string, any>;
     const omitted = out.optionalLegsOmitted.omitted as Array<{
       leg: string;
-      tier: number;
-      fields: string[];
+      fields?: string[];
       recoverVia: string;
     }>;
     const presentOrder = ORIENT_OPTIONAL_EVICTION_PRIORITY.filter((leg) =>
@@ -1095,12 +1094,35 @@ describe('EI-20213176698128052: floor-only disclosed optional-leg eviction', () 
 
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
     expect(omitted.map((entry) => entry.leg)).toEqual(presentOrder.slice(0, omitted.length));
-    expect(omitted[0]).toMatchObject({ leg: 'ownerPresent', tier: 4, fields: ['ownerPresent'] });
+    expect(omitted[0]).toMatchObject({ leg: 'ownerPresent' });
+    expect(omitted[0]).not.toHaveProperty('tier');
+    expect(omitted[0]).not.toHaveProperty('fields');
     expect(omitted[0].recoverVia).toContain('coord:orient');
+    const verbose = omitted.map((entry) => ({
+      ...entry,
+      tier: ORIENT_OPTIONAL_EVICTION_PRIORITY.find((leg) => leg.name === entry.leg)!.tier,
+      fields: entry.fields ?? [entry.leg],
+    }));
+    expect(JSON.stringify(omitted).length).toBeLessThan(JSON.stringify(verbose).length);
     expect(out.ownerPresent).toBeUndefined();
     expect(out.taskToolSchemaPack).toBeDefined();
     expect(out.shaperTightened).toMatchObject({ rung: 'floor-optional-eviction' });
     expect(out.shaperTightened.overBudget).toBeUndefined();
+  });
+
+  it('retains exact omitted field groups and recovery hints for every evicted leg', () => {
+    const source: Record<string, any> = { ...payload(), recovery: { blob: 'x'.repeat(40_000) } };
+    for (const leg of ORIENT_OPTIONAL_EVICTION_PRIORITY) {
+      for (const field of leg.fields) source[field] = { blob: 'x'.repeat(8_000) };
+    }
+    const out = shapeOrient(source, 'trimmed') as Record<string, any>;
+    for (const entry of out.optionalLegsOmitted.omitted) {
+      const leg = ORIENT_OPTIONAL_EVICTION_PRIORITY.find((leg) => leg.name === entry.leg)!;
+      expect(entry.fields ?? [entry.leg]).toEqual(leg.fields);
+      expect(entry.recoverVia).toBe(leg.recoverVia);
+      for (const field of leg.fields) expect(out).not.toHaveProperty(field);
+    }
+    expect(out.optionalLegsOmitted.more).toContain("payloadTier:'full'");
   });
 
   it('never evicts core, recovery, leaderBrief, or laneClaim', () => {
