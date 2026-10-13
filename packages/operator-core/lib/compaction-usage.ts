@@ -1613,14 +1613,17 @@ export async function detectContextDeathForOwner(ownerId: string): Promise<boole
 
 /** Positive recovery evidence, unlike the best-effort false/null death APIs.
  * An empty, unreadable, changing or error-only transcript is not healthy. */
-export async function observeHealthyClaudeTranscriptForOwner(ownerId: string): Promise<{
+export async function observeHealthyClaudeTranscriptForOwner(ownerId: string, deps: Pick<EstimateContextDeps, 'resolveRef'> & {
+  readTail?: typeof readLiveClaudeTranscriptTail;
+} = {}): Promise<{
   sessionId: string; measuredAtMs: number;
 } | null> {
   try {
-    const before = await resolveSessionRefReconciled(ownerId);
+    const resolveRef = deps.resolveRef ?? resolveSessionRefReconciled;
+    const before = await resolveRef(ownerId);
     if (before?.agent !== 'claude' || !before.sessionId) return null;
-    const tail = await readLiveClaudeTranscriptTail(ownerId, TOOL_REFERENCE_DEATH_TAIL_BYTES, before);
-    const after = await resolveSessionRefReconciled(ownerId);
+    const tail = await (deps.readTail ?? readLiveClaudeTranscriptTail)(ownerId, TOOL_REFERENCE_DEATH_TAIL_BYTES, before);
+    const after = await resolveRef(ownerId);
     if (tail == null || after?.agent !== 'claude' || after.sessionId !== before.sessionId ||
         after.transcriptOwner !== before.transcriptOwner || tailCarriesContextDeath(tail) ||
         tailCarriesToolReferenceDeath(tail)) return null;

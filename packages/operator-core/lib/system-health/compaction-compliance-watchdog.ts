@@ -95,7 +95,8 @@ async function compactionEpisodeReader(deps: CompactionConditionDeps) {
         const scope = JSON.parse(decodeURIComponent(row.conditionKey.slice('alarm:compaction-compliance:'.length)));
         return row.conditionKey.startsWith('alarm:compaction-compliance:') && Array.isArray(scope) &&
           scope.length === 4 && scope[0] === workspace && scope[1] === owner && scope[2] === kind &&
-          typeof scope[3] === 'string' && Number.isFinite(row.openedAtMs) && row.openedAtMs > 0;
+          typeof scope[3] === 'string' && (kind === 'compaction-stranding' || kind === 'stale-cutover' || scope[3] === '') &&
+          Number.isFinite(row.openedAtMs) && row.openedAtMs > 0;
       } catch { return false; }
     });
   };
@@ -3212,12 +3213,13 @@ export function startCompactionComplianceWatchdog(
   // A different process/host, unknown cutover or missing boot is not recovery.
   void (async () => {
     const episodes = await compactionEpisodeReader({});
-    for (const episode of episodes(DEFAULT_COORD_WORKSPACE, `${hostname()}:${process.argv[1]}`, 'stale-cutover')) {
+    const runtimeEpisodes = episodes(DEFAULT_COORD_WORKSPACE, `${hostname()}:${process.argv[1]}`, 'stale-cutover');
+    for (const episode of runtimeEpisodes) {
       try {
         const scope = JSON.parse(decodeURIComponent(episode.conditionKey.slice('alarm:compaction-compliance:'.length)));
         const cutover = WATCHDOG_BEHAVIOR_CUTOVERS.find(row => row.id === scope[3]);
         if (cutover && Number.isFinite(processStartedAtMs) && processStartedAtMs >= cutover.atMs) {
-          await recoverCompactionEpisodes([episode], Date.now(), {});
+          await recoverCompactionEpisodes(runtimeEpisodes.filter(row => row.conditionKey === episode.conditionKey), Date.now(), {});
         }
       } catch { /* unknown cutover preserves */ }
     }

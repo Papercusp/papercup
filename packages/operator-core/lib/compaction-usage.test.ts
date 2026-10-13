@@ -22,6 +22,7 @@ import {
   estimateContextWindowForOwner,
   fallbackTranscriptFresh,
   healthyClaudeTranscriptResponseAt,
+  observeHealthyClaudeTranscriptForOwner,
   newestTranscriptUnderOwner,
   parseLaunchCompactionLimitArgv,
   resolveCodexRolloutPathForRef,
@@ -55,6 +56,32 @@ describe('positive live transcript recovery evidence', () => {
     if (kind === 'empty-response') record.message.content = [];
     expect(healthyClaudeTranscriptResponseAt(kind === 'empty' ? '' : kind === 'partial' ? '{' : JSON.stringify(record), now)).toBeNull();
   });
+  it('returns the response time from the same reconciled live transcript, with a bounded exact-owner read', async () => {
+    const at = Date.now() - 10;
+    const ref = { agent: 'claude', sessionId: 'current', transcriptOwner: 'original-root' };
+    const readTail = vi.fn(async () => JSON.stringify({ ...response, timestamp: new Date(at).toISOString() }));
+    const result = await observeHealthyClaudeTranscriptForOwner('owner', { resolveRef: async () => ref, readTail });
+    expect(result).toEqual({ sessionId: 'current', measuredAtMs: at });
+    expect(readTail).toHaveBeenCalledWith('owner', 256 * 1024, ref);
+  });
+  it.each(['missing-ref', 'non-claude', 'changing-session', 'changing-root', 'failed-read', 'failed-ref', 'unreadable-tail'])
+    ('preserves %s instead of inventing a healthy response', async kind => {
+      let calls = 0;
+      const result = await observeHealthyClaudeTranscriptForOwner('owner', {
+        resolveRef: async () => {
+          calls++;
+          if (kind === 'failed-ref') throw new Error('reference unreadable');
+          if (kind === 'missing-ref') return null;
+          return { agent: kind === 'non-claude' ? 'codex' : 'claude',
+            sessionId: kind === 'changing-session' && calls > 1 ? 'other' : 'current',
+            transcriptOwner: kind === 'changing-root' && calls > 1 ? 'other-root' : 'root' };
+        }, readTail: async () => {
+          if (kind === 'failed-read') throw new Error('transcript unreadable');
+          return kind === 'unreadable-tail' ? null : JSON.stringify({ ...response, timestamp: new Date(Date.now() - 1).toISOString() });
+        },
+      });
+      expect(result).toBeNull();
+    });
 });
 
 describe('estimateContextTokens (backend gating + degradation)', () => {

@@ -333,7 +333,7 @@ beforeEach(() => {
   process.env.PAPERCUSP_TURN_PROVENANCE_DIR = join(tmpdir(), `wd-prov-${process.pid}`);
 });
 
-afterEach(() => { expect(readRealPgRailBlocks().blocked).toBe(0); });
+afterEach(() => { vi.useRealTimers(); expect(readRealPgRailBlocks().blocked).toBe(0); });
 
 describe('original compaction durable episodes', () => {
   function fixture() {
@@ -426,6 +426,47 @@ describe('original compaction durable episodes', () => {
       { file: 'packages/target.ts', edited_ms: Date.now() } ] }), h.deps);
     expect(h.open.size).toBe(0);
   });
+  it('independent dark and implausible episodes recover only on a trustworthy numeric measurement', async () => {
+    const h = fixture(); resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'current' });
+    await h.run(); await h.run(); await h.run(); expect(h.open.has(h.key('dark-telemetry'))).toBe(true);
+    estimateMock.mockResolvedValue(2_000_001); await h.run(); expect(h.open.size).toBe(2);
+    estimateMock.mockResolvedValue(Number.NaN); await h.run(); expect(h.open.size).toBe(2);
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('an absent or stale fixed-floor measurement preserves the episode until the new floor fits', async () => {
+    const h = fixture(); estimateMock.mockResolvedValue(50_000);
+    observedPromptFloorMock.mockReturnValue({ tokens: 150_000, observations: 3, at: Date.now() });
+    await h.run(); expect(h.open.has(h.key('unsatisfiable-limit'))).toBe(true);
+    observedPromptFloorMock.mockReturnValue(null); await h.run(); expect(h.open.size).toBe(1);
+    observedPromptFloorMock.mockReturnValue({ tokens: 10_000, observations: 3, at: 1 });
+    await h.run(); expect(h.open.size).toBe(1);
+    observedPromptFloorMock.mockReturnValue({ tokens: 10_000, observations: 3, at: Date.now() });
+    await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('a missing measured model window preserves the default-window alarm after restart', async () => {
+    const h = fixture(); h.open.set(h.key('default-1m-served-small'), Date.now() - 1);
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(1);
+    contextWindowMock.mockResolvedValue(1_000_000); await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('requires a sustained measured under-limit stretch after a missed sweep before clearing the loop', async () => {
+    vi.useFakeTimers(); const h = fixture(); h.open.set(h.key('carry-respawn-loop'), Date.now() - 1);
+    estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(1);
+    vi.advanceTimersByTime(30 * 60_000); await h.run(); expect(h.open.size).toBe(1);
+    for (let i = 0; i < 15; i++) { vi.advanceTimersByTime(2 * 60_000); await h.run(); }
+    expect(h.open.size).toBe(0);
+  });
+  it.each(['unsupported-host', 'missing-transcript', 'failed-builder', 'rejected-injection', 'failed-discovery'])
+    ('opens the original force fallback for %s', async kind => {
+      const h = fixture(); estimateMock.mockResolvedValue(150_000);
+      findLiveHostMock.mockReturnValue({ sock: 'fixture-socket', caps: ['carry-respawn'] });
+      hostSupportsMock.mockReturnValue(kind !== 'unsupported-host');
+      if (kind === 'missing-transcript') { findTranscriptMock.mockResolvedValue(null); newestTranscriptMock.mockReturnValue(null); }
+      if (kind === 'failed-builder') buildOwnerRespawnMock.mockRejectedValueOnce(new Error('builder unavailable'));
+      if (kind === 'rejected-injection') injectMock.mockResolvedValue(false);
+      if (kind === 'failed-discovery') findLiveHostMock.mockImplementationOnce(() => { throw new Error('host unreadable'); });
+      await h.run(); expect(h.open.has(h.key('force-unavailable'))).toBe(true);
+      estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(0);
+    });
 });
 
 describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () => {
