@@ -99,8 +99,12 @@ describe('retireRunInstancePlan', () => {
     const update = updateOf(calls);
     expect(update.text).toMatch(/SET status = 'superseded'/);
     // The status guard is the last predicate: a concurrent retire wins, never re-retire.
-    expect(update.text).toMatch(/AND status = \?$/);
-    expect(update.values.at(-1)).toBe('active');
+    expect(update.text).toMatch(/AND status = ANY\(\?\)$/);
+    // WI-6554700010009851: ANY non-terminal status, not 'active' alone — an instance cloned
+    // with its template's `ready`/`draft` frontmatter was otherwise never retired.
+    expect(update.values.at(-1)).toEqual(['draft', 'ready', 'active', 'awaiting-acceptance']);
+    const select = calls.find((c) => c.text.startsWith('SELECT'))!;
+    expect(select.values.at(-1)).toEqual(['draft', 'ready', 'active', 'awaiting-acceptance']);
     expect(itemsWritten(update)).toEqual([
       { id: 'P-001', status: 'dropped' },
       { id: 'P-002', status: 'done' },
@@ -148,8 +152,8 @@ describe('retireRunInstancePlan', () => {
 
     expect(result).toEqual({ retired: true, itemsClosed: 2 });
     const select = calls.find((c) => c.text.startsWith('SELECT'))!;
-    expect(select.values.at(-1)).toBe('superseded');
-    expect(updateOf(calls).values.at(-1)).toBe('superseded');
+    expect(select.values.at(-1)).toEqual(['superseded']);
+    expect(updateOf(calls).values.at(-1)).toEqual(['superseded']);
     // The plan stays superseded; only its items move.
     expect(itemsWritten(updateOf(calls)).map((i) => i.status)).toEqual(['dropped', 'done', 'dropped', 'dropped']);
   });

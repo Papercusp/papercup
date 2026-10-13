@@ -140,6 +140,9 @@ export interface SpecEvidenceForAdequacy {
       failed: number;
       skipped: number;
       collectionFailed: boolean;
+      /** Canonical calibration-row identities, independent of binder declarations. */
+      passedCaseTitles?: string[];
+      passedCaseTitlesIncomplete?: boolean;
     } | null;
     commitSha: string | null;
     worktreeDirty: boolean | null;
@@ -1358,11 +1361,18 @@ function hasLinkedMutationBaseline(row: SpecEvidenceForAdequacy): boolean {
   const provenance = row.testRunProvenance;
   const mutation = provenance?.mutation;
   const baseline = provenance?.mutationBaseline;
+  const declaredCases = detailsOf(row).testCases ?? [];
+  // A focused runner counts filtered-out cases as skipped. Credit only cases the
+  // calibration row actually measured passing; an incomplete list never proves
+  // an omitted case passed, and binder-written passed titles cannot qualify it.
+  const baselineScopePassed = baseline != null && (baseline.skipped === 0 ||
+    (declaredCases.length > 0 && declaredCases.every(caseTitle =>
+      hasMatchingDeclaredCaseTitle(caseTitle, baseline.passedCaseTitles ?? []))));
   return mutation !== undefined && mutation.leg === 'mutant' &&
     provenance?.source === 'mutation-probe' && provenance.mutationPhase === 'mutant' &&
     baseline != null && baseline.testRunId !== row.testRunId &&
     baseline.status === 'pass' && baseline.passed > 0 && baseline.failed === 0 &&
-    baseline.skipped === 0 && baseline.collectionFailed === false &&
+    baselineScopePassed && baseline.collectionFailed === false &&
     CALIBRATION_LEGS.includes(baseline.mutation.leg) &&
     baseline.mutation.probeInvocationId === mutation.probeInvocationId &&
     baseline.mutation.subjectBeforeSha256 === mutation.subjectBeforeSha256;

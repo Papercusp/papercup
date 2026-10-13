@@ -1401,13 +1401,15 @@ describe('listSpecEvidence timestamp normalization', () => {
       test_run_commit_sha: execution.commitSha, test_run_worktree_dirty: false,
       test_run_execution_details: execution, mutation_execution_details: execution, mutation_failure_tail: null,
       mutation_baseline_id: 46, mutation_baseline_status: 'pass',
-      mutation_baseline_execution_details: { ...execution, passed: 1, failed: 0,
+      mutation_baseline_execution_details: { ...execution, passed: 2, failed: 0,
+        skipped: 39, passedCaseTitles: ['guard > rejects'], passedCaseTitlesTruncated: true,
         mutationPhase: 'baseline', failedCaseTitles: [], mutation: { ...mutation, leg: 'baseline' } },
       observed_at: '2026-10-11T16:35:00.000Z', created_at: '2026-10-11T16:36:00.000Z',
     }];
     const read = async () => (await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] }))[0];
     expect((await read()).testRunProvenance).toMatchObject({ mutation, mutationBaseline: {
-      testRunId: 46, status: 'pass', passed: 1, failed: 0, mutation: { ...mutation, leg: 'baseline' },
+      testRunId: 46, status: 'pass', passed: 2, failed: 0, mutation: { ...mutation, leg: 'baseline' },
+      skipped: 39, passedCaseTitles: ['guard > rejects'], passedCaseTitlesIncomplete: true,
     } });
     h.rows[0].mutation_baseline_execution_details = { malformed: true };
     expect((await read()).testRunProvenance?.mutationBaseline).toBeNull();

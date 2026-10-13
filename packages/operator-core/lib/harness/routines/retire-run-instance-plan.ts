@@ -23,6 +23,7 @@
  * whose ledger is `plan_runs` is retired by the system, with the reason recorded.
  */
 import type { Sql } from 'postgres';
+import { NON_TERMINAL_PLAN_STATUSES } from '@papercusp/plan-parser';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { writePlanIndexRows } from '../../agent-tools/plans/plan-index-rows';
 import { deriveIndexFromContent, type PlanIndexDecision, type PlanIndexItem } from '../../agent-tools/plans/source';
@@ -37,12 +38,17 @@ export interface RetireRunInstanceInput {
   templateSlug: string;
   outcome: RetiredRunOutcome;
   /**
-   * Which plan status this call may retire. Default `'active'` — the normal lifecycle,
-   * where the status guard makes a concurrent retire win. `'superseded'` is the BACKFILL
-   * form: an instance an older writer superseded WITHOUT closing its items is re-run
-   * through the same item-closing path (status stays `superseded`).
+   * Which plan status this call may retire. Default: ANY non-terminal status
+   * (`NON_TERMINAL_PLAN_STATUSES` — draft, ready, active, awaiting-acceptance), where the
+   * status guard makes a concurrent retire win. It used to default to `'active'` alone,
+   * so an instance cloned before its frontmatter status was stamped `active`
+   * (EI-25654921386861878) — or later moved to `ready`/`draft`/`awaiting-acceptance` — was
+   * never retired: 13 such instances stranded under settled runs, measured 2026-10-13
+   * (WI-6554700010009851). `'superseded'` is the BACKFILL form: an instance an older writer
+   * superseded WITHOUT closing its items is re-run through the same item-closing path
+   * (status stays `superseded`).
    */
-  onlyIfStatus?: 'active' | 'superseded';
+  onlyIfStatus?: 'superseded';
 }
 
 export interface RetireRunInstanceResult {
@@ -64,7 +70,7 @@ export async function retireRunInstancePlan(
   input: RetireRunInstanceInput,
 ): Promise<RetireRunInstanceResult> {
   const { workspaceId, planStorageSlug, instanceSlug, templateSlug, outcome } = input;
-  const fromStatus = input.onlyIfStatus ?? 'active';
+  const fromStatuses: string[] = input.onlyIfStatus ? [input.onlyIfStatus] : [...NON_TERMINAL_PLAN_STATUSES];
   const rows = await sql<Array<{ content: string | null; items: unknown; decisions: unknown }>>`
     SELECT content, items, decisions
       FROM harness_shared.harness_plans
@@ -72,7 +78,7 @@ export async function retireRunInstancePlan(
        AND harness_slug = ${planStorageSlug}
        AND plan_slug = ${instanceSlug}
        AND template_slug = ${templateSlug}
-       AND status = ${fromStatus}
+       AND status = ANY(${fromStatuses})
   `;
   const row = rows[0];
   if (!row) return { retired: false, itemsClosed: 0 };
@@ -120,7 +126,7 @@ export async function retireRunInstancePlan(
          AND harness_slug = ${planStorageSlug}
          AND plan_slug = ${instanceSlug}
          AND template_slug = ${templateSlug}
-         AND status = ${fromStatus}
+         AND status = ANY(${fromStatuses})
     `;
     // WI-10006321: this raw UPDATE rewrites content outside withPlanLock, so it records the
     // revision itself. Without one, the plan-parts reconcile sweep has no content clock for

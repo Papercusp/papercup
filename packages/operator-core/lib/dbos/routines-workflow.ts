@@ -2257,11 +2257,12 @@ async function routinesSweepTickImpl(): Promise<void> {
     async () => {
       try {
         const { reconcileAndGovern } = await import('../harness/routines/reconcile-plan-runs');
-        const { reconciled, paused, orphaned } = await reconcileAndGovern();
-        if (reconciled > 0 || paused.length > 0 || orphaned > 0) {
+        const { reconciled, paused, orphaned, instancesRetired } = await reconcileAndGovern();
+        if (reconciled > 0 || paused.length > 0 || orphaned > 0 || instancesRetired > 0) {
           console.warn(
             `[plan-run-reconcile] tick settled ${reconciled} scheduled run(s)` +
               (orphaned > 0 ? `, reclaimed ${orphaned} orphaned run(s)` : '') +
+              (instancesRetired > 0 ? `, retired ${instancesRetired} settled-run instance plan(s)` : '') +
               (paused.length ? `, auto-paused ${paused.length} schedule(s): ${paused.join(', ')}` : ''),
           );
         }

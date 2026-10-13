@@ -61,6 +61,44 @@ describe('ledger-derived mutation catches (R-7)', () => {
     expect(rating(row).rating).toBe('pass');
   });
 
+  it.each(['baseline', 'copy-baseline'])('credits filtered skips when the %s ledger measured the declared case passing', leg => {
+    const row = proof('mutation');
+    row.testRunExecution!.skipped = 39;
+    Object.assign(row.testRunProvenance!.mutationBaseline!, {
+      skipped: 39, passedCaseTitles: [failedCase],
+      mutation: { ...mutation, leg },
+    });
+    expect(rating(row).rating).toBe('pass');
+    expect(rating(row).evidence).toContain('mutationLinkage=verified');
+  });
+
+  it('matches a runner-prefixed passing baseline case without requiring unrelated skipped cases', () => {
+    const row = proof('mutation');
+    Object.assign(row.testRunProvenance!.mutationBaseline!, {
+      skipped: 39, passedCaseTitles: [`test/mutation-provenance.test.ts > ${failedCase}`],
+      passedCaseTitlesIncomplete: true,
+    });
+    expect(rating(row).rating).toBe('pass');
+  });
+
+  it.each(['missing', 'different', 'partial', 'incomplete', 'binder-only'])
+    ('rejects a filtered baseline without canonical passing coverage: %s', defect => {
+      const row = proof('mutation');
+      const baseline = row.testRunProvenance!.mutationBaseline!;
+      const details = row.details.adequacy as Record<string, unknown>;
+      baseline.skipped = 39;
+      if (defect === 'different') Object.assign(baseline, { passedCaseTitles: ['guard > another case'] });
+      if (defect === 'partial') {
+        details.testCases = [failedCase, 'guard > unexecuted case'];
+        Object.assign(baseline, { passedCaseTitles: [failedCase] });
+      }
+      if (defect === 'incomplete') Object.assign(baseline, {
+        passedCaseTitles: ['guard > another case'], passedCaseTitlesIncomplete: true,
+      });
+      if (defect === 'binder-only') details.passedCaseTitles = [failedCase];
+      expect(rating(row).rating).toBe('unknown');
+    });
+
   it.each(['missing', 'invocation', 'subject', 'leg', 'failed', 'skipped', 'collection', 'zero', 'self'])
     ('does not credit an invalid calibration: %s', defect => {
       const row = proof('mutation'); const p = row.testRunProvenance!; const b = p.mutationBaseline!;

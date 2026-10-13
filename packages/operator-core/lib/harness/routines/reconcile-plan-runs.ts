@@ -20,6 +20,7 @@ import { disarmPlanSchedule } from './arm-plan-schedule';
 import { autoPauseOnCostBreach } from './plan-run-cost';
 import { routineStorageSlug } from '../../pot-membership';
 import { retireRunInstancePlan } from './retire-run-instance-plan';
+import { NON_TERMINAL_PLAN_STATUSES } from '@papercusp/plan-parser';
 // The orphan threshold has ONE definition; this module drives the same reclaim on the
 // tick rather than re-deciding what "orphaned" means (see sweepOrphanedPlanRuns below).
 import { PLAN_RUN_ORPHAN_FAIL_MS } from '../../agent-tools/plans/runs';
@@ -207,6 +208,83 @@ export async function sweepOrphanedPlanRuns(
   return { failed: rows.length };
 }
 
+/**
+ * Converge every SETTLED scheduled run's instance plan to the ledger — WI-6554700010009851.
+ *
+ * Retiring the instance inline is only one writer's habit. `reconcileScheduledPlanRuns` and
+ * `recordScheduledFireFailure` do it; the status-only settlers do not —
+ * `sweepOrphanedPlanRuns` above, `sweepPlanRuns` on the `plans:runs` read, and a manual
+ * `plans:run-status` archive. Each of those leaves a `<template>@run-<token>` instance
+ * live under a run that is already `failed`/`archived`. Measured 2026-10-13: 18 such
+ * instances (7 `active`, 10 `ready`, 1 `draft`), the oldest from 2026-08-12. Patching
+ * every settler would leave the next one to forget, so this sweep owns the invariant
+ * instead: a settled run's instance is retired, whoever settled it.
+ *
+ * It holds back while any of the run's work-items is still non-terminal. An
+ * orphan-failed run can still have an open work-item that a late executor picks up. Its
+ * completion reflects `done` onto the plan item, and that must land on a live instance,
+ * not one the sweep already superseded. Once those work-items terminate, the next tick
+ * retires the instance.
+ *
+ * Drives from the (small) set of non-terminal instance plans, not the run ledger.
+ */
+export async function retireSettledRunInstances(
+  opts: { sql?: Sql; harnessSlug?: string } = {},
+): Promise<{ retired: number; itemsClosed: number }> {
+  const db = opts.sql ?? getOrgPg().sql;
+  const harnessFilter = opts.harnessSlug ? db`AND r.harness_slug = ${opts.harnessSlug}` : db``;
+  const nonTerminal: string[] = [...NON_TERMINAL_PLAN_STATUSES];
+  const rows = await db<
+    Array<{
+      id: number;
+      harness_slug: string;
+      workspace_id: string;
+      plan_slug: string;
+      instance_plan_slug: string;
+      status: string;
+      outcome: string | null;
+    }>
+  >`
+    SELECT r.id, r.harness_slug, r.workspace_id, r.plan_slug, r.instance_plan_slug, r.status, r.outcome
+      FROM harness_shared.harness_plans p
+      JOIN harness_shared.plan_runs r
+        ON r.workspace_id = p.workspace_id
+       AND r.instance_plan_slug = p.plan_slug
+       AND r.plan_slug = p.template_slug
+     WHERE p.template_slug IS NOT NULL
+       AND p.status = ANY(${nonTerminal})
+       AND r.run_type = 'scheduled'
+       AND r.status IN ('done', 'failed', 'archived') ${harnessFilter}
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.harness_features_consolidated f
+          WHERE f.harness_slug = r.harness_slug
+            AND f.payload -> 'plan_run' ->> 'runId' = r.id::text
+            AND NOT (f.status = ANY(${TERMINAL}))
+       )
+  `;
+  let retired = 0;
+  let itemsClosed = 0;
+  for (const run of rows) {
+    const outcome: RunOutcome =
+      run.outcome === 'success' || run.outcome === 'partial' || run.outcome === 'failed'
+        ? run.outcome
+        : run.status === 'done'
+          ? 'success'
+          : 'failed';
+    const planStorageSlug = await routineStorageSlug(run.harness_slug, run.workspace_id);
+    const r = await retireRunInstancePlan(db, {
+      workspaceId: run.workspace_id,
+      planStorageSlug,
+      instanceSlug: run.instance_plan_slug,
+      templateSlug: run.plan_slug,
+      outcome,
+    });
+    if (r.retired) retired += 1;
+    itemsClosed += r.itemsClosed;
+  }
+  return { retired, itemsClosed };
+}
+
 /** Default consecutive-failure threshold before a schedule auto-pauses (D-011). */
 export const DEFAULT_FAILURE_STREAK = 3;
 
@@ -270,7 +348,7 @@ export async function autoPauseOnFailureStreak(opts: {
  */
 export async function reconcileAndGovern(
   opts: { sql?: Sql; harnessSlug?: string; failureStreakK?: number } = {},
-): Promise<{ reconciled: number; paused: string[]; orphaned: number }> {
+): Promise<{ reconciled: number; paused: string[]; orphaned: number; instancesRetired: number }> {
   const db = opts.sql ?? getOrgPg().sql;
   const { settled } = await reconcileScheduledPlanRuns({ sql: db, harnessSlug: opts.harnessSlug });
   const paused: string[] = [];
@@ -304,5 +382,14 @@ export async function reconcileAndGovern(
   // template's whole schedule via concurrency='skip'.
   const orphaned = await sweepOrphanedPlanRuns({ sql: db, harnessSlug: opts.harnessSlug });
 
-  return { reconciled: settled.length, paused, orphaned: orphaned.failed };
+  // Last of all: retire the instance of every run settled by a status-only writer — the
+  // orphan sweep just above, `sweepPlanRuns` on the read path, a manual archive.
+  const instances = await retireSettledRunInstances({ sql: db, harnessSlug: opts.harnessSlug });
+
+  return {
+    reconciled: settled.length,
+    paused,
+    orphaned: orphaned.failed,
+    instancesRetired: instances.retired,
+  };
 }

@@ -729,6 +729,11 @@ export const OWNER_DIRECTIVES_BLOCK_HEADER =
   'action obligations and outrank its loop agenda; [FYI] rows are context only, not action assignments. ' +
   'Only disposition a row marked [FOR THIS SESSION] with orders:disposition { id, status: done|declined, note }.';
 
+/** Heads the grouped [FYI] ids in renderOwnerDirectivesBlock. */
+export const OWNER_DIRECTIVES_FYI_LEGEND =
+  "  [FYI] other sessions' open directives, by recording session — not an action assignment for this " +
+  'session; full text: orders:get #<id>';
+
 /**
  * The block every render point injects. Returns null when there are no open
  * rows. `totalOpen` (when it exceeds rows.length) adds the "+N more" line even
@@ -748,15 +753,43 @@ export function renderOwnerDirectivesBlock(
   // render before any [FYI] row and are never the ones the char cap folds into
   // "+N more". Stable within each group, so the given (oldest-first) order holds.
   const viewer = opts.viewerOwnerId ?? null;
-  const ordered = viewer
-    ? [...rows.filter((r) => r.recordedBy === viewer), ...rows.filter((r) => r.recordedBy !== viewer)]
-    : rows;
-  for (const row of ordered) {
-    const line = renderOwnerDirectiveRow(row, nowMs, opts.viewerOwnerId);
-    if (used + line.length + 1 > OWNER_DIRECTIVES_BLOCK_CHAR_CAP) break;
+  const own = viewer ? rows.filter((r) => r.recordedBy === viewer) : [];
+  const fyi = viewer ? rows.filter((r) => r.recordedBy !== viewer) : rows;
+  let capped = false;
+  for (const row of own) {
+    const line = renderOwnerDirectiveRow(row, nowMs, viewer);
+    if (used + line.length + 1 > OWNER_DIRECTIVES_BLOCK_CHAR_CAP) {
+      capped = true;
+      break;
+    }
     lines.push(line);
     used += line.length + 1;
     shown += 1;
+  }
+  // WI-6554700010009314 (P-006): [FYI] rows are other sessions' directives, and
+  // the only thing a reader may do with one is look it up. One legend plus one
+  // id line per recording session carries that; the per-row form repeated ~150
+  // chars of the same disclaimer for every id, on every orient, loop wake and
+  // carry document. Ids stay oldest-first within the same char cap.
+  if (!capped && fyi.length && used + OWNER_DIRECTIVES_FYI_LEGEND.length + 1 <= OWNER_DIRECTIVES_BLOCK_CHAR_CAP) {
+    const groups = new Map<string, number[]>();
+    let fyiUsed = OWNER_DIRECTIVES_FYI_LEGEND.length + 1;
+    for (const row of fyi) {
+      const ids = groups.get(row.recordedBy);
+      const cost = ids ? ` #${row.id}`.length : `  • ${shortOwner(row.recordedBy)}: #${row.id}`.length + 1;
+      if (used + fyiUsed + cost > OWNER_DIRECTIVES_BLOCK_CHAR_CAP) break;
+      if (ids) ids.push(row.id);
+      else groups.set(row.recordedBy, [row.id]);
+      fyiUsed += cost;
+      shown += 1;
+    }
+    if (groups.size) {
+      lines.push(OWNER_DIRECTIVES_FYI_LEGEND);
+      for (const [recordedBy, ids] of groups) {
+        lines.push(`  • ${shortOwner(recordedBy)}: ${ids.map((id) => `#${id}`).join(' ')}`);
+      }
+      used += fyiUsed;
+    }
   }
   const hidden = totalOpen - shown;
   if (hidden > 0) lines.push(`  +${hidden} more open — orders:list { open: true }`);

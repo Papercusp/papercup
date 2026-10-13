@@ -3758,6 +3758,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                     failed: baselineExecution.failed,
                     skipped: baselineExecution.skipped,
                     collectionFailed: baselineExecution.collectionFailed,
+                    ...(baselineExecution.passedCaseTitles !== undefined
+                      ? { passedCaseTitles: [...baselineExecution.passedCaseTitles] }
+                      : {}),
+                    ...(passedCaseTitlesIncomplete(baselineExecution)
+                      ? { passedCaseTitlesIncomplete: true }
+                      : {}),
                   }
                 : null,
             } : {}),

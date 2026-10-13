@@ -2195,8 +2195,10 @@ describe('owner directives in the brief (EI-11484)', () => {
       expect(out).toContain('[FOR THIS SESSION]');
       expect(out).toContain(ownText);
       expect(out).toContain('[FYI');
-      expect(out).toContain('recorded by su-peer-s');
-      expect(out).toContain('orders:get #21');
+      // P-006 (WI-6554700010009314): FYI ids are grouped under their recording
+      // session beneath one legend that carries the lookup pointer.
+      expect(out).toContain('• su-peer-sess: #21');
+      expect(out).toContain('orders:get #<id>');
       expect(out).not.toContain(peerText);
     }
   });
