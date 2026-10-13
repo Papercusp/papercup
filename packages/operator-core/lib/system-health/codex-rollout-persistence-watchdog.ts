@@ -20,6 +20,9 @@ const DEFAULT_HISTORY_FRESH_MS = 5 * 60_000;
 const DEFAULT_ROLLOUT_LAG_MS = 15 * 60_000;
 const DEFAULT_WATCHDOG_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_PROVIDER_FAILURE_CONSECUTIVE = 3;
+// The condition reconciler treats 120 minutes without a new signal as quiet.
+// Do not keep re-opening alarms from an old, still-present rollout tail after it quiets.
+const DEFAULT_PROVIDER_FAILURE_FRESH_MS = 2 * 60 * 60_000;
 export const CODEX_PROVIDER_ERROR_TAIL_BYTES = 512 * 1024;
 const PHASE_PREFIX = 'codex-rollout-stall:';
 const PROVIDER_FAILURE_PHASE_PREFIX = 'codex-provider-failure:';
@@ -657,7 +660,11 @@ export async function checkCodexRolloutPersistence(
     let now = (opts.now ?? Date.now)();
     if (!measuredTime(now, now)) return out;
     let episodes: Array<{ conditionKey: string; openedAtMs: number }> = [];
-    try { episodes = await (opts.readOpenConditions ?? readOpenCodexConditions)(); } catch { /* Unknown preserves recovery. */ }
+    let episodesKnown = false;
+    try {
+      episodes = await (opts.readOpenConditions ?? readOpenCodexConditions)();
+      episodesKnown = true;
+    } catch { /* Unknown state cannot prove an old condition recovered. */ }
     const healthyPersistencePhases = new Set<string>();
     const healthyProviderPhases = new Set<string>();
     const alive = opts.pidAlive ?? defaultPidAlive;
@@ -749,7 +756,11 @@ export async function checkCodexRolloutPersistence(
           // older key, which the next pass's larger size invalidates.
           if (cache && cacheKey && recurrence) cache.set(read.rolloutPath, { key: cacheKey, recurrence });
         }
-        if (recurrence?.dead) {
+        const latestFailureAt = recurrence?.latest?.timestamp
+          ? Date.parse(recurrence.latest.timestamp)
+          : snapshot.rolloutMtimeMs;
+        if (recurrence?.dead && latestFailureAt != null && measuredTime(latestFailureAt, now) &&
+            now - latestFailureAt <= DEFAULT_PROVIDER_FAILURE_FRESH_MS) {
           providerFailures.push({
             advSessionId: row.id,
             snapshot,
@@ -817,14 +828,21 @@ export async function checkCodexRolloutPersistence(
 
     const newlyProviderFailed: ProviderFailureObservation[] = [];
     for (const item of providerFailures) {
-      try {
-        const event = {
-          conditionKey: codexRolloutConditionKey('provider', item.workspaceId, item.snapshot.sessionId, item.snapshot.ownerId),
-          summary: 'Codex provider failures repeated', body: providerEscalationBody(item, now), oneShot: true,
-        };
-        if (opts.rail?.broadcast) await opts.rail.broadcast(event);
-        else await broadcastSevereEvent(event);
-      } catch { /* The owner-notification leg is independent. */ }
+      const conditionKey = codexRolloutConditionKey('provider', item.workspaceId, item.snapshot.sessionId, item.snapshot.ownerId);
+      const event = {
+        conditionKey,
+        summary: 'Codex provider failures repeated', body: providerEscalationBody(item, now), oneShot: true,
+      };
+      const conditionAlreadyOpen = episodes.some((episode) => episode.conditionKey === conditionKey);
+      // Condition state is the canonical event-delivery ledger. Suppress the same
+      // still-open episode; when that read is unavailable, the durable escalation
+      // claim below decides whether this process may emit a first notification.
+      if (episodesKnown && !conditionAlreadyOpen) {
+        try {
+          if (opts.rail?.broadcast) await opts.rail.broadcast(event);
+          else await broadcastSevereEvent(event);
+        } catch { /* The owner-notification leg is independent. */ }
+      }
       const phase = PROVIDER_FAILURE_PHASE_PREFIX + item.snapshot.sessionId;
       let claimed: Array<{ phase: string }> = [];
       try { claimed = await sql`
@@ -836,6 +854,12 @@ export async function checkCodexRolloutPersistence(
           WHERE harness_escalations.escalation IS NULL
         RETURNING phase
       `; } catch { /* A legacy write cannot suppress other keyed episodes. */ }
+      if (!episodesKnown && claimed.length === 1) {
+        try {
+          if (opts.rail?.broadcast) await opts.rail.broadcast(event);
+          else await broadcastSevereEvent(event);
+        } catch { /* The durable claim and owner notification remain independent. */ }
+      }
       if (claimed.length === 1) newlyProviderFailed.push(item);
     }
     if (newlyProviderFailed.length > 0) {
