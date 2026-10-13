@@ -148,6 +148,14 @@ export interface SystemActionOptions {
    * the candidate set from source and fails until each action is declared or justified.
    */
   executesIntegrationTreeCode?: boolean;
+  /**
+   * test-rubric-unification-2026-10-12 D-008: a plan schedule may fire this action directly
+   * (`plans:set-schedule { schedule: { action: { system: '<name>', input } } }`), so the
+   * materialized `plan-schedule-<slug>` routine targets `system:<name>` with payload
+   * `{ templateSlug, harnessSlug, input }`. Only deterministic actions that take their whole
+   * input from that payload opt in; plans:set-schedule refuses any other name.
+   */
+  planSchedulable?: boolean;
 }
 
 /** How a system action's routine row is expected to exist. See `SystemActionOptions.scheduling`. */
@@ -160,6 +168,8 @@ export interface SystemActionEntry {
   routineTimeoutMs?: number;
   /** See `SystemActionOptions.executesIntegrationTreeCode`. */
   executesIntegrationTreeCode: boolean;
+  /** See `SystemActionOptions.planSchedulable`. */
+  planSchedulable: boolean;
 }
 
 /** The reserved `target_role` prefix that routes a routine to a system action. */
@@ -177,6 +187,7 @@ export function registerSystemAction(name: string, fn: SystemAction, opts: Syste
     // row is reported rather than silently accepted.
     scheduling: opts.scheduling === 'on-demand' ? 'on-demand' : 'standing',
     executesIntegrationTreeCode: opts.executesIntegrationTreeCode === true,
+    planSchedulable: opts.planSchedulable === true,
   };
   if (opts.routineTimeoutMs !== undefined) entry.routineTimeoutMs = opts.routineTimeoutMs;
   REGISTRY.set(name, entry);

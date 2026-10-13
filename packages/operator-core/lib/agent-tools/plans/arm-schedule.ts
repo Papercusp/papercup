@@ -92,7 +92,9 @@ export default defineTool({
         // An operation-backed schedule fires a registered operation instead of
         // cloning items, so this check does not apply to it (the fire-time guard in
         // plan-run-action still does). A plan with no items keeps its old behaviour.
-        if (!plan.schedule?.operation) {
+        // An action-backed schedule (D-008) runs a deterministic system action and clones
+        // nothing either, so it is exempt for the same reason.
+        if (!plan.schedule?.operation && !plan.schedule?.action) {
           const items = planItemsForRow(plan);
           if (items.length > 0 && items.every((item) => isTerminalItemStatus(item.storedStatus))) {
             return {

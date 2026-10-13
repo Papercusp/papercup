@@ -41,7 +41,10 @@ import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { isTerminalItemStatus } from '../../fleet-drained-events';
 import type { AgenticPlanExecutionTarget } from '../../agentic-plan-execution-target';
-import type { BlueprintOperationRoutineTarget } from '../../harness/routines/materialize-plan-schedule';
+import type {
+  BlueprintOperationRoutineTarget,
+  PlanScheduleSystemAction,
+} from '../../harness/routines/materialize-plan-schedule';
 import { BLENDER_PLAN_SQL_PATTERN } from './plan-provenance';
 import { activeAcceptanceRubricsQuery } from './plan-lifecycle-derivation';
 import { applyNowNoteToParsed, parseNowNote, type PlanNowNote } from './now-note-store';
@@ -188,6 +191,11 @@ export interface PlanSchedule {
   execution?: AgenticPlanExecutionTarget;
   /** Optional registered operation fired by this cadence instead of legacy system:plan-run. */
   operation?: BlueprintOperationRoutineTarget;
+  /**
+   * Optional plan-schedulable system action fired directly by this cadence (deterministic,
+   * no agent turn) — test-rubric-unification-2026-10-12 D-008. Exclusive with `operation`.
+   */
+  action?: PlanScheduleSystemAction;
 }
 
 export interface PlanRow {

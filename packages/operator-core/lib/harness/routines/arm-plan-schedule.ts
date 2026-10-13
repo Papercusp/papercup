@@ -18,6 +18,7 @@ import {
   materializePlanSchedule,
   deactivatePlanSchedule,
   type BlueprintOperationRoutineTarget,
+  type PlanScheduleSystemAction,
 } from './materialize-plan-schedule';
 import type { ScheduleTrigger } from './schedule-next';
 
@@ -41,6 +42,7 @@ export interface ArmPlanScheduleInput {
   schedule?: (ScheduleTrigger & {
     concurrency?: 'queue' | 'skip' | 'cancel-prev';
     operation?: BlueprintOperationRoutineTarget;
+    action?: PlanScheduleSystemAction;
   }) | null;
   /** The plan's one-shot time (from the scheduled_at column). */
   scheduledAt?: Date | string | null;
@@ -76,6 +78,7 @@ export async function armPlanSchedule(input: ArmPlanScheduleInput): Promise<ArmR
     templateSlug: input.templateSlug,
     schedule: input.schedule ?? undefined,
     operation: input.schedule?.operation,
+    action: input.schedule?.action,
     scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : undefined,
     concurrency: input.concurrency ?? input.schedule?.concurrency,
     active: true,

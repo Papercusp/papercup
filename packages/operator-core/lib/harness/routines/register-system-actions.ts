@@ -270,6 +270,8 @@ import './plan-run-action';
 // blueprint-backed-work-item-execution P-016 / D-020: operation-backed plan
 // schedules materialize on demand and reuse the routine fire workflow id.
 import './blueprint-operation-action';
+// test-rubric-unification-2026-10-12 P-008 (D-008): plan-schedulable rubric re-score.
+import './rubric-rescore-action';
 // work-on-everything-goal-2026-08-23 P-020 (D-006 ruling 3): `system:goal-start` —
 // one scheduled activation of an existing goal via the startGoalById primitive.
 import './goal-start-action';
