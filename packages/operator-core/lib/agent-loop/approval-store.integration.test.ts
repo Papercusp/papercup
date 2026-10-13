@@ -236,25 +236,33 @@ describe('agent-loop approval store — real Postgres (migration 934)', () => {
     await createLoopApproval(REQ);
     expect(await resolveLoopApproval({ ...REQ, approved: true })).toBe(true);
     const ctrl = new AbortController();
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
     let queryCompleted = false;
-    const delayedSql = afterApprovalQuery(stage === 'read'
-      ? 'SELECT status, reason' : 'DELETE FROM harness_shared.agent_loop_approvals', async () => {
-      queryCompleted = true;
-      if (exit === 'abort') ctrl.abort();
-      else await new Promise((resolve) => setTimeout(resolve, 100));
-    });
+    try {
+      const delayedSql = afterApprovalQuery(stage === 'read'
+        ? 'SELECT status, reason' : 'DELETE FROM harness_shared.agent_loop_approvals', () => {
+        queryCompleted = true;
+        if (exit === 'abort') ctrl.abort();
+        // Advance only after the selected PG result exists, so slow queries
+        // cannot expire the consume case prematurely at its earlier read.
+        else now += 100;
+      });
 
-    const decision = await awaitLoopApprovalDecision({
-      ...REQ, timeoutMs: exit === 'timeout' ? 50 : 10_000, signal: ctrl.signal,
-    }, { sql: delayedSql });
+      const decision = await awaitLoopApprovalDecision({
+        ...REQ, timeoutMs: exit === 'timeout' ? 50 : 10_000, signal: ctrl.signal,
+      }, { sql: delayedSql });
 
-    expect(queryCompleted).toBe(true);
-    expect(decision).toEqual({
-      approved: false,
-      reason: exit === 'timeout' ? 'approval timed out' : 'approval aborted (run cancelled)',
-    });
-    expect(await sql`SELECT * FROM harness_shared.agent_loop_approvals`).toHaveLength(0);
-    expect(await resolveLoopApproval({ ...REQ, approved: true })).toBe(false);
+      expect(queryCompleted).toBe(true);
+      expect(decision).toEqual({
+        approved: false,
+        reason: exit === 'timeout' ? 'approval timed out' : 'approval aborted (run cancelled)',
+      });
+      expect(await sql`SELECT * FROM harness_shared.agent_loop_approvals`).toHaveLength(0);
+      expect(await resolveLoopApproval({ ...REQ, approved: true })).toBe(false);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('an approved decision remains usable when its PG read completes within the waiter bounds', async () => {
