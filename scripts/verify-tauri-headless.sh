@@ -998,13 +998,12 @@ NATIVE_CARGO_TARGET=""
 NATIVE_CARGO_NEED_GB=0
 preflight_native_cargo() {
   [ "$PREPARE_ONLY" != "1" ] || return 0
+  local target need inherited="${PAPERCUSP_DISK_RESERVATION_FILE:-}"
   PAPERCUSP_DESKTOP_TARGET_ROOT="$DESKTOP_DIR" . "$DESKTOP_DIR/bin/lib/claim-target-dir.sh" || return $?
   . "$DESKTOP_DIR/bin/lib/disk-preflight.sh" || return $?
-  PAPERCUSP_DISK_RESERVATION_FILE=""
-  local target need
   target="$(papercusp_cargo_target_root "$DESKTOP_DIR/src-tauri")" || return $?
   need="$(papercusp_native_dev_cargo_need_gb "$target")" || return $?
-  papercusp_require_disk_reservation "$target" "$need" "native dev Cargo build" >&2 || return $?
+  papercusp_require_disk_reservation "$target" "$need" "native dev Cargo build" "$inherited" >&2 || return $?
   NATIVE_CARGO_TARGET="$target"
   NATIVE_CARGO_NEED_GB="$need"
   NATIVE_CARGO_DISK_RESERVATION_FILE="${PAPERCUSP_DISK_RESERVATION_FILE:-}"
@@ -2402,6 +2401,7 @@ log "contention: $(contention_summary)"
 
 # ── teardown (always runs; scoped to exactly what THIS invocation started) ──
 XVFB_PID="" OPENBOX_PID="" TAURI_PID="" PORT_LOCK_KEEPER_PID="" ISOLATED_PG_PID=""
+VERIFY_STARTED_PROCESS_PID=""
 TAURI_SCOPE_UNIT=""
 
 # Launch a long-lived verifier process. Managed callers and visible-terminal
@@ -2410,6 +2410,9 @@ TAURI_SCOPE_UNIT=""
 # is available. The caller keeps the systemd-run client PID as the process-group
 # handle in that fallback, and the generated stop script also stops the named
 # scopes for a cgroup-complete teardown.
+# Invoke in the owning shell, never command substitution: a substitution's
+# temporary parent exits and reparents the child, so it cannot adopt the owning
+# verifier's retained Cargo reservation. Return the PID through a shell variable.
 start_verify_process() {
   local unit="$1" output="$2"
   shift 2
@@ -2418,7 +2421,7 @@ start_verify_process() {
   else
     setsid "$@" >"$output" 2>&1 &
   fi
-  echo "$!"
+  VERIFY_STARTED_PROCESS_PID="$!"
 }
 write_freshness_check_script() {
   # EI-17134: the frozen SPA snapshot (below, EI-10364) is copied ONCE at boot and
@@ -2996,10 +2999,12 @@ verify_assertion_input_integrity() {
 # teardown() and the SIGTERM/SIGINT handlers below already read those as
 # ambient globals, so a re-run's fresh PIDs are picked up with no other wiring.
 start_display_server() {
-  XVFB_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-xvfb" "$WORK/xvfb.log" env "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" "PAPERCUSP_VERIFY_XVFB_DISPLAY=:$DISPLAY_NUM" "DISPLAY=:$DISPLAY_NUM" Xvfb ":$DISPLAY_NUM" -screen 0 "${XVFB_SCREEN_W}x${XVFB_SCREEN_H}x24" -nolisten tcp)"
+  start_verify_process "${VERIFY_SCOPE_BASE}-xvfb" "$WORK/xvfb.log" env "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" "PAPERCUSP_VERIFY_XVFB_DISPLAY=:$DISPLAY_NUM" "DISPLAY=:$DISPLAY_NUM" Xvfb ":$DISPLAY_NUM" -screen 0 "${XVFB_SCREEN_W}x${XVFB_SCREEN_H}x24" -nolisten tcp
+  XVFB_PID="$VERIFY_STARTED_PROCESS_PID"
   sleep 1
   DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || { echo "FATAL: Xvfb :$DISPLAY_NUM never came up — see $WORK/xvfb.log" >&2; exit 1; }
-  OPENBOX_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox)"
+  start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox
+  OPENBOX_PID="$VERIFY_STARTED_PROCESS_PID"
 }
 # Arm the EXIT/signal traps BEFORE the first start_display_server call (not
 # after, as a naive factor-out would do) — teardown()/handle_signal() check
@@ -3691,7 +3696,8 @@ exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET $ISOLATED_UNSET_LINE
 LAUNCH
   chmod +x "$WORK/launch.sh"
   TAURI_SCOPE_UNIT="${VERIFY_SCOPE_BASE}-tauri-${BOOT_ATTEMPTS}"
-  TAURI_PID="$(start_verify_process "$TAURI_SCOPE_UNIT" "$LOG" "$WORK/launch.sh")"
+  start_verify_process "$TAURI_SCOPE_UNIT" "$LOG" "$WORK/launch.sh"
+  TAURI_PID="$VERIFY_STARTED_PROCESS_PID"
 }
 
 # EI-18734124566158657: the advisory port lock (pick_and_lock_ports, above)
