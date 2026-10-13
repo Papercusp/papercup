@@ -3422,7 +3422,7 @@ export async function emitScorecard(
           ? { [probeEvaluation.criterionKey]: probeEvaluation.run }
           : {};
       checkLedger = await recordCheckResultsReported(
-        probeCheckResults(rubric.rubricId, executedProbeRuns),
+        probeCheckResults(rubric.rubricId, executedProbeRuns, rubric.criteria),
         {
           workspaceId: rubric.workspaceId ?? null,
           harnessSlug: rubric.subjectHarnessSlug ?? null,

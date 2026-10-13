@@ -18,10 +18,10 @@
  */
 
 import { execFile, execSync, execFileSync } from 'node:child_process';
-import { constants as osConstants } from 'node:os';
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { constants as osConstants, tmpdir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { findUnextractedDeps } from '../check-declared-deps-extracted.mjs';
 import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observations.mjs';
@@ -2189,11 +2189,13 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates = 
 
   const routes = [...grouped.values()].map((route) => {
     if (route.scoped) {
-      const filesArg = `--files=${route.files.join(',')}`;
+      // WI-6554700010009716: a huge list goes through a response file, not argv (E2BIG).
+      const { arg: filesArg, responseFile } = scopedFilesArg(route.files);
       return {
         ...route,
         command: `npm run ${route.npmScript} -- ${filesArg}`,
         args: ['run', route.npmScript, '--', filesArg],
+        ...(responseFile ? { responseFile } : {}),
       };
     }
     const args = workspaceTypecheckArgs(route.workspaceDir, route.standalone === true);
@@ -2239,6 +2241,9 @@ export function runAutoTypecheckRoutes({ root, routes, execFile = execFileSync, 
       if (onUnchecked && error?.stdout) process.stdout.write(error.stdout);
       const status = Number.isInteger(error?.status) && error.status > 0 ? error.status : 1;
       if (firstFailure === 0) firstFailure = status;
+    } finally {
+      // The --files-from response file written by buildAutoTypecheckRoutes (WI-6554700010009716).
+      if (route.responseFile) rmSync(dirname(route.responseFile), { recursive: true, force: true });
     }
   }
   return firstFailure;
@@ -2389,6 +2394,37 @@ export async function runCrossLegConsumer({
 }
 
 /**
+ * WI-6554700010009716 — Linux caps ONE argv string at MAX_ARG_STRLEN (32 pages = 128 KiB) and the
+ * whole argv+env at ARG_MAX. A candidate ~1,500 commits behind main produced a `--files=a,b,…` list
+ * past that, so every cross-leg child died with `spawn E2BIG` and its leg read as uncheckable (gate
+ * run 4bbfb5d7). Past this many characters the list travels as a `--files-from=` JSON response file
+ * instead — the parser above gives both forms identical scoped-verdict semantics. Kept well under the
+ * kernel limit because the environment shares the ARG_MAX budget.
+ */
+export const INLINE_FILES_ARG_MAX_CHARS = 32 * 1024;
+
+/**
+ * The child argument that names `files`: inline `--files=` when short, else `--files-from=<json>`.
+ * `responseFile` is the written path (null when inline); `cleanup()` removes it and never throws.
+ *
+ * @param {string[]} files
+ * @param {{maxInlineChars?: number, tmpRoot?: string}} [opts]
+ * @returns {{arg: string, responseFile: string | null, cleanup: () => void}}
+ */
+export function scopedFilesArg(files, { maxInlineChars = INLINE_FILES_ARG_MAX_CHARS, tmpRoot = tmpdir() } = {}) {
+  const inline = `--files=${files.join(',')}`;
+  if (inline.length <= maxInlineChars) return { arg: inline, responseFile: null, cleanup: () => {} };
+  const dir = mkdtempSync(join(tmpRoot, 'lint-tsc-files-'));
+  const responseFile = join(dir, 'files.json');
+  writeFileSync(responseFile, JSON.stringify(files));
+  return {
+    arg: `--files-from=${responseFile}`,
+    responseFile,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+/**
  * Run the planned consumer legs as child gate processes, at most `concurrency` at once: each one
  * builds a full program (3-23 s and 1-2 GB, measured 2026-10-12). A child is RED only when it
  * exits 1 with a `status=regressed` marker; any other outcome is UNDETERMINED, never clean.
@@ -2404,9 +2440,10 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, spawnChi
     spawnChild ??
     ((plan) =>
       new Promise((done) => {
+        const filesArg = scopedFilesArg(plan.files);
         execFile(
           process.execPath,
-          [plan.scriptPath, `--files=${plan.files.join(',')}`],
+          [plan.scriptPath, filesArg.arg],
           {
             cwd: root,
             encoding: 'utf-8',
@@ -2414,6 +2451,7 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, spawnChi
             env: { ...process.env, [CROSS_LEG_CONSUMER_ENV]: '1', [AUTO_TYPECHECK_ROUTE_ENV]: '1' },
           },
           (error, stdout, stderr) => {
+            filesArg.cleanup();
             const code = /** @type {any} */ (error)?.code;
             done({ status: error ? (Number.isInteger(code) ? code : null) : 0, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
           },

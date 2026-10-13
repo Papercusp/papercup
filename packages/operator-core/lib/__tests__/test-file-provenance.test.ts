@@ -1,16 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { verifierSourceFiles } from '../verifier-source';
 import {
+  CHILD_SOURCE_NOTICE_ENV,
+  CHILD_SOURCE_NOTICE_SCHEMA,
   committedBlobProbes,
   diffProvenanceSnapshots,
   fileFingerprint,
+  formatChildSourceNotices,
   formatProvenanceBanner,
   formatProvenanceDrift,
   main,
+  openChildSourceNoticeSink,
+  parseChildSourceNotices,
   provenanceResultFields,
+  readChildSourceNotices,
   snapshotProvenance,
   REPO_ROOT,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
@@ -315,6 +331,209 @@ describe('provenance fields on the terminal marker line', () => {
 
   it('an unreadable git state degrades to unknown rather than a clean bill', () => {
     expect(provenanceResultFields({ head: null, entries: [] }, null)).toContain('provenance=unknown');
+  });
+});
+
+/**
+ * WI-6554700010009516 — a test that spawns `node <repo script>` hands the committed-source loader to
+ * that child through NODE_OPTIONS, and the child executes the HEAD blob of every dirty file it
+ * imports. The loader appends one JSONL notice per substituted/refused module to the file named by
+ * CHILD_SOURCE_NOTICE_ENV; the router exports a per-run file and reports what landed.
+ */
+describe('test-spawned child committed-source substitutions', () => {
+  const notice = (top: string, over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      schemaVersion: CHILD_SOURCE_NOTICE_SCHEMA,
+      kind: 'substituted',
+      via: 'esm',
+      rel: 'scripts/lib/a.mjs',
+      top,
+      pid: 4242,
+      entry: '/checkout/scripts/child.mjs',
+      ...over,
+    });
+  const withRoot = (fn: (root: string, scratch: string) => void) => {
+    const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'child-notices-')));
+    const root = join(scratch, 'checkout');
+    mkdirSync(join(root, 'libs', 'sub'), { recursive: true });
+    try {
+      fn(root, scratch);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  };
+
+  it('pins the duplicated env name and schema to the loader that writes them', () => {
+    const loader = readFileSync(join(REPO_ROOT, 'scripts/lib/committed-source-loader.mjs'), 'utf8');
+    expect(loader).toContain(`export const COMMITTED_SOURCE_NOTICE_ENV = '${CHILD_SOURCE_NOTICE_ENV}';`);
+    expect(loader).toContain(`export const COMMITTED_SOURCE_NOTICE_SCHEMA = '${CHILD_SOURCE_NOTICE_SCHEMA}';`);
+  });
+
+  it('keeps this checkout and its submodules, drops fixtures and prefix siblings, counts malformed lines', () => {
+    withRoot((root, scratch) => {
+      const text = [
+        notice(root, { rel: 'scripts/a.mjs' }),
+        notice(join(root, 'libs', 'sub'), { rel: 'b.ts', via: 'cjs' }),
+        notice(join(scratch, 'fixture'), { rel: 'fixture.mjs' }),
+        notice(`${root}-sibling`, { rel: 'sibling.mjs' }),
+        '{not json',
+        notice(root, { schemaVersion: 'committed-source-notice-v0' }),
+        JSON.stringify({ schemaVersion: CHILD_SOURCE_NOTICE_SCHEMA, kind: 'refused', top: root }),
+        '',
+      ].join('\n');
+      const parsed = parseChildSourceNotices(text, root);
+      expect(parsed.records.map((r: { rel: string }) => r.rel)).toEqual(['scripts/a.mjs', 'b.ts']);
+      expect(parsed.malformed).toBe(3);
+    });
+  });
+
+  it('matches a symlinked root against the real path the loader records', () => {
+    withRoot((root, scratch) => {
+      const link = join(scratch, 'link');
+      symlinkSync(root, link);
+      expect(parseChildSourceNotices(notice(root), link).records).toHaveLength(1);
+    });
+  });
+
+  it('prints nothing when no child substituted anything, and count=unknown when the channel was unreadable', () => {
+    expect(formatChildSourceNotices({ records: [], malformed: 0, unreadable: false })).toEqual([]);
+    for (const notices of [{ records: [], malformed: 0, unreadable: true }, undefined]) {
+      const lines = formatChildSourceNotices(notices);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/^TEST_FILE_CHILD_SUBSTITUTED count=unknown /);
+    }
+    expect(formatChildSourceNotices({ records: [], malformed: 2, unreadable: false })).toEqual([
+      'TEST_FILE_CHILD_SUBSTITUTED count=0 malformed=2',
+    ]);
+  });
+
+  it('names each substituted or refused module with its process and entry script, then warns', () => {
+    const records = [
+      JSON.parse(notice('/checkout')),
+      JSON.parse(notice('/checkout', { kind: 'refused', via: 'cjs', rel: 'scripts/b.cjs', pid: 7, reason: 'uncommitted' })),
+    ];
+    expect(formatChildSourceNotices({ records, malformed: 0, unreadable: false })).toEqual([
+      'TEST_FILE_CHILD_SUBSTITUTED count=2',
+      '  substituted esm scripts/lib/a.mjs  pid=4242 entry=/checkout/scripts/child.mjs',
+      '  refused cjs scripts/b.cjs  pid=7 entry=/checkout/scripts/child.mjs reason=uncommitted',
+      expect.stringMatching(/ran the COMMITTED blob .* measured HEAD, not your working tree/),
+    ]);
+  });
+
+  it('appends childSubstituted LAST on the terminal fields, only when main() passes the notices', () => {
+    const snapshot = { head: 'aaa', entries: [entry()], startedAt: '2026-10-13T00:00:00.000Z' };
+    const diff = { drifted: false, uncomparable: [] };
+    const base = 'head=aaa uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-13T00:00:00.000Z';
+    expect(provenanceResultFields(snapshot, diff)).toBe(base);
+    expect(provenanceResultFields(snapshot, diff, { records: [{}, {}], malformed: 0, unreadable: false })).toBe(
+      `${base} childSubstituted=2`,
+    );
+    expect(provenanceResultFields(snapshot, diff, { records: [], malformed: 1, unreadable: false })).toBe(
+      `${base} childSubstituted=0`,
+    );
+    for (const unreadable of [{ records: [], malformed: 0, unreadable: true }, null]) {
+      expect(provenanceResultFields(snapshot, diff, unreadable)).toBe(`${base} childSubstituted=unknown`);
+    }
+  });
+
+  it('owns a per-run file: exports it for children, reads it back, then removes it and the variable', () => {
+    withRoot((root, scratch) => {
+      const env: Record<string, string | undefined> = {};
+      const sink = openChildSourceNoticeSink(env, { tmpRoot: scratch });
+      expect(sink.owned).toBe(true);
+      expect(env[CHILD_SOURCE_NOTICE_ENV]).toBe(sink.path);
+      // No child wrote anything: a missing file is a measured zero, not an unreadable channel.
+      expect(readChildSourceNotices(sink, root)).toEqual({ records: [], malformed: 0, unreadable: false });
+      appendFileSync(sink.path, `${notice(root)}\n`);
+      expect(readChildSourceNotices(sink, root).records).toHaveLength(1);
+      sink.close();
+      expect(CHILD_SOURCE_NOTICE_ENV in env).toBe(false);
+      expect(existsSync(dirname(sink.path))).toBe(false);
+    });
+  });
+
+  it('shares an inherited channel without owning it and reads only what this run appended', () => {
+    withRoot((root, scratch) => {
+      const path = join(scratch, 'parent-notices.jsonl');
+      writeFileSync(path, `${notice(root, { rel: 'before.mjs' })}\n`);
+      const env: Record<string, string | undefined> = { [CHILD_SOURCE_NOTICE_ENV]: path };
+      const sink = openChildSourceNoticeSink(env, { tmpRoot: scratch });
+      expect(sink).toMatchObject({ path, owned: false });
+      appendFileSync(path, `${notice(root, { rel: 'during.mjs' })}\n`);
+      expect(readChildSourceNotices(sink, root).records.map((r: { rel: string }) => r.rel)).toEqual(['during.mjs']);
+      sink.close();
+      expect(env[CHILD_SOURCE_NOTICE_ENV]).toBe(path);
+      expect(existsSync(path)).toBe(true);
+    });
+  });
+
+  it('reports a channel it could not open or read as unreadable, never as zero', () => {
+    withRoot((root, scratch) => {
+      const env: Record<string, string | undefined> = {};
+      const unopened = openChildSourceNoticeSink(env, { tmpRoot: join(scratch, 'missing') });
+      expect(unopened.path).toBeNull();
+      expect(CHILD_SOURCE_NOTICE_ENV in env).toBe(false);
+      expect(readChildSourceNotices(unopened, root).unreadable).toBe(true);
+      // A path that exists but is not a readable file (EISDIR) is unreadable too.
+      expect(readChildSourceNotices({ path: scratch, offset: 0 }, root).unreadable).toBe(true);
+    });
+  });
+
+  it('main() opens the channel after the restricted-hold census and reports what a run child appended', async () => {
+    const keys: string[] = [CHILD_SOURCE_NOTICE_ENV, 'PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE'];
+    const saved = keys.map((key) => process.env[key]);
+    // Under `npm run test:file` this worker inherits the PARENT router's channel; the fake child
+    // record below must land in a channel this main() owns, not in the parent's report.
+    for (const key of keys) delete process.env[key];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let censusSaw: string | undefined = 'census not called';
+    let channel: string | undefined;
+    let afterMain: string | undefined;
+    let code: number;
+    let output: string;
+    try {
+      code = await main(['packages/operator-core/lib/__tests__/test-file-provenance.test.ts'], {
+        restrictedHoldPreflightImpl: () => {
+          censusSaw = process.env[CHILD_SOURCE_NOTICE_ENV];
+          return { verdict: 'skip' };
+        },
+        runCapturedTestProcessImpl: async () => {
+          channel = process.env[CHILD_SOURCE_NOTICE_ENV];
+          if (channel) appendFileSync(channel, `${notice(realpathSync(REPO_ROOT), { pid: 999001 })}\n`);
+          return {
+            status: 0,
+            signal: null,
+            stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
+            stderr: '',
+            error: null,
+            timedOut: false,
+          };
+        },
+      });
+      afterMain = process.env[CHILD_SOURCE_NOTICE_ENV];
+      output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    } finally {
+      keys.forEach((key, i) => {
+        if (saved[i] === undefined) delete process.env[key];
+        else process.env[key] = saved[i];
+      });
+      logSpy.mockRestore();
+      errSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    }
+    expect(code).toBe(0);
+    // The census is a deliberate committed-source walk: its substitutions are not the tests'.
+    expect(censusSaw).toBeUndefined();
+    expect(channel).toBeTruthy();
+    expect(output).toContain('  substituted esm scripts/lib/a.mjs  pid=999001 entry=/checkout/scripts/child.mjs');
+    // The real `vitest list` child shares the channel, so count by agreement, not by a literal 1.
+    const count = Number(/TEST_FILE_CHILD_SUBSTITUTED count=(\d+)/.exec(output)?.[1]);
+    expect(count).toBeGreaterThanOrEqual(1);
+    expect(output).toMatch(new RegExp(`TEST_FILE_RESULT .* childSubstituted=${count} `));
+    expect(afterMain).toBeUndefined();
+    expect(existsSync(dirname(channel!))).toBe(false);
   });
 });
 

@@ -19,15 +19,18 @@ import {
   CROSS_LEG_CONSUMER_ENV,
   CROSS_LEG_ENV,
   CROSS_LEG_MARKER,
+  INLINE_FILES_ARG_MAX_CHARS,
   TOOLCHAIN_FAILURE_EXIT_CODE,
   countByFile,
   discoverSiblingTypecheckGates,
   formatCrossLegReport,
   judgeCrossLegMembers,
+  parseExplicitFiles,
   parseTscErrors,
   planCrossLegChecks,
   runCrossLegChecks,
   runCrossLegConsumer,
+  scopedFilesArg,
 } from '../../../scripts/lib/tsc-baseline-gate.mjs';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -261,6 +264,50 @@ describe('runCrossLegConsumer', () => {
     expect(code).toBe(TOOLCHAIN_FAILURE_EXIT_CODE);
     expect(marker).toBe(`${CROSS_LEG_MARKER} leg=leg status=undetermined reason=program-failed`);
   });
+});
+
+describe('scopedFilesArg (WI-6554700010009716: spawn E2BIG on a huge --files list)', () => {
+  const tmpRoots: string[] = [];
+  afterAll(() => {
+    for (const dir of tmpRoots) rmSync(dir, { recursive: true, force: true });
+  });
+  // ~560 KB joined: past Linux's 128 KiB MAX_ARG_STRLEN for a single argv string.
+  const many = Array.from({ length: 20_000 }, (_, i) => `packages/x/src/file-${String(i).padStart(5, '0')}.ts`);
+
+  it('keeps a short list inline with nothing to clean up', () => {
+    const r = scopedFilesArg(['a.ts', 'b.ts']);
+    expect(r).toMatchObject({ arg: '--files=a.ts,b.ts', responseFile: null });
+    r.cleanup();
+  });
+
+  it('moves a list past the inline cap into a --files-from response file that parses to the same set', () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'scoped-files-arg-'));
+    tmpRoots.push(tmpRoot);
+    const r = scopedFilesArg(many, { tmpRoot });
+    expect(r.arg.startsWith('--files-from=')).toBe(true);
+    expect(r.arg.length).toBeLessThan(INLINE_FILES_ARG_MAX_CHARS);
+    expect(existsSync(r.responseFile!)).toBe(true);
+    expect(parseExplicitFiles([r.arg])).toEqual(new Set(many));
+    r.cleanup();
+    expect(existsSync(r.responseFile!)).toBe(false);
+  });
+
+  it('a real cross-leg child receives a >128 KiB file list instead of dying with spawn E2BIG', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cross-leg-e2big-'));
+    tmpRoots.push(dir);
+    expect(`--files=${many.join(',')}`.length).toBeGreaterThan(128 * 1024);
+    const gate = pathToFileURL(fileURLToPath(new URL('../../../scripts/lib/tsc-baseline-gate.mjs', import.meta.url))).href;
+    const script = join(dir, 'child.mjs');
+    writeFileSync(
+      script,
+      `import { parseExplicitFiles, CROSS_LEG_MARKER } from ${JSON.stringify(gate)};\n` +
+        'const n = parseExplicitFiles(process.argv.slice(2))?.size ?? 0;\n' +
+        'console.log(`${CROSS_LEG_MARKER} leg=x status=clean members=${n} nonMembers=0 regressed=0`);\n',
+    );
+    const report = await runCrossLegChecks({ root: dir, plans: [{ npmScript: 'leg', scriptPath: script, files: many }] });
+    expect(report.undetermined).toEqual([]);
+    expect(report.clean).toEqual(['leg']);
+  }, 60_000);
 });
 
 describe('runCrossLegChecks', () => {

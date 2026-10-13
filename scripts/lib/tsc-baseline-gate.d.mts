@@ -1070,6 +1070,22 @@ export function runCrossLegConsumer({ root, tscCommand, baselineFile, foreignBas
     warn?: (line: string) => void;
 }): Promise<number>;
 /**
+ * The child argument that names `files`: inline `--files=` when short, else `--files-from=<json>`.
+ * `responseFile` is the written path (null when inline); `cleanup()` removes it and never throws.
+ *
+ * @param {string[]} files
+ * @param {{maxInlineChars?: number, tmpRoot?: string}} [opts]
+ * @returns {{arg: string, responseFile: string | null, cleanup: () => void}}
+ */
+export function scopedFilesArg(files: string[], { maxInlineChars, tmpRoot }?: {
+    maxInlineChars?: number;
+    tmpRoot?: string;
+}): {
+    arg: string;
+    responseFile: string | null;
+    cleanup: () => void;
+};
+/**
  * Run the planned consumer legs as child gate processes, at most `concurrency` at once: each one
  * builds a full program (3-23 s and 1-2 GB, measured 2026-10-12). A child is RED only when it
  * exits 1 with a `status=regressed` marker; any other outcome is UNDETERMINED, never clean.
@@ -1507,6 +1523,15 @@ export const CROSS_LEG_CONSUMER_ENV: "PAPERCUSP_TSC_CROSS_LEG_CONSUMER";
 /** `PAPERCUSP_TSC_CROSS_LEG=0` skips the cross-leg fan-out of a scoped run, like `--no-cross-leg`. */
 export const CROSS_LEG_ENV: "PAPERCUSP_TSC_CROSS_LEG";
 export const CROSS_LEG_MARKER: "LINT_TSC_CROSS_LEG";
+/**
+ * WI-6554700010009716 — Linux caps ONE argv string at MAX_ARG_STRLEN (32 pages = 128 KiB) and the
+ * whole argv+env at ARG_MAX. A candidate ~1,500 commits behind main produced a `--files=a,b,…` list
+ * past that, so every cross-leg child died with `spawn E2BIG` and its leg read as uncheckable (gate
+ * run 4bbfb5d7). Past this many characters the list travels as a `--files-from=` JSON response file
+ * instead — the parser above gives both forms identical scoped-verdict semantics. Kept well under the
+ * kernel limit because the environment shares the ARG_MAX budget.
+ */
+export const INLINE_FILES_ARG_MAX_CHARS: number;
 /** EX_SOFTWARE (sysexits.h): the fallback when a no-output toolchain failure carries no abnormal code of its own. */
 export const TOOLCHAIN_FAILURE_EXIT_CODE: 70;
 /** Where the standing-verdict marker lives, relative to the repo root. */

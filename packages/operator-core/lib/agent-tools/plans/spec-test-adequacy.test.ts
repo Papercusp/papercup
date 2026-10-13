@@ -1922,6 +1922,9 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         filePath: testPath,
         commitSha: 'abc123',
         worktreeDirty: false,
+        source: 'mutation-probe',
+        mutationPhase: 'mutant',
+        mutationFailureLines: [`${DEFAULT_MUTATION_TEST_CASE}: expected true to be false`],
         mutationFailedCaseTitles: [DEFAULT_MUTATION_TEST_CASE],
       },
       details: {
@@ -1934,9 +1937,17 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         },
       },
     });
+    const baseline = successfulTestBinding(testPath);
+    const exactTarget = mutationFor(40095, 'SPEC-003-01');
+    const singleTarget = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [baseline, exactTarget],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(singleTarget.ratings.falsifiability.rating).toBe('pass');
     const result = evaluateSpecTestAdequacy({
       clause: clause(),
-      evidence: [successfulTestBinding(testPath), mutationFor(40095, 'SPEC-003-01'), mutationFor(40096, 'spec-003-01')],
+      evidence: [baseline, exactTarget, mutationFor(40096, 'spec-003-01')],
       classRef: 'plan-class-feature-ship',
     });
 

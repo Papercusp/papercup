@@ -122,6 +122,7 @@ vi.mock('../../degradation/fallback-observations', async (importOriginal) => ({
 }));
 
 import certifyTool from './certify-spec-clauses';
+import { certifyPassingRef } from './evaluate-spec-test-adequacy';
 import { validateGradingAuditReplayConsistency } from '../scorecards/emit';
 import { specTestAdequacySubjectRef } from './spec-test-adequacy';
 import { asStructuredObservation } from '../../harness/improvements/observation-types';
@@ -734,5 +735,42 @@ describe('plans:certify-spec-clauses', () => {
     expect(result).toMatchObject({ ok: false, evaluator: { ok: false, error: 'selection_empty' } });
     expect(result).not.toHaveProperty('counts');
     expect(captureImprovement).not.toHaveBeenCalled();
+  });
+});
+
+// oversized-tool-results-reduction-2026-10-12 P-006: plans:evaluate-spec-test-adequacy hands
+// passing-row callers this certify call so they stop fetching the full body only to shuttle
+// drafts into scorecards:emit by hand. Falsifier: the ref carries an argument certify
+// rejects, or is offered for a pinned/replayed read whose cohort certify cannot reproduce,
+// for a non-active class source, or with nothing passing.
+describe('certifyPassingRef (plans:evaluate-spec-test-adequacy → plans:certify-spec-clauses)', () => {
+  const ctx = { classRef: 'plan-class-feature-ship' as const, classRefSource: 'active-acceptance-rubric' as const, passingCount: 2 };
+  const live = {
+    harness: 'papercusp',
+    slug: 'plan-a',
+    specIds: ['SPEC-001'],
+    workItemIds: ['WI-1'],
+    evidenceRefs: ['ref-1'],
+    planItemIds: ['P-001'],
+    includeDraft: true,
+    limit: 200,
+  };
+
+  it('emits only arguments certify accepts, carrying the resolved classRef', () => {
+    const ref = certifyPassingRef(live, ctx);
+    expect(ref).toMatchObject({ tool: 'plans:certify-spec-clauses', passing: 2 });
+    const certifyKeys = Object.keys((certifyTool.args as unknown as { shape: Record<string, unknown> }).shape);
+    for (const key of Object.keys(ref!.args)) expect(certifyKeys).toContain(key);
+    expect(certifyTool.args.safeParse(ref!.args).success).toBe(true);
+    expect(ref!.args).toEqual({ ...live, classRef: 'plan-class-feature-ship' });
+  });
+
+  it('is withheld when nothing passes, the class is not active, or the read is pinned or replayed', () => {
+    expect(certifyPassingRef(live, { ...ctx, passingCount: 0 })).toBeUndefined();
+    expect(certifyPassingRef(live, { ...ctx, classRefSource: 'retired-acceptance-rubric' })).toBeUndefined();
+    expect(certifyPassingRef(live, { ...ctx, classRefSource: 'work-item-completion-attestation' })).toBeUndefined();
+    expect(certifyPassingRef({ ...live, bindingIds: [7] }, ctx)).toBeUndefined();
+    expect(certifyPassingRef({ ...live, replaySnapshot: true }, ctx)).toBeUndefined();
+    expect(certifyPassingRef({ ...live, specRevision: 3 }, ctx)).toBeUndefined();
   });
 });
