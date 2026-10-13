@@ -37,7 +37,12 @@ function hasExactReportCitation(criteria: readonly ScorecardEvidenceCriterion[],
     }
     return false;
   };
-  return criteria.some((criterion) => hasToken(criterion.evidence) || hasToken(criterion.evidenceRef));
+  return criteria.some(
+    (criterion) =>
+      hasToken(criterion.evidence) ||
+      criterion.evidenceRef === reportId ||
+      hasToken(criterion.evidenceRef),
+  );
 }
 
 export default defineTool({
