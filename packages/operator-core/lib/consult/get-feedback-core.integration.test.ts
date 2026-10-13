@@ -2442,6 +2442,57 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     expect(reached).toHaveLength(1);
   });
 
+  it.each([
+    ['changed revision', `rev7/hash${'a'.repeat(64)}`],
+    ['changed criteria hash', `rev8/hash${'b'.repeat(64)}`],
+    ['missing criteria hash', 'rev8'],
+    ['missing revision and hash', ''],
+  ])('does not reuse a same-subject archive with %s', async (label, archivedPins) => {
+    const ws = `ws-arch-pins-${label.replaceAll(' ', '-')}`;
+    const subject = 'acceptance-byoc-delivery-acceleration-2026-09-06';
+    await seedClosedConsult({
+      ws,
+      conv: 'arch-stale-pins',
+      vec: vecAt(0),
+      question: `Vet ${subject} ${archivedPins} against meta-acceptance-rubric.`,
+      outcome: { answer: 'An older or unpinned construction review', confidence: 'high' },
+    });
+    const { deps, reached } = makeDeps(routeOf([cand('cand-live')], { queryVec: qv }));
+    const r = asOk(await getFeedbackCore({
+      ...baseReq,
+      workspaceId: ws,
+      question: `Vet ${subject} revision8 criteriaHash${'a'.repeat(64)} against meta-acceptance-rubric.`,
+      policy: 'rubric-vetting',
+    }, deps));
+
+    expect(r.verdict).toBe('routed');
+    expect(r.archive).toBeUndefined();
+    expect(reached).toHaveLength(1);
+  });
+
+  it('reuses a same-subject archive with equivalent explicit revision and hash pins', async () => {
+    const ws = 'ws-arch-current-pins';
+    const subject = 'acceptance-byoc-delivery-acceleration-2026-09-06';
+    const hash = 'a'.repeat(64);
+    await seedClosedConsult({
+      ws,
+      conv: 'arch-current-pins',
+      vec: vecAt(0),
+      question: `Vet ${subject} rev8/hash${hash} against meta-acceptance-rubric.`,
+    });
+    const { deps, reached } = makeDeps(routeOf([cand('cand-live')], { queryVec: qv }));
+    const r = asOk(await getFeedbackCore({
+      ...baseReq,
+      workspaceId: ws,
+      question: `Vet ${subject} revision: 8 criteriaHash: ${hash.toUpperCase()} against meta-acceptance-rubric.`,
+      policy: 'rubric-vetting',
+    }, deps));
+
+    expect(r.verdict).toBe('served_from_archive');
+    expect(r.archive?.source_conversation_id).toBe('arch-current-pins');
+    expect(reached).toHaveLength(0);
+  });
+
   it('reuses a high-similarity archive answer when all named subjects match exactly', async () => {
     const ws = 'ws-arch-subject-match';
     await seedClosedConsult({
