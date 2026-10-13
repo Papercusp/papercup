@@ -10,6 +10,7 @@ import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { getOrgPg } from '@papercusp/db-org';
 import {
   LIVE_TRANSCRIPT_GRACE_MS,
   assessArchiveLiveness,
@@ -21,6 +22,8 @@ import {
 } from './session-archive-hook';
 import { archiveSession, type ArchiveFileRow, type ArchiveStampRow, type SessionArchiveStore } from './session-archive';
 import type { ProtectedSessionIdentity } from './session-dir-gc';
+
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
 
 const SID = 'cccccccc-1111-2222-3333-444444444444';
 
@@ -278,6 +281,83 @@ describe('runArchiveForAdvSession (injected deps, no PG)', () => {
         expect(store.files).toEqual(archivedFiles);
       }
     } finally { warn.mockRestore(); }
+  });
+
+  it.each(['claude', 'codex', 'omp'] as const)('retains a missing indexed legacy %s transcript without port metadata', async (agent) => {
+    tmp = await mkdtemp(join(tmpdir(), 'sa-legacy-missing-'));
+    const store = new MiniStore();
+    const ingestFile = vi.fn(async () => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runArchiveForAdvSession(9, {
+        loadRow: async () => row({ agent, port_metadata: null,
+          ingestedTranscripts: [{ nativeRef: join(tmp!, `${SID}.jsonl`), byteOffset: 100 }] }),
+        roots: { claudeSessionRoot: tmp, codexHomeFor: () => tmp!, ompRoot: tmp },
+        store, protectedIdentity: NOBODY, ingestFile,
+      });
+      expect(result).toMatchObject({ ok: false, reason: 'missing_persisted_transcript' });
+      expect(store.advStamps).toEqual([]);
+      expect(store.stamps.size).toBe(0);
+      expect(ingestFile).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it.each(['intact', 'short-archive', 'short-native', 'partial-archive'] as const)(
+    'requires complete indexed legacy custody (%s), preserving an existing archive', async (control) => {
+      tmp = await mkdtemp(join(tmpdir(), 'sa-legacy-custody-'));
+      const root = join(tmp, 'su-t');
+      const nativeRef = join(root, 'projects', '-repo', `${SID}.jsonl`);
+      const bytes = '{"type":"user","message":{"content":"indexed original native frame"}}\n';
+      await mkdir(join(nativeRef, '..'), { recursive: true });
+      await writeFile(nativeRef, bytes);
+      const store = new MiniStore();
+      await archiveSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: root }, store);
+      await rm(nativeRef);
+      if (control === 'short-native') {
+        await writeFile(nativeRef, '{}\n');
+        await quiet(nativeRef);
+        store.files = [];
+      }
+      const archivedFiles = [...store.files];
+      const ingestFile = vi.fn(async () => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await runArchiveForAdvSession(9, {
+          loadRow: async () => row({ port_metadata: null, ingestedTranscripts: [
+            { nativeRef, byteOffset: Buffer.byteLength(bytes) + (control === 'short-archive' ? 1 : 0) },
+            ...(control === 'partial-archive' ? [{ nativeRef: join(root, 'projects', '-other', `${SID}.jsonl`), byteOffset: 10 }] : []),
+          ] }),
+          roots: { ...ROOTS, claudeSessionRoot: tmp! }, store, protectedIdentity: NOBODY, ingestFile,
+        });
+        expect(result).toMatchObject(control === 'intact'
+          ? { ok: true, reason: 'already_archived' }
+          : { ok: false, reason: 'missing_persisted_transcript' });
+        expect(store.advStamps).toEqual(control === 'intact' ? [9] : []);
+        expect(store.files).toEqual(archivedFiles);
+        expect(ingestFile).not.toHaveBeenCalled();
+        if (control === 'short-native') expect(existsSync(nativeRef)).toBe(true);
+      } finally { warn.mockRestore(); }
+    },
+  );
+
+  it.each(['indexed', 'empty'] as const)('loads legacy custody through the bounded production ingest query (%s)', async (control) => {
+    tmp = await mkdtemp(join(tmpdir(), 'sa-legacy-loader-'));
+    const root = join(tmp, 'su-t');
+    const nativeRef = join(root, 'projects', '-repo', `${SID}.jsonl`);
+    const sql = vi.fn().mockResolvedValueOnce([row({ port_metadata: null })])
+      .mockResolvedValueOnce(control === 'indexed' ? [{ file_path: nativeRef, byte_offset: '100' }] : []);
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as unknown as ReturnType<typeof getOrgPg>);
+    const store = new MiniStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runArchiveForAdvSession(9, {
+        roots: { ...ROOTS, claudeSessionRoot: tmp! }, store, protectedIdentity: NOBODY,
+      });
+      expect(result.reason).toBe(control === 'indexed' ? 'missing_persisted_transcript' : 'no_files');
+      expect(sql).toHaveBeenCalledTimes(2);
+      expect(sql.mock.calls[1].slice(1)).toEqual(['claude', `${root}/`, `${root}/\uffff`, SID]);
+      expect(store.advStamps).toEqual([]);
+    } finally { warn.mockRestore(); vi.mocked(getOrgPg).mockReset(); }
   });
 
   it('keeps the normal no-persistence empty-session result', async () => {

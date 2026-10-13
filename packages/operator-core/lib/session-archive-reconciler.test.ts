@@ -145,7 +145,7 @@ describe('runSessionArchiveReconcileOnce', () => {
     expect(stats.oldestEndedUnarchivedAgeMs).toBe(3 * 3600_000);
   });
 
-  it('keeps a missing proven native transcript pending past the empty-session grace', async () => {
+  it.each(['port-proof', 'legacy-ingest'] as const)('keeps a missing native transcript pending past the empty-session grace (%s)', async (evidence) => {
     const nowMs = Date.now();
     const db = fakeDb([{ id: 31, endedAtMs: nowMs - 3 * 3600_000 }]);
     const store = new MiniStore();
@@ -159,7 +159,9 @@ describe('runSessionArchiveReconcileOnce', () => {
         runAdvArchive: (id) => runArchiveForAdvSession(id, {
           loadRow: async () => ({ id, agent: 'claude', mode: 'console', cwd: '/repo', coord_owner_id: 'su-missing', session_id: SID_DEAD,
             ended_at: new Date(nowMs - 3 * 3600_000),
-            port_metadata: { persistenceProof: { persisted: true, nativeRef: join(root, 'su-missing', 'projects', '-repo', `${SID_DEAD}.jsonl`) } },
+            ...(evidence === 'port-proof'
+              ? { port_metadata: { persistenceProof: { persisted: true, nativeRef: join(root, 'su-missing', 'projects', '-repo', `${SID_DEAD}.jsonl`) } } }
+              : { port_metadata: null, ingestedTranscripts: [{ nativeRef: join(root, 'su-missing', 'projects', '-repo', `${SID_DEAD}.jsonl`), byteOffset: 100 }] }),
           }),
           roots: { claudeSessionRoot: root, codexHomeFor: () => root, ompRoot: root }, store,
           protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set() }, nowMs,
