@@ -10,6 +10,33 @@ import { resolveFsMutexLockRoot } from '../../../scripts/lib/fs-mutex.mjs';
 const root = resolve(__dirname, '../../..');
 
 describe('current-build execution route contract', () => {
+  it.each(['--isolated-runtime', '--isolated-runtime=operator-api'])(
+    'pins the allocator before native host loading (%s)', mode => {
+      const probe = `
+        (async () => {
+          const { planMallocArenaReexec, HOST_MALLOC_ARENA_MAX } = await import(
+            require('node:path').resolve('apps/operator/bin/malloc-arena-reexec.ts'));
+          const plan = planMallocArenaReexec({ platform: 'linux', env: process.env,
+            execPath: process.execPath, execArgv: [], argv: [process.execPath, '/private/hono-host.mjs'],
+            isMainThread: true, hasExecve: true });
+          console.log('ALLOCATOR_BOOT_PROBE ' + JSON.stringify({
+            plan: { action: plan.action, reason: plan.action === 'none' ? plan.reason : 'pin-missing' },
+            pinned: process.env.MALLOC_ARENA_MAX === HOST_MALLOC_ARENA_MAX }));
+        })().catch(error => { console.error(error); process.exitCode = 1; });`;
+      const env = { ...process.env };
+      delete env.MALLOC_ARENA_MAX;
+      delete env.GLIBC_TUNABLES;
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), mode,
+        '--', process.execPath, '-e', probe], { cwd: root, env, encoding: 'utf8',
+        timeout: 180_000, maxBuffer: 16 * 1024 * 1024 });
+      expect(result.status, result.stderr + result.stdout).toBe(0);
+      const line = result.stdout.split('\n').find(row => row.startsWith('ALLOCATOR_BOOT_PROBE '));
+      expect(line, result.stderr + result.stdout).toBeTruthy();
+      expect(JSON.parse(line!.slice('ALLOCATOR_BOOT_PROBE '.length))).toEqual({
+        plan: { action: 'none', reason: 'already-set' }, pinned: true,
+      });
+    }, 200_000);
+
   it('points every declared runnable route at maintained source and a real runtime', () => {
     for (const route of CURRENT_BUILD_TEST_CLASSES) {
       if (route.runtime) expect(SERVING_RUNTIMES[route.runtime]).toBeDefined();

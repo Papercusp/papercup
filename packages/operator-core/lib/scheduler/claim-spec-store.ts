@@ -834,6 +834,11 @@ export async function getNextForBee(args: {
           acquirePool: 'scheduler-claim',
           signal: args.signal,
           acquireTimeoutMs,
+          // This is the scheduler's total setup-acquisition budget. The generic
+          // transaction wrapper's two default retries each restart that clock,
+          // turning a warm 5s cap into 15s plus backoff before the caller returns.
+          // An expired acquisition must surface once; the caller chooses retry.
+          acquireRetries: 0,
           statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
           lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
         },

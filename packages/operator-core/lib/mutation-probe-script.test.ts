@@ -231,6 +231,42 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     });
   });
 
+  it('replays descriptor export settings even when the next caller disables export', () => {
+    const args = ['--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}"];
+    const env = { ...process.env,
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:3170/api/health',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: join(dir, 'reader-é-東京'),
+      PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+      UNRELATED_REPLAY_SECRET: 'must-not-enter-the-receipt',
+    };
+    const first = runProbeIO(args, env);
+    expect(first.code, first.out).toBe(0);
+    const record = JSON.parse(first.out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)![1]!);
+    expect(record.environment).toEqual({
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'always',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: env.PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: env.PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO,
+      PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+    });
+    const replay = runProbeIO(record.argv, { ...env, PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'never',
+      ...record.environment });
+    expect(replay.code, replay.out).toBe(0);
+    expect(replay.out).toContain('mutation descriptor forced on');
+    expect(replay.out).not.toContain('must-not-enter-the-receipt');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('records effective automatic export when the caller leaves it unset', () => {
+    const result = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', "grep -q '^beta$' {}"],
+      { ...process.env, PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: undefined,
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: 'http://127.0.0.1:1/api/health' });
+    expect(result.code, result.out).toBe(0);
+    const record = JSON.parse(result.out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)![1]!);
+    expect(record.environment.PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT).toBe('auto');
+    expect(record.environment.PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO).toBe(resolve(__dirname, '../../..'));
+  });
+
   it('preserves UTF-8 guard arguments in the exact replay receipt', () => {
     const unicodeSubject = join(dir, 'subject-é-東京-🧪.txt');
     writeFileSync(unicodeSubject, ORIGINAL);

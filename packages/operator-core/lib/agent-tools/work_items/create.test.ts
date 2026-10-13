@@ -12,6 +12,7 @@ const fleetAdmission = vi.hoisted(() => ({
   decision: { allowed: true, scoped: false } as any,
   admit: vi.fn(async () => fleetAdmission.decision),
   notify: vi.fn(),
+  remedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
 }));
 const workScope = vi.hoisted(() => ({
   decision: { allowed: true, reason: 'no-policy' } as any,
@@ -42,7 +43,7 @@ vi.mock('./drain-flow', () => ({ withDrainBugAdmission: drainAdmission.gate }));
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitSubjectForFleetTarget: fleetAdmission.admit,
   notifyFleetScopeRefusal: fleetAdmission.notify,
-  fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
+  fleetScopeLeaderRemedy: fleetAdmission.remedy,
 }));
 vi.mock('../../work-scope-policy', () => ({ gateWorkScope: workScope.gate }));
 // Create-time dedup port (P-009) — mock so this handler test stays hermetic
@@ -628,6 +629,30 @@ describe('work_items:create handler (keyed-array)', () => {
         },
       });
       expect(createM.mock.calls[0][0].payload).not.toHaveProperty('_claimHold');
+    });
+
+    it('renders missing-scope repairs in the receipt and leader message with the persisted id', async () => {
+      fleetAdmission.decision = { ...outOfScope, code: 'fleet_scope_missing' };
+      const result = await body({ kind: 'task', title: 'append repair', harness: 'papercusp', assign_to: 'bee-7' });
+      expect(result.results[0]).toMatchObject({ ok: true, id: 'WI-append repair' });
+      expect(fleetAdmission.notify).toHaveBeenCalledWith(
+        expect.anything(), fleetAdmission.decision,
+        'work_items:create+assign WI-append repair → bee-7',
+        { harness: 'papercusp', subject: { itemId: 'WI-append repair', member: 'bee-7' } },
+      );
+      expect(fleetAdmission.remedy).toHaveBeenCalledWith(
+        fleetAdmission.decision, undefined, undefined, null, 'WI-append repair', 'papercusp',
+      );
+      expect(createM.mock.invocationCallOrder[0]).toBeLessThan(fleetAdmission.notify.mock.invocationCallOrder[0]);
+    });
+
+    it('does not notify the leader about an item that failed to persist', async () => {
+      fleetAdmission.decision = { ...outOfScope, code: 'fleet_scope_missing' };
+      createM.mockResolvedValueOnce({ ok: false, error: 'invalid', message: 'fixture refusal' } as never);
+      const result = await body({ kind: 'task', title: 'append refused', assign_to: 'bee-7' });
+      expect(result.results[0].ok).toBe(false);
+      expect(fleetAdmission.notify).not.toHaveBeenCalled();
+      expect(fleetAdmission.remedy).not.toHaveBeenCalled();
     });
 
     it('records the requester as reporter so the filing stays attributable', async () => {

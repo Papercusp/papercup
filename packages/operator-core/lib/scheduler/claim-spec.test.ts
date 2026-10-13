@@ -22,6 +22,7 @@ import {
   isIdOnlySelector,
   fixedCohortIds,
   positiveIdCohortIds,
+  appendIdsToClaimSpec,
   positiveKindCohortKinds,
   formatSpecRef,
   CLAIM_SPEC_FENCE_MACROS,
@@ -1024,6 +1025,49 @@ describe('positiveKindCohortKinds — sound kind bounds', () => {
       { not: { field: 'kind', op: '=', value: 'feature' } },
       { field: 'kind', op: 'glob', value: '*bug*' },
     ]) expect(positiveKindCohortKinds(filter)).toBeNull();
+  });
+});
+
+describe('appendIdsToClaimSpec — exact cohort extension', () => {
+  it('preserves incumbent ids, fences, rank, states and limits without mutating the input', () => {
+    const spec: ClaimSpec = {
+      ...DEFAULT_CLAIM_SPEC, revision: 7, states: ['open'], limits: { maxConcurrentClaims: 2 },
+      view: { filter: { all: [
+        { field: 'id', op: 'in', value: ['WI-old', 'WI-retained'] },
+        { field: 'goal', op: '=', value: 'goal-owned' },
+        { not: { field: 'title', op: 'word', value: 'p2p' } },
+      ] } },
+    };
+    const snapshot = structuredClone(spec);
+    const candidate = appendIdsToClaimSpec(spec, ['WI-new', 'WI-old'])!;
+    expect(positiveIdCohortIds(candidate.view.filter)).toEqual(['WI-old', 'WI-retained', 'WI-new']);
+    expect(candidate.view.filter!.all).toEqual([
+      { field: 'id', op: 'in', value: ['WI-old', 'WI-retained', 'WI-new'] },
+      ...(spec.view.filter!.all as unknown[]).slice(1),
+    ]);
+    expect({ ...candidate, view: spec.view }).toEqual(spec);
+    expect(spec).toEqual(snapshot);
+  });
+
+  it('refuses dynamic, mixed disjunction and negative-only ID lanes', () => {
+    for (const filter of [
+      { field: 'kind', op: '=', value: 'bug' },
+      { any: [{ field: 'id', op: '=', value: 'WI-old' }, { field: 'goal', op: '=', value: 'goal-owned' }] },
+      { not: { field: 'id', op: 'in', value: ['WI-old'] } },
+    ]) expect(appendIdsToClaimSpec({ ...DEFAULT_CLAIM_SPEC, view: { filter } }, ['WI-new'])).toBeNull();
+  });
+
+  it('extends pure ID disjunctions and retains intersection semantics in fenced cohorts', () => {
+    const disjunction = appendIdsToClaimSpec({ ...DEFAULT_CLAIM_SPEC, view: { filter: { any: [
+      { field: 'id', op: '=', value: 'WI-a' }, { field: 'id', op: '=', value: 'WI-b' },
+    ] } } }, ['WI-c'])!;
+    expect(positiveIdCohortIds(disjunction.view.filter)).toEqual(['WI-a', 'WI-b', 'WI-c']);
+    const intersection = appendIdsToClaimSpec({ ...DEFAULT_CLAIM_SPEC, view: { filter: { all: [
+      { field: 'id', op: 'in', value: ['WI-common', 'WI-a'] },
+      { field: 'id', op: 'in', value: ['WI-common', 'WI-b'] },
+      { field: 'goal', op: '=', value: 'goal-owned' },
+    ] } } }, ['WI-c'])!;
+    expect(positiveIdCohortIds(intersection.view.filter)).toEqual(['WI-common', 'WI-c']);
   });
 });
 

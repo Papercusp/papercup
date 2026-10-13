@@ -106,28 +106,68 @@ async function main() {
     ? await (await import('./committed-reader-http-scenario')).prepareCommittedReaderScenario({
       workspace, harness, base, headers, evidenceDir,
     }) : undefined;
-  disposeScenario = committedReader?.dispose;
+  const blueprintRoute = e.STAGING_FIRST_HTTP_SCENARIO === 'blueprint-account-route'
+    ? await (await import('./blueprint-account-route-http-scenario')).prepareBlueprintAccountRouteScenario({ workspace, evidenceDir })
+    : undefined;
+  disposeScenario = blueprintRoute?.dispose ?? committedReader?.dispose;
   // Preparation changes socket/tmp settings; compare the final host environment
   // again. A refused pin still follows the same finally/dispose path.
   if (qualifySource) qualifySource();
-  host = spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+  // The real native request fixture grants writes only to its disposable state.
+  // Apply the mount boundary to the whole operator/invoke/native lineage.
+  const privateRoot = dirname(e.HOME!);
+  host = blueprintRoute
+    ? spawn('bwrap', ['--die-with-parent', '--ro-bind', '/', '/', '--bind', privateRoot, privateRoot,
+      '--bind', evidenceDir, evidenceDir, '--dev', '/dev', '--proc', '/proc', '--', process.execPath, bundle],
+    { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
   host.stdout!.on('data', chunk => process.stdout.write(chunk));
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
   hostIdentity = readProcessIdentity(host.pid!);
   assert.ok(hostIdentity, 'private host kernel identity required');
   let health: any;
-  const deadline = Date.now() + 90_000;
+  const readinessStarted = Date.now();
+  const deadline = readinessStarted + 90_000;
+  const readinessProbes: Array<{ elapsedMs: number; status?: number; service?: unknown; error?: string }> = [];
+  let readinessAttempts = 0;
   while (Date.now() < deadline) {
     assert.equal(host.exitCode, null, 'private host exited before readiness');
     assert.equal(host.signalCode, null, 'private host was signaled before readiness');
+    readinessAttempts++;
     try {
       const response = await fetch(base + '/api/health', { headers, signal: AbortSignal.timeout(2_000) });
-      if (response.ok) { health = await response.json(); break; }
-    } catch { /* bounded readiness convergence; request assertions never retry */ }
+      const probe = { elapsedMs: Date.now() - readinessStarted, status: response.status, service: undefined as unknown };
+      readinessProbes.push(probe);
+      if (response.ok) {
+        health = await response.json();
+        probe.service = health?.service;
+        break;
+      }
+    } catch (error) {
+      readinessProbes.push({ elapsedMs: Date.now() - readinessStarted,
+        error: error instanceof Error ? `${error.name}: ${error.message}; cause=${String(error.cause ?? '')}` : String(error) });
+    }
+    // Keep the last failures without retaining response bodies or credentials.
+    if (readinessProbes.length > 24) readinessProbes.shift();
     await new Promise(done => setTimeout(done, 250));
   }
-  assert.equal(health?.service, 'papercusp-operator', 'private operator never became ready');
+  const readiness = { base, pid: host.pid, hostIdentity, mallocArenaMax: e.MALLOC_ARENA_MAX ?? null,
+    elapsedMs: Date.now() - readinessStarted, attempts: readinessAttempts, probes: readinessProbes.slice(-24) };
+  writeFileSync(join(evidenceDir, 'readiness.json'), JSON.stringify(readiness));
+  assert.equal(health?.service, 'papercusp-operator',
+    'private operator never became ready: ' + JSON.stringify(readiness));
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (blueprintRoute) {
+    const receipt = await blueprintRoute.execute();
+    await stopHost();
+    await blueprintRoute.dispose();
+    disposeScenario = undefined;
+    await sql.end();
+    const finalReceipt = { ...receipt, hostStopped: true, hostPid: host.pid, bundleSha256, sourceSha256, health };
+    writeFileSync(join(evidenceDir, 'account-route.json'), JSON.stringify(finalReceipt));
+    console.log('BLUEPRINT_ACCOUNT_ROUTE_RECEIPT ' + JSON.stringify(finalReceipt));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native') {
     const receipt = await (await import('./current-su-native-http-scenario')).measureCurrentSuNativeScenario({
       workspace, base, evidenceDir,

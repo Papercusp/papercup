@@ -610,6 +610,10 @@ export default defineTool({
         }
         let workScopeDowngrade: Record<string, never> | { workScopeDowngrade: string } = {};
         let fleetScopeDowngrade: Record<string, never> | { fleetScopeDowngrade: string } = {};
+        let fleetRefusal: {
+          admission: Extract<Awaited<ReturnType<typeof admitSubjectForFleetTarget>>, { allowed: false }>;
+          requestedAssignee: string;
+        } | undefined;
         if (spec.assign_to) {
           // workspace-work-scope-policy-2026-09-04 D-002/P-006: filing is allowed,
           // but an explicit assignment is a hand-out of work and must not create a
@@ -660,20 +664,9 @@ export default defineTool({
             workspaceId: ident.workspaceId,
           });
           if (!admission.allowed) {
-            // WI-6326: reuse the SAME liveness read the leader notification just performed
-            // (never a second lookup) so the caller-facing downgrade note's "route
-            // elsewhere" advice is code-conditional too.
-            const { liveRouteTarget, classRefusal } = (await notifyFleetScopeRefusal(
-              ident,
-              admission,
-              `work_items:create+assign '${spec.title}' → ${spec.assign_to}`,
-              // EI-19484346966003625 (R1): hand the refused subject's harness over so the
-              // notice can say whether this spec is refusing a CLASS rather than only this
-              // row — the per-row widen it otherwise recommends is what drove one leader
-              // through 6 spec revisions in 42h without unblocking its member.
-              { harness: spec.harness ?? createCtx.harnessSlug },
-            )) ?? {};
             const requestedAssignee = spec.assign_to;
+            // File first so both notification and receipt carry the actual id.
+            fleetRefusal = { admission, requestedAssignee };
             spec.payload = {
               ...(typeof spec.payload === 'object' && spec.payload !== null ? spec.payload : {}),
               // The downgraded filing is deliberately unassigned, but it must remain
@@ -695,21 +688,6 @@ export default defineTool({
             // it from entering the duplicate-screening pending dead end.
             spec.admissionBypass = 'bypass:explicit-assignment';
             spec.assign_to = undefined;
-            fleetScopeDowngrade = {
-              // EI-18673501896258575: the same concrete remedy fleetScopeLeaderRemedy
-              // already sent to the fleet leader (via notifyFleetScopeRefusal), echoed to
-              // the CALLER too, so a member can see the exact scheduler:set_claim_spec
-              // shape needed instead of waiting, blind, for the leader to notice.
-              fleetScopeDowngrade:
-                `FILED UNASSIGNED — the item exists on the ledger, but you do NOT hold it: ` +
-                `${admission.reason}. No out-of-scope claim was created. You are recorded as the ` +
-                `reporter, so the finding is durable and attributable while it waits for an owner. ` +
-                // EI-21906739799895413: the row is not persisted yet, so there is no id to
-                // render — pass a placeholder so the notice still shows the fence-preserving
-                // COMBINATOR shape (the part nobody can guess) with an obvious fill-in,
-                // rather than degrading to prose that sends the reader inventing syntax.
-                `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, null, '<the filed work-item id>')}`,
-            };
           }
         }
         const persist = () => createOneWorkItem(spec, createCtx);
@@ -759,6 +737,19 @@ export default defineTool({
             // EI-23799808825983763: the refusal's own next action (retry / force).
             ...(res.disposition !== undefined ? { disposition: res.disposition } : {}),
             ...(res.queueAdmission !== undefined ? { queueAdmission: res.queueAdmission } : {}),
+          };
+        }
+        if (fleetRefusal) {
+          const harness = spec.harness ?? createCtx.harnessSlug;
+          const { admission, requestedAssignee } = fleetRefusal;
+          const { liveRouteTarget, classRefusal } = (await notifyFleetScopeRefusal(
+            ident, admission, `work_items:create+assign ${res.workItem.id} → ${requestedAssignee}`,
+            { harness, subject: { itemId: res.workItem.id, member: requestedAssignee } },
+          )) ?? {};
+          fleetScopeDowngrade = { fleetScopeDowngrade:
+            `FILED UNASSIGNED — the item exists on the ledger, but you do NOT hold it: ` +
+            `${admission.reason}. No out-of-scope claim was created. You are recorded as the reporter. ` +
+            fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, null, res.workItem.id, harness),
           };
         }
         // WI-2874 non-blocking nudge: `task` is NON-CODE only. If a fresh task smells

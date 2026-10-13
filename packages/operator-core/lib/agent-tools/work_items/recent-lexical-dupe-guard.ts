@@ -145,7 +145,9 @@ async function queryRecentOpenItemsReal(windowMin: number, harness?: string): Pr
            (embedding IS NOT NULL) AS has_embedding
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
-       AND created_ts >= now() - (${windowMin} || ' minutes')::interval
+       -- work_items.created_ts is epoch milliseconds (BIGINT), not timestamptz.
+       -- Convert the cutoff, preserving the indexed column and fractional windows.
+       AND created_ts >= (extract(epoch FROM (now() - (${windowMin} || ' minutes')::interval)) * 1000)::bigint
        AND (status IS NULL OR NOT (status = ANY(${terminal}::text[])))
        AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
      ORDER BY created_ts DESC

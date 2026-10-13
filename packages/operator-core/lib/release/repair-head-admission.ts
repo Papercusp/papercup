@@ -70,15 +70,18 @@ export type AdmissionGitRunner = (
   opts: { cwd: string; env?: NodeJS.ProcessEnv; input?: string },
 ) => AdmissionGitResult;
 
+export const ADMISSION_GIT_MAX_BUFFER = 64 * 1024 * 1024;
+
 export const realAdmissionGit: AdmissionGitRunner = (argv, opts) => {
   const r = spawnSync('git', [...argv], {
     cwd: opts.cwd,
     env: opts.env ?? process.env,
     encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer: ADMISSION_GIT_MAX_BUFFER,
     ...(opts.input !== undefined ? { input: opts.input } : {}),
   });
-  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  const error = r.error ? `${'code' in r.error ? r.error.code : 'spawn-error'}: ${r.error.message}` : '';
+  return { status: r.status, stdout: r.stdout ?? '', stderr: [r.stderr, error].filter(Boolean).join('\n') };
 };
 
 export type AdmissionEntryKind = 'blob' | 'symlink' | 'gitlink' | 'absent';

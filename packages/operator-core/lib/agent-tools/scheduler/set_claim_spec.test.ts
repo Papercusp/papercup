@@ -7,7 +7,7 @@
  * to an allowlist of the coding-FACTORY push-pipeline roles, so ONLY a genuine factory
  * push-role trips it. These assertions pin that role-awareness.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import setClaimSpecTool, {
   claimSpecInertWarning,
@@ -16,7 +16,7 @@ import setClaimSpecTool, {
   resolveClaimSpecPotSlug,
   wakeClaimableAwaitersAfterSpecChange,
 } from './set_claim_spec';
-import type { ClaimSpec } from '../../scheduler/claim-spec';
+import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { ClaimFloorAttribution } from '../../work-items';
 
 const wakeClaimableAwaitersForSubscribers = vi.hoisted(() => vi.fn());
@@ -161,6 +161,59 @@ describe('published claim-spec args — EI-21170624598321316', () => {
       spec: { ...baseSpec, revision: 1 },
     });
     expect(complete.success).toBe(true);
+  });
+});
+
+describe('scheduler:set_claim_spec appendIds', () => {
+  afterEach(() => vi.clearAllMocks());
+
+  it('accepts fleet plus appendIds without requiring claim-spec JSON', () => {
+    expect(setClaimSpecTool.args.safeParse({ fleet: 'append-fleet', harness: 'papercusp', appendIds: ['WI-new'] }).success).toBe(true);
+    for (const invalid of [
+      { cupId: 'su-member', appendIds: ['WI-new'] },
+      { fleet: 'append-fleet', appendIds: [] },
+      { fleet: 'append-fleet', appendIds: [' '] },
+      { fleet: 'append-fleet', appendIds: ['WI-new'], spec: DEFAULT_CLAIM_SPEC },
+      { fleet: 'append-fleet', appendIds: ['WI-new'], clear: true },
+    ]) expect(setClaimSpecTool.args.safeParse(invalid).success).toBe(false);
+  });
+
+  it('applies the existing admission preview to the union and wakes only after a successful append', async () => {
+    vi.clearAllMocks();
+    getFleet.mockResolvedValueOnce({ slug: 'append-fleet' });
+    const candidate: ClaimSpec = { ...DEFAULT_CLAIM_SPEC, specId: 'append-fleet:cohort', revision: 9,
+      view: { filter: { field: 'id', op: 'in', value: ['F-old', 'F-new'] } },
+    };
+    setClaimSpec.mockImplementationOnce(async (args) => {
+      expect(args).toMatchObject({ cupId: 'fleet:append-fleet', workspaceId: 'ws-test', appendIds: ['F-new'], potSlug: 'papercusp' });
+      expect(args.spec).toBeUndefined();
+      const admission = await args.validateAppend(candidate, 'papercusp');
+      expect(admission.errors).toEqual([]);
+      return { ok: true, errors: [], revision: 9, spec: candidate };
+    });
+    listFleetMembers.mockResolvedValueOnce(['su-member']);
+    wakeClaimableAwaitersForSubscribers.mockResolvedValueOnce(1);
+    const result = await (setClaimSpecTool as any).handler(
+      { fleet: 'append-fleet', appendIds: ['F-new'], harness: 'papercusp' },
+      { isSuperuser: true, uiClientId: 'su-append', workspaceId: 'ws-test' },
+    );
+    expect(result.data).toMatchObject({ ok: true, revision: 9, spec: candidate, claimableAwaitersWoken: 1,
+      admissibilityPreview: { mode: 'fixed-cohort', cohortIds: ['F-old', 'F-new'] },
+    });
+    expect(wakeClaimableAwaitersForSubscribers).toHaveBeenCalledWith({ subscriberIds: ['su-member'], specId: candidate.specId, revision: 9 });
+    expect(getClaimSpecRecord).not.toHaveBeenCalled();
+  });
+
+  it('does not wake members when the append is refused', async () => {
+    vi.clearAllMocks();
+    getFleet.mockResolvedValueOnce({ slug: 'append-fleet' });
+    setClaimSpec.mockResolvedValueOnce({ ok: false, errors: ['claim-floor refusal'] });
+    const result = await (setClaimSpecTool as any).handler(
+      { fleet: 'append-fleet', appendIds: ['WI-refused'], harness: 'papercusp' },
+      { isSuperuser: true, uiClientId: 'su-append', workspaceId: 'ws-test' },
+    );
+    expect(result.data).toMatchObject({ ok: false, claimableAwaitersWoken: 0 });
+    expect(wakeClaimableAwaitersForSubscribers).not.toHaveBeenCalled();
   });
 });
 

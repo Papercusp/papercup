@@ -17,10 +17,11 @@ import {
   checkAdmissionImportCompleteness,
   extractRelativeImportSpecifiers,
   importCompletenessPreflight,
+  readAdmissionBlobBatch,
   renderMissingImports,
   resolveImportCandidates,
 } from './admission-import-completeness';
-import { admitPathsOntoRepairHead, frozenLineageRef, realAdmissionGit, type AdmissionGitRunner } from './repair-head-admission';
+import { ADMISSION_GIT_MAX_BUFFER, admitPathsOntoRepairHead, frozenLineageRef, realAdmissionGit, type AdmissionGitRunner } from './repair-head-admission';
 
 const TEMP: string[] = [];
 afterEach(() => {
@@ -516,11 +517,11 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     expect(missing).toMatchObject({ ok: false, code: 'admission-incomplete',
       missing: [expect.objectContaining({ wanted: 'lib/a.test.ts', relation: 'reverse-importer' })] });
     expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
-    // One admitted blob + diff + tree + content batch. No per-test processes or
+    // One admitted blob + diff + tree + size metadata + content batch. No per-test processes or
     // per-import path probes, regardless of the unrelated changed-test population.
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
     expect(calls.filter((args) => args[1] === '--batch')).toHaveLength(1);
-    expect(calls.some((args) => args[1]?.startsWith('--batch-check'))).toBe(false);
+    expect(calls.filter((args) => args[1] === '--batch-check')).toHaveLength(1);
     const complete = admit(root, candidate, ['lib/a.ts', 'lib/a.test.ts'], { source: { ref: sourceCommit }, preflight });
     expect(complete.ok).toBe(true);
   });
@@ -543,6 +544,48 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     expect(admit(root, candidate, ['lib/a.ts'], { source: { ref: sourceCommit }, preflight }))
       .toMatchObject({ ok: false, code: 'git-failed', step: expect.stringContaining('source cohort blobs') });
     expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+  });
+});
+
+describe('immutable blob capture bounds', () => {
+  it('reads more than the native capture limit without losing Unicode framing or the subprocess error', () => {
+    const { root } = repo();
+    const unit = '// café ☕\n';
+    const body = unit.repeat(Math.ceil(14 * 1024 * 1024 / Buffer.byteLength(unit)));
+    const sources = Array.from({ length: 5 }, (_, i) => `${body}// object ${i}\n`);
+    const objectIds = sources.map(input => execFileSync('git', ['hash-object', '-w', '--stdin'], {
+      cwd: root, env: GIT_ENV, encoding: 'utf8', input,
+    }).trim());
+    expect(sources.reduce((sum, source) => sum + Buffer.byteLength(source), 0)).toBeGreaterThan(ADMISSION_GIT_MAX_BUFFER);
+    const unbounded = realAdmissionGit(['cat-file', '--batch'], { cwd: root, input: objectIds.join('\n') + '\n' });
+    expect(unbounded.status).toBeNull();
+    expect(unbounded.stderr).toContain('ENOBUFS');
+    const captures: number[] = [];
+    const runner: AdmissionGitRunner = (argv, opts) => {
+      const result = realAdmissionGit(argv, opts);
+      if (argv[1] === '--batch') captures.push(Buffer.byteLength(result.stdout));
+      return result;
+    };
+    const result = readAdmissionBlobBatch(root, objectIds, runner);
+    expect(result.ok).toBe(true);
+    if (result.ok) objectIds.forEach((oid, i) => expect(result.contents.get(oid)).toBe(sources[i]));
+    expect(captures.length).toBeGreaterThan(1);
+    expect(captures.every(size => size < ADMISSION_GIT_MAX_BUFFER)).toBe(true);
+  }, 60_000);
+
+  it.each(['missing', 'wrong-object', 'trailing', 'oversized', 'command-failure'])('fails closed on %s size metadata before content capture', fault => {
+    const oid = 'a'.repeat(40);
+    const calls: string[][] = [];
+    const runner: AdmissionGitRunner = argv => {
+      calls.push([...argv]);
+      return fault === 'command-failure' ? { status: null, stdout: '', stderr: 'ENOBUFS: metadata capture failed' }
+        : { status: 0, stderr: '', stdout: fault === 'missing' ? `${oid} missing\n`
+          : fault === 'wrong-object' ? `${'b'.repeat(40)} blob 1\n`
+          : fault === 'trailing' ? `${oid} blob 1\nunexpected\n`
+          : `${oid} blob ${ADMISSION_GIT_MAX_BUFFER}\n` };
+    };
+    expect(readAdmissionBlobBatch('/unused', [oid], runner)).toMatchObject({ ok: false, code: 'git-failed' });
+    expect(calls).toEqual([['cat-file', '--batch-check']]);
   });
 });
 

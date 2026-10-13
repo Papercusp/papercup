@@ -178,6 +178,84 @@ describe('migration 389 restored after the migration 555 table rename', () => {
 });
 
 describe('cup_claim_specs store (mig 372)', () => {
+  it('appendIds preserves incumbent cohort ids and policy in exactly one revision', async () => {
+    const cupId = fleetSpecBeeKey('append-preserves-policy');
+    const incumbent = {
+      ...DEFAULT_CLAIM_SPEC, specId: 'append-preserves-policy', revision: 7,
+      states: ['open'], limits: { maxConcurrentClaims: 2 },
+      view: { filter: { all: [
+        { field: 'id', op: 'in', value: ['WI-old', 'WI-retained'] },
+        { field: 'goal', op: '=', value: 'goal-owned' },
+        { not: { field: 'title', op: 'word', value: 'p2p' } },
+      ] } },
+    };
+    expect((await setClaimSpec({ cupId, workspaceId: 'append-ws', spec: incumbent, potSlug: 'papercusp' }, db.sql)).ok).toBe(true);
+    const result = await setClaimSpec({ cupId, workspaceId: 'append-ws', appendIds: ['WI-new', 'WI-old'], potSlug: 'wrong-scope' }, db.sql);
+    expect(result).toMatchObject({ ok: true, revision: 8 });
+    const [stored] = await db.sql`SELECT spec, revision, harness_slug FROM harness_shared.cup_claim_specs
+      WHERE workspace_id = 'append-ws' AND bee_id = ${cupId}`;
+    expect(stored.spec).toEqual({ ...incumbent, revision: 8, view: { filter: { all: [
+      { field: 'id', op: 'in', value: ['WI-old', 'WI-retained', 'WI-new'] },
+      ...incumbent.view.filter.all.slice(1),
+    ] } } });
+    expect(stored).toMatchObject({ revision: 8, harness_slug: 'papercusp' });
+    expect(result.spec).toEqual(stored.spec);
+  });
+
+  it('concurrent appendIds calls preserve the union of requested cohort ids', async () => {
+    const cupId = fleetSpecBeeKey('append-concurrent');
+    await setClaimSpec({ cupId, spec: { ...DEFAULT_CLAIM_SPEC, revision: 10,
+      view: { filter: { field: 'id', op: 'in', value: ['WI-incumbent'] } },
+    } }, db.sql);
+    const ids = Array.from({ length: 8 }, (_, index) => `WI-concurrent-${index}`);
+    const results = await Promise.all(ids.map((id) => setClaimSpec({ cupId, appendIds: [id] }, db.sql)));
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(results.map((result) => result.revision).sort((a, b) => a! - b!)).toEqual([11, 12, 13, 14, 15, 16, 17, 18]);
+    const [stored] = await db.sql`SELECT spec, revision FROM harness_shared.cup_claim_specs
+      WHERE workspace_id = 'default' AND bee_id = ${cupId}`;
+    expect(stored.spec.view.filter.value).toHaveLength(9);
+    expect(new Set(stored.spec.view.filter.value)).toEqual(new Set(['WI-incumbent', ...ids]));
+    expect(stored.spec.revision).toBe(18);
+    expect(stored.revision).toBe(18);
+  });
+
+  it('concurrent first appendIds calls bootstrap only the requested id union', async () => {
+    const cupId = fleetSpecBeeKey('append-bootstrap');
+    const ids = ['WI-first-a', 'WI-first-b', 'WI-first-c'];
+    const results = await Promise.all(ids.map((id) => setClaimSpec({ cupId, appendIds: [id] }, db.sql)));
+    expect(results.every((result) => result.ok)).toBe(true);
+    const [stored] = await db.sql`SELECT spec, revision, id_only FROM harness_shared.cup_claim_specs
+      WHERE workspace_id = 'default' AND bee_id = ${cupId}`;
+    expect(stored.revision).toBe(3);
+    expect(stored.spec.revision).toBe(3);
+    expect(stored.id_only).toBe(true);
+    expect(new Set(stored.spec.view.filter.value)).toEqual(new Set(ids));
+    expect(stored.spec.view.filter.value).toHaveLength(3);
+  });
+
+  it('appendIds refuses dynamic lanes and admission failures without changing storage', async () => {
+    const cupId = fleetSpecBeeKey('append-guarded');
+    await setClaimSpec({ cupId, spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    expect(await setClaimSpec({ cupId, appendIds: ['WI-refused'] }, db.sql)).toMatchObject({ ok: false });
+    const cohort = { ...DEFAULT_CLAIM_SPEC, revision: 5,
+      view: { filter: { field: 'id', op: 'in', value: ['WI-old'] } },
+    };
+    await setClaimSpec({ cupId, spec: cohort }, db.sql);
+    const validateAppend = vi.fn(async () => ({ errors: ['owner-action floor'] }));
+    expect(await setClaimSpec({ cupId, appendIds: ['WI-refused'], validateAppend }, db.sql)).toMatchObject({
+      ok: false, errors: ['owner-action floor'],
+    });
+    expect(validateAppend).toHaveBeenCalledWith({ ...cohort, revision: 6,
+      view: { filter: { field: 'id', op: 'in', value: ['WI-old', 'WI-refused'] } },
+    }, null);
+    const [stored] = await db.sql`SELECT spec, revision FROM harness_shared.cup_claim_specs
+      WHERE workspace_id = 'default' AND bee_id = ${cupId}`;
+    expect(stored).toMatchObject({ spec: cohort, revision: 5 });
+    const absent = fleetSpecBeeKey('append-guarded-absent');
+    expect(await setClaimSpec({ cupId: absent, appendIds: ['WI-refused'], validateAppend }, db.sql)).toMatchObject({ ok: false });
+    expect(await db.sql`SELECT 1 FROM harness_shared.cup_claim_specs WHERE workspace_id = 'default' AND bee_id = ${absent}`).toHaveLength(0);
+  });
+
   it('bounds dedicated setup acquisition and recovers without running an expired setup', async () => {
     const cupId = 'su-scheduler-setup-starved';
     await setClaimSpec({ cupId, spec: DEFAULT_CLAIM_SPEC }, db.sql);

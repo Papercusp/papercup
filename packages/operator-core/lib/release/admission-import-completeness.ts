@@ -31,6 +31,7 @@ import { posix } from 'node:path';
 import ts from 'typescript';
 
 import {
+  ADMISSION_GIT_MAX_BUFFER,
   realAdmissionGit,
   type AdmissionGitRunner,
   type AdmissionMissingImport,
@@ -698,29 +699,64 @@ export function checkAdmissionImportCompleteness(input: ImportCompletenessInput)
  * Only paths differing from the pre-admission repair head can be owed. This check runs before
  * publication and never widens the caller's allowlist on its behalf.
  */
-/** Read immutable source blobs in one byte-framed Git batch (also used by R6 inventory). */
+/** Bound both metadata and content capture; object count alone cannot bound blob bytes. */
+const BLOB_BATCH_OBJECTS = 500;
+const BLOB_BATCH_BYTES = ADMISSION_GIT_MAX_BUFFER / 4;
+
+/** Read immutable source blobs in byte-bounded, byte-framed Git batches (also used by R6 inventory). */
 export function readAdmissionBlobBatch(root: string, objectIds: readonly string[], git: AdmissionGitRunner = realAdmissionGit):
   | { ok: true; contents: Map<string, string> }
   | { ok: false; code: 'git-failed'; step: string; detail: string } {
   const contents = new Map<string, string>();
   if (objectIds.length === 0) return { ok: true, contents };
   const failed = (detail: string) => ({ ok: false as const, code: 'git-failed' as const, step: 'source blobs', detail });
-  const batch = git(['cat-file', '--batch'], { cwd: root, input: objectIds.join('\n') + '\n' });
-  if (batch.status !== 0) return failed((batch.stderr || batch.stdout).slice(0, 400));
-  const bytes = Buffer.from(batch.stdout, 'utf8');
-  let offset = 0;
-  for (const oid of objectIds) {
-    const end = bytes.indexOf(10, offset);
-    const header = end < 0 ? null : /^([0-9a-f]{40,64}) blob (\d+)$/.exec(bytes.subarray(offset, end).toString('utf8'));
-    if (!header || header[1] !== oid) return failed('missing or mismatched blob header');
-    const size = Number(header[2]);
-    const next = end + 1 + size;
-    if (!Number.isSafeInteger(size) || next >= bytes.length || bytes[next] !== 10)
-      return failed('truncated or malformed blob content');
-    contents.set(oid, bytes.subarray(end + 1, next).toString('utf8'));
-    offset = next + 1;
+  for (let start = 0; start < objectIds.length; start += BLOB_BATCH_OBJECTS) {
+    const ids = objectIds.slice(start, start + BLOB_BATCH_OBJECTS);
+    const metadata = git(['cat-file', '--batch-check'], { cwd: root, input: ids.join('\n') + '\n' });
+    if (metadata.status !== 0) return failed((metadata.stderr || metadata.stdout).slice(0, 400));
+    const rows = metadata.stdout.split('\n');
+    if (rows.pop() !== '' || rows.length !== ids.length) return failed('missing or trailing blob metadata');
+    const groups: string[][] = [];
+    const sizes = new Map<string, number>();
+    let group: string[] = [];
+    let groupBytes = 0;
+    for (let i = 0; i < ids.length; i++) {
+      const oid = ids[i]!;
+      const header = /^([0-9a-f]{40,64}) blob (\d+)$/.exec(rows[i]!);
+      if (!header || header[1] !== oid) return failed('missing or mismatched blob metadata');
+      const size = Number(header[2]);
+      const framedBytes = Buffer.byteLength(rows[i]!, 'utf8') + size + 2;
+      if (!Number.isSafeInteger(size) || !Number.isSafeInteger(framedBytes) || framedBytes >= ADMISSION_GIT_MAX_BUFFER)
+        return failed(`blob exceeds Git capture bound: ${oid} (${header[2]} bytes)`);
+      sizes.set(oid, size);
+      if (group.length > 0 && groupBytes + framedBytes > BLOB_BATCH_BYTES) {
+        groups.push(group);
+        group = [];
+        groupBytes = 0;
+      }
+      group.push(oid);
+      groupBytes += framedBytes;
+    }
+    if (group.length > 0) groups.push(group);
+    for (const ids of groups) {
+      const batch = git(['cat-file', '--batch'], { cwd: root, input: ids.join('\n') + '\n' });
+      if (batch.status !== 0) return failed((batch.stderr || batch.stdout).slice(0, 400));
+      const bytes = Buffer.from(batch.stdout, 'utf8');
+      let offset = 0;
+      for (const oid of ids) {
+        const end = bytes.indexOf(10, offset);
+        const header = end < 0 ? null : /^([0-9a-f]{40,64}) blob (\d+)$/.exec(bytes.subarray(offset, end).toString('utf8'));
+        if (!header || header[1] !== oid) return failed('missing or mismatched blob header');
+        const size = Number(header[2]);
+        const next = end + 1 + size;
+        if (!Number.isSafeInteger(size) || size !== sizes.get(oid) || next >= bytes.length || bytes[next] !== 10)
+          return failed('truncated or malformed blob content');
+        contents.set(oid, bytes.subarray(end + 1, next).toString('utf8'));
+        offset = next + 1;
+      }
+      if (offset !== bytes.length) return failed('unexpected trailing blob data');
+    }
   }
-  if (offset !== bytes.length) return failed('unexpected trailing blob data');
   return { ok: true, contents };
 }
 

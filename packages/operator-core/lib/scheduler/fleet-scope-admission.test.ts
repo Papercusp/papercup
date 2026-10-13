@@ -2363,6 +2363,30 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(remedy).toMatch(/fleet: "p2p-release-verify"/);
     });
 
+    it('a fleet_scope_missing receipt includes the append-ids call for the refused id', () => {
+      const missing: Extract<FleetScopeAdmission, { allowed: false }> = {
+        ...violation, code: 'fleet_scope_missing',
+        scope: { ...scope, record: { ...scope.record, source: 'default' } },
+      };
+      const remedy = fleetScopeLeaderRemedy(missing, true, null, null, 'WI-refused', 'papercusp');
+      expect(remedy).toContain('scheduler:set_claim_spec {"fleet":"p2p-release-verify","appendIds":["WI-refused"],"harness":"papercusp"}');
+      expect(remedy).not.toContain('spec:');
+    });
+
+    it('the fleet leader auto-message includes the append-ids call for the refused id', async () => {
+      const missing: Extract<FleetScopeAdmission, { allowed: false }> = {
+        ...violation, code: 'fleet_scope_missing',
+        scope: { ...scope, record: { ...scope.record, source: 'default' } },
+      };
+      await notifyFleetScopeRefusal({ ownerId: 'su-member' } as never, missing, 'work_items:claim WI-refused', {
+        harness: 'papercusp', subject: { itemId: 'WI-refused', member: 'su-member' },
+      });
+      const payload = admissionMocks.sendMessage.mock.calls.at(-1)?.[1];
+      expect(payload.to).toEqual(['@fleet-leader:p2p-release-verify']);
+      expect(payload.body).toContain('scheduler:set_claim_spec {"fleet":"p2p-release-verify","appendIds":["WI-refused"],"harness":"papercusp"}');
+      expect(payload.extra['fleetAdmissionBlock']).toMatchObject({ itemId: 'WI-refused', code: 'fleet_scope_missing' });
+    });
+
     it('notifyFleetScopeRefusal sends the leader a body carrying the factual reason AND the concrete widen action', async () => {
       await notifyFleetScopeRefusal(
         { ownerId: 'su-member' } as never,

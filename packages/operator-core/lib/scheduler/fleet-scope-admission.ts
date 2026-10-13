@@ -26,7 +26,7 @@ import {
 } from './claim-spec-match';
 import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-filter';
 import { reviewableMiss } from './reviewable-miss';
-import { claimSpecReferencesField, formatSpecRef, type ClaimSpec } from './claim-spec';
+import { appendIdsToClaimSpec, claimSpecReferencesField, formatSpecRef, type ClaimSpec } from './claim-spec';
 import { boundedPgReadTxn, PG_READ_QUERY_CALL_OVERHEAD_MS } from '../pg-read-query';
 import { interpretFleetClaimability } from '../fleet/lane-health';
 import { isLeaderPresentSessionState } from '../fleet/leader-presence';
@@ -1357,6 +1357,7 @@ export function fleetScopeLeaderRemedy(
    *  render an EXECUTABLE fence-preserving widen instead of describing one — see
    *  {@link fencePreservingWidenFilter}. Omitted: the wording degrades to the prose form. */
   subjectId?: string | null,
+  harness?: string | null,
 ): string {
   const fleetSlug = admission.scope.fleetSlug;
   if (admission.code === 'fleet_winding_down') {
@@ -1422,11 +1423,22 @@ export function fleetScopeLeaderRemedy(
   // change exists to fix, while no class warning was printed either — prose and silence,
   // the worst of both. Computed once and reused below so the two can never drift apart.
   const classNote = planScoped ? '' : fleetScopeClassRefusalNote(classRefusal);
+  const appendCall = subjectId && !retiredPlans?.length &&
+    (admission.code === 'fleet_scope_missing' ||
+      (admission.scope.record.source === 'fleet' && spec && appendIdsToClaimSpec(spec, [subjectId])))
+    ? `scheduler:set_claim_spec ${JSON.stringify({
+        fleet: fleetSlug, appendIds: [subjectId],
+        ...((harness ?? admission.scope.record.harnessSlug)?.trim()
+          ? { harness: (harness ?? admission.scope.record.harnessSlug)!.trim() } : {}),
+      })}`
+    : null;
   const concreteWiden =
     subjectId && spec && !classNote
       ? JSON.stringify(fencePreservingWidenFilter(spec.view?.filter, subjectId))
       : null;
-  const laneAction = retiredPlans?.length
+  const laneAction = appendCall
+    ? `APPEND the refused id in ONE call: ${appendCall}. This atomically preserves incumbent ids and fences and bumps one revision; claim floors still apply`
+    : retiredPlans?.length
     ? `RE-STEER the fleet lane in ONE call: ` +
       `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
       `whose view.filter points at a live plan (or another positive filter) and admits this work } }`
@@ -1563,7 +1575,7 @@ export async function notifyFleetScopeRefusal(
       // notice most of all must carry the executable widen rather than describe it. `itemId`
       // is already resolved above and is '' when the caller sent no subject stamp, which
       // degrades to the prose wording exactly as the other call sites do.
-      `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, retiredPlans, itemId || null)}` +
+      `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, retiredPlans, itemId || null, opts?.harness)}` +
       (dependencyEscape ? ` ${renderFleetDependencyEscape(dependencyEscape)}` : ''),
     category: FLEET_ADMISSION_BLOCK_CATEGORY,
     ...(stamp ? { extra: stamp } : {}),
