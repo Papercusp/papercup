@@ -942,6 +942,42 @@ const SYNC_FETCH_SEAM_IS_HOSTFETCHFOR =
   'WI-10006261 adjudicated: sync tests replace the whole host fetch via ConnectorSyncDeps.hostFetchFor ' +
   '(connector-runtime.ts:117); production fetchImpl defaults to global fetch (host-fetch.ts:60)';
 
+/**
+ * 2026-10-13 (WI-6554700010009462, fleet gate-lint-green): adjudications for the 18
+ * findings that accumulated at tip while this guard was not gating. Each was checked
+ * against the code that READS its seam, and every reason below names that reader.
+ */
+const GOVERNOR_RECEIPT_KEYS_TEST_SEAM =
+  'benign: P-530 test seam with a real production default (boot.ts:3694-3696 `?? loadLiveGovernorReceiptSnapshotKeys`); ' +
+  'only perf/peer-child.ts injects a PG-free census. Omitting it is the production read, and a failed load keeps every encrypted row (boot.ts:3698).';
+const DECISION_REVIEW_PARK_IS_REPLY_ONLY =
+  'unreachable here: only consultReplyCore reads onDecisionReviewReply (consult-verbs-core.ts:694); close and decline never call it, ' +
+  'and the expiry sweep re-runs the park resolver. Resolving parks on close/decline would be a core change, not a wiring gap.';
+const SIDECAR_DISABLED_CASE_NEVER_ROUTES =
+  'unreachable here: this degradation case pins sidecarEnabled: () => false (rail-migration-cases.ts:2637-2638) to prove disabled ' +
+  'routing records no sidecar decision; execFileViaSidecar reads viaSidecar only inside `if (sidecarEnabled())` (git-via-sidecar.ts:812-816).';
+const MANAGED_SPAWN_FN_TEST_SEAM =
+  'benign: "Injected for tests" (managed-spawn.ts:75-76) with the real default `opts.spawnFn ?? spawn` (managed-spawn.ts:236); ' +
+  'omitting it is the production spawn path.';
+const MANAGED_SPAWN_STAGE_IS_TRACER =
+  'benign: stage is an optional launch tracer (managed-spawn.ts:60-61) called only as `opts.stage?.(…)`; omitting it changes no behavior.';
+const SIDE_EFFECT_HEAD_FALLS_BACK_TO_LEGACY_SEAM =
+  'benign: the guard resolves side-effect edges with `sideEffectTargetAtHead ?? isResolvableAtHead` (quarantine-import-guard.ts:217), ' +
+  'and the pre-deletion pass wires isResolvableAtHead (run-git-sync.ts:5544). Only the post-stage pass (run-git-sync.ts:4269) needs the ' +
+  'narrower seam, to keep absent-from-index and gitlink/package-closure exclusions unresolvable.';
+const RESULT_DOOR_CHILD_HAS_NO_INVOCATION_ROW =
+  'benign: this test child calls applyResultDoorAsync directly with no transport invocation row; onScratchWritePending persists that ' +
+  "row's bounded-wait timeout (result-door.ts:139-140, wired by _mcp-host.ts:5032), so there is nothing here to persist.";
+const PHASE_I_DRILL_HAS_NO_RESTART_BARRIER =
+  'deliberate: the phase-I drill runs git-sync on a disposable temp clone outside the shared git-sync restart barrier, so there is no ' +
+  'waiting exclusive to yield to; an absent shouldYield never yields (run-git-sync.ts:6909).';
+const LIVE_SEARCH_RECONNECT_DEFAULT_REFUSAL =
+  'deliberate: like outbound dispatch, live search has no sync failure classifier; an unwired reconnectRequired falls back to the ' +
+  "built-in '… must be reconnected' error (source-host-fetch.ts:93-98), a real refusal to the person searching.";
+const FETCH_IMPL_TEST_PASSTHROUGH =
+  'benign: fetchImpl is a test pass-through (source-host-fetch.ts:61) with the real default `deps.fetchImpl ?? fetch` (host-fetch.ts:97); ' +
+  'push delivery and socket ingress inject no fetch, so they take the production path.';
+
 const FAIL_BASELINE = new Map([
   // Historical seed from the measured `--list` run after the WI-1745363 attribution fix:
   // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
@@ -1033,7 +1069,6 @@ const FAIL_BASELINE = new Map([
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-input-schema.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-blocked-by.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-phase.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
-  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-now.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-output-schema.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-plan-status.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-status.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
@@ -1061,7 +1096,6 @@ const FAIL_BASELINE = new Map([
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-input-schema.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-blocked-by.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-phase.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
-  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-now.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-output-schema.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-template-data.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-title.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
@@ -1088,6 +1122,29 @@ const FAIL_BASELINE = new Map([
   // WI-10006261 — the two SourceHostFetchOptions sites (plan generalized-integrations…, D-014.4).
   ['SourceHostFetchOptions|packages/operator-core/lib/capability-verbs/provider-dispatch.ts|reconnectRequired', OUTBOUND_RECONNECT_DEFAULT_REFUSAL],
   ['SourceHostFetchOptions|packages/operator-core/lib/providers/connector-runtime.ts|fetchImpl', SYNC_FETCH_SEAM_IS_HOSTFETCHFOR],
+
+  // 2026-10-13 (WI-6554700010009462) — the 18 findings that accumulated at tip, one row per
+  // file and seam, from the measured run (composition-rig.ts and merge-cost.ts have two
+  // construction sites each). The reason constants above cite each seam's reader.
+  ['BootHarnessOpts|packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts|loadOwnCompactionGovernorReceiptKeys', GOVERNOR_RECEIPT_KEYS_TEST_SEAM],
+  ['BootHarnessOpts|packages/operator-core/lib/p2p/two-peer-commerce/commerce-peer-child.ts|loadOwnCompactionGovernorReceiptKeys', GOVERNOR_RECEIPT_KEYS_TEST_SEAM],
+  ['BootHarnessOpts|packages/operator-core/lib/shared-pot-loop/composition-rig.ts|loadOwnCompactionGovernorReceiptKeys', GOVERNOR_RECEIPT_KEYS_TEST_SEAM],
+  ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/fixture.ts|loadOwnCompactionGovernorReceiptKeys', GOVERNOR_RECEIPT_KEYS_TEST_SEAM],
+  ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/scenarios/merge-cost.ts|loadOwnCompactionGovernorReceiptKeys', GOVERNOR_RECEIPT_KEYS_TEST_SEAM],
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/close.ts|onDecisionReviewReply', DECISION_REVIEW_PARK_IS_REPLY_ONLY],
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|onDecisionReviewReply', DECISION_REVIEW_PARK_IS_REPLY_ONLY],
+  ['ExecFileViaSidecarDeps|packages/operator-core/lib/degradation/rail-migration-cases.ts|viaSidecar', SIDECAR_DISABLED_CASE_NEVER_ROUTES],
+  ['ManagedSpawnOptions|packages/operator-core/lib/su-session-stdio-peer.ts|spawnFn', MANAGED_SPAWN_FN_TEST_SEAM],
+  ['ManagedSpawnOptions|packages/operator-core/lib/voice-node/local-whisper-service.ts|stage', MANAGED_SPAWN_STAGE_IS_TRACER],
+  // File-keyed: this row also covers any OTHER run-git-sync.ts site that later drops the
+  // seam. Today only the pre-deletion pass (:5540) omits it; the live-lock and post-stage
+  // passes wire it.
+  ['QuarantineImportGuardDeps|packages/operator-core/lib/harness/git-sync/run-git-sync.ts|sideEffectTargetAtHead', SIDE_EFFECT_HEAD_FALLS_BACK_TO_LEGACY_SEAM],
+  ['ResultDoorOpts|packages/operator-core/test/_scorecards-list-result-door-child.ts|onScratchWritePending', RESULT_DOOR_CHILD_HAS_NO_INVOCATION_ROW],
+  ['RunGitSyncOpts|packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts|shouldYield', PHASE_I_DRILL_HAS_NO_RESTART_BARRIER],
+  ['SourceHostFetchOptions|packages/operator-core/lib/data-sources/live-search-adapter.ts|reconnectRequired', LIVE_SEARCH_RECONNECT_DEFAULT_REFUSAL],
+  ['SourceHostFetchOptions|packages/operator-core/lib/providers/connector-push.ts|fetchImpl', FETCH_IMPL_TEST_PASSTHROUGH],
+  ['SourceHostFetchOptions|packages/operator-core/lib/providers/provider-socket-ingress.ts|fetchImpl', FETCH_IMPL_TEST_PASSTHROUGH],
 ]);
 
 /**
