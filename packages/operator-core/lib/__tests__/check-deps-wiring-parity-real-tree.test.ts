@@ -17,9 +17,20 @@
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../..');
+
+/**
+ * Budget for ONE guard run, and the vitest timer for every test here. A full-tree scan
+ * measured 56.6s wall at load average ~355 on the 128-core dev box (2026-10-13,
+ * WI-6554700010009462); CI ran this file in 115-183s. The subprocess always had a 180s
+ * budget, but each `it` ran under vitest's 60s default, which made that budget dead code:
+ * the file went red by "Test timed out in 60000ms" with every assertion intact. The two
+ * budgets are now one number, plus headroom for spawn and output parsing.
+ */
+const GUARD_TIMEOUT_MS = 180_000;
+const TEST_TIMEOUT_MS = GUARD_TIMEOUT_MS + 30_000;
 
 function runGuard(args: string[]): { stdout: string; exitCode: number } {
   let stdout = '';
@@ -28,19 +39,36 @@ function runGuard(args: string[]): { stdout: string; exitCode: number } {
     stdout = execFileSync('node', ['scripts/check-deps-wiring-parity.mjs', ...args], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
-      timeout: 180_000,
+      timeout: GUARD_TIMEOUT_MS,
     });
   } catch (e) {
-    const err = e as { status?: number | null; stdout?: string };
-    exitCode = err.status ?? 1;
+    const err = e as { status?: number | null; signal?: string | null; stdout?: string };
+    // A guard killed by a signal (its timeout, or an external kill) produced no verdict.
+    // Mapping that to exit 1 used to report a TIMEOUT as "guard reported NEW divergence".
+    if (err.status === null || err.status === undefined) {
+      throw new Error(
+        `check-deps-wiring-parity did not finish (signal ${err.signal ?? 'unknown'}, budget ` +
+          `${GUARD_TIMEOUT_MS}ms): this is a timeout, not a divergence. Partial output:\n${err.stdout ?? ''}`,
+      );
+    }
+    exitCode = err.status;
     stdout = err.stdout ?? '';
   }
   return { stdout, exitCode };
 }
 
-describe('lint:deps-wiring-parity over the real tree (blocking wiring)', () => {
+describe('lint:deps-wiring-parity over the real tree (blocking wiring)', { timeout: TEST_TIMEOUT_MS }, () => {
+  // ONE full-tree scan, shared by the three whole-tree assertions. `--fail` changes only
+  // the exit code (`if (opts.fail && newFindings.length > 0) process.exit(1)` in the
+  // script); the "examined N files" line and the STALE-row warning print in both modes.
+  // Scanning the whole tree three times measured nothing new and tripled the runtime.
+  let fullTree: { stdout: string; exitCode: number } = { stdout: '', exitCode: -1 };
+  beforeAll(() => {
+    fullTree = runGuard(['--fail']);
+  }, TEST_TIMEOUT_MS);
+
   it('finds no NEW deps-seam divergence beyond the shrink-only baseline', () => {
-    const { stdout, exitCode } = runGuard(['--fail']);
+    const { stdout, exitCode } = fullTree;
 
     // Exit 2 = EXIT_NOT_CHECKED (zero candidate files) — a scan that examined nothing
     // must never read as a clean bill of health, so fail loudly rather than pass.
@@ -49,7 +77,7 @@ describe('lint:deps-wiring-parity over the real tree (blocking wiring)', () => {
   });
 
   it('actually examined the tree — a guard measuring nothing is not a passing guard', () => {
-    const { stdout } = runGuard([]);
+    const { stdout } = fullTree;
     const examined = /examined (\d+) files/.exec(stdout);
     expect(examined, `no "examined N files" line in:\n${stdout}`).not.toBeNull();
     expect(Number(examined![1])).toBeGreaterThan(1000);
@@ -72,7 +100,7 @@ describe('lint:deps-wiring-parity over the real tree (blocking wiring)', () => {
   });
 
   it('reports stale baseline rows so the baseline can only shrink', () => {
-    const { stdout } = runGuard([]);
+    const { stdout } = fullTree;
     // A stale row means a recorded divergence was fixed; the guard must SAY so, or the
     // baseline silently accumulates rows that no longer correspond to anything.
     if (stdout.includes('STALE baseline row')) {
