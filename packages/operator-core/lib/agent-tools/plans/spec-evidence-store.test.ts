@@ -1210,6 +1210,48 @@ describe('classifySpecEvidenceCurrentness exact current comparisons', () => {
     },
   );
 
+  it.each(['live', 'deployed'])('ledger-only live proof measures ledger state without inventing a runtime on %s', (plane) => {
+    const measurement = { schemaVersion: 1, kind: 'work-items', workItemIds: ['EI-1234'] };
+    const row = {
+      spec_is_current: true,
+      source_fingerprint: 'sha256-work-item-set-v1:open',
+      test_fingerprint: null,
+      fixture_fingerprint: null,
+      rubric_fingerprint: null,
+      environment_fingerprint: null,
+      coverage_evidence_ref: null,
+      coverage_evidence_present: false,
+      test_run_id: null,
+      test_run_present: false,
+      evidence_kind: 'manual' as const,
+      details: { evidencePlane: plane, currentMeasurement: measurement },
+    };
+    const current = {
+      evidenceKind: 'manual' as const,
+      evidenceRef: 'work-item:EI-1234',
+      sourceFingerprint: 'sha256-work-item-set-v1:open',
+    };
+    expect(classifySpecEvidenceCurrentness(row, current, { provenance: 'server-measured' })).toMatchObject({
+      overall: 'current', dimensions: { source: 'current', environment: 'not-applicable' }, unknownReasons: [],
+    });
+    expect(classifySpecEvidenceCurrentness(row, { ...current, sourceFingerprint: 'sha256-work-item-set-v1:done' },
+      { provenance: 'server-measured' })).toMatchObject({
+      overall: 'stale', dimensions: { source: 'stale', environment: 'not-applicable' }, staleReasons: ['source-stale'],
+    });
+    for (const currentMeasurement of [
+      { ...measurement, runtimeUnits: ['operator'] },
+      { ...measurement, workItemIds: [] },
+      { ...measurement, unexpected: true },
+      { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['source.ts'] },
+    ]) {
+      expect(classifySpecEvidenceCurrentness({ ...row, details: { evidencePlane: plane, currentMeasurement } },
+        current, { provenance: 'server-measured' })).toMatchObject({
+        overall: 'unknown', dimensions: { environment: 'unknown' },
+        unknownReasons: ['environment-evidence-fingerprint-not-recorded'],
+      });
+    }
+  });
+
   it('compares recorded runtime fingerprints for live evidence', () => {
     const row = {
       spec_is_current: true,

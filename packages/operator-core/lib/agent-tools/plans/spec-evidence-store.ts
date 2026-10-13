@@ -2024,8 +2024,14 @@ export function classifySpecEvidenceCurrentness(
     (adequacy as Record<string, unknown>).fixtureCalibrated === true;
   const fixtureExpected = row.evidence_kind === 'fixture' || fixtureCalibrationAttested;
   const evidencePlane = row.details?.evidencePlane ?? row.details?.evidence_plane ?? row.details?.plane;
+  const ledgerMeasurement = workItemsEvidenceMeasurementSchema.safeParse(row.details?.currentMeasurement);
+  // A live ledger-state observation measures dispositions, not a serving process.
+  // Only a valid ledger-only recipe can omit runtime identity; runtime-dependent
+  // work-item measurements and every repository-backed live proof still require it.
+  const ledgerOnly = ledgerMeasurement.success && ledgerMeasurement.data.runtimeUnits === undefined;
   const liveEnvironmentRequired =
-    typeof evidencePlane === 'string' && ['live', 'deployed'].includes(evidencePlane.trim().toLowerCase());
+    typeof evidencePlane === 'string' && ['live', 'deployed'].includes(evidencePlane.trim().toLowerCase()) &&
+    !ledgerOnly;
   const environmentFingerprintMissing = liveEnvironmentRequired && row.environment_fingerprint === null;
   const dimensions: EvidenceCurrentness['dimensions'] = {
     spec: row.spec_is_current ? 'current' : 'stale',
