@@ -3814,12 +3814,18 @@ const sessionResumed = defineTool({
     let advSessionId: number | null = null;
     let resumeClaimKey: string | null = null;
     let localLivenessEvidence: unknown = undefined;
+    let allowRetired = false;
     try {
       const body = (await req.json()) as {
         advSessionId?: unknown;
         resumeClaimKey?: unknown;
         localLivenessEvidence?: unknown;
+        allowRetired?: unknown;
       };
+      if (body.allowRetired !== undefined && typeof body.allowRetired !== 'boolean') {
+        return jsonRes({ error: 'allowRetired must be boolean' }, 400);
+      }
+      allowRetired = body.allowRetired === true;
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
       }
@@ -3849,7 +3855,7 @@ const sessionResumed = defineTool({
     }
     try {
       if (resumeClaimKey) {
-        const reservation = localLivenessEvidence === undefined
+        const reservation = localLivenessEvidence === undefined && !allowRetired
           ? await acquireAdvSessionResume(advSessionId, resumeClaimKey)
           : await acquireAdvSessionResume(
             advSessionId,
@@ -3857,11 +3863,13 @@ const sessionResumed = defineTool({
             undefined,
             undefined,
             localLivenessEvidence,
+            allowRetired,
           );
         return jsonRes({ ok: true, ...reservation, reactivated: reservation.acquired });
       }
       const claimed = await claimAdvSessionResume(advSessionId, null);
-      return jsonRes({ ok: true, reactivated: claimed });
+      return jsonRes({ ok: true, reactivated: claimed === true,
+        ...(claimed === 'retired' ? { status: 'retired' } : {}) });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
     }
@@ -3870,16 +3878,22 @@ const sessionResumed = defineTool({
 
 async function parseResumeTransitionBody(
   req: Request,
-): Promise<{ advSessionId: number; resumeClaimKey: string; launchArgv?: string[] } | Response> {
+): Promise<{ advSessionId: number; resumeClaimKey: string; launchArgv?: string[]; allowRetired?: boolean } | Response> {
   let advSessionId: number | null = null;
   let resumeClaimKey: string | null = null;
   let launchArgv: string[] | undefined;
+  let allowRetired: boolean | undefined;
   try {
     const body = (await req.json()) as {
       advSessionId?: unknown;
       resumeClaimKey?: unknown;
       launchArgv?: unknown;
+      allowRetired?: unknown;
     };
+    if (body.allowRetired !== undefined && typeof body.allowRetired !== 'boolean') {
+      return jsonRes({ error: 'allowRetired must be boolean' }, 400);
+    }
+    if (body.allowRetired === true) allowRetired = true;
     if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
       advSessionId = body.advSessionId;
     }
@@ -3916,7 +3930,8 @@ async function parseResumeTransitionBody(
   if (!resumeClaimKey) {
     return jsonRes({ error: 'resumeClaimKey must be a non-empty string of at most 200 characters' }, 400);
   }
-  return { advSessionId, resumeClaimKey, ...(launchArgv ? { launchArgv } : {}) };
+  return { advSessionId, resumeClaimKey, ...(launchArgv ? { launchArgv } : {}),
+    ...(allowRetired ? { allowRetired } : {}) };
 }
 
 /** Finalize a keyed resume reservation from concrete child/host spawn evidence. */
@@ -3934,6 +3949,7 @@ const sessionResumeFinalized = defineTool({
         parsed.advSessionId,
         parsed.resumeClaimKey,
         parsed.launchArgv,
+        parsed.allowRetired,
       );
       if (finalized) {
         try {
