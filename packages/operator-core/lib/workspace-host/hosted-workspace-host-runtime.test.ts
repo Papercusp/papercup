@@ -66,7 +66,7 @@ class FakePty extends EventEmitter implements HostedHostPty {
   kill() {
     this.killed = true;
   }
-  snapshot() {
+  snapshot(): Promise<string | null> {
     return Promise.resolve(null);
   }
   onData(listener: (data: Buffer) => void) {
