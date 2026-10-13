@@ -1441,7 +1441,7 @@ export async function reconcileOnePot(
            extract(epoch from last_recovery_at) * 1000 AS last_recovery_ms,
            extract(epoch from recovery_started_at) * 1000 AS recovery_started_ms,
            last_loss_spawn_id,
-           escalation_msg_id, disposition,
+           escalation_msg_id, last_disposition AS disposition,
            extract(epoch from last_seen_at) * 1000 AS last_seen_ms
       FROM harness_shared.pot_placements
      WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}`;

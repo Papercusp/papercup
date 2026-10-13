@@ -1220,6 +1220,57 @@ const dispatchEnvelopeCases: RailMigrationCase[] = [{
 }];
 
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+  id: 'placement-original-independent-episodes-and-exact-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/pot/placement-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { reconcileOnePot, placementConfig } = await import('../pot/placement-watchdog');
+    const at = 1_900_000_000_000;
+    const open = new Map<string, number>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    let healthy = false, unknown = false, omitted = false;
+    const placements = [
+      { work_item_id: 'WI-cursed', status: 'cursed', fail_count: 3, disposition: 'breaker' },
+      { work_item_id: 'WI-infra', status: 'cursed', fail_count: 0, disposition: 'breaker' },
+      { work_item_id: 'WI-stale', status: 'stranded', fail_count: 1, disposition: 'recovery-timeout' },
+      { work_item_id: 'WI-blocker', status: 'stranded', fail_count: 0, disposition: 'stranded' },
+    ].map(row => ({ ...row, infra_loss_count: row.work_item_id === 'WI-infra' ? 12 : 0,
+      escalation_msg_id: 'existing-legacy', last_seen_ms: at, last_loss_spawn_id: null,
+      last_recovery_ms: null, recovery_started_ms: null }));
+    const sql = (async (parts: TemplateStringsArray) => {
+      const query = parts.join('');
+      if (query.includes('SELECT f.status, f.payload')) {
+        if (unknown) throw new Error('exact subject unreadable');
+        return omitted ? [] : [{ status: healthy ? 'done' : 'open', holder_live: false, downstream: 1, payload: {} }];
+      }
+      if (query.includes('FROM harness_shared.adv_sessions')) return healthy || omitted ? [] : [{ coord_owner_id: 'fixture-mug' }];
+      if (query.includes('AS last_recovery_ms')) return placements;
+      if (query.includes('SELECT feature_id, harness_slug, status, taken_by, payload')) return placements.map(row =>
+        ({ feature_id: row.work_item_id, harness_slug: 'harness', status: 'open', taken_by: null, payload: {} }));
+      if (query.includes('SELECT b.feature_id AS blocker_id')) return [{ blocker_id: 'WI-blocker', blocker_harness: 'harness',
+        blocker_status: 'failing', downstream: 1 }];
+      if (query.includes('INSERT INTO harness_shared.pot_placements')) expect(open.size).toBeGreaterThan(0);
+      return [];
+    }) as unknown as import('postgres').Sql;
+    const conditions = { readOpenConditions: async () => [...open].map(([conditionKey, openedAtMs]) => ({ conditionKey, openedAtMs })),
+      rail: { broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+        expect(event.oneShot).toBe(true);
+        if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+        open.set(event.conditionKey!, open.get(event.conditionKey!) ?? at); return true;
+      }, resolve: async (event: { conditionKey: string }) => {
+        if (!open.delete(event.conditionKey)) return false; resolvedKeys.push(event.conditionKey); return true;
+      } } };
+    const run = () => reconcileOnePot(sql, 'fixture', 'pot', placementConfig(), at, () => false, conditions);
+    await run(); expect(open.size).toBe(4);
+    await run(); expect(open.size).toBe(4); expect(openedKeys).toHaveLength(4);
+    omitted = true; await run(); expect(open.size).toBe(4);
+    omitted = false; unknown = true;
+    const warning = (await import('vitest')).vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try { await run(); expect(open.size).toBe(4); expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('exact subject unreadable')); } finally { warning.mockRestore(); }
+    unknown = false; healthy = true; await run(); expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
   id: 'agent-productivity-original-wedge-degenerate-ideate-and-exact-recovery', item: 'P-014', route: 'condition',
   rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/agent-productivity-watchdog.ts|<module>|1'],
   run: async () => {
