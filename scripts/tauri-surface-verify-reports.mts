@@ -23,12 +23,29 @@ export interface NativeLiveProfile {
 export function reportsHistoryFilterExpression(expected: {
   originalTitle: string; correctedTitle: string; subjectValue: string; subjectLabel: string;
 }): string {
-  return `document.querySelectorAll('.reports-list-item').length === 1
-    && document.querySelector('.reports-list-item')?.textContent.includes(${JSON.stringify(expected.correctedTitle)})
-    && document.querySelector('.reports-reader h2')?.textContent === ${JSON.stringify(expected.originalTitle)}
-    && document.querySelector('[aria-label="Search reports"]')?.value === ${JSON.stringify(expected.originalTitle)}
-    && document.querySelector('[aria-label="Report subject"]')?.value === ${JSON.stringify(expected.subjectValue)}
-    && document.querySelectorAll('.reports-history-item').length === 2`;
+  return `(() => {
+    const expected = ${JSON.stringify(expected)};
+    const actual = {
+      listCount: document.querySelectorAll('.reports-list-item').length,
+      listText: document.querySelector('.reports-list-item')?.textContent ?? null,
+      readerTitle: document.querySelector('.reports-reader h2')?.textContent ?? null,
+      searchValue: document.querySelector('[aria-label="Search reports"]')?.value ?? null,
+      subjectValue: new URL(location.href).searchParams.get('subject'),
+      subjectLabel: document.querySelector('.reports-subject-picker')?.textContent ?? null,
+      historyCount: document.querySelectorAll('.reports-history-item').length,
+    };
+    const checks = {
+      listCount: actual.listCount === 1,
+      correctedEdition: actual.listText?.includes(expected.correctedTitle) === true,
+      originalReader: actual.readerTitle === expected.originalTitle,
+      searchValue: actual.searchValue === expected.originalTitle,
+      subjectUrl: actual.subjectValue === expected.subjectValue,
+      subjectLabel: actual.subjectLabel === 'About: ' + expected.subjectLabel + ' ▾',
+      historyCount: actual.historyCount === 2,
+    };
+    window.__reportsHistoryFilterWitness = { expected, actual, checks };
+    return Object.values(checks).every(value => value === true);
+  })()`;
 }
 
 /** Restore only the owned private context after the worker's hermetic scrub. */
@@ -420,6 +437,7 @@ async function verifyReports(evidenceDir: string) {
     // Keep the original failure even when the diagnostic transport is broken.
     const failure: Record<string, unknown> = { error: String(error), step, sourceFingerprints: before };
     try {
+      failure.historyFilterWitness = JSON.parse(native('eval', 'JSON.stringify(window.__reportsHistoryFilterWitness ?? null)'));
       failure.transport = transportSnapshot();
       failure.ui = native('eval', 'JSON.stringify({url:location.href, text:document.body.innerText})');
       native('eval', `window.__reportsReadProbe = { done: false }; void (async () => {
