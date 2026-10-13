@@ -44,7 +44,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -58,8 +58,12 @@ import {
   cachedDeclarationsGraph,
   invalidateDeclarationsGraph,
   describeGeneratorFailure,
+  declarationsGraphMembers,
   DECLARATIONS_GRAPH_TTL_MS,
 } from '../regenerate-declaration-before-lock-release.mjs';
+
+/** The helper run as git-sync runs it: a separate node process (WI-6554700010011061). */
+const HELPER = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'regenerate-declaration-before-lock-release.mjs');
 
 /** Walk up for the declarations config — the same marker the helper uses as the repo root. */
 function findRepoRoot(): string {
@@ -387,6 +391,46 @@ describe('WI-6554700010010911: declarations program-graph edits', () => {
       invalidateDeclarationsGraph(root);
       cachedDeclarationsGraph(root, opts);
       expect(computes).toBe(4);
+    });
+  });
+
+  // WI-6554700010011061 — git-sync asks the helper which dirty paths are graph sources,
+  // so the commit-time trigger and the edit hook share one rule and one cache.
+  it('declarationsGraphMembers keeps only graph sources, and never looks up a non-source list', () => {
+    const seam = graphSeam([IN_GRAPH, 'scripts/lib/imported.mjs']);
+    expect(
+      declarationsGraphMembers(REPO_ROOT, [IN_GRAPH, IN_GRAPH, 'packages/x/out-of-graph.ts', 'scripts/lib/imported.mjs', 'README.md'], seam),
+    ).toEqual([IN_GRAPH, 'scripts/lib/imported.mjs']);
+    expect(seam.calls).toBe(1);
+    const untouched = graphSeam([IN_GRAPH]);
+    expect(declarationsGraphMembers(REPO_ROOT, ['README.md', 'node_modules/x/index.ts', '../elsewhere.ts'], untouched)).toEqual([]);
+    expect(untouched.calls).toBe(0);
+  });
+
+  it('the --declarations-graph-members CLI prints the members from the shared cache and generates nothing', () => {
+    withDeclarationsRepo((root) => {
+      const config = statSync(join(root, 'tsconfig.declarations.json'));
+      const cache = join(root, '.papercusp', 'scratch', 'derived-artifacts', 'declarations-graph.json');
+      mkdirSync(dirname(cache), { recursive: true });
+      writeFileSync(
+        cache,
+        JSON.stringify({ stamp: `${config.size}:${config.mtimeMs}`, computedAt: Date.now(), files: ['lib/in-graph.ts'] }),
+      );
+      const run = spawnSync(
+        process.execPath,
+        [HELPER, '--declarations-graph-members', '--repo-root', root, '--path', 'lib/in-graph.ts', '--path', 'lib/other.ts', '--path', 'README.md'],
+        { encoding: 'utf8' },
+      );
+      expect(run.stderr).toBe('');
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual(['lib/in-graph.ts']);
+      expect(existsSync(join(root, 'ARGV.json'))).toBe(false);
+
+      const missingRoot = spawnSync(process.execPath, [HELPER, '--declarations-graph-members', '--path', 'lib/in-graph.ts'], {
+        encoding: 'utf8',
+      });
+      expect(missingRoot.status).toBe(2);
+      expect(missingRoot.stderr).toContain('--declarations-graph-members requires --repo-root');
     });
   });
 });

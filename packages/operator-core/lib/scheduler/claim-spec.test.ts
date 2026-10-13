@@ -28,6 +28,7 @@ import {
   CLAIM_SPEC_FENCE_MACROS,
   CLAIM_SPEC_LANES,
   type ClaimSpec,
+  type FilterNode,
 } from './claim-spec';
 
 /** A maximal, valid spec exercising the full vocabulary (mirrors the plan's worked example). */
@@ -1041,20 +1042,21 @@ describe('appendIdsToClaimSpec — exact cohort extension', () => {
     const snapshot = structuredClone(spec);
     const candidate = appendIdsToClaimSpec(spec, ['WI-new', 'WI-old'])!;
     expect(positiveIdCohortIds(candidate.view.filter)).toEqual(['WI-old', 'WI-retained', 'WI-new']);
-    expect(candidate.view.filter!.all).toEqual([
+    expect((candidate.view.filter as { all: FilterNode[] }).all).toEqual([
       { field: 'id', op: 'in', value: ['WI-old', 'WI-retained', 'WI-new'] },
-      ...(spec.view.filter!.all as unknown[]).slice(1),
+      ...(spec.view.filter as { all: FilterNode[] }).all.slice(1),
     ]);
     expect({ ...candidate, view: spec.view }).toEqual(spec);
     expect(spec).toEqual(snapshot);
   });
 
   it('refuses dynamic, mixed disjunction and negative-only ID lanes', () => {
-    for (const filter of [
+    const filters: FilterNode[] = [
       { field: 'kind', op: '=', value: 'bug' },
       { any: [{ field: 'id', op: '=', value: 'WI-old' }, { field: 'goal', op: '=', value: 'goal-owned' }] },
       { not: { field: 'id', op: 'in', value: ['WI-old'] } },
-    ]) expect(appendIdsToClaimSpec({ ...DEFAULT_CLAIM_SPEC, view: { filter } }, ['WI-new'])).toBeNull();
+    ];
+    for (const filter of filters) expect(appendIdsToClaimSpec({ ...DEFAULT_CLAIM_SPEC, view: { filter } }, ['WI-new'])).toBeNull();
   });
 
   it('extends pure ID disjunctions and retains intersection semantics in fenced cohorts', () => {

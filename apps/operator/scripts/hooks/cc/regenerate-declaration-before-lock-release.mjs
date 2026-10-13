@@ -62,6 +62,11 @@ export const DECLARATIONS_GRAPH_TTL_MS = 15 * 60_000;
 // Only a source file can be in the program graph; anything else never pays for a lookup.
 const GRAPH_CANDIDATE = /\.(?:[cm]?[jt]sx?)$/;
 
+/** A repo-relative path that COULD be a program-graph source (only the graph says whether it is). */
+function isGraphCandidate(path) {
+  return GRAPH_CANDIDATE.test(path) && !path.startsWith('../') && !path.split('/').includes('node_modules');
+}
+
 // EI-20094472685960957 — `.papercusp/testing-domains.json` is derived from the
 // operator's testing-domains registry, but it is also COMMITTED (the harness
 // Tests tab reads it at runtime), and its freshness is asserted deep inside the
@@ -320,6 +325,30 @@ export function invalidateDeclarationsGraph(repoRoot) {
 const DEFAULT_DEPS = Object.freeze({ declarationsGraph: (repoRoot) => cachedDeclarationsGraph(repoRoot) });
 
 /**
+ * The subset of `paths` that are source files in the declarations program graph,
+ * repo-relative and de-duplicated. Paths that cannot be graph sources never pay for
+ * a lookup, so an all-non-source list returns `[]` without touching the cache.
+ *
+ * WI-6554700010011061: git-sync's commit-time declarations trigger asks THIS function
+ * (out of process, via `--declarations-graph-members`) rather than re-implementing
+ * the graph rule, so the edit hook and the commit path share one rule and one cache.
+ * Running it out of process also keeps the synchronous 3-5s tsc listing off the
+ * bg-host event loop.
+ *
+ * @param {string} repoRoot
+ * @param {string[]} paths absolute or repo-relative
+ * @param {{ declarationsGraph: (root: string) => Set<string> }} [deps]
+ * @returns {string[]}
+ */
+export function declarationsGraphMembers(repoRoot, paths, deps = DEFAULT_DEPS) {
+  const root = resolve(repoRoot);
+  const candidates = [...new Set(toRepoRelative(root, paths).filter(isGraphCandidate))];
+  if (candidates.length === 0) return [];
+  const graph = deps.declarationsGraph(root);
+  return candidates.filter((path) => graph.has(path));
+}
+
+/**
  * One entry per derived artifact: which edited paths strand it, and the
  * deterministic command that un-strands it.
  *
@@ -343,13 +372,7 @@ const DERIVED_ARTIFACTS = [
       // Enrolled inputs are returned in the CONFIG's own spelling: `--files` is
       // matched against that list literally by gen:declarations.
       const selected = enrolledInputs(repoRoot).filter((path) => wanted.has(normalize(repoRoot, path)));
-      const candidates = relPaths.filter(
-        (path) =>
-          !enrolledSet.has(path) &&
-          GRAPH_CANDIDATE.test(path) &&
-          !path.startsWith('../') &&
-          !path.split('/').includes('node_modules'),
-      );
+      const candidates = relPaths.filter((path) => !enrolledSet.has(path) && isGraphCandidate(path));
       // Most edits stop here: only a source-file edit outside the enrolled set
       // consults the graph, so the hot path never pays for a cache read.
       if (candidates.length === 0) return selected;
@@ -489,9 +512,10 @@ export function regenerateForHookPayload(payload) {
 }
 
 function args(argv) {
-  const out = { repoRoot: null, paths: [], hookPayload: false };
+  const out = { repoRoot: null, paths: [], hookPayload: false, graphMembers: false };
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--hook-payload') out.hookPayload = true;
+    else if (argv[i] === '--declarations-graph-members') out.graphMembers = true;
     else if (argv[i] === '--repo-root') out.repoRoot = argv[++i] ?? null;
     else if (argv[i] === '--path') out.paths.push(argv[++i] ?? '');
   }
@@ -505,6 +529,22 @@ async function main() {
     for await (const chunk of process.stdin) raw += chunk;
     try {
       regenerateForHookPayload(JSON.parse(raw || '{}'));
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+    return;
+  }
+  // Read-only query mode for git-sync (WI-6554700010011061): print the JSON array of
+  // `--path` values that are declarations program-graph sources. Nothing is generated.
+  if (parsed.graphMembers) {
+    if (!parsed.repoRoot) {
+      console.error('--declarations-graph-members requires --repo-root');
+      process.exitCode = 2;
+      return;
+    }
+    try {
+      process.stdout.write(`${JSON.stringify(declarationsGraphMembers(parsed.repoRoot, parsed.paths))}\n`);
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;

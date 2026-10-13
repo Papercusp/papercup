@@ -36,6 +36,25 @@ export function cachedDeclarationsGraph(repoRoot: string, opts?: {
 /** Drop the cached graph so the next lookup sees an edit's new or removed imports. */
 export function invalidateDeclarationsGraph(repoRoot: any): void;
 /**
+ * The subset of `paths` that are source files in the declarations program graph,
+ * repo-relative and de-duplicated. Paths that cannot be graph sources never pay for
+ * a lookup, so an all-non-source list returns `[]` without touching the cache.
+ *
+ * WI-6554700010011061: git-sync's commit-time declarations trigger asks THIS function
+ * (out of process, via `--declarations-graph-members`) rather than re-implementing
+ * the graph rule, so the edit hook and the commit path share one rule and one cache.
+ * Running it out of process also keeps the synchronous 3-5s tsc listing off the
+ * bg-host event loop.
+ *
+ * @param {string} repoRoot
+ * @param {string[]} paths absolute or repo-relative
+ * @param {{ declarationsGraph: (root: string) => Set<string> }} [deps]
+ * @returns {string[]}
+ */
+export function declarationsGraphMembers(repoRoot: string, paths: string[], deps?: {
+    declarationsGraph: (root: string) => Set<string>;
+}): string[];
+/**
  * Which artifacts this edit stranded, without running anything.
  *
  * Exported as the pure seam the tests assert on: proving the SELECTION rule needs
