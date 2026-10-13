@@ -4,6 +4,9 @@
  * This proves product behavior; hosted exact-artifact proof is separate. */
 import { expect, test, type Page } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
+import { installWorkspaceKeyboardDiagnostics, typeWorkspaceNameWithKeyboard,
+  withinInputBudget, type KeyboardInputEvidence } from './_keyboard-input';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson';
 import { prepareCloudTutorialNetlog } from '@papercusp/test-config/hermetic-tmpdir';
 import AxeBuilder from '@axe-core/playwright';
@@ -765,6 +768,7 @@ test('guide speaks current instructions and scoped help with real browser audio 
 for (const existing of [false, true]) for (const accessible of [false, true]) {
   test(`${existing ? 'existing workspace' : 'new user'} completes the actual Cloud first-agent journey${accessible ? ' with narrow enlarged text, reduced motion and keyboard activation' : ''}`, async ({ page }) => {
     const fixture = await setupJourney(page, existing);
+    if (!existing) await page.addInitScript(installWorkspaceKeyboardDiagnostics);
     // Run the whole product journey under these settings. Inspecting a narrow
     // row then restoring the desktop viewport does not prove task completion.
     // Focus is seeded at each named control; Tab still verifies form/terminal
@@ -809,11 +813,38 @@ for (const existing of [false, true]) for (const accessible of [false, true]) {
       await expect(name).toBeFocused();
       // Atomic fill hides dropped intermediate updates in a controlled,
       // URL-backed field. Exercise actual keystrokes after guide focus.
-      let entered = '';
-      for (const character of 'My workspace') {
-        await page.keyboard.type(character, { delay: 20 });
-        entered += character;
-        await expect(name).toHaveValue(entered);
+      const inputEvidence: KeyboardInputEvidence[] = [];
+      const hostLoop = monitorEventLoopDelay({ resolution: 20 });
+      hostLoop.enable();
+      let typingFailure: unknown;
+      try {
+        await typeWorkspaceNameWithKeyboard({ press: async (key, options) => {
+          // Locator.press focuses its target. Fail a lost-focus regression
+          // before it can silently refocus the field for the next character.
+          await expect(name).toBeFocused();
+          await name.press(key, options);
+        } }, 'My workspace', async expected => {
+          await expect(name).toHaveValue(expected);
+          await expect(name).toBeFocused();
+        }, inputEvidence);
+      } catch (error) {
+        typingFailure = error;
+        throw error;
+      } finally {
+        hostLoop.disable();
+        // A stalled renderer must not turn collecting failure evidence into
+        // another unbounded operation, or replace the original input failure.
+        const renderer = await withinInputBudget(() => page.evaluate(() =>
+          (window as unknown as { __tutorialKeyboardDiagnostics?: unknown }).__tutorialKeyboardDiagnostics),
+        1000, 'renderer input evidence').catch(error => ({ unavailable: String(error) }));
+        await test.info().attach('workspace-keyboard-input-diagnostics', {
+          body: JSON.stringify({ actions: inputEvidence, renderer,
+            hostEventLoopMaxMs: hostLoop.max / 1e6,
+            failed: typingFailure !== undefined }), contentType: 'application/json',
+        }).catch(error => {
+          if (typingFailure === undefined) throw error;
+          console.error('WORKSPACE_INPUT_DIAGNOSTICS_ATTACHMENT_FAILED', String(error));
+        });
       }
       await page.keyboard.press('Tab');
       await expect(name).toHaveValue('My workspace');
