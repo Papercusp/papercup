@@ -445,6 +445,10 @@ if (runtimeRoot && runtimeId) {
     OPERATOR_DEV_PORT: String(httpPort),
     OPERATOR_DEV_PTY_PORT: String(ptyPort),
     PAPERCUSP_BIND_HOST: '127.0.0.1',
+    // Match the maintained host allocator launcher policy before first exec
+    // (bin/malloc-arena-reexec.ts). Otherwise boot-malloc-arena repeats the
+    // complete module load before a private readiness probe can succeed.
+    MALLOC_ARENA_MAX: process.env.MALLOC_ARENA_MAX ?? '2',
     PAPERCUSP_BACKGROUND_WORKERS: operatorApi ? '0' : '1',
     PAPERCUSP_DBOS_ENABLE: operatorApi ? '0' : '1',
     PAPERCUSP_DBOS_ORCHESTRATOR: operatorApi ? '0' : '1',
