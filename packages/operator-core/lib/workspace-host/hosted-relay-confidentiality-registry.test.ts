@@ -97,6 +97,73 @@ function sqlWriterColumns(source: string): Map<string, Set<string>> {
   return found;
 }
 
+/** The shared audit writer uses Drizzle rather than a literal SQL INSERT. */
+function auditObjectFields(source: string): { row: string[]; details: string[]; dynamic: string[] } {
+  const row = new Set<string>();
+  const details = new Set<string>();
+  const dynamic: string[] = [];
+  const tree = ts.createSourceFile('audit.ts', source, ts.ScriptTarget.Latest, true);
+  function objectKeys(object: ts.ObjectLiteralExpression, fields: Set<string>) {
+    for (const property of object.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        // Hosted optional fields use conditional spreads of literal objects.
+        let objects = 0;
+        function nested(node: ts.Node) {
+          if (ts.isObjectLiteralExpression(node)) { objects++; objectKeys(node, fields); }
+          else ts.forEachChild(node, nested);
+        }
+        nested(property.expression);
+        if (!objects) dynamic.push(property.getText(tree));
+      } else if (property.name && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))) {
+        fields.add(property.name.text);
+      } else dynamic.push(property.getText(tree));
+    }
+  }
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.name.text === 'values'
+      && ts.isCallExpression(node.expression.expression)
+      && ts.isPropertyAccessExpression(node.expression.expression.expression)
+      && node.expression.expression.expression.name.text === 'insert') {
+      const value = node.arguments[0];
+      if (value && ts.isObjectLiteralExpression(value)) objectKeys(value, row);
+      else dynamic.push(node.getText(tree));
+    }
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'hostedDesktopAuditRow') {
+      function hosted(child: ts.Node) {
+        if (ts.isVariableDeclaration(child) && child.name.getText(tree) === 'details') {
+          if (child.initializer && ts.isObjectLiteralExpression(child.initializer)) objectKeys(child.initializer, details);
+          else dynamic.push(child.getText(tree));
+        }
+        ts.forEachChild(child, hosted);
+      }
+      hosted(node);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  return { row: [...row].sort(), details: [...details].sort(), dynamic };
+}
+
+/** Census the arguments reaching console, including a newly introduced method/site. */
+function consoleArgumentFields(source: string): string[] {
+  const fields: string[] = [];
+  const counts = new Map<string, number>();
+  const tree = ts.createSourceFile('warnings.ts', source, ts.ScriptTarget.Latest, true);
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.expression.getText(tree) === 'console') {
+      const method = node.expression.name.text;
+      const ordinal = counts.get(method) ?? 0;
+      counts.set(method, ordinal + 1);
+      node.arguments.forEach((_, index) => fields.push(`${method}.${ordinal}.argument.${index}`));
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(tree);
+  return fields.sort();
+}
+
 function environmentKeys(source: string, constants: Readonly<Record<string, string>> = {}): { keys: string[]; dynamic: string[] } {
   const keys = new Set<string>();
   const dynamic: string[] = [];
@@ -241,6 +308,38 @@ describe('hosted relay confidentiality registry (P-001)', () => {
       .toEqual({ keys: ['CUSTOMER_PAYLOAD'], dynamic: ['process.env[computedKey]'] });
   });
 
+  it('classifies the real Drizzle audit row, hosted detail objects and console argument populations', () => {
+    const source = readFileSync(resolve(REPO, HOSTED_CONTROL_PLANE_WRITER_REGISTRY['desktop-audit-row'].sources[0]), 'utf8');
+    const found = auditObjectFields(source);
+    expect(found.dynamic).toEqual([]);
+    expect(found.row).toContain('details');
+    expect(found.details).toContain('detail');
+    expect(Object.keys(HOSTED_CONTROL_PLANE_FIELD_REGISTRY['desktop-audit-row']!).sort()).toEqual(found.row);
+    expect(Object.keys(HOSTED_CONTROL_PLANE_FIELD_REGISTRY['hosted-desktop-audit-details']!).sort()).toEqual(found.details);
+    for (const sink of ['desktop-audit-warnings', 'hosted-handler-warnings'] as const) {
+      const writer = HOSTED_CONTROL_PLANE_WRITER_REGISTRY[sink];
+      const fields = writer.sources.flatMap((path) => consoleArgumentFields(readFileSync(resolve(REPO, path), 'utf8')));
+      expect(fields.length, sink + ' positive control').toBeGreaterThan(0);
+      expect(Object.keys(HOSTED_CONTROL_PLANE_FIELD_REGISTRY[sink]!).sort()).toEqual(fields.sort());
+    }
+  });
+
+  it('detects new Drizzle fields, nested audit content, dynamic objects and console sites', () => {
+    const source = readFileSync(resolve(REPO, 'packages/operator-core/lib/desktop/desktop-audit.ts'), 'utf8');
+    const rowChange = source.replace('details: row.details as never,', 'details: row.details as never, customerPayload: row.details,');
+    const detailChange = source.replace("target: 'hosted',", "target: 'hosted', customerPayload: event.detail,");
+    expect(rowChange).not.toBe(source);
+    expect(detailChange).not.toBe(source);
+    expect(auditObjectFields(rowChange).row.filter((field) => !(field in HOSTED_CONTROL_PLANE_FIELD_REGISTRY['desktop-audit-row']!)))
+      .toEqual(['customerPayload']);
+    expect(auditObjectFields(detailChange).details.filter((field) => !(field in HOSTED_CONTROL_PLANE_FIELD_REGISTRY['hosted-desktop-audit-details']!)))
+      .toEqual(['customerPayload']);
+    expect(auditObjectFields('drizzle(tx).insert(table).values(unclassified);').dynamic).toHaveLength(1);
+    const registered = HOSTED_CONTROL_PLANE_FIELD_REGISTRY['desktop-audit-warnings']!;
+    expect(consoleArgumentFields(source + '\nconsole.error(customerPayload);').filter((field) => !(field in registered)))
+      .toEqual(['error.0.argument.0']);
+  });
+
   it('keeps diagnostic, configuration and structured persistence fields content-bearing', () => {
     const content: Record<string, string[]> = {
       'workspace-host-connections': ['provider_config', 'status_detail', 'credential_ref'],
@@ -250,6 +349,12 @@ describe('hosted relay confidentiality registry (P-001)', () => {
       'workspace-host-logs': ['message', 'metadata', 'unit'],
       'workspace-host-initialization-steps': ['public_evidence'],
       'customer-host-config': ['PAPERCUSP_HOSTED_CONNECTOR_BEARER', 'PAPERCUSP_HOSTED_WORKSPACE_ROOT'],
+      'workspace-connectors': ['route_label'],
+      'connector-tickets': ['route_label', 'audience'],
+      'desktop-audit-row': ['actor', 'action', 'subject', 'details'],
+      'hosted-desktop-audit-details': ['detail'],
+      'desktop-audit-warnings': ['warn.0.argument.1'],
+      'hosted-handler-warnings': ['warn.0.argument.0', 'warn.0.argument.1', 'warn.1.argument.0', 'warn.1.argument.1'],
     };
     for (const [sink, fields] of Object.entries(content)) {
       for (const field of fields) expect(HOSTED_CONTROL_PLANE_FIELD_REGISTRY[sink]![field]!.sensitivity, sink + '.' + field).toBe('content');
