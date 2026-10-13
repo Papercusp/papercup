@@ -47,6 +47,10 @@ function sha(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
 
+function serializedBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
 /** Digest the legs a stub could replace. Ownership-warning entries (checkpoint null)
  *  are never stubbed, so they are not digested. */
 export function digestRecoveryLegs(recovery: CompactionRecovery): RecoveryDeliveryDigest {
@@ -107,14 +111,14 @@ export function stubCarryDeliveredLegs(
       omitted: 'decision bodies' as const,
       refetch: `plans:get { slug: '${pa.planSlug}', harness: '${pa.harness}', decisionId: '<D-NNN>' }`,
     };
-    const bodyChars = pa.decisions.reduce((n, d) => n + d.body.length, 0);
-    // Same rule as checkpoints: only stub when the pointer is smaller than what it replaces.
-    if (bodyChars > JSON.stringify(deliveredInCarry).length) {
-      out.planAuthority = {
-        ...pa,
-        decisions: pa.decisions.map((d) => ({ id: d.id, title: d.title, body: '', truncated: true })),
-        deliveredInCarry,
-      };
+    const candidate = {
+      ...pa,
+      decisions: pa.decisions.map((d) => ({ id: d.id, title: d.title, body: '', truncated: true })),
+      deliveredInCarry,
+    };
+    // Count the complete wire representation, including metadata keys and UTF-8 width.
+    if (serializedBytes(candidate) < serializedBytes(pa)) {
+      out.planAuthority = candidate;
       stubbed.push('planAuthority.decisions');
     }
   }
@@ -127,11 +131,11 @@ export function stubCarryDeliveredLegs(
         `⟦unchanged since your carry document (built ${record.builtAt}); ` +
         `full text: ${workItemFetchHint(item.id, item.harness)}⟧`;
       const { checkpointTruncated, ...rest } = item;
-      // A stub exists to shrink the body: never trade a short excerpt for a longer pointer.
-      const replacedChars = (item.checkpoint?.length ?? 0) + (checkpointTruncated ? JSON.stringify(checkpointTruncated).length : 0);
-      if (pointer.length >= replacedChars) return item;
+      const candidate = { ...rest, checkpoint: pointer };
+      // JSON escaping and the pointer's Unicode delimiters also count toward the result door.
+      if (serializedBytes(candidate) >= serializedBytes(item)) return item;
       stubbed.push(`checkpoints:${item.id}`);
-      return { ...rest, checkpoint: pointer };
+      return candidate;
     });
   }
 

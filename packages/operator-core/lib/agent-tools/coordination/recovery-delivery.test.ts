@@ -150,6 +150,29 @@ describe('stubCarryDeliveredLegs — D-006', () => {
     expect(result.stubbed).toEqual([]);
     expect(result.recovery).toBe(live);
   });
+
+  it('never grows serialized plan authority at the pointer boundary', () => {
+    for (let size = 1; size <= 512; size++) {
+      const live = recovery({ checkpoints: [] });
+      if (live.planAuthority?.resolution !== 'current') throw new Error('unreachable');
+      live.planAuthority.decisions = [{ id: 'D-001', title: 'first', body: 'x'.repeat(size), truncated: false }];
+      const out = stubCarryDeliveredLegs(live, recordFor(live), ONE_BUMP_AFTER).recovery;
+      expect(Buffer.byteLength(JSON.stringify(out)), `decision body length ${size}`)
+        .toBeLessThanOrEqual(Buffer.byteLength(JSON.stringify(live)));
+    }
+  });
+
+  it('never grows serialized checkpoints at the UTF-8 pointer boundary', () => {
+    for (let size = 1; size <= 512; size++) {
+      const live = recovery({
+        planAuthority: null,
+        checkpoints: [{ id: 'WI-1', harness: 'papercusp', checkpoint: 'x'.repeat(size) }],
+      });
+      const out = stubCarryDeliveredLegs(live, recordFor(live), ONE_BUMP_AFTER).recovery;
+      expect(Buffer.byteLength(JSON.stringify(out)), `checkpoint length ${size}`)
+        .toBeLessThanOrEqual(Buffer.byteLength(JSON.stringify(live)));
+    }
+  });
 });
 
 describe('record / read seams — D-006', () => {
