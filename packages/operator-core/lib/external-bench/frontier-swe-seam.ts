@@ -24,6 +24,7 @@ import { liveBuildVerifierCommand, livePrepareSeparateVerifier, liveReadReward }
 import { makeFrontierSweGrader, type FrontierSweGraderConfig } from './grader/frontier-swe';
 import { checkContainerEvidenceIntegrity, FRONTIER_SWE_PROTECTED_PATHS, type EvidenceIntegrity } from './evidence-integrity';
 import { CONTAINER_CODEX_BIN_PATH, resolveContainerCodexBinary } from './container-exec-target';
+import { CONTAINER_BUSYBOX_PATH, CONTAINER_HOOK_SHIM_PATH, materializeHookShim, resolveStaticBusybox } from './codex-hook-bridge';
 import type { BenchEgress, TaskNetworkLease } from './bench-egress';
 import { codexHomesRoot, codexSqliteHomesRoot } from '@papercusp/orchestrator/session-launch-dirs';
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, renameSync, rmSync, unlinkSync } from 'node:fs';
@@ -67,6 +68,10 @@ export interface InContainerCodexConfig {
   codexBinary?: string;
   /** Default the operator's own uid/gid. */
   hostOwner?: { uid: number; gid: number };
+  /** The D-032 hook shim, mounted read-only at {@link CONTAINER_HOOK_SHIM_PATH}. Default: materialized into a temp dir. */
+  hookShim?: string;
+  /** The shim's interpreter, mounted read-only at {@link CONTAINER_BUSYBOX_PATH}. Default {@link resolveStaticBusybox}. */
+  busybox?: string;
 }
 
 export interface FrontierSweSeamConfig {
@@ -197,6 +202,7 @@ interface ResolvedInContainerCodex {
   roots: [string, string];
   codexBinary: string;
   hostOwner: { uid: number; gid: number };
+  hook: { shim: string; busybox: string };
 }
 
 /** Is `p` equal to or inside `base`? */
@@ -215,7 +221,12 @@ export function resolveInContainerCodexConfig(c: true | InContainerCodexConfig):
   const homesRoot = o.homesRoot ?? codexHomesRoot();
   const sqliteRoot = o.sqliteRoot ?? codexSqliteHomesRoot();
   const codexBinary = o.codexBinary ?? resolveContainerCodexBinary();
-  for (const [name, p] of [['homesRoot', homesRoot], ['sqliteRoot', sqliteRoot], ['codexBinary', codexBinary]] as const) {
+  // Every in-container Codex runs its hooks through the D-032 bridge, so a missing static busybox fails here, before
+  // any container starts, instead of leaving an arm whose hooks silently fail.
+  const busybox = o.busybox ?? resolveStaticBusybox();
+  const hookShim = o.hookShim ?? materializeHookShim();
+  const paths = [['homesRoot', homesRoot], ['sqliteRoot', sqliteRoot], ['codexBinary', codexBinary], ['busybox', busybox], ['hookShim', hookShim]] as const;
+  for (const [name, p] of paths) {
     if (!isAbsolute(p)) throw new Error(`FrontierSWE seam: inContainerCodex.${name} must be absolute (got ${JSON.stringify(p)})`);
     if (p.includes(',')) throw new Error(`FrontierSWE seam: inContainerCodex.${name} contains ',' — refusing an ambiguous --mount (${p})`);
   }
@@ -223,7 +234,7 @@ export function resolveInContainerCodexConfig(c: true | InContainerCodexConfig):
     throw new Error(`FrontierSWE seam: the Codex homes root and SQLite root must not nest (${homesRoot}, ${sqliteRoot}) — one mount would shadow the other`);
   }
   const hostOwner = o.hostOwner ?? { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 };
-  return { roots: [homesRoot, sqliteRoot], codexBinary, hostOwner };
+  return { roots: [homesRoot, sqliteRoot], codexBinary, hostOwner, hook: { shim: hookShim, busybox } };
 }
 
 /**
@@ -237,13 +248,16 @@ function mintPerTaskDir(root: string, instanceId: string): string {
 }
 
 /** The `docker run` mount flags for an in-container Codex arm (exported for tests). */
-export function inContainerCodexMountArgs(m: InContainerCodexMounts, codexBinary: string): string[] {
+export function inContainerCodexMountArgs(m: InContainerCodexMounts, codexBinary: string, hook: { shim: string; busybox: string }): string[] {
   const args: string[] = [];
   for (const { hostRoot, perTaskDir } of m.roots) {
     if (perTaskDir.includes(',')) throw new Error(`FrontierSWE seam: per-task dir contains ',' (${perTaskDir})`);
     args.push('--mount', `type=bind,source=${perTaskDir},target=${hostRoot}`);
   }
   args.push('--mount', `type=bind,source=${codexBinary},target=${m.binPath},readonly`);
+  // The D-032 hook bridge: the static busybox first (it is the shim's shebang), then the shim. Both read-only.
+  args.push('--mount', `type=bind,source=${hook.busybox},target=${CONTAINER_BUSYBOX_PATH},readonly`);
+  args.push('--mount', `type=bind,source=${hook.shim},target=${CONTAINER_HOOK_SHIM_PATH},readonly`);
   return args;
 }
 
@@ -354,7 +368,7 @@ export function makeFrontierSweCloneGradeSeam(cfg: FrontierSweSeamConfig): Clone
         try {
           for (const root of codex.roots) roots.push({ hostRoot: root, perTaskDir: mintPerTaskDir(root, task.instanceId) });
           mounts = { binPath: CONTAINER_CODEX_BIN_PATH, roots, hostOwner: codex.hostOwner };
-          runArgs.push(...inContainerCodexMountArgs(mounts, codex.codexBinary));
+          runArgs.push(...inContainerCodexMountArgs(mounts, codex.codexBinary, codex.hook));
         } catch (e) {
           restoreRelocatedSessions(roots);
           await releaseLease(lease, task.instanceId);

@@ -3337,9 +3337,14 @@ export async function main(
       let nodeLedger = null;
       if (!dry && !vitestArgs.some((arg) => String(arg).startsWith('--test-reporter'))) {
         try {
+          // Snapshot the shared channel's cursor before this group. Previous groups'
+          // notices must not poison this node:test run's persisted source identity.
+          const nodeSourceSink = childSourceNoticeSink?.path
+            ? openChildSourceNoticeSink(process.env) : childSourceNoticeSink;
           const { beginNodeTestLedger } = await loadNodeTestLedger();
           // AWAITED: the before-snapshot must settle before the spawnSync below blocks the loop.
-          nodeLedger = await beginNodeTestLedger({ repoRoot: REPO_ROOT });
+          nodeLedger = await beginNodeTestLedger({ repoRoot: REPO_ROOT,
+            readExecutedSource: () => readChildSourceNotices(nodeSourceSink, REPO_ROOT) });
         } catch (error) {
           console.error(`TEST_FILE_LEDGER runner=node:test rows=0 reason=${JSON.stringify(`ledger unavailable: ${error?.message ?? error}`)}`);
         }

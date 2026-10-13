@@ -14041,6 +14041,22 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
 });
 
 describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", () => {
+  it("keeps retired refusal terminal and sends the opt-in only when explicitly true", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl: typeof fetch = async (_url, opts) => {
+      bodies.push(JSON.parse(String(opts?.body)));
+      return Response.json({ ok: true, status: "retired", acquired: false, reactivated: false });
+    };
+    for (const allowRetired of [undefined, false, true]) {
+      await expect(reportSessionResumed(42, { fetchImpl, operatorUrl: "http://op:1", resumeClaimKey: "retired-key", allowRetired })).resolves.toMatchObject({ claimed: false, status: "retired" });
+    }
+    expect(bodies).toEqual([
+      { advSessionId: 42, resumeClaimKey: "retired-key" },
+      { advSessionId: 42, resumeClaimKey: "retired-key" },
+      { advSessionId: 42, resumeClaimKey: "retired-key", allowRetired: true },
+    ]);
+  });
+
   it("uses the shared proxy-derived request budget by default", async () => {
     const timeoutValues: number[] = [];
     const timeoutSpy = vi
@@ -14378,6 +14394,14 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
 });
 
 describe("acquireSessionResumeWithRecovery — truthful reserved wait/retry", () => {
+  it("preserves explicit relaunch permission across retries and never waits on retirement", async () => {
+    const sleep = vi.fn(async () => undefined);
+    const reportImpl = vi.fn(async () => ({ claimed: false, reason: "contended", status: "retired", resumeClaimKey: "key" }) as const);
+    await expect(acquireSessionResumeWithRecovery(42, { resumeClaimKey: "key", allowRetired: true, reportImpl, sleep })).resolves.toMatchObject({ claimed: false, status: "retired" });
+    expect(reportImpl).toHaveBeenCalledExactlyOnceWith(42, { resumeClaimKey: "key", allowRetired: true });
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
   it("waits through a held lease and retries with the SAME attempt key", async () => {
     const keys: string[] = [];
     const sleeps: number[] = [];
@@ -14554,6 +14578,22 @@ describe("acquireSessionResumeWithRecovery — truthful reserved wait/retry", ()
 });
 
 describe("resume reservation finalize/release reporters", () => {
+  it("sends explicit retirement permission on finalize and omits it on release", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl: typeof fetch = async (_url, opts) => {
+      const body = JSON.parse(String(opts?.body));
+      bodies.push(body);
+      return Response.json({ ok: true, finalized: true, released: true, resumeClaimKey: body.resumeClaimKey });
+    };
+    const options = { fetchImpl, operatorUrl: "http://op:1", allowRetired: true };
+    await reportSessionResumeFinalized(42, "key", options);
+    await reportSessionResumeReleased(42, "key", options);
+    expect(bodies).toEqual([
+      { advSessionId: 42, resumeClaimKey: "key", allowRetired: true },
+      { advSessionId: 42, resumeClaimKey: "key" },
+    ]);
+  });
+
   it("finalizes with the exact acquisition key after spawn evidence", async () => {
     const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
     const fetchImpl = async (url, opts) => {

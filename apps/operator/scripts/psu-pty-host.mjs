@@ -10058,6 +10058,9 @@ export function hostThroughPty(o) {
   // Only actual owner input advances this epoch; terminal capability replies
   // cannot invalidate an untouched successor's first-prompt readiness.
   let ownerInputGeneration = 0;
+  // A pending machine composer belongs to its original input generation.
+  // Owner edits and raw control writes both revoke permission to submit it.
+  let composerInputGeneration = 0;
   // WI-1386682 (1): quota-wall detector, fed the same raw bytes as `activity`
   // (wireChildData below). A stable object with its own reset() — unlike
   // childStartupOutput/childStartupReady this is not reassigned per recycle,
@@ -10363,6 +10366,7 @@ export function hostThroughPty(o) {
   // existing tick (D-002: no new timer). Assigned once the park machinery below
   // exists; a no-op until then.
   let parkTick = () => {};
+  let pendingSubmissionTick = () => {};
   const activityTimer = setInterval(() => {
     let ownKey = true;
     try {
@@ -10374,6 +10378,7 @@ export function hostThroughPty(o) {
     if (ownKey) {
       lastPersisted = snap.lastActivityAt ?? 0;
       writeMeta();
+      pendingSubmissionTick();
     }
     try {
       parkTick();
@@ -11130,6 +11135,7 @@ export function hostThroughPty(o) {
           // The text is the first step; later steps are delayed submit CRs, so
           // readiness is captured now, not after them.
           const turnWriteStartedAt = Date.now();
+          const composerGenerationAtWrite = composerInputGeneration;
           lastMachineTurnWriteStartedAtMs = turnWriteStartedAt;
           const kickoffWriteContext = turnWriteContext(turnWriteStartedAt);
           const turnWriteAuthorizedBy = codexMarkerKickoffRequiresFrame()
@@ -11179,7 +11185,8 @@ export function hostThroughPty(o) {
                     activeHeadlessCodexModelChoice?.complete();
                     if (!submissionObserved) {
                       submissionObserved = true;
-                      onSubmitted?.({ child: injectChild, submittedAtMs: turnWriteStartedAt });
+                      onSubmitted?.({ child: injectChild, submittedAtMs: turnWriteStartedAt,
+                        composerGenerationAtWrite });
                     }
                   }
                 } catch {
@@ -12055,6 +12062,7 @@ export function hostThroughPty(o) {
       } else if (!supersededOnly && nativeStartProof(pending).started) {
         deliveryDedup.markCompleted(id);
         nativeStartPending.delete(id);
+        appendHostEvent(ownerId, 'native-turn-start-confirmed', { deliveryId: id, childGeneration });
       }
     }
     return nativeStartPending.size > 0;
@@ -12089,6 +12097,73 @@ export function hostThroughPty(o) {
       }
     },
   });
+  // EI-25878022553042846: a provider error can consume the initial Enter
+  // while the machine text remains staged. The bounded verifier then ends,
+  // and delivery-ID retries correctly refuse to paste that text a second time.
+  // Resume ONLY the standalone Enter, using the existing discovery tick and
+  // inject mutex. Native acceptance stops retries even if the provider is still
+  // failing; quota/auth banners are not evidence of an unsubmitted composer.
+  let pendingSubmissionRetryActive = false;
+  const pendingSubmissionRecovery = (submittedAtMs, composerGenerationAtWrite) => ({
+    submittedAtMs, composerGenerationAtWrite, lastResubmitAtMs: Date.now(), resubmits: 0, stopped: false,
+  });
+  const retryPendingSubmissions = async () => {
+    if (pendingSubmissionRetryActive || !nativeStartPending.size || deliveriesInFlight > 0) return;
+    pendingSubmissionRetryActive = true;
+    let release;
+    try {
+      release = await injectMutex.acquire();
+      if (hostCleanedUp || shuttingDown || parked || deliveriesInFlight > 0) return;
+      reconcileNativeStartPending();
+      const seen = new Set();
+      for (const [deliveryId, pending] of nativeStartPending) {
+        if (seen.has(pending)) continue;
+        seen.add(pending);
+        const recovery = pending.submissionRecovery;
+        if (!recovery || recovery.stopped || pending.child !== child) continue;
+        // Submission and execution are different receipts. A persisted user
+        // row with a failed/slow model call MUST NOT receive another Enter.
+        if (findNativeTranscriptMarker({ agent: env.PAPERCUSP_AGENT, env,
+          marker: pending.marker, sinceMs: pending.submittedAtMs })) continue;
+        const lostComposer = ownerStopRequested ||
+          recovery.composerGenerationAtWrite !== composerInputGeneration ||
+          recovery.submittedAtMs !== lastMachineTurnWriteStartedAtMs ||
+          Number(activity.snapshot().lastInputAt ?? 0) > recovery.submittedAtMs ||
+          ownerComposerGate.hasPending();
+        if (lostComposer) {
+          recovery.stopped = true;
+          appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
+            deliveryId, reason: 'pending-composer-ownership-lost', terminated: false,
+          });
+          continue;
+        }
+        if (machineTurnActive || nativeExecutionBlocksInjection(currentNativeExecution())) continue;
+        const quietMs = submitVerifyQuietMs(env);
+        const retryCap = positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR, SUBMIT_VERIFY_MAX_RESUBMITS);
+        const retryMs = quietMs * Math.min(2 ** Math.min(recovery.resubmits, 20), retryCap);
+        const now = Date.now();
+        if (now - Number(activity.snapshot().lastOutputAt ?? 0) < quietMs ||
+          now - recovery.lastResubmitAtMs < retryMs) continue;
+        // No await between the ownership/receipt checks and this write: an
+        // owner keystroke cannot race the decision. Never rewrite the payload.
+        child.write('\r');
+        recovery.lastResubmitAtMs = now;
+        recovery.resubmits++;
+        appendHostEvent(ownerId, 'submit-verify-recovery-resubmit', {
+          deliveryId, childGeneration, resubmits: recovery.resubmits,
+          quotaBlocked: quotaBlockDetector.isBlocked(), authBlocked: authBlockDetector.isBlocked(),
+        });
+      }
+    } finally {
+      release?.();
+      pendingSubmissionRetryActive = false;
+    }
+  };
+  pendingSubmissionTick = () => {
+    void retryPendingSubmissions().catch(error => appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
+      reason: 'pending-submit-recovery-error', terminated: false, ...hostErrorEvidence(error),
+    }));
+  };
   // WI-5510: per-loop-instance last-delivered fire number — the delivery-side
   // half of the stale-fire guard (see makeStaleFireGuard's doc block). One
   // guard per host process is correct: this host serves exactly ONE ownerId
@@ -12222,7 +12297,8 @@ export function hostThroughPty(o) {
           terminateOnSubmitVerifyExhaustion: false,
           submitVerificationRequired: true,
           onSubmitted: (submission) => {
-            if (nativeProofAvailable) nativeSubmission = { ...submission, marker, submissionOnly: true };
+            if (nativeProofAvailable) nativeSubmission = { ...submission, marker, submissionOnly: true,
+              submissionRecovery: pendingSubmissionRecovery(submission.submittedAtMs, submission.composerGenerationAtWrite) };
           },
           prepareBeforeWrite: async ({ deadline }) => {
             if (shouldDeferWakeForPendingRespawn(mode, carryRearm.pendingCount('carry-respawn'))) {
@@ -13798,6 +13874,7 @@ export function hostThroughPty(o) {
         let machineTurnSubmitted = false;
         let firstInputWrite = true;
         const turnWriteStartedAt = Date.now();
+        const composerGenerationAtWrite = composerInputGeneration;
         // WI-10004943: snapshot BEFORE the first byte, so a frame the write
         // provokes cannot be mistaken for readiness that preceded it.
         const injectWriteContext = msg.mode === 'turn' || msg.mode === 'reset'
@@ -13827,6 +13904,7 @@ export function hostThroughPty(o) {
               }
             }
             if (msg.mode !== 'osc') {
+              if (msg.mode === 'raw' && step.data) composerInputGeneration++;
               quotaBlockDetector.observeInput(step.data);
               authBlockDetector.observeInput(step.data);
             }
@@ -13870,6 +13948,7 @@ export function hostThroughPty(o) {
             }
             const target = child;
             const pending = { child: target, marker, submittedAtMs: turnWriteStartedAt,
+              submissionRecovery: pendingSubmissionRecovery(turnWriteStartedAt, composerGenerationAtWrite),
               anchor: { fileIdentity: null, markerStartOffset: null, markerEndOffset: null, scannedEndOffset: null } };
             nativeStartPending.set(deliver.deliveryId, pending);
             const proof = await waitForNativeTurnStart({ probe: () => nativeStartProof(pending),
@@ -13890,7 +13969,8 @@ export function hostThroughPty(o) {
           const nativeProofAvailable = Boolean(marker) &&
             nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
           if (nativeProofAvailable) {
-            const pending = { child, marker, submittedAtMs: turnWriteStartedAt, submissionOnly: true };
+            const pending = { child, marker, submittedAtMs: turnWriteStartedAt, submissionOnly: true,
+              submissionRecovery: pendingSubmissionRecovery(turnWriteStartedAt, composerGenerationAtWrite) };
             for (const id of coalescedDeliveryIds) nativeStartPending.set(id, pending);
           }
           const result = await verifySubmitted(`${msg.mode} inject`, {
@@ -14404,6 +14484,7 @@ export function hostThroughPty(o) {
     // only definite line-affecting input advances this interruption epoch.
     if (freshChildOwnerInterruptionDetector.sawOwnerInput(input)) {
       ownerInputGeneration++;
+      composerInputGeneration++;
     }
     const ownerTyped = ownerInputDetector.sawOwnerInput(input);
     if (ownerTyped) {

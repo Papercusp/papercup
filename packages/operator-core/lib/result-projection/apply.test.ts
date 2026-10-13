@@ -19,6 +19,7 @@ import {
   pickRepairCandidates,
   projectionMaterializationFormat,
   proposePickRepairs,
+  renderJsonForLineOps,
 } from './apply';
 import { parseProjection } from './parse';
 import { nestedProjectionContext } from './nested-dispatch';
@@ -947,16 +948,47 @@ describe('applyResultProjection — structured-body and custom truncation disclo
       { toolName: 'work_items:list' },
     );
 
-    // The JSON was compact, so grep retained one rendered line and count
-    // correctly reports that line count. It must not pretend this is an
-    // item-level count of three matching rows.
-    expect(bodyText(out)).toBe('1');
+    // D-005: the compact JSON is re-rendered with indentation before the line
+    // operators run, so grep keeps the three `"state"` lines and count reports
+    // that RENDERED-LINE count. The footer must still say it is not an
+    // item-level count.
+    expect(bodyText(out)).toBe('3');
     const footer = footerOf(out);
     expect(footer).toContain('pipe applied directly to structured JSON');
     expect(footer).toContain('count` reports rendered line count, not matching item count');
     expect(footer).toContain('JSON on 1 line(s)');
+    expect(footer).toContain('2-space indentation');
     expect(footer).toContain('Use `pick` first');
     expect(reportOf(out).notes.join(' ')).toContain('rendered JSON lines');
+  });
+
+  // oversized-tool-results-reduction-2026-10-12#D-005 / WI-6554700010010307:
+  // over the compact rendering grep kept everything and head could not cut, so a
+  // pipe never reduced a JSON result.
+  it('lets grep select fields and head cut a compact JSON body (D-005)', () => {
+    const body = JSON.stringify({
+      results: [{ id: 'WI-1', workItem: { state: 'open', summary: 'x'.repeat(5_000) } }],
+    });
+    const grepped = applyResultProjection(
+      textResult(body),
+      spec({ pipe: [{ op: 'grep', pattern: '"state"' }] }),
+      { toolName: 'work_items:get' },
+    );
+    expect(bodyText(grepped).trim()).toBe('"state": "open",');
+
+    const headed = applyResultProjection(
+      textResult(body),
+      spec({ pipe: [{ op: 'head', n: 3 }] }),
+      { toolName: 'work_items:get' },
+    );
+    expect(bodyText(headed).split('\n')).toEqual(['{', '  "results": [', '    {']);
+  });
+
+  it('re-renders only the JSON item when the body has other text items (D-005)', () => {
+    expect(
+      renderJsonForLineOps([{ text: 'header line' }, { text: '{"a":1}' }], { parsed: { a: 1 }, itemIndex: 1 }),
+    ).toBe('header line\n\n{\n  "a": 1\n}');
+    expect(renderJsonForLineOps([{ text: '[1]' }], { parsed: [1], itemIndex: -1 })).toBe('[\n  1\n]');
   });
 
   it('warns on a generic _projection truncation marker before pick removes it', () => {

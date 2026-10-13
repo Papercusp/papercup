@@ -2182,6 +2182,8 @@ export default defineTool({
         const memberBrief = memberBriefs[i];
         const env = {
           ...base.env,
+          // Only explicit exact resume authorizes retirement clearing.
+          ...(!fork && isResume ? { PSU_ALLOW_RETIRED_RESUME: '1' } : {}),
           ...(scopedGateway ? { [SCOPED_INFERENCE_GATEWAY_ENV]: JSON.stringify(scopedGateway) } : {}),
           ...(memberBrief ? { PAPERCUSP_KICKOFF_PROMPT: memberBrief } : {}),
           ...(internalKickoffOrigin

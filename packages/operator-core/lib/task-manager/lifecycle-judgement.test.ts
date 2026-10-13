@@ -27,6 +27,7 @@ import {
   type LifecycleVerdictEnforcementDeps,
   type ProcessLifecycleProbe,
   type ProcessLifecycleVerdict,
+  type LifecycleLauncherLiveness,
 } from './lifecycle-judgement';
 import { isRetiredTierRole } from '../pot/retired-tier-roles';
 import type { TaskRow } from './types';
@@ -78,18 +79,34 @@ function evaluate(input: {
   rows: TaskRow[];
   nowMs?: number;
   residue?: string[];
-  launchers?: Array<[string, string | null]>;
+  launchers?: Array<[string, string | null | LifecycleLauncherLiveness]>;
   verdicts?: Array<[string, ProcessLifecycleVerdict]>;
   logMtimeMs?: number | null;
 }) {
   return evaluateLifecycleCandidates({
     rows: input.rows,
     confirmedResidueTaskIds: new Set(input.residue ?? []),
-    launcherStates: new Map(input.launchers ?? []),
+    launcherStates: new Map((input.launchers ?? []).map(([ownerId, state]) => [
+      ownerId,
+      typeof state === 'string' ? launcherState(state as LifecycleLauncherLiveness['sessionState']) :
+        state ?? launcherState(null, { signalMissing: true }),
+    ] as const)),
     latestVerdicts: new Map(input.verdicts ?? []),
     statLogMtimeMs: () => input.logMtimeMs ?? null,
     nowMs: input.nowMs ?? NOW,
   });
+}
+
+function launcherState(
+  sessionState: LifecycleLauncherLiveness['sessionState'],
+  over: Partial<LifecycleLauncherLiveness> = {},
+): LifecycleLauncherLiveness {
+  return {
+    sessionState,
+    wakeable: sessionState === 'parked',
+    liveTurn: sessionState === 'live',
+    ...over,
+  };
 }
 
 describe('evaluateLifecycleCandidates', () => {
@@ -114,6 +131,38 @@ describe('evaluateLifecycleCandidates', () => {
     });
     expect(second.candidates).toHaveLength(1);
     expect(second.candidates[0].kinds).toContain('launcher-ended');
+  });
+
+  it('requires consistent ended liveness and resets the grace clock on parked, contradictory, or unknown evidence', () => {
+    const first = evaluate({
+      rows: [row({ logPath: null })],
+      launchers: [['su-launcher', launcherState('ended')]],
+    });
+    const priorProbe = first.probeUpdates[0].probe;
+    const afterGrace = NOW + LIFECYCLE_LAUNCHER_ENDED_GRACE_MS + 1;
+
+    const parked = evaluate({
+      rows: [row({ logPath: null, detail: { processLifecycleProbe: priorProbe } })],
+      nowMs: afterGrace,
+      launchers: [['su-launcher', launcherState('parked')]],
+    });
+    expect(parked.candidates).toEqual([]);
+    expect(parked.probeUpdates[0].probe.launcherEndedSinceMs).toBeNull();
+
+    const contradictory = evaluate({
+      rows: [row({ logPath: null, detail: { processLifecycleProbe: priorProbe } })],
+      nowMs: afterGrace,
+      launchers: [['su-launcher', launcherState('ended', { wakeable: true })]],
+    });
+    expect(contradictory.candidates).toEqual([]);
+    expect(contradictory.probeUpdates[0].probe.launcherEndedSinceMs).toBeNull();
+
+    const unknown = evaluate({
+      rows: [row({ logPath: null, detail: { processLifecycleProbe: priorProbe } })],
+      nowMs: afterGrace,
+    });
+    expect(unknown.candidates).toEqual([]);
+    expect(unknown.probeUpdates[0].probe.launcherEndedSinceMs).toBeNull();
   });
 
   it('uses a readable old log immediately, but a no-log task gets a first-observation baseline', () => {

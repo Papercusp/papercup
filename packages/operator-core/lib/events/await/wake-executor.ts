@@ -2719,7 +2719,7 @@ export interface ExecuteWakeDeps {
   /** WI-666: injected force-resume seam for hermetic tests. */
   forceResume?: (pid: number) => Promise<boolean>;
   /** EI-212246: atomic single-winner claim immediately before Channel 2 resume. */
-  claimResume?: (advSessionId: number) => Promise<boolean>;
+  claimResume?: (advSessionId: number, key?: string | null, windowSec?: number, ownerId?: string | null) => Promise<boolean | 'retired'>;
   /** P-001 (wake-delivery-degradation-fix-2026-07-09): the coord-message send
    *  used to degrade a would-be DROP into a durable inbox notification.
    *  Injected for tests; defaults to the real sendMessage. */
@@ -4423,6 +4423,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     }
 
     // WI-10005134: every channel below STARTS A NEW PROCESS for this session
+    // Retirement is independent of ended_at: generic activity and resume may
+    // reconcile that tuple, but cannot authorize another process after a kill.
+    const retirement = await getLatestSessionForOwner(d.subscriberId);
+    if (retirement?.retiredAt != null) {
+      return { kind: 'drop', reason:
+        `owner retired by deliberate kill (${retirement.retiredBy ?? 'unknown'} @ ${retirement.retiredAt}); no process started (WI-6554700010010429)` };
+    }
     // (cold successor, hive fresh wake, fresh-context fork, backend re-home,
     // resume-headless). The recorded pid above can be stale while the session
     // is still alive: a psu host carry-respawns its CLI child under a new pid.
@@ -4806,7 +4813,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // a datastore fault as a lost race sends the operator hunting a competing
     // resumer that never existed. Park either way (never risk a second writer),
     // but say which happened.
-    let claimed: boolean;
+    let claimed: boolean | 'retired';
     try {
       claimed = await claimResume(handle.advSessionId, null, undefined, d.subscriberId);
     } catch (err) {
@@ -4816,6 +4823,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           `resume claim for adv session #${handle.advSessionId} could not be evaluated ` +
           `(${err instanceof Error ? err.message : String(err)}); parked before Channel 2 spawn`,
       };
+    }
+    if (claimed === 'retired') {
+      return { kind: 'drop', reason: 'owner retired by deliberate kill during resume claim; no process started (WI-6554700010010429)' };
     }
     if (!claimed) {
       return {

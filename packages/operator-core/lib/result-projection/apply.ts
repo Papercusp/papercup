@@ -281,6 +281,21 @@ export function classifyProjectionBody(
 }
 
 /**
+ * The text a pipe-only projection's line operators see when the body is JSON
+ * (oversized-tool-results-reduction-2026-10-12#D-005): the parsed JSON with
+ * 2-space indentation. When the JSON is one item of several, only that item is
+ * re-rendered and the other text items keep their own lines.
+ */
+export function renderJsonForLineOps(
+  textItems: ReadonlyArray<{ text: string }>,
+  json: { parsed: unknown; itemIndex: number },
+): string {
+  const pretty = JSON.stringify(json.parsed, null, 2) ?? '';
+  if (json.itemIndex < 0) return pretty;
+  return textItems.map((it, i) => (i === json.itemIndex ? pretty : it.text)).join('\n\n');
+}
+
+/**
  * Truncation evidence that can survive in the body without the shared
  * `_meta.payloadProjection` envelope. Custom shapers own their output shape,
  * so they may emit camelCase/snake_case field markers, while the generic
@@ -929,12 +944,20 @@ export function applyResultProjection<T extends ProjectableResult>(
     // the documented operator behavior and make the dimensional mismatch
     // impossible to mistake for an item-level finding. `pick` is the explicit
     // structured form and runs before `pipe` when the caller wants item counts.
+    //
+    // oversized-tool-results-reduction-2026-10-12#D-005: the line operators run
+    // over the INDENTED rendering, the same one `pick` already hands to `pipe`
+    // below. Over the compact rendering grep kept all or nothing and head/tail
+    // could not cut, so a pipe never reduced a JSON result and the agent got
+    // the whole body cut by position at the result door.
     if ((spec.pipe?.length ?? 0) > 0 && !spec.pick && json) {
+      working = renderJsonForLineOps(textItems, json);
       const hasCount = spec.pipe?.some((stage) => stage.op === 'count') ?? false;
       note(
         `pipe applied directly to structured JSON: these operators inspect rendered ` +
           `JSON lines, not array/object items${hasCount ? '; `count` reports rendered line count, not matching item count' : ''}. ` +
-          `This body is JSON on ${bodyShape.lineCount} line(s), so any count is a line count over the rendering. ` +
+          `The body (JSON on ${bodyShape.lineCount} line(s)) was re-rendered with 2-space indentation ` +
+          `(${splitLines(working).lines.length} line(s)) before the operators ran, so any count is a line count over that rendering. ` +
           `Use \`pick\` first (for example, \`pick: ["items[].field"]\`) for item-level filtering/counting.`,
       );
     }

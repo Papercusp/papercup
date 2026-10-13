@@ -507,6 +507,21 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
   });
 
   // ── Channel 2 single-winner resume claim (EI-21247460909447431) ───────────
+  it('retirement racing the pre-spawn check drops at the resume claim', async () => {
+    const s = tb.session('retired-during-preparation');
+    let spawned = 0;
+    const out = await executeWake(makeDelivery({ subscriberId: s.ownerId,
+      wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-race', pid: null }),
+    }), baseDeps({
+      getSession: async () => ({ pid: null, endedAt: new Date().toISOString(),
+        agent: 'claude', sessionId: 'native-race', coordOwnerId: s.ownerId, cwd: s.cwd }) as never,
+      claimResume: async () => 'retired',
+      spawnDetached: () => { spawned++; return 4242; },
+    }));
+    expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('retired') });
+    expect(spawned).toBe(0);
+  });
+
   //
   // The claim exists so a queued loop wake and a manual `psu --resume` cannot
   // both spawn a writer for the same session. Both rows below must PARK without

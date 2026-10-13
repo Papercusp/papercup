@@ -2266,7 +2266,12 @@ export async function reconcileLoopRoutines(
       // EI-22346847925961653: reconcile can run long after a completion signal landed. Never
       // leave an active AUTO loop with an already-expired finite next_fire_at; if the
       // completion-relative candidate is stale, start a fresh interval from this pass's clock.
-      const rearmAtMs = futureRearmAtMs(completedAt, rearmMs, nowMs, intervalMs);
+      // The usage-wall duration was parsed relative to this pass's `nowMs`, so it must also be
+      // applied from `nowMs`. `completedAt` can be the much earlier park/fire timestamp on the
+      // stuck-backstop path; adding the parsed duration there counts the parked time twice and
+      // retries before the provider's stated reset.
+      const deferPastWall = turnDeath?.reason === 'usage_limit' && rearmMs > intervalMs;
+      const rearmAtMs = futureRearmAtMs(deferPastWall ? nowMs : completedAt, rearmMs, nowMs, intervalMs);
       const reArmIso = new Date(rearmAtMs).toISOString();
 
       // WI-6852: a USAGE-LIMIT death is the one case that must be allowed to push next_fire_at
@@ -2279,8 +2284,6 @@ export async function reconcileLoopRoutines(
       // one owner re-firing 30x over 2h40m and stopping only when the wall itself lifted.
       // Gated on a reset-aware verdict (rearmMs > intervalMs proves an instant was actually
       // parsed from the turn's own text), so no other path can push a loop's cadence out.
-      const deferPastWall = turnDeath?.reason === 'usage_limit' && rearmMs > intervalMs;
-
       // ONE statement for BOTH kinds (d5a84's LEAST tip):
       //   pure loop parked  → next_fire_at='infinity' matches → LEAST(infinity, X) = X (re-arm)
       //   cron+loop (armed) → guarded by next_fire_at > X → LEAST(cron-next, X) = X (fold sooner)

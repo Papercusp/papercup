@@ -2562,6 +2562,22 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(dataOf(res)?.launch).toMatchObject({ fleet: 'target-fleet', resumedOwnerId: 'su-a1a71' });
   });
 
+  it('authorizes retirement clearing only on explicit exact resumes', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    const result = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'explicitly relaunch this identity' }, ctx);
+    expect(isError(result)).toBe(false);
+    expect(spawnedEnv().PSU_ALLOW_RETIRED_RESUME).toBe('1');
+  });
+
+  it.each([false, true])('does not authorize retirement clearing on a fresh launch or fork (fork=%s)', async (fork) => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    const result = await launchAgent.handler(fork
+      ? { resume: { agentId: 'su-a1a71' }, fork: true, brief: 'branch to a new identity' }
+      : { brief: 'start a new identity' }, ctx);
+    expect(isError(result)).toBe(false);
+    expect(spawnedEnv()).not.toHaveProperty('PSU_ALLOW_RETIRED_RESUME');
+  });
+
   it('preserves resumed target membership when independent is supplied', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });

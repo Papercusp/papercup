@@ -247,7 +247,7 @@ describe('in-container Codex session mounts (D-026 / D-029)', () => {
     made.push(base);
     const homesRoot = join(base, 'home', '.papercusp', 'su-codex-homes');
     const sqliteRoot = join(base, 'tmp', 'papercusp-codex-sqlite-homes');
-    return { base, homesRoot, sqliteRoot, codexBinary: join(base, 'codex-musl') };
+    return { base, homesRoot, sqliteRoot, codexBinary: join(base, 'codex-musl'), busybox: join(base, 'busybox'), hookShim: join(base, 'hook-shim') };
   }
   const owner = { uid: 4242, gid: 4343 };
   /**
@@ -301,6 +301,8 @@ describe('in-container Codex session mounts (D-026 / D-029)', () => {
       `type=bind,source=${m.roots[0].perTaskDir},target=${r.homesRoot}`,
       `type=bind,source=${m.roots[1].perTaskDir},target=${r.sqliteRoot}`,
       `type=bind,source=${r.codexBinary},target=/opt/papercusp/codex,readonly`,
+      `type=bind,source=${r.busybox},target=/opt/papercusp/busybox,readonly`,
+      `type=bind,source=${r.hookShim},target=/opt/papercusp/hook-shim,readonly`,
     ]);
     // The shared roots themselves are never a mount source: no other session's home reaches the container.
     expect(run.some((a) => a.includes(`source=${r.homesRoot},`) || a.includes(`source=${r.sqliteRoot},`))).toBe(false);

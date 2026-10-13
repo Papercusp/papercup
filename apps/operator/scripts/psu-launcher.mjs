@@ -10596,7 +10596,7 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
  *             replayed?: boolean, leaseExpiresAt?: string,
  *             legacyReactivation?: true }
  *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport',
- *       detail?: string, status?: 'reserved' | 'live' | 'missing',
+ *       detail?: string, status?: 'reserved' | 'live' | 'missing' | 'retired',
  *       retryAfterMs?: number, leaseExpiresAt?: string, resumeClaimKey?: string }
  * } ResumeClaimOutcome
  * @typedef {object} ResumeClaimOptions
@@ -10611,6 +10611,7 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
  * @property {(message:string)=>any} [onNotice]
  * @property {string} [resumeClaimKey]
  * @property {unknown} [localLivenessEvidence]
+ * @property {boolean} [allowRetired] explicit operator exact relaunch only
  *
  * @param {number|string|null} advSessionId the adv_sessions PK to claim
  * @param {ResumeClaimOptions} [opts]
@@ -10632,6 +10633,7 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
     onNotice = (message) => process.stderr.write(message),
     resumeClaimKey = randomUUID(),
     localLivenessEvidence = null,
+    allowRetired = false,
   } = opts;
   if (!advSessionId) return { claimed: false, reason: "no-session" };
   const claimKey = String(resumeClaimKey || "").trim();
@@ -10659,6 +10661,7 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
           body: JSON.stringify({
             advSessionId: Number(advSessionId),
             resumeClaimKey: claimKey,
+            ...(allowRetired === true ? { allowRetired: true } : {}),
             ...(evidence ? { localLivenessEvidence: evidence } : {}),
           }),
         },
@@ -10744,7 +10747,7 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
     }
     if (
       body?.acquired === false &&
-      ["reserved", "live", "missing"].includes(body?.status)
+      ["reserved", "live", "missing", "retired"].includes(body?.status)
     ) {
       return {
         claimed: false,
@@ -10814,6 +10817,7 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
 
 /**
  * @typedef {object} ResumeAcquireRecoveryOptions
+ * @property {boolean} [allowRetired]
  * @property {string} [resumeClaimKey]
  * @property {(advSessionId:number|string|null, opts:{resumeClaimKey:string})=>Promise<ResumeClaimOutcome>} [reportImpl]
  * @property {(ms:number)=>Promise<void>} [sleep]
@@ -10845,6 +10849,7 @@ export async function acquireSessionResumeWithRecovery(
     onNotice = (message) => console.error(message),
     waitBudgetMs = 75_000,
     localLivenessEvidence = null,
+    allowRetired = false,
   } = opts;
   const claimKey = String(resumeClaimKey || "").trim();
   const startedAt = now();
@@ -10855,6 +10860,7 @@ export async function acquireSessionResumeWithRecovery(
   while (true) {
     const outcome = await reportImpl(advSessionId, {
       resumeClaimKey: claimKey,
+      ...(allowRetired === true ? { allowRetired: true } : {}),
       ...(canonicalLocalLivenessEvidence
         ? { localLivenessEvidence: canonicalLocalLivenessEvidence }
         : {}),
@@ -10906,6 +10912,7 @@ export async function acquireSessionResumeWithRecovery(
  * never creates a new claimant or substitutes a new key.
  *
  * @typedef {object} ResumeTransitionOptions
+ * @property {boolean} [allowRetired]
  * @property {(input:any, init?:any)=>Promise<any>} [fetchImpl]
  * @property {string} [operatorUrl]
  * @property {string|null} [token]
@@ -10934,6 +10941,7 @@ async function reportSessionResumeTransition(
     now = () => Date.now(),
     onNotice = (message) => process.stderr.write(message),
     launchArgv = null,
+    allowRetired = false,
   } = /** @type {ResumeTransitionOptions} */ (opts);
   const verdictField = transition === "finalized" ? "finalized" : "released";
   if (!advSessionId) return { [verdictField]: false, reason: "no-session" };
@@ -10956,6 +10964,7 @@ async function reportSessionResumeTransition(
           ...(transition === "finalized" && Array.isArray(launchArgv)
             ? { launchArgv }
             : {}),
+          ...(transition === "finalized" && allowRetired === true ? { allowRetired: true } : {}),
         }),
       },
       {
@@ -13765,6 +13774,9 @@ async function launchResume(
     });
   }
   let resumeClaimed = false;
+  // Consume the opt-in so it cannot leak to the native child or later launches.
+  const allowRetiredResume = !fork && process.env.PSU_ALLOW_RETIRED_RESUME === "1";
+  delete process.env.PSU_ALLOW_RETIRED_RESUME;
   let resumeClaimKey = null;
   let resumeClaimLegacyReactivation = false;
   let resumeLaunchArgv = null;
@@ -13801,6 +13813,7 @@ async function launchResume(
     }
     const outcome = await reportSessionResumeFinalized(session.id, resumeClaimKey, {
       ...(resumeLaunchArgv ? { launchArgv: resumeLaunchArgv } : {}),
+      ...(allowRetiredResume ? { allowRetired: true } : {}),
     });
     if (outcome.finalized) {
       resumeClaimed = false;
@@ -13842,6 +13855,7 @@ async function launchResume(
     }
     const claim = await acquireSessionResumeWithRecovery(session.id, {
       ...(localLivenessEvidence ? { localLivenessEvidence } : {}),
+      ...(allowRetiredResume ? { allowRetired: true } : {}),
     });
     if (!claim.claimed) {
       console.error(

@@ -1258,6 +1258,11 @@ describe('reconcileLoopRoutines — stuck-backstop (no-signal) death reclassific
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});
     const escalateLifecycleDeath = vi.fn(async () => {});
+    const wallText = "You've hit your session limit · resets 5:40am (America/New_York)";
+    const nowMs = T0 + 31 * 60_000;
+    const verdict = classifyLoopLifecycleTurn(wallText, 60_000, nowMs);
+    expect(verdict?.reason).toBe('usage_limit');
+    expect(verdict?.rearmDelayMs).toBeGreaterThan(60_000);
     const sql = fakeSql(
       [
         {
@@ -1275,7 +1280,7 @@ describe('reconcileLoopRoutines — stuck-backstop (no-signal) death reclassific
           // call, so presence never bumped and neither lifecycle/turn-journal/presence-quiescence
           // ever produces a `signal`. Before this fix, this field was fetched and then never read
           // on this branch.
-          last_assistant_text_after_fire: "You've hit your session limit · resets 5:40am (America/New_York)",
+          last_assistant_text_after_fire: wallText,
         },
       ],
       updates,
@@ -1283,7 +1288,7 @@ describe('reconcileLoopRoutines — stuck-backstop (no-signal) death reclassific
     // Past the classic stuck-park dwell (>=30min) so the backstop actually fires.
     const res = await reconcileLoopRoutines({
       sql,
-      nowMs: T0 + 31 * 60_000,
+      nowMs,
       recordFire,
       readFireState: NO_PRIOR_ERRORS,
       checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
@@ -1291,8 +1296,9 @@ describe('reconcileLoopRoutines — stuck-backstop (no-signal) death reclassific
     });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('stuck-backstop'); // the signal classification itself is unchanged
-    // The whole point: this must NOT be the bare lastFiredMs+interval a blind stuck-backstop uses.
-    expect(res.loops[0].nextFireAt).toBeGreaterThan(T0 + 60_000);
+    // The parsed delay is relative to this reconciliation pass, not the earlier parked fire.
+    // Using T0 + rearmDelayMs would count the 31-minute park twice and wake before the reset.
+    expect(res.loops[0].nextFireAt).toBe(nowMs + verdict!.rearmDelayMs);
     expect(recordFire).toHaveBeenCalledWith(
       'papercusp',
       'loop-su-wedged',
@@ -2948,8 +2954,8 @@ describe('reconcileLoopRoutines — a usage-limit re-arm may push next_fire_at L
     expect(armStmt).toContain('GREATEST');
     expect(armStmt).toContain('next_fire_at < ');
     expect(armStmt).not.toContain('LEAST');
-    // ...and the deferral must be the real multi-hour wall, not the bare interval.
-    expect(res.loops[0].nextFireAt).toBe(T0 + 5_000 + 3 * 3_600_000);
+    // ...and the deferral must preserve the reset instant parsed from nowMs, not completedAt.
+    expect(res.loops[0].nextFireAt).toBe(T0 + 10_000 + 3 * 3_600_000);
   });
 
   it('keeps the ordinary never-LATER (LEAST) statement for a NON-usage_limit death', async () => {

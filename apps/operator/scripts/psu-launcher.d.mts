@@ -3008,7 +3008,7 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
  *             replayed?: boolean, leaseExpiresAt?: string,
  *             legacyReactivation?: true }
  *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport',
- *       detail?: string, status?: 'reserved' | 'live' | 'missing',
+ *       detail?: string, status?: 'reserved' | 'live' | 'missing' | 'retired',
  *       retryAfterMs?: number, leaseExpiresAt?: string, resumeClaimKey?: string }
  * } ResumeClaimOutcome
  * @typedef {object} ResumeClaimOptions
@@ -3023,6 +3023,7 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
  * @property {(message:string)=>any} [onNotice]
  * @property {string} [resumeClaimKey]
  * @property {unknown} [localLivenessEvidence]
+ * @property {boolean} [allowRetired] explicit operator exact relaunch only
  *
  * @param {number|string|null} advSessionId the adv_sessions PK to claim
  * @param {ResumeClaimOptions} [opts]
@@ -3031,6 +3032,7 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
 export function reportSessionResumed(advSessionId: number | string | null, opts?: ResumeClaimOptions): Promise<ResumeClaimOutcome>;
 /**
  * @typedef {object} ResumeAcquireRecoveryOptions
+ * @property {boolean} [allowRetired]
  * @property {string} [resumeClaimKey]
  * @property {(advSessionId:number|string|null, opts:{resumeClaimKey:string})=>Promise<ResumeClaimOutcome>} [reportImpl]
  * @property {(ms:number)=>Promise<void>} [sleep]
@@ -4940,7 +4942,7 @@ export type ResumeClaimOutcome = {
     claimed: false;
     reason: "no-session" | "http" | "contended" | "transport";
     detail?: string;
-    status?: "reserved" | "live" | "missing";
+    status?: "reserved" | "live" | "missing" | "retired";
     retryAfterMs?: number;
     leaseExpiresAt?: string;
     resumeClaimKey?: string;
@@ -4977,8 +4979,13 @@ export type ResumeClaimOptions = {
     onNotice?: ((message: string) => any) | undefined;
     resumeClaimKey?: string | undefined;
     localLivenessEvidence?: unknown;
+    /**
+     * explicit operator exact relaunch only
+     */
+    allowRetired?: boolean | undefined;
 };
 export type ResumeAcquireRecoveryOptions = {
+    allowRetired?: boolean | undefined;
     resumeClaimKey?: string | undefined;
     reportImpl?: ((advSessionId: number | string | null, opts: {
         resumeClaimKey: string;
@@ -4995,6 +5002,7 @@ export type ResumeAcquireRecoveryOptions = {
  * never creates a new claimant or substitutes a new key.
  */
 export type ResumeTransitionOptions = {
+    allowRetired?: boolean | undefined;
     fetchImpl?: ((input: any, init?: any) => Promise<any>) | undefined;
     operatorUrl?: string | undefined;
     token?: string | null | undefined;

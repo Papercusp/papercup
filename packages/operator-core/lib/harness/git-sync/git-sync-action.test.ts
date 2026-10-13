@@ -543,7 +543,14 @@ let contentFixerRows: Array<{ lr: { status?: string; at?: number; instance?: str
 /** Claimed values returned by the atomic content-fixer marker CAS. */
 let contentFixerClaimResults: boolean[] = [];
 /** Rows returned for the EI-18 + content counters read, including the prior offender signature. */
-let counterRows: Array<{ et: number; lo: string[] | null; ct?: number; cs?: string | null }> = [];
+let counterRows: Array<{
+  et: number;
+  lo: string[] | null;
+  ct?: number;
+  cs?: string | null;
+  lastyield?: string | null;
+  lastsynced?: string | null;
+}> = [];
 /** Previous bridge egress watermark returned for the bridge-ordering regression fixture. */
 let bridgePreviousEgressHead: string | null = null;
 let bridgePreviousEgressScanProgress: unknown = null;
@@ -667,6 +674,7 @@ import {
   GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP,
   computeConflictAuthorship,
   gitSyncContentErrorKey,
+  gitSyncYieldCapped,
 } from './git-sync-action';
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
 import { intentToSubject, DEFAULT_GIT_SYNC_SUBJECT } from './git-sync-attribution';
@@ -6276,5 +6284,58 @@ describe('WI-10007606: cooperative yield to a draining dev:restart barrier', () 
     expect(gitSyncActivityPatches().at(-1)).toMatchObject({ active: false, phase: 'complete', outcome_status: null });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('barrier released; the next tick redoes the pass'));
     log.mockRestore();
+  });
+});
+
+/**
+ * WI-6554700010009238 — the yield must not starve commits. Measured 2026-10-12: a bg-host
+ * auto-remediator requested a restart drain every ~4 min, every drain timed out, and the
+ * papercusp pass (39 submodules) yielded to each one, so nothing was committed for 30 min.
+ */
+describe('WI-6554700010009238: anti-starvation cap on the cooperative yield', () => {
+  async function probeFor(rows: typeof counterRows): Promise<unknown> {
+    counterRows = rows;
+    let probe: unknown = 'not-captured';
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      probe = opts.shouldYield;
+      return { status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] };
+    });
+    await action(ctx);
+    return probe;
+  }
+
+  it('the fire after an unanswered yield runs its pass to the end (no yield probe)', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const now = Date.now();
+
+    const probe = await probeFor([{ et: 0, lo: [], lastyield: String(now - 60_000), lastsynced: String(now - 600_000) }]);
+
+    expect(probe).toBeUndefined();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('this pass will not yield to a restart drain (anti-starvation)'));
+    log.mockRestore();
+  });
+
+  it('a yield with no completed pass ever recorded is also capped', async () => {
+    const probe = await probeFor([{ et: 0, lo: [], lastyield: String(Date.now() - 60_000), lastsynced: null }]);
+    expect(probe).toBeUndefined();
+  });
+
+  it('a completed pass since the last yield restores the probe', async () => {
+    const now = Date.now();
+    const probe = await probeFor([{ et: 0, lo: [], lastyield: String(now - 600_000), lastsynced: String(now - 60_000) }]);
+    expect(typeof probe).toBe('function');
+  });
+
+  it('a routine that never yielded keeps the probe', async () => {
+    const probe = await probeFor([{ et: 0, lo: [] }]);
+    expect(typeof probe).toBe('function');
+  });
+
+  it('gitSyncYieldCapped: capped only while the last yield is newer than the last completed pass', () => {
+    expect(gitSyncYieldCapped({ lastYieldAt: null, lastSyncedAt: null })).toBe(false);
+    expect(gitSyncYieldCapped({ lastYieldAt: null, lastSyncedAt: 5 })).toBe(false);
+    expect(gitSyncYieldCapped({ lastYieldAt: 5, lastSyncedAt: null })).toBe(true);
+    expect(gitSyncYieldCapped({ lastYieldAt: 6, lastSyncedAt: 5 })).toBe(true);
+    expect(gitSyncYieldCapped({ lastYieldAt: 5, lastSyncedAt: 6 })).toBe(false);
   });
 });

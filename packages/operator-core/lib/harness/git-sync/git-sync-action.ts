@@ -1833,6 +1833,9 @@ async function readEscalationCounters(
   cumulativePeelTicks: number;
   publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
   prevPublishBlockedAtCommit: string | null;
+  /** WI-6554700010009238: `last_yield.at` and `last_synced_at` (epoch ms) from earlier fires. */
+  lastYieldAt: number | null;
+  lastSyncedAt: number | null;
 }> {
   const { sql } = getOrgPg();
   const rows = await sql<
@@ -1846,9 +1849,13 @@ async function readEscalationCounters(
       pubrefused: string | null;
       pubblocked: string | null;
       lastpub: string | null;
+      lastyield?: string | number | null;
+      lastsynced?: string | number | null;
     }[]
   >`
     SELECT coalesce((metadata->>'consecutive_error_ticks')::int, 0) AS et,
+           metadata->'last_yield'->>'at' AS lastyield,
+           metadata->>'last_synced_at' AS lastsynced,
            array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_oversized', '[]'::jsonb))) AS lo,
            array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_bulk_excluded', '[]'::jsonb))) AS lb,
            coalesce((metadata->>'consecutive_content_error_ticks')::int, 0) AS ct,
@@ -1874,7 +1881,33 @@ async function readEscalationCounters(
     cumulativePeelTicks: rows[0]?.cpt ?? 0,
     publishRefusal: refused ? { refused, blockedAtCommit: rows[0]?.pubblocked ?? null } : null,
     prevPublishBlockedAtCommit: rows[0]?.lastpub ?? null,
+    lastYieldAt: epochMsOrNull(rows[0]?.lastyield),
+    lastSyncedAt: epochMsOrNull(rows[0]?.lastsynced),
   };
+}
+
+function epochMsOrNull(value: string | number | null | undefined): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * WI-6554700010009238: anti-starvation cap on the cooperative yield (WI-10007606).
+ *
+ * A yield gives up the whole pass, and the next tick starts it over. A papercusp pass
+ * (39 submodules) outlasts the interval between bg-host auto-remediator restart
+ * requests, and those restarts kept timing out their drains anyway. So every pass
+ * yielded and none reached the superproject commit: measured 2026-10-12, 30 min with
+ * no papercusp commit, four yields to four refused drains.
+ *
+ * Rule: if the previous fire yielded and no pass has completed since, this fire runs to
+ * the end. At most every other pass yields, so commits keep landing however often
+ * restarts are requested, and a restart waits at most one pass.
+ */
+export function gitSyncYieldCapped(prev: { lastYieldAt: number | null; lastSyncedAt: number | null }): boolean {
+  if (prev.lastYieldAt == null) return false;
+  return prev.lastSyncedAt == null || prev.lastYieldAt > prev.lastSyncedAt;
 }
 
 /**
@@ -4116,7 +4149,15 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // WI-10007606: cooperative yield. Only meaningful while THIS fire holds the shared
     // restart barrier — an unlocked best-effort fire blocks no drain, so it never yields.
     const holdsRestartBarrier = acquired.some((r) => r.resource === GIT_SYNC_RESTART_BARRIER_RESOURCE);
-    const shouldYield = holdsRestartBarrier
+    // WI-6554700010009238: the fire after an unanswered yield finishes its pass.
+    const yieldCapped = holdsRestartBarrier && gitSyncYieldCapped(prev);
+    if (yieldCapped) {
+      console.log(
+        `[git-sync] ${slug}: the previous fire yielded and no pass has completed since — ` +
+          'this pass will not yield to a restart drain (anti-starvation)',
+      );
+    }
+    const shouldYield = holdsRestartBarrier && !yieldCapped
       ? async (): Promise<string | null> => {
           // This is a read-only inspection of the lock store. The org pool points at
           // another database; inWorkspaceTxn takes the exclusive workspace advisory

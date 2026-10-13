@@ -407,7 +407,8 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
         error:
           `live ${unmanaged.source} session has no managed psu-pty host; no signal was sent and ` +
           'its presence was preserved. Safe stop for its current turn: `turn:interrupt` ' +
-          '`{ owner, mode: "force", reason }` (the session remains resumable).',
+          '`{ owner, mode: "force", reason }`. Routine wakes are fenced; an explicit ' +
+          '`capability:launch-agent` resume may relaunch this identity.',
       };
     }
 

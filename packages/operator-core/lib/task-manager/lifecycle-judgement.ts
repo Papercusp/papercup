@@ -19,7 +19,7 @@ import { statSync } from 'node:fs';
 
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
-import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
+import { resolveSessionStates, type LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import { upsertConditionWorkItem } from '../coord/condition-upsert';
 import { spawnAgentInHarness } from '../fleet/operator-spawn';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
@@ -123,6 +123,11 @@ export interface LifecycleEvaluation {
   probeUpdates: Array<{ taskId: string; probe: ProcessLifecycleProbe; terminalResidue?: boolean }>;
 }
 
+export type LifecycleLauncherLiveness = Pick<
+  LivenessVerdict,
+  'sessionState' | 'wakeable' | 'liveTurn' | 'signalMissing'
+>;
+
 export interface LifecycleVerdictEnforcement {
   taskId: string;
   decision: 'kill' | 'gone';
@@ -176,7 +181,7 @@ export interface OpenLifecycleCandidateItem {
 
 export interface LifecycleJudgementDeps {
   loadRows(input: { workspaceId: string; residueTaskIds: readonly string[] }): Promise<TaskRow[]>;
-  resolveLauncherStates(ownerIds: readonly string[]): Promise<Map<string, string | null>>;
+  resolveLauncherStates(ownerIds: readonly string[]): Promise<Map<string, LifecycleLauncherLiveness>>;
   statLogMtimeMs(path: string): number | null;
   readLatestVerdicts(workspaceId: string, taskIds: readonly string[]): Promise<Map<string, ProcessLifecycleVerdict>>;
   enforceVerdicts(
@@ -519,7 +524,7 @@ export async function enforceLifecycleVerdicts(
 export function evaluateLifecycleCandidates(input: {
   rows: readonly TaskRow[];
   confirmedResidueTaskIds: ReadonlySet<string>;
-  launcherStates: ReadonlyMap<string, string | null>;
+  launcherStates: ReadonlyMap<string, LifecycleLauncherLiveness>;
   latestVerdicts: ReadonlyMap<string, ProcessLifecycleVerdict>;
   settledVerdictTaskIds?: ReadonlySet<string>;
   statLogMtimeMs: (path: string) => number | null;
@@ -604,13 +609,20 @@ export function evaluateLifecycleCandidates(input: {
 
     if (row.state === 'pending' || row.state === 'running') {
       const launcherIsSu = /^su-[0-9A-Za-z]/.test(row.launchedBy);
-      const launcherState = launcherIsSu ? input.launcherStates.get(row.launchedBy) : null;
-      const launcherEndedSinceMs =
-        launcherState === 'ended'
-          ? (prior?.launcherEndedSinceMs ?? input.nowMs)
-          : launcherState == null
-            ? (prior?.launcherEndedSinceMs ?? null)
-            : null;
+      const launcherLiveness = launcherIsSu ? input.launcherStates.get(row.launchedBy) : undefined;
+      // `ended` can coexist with positive wakeability (for example, a matured
+      // wake-miss or stale session-log signal). That contradiction is not
+      // abandonment evidence. Count only a consistent ended verdict, and reset
+      // the grace clock on every parked, contradictory, or unknown observation
+      // so gaps cannot be counted as continuous death.
+      const launcherConfirmedEnded =
+        launcherLiveness?.sessionState === 'ended' &&
+        launcherLiveness.signalMissing !== true &&
+        launcherLiveness.wakeable === false &&
+        launcherLiveness.liveTurn === false;
+      const launcherEndedSinceMs = launcherConfirmedEnded
+        ? (prior?.launcherEndedSinceMs ?? input.nowMs)
+        : null;
 
       const logPath = row.logPath?.trim() || null;
       const sameLogPath = prior?.logPath === logPath;
@@ -656,7 +668,7 @@ export function evaluateLifecycleCandidates(input: {
       if (!sameProbe(prior, nextProbe)) probeUpdates.push({ taskId: row.taskId, probe: nextProbe });
 
       if (
-        launcherState === 'ended' &&
+        launcherConfirmedEnded &&
         launcherEndedSinceMs !== null &&
         input.nowMs - launcherEndedSinceMs >= LIFECYCLE_LAUNCHER_ENDED_GRACE_MS
       ) {
@@ -1007,11 +1019,16 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
         ownerIds.map((ownerId) => ({ ownerId })),
         { hydratePerId: true },
       );
-      return new Map([...verdicts].map(([ownerId, verdict]) => [ownerId, verdict.sessionState]));
+      return new Map([...verdicts].map(([ownerId, verdict]) => [ownerId, {
+        sessionState: verdict.sessionState,
+        wakeable: verdict.wakeable,
+        liveTurn: verdict.liveTurn,
+        ...(verdict.signalMissing ? { signalMissing: verdict.signalMissing } : {}),
+      }] as const));
     } catch {
       // Unknown liveness disables the launcher-ended class for this pass. The
-      // persisted clock is preserved by the pure evaluator rather than reset.
-      return new Map(ownerIds.map((ownerId) => [ownerId, null]));
+      // pure evaluator resets the grace clock because continuity was not proven.
+      return new Map();
     }
   },
 

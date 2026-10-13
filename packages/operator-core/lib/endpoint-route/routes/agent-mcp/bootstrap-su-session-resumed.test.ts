@@ -20,7 +20,7 @@ beforeAll(async () => {
   routes = mod.default as unknown as typeof routes;
 }, 60_000);
 
-const claimResumeMock = vi.hoisted(() => vi.fn(async (): Promise<boolean> => true));
+const claimResumeMock = vi.hoisted(() => vi.fn(async (): Promise<boolean | 'retired'> => true));
 const acquireResumeMock = vi.hoisted(() =>
   vi.fn(
     async (): Promise<AdvSessionResumeReservation> => ({
@@ -115,6 +115,30 @@ async function postTransition(
 }
 
 describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
+  it('preserves retirement refusals for keyed and legacy callers without rearming wakes', async () => {
+    acquireResumeMock.mockResolvedValue({ status: 'retired', acquired: false });
+    claimResumeMock.mockResolvedValue('retired');
+    expect(await (await postResumed({ advSessionId: 42, resumeClaimKey: 'wake' })).json()).toEqual({ ok: true, status: 'retired', acquired: false, reactivated: false });
+    expect(await (await postResumed({ advSessionId: 42 })).json()).toEqual({ ok: true, status: 'retired', reactivated: false });
+    expect(armInboxWakeMock).not.toHaveBeenCalled();
+  });
+
+  it('threads an explicit retirement opt-in only into keyed acquisition', async () => {
+    const response = await postResumed({ advSessionId: 42, resumeClaimKey: 'explicit', allowRetired: true });
+    expect(response.status).toBe(200);
+    expect(acquireResumeMock).toHaveBeenCalledWith(42, 'explicit', undefined, undefined, undefined, true);
+    expect(armInboxWakeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed retirement opt-ins before touching lifecycle state', async () => {
+    for (const allowRetired of ['true', 1, null, {}]) {
+      expect((await postResumed({ advSessionId: 42, resumeClaimKey: 'explicit', allowRetired })).status).toBe(400);
+      expect((await postTransition('session-resume-finalized', { advSessionId: 42, resumeClaimKey: 'explicit', allowRetired })).status).toBe(400);
+    }
+    expect(acquireResumeMock).not.toHaveBeenCalled();
+    expect(finalizeResumeMock).not.toHaveBeenCalled();
+  });
+
   it('acquires a keyed reservation without asserting liveness and returns its typed lease', async () => {
     const res = await postResumed({ advSessionId: 42, resumeClaimKey: 'resume-claim-1' });
 
@@ -147,6 +171,7 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
       undefined,
       undefined,
       evidence,
+      false,
     );
   });
 
@@ -235,6 +260,7 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
       undefined,
       undefined,
       evidence,
+      false,
     );
   });
 
@@ -262,6 +288,13 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
 });
 
 describe('POST bootstrap-su/session-resume-finalized — spawn evidence transition', () => {
+  it('threads successful explicit relaunch permission to finalization before rearming wakes', async () => {
+    const response = await postTransition('session-resume-finalized', { advSessionId: 42, resumeClaimKey: 'explicit', allowRetired: true });
+    expect(response.status).toBe(200);
+    expect(finalizeResumeMock).toHaveBeenCalledWith(42, 'explicit', undefined, true);
+    expect(armInboxWakeMock).toHaveBeenCalledOnce();
+  });
+
   it('finalizes only the matching reservation key', async () => {
     const launchArgv = ['psu', '--resume=42', '--agent=claude', '--account=auto'];
     const res = await postTransition('session-resume-finalized', {
@@ -276,7 +309,7 @@ describe('POST bootstrap-su/session-resume-finalized — spawn evidence transiti
       finalized: true,
       resumeClaimKey: 'resume-claim-1',
     });
-    expect(finalizeResumeMock).toHaveBeenCalledWith(42, 'resume-claim-1', launchArgv);
+    expect(finalizeResumeMock).toHaveBeenCalledWith(42, 'resume-claim-1', launchArgv, undefined);
     expect(getAdvSessionMock).toHaveBeenCalledWith(42);
     expect(armInboxWakeMock).toHaveBeenCalledWith({ ownerId: 'su-resumed-test' });
   });
