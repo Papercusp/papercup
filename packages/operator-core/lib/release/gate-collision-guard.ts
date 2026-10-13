@@ -994,6 +994,11 @@ export interface GitSyncRestartBarrierDeps {
  * (or before its pointer-bump phase) when it sees this barrier's exclusive `draining`
  * (`gitSyncRestartYieldReason` in git-sync-action.ts), so the drain is bounded by one
  * batch of git work, not by the whole pass.
+ *
+ * WI-6554700010010584 (2026-10-13): EXCEPT a pass already inside its pointer-bump
+ * phase (stage + guard + commit), which has no yield boundary and measured 70-90s
+ * under load — the sole remaining holder in every measured 45s refusal. A caller that
+ * must restart should pass this full ceiling, not a shorter budget.
  */
 export const GIT_SYNC_RESTART_BARRIER_DRAIN_SEC = 120;
 
