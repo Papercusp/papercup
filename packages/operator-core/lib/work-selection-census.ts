@@ -529,6 +529,8 @@ export const WORK_SELECTION_SCAN_EXCLUSIONS: readonly WorkSelectionScanExclusion
   ex('work_items/complete.ts', 'by-id', 'completes the id it is given'),
   ex('work_items/expand.ts', 'by-id', 'expands the id it is given'),
   ex('work_items/rehome.ts', 'by-id', 'rehomes the id it is given'),
+  ex('work_items/_mechanics.ts', 'by-id', 'reads the external-blocker projection of the id it is given'),
+  ex('work_items/gate-singleton-claim-guard.ts', 'by-id', 'reads the condition_key of the id being claimed'),
   ex('coordination/coupling-sources.ts', 'observation-lane', 'reads lane=observation reflections only'),
   ex('improvements/filing-classes.ts', 'filing-identity', 'finds an existing row for a filing class before minting'),
   ex('plans/acceptance-drain-filing.ts', 'filing-identity', 'finds its own acceptance-drain filing'),
