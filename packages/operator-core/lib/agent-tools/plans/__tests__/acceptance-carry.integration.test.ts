@@ -73,6 +73,8 @@ describe('P-025 transactional acceptance carry', () => {
       accountableOwnerId: 'su-carry-driver',
     });
 
+    // A refused move names its door in `skipped`/`blindReview`; surface it on failure.
+    expect(result.skipped, JSON.stringify(result)).toBeUndefined();
     expect(result).toMatchObject({
       applied: true,
       from: 'ready',
@@ -105,6 +107,27 @@ describe('P-025 transactional acceptance carry', () => {
       taken_by: 'su-carry-driver',
       payload: { gateObservation: 'pending', blockerCode: null },
     });
+  }, 60_000);
+
+  it('gates the plan under its registered workspace when the ambient workspace differs — WI-6554700010010577', async () => {
+    // The plan lives in the fixture workspace. Point the process-level workspace
+    // (activeWorkspaceId()'s env pin) elsewhere: the blind review gate must read the
+    // plan under the scope the plan lock resolved, or it finds no plan and refuses
+    // the move as blind_review_unavailable.
+    const slug = PLAN('ambient');
+    await registerHarnessProject(admin, workspaceId, HARNESS);
+    await seedPlan(admin, workspaceId, HARNESS, slug, body(slug));
+    const prev = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = 'zzz-ambient-not-the-plan-workspace';
+    let result: Awaited<ReturnType<typeof applyPlanDrainTransition>>;
+    try {
+      result = await applyPlanDrainTransition(slug, HARNESS, { accountableOwnerId: 'su-carry-driver' });
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = prev;
+    }
+    expect(result.skipped, JSON.stringify(result)).toBeUndefined();
+    expect(result).toMatchObject({ applied: true, to: 'awaiting-acceptance', acceptanceCarry: { outcome: 'created' } });
   }, 60_000);
 
   it('rolls back both records when the coupled handoff is interrupted', async () => {

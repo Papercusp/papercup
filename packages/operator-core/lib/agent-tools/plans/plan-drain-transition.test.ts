@@ -29,7 +29,7 @@ describe('planDrainTransitionMutationGated: plan-run instances (WI-6554700010009
     const evaluate = evaluateStub(true);
     const out = await planDrainTransitionMutationGated(
       drainedBody('bug-triage'),
-      { planSlug: 'bug-triage', harnessSlug: 'papercusp' },
+      { planSlug: 'bug-triage', harnessSlug: 'papercusp', workspaceId: 'ws-a' },
       { evaluate },
     );
     expect(out.value).toMatchObject({ applied: true, to: 'awaiting-acceptance' });
@@ -37,12 +37,24 @@ describe('planDrainTransitionMutationGated: plan-run instances (WI-6554700010009
     expect(evaluate).toHaveBeenCalledTimes(1);
   });
 
+  it('asks the gate about the caller\'s locked scope, never the ambient workspace (WI-6554700010010577)', async () => {
+    const evaluate = evaluateStub(true);
+    await planDrainTransitionMutationGated(
+      drainedBody('bug-triage'),
+      { planSlug: 'bug-triage', harnessSlug: 'calendar', workspaceId: 'ws-registered' },
+      { evaluate },
+    );
+    expect(evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({ planSlug: 'bug-triage', harnessSlug: 'calendar', workspaceId: 'ws-registered' }),
+    );
+  });
+
   it('never moves a <template>@run-<token> instance, so no acceptance carry is filed and the run reconciler can still retire it', async () => {
     const slug = 'bug-triage@run-933051162668500852';
     const evaluate = evaluateStub(true);
     const out = await planDrainTransitionMutationGated(
       drainedBody(slug),
-      { planSlug: slug, harnessSlug: 'papercusp' },
+      { planSlug: slug, harnessSlug: 'papercusp', workspaceId: 'ws-a' },
       { evaluate },
     );
     expect(out).toEqual({ newBody: null, value: { applied: false, skipped: 'plan_run_instance' } });
@@ -54,7 +66,7 @@ describe('planDrainTransitionMutationGated: plan-run instances (WI-6554700010009
     const evaluate = evaluateStub(true);
     const out = await planDrainTransitionMutationGated(
       drainedBody(slug),
-      { planSlug: slug, harnessSlug: 'papercusp' },
+      { planSlug: slug, harnessSlug: 'papercusp', workspaceId: 'ws-a' },
       { evaluate },
     );
     expect(out.value.skipped).not.toBe('plan_run_instance');

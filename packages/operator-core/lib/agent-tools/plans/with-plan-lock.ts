@@ -463,6 +463,12 @@ export async function withPlanLock<T>(
   mutator: (
     current: string | null,
     meta: PlanWriteMeta | null,
+    /** The (workspaceId, harnessSlug) this lock resolved and read `current` under. A
+     *  mutator that reads the SAME plan through another path (a gate, a second query)
+     *  must use this scope, never re-resolve one: `activeWorkspaceId()` can name a
+     *  different workspace than the plan's registered one, and the second read then
+     *  finds no plan (WI-6554700010010577). */
+    scope: { workspaceId: string; harnessSlug: string },
   ) => Promise<{
     newBody: string | null;
     value: T;
@@ -570,6 +576,7 @@ export async function withPlanLock<T>(
     const { newBody, value, templateData: templateDataPatch, inputSchema, outputSchema, nowNote } = await mutator(
       cur?.content ?? null,
       meta,
+      { workspaceId, harnessSlug },
     );
     let templateData = templateDataPatch;
 

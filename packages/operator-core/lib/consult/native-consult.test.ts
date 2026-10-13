@@ -4,6 +4,7 @@ import { observeNativeConsultSource } from './consult-dispatch';
 import type { RouteResult } from './relevance-router';
 import type { resolveResumeTarget } from '../agent-launch-core';
 import type { AdvSessionRow } from '../adv-sessions';
+import type { PlanItemClaim } from '../plan-items/claims';
 
 const constraint: NativeConsultConstraints = { sourceBackend: 'claude', targetBackend: 'codex', sourceState: 'ended' };
 const candidate = { ownerId: 'owner-exact', evidence: [
@@ -50,6 +51,11 @@ describe('native consult pre-dispatch boundary', () => {
     live: true, endedAt: null, advSessionId: 7 } as never;
   const source = { id: 7, coordOwnerId: 'owner-exact', sessionId: 'exact-native', agent: 'claude',
     endedAt: null, role: null, cwd: '/repo' } as AdvSessionRow;
+  const planClaim: PlanItemClaim = { workspaceId: 'workspace-native', harnessSlug: 'papercusp',
+    planSlug: 'plan-only', itemId: 'P-009', claimId: 'incarnation-before', owner: 'owner-exact',
+    ownerLabel: null, ownerName: null, intent: 'independent source work', livenessMode: 'activity',
+    ttlSec: 1800, acquiredTs: '2026-10-12T01:00:00Z', expiresTs: '2026-10-12T01:30:00Z',
+    lastActivityTs: '2026-10-12T01:00:00Z', expired: true };
   const makeDeps = () => ({
     readSession: async () => source,
     readSource: async () => ({ bytes: Buffer.from('{}\n'), sha256: 'a'.repeat(64), highWaterBytes: 3,
@@ -57,6 +63,7 @@ describe('native consult pre-dispatch boundary', () => {
       fileIdentity: { path: '/canonical/native.jsonl', device: 2, inode: 8, links: 1 } }),
     readClaims: async () => [{ id: 'WI-held', harness: 'papercusp', sourcePlanSlug: 'plan-native',
       sourcePlanItemIds: ['P-002'] }] as never,
+    readPlanClaims: async () => [planClaim],
     now: () => '2026-10-12T02:00:00Z',
   });
 
@@ -78,6 +85,90 @@ describe('native consult pre-dispatch boundary', () => {
       status: 'unknown', reason: expect.stringContaining('live native incarnation changed'),
     });
     expect(readSource).not.toHaveBeenCalled();
+  });
+
+  it('records plan-only claim incarnations and leases, including expired rows, in an explicit read window', async () => {
+    const deps = makeDeps();
+    const readPlans = vi.spyOn(deps, 'readPlanClaims');
+    deps.now = vi.fn().mockReturnValueOnce('2026-10-12T02:00:00Z').mockReturnValue('2026-10-12T02:00:01Z');
+    const observation = await captureNativeConsultBoundary(target, 'workspace-native', deps);
+    expect(readPlans).toHaveBeenCalledWith('owner-exact', 'workspace-native');
+    expect(observation).toMatchObject({ status: 'measured', capturedAt: '2026-10-12T02:00:00Z',
+      completedAt: '2026-10-12T02:00:01Z', planClaims: { truncated: false, checked: [{
+        workspaceId: 'workspace-native', harnessSlug: 'papercusp', planSlug: 'plan-only', itemId: 'P-009',
+        claimId: 'incarnation-before', owner: 'owner-exact', livenessMode: 'activity', ttlSec: 1800,
+        acquiredTs: '2026-10-12T01:00:00.000Z', expiresTs: '2026-10-12T01:30:00.000Z',
+        lastActivityTs: '2026-10-12T01:00:00.000Z', expired: true,
+      }], scope: expect.stringContaining('endpoint') } });
+  });
+
+  it('distinguishes a replacement incarnation and a lease renewal under the same owner and plan item', async () => {
+    const before = await captureNativeConsultBoundary(target, 'workspace-native', makeDeps());
+    const deps = makeDeps();
+    deps.readPlanClaims = async () => [{ ...planClaim, claimId: 'incarnation-after',
+      acquiredTs: '2026-10-12T02:00:00Z', expiresTs: '2026-10-12T02:30:00Z', expired: false }];
+    const replaced = await captureNativeConsultBoundary(target, 'workspace-native', deps);
+    deps.readPlanClaims = async () => [{ ...planClaim, expiresTs: '2026-10-12T02:30:00Z', expired: false }];
+    const renewed = await captureNativeConsultBoundary(target, 'workspace-native', deps);
+    expect(before.status).toBe('measured');
+    expect(replaced.status).toBe('measured');
+    expect(renewed.status).toBe('measured');
+    if (before.status !== 'measured' || replaced.status !== 'measured' || renewed.status !== 'measured') return;
+    expect(replaced.planClaims.checked[0].claimId).not.toBe(before.planClaims.checked[0].claimId);
+    expect(renewed.planClaims.checked[0].claimId).toBe(before.planClaims.checked[0].claimId);
+    expect(renewed.planClaims.checked[0].expiresTs).not.toBe(before.planClaims.checked[0].expiresTs);
+    expect(replaced.claims).toEqual(before.claims);
+  });
+
+  it('keeps unreadable, overflowing or misbound plan claims unknown rather than certifying an empty endpoint', async () => {
+    const deps = makeDeps();
+    deps.readPlanClaims = async () => { throw new Error('plan claims unavailable'); };
+    expect(await captureNativeConsultBoundary(target, 'workspace-native', deps)).toMatchObject({
+      status: 'unknown', reason: expect.stringContaining('plan claims unavailable'),
+    });
+    deps.readPlanClaims = async () => Array.from({ length: 201 }, (_, n) => ({ ...planClaim, itemId: `P-${n}` }));
+    expect(await captureNativeConsultBoundary(target, 'workspace-native', deps)).toMatchObject({
+      status: 'unknown', reason: expect.stringContaining('plan claim census exceeds'),
+    });
+    for (const change of [{ owner: 'foreign-owner' }, { workspaceId: 'foreign-workspace' }]) {
+      deps.readPlanClaims = async () => [{ ...planClaim, ...change }];
+      expect(await captureNativeConsultBoundary(target, 'workspace-native', deps)).toMatchObject({
+        status: 'unknown', reason: expect.stringContaining('plan claim owner/workspace binding'),
+      });
+    }
+  });
+
+  it('records a measured empty plan endpoint and sorts disjoint plan/harness keys without merging them', async () => {
+    const deps = makeDeps();
+    deps.readPlanClaims = async () => [];
+    expect(await captureNativeConsultBoundary(target, 'workspace-native', deps)).toMatchObject({
+      status: 'measured', planClaims: { checked: [], truncated: false },
+    });
+    deps.readPlanClaims = async () => [planClaim,
+      { ...planClaim, harnessSlug: 'aaa', claimId: 'another-harness' },
+      { ...planClaim, planSlug: 'aaa', claimId: 'another-plan' }];
+    const observation = await captureNativeConsultBoundary(target, 'workspace-native', deps);
+    expect(observation.status).toBe('measured');
+    if (observation.status !== 'measured') return;
+    expect(observation.planClaims.checked.map(row => row.claimId))
+      .toEqual(['another-harness', 'another-plan', 'incarnation-before']);
+  });
+
+  it('refuses an unspecified workspace before reading source or claims', async () => {
+    const deps = makeDeps();
+    const readSession = vi.spyOn(deps, 'readSession');
+    for (const workspace of ['*', '', '   ']) {
+      expect(await captureNativeConsultBoundary(target, workspace, deps)).toMatchObject({
+        status: 'unknown', reason: expect.stringContaining('workspace identity missing'),
+      });
+    }
+    expect(readSession).not.toHaveBeenCalled();
+  });
+
+  it('keeps an invalid lease timestamp unknown rather than storing an incomplete signature', async () => {
+    const deps = makeDeps();
+    deps.readPlanClaims = async () => [{ ...planClaim, expiresTs: 'unreadable' }];
+    expect(await captureNativeConsultBoundary(target, 'workspace-native', deps)).toMatchObject({ status: 'unknown' });
   });
 
   it('keeps unreadable or truncated claims unknown instead of recording an empty census', async () => {

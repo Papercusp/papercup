@@ -15,6 +15,80 @@ export const MAX_LAUNCH_CONTEXT_BYTES = 1024 * 1024;
 
 const CODEX_REASONING_EFFORT_RE = /:(low|medium|high|xhigh|max)$/i;
 
+/** Shared human launch aliases. Full provider/model ids remain open. */
+export const LAUNCH_MODEL_ALIASES = Object.freeze([
+  { agent: 'codex', model: 'gpt-6.1-sol', aliases: ['sol 6.1', '6.1 sol', 'sol6.1', 'sol-6.1', '6.1'] },
+  { agent: 'codex', model: 'gpt-6-sol', aliases: ['sol 6', '6 sol', 'sol6', 'sol-6', '6'] },
+  { agent: 'codex', model: 'gpt-6-astra', aliases: ['astra', 'astra 6', '6 astra', 'astra6', 'astra-6', '6'] },
+  { agent: 'codex', model: 'gpt-5.6-sol', aliases: ['sol', 'sol 5.6', '5.6 sol', 'sol5.6', 'sol-5.6'] },
+  { agent: 'codex', model: 'gpt-5.6-terra', aliases: ['terra', 'terra 5.6', '5.6 terra', 'terra5.6', 'terra-5.6'] },
+  { agent: 'codex', model: 'gpt-5.6-luna', aliases: ['luna', 'luna 5.6', '5.6 luna', 'luna5.6', 'luna-5.6'] },
+  { agent: 'claude', model: 'opus', aliases: ['opus', 'claude opus'] },
+  { agent: 'claude', model: 'sonnet', aliases: ['sonnet', 'claude sonnet'] },
+  { agent: 'claude', model: 'haiku', aliases: ['haiku', 'claude haiku'] },
+  { agent: 'claude', model: 'fable', aliases: ['fable', 'claude fable'] },
+].map(entry => Object.freeze({ ...entry, aliases: Object.freeze(entry.aliases) })));
+
+export function listLaunchModelAliases() {
+  return LAUNCH_MODEL_ALIASES.map(entry => ({ ...entry, aliases: [...entry.aliases] }));
+}
+
+function launchAliasMatches(value) {
+  const key = value.trim().toLowerCase().replace(/\s+/g, ' ');
+  return LAUNCH_MODEL_ALIASES.filter(entry => entry.model === key || entry.aliases.includes(key));
+}
+
+export class LaunchModelAliasError extends Error {
+  constructor(code, message, candidates = listLaunchModelAliases()) {
+    super(message);
+    this.name = 'LaunchModelAliasError';
+    this.code = code;
+    this.candidates = candidates;
+  }
+}
+
+/** Resolve before choosing a backend or opening a process.
+ * @param {string} model
+ * @param {{ effort?: string, agent?: string }} [options]
+ * @returns {{ requested: string, agent: 'claude' | 'codex' | 'omp' | null, model: string, effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null, alias: string | null }}
+ */
+export function resolveLaunchModelAlias(model, { effort, agent } = {}) {
+  if (agent && !['claude', 'codex', 'omp'].includes(agent)) {
+    throw new LaunchModelAliasError('unknown_model_backend', `Unknown agent '${agent}'; use claude, codex or omp.`);
+  }
+  const requested = String(model ?? '').trim();
+  const tail = /(?:[:\s])(low|medium|high|xhigh|max)$/i.exec(requested);
+  const level = (effort ?? tail?.[1])?.trim().toLowerCase() || null;
+  if (level && !/^(low|medium|high|xhigh|max)$/.test(level)) {
+    throw new LaunchModelAliasError('invalid_model_effort', `Unknown effort '${level}'; use low, medium, high, xhigh or max.`);
+  }
+  let base = tail ? requested.slice(0, tail.index).trim() : requested;
+  const marker = /\[[^\]]+\]$/.exec(base)?.[0] ?? '';
+  if (marker) base = base.slice(0, -marker.length);
+  if (/^chatgpt:/i.test(base)) base = `gpt-${base.slice('chatgpt:'.length)}`;
+  // OMP owns provider selectors and host-local short ids.
+  if (agent === 'omp' && base && !/\s/.test(base)) {
+    return { requested, agent: 'omp', model: `${base}${marker}${level ? `:${level}` : ''}`, effort: level, alias: null };
+  }
+  const matches = launchAliasMatches(base);
+  if (matches.length > 1) {
+    throw new LaunchModelAliasError('ambiguous_model_alias', `Model alias '${base}' is ambiguous: ${matches.map(entry => entry.model).join(', ')}.`, matches);
+  }
+  const match = matches[0];
+  const native = /^(?:gpt[-_.]|claude[-_.]|anthropic[./]|o\d)|\//i.test(base);
+  if (!match && !native) {
+    throw new LaunchModelAliasError('unknown_model_alias', `Unknown model alias '${base}'. Read config:tiers-get for launchAliases or choose a full provider/model id.`);
+  }
+  const resolvedAgent = match?.agent ?? (/^(?:gpt[-_.]|o\d)/i.test(base) ? 'codex' : /^claude[-_.]|^anthropic[./]/i.test(base) ? 'claude' : null);
+  if (agent && resolvedAgent && agent !== resolvedAgent) {
+    throw new LaunchModelAliasError('model_backend_mismatch', `Model '${base}' requires agent '${resolvedAgent}', not '${agent}'.`, match ? [match] : []);
+  }
+  const modelSpec = `${match?.model ?? base}${marker}${level ? `:${level}` : ''}`;
+  const effectiveModel = resolvedAgent === 'claude' ? normalizeClaudeModelEffortSpec(modelSpec) : modelSpec;
+  const effectiveEffort = effectiveModel === modelSpec ? level : effectiveModel.slice(effectiveModel.lastIndexOf(':') + 1);
+  return { requested, agent: resolvedAgent, model: effectiveModel, effort: effectiveEffort, alias: match && base !== match.model ? base : null };
+}
+
 /** Strip provider/decorative selectors before comparing a Codex model to policy.
  * Codex callers use both `provider/id` and `id:effort` (and a few historical
  * launch paths append a `[1m]` marker).  The deny decision must not depend on
@@ -254,8 +328,8 @@ export function normalizeCodexCliModel(model) {
   const base = effort ? trimmed.slice(0, -effort.length) : trimmed;
   const chatgpt = /^chatgpt:(.+)$/i.exec(base);
   const unprefixed = chatgpt ? `gpt-${chatgpt[1]}` : base;
-  const family = /^(sol|terra|luna)$/i.exec(unprefixed);
-  const normalized = family ? `gpt-5.6-${family[1].toLowerCase()}` : unprefixed;
+  const matches = launchAliasMatches(unprefixed).filter(entry => entry.agent === 'codex');
+  const normalized = matches.length === 1 ? matches[0].model : unprefixed;
   return `${normalized}${effort}`;
 }
 

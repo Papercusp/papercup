@@ -153,10 +153,15 @@ export function planDrainTransitionMutation(current: string | null): {
  * applyPlanDrainTransition). A refused move writes nothing and names the door's code.
  * Template 'rubric' plans are skipped, like the acceptance carry filing.
  * Plan-run INSTANCES are never moved at all: see the `plan_run_instance` skip.
+ *
+ * `scope` is REQUIRED and must be the scope the caller's plan lock resolved (the
+ * mutator's third argument). The gate re-reads the plan; left to default it used
+ * `activeWorkspaceId()`, which can differ from the plan's registered workspace, found
+ * no plan, and refused every move as `blind_review_unavailable` (WI-6554700010010577).
  */
 export async function planDrainTransitionMutationGated(
   current: string | null,
-  scope: { planSlug: string; harnessSlug?: string | null; workspaceId?: string },
+  scope: { planSlug: string; harnessSlug: string; workspaceId: string },
   deps: { evaluate?: typeof evaluateBlindReviewGate } = {},
 ): Promise<{ newBody: string | null; value: PlanDrainTransitionResult }> {
   if (isPlanRunInstanceSlug(scope.planSlug)) {
@@ -167,8 +172,8 @@ export async function planDrainTransitionMutationGated(
   if (parsePlan(out.newBody).frontmatter.template === 'rubric') return out;
   const verdict = await (deps.evaluate ?? evaluateBlindReviewGate)({
     planSlug: scope.planSlug,
-    harnessSlug: scope.harnessSlug ?? null,
-    ...(scope.workspaceId ? { workspaceId: scope.workspaceId } : {}),
+    harnessSlug: scope.harnessSlug,
+    workspaceId: scope.workspaceId,
     planBody: out.newBody,
   });
   if (verdict.satisfied) return out;
@@ -206,6 +211,7 @@ export async function applyPlanDrainTransition(
       slug: planSlug,
       intent: 'plan-drain-transition: reconcile plan status against a drained item graph',
       ...(harnessSlug ? { harnessSlug } : {}),
+      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
       inTransaction: async (tx, writtenBody, scope, value) => {
         if (value.applied && value.to === 'awaiting-acceptance' &&
             parsePlan(writtenBody).frontmatter.template !== 'rubric') {
@@ -219,10 +225,10 @@ export async function applyPlanDrainTransition(
         }
       },
     },
-    async (current) => planDrainTransitionMutationGated(current, {
+    async (current, _meta, scope) => planDrainTransitionMutationGated(current, {
       planSlug,
-      harnessSlug,
-      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+      harnessSlug: scope.harnessSlug,
+      workspaceId: scope.workspaceId,
     }),
   );
 

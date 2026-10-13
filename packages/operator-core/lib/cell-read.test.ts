@@ -28,7 +28,7 @@ vi.mock('./events/await/predicate-watch', async (importOriginal) => {
   };
 });
 
-import { CELL_READ_TIMEOUT_MS, formatCellPointers, readCell, unknownForDispatchError } from './cell-read';
+import { CELL_READ_TIMEOUT_MS, __resolverInflightCountForTests, formatCellPointers, readCell, unknownForDispatchError } from './cell-read';
 import {
   BUILTIN_CELLS,
   GATE_CANDIDATE_FAILURES_CELL,
@@ -1180,17 +1180,28 @@ describe('WI-6488 — readCell now BOUNDS a resolver that never settles', () => 
 
   it('a resolver that never settles no longer hangs readCell — it times out as resolver-failed', async () => {
     registerCell(spec());
-    dispatchReadOnlyTool.mockImplementation(() => new Promise(() => {}));
+    let finishResolver!: (value: unknown) => void;
+    const dispatch = new Promise<unknown>((resolve) => { finishResolver = resolve; });
+    dispatchReadOnlyTool.mockReturnValue(dispatch);
 
-    const pending = readCell('test.cell', READER, ENV);
-    await vi.advanceTimersByTimeAsync(CELL_READ_TIMEOUT_MS);
-    const out = await pending;
+    try {
+      const pending = readCell('test.cell', READER, ENV);
+      await vi.advanceTimersByTimeAsync(CELL_READ_TIMEOUT_MS);
+      const out = await pending;
 
-    expect(out.status).toBe('unknown');
-    if (out.status === 'unknown') {
-      expect(out.unknown.code).toBe('resolver-failed');
-      expect(out.unknown.detail).toMatch(/did not respond within/);
+      expect(out.status).toBe('unknown');
+      if (out.status === 'unknown') {
+        expect(out.unknown.code).toBe('resolver-failed');
+        expect(out.unknown.detail).toMatch(/did not respond within/);
+      }
+      // The deadline bounds this waiter; the underlying dispatch remains shared
+      // until it settles. Do not leave a synthetic hung flight in later tests.
+      expect(__resolverInflightCountForTests()).toBe(1);
+    } finally {
+      finishResolver({ positions: { deployed: true } });
+      await dispatch;
     }
+    expect(__resolverInflightCountForTests()).toBe(0);
   });
 
   it('a resolver that settles just under the bound still returns its real value', async () => {

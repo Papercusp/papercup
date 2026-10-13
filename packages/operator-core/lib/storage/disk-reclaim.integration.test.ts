@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { runDiskReclaimOnce, writeReclaimAudit, type ReclaimSql } from './disk-reclaim';
+import { readReclaimReceipt, runDiskReclaimOnce, writeReclaimAudit, type ReclaimSql } from './disk-reclaim';
 import { type RetentionClass } from './retention-policy';
 
 let fixture: string | undefined;
@@ -97,6 +97,14 @@ describe('retention on a real fixture tree', () => {
       expect(rows.map((r) => r.action)).toEqual(['disk-retention:started', 'disk-retention:remove-intent', 'disk-retention:removed', 'disk-retention:receipt']);
       expect(rows.map((r) => r.detail_type)).toEqual(['object', 'object', 'object', 'object']);
       expect(rows[1]!.details.path).toBe(path); expect(rows[3]!.details).toEqual(receipt);
+      expect(await readReclaimReceipt(sql, 'fixture-workspace')).toEqual(receipt);
+      expect(await readReclaimReceipt(sql, 'fixture-workspace', receipt.id)).toEqual(receipt);
+      expect(await readReclaimReceipt(sql, 'other-workspace', receipt.id)).toBeNull();
+      expect(await readReclaimReceipt(sql, 'fixture-workspace', 'missing')).toBeNull();
+      const dry = { ...receipt, id: 'dry-receipt', dryRun: true };
+      await writeReclaimAudit(sql, 'fixture-workspace', dry.id, 'receipt', dry);
+      expect(await readReclaimReceipt(sql, 'fixture-workspace')).toEqual(receipt);
+      expect(await readReclaimReceipt(sql, 'fixture-workspace', dry.id)).toEqual(dry);
       await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await sql.end({ timeout: 5 });

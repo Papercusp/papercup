@@ -147,6 +147,7 @@ import {
   codexModelConfigToml,
   listCodexInstalledModels,
   normalizeCodexCliModel,
+  resolveLaunchModelAlias,
   isCodexModelDenied,
   CODEX_DENIED_MODEL_IDS,
   resolveCodexModel,
@@ -1241,7 +1242,7 @@ export function parseArgs(argv) {
       // prints `psu: <message>` + exits. Covers EVERY launch path (raw psu, capability:terminal,
       // fleet:launch-on-plan) since all --model input funnels through parseArgs.
       const rawModel = a.slice("--model=".length);
-      const v = validateModelSpec(rawModel);
+      const v = validateModelSpec(normalizeCodexCliModel(rawModel));
       if (!v.ok) throw new Error(v.message);
       // Normalization is backend-specific and therefore happens after the
       // complete argv has resolved `--agent` below. OMP is multi-provider and
@@ -1453,6 +1454,9 @@ export function parseArgs(argv) {
   // Model-family/backend coupling: a supplied native cloud model selects its
   // backend when --agent is omitted, and an explicit mismatch fails before any
   // wrapper/terminal opens. OMP stays exempt because it is multi-provider.
+  if (out.model && (!out.agent || out.agent === 'codex' || /\s/.test(out.model))) {
+    out.model = resolveLaunchModelAlias(out.model, { agent: out.agent === 'omp' ? 'omp' : undefined }).model;
+  }
   const hintedBackend = cloudModelBackendHint(out.model);
   if (!out.agent && hintedBackend) out.agent = hintedBackend;
   const pairing = validateAgentModelPair(out.agent, out.model);
@@ -15421,9 +15425,10 @@ async function chooseResumeTarget(session, args) {
  *  The wake-executor rematerializes on ITS resume path, but a direct
  *  `psu --resume` reads the disk — so on a transcript miss, ask the operator
  *  to restore the files from the archive, then retry the disk lookup. Returns
- *  the API result or null; never throws (a miss just falls through to the
- *  existing not-found error, incl. against an older operator without the
- *  endpoint). EI-9756 regression guard: injectable `fetchImpl`/`operatorUrl`/
+ *  the API result, a structured failure/pending result, or null after the
+ *  archive service explicitly confirms absence. A failed request never proves
+ *  absence; native preflight propagates its cause. EI-9756 regression guard:
+ *  injectable `fetchImpl`/`operatorUrl`/
  *  `token` (mirrors reportSessionResumed) so this — previously untested — is
  *  unit-testable without a live operator; a real caller always hits the real
  *  operator via the defaults.
@@ -15460,6 +15465,15 @@ export async function tryRematerializeFromArchive(
   } = {},
 ) {
   if (!sessionId) return null;
+  const failedRestore = (reason, detail, status = null) => ({
+    ok: false,
+    failed: true,
+    reason,
+    sessionId,
+    sourceKind,
+    status,
+    error: `Archive restore for ${sessionId} failed (${status ? `HTTP ${status}: ` : ""}${reason}${detail ? `: ${detail}` : ""}); archive absence was not established.`,
+  });
   const finishRestore = (restored) => {
     // Archive bytes can live under a different physical root from the tracked
     // owner's directory. Pin the source to that root only after resolving its
@@ -15491,8 +15505,19 @@ export async function tryRematerializeFromArchive(
         }),
       },
     );
-    const r = await res.json().catch(() => null);
-    if (!r?.ok) return null;
+    let r;
+    try {
+      r = await res.json();
+    } catch {
+      return failedRestore("invalid_response", "expected a JSON restore result", res.status);
+    }
+    if (!r?.ok || res.ok === false) {
+      // Only the archive service's explicit absence verdict permits the caller
+      // to say there is no archive. Admission, transport, integrity and response
+      // failures are different evidence and must survive the resume preflight.
+      if (r?.reason === "not_archived" && (res.status == null || res.status === 404)) return null;
+      return failedRestore(r?.reason || "restore_refused", String(r?.error || "").slice(0, 500), res.status);
+    }
     console.error(
       `psu: transcript restored from the session archive (${r.sourceKind}, ${r.written} file(s) → ${r.root}).`,
     );
@@ -15500,7 +15525,9 @@ export async function tryRematerializeFromArchive(
   } catch (error) {
     // AbortSignal.timeout only cancels the client request. The synchronous
     // operator handler can still be decompressing/writing a large archive.
-    if (!isArchiveRequestTimeout(error)) return null;
+    if (!isArchiveRequestTimeout(error)) {
+      return failedRestore("request_failed", String(error?.message || error).slice(0, 500));
+    }
     const status = await pollArchiveRematerializeStatus(sessionId, sourceKind, {
       fetchImpl,
       operatorUrl,
@@ -15526,9 +15553,15 @@ export async function tryRematerializeFromArchive(
     // A completed status read can disprove an in-flight restore even though
     // the original POST timed out. Missing/failed archives are terminal;
     // retain pending only for an actual pending or unknown status.
-    if (status?.ok === true &&
-        ["not_ready", "not_archived"].includes(status.state) &&
-        status.pending === false) return null;
+    if (status?.ok === true && status.pending === false) {
+      if (status.state === "not_archived") return null;
+      if (status.state === "not_ready") {
+        // The status endpoint emits not_ready even when every per-kind result
+        // is not_archived; use those exact observations, never the name alone.
+        if (status.statuses?.length && status.statuses.every((entry) => entry.reason === "not_archived")) return null;
+        return failedRestore("restore_not_ready", "the archive status did not verify restored bytes");
+      }
+    }
     return {
       ok: false,
       pending: true,
@@ -15608,7 +15641,8 @@ async function pollArchiveRematerializeStatus(
  *
  * Tracked OMP rows have an id-addressable transcript too; raw OMP thread names
  * remain unverifiable here. Injectable `home`/`rematerialize`
- * for tests; never throws.
+ * for tests. Restore request failures throw with their preserved cause; only
+ * an explicit archive-absence verdict returns false.
  */
 export async function ensureResumeTranscriptPresent(
   source,
@@ -15624,6 +15658,7 @@ export async function ensureResumeTranscriptPresent(
     { sourceSession: source, home },
   );
   if (restored?.pending) return restored;
+  if (restored?.failed) throw new Error(restored.error);
   return Boolean(restored) && sessionHasTranscript(source, { home });
 }
 
@@ -16305,6 +16340,7 @@ export async function resumeFlow(
     let untracked = findUntrackedSession(args.resumeId);
     if (!untracked) {
       const restored = await tryRematerializeFromArchive(args.resumeId);
+      if (restored?.failed) throw new Error(restored.error);
       if (restored?.pending) {
         console.error(
           `psu: session archive restore for ${args.resumeId} is still in progress; the operator timed out while ` +

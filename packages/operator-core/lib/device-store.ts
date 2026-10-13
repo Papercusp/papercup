@@ -33,6 +33,41 @@ export interface PushTokenRow {
   registered_at: Date;
 }
 
+/** Per-phone session authority lives in the existing connected-app scopes. */
+export const DEVICE_AGENT_SESSIONS_CAPABILITY = 'agent-sessions';
+
+export async function deviceAgentSessionsAllowed(deviceId: string, workspaceId: string): Promise<boolean> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<{ allowed: boolean }[]>`
+      SELECT COALESCE(scopes->'capabilities' ? ${DEVICE_AGENT_SESSIONS_CAPABILITY}, false) AS allowed
+        FROM harness_shared.connected_apps
+       WHERE id = ${deviceId} AND workspace_id = ${workspaceId} AND kind = 'mobile'
+         AND revoked_at IS NULL AND paused_at IS NULL
+       LIMIT 1
+    `;
+    return rows[0]?.allowed === true;
+  });
+}
+
+/** Replace just the session grant, retaining every other scope atomically. */
+export async function setDeviceAgentSessionsEnabled(
+  deviceId: string, workspaceId: string, enabled: boolean,
+): Promise<boolean> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      UPDATE harness_shared.connected_apps
+         SET scopes = jsonb_set(COALESCE(scopes, '{}'::jsonb), '{capabilities}',
+           COALESCE((SELECT jsonb_agg(capability)
+             FROM jsonb_array_elements_text(COALESCE(scopes->'capabilities', '[]'::jsonb)) AS capability
+            WHERE capability <> ${DEVICE_AGENT_SESSIONS_CAPABILITY}), '[]'::jsonb)
+           || CASE WHEN ${enabled}::boolean THEN jsonb_build_array(${DEVICE_AGENT_SESSIONS_CAPABILITY}::text) ELSE '[]'::jsonb END)
+       WHERE id = ${deviceId} AND workspace_id = ${workspaceId} AND kind = 'mobile' AND revoked_at IS NULL
+      RETURNING id
+    `;
+    return rows.length === 1;
+  });
+}
+
 export async function insertDevice(opts: {
   deviceId: string;
   userEmail: string;

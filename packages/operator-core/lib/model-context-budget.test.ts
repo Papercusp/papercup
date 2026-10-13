@@ -19,7 +19,61 @@ const {
   resolveCodexModel,
   resolveCodexModelSelection,
   resolveModelContextWindow,
+  listLaunchModelAliases,
+  resolveLaunchModelAlias,
 } = modelContextBudget;
+
+describe('shared launch model aliases', () => {
+  it('resolves the requested model wording before backend selection', () => {
+    for (const alias of ['sol 6.1', '6.1 sol', 'sol6.1', 'SOL-6.1']) {
+      expect(resolveLaunchModelAlias(alias, { effort: 'xhigh' })).toMatchObject({
+        agent: 'codex', model: 'gpt-6.1-sol:xhigh', effort: 'xhigh',
+      });
+      expect(normalizeCodexCliModel(`${alias}:xhigh`)).toBe('gpt-6.1-sol:xhigh');
+    }
+    expect(resolveLaunchModelAlias('sol 6.1 xhigh').model).toBe('gpt-6.1-sol:xhigh');
+  });
+
+  it('echoes the backend-normalized effort without changing other backends', () => {
+    expect(resolveLaunchModelAlias('claude opus', { effort: 'xhigh' })).toMatchObject({
+      agent: 'claude', model: 'opus:max', effort: 'max',
+    });
+    expect(resolveLaunchModelAlias('opus[1m]:xhigh').model).toBe('opus[1m]:max');
+    expect(resolveLaunchModelAlias('sol 6.1:xhigh').effort).toBe('xhigh');
+    expect(resolveLaunchModelAlias('opus:xhigh', { agent: 'omp' }).effort).toBe('xhigh');
+  });
+
+  it('refuses unknown and ambiguous aliases with candidate models', () => {
+    for (const [model, code] of [['mystery', 'unknown_model_alias'], ['6', 'ambiguous_model_alias']]) {
+      try {
+        resolveLaunchModelAlias(model);
+        expect.fail('Expected an alias refusal');
+      } catch (error) {
+        expect(error).toMatchObject({ code, candidates: expect.arrayContaining([
+          expect.objectContaining({ agent: 'codex', model: 'gpt-6-sol' }),
+        ]) });
+      }
+    }
+  });
+
+  it('preserves legacy aliases, native ids and explicit OMP selectors', () => {
+    expect(resolveLaunchModelAlias('sol:high').model).toBe('gpt-5.6-sol:high');
+    expect(resolveLaunchModelAlias('gpt-future-sol:high').model).toBe('gpt-future-sol:high');
+    expect(resolveLaunchModelAlias('openrouter/vendor/model:high', { agent: 'omp' }).model)
+      .toBe('openrouter/vendor/model:high');
+    expect(resolveLaunchModelAlias('ornith', { agent: 'omp' }).model).toBe('ornith');
+    expect(() => resolveLaunchModelAlias('sol 6.1', { agent: 'claude' })).toThrow(/requires agent/);
+    expect(() => resolveLaunchModelAlias('sol 6.1', { effort: 'extreme' })).toThrow(/Unknown effort/);
+    expect(() => resolveLaunchModelAlias('sol 6.1', { agent: 'unknown' })).toThrow(/Unknown agent/);
+  });
+
+  it('prevents a catalog reader from mutating the registry', () => {
+    const catalog = listLaunchModelAliases();
+    expect(catalog).toContainEqual(expect.objectContaining({ model: 'gpt-6.1-sol', agent: 'codex' }));
+    catalog[0].aliases.splice(0);
+    expect(resolveLaunchModelAlias('sol 6.1').model).toBe('gpt-6.1-sol');
+  });
+});
 
 describe('Claude Opus 5 effort compatibility', () => {
   it('maps only Opus 5 xhigh specs to Claude Code max', () => {

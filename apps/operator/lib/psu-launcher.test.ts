@@ -895,6 +895,19 @@ describe("tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
   });
 });
 
+describe("shared launch model alias parsing", () => {
+  it("resolves a human versioned selector before selecting the backend", () => {
+    expect(parseArgs(["--no-picker", "--model=sol 6.1:xhigh"])).toMatchObject({
+      agent: "codex", model: "gpt-6.1-sol:xhigh", modelSource: "explicit",
+    });
+  });
+
+  it("refuses unknown and ambiguous human selectors before bootstrap", () => {
+    expect(() => parseArgs(["--no-picker", "--model=mystery"])).toThrow(/Unknown model alias/);
+    expect(() => parseArgs(["--no-picker", "--model=6"])).toThrow(/ambiguous.*gpt-6-sol.*gpt-6-astra/);
+  });
+});
+
 describe("kickoffPositionalArgs (EI-5503 plan auto-kickoff)", () => {
   const KICK =
     "Begin: advance this plan. Read the `## Now` block, pick up the next actionable item, and work it.";
@@ -8059,7 +8072,11 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       model: "opus[1m]:high",
     });
     expect(command).not.toContain("--agent");
-    expect(resolveResumeTarget(source, parseArgs(command.split(" ").slice(1)))).toMatchObject({
+    // parseArgs consumes argv, after the shell has removed quotes around the model.
+    const argv = command.split(" ").slice(1).map(arg => arg.replace(/^--model='([^']+)'$/, "--model=$1"));
+    const parsed = parseArgs(argv);
+    expect(parsed.model).toBe("opus[1m]:high");
+    expect(resolveResumeTarget(source, parsed)).toMatchObject({
       operation: "native",
       targetAgent: "claude",
     });
@@ -12210,6 +12227,31 @@ describe("ensureResumeTranscriptPresent — the archive-at-death race (owner-hit
     } finally { rmSync(codexHome, { recursive: true, force: true }); }
   });
 
+  it.each([
+    { name: 'HTTP admission refusal', response: () => new Response(JSON.stringify({ ok: false, error: 'mcp_proxy_overloaded' }), { status: 429 }), cause: 'HTTP 429' },
+    { name: 'malformed archive response', response: () => new Response('not JSON', { status: 200 }), cause: 'invalid_response' },
+    { name: 'unreachable archive service', response: () => { throw new Error('ECONNREFUSED'); }, cause: 'ECONNREFUSED' },
+  ])("preserves $name instead of declaring the indexed native archive absent", async ({ response, cause }) => {
+    const source = { id: 42329, agent: 'codex', sessionId: UUID, coordOwnerId: 'su-original-reviewer' };
+    const before = structuredClone(source);
+    const rematerialize = (id, agent, options) => tryRematerializeFromArchive(id, agent, {
+      ...options, operatorUrl: 'http://archive', token: 'fixture-token', fetchImpl: async () => response(),
+    });
+    expect(sessionHasTranscript(source, { home })).toBe(false);
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize }))
+      .rejects.toThrow(cause);
+    expect(source).toEqual(before);
+  });
+
+  it("reports archive absence only after the service explicitly confirms not_archived", async () => {
+    const source = { id: 42329, agent: 'codex', sessionId: UUID };
+    const rematerialize = (id, agent, options) => tryRematerializeFromArchive(id, agent, {
+      ...options, operatorUrl: 'http://archive', token: 'fixture-token',
+      fetchImpl: async () => new Response(JSON.stringify({ ok: false, reason: 'not_archived' }), { status: 404 }),
+    });
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(false);
+  });
+
   let home = "";
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "psu-resume-race-"));
@@ -15550,12 +15592,14 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
     });
     const sleep = vi.fn(async () => {});
 
-    await expect(tryRematerializeFromArchive("sid-missing", "codex", {
+    const result = await tryRematerializeFromArchive("sid-missing", "codex", {
       fetchImpl,
       operatorUrl: "http://op:1",
       token: "tok",
       sleep,
-    })).resolves.toBeNull();
+    });
+    if (state === "not_archived") expect(result).toBeNull();
+    else expect(result).toMatchObject({ ok: false, failed: true, reason: "restore_not_ready" });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(sleep).not.toHaveBeenCalled();
   });
@@ -15649,7 +15693,7 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
     expect(calls).toHaveLength(0);
   });
 
-  it("ok:false (not_archived / sha_mismatch / …) → returns null, never throws", async () => {
+  it("an explicit not_archived result returns null", async () => {
     const fetchImpl = async () => ({
       json: async () => ({ ok: false, reason: "not_archived" }),
     });
@@ -15662,7 +15706,7 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
     ).toBeNull();
   });
 
-  it("transport failure / unreachable operator → swallowed, returns null (never blocks the fallback not-found error)", async () => {
+  it("preserves an unreachable operator as a request failure", async () => {
     const fetchImpl = async () => {
       throw new Error("ECONNREFUSED");
     };
@@ -15672,10 +15716,10 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
         operatorUrl: "http://op:1",
         token: "t",
       }),
-    ).resolves.toBeNull();
+    ).resolves.toMatchObject({ ok: false, failed: true, reason: "request_failed", error: expect.stringContaining("ECONNREFUSED") });
   });
 
-  it("non-JSON / malformed response body → swallowed, returns null", async () => {
+  it("preserves a malformed response instead of claiming archive absence", async () => {
     const fetchImpl = async () => ({
       json: async () => {
         throw new SyntaxError("Unexpected token");
@@ -15687,7 +15731,7 @@ describe("tryRematerializeFromArchive (psu --resume self-heals a transcript the 
         operatorUrl: "http://op:1",
         token: "t",
       }),
-    ).toBeNull();
+    ).toMatchObject({ ok: false, failed: true, reason: "invalid_response" });
   });
 });
 

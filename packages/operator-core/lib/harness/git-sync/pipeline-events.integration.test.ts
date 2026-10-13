@@ -22,6 +22,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { readGateNonVerdictReasons } from '../../release/gate-fire-ledger';
 import {
   appendPipelineEvent,
   summarizePipelineWindow,
@@ -66,6 +67,35 @@ describe('pipeline-events runtime — real Postgres', () => {
   });
   beforeEach(async () => {
     await db.sql`TRUNCATE harness_shared.pipeline_events RESTART IDENTITY`;
+  });
+
+  it('counts non-verdict reasons over an exact complete day, deduplicating repeated fire outcomes', async () => {
+    const now = Date.UTC(2026, 9, 13, 12);
+    const insert = async (status: string, fire: string | null, at = now - 1000,
+      workspace = 'ws', install = SLUG, kind: PipelineEventKind = 'green_checkpoint') => {
+      await db.sql`INSERT INTO harness_shared.pipeline_events
+        (workspace_id, install_slug, kind, status, detail, created_at)
+        VALUES (${workspace}, ${install}, ${kind}, ${status},
+          ${JSON.stringify(fire === null ? {} : { gateFireId: fire })}::text::jsonb, ${new Date(at)})`;
+    };
+    for (let i = 0; i < 6; i++) {
+      await insert('skipped-joined-attempt', `joined-${i}`);
+      await insert('skipped-joined-attempt', `joined-${i}`);
+    }
+    await insert('skipped-memory-budget', null);
+    await insert('skipped-memory-budget', null);
+    await insert('skipped-joined-attempt', 'too-old', now - 86_400_001);
+    await insert('skipped-joined-attempt', 'future', now + 1);
+    await insert('skipped-joined-attempt', 'foreign-workspace', now, 'other');
+    await insert('skipped-joined-attempt', 'foreign-install', now, 'ws', 'other');
+    await insert('skipped-joined-attempt', 'anchor', now, 'ws', SLUG, 'green_checkpoint_fire');
+    await insert('not-green', 'red');
+    await insert('pure-proof-capture-pending', 'pending');
+    const result = await readGateNonVerdictReasons(db.sql, { workspaceId: 'ws', installSlug: SLUG }, now);
+    expect(result.reasons.map(({ reason, count }) => ({ reason, count }))).toEqual([
+      { reason: 'skipped-joined-attempt', count: 6 }, { reason: 'skipped-memory-budget', count: 2 },
+    ]);
+    expect(result).toMatchObject({ windowHours: 24, measuredAtMs: now, sinceMs: now - 86_400_000 });
   });
 
   it('reads complete gate windows in one snapshot, scopes exactly and exposes spanning attempts', async () => {

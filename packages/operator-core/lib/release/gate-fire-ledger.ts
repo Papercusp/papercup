@@ -436,6 +436,46 @@ export function classifyGateOutcomeStatus(status: string): GateOutcomeClass {
   return status.startsWith('skipped-') ? 'skip' : 'unknown';
 }
 
+/** P-029: terminal skip/abort outcomes in a complete rolling day, grouped by reason. */
+export interface GateNonVerdictReasons {
+  windowHours: 24;
+  sinceMs: number;
+  measuredAtMs: number;
+  reasons: Array<{ reason: string; count: number; latestAtMs: number }>;
+}
+
+/** Aggregate in SQL so a bounded display timeline cannot undercount recurring skips. */
+export async function readGateNonVerdictReasons(
+  sql: Sql,
+  target: GateFireTarget,
+  nowMs: number = Date.now(),
+): Promise<GateNonVerdictReasons> {
+  const sinceMs = nowMs - 86_400_000;
+  const rows = await sql<{ status: string; count: string | number; latest_ms: string | number }[]>`
+    SELECT status, count(DISTINCT COALESCE(NULLIF(detail->>'gateFireId', ''), id::text)) AS count,
+           extract(epoch from max(created_at)) * 1000 AS latest_ms
+      FROM harness_shared.pipeline_events
+     WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
+       AND kind = 'green_checkpoint'
+       AND created_at >= ${new Date(sinceMs)} AND created_at <= ${new Date(nowMs)}
+     GROUP BY status`;
+  const reasons: GateNonVerdictReasons['reasons'] = [];
+  for (const row of rows) {
+    const count = Number(row.count);
+    const latestAtMs = Number(row.latest_ms);
+    if (typeof row.status !== 'string' || !row.status || !Number.isSafeInteger(count) || count < 1 ||
+        !Number.isFinite(latestAtMs) || latestAtMs < sinceMs || latestAtMs > nowMs) {
+      throw new Error('non-verdict reason measurement is invalid');
+    }
+    const cls = classifyGateOutcomeStatus(row.status);
+    if (isTerminalGateOutcomeStatus(row.status) && (cls === 'skip' || cls === 'no-verdict')) {
+      reasons.push({ reason: row.status, count, latestAtMs });
+    }
+  }
+  reasons.sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+  return { windowHours: 24, sinceMs, measuredAtMs: nowMs, reasons };
+}
+
 /** One reconstructed day. `unaccounted` = fires with no outcome row that day (killed/vanished). */
 export interface GateFireDay {
   /** ISO date (UTC day). */

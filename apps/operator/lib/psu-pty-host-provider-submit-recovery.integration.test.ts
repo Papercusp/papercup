@@ -9,6 +9,7 @@ import { eventLogPathForOwner, hostThroughPty, leadingTurnOriginMarker, metaPath
 import { injectIntoHostWithConfirmation } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const capacityError = 'Selected model is at capacity';
 async function until(check: () => boolean, timeoutMs = 6_000, detail = () => '') {
   const deadline = Date.now() + timeoutMs;
   while (!check() && Date.now() < deadline) await delay(20);
@@ -83,7 +84,8 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
   const rows = () => existsSync(eventLogPathForOwner(ownerId))
     ? readFileSync(eventLogPathForOwner(ownerId), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
     : [];
-  await until(() => output.includes('READY') && existsSync(metaPathFor(ownerId)));
+  await until(() => output.includes('READY') && existsSync(metaPathFor(ownerId)), 6_000,
+    () => JSON.stringify({ phase: 'fixture-start', output, events: rows() }));
   const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
   expect(Number.isInteger(meta.execution?.childGeneration), 'native generation preflight').toBe(true);
   const data = `⟦turn-origin:wake-pump nonce:${serial.toString(16).padStart(16, '0')}⟧\nresume the pending work`;
@@ -103,9 +105,24 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
 }
 
 describe('pending submission after provider recovery (EI-25878022553042846)', () => {
+  it('isolates native transcript roots even when the launcher supplies OMP overrides', () => {
+    const source = { PAPERCUSP_PSU_PTY_DIR: '/tmp/private-pty-fixture',
+      PI_CONFIG_DIR: '/live/omp-config', PI_CODING_AGENT_DIR: '/live/omp-agent',
+      CODEX_HOME: '/live/codex', CLAUDE_CONFIG_DIR: '/live/claude' };
+    const env = hermeticEnv({ PI_CONFIG_DIR: '/tmp/private-omp-config' }, source);
+    expect(env.PI_CODING_AGENT_DIR).toBeUndefined();
+    expect(env.PI_CONFIG_DIR).toBe('/tmp/private-omp-config');
+    expect(env.CODEX_HOME).toBe('/tmp/private-pty-fixture/codex-home');
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/tmp/private-pty-fixture/claude-home');
+    expect(hermeticEnv({}, source).PI_CONFIG_DIR).toBeUndefined();
+    expect(hermeticEnv({ PI_CODING_AGENT_DIR: '/tmp/private-omp-agent' }, source)
+      .PI_CODING_AGENT_DIR).toBe('/tmp/private-omp-agent');
+  });
+
   it.each([
     ['codex', 'You’ve hit your usage limit. Try again at Oct 17th, 2026 11:58 PM.', true],
     ['codex', 'unexpected status 502 Bad Gateway: inference-gateway: upstream TTFB exceeded 30000ms', true],
+    ['codex', capacityError, true],
     ['claude', 'API Error: 429 You have reached your usage limit.', true],
     ['claude', 'API Error: 529 {"error":{"type":"overloaded_error"}}', true],
     ['codex', 'You’ve hit your usage limit.', false],
@@ -119,6 +136,19 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
       await until(() => f.rows().some(row => row.kind === (nativeStart ? 'native-turn-start-unverified' : 'submit-verify-unconfirmed')),
         6_000, () => JSON.stringify({ output: f.output(), events: f.rows() }));
       expect(existsSync(f.transcript)).toBe(false);
+      // Retries of the durable delivery must keep one staged payload alive.
+      // Deduplication is acceptance, not proof that a native turn started.
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope)).toMatchObject({
+        ok: true, reason: 'pending-delivery-id',
+      });
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope)).toMatchObject({
+        ok: true, reason: 'pending-delivery-id',
+      });
+      if (error.startsWith('Selected model is at capacity')) {
+        expect(f.rows()).toContainEqual(expect.objectContaining({
+          kind: 'model-capacity-detected', retryable: true, retryAfterMs: 60_000,
+        }));
+      }
       await f.recover();
       // No human Enter and no new wake are needed after gateway recovery.
       await until(() => f.output().includes('SUBMITTED:'), 6_000,
@@ -130,15 +160,20 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
       expect(user).toHaveLength(1);
       expect(agent === 'codex' ? user[0].payload.content[0].text : agent === 'claude'
         ? user[0].message.content : user[0].message.content[0].text).toBe(f.data);
-      await until(() => f.rows().some(row => row.kind === 'native-turn-start-confirmed'));
+      await until(() => f.rows().some(row => row.kind === 'native-turn-start-confirmed'), 6_000,
+        () => JSON.stringify({ phase: 'native-start', output: f.output(), events: f.rows(), transcript: rows }));
       expect(await injectIntoHostWithConfirmation(f.sock, f.envelope)).toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
       await delay(150);
       expect(f.output().match(/SUBMITTED:/g)).toHaveLength(1);
     } finally { await f.close(); }
   }, 20_000);
 
-  it.each(['codex', 'claude'] as const)('does not submit owner edits in the recovered %s composer', async agent => {
-    const f = await fixture(agent, 'API Error: 502 Bad Gateway');
+  it.each([
+    ['codex', 'API Error: 502 Bad Gateway'],
+    ['claude', 'API Error: 502 Bad Gateway'],
+    ['codex', capacityError],
+  ] as const)('does not submit owner edits in the recovered %s composer after %s', async (agent, error) => {
+    const f = await fixture(agent, error);
     try {
       await injectIntoHostWithConfirmation(f.sock, f.envelope);
       await until(() => f.rows().some(row => row.kind === 'native-turn-start-unverified'));
@@ -150,8 +185,12 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
     } finally { await f.close(); }
   }, 20_000);
 
-  it.each(['codex', 'claude'] as const)('a recovered %s gateway still needs Enter when the recovery tick is held', async agent => {
-    const f = await fixture(agent, 'API Error: 502 Bad Gateway', true, { activityPersistMs: 60_000 });
+  it.each([
+    ['codex', 'API Error: 502 Bad Gateway'],
+    ['claude', 'API Error: 502 Bad Gateway'],
+    ['codex', capacityError],
+  ] as const)('a recovered %s gateway still needs Enter when the recovery tick is held after %s', async (agent, error) => {
+    const f = await fixture(agent, error, true, { activityPersistMs: 60_000 });
     try {
       await injectIntoHostWithConfirmation(f.sock, f.envelope);
       await until(() => f.rows().some(row => row.kind === 'native-turn-start-unverified'));
@@ -181,8 +220,12 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
     } finally { await f.close(); }
   }, 20_000);
 
-  it.each(['codex', 'claude'] as const)('never retries Enter for an accepted %s message whose provider failed', async agent => {
-    const f = await fixture(agent, 'API Error: 502 Bad Gateway', true, { acceptBeforeRecovery: true });
+  it.each([
+    ['codex', 'API Error: 502 Bad Gateway'],
+    ['claude', 'API Error: 502 Bad Gateway'],
+    ['codex', capacityError],
+  ] as const)('never retries Enter for an accepted %s message whose provider failed with %s', async (agent, error) => {
+    const f = await fixture(agent, error, true, { acceptBeforeRecovery: true });
     try {
       await injectIntoHostWithConfirmation(f.sock, f.envelope);
       await until(() => f.output().includes('SUBMITTED:'));

@@ -13,6 +13,7 @@
  * desktop path carries (plan D-008 for end).
  */
 import { handleHttpToolRequest, PAPERCUSP_CONTEXT_HEADERS } from '@papercusp/agent-mcp';
+import { createHash } from 'node:crypto';
 // Side-effect: register the operator-side first-party tools (coord:*, fleet:*).
 import '../agent-tools/index';
 import { ADMIN_COORD_UI_OWNER } from '../agent-tools/coordination/identity';
@@ -39,6 +40,7 @@ export function adminUiSearchParams(inbound?: URLSearchParams): URLSearchParams 
 }
 
 export interface AdminToolDispatch {
+  idempotencyKey?: string;
   /** Tool group and verb, e.g. `fleet` / `kill`. */
   group: string;
   verb: string;
@@ -64,6 +66,7 @@ export async function dispatchToolAsAdminUi(input: AdminToolDispatch): Promise<A
     searchParams: adminUiSearchParams(input.searchParams),
     headers,
     body: input.body,
+    ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
   };
   if (input.workspaceId === undefined) {
     return handleHttpToolRequest(request, ADMIN_PROXY_HOST_EXTRAS);
@@ -102,6 +105,7 @@ export type OwnerCoordSendOutcome =
  * send as the admin UI owner bound to that workspace.
  */
 export async function dispatchOwnerCoordSend(input: {
+  idempotencyKey?: string;
   workspaceId: string;
   body: Record<string, unknown>;
   headers?: Record<string, string | undefined>;
@@ -134,6 +138,7 @@ export async function dispatchOwnerCoordSend(input: {
     verb: 'send',
     body: applyOwnerMessageDefaults(body),
     workspaceId,
+    ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
     ...(input.headers ? { headers: input.headers } : {}),
     ...(input.searchParams ? { searchParams: input.searchParams } : {}),
   });
@@ -149,17 +154,30 @@ export type OwnerSessionMessageResult =
  * what coord:send did with it (woken, staged, queued or absent).
  */
 export async function sendOwnerSessionMessage(input: {
+  idempotencyKey?: string;
+  /** Verified by the device route, never accepted from its request body. */
+  pairedDevice?: { id: string; label: string };
   workspaceId: string;
   ownerId: string;
   text: string;
   headers?: Record<string, string | undefined>;
   searchParams?: URLSearchParams;
 }): Promise<OwnerSessionMessageResult> {
+  const searchParams = new URLSearchParams(input.searchParams);
+  if (input.pairedDevice) {
+    // A paired phone is labelled for the owner but remains agent-origin (D-010).
+    const digest = createHash('sha256').update(JSON.stringify([input.workspaceId, input.pairedDevice.id])).digest('hex');
+    searchParams.set('client', `paired-device-${digest}`);
+  }
+  const text = input.pairedDevice
+    ? `[${input.pairedDevice.label} — sent from a paired device]\n${input.text}`
+    : input.text;
   const outcome = await dispatchOwnerCoordSend({
     workspaceId: input.workspaceId,
-    body: { ...ownerMessageSendArgs(input.ownerId, input.text) },
+    body: { ...ownerMessageSendArgs(input.ownerId, text) },
+    ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
     ...(input.headers ? { headers: input.headers } : {}),
-    ...(input.searchParams ? { searchParams: input.searchParams } : {}),
+    searchParams,
   });
   if ('refused' in outcome) {
     return { ok: false, status: outcome.refused.status, error: outcome.refused.body.error };
@@ -168,6 +186,11 @@ export async function sendOwnerSessionMessage(input: {
     return { ok: false, status: outcome.result.status, error: 'coord:send failed' };
   }
   const response = adminToolResultJson(outcome.result);
+  const verdict = response as { ok?: boolean; results?: Array<{ ok?: boolean }> } | null | undefined;
+  if ((outcome.result.body as { isError?: boolean })?.isError || verdict?.ok === false
+    || verdict?.results?.some(row => row.ok === false)) {
+    return { ok: false, status: 502, error: 'coord:send refused' };
+  }
   // An unparseable 200 is an accepted send whose delivery cannot be
   // characterised: report the weakest honest outcome, as the desktop does.
   return { ok: true, delivery: deliveryFromSendResponse(response ?? null), response: response ?? null };

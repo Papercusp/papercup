@@ -92,6 +92,8 @@ export interface AgentRunOutput extends AgentRunUsage {
    * tau2 +memory "lift": a discretionary capability the agent simply never invoked). A `worker` in a
    * central/no-coord arm legitimately reports 0. */
   coordCalls?: number;
+  /** Native driver identity, accounting and context evidence, retained on the result row. */
+  armMeta?: Record<string, unknown>;
   error?: string | null;
   /**
    * P-022 / D-010: pointer to THIS agent run's transcript (e.g. its session JSONL path), reported by the live
@@ -322,7 +324,11 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
   });
   /** Attach the merged capability evidence of every agent that ran for this task unit. */
   const withEvidence = (armMeta: Record<string, unknown>, outputs: ReadonlyArray<AgentRunOutput>) =>
-    withExecutionPath(withCapabilityEvidence(armMeta, mergeCapabilityEvidence(outputs.map((o) => o.capabilityEvidence))), outputs);
+    withExecutionPath(withCapabilityEvidence({
+      ...(outputs.length === 1 ? outputs[0].armMeta :
+        outputs.some(output => output.armMeta) ? { agentExecutions: outputs.map(output => output.armMeta ?? null) } : {}),
+      ...armMeta,
+    }, mergeCapabilityEvidence(outputs.map((o) => o.capabilityEvidence))) ?? armMeta, outputs);
 
   // ── per-topology task execution ──────────────────────────────────────────────
   /** distributed / huddle / central: ONE worker per task carrying its team's coordination directive. */

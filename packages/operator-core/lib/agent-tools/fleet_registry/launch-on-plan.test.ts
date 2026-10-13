@@ -526,6 +526,13 @@ describe('cloudModelBackendHint (native cloud model-family/backend guard)', () =
 });
 
 describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-inheritance-2026-07-03)', () => {
+  it('resolves the versioned human alias before inheriting a caller backend', () => {
+    expect(resolveFleetAgent({ argModel: 'sol 6.1:xhigh', callerAgent: 'claude' })).toEqual({
+      agent: 'codex', model: 'gpt-6.1-sol:xhigh', modelSource: 'explicit',
+    });
+    expect(resolveFleetAgent({ argModel: '6' })).toMatchObject({ error: expect.stringContaining('ambiguous') });
+  });
+
   it('an explicit `agent` arg wins, but no-picker Codex still requires model authority', () => {
     // Owner directive 2026-09-15 (WI-10001535): a claude member with no explicit and no
     // inheritable model now takes the opus 5 xhigh configured default instead of leaving

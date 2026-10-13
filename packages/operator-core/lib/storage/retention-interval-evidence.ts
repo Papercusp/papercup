@@ -81,6 +81,91 @@ export interface RetentionIntervalAssessment {
 const REQUIRED_PATHS = ['/', '/mnt/data', '/tmp/pcv'] as const;
 const EXTERNAL_CHECKS = new Set(['inode-headroom', 'final-candidate-demand']);
 
+const sampleSeriesSchema = z.array(endpoint.omit({ stores: true })).min(1).max(20_000);
+const sampleRequirementsSchema = z.object({
+  startAt: z.string().datetime({ offset: true }),
+  endAt: z.string().datetime({ offset: true }),
+  maxSampleGapMs: bytes.positive(),
+}).refine((x) => Date.parse(x.endAt) > Date.parse(x.startAt), 'Require a positive observation window.');
+
+/**
+ * Assess sample coverage, not interpolated capacity. The evaluator supplies the
+ * required window and maximum gap separately from the retained measurements.
+ * This reuses endpoint policy/device records; it does not start a sampler or
+ * upgrade an endpoint-only proof into continuous host evidence.
+ */
+export function assessRetainedStorageSamples(input: unknown, requirements: unknown) {
+  const checks: RetentionEvidenceCheck[] = [];
+  const add = (id: string, status: RetentionEvidenceCheck['status'], detail: string) => checks.push({ id, status, detail });
+  const finish = (sampledSpanMs: number | null, largestGapMs: number | null, observedSamples: number) => ({
+    schemaVersion: 1 as const, kind: 'retained-storage-sample-assessment' as const,
+    sampleStatus: checks.some((x) => x.status === 'fail') ? 'fail' as const :
+      checks.some((x) => x.status === 'unknown') ? 'unknown' as const : 'pass' as const,
+    sampledSpanMs, largestGapMs, observedSamples, checks,
+    coverage: {
+      population: checks.map((x) => x.id),
+      checked: checks.filter((x) => x.status !== 'unknown').map((x) => x.id),
+      notChecked: checks.filter((x) => x.status === 'unknown').map((x) => x.id),
+      notApplicable: [] as string[], residue: checks.filter((x) => x.status !== 'pass').map((x) => `${x.id}: ${x.detail}`),
+    },
+    scope: [
+      'Retained discrete samples and their maximum gaps only; capacity between samples remains unmeasured.',
+      'The required window and cadence come from the evaluator, not a passing flag in the artifact.',
+      'Recorded runtime identity and stability during reads do not establish uninterrupted runtime between reads.',
+      'No candidate admission, protected-payload custody, native retention execution, recorder recovery or shipment claim.',
+    ],
+  });
+  const required = sampleRequirementsSchema.safeParse(requirements);
+  const parsed = sampleSeriesSchema.safeParse(input);
+  if (!required.success || !parsed.success) {
+    add('sample-shape', 'unknown', [...(!required.success ? required.error.issues : []), ...(!parsed.success ? parsed.error.issues : [])]
+      .slice(0, 8).map((x) => x.path.join('.') + ': ' + x.message).join('; '));
+    return finish(null, null, 0);
+  }
+  const samples = parsed.data;
+  const times = samples.map((x) => Date.parse(x.at));
+  const chronological = times.every((at, index) => index === 0 || at > times[index - 1]!);
+  add('sample-order', chronological ? 'pass' : 'fail', 'Supplied timestamps must be strictly increasing; no sorting or deduplication hides lost samples.');
+  if (!chronological) return finish(null, null, samples.length);
+  const start = Date.parse(required.data.startAt), end = Date.parse(required.data.endAt);
+  const coversWindow = times[0]! <= start && times[times.length - 1]! >= end;
+  add('window-coverage', coversWindow ? 'pass' : 'unknown', 'Actual samples must bracket both requested window boundaries.');
+  // Only adjacent samples bracketing the requested window matter to its gap and
+  // headroom checks. A much older prefix cannot fabricate or invalidate coverage.
+  const first = times.reduce((index, at, current) => at <= start ? current : index, 0);
+  const last = times.findIndex((at) => at >= end);
+  const window = samples.slice(first, last < 0 ? undefined : last + 1);
+  const gaps = window.slice(1).map((x, index) => Date.parse(x.at) - Date.parse(window[index]!.at));
+  const largestGapMs = gaps.length ? Math.max(...gaps) : null;
+  add('sample-gap', largestGapMs === null ? 'unknown' : largestGapMs <= required.data.maxSampleGapMs ? 'pass' : 'fail',
+    `Largest observed gap ${largestGapMs ?? 'unknown'}ms; evaluator permits ${required.data.maxSampleGapMs}ms. No interpolation.`);
+  const baseline = window[0]!;
+  add('runtime-custody', window.some((x) => x.runtimeStableDuringRead === undefined) ? 'unknown' :
+    window.every((x) => x.runtimeStableDuringRead && x.nativePid === baseline.nativePid && x.scriptSha256 === baseline.scriptSha256) ? 'pass' : 'fail',
+    'Every included read must record the same PID/source and an explicit stability witness.');
+  for (const path of REQUIRED_PATHS) {
+    const rows = window.map((sample) => ({ sample, matches: sample.snapshots.filter((x) => x.path === path) }));
+    const complete = rows.every((x) => x.matches.length === 1);
+    const device = rows[0]!.matches[0];
+    add(`byte-headroom:${path}`, !complete ? 'unknown' : rows.every(({ sample, matches }) => {
+      const s = matches[0]!, usable = s.availableBytes - s.reservedBytes;
+      const floor = criticalWriteHeadroomBytes(s.totalBytes, { ...DEFAULT_DISK_POLICY, ...sample.policy });
+      return s.dev === device!.dev && s.totalBytes === device!.totalBytes && s.availableBytes <= s.totalBytes && usable >= floor &&
+        (s.usableAfterReservationsBytes === undefined || s.usableAfterReservationsBytes === usable) &&
+        (s.criticalFloorBytes === undefined || Math.abs(s.criticalFloorBytes - floor) <= 0.000001);
+    }) ? 'pass' : 'fail', 'Recompute available-minus-reserved against each recorded policy on one stable device; check every included sample.');
+    add(`inode-headroom:${path}`, !complete || rows.some(({ matches }) => matches[0]!.totalInodes === undefined || matches[0]!.freeInodes === undefined) ? 'unknown' :
+      rows.every(({ sample, matches }) => {
+        const s = matches[0]!;
+        return s.freeInodes! <= s.totalInodes! && (s.totalInodes === 0 || s.freeInodes! / s.totalInodes! >= sample.policy.freeInodesPctMin);
+      }) ? 'pass' : 'fail', 'Require recorded inode counts at every included sample; zero total means this filesystem does not report inodes.');
+  }
+  add('physical-alias-budget', window.every((sample) => sample.snapshots.every((s) =>
+    sample.snapshots.filter((other) => other.dev === s.dev).every((other) => other.totalBytes === s.totalBytes && other.reservedBytes === s.reservedBytes))) ? 'pass' : 'fail',
+  'Paths spending the same physical device must report one reservation budget; never sum alias budgets.');
+  return finish(Date.parse(window[window.length - 1]!.at) - Date.parse(baseline.at), largestGapMs, window.length);
+}
+
 /** Recompute conclusions from bounded records; never trust their authored pass booleans. */
 export function assessRetainedStorageInterval(input: unknown): RetentionIntervalAssessment {
   const checks: RetentionEvidenceCheck[] = [];

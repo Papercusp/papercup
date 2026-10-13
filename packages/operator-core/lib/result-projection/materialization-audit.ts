@@ -10,8 +10,10 @@
  * over a one-line JSON body, which reduces nothing and then hits the result door
  * at full size, cannot be told apart from an ordinary oversized call.
  *
- * The record is audit-only: it rides on the tool context to the invocation
- * recorder and is never read by a handler.
+ * The record rides on the tool context to the invocation recorder. Custom
+ * result handlers also use promotedToFull to distinguish internal projection
+ * materialization from an explicitly requested full payload (tools:find must
+ * preserve its compact schema under a field pick).
  */
 import type { ProjectionSpec } from './types';
 

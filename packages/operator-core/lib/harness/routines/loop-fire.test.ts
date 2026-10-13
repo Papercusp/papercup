@@ -286,7 +286,8 @@ describe('renderLoopChecksBlock — contested verification is explicit on wake',
 describe('R-004 matched production check-renderer inputs', () => {
   const snapshot = JSON.parse(readFileSync(new URL(
     '../../../../../docs/evidence/byoc-p009-r004-matched-input-2026-10-13.json', import.meta.url,
-  ), 'utf8')) as { snapshots: Array<{ kind: string; note: string }> };
+  ), 'utf8')) as { snapshots: Array<{ kind: string; note: string }>;
+    injectedBaseline: { summary: string; checksBlock: string; utf8_bytes: number } };
   // Exact pre-compactor algorithm at 61b1c090369cd89cd7445ec4ba7d06b744a08b18,
   // sharing the current parser/line renderer so only history compaction differs.
   const baseline = (checks: ReadonlyArray<CheckEntry>): string | null => checks.length ? (
@@ -312,6 +313,25 @@ describe('R-004 matched production check-renderer inputs', () => {
     }
     expect(candidate).toContain(renderCheckLine(checks.at(-1)!).replace(/^-\s*/, '• '));
     expect(JSON.stringify({ note, checks, walls })).toBe(original);
+  });
+
+  it('reduces the complete original injected wake using exactly its original check rows', () => {
+    const { summary, checksBlock, utf8_bytes } = snapshot.injectedBaseline;
+    expect(summary.split(checksBlock)).toHaveLength(2);
+    const note = '## Checks\n' + checksBlock.split('\n').slice(1)
+      .map(line => line.replace(/^  • /, '- ')).join('\n');
+    const { checks } = splitCarryNoteChecks(note);
+    expect(checks).toHaveLength(12);
+    const original = JSON.stringify(checks);
+    const candidateBlock = renderLoopChecksBlock(checks)!;
+    const candidate = summary.replace(checksBlock, candidateBlock);
+    expect(bytes(summary)).toBe(utf8_bytes);
+    expect(bytes(candidate)).toBeLessThanOrEqual(utf8_bytes / 2);
+    const [prefix, suffix] = summary.split(checksBlock);
+    expect(candidate).toBe(prefix + candidateBlock + suffix); // Every non-check byte survives.
+    for (const check of checks) expect(candidate).toContain(`#${check.id}`);
+    expect(candidateBlock).toContain(renderCheckLine(checks.at(-1)!).replace(/^-\s*/, '• '));
+    expect(JSON.stringify(checks)).toBe(original);
   });
 
   it('reports no check-block savings for the active production note with no check history', () => {

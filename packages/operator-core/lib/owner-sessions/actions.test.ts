@@ -63,6 +63,22 @@ beforeEach(() => {
 });
 
 describe('owner send — one implementation (P-001, R-3)', () => {
+  it('does not report an HTTP-200 logical refusal as an accepted send', async () => {
+    fixture.response = { ok: false, results: [{ ok: false, error: 'recipient unavailable' }] };
+    expect(await sendOwnerSessionMessage({ workspaceId: 'ws-a', ownerId: 'su-target', text: 'hi' }))
+      .toEqual({ ok: false, status: 502, error: 'coord:send refused' });
+  });
+  it('labels a verified phone, scopes retries and keeps it outside human UI provenance', async () => {
+    await sendOwnerSessionMessage({ workspaceId: 'ws-a', ownerId: 'su-target', text: 'hi',
+      idempotencyKey: 'device-a:key', pairedDevice: { id: 'phone-a', label: 'Owner' } });
+    const request = lastDispatch() as DispatchedRequest & { idempotencyKey: string };
+    expect(request.idempotencyKey).toBe('device-a:key');
+    expect(request.searchParams.get('client')).toMatch(/^paired-device-/);
+    expect(request.searchParams.get('client')).not.toBe(ADMIN_COORD_UI_OWNER);
+    expect(request.body).toMatchObject({ to: ['su-target'], wake: 'required', body: [
+      expect.objectContaining({ text: '[Owner — sent from a paired device]\nhi' }),
+    ] });
+  });
   it('dispatches exactly what the desktop /admin/coord/send route dispatches for the same message', async () => {
     const text = 'please rebase onto staging and rerun the failing test';
     const desktop = await coordRoutes[0].handler(

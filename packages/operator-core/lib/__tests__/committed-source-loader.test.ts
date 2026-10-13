@@ -15,10 +15,10 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -173,7 +173,10 @@ describe('committed-source loader — a scratch checkout', () => {
     const outside = mkdtempSync(join(scratch, 'retained-api-'));
     put(outside, '.git/info/exclude', '*.log\n');
     put(outside, 'artifacts/api.mjs', "console.log('RETAINED-API-RAN');\n");
-    const result = run(['--import', COMMITTED_SOURCE_LOADER, join(outside, 'artifacts/api.mjs')], cleanEnv());
+    const env = cleanEnv();
+    delete env.PAPERCUSP_COMMITTED_SOURCE_GIT;
+    env.PATH = '';
+    const result = run(['--import', COMMITTED_SOURCE_LOADER, join(outside, 'artifacts/api.mjs')], env);
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('RETAINED-API-RAN');
   }, 60_000);
@@ -202,6 +205,46 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(result.status).not.toBe(0);
     expect(result.stdout).not.toContain('DAMAGED-REPO-RAN');
     expect(result.stderr).toMatch(/not a git repository/i);
+  }, 60_000);
+
+  it('pins git at loader registration so a descendant fake PATH cannot intercept checkout reads', () => {
+    const binDir = join(scratch, 'fake-git-bin');
+    const fakeGit = join(binDir, process.platform === 'win32' ? 'git.exe' : 'git');
+    const fakeGitCalls = join(scratch, 'fake-git-calls');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(fakeGit, [
+      '#!/bin/sh',
+      'printf "called\\n" >> "$FAKE_GIT_CALLS"',
+      'exit 97',
+      '',
+    ].join('\n'));
+    chmodSync(fakeGit, 0o755);
+
+    const parent = [
+      "import { spawnSync } from 'node:child_process';",
+      "import { writeFileSync } from 'node:fs';",
+      `const childPath = [${JSON.stringify(binDir)}, process.env.PATH].filter(Boolean).join(${JSON.stringify(delimiter)});`,
+      'const fakeEnv = { ...process.env, PATH: childPath };',
+      "const fakeControl = spawnSync('git', ['--version'], { env: fakeEnv, encoding: 'utf8' });",
+      "if (fakeControl.status !== 97) throw new Error('fake git did not intercept the control call');",
+      `writeFileSync(${JSON.stringify(fakeGitCalls)}, '');`,
+      `const child = spawnSync(process.execPath, ['--import', ${JSON.stringify(COMMITTED_SOURCE_LOADER)}, 'entry.mjs'], { cwd: process.cwd(), env: fakeEnv, encoding: 'utf8' });`,
+      'if (child.error) throw child.error;',
+      'process.stdout.write(child.stdout ?? "");',
+      'if (child.stderr) process.stderr.write(child.stderr);',
+      'process.exitCode = child.status ?? 1;',
+    ].join('\n');
+    const env = cleanEnv();
+    delete env.PAPERCUSP_COMMITTED_SOURCE_GIT;
+    env.FAKE_GIT_CALLS = fakeGitCalls;
+
+    const result = spawnSync(process.execPath, [
+      '--import', COMMITTED_SOURCE_LOADER, '--input-type=module', '-e', parent,
+    ], { cwd: fixture, env, encoding: 'utf8', timeout: 60_000 });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('V=HEAD');
+    expect(readFileSync(fakeGitCalls, 'utf8')).toBe('');
   }, 60_000);
 
   it.each([

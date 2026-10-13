@@ -1419,7 +1419,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       if (!existsSync(path)) return [];
       return readFileSync(path, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
     };
-    return { sock: socketPathFor(ownerId), captured, done, hostEvents };
+    return { ownerId, sock: socketPathFor(ownerId), captured, done, hostEvents };
   };
 
   it('holds a fresh Codex kickoff past its budget while the footer reads Starting, then delivers on the frame', async () => {
@@ -1471,7 +1471,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       // Positive control for the fresh-child case below, which asserts this
       // line's ABSENCE through the same spy: a terminal drop must print it.
       const printed = stderrWrite.mock.calls.map((call) => String(call[0]));
-      expect(printed.some((line) => line.includes('launch kickoff DROPPED'))).toBe(true);
+      expect(printed.some((line) => line.includes(`launch kickoff DROPPED for ${run.ownerId} `))).toBe(true);
     } finally {
       stderrWrite.mockRestore();
       if (existsSync(run.sock)) await rawInject(run.sock, 'QUIT\n');
@@ -1547,9 +1547,11 @@ describe('session-port managed seed + native persistence helpers', () => {
       }, { timeout: 8000 });
       expect(written).toMatchObject({ label: 'launch kickoff' });
       // The acceptance grader retires a judge on this line; the retried launch
-      // above did deliver, so it must never have been printed.
+      // above did deliver, so it must never have been printed for this host.
+      // A prior host can finish an asynchronous drop after its child exits;
+      // the process-wide stderr spy also captures that unrelated receipt.
       const printed = stderrWrite.mock.calls.map((call) => String(call[0]));
-      expect(printed.some((line) => line.includes('launch kickoff DROPPED'))).toBe(false);
+      expect(printed.some((line) => line.includes(`launch kickoff DROPPED for ${run.ownerId} `))).toBe(false);
     } finally {
       stderrWrite.mockRestore();
       if (existsSync(run.sock)) await rawInject(run.sock, 'QUIT\n');

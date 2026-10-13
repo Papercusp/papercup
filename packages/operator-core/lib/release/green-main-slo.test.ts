@@ -89,6 +89,33 @@ describe('computeGreenMainSlo — metrics from their named populations', () => {
   });
 });
 
+describe('computeGreenMainSlo — recurring non-verdict reasons (P-029)', () => {
+  it('preserves independent reason counts and alarms only at the daily threshold', () => {
+    const nonVerdictReasons = {
+      windowHours: 24 as const,
+      sinceMs: NOW - 24 * H,
+      measuredAtMs: NOW,
+      reasons: [
+        { reason: 'skipped-joined-attempt', count: 6, latestAtMs: NOW - H },
+        { reason: 'skipped-memory-budget', count: 5, latestAtMs: NOW - H },
+      ],
+    };
+    const slo = computeGreenMainSlo({ ...base, lastGreenAtMs: NOW, lastVerdictAtMs: NOW, queue: null, nonVerdictReasons });
+    expect(slo.metrics.nonVerdictReasons).toEqual(nonVerdictReasons);
+    expect(slo.breaches).toEqual([expect.objectContaining({
+      metric: 'non-verdict-reason', subject: 'skipped-joined-attempt', value: 6, threshold: 6,
+    })]);
+  });
+
+  it('keeps an unreadable ledger distinct from a measured empty population', () => {
+    const input = { ...base, lastGreenAtMs: NOW, lastVerdictAtMs: NOW, queue: null };
+    expect(computeGreenMainSlo(input).metrics.nonVerdictReasons).toBeNull();
+    expect(computeGreenMainSlo({ ...input, nonVerdictReasons: {
+      windowHours: 24, sinceMs: NOW - 24 * H, measuredAtMs: NOW, reasons: [],
+    } }).metrics.nonVerdictReasons?.reasons).toEqual([]);
+  });
+});
+
 describe('computeGreenMainSlo — owner pages (AUTO-BAR-R-14)', () => {
   const pages = (lastGreenAtMs: number | null, lastVerdictAtMs: number | null) =>
     computeGreenMainSlo({ ...base, lastGreenAtMs, lastVerdictAtMs, queue: null }).breaches.filter((b) => b.severity === 'page');

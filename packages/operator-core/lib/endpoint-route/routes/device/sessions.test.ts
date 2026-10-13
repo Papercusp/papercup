@@ -28,6 +28,7 @@ vi.mock('../../../sync-resolver/adv-roster-read', async (importOriginal) => ({
 vi.mock('../../../device-feeds', () => ({
   recentToasts: vi.fn(), recentAuditEntries: vi.fn(), currentlyRunning: vi.fn(),
 }));
+vi.mock('../../../device-store', () => ({ deviceAgentSessionsAllowed: vi.fn(async () => true) }));
 vi.mock('../../../device-harnesses', () => ({ listHarnessesFor: vi.fn(), harnessStatusFor: vi.fn() }));
 vi.mock('../../../operator-standing-candidates', () => ({ readCandidates: vi.fn(), refreshCandidates: vi.fn() }));
 

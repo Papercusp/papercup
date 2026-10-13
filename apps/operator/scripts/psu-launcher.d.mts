@@ -4049,9 +4049,10 @@ export function resumeFirstStepChoices(session: {
  *  The wake-executor rematerializes on ITS resume path, but a direct
  *  `psu --resume` reads the disk — so on a transcript miss, ask the operator
  *  to restore the files from the archive, then retry the disk lookup. Returns
- *  the API result or null; never throws (a miss just falls through to the
- *  existing not-found error, incl. against an older operator without the
- *  endpoint). EI-9756 regression guard: injectable `fetchImpl`/`operatorUrl`/
+ *  the API result, a structured failure/pending result, or null after the
+ *  archive service explicitly confirms absence. A failed request never proves
+ *  absence; native preflight propagates its cause. EI-9756 regression guard:
+ *  injectable `fetchImpl`/`operatorUrl`/
  *  `token` (mirrors reportSessionResumed) so this — previously untested — is
  *  unit-testable without a live operator; a real caller always hits the real
  *  operator via the defaults.
@@ -4112,7 +4113,8 @@ export function tryRematerializeFromArchive(sessionId: string | null | undefined
  *
  * Tracked OMP rows have an id-addressable transcript too; raw OMP thread names
  * remain unverifiable here. Injectable `home`/`rematerialize`
- * for tests; never throws.
+ * for tests. Restore request failures throw with their preserved cause; only
+ * an explicit archive-absence verdict returns false.
  */
 export function ensureResumeTranscriptPresent(source: any, { home, rematerialize }?: {
     home?: string | undefined;

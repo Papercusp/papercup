@@ -34,6 +34,7 @@ import {
   type FrozenCandidateRepairQueue,
   type FrozenRepairLatencySource,
 } from './frozen-candidate-repair-queue';
+import type { GateNonVerdictReasons } from './gate-fire-ledger';
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -51,6 +52,8 @@ export const GREEN_MAIN_SLO_DEFAULTS = {
   perSyncRedRateAlert: 0.2,
   /** ...over at least this many judged batches (one red in two batches is not a rate). */
   perSyncRedMinBatches: 5,
+  /** P-029: repeated terminal skips/aborts of one reason in a rolling day. */
+  nonVerdictReasonMinCount: 6,
 } as const;
 
 export type GreenMainSloThresholds = { -readonly [K in keyof typeof GREEN_MAIN_SLO_DEFAULTS]?: number };
@@ -114,6 +117,7 @@ export interface GreenMainSloInput {
   queue: GreenMainSloQueue | null;
   /** Per-fleet sync tallies over the delta check's retained window; omit when unreadable. */
   syncTallies?: readonly SyncBatchFleetTally[] | null;
+  nonVerdictReasons?: GateNonVerdictReasons | null;
 }
 
 export interface PerSyncRedRate {
@@ -143,6 +147,7 @@ export interface GreenMainSloMetrics {
   redAddingAdmissions: RedAddingAdmissions | null;
   /** null when the sync tallies were unreadable — never an empty list standing in for "unknown". */
   perSyncRedRate: PerSyncRedRate[] | null;
+  nonVerdictReasons: GateNonVerdictReasons | null;
 }
 
 export type GreenMainSloBreachMetric =
@@ -151,7 +156,8 @@ export type GreenMainSloBreachMetric =
   | 'round-cycle-time'
   | 'queue-idle'
   | 'red-adding-admission'
-  | 'per-sync-red-rate';
+  | 'per-sync-red-rate'
+  | 'non-verdict-reason';
 
 export interface GreenMainSloBreach {
   metric: GreenMainSloBreachMetric;
@@ -315,6 +321,20 @@ export function computeGreenMainSlo(input: GreenMainSloInput, thresholds: GreenM
     });
   }
 
+  for (const row of input.nonVerdictReasons?.reasons ?? []) {
+    if (row.count < t.nonVerdictReasonMinCount) continue;
+    breaches.push({
+      metric: 'non-verdict-reason',
+      subject: row.reason,
+      severity: 'alert',
+      value: row.count,
+      threshold: t.nonVerdictReasonMinCount,
+      episodeKey: key('non-verdict-reason', `${row.reason}:${Math.floor(nowMs / 86_400_000)}`),
+      title: `${row.reason}: ${row.count} non-verdict gate outcomes on ${installSlug}`,
+      detail: `${row.count} terminal outcomes with this reason in the last 24h (follow-up at ${t.nonVerdictReasonMinCount}). Repair this recurring reason without starting a parallel gate run.`,
+    });
+  }
+
   return {
     installSlug,
     computedAtMs: nowMs,
@@ -326,6 +346,7 @@ export function computeGreenMainSlo(input: GreenMainSloInput, thresholds: GreenM
       roundsToConverge,
       redAddingAdmissions: admissions,
       perSyncRedRate,
+      nonVerdictReasons: input.nonVerdictReasons ?? null,
     },
     breaches,
     thresholds: t,

@@ -59,6 +59,22 @@ export interface DiskReclaimOptions {
 }
 
 export type ReclaimSql = { unsafe: (query: string, params: unknown[]) => Promise<unknown> };
+/** Read an exact receipt, or the latest real pass, from the existing workspace audit ledger. */
+export async function readReclaimReceipt(sql: ReclaimSql, workspaceId: string, id?: string): Promise<DiskReclaimReceipt | null> {
+  const rows = await sql.unsafe(
+    `SELECT details FROM harness_shared.audit_log
+      WHERE workspace_id = $1 AND action = 'disk-retention:receipt'
+        AND jsonb_typeof(details) = 'object' AND details->>'schemaVersion' = '1'
+        AND details->>'id' = subject
+        ${id ? 'AND subject = $2' : "AND details->>'dryRun' = 'false'"}
+      ORDER BY ts DESC, id DESC LIMIT 1`,
+    id ? [workspaceId, id] : [workspaceId],
+  ) as Array<{ details: DiskReclaimReceipt }>;
+  return rows[0]?.details ?? null;
+}
+export function reclaimReceiptHref(id: string): string {
+  return `/settings/storage?reclaim=${encodeURIComponent(id)}`;
+}
 /** Reuse audit_log; no separate receipt table or retention subsystem. */
 export async function writeReclaimAudit(sql: ReclaimSql, workspaceId: string, runId: string, phase: string, details: unknown): Promise<void> {
   await sql.unsafe(
@@ -204,15 +220,15 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           receipt.entries.push(outcome);
           if (holders.byPath.has(entry.path)) { outcome.reason = 'live process'; continue; }
           try {
+            // Write the intent before the last identity/holder checks, so a
+            // slow database round trip cannot widen the check-to-effect window.
+            if (!receipt.dryRun) await options.record?.('remove-intent', entry);
             // Rescan write activity + identity and process holders immediately before the effect.
             const fresh = await inspectEntry(entry.path, entry.root, entry.classId, budget);
             const freshHolders = await scan([entry.path]);
             if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) { outcome.reason = 'process evidence unavailable or held'; continue; }
             if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs) { outcome.status = 'changed'; continue; }
             if (receipt.dryRun) { outcome.status = 'would-remove'; continue; }
-            // A restart between this intent and the completion is inspectable.
-            // If the audit cannot be written, the effect is refused.
-            await options.record?.('remove-intent', entry);
             await rm(entry.path, { recursive: true, force: false });
             outcome.status = 'removed';
             await options.record?.('removed', outcome);

@@ -25,7 +25,8 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, applyPlanItemClaimMigrations, type FreshPgDb } from '../../test/_pg-helpers';
+import type { FreshPgDb } from '../../test/_pg-helpers';
+import { createOrgTestDb } from '../../test/_org-test-db';
 import type { AcquireOpts } from './claims';
 import { noteGoalClaimed, readAgentStateStamp, resetAgentStateStamps } from '../agent-state-stamp';
 
@@ -45,33 +46,14 @@ const PLAN = 'test-plan-2026-06-07';
 let db: FreshPgDb;
 
 beforeAll(async () => {
-  db = await createFreshPgDb('claims');
+  // Goal rehydration can read work-items/fleets on the same connection during
+  // release. A missing leg aborts the D006 observer transaction even when its
+  // JS reader catches the error. Reuse the migrated fixture, including those
+  // real tables, rather than maintaining a partial claim-only schema.
+  const org = await createOrgTestDb({ adminPoolMax: 4 });
+  db = { sql: org.adminSql, url: org.adminDsn, cleanup: org.cleanup };
   h.sql = db.sql;
-  // The migration's GRANTs reference cluster-wide roles — ensure they exist
-  // (shared testcontainer: another file may have created them already).
-  await db.sql.unsafe(`
-    DO $r$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
-    DO $r$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
-  `).simple();
-  // Apply the REAL migrations — we test the shipped schema, not a hand-rolled
-  // copy. 140/141/143 — see EI-9613: shared helper instead of a hand-copied
-  // list (this file previously loaded only 141+143 by hand; 140 rides along
-  // now too — it's a self-contained CREATE TABLE with no FK on 141/143's
-  // tables, harmless to apply even though this file's own tests don't touch
-  // plan_item_assignments).
-  await applyPlanItemClaimMigrations(db.sql);
-  // renewOwnerActivityClaims consults the latest recorded session as its
-  // liveness authority. Keep this fixture minimal; the claim-store tests do
-  // not need the rest of migration 079's session columns.
-  await db.sql`
-    CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
-      id BIGSERIAL PRIMARY KEY,
-      coord_owner_id text,
-      started_at timestamptz NOT NULL DEFAULT now(),
-      ended_at timestamptz
-    )
-  `;
-});
+}, 180_000);
 
 afterAll(async () => {
   await db?.cleanup();
@@ -393,9 +375,9 @@ describe('renewOwnerActivityClaims — the per-turn auto-renewal', () => {
   // boundary conditions (lapsed + other-owner untouched).
   it('renews the owner\'s live claims (both modes); lapsed + other owners untouched', async () => {
     await db.sql`
-      INSERT INTO harness_shared.adv_sessions (coord_owner_id, started_at, ended_at)
-      VALUES ('su-alice', clock_timestamp() - interval '1 minute', NULL),
-             ('su-bob', clock_timestamp() - interval '1 minute', NULL)
+      INSERT INTO harness_shared.adv_sessions (workspace_id, mode, cwd, coord_owner_id, started_at, ended_at)
+      VALUES (${WS}, 'console', '/repo', 'su-alice', clock_timestamp() - interval '1 minute', NULL),
+             (${WS}, 'console', '/repo', 'su-bob', clock_timestamp() - interval '1 minute', NULL)
     `;
     await acquire({ itemId: 'P-020', livenessMode: 'activity' });
     await acquire({ itemId: 'P-021', livenessMode: 'activity' });
@@ -478,6 +460,56 @@ describe('extendOwnerClaimsForAwait — EI-383 (survive an events:await sleep)',
 });
 
 describe('reads + sweep', () => {
+  it('reads exact-owner endpoints across plans/harnesses, retaining lapsed leases without changing rows', async () => {
+    await acquire({ itemId: 'P-002' });
+    await acquire({ itemId: 'P-001', harnessSlug: 'aaa', planSlug: 'another-plan' });
+    await acquire({ itemId: 'P-003', owner: 'su-bob' });
+    await acquire({ itemId: 'P-004', workspaceId: 'foreign-workspace' });
+    await lapse('P-002');
+    const before = await db.sql`SELECT * FROM harness_shared.plan_item_claims ORDER BY workspace_id, harness_slug, plan_slug, item_id`;
+    const own = await claims.listClaimsForOwner(WS, 'su-alice', 201);
+    expect(own.map(row => [row.harnessSlug, row.planSlug, row.itemId, row.expired]))
+      .toEqual([['aaa', 'another-plan', 'P-001', false], [HARNESS, PLAN, 'P-002', true]]);
+    expect(own.every(row => row.owner === 'su-alice' && row.workspaceId === WS)).toBe(true);
+    expect(await claims.listClaimsForOwner(WS, 'unheld-owner', 201)).toEqual([]);
+    expect(await db.sql`SELECT * FROM harness_shared.plan_item_claims ORDER BY workspace_id, harness_slug, plan_slug, item_id`)
+      .toEqual(before);
+  });
+
+  it('retains exact incarnation and lease changes across heartbeat and same-owner release/reacquire', async () => {
+    const result = await acquire();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const [before] = await claims.listClaimsForOwner(WS, 'su-alice', 201);
+    await claims.heartbeatClaim(WS, HARNESS, PLAN, 'P-001', result.claim.claimId, 'su-alice', 'extend', 3600);
+    const [renewed] = await claims.listClaimsForOwner(WS, 'su-alice', 201);
+    expect(renewed.claimId).toBe(before.claimId);
+    expect(new Date(renewed.expiresTs).getTime()).toBeGreaterThan(new Date(before.expiresTs).getTime());
+    expect(await claims.releaseClaim(WS, HARNESS, PLAN, 'P-001', result.claim.claimId, 'su-alice')).toBe(true);
+    expect(await claims.listClaimsForOwner(WS, 'su-alice', 201)).toEqual([]);
+    await acquire();
+    const [replaced] = await claims.listClaimsForOwner(WS, 'su-alice', 201);
+    expect(replaced.claimId).not.toBe(before.claimId);
+    expect(replaced.owner).toBe(before.owner);
+    expect(replaced.itemId).toBe(before.itemId);
+  });
+
+  it('bounds owner endpoint reads with an overflow sentinel and rejects invalid bounds', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.plan_item_claims
+        (workspace_id, harness_slug, plan_slug, item_id, owner, acquired_ts, expires_ts, last_activity_ts)
+      SELECT ${WS}, ${HARNESS}, ${PLAN}, 'P-' || lpad(n::text, 3, '0'), 'su-alice',
+        clock_timestamp(), clock_timestamp() + interval '20 minutes', clock_timestamp()
+      FROM generate_series(1, 202) AS n`;
+    const rows = await claims.listClaimsForOwner(WS, 'su-alice', 201);
+    expect(rows).toHaveLength(201);
+    expect(rows[200].itemId).toBe('P-201');
+    expect(await claims.listClaimsForOwner(WS, 'su-alice', 1)).toHaveLength(1);
+    for (const invalid of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 202]) {
+      await expect(claims.listClaimsForOwner(WS, 'su-alice', invalid)).rejects.toThrow('claim read limit');
+    }
+  });
+
   it('getClaim/listClaimsForPlan derive `expired`; listing is item-ordered', async () => {
     await acquire({ itemId: 'P-002' });
     await acquire({ itemId: 'P-001' });

@@ -475,6 +475,10 @@ import deviceOperatorConverse from './device/operator-converse';
 import deviceVoiceTurn from './device/voice-turn';
 import devicePlans from './device/plans';
 import deviceSessions from './device/sessions';
+import deviceSessionTranscript from './device/session-transcript';
+import deviceSessionMessages from './device/session-messages';
+import deviceSessionEnd from './device/session-end';
+import deviceSessionCapability from './device/session-capability';
 import deviceAttention from './device/attention';
 import deviceMonitoring from './device/monitoring';
 import coordRoutes from './coord/index';
@@ -996,6 +1000,10 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(deviceVoiceTurn as AnyRoute[]),
   ...flatten(devicePlans as AnyRoute[]),
   ...flatten(deviceSessions as AnyRoute[]),
+  ...flatten(deviceSessionTranscript as AnyRoute[]),
+  ...flatten(deviceSessionMessages as AnyRoute[]),
+  ...flatten(deviceSessionEnd as AnyRoute[]),
+  ...flatten(deviceSessionCapability as AnyRoute[]),
   ...flatten(deviceAttention as AnyRoute[]),
   ...flatten(deviceMonitoring as AnyRoute[]),
   ...flatten(coordRoutes as AnyRoute[]),

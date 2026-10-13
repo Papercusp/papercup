@@ -25,10 +25,17 @@ export default defineTool({
       device: z.string().optional().describe('Mount point, e.g. "/" or "/mnt/data"; omit for every watched device.'),
       orderBy: z.enum(['bytes', 'growth']).optional().describe('bytes (default) = largest first; growth = fastest-growing first.'),
       limit: z.number().int().min(1).max(500).optional().describe('Consumers per device (default 30).'),
+      receiptId: z.string().uuid().optional().describe('Read this reclaim receipt; omitted returns the latest real pass.'),
     })
     .optional(),
   async handler(args) {
     const { getOrgPg } = await import('@papercusp/db-org');
+    const { activeWorkspaceId } = await import('../../workspace-registry');
+    const { readReclaimReceipt, reclaimReceiptHref } = await import('../../storage/disk-reclaim');
+    if (args?.receiptId) {
+      const receipt = await readReclaimReceipt(getOrgPg().sql, activeWorkspaceId(), args.receiptId);
+      return { data: { ok: true, receipt, receiptHref: receipt ? reclaimReceiptHref(receipt.id) : null } };
+    }
     const { readDiskConsumerCensus, resolveCensusDevices } = await import('../../storage/disk-consumer-census');
     const expectedDevices = await resolveCensusDevices()
       .then((ds) => ds.map((d) => d.device))
@@ -39,6 +46,7 @@ export default defineTool({
       limit: args?.limit,
       expectedDevices,
     });
-    return { data: { ok: true, ...census } };
+    const receipt = await readReclaimReceipt(getOrgPg().sql, activeWorkspaceId(), args?.receiptId);
+    return { data: { ok: true, ...census, receipt, receiptHref: receipt ? reclaimReceiptHref(receipt.id) : null } };
   },
 });

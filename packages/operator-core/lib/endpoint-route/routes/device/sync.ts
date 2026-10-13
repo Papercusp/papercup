@@ -16,6 +16,7 @@ import { listHarnessesFor, harnessStatusFor } from '../../../device-harnesses';
 import { readCandidates, refreshCandidates } from '../../../operator-standing-candidates';
 import { deviceSessionsVersion, pageDeviceSessions } from '../../../owner-sessions/device-roster';
 import { parseDeviceSessionFilters, parseDeviceSessionsLimit, readDeviceSessionRows } from './sessions';
+import { requireDeviceAgentSessions } from '../../../owner-sessions/device-authority';
 
 /**
  * GET /device/rest-query — REST query endpoint for libs/sync's polling
@@ -77,6 +78,8 @@ const restQuery = defineTool({
           return Response.json({ rows: candidates, version: String(Date.now()) });
         }
         case 'deviceSessions.list': {
+          const denied = await requireDeviceAgentSessions(devicePrincipal(ctx));
+          if (denied) return denied;
           // mobile-agent-sessions P-002: the first page of GET /device/sessions,
           // versioned by the workspace's session content (not the clock), so the
           // phone's cache refetches on a presence change and not on every poll.

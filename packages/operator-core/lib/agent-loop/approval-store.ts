@@ -172,6 +172,11 @@ export async function awaitLoopApprovalDecision(
   const timeoutMs = args.timeoutMs ?? LOOP_APPROVAL_TIMEOUT_MS;
   const pollMs = Math.max(50, args.pollMs ?? LOOP_APPROVAL_POLL_MS);
   const deadline = Date.now() + timeoutMs;
+  const lifecycleDenial = (): string | null => {
+    if (args.signal?.aborted) return 'approval aborted (run cancelled)';
+    if (Date.now() >= deadline) return 'approval timed out';
+    return null;
+  };
 
   const selfDeny = async (reason: string): Promise<LoopApprovalDecision> => {
     try {
@@ -209,14 +214,20 @@ export async function awaitLoopApprovalDecision(
       // Missing, expired, or outside this workspace — treat as denied.
       return { approved: false, reason: 'approval request expired' };
     }
+    // A live row is not authorization after the waiter's own bounds close.
+    // Both cancellation and deadline can change while the PG read is in flight.
+    const readDenial = lifecycleDenial();
+    if (readDenial) return selfDeny(readDenial);
     if (row.status !== 'pending') {
       await consume(sql, args.chatId, args.callId, args.workspaceId);
+      // Cleanup is another async boundary before the decision reaches the loop.
+      const consumeDenial = lifecycleDenial();
+      if (consumeDenial) return { approved: false, reason: consumeDenial };
       return {
         approved: row.status === 'approved',
         ...(row.reason ? { reason: row.reason } : {}),
       };
     }
-    if (Date.now() >= deadline) return selfDeny('approval timed out');
     await new Promise<void>((resolve) => {
       const t = setTimeout(resolve, pollMs);
       (t as { unref?: () => void }).unref?.();

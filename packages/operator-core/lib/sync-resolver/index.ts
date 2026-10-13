@@ -56,6 +56,7 @@ import { reportsListArgs, reportsLineageArgs } from './reports';
 // one and left every panel's error branch unreachable for the data-layer class.
 import { classifyReadFailure, degraded } from './degraded-snapshot';
 import { createReadDeadline } from './read-deadline';
+import { traceNamedQueryStage } from '../agent-tools/db-diagnostic-correlation-wiring';
 import { createCompanionListQueryPair, readCompanionSummary } from './bounded-list-read';
 import {
   WORK_ITEMS_CURSOR_PAGE_LIMIT,
@@ -3167,13 +3168,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     backingTables: ['harness_shared.work_items'],
     resolve: async (args) => {
       const { harnessSlug, id } = args as { harnessSlug: string; id: string };
-      const { getEnrichedWorkItem } = await import('../endpoint-route/routes/harness/work-items');
-      const item = await getEnrichedWorkItem(harnessSlug, id);
+      const { getEnrichedWorkItem } = await traceNamedQueryStage('work-item-detail-import',
+        () => import('../endpoint-route/routes/harness/work-items'));
+      const item = await traceNamedQueryStage('work-item-detail-enrichment',
+        () => getEnrichedWorkItem(harnessSlug, id));
       if (!item) return [];
       const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
         import('@papercusp/db-org'), import('../workspace-registry'),
       ]);
-      const presentations = await readWorkItemPresentations(getOrgPg().sql, activeWorkspaceId(), [{ id, harnessSlug }]);
+      const presentations = await traceNamedQueryStage('work-item-detail-presentation',
+        () => readWorkItemPresentations(getOrgPg().sql, activeWorkspaceId(), [{ id, harnessSlug }]));
       return [{ ...item, presentation: presentations.get(`${harnessSlug}#${id}`) }];
     },
   },
@@ -3351,16 +3355,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { harnessSlug, limit } = args as { harnessSlug: string; limit?: number };
-      const [{ getOrgPg }, { activeWorkspaceId }, { resolveDependencyGraphEdges }] = await Promise.all([
+      const [{ getOrgPg }, { activeWorkspaceId }, { resolveDependencyGraphEdges }] = await traceNamedQueryStage('work-item-dependencies-import', () => Promise.all([
         import('@papercusp/db-org'),
         import('../workspace-registry'),
         import('./dependency-graph-edges'),
-      ]);
-      return await resolveDependencyGraphEdges(getOrgPg().sql, {
+      ]));
+      return await traceNamedQueryStage('work-item-dependencies-sql', () => resolveDependencyGraphEdges(getOrgPg().sql, {
         workspaceId: activeWorkspaceId(),
         harnessSlug,
         limit,
-      });
+      }));
     },
   },
 

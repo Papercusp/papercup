@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assessQualifiedDerivativeReceipts, assessRetainedStorageInterval } from './retention-interval-evidence';
+import { assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples } from './retention-interval-evidence';
 
 const GIB = 1024 ** 3;
 const generationId = 'v1-' + 'a'.repeat(64);
@@ -31,6 +31,93 @@ function fixture() {
   };
 }
 const check = (input: unknown, id: string) => assessRetainedStorageInterval(input).checks.find((x) => x.id === id);
+
+function sampleFixture() {
+  const base = fixture().native0250Window.pre;
+  return [0, 30, 60].map((minutes) => ({
+    ...structuredClone(base), at: new Date(Date.parse(base.at) + minutes * 60_000).toISOString(),
+    runtimeStableDuringRead: true,
+    snapshots: base.snapshots.map((s) => ({ ...s, totalInodes: 1000, freeInodes: 100 })),
+  }));
+}
+const sampleRequirements = { startAt: '2026-10-11T02:43:18.599Z', endAt: '2026-10-11T03:43:18.599Z', maxSampleGapMs: 30 * 60_000 };
+const sampleCheck = (input: unknown, id: string) => assessRetainedStorageSamples(input, sampleRequirements).checks.find((x) => x.id === id);
+
+describe('retained storage sample coverage assessment', () => {
+  it('checks every sample against the evaluator window and retains the limit of discrete observations', () => {
+    const result = assessRetainedStorageSamples(sampleFixture(), sampleRequirements);
+    expect(result).toMatchObject({ sampleStatus: 'pass', sampledSpanMs: 3_600_000, largestGapMs: 1_800_000, observedSamples: 3 });
+    expect(result.scope.join(' ')).toContain('capacity between samples remains unmeasured');
+    expect([...result.coverage.checked, ...result.coverage.notChecked, ...result.coverage.notApplicable].sort()).toEqual([...result.coverage.population].sort());
+  });
+
+  it('rejects two healthy hour endpoints when the permitted sample gap is shorter', () => {
+    const samples = sampleFixture(); samples.splice(1, 1);
+    Object.assign(samples, { continuousHeadroom: true, maxSampleGapMs: 3_600_000 });
+    expect(sampleCheck(samples, 'sample-gap')?.status).toBe('fail');
+  });
+
+  it.each(['bytes', 'inodes'] as const)('detects a middle-sample %s deficit despite healthy endpoints', (kind) => {
+    const samples = sampleFixture();
+    Object.assign(samples[1]!.snapshots[0]!, kind === 'bytes' ? { reservedBytes: 45 * GIB, meetsCriticalFloor: true } : { freeInodes: 49 });
+    expect(sampleCheck(samples, `${kind === 'bytes' ? 'byte' : 'inode'}-headroom:/`)?.status).toBe('fail');
+  });
+
+  it('keeps missing inode, reservation and filesystem measurements unknown', () => {
+    const samples = sampleFixture();
+    delete (samples[1]!.snapshots[0]! as { totalInodes?: number }).totalInodes;
+    expect(sampleCheck(samples, 'inode-headroom:/')?.status).toBe('unknown');
+    samples[1]!.snapshots.pop();
+    expect(sampleCheck(samples, 'byte-headroom:/tmp/pcv')?.status).toBe('unknown');
+    delete (samples[1]!.snapshots[0]! as { reservedBytes?: number }).reservedBytes;
+    expect(assessRetainedStorageSamples(samples, sampleRequirements).sampleStatus).toBe('unknown');
+  });
+
+  it.each(['duplicate', 'reversed'] as const)('refuses %s timestamps instead of silently repairing the sample sequence', (kind) => {
+    const samples = sampleFixture();
+    if (kind === 'duplicate') samples[1]!.at = samples[0]!.at;
+    else samples.reverse();
+    expect(sampleCheck(samples, 'sample-order')?.status).toBe('fail');
+  });
+
+  it('requires the actual samples to bracket the requested window and establish a gap', () => {
+    expect(sampleCheck(sampleFixture().slice(1), 'window-coverage')?.status).toBe('unknown');
+    expect(sampleCheck(sampleFixture().slice(0, 2), 'window-coverage')?.status).toBe('unknown');
+    expect(sampleCheck(sampleFixture().slice(0, 1), 'sample-gap')?.status).toBe('unknown');
+  });
+
+  it.each(['device', 'runtime', 'source', 'stability', 'aliases', 'derived-bytes'] as const)('rejects middle-sample %s drift', (kind) => {
+    const samples = sampleFixture(), middle = samples[1]!;
+    if (kind === 'device') middle.snapshots[0]!.dev = 99;
+    if (kind === 'runtime') middle.nativePid++;
+    if (kind === 'source') middle.scriptSha256 = 'e'.repeat(64);
+    if (kind === 'stability') middle.runtimeStableDuringRead = false;
+    if (kind === 'aliases') middle.snapshots[2]!.reservedBytes = 0;
+    if (kind === 'derived-bytes') Object.assign(middle.snapshots[0]!, { usableAfterReservationsBytes: 50 * GIB });
+    const id = kind === 'aliases' ? 'physical-alias-budget' : kind === 'device' || kind === 'derived-bytes' ? 'byte-headroom:/' : 'runtime-custody';
+    expect(sampleCheck(samples, id)?.status).toBe('fail');
+  });
+
+  it('does not hide impossible inode counts behind the no-inode-reporting policy', () => {
+    const samples = sampleFixture();
+    for (const sample of samples) Object.assign(sample.snapshots[0]!, { totalInodes: 0, freeInodes: 0 });
+    expect(sampleCheck(samples, 'inode-headroom:/')?.status).toBe('pass');
+    samples[1]!.snapshots[0]!.freeInodes = 1;
+    expect(sampleCheck(samples, 'inode-headroom:/')?.status).toBe('fail');
+  });
+
+  it('excludes unrelated old sample gaps while still checking boundary-adjacent samples', () => {
+    const samples = sampleFixture();
+    const old = { ...structuredClone(samples[0]!), at: '2026-10-10T02:43:18.599Z' };
+    expect(assessRetainedStorageSamples([old, ...samples], sampleRequirements).sampleStatus).toBe('pass');
+    const crossing = { ...structuredClone(samples[0]!), at: '2026-10-11T02:43:18.598Z' };
+    expect(assessRetainedStorageSamples([crossing, ...samples.slice(1)], sampleRequirements).sampleStatus).toBe('fail');
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('keeps an invalid evaluator gap %s unknown', (gap) => {
+    expect(assessRetainedStorageSamples(sampleFixture(), { ...sampleRequirements, maxSampleGapMs: gap }).sampleStatus).toBe('unknown');
+  });
+});
 
 describe('retained storage interval assessment', () => {
   it('assesses the captured byte/pin window while retaining unmeasured candidate and inode facts', () => {

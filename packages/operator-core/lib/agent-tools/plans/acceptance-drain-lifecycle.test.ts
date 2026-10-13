@@ -170,9 +170,14 @@ beforeEach(() => {
     async (
       _ctx: unknown,
       _opts: unknown,
-      mutator: (current: string, meta: unknown) => Promise<{ newBody: string | null; value: unknown }>,
+      mutator: (
+        current: string,
+        meta: unknown,
+        scope: { workspaceId: string; harnessSlug: string },
+      ) => Promise<{ newBody: string | null; value: unknown }>,
     ) => {
-      const mutation = await mutator(currentBody, {});
+      // The real lock hands every mutator the scope it resolved (WI-6554700010010577).
+      const mutation = await mutator(currentBody, {}, { workspaceId: WS, harnessSlug: 'papercusp' });
       if (mutation.newBody !== null) currentBody = mutation.newBody;
       return {
         kind: 'applied',

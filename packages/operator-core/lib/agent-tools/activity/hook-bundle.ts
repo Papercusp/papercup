@@ -114,7 +114,7 @@ export interface ActivityHookBundleDeps {
    * non-boolean result fail open to the existing full fold.
    */
   ownerRelevantDelta?: (ownerId: string, afterId: string, throughId: string) => Promise<boolean>;
-  inbox: (sinceTs: string | null | undefined, ctx: ToolContext) => Promise<Record<string, unknown> | null>;
+  inbox: (sinceTs: string | null | undefined, ctx: ToolContext, systemNoticeState?: unknown) => Promise<Record<string, unknown> | null>;
   glance: (ctx: ToolContext) => Promise<Record<string, unknown> | null>;
   /** Server-owned two-phase cursor for the windowed inbox surface. */
   readInboxCursor: (ownerId: string) => Promise<AckResult>;
@@ -231,10 +231,12 @@ const defaultDeps: ActivityHookBundleDeps = {
   // the DELIVERY path — it owns the server-side cursor for surface 'inbox' — so
   // it passes its committed floor through the internal seam instead. Agents get
   // a VIEW; only a caller holding a real cursor gets a delta.
-  inbox: async (sinceTs, ctx) => {
+  inbox: async (sinceTs, ctx, systemNoticeState) => {
     return parseToolPayload(
       await inboxTool.handler(
-        (sinceTs ? { __deliveryFloorTs: sinceTs } : {}) as Parameters<typeof inboxTool.handler>[0],
+        { ...(sinceTs ? { __deliveryFloorTs: sinceTs } : {}),
+          __systemNoticeState: systemNoticeState ?? {},
+        } as Parameters<typeof inboxTool.handler>[0],
         ctx,
       ),
     );
@@ -355,7 +357,7 @@ function inboxDidAdvance(inbox: Record<string, unknown> | null, sinceTs: string 
 export function hookInboxSurface(inbox: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(inbox)) {
-    if (key === 'recent') continue;
+    if (key === 'recent' || key === '__systemNoticeState') continue;
     out[key] = key === 'entries' && Array.isArray(value) ? value.map(hookInboxEntryStub) : value;
   }
   return out;
@@ -518,7 +520,9 @@ export async function buildActivityHookBundle(
     : committedInboxFloor(inboxCursor);
 
   const [inbox, glance] = await Promise.all([
-    deps.inbox(sinceTs, ctx).catch(() => null),
+    (inboxCursor.committed?.systemNoticeState === undefined
+      ? deps.inbox(sinceTs, ctx)
+      : deps.inbox(sinceTs, ctx, inboxCursor.committed.systemNoticeState)).catch(() => null),
     hydrateGlance ? deps.glance(ctx).catch(() => null) : Promise.resolve(null),
   ]);
   let complete = inbox !== null && (!hydrateGlance || glance !== null);
@@ -529,6 +533,8 @@ export async function buildActivityHookBundle(
     try {
       await deps.stageInboxCursor(ownerId, {
         since_ts: inboxNewestTimestamp(inbox) ?? sinceTs,
+        ...(inbox && Object.prototype.hasOwnProperty.call(inbox, '__systemNoticeState')
+          ? { systemNoticeState: inbox.__systemNoticeState } : {}),
       });
     } catch {
       complete = false;

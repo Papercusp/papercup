@@ -17,6 +17,8 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
+import { requireDeviceAgentSessions } from '../../../owner-sessions/device-authority';
+import { redactSensitiveText } from '../../../sensitive-text';
 import { readSessionRosterSnapshot } from '../../../owner-sessions/roster';
 import {
   DEVICE_SESSION_STATES,
@@ -36,7 +38,9 @@ export async function readDeviceSessionRows(
 ): Promise<{ rows: DeviceSessionRow[]; degradedFields?: DegradedField[] }> {
   const snapshot = await readSessionRosterSnapshot({ workspaceId });
   return {
-    rows: deviceSessionRows(snapshot, workspaceId),
+    rows: deviceSessionRows(snapshot, workspaceId).map(row => Object.fromEntries(
+      Object.entries(row).map(([key, value]) => [key, typeof value === 'string' ? redactSensitiveText(value) : value]),
+    ) as unknown as DeviceSessionRow),
     ...(snapshot.degradedFields ? { degradedFields: snapshot.degradedFields } : {}),
   };
 }
@@ -116,6 +120,8 @@ const sessionsList = defineTool({
   cors: true,
   async handler(req, ctx) {
     const principal = devicePrincipal(ctx);
+    const denied = await requireDeviceAgentSessions(principal);
+    if (denied) return denied;
     const params = new URL(req.url).searchParams;
 
     const parsed = parseDeviceSessionFilters({

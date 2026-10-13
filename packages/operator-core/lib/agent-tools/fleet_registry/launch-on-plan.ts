@@ -137,7 +137,7 @@ import { liveFleetMemberIds, occupiesLaunchMemberSeat } from '../../fleet/fleet-
 import { listLiveTasks } from '../../task-manager/store';
 import type { TaskRow } from '../../task-manager/types';
 import { agentSpawnScopeMemoryMaxG } from '../../systemd-scope';
-import { resolveCodexModelSelection } from '../../model-context-budget.mjs';
+import { LaunchModelAliasError, normalizeCodexCliModel, resolveCodexModelSelection, resolveLaunchModelAlias } from '../../model-context-budget.mjs';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsAsync } from '../../inference-gateway/local-model-ids-cache';
@@ -599,7 +599,16 @@ export function resolveFleetAgent(opts: {
   callerAgent?: string | null;
   callerModel?: string | null;
 }): FleetAgentResolution {
-  const argModel = opts.argModel?.trim() || undefined;
+  let argModel = opts.argModel?.trim() || undefined;
+  if (argModel) {
+    try {
+      argModel = resolveLaunchModelAlias(argModel, {
+        agent: opts.argAgent === 'omp' || isOmpLocalModel(argModel) ? 'omp' : undefined,
+      }).model;
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
   const localModel = isOmpLocalModel(argModel);
   if (opts.argAgent && opts.argAgent !== 'omp' && localModel) {
     return {
@@ -2016,7 +2025,7 @@ export default defineTool({
       // cloud id set — it only rejects the unambiguous malformed classes (incl. the `sonnet-5`
       // versioned-shorthand leak, the most common agent typo).
       .superRefine((value, ctx) => {
-        const v = validateCloudModelSpec(value);
+        const v = validateCloudModelSpec(normalizeCodexCliModel(value));
         if (!v.ok) {
           ctx.addIssue({
             code: 'custom',
@@ -2146,6 +2155,32 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    let modelResolution: ReturnType<typeof resolveLaunchModelAlias> | null = null;
+    const requestedDefaultEffort = args.effort;
+    try {
+      if (args.model) {
+        modelResolution = resolveLaunchModelAlias(args.model, {
+          effort: args.effort,
+          agent: args.agent ?? (isOmpLocalModel(args.model) ? 'omp' : undefined),
+        });
+        args = { ...args, model: modelResolution.model, effort: modelResolution.effort ?? undefined, agent: args.agent ?? modelResolution.agent ?? undefined };
+      }
+      if (args.members) {
+        args = { ...args, members: args.members.map(member => {
+          if (!member.model) return member;
+          const resolved = resolveLaunchModelAlias(member.model, {
+            effort: member.effort ?? requestedDefaultEffort,
+            agent: member.agent ?? (isOmpLocalModel(member.model) ? 'omp' : undefined),
+          });
+          return { ...member, model: resolved.model, effort: resolved.effort ?? undefined, agent: member.agent ?? resolved.agent ?? undefined };
+        }) };
+      }
+    } catch (error) {
+      if (error instanceof LaunchModelAliasError) {
+        return json({ ok: false, error: error.code, message: error.message, candidates: error.candidates });
+      }
+      throw error;
+    }
     // Resolved FIRST, ahead of the option branch (P-006): the goal's launch
     // settings can supply `fleetType` and the per-role profiles, and reading them
     // needs the caller's workspace + owner id. All three resolvers below are
@@ -5854,6 +5889,7 @@ export default defineTool({
     return json(
       {
         ok: launchTransaction.verifiedMemberIds.length > 0 || spawnedLeader?.registered === true,
+        modelResolution,
         fleet: fleetSlug,
         // WI-10004545: which goal the launching agent attributed the plan to (null = not a
         // goal launch / nothing attributed); `error` is set when the best-effort stamp threw.

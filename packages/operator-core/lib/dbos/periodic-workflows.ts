@@ -72,6 +72,7 @@ import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
+import { DISK_RECLAIM_CRONTAB, DISK_RECLAIM_STEP } from '../storage/disk-reclaim';
 import {
   defaultEvidenceRoot,
   formatForeignPruneLine,
@@ -1362,6 +1363,28 @@ const diskConsumerCensusWorkflow = idempotentRegisterWorkflow('diskConsumerCensu
   }),
 );
 DBOS.registerScheduled(diskConsumerCensusWorkflow, { name: 'diskConsumerCensus', crontab: '0 35 */6 * * *' });
+
+// Hourly retention, independent of free space (disk-headroom P-004 / D-005).
+// Returning the complete report from this step stores its receipt in Postgres,
+// including partial/error runs; a SUCCESS workflow alone is never the oracle.
+async function diskRetentionReclaimTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    const { runScheduledDiskReclaim } = await import('../storage/disk-reclaim');
+    try {
+      const receipt = await runScheduledDiskReclaim();
+      if (!receipt.complete) console.warn(`[disk-retention] partial run: ${receipt.errors.join('; ')}`);
+      return receipt;
+    } catch (err) {
+      const error = (err as Error).message;
+      console.warn(`[disk-retention] refused: ${error}`);
+      return { schemaVersion: 1, complete: false, policyExhausted: null, errors: [error], finishedAt: new Date().toISOString() };
+    }
+  }, { name: DISK_RECLAIM_STEP });
+}
+const diskRetentionReclaimWorkflow = idempotentRegisterWorkflow('diskRetentionReclaim', () =>
+  DBOS.registerWorkflow(diskRetentionReclaimTick, { name: 'diskRetentionReclaim', maxRecoveryAttempts: 5 }),
+);
+DBOS.registerScheduled(diskRetentionReclaimWorkflow, { name: 'diskRetentionReclaim', crontab: DISK_RECLAIM_CRONTAB });
 
 // Hourly (:40, off the :00/:50 stampede): replication-slot WAL-retention alarm
 // (infra-perf-reliability-audit-round4 P-009 / D-004). READ-ONLY pg_replication_slots

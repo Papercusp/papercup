@@ -114,6 +114,8 @@ describe('disk reservation ledger — Node reader', () => {
         'source "$1"',
         'export PAPERCUSP_DISK_RESERVATION_DIR="$2" PAPERCUSP_DISK_RESERVATION_TTL_SEC=32400',
         'papercusp_free_gb() { printf 100; }',
+        // Linux ancestry must read exact kernel metadata, not run a scanner per edge.
+        'if [ -d /proc/self ]; then ps() { printf "UNEXPECTED_ANCESTRY_PS\\n" >&2; return 91; }; export -f ps; fi',
         'papercusp_require_disk_reservation "$3" 78 native || exit $?',
         'receipt="$PAPERCUSP_DISK_RESERVATION_FILE"',
         'trap \'PAPERCUSP_DISK_RESERVATION_FILE="$receipt" papercusp_release_disk_reservation; [ -z "${peer:-}" ] || kill "$peer" 2>/dev/null\' EXIT',

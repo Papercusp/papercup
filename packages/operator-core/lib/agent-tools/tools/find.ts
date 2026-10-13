@@ -317,6 +317,26 @@ function nestedObjectFieldHint(node: JsonSchemaNode, depth: number, includeNeste
   const nested = nestedObjectProperties(node);
   if (!nested) return '';
   const entries = Object.entries(nested.properties);
+  // A discriminated executable union needs every arm's input names. Expanding
+  // its first optional object (for example instrument.expect) hides all other
+  // arms in the bounded fallback. Keep the discriminator and shallow vocabulary.
+  const discriminator = entries.find(([name]) => name === 'kind');
+  const branches = schemaNodes(node).filter((branch) => branch.properties && typeof branch.properties === 'object');
+  if (discriminator && branches.length > 1) {
+    const kind = discriminator[1] as JsonSchemaNode;
+    const fields = [
+      `kind${nested.required.has('kind') ? '' : '?'}:${schemaShape(kind, depth, false, false)}`,
+      ...entries.filter(([name]) => name !== 'kind').map(([name]) => `${name}${nested.required.has(name) ? '' : '?'}`),
+    ];
+    let body = '';
+    let omitted = 0;
+    for (const field of fields) {
+      const next = body ? `${body},${field}` : field;
+      if (next.length <= NESTED_OBJECT_HINT_MAX_CHARS) body = next;
+      else omitted++;
+    }
+    return body ? `{${body}${omitted ? `,…+${omitted}` : ''}}` : '';
+  }
   const fields = entries.filter(([, raw]) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
     return nestedObjectProperties(raw as JsonSchemaNode) != null;
@@ -1475,7 +1495,10 @@ export default defineTool({
     // an explicit `payloadTier:'full'` request. Preserve the ordinary bounded
     // shape by default; an explicit full request gets the complete JSON schema
     // so deep fields omitted by the searchable one-level corpus text remain available.
-    const fullArgSchemaRequested = ctx.payloadTierOverride === 'full';
+    // Projection materialization promotes generic sources to full internally. It
+    // must not turn a compact discovery schema into an unrequested raw schema.
+    const fullArgSchemaRequested =
+      ctx.payloadTierOverride === 'full' && ctx.sourceMaterialization?.promotedToFull !== true;
 
     // Honest mode marker (never silently pretend semantic ran):
     //   on          — index ready, the semantic leg contributed;

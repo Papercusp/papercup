@@ -120,6 +120,7 @@ export const ArgsSchema = z.object({
   welcomedUser: z.object({ display_name: z.string().optional() }).optional(),
   mayAskActive: z.boolean().optional(),
   modality: z.union([z.literal('voice'), z.literal('text')]).optional(),
+  voiceProfile: z.enum(['standard', 'slim']).optional().describe('Voice prompt profile; slim by default. Standard is the same-build comparison baseline, with the same trust and modality boundary.'),
   audienceMode: z.union([z.literal('engineer'), z.literal('novice')]).optional(),
   /** Which persona the brain assumes — the Sentinel re-home seam.
    *  Defaults to 'operator' (fully backward-compatible). 'sentinel' loads the
@@ -340,6 +341,9 @@ export default defineTool({
     const selectedOperatorTools: readonly string[] = selectConverseTools({
       role,
       hostTrust,
+      modality: turnModality,
+      voiceProfile: input.voiceProfile,
+      supportsVoice: (name) => (lookupByMcpName(name)?.modality ?? ['text', 'voice']).includes('voice'),
       agentRunsAsCustomer: hostedCustomerIdentity,
       publicDoorNames: () => capabilityToolNames(OWNED_LOOP_TOOL_SELECTION),
     });
@@ -403,6 +407,7 @@ export default defineTool({
         welcomed_user: input.welcomedUser,
         mayAskActive: input.mayAskActive,
         modality: input.modality,
+        voiceProfile: input.voiceProfile,
         audienceMode: input.audienceMode,
         surface: input.surface,
         uiClientId: input.uiClientId,

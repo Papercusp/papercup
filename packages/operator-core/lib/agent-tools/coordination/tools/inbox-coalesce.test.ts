@@ -20,6 +20,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const M = vi.hoisted(() => ({
   readInbox: vi.fn(async () => [] as unknown[]),
+  renderInjection: vi.fn((_entries: unknown[], _options?: unknown) => ''),
 }));
 
 vi.mock("../identity", async (importOriginal) => ({
@@ -58,7 +59,7 @@ vi.mock("../presence-snapshot", () => ({
   renderPresenceRebootstrapBlock: () => "",
   consumePresenceRebootstrap: async () => null,
 }));
-vi.mock("../../../coord-schema", () => ({ renderInjection: () => "" }));
+vi.mock("../../../coord-schema", () => ({ renderInjection: M.renderInjection }));
 vi.mock("../../../cache", () => ({
   cachedRead: async (
     _ctx: unknown,
@@ -84,6 +85,8 @@ const ctx = (ownerId = "owner-a", over: InboxContextOverrides = {}): never =>
 type InboxOut = {
   entries: Array<Record<string, unknown>>;
   summary: Record<string, unknown>;
+  __systemNoticeState?: Record<string, string>;
+  system_notices_suppressed?: number;
 };
 const callInbox = async (
   args: Record<string, unknown> = {},
@@ -126,6 +129,25 @@ const direct = (m: number, summary: string) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   M.readInbox.mockImplementation(async () => []);
+});
+
+describe('native notice delivery versus public inbox VIEW', () => {
+  it('passes committed notice state to injection filtering while the public VIEW stays repeatable', async () => {
+    const row = broadcast(1, 'Compaction over-limit: other', {
+      auto: true, category: 'severe-event', condition_key: 'compaction:other',
+    });
+    M.readInbox.mockResolvedValue([row]);
+    const first = await callInbox({ __systemNoticeState: {} });
+    expect(M.renderInjection.mock.calls.at(-1)?.[0]).toEqual([row]);
+    expect(first.__systemNoticeState).toBeDefined();
+    const repeated = await callInbox({ __systemNoticeState: first.__systemNoticeState });
+    expect(M.renderInjection.mock.calls.at(-1)?.[0]).toEqual([]);
+    expect(repeated.system_notices_suppressed).toBe(1);
+    const view = await callInbox();
+    expect(M.renderInjection.mock.calls.at(-1)?.[0]).toEqual([row]);
+    expect(view.__systemNoticeState).toBeUndefined();
+    expect(view.entries).toHaveLength(1);
+  });
 });
 
 describe("coalesceRepeatedBroadcasts (pure)", () => {

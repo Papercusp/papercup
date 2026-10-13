@@ -53,8 +53,9 @@ export const SPEC_TEST_ADEQUACY_REPLAY_LIMIT = 25;
  * green-main-cycle-time-2026-10-08#AUTO-BAR-R-11-P-007@3, 31 bindings).
  *
  * A cohort that fits keeps the critical-pressure budget. A larger cohort pins
- * exactly one row more than it graded, so the replay stays bounded and can still
- * load its own population. Its judge replay is refused admission under critical
+ * exactly one row more than its largest loaded population, so the replay stays
+ * bounded and can still load both selected and clause-wide disclosure bindings.
+ * Its judge replay is refused admission under critical
  * pressure (a transient wait), rather than the card being impossible.
  */
 export function specTestAdequacyReplayLimit(gradedRows: number): number {
@@ -2052,6 +2053,7 @@ function rerunRecipeFor(
   harness: string | undefined,
   classRef: PlanClassRubricRef,
   selection: { workItemIds?: string[]; evidenceRefs?: string[]; bindingIds?: number[]; planItemIds?: string[] } | undefined,
+  loadedClauseRows: number,
 ): SpecTestAdequacyRerunRecipe {
   const evaluatorBuild = getBuildInfo();
   const selectedEvidence = [
@@ -2162,7 +2164,7 @@ function rerunRecipeFor(
       ...(replayBindingIds !== undefined ? { bindingIds: replayBindingIds } : {}),
       ...(selection?.planItemIds?.length ? { planItemIds: [...selection.planItemIds] } : {}),
       includeDraft: true,
-      limit: specTestAdequacyReplayLimit(Math.max(evidence.length, replayBindingIds?.length ?? 0)),
+      limit: specTestAdequacyReplayLimit(Math.max(loadedClauseRows, evidence.length, replayBindingIds?.length ?? 0)),
       // Replay the exact immutable clause snapshot that produced this grade. The pin
       // fixes WHICH clause revision is graded; it does not freeze freshness — the
       // server re-measures each binding's persisted recipe, so this card replays
@@ -3516,7 +3518,13 @@ export function evaluateSpecTestAdequacy(input: {
     };
   }
 
-  const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, input.harness, classRef, input.rerunSelection);
+  // Store ceilings apply before logical evidence consolidation, and replay also
+  // loads the unselected clause bindings for its universal disclosure check.
+  // Preserve headroom for both reads without widening the exact binding selector.
+  const rerunRecipe = rerunRecipeFor(
+    clause, evidence, input.current, input.harness, classRef, input.rerunSelection,
+    Math.max(exactSelectorMatches.length, exactDisclosedGapMatches.length),
+  );
   appendRatingRerunProbes(ratings, rerunRecipe);
 
   const wouldBlock = ADEQUACY_CRITERIA.filter((key) => ['fail', 'unknown'].includes(ratings[key].rating));

@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { asSevereEventEmitter, renderSevereEventEmitter } from '../../severe-event-emitter';
+
 /**
  * inbox-visibility.ts — the PURE "is this entry visible in a default coord:inbox
  * read?" predicates. PURE: no I/O, no PG, no tool registration.
@@ -146,6 +149,70 @@ export function isDirectedDelivery(e: Record<string, unknown>, ownerId: string):
  *  than repetition. A count is signal; an instant is noise. */
 const VOLATILE_TIMESTAMP_RE =
   /\d{4}-\d{2}-\d{2}[T ][\d:]{5,8}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+
+/** Remember only compact fingerprints on the existing two-phase inbox cursor.
+ * Public inbox VIEW reads do not use this filter. Directed/mixed deliveries and
+ * peer broadcasts always pass through. Losing state re-delivers, never skips. */
+export function changedSystemNoticeDelivery<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  previous: unknown,
+  shownLimit = entries.length,
+): { entries: T[]; state: Record<string, string>; suppressed: number } {
+  const state: Record<string, string> = {};
+  if (previous && typeof previous === 'object' && !Array.isArray(previous)) {
+    for (const [key, value] of Object.entries(previous)) {
+      if (/^[a-f0-9]{64}$/.test(key) && typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)) {
+        state[key] = value;
+      }
+    }
+  }
+  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const kept: T[] = [];
+  const pending = new Map<T, { key: string; fingerprint: string }>();
+  for (const entry of entries) {
+    const to = entry['to'];
+    if (entry['auto'] !== true || entry['kind'] !== 'message' || entry['lifecycle'] ||
+        !Array.isArray(to) || to.length === 0 ||
+        !to.every((recipient) => recipient === '*') ||
+        typeof entry['category'] !== 'string' || typeof entry['summary'] !== 'string') {
+      kept.push(entry);
+      continue;
+    }
+    const normalize = (value: unknown): unknown =>
+      typeof value === 'string' ? value.replace(VOLATILE_TIMESTAMP_RE, '<ts>') : value;
+    const emitter = asSevereEventEmitter(entry['emitter']);
+    let body = entry['body'];
+    if (emitter && typeof body === 'string') {
+      const trailer = renderSevereEventEmitter(emitter);
+      if (body.endsWith(trailer)) body = body.slice(0, -trailer.length);
+    }
+    const condition = entry['condition_key'];
+    const key = digest([entry['from'], typeof condition === 'string' && condition
+      ? condition : [entry['kind'], entry['category'], normalize(entry['summary'])]]);
+    const sectionText = body === undefined && Array.isArray(entry['sections'])
+      ? entry['sections'].map((section) => section && typeof section === 'object'
+        ? normalize((section as Record<string, unknown>)['text']) : null) : null;
+    const fingerprint = digest([entry['kind'], entry['category'], normalize(entry['summary']),
+      normalize(body), sectionText, entry['resolved'] === true, emitter?.pid, emitter?.startedAt]);
+    if (state[key] !== fingerprint) kept.push(entry);
+    pending.set(entry, { key, fingerprint });
+  }
+  // Native injection renders the newest bounded rows. Never remember a notice
+  // that its overflow omitted. Machine messages have no intent/digest collapse.
+  const shown = shownLimit > 0
+    ? [...kept].sort((a, b) => String(a['ts']).localeCompare(String(b['ts']))).slice(-shownLimit)
+    : [];
+  for (const entry of shown) {
+    const notice = pending.get(entry);
+    if (!notice) continue;
+    const { key, fingerprint } = notice;
+    delete state[key];
+    state[key] = fingerprint;
+  }
+  const keys = Object.keys(state);
+  for (const key of keys.slice(0, Math.max(0, keys.length - 256))) delete state[key];
+  return { entries: kept, state, suppressed: entries.length - kept.length };
+}
 
 export function coalesceRepeatedBroadcasts<T extends Record<string, unknown>>(
   entries: readonly T[],

@@ -162,6 +162,31 @@ describe('disk consumer census (real du, real PG)', () => {
     expect(only.devices).toHaveLength(1);
   });
 
+  it('never reports newly visible bytes as growth across a denied or differently privileged baseline', async () => {
+    const host = 'visibility-growth-host'; const at = new Date('2026-10-13T17:00:00Z');
+    const dev = device({ device: '/visibility' });
+    const write = (id: string, hours: number, note: string, bytes: number) => writeCensusRun(sql, {
+      runId: id, host, device: dev, startedAt: new Date(at.getTime() - hours * HOUR), finishedAt: new Date(at.getTime() - hours * HOUR),
+      attributedBytes: bytes, complete: true, note, consumers: [dir('/visibility/data', bytes)],
+    });
+    await write('00000000-0000-4000-8000-000000000081', 24, '681 unreadable path(s), e.g. /var/lib/postgresql', 2 * G);
+    await write('00000000-0000-4000-8000-000000000082', 23, 'du walked unprivileged (sudo -n unavailable)', 3 * G);
+    await write('00000000-0000-4000-8000-000000000083', 0, 'du walked as root (sudo -n)', 40 * G);
+    const unknown = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
+    expect(unknown.baselineAt).toBeNull(); expect(unknown.consumers![0]!.growth24hBytes).toBeNull();
+    await write('00000000-0000-4000-8000-000000000084', 22, 'du walked as root (sudo -n)', 38 * G);
+    const calibrated = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
+    expect(calibrated.baselineAt).toBe(new Date(at.getTime() - 22 * HOUR).toISOString());
+    expect(calibrated.consumers![0]!.growth24hBytes).toBe(2 * G);
+  });
+
+  it('reports historical denied scans as incomplete even when the old writer stored complete=true', async () => {
+    const at = new Date('2026-10-13T17:00:00Z');
+    await writeCensusRun(sql, { runId: '00000000-0000-4000-8000-000000000085', host: 'legacy-denied-host', device: device({ device: '/denied' }), startedAt: at, finishedAt: at, attributedBytes: G, complete: true, note: '3 unreadable path(s), e.g. /db', consumers: [dir('/denied/data', G)] });
+    const view = (await readDiskConsumerCensus(sql, { host: 'legacy-denied-host', now: at })).devices[0]!;
+    expect(view.complete).toBe(false); expect(view.baselineAt).toBeNull();
+  });
+
   it('flags a device whose latest run is older than 24h as stale, and a watched device with no rows as missing', async () => {
     const host = 'stale-host';
     const at = new Date('2026-10-10T00:00:00Z');

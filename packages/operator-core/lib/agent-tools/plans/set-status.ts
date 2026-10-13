@@ -1444,7 +1444,7 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         }
       },
     },
-    async (current): Promise<{ newBody: string | null; value: SetStatusValue }> => {
+    async (current, _meta, lockScope): Promise<{ newBody: string | null; value: SetStatusValue }> => {
       if (current === null) {
         return { newBody: null, value: { ok: false, code: 'not_found' } };
       }
@@ -1596,7 +1596,12 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       // same parser-owned transition serves direct writes and the backstop;
       // final item + lifecycle + carry filing commit together or not at all.
       if (isTerminalStatus(it.status) !== (oldStatus !== null && isTerminalStatus(oldStatus))) {
-        const drain = await planDrainTransitionMutationGated(finalBody, { planSlug: it.slug, harnessSlug: harnessSlug ?? null });
+        // The lock's resolved scope, not the ambient workspace (WI-6554700010010577).
+        const drain = await planDrainTransitionMutationGated(finalBody, {
+          planSlug: it.slug,
+          harnessSlug: lockScope.harnessSlug,
+          workspaceId: lockScope.workspaceId,
+        });
         if (drain.newBody !== null) finalBody = drain.newBody;
         carryRequired = drain.value.applied && drain.value.to === 'awaiting-acceptance' &&
           parsePlan(finalBody).frontmatter.template !== 'rubric';

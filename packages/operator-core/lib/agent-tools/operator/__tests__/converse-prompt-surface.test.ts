@@ -61,6 +61,22 @@ function responseData(result: object): unknown {
 }
 
 describe('buildOperatorPrompt — per-surface affordances', () => {
+  it('voice defaults to a smaller history window while standard and text retain their budget', async () => {
+    const messages = Array.from({ length: 24 }, (_, i) => ({ role: 'user' as const, content: `turn-${i}:` + 'x'.repeat(6000) }));
+    const slim = await buildOperatorPrompt({ messages, modality: 'voice' }, null);
+    const standard = await buildOperatorPrompt({ messages, modality: 'voice', voiceProfile: 'standard' }, null);
+    const text = await buildOperatorPrompt({ messages, modality: 'text', voiceProfile: 'slim' }, null);
+    expect(slim.userPromptText).not.toContain('turn-0:');
+    expect(slim.userPromptText).toContain('turn-23:');
+    expect(standard.userPromptText).toContain('turn-0:');
+    expect(text.userPromptText).toContain('turn-0:');
+    expect(slim.userPromptText).toContain('never invent a result');
+    expect(standard.userPromptText).not.toContain('Voice timing:');
+    expect(text.userPromptText).not.toContain('Voice timing:');
+    // Persona and tool calling contract stay intact on the slimmer turn.
+    expect(slim.systemPromptText).toEqual(standard.systemPromptText);
+  });
+
   it('injects the pui control affordance + client_id only on surface="tui"', async () => {
     const tui = await buildOperatorPrompt(
       {

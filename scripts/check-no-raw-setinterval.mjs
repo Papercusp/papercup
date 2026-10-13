@@ -95,6 +95,7 @@ export const BROWSER_CLIENT_ALLOWLIST = new Set([
   'packages/operator-core/lib/voice-engines/deepgram.ts', // browser STT adapter — window.setInterval + MediaRecorder, runs in the webview not the host
   'apps/operator/app/_components/useWslGateBlocking.ts', // browser hook -- window.setInterval polling wsl_status in the webview, not the host
   'packages/operator-core/lib/operator-window-sync.ts', // browser cross-window localStorage sync (lease heartbeat) -- window/StorageEvent, only imported by OperatorConversationProvider.tsx; not a host timer
+  'apps/operator/e2e/_keyboard-input.ts', // in-page diagnostics heartbeat -- installWorkspaceKeyboardDiagnostics runs via page.addInitScript inside the Playwright page (window/document/PerformanceObserver); not a host timer
 ]);
 
 /**

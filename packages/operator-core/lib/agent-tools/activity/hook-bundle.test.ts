@@ -10,6 +10,7 @@ import {
   type ActivityHookBundleDeps,
 } from './hook-bundle';
 import { InMemoryReadCursorStore } from '../coordination/read-cursors';
+import { changedSystemNoticeDelivery } from '../coordination/inbox-visibility';
 
 function deps(generation = 'host-a:42') {
   const inbox = vi.fn(
@@ -48,6 +49,32 @@ function deps(generation = 'host-a:42') {
 }
 
 describe('activity hook bundle', () => {
+  it('commits notice fingerprints with the existing delivery cursor and retries a failed stage', async () => {
+    const d = deps();
+    const row = { msg_id: 'alarm', ts: '2026-07-13T19:59:30.000Z', from: 'system-watchdog',
+      to: ['*'], auto: true, kind: 'message', category: 'severe-event',
+      condition_key: 'compaction:other', summary: 'Compaction over-limit: other' };
+    d.value.inbox = async (_floor, _ctx, state) => {
+      const delivery = changedSystemNoticeDelivery([row], state);
+      return { entries: delivery.entries, summary: { newest_ts: row.ts },
+        injection: delivery.entries.length ? row.summary : '', __systemNoticeState: delivery.state };
+    };
+    const request = { force_resync: true, glance_stale: false };
+    d.stageInboxCursor.mockRejectedValueOnce(new Error('stage failed'));
+    const failed = await buildActivityHookBundle('su-abc', request, {} as never, d.value);
+    expect(failed.complete).toBe(false);
+    expect(failed.surfaces?.inbox?.injection).toBe(row.summary);
+    const retry = await buildActivityHookBundle('su-abc', request, {} as never, d.value);
+    expect(retry.complete).toBe(true);
+    expect(retry.surfaces?.inbox?.injection).toBe(row.summary);
+    expect(retry.surfaces?.inbox).not.toHaveProperty('__systemNoticeState');
+    const repeated = await buildActivityHookBundle('su-abc', request, {} as never, d.value);
+    expect(repeated.surfaces?.inbox?.injection).toBe('');
+    row.summary = 'Compaction recovered: other';
+    const changed = await buildActivityHookBundle('su-abc', request, {} as never, d.value);
+    expect(changed.surfaces?.inbox?.injection).toBe(row.summary);
+  });
+
   it('hydrates inbox + glance once, then skips both for N unchanged heartbeats', async () => {
     const d = deps();
     const first = await buildActivityHookBundle(

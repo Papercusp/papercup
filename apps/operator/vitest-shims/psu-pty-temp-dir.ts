@@ -22,6 +22,7 @@ export function hermeticEnv(
 ): NodeJS.ProcessEnv {
   const nativeOrCredentialKeys = new Set([
     'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_SESSION_ID',
+    'PI_CONFIG_DIR', 'PI_CODING_AGENT_DIR',
     'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
   ]);
   const rest = Object.fromEntries(Object.entries(source).filter(([key]) =>

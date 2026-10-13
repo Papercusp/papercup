@@ -156,6 +156,7 @@ export function installWorkspaceKeyboardDiagnostics(): void {
   }
   let previous = performance.now();
   let lastEmission = previous;
+  // timer-classification: must-sample — in-page main-thread stall detector (heartbeat gaps); no event reports a stalled event loop
   setInterval(() => {
     const now = performance.now();
     if (now - previous > 1000 && diagnostics.heartbeatGaps.length < 100) {

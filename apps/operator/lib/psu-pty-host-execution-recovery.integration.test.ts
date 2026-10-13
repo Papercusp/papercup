@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { listDueCronRoutines } from '@papercusp/db-org';
 import { createOrgTestDb, type OrgTestDb } from '../../../packages/operator-core/test/_org-test-db';
 import { claimDueRoutine } from '@papercusp/operator-core/lib/harness/routines/claim';
@@ -13,6 +13,35 @@ import { tmpdir } from 'node:os';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { hostThroughPty, metaPathFor, socketPathFor, nativeLatestExecution } from '../scripts/psu-pty-host.mjs';
 import { injectIntoHostWithConfirmation, type PsuPtyHost } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
+import {
+  fallbackObservationCounters, flushFallbackObservations, observeFallback,
+} from '@papercusp/operator-core/lib/degradation/fallback-observations';
+
+const privateDatabase = vi.hoisted(() => ({ sql: undefined as OrgTestDb['adminSql'] | undefined }));
+// The composed wake imports producers whose telemetry flushes asynchronously.
+// Route their implicit accessor too, not just the explicit routine SQL handle.
+vi.mock('@papercusp/db-org', async original => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => {
+    if (!privateDatabase.sql) throw new Error('private recovery database is not initialized');
+    return { sql: privateDatabase.sql };
+  },
+}));
+
+let org: OrgTestDb;
+beforeAll(async () => {
+  org = await createOrgTestDb();
+  privateDatabase.sql = org.adminSql;
+}, 180_000);
+afterEach(async () => {
+  expect((await flushFallbackObservations()).failed, 'implicit telemetry must remain on the private database').toBe(0);
+  expect(fallbackObservationCounters().failed).toBe(0);
+});
+afterAll(async () => {
+  await flushFallbackObservations();
+  await org?.cleanup();
+  privateDatabase.sql = undefined;
+});
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 let ownerCounter = 0;
@@ -104,6 +133,22 @@ async function fixture(agent: string, autoStart: boolean, failInitially = false)
 }
 
 describe('cross-client native recovery handshake', () => {
+  it('persists implicit fallback telemetry through the real timer into the private database', async () => {
+    const mechanism = `native-recovery-isolation-${process.pid}`;
+    expect(observeFallback(mechanism, { eligible: 1, applied: 1, reason: 'applied' })).toBe(true);
+    let rows: Array<{ database: string; samples: number }> = [];
+    const deadline = Date.now() + 10_000;
+    // Do not explicitly flush or pass SQL: exercise the same delayed default
+    // accessor that previously attempted to open the protected live admin pool.
+    while (rows.length === 0 && Date.now() < deadline) {
+      await delay(25);
+      rows = await org.adminSql`SELECT current_database() AS database, samples
+        FROM harness_shared.fallback_observations WHERE mechanism = ${mechanism}`;
+    }
+    expect(rows).toEqual([{ database: org.dbName, samples: 1 }]);
+    expect(fallbackObservationCounters().failed).toBe(0);
+  }, 15_000);
+
   it.each(['codex', 'claude', 'omp'])('requires a native %s turn and deduplicates repeated delivery', async agent => {
     const f = await fixture(agent, true);
     try {
@@ -146,10 +191,6 @@ describe('cross-client native recovery handshake', () => {
 });
 
 describe('failed native turn → durable routine retry → native wake', () => {
-  let org: OrgTestDb;
-  beforeAll(async () => { org = await createOrgTestDb(); }, 180_000);
-  afterAll(async () => { await org?.cleanup(); });
-
   it.each(['codex', 'claude', 'omp'])('recovers one %s turn through the real claim and wake paths', async agent => {
     const f = await fixture(agent, true, true);
     const sql = org.adminSql;

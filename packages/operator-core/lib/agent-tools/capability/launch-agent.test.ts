@@ -23,7 +23,9 @@ vi.mock('@papercusp/orchestrator/role-prompt', async (orig) => ({
   assembleRolePrompt: (...args: unknown[]) => assembleRolePromptMock(...args),
 }));
 
-const goalContextSqlMock = vi.hoisted(() => vi.fn(async () => []));
+// Typed as a tagged-template sql (strings, ...values) so a test can install a
+// query-aware implementation without a cast (the reviewer-relaunch guard test).
+const goalContextSqlMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<unknown[]> => []));
 const goalLaunchResolveMock = vi.hoisted(() => vi.fn());
 const declareCouplingMock = vi.hoisted(() => vi.fn());
 vi.mock('../../coord/couplings', async (orig) => ({
@@ -443,6 +445,52 @@ describe('launch-tool routing guidance', () => {
   it('declares enough server budget for bounded headless launch verification (EI-22780156976598155)', () => {
     expect((launchAgent as { timeoutSec?: number }).timeoutSec).toBe(AGENT_LAUNCH_HANDLER_TIMEOUT_SEC);
     expect((launchAgent as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
+  });
+});
+
+describe('shared model alias preflight', () => {
+  it('echoes the same resolved tuple used for the actual launch', async () => {
+    const result = await launchAgent.handler({ model: 'sol 6.1', effort: 'xhigh', brief: 'Verify a lane' }, ctx);
+    expect(result).toMatchObject({ data: { modelResolution: {
+      requested: 'sol 6.1', agent: 'codex', model: 'gpt-6.1-sol:xhigh', effort: 'xhigh',
+    } } });
+    expect(spawnedCommand()).toContain('--agent=codex');
+    expect(spawnedCommand()).toContain('--model=gpt-6.1-sol:xhigh');
+  });
+
+  it('echoes the normalized Claude effort that reaches the command', async () => {
+    const result = await launchAgent.handler({ model: 'claude opus', effort: 'xhigh', brief: 'Verify a lane' }, ctx);
+    expect(result).toMatchObject({ data: { modelResolution: {
+      agent: 'claude', model: 'opus:max', effort: 'max',
+    } } });
+    expect(spawnedCommand()).toContain('--model=opus:max');
+  });
+
+  it('normalizes a member override before composing its command', async () => {
+    await launchAgent.handler({ brief: 'Verify a lane', members: [{ model: 'claude opus', effort: 'xhigh' }] }, ctx);
+    expect(spawnedCommand()).toContain('--model=opus:max');
+  });
+
+  it('preserves the requested default effort for a different member backend', async () => {
+    await launchAgent.handler({ model: 'claude opus', effort: 'xhigh', brief: 'Verify a lane', members: [{ model: 'sol 6.1' }] }, ctx);
+    expect(spawnedCommand()).toContain('--model=gpt-6.1-sol:xhigh');
+  });
+
+  it('accepts the same top-level model and effort shape as the fleet door', () => {
+    const parsed = launchAgent.args.safeParse({ brief: 'Verify a lane', model: 'sol 6.1', effort: 'xhigh' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.effort).toBe('xhigh');
+  });
+
+  it('returns candidates before placement for unknown and ambiguous aliases', async () => {
+    for (const [model, error] of [['mystery', 'unknown_model_alias'], ['6', 'ambiguous_model_alias']]) {
+      const result = await launchAgent.handler({ brief: 'Verify a lane', model }, ctx);
+      expect(result).toMatchObject({
+        isError: true,
+        data: { error, candidates: expect.arrayContaining([expect.objectContaining({ model: 'gpt-6-sol' })]) },
+      });
+    }
+    expect(goalLaunchResolveMock).not.toHaveBeenCalled();
   });
 });
 
@@ -2448,6 +2496,30 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--resume=sid-dead');
     expect(spawnedCommand()).not.toContain('--fork');
     expect(textOf(res)).toContain('re-attaches its ORIGINAL identity su-a1a71');
+  });
+
+  it('refuses to resume a sweep-recruited acceptance reviewer before opening a process (EI-25876555362728602)', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    // The REAL guard runs against the mocked org PG: no review-target reservation
+    // names the reviewer's plan, and its first launch was by the grading sweep,
+    // so independence cannot be proved and the launch must refuse.
+    goalContextSqlMock.mockImplementation(async (...args: unknown[]) => {
+      const strings = args[0];
+      const text = Array.isArray(strings) ? strings.join('?') : '';
+      return text.includes('FROM harness_shared.adv_sessions') && text.includes('launch_parent_owner')
+        ? [{ launch_parent_owner: 'system:acceptance-grading-sweep' }]
+        : [];
+    });
+    try {
+      const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue grading' }, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('reviewer_relaunch_breaks_independence');
+      expect(textOf(res)).toContain('recruited by system:acceptance-grading-sweep');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    } finally {
+      goalContextSqlMock.mockImplementation(async () => []);
+    }
   });
 
   it.each(['codex', 'omp'])('forwards an explicit %s→Claude conversion and its exact prepared-port verification source', async (sourceBackend) => {

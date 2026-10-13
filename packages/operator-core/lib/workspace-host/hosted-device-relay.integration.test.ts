@@ -76,7 +76,7 @@ afterEach(() => {
   __resetDeviceJwtForTest();
 });
 
-async function assembled(options: { registered?: boolean; responseBody?: string; status?: number; hosting?: 'byoc' | 'papercusp' } = {}) {
+async function assembled(options: { registered?: boolean; responseBody?: string; responseStream?: ReadableStream<Uint8Array>; status?: number; hosting?: 'byoc' | 'papercusp' } = {}) {
   const captures: string[] = [];
   const phoneKey = SecretStream.keyPair(Buffer.alloc(32, 51));
   const hostKey = SecretStream.keyPair(Buffer.alloc(32, 52));
@@ -106,8 +106,8 @@ async function assembled(options: { registered?: boolean; responseBody?: string;
             const token = headers.get('authorization')?.replace(/^Bearer /, '') ?? '';
             const claims = verifyDeviceToken(token);
             const status = paired || (claims?.sub === 'phone-1' && claims.workspace_id === 'byoc-1') ? options.status ?? 200 : 401;
-            return new Response(options.responseBody ?? '{"secret":"DEVICE_CONTENT_MARKER"}', {
-              status, headers: { 'content-type': 'application/json' },
+            return new Response(options.responseStream ?? options.responseBody ?? '{"secret":"DEVICE_CONTENT_MARKER"}', {
+              status, headers: { 'content-type': options.responseStream ? 'text/event-stream' : 'application/json' },
             });
           },
         },
@@ -155,6 +155,27 @@ async function assembled(options: { registered?: boolean; responseBody?: string;
 }
 
 describe('assembled sealed device ingress (D-019)', () => {
+  it('R-32: a session transcript stays open and carries a new turn through Noise without leaking relay content', async () => {
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const responseStream = new ReadableStream<Uint8Array>({ start(controller) { source = controller; } });
+    const h = await assembled({ responseStream });
+    await h.phone.send({ type: 'http.request', requestId: 'sessions-live', method: 'GET',
+      path: '/api/device/sessions/su-target/transcript?stream=1', headers: { authorization: `Bearer ${jwt('phone-1')}` } });
+    source.enqueue(new TextEncoder().encode('event: backfill\ndata: []\n\n'));
+    const text = () => h.frames.filter(frame => frame.requestId === 'sessions-live' && frame.type === 'http.body')
+      .map(frame => Buffer.from(String(frame.data), 'base64').toString()).join('');
+    await vi.waitFor(() => expect(text()).toContain('event: backfill'));
+    expect(h.frames.some(frame => frame.requestId === 'sessions-live' && frame.type === 'http.end')).toBe(false);
+    source.enqueue(new TextEncoder().encode('event: event\ndata: {"kind":"text","text":"SESSION_LIVE_PRIVATE_MARKER"}\n\n'));
+    await vi.waitFor(() => expect(text()).toContain('SESSION_LIVE_PRIVATE_MARKER'));
+    expect(h.fetched).toHaveLength(1);
+    expect(h.fetched[0].url).toContain('/api/device/sessions/su-target/transcript?stream=1');
+    expect(h.captures.join('\n')).not.toContain('SESSION_LIVE_PRIVATE_MARKER');
+    expect(h.errors).toEqual([]);
+    source.close();
+    await vi.waitFor(() => expect(h.frames.some(frame => frame.requestId === 'sessions-live' && frame.type === 'http.end')).toBe(true));
+  });
+
   it('keeps the fixture bearer stable across wall-clock seconds while preserving expiry verification', () => {
     const token = jwt('phone-1');
     const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 1000);

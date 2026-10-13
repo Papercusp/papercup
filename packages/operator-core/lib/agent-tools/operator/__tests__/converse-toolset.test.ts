@@ -7,7 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../operator-mcp-tools', () => ({
-  ALL_AGENT_MCP_TOOLS: ['mcp__agentmcp__harness:status', 'mcp__agentmcp__chat:ask_choice'],
+  ALL_AGENT_MCP_TOOLS: ['mcp__agentmcp__harness:status', 'mcp__agentmcp__chat:ask_choice', 'mcp__agentmcp__scorecards:list'],
   INTERACTIVE_CHAT_TOOLS: ['mcp__agentmcp__chat:ask_choice'],
 }));
 
@@ -20,6 +20,7 @@ describe('selectConverseTools', () => {
     expect(selectConverseTools({ role: 'operator', hostTrust: 'owner', publicDoorNames: doors })).toEqual([
       'mcp__agentmcp__harness:status',
       'mcp__agentmcp__chat:ask_choice',
+      'mcp__agentmcp__scorecards:list',
     ]);
   });
 
@@ -27,6 +28,7 @@ describe('selectConverseTools', () => {
     expect(selectConverseTools({ role: 'papercup', hostTrust: 'owner', publicDoorNames: doors })).toEqual([
       'mcp__agentmcp__harness:status',
       'mcp__agentmcp__chat:ask_choice',
+      'mcp__agentmcp__scorecards:list',
       DELEGATE_DEEP_TOOL,
       ...PUBLIC_MANUAL_TOOLS,
     ]);
@@ -67,6 +69,27 @@ describe('selectConverseTools', () => {
 });
 
 describe('buildConverseMcpMount', () => {
+  it('voice slim narrows the owner catalog and actual mount; standard differs only in analytical tools', () => {
+    const input = {
+      role: 'papercup', hostTrust: 'owner' as const, publicDoorNames: doors,
+      modality: 'voice' as const, supportsVoice: (name: string) => name !== 'chat:ask_choice',
+    };
+    const slim = selectConverseTools(input);
+    const standard = selectConverseTools({ ...input, voiceProfile: 'standard' });
+    expect(slim).toEqual(['mcp__agentmcp__harness:status', DELEGATE_DEEP_TOOL, ...PUBLIC_MANUAL_TOOLS]);
+    expect(standard).toContain('mcp__agentmcp__scorecards:list');
+    expect(standard).not.toContain('mcp__agentmcp__chat:ask_choice');
+    const mount = buildConverseMcpMount({ hostTrust: 'owner', baseUrl: 'http://localhost', workspaceId: 'ws', tools: slim, uiClientId: null, superuserToken: 'owner-token', principalToken: null });
+    expect(new URL(mount!.url).searchParams.get('tools')?.split(',')).toEqual(slim.map(name => name.replace('mcp__agentmcp__', '')));
+  });
+
+  it.each(['slim', 'standard'] as const)('voice %s never adds owner tools to a public or customer-run turn', (voiceProfile) => {
+    const input = { role: 'papercup', publicDoorNames: doors, modality: 'voice' as const, voiceProfile, supportsVoice: (name: string) => name !== 'chat:ask_choice' };
+    const pub = selectConverseTools({ ...input, hostTrust: 'public' });
+    expect(pub).toEqual(['mcp__agentmcp__capability:read', 'mcp__agentmcp__capability:fetch', 'mcp__agentmcp__tasks:ops', DELEGATE_DEEP_TOOL, ...PUBLIC_MANUAL_TOOLS]);
+    expect(selectConverseTools({ ...input, hostTrust: 'owner', agentRunsAsCustomer: true })).toEqual(pub);
+  });
+
   const base = {
     baseUrl: 'http://localhost:3070',
     workspaceId: 'ws with space',

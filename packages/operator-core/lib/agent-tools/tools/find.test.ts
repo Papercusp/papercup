@@ -17,6 +17,7 @@ import { runInNewContext } from 'node:vm';
 import { z } from 'zod';
 import { addresseeArg } from '../_addressee-arg';
 import { defineTool } from '@papercusp/agent-mcp';
+import { nestedProjectionContext } from '../../result-projection/nested-dispatch';
 import devServiceHealth from '../dev/service_health';
 import launchAgent from '../capability/launch-agent';
 import activityToolLog from '../activity/tool-log';
@@ -1559,6 +1560,30 @@ describe('handler — graceful degrade + result shape', () => {
     expect(fullSchema).toContain('"slugs"');
   });
 
+  it('keeps a projected discovery schema compact instead of expanding the implicit full source', async () => {
+    const args = { query: 'work_items:checkpoint', limit: 1 };
+    const projection = { pick: ['hits[].argSchema'] };
+    const materialized = nestedProjectionContext({ contextTier: 'trimmed' } as never, args, projection);
+    expect(materialized.sourceMaterialization?.promotedToFull).toBe(true);
+    const ordinary = await callHandler(args);
+    const projected = await callHandler(args, { ...materialized });
+    expect(projected.hits[0]?.argSchema).toBe(ordinary.hits[0]?.argSchema);
+    expect(Buffer.byteLength(JSON.stringify(projected))).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
+  });
+
+  it('retains explicitly requested full schemas even when the caller also picks fields', async () => {
+    const args = { query: 'work_items:checkpoint', limit: 1, payloadTier: 'full' };
+    const materialized = nestedProjectionContext(
+      { contextTier: 'trimmed', payloadTierOverride: 'full' } as never,
+      args,
+      { pick: ['hits[].argSchema'] },
+    );
+    expect(materialized.sourceMaterialization?.promotedToFull).toBe(false);
+    const out = await callHandler(args, { ...materialized });
+    expect(() => JSON.parse(out.hits[0]?.argSchema ?? '')).not.toThrow();
+    expect(out.hits[0]?.argSchema).toContain('"properties"');
+  });
+
   it('returns a full schema when an explicit full payload tier exceeds the inline result budget', async () => {
     expect(bindSpecEvidence.name).toBe('plans:bind-spec-evidence');
     const { schemaByTool } = buildCorpus();
@@ -1663,18 +1688,21 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(rubricsPropose.name).toBe('rubrics:propose');
     const { schemaByTool } = buildCorpus();
     const compact = compactSchemaForResult(schemaByTool.get('rubrics:propose')) ?? '';
-    const checkShape =
-      'check?:object{kind:enum(tests|cargo|instrument|probe|coverage|requirements),' +
-      'files?:array(1-20)<string>,manifestPath?:string(1-500),sourceFiles?:array(1-50)<string>,' +
-      'test?:string(1-500),instrumentKey?:string(≥1),probe?,all?:array(1-8),scope?:object,floor?:enum(l1|l2|l3|l4)}';
-
     // `check` is a nested discriminated union. The compact response must retain
-    // all callable arms, not just the first `tests` branch.
-    expect(compact).toContain(checkShape);
+    // every callable input even when growing optional metadata forces a shallow
+    // fallback; enum/bounds remain on the full schema and conditional synopsis.
+    const assertCheckInputs = (schema: string) => {
+      const fields = schema.match(/check\?:object\{([^}]+)\}/)?.[1] ?? '';
+      expect(fields).toContain('kind:enum(tests|cargo|instrument|probe|coverage|requirements)');
+      for (const key of ['files', 'manifestPath', 'sourceFiles', 'test', 'instrumentKey', 'probe', 'all', 'scope', 'floor', 'expect']) {
+        expect(fields, `missing callable check input ${key}`).toMatch(new RegExp(`(?:^|,)${key}\\?(?::|,|$)`));
+      }
+    };
+    assertCheckInputs(compact);
     expect(compact).not.toContain('check?:object{kind:enum(tests),');
 
     const result = await callHandler({ query: 'rubrics:propose', limit: 1 });
-    expect(result.hits.find((hit) => hit.tool === 'rubrics:propose')?.argSchema).toContain(checkShape);
+    assertCheckInputs(result.hits.find((hit) => hit.tool === 'rubrics:propose')?.argSchema ?? '');
   });
 
   it('EI-21579794371308546: live coord:send discovery identifies premises as string refs', () => {

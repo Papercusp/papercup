@@ -694,7 +694,7 @@ export async function censusOneDevice(
     );
     const attributionMs = Date.now() - attributionStarted;
     const finishedAt = now();
-    const complete = !du.timedOut && !du.error && du.summary.rootBytes !== null;
+    const complete = !du.timedOut && !du.error && du.summary.rootBytes !== null && du.deniedCount === 0 && ownFilesNotes.length === 0;
     const notes = [
       du.privileged ? 'du walked as root (sudo -n)' : 'du walked unprivileged (sudo -n unavailable)',
       censusPhaseNote(walkMs, attributionMs, du.summary.ownFiles.length),
@@ -823,6 +823,16 @@ async function consumersOf(sql: CensusSql, runId: string): Promise<CensusConsume
   return rows.map((r) => ({ consumer: r.consumer, kind: r.kind, depth: Number(r.depth), bytes: Number(r.bytes) }));
 }
 
+/** Older writers stamped denied walks complete. Those rows cannot calibrate growth. */
+function censusCoverageReadable(note: string | null): boolean {
+  return !note || !/unreadable path\(s\)|own files .* may be incomplete|du timed out|du failed:/i.test(note);
+}
+function censusVisibility(note: string | null): 'root' | 'unprivileged' | 'legacy' {
+  if (note?.includes('du walked as root')) return 'root';
+  if (note?.includes('du walked unprivileged')) return 'unprivileged';
+  return 'legacy';
+}
+
 /** The census read: per device, each consumer's size and its growth over the last ~24h. */
 export async function readDiskConsumerCensus(
   sql: CensusSql,
@@ -848,13 +858,18 @@ export async function readDiskConsumerCensus(
   for (const run of latest) {
     const finishedAt = new Date(run.finished_at);
     const target = new Date(finishedAt.getTime() - 24 * 3600_000);
-    const base = await sql<{ run_id: string; finished_at: Date }>`
-      SELECT run_id, finished_at FROM harness_shared.disk_census_runs
+    const candidates = await sql<{ run_id: string; finished_at: Date; note: string | null }>`
+      SELECT run_id, finished_at, note FROM harness_shared.disk_census_runs
        WHERE host = ${host} AND device = ${run.device} AND complete
          AND finished_at BETWEEN ${new Date(finishedAt.getTime() - 30 * 3600_000)} AND ${new Date(finishedAt.getTime() - 18 * 3600_000)}
        ORDER BY abs(extract(epoch FROM (finished_at - ${target}::timestamptz)))
-       LIMIT 1`;
-    const rows = joinCensusGrowth(await consumersOf(sql, run.run_id), base[0] ? await consumersOf(sql, base[0].run_id) : null);
+       LIMIT 100`;
+    // Changed visibility is not changed consumption. Prefer a comparable clean
+    // baseline; otherwise growth stays unknown instead of inventing a spike.
+    const base = run.complete && censusCoverageReadable(run.note)
+      ? candidates.find((candidate) => censusCoverageReadable(candidate.note) && censusVisibility(candidate.note) === censusVisibility(run.note))
+      : undefined;
+    const rows = joinCensusGrowth(await consumersOf(sql, run.run_id), base ? await consumersOf(sql, base.run_id) : null);
     const sorted = sortCensusRows(rows, opts.orderBy);
     const used = Number(run.used_bytes);
     const attributed = Number(run.attributed_bytes);
@@ -863,7 +878,7 @@ export async function readDiskConsumerCensus(
       device: run.device,
       sampledAt: finishedAt.toISOString(),
       stale: now.getTime() - finishedAt.getTime() > CENSUS_STALE_MS,
-      complete: run.complete,
+      complete: run.complete && censusCoverageReadable(run.note),
       note: run.note,
       sizeBytes: Number(run.size_bytes),
       usedBytes: used,
@@ -871,7 +886,7 @@ export async function readDiskConsumerCensus(
       attributedBytes: attributed,
       unattributedBytes: unattributed,
       coverageGap: unattributed >= CENSUS_COVERAGE_GAP_BYTES,
-      baselineAt: base[0] ? new Date(base[0].finished_at).toISOString() : null,
+      baselineAt: base ? new Date(base.finished_at).toISOString() : null,
       consumers: sorted.slice(0, limit),
       consumersTotal: sorted.length,
       truncatedByLimit: sorted.length > limit,

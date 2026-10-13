@@ -286,11 +286,18 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   }
 
   if (selectedId && !feature && !issue && !workItem && !agent) {
+    // Sync exposes the latest failed attempt during automatic retries, before
+    // `error` settles. A resolver failure must not look like a healthy spinner.
+    const detailError = workItemDetailQuery.error ??
+      (workItemDetailQuery.failureCount > 0 ? workItemDetailQuery.failureReason : null);
+    if (kind === 'workItem' && detailError) {
+      return <Empty tone="error">Unable to load {selectedId}: {detailError.message}</Empty>;
+    }
     // The id is in the URL but the lists haven't settled yet (or it's a
     // stale selection). Show a brief loading state until the lists load.
     if (
       (kind === 'feature' && featureLoading) ||
-      issues === null ||
+      (kind === 'issue' && issues === null) ||
       (kind === 'workItem' && workItemDetailQuery.loading) ||
       (kind === 'agent' && agentRows === null)
     ) {

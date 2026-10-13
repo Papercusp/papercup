@@ -36,9 +36,9 @@
 // code; the installed PreToolUse hook applies that same decision to client-native egress.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, appendFileSync, constants as fsConstants, existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import Module, { register } from 'node:module';
-import { dirname, join, relative, sep } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { threadId } from 'node:worker_threads';
 
@@ -62,6 +62,37 @@ export const COMMITTED_SOURCE_NOTICE_SCHEMA = 'committed-source-notice-v1';
 const HOOKS_QUERY = 'committed-source-hooks';
 const GIT_TIMEOUT_MS = 60_000;
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
+const COMMITTED_SOURCE_GIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_GIT';
+const GIT_UNAVAILABLE_SENTINEL = 'unavailable-at-loader-registration';
+
+/** Resolve git once before registering the hook, then propagate the pin to child Node processes. */
+function resolveGitExecutable(env = process.env) {
+  const configured = env[COMMITTED_SOURCE_GIT_ENV];
+  if (configured === GIT_UNAVAILABLE_SENTINEL) return null;
+  if (configured && !isAbsolute(configured)) {
+    throw new Error(`${COMMITTED_SOURCE_MARKER} ${COMMITTED_SOURCE_GIT_ENV} must be an absolute executable path`);
+  }
+  const executableName = process.platform === 'win32' ? 'git.exe' : 'git';
+  const candidates = configured
+    ? [configured]
+    : String(env.PATH ?? '').split(delimiter).filter(Boolean).map((directory) => join(directory, executableName));
+  for (const candidate of candidates) {
+    try {
+      const resolved = realpathSync(candidate);
+      if (!statSync(resolved).isFile()) continue;
+      accessSync(resolved, fsConstants.X_OK);
+      return resolved;
+    } catch {
+      // Keep searching PATH; an explicitly configured path still fails closed below.
+    }
+  }
+  if (configured) {
+    throw new Error(`${COMMITTED_SOURCE_MARKER} could not resolve the configured git executable for checkout reads`);
+  }
+  return null;
+}
+
+let gitExecutable = null;
 
 /** git's object id for `bytes` as a blob, in the object format `like` uses (sha1 or sha256). */
 export function gitBlobId(bytes, like = '') {
@@ -103,7 +134,10 @@ function checkoutTop(file) {
 }
 
 function git(top, args, opts = {}) {
-  return execFileSync('git', ['-C', top, ...args], {
+  if (!gitExecutable) {
+    throw new Error(`${COMMITTED_SOURCE_MARKER} no absolute git executable was available at loader registration for checkout reads`);
+  }
+  return execFileSync(gitExecutable, ['-C', top, ...args], {
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -251,6 +285,13 @@ let entryLabel = null;
 /** ES `initialize` hook (hooks thread): receives `register`'s `data`. */
 export function initialize(data) {
   entryLabel = typeof data?.entry === 'string' && data.entry ? data.entry : null;
+  const pinnedGit = typeof data?.gitExecutable === 'string' && data.gitExecutable
+    ? data.gitExecutable
+    : process.env[COMMITTED_SOURCE_GIT_ENV];
+  gitExecutable = resolveGitExecutable({
+    ...process.env,
+    ...(pinnedGit ? { [COMMITTED_SOURCE_GIT_ENV]: pinnedGit } : {}),
+  });
 }
 
 /** The stderr line for one substituted module, scoped to the process that ran its HEAD bytes. */
@@ -325,6 +366,8 @@ if (!new URL(import.meta.url).searchParams.has(HOOKS_QUERY)) {
   // This (registering) thread's instance labels its own CommonJS notices; the hooks thread's
   // instance receives the same label through `initialize`.
   entryLabel = describeEntry(process.argv[1]);
-  register(hooks.href, { data: { entry: entryLabel } });
+  gitExecutable = resolveGitExecutable(process.env);
+  process.env[COMMITTED_SOURCE_GIT_ENV] = gitExecutable ?? GIT_UNAVAILABLE_SENTINEL;
+  register(hooks.href, { data: { entry: entryLabel, gitExecutable } });
   guardCommonJs();
 }

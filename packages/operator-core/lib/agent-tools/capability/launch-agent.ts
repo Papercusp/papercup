@@ -108,7 +108,7 @@ import {
   readPsuLaunchLogTail,
 } from '../../psu-launch-log.mjs';
 import { assertOriginalCodexRouting, codexThreadWriterHolder, ORIGINAL_CODEX_ROUTING_ENV } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
-import { resolveCodexModelSelection } from '../../model-context-budget.mjs';
+import { LaunchModelAliasError, resolveCodexModelSelection, resolveLaunchModelAlias } from '../../model-context-budget.mjs';
 import { isSuTierRole } from '../../su-role-addendum';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
 import {
@@ -674,6 +674,8 @@ export default defineTool({
         .max(80)
         .optional()
         .describe('Model override for a fresh launch or successor (e.g. an opus/sonnet spec). For ordinary in-place resume, omit it to use the target session model; an explicit resume override is intentional and may be refused if it conflicts with the saved fleet profile.'),
+      effort: z.string().min(1).max(40).optional()
+        .describe('Reasoning effort for every member (low|medium|high|xhigh|max); members[].effort overrides it. Human model aliases resolve through config:tiers-get launchAliases.'),
       extraArgs: z
         .array(z.string().max(200))
         .max(20)
@@ -761,6 +763,26 @@ export default defineTool({
       });
   })(),
   async handler(args, ctx) {
+    let modelResolution: ReturnType<typeof resolveLaunchModelAlias> | null = null;
+    const requestedDefaultEffort = args.effort;
+    try {
+      if (args.model) {
+        modelResolution = resolveLaunchModelAlias(args.model, { effort: args.effort, agent: args.agent });
+        args = { ...args, model: modelResolution.model, effort: modelResolution.effort ?? undefined, agent: args.agent ?? modelResolution.agent ?? undefined };
+      }
+      if (args.members) {
+        args = { ...args, members: args.members.map(member => {
+          if (!member.model) return member;
+          const resolved = resolveLaunchModelAlias(member.model, { effort: member.effort ?? requestedDefaultEffort, agent: member.agent });
+          return { ...member, model: resolved.model, effort: resolved.effort ?? undefined, agent: member.agent ?? resolved.agent ?? undefined };
+        }) };
+      }
+    } catch (error) {
+      if (error instanceof LaunchModelAliasError) {
+        return { data: { ok: false, error: error.code, message: error.message, candidates: error.candidates }, isError: true };
+      }
+      throw error;
+    }
     const privateRoute = (ctx as typeof ctx & {
       [INTERNAL_SCOPED_INFERENCE_GATEWAY]?: ScopedInferenceGateway;
     })[INTERNAL_SCOPED_INFERENCE_GATEWAY];
@@ -1693,6 +1715,27 @@ export default defineTool({
     // whole so an over-large batch is refused once here rather than part-way
     // through, leaving half a fleet running against a breached ceiling.
     const retainedOwnerId = isSuccessor || (isResume && !fork) ? resumeOwnerId : null;
+    // EI-25876555362728602: a retaining launch stamps the CALLER as the retained
+    // identity's launcher, a permanent lineage edge. Refuse it before that edge is
+    // written when it would put an acceptance reviewer under its plan's implementer.
+    if (retainedOwnerId && callerOwnerId) {
+      const guard = await import('../../acceptance-reviewer-relaunch-guard');
+      let conflict: Awaited<ReturnType<typeof guard.findReviewerRelaunchConflict>>;
+      try {
+        conflict = await guard.findReviewerRelaunchConflict({
+          workspaceId,
+          launcherOwnerId: callerOwnerId,
+          retainedOwnerId,
+        });
+      } catch (e) {
+        return err(
+          `reviewer_relaunch_independence_unreadable: could not verify that relaunching ${retainedOwnerId} keeps ` +
+            `acceptance review independent of ${callerOwnerId} (${e instanceof Error ? e.message : String(e)}). ` +
+            'Retry once the database is readable (EI-25876555362728602).',
+        );
+      }
+      if (conflict) return err(guard.renderReviewerRelaunchRefusal(conflict));
+    }
     const goalExcludedOwnerIds = [...new Set([
       ...(respawnReplacesOwnerId ? [respawnReplacesOwnerId] : []),
       ...(retainedOwnerId ? [retainedOwnerId] : []),
@@ -1748,7 +1791,7 @@ export default defineTool({
       modelSource: isSuccessor && resumeAgent === 'codex'
         ? (goalLaunch.effective.model || args.model ? 'explicit' : resumeModelSource ?? undefined)
         : undefined,
-      effort: goalLaunch.effective.effort ?? undefined,
+      effort: goalLaunch.effective.effort ?? args.effort ?? undefined,
       contextSize: goalLaunch.effective.contextSize ?? persistedHeadcountProfile?.config.contextSize ?? undefined,
       compactionLimit: persistedHeadcountProfile?.config.compactionLimit,
       // P-003: `headless` was the ONE knob in this block that ignored the goal
@@ -2805,6 +2848,7 @@ export default defineTool({
       content: [{ type: 'text' as const, text: lines.join('\n') }],
       data: {
         deduped: false,
+        modelResolution,
         launch: launchSummary,
         ...(completionReceipt ? { completionReceipt } : {}),
       },

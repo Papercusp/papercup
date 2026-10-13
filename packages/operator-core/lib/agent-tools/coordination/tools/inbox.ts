@@ -41,6 +41,7 @@ import {
   isDirectedDelivery,
   excludeIntentDeclares,
   coalesceRepeatedBroadcasts,
+  changedSystemNoticeDelivery,
   inboxPriorityBucket,
   prioritizedInboxWindow,
   expandInboxChunkGroupsForMessageIds,
@@ -849,6 +850,8 @@ export interface InboxDeliveryFloor {
   /** Committed floor from the caller's OWN server-side read cursor. Never a
    *  client-reported wall-clock timestamp. */
   __deliveryFloorTs?: string | null;
+  /** Internal committed notice fingerprints; absence preserves public VIEW reads. */
+  __systemNoticeState?: unknown;
 }
 
 function internalDeliveryFloor(args: unknown): string | undefined {
@@ -1601,6 +1604,21 @@ export default defineTool({
       }
     }
 
+    // WI-10479: coalescing within a read does not stop a watchdog re-emission on
+    // the next tool call. Only the native delivery path passes committed state;
+    // stage its replacement with the inbox cursor after the complete fold.
+    const maxInjectionLines = 8;
+    const noticeDelivery = Object.prototype.hasOwnProperty.call(args, '__systemNoticeState')
+      ? changedSystemNoticeDelivery(
+          injectionEntries as unknown as Array<Record<string, unknown>>,
+          (args as InboxDeliveryFloor).__systemNoticeState,
+          maxInjectionLines,
+        )
+      : null;
+    if (noticeDelivery) {
+      injectionEntries = noticeDelivery.entries as unknown as typeof injectionEntries;
+    }
+
     // EI-213057 READ-RECEIPT: emit receipts for newly SHOWN directed messages before
     // advancing this agent's `messages_shown_ts` cursor. The watermark is the sender's
     // read proof, so a failed receipt must leave it untouched; the next VIEW read then
@@ -1755,7 +1773,7 @@ export default defineTool({
     }
     const coordInjection = renderInjection(
       injectionEntries as unknown as CoordLineSource[],
-      { cueScope, relatedQuotes, bodyRefs },
+      { cueScope, relatedQuotes, bodyRefs, maxLines: maxInjectionLines },
     );
 
     // P-010 re-bootstrap-on-compaction (D-007): on the first read after a fresh
@@ -2129,6 +2147,10 @@ export default defineTool({
             // looks it up by `msg_id` in `entries`, same as it always could.
             recent: entriesOut.map((e) => e["msg_id"]),
             injection,
+            ...(noticeDelivery ? {
+              __systemNoticeState: noticeDelivery.state,
+              system_notices_suppressed: noticeDelivery.suppressed,
+            } : {}),
             // P-015: the ≥80% loud gauge, exposed OUT of `injection` so the PostToolUse
             // hook can inject it even when there are no new entries (empty-inbox turns).
             context_gauge: contextGauge,

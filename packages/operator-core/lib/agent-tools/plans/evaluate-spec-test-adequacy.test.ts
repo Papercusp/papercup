@@ -1243,6 +1243,56 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ specIds: [selected.specId], ...selector }));
   });
 
+  it.each([1, 29])('replays a %s-binding diagnostic cohort with a larger clause-wide disclosure population', async (selectedCount) => {
+    const pool = Array.from({ length: 31 }, (_, index) => ({
+      id: 39000 + index,
+      workItemId: index < selectedCount ? 'WI-selected' : 'WI-other',
+      planSlug: 'plan-a', specId: 'SPEC-001', specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test', evidenceRef: `test-run:${39000 + index}`,
+      fingerprints: {
+        sourceFingerprint: 'sha256:source', testFingerprint: 'sha256:test',
+        fixtureFingerprint: null, rubricFingerprint: null, environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null, testRunId: 39000 + index,
+      testRunExecution: {
+        status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        testLayer: 'integration', passedCaseTitles: ['SPEC-001 selected test'],
+      },
+      details: { adequacy: {
+        testLayer: 'integration', outcome: 'passed', executed: true, collected: true,
+        fixtureCalibrated: true, falsifiable: true, pathReachable: true, oracleIndependent: true,
+      } },
+      currentness: {
+        overall: 'current', provenance: 'server-measured', comparisonSupplied: true,
+        dimensions: { spec: 'current', source: 'current', test: 'current' },
+        staleReasons: [], unknownReasons: [],
+      },
+    })) as EvidenceRow[];
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockImplementation(async (options) => pool.filter((row) =>
+      (!options.workItemIds || options.workItemIds.includes(row.workItemId!)) &&
+      (!options.evidenceRefs || options.evidenceRefs.includes(row.evidenceRef)) &&
+      (!options.bindingIds || options.bindingIds.includes(row.id!)),
+    ).slice(0, options.limit));
+
+    const initial = await call({
+      harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'], workItemIds: ['WI-selected'], detail: 'full',
+    });
+    expect(initial.ok).toBe(true);
+    const recipe = initial.rows[0].scorecardDraft.rerunRecipe.args;
+    expect(recipe.bindingIds).toEqual(pool.slice(0, selectedCount).map((row) => row.id));
+
+    // Both bounded store reads must fit the persisted recipe. Raising the ceiling
+    // must preserve the selected cohort and the universal disclosure check.
+    const replay = await call(tool.args.parse(recipe));
+    expect(replay).toMatchObject({ ok: true, selectedEvidenceCount: selectedCount });
+    expect(replay.rows[0].verdict).toBe(initial.rows[0].verdict);
+    expect(replay.rows[0].ratings['disclosed-gap'].rating).toBe(initial.rows[0].ratings['disclosed-gap'].rating);
+    expect(listEvidence.mock.calls.at(-1)?.[0]).not.toHaveProperty('bindingIds');
+  });
+
   it('checks every active clause binding for disclosed gaps during a pinned diagnostic read', async () => {
     const binding = (id: number, disclosedGap?: string) => ({
       id,

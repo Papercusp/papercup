@@ -25,7 +25,10 @@ type NamedQueryStage = 'goal-detail-dependencies' | 'goal-detail-sql' | 'goal-ho
   'stewardship-dependencies' | 'stewardship-scorecards' | 'stewardship-rubrics' |
   'stewardship-repairs' | 'stewardship-lineage' | 'scorecards-generation' | 'scorecards-rubric' |
   'native-session-verifier-workspace-transaction' | 'native-session-verifier-global-transaction' |
-  'native-session-verifier-owner-row-lookup' | 'native-session-verifier-owner-candidate-rows-lookup';
+  'native-session-verifier-owner-row-lookup' | 'native-session-verifier-owner-candidate-rows-lookup' |
+  'work-item-detail-import' | 'work-item-detail-enrichment' | 'work-item-detail-row' |
+  'work-item-detail-dimensions' | 'work-item-detail-reporter' | 'work-item-detail-presentation' |
+  'work-item-dependencies-import' | 'work-item-dependencies-sql';
 interface NamedQueryStageTiming {
   stage: NamedQueryStage;
   startedAt: number;
