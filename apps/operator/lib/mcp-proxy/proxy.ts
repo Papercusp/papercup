@@ -2922,6 +2922,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   )
     ? Math.max(0, Math.floor(configuredImprovementsCaptureQueue))
     : 0;
+  // Preserve the emergency in-flight toolFailure slot and allow one extra bounded FIFO
+  // alongside the configured normal improvements:capture queue capacity.
+  const maxToolFailureCaptureQueue = maxImprovementsCaptureQueue + 1;
   const maxCriticalContinuationQueueWaitMs =
     opts.maxCriticalContinuationQueueWaitMs ??
     DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS;
@@ -3714,8 +3717,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             improvementsCaptureQueue: {
               waiting: improvementsCaptureQueueLength(),
               max: maxImprovementsCaptureQueue,
-              toolFailureMax: 1,
-              waiterCapacity: maxImprovementsCaptureQueue + 1,
+              toolFailureMax: maxToolFailureCaptureQueue,
+              waiterCapacity:
+                maxImprovementsCaptureQueue + maxToolFailureCaptureQueue,
               maxWaitMs: improvementsCaptureQueueWaitMs,
               oldestAgeMs:
                 waitingImprovementsCaptureRequests.length > 0
@@ -3993,7 +3997,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             ? queuedToolFailureCaptures
             : queuedNormalCaptures;
           const queueCapacity = toolFailureCapture
-            ? 1
+            ? maxToolFailureCaptureQueue
             : maxImprovementsCaptureQueue;
           const queueFull = queueWaiters >= queueCapacity;
           if (queueFull) {

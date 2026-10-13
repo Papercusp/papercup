@@ -7961,7 +7961,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toEqual(["held-capture", "default-capture"]);
   });
 
-  it("EI-25387799480927943: toolFailure captures bypass ordinary capture saturation and keep one bounded waiter", async () => {
+  it("EI-25799962570390054: toolFailure captures bypass ordinary saturation with bounded waiters", async () => {
     let releaseNormal: () => void = () => {};
     const normalGate = new Promise<void>((resolve) => {
       releaseNormal = resolve;
@@ -8005,7 +8005,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         maxInFlight: 10,
         controlPlaneReserve: 1,
         maxCriticalContinuationQueue: 1,
-        maxImprovementsCaptureQueue: 200,
+        maxImprovementsCaptureQueue: 1,
         improvementsCaptureQueueWaitMs: 100,
         criticalContinuationQueueWaitLogMs: 10,
         log: (line) => logs.push(line),
@@ -8041,6 +8041,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     let normal: ReturnType<typeof request> | null = null;
     let failure: ReturnType<typeof request> | null = null;
     let queuedFailure: ReturnType<typeof request> | null = null;
+    let queuedFailureSecond: ReturnType<typeof request> | null = null;
     try {
       normal = request(
         port(proxy),
@@ -8070,8 +8071,25 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         queuedFailureSettled = true;
         return result;
       });
-      await waitFor(() =>
-        logs.some((line) => line.includes("queued improvements:capture request")),
+      let queuedFailureSecondSettled = false;
+      queuedFailureSecond = request(
+        port(proxy),
+        body(5, {
+          toolFailure: {
+            toolName: "coord:inbox",
+            message: "A third failure needs a durable record.",
+          },
+        }),
+        "/api/mcp?client=queued-tool-failure-second",
+      ).then((result) => {
+        queuedFailureSecondSettled = true;
+        return result;
+      });
+      await waitFor(
+        () =>
+          logs.filter((line) =>
+            line.includes("queued improvements:capture request"),
+          ).length >= 2,
       );
 
       const health = JSON.parse(
@@ -8082,17 +8100,20 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
           improvementsCaptureQueue: {
             waiting: number;
             toolFailureMax: number;
+            waiterCapacity: number;
             requests: Array<{ maxWaitMs: number; toolFailureCapture?: boolean }>;
           };
         };
       };
       expect(health.inFlight.improvementsCaptureQueue).toMatchObject({
-        waiting: 1,
+        waiting: 2,
+        toolFailureMax: 2,
+        waiterCapacity: 3,
         requests: [
+          expect.objectContaining({ maxWaitMs: 45_000, toolFailureCapture: true }),
           expect.objectContaining({ maxWaitMs: 45_000, toolFailureCapture: true }),
         ],
       });
-      expect(health.inFlight.improvementsCaptureQueue.toolFailureMax).toBe(1);
       expect(health.inFlight.improvementsCaptureToolFailureMax).toBe(1);
 
       const overflowFailure = await request(
@@ -8116,16 +8137,19 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         forwardingResult: "not_forwarded",
       });
       expect(overflowBody.detail).toContain(
-        "tool-failure FIFO already has 1 waiter(s) (queue max 1)",
+        "tool-failure FIFO already has 2 waiter(s) (queue max 2)",
       );
       expect(hits).toEqual(["held-normal", "held-tool-failure"]);
 
       await new Promise((resolve) => setTimeout(resolve, 150));
       expect(queuedFailureSettled).toBe(false);
+      expect(queuedFailureSecondSettled).toBe(false);
 
       releaseFailure();
       await waitFor(() => hits.includes("queued-tool-failure"));
       expect((await queuedFailure).status).toBe(200);
+      await waitFor(() => hits.includes("queued-tool-failure-second"));
+      expect((await queuedFailureSecond).status).toBe(200);
       releaseNormal();
       expect((await failure).status).toBe(200);
       expect((await normal).status).toBe(200);
@@ -8133,7 +8157,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       releaseFailure();
       releaseNormal();
       await Promise.all(
-        [normal, failure, queuedFailure]
+        [normal, failure, queuedFailure, queuedFailureSecond]
           .filter((pending): pending is ReturnType<typeof request> => pending !== null)
           .map((pending) => pending.catch(() => undefined)),
       );
