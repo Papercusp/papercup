@@ -41,8 +41,9 @@
  * confirmed by a second read before it is reported, so one anomalous answer cannot fail the
  * gate or make the supervision reconciler file a false work-item.
  *
- * SCOPE, stated so a reader does not over-trust a pass: user-scope `*.service.d/*.conf`
- * drop-ins (read with `systemctl --user`), SYSTEM-scope drop-ins tracked under
+ * SCOPE, stated so a reader does not over-trust a pass: user-scope `*.service.d/*.conf` and
+ * `*.slice.d/*.conf` drop-ins (read with `systemctl --user`; slices since WI-6554700010010449,
+ * papercusp.slice's CPUWeight), SYSTEM-scope drop-ins tracked under
  * `scripts/systemd/system/<unit>.{service,slice}.d/*.conf` (read with plain `systemctl`;
  * installed as root-owned copies by `sudo install`, so the check is "is it in the unit's
  * DropInPaths", never "is it a symlink"), plus the Diodon/zeitgeist lifecycle on a host with
@@ -207,7 +208,8 @@ function trackedDropIns() {
       }
     }
   };
-  collect(systemdDir, 'user', ['.service.d']);
+  // User slices carry drop-ins too: papercusp.slice's CPUWeight (WI-6554700010010449).
+  collect(systemdDir, 'user', ['.service.d', '.slice.d']);
   collect(join(systemdDir, 'system'), 'system', ['.service.d', '.slice.d']);
   return found.sort((a, b) =>
     `${a.scope}/${a.unit}/${a.confName}`.localeCompare(`${b.scope}/${b.unit}/${b.confName}`),

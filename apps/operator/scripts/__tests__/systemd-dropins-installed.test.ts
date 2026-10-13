@@ -312,4 +312,27 @@ describe('systemd drop-in guard: a failed read is never a verdict (EI-2416157915
     expect(gate.stderr).toContain(`/etc/systemd/system/${SYSTEM_DROP.unit}.d/${SYSTEM_DROP.conf}`);
     expect(gate.stderr).not.toContain(`~/.config/systemd/user/${SYSTEM_DROP.unit}.d`);
   });
+
+  // WI-6554700010010449 (plan R-3, outside review thread-post:1178953): the serving path only
+  // outweighs headless agent / test / bash-job work if papercusp.slice — a USER slice — is
+  // weighted below app.slice. Before this, the guard collected only user *.service.d, so a
+  // user slice drop-in could be committed and never installed with nothing noticing.
+  const USER_SLICE_DROP = { unit: 'papercusp.slice', conf: '60-background-cpu-weight.conf' };
+
+  it('tracks the user-scope papercusp.slice CPU weight drop-in (guards against a vacuous user-slice pass)', () => {
+    const conf = join(REPO_ROOT, 'apps/operator/scripts/systemd', `${USER_SLICE_DROP.unit}.d`, USER_SLICE_DROP.conf);
+    expect(existsSync(conf)).toBe(true);
+    expect(readFileSync(conf, 'utf8')).toMatch(/^\[Slice\]\nCPUWeight=25$/m);
+    const list = runWithFake('none', ['--list']);
+    expect(list.stdout).toMatch(/^\s*INSTALLED\s+papercusp\.slice\s+60-background-cpu-weight\.conf\s*$/m);
+    expect(list.stdout).toMatch(/^installed=\d+ missing=0 unit-absent=0$/m);
+  });
+
+  it('catches a missing USER slice drop-in and prints the symlink install, not a root copy', () => {
+    const gate = runWithFake('drop-always', [], USER_SLICE_DROP);
+    expect(gate.status).toBe(1);
+    expect(gate.stderr).toContain(`${USER_SLICE_DROP.unit}  <-  ${USER_SLICE_DROP.conf}`);
+    expect(gate.stderr).toContain(`~/.config/systemd/user/${USER_SLICE_DROP.unit}.d/${USER_SLICE_DROP.conf}`);
+    expect(gate.stderr).not.toContain(`/etc/systemd/system/${USER_SLICE_DROP.unit}.d`);
+  });
 });
