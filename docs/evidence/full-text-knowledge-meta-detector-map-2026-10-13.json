@@ -149,11 +149,26 @@
           "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
@@ -163,11 +178,26 @@
           "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/search/chunks/registry.test.ts",
@@ -177,11 +207,26 @@
           "testFileSha256": "3968bfefc86f1b6a72fbea28f0e34f665bf35cdbd8976e90230e0be41a16fff8",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/search/chunks/registry.test.ts",
@@ -191,11 +236,26 @@
           "testFileSha256": "3968bfefc86f1b6a72fbea28f0e34f665bf35cdbd8976e90230e0be41a16fff8",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/search/chunks/registry.test.ts",
@@ -205,11 +265,26 @@
           "testFileSha256": "3968bfefc86f1b6a72fbea28f0e34f665bf35cdbd8976e90230e0be41a16fff8",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/agent-tools/plans/__tests__/search-rrf-fusion.integration.test.ts",
@@ -219,11 +294,55 @@
           "testFileSha256": "4cad26033099b223d56d81c48f6f3bde596d014aa170e29db094a87a50f09be6",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/plans/__tests__/search-rrf-fusion.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/plans/__tests__/search-rrf-fusion.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/plans/__tests__/search-rrf-fusion.integration.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 235,
+          "testDeclaration": "it('reads the registered session/work-item and complete knowledge sources', async () => {",
+          "assertionSource": "  it('reads the registered session/work-item and complete knowledge sources', async () => {\n    runHybridSearch.mockResolvedValue(ok());\n    await recallCorpusContext(base);\n    const [sources] = runHybridSearch.mock.calls[0];\n    expect((sources as Array<{ name: string }>).map((s) => s.name).sort()).toEqual([\n      'doc',\n      'plan',\n      'report',\n      'session_turn',\n      'work_item',\n    ]);\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "Positive control: the registered source list passed to runHybridSearch contains plan, doc, report, session_turn and work_item. Omitting this criterion's knowledge source from automatic corpus recall changes the exact source list and fails this assertion; the criterion's other detectors independently verify complete body ingestion and retrieval.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
         }
       ]
     },
@@ -246,11 +365,26 @@
           "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
@@ -260,11 +394,26 @@
           "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/agent-tools/docs/__tests__/semantic-leg.query.test.ts",
@@ -274,11 +423,26 @@
           "testFileSha256": "6ea22b6d1f451b5f0aeecd5d943ae55042146a2a85362f75245ebc85f27f6a01",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/docs/__tests__/semantic-leg.query.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/docs/__tests__/semantic-leg.query.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/docs/__tests__/semantic-leg.query.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/search/chunks/registry.test.ts",
@@ -288,11 +452,55 @@
           "testFileSha256": "3968bfefc86f1b6a72fbea28f0e34f665bf35cdbd8976e90230e0be41a16fff8",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 235,
+          "testDeclaration": "it('reads the registered session/work-item and complete knowledge sources', async () => {",
+          "assertionSource": "  it('reads the registered session/work-item and complete knowledge sources', async () => {\n    runHybridSearch.mockResolvedValue(ok());\n    await recallCorpusContext(base);\n    const [sources] = runHybridSearch.mock.calls[0];\n    expect((sources as Array<{ name: string }>).map((s) => s.name).sort()).toEqual([\n      'doc',\n      'plan',\n      'report',\n      'session_turn',\n      'work_item',\n    ]);\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "Positive control: the registered source list passed to runHybridSearch contains plan, doc, report, session_turn and work_item. Omitting this criterion's knowledge source from automatic corpus recall changes the exact source list and fails this assertion; the criterion's other detectors independently verify complete body ingestion and retrieval.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
         }
       ]
     },
@@ -314,11 +522,26 @@
           "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
@@ -328,11 +551,26 @@
           "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/search/chunks/registry.test.ts",
@@ -342,11 +580,55 @@
           "testFileSha256": "3968bfefc86f1b6a72fbea28f0e34f665bf35cdbd8976e90230e0be41a16fff8",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/chunks/registry.test.ts"
+            }
+          }
+        },
+        {
+          "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
+          "line": 235,
+          "testDeclaration": "it('reads the registered session/work-item and complete knowledge sources', async () => {",
+          "assertionSource": "  it('reads the registered session/work-item and complete knowledge sources', async () => {\n    runHybridSearch.mockResolvedValue(ok());\n    await recallCorpusContext(base);\n    const [sources] = runHybridSearch.mock.calls[0];\n    expect((sources as Array<{ name: string }>).map((s) => s.name).sort()).toEqual([\n      'doc',\n      'plan',\n      'report',\n      'session_turn',\n      'work_item',\n    ]);\n  });\n",
+          "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
+          "readFileAtCommit": {
+            "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "Positive control: the registered source list passed to runHybridSearch contains plan, doc, report, session_turn and work_item. Omitting this criterion's knowledge source from automatic corpus recall changes the exact source list and fails this assertion; the criterion's other detectors independently verify complete body ingestion and retrieval.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
+            "root": ".",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
         }
       ]
     },
@@ -366,11 +648,26 @@
           "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
         }
       ]
     },
@@ -391,11 +688,26 @@
           "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts",
@@ -405,11 +717,26 @@
           "testFileSha256": "28caa7e310884092af0fcafec961712ee9e67c80c40a95855012a2d0b8f02a12",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+            }
+          }
         }
       ]
     },
@@ -430,11 +757,26 @@
           "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
@@ -444,11 +786,26 @@
           "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
         }
       ]
     },
@@ -469,11 +826,26 @@
           "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
@@ -483,11 +855,26 @@
           "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
         }
       ]
     },
@@ -507,11 +894,26 @@
           "testFileSha256": "95c1c90f6304c9db54310fa29285c29d2e78719d65e463412b80c8e4d53d85a8",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
+            }
+          }
         }
       ]
     },
@@ -533,11 +935,26 @@
           "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts",
@@ -547,11 +964,26 @@
           "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
@@ -561,11 +993,26 @@
           "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
@@ -575,11 +1022,26 @@
           "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
         }
       ]
     },
@@ -600,11 +1062,26 @@
           "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts",
@@ -614,11 +1091,26 @@
           "testFileSha256": "71e6482f095a4de97d9adf0158032d69d2d167c7581bfb6298f55d6a017c0c37",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/knowledge-sources.integration.test.ts"
+            }
+          }
         }
       ]
     },
@@ -638,11 +1130,26 @@
           "testFileSha256": "95c1c90f6304c9db54310fa29285c29d2e78719d65e463412b80c8e4d53d85a8",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall.test.ts"
+            }
+          }
         }
       ]
     },
@@ -665,11 +1172,26 @@
           "testFileSha256": "212463b7635cf35a4a1148ac36633243cca655bad9d98fa6c7d77acf07047959",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/injection.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/injection.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/memory/injection.test.ts",
@@ -679,11 +1201,26 @@
           "testFileSha256": "212463b7635cf35a4a1148ac36633243cca655bad9d98fa6c7d77acf07047959",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/injection.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/injection.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts",
@@ -693,11 +1230,26 @@
           "testFileSha256": "28caa7e310884092af0fcafec961712ee9e67c80c40a95855012a2d0b8f02a12",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
@@ -707,11 +1259,26 @@
           "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/search/prose-vector-dims.test.ts",
@@ -721,11 +1288,26 @@
           "testFileSha256": "53df6ddee14ad56397b872cbecef2db4461bad95ab12c90cde60498f139a969c",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/search/prose-vector-dims.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/search/prose-vector-dims.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/search/prose-vector-dims.test.ts"
+            }
+          }
         }
       ]
     },
@@ -748,11 +1330,26 @@
           "testFileSha256": "6eeb7d2033c86f812b58e097b5761774b87185eca0bebc03547f8931e793f283",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/agent-tools/search/report-source.integration.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/memory/injection-coverage.test.ts",
@@ -762,11 +1359,26 @@
           "testFileSha256": "7370a519c770d3a82eaf5676801995188242ae12cf9f9c53e7b8a6829bfdb85c",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection-coverage.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/injection-coverage.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/injection-coverage.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/memory/injection.test.ts",
@@ -776,11 +1388,26 @@
           "testFileSha256": "212463b7635cf35a4a1148ac36633243cca655bad9d98fa6c7d77acf07047959",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/injection.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/injection.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/injection.test.ts"
+            }
+          }
         },
         {
           "file": "libs/generic/search/src/hybrid.test.ts",
@@ -790,13 +1417,28 @@
           "testFileSha256": "5e7ef6ab0c633ac1ef9fd424e04b9fe3bafb203d5ff96016cfd8777dcb444c54",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "libs/generic/search/src/hybrid.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": "libs/generic/search",
             "commitSha": "b41a38b4c09a6b823b223442b1449e92544df80f",
             "path": "src/hybrid.test.ts",
             "superprojectCommitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "gitlinkPath": "libs/generic/search"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "libs/generic/search/src/hybrid.test.ts"
+            }
+          }
         }
       ]
     },
@@ -817,11 +1459,26 @@
           "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/memory/corpus-recall-io.test.ts",
@@ -831,11 +1488,26 @@
           "testFileSha256": "211dcaa0365f498059c080dbf245ce9300195af43e72a14433984c24928327d6",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/memory/corpus-recall-io.test.ts"
+            }
+          }
         },
         {
           "file": "libs/generic/search/src/hybrid.test.ts",
@@ -845,13 +1517,28 @@
           "testFileSha256": "5e7ef6ab0c633ac1ef9fd424e04b9fe3bafb203d5ff96016cfd8777dcb444c54",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "libs/generic/search/src/hybrid.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": "libs/generic/search",
             "commitSha": "b41a38b4c09a6b823b223442b1449e92544df80f",
             "path": "src/hybrid.test.ts",
             "superprojectCommitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "gitlinkPath": "libs/generic/search"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "libs/generic/search/src/hybrid.test.ts"
+            }
+          }
         }
       ]
     },
@@ -871,11 +1558,26 @@
           "testFileSha256": "fdfd150e83272f4ed2eac0b946358cfdeb83b542fcf9a3fb4319306657b85e1e",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts",
@@ -885,11 +1587,26 @@
           "testFileSha256": "fdfd150e83272f4ed2eac0b946358cfdeb83b542fcf9a3fb4319306657b85e1e",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+            }
+          }
         },
         {
           "file": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts",
@@ -899,11 +1616,26 @@
           "testFileSha256": "fdfd150e83272f4ed2eac0b946358cfdeb83b542fcf9a3fb4319306657b85e1e",
           "readFileAtCommit": {
             "op": "readFileAtCommit",
+            "rootHarnessSlug": "papercusp",
+            "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+            "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+          },
+          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient.",
+          "resolvedSourceLocator": {
+            "op": "readFileAtCommit",
             "root": ".",
             "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
             "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
           },
-          "interpretation": "The named expect assertions, positive controls and fixture inputs in assertionSource are the detector; a filename or passing count alone is insufficient."
+          "sourceReadProbe": {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "rootHarnessSlug": "papercusp",
+              "commitSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+              "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts"
+            }
+          }
         }
       ]
     }
