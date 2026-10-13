@@ -56,9 +56,19 @@ describe('WI-10007604 — frozen host source identity', () => {
   const block = source.slice(source.indexOf('if [[ -f "$REPO_ROOT/.verifier-source.json" ]]'), source.indexOf('# EI-9413:'));
   const select = (root: string, receipt = '') => spawnSync('bash', ['-c', 'set -euo pipefail; REPO_ROOT="$1"; COMMITTED_NODE=(node);\n' + block + '\nprintf "%s" "$SOURCE_SHA"', '_', root],
     { encoding: 'utf8', env: { ...process.env, VERIFY_TAURI_SOURCE_RECEIPT: receipt } });
+  function snapshotRoot() {
+    // Match the maintained verifier's ignored scratch boundary. An unignored
+    // fixture is rightly refused by the committed-source loader before receipt
+    // verification, masking both the positive and tampered-archive controls.
+    const parent = join(REPO_ROOT, '.papercusp/tmp');
+    mkdirSync(parent, { recursive: true });
+    const root = mkdtempSync(join(parent, 'host-source-identity-'));
+    expect(spawnSync('git', ['check-ignore', root], { cwd: REPO_ROOT }).status).toBe(0);
+    return root;
+  }
   function snapshot() {
     // Nested under a real checkout: Git demonstrably discovers the wrong parent.
-    const root = mkdtempSync(join(REPO_ROOT, '.papercusp/host-source-identity-'));
+    const root = snapshotRoot();
     const helper = 'packages/operator-core/lib/verifier-source.ts';
     mkdirSync(dirname(join(root, helper)), { recursive: true });
     writeFileSync(join(root, helper), readFileSync(join(REPO_ROOT, helper)));
@@ -109,7 +119,7 @@ describe('WI-10007604 — frozen host source identity', () => {
     } finally { rmSync(root, { recursive: true, force: true }); rmSync(external, { force: true }); }
   });
   it('refuses a pinned receipt without its archive marker before Git fallback', () => {
-    const root = mkdtempSync(join(REPO_ROOT, '.papercusp/host-source-identity-'));
+    const root = snapshotRoot();
     try {
       const selected = select(root, join(root, 'missing-receipt.json'));
       expect(selected.status).toBe(78);
@@ -117,7 +127,7 @@ describe('WI-10007604 — frozen host source identity', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it('leaves an unrecorded gitless export unknown instead of borrowing its parent', () => {
-    const root = mkdtempSync(join(REPO_ROOT, '.papercusp/host-source-identity-'));
+    const root = snapshotRoot();
     try {
       const selected = select(root);
       expect(selected.status, selected.stderr).toBe(0);
