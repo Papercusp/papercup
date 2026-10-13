@@ -27,7 +27,7 @@ export const PHONE_DEVICE_PATHS = [
   '/api/device/operator/pause', '/api/device/operator/cards',
   '/api/device/operator/standing-candidates', '/api/device/operator/standing-candidates/decide',
   '/api/device/operator/conversation', '/api/device/operator/conversation/turns', '/api/device/operator/converse',
-  '/api/device/plans', '/api/device/voice-lease', '/api/device/voice-lease/claim',
+  '/api/device/plans', '/api/device/sessions', '/api/device/voice-lease', '/api/device/voice-lease/claim',
   '/api/device/voice-lease/heartbeat', '/api/device/voice-session-init',
   '/api/device/voice/turn', '/api/device/voice/warmup',
 ] as const;

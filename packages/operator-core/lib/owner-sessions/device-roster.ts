@@ -109,14 +109,16 @@ function fromRosterEntry(entry: ActiveEntry, section: DeviceSessionSection): Dev
   return {
     key: `${section}:${entry.ownerId}`,
     section,
+    // Values pass through unchanged (R-20: each must equal what the desktop
+    // roster shows), so an empty label or intent stays '' rather than null.
     ownerId: entry.ownerId,
-    label: entry.label || null,
+    label: entry.label ?? null,
     displayName: entry.displayName ?? null,
     role: entry.role ?? null,
     harness: entry.harnessSlug ?? null,
     pot: entry.potSlug ?? null,
     fleet: entry.fleetSlug ?? null,
-    intent: entry.intent || null,
+    intent: entry.intent ?? null,
     objective: entry.objective ?? null,
     heldWorkItem: entry.objectiveWorkItemRef ?? null,
     lastActiveAt: entry.lastActiveAt ?? null,
