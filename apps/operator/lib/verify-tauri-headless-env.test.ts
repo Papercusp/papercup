@@ -21,6 +21,21 @@ const devWrapper = readFileSync(
 const launchTemplate = src.match(
   /cat > "\$WORK\/launch\.sh" <<LAUNCH\n([\s\S]*?)\nLAUNCH/,
 )?.[1];
+const hostResolver = src.match(/^verify_tauri_dev_host\(\) \{[\s\S]*?^\}/m)?.[0];
+const urlBuilder = src.match(/^verify_tauri_dev_url\(\) \{[\s\S]*?^\}/m)?.[0];
+
+function resolveVerifierUrl(host?: string): string {
+  const env = { ...process.env };
+  if (host === undefined) delete env.VERIFY_TAURI_DEV_HOST;
+  else env.VERIFY_TAURI_DEV_HOST = host;
+  return execFileSync('bash', ['-c', [
+    'set -u',
+    hostResolver ?? '',
+    urlBuilder ?? '',
+    'VERIFY_TAURI_DEV_HOST="$(verify_tauri_dev_host)" || exit $?',
+    'printf "%s\\n%s\\n" "$VERIFY_TAURI_DEV_HOST" "$(verify_tauri_dev_url 33701)"',
+  ].join('\n')], { encoding: 'utf8', env }).trim();
+}
 
 describe('verifier assertion display handoff', () => {
   const handoff = src.match(/^export VERIFY_TAURI_DISPLAY=.*(?:\nexport DISPLAY=.*)?/m)?.[0];
@@ -133,5 +148,35 @@ describe('EI-20210154033151684 — verifier launch scrubs ambient runtime env', 
     expect(devWrapper).toMatch(
       /env \$\{DEV_CALLER_OVERRIDES\}(?:[A-Z_][A-Z0-9_]*=\S+ )*PAPERCUSP_HONO_PORT=\$PORT/,
     );
+  });
+});
+
+describe('verifier loopback host selection', () => {
+  it('defaults to 127.0.0.1 and accepts localhost while rejecting other hosts', () => {
+    expect(hostResolver).toBeTruthy();
+    expect(urlBuilder).toBeTruthy();
+    expect(resolveVerifierUrl()).toBe('127.0.0.1\nhttp://127.0.0.1:33701');
+    expect(resolveVerifierUrl('localhost')).toBe('localhost\nhttp://localhost:33701');
+    for (const invalid of ['example.com', '127.0.0.2', '0.0.0.0', 'localhost:33701']) {
+      expect(() => resolveVerifierUrl(invalid)).toThrow();
+    }
+  });
+
+  it('uses the selected loopback origin for the WebView, sidecar, boot-only handoff, and seed request', () => {
+    expect(src).toContain('TAURI_DEV_URL="$(verify_tauri_dev_url "$DEV_PORT")"');
+    expect(src).toContain('OPERATOR_DEV_URL="$TAURI_DEV_URL"');
+    expect(launchTemplate).toContain('PAPERCUSP_OPERATOR_BASE="$OPERATOR_DEV_URL"');
+    expect(launchTemplate).toContain('PAPERCUSP_OPERATOR_URL="$OPERATOR_DEV_URL"');
+    expect(launchTemplate).toContain(
+      'PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS="$VERIFY_TAURI_TRACE_SESSION_CHAT_CSS"',
+    );
+    expect(src).toContain(
+      'export VERIFY_TAURI_DEV_URL="$(verify_tauri_dev_url "$DEV_PORT")"',
+    );
+    expect(src).toContain('verify_tauri_dev_url "$VERIFY_TAURI_PORT")');
+    expect(src).toContain(
+      'SEED_URL="$(verify_tauri_dev_url "$DEV_PORT")/api/desktop/setup-wizard-state"',
+    );
+    expect(launchTemplate).toContain('PAPERCUSP_BIND_HOST=127.0.0.1');
   });
 });

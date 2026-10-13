@@ -311,6 +311,7 @@ function safeDistPath(rel: string): string | null {
 
 export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): Hono {
   let hostedControlPlaneWorkspaceId: string | null = null;
+  let firstSessionChatCssResponseCaptured = false;
   if (profile.kind === 'hosted') {
     const configuredWorkspaceId = profile.controlPlaneWorkspaceId.trim();
     if (configuredWorkspaceId.length === 0) {
@@ -320,6 +321,74 @@ export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): H
   }
 
   const routes = new Hono();
+  const traceFirstSessionChatCssResponse = (
+    request: Request,
+    pathname: string,
+    response: Response,
+    startedAt: bigint,
+  ): Response => {
+    if (
+      firstSessionChatCssResponseCaptured ||
+      process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS !== '1' ||
+      !/(?:^|\/)SessionChatModal-[^/]+\.css$/i.test(pathname)
+    ) {
+      return response;
+    }
+
+    firstSessionChatCssResponseCaptured = true;
+    const reader = response.body?.getReader();
+    let traceFinished = false;
+    const finishTrace = (completion: 'complete' | 'error' | 'cancelled') => {
+      if (traceFinished) return;
+      traceFinished = true;
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+      const entry = {
+        event: 'spa_css_response',
+        host: request.headers.get('host'),
+        path: pathname,
+        status: response.status,
+        contentLength: response.headers.get('content-length'),
+        completion,
+        durationMs: Number(durationMs.toFixed(3)),
+      };
+      try {
+        console.info('[spa-css-response] ' + JSON.stringify(entry));
+      } catch {
+        // Diagnostic output must never affect the asset response.
+      }
+    };
+
+    if (!reader) {
+      finishTrace('complete');
+      return response;
+    }
+
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            finishTrace('complete');
+            controller.close();
+            return;
+          }
+          controller.enqueue(value);
+        } catch (error) {
+          finishTrace('error');
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        finishTrace('cancelled');
+        await reader.cancel(reason);
+      },
+    });
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  };
 
   // EI-15848: the identity of the bundle on disk RIGHT NOW. The running UI
   // compares this against the `window.__PAPERCUSP_BUILD_ID__` it booted with and
@@ -343,6 +412,7 @@ export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): H
   // `/internal/docs/*`, `/wiki`, `/drizzle-studio` and the cross-app proxies
   // have all already terminated before a request reaches here.
   routes.get('*', async (c) => {
+    const requestStartedAt = process.hrtime.bigint();
     const pathname = decodeURI(new URL(c.req.url).pathname);
     const rel = pathname.replace(/^\/+/, '');
 
@@ -350,16 +420,26 @@ export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): H
     if (rel && extname(rel)) {
       const abs = safeDistPath(rel);
       if (abs && existsSync(abs) && statSync(abs).isFile()) {
-        return serveFile(
-          abs,
-          200,
-          isImmutableSpaAssetPath(rel) ? IMMUTABLE_CACHE_CONTROL : undefined,
+        return traceFirstSessionChatCssResponse(
+          c.req.raw,
+          pathname,
+          serveFile(
+            abs,
+            200,
+            isImmutableSpaAssetPath(rel) ? IMMUTABLE_CACHE_CONTROL : undefined,
+          ),
+          requestStartedAt,
         );
       }
-      return new Response('Not found', {
-        status: 404,
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
-      });
+      return traceFirstSessionChatCssResponse(
+        c.req.raw,
+        pathname,
+        new Response('Not found', {
+          status: 404,
+          headers: { 'content-type': 'text/plain; charset=utf-8' },
+        }),
+        requestStartedAt,
+      );
     }
 
     // (2) Extensionless → SPA shell. Client router (TSR) owns the route,
