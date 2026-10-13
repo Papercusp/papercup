@@ -117,17 +117,17 @@ describe('fetchWakeability activity recency (semantics)', () => {
 
     const signals = await fetchWakeability(['live', 'ended', 'stale', 'other-lifecycle', 'live'], sql);
 
-    // fetchWakeability resolves activity to whole seconds (it Date.parse()s the
-    // driver's value — a pre-existing property this rewrite does not change), so
-    // compare at second granularity: still distinguishes every row seeded here.
-    const second = (ms: number | null | undefined) => (ms == null ? null : Math.floor(ms / 1000));
-    expect(second(signals.get('live')?.lastActivityMs)).toBe(second(liveNewest.getTime()));
+    // EXACT milliseconds (WI-6554700010009626). The org-like client delivers Date
+    // objects; Date.parse(date) coerces through toString() and used to drop the
+    // milliseconds, so this compared at whole seconds. A regression to that
+    // conversion fails here unless the seeded instant happens to land on .000.
+    expect(signals.get('live')?.lastActivityMs).toBe(liveNewest.getTime());
     expect(signals.get('live')?.liveTurn).toBe(true);
-    expect(second(signals.get('ended')?.lastActivityMs)).toBe(second(endedAt.getTime()));
+    expect(signals.get('ended')?.lastActivityMs).toBe(endedAt.getTime());
     expect(signals.get('ended')?.liveTurn).toBe(false);
     expect(signals.get('stale')?.lastActivityMs ?? null).toBeNull();
     expect(signals.get('stale')?.liveTurn).toBe(false);
-    expect(second(signals.get('other-lifecycle')?.lastActivityMs)).toBe(second(otherNewest.getTime()));
+    expect(signals.get('other-lifecycle')?.lastActivityMs).toBe(otherNewest.getTime());
     expect(signals.get('other-lifecycle')?.liveTurn).toBe(true);
   });
 });
@@ -178,7 +178,7 @@ describe('fetchWakeability activity recency (cost, migration 1487)', () => {
       await tx.unsafe('SET LOCAL enable_bitmapscan = off');
       return tx.unsafe(`EXPLAIN (FORMAT JSON) ${captured[0]!.query}`, captured[0]!.params as never[]);
     });
-    const plan = (rows[0] as { 'QUERY PLAN': Array<{ Plan: PlanNode }> })['QUERY PLAN'][0]!.Plan;
+    const plan = (rows[0] as unknown as { 'QUERY PLAN': Array<{ Plan: PlanNode }> })['QUERY PLAN'][0]!.Plan;
     const indexes = activityScans(plan).map((s) => s['Index Name']).sort();
     expect(indexes).toEqual(['agent_activity_owner_created_idx', 'agent_activity_owner_lifecycle_idx']);
   });

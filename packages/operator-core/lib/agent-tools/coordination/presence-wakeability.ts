@@ -413,6 +413,18 @@ export function overrideIntentStaleForSessionState(
  *     `queued` attempt) only counts once it has outlived WAKE_PICKUP_GRACE_MS;
  *     a definitive failure (`dropped`/`dead`, `missed`) counts at once.
  */
+/**
+ * A timestamptz column as epoch ms. The org pool's serializers deliver `Date`;
+ * raw clients may deliver an ISO string. Never `Date.parse` a `Date`: it coerces
+ * through `toString()`, which has whole-second precision, so every activity time
+ * silently lost its milliseconds (WI-6554700010009626) — enough to misorder a
+ * tool call and a session-end marker written in the same second.
+ */
+function timestampMs(v: Date | string | null | undefined): number | null {
+  if (v == null || v === '') return null;
+  return v instanceof Date ? v.getTime() : Date.parse(v);
+}
+
 export async function fetchWakeability(
   ownerIds: string[],
   sqlOverride?: ReturnType<typeof getOrgPg>['sql'],
@@ -450,7 +462,7 @@ export async function fetchWakeability(
     // agent_activity_owner_lifecycle_idx (~42 ms for the same roster, result
     // set identical). Owners with no activity in the window are omitted, as
     // the GROUP BY omitted them.
-    sql<{ owner_id: string; last_any: string | null; last_end: string | null }[]>`
+    sql<{ owner_id: string; last_any: Date | string | null; last_end: Date | string | null }[]>`
       SELECT o.owner_id, a.last_any, e.last_end
         FROM (SELECT DISTINCT unnest(${ownerIds}::text[]) AS owner_id) o
         CROSS JOIN LATERAL (
@@ -471,7 +483,7 @@ export async function fetchWakeability(
            ORDER BY ae.created_at DESC
            LIMIT 1
         ) e ON true`,
-    sql<{ owner_id: string; attempt_at: string | null }[]>`
+    sql<{ owner_id: string; attempt_at: Date | string | null }[]>`
       SELECT owner_id, max(attempt_at) AS attempt_at
         FROM (
           SELECT subscriber_id AS owner_id,
@@ -535,15 +547,9 @@ export async function fetchWakeability(
   const toolCallByOwner = new Map(toolCalls.map((r) => [r.owner_id, r]));
   for (const id of ownerIds) {
     const t = turnByOwner.get(id);
-    const lastAny = t?.last_any ? Date.parse(t.last_any) : null;
-    const lastEnd = t?.last_end ? Date.parse(t.last_end) : null;
-    const toolCallAt = toolCallByOwner.get(id)?.last_tool_call_at;
-    const lastToolCall =
-      toolCallAt == null
-        ? null
-        : toolCallAt instanceof Date
-          ? toolCallAt.getTime()
-          : Date.parse(toolCallAt);
+    const lastAny = timestampMs(t?.last_any);
+    const lastEnd = timestampMs(t?.last_end);
+    const lastToolCall = timestampMs(toolCallByOwner.get(id)?.last_tool_call_at);
     const activityTimes = [lastAny, lastToolCall].filter(
       (time): time is number => time != null && Number.isFinite(time),
     );
@@ -562,7 +568,7 @@ export async function fetchWakeability(
       nowMs - lastActivity <= LIVE_TURN_WINDOW_MS &&
       (lastEnd == null || Number.isNaN(lastEnd) || lastActivity > lastEnd);
     const attempt = attemptByOwner.get(id)?.attempt_at;
-    const attemptAt = attempt ? Date.parse(attempt) : null;
+    const attemptAt = timestampMs(attempt);
     const wakeAttemptMiss = isConfirmedWakeAttemptMiss(attemptAt, lastActivity);
     out.set(id, {
       wakeable: wakeSet.has(id),
