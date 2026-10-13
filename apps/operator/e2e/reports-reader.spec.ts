@@ -4,6 +4,7 @@ import { stubSyncQueries } from './_sync-stub';
 import { reportFullFixture, reportSummaryFixture } from '../../operator-vite/src/components/reports/reports-test-fixture';
 import { captureReportClipboard, navigateToPublishedReport, observeReportReadiness, readPublishedReportProof, verifyPublishedReportAndOfflineExport, waitForReportRenderer } from './_reports-proof';
 import type { Page } from '@playwright/test';
+import { runInNewContext } from 'node:vm';
 
 const report = {
   ...reportFullFixture,
@@ -86,6 +87,22 @@ for (const width of [1440, 900, 390]) {
 // With no input this always runs in CI using calibrated sync fixtures. An explicit
 // complete reports:get receipt exercises the same instrument against the real reader,
 // with no flags or report-data stubs. Select this case alone for a live acceptance run.
+test('report clipboard capture initializes without Node transpiler globals', async () => {
+  let browserScript: string | undefined;
+  await captureReportClipboard({
+    addInitScript: async (script: unknown) => {
+      expect(typeof script).toBe('string');
+      browserScript = script as string;
+    },
+  } as Page);
+  const navigator: { clipboard?: { writeText(value: string): Promise<void> } } = {};
+  const window: { reportProofMarkdown?: string } = {};
+  runInNewContext(browserScript!, { navigator, window });
+  const markdown = '# Report\n\nComplete body with $ and literal `code`.';
+  await navigator.clipboard!.writeText(markdown);
+  expect(window.reportProofMarkdown).toBe(markdown);
+});
+
 test('published report text and standalone HTML stay identical', async ({ page }, testInfo) => {
   const input = process.env.OPERATOR_REPORT_PROOF_JSON;
   const expected = input ? await readPublishedReportProof(input) : report;

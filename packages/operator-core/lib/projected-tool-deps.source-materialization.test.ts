@@ -96,3 +96,79 @@ describe('sourceMaterialization reaches tool_invocations.metadata_json', () => {
     expect(meta).not.toHaveProperty('sourceMaterialization');
   });
 });
+
+/**
+ * WI-6554700010010439 — a nested code:run / recipe call runs unshaped but
+ * inherits the outer session's requestOrigin (ctx_tier included). The row must
+ * say it was nested, or a size audit counts script-internal bodies as results
+ * that reached an agent at the outer session's tier.
+ */
+describe('nestedDispatch reaches tool_invocations.metadata_json', () => {
+  beforeEach(() => {
+    captured.length = 0;
+  });
+  afterEach(async () => {
+    await flushPendingTelemetry();
+    captured.length = 0;
+  });
+
+  it('marks a code-mode indirect dispatch with the tier it actually ran at', async () => {
+    const meta = await recordAndReadMetadata({
+      indirectDispatch: true,
+      codeMode: true,
+      contextTier: undefined,
+      requestOrigin: { path: '/api/mcp', query: { ctx_tier: 'trimmed' } },
+    });
+    expect(meta).toMatchObject({
+      handlerField: 'kept',
+      requestOrigin: { query: { ctx_tier: 'trimmed' } },
+      nestedDispatch: { indirect: true, codeMode: true, contextTier: null },
+    });
+  });
+
+  it('records a non-code-mode indirect dispatch without the codeMode flag', async () => {
+    const meta = await recordAndReadMetadata({ indirectDispatch: true, contextTier: 'trimmed' });
+    expect(meta).toMatchObject({ nestedDispatch: { indirect: true, contextTier: 'trimmed' } });
+    expect((meta as { nestedDispatch: object }).nestedDispatch).not.toHaveProperty('codeMode');
+  });
+
+  it('omits the key for a direct call', async () => {
+    const meta = await recordAndReadMetadata({ contextTier: 'trimmed' });
+    expect(meta).toMatchObject({ handlerField: 'kept' });
+    expect(meta).not.toHaveProperty('nestedDispatch');
+  });
+
+  it('cannot be spoofed by handler metadata', async () => {
+    await PROJECTED_DEPS.recordInvocation!({
+      toolName: 'x:probe',
+      pluginName: 'agent-mcp',
+      ctx: ctx({}),
+      windowKey: 'w1',
+      durationMs: 3,
+      status: 'ok',
+      args: { a: 1 },
+      metadataJson: { handlerField: 'kept', nestedDispatch: { indirect: true } },
+    } as never);
+    await flushPendingTelemetry();
+    const insert = captured.find((c) => c.sql.includes('INSERT INTO harness_shared.tool_invocations'));
+    const raw = insert!.params.find((p) => typeof p === 'string' && p.includes('handlerField')) as string;
+    // A direct call keeps the handler's own key untouched; the framework adds
+    // nothing. The framework value wins only when it is set (ordering pin).
+    expect(JSON.parse(raw)).toMatchObject({ nestedDispatch: { indirect: true } });
+    captured.length = 0;
+    await PROJECTED_DEPS.recordInvocation!({
+      toolName: 'x:probe',
+      pluginName: 'agent-mcp',
+      ctx: ctx({ indirectDispatch: true, contextTier: 'full' }),
+      windowKey: 'w1',
+      durationMs: 3,
+      status: 'ok',
+      args: { a: 1 },
+      metadataJson: { handlerField: 'kept', nestedDispatch: { indirect: false, contextTier: 'spoofed' } },
+    } as never);
+    await flushPendingTelemetry();
+    const insert2 = captured.find((c) => c.sql.includes('INSERT INTO harness_shared.tool_invocations'));
+    const raw2 = insert2!.params.find((p) => typeof p === 'string' && p.includes('handlerField')) as string;
+    expect(JSON.parse(raw2)).toMatchObject({ nestedDispatch: { indirect: true, contextTier: 'full' } });
+  });
+});

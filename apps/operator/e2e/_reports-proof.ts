@@ -25,11 +25,13 @@ export async function readPublishedReportProof(path: string): Promise<PublishedR
 
 /** Capture Copy as Markdown without changing the system clipboard. Install before navigation. */
 export async function captureReportClipboard(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+  // A serialized TypeScript callback can reference tsx's Node-only __name helper.
+  // Send browser JavaScript directly so initialization survives either importer.
+  await page.addInitScript(`
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
-      writeText: async (value: string) => { (window as unknown as { reportProofMarkdown: string }).reportProofMarkdown = value; },
+      writeText: async function(value) { window.reportProofMarkdown = value; },
     } });
-  });
+  `);
 }
 
 /** Keep request completion and renderer progress when a reader assertion fails. */

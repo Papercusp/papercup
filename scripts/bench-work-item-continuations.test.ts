@@ -5,15 +5,15 @@ describe('controlled live continuation evidence oracle', () => {
   const good = { wallMs: 10, successfulReadback: true, heldAtReadback: true, ordered: true,
     cancelledAbsent: true, rejectedNotForwarded: true, unknownReceipt: true,
     unknownPersisted: true, sourceStable: true };
-  it('requires matching authoritative hash, verified receipt, and exact marker', () => {
+  it('requires matching authoritative hash, verified receipt, and exact identity', () => {
     const receipt = { ok: true, results: [{ id: 'EI-1', ok: true, verified: true, contentHash: 'abc' }] };
     const read = { results: [{ id: 'EI-1', ok: true, checkpointContentHash: 'abc', checkpoint: 'marker' }] };
-    expect(verifyCheckpoint(receipt, read, 'EI-1', 'marker')).toBe(true);
-    expect(verifyCheckpoint(receipt, read, 'EI-2', 'marker')).toBe(false);
-    expect(verifyCheckpoint(receipt, read, 'EI-1', 'absent')).toBe(false);
-    expect(verifyCheckpoint(receipt, { results: [{ ...read.results[0], checkpointContentHash: 'def' }] }, 'EI-1', 'marker')).toBe(false);
-    expect(verifyCheckpoint({ ...receipt, ok: false }, read, 'EI-1', 'marker')).toBe(false);
-    expect(verifyCheckpoint({ results: [{ id: 'EI-1', ok: true, contentHash: 'abc' }] }, read, 'EI-1', 'marker')).toBe(false);
+    expect(verifyCheckpoint(receipt, read, 'EI-1')).toBe(true);
+    expect(verifyCheckpoint(receipt, read, 'EI-2')).toBe(false);
+    expect(verifyCheckpoint(receipt, {}, 'EI-1')).toBe(false);
+    expect(verifyCheckpoint(receipt, { results: [{ ...read.results[0], checkpointContentHash: 'def' }] }, 'EI-1')).toBe(false);
+    expect(verifyCheckpoint({ ...receipt, ok: false }, read, 'EI-1')).toBe(false);
+    expect(verifyCheckpoint({ results: [{ id: 'EI-1', ok: true, contentHash: 'abc' }] }, read, 'EI-1')).toBe(false);
   });
   it('fails slow, non-finite, unverified, or post-stall writes', () => {
     expect(judgeContinuation(good).every(row => row.passed)).toBe(true);

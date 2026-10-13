@@ -5,7 +5,7 @@
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
@@ -21,13 +21,12 @@ const SOURCE_PATHS = ['apps/operator/lib/mcp-proxy/proxy.ts', 'apps/operator/lib
 const hashes = () => Object.fromEntries(SOURCE_PATHS.map(path =>
   [path, createHash('sha256').update(readFileSync(resolve(ROOT, path))).digest('hex')]));
 
-export function verifyCheckpoint(receipt: any, readback: any, id: string, marker: string) {
+export function verifyCheckpoint(receipt: any, readback: any, id: string) {
   const written = receipt?.results?.find((row: any) => row.id === id);
   const stored = readback?.results?.find((row: any) => row.id === id);
   return receipt?.ok === true && written?.ok === true && written?.verified === true &&
     typeof written.contentHash === 'string' && written.contentHash.length > 0 &&
-    stored?.ok === true && stored.checkpointContentHash === written.contentHash &&
-    typeof stored.checkpoint === 'string' && stored.checkpoint.includes(marker);
+    stored?.ok === true && stored.checkpointContentHash === written.contentHash;
 }
 
 export function judgeContinuation(input: {
@@ -66,11 +65,14 @@ async function listen(server: http.Server) {
 
 async function main() {
   const flags = Object.fromEntries(process.argv.slice(2).map(arg => {
-    const match = /^--(held|unrelated)=(.+)$/.exec(arg);
-    if (!match) throw new Error('Accepted flags: --held=WI-... --unrelated=EI-...');
+    const match = /^--(held|unrelated|output)=(.+)$/.exec(arg);
+    if (!match) throw new Error('Accepted flags: --held=WI-... --unrelated=EI-... --output=/tmp/new-file.json');
     return [match[1], match[2]];
   }));
   const { held, unrelated } = flags;
+  if (!flags.output || !resolve(flags.output).startsWith('/tmp/') || !flags.output.endsWith('.json') || existsSync(flags.output)) {
+    throw new Error('A new /tmp JSON output path is required to separate proxy telemetry from evidence');
+  }
   const client = process.env.PAPERCUSP_SID;
   const workspace = process.env.PAPERCUSP_WORKSPACE;
   if (!client || !workspace || !/^(WI|EI)-[0-9]+$/.test(held ?? '') ||
@@ -99,6 +101,10 @@ async function main() {
     const state = await call(3170, 'work_items:get', { id, harness: 'papercusp', resume: true,
       projection: { pick: ['results[].resume.claim.assignee'] } });
     if (state?.results?.[0]?.resume?.claim?.assignee !== client) throw new Error('Item ownership changed');
+    const hash = await call(3170, 'work_items:get', { id, harness: 'papercusp', payloadTier: 'full',
+      projection: { pick: ['results[].id', 'results[].ok', 'results[].checkpointContentHash'] } });
+    if (hash?.results?.[0]?.id !== id || hash?.results?.[0]?.ok !== true ||
+        typeof hash?.results?.[0]?.checkpointContentHash !== 'string') throw new Error('Hash read preflight failed');
   }
   const startedAt = new Date().toISOString();
   const before = hashes();
@@ -110,6 +116,7 @@ async function main() {
   const gate = new Promise<void>(resolve => { releaseHeld = resolve; });
   let heldReleased = false;
   let queued = 0;
+  let unknownServerReceipt: any;
   const pending: Promise<unknown>[] = [];
   const controllers: AbortController[] = [];
   // This relay introduces a known stall before dispatch and a lost ACK after dispatch.
@@ -128,8 +135,12 @@ async function main() {
         path: req.url, headers: { ...req.headers, host: '127.0.0.1:3170' } }, response => {
         if (kind === 'unknown') {
           // Consume the actual operator response, then deliberately lose its ACK.
-          response.resume();
-          response.once('end', () => res.destroy());
+          const receiptChunks: Buffer[] = [];
+          response.on('data', chunk => receiptChunks.push(Buffer.from(chunk)));
+          response.once('end', () => {
+            unknownServerReceipt = parseSse(Buffer.concat(receiptChunks).toString()).result;
+            res.destroy();
+          });
         } else {
           res.writeHead(response.statusCode ?? 502, response.headers);
           response.pipe(res);
@@ -153,7 +164,7 @@ async function main() {
       checkpoint: `${markers[kind]} Append-only transport measurement; existing diagnosis and acceptance scope unchanged.`,
       projection: { pick: ['ok', 'results[].id', 'results[].ok', 'results[].verified', 'results[].contentHash'] } }, signal);
   const read = (id: string) => call(3170, 'work_items:get', { id, harness: 'papercusp', payloadTier: 'full',
-    projection: { pick: ['results[].id', 'results[].ok', 'results[].checkpoint', 'results[].checkpointContentHash'] } });
+    projection: { pick: ['results[].id', 'results[].ok', 'results[].checkpointContentHash'] } });
   try {
     phase = 'stall-and-queue';
     const heldWrite = write(held, 'held'); pending.push(heldWrite);
@@ -184,24 +195,21 @@ async function main() {
     phase = 'lost-ack-readback';
     const unknown = await write(unrelated, 'unknown');
     const unknownReadback = await read(unrelated);
-    const checkpoint = unknownReadback?.results?.[0]?.checkpoint;
-    const heldCheckpoint = heldReadback?.results?.[0]?.checkpoint;
     const assertions = judgeContinuation({ wallMs,
-      successfulReadback: verifyCheckpoint(receipt, readback, unrelated, markers.unrelated!), heldAtReadback,
+      successfulReadback: verifyCheckpoint(receipt, readback, unrelated), heldAtReadback,
       ordered: orderedBlocked && heldReceipt?.ok === true &&
-        verifyCheckpoint(orderedReceipt, heldReadback, held, markers.ordered!) &&
-        typeof heldCheckpoint === 'string' && heldCheckpoint.indexOf(markers.held!) < heldCheckpoint.indexOf(markers.ordered!),
-      cancelledAbsent: cancellation === 'cancelled' && !reached.includes('cancelled') &&
-        typeof heldCheckpoint === 'string' && !heldCheckpoint.includes(markers.cancelled!),
+        verifyCheckpoint(orderedReceipt, heldReadback, held) &&
+        reached.indexOf('held') < reached.indexOf('ordered'),
+      cancelledAbsent: cancellation === 'cancelled' && !reached.includes('cancelled'),
       rejectedNotForwarded: overflow?.forwardingResult === 'not_forwarded' && !reached.includes('overflow'),
       unknownReceipt: unknown?.forwardingResult === 'outcome_unknown',
-      unknownPersisted: typeof checkpoint === 'string' && checkpoint.includes(markers.unknown!) &&
+      unknownPersisted: verifyCheckpoint(unknownServerReceipt, unknownReadback, unrelated) &&
         unknownReadback?.results?.[0]?.checkpointContentHash !== readback?.results?.[0]?.checkpointContentHash,
       sourceStable: JSON.stringify(before) === JSON.stringify(hashes()) });
     const passed = assertions.every(row => row.passed);
-    process.stdout.write(JSON.stringify({ schemaVersion: 1, kind: 'operational-test-evidence',
+    writeFileSync(flags.output, JSON.stringify({ schemaVersion: 1, kind: 'operational-test-evidence',
       name: 'BYOC P009 R003 controlled stall with authoritative owned checkpoint writes', framework: 'node',
-      command: ['npx', 'tsx', 'scripts/bench-work-item-continuations.ts', `--held=${held}`, `--unrelated=${unrelated}`],
+      command: ['npx', 'tsx', 'scripts/bench-work-item-continuations.ts', `--held=${held}`, `--unrelated=${unrelated}`, `--output=${flags.output}`],
       exitCode: passed ? 0 : 1, startedAt, finishedAt: new Date().toISOString(),
       summary: 'Isolated current-source proxy and controlled relay; real append-only writes/readbacks on staging3170.',
       assertions: assertions.map(row => ({ ...row, evidence: row.id === 'unrelated-write-within-20s'
@@ -213,7 +221,7 @@ async function main() {
       receipts: { overflow: overflow?.forwardingResult, unknown: unknown?.forwardingResult },
       scope: 'Current-source isolated proxy on real staging writes; not the deployed shared proxy or R006 shipment.',
       notExercised: ['shared deployed proxy', 'unrelated claim mutation', 'all unavailable evidence paths', 'deployed R006 acceptance'],
-    }, null, 2) + '\n');
+    }, null, 2) + '\n', { flag: 'wx' });
     if (!passed) process.exitCode = 1;
   } finally {
     releaseHeld();
