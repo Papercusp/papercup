@@ -6,6 +6,7 @@ import {
   orientServedDelta,
   bindOrientOutputResult,
   composeSelectedOrientModes,
+  orientModeContractsInContext,
   orientRoleFolds,
   assembleOrientOutput,
   ORIENT_AGGREGATE_TIMEOUT_MS,
@@ -174,6 +175,80 @@ describe('coord:orient selected mode definitions', () => {
     expect(result.active).toMatchObject(rows);
     expect(result.contracts).toBe('');
     expect(result.definitionUnavailable).toBe('approved source changed');
+  });
+
+  it('replaces repeated contracts with a working mode fetch pointer only after context proof', async () => {
+    const contract = 'SELECTED AUTO '.repeat(1000);
+    const resolver = vi.fn(async () => new Map([['auto', {
+      contract, sourceRevision: 'source', contractRevision: 'definition',
+    }]]));
+    const proof = vi.fn(async () => true);
+    const modeRows = rows.filter((row) => row.mode === 'auto');
+    const result = await composeSelectedOrientModes(modeRows, resolver as never, proof);
+    expect(proof).toHaveBeenCalledExactlyOnceWith([contract]);
+    expect(result).toMatchObject({ contracts: '', contractsInPrompt: true,
+      contractsRefetch: 'mode:get { contracts: true }',
+      active: modeRows, definitionRevisions: { auto: { sourceRevision: 'source', definitionRevision: 'definition' } } });
+    expect(JSON.stringify(result).length).toBeLessThan(1000);
+    // Recovery/full callers omit the proof seam and still receive every byte.
+    expect((await composeSelectedOrientModes(modeRows, resolver as never)).contracts).toBe(contract);
+    expect((await composeSelectedOrientModes(modeRows, resolver as never, async () => { throw new Error('DB unavailable'); })).contracts).toBe(contract);
+    expect((await composeSelectedOrientModes(modeRows, resolver as never, async () => false)).contracts).toBe(contract);
+  });
+
+  it('keeps a short contract when its pointer would cost more bytes', async () => {
+    const resolver = async () => new Map([['auto', { contract: '短い', sourceRevision: 'source', contractRevision: 'definition' }]]);
+    const result = await composeSelectedOrientModes(rows.filter((row) => row.mode === 'auto'), resolver as never, async () => true);
+    expect(result.contracts).toBe('短い');
+    expect(result).not.toHaveProperty('contractsInPrompt');
+  });
+
+  const deliveredProof = {
+    status: 'applied', specificationRevision: 'spec', stateRevision: 'state',
+    desiredSpecificationRevision: 'spec', desiredStateRevision: 'state',
+    nativeSessionId: 'native-current', appliedNativeSessionId: 'native-current',
+    appliedAt: '2026-10-13T18:00:01Z', epochBumpedAt: '2026-10-13T18:00:00Z',
+  };
+
+  it('requires the exact rendered bytes for every active mode after a current-incarnation receipt', async () => {
+    const readPrompt = vi.fn(async () => 'prefix\nAUTO\nGOAL\nsuffix');
+    expect(await orientModeContractsInContext('owner', 'workspace', ['AUTO', 'GOAL'], {
+      readProof: async () => deliveredProof, readPrompt,
+    })).toBe(true);
+    expect(readPrompt).toHaveBeenCalledExactlyOnceWith({ specificationRevision: 'spec', stateRevision: 'state' });
+    for (const contracts of [['AUTO', 'OLD GOAL'], [''], []]) {
+      expect(await orientModeContractsInContext('owner', 'workspace', contracts, {
+        readProof: async () => deliveredProof, readPrompt,
+      })).toBe(false);
+    }
+  });
+
+  it.each([
+    ['native compact after applied', { epochBumpedAt: '2026-10-13T18:00:02Z' }],
+    ['prior incarnation', { appliedNativeSessionId: 'native-old' }],
+    ['unknown incarnation', { nativeSessionId: '' }],
+    ['pending activation', { status: 'prepared' }],
+    ['changed definition', { desiredSpecificationRevision: 'new-spec' }],
+    ['changed state', { desiredStateRevision: 'new-state' }],
+    ['unknown epoch', { epochBumpedAt: 'invalid' }],
+    ['unknown receipt time', { appliedAt: 'invalid' }],
+  ])('retains full contracts when context proof fails: %s', async (_label, patch) => {
+    const readPrompt = vi.fn(async () => 'AUTO');
+    expect(await orientModeContractsInContext('owner', 'workspace', ['AUTO'], {
+      readProof: async () => ({ ...deliveredProof, ...patch }), readPrompt,
+    })).toBe(false);
+    expect(readPrompt).not.toHaveBeenCalled();
+  });
+
+  it('fails open to full contracts when delivery or artifact reads are unavailable', async () => {
+    for (const readProof of [async () => null, async () => { throw new Error('proof unavailable'); }]) {
+      expect(await orientModeContractsInContext('owner', 'workspace', ['AUTO'], { readProof })).toBe(false);
+    }
+    for (const readPrompt of [async () => null, async () => { throw new Error('artifact unavailable'); }]) {
+      expect(await orientModeContractsInContext('owner', 'workspace', ['AUTO'], {
+        readProof: async () => deliveredProof, readPrompt,
+      })).toBe(false);
+    }
   });
 });
 

@@ -3028,6 +3028,7 @@ export const ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES = ['memory:search'] as const
 export async function composeSelectedOrientModes(
   rows: readonly { mode: string; reason: string; setBy: string; ownerDirected: boolean; setAt: unknown }[],
   resolver?: typeof import('../../../agent-identities/source').getSelectedModeDefinitions,
+  contextContains?: (contracts: readonly string[]) => Promise<boolean>,
 ) {
   const active = rows.map((row) => ({
     mode: row.mode, reason: row.reason, setBy: row.setBy,
@@ -3039,9 +3040,22 @@ export async function composeSelectedOrientModes(
     const selected = await resolve(known);
     const missing = known.find((id) => !selected.has(id));
     if (missing) throw new Error('selected definition missing for ' + missing);
+    const contracts = rows.map((row) => selected.get(row.mode)?.contract).filter((s): s is string => Boolean(s));
+    // WI-6554700010009954: applied authority alone is not proof that the text
+    // survived a context wipe. The reader below also checks incarnation, epoch
+    // and exact rendered bytes. Any failed proof keeps the full contracts.
+    let inPrompt = false;
+    if (contracts.length && contextContains) {
+      try { inPrompt = await contextContains(contracts); } catch { /* deliver in full */ }
+    }
+    const pointer = { contractsInPrompt: true as const, contractsRefetch: 'mode:get { contracts: true }' };
+    if (Buffer.byteLength(JSON.stringify(pointer), 'utf8') >= Buffer.byteLength(JSON.stringify(contracts.join('\n\n')), 'utf8')) {
+      inPrompt = false;
+    }
     return {
       active,
-      contracts: rows.map((row) => selected.get(row.mode)?.contract).filter(Boolean).join('\n\n'),
+      contracts: inPrompt ? '' : contracts.join('\n\n'),
+      ...(inPrompt ? pointer : {}),
       definitionRevisions: Object.fromEntries(rows.flatMap((row) => {
         const entry = selected.get(row.mode);
         return entry ? [[row.mode, {
@@ -3051,10 +3065,88 @@ export async function composeSelectedOrientModes(
     };
   } catch (error) {
     return {
-      active, contracts: '',
+      active, contracts: '', definitionRevisions: undefined,
       definitionUnavailable: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
     };
   }
+}
+
+export interface OrientModeContextProof {
+  status: string;
+  specificationRevision: string;
+  stateRevision: string;
+  desiredSpecificationRevision: string;
+  desiredStateRevision: string;
+  nativeSessionId: string;
+  appliedNativeSessionId: string;
+  appliedAt: string | Date;
+  epochBumpedAt: string | Date;
+}
+
+/** Reuse the activation flight record and context-epoch ledger; no second
+ * delivery store. A native compact advances the epoch without a new applied
+ * receipt, so it cannot authorize omission. Explicit recovery reads bypass
+ * this proof even when a managed respawn has already applied a fresh prompt. */
+export async function orientModeContractsInContext(
+  ownerId: string,
+  workspaceId: string,
+  contracts: readonly string[],
+  deps: {
+    readProof?: () => Promise<OrientModeContextProof | null>;
+    readPrompt?: (revision: { specificationRevision: string; stateRevision: string }) => Promise<string | null>;
+  } = {},
+): Promise<boolean> {
+  try {
+    const readProof = deps.readProof ?? (async () => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const rows = await getOrgPg().sql<OrientModeContextProof[]>`
+        SELECT b.control_state->'activation'->>'status' AS status,
+               b.control_state #>> '{activation,applied,specificationRevision}' AS "specificationRevision",
+               b.control_state #>> '{activation,applied,stateRevision}' AS "stateRevision",
+               b.control_state #>> '{activation,desired,specificationRevision}' AS "desiredSpecificationRevision",
+               b.control_state #>> '{activation,desired,stateRevision}' AS "desiredStateRevision",
+               n.session_id AS "nativeSessionId", a.native_session_id AS "appliedNativeSessionId",
+               a.recorded_at AS "appliedAt", e.bumped_at AS "epochBumpedAt"
+          FROM harness_shared.session_briefs b
+          JOIN harness_shared.memory_session_epochs e ON e.session_id = b.owner_id
+          JOIN LATERAL (
+            SELECT session_id FROM harness_shared.adv_sessions
+             WHERE coord_owner_id = b.owner_id AND workspace_id = b.workspace_id
+             ORDER BY id DESC LIMIT 1
+          ) n ON true
+          JOIN LATERAL (
+            SELECT native_session_id, recorded_at
+              FROM harness_shared.session_identity_activation_events
+             WHERE owner_id = b.owner_id AND workspace_id = b.workspace_id AND phase = 'applied'
+               AND specification_revision = b.control_state #>> '{activation,applied,specificationRevision}'
+               AND state_revision = b.control_state #>> '{activation,applied,stateRevision}'
+             ORDER BY id DESC LIMIT 1
+          ) a ON true
+         WHERE b.owner_id = ${ownerId} AND b.workspace_id = ${workspaceId}
+         LIMIT 1`;
+      return rows[0] ?? null;
+    });
+    const proof = await readProof();
+    if (!proof || proof.status !== 'applied' || !proof.specificationRevision || !proof.stateRevision ||
+      proof.specificationRevision !== proof.desiredSpecificationRevision ||
+      proof.stateRevision !== proof.desiredStateRevision || !proof.nativeSessionId ||
+      proof.nativeSessionId !== proof.appliedNativeSessionId) return false;
+    const millis = (value: string | Date) => value instanceof Date ? value.getTime() : Date.parse(value);
+    const appliedAt = millis(proof.appliedAt), bumpedAt = millis(proof.epochBumpedAt);
+    if (!Number.isFinite(appliedAt) || !Number.isFinite(bumpedAt) || appliedAt < bumpedAt) return false;
+    const readPrompt = deps.readPrompt ?? (async (revision) => {
+      const [{ getOrgPg }, { readGateSelectedLaunchSpec }, { appliedOrCurrentIdentityArtifact }, { specificationPrompt }] =
+        await Promise.all([
+          import('@papercusp/db-org'), import('../control-anchor'),
+          import('../../../capability-envelope/identity-grants-port'), import('@papercusp/orchestrator/blueprint'),
+        ]);
+      const artifact = appliedOrCurrentIdentityArtifact(
+        await readGateSelectedLaunchSpec(getOrgPg().sql, ownerId, workspaceId, [revision]), revision);
+      return artifact ? specificationPrompt(artifact) : null;
+    });
+    const prompt = await readPrompt({ specificationRevision: proof.specificationRevision, stateRevision: proof.stateRevision });
+    return typeof prompt === 'string' && contracts.length > 0 && contracts.every((contract) => contract.length > 0 && prompt.includes(contract));
+  } catch { return false; }
 }
 
 export async function bindOrientOutputResult<T extends Record<string, unknown>>(
@@ -3996,17 +4088,16 @@ export default defineTool({
     // the "and this is you" anchor). Best-effort — omitted for an unattributable
     // caller. See self-marker.ts for why this is a response-layer overlay.
     const self = resolveSelfRef(ctx);
-    // modes-and-intake-ux-2026-07-05 P-008: re-inject the caller's ACTIVE mode
-    // contracts each orient — the always-present prompt carries only the one-line
-    // mode index; orient (the mandated bootstrap read, run every wake) is the
-    // activation-scoped carry surface, same pattern as checkpoint re-injection.
-    // A peer-set mode thus takes effect at the target's next turn boundary.
-    // Best-effort: a mode-read failure never breaks orientation.
+    // Keep selected mode attribution/revisions on every orient. Full contract
+    // prose is needed until its exact bytes are proven in the current context;
+    // recovery and explicit full requests always retain it.
     let modes:
       | {
           active: Array<Record<string, unknown>>;
           contracts: string;
           definitionRevisions?: Record<string, { sourceRevision: string; definitionRevision: string }>;
+          contractsInPrompt?: boolean;
+          contractsRefetch?: string;
           definitionUnavailable?: string;
           /** WI-2140700: GOAL holders only — the every-wake owner-report verdict
            *  (null = read failed / no active goal-mode row; absent = not a GOAL caller). */
@@ -4017,7 +4108,17 @@ export default defineTool({
     if (runtimeModeRows) {
       runtimeModeIds = runtimeModeRows.map((row) => row.mode);
       if (runtimeModeRows.length) {
-        modes = await phaseTracker.track('handler:modeContracts', () => composeSelectedOrientModes(runtimeModeRows));
+        const fullContracts = args.afterCompaction ||
+          (ctx.payloadTierOverride === 'full' && ctx.sourceMaterialization?.promotedToFull !== true);
+        modes = await phaseTracker.track('handler:modeContracts', () => composeSelectedOrientModes(
+          runtimeModeRows, undefined,
+          ownerId && !fullContracts ? async (contracts) => {
+            const proof = await withBoundedTimeout(orientModeContractsInContext(
+              ownerId, resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId), contracts,
+            ), { fallback: false, timeoutMs: ORIENT_PREFLIGHT_LEG_TIMEOUT_MS, label: 'orient:modeContextProof' });
+            return proof.value;
+          } : undefined,
+        ));
         if (goalOwnerReportPromise) {
           modes.ownerReport = await phaseTracker.track('handler:goalOwnerReport', () => goalOwnerReportPromise);
         }
