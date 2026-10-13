@@ -75,7 +75,7 @@ export function selectConverseTools(input: SelectConverseToolsInput): readonly s
     ? dedupe([...ALL_AGENT_MCP_TOOLS, ...deep, ...manual])
     : dedupe([...input.publicDoorNames().map(toAllowedToolName), ...INTERACTIVE_CHAT_TOOLS, ...deep, ...manual]);
   if (input.modality !== 'voice') return selected;
-  // The same list feeds the prompt, mount and allowed-tools. A text-only card
+  // The same list feeds the prompt, mount and allowed-tools. A text-only tool
   // must not inflate the voice schema budget or remain callable but unlisted.
   const voice = selected.filter((name) => input.supportsVoice?.(name.replace(AGENT_MCP_TOOL_PREFIX, '')) ?? true);
   if (input.voiceProfile === 'standard') return voice;
