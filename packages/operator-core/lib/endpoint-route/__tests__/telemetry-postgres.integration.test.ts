@@ -51,7 +51,7 @@ describe('mounted route telemetry PostgreSQL failure confidentiality', () => {
     // changing the Error or replacing the recorder.
     vi.mocked(getOrgPg).mockReturnValue({
       sql: {
-        begin: async (fn: Parameters<typeof db.sql.begin>[0]) => {
+        begin: async (fn: (tx: import('postgres').TransactionSql) => Promise<unknown>) => {
           try { return await db.sql.begin(fn); }
           catch (error) { rejected.push(error); throw error; }
         },
