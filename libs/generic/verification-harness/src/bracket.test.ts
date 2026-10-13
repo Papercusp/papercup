@@ -18,6 +18,8 @@ import {
   DEFAULT_FOREIGN_MAX_AGE_HOURS,
   DEFAULT_KEEP_RUNS,
   FOREIGN_FRESHNESS_CACHE,
+  FOREIGN_PRUNE_LEDGER,
+  FOREIGN_PRUNE_LEDGER_MAX_BYTES,
   FOREIGN_WALK_BUDGET,
   foreignMaxAgeHoursFromEnv,
   formatForeignPruneLine,
@@ -27,6 +29,7 @@ import {
   pruneRuns,
   pruneRunsWithReport,
   pruneStaleForeign,
+  readForeignPruneLedger,
   runHarness,
   VH_KEEP_MARKER,
   vhDiskReserveBytes,
@@ -505,6 +508,55 @@ describe('pruneStaleForeign (WI-10007424: hand-named entries beside the runs)', 
     }
     // The symlink itself survives (dangling now): retention never judges or follows links.
     expect(readlinkSync(path.join(root, 'link-to-old'))).toBe('wi1-old-scratch');
+  });
+
+  it('records every real removal in a durable tombstone ledger that retention itself never removes (WI-6554700010010390)', async () => {
+    const root = tmp();
+    oldTree(root, 'release-bank-old');
+    writeFileSync(path.join(root, 'stray.log'), 'x');
+    age(path.join(root, 'stray.log'));
+    mkdirSync(path.join(root, 'fresh-bank'));
+
+    // A dry run judges only: no ledger.
+    await pruneStaleForeign(root, { maxAgeHours: 72, now: NOW, dryRun: true });
+    expect(existsSync(path.join(root, FOREIGN_PRUNE_LEDGER))).toBe(false);
+
+    const r = await pruneStaleForeign(root, { maxAgeHours: 72, now: NOW });
+    expect(r.removed.sort()).toEqual(['release-bank-old', 'stray.log']);
+    const ledger = await readForeignPruneLedger(root);
+    expect(ledger.map((t) => t.name).sort()).toEqual(['release-bank-old', 'stray.log']);
+    for (const t of ledger) {
+      expect(t.entryMtime).toBe(OLD.toISOString());
+      expect(t.maxAgeHours).toBe(72);
+      expect(t.pid).toBe(process.pid);
+      expect(Number.isNaN(Date.parse(t.at))).toBe(false);
+    }
+
+    // The ledger is a dot-entry: even aged past the cutoff, a later sweep keeps it and appends.
+    age(path.join(root, FOREIGN_PRUNE_LEDGER));
+    oldTree(root, 'second-old');
+    const r2 = await pruneStaleForeign(root, { maxAgeHours: 72, now: NOW });
+    expect(r2.removed).toEqual(['second-old']);
+    expect((await readForeignPruneLedger(root)).map((t) => t.name)).toEqual([
+      ...ledger.map((t) => t.name),
+      'second-old',
+    ]);
+  });
+
+  it('trims the tombstone ledger to its newest half once it outgrows its cap, keeping the newest removal', async () => {
+    const root = tmp();
+    const filler = JSON.stringify({ at: '2026-01-01T00:00:00.000Z', name: 'filler', entryMtime: OLD.toISOString(), maxAgeHours: 72, pid: 1, caller: null });
+    const lines = Math.ceil(FOREIGN_PRUNE_LEDGER_MAX_BYTES / (filler.length + 1)) + 10;
+    writeFileSync(path.join(root, FOREIGN_PRUNE_LEDGER), `${filler}\n`.repeat(lines));
+    oldTree(root, 'newest-old');
+
+    await pruneStaleForeign(root, { maxAgeHours: 72, now: NOW });
+
+    const text = readFileSync(path.join(root, FOREIGN_PRUNE_LEDGER), 'utf8');
+    expect(text.length).toBeLessThanOrEqual(FOREIGN_PRUNE_LEDGER_MAX_BYTES);
+    const rows = await readForeignPruneLedger(root);
+    expect(rows.at(-1)?.name).toBe('newest-old');
+    expect(rows.length).toBeGreaterThan(lines / 3);
   });
 
   it('a max age of 0 disables it; the env knob falls back to the default on junk', async () => {

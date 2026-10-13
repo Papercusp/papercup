@@ -10,6 +10,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import {
+  appendFile,
   link,
   lstat,
   mkdir,
@@ -603,6 +604,67 @@ async function writeFreshnessCache(evidenceRoot: string, cache: Record<string, n
   }
 }
 
+/**
+ * Durable record of every foreign-entry REMOVAL: one JSON line per removed entry, appended by
+ * {@link pruneStaleForeign}. A dot-entry, so retention never judges it. The VH_PRUNED_FOREIGN
+ * console line alone lands in whatever log the caller owns (a rotated journal, one run's stderr),
+ * so a removed release bank stopped being attributable a day later (WI-6554700010009674,
+ * WI-6554700010010390). Read it with {@link readForeignPruneLedger}.
+ */
+export const FOREIGN_PRUNE_LEDGER = '.vh-pruned.jsonl';
+/** Past this size the ledger is trimmed to its newest half; removals are rare, so this spans months. */
+export const FOREIGN_PRUNE_LEDGER_MAX_BYTES = 256 * 1024;
+
+export interface ForeignPruneTombstone {
+  /** When the entry was removed (ISO-8601). */
+  at: string;
+  name: string;
+  /** The entry's own mtime when it was judged stale (ISO-8601). */
+  entryMtime: string;
+  maxAgeHours: number;
+  pid: number;
+  /** Basename of the process entry script (hourly sweep host vs a run's finalize), or null. */
+  caller: string | null;
+}
+
+async function appendForeignPruneLedger(evidenceRoot: string, rows: ForeignPruneTombstone[]): Promise<void> {
+  if (rows.length === 0) return;
+  const file = path.join(evidenceRoot, FOREIGN_PRUNE_LEDGER);
+  try {
+    await appendFile(file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    const size = await stat(file).then((s) => s.size, () => 0);
+    if (size > FOREIGN_PRUNE_LEDGER_MAX_BYTES) {
+      const lines = (await readFile(file, 'utf8')).split('\n').filter(Boolean);
+      const tmp = `${file}.${process.pid}`;
+      await writeFile(tmp, lines.slice(Math.floor(lines.length / 2)).join('\n') + '\n');
+      await rename(tmp, file);
+    }
+  } catch {
+    // Best-effort: a ledger failure must never block retention; the console line still fires.
+  }
+}
+
+/** Every recorded foreign-entry removal in `evidenceRoot`, oldest first; unparseable lines are skipped. */
+export async function readForeignPruneLedger(evidenceRoot: string): Promise<ForeignPruneTombstone[]> {
+  let text: string;
+  try {
+    text = await readFile(path.join(evidenceRoot, FOREIGN_PRUNE_LEDGER), 'utf8');
+  } catch {
+    return [];
+  }
+  const rows: ForeignPruneTombstone[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as ForeignPruneTombstone;
+      if (parsed && typeof parsed.name === 'string' && typeof parsed.at === 'string') rows.push(parsed);
+    } catch {
+      // A torn concurrent append costs one line, never the ledger.
+    }
+  }
+  return rows;
+}
+
 export interface ForeignPruneOptions {
   maxAgeHours?: number;
   now?: number;
@@ -656,6 +718,8 @@ export async function pruneStaleForeign(evidenceRoot: string, opts: ForeignPrune
   // Oldest first: the likeliest-stale entries get the walk budget before it runs out.
   candidates.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
   const budget = { left: walkBudget };
+  const tombstones: ForeignPruneTombstone[] = [];
+  const caller = process.argv[1] ? path.basename(process.argv[1]) : null;
   for (const { name, target } of candidates) {
     const until = cached[name];
     // If the proving file was since deleted, trusting the proof only DELAYS removal: the safe side.
@@ -679,9 +743,20 @@ export async function pruneStaleForeign(evidenceRoot: string, opts: ForeignPrune
     // A writer may have reached the entry while it was being walked: re-check its own mtime.
     const again = await lstat(target).then((s) => s.mtimeMs, () => null);
     if (again === null || again >= cutoffMs) continue;
-    if (!dryRun) await rm(target, { recursive: true, force: true });
+    if (!dryRun) {
+      await rm(target, { recursive: true, force: true });
+      tombstones.push({
+        at: new Date().toISOString(),
+        name,
+        entryMtime: new Date(again).toISOString(),
+        maxAgeHours,
+        pid: process.pid,
+        caller,
+      });
+    }
     result.removed.push(name);
   }
+  if (!dryRun) await appendForeignPruneLedger(evidenceRoot, tombstones);
   if (!dryRun && JSON.stringify(nextCache) !== JSON.stringify(cached)) await writeFreshnessCache(evidenceRoot, nextCache);
   return result;
 }
