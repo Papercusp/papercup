@@ -31,7 +31,7 @@ function restoreEnv(name: string, value: string | undefined): void {
 describe('Playwright temporary allocation admission (EI-25339618434256268)', () => {
   it('loads the combined browser and native collection graph as ESM with the production reporter', () => {
     const listing = execFileSync(process.execPath, [
-      require.resolve('@playwright/test/cli'), 'test', '--list',
+      require.resolve('@playwright/test/cli'), 'test', '--config', 'playwright.config.mts', '--list',
       'e2e/ongoing-work-ui.spec.ts', 'e2e/ongoing-work-native-collection.spec.mts', '--reporter=list',
     ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: PLAYWRIGHT_CHILD_TIMEOUT_MS });
     expect(listing).toContain('native collection fixture writer graph loads');
@@ -44,7 +44,7 @@ describe('Playwright temporary allocation admission (EI-25339618434256268)', () 
     expect(reporterPackage.type).toBe('module');
     expect(JSON.parse(readFileSync(join(E2E_DIR, 'package.json'), 'utf8')).type).toBe('module');
     const run = execFileSync(process.execPath, [
-      require.resolve('@playwright/test/cli'), 'test',
+      require.resolve('@playwright/test/cli'), 'test', '--config', 'playwright.config.mts',
       'e2e/ongoing-work-ui.spec.ts', 'e2e/ongoing-work-native-collection.spec.mts', '--workers=1',
       '--grep', 'native collection fixture writer graph loads',
     ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: PLAYWRIGHT_CHILD_TIMEOUT_MS,
@@ -98,7 +98,7 @@ describe('Playwright isolated webServer contract', () => {
   });
 
   it('preflights browser temp headroom before the default and inherited hosted profiles load', () => {
-    for (const name of ['playwright.config.ts', 'playwright.hosted-http1.config.ts']) {
+    for (const name of ['playwright.config.mts', 'playwright.hosted-http1.config.ts']) {
       const source = readFileSync(join(OPERATOR_DIR, name), 'utf8');
       expect(source).toContain("from '../../scripts/lib/playwright-temp-directory.cjs'");
       expect(source.indexOf('preparePlaywrightTempDirectory();')).toBeGreaterThan(0);
@@ -110,7 +110,7 @@ describe('Playwright isolated webServer contract', () => {
 
   it('loads the preflight through Playwright native config transformation before collecting specs', () => {
     const listing = execFileSync(process.execPath, [
-      require.resolve('@playwright/test/cli'), 'test', '--list', 'e2e/plan-audit.spec.ts', '--reporter=list',
+      require.resolve('@playwright/test/cli'), 'test', '--config', 'playwright.config.mts', '--list', 'e2e/plan-audit.spec.ts', '--reporter=list',
     ], { cwd: OPERATOR_DIR, encoding: 'utf8', timeout: PLAYWRIGHT_CHILD_TIMEOUT_MS });
     expect(listing).toContain('sidebar audit opens report, navigates evidence, and reopens history');
     expect(listing).toMatch(/Total: 1 test in 1 file/);
@@ -127,7 +127,7 @@ describe('Playwright isolated webServer contract', () => {
     vi.resetModules();
 
     try {
-      const { default: config } = await import('../../playwright.config');
+      const { default: config } = await import('../../playwright.config.mts');
       const webServer = config.webServer;
       expect(webServer).not.toBeUndefined();
       expect(Array.isArray(webServer)).toBe(false);
@@ -209,7 +209,7 @@ function profileTestMatches(): Array<{ config: string; testMatch: RegExp }> {
 
 describe('default Playwright run never collects a profile-owned spec (WI-10006736)', () => {
   it('ignores every e2e file a playwright.<profile>.config.ts selects', async () => {
-    const { default: config } = await import('../../playwright.config');
+    const { default: config } = await import('../../playwright.config.mts');
     const testMatch = config.testMatch as RegExp;
     const testIgnore = (config.testIgnore ?? []) as RegExp[];
     const collectedByDefault = (file: string) =>
@@ -297,7 +297,7 @@ describe('default Playwright run never collects a profile-owned spec (WI-1000673
   });
 
   it('warms the dev server in globalSetup, and the warm-up is never collected as a spec (WI-10006792)', async () => {
-    const { default: config } = await import('../../playwright.config');
+    const { default: config } = await import('../../playwright.config.mts');
     const setup = config.globalSetup;
     expect(typeof setup).toBe('string');
     const setupPath = resolve(OPERATOR_DIR, setup as string);
@@ -310,7 +310,7 @@ describe('default Playwright run never collects a profile-owned spec (WI-1000673
   });
 
   it('still collects ordinary specs (the ignore list is not over-broad)', async () => {
-    const { default: config } = await import('../../playwright.config');
+    const { default: config } = await import('../../playwright.config.mts');
     const testMatch = config.testMatch as RegExp;
     const testIgnore = (config.testIgnore ?? []) as RegExp[];
     const ordinary = join(E2E_DIR, 'desktop-grid.spec.ts');
