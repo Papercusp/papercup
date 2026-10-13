@@ -107,6 +107,39 @@ describe('affected-tests: real host bundle guard (EI-24368307678871025)', () => 
   });
 });
 
+/**
+ * WI-6554700010009310 (perf audit 2026-10-12 P-010) — the operator-vite client bundle budget
+ * ran only in the GitHub workflow, so the green-checkpoint gate never measured it. A leak into
+ * the eager bundle can arrive through any source the SPA reaches (EI-13213 came in through a
+ * relative import inside operator-core), so the guard must attach far outside operator-vite.
+ */
+describe('affected-tests: client bundle budget guard (P-010)', () => {
+  const SCRIPT = 'lint:bundle-budget';
+  const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
+
+  // Each dryTasks probe is a full affected-tests CLI start (memoised per file), so the
+  // operator-core / apps/operator paths below reuse the host-bundle section's probes and
+  // only two probes are new.
+  it('runs for SPA source and for client-reachable source in other workspaces', () => {
+    expect(dryTasks('apps/operator-vite/src/main.tsx')).toContain(TASK);
+    expect(dryTasks('packages/operator-core/lib/blueprint/package-resource-receipts.ts')).toContain(TASK);
+    expect(dryTasks('apps/operator/lib/release/deploy-cli.ts')).toContain(TASK);
+  });
+
+  it('runs when the evaluator or routing changes, but skips test-only edits', () => {
+    expect(dryTasks('scripts/lib/bundle-budget.mjs')).toContain(TASK);
+    expect(dryTasks('scripts/affected-tests.mjs')).toContain(TASK);
+    expect(dryTasks('apps/operator/lib/release/deploy.test.ts')).not.toContain(TASK);
+  });
+
+  it('resolves the real budget check from its selected workspace', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(pkg.scripts?.[SCRIPT]).toContain('check-bundle-budget.mjs');
+  });
+});
+
 describe('affected-tests: unenrolled .mjs import guard (WI-7025)', () => {
   const SCRIPT = 'lint:no-unenrolled-mjs-imports';
   const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;

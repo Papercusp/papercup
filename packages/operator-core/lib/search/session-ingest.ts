@@ -56,6 +56,7 @@ import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
 import { blockPayloadText, codexToolCallArgsRaw, CLAUDE_OWNER_DIALOG_RESULT_PREFIXES } from '../transcript-wire';
 import { classifyRecordedTurn, OWNER_DIALOG_TURN_MARKER } from '../turn-provenance/turn-ref';
+import { closeTruncatedWholePaste } from '../turn-provenance/envelope-grammar';
 import {
   MACHINE_SURFACE_CATALOGUE_VERSION,
   CLASSIFY_HEAD_CHARS,
@@ -78,11 +79,13 @@ import { capWithMarker, partTextCapFor } from '../transcript-text-caps';
 
 // Backward-compatible export for the session-part security tests and archive readers.
 export { redactKeyDirectedSecrets as redactPartSecrets } from '../sensitive-text';
+import { SESSION_TURN_PART_RETENTION_DAYS, SESSION_TURN_RETENTION_DAYS } from './session-retention';
 
 /** How far back a source file's mtime may be and still get ingested. */
 const INGEST_WINDOW_DAYS = 45;
-/** Retention for indexed turns (the JSONL remains the archive past this). */
-const RETENTION_DAYS = 45;
+/** Retention for indexed turns (the JSONL remains the archive past this).
+ *  Shared with the storage-growth alarm's retention-lag leg. */
+const RETENTION_DAYS = SESSION_TURN_RETENTION_DAYS;
 /** Per-tick caps — the tailer converges across ticks, never gulps. */
 const MAX_FILES_PER_TICK = 200;
 const MAX_TURNS_PER_TICK = 4000;
@@ -122,8 +125,9 @@ const MIN_TEXT_LEN = 3;
 export { PART_TEXT_CAP_PROSE, PART_TEXT_CAP_TOOL, partTextCapFor } from '../transcript-text-caps';
 /** Retention for faithful parts — SHORTER than RETENTION_DAYS by design
  * (D-002): recent sessions render faithfully, older ones degrade to the text
- * turns in session_turns, older still to session_archives. */
-const PART_RETENTION_DAYS = 14;
+ * turns in session_turns, older still to session_archives. Shared with the
+ * storage-growth alarm's retention-lag leg. */
+const PART_RETENTION_DAYS = SESSION_TURN_PART_RETENTION_DAYS;
 
 export type SourceKind = 'claude' | 'omp' | 'codex' | 'agent_chat';
 
@@ -300,7 +304,16 @@ export function cleanTurnText(raw: string, options: TurnTextParseOptions = {}): 
   const t = raw.trim();
   if (t.length < (options.retainShortUserTurns ? 1 : MIN_TEXT_LEN)) return null;
   for (const p of BOILERPLATE_PREFIXES) if (t.startsWith(p)) return null;
-  return redactSelfIdentifyingSecrets(options.fullSource ? t : t.slice(0, TEXT_CAP));
+  if (options.fullSource || t.length <= TEXT_CAP) return redactSelfIdentifyingSecrets(t);
+  // The cap cuts a whole-prompt paste's closing tag, so a PTY-typed machine
+  // kickoff over the cap would lose the evidence that it is ONE paste and fall
+  // to the unenrolled residual (WI-6554700010009878). Re-close it from the raw
+  // end HERE, in the stored text itself, so insert-time stamping and every
+  // later head+tail re-derivation (rederiveProvenanceWindow) see the same
+  // whole paste. Owner words before or after the paste still fail the test.
+  return redactSelfIdentifyingSecrets(
+    closeTruncatedWholePaste(t.slice(0, TEXT_CAP), t.slice(-PROVENANCE_PASTE_TAIL_CHARS)),
+  );
 }
 
 function cleanMessageText(raw: string, speaker: string, options: TurnTextParseOptions = {}): string | null {
@@ -2301,6 +2314,10 @@ async function sessionTurnsHeapPages(sql: Sql): Promise<number> {
  * ones whose verdict changes, `limit` rows per statement. The read takes no
  * locks; only the rewrite claims rows (see writeProvenanceChanges).
  */
+/** Enough of a turn's END to see a whole-prompt paste's closing tag (the id
+ * is at most 64 chars) plus trailing whitespace. Mirrors TURN_ORIGIN_TAIL_CHARS. */
+export const PROVENANCE_PASTE_TAIL_CHARS = 256;
+
 async function rederiveProvenanceWindow(
   sql: Sql,
   limit: number,
@@ -2315,6 +2332,7 @@ async function rederiveProvenanceWindow(
       turn_idx: number;
       speaker: string;
       head: string | null;
+      tail: string | null;
       turn_origin: string | null;
       turn_origin_verdict: string | null;
       version: number | null;
@@ -2322,6 +2340,7 @@ async function rederiveProvenanceWindow(
   >`
     SELECT workspace_id, source_kind, session_id, turn_idx, speaker,
            left(text, ${CLASSIFY_HEAD_CHARS}) AS head,
+           right(text, ${PROVENANCE_PASTE_TAIL_CHARS}) AS tail,
            turn_origin, turn_origin_verdict,
            turn_origin_classifier_version AS version
       FROM harness_shared.session_turns
@@ -2337,10 +2356,15 @@ async function rederiveProvenanceWindow(
   for (const r of rows) {
     // Reuse the ONE stamp path rather than re-deriving the rules here — a
     // second copy of this logic is how the four divergent classifiers arose.
+    // The head alone cuts off a long paste's closing tag, so a paste-wrapped
+    // machine envelope (every PTY-typed kickoff/wake) fell to the owner-typed
+    // residual and was stored `unenrolled-origin` (WI-6554700010009707). The
+    // tail lets the shared helper restore a WHOLE-prompt paste exactly as the
+    // full-text ingest path sees it; owner words around a paste still fail it.
     const staged = {
       source_kind: r.source_kind,
       speaker: r.speaker,
-      text: r.head ?? '',
+      text: closeTruncatedWholePaste(r.head ?? '', r.tail),
     } as TurnRow;
     stampTurnProvenance(staged);
 

@@ -10,6 +10,7 @@
     "test:integration": "node ../../scripts/workspace-test.mjs --workspace-integration",
     "pretest:e2e": "node ../../scripts/ensure-playwright-browsers.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:css-preload": "npm run build:operator --prefix ../.. && npm run test:e2e -- --config playwright.production-preview.config.ts e2e/adv-shell-nav.spec.ts --grep \"first lazy HUD CSS preload failure\" --workers=1",
     "test:e2e:fixture-affected": "node ../../scripts/e2e-fixture-affected.mjs",
     "test:e2e:isolated": "bash ../../scripts/run-operator-e2e-isolated.sh",
     "test:e2e:hosted-http1": "playwright test --config playwright.hosted-http1.config.ts",

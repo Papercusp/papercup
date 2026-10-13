@@ -57,6 +57,9 @@ import {
 } from './disk';
 import { computeStorageUsage, type StorageUsageRow } from './usage';
 import { bareTableName, CHUNK_STORES } from '../search/chunks/registry';
+import { FALLBACK_RETENTION_MS } from '../degradation/fallback-observations';
+import { SESSION_TURN_PART_RETENTION_DAYS, SESSION_TURN_RETENTION_DAYS } from '../search/session-retention';
+import { CENSUS_RETENTION_DAYS } from './disk-consumer-census';
 
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
@@ -109,6 +112,9 @@ export interface GrowthAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 
    *  entry. Feeds the THIRD leg: growth inside a table the other two legs are
    *  structurally forbidden to look at (WI-936229). */
   countExemptSubsets?: () => Promise<ExemptSubsetCount[]>;
+  /** Injectable for tests — defaults to one indexed min(ageColumn) per RETENTION_WINDOWS
+   *  entry. Feeds the FOURTH leg: a pruner that exists but has fallen behind its window. */
+  readRetentionAges?: () => Promise<RetentionAgeReading[]>;
   /** Injectable for tests — defaults to the shared attention-notify rail. */
   escalate?: (t: { title: string; body: string }) => Promise<void>;
   /** Injectable for tests — the persistent cross-restart cooldown floor. */
@@ -181,6 +187,8 @@ export const RETENTION_COVERED_ELSEWHERE: Readonly<Record<string, string>> = {
   session_archive_files: `permanent canonical archive — archiveSession() writes/updates it in session-archive.ts; ${NOT_AGE_PRUNABLE}`,
   session_turns: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (RETENTION_DAYS=45)',
   session_turn_parts: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (PART_RETENTION_DAYS=14)',
+  fallback_observations:
+    'pruned by degradation/fallback-observations.ts pruneFallbackObservations (FALLBACK_RETENTION_MS=14d), driven by system-health/degradation-watchdog.ts',
   // Every chunk store (session_turn_chunks, text_chunks, …): DERIVED from
   // search/chunks/registry.ts CHUNK_STORES, each with its deleting mechanism
   // (generic-rag-chunking P-005).
@@ -295,6 +303,154 @@ export function detectExemptSubsetGrowth(
   }
 
   return { over: over.sort((a, b) => b.rows - a.rows), unknown: unknown.sort() };
+}
+
+/* ─────────────────── THE FOURTH LEG (WI-6554700010009732) ───────────────────
+ *
+ * RETENTION_COVERED_ELSEWHERE records that a pruner EXISTS. Nothing checked that
+ * the pruner KEEPS UP. session_turn_parts carried "pruned by … (PART_RETENTION_DAYS=14)"
+ * while its oldest row was 41.7 days old (measured 2026-10-13): the daily prune
+ * stopped at a fixed 200k-row cap against ~470k rows/day of inflow
+ * (WI-6554700010009718), and every leg above still read the table as covered.
+ * A retention claim is only as good as its oldest row.
+ *
+ * Each window names the column the pruner's own DELETE predicate ages by, and
+ * takes its length from the pruner's constant, so claim and check cannot drift.
+ */
+
+/** A declared age window for a table some pruner owns. */
+export interface RetentionWindow {
+  /** `harness_shared` table. It MUST also carry a RETENTION_COVERED_ELSEWHERE entry. */
+  table: string;
+  /** timestamptz column the pruner's DELETE predicate ages by. Must be indexed: probed every tick. */
+  ageColumn: string;
+  /** The pruner's window, imported from the pruner and never restated. */
+  windowDays: number;
+  /** Lag tolerated past the window before reporting: one pruner cadence plus one missed run. */
+  graceDays: number;
+  /** The deleting call site, named in the toast. */
+  prunedBy: string;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export const RETENTION_WINDOWS: readonly RetentionWindow[] = [
+  {
+    table: 'session_turn_parts',
+    ageColumn: 'ingested_at',
+    windowDays: SESSION_TURN_PART_RETENTION_DAYS,
+    graceDays: 2,
+    prunedBy: 'search/session-ingest.ts pruneSessionTurnsOnce (daily)',
+  },
+  {
+    table: 'session_turns',
+    ageColumn: 'ingested_at',
+    windowDays: SESSION_TURN_RETENTION_DAYS,
+    graceDays: 2,
+    prunedBy: 'search/session-ingest.ts pruneSessionTurnsOnce (daily)',
+  },
+  {
+    table: 'fallback_observations',
+    ageColumn: 'observed_at',
+    windowDays: FALLBACK_RETENTION_MS / DAY_MS,
+    graceDays: 2,
+    prunedBy: 'degradation/fallback-observations.ts pruneFallbackObservations',
+  },
+  {
+    table: 'disk_census_runs',
+    ageColumn: 'finished_at',
+    windowDays: CENSUS_RETENTION_DAYS,
+    graceDays: 2,
+    prunedBy: 'storage/disk-consumer-census.ts pruneDiskCensus (each census run)',
+  },
+];
+
+/** Covered tables whose recorded horizon is deliberately NOT a row age, with the
+ *  reason. A covered entry naming a day horizon must appear either here or in
+ *  RETENTION_WINDOWS; the guard test fails on one in neither, so an age claim
+ *  cannot be added without the check that it holds. */
+export const NO_ROW_AGE_WINDOW: Readonly<Record<string, string>> = {
+  trigger_deliveries:
+    'the 30d horizon prunes PAYLOADS (SET payload = NULL); rows are kept as per-sink dedupe identity, so row age is expected to exceed it',
+};
+
+/** One window's oldest row. `measured:false` = the probe FAILED (unknown, never
+ *  healthy); `measured:true` with `oldestAgeDays:null` = the table is empty. */
+export interface RetentionAgeReading {
+  table: string;
+  measured: boolean;
+  oldestAgeDays: number | null;
+}
+
+/** A pruner that has fallen behind its window by more than its grace. */
+export interface RetentionLag {
+  table: string;
+  oldestAgeDays: number;
+  windowDays: number;
+  graceDays: number;
+  lagDays: number;
+  prunedBy: string;
+}
+
+/**
+ * Pure: which declared windows hold rows older than window + grace.
+ *
+ * A window with no reading, a failed reading, or a non-finite age is UNKNOWN,
+ * never silently healthy. An empty table has nothing past its window.
+ */
+export function detectRetentionLag(
+  readings: readonly RetentionAgeReading[],
+  windows: readonly RetentionWindow[] = RETENTION_WINDOWS,
+): { lagging: RetentionLag[]; unknown: string[] } {
+  const lagging: RetentionLag[] = [];
+  const unknown: string[] = [];
+
+  for (const w of windows) {
+    const hit = readings.find((r) => r.table === w.table);
+    if (!hit || !hit.measured || (hit.oldestAgeDays !== null && !Number.isFinite(hit.oldestAgeDays))) {
+      unknown.push(w.table);
+      continue;
+    }
+    if (hit.oldestAgeDays === null) continue;
+    const lagDays = hit.oldestAgeDays - w.windowDays;
+    if (lagDays > w.graceDays) {
+      lagging.push({
+        table: w.table,
+        oldestAgeDays: hit.oldestAgeDays,
+        windowDays: w.windowDays,
+        graceDays: w.graceDays,
+        lagDays,
+        prunedBy: w.prunedBy,
+      });
+    }
+  }
+
+  return { lagging: lagging.sort((a, b) => b.lagDays - a.lagDays), unknown: unknown.sort() };
+}
+
+export function formatRetentionLagToast(
+  lagging: readonly RetentionLag[],
+  unknown: readonly string[],
+): { level: string; message: string; description: string } {
+  const lines = lagging.map(
+    (l) =>
+      `${l.table}: oldest row ${l.oldestAgeDays.toFixed(1)}d vs a ${l.windowDays}d window ` +
+      `(${l.lagDays.toFixed(1)}d behind; pruned by ${l.prunedBy})`,
+  );
+  const unmeasured =
+    unknown.length > 0 ? `\n\n⚠ Oldest-row probe FAILED (age unknown, not healthy) for: ${unknown.join(', ')}.` : '';
+  return {
+    level: 'warning',
+    message:
+      lagging.length > 0
+        ? `Retention lag — ${lagging.length} table(s) keep rows past their pruner's window`
+        : `Retention lag — ${unknown.length} window(s) could not be measured`,
+    description:
+      (lines.length > 0 ? lines.join('\n') + '\n\n' : '') +
+      'The pruner exists but is not keeping up. Check its per-run cap against the ' +
+      "table's inflow, and that its routine fires. Declared in RETENTION_WINDOWS " +
+      `(storage/storage-growth-alarm.ts).${unmeasured}`,
+  };
 }
 
 /** `bak_*` pre-migration snapshots are frozen undo trails, never live growth —
@@ -586,6 +742,37 @@ async function defaultCountExemptSubsets(
   return out;
 }
 
+/** Default retention-lag probe: one indexed min(ageColumn) per window. A failed
+ *  probe reports measured:false (UNKNOWN), never an empty table. */
+async function defaultReadRetentionAges(
+  windows: readonly RetentionWindow[] = RETENTION_WINDOWS,
+): Promise<RetentionAgeReading[]> {
+  const sqlClient = getOrgPg().sql as unknown as {
+    unsafe: (q: string) => Promise<Array<{ age_days: string | number | null }>>;
+  };
+  const ident = /^[a-z_][a-z0-9_]*$/;
+  const out: RetentionAgeReading[] = [];
+  for (const w of windows) {
+    if (!ident.test(w.table) || !ident.test(w.ageColumn)) {
+      out.push({ table: w.table, measured: false, oldestAgeDays: null });
+      continue;
+    }
+    try {
+      const rows = await sqlClient.unsafe(
+        `SELECT extract(epoch FROM now() - min(${w.ageColumn})) / 86400.0 AS age_days FROM harness_shared.${w.table}`,
+      );
+      const raw = rows?.[0]?.age_days;
+      out.push({ table: w.table, measured: true, oldestAgeDays: raw === null || raw === undefined ? null : Number(raw) });
+    } catch (err) {
+      console.warn(
+        `[storage-growth-alarm] retention probe ${w.table} failed (reported UNKNOWN): ${(err as Error)?.message ?? String(err)}`,
+      );
+      out.push({ table: w.table, measured: false, oldestAgeDays: null });
+    }
+  }
+  return out;
+}
+
 /** Default undeclared-table scan: the catalog, NOT the category list. */
 async function defaultListTableSizes(): Promise<TableSizeRow[]> {
   const { getOrgPg } = await import('@papercusp/db-org');
@@ -616,6 +803,8 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
   diskScanIncomplete: boolean;
   exemptSubsets: ExemptSubsetGrowth[];
   exemptUnknown: string[];
+  retentionLag: RetentionLag[];
+  retentionUnknown: string[];
 }> {
   const computeUsage = deps.computeUsage ?? (() => computeStorageUsage({ sizesOnly: true }));
   const emitToast = deps.emitToast ?? defaultEmitToast;
@@ -734,6 +923,26 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
     );
   }
 
+  // ── The retention-lag sweep (a pruner that exists but has fallen behind) ──
+  // Independent of all three legs above: each of them reads a covered table as
+  // fine, which is exactly the blind spot this leg closes.
+  let retentionLag: RetentionLag[] = [];
+  let retentionUnknown: string[] = [];
+  try {
+    const readRetentionAges = deps.readRetentionAges ?? (() => defaultReadRetentionAges());
+    const result = detectRetentionLag(await readRetentionAges());
+    retentionLag = result.lagging;
+    retentionUnknown = result.unknown;
+    if (retentionLag.length > 0 || retentionUnknown.length > 0) {
+      await emitToast(formatRetentionLagToast(retentionLag, retentionUnknown));
+    }
+  } catch (err) {
+    retentionUnknown = RETENTION_WINDOWS.map((w) => w.table).sort();
+    console.warn(
+      `[storage-growth-alarm] retention-lag sweep skipped (UNKNOWN, non-fatal): ${(err as Error)?.message ?? String(err)}`,
+    );
+  }
+
   return {
     checked: rows.length,
     breaches,
@@ -742,5 +951,7 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
     diskScanIncomplete,
     exemptSubsets,
     exemptUnknown,
+    retentionLag,
+    retentionUnknown,
   };
 }

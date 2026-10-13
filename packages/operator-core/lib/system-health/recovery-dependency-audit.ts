@@ -604,11 +604,11 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     note: 'P-009 — a goal-mode owner report-silent past the cadence floor gets one nudge with the report skeleton. A quiet owner is not a substrate failure.',
   },
   {
-    name: 'retrieval-degradation-watchdog',
-    file: 'packages/operator-core/lib/system-health/retrieval-degradation-watchdog.ts',
+    name: 'degradation-watchdog',
+    file: 'packages/operator-core/lib/system-health/degradation-watchdog.ts',
     executor: 'operator-in-process-timer',
     recovers: [],
-    note: 'P-002 of this plan — semantic leg blocked by the embed budget.',
+    note: 'degradation-signals-on-condition-rail-2026-10-11 P-003 — the generic collapsed-fail-open-rate detector. It absorbed the retrieval-degradation timer (P-002: semantic leg blocked by the embed budget); retrieval-degradation-watchdog.ts no longer arms a timer of its own.',
   },
   {
     name: 'embed-latency-watchdog',

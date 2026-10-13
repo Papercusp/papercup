@@ -85,7 +85,13 @@ vi.mock("../../../compaction-usage", () => ({
 }));
 vi.mock("../../../events/await/psu-pty-discovery", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../events/await/psu-pty-discovery")>();
-  return { ...actual, selfCompactionAvailability: M.selfCompactionAvailability };
+  // The handler reads availability through the async variant (WI-10005186); route
+  // it to the same mock so both entry points stay pinned.
+  return {
+    ...actual,
+    selfCompactionAvailability: M.selfCompactionAvailability,
+    selfCompactionAvailabilityAsync: async (ownerId: string) => M.selfCompactionAvailability(ownerId),
+  };
 });
 vi.mock("./continuation-gate", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./continuation-gate")>();

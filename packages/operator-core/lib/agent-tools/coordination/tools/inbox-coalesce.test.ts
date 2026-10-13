@@ -69,6 +69,7 @@ vi.mock("../../../cache", () => ({
 
 import tool, {
   coalesceRepeatedBroadcasts,
+  inboxDefaultWindowChars,
   inboxPriorityBucket,
   prioritizedInboxWindow,
 } from "./inbox";
@@ -431,14 +432,25 @@ describe("coord:inbox handler (default raw-entry budget)", () => {
     summary: `message ${m} ${"x".repeat(1000)}`,
   });
 
-  it("keeps the no-arg 50-row read tight while honoring explicit max_body_chars", async () => {
+  it("keeps a 50-row read tight while honoring explicit max_body_chars", async () => {
     const rows = Array.from({ length: 50 }, (_, i) => longPeerPing(i));
     M.readInbox.mockImplementation(async () => rows);
 
+    // An explicit limit is not door-fitted (P-006 D-002), so all 50 rows come back
+    // at the per-entry share of INBOX_ENTRY_BUDGET.
+    const wide = await callInbox({ limit: 50 });
+    expect(wide.entries).toHaveLength(50);
+    expect(wide.entries[0]!.summary_truncated).toBe(true);
+    expect(String(wide.entries[0]!.summary).length).toBe(300);
+    expect(wide.summary).not.toHaveProperty("fitted_to_result");
+
+    // A no-args read is fitted to the caller's result door at that same cap, and says so.
     const def = await callInbox();
-    expect(def.entries).toHaveLength(50);
-    expect(def.entries[0]!.summary_truncated).toBe(true);
+    expect(def.entries.length).toBeGreaterThan(0);
+    expect(def.entries.length).toBeLessThan(50);
     expect(String(def.entries[0]!.summary).length).toBe(300);
+    expect(JSON.stringify(def.entries).length).toBeLessThanOrEqual(inboxDefaultWindowChars("owner-a"));
+    expect(def.summary["fitted_to_result"]).toMatchObject({ omitted: 50 - def.entries.length });
 
     const explicit = await callInbox({ max_body_chars: 800 });
     expect(explicit.entries).toHaveLength(50);

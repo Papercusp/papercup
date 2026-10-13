@@ -20,6 +20,11 @@ import {
   EXEMPT_SUBSET_PROBES,
   NO_EPHEMERAL_SUBSET,
   NOT_AGE_PRUNABLE,
+  RETENTION_WINDOWS,
+  NO_ROW_AGE_WINDOW,
+  detectRetentionLag,
+  formatRetentionLagToast,
+  type RetentionAgeReading,
   type StorageBreach,
   type TableSizeRow,
   type ExemptSubsetCount,
@@ -36,6 +41,11 @@ const emptyDiskScan = async (_registeredPaths: readonly string[]): Promise<DiskR
   entries: [],
   truncated: false,
 });
+
+/** Keep the other legs' tests independent of the retention-lag leg: every window
+ *  measured, every table freshly pruned. */
+const healthyRetentionAges = async (): Promise<RetentionAgeReading[]> =>
+  RETENTION_WINDOWS.map((w) => ({ table: w.table, measured: true, oldestAgeDays: 0 }));
 
 function pgRow(id: string, gb: number, extra: Partial<StorageUsageRow> = {}): StorageUsageRow {
   return {
@@ -129,6 +139,7 @@ describe('runStorageGrowthAlarmOnce', () => {
       // and the host filesystem.
       listTableSizes: async () => [],
       listDiskRootChildren: emptyDiskScan,
+      readRetentionAges: healthyRetentionAges,
       escalate: async () => {},
       recentlyEscalated: async () => false,
     });
@@ -145,6 +156,7 @@ describe('runStorageGrowthAlarmOnce', () => {
       emitToast: async () => {},
       listTableSizes: async () => [],
       listDiskRootChildren: emptyDiskScan,
+      readRetentionAges: healthyRetentionAges,
       escalate,
       recentlyEscalated: async () => false,
     });
@@ -159,6 +171,7 @@ describe('runStorageGrowthAlarmOnce', () => {
       emitToast,
       listTableSizes: async () => [],
       listDiskRootChildren: emptyDiskScan,
+      readRetentionAges: healthyRetentionAges,
     });
     expect(res.breaches).toEqual([]);
     expect(emitToast).not.toHaveBeenCalled();
@@ -241,6 +254,7 @@ describe('runStorageGrowthAlarmOnce — disk undeclared leg', () => {
       computeUsage: async () => [],
       listTableSizes: async () => [],
       listDiskRootChildren: scanDiskRootChildren,
+      readRetentionAges: healthyRetentionAges,
       emitToast,
       countExemptSubsets: healthySubsetCounts,
     });
@@ -258,6 +272,7 @@ describe('runStorageGrowthAlarmOnce — disk undeclared leg', () => {
       computeUsage: async () => [],
       listTableSizes: async () => [],
       listDiskRootChildren: async () => ({ entries: [], truncated: true }),
+      readRetentionAges: healthyRetentionAges,
       emitToast,
       countExemptSubsets: healthySubsetCounts,
     });
@@ -391,6 +406,7 @@ describe('runStorageGrowthAlarmOnce — undeclared leg', () => {
       emitToast,
       listTableSizes: async () => [tbl('pot_throughput_ticks', 900, 410_510)],
       listDiskRootChildren: emptyDiskScan,
+      readRetentionAges: healthyRetentionAges,
       countExemptSubsets: healthySubsetCounts,
     });
     // The category leg degrades loudly but non-fatally...
@@ -412,6 +428,7 @@ describe('runStorageGrowthAlarmOnce — undeclared leg', () => {
         ...Object.keys(RETENTION_COVERED_ELSEWHERE).map((t) => tbl(t, 1)),
       ],
       listDiskRootChildren: emptyDiskScan,
+      readRetentionAges: healthyRetentionAges,
       countExemptSubsets: healthySubsetCounts,
     });
     expect(res.undeclared).toEqual([]);
@@ -612,6 +629,7 @@ describe('runStorageGrowthAlarmOnce — exempt-subset leg', () => {
         throw new Error('catalog scan down');
       },
       listDiskRootChildren: emptyDiskScan,
+      readRetentionAges: healthyRetentionAges,
       emitToast,
       countExemptSubsets: async () => [count('work_items', 'resource-governor admission receipts', 776_382)],
     });
@@ -627,6 +645,7 @@ describe('runStorageGrowthAlarmOnce — exempt-subset leg', () => {
       computeUsage: async () => [],
       listTableSizes: async () => [],
       listDiskRootChildren: emptyDiskScan,
+      readRetentionAges: healthyRetentionAges,
       emitToast,
       countExemptSubsets: healthySubsetCounts,
     });
@@ -641,6 +660,7 @@ describe('runStorageGrowthAlarmOnce — exempt-subset leg', () => {
       computeUsage: async () => [],
       listTableSizes: async () => [],
       listDiskRootChildren: emptyDiskScan,
+      readRetentionAges: healthyRetentionAges,
       emitToast,
       countExemptSubsets: async () => [count('work_items', 'resource-governor admission receipts', null)],
     });
@@ -655,6 +675,7 @@ describe('runStorageGrowthAlarmOnce — exempt-subset leg', () => {
       computeUsage: async () => [],
       listTableSizes: async () => [],
       listDiskRootChildren: emptyDiskScan,
+      readRetentionAges: healthyRetentionAges,
       emitToast,
       countExemptSubsets: async () => {
         throw new Error('subset count down');
@@ -664,5 +685,135 @@ describe('runStorageGrowthAlarmOnce — exempt-subset leg', () => {
     warn.mockRestore();
     expect(res.exemptSubsets).toEqual([]);
     expect(emitToast).not.toHaveBeenCalled();
+  });
+});
+
+// ── The retention-lag leg (WI-6554700010009732) ─────────────────────────────
+// Regression guard for the blind spot: RETENTION_COVERED_ELSEWHERE recorded that
+// session_turn_parts was pruned at 14 days while its oldest row was 41.7 days old,
+// and every other leg read the table as covered.
+
+function age(table: string, oldestAgeDays: number | null, measured = true): RetentionAgeReading {
+  return { table, measured, oldestAgeDays };
+}
+const WINDOW = RETENTION_WINDOWS.find((w) => w.table === 'session_turn_parts')!;
+
+describe('detectRetentionLag', () => {
+  it('reports a table whose oldest row is past window + grace (the 2026-10-13 measurement)', () => {
+    const { lagging, unknown } = detectRetentionLag([age('session_turn_parts', 41.7)], [WINDOW]);
+    expect(unknown).toEqual([]);
+    expect(lagging).toHaveLength(1);
+    expect(lagging[0]).toMatchObject({ table: 'session_turn_parts', windowDays: 14 });
+    expect(lagging[0].lagDays).toBeCloseTo(27.7, 5);
+  });
+
+  it('tolerates lag up to the grace (a daily pruner one run late) and reports just past it', () => {
+    const edge = WINDOW.windowDays + WINDOW.graceDays;
+    expect(detectRetentionLag([age(WINDOW.table, edge)], [WINDOW]).lagging).toEqual([]);
+    expect(detectRetentionLag([age(WINDOW.table, edge + 0.01)], [WINDOW]).lagging).toHaveLength(1);
+  });
+
+  it('treats an empty table as healthy, not unknown', () => {
+    expect(detectRetentionLag([age(WINDOW.table, null)], [WINDOW])).toEqual({ lagging: [], unknown: [] });
+  });
+
+  it('reports a failed, missing or non-finite reading as UNKNOWN, never healthy', () => {
+    const windows = RETENTION_WINDOWS.slice(0, 3);
+    const { lagging, unknown } = detectRetentionLag(
+      [age(windows[0].table, null, false), age(windows[1].table, Number.NaN)],
+      windows,
+    );
+    expect(lagging).toEqual([]);
+    expect(unknown).toEqual(windows.map((w) => w.table).sort());
+  });
+
+  it('sorts the worst lag first', () => {
+    const { lagging } = detectRetentionLag(
+      RETENTION_WINDOWS.map((w, i) => age(w.table, w.windowDays + w.graceDays + 1 + i)),
+    );
+    expect(lagging.map((l) => l.lagDays)).toEqual([...lagging.map((l) => l.lagDays)].sort((a, b) => b - a));
+    expect(lagging).toHaveLength(RETENTION_WINDOWS.length);
+  });
+});
+
+describe('formatRetentionLagToast', () => {
+  it('names the table, its age, its window and its pruner, and flags unmeasured windows', () => {
+    const { lagging } = detectRetentionLag([age('session_turn_parts', 41.7)], [WINDOW]);
+    const t = formatRetentionLagToast(lagging, ['session_turns']);
+    expect(t.level).toBe('warning');
+    expect(t.message).toContain('1 table(s)');
+    expect(t.description).toContain('session_turn_parts: oldest row 41.7d vs a 14d window');
+    expect(t.description).toContain(WINDOW.prunedBy);
+    expect(t.description).toContain('FAILED (age unknown, not healthy) for: session_turns');
+  });
+});
+
+describe('RETENTION_WINDOWS registry integrity — the recurrence guard', () => {
+  it('pairs every window with a recorded retention claim, and every age claim with a window', () => {
+    const windowed = new Set(RETENTION_WINDOWS.map((w) => w.table));
+    for (const w of RETENTION_WINDOWS) expect(RETENTION_COVERED_ELSEWHERE).toHaveProperty(w.table);
+    const ageClaims = Object.entries(RETENTION_COVERED_ELSEWHERE)
+      .filter(([, why]) => /_DAYS\b|_DAYS=|_MS=|\b\d+d\b/.test(why))
+      .map(([table]) => table);
+    expect(ageClaims.length).toBeGreaterThan(0);
+    const unchecked = ageClaims.filter((t) => !windowed.has(t) && !(t in NO_ROW_AGE_WINDOW));
+    expect(unchecked).toEqual([]);
+  });
+
+  it('declares sane, unique, SQL-safe windows', () => {
+    const tables = RETENTION_WINDOWS.map((w) => w.table);
+    expect(new Set(tables).size).toBe(tables.length);
+    for (const w of RETENTION_WINDOWS) {
+      expect(w.table).toMatch(/^[a-z_][a-z0-9_]*$/);
+      expect(w.ageColumn).toMatch(/^[a-z_][a-z0-9_]*$/);
+      expect(Number.isFinite(w.windowDays) && w.windowDays > 0).toBe(true);
+      expect(w.graceDays).toBeGreaterThan(0);
+      expect(w.graceDays).toBeLessThan(w.windowDays);
+    }
+  });
+});
+
+describe('runStorageGrowthAlarmOnce — retention-lag leg', () => {
+  const quiet = {
+    computeUsage: async () => [],
+    listTableSizes: async () => [],
+    listDiskRootChildren: emptyDiskScan,
+    countExemptSubsets: healthySubsetCounts,
+  };
+
+  it('emits exactly one toast and returns the lag when a pruner has fallen behind', async () => {
+    const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
+    const res = await runStorageGrowthAlarmOnce({
+      ...quiet,
+      emitToast,
+      readRetentionAges: async () =>
+        RETENTION_WINDOWS.map((w) => age(w.table, w.table === 'session_turn_parts' ? 41.7 : 0)),
+    });
+    expect(res.retentionLag.map((l) => l.table)).toEqual(['session_turn_parts']);
+    expect(res.retentionUnknown).toEqual([]);
+    expect(emitToast).toHaveBeenCalledTimes(1);
+    expect(emitToast.mock.calls[0][0].message).toContain('Retention lag');
+  });
+
+  it('emits NO toast when every pruner is within its window', async () => {
+    const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
+    const res = await runStorageGrowthAlarmOnce({ ...quiet, emitToast, readRetentionAges: healthyRetentionAges });
+    expect(res.retentionLag).toEqual([]);
+    expect(emitToast).not.toHaveBeenCalled();
+  });
+
+  it('reports every window UNKNOWN when the probe throws, without blinding the other legs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await runStorageGrowthAlarmOnce({
+      ...quiet,
+      emitToast: async () => {},
+      readRetentionAges: async () => {
+        throw new Error('pool down');
+      },
+    });
+    warn.mockRestore();
+    expect(res.retentionUnknown).toEqual(RETENTION_WINDOWS.map((w) => w.table).sort());
+    expect(res.retentionLag).toEqual([]);
+    expect(res.exemptUnknown).toEqual([]);
   });
 });

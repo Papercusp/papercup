@@ -20,7 +20,11 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseOmpLine,
+  cleanTurnText,
+  SESSION_TURN_TEXT_CAP,
+  PROVENANCE_PASTE_TAIL_CHARS,
 } from './session-ingest';
+import { closeTruncatedWholePaste } from '../turn-provenance/envelope-grammar';
 import { MACHINE_SURFACE_CATALOGUE_VERSION } from '../turn-provenance/machine-surface-catalogue';
 import { classifyRecordedTurn, OWNER_CANDIDATE_TURN_VERDICTS } from '../turn-provenance/turn-ref';
 
@@ -442,5 +446,59 @@ describe('hook-authenticated prompt-origin correlation', () => {
     };
     expect(correlatePromptOriginStamps([candidate], [stamp])).toBe(0);
     expect(candidate.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+});
+
+/**
+ * WI-6554700010009878. The ingest cap (SESSION_TURN_TEXT_CAP) cut a long
+ * whole-prompt paste's closing tag before stamping, so every PTY-typed machine
+ * kickoff over the cap (scorecard judge fleet-kickoffs) stored unenrolled-origin
+ * and competed with real owner turns in consult routing.
+ */
+describe('cleanTurnText keeps an over-cap whole-prompt paste classifiable', () => {
+  const envelope = '⟦turn-origin:fleet-kickoff nonce:013ec62794d30cef⟧';
+  const body = 'Currentness check. '.repeat(Math.ceil((SESSION_TURN_TEXT_CAP * 2) / 19));
+  const paste = `<pasted_content id="f715">\n${envelope}\n${body}\n</pasted_content id="f715">\n`;
+
+  function stamped(text: string | null): Row {
+    expect(text).not.toBeNull();
+    const r = row({ source_kind: 'claude', text: text! });
+    stampTurnProvenance(r);
+    return r;
+  }
+
+  it('stamps an over-cap machine kickoff agent-injected, as the full text would', () => {
+    expect(paste.length).toBeGreaterThan(SESSION_TURN_TEXT_CAP);
+    const text = cleanTurnText(paste);
+    expect(stamped(text).turn_origin_verdict).toBe('agent-injected');
+    expect(stamped(text).turn_origin).toBe('fleet-kickoff');
+    expect(classifyRecordedTurn(paste.trim()).verdict).toBe('agent-injected');
+  });
+
+  it('keeps the evidence in the STORED text, so a head+tail re-derivation agrees', () => {
+    const text = cleanTurnText(paste)!;
+    expect(text.endsWith('</pasted_content id="f715">')).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(SESSION_TURN_TEXT_CAP + 32);
+    const rederived = closeTruncatedWholePaste(text.slice(0, 4000), text.slice(-PROVENANCE_PASTE_TAIL_CHARS));
+    expect(stamped(rederived).turn_origin_verdict).toBe('agent-injected');
+  });
+
+  it('does not re-close a paste the owner typed words AFTER', () => {
+    const text = cleanTurnText(`${paste}\nplease look at this one carefully`)!;
+    expect(text.length).toBe(SESSION_TURN_TEXT_CAP);
+    expect(text.includes('</pasted_content')).toBe(false);
+    expect(stamped(text).turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+
+  it('does not re-close a paste the owner typed words BEFORE', () => {
+    const text = cleanTurnText(`here is the kickoff I got:\n${paste}`)!;
+    expect(text.length).toBe(SESSION_TURN_TEXT_CAP);
+    expect(stamped(text).turn_origin_verdict).not.toBe('agent-injected');
+  });
+
+  it('leaves under-cap text and fullSource reads untouched', () => {
+    const short = `<pasted_content id="a1">\n${envelope}\nshort\n</pasted_content id="a1">`;
+    expect(cleanTurnText(short)).toBe(short);
+    expect(cleanTurnText(paste, { fullSource: true })).toBe(paste.trim());
   });
 });

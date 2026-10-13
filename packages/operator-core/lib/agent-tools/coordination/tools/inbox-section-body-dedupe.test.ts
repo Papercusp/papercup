@@ -13,7 +13,7 @@
  * `control` block asserts the single-copy pin FAILS against it, so a refactor that
  * silently stops deduplicating cannot keep every test here green.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const M = vi.hoisted(() => ({
   readInbox: vi.fn(async () => [] as unknown[]),
@@ -60,8 +60,16 @@ vi.mock("../../../cache", () => ({
   cachedRead: async (_ctx: unknown, _key: unknown, fn: () => Promise<unknown>) => fn(),
 }));
 
+import { renderSevereEventEmitter } from "../../../severe-event-emitter";
 import { authoredFieldsMarker } from "../message-fields";
-import tool, { boundInboxEntries, dropSectionTextDuplicatedInBody } from "./inbox";
+import tool, {
+  boundInboxEntries,
+  dropSectionTextDuplicatedInBody,
+  fitInboxWindowToChars,
+  inboxDefaultWindowChars,
+  severeEventEmitterNote,
+  stripSevereEventEmitterTrailer,
+} from "./inbox";
 
 type Row = Record<string, unknown>;
 
@@ -182,5 +190,167 @@ describe("coord:inbox handler wiring", () => {
     const row = out.entries.find((e) => e["msg_id"] === "m-1")!;
     expect((row["sections"] as Row[]).map((s) => s["text"])).toEqual(["background", "the ask"]);
     expect(row).not.toHaveProperty("sections_text_in_body");
+  });
+});
+
+const emitter = { pid: 4242, startedAt: "2026-10-13T04:45:05.048Z", uptimeSec: 3720, cwd: "/repo/apps/operator" };
+const alarm = (text: string, over: Row = {}): Row => ({
+  msg_id: "a-1",
+  ts: "2026-10-13T05:00:00.000Z",
+  from: "system",
+  to: ["*"],
+  kind: "message",
+  category: "severe-event",
+  summary: "Grading is behind",
+  body: text + renderSevereEventEmitter(emitter),
+  emitter,
+  ...over,
+});
+
+describe("stripSevereEventEmitterTrailer", () => {
+  it("pins the trailer bytes the writer appends (moving the renderer must not change them)", () => {
+    expect(renderSevereEventEmitter(emitter)).toBe(
+      "\n\n— emitted by pid 4242, process started 2026-10-13T04:45:05.048Z (up 1h02m), cwd /repo/apps/operator. " +
+        "If that start time PREDATES the fix you are checking, this process never loaded it " +
+        "(no hot-reload) and no deploy will reach it — restart that host instead of re-investigating the alarm.",
+    );
+  });
+
+  it("strips the trailer that exactly matches the entry's own emitter and keeps the emitter field", () => {
+    const { entries, stripped } = stripSevereEventEmitterTrailer([alarm("89 of 105 holder hours are ungraded.")]);
+    expect(stripped).toBe(1);
+    expect(entries[0]!["body"]).toBe("89 of 105 holder hours are ungraded.");
+    expect(entries[0]!["emitter"]).toEqual(emitter);
+  });
+
+  it("leaves the body alone when the trailer does not match the emitter field", () => {
+    const entry = alarm("text", { emitter: { ...emitter, pid: 1 } });
+    const { entries, stripped } = stripSevereEventEmitterTrailer([entry]);
+    expect(stripped).toBe(0);
+    expect(entries[0]).toBe(entry);
+  });
+
+  it("leaves entries without a well-formed emitter alone", () => {
+    const rows: Row[] = [{ body: "x" }, { body: "x", emitter: { pid: "1" } }, { emitter }];
+    const { entries, stripped } = stripSevereEventEmitterTrailer(rows);
+    expect(stripped).toBe(0);
+    entries.forEach((row, i) => expect(row).toBe(rows[i]));
+  });
+
+  it("states the interpretation rule once, with the count", () => {
+    expect(severeEventEmitterNote(1)).toMatch(/^1 alarm body omits its emitter trailer; /);
+    expect(severeEventEmitterNote(3)).toMatch(/^3 alarm bodies omit their emitter trailer; /);
+    expect(severeEventEmitterNote(3)).toContain("restart that host instead of re-investigating the alarm.");
+  });
+
+  it("a clipped alarm keeps its own text instead of only the trailer", () => {
+    const text = "Workspace papercusp-workspace. 89 of 105 active holder hours are ungraded (limit 6).";
+    const pre = boundInboxEntries([alarm(text)], 150)[0]!;
+    expect(String(pre["body"])).not.toContain("89 of 105");
+    const post = boundInboxEntries(stripSevereEventEmitterTrailer([alarm(text)]).entries, 150)[0]!;
+    expect(String(post["body"])).toContain("89 of 105");
+  });
+});
+
+describe("coord:inbox handler wiring: emitter trailer", () => {
+  const ctx = (): never =>
+    ({ ownerId: "owner-a", workspaceId: "ws", metadata: vi.fn(), log: vi.fn(), progress: vi.fn() }) as never;
+  const callInbox = async (args: Row = {}) => {
+    const res = (await tool.handler(args as never, ctx())) as { content: Array<{ text: string }> };
+    return JSON.parse(res.content[0]!.text) as { entries: Row[]; emitter_note?: string };
+  };
+  const alarmBodies = (out: { entries: Row[] }) =>
+    out.entries.filter((e) => String(e["msg_id"]).startsWith("a-")).map((e) => String(e["body"]));
+
+  beforeEach(() => {
+    M.readInbox.mockReset();
+    M.readInbox.mockResolvedValue([
+      alarm("first alarm text"),
+      alarm("second alarm text", { msg_id: "a-2", summary: "Another alarm" }),
+    ]);
+  });
+
+  it("a bounded read strips each trailer and adds one emitter_note", async () => {
+    const out = await callInbox({ max_body_chars: 300, include_ambient: true });
+    const bodies = alarmBodies(out);
+    expect(bodies.length).toBeGreaterThan(0);
+    for (const b of bodies) expect(b).not.toContain("emitted by pid");
+    expect(out.emitter_note).toMatch(/emitter trailer/);
+  });
+
+  it("an unbounded read (max_body_chars: 0) keeps the trailers and adds no note", async () => {
+    const out = await callInbox({ max_body_chars: 0, include_ambient: true });
+    const bodies = alarmBodies(out);
+    expect(bodies.length).toBeGreaterThan(0);
+    for (const b of bodies) expect(b).toContain("emitted by pid 4242");
+    expect(out).not.toHaveProperty("emitter_note");
+  });
+});
+
+describe("P-006 D-002: the default window fits one result", () => {
+  const msg = (i: number): Row => ({
+    msg_id: `d-${String(i).padStart(2, "0")}`,
+    ts: `2026-10-13T05:${String(i).padStart(2, "0")}:00.000Z`,
+    from: "peer",
+    to: ["owner-a"],
+    kind: "message",
+    summary: `message ${i}`,
+    body: "x".repeat(400),
+  });
+
+  it("keeps a priority prefix within the budget, and always at least one entry", () => {
+    const rows = [msg(1), msg(2), msg(3), msg(4)];
+    const one = JSON.stringify(boundInboxEntries([rows[0]!], 300)[0]).length + 1;
+    const fit = fitInboxWindowToChars(rows, 300, one * 2 + 5);
+    expect(fit.kept).toEqual([rows[0], rows[1]]);
+    expect(fit.omitted).toBe(2);
+    expect(fitInboxWindowToChars(rows, 300, 1).kept).toEqual([rows[0]]);
+  });
+
+  it("derives its budget from the result door", () => {
+    const chars = inboxDefaultWindowChars();
+    expect(chars).toBeGreaterThan(1000);
+    expect(chars).toBeLessThan(6000);
+  });
+
+  describe("handler", () => {
+    const prevDoorsOff = process.env.PAPERCUSP_DOORS_CONFIG_OFF;
+    const ctx = (): never =>
+      ({ ownerId: "owner-a", workspaceId: "ws", metadata: vi.fn(), log: vi.fn(), progress: vi.fn() }) as never;
+    const callInbox = async (args: Row = {}) => {
+      const res = (await tool.handler(args as never, ctx())) as { content: Array<{ text: string }> };
+      return JSON.parse(res.content[0]!.text) as { entries: Row[]; summary: Row };
+    };
+
+    beforeEach(() => {
+      process.env.PAPERCUSP_DOORS_CONFIG_OFF = "1";
+      M.readInbox.mockReset();
+      M.readInbox.mockResolvedValue(Array.from({ length: 40 }, (_, i) => msg(i + 1)));
+    });
+    afterEach(() => {
+      if (prevDoorsOff === undefined) delete process.env.PAPERCUSP_DOORS_CONFIG_OFF;
+      else process.env.PAPERCUSP_DOORS_CONFIG_OFF = prevDoorsOff;
+    });
+
+    it("a no-args read returns only what fits, and says how many it omitted", async () => {
+      const out = await callInbox();
+      expect(out.entries.length).toBeGreaterThan(0);
+      expect(out.entries.length).toBeLessThan(40);
+      expect(out.summary["returned"]).toBe(out.entries.length);
+      const fitted = out.summary["fitted_to_result"] as Row;
+      expect(fitted["omitted"]).toBe(40 - out.entries.length);
+      expect(JSON.stringify(out.entries).length).toBeLessThanOrEqual(inboxDefaultWindowChars() + 2000);
+    });
+
+    it("an explicit limit is honoured exactly and is not fitted", async () => {
+      const out = await callInbox({ limit: 40 });
+      expect(out.entries.length).toBe(40);
+      expect(out.summary).not.toHaveProperty("fitted_to_result");
+    });
+
+    it("an explicit max_body_chars is not fitted either", async () => {
+      const out = await callInbox({ max_body_chars: 100 });
+      expect(out.summary).not.toHaveProperty("fitted_to_result");
+    });
   });
 });

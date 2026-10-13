@@ -19,7 +19,7 @@ import {
   type AdvRowForArchive,
   type ArchiveRoots,
 } from './session-archive-hook';
-import type { ArchiveFileRow, ArchiveStampRow, SessionArchiveStore } from './session-archive';
+import { archiveSession, type ArchiveFileRow, type ArchiveStampRow, type SessionArchiveStore } from './session-archive';
 import type { ProtectedSessionIdentity } from './session-dir-gc';
 
 const SID = 'cccccccc-1111-2222-3333-444444444444';
@@ -176,6 +176,129 @@ describe('runArchiveForAdvSession (injected deps, no PG)', () => {
     ).toMatchObject({ ok: false, reason: 'unresolvable' });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it.each(['claude', 'codex', 'omp'] as const)('archives an intact proven %s transcript normally', async (agent) => {
+    tmp = await mkdtemp(join(tmpdir(), 'sa-persisted-positive-'));
+    const sessionRoot = agent === 'claude' ? join(tmp, 'su-t') : tmp;
+    const rel = agent === 'claude' ? join('projects', '-repo', `${SID}.jsonl`)
+      : agent === 'codex' ? join('sessions', '2026', '10', '13', `rollout-2026-10-13_${SID}.jsonl`)
+        : join('-repo', `2026-10-13_${SID}.jsonl`);
+    const nativeRef = join(sessionRoot, rel);
+    await mkdir(join(nativeRef, '..'), { recursive: true });
+    const bytes = '{"type":"user","message":{"content":"persisted native frame"}}\n';
+    await writeFile(nativeRef, bytes);
+    await quiet(nativeRef);
+    const store = new MiniStore();
+    const ingestFile = vi.fn(async () => {});
+    const result = await runArchiveForAdvSession(9, {
+      loadRow: async () => row({ agent, port_metadata: { persistenceProof: { persisted: true, nativeRef } } }),
+      roots: { claudeSessionRoot: tmp, codexHomeFor: () => tmp!, ompRoot: tmp },
+      store, protectedIdentity: NOBODY, ingestFile,
+    });
+    expect(result).toMatchObject({ ok: true, archive: { fileCount: 1, bytesRaw: Buffer.byteLength(bytes) }, delete: { deleted: 1 } });
+    expect(ingestFile).toHaveBeenCalledExactlyOnceWith(nativeRef);
+    expect(store.files).toHaveLength(1);
+    expect(store.files[0]).toMatchObject({ source_kind: agent, session_id: SID, relpath: rel });
+    expect(store.advStamps).toEqual([9]);
+    expect(existsSync(nativeRef)).toBe(false);
+  });
+
+  it.each(['claude', 'codex', 'omp'] as const)('retains archive responsibility when a proven %s transcript disappears', async (agent) => {
+    tmp = await mkdtemp(join(tmpdir(), 'sa-missing-'));
+    const store = new MiniStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runArchiveForAdvSession(9, {
+        loadRow: async () => row({ agent, port_metadata: { persistenceProof: { persisted: true, nativeRef: join(tmp!, `${SID}.jsonl`) } } }),
+        roots: { claudeSessionRoot: tmp, codexHomeFor: () => tmp!, ompRoot: tmp },
+        store, protectedIdentity: NOBODY,
+      });
+      expect(result).toMatchObject({ ok: false, reason: 'missing_persisted_transcript' });
+      expect(store.advStamps).toEqual([]);
+      expect(store.stamps.size).toBe(0);
+      expect(warn).toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it('does not mistake surviving side files for the proven native transcript', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'sa-side-only-'));
+    await mkdir(join(tmp, 'su-t', 'todos'), { recursive: true });
+    const side = join(tmp, 'su-t', 'todos', `${SID}-agent.json`);
+    await writeFile(side, '{}');
+    await quiet(side);
+    const store = new MiniStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runArchiveForAdvSession(9, {
+        loadRow: async () => row({ port_metadata: { persistenceProof: { persisted: true, nativeRef: join(tmp!, 'su-t', 'projects', '-repo', `${SID}.jsonl`) } } }),
+        roots: { ...ROOTS, claudeSessionRoot: tmp }, store, protectedIdentity: NOBODY,
+      });
+      expect(result.reason).toBe('missing_persisted_transcript');
+      expect(existsSync(side)).toBe(true);
+      expect(store.stamps.size).toBe(0);
+    } finally { warn.mockRestore(); }
+  });
+
+  it.each(['intact', 'intact-with-side-file', 'missing-row', 'corrupt-blob', 'wrong-native'] as const)('checks the canonical archived transcript (%s) before completing', async (control) => {
+    tmp = await mkdtemp(join(tmpdir(), 'sa-archived-proof-'));
+    const root = join(tmp, 'su-t');
+    await mkdir(join(root, 'projects', '-repo'), { recursive: true });
+    const nativeRef = join(root, 'projects', '-repo', `${SID}.jsonl`);
+    await writeFile(nativeRef, '{"type":"user","message":{"content":"persisted port frame"}}\n');
+    const store = new MiniStore();
+    await archiveSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: root }, store);
+    await rm(nativeRef);
+    const archivedFiles = [...store.files];
+    const side = join(root, 'todos', `${SID}-agent.json`);
+    if (control === 'intact-with-side-file') {
+      await mkdir(join(root, 'todos'), { recursive: true });
+      await writeFile(side, '{}');
+      await quiet(side);
+    }
+    const ingestFile = vi.fn(async () => {});
+    const intact = control === 'intact' || control === 'intact-with-side-file';
+    if (control === 'missing-row') store.files = [];
+    if (control === 'corrupt-blob') store.files[0].blob = Buffer.from('corrupt');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const run = () => runArchiveForAdvSession(9, {
+        loadRow: async () => row({ port_metadata: { persistenceProof: { persisted: true, nativeRef: control === 'wrong-native' ? join(root, `${SID}-other.jsonl`) : nativeRef } } }),
+        roots: { ...ROOTS, claudeSessionRoot: tmp! }, store, protectedIdentity: NOBODY, ingestFile,
+      });
+      if (control === 'corrupt-blob') await expect(run()).rejects.toThrow();
+      else expect(await run()).toMatchObject(intact
+        ? { ok: true, reason: 'already_archived' }
+        : { ok: false, reason: 'missing_persisted_transcript' });
+      expect(store.advStamps).toEqual(intact ? [9] : []);
+      expect(store.stamps.size).toBe(1);
+      expect(ingestFile).not.toHaveBeenCalled();
+      if (control === 'intact-with-side-file') {
+        expect(existsSync(side)).toBe(true);
+        expect(store.files).toEqual(archivedFiles);
+      }
+    } finally { warn.mockRestore(); }
+  });
+
+  it('keeps the normal no-persistence empty-session result', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'sa-no-persistence-'));
+    const store = new MiniStore();
+    const result = await runArchiveForAdvSession(9, {
+      loadRow: async () => row({ port_metadata: { persistenceProof: { persisted: false } } }),
+      roots: { ...ROOTS, claudeSessionRoot: tmp }, store, protectedIdentity: NOBODY,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'no_files' });
+    expect(store.advStamps).toEqual([]);
+  });
+
+  it('does not clear an unresolvable row with previously proven persistence', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runArchiveForAdvSession(9, {
+        loadRow: async () => row({ session_id: null, port_metadata: { persistenceProof: { persisted: true } } }), roots: ROOTS,
+      });
+      expect(result).toMatchObject({ ok: false, reason: 'missing_persisted_transcript' });
+    } finally { warn.mockRestore(); }
   });
 
   it('archives the tracked OMP transcript with no session_id and keeps a neighboring session', async () => {

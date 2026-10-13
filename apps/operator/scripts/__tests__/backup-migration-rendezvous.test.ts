@@ -46,7 +46,10 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
     expect(stripped).toContain("'SET lock_timeout = 0;'");
     expect(stripped).toContain("'SET statement_timeout = 0;'");
     expect(stripped).toContain("pg_advisory_lock(hashtext('$BACKUP_MIGRATION_ADVISORY_LOCK_KEY'))");
-    expect(stripped).toContain('trap release_migration_rendezvous EXIT');
+    // The EXIT trap must still release the rendezvous. Since the IN_PROGRESS
+    // progress-marker cleanup joined it, the trap is the quoted two-command form,
+    // so accept either shape rather than one literal spelling.
+    expect(stripped).toMatch(/^trap (?:release_migration_rendezvous|'[^']*\brelease_migration_rendezvous\b[^']*') EXIT$/m);
 
     // WI-10008166: the rendezvous used to be acquired once before the first dump
     // and released only after the transcript tier, so it covered every other
@@ -83,7 +86,7 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
 
   it('holds the lock only while a migration-database leg dumps, and re-acquires per leg', () => {
     const acquire = extractFunction('acquire_migration_rendezvous', '\n}\n\n# guarded_dump_one');
-    const release = extractFunction('release_migration_rendezvous', '\n}\n\ntrap release_migration_rendezvous');
+    const release = extractFunction('release_migration_rendezvous', '\n}\n');
     const guarded = extractFunction('guarded_dump_one', '\n}\n');
     expect(acquire).not.toBe('');
     expect(release).not.toBe('');
@@ -172,7 +175,7 @@ describe('papercusp-db-backup.sh migration rendezvous (EI-22634893804237362)', (
 
   it('keeps the dedicated lock session open until the real release helper closes it', () => {
     const acquire = extractFunction('acquire_migration_rendezvous', '\n}\n\n# guarded_dump_one');
-    const release = extractFunction('release_migration_rendezvous', '\n}\n\ntrap release_migration_rendezvous');
+    const release = extractFunction('release_migration_rendezvous', '\n}\n');
     expect(acquire).not.toBe('');
     expect(release).not.toBe('');
 

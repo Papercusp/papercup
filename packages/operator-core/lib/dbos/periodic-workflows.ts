@@ -1300,27 +1300,64 @@ DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm',
 // harness_shared.disk_census_* so storage:census can show each consumer's size and
 // 24h growth; prunes rows older than 30 days. Four runs a day keep a run inside the
 // read's 18–30h baseline window. Per-device failures are recorded, never thrown.
+//
+// Restart-safe (WI-6554700010009855). A census takes ~75 min and bg-host restarts about
+// every 33 min, and one step used to wrap every device's du as a bg-host child, so each
+// restart re-walked everything from zero (the 2026-10-13 04:35Z run never wrote a row).
+// Now: one step records the pass (devices, API-sized stores, sudo); ONE STEP PER DEVICE,
+// so recovery skips every device whose row is written; each du walk runs detached in its
+// own transient scope with its output in files, and a recovered step adopts the walk
+// still running instead of starting over (storage/disk-census-detached-walk.ts). Every
+// step is idempotent, so the recovery budget is sized for many restarts per run.
 async function diskConsumerCensusTick(): Promise<void> {
-  await DBOS.runStep(
+  const runKey = DBOS.workflowID ?? 'disk-consumer-census-adhoc';
+  const pass = await DBOS.runStep(
     async () => {
-      if (shouldShedHeavyTick('disk-consumer-census')) return;
-      const { runDiskConsumerCensusOnce } = await import('../storage/disk-consumer-census');
-      const r = await runDiskConsumerCensusOnce();
-      if (r.skipped) return;
-      for (const run of r.runs) {
+      if (shouldShedHeavyTick('disk-consumer-census')) return null;
+      const { prepareCensusPass } = await import('../storage/disk-consumer-census');
+      const prepared = await prepareCensusPass();
+      if ('skipped' in prepared) {
+        console.log(`[disk-consumer-census] skipped: ${prepared.skipped}`);
+        return null;
+      }
+      return prepared;
+    },
+    { name: 'disk-consumer-census-prepare' },
+  );
+  if (!pass) return;
+  for (const device of pass.devices) {
+    await DBOS.runStep(
+      async () => {
+        const { censusOneDevice } = await import('../storage/disk-consumer-census');
+        const { detachedCensusWalker } = await import('../storage/disk-census-detached-walk');
+        const outcome = await censusOneDevice(pass, device, { runDu: detachedCensusWalker(runKey) });
+        if (!outcome.run) {
+          console.warn(`[disk-consumer-census] ${outcome.failure.device} failed: ${outcome.failure.error}`);
+          return;
+        }
+        const run = outcome.run;
         console.log(
           `[disk-consumer-census] ${run.device}: ${run.consumers} consumer(s), unattributed ${(run.unattributedBytes / 1024 ** 3).toFixed(1)}GiB, ${run.complete ? 'complete' : 'INCOMPLETE'} in ${Math.round(run.durationMs / 1000)}s`,
         );
-      }
-      for (const f of r.failures) console.warn(`[disk-consumer-census] ${f.device} failed: ${f.error}`);
+      },
+      { name: 'disk-consumer-census-device' },
+    );
+  }
+  await DBOS.runStep(
+    async () => {
+      const { pruneCensusPass } = await import('../storage/disk-consumer-census');
+      const { pruneCensusWalks } = await import('../storage/disk-census-detached-walk');
+      await pruneCensusPass();
+      await pruneCensusWalks({ runKey });
     },
-    { name: 'disk-consumer-census' },
+    { name: 'disk-consumer-census-prune' },
   );
 }
 const diskConsumerCensusWorkflow = idempotentRegisterWorkflow('diskConsumerCensus', () =>
   DBOS.registerWorkflow(diskConsumerCensusTick, {
     name: 'diskConsumerCensus',
-    maxRecoveryAttempts: 3,
+    // One recovery per bg-host restart; a ~75 min run can see several (WI-6554700010009855).
+    maxRecoveryAttempts: 24,
   }),
 );
 DBOS.registerScheduled(diskConsumerCensusWorkflow, { name: 'diskConsumerCensus', crontab: '0 35 */6 * * *' });

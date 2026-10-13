@@ -254,7 +254,13 @@ export const CLASSIFY_HEAD_CHARS = 240;
 // original machine envelope. Make existing rows findable for reclassification.
 // 6 → 7 (EI-25237423028877031): damaged nonce-tail event wakes must override
 // even an earlier hook-authenticated owner stamp during the existing backfill.
-export const MACHINE_SURFACE_CATALOGUE_VERSION = 7;
+// 7 → 8 (WI-6554700010009707): the provenance backfill re-derived rows from a
+// 240-char head, which cuts off a long paste's closing tag, so every
+// paste-wrapped PTY injection (fleet-kickoff, wake-pump, self-compaction) was
+// rewritten from agent-injected to `unenrolled-origin` (~18k Claude rows). The
+// backfill now restores the closing tag from the turn's tail; the bump makes the
+// wrongly downgraded rows findable so the sweep re-derives them.
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 8;
 
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {

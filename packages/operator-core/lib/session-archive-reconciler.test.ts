@@ -145,6 +145,34 @@ describe('runSessionArchiveReconcileOnce', () => {
     expect(stats.oldestEndedUnarchivedAgeMs).toBe(3 * 3600_000);
   });
 
+  it('keeps a missing proven native transcript pending past the empty-session grace', async () => {
+    const nowMs = Date.now();
+    const db = fakeDb([{ id: 31, endedAtMs: nowMs - 3 * 3600_000 }]);
+    const store = new MiniStore();
+    const root = await tmp('sar-missing-persisted-');
+    const { runArchiveForAdvSession } = await import('./session-archive-hook');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const stats = await runSessionArchiveReconcileOnce({
+        db, store, dirRoots: [], ompRoot: root,
+        protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set() }, nowMs,
+        runAdvArchive: (id) => runArchiveForAdvSession(id, {
+          loadRow: async () => ({ id, agent: 'claude', mode: 'console', cwd: '/repo', coord_owner_id: 'su-missing', session_id: SID_DEAD,
+            ended_at: new Date(nowMs - 3 * 3600_000),
+            port_metadata: { persistenceProof: { persisted: true, nativeRef: join(root, 'su-missing', 'projects', '-repo', `${SID_DEAD}.jsonl`) } },
+          }),
+          roots: { claudeSessionRoot: root, codexHomeFor: () => root, ompRoot: root }, store,
+          protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set() }, nowMs,
+        }),
+      });
+      expect(stats.dbFailed).toBe(1);
+      expect(stats.dbStampedEmpty).toBe(0);
+      expect(stats.endedUnarchivedRemaining).toBe(1);
+      expect(db.stamped).toEqual([]);
+      expect(store.advStamps).toEqual([]);
+    } finally { warn.mockRestore(); }
+  });
+
   it('db-side LIVENESS invariant (EI-22126624550252124 fix direction 4): the oldest ended-unarchived age is measured, and is null only when nothing is pending', async () => {
     const nowMs = Date.now();
     const common = {
