@@ -114,10 +114,63 @@ kopia_as_root() {
 # it had to be SIGKILLed, and 1 when even SIGKILL failed. Prints nothing; the
 # caller logs. GRACE_SEC must stay below the guard's KOPIA_BACKUP_STOP_GRACE_SEC
 # (default 20), which SIGKILLs the calling script if its cleanup outlives that.
+#
+# Privileged calls are bounded by KOPIA_SUDO_SIGNAL_TIMEOUT_SEC (default 45), not 1 s.
+# Measured 2026-10-14 (WI-6554700010011924): under memory+IO pressure a single sudo
+# spent >=37 s before it even logged its command (journald itself was current), and
+# in-sudo gaps of ~11 s recurred. A 1 s bound timed out BOTH the SIGTERM and the
+# SIGKILL, so the stop-post cleanup delivered no signal and the root Kopia leaked.
+# Worst case per cleanup is 3 bounded calls + GRACE_SEC, so each unit's
+# TimeoutStopSec must exceed 3 x this bound + its grace.
+kopia_sudo_signal_timeout() {
+  local bound="${KOPIA_SUDO_SIGNAL_TIMEOUT_SEC:-45}"
+  [[ "$bound" =~ ^[0-9]+$ ]] && [ "$bound" -ge 1 ] || bound=45
+  printf '%s' "$bound"
+}
+
+# kopia_proc_stat_field PID INDEX — a field of /proc/<pid>/stat, counted from the
+# first field AFTER the parenthesised comm (1 = state, 20 = starttime). stat is
+# world-readable even for a root process, so identity needs no sudo.
+kopia_proc_stat_field() {
+  local stat="" idx="$2"
+  local -a fields=()
+  [[ "$idx" =~ ^[0-9]+$ ]] && [ "$idx" -ge 1 ] || return 1
+  IFS= read -r stat 2>/dev/null <"$PROC_ROOT/$1/stat" || [ -n "$stat" ] || return 1
+  [[ "$stat" == *") "* ]] || return 1
+  read -r -a fields <<<"${stat##*) }"
+  [ -n "${fields[$((idx - 1))]:-}" ] || return 1
+  printf '%s' "${fields[$((idx - 1))]}"
+}
+
+# kopia_exact_snapshot_pid PID — true only for a live `"$KOPIA_BIN" snapshot create`
+# process. The caller defines PROC_ROOT, KOPIA_BIN and SUDO_BIN. The world-readable
+# cmdline is checked FIRST, so a non-Kopia cgroup member (the cleanup's own helper
+# processes, the root sudo wrapper) costs no sudo at all. Only a process whose argv
+# already IS a Kopia snapshot reaches the exe check, and sudo resolves the link only
+# when the unprivileged readlink did not (a root-owned exe link is unreadable here,
+# WI-10002636). That call is bounded like the signals.
+kopia_exact_snapshot_pid() {
+  local pid="$1" exe="" cmdline=""
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [ "$pid" -gt 1 ] 2>/dev/null || return 1
+  cmdline="$(tr '\0' ' ' <"$PROC_ROOT/$pid/cmdline" 2>/dev/null || true)"
+  [[ "$cmdline" == "$KOPIA_BIN snapshot create "* ]] || return 1
+  exe="$(readlink -f "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
+  if [ "$exe" != "$KOPIA_BIN" ]; then
+    exe="$(/usr/bin/timeout --kill-after=1s "$(kopia_sudo_signal_timeout)s" \
+      "$SUDO_BIN" -n -- readlink -f -- "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
+  fi
+  [ "$exe" = "$KOPIA_BIN" ]
+}
+
 kopia_stop_flushing() {
-  local pid="$1" grace="${2:-15}" deadline=0
+  local pid="$1" grace="${2:-15}" deadline=0 bound="" start0="" start1="" state=""
   [[ "$grace" =~ ^[0-9]+$ ]] || grace=15
-  /usr/bin/timeout --kill-after=1s 1s "$SUDO_BIN" -n -- "$KILL_BIN" -TERM "$pid" >/dev/null 2>&1 || true
+  bound="$(kopia_sudo_signal_timeout)"
+  # Identity of the process validated by the caller: same PID + same starttime is the
+  # same process, even after a PID wrap. Empty when stat is unreadable (fixtures).
+  start0="$(kopia_proc_stat_field "$pid" 20 2>/dev/null || true)"
+  /usr/bin/timeout --kill-after=1s "${bound}s" "$SUDO_BIN" -n -- "$KILL_BIN" -TERM "$pid" >/dev/null 2>&1 || true
   # Bound the grace by WALL-CLOCK time, never by a count of `sleep 0.2` ticks. Each
   # tick forks a sleep, and at host load ~280 every fork overran, so a "15 s" grace
   # outlived kopia-home-snapshot's 30 s TimeoutStopSec. systemd then killed the
@@ -127,8 +180,19 @@ kopia_stop_flushing() {
   while [ -d "$PROC_ROOT/$pid" ] && [ "$SECONDS" -lt "$deadline" ]; do
     sleep 0.2
   done
-  # A zombie keeps its /proc dir but no readable exe, so it fails the match: gone.
-  kopia_pid_matches "$pid" || return 0
-  /usr/bin/timeout --kill-after=1s 1s "$SUDO_BIN" -n -- "$KILL_BIN" -KILL "$pid" >/dev/null 2>&1 || return 1
+  [ -d "$PROC_ROOT/$pid" ] || return 0
+  if [ -n "$start0" ]; then
+    # No sudo here: a changed starttime is a recycled PID, and a zombie (state Z)
+    # has already exited. Either way there is nothing of ours left to kill.
+    start1="$(kopia_proc_stat_field "$pid" 20 2>/dev/null || true)"
+    [ "$start1" = "$start0" ] || return 0
+    state="$(kopia_proc_stat_field "$pid" 1 2>/dev/null || true)"
+    [ "$state" != Z ] || return 0
+  else
+    # stat unreadable: fall back to the full exe+argv match. A zombie keeps its
+    # /proc dir but no readable exe, so it fails the match: gone.
+    kopia_pid_matches "$pid" || return 0
+  fi
+  /usr/bin/timeout --kill-after=1s "${bound}s" "$SUDO_BIN" -n -- "$KILL_BIN" -KILL "$pid" >/dev/null 2>&1 || return 1
   return 2
 }

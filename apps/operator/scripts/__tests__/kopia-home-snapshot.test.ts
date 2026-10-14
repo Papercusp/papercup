@@ -27,7 +27,8 @@ describe('kopia-home-snapshot bounded execution contract', () => {
     expect(unit).toContain('MemoryHigh=8G');
     expect(unit).toContain('MemoryMax=12G');
     expect(unit).toContain('MemorySwapMax=0');
-    expect(unit).toContain('TimeoutStopSec=30s');
+    // WI-6554700010011924: 3 privileged calls x 45 s bound + 15 s grace must fit.
+    expect(unit).toContain('TimeoutStopSec=180s');
     expect(unit).toContain('ExecStopPost=%h/.config/kopia/home-snapshot.sh --cleanup');
     // WI-6554700010011790: a restart must reap leftovers before starting a new walk.
     expect(serviceSection).toContain('ExecStartPre=%h/.config/kopia/home-snapshot.sh --cleanup');
@@ -166,6 +167,9 @@ describe('kopia-home-snapshot bounded execution contract', () => {
           KOPIA_TEST_HANG_ON_KILL: '1',
           KOPIA_TEST_KILL_LOG: killLog,
           KOPIA_HOME_SNAPSHOT_FLUSH_GRACE_SEC: '0',
+          // The bound is configurable (default 45 s, WI-6554700010011924); this case
+          // pins it low to prove a hung sudo is still cut off at the bound.
+          KOPIA_SUDO_SIGNAL_TIMEOUT_SEC: '1',
         },
       });
 
@@ -349,6 +353,86 @@ describe('kopia-home-snapshot bounded execution contract', () => {
         expect(log).toContain('-KILL 6161');
         expect(log).not.toMatch(/-(TERM|KILL) 6262\b/);
         expect(log).not.toMatch(/-(TERM|KILL) 6363\b/);
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    });
+
+    // WI-6554700010011924: under memory+IO pressure one sudo was measured stalling
+    // >=37 s, so every sudo the cleanup forks is a liability. These pin the three
+    // ways the old cleanup spent them.
+    it('validates cgroup members without sudo when their exe link is readable', () => {
+      // 6464 is a user-readable non-Kopia member (the cleanup's own helpers look like
+      // this). The old validator escalated every exe mismatch to `sudo readlink`.
+      const f = fixture({ leaf: 'kopia-home-snapshot.service', graceSec: '0' });
+      try {
+        expect(spawnSync('bash', [REPO_SCRIPT, '--cleanup'], { encoding: 'utf8', env: f.env, timeout: 15_000 }).status).toBe(0);
+        const log = f.killLogText();
+        expect(log).toContain('-KILL 6161');
+        expect(log.split('\n').filter((l) => l.includes('readlink'))).toEqual([]);
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    });
+
+    it('delivers SIGTERM and SIGKILL through a sudo that stalls for seconds (default bound)', () => {
+      // The stub sleeps BEFORE acting, like the measured sudo that spent >=37 s before
+      // it logged. With the old 1 s bound neither signal was ever delivered.
+      const f = fixture({ leaf: 'kopia-home-snapshot.service', graceSec: '0' });
+      try {
+        writeFileSync(
+          f.env.KOPIA_HOME_SNAPSHOT_SUDO,
+          [
+            '#!/usr/bin/env bash',
+            '[ "$1" = -n ] && shift',
+            '[ "$1" = -- ] && shift',
+            '/bin/sleep 2',
+            'printf \'%s\\n\' "$*" >>"$KOPIA_TEST_KILL_LOG"',
+            '',
+          ].join('\n'),
+        );
+        const run = spawnSync('bash', [REPO_SCRIPT, '--cleanup'], { encoding: 'utf8', env: f.env, timeout: 30_000 });
+        expect(run.status).toBe(0);
+        const log = f.killLogText();
+        for (const pid of ['6161', '6262', '6363']) {
+          expect(log).toContain(`-TERM ${pid}`);
+          expect(log).toContain(`-KILL ${pid}`);
+        }
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    });
+
+    it('re-checks identity after the grace from /proc/<pid>/stat: no SIGKILL for a recycled PID or a zombie', () => {
+      // On SIGTERM the stub rewrites 6262's starttime (the PID was reused) and marks
+      // 6363 a zombie; 6161 is untouched and still running. Only 6161 may be killed.
+      const f = fixture({ leaf: 'kopia-home-snapshot.service', graceSec: '0' });
+      const procRoot = f.env.KOPIA_HOME_SNAPSHOT_PROC_ROOT;
+      const stat = (pid: string, state: string, start: string) =>
+        `${pid} (kopia) ${state} 1 ${pid} ${pid} 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 ${start} 1000 100\n`;
+      try {
+        for (const pid of ['6161', '6262', '6363', '6464']) writeFileSync(join(procRoot, pid, 'stat'), stat(pid, 'S', '777'));
+        writeFileSync(
+          f.env.KOPIA_HOME_SNAPSHOT_SUDO,
+          [
+            '#!/usr/bin/env bash',
+            '[ "$1" = -n ] && shift',
+            '[ "$1" = -- ] && shift',
+            'printf \'%s\\n\' "$*" >>"$KOPIA_TEST_KILL_LOG"',
+            'case " $* " in',
+            `  *" -TERM 6262 "*) printf '%s\\n' ${JSON.stringify(stat('6262', 'S', '999').trim())} >${JSON.stringify(join(procRoot, '6262', 'stat'))} ;;`,
+            `  *" -TERM 6363 "*) printf '%s\\n' ${JSON.stringify(stat('6363', 'Z', '777').trim())} >${JSON.stringify(join(procRoot, '6363', 'stat'))} ;;`,
+            'esac',
+            '',
+          ].join('\n'),
+        );
+        expect(spawnSync('bash', [REPO_SCRIPT, '--cleanup'], { encoding: 'utf8', env: f.env, timeout: 15_000 }).status).toBe(0);
+        const log = f.killLogText();
+        expect(log).toContain('-TERM 6262');
+        expect(log).toContain('-TERM 6363');
+        expect(log).toContain('-KILL 6161');
+        expect(log).not.toMatch(/-KILL 6262\b/);
+        expect(log).not.toMatch(/-KILL 6363\b/);
       } finally {
         rmSync(f.root, { recursive: true, force: true });
       }

@@ -62,20 +62,11 @@ write_vm_verification_marker() {
 # this invocation, and cleanup validates both /proc/<pid>/exe and argv before
 # using sudo to kill that exact PID. Never use pkill/killall here.
 kopia_pid_matches() {
-  local pid="$1" exe="" cmdline=""
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  [ "$pid" -gt 1 ] 2>/dev/null || return 1
-  exe="$(readlink -f "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
-  # The Kopia child runs as ROOT (sudo), and /proc/<pid>/exe of a root process is
-  # unreadable to this user unit, so the plain readlink above returns nothing for the
-  # exact process this cleanup exists to kill (WI-10002636). Resolve the link with
-  # the same sudo the kill below already uses; cmdline stays world-readable.
-  if [ "$exe" != "$KOPIA_BIN" ]; then
-    exe="$("$SUDO_BIN" -n -- readlink -f -- "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
-  fi
-  [ "$exe" = "$KOPIA_BIN" ] || return 1
-  cmdline="$(tr '\0' ' ' <"$PROC_ROOT/$pid/cmdline" 2>/dev/null || true)"
-  [[ "$cmdline" == "$KOPIA_BIN snapshot create "* ]]
+  # Shared exe+argv validator (kopia-cache-bootstrap.sh). The Kopia child runs as
+  # ROOT, so its exe link is unreadable here and is resolved with a bounded sudo
+  # (WI-10002636), but only after the world-readable cmdline already matched, so a
+  # non-Kopia cgroup member costs no sudo (WI-6554700010011924).
+  kopia_exact_snapshot_pid "$1"
 }
 
 # Every root Kopia this unit starts stays in the unit's cgroup until it exits. The
@@ -90,7 +81,9 @@ CGROUP_ROOT="${KOPIA_HOME_SNAPSHOT_CGROUP_ROOT:-/sys/fs/cgroup}"
 SELF_CGROUP_FILE="${KOPIA_HOME_SNAPSHOT_SELF_CGROUP:-/proc/self/cgroup}"
 UNIT_CGROUP_LEAF="kopia-home-snapshot.service"
 
-unit_cgroup_kopia_pids() {
+# Lists this unit's cgroup members UNVALIDATED; the caller skips PIDs it already
+# validated before calling kopia_pid_matches, so no PID costs a second sudo.
+unit_cgroup_pids() {
   local line="" path="" procs="" pid=""
   line="$(grep -m1 '^0::' "$SELF_CGROUP_FILE" 2>/dev/null || true)"
   path="${line#0::}"
@@ -101,7 +94,7 @@ unit_cgroup_kopia_pids() {
   [ -r "$procs" ] || return 0
   while read -r pid; do
     [ -n "$pid" ] && [ "$pid" != "$$" ] || continue
-    if kopia_pid_matches "$pid"; then printf '%s\n' "$pid"; fi
+    printf '%s\n' "$pid"
   done <"$procs"
 }
 
@@ -134,12 +127,13 @@ cleanup_kopia_pid() {
   while read -r pid; do
     [ -n "$pid" ] || continue
     case "$seen" in *" $pid "*) continue ;; esac
+    seen+="$pid "
+    kopia_pid_matches "$pid" || continue
     echo "CLEANUP: leftover Kopia PID $pid found in this unit's cgroup" >>"$LOG"
     targets+=("$pid")
-    seen+="$pid "
-  done < <(unit_cgroup_kopia_pids)
+  done < <(unit_cgroup_pids)
   # Stop them in parallel, so any number of leftovers shares ONE flush grace inside
-  # the unit's 30 s TimeoutStopSec instead of N graces in sequence.
+  # the unit's TimeoutStopSec instead of N graces in sequence.
   for pid in "${targets[@]}"; do
     stop_kopia_pid_logged "$pid" &
     waits+=("$!")

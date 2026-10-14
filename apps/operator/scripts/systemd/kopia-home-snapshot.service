@@ -39,7 +39,11 @@ MemoryAccounting=yes
 MemoryHigh=8G
 MemoryMax=12G
 MemorySwapMax=0
-TimeoutStopSec=30s
+# WI-6554700010011924: the stop-post cleanup makes up to 3 privileged calls, each
+# bounded by KOPIA_SUDO_SIGNAL_TIMEOUT_SEC (45 s), plus a 15 s flush grace = 150 s.
+# Under memory+IO pressure one sudo was measured stalling >=37 s, so the old 30 s
+# timed out the cleanup and the root Kopia leaked. Keep this above 3 x bound + grace.
+TimeoutStopSec=180s
 # WI-6554700010011790: reap any root Kopia a previous failed attempt left in this
 # unit's cgroup before starting a new walk (systemd only logs "Found left-over
 # process ... Ignoring"). Same exact-match cleanup as ExecStopPost; always exits 0.

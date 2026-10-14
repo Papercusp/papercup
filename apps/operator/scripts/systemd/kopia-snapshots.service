@@ -27,7 +27,9 @@ MemoryAccounting=yes
 MemoryHigh=8G
 MemoryMax=12G
 MemorySwapMax=0
-TimeoutStopSec=30s
+# Same budget as kopia-home-snapshot.service (WI-6554700010011924): up to 3 sudo
+# calls bounded at KOPIA_SUDO_SIGNAL_TIMEOUT_SEC (45 s) + the 15 s flush grace.
+TimeoutStopSec=180s
 # WI-2146225: snapshot-all.sh resolves this to build REQUIRED_SOURCES, so the
 # sweep covers the dump directory even before that directory has ever been
 # snapshotted (discovery alone can never reach it — see the comment there).

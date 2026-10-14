@@ -191,6 +191,8 @@ vm_verification_epoch() {
 }
 
 fail() {
+  # Carry the section-0 leftover finding on EVERY page, not only its own (WI-6554700010011924).
+  [ -z "${LEFTOVER_NOTE:-}" ] || set -- "$* $LEFTOVER_NOTE"
   echo "[$(date -Iseconds)] FAIL: $*" >> "$LOG"
   if [ -n "$ALARM_SUPPRESSED" ]; then
     # The exit code stays 1 — the failure path is fully exercised and the verdict is real.
@@ -423,6 +425,33 @@ jdoe@host:/mnt/backup/db-dumps-other"
   [ "$failed" -eq 0 ] || exit 1
   exit 0
 fi
+
+# ── 0. DETECT (page later) A KOPIA PROCESS THAT OUTLIVED ITS STOPPED UNIT ─────
+# Rationale in section 3. Detected FIRST because every check below may fail() and
+# exit; fail() then carries LEFTOVER_NOTE on its page (WI-6554700010011924).
+UNIT_CGROUP_ROOT="${KOPIA_UNIT_CGROUP_ROOT:-/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service}"
+SYSTEMCTL_BIN="${KOPIA_HEALTHCHECK_SYSTEMCTL:-/usr/bin/systemctl}"
+unit_stopped() { # true when the unit's SubState means "no process should be running"
+  case "$("$SYSTEMCTL_BIN" --user show -p SubState --value "$1" 2>/dev/null)" in
+    dead|failed|auto-restart|auto-restart-queued) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+unit_procs() { tr '\n' ' ' < "$1/cgroup.procs" 2>/dev/null | sed 's/ *$//'; }
+leftover=""
+if [ -d "$UNIT_CGROUP_ROOT" ]; then
+  for unit in kopia-home-snapshot.service kopia-snapshots.service; do
+    cg=$(find "$UNIT_CGROUP_ROOT" -maxdepth 3 -type d -name "$unit" 2>/dev/null | head -1)
+    [ -n "$cg" ] || continue
+    [ -n "$(unit_procs "$cg")" ] || continue   # empty cgroup: no systemctl round trip
+    unit_stopped "$unit" || continue
+    procs=$(unit_procs "$cg")
+    [ -n "$procs" ] && unit_stopped "$unit" || continue
+    leftover="${leftover:+$leftover; }$unit is stopped but its cgroup still holds pid(s) $procs"
+  done
+fi
+LEFTOVER_NOTE=""
+[ -z "$leftover" ] || LEFTOVER_NOTE="ALSO: Kopia process(es) outlived their stopped unit: $leftover (WI-6554700010011924)."
 
 # ── 1. THE DUMP ITSELF — the check whose absence hid a 30-day outage ─────────
 newest=0
@@ -703,29 +732,14 @@ fi
 # Signal: SubState says nothing should run, yet the unit's cgroup still has processes.
 # SubState is read BEFORE and AFTER the cgroup read, so a unit that starts mid-check
 # is never mistaken for a leftover. cgroupfs files always report size 0, so the
-# content is read, never tested with -s. LAST on purpose, like the duty check.
-UNIT_CGROUP_ROOT="${KOPIA_UNIT_CGROUP_ROOT:-/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service}"
-SYSTEMCTL_BIN="${KOPIA_HEALTHCHECK_SYSTEMCTL:-/usr/bin/systemctl}"
-unit_stopped() { # true when the unit's SubState means "no process should be running"
-  case "$("$SYSTEMCTL_BIN" --user show -p SubState --value "$1" 2>/dev/null)" in
-    dead|failed|auto-restart|auto-restart-queued) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-unit_procs() { tr '\n' ' ' < "$1/cgroup.procs" 2>/dev/null | sed 's/ *$//'; }
-leftover=""
-if [ -d "$UNIT_CGROUP_ROOT" ]; then
-  for unit in kopia-home-snapshot.service kopia-snapshots.service; do
-    cg=$(find "$UNIT_CGROUP_ROOT" -maxdepth 3 -type d -name "$unit" 2>/dev/null | head -1)
-    [ -n "$cg" ] || continue
-    [ -n "$(unit_procs "$cg")" ] || continue   # empty cgroup: no systemctl round trip
-    unit_stopped "$unit" || continue
-    procs=$(unit_procs "$cg")
-    [ -n "$procs" ] && unit_stopped "$unit" || continue
-    leftover="${leftover:+$leftover; }$unit is stopped but its cgroup still holds pid(s) $procs"
-  done
-fi
+# content is read, never tested with -s. Paged LAST, like the duty check, but
+# detected in section 0 so an earlier failure's page still carries it.
+# DETECTED in section 0 (before any check can fail() and exit), PAGED here when nothing
+# else failed. When an earlier check does fail, fail() appends LEFTOVER_NOTE to that
+# page instead, so a stale dump (exactly when a leaked walk is likeliest) can no longer
+# silence this finding, and the staleness message still leads.
 if [ -n "$leftover" ]; then
+  LEFTOVER_NOTE=""   # this page IS the finding; do not append it a second time
   fail "Kopia process(es) outlived their stopped unit: $leftover. They run outside kopia-global.lock until the unit's next start reaps them (ExecStartPre --cleanup). Inspect with: sudo ps -o pid,etimes,args -p <pid>. See WI-6554700010011924."
 fi
 

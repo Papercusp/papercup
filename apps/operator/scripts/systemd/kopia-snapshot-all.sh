@@ -24,21 +24,12 @@ fi
 # down the user unit. Validate the exact PID and command before cleanup; never
 # scan for or kill unrelated Kopia processes.
 kopia_pid_matches() {
-  local pid="$1" exe="" cmdline=""
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  [ "$pid" -gt 1 ] 2>/dev/null || return 1
-  exe="$(readlink -f "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
-  # The Kopia child runs as ROOT (sudo), and /proc/<pid>/exe of a root process is
-  # unreadable to this user unit, so the plain readlink above returns nothing for the
-  # exact process this cleanup exists to kill (WI-10002636: two orphaned snapshot
-  # creates ran 3.5h while every cleanup logged "refusing to kill"). Resolve the link
-  # with the same sudo the kill below already uses; cmdline stays world-readable.
-  if [ "$exe" != "$KOPIA_BIN" ]; then
-    exe="$("$SUDO_BIN" -n -- readlink -f -- "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
-  fi
-  [ "$exe" = "$KOPIA_BIN" ] || return 1
-  cmdline="$(tr '\0' ' ' <"$PROC_ROOT/$pid/cmdline" 2>/dev/null || true)"
-  [[ "$cmdline" == "$KOPIA_BIN snapshot create "* ]]
+  # Shared exe+argv validator (kopia-cache-bootstrap.sh). The Kopia child runs as
+  # ROOT, so its exe link is unreadable here and is resolved with a bounded sudo
+  # (WI-10002636: two orphaned snapshot creates ran 3.5h while every cleanup logged
+  # "refusing to kill"), but only after the world-readable cmdline already matched
+  # (WI-6554700010011924).
+  kopia_exact_snapshot_pid "$1"
 }
 
 # Kopia was SIGKILLed, so the snapshots this output reports as "Created" were
