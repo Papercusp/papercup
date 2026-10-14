@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { captureNativeConsultBoundary, filterNativeConsultRoute, type NativeConsultConstraints } from './native-consult';
+import { captureNativeConsultBoundary, filterNativeConsultRoute, nativePlanClaimRequirementMismatch, type NativeConsultConstraints } from './native-consult';
 import { observeNativeConsultSource } from './consult-dispatch';
 import type { RouteResult } from './relevance-router';
 import type { resolveResumeTarget } from '../agent-launch-core';
@@ -118,6 +118,23 @@ describe('native consult pre-dispatch boundary', () => {
     expect(renewed.planClaims.checked[0].claimId).toBe(before.planClaims.checked[0].claimId);
     expect(renewed.planClaims.checked[0].expiresTs).not.toBe(before.planClaims.checked[0].expiresTs);
     expect(replaced.claims).toEqual(before.claims);
+  });
+
+  it('revalidates nonempty source plan leases after retrieval and refuses unknown or expired endpoints', async () => {
+    const required = { ...constraint, requireSourcePlanClaims: true };
+    const deps = makeDeps();
+    deps.readPlanClaims = async () => [{ ...planClaim, expired: false, expiresTs: '2026-10-12T03:00:00Z' }];
+    const held = await captureNativeConsultBoundary(target, 'workspace-native', deps);
+    expect(nativePlanClaimRequirementMismatch(held, required)).toBeNull();
+    deps.readPlanClaims = async () => [];
+    expect(nativePlanClaimRequirementMismatch(await captureNativeConsultBoundary(target, 'workspace-native', deps), required))
+      .toContain('missing');
+    deps.readPlanClaims = async () => [{ ...planClaim, expired: false }];
+    expect(nativePlanClaimRequirementMismatch(await captureNativeConsultBoundary(target, 'workspace-native', deps), required))
+      .toContain('missing');
+    expect(nativePlanClaimRequirementMismatch({ status: 'unknown', reason: 'unreadable' }, required))
+      .toContain('not measured');
+    expect(nativePlanClaimRequirementMismatch({ status: 'unknown', reason: 'unreadable' }, constraint)).toBeNull();
   });
 
   it('keeps unreadable, overflowing or misbound plan claims unknown rather than certifying an empty endpoint', async () => {

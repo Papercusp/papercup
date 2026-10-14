@@ -521,6 +521,11 @@ function nativeSourcePopulationSql(sql: Sql, params: ConsultRouteParams) {
         CASE WHEN a.agent = 'omp' THEN COALESCE(a.omp_thread_id, a.session_id)
              ELSE a.session_id END = session_turns.session_id`
     : sql`a.ended_at IS NOT NULL`;
+  const claimed = constraint.requireSourcePlanClaims ? sql`EXISTS (
+    SELECT 1 FROM harness_shared.plan_item_claims c
+     WHERE c.workspace_id = a.workspace_id AND c.owner = a.coord_owner_id
+       AND c.expires_ts > clock_timestamp()
+  )` : sql`TRUE`;
   return sql`session_turns.source_kind = ${constraint.sourceBackend} AND EXISTS (
     SELECT 1 FROM harness_shared.adv_sessions a
      WHERE a.workspace_id = ${params.workspaceId}
@@ -528,6 +533,7 @@ function nativeSourcePopulationSql(sql: Sql, params: ConsultRouteParams) {
        AND a.agent = ${constraint.sourceBackend}
        AND a.role IS NULL
        AND ${state}
+       AND ${claimed}
   )`;
 }
 

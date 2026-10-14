@@ -47,6 +47,39 @@ const begin = () =>
     nowMs: 100,
   }).transaction;
 
+describe('physical reservation refusal evidence (P-033)', () => {
+  const running = () => reserveQualificationRunner(begin(), {
+    attemptId: 'attempt-1', runnerId: 'fire-1', candidate: 'candidate-1',
+    runId: 'run-1', pid: 42, pidIdentity: 'boot:42', started: true,
+    leaseDurationMs: 1_000, nowMs: 200,
+  }).transaction;
+
+  it.each([
+    [{ attemptId: 'other-attempt' }, 'attempt-id-mismatch'],
+    [{ candidate: 'other-candidate' }, 'candidate-mismatch'],
+    [{ runId: 'other-run' }, 'run-id-mismatch'],
+    [{ pidIdentity: 'other-boot:42' }, 'pid-identity-mismatch'],
+    [{ runnerId: 'other-fire' }, 'runner-held'],
+  ] as const)('names the failed invariant while preserving the reservation: %s', (override, reason) => {
+    const current = running();
+    const result = reserveQualificationRunner(current, {
+      attemptId: 'attempt-1', runnerId: 'fire-1', candidate: 'candidate-1',
+      runId: 'run-1', pid: 42, pidIdentity: 'boot:42', started: true,
+      leaseDurationMs: 1_000, nowMs: 300, ...override,
+    });
+    expect(result).toEqual({ status: 'conflict', transaction: current, refusalReason: reason });
+    expect(result.transaction).toBe(current);
+  });
+
+  it('still attaches the matching process instead of treating equal ids as a refusal', () => {
+    expect(reserveQualificationRunner(running(), {
+      attemptId: 'attempt-1', runnerId: 'fire-1', candidate: 'candidate-1',
+      runId: 'run-1', pid: 42, pidIdentity: 'boot:42', started: true,
+      leaseDurationMs: 1_000, nowMs: 300,
+    }).status).toBe('updated');
+  });
+});
+
 describe('historical dependency pre-suite recovery', () => {
   const terminal = () => settleQualificationTransaction(begin(), {
     attemptId: 'attempt-1', candidate: 'candidate-1', runId: 'run-1',

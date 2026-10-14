@@ -2025,6 +2025,39 @@ export function runnerUnitIsOwn(
   return Boolean(unit && units?.includes(unit));
 }
 
+/** Report the store's failed invariant without inferring id skew from unit ownership. */
+export function checkpointQualificationAttachmentRefusalSummary(
+  activation: {
+    status: string;
+    refusalReason?: string;
+    transaction?: {
+      attemptId: string;
+      candidate: string | null;
+      runId: string | null;
+      currentPhysicalRunner: QualificationPhysicalRunner | null;
+    };
+  },
+  input: { attemptId?: string; gateFireId?: string; candidate: string | null; runId: string },
+  selfUnits: readonly string[],
+): string {
+  const transaction = activation.transaction;
+  const runner = transaction?.currentPhysicalRunner;
+  const sameUnit = runner && runnerUnitIsOwn(runner, selfUnits);
+  const identitySkew = sameUnit && runner.id !== input.gateFireId;
+  const identity = sameUnit
+    ? ` — reserved runner ${runner.id} is this process's own unit ${runner.unit}; ` +
+      (identitySkew
+        ? `the launcher's reservation id and the transported gateFireId ${input.gateFireId ?? 'unrecorded'} disagree (launcher/CLI version skew, WI-6554700010009727)`
+        : `reservation id and transported gateFireId agree (${runner.id})`)
+    : '';
+  const state = transaction
+    ? `; stored attempt=${transaction.attemptId}, candidate=${transaction.candidate ?? 'null'}, runId=${transaction.runId ?? 'null'}` +
+      `; requested attempt=${input.attemptId ?? 'unrecorded'}, candidate=${input.candidate ?? 'null'}, runId=${input.runId}`
+    : '';
+  return `checkpoint qualification runner attachment refused: ${activation.status}` +
+    `; refusalReason=${activation.refusalReason ?? 'unknown'}${identity}${state}`;
+}
+
 /** The `skipped-locked` summary for a fire that lost the qualification attach race (WI-6554700010009570). */
 export function attachRaceSkipSummary(incumbent: {
   runner: Pick<QualificationPhysicalRunner, "pid" | "unit">;
@@ -23884,20 +23917,9 @@ if (require.main === module) {
           });
           process.exit(0);
         }
-        const reservedRunner =
-          'transaction' in activation ? activation.transaction?.currentPhysicalRunner ?? null : null;
-        if (reservedRunner && runnerUnitIsOwn(reservedRunner, selfUnits)) {
-          // WI-6554700010009727: the reservation is OURS (same systemd unit) but was recorded under a
-          // different runner id than the gateFireId this CLI attached with. That is launcher/CLI id
-          // skew, not a lost race; name it so the crash is diagnosable instead of a silent stand-down.
-          throw new Error(
-            `checkpoint qualification runner attachment refused: ${activation.status} — the reserved runner ` +
-              `${reservedRunner.id} is this process's own unit ${reservedRunner.unit}, but this CLI attached as ` +
-              `${gateFireId ?? 'an unrecorded gateFireId'}; the launcher's reservation id and the transported ` +
-              `gateFireId disagree (launcher/CLI version skew, WI-6554700010009727)`,
-          );
-        }
-        throw new Error(`checkpoint qualification runner attachment refused: ${activation.status}`);
+        throw new Error(checkpointQualificationAttachmentRefusalSummary(activation, {
+          attemptId: qualificationAttemptId, gateFireId, candidate: qualificationCandidate, runId,
+        }, selfUnits));
       }
       qualificationProgress = startCheckpointQualificationProgress({
         target: qualificationTarget,

@@ -9,6 +9,14 @@ const input = { scenario, identity: { ownerId: 'owner-requester' } as never,
   workspaceId: 'workspace-native', harnessSlug: 'papercusp', workItemId: 'WI-native' };
 
 describe('native consult durable acceptance', () => {
+  it('preserves the nonempty source-plan-lease predicate in durable acceptance', async () => {
+    const accept = vi.fn(async () => ({ state: 'routing', pending: true })) as unknown as typeof acceptFeedbackRequestProd;
+    await acceptNativeConsultScenario({ ...input, scenario: { ...scenario, requireSourcePlanClaims: true } },
+      { accept, readHeldWorkItems: async () => [{ id: 'WI-native' }] as never });
+    expect(accept).toHaveBeenCalledWith(expect.objectContaining({
+      nativeConsult: expect.objectContaining({ requireSourcePlanClaims: true }),
+    }), input.identity, { harnessSlug: 'papercusp', allowDispatch: true });
+  });
   it('does not launch against an unheld or unreadable work-item', async () => {
     const accept = vi.fn();
     expect(await acceptNativeConsultScenario(input, { accept, readHeldWorkItems: async () => [] }))

@@ -72,7 +72,7 @@ import {
 } from './expert-model-allowlist';
 import type { ConsultReviewerModel } from './get-feedback-core';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
-import { captureNativeConsultBoundary, nativeConsultConstraintsSchema, type NativeConsultConstraints, type NativeConsultSourceObservation } from './native-consult';
+import { captureNativeConsultBoundary, nativePlanClaimRequirementMismatch, nativeConsultConstraintsSchema, type NativeConsultConstraints, type NativeConsultSourceObservation } from './native-consult';
 
 /** How long the dispatcher waits for the answering session's pty host to
  * register before reporting verified:null (booting). Same budget and same
@@ -287,9 +287,16 @@ export async function observeNativeConsultSource(
           state: nativeSourceState(resolved.target), eligible: false,
           reason: `source boundary unmeasured: ${before.reason}`, before };
       }
+      const mismatch = nativePlanClaimRequirementMismatch(before, constraint);
+      if (mismatch) return { ...base, sessionId: resolved.target.sessionId, backend: resolved.target.agent,
+        state: nativeSourceState(resolved.target), eligible: false, reason: mismatch, before };
       return { ...base, sessionId: resolved.target.sessionId, backend: resolved.target.agent,
         state: nativeSourceState(resolved.target), eligible: true,
         reason: 'exact source matched and pre-dispatch boundary measured', before };
+    }
+    if (constraint.requireSourcePlanClaims && !('refusal' in resolved)) {
+      return { ...base, sessionId: resolved.target.sessionId, backend: resolved.target.agent,
+        state: nativeSourceState(resolved.target), eligible: false, reason: 'required source plan leases were not measured' };
     }
     return 'refusal' in resolved
       ? { ...base, sessionId: null, backend: null, state: 'unknown', eligible: false, reason: resolved.refusal }
@@ -381,6 +388,7 @@ export interface BackendAvailability {
 
 /** Injectable seams — unit tests pass fakes; production omits (real impls). */
 export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
+  captureNativeBoundary?: typeof captureNativeConsultBoundary;
   /** Test seam for the saved per-review model, read again on every cascade leg. */
   readReviewerModel?: (workspaceId: string, conversationId: string) => Promise<ConsultReviewerModel | null>;
   readDispatchChoice?: (workspaceId: string, conversationId: string) => Promise<{
@@ -1219,6 +1227,11 @@ async function walkConsultDispatch(
     const source = await resolveDispatchSource(opts, d);
     if ('refusal' in source) return give(source.refusal);
     const { target, evidenceSource } = source;
+    if (opts.nativeConsult?.requireSourcePlanClaims) {
+      const before = await (d.captureNativeBoundary ?? captureNativeConsultBoundary)(target, ctx.workspaceId);
+      const mismatch = nativePlanClaimRequirementMismatch(before, opts.nativeConsult);
+      if (mismatch) return give(mismatch);
+    }
     const exactTracked = isExactTrackedResumeTarget(target);
     const boundNativeId = target.agent === 'omp'
       ? target.binding?.ompThreadId ?? target.binding?.sessionId : target.binding?.sessionId;

@@ -436,7 +436,7 @@ export function classifyGateOutcomeStatus(status: string): GateOutcomeClass {
   return status.startsWith('skipped-') ? 'skip' : 'unknown';
 }
 
-/** P-029: terminal skip/abort outcomes in a complete rolling day, grouped by reason. */
+/** P-029: actionable terminal skip/abort outcomes in a complete rolling day, grouped by reason. */
 export interface GateNonVerdictReasons {
   windowHours: 24;
   sinceMs: number;
@@ -444,7 +444,12 @@ export interface GateNonVerdictReasons {
   reasons: Array<{ reason: string; count: number; latestAtMs: number }>;
 }
 
-/** Aggregate in SQL so a bounded display timeline cannot undercount recurring skips. */
+/**
+ * Aggregate in SQL so a bounded display timeline cannot undercount recurring skips.
+ * A positively identified live join is the serializer working, not an aborted physical
+ * run (P-033). Keep it in the fire history; the no-verdict clock detects a stalled
+ * incumbent. Missing identities or unmeasured liveness must still count here.
+ */
 export async function readGateNonVerdictReasons(
   sql: Sql,
   target: GateFireTarget,
@@ -458,6 +463,12 @@ export async function readGateNonVerdictReasons(
      WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
        AND kind = 'green_checkpoint'
        AND created_at >= ${new Date(sinceMs)} AND created_at <= ${new Date(nowMs)}
+       AND NOT (
+         status = 'skipped-joined-attempt'
+         AND COALESCE(detail->>'runnerLiveness', '') = 'live'
+         AND NULLIF(btrim(detail->>'runnerId'), '') IS NOT NULL
+         AND NULLIF(btrim(detail->>'attemptId'), '') IS NOT NULL
+       )
      GROUP BY status`;
   const reasons: GateNonVerdictReasons['reasons'] = [];
   for (const row of rows) {

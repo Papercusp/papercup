@@ -153,6 +153,11 @@ beforeAll(async () => {
       agent text, role text, session_id text, omp_thread_id text,
       ended_at timestamptz
     )`);
+  // Exact canonical column names from the existing plan-claim store; only
+  // population selection reads this fixture, never claim lifecycle operations.
+  await rootSql.unsafe(`CREATE TABLE harness_shared.plan_item_claims (
+    workspace_id text NOT NULL, owner text NOT NULL, expires_ts timestamptz NOT NULL
+  )`);
 
   // ── The corpus ─────────────────────────────────────────────────────────
   // alpha: highly similar (θ≈0.2), recent, verified, authored the named path.
@@ -198,6 +203,7 @@ describe('native source population before retrieval and subject bounds', () => {
   afterEach(async () => {
     await rootSql`DELETE FROM harness_shared.session_turns WHERE owner = ANY(${addedOwners}::text[])`;
     await rootSql`DELETE FROM harness_shared.adv_sessions WHERE coord_owner_id = ANY(${addedOwners}::text[])`;
+    await rootSql`DELETE FROM harness_shared.plan_item_claims WHERE owner = ANY(${addedOwners}::text[])`;
     addedOwners.length = 0;
   });
   async function source(owner: string, angle: number, options: {
@@ -251,6 +257,30 @@ describe('native source population before retrieval and subject bounds', () => {
       turnLimit: 1 }, deps(0));
     expect(result.qualified.map(c => c.ownerId)).toEqual(['native-pop-history']);
     expect(result.qualified[0]?.evidence[0]?.session_id).toBe('historical-native');
+  });
+
+  it('requires genuine source plan leases before bounded semantic and lexical retrieval', async () => {
+    await source('native-plan-empty', 0.01);
+    await source('native-plan-expired', 0.02);
+    await source('native-plan-foreign', 0.03);
+    await source('native-plan-held', 0.2);
+    await rootSql`INSERT INTO harness_shared.plan_item_claims (workspace_id, owner, expires_ts) VALUES
+      (${WS}, 'native-plan-expired', clock_timestamp() - interval '1 minute'),
+      ('another-workspace', 'native-plan-foreign', clock_timestamp() + interval '1 hour'),
+      (${WS}, 'native-plan-held', clock_timestamp() + interval '1 hour')`;
+    const request = { ...baseParams, question, nativeConsult: { ...nativeConsult, requireSourcePlanClaims: true },
+      turnLimit: 1, maxCandidates: 1, maxQualified: 1 };
+    const measured = await routeConsult(request, deps(0));
+    expect(measured.qualified.map(c => c.ownerId)).toEqual(['native-plan-held']);
+    expect(measured.snapshot.simFloor).toBe(DEFAULT_SIM_FLOOR);
+    expect(measured.snapshot.relevanceFloor).toBe(DEFAULT_RELEVANCE_FLOOR);
+    const lexical = await routeConsult(request, deps(null));
+    expect(lexical.qualified).toEqual([]);
+    expect(lexical.snapshot.candidates.map(c => c.ownerId)).toEqual(['native-plan-held']);
+    expect(lexical.snapshot).toMatchObject({ degraded: 'embed-unavailable', fallback: 'lexical' });
+    // Omitting the internal predicate preserves the ordinary native population.
+    const ordinary = await routeConsult({ ...request, nativeConsult }, deps(0));
+    expect(ordinary.qualified.map(c => c.ownerId)).toEqual(['native-plan-empty']);
   });
 
   it('constrains lexical fallback too, without treating it as measured expertise', async () => {

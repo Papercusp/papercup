@@ -98,6 +98,44 @@ describe('pipeline-events runtime — real Postgres', () => {
     expect(result).toMatchObject({ windowHours: 24, measuredAtMs: now, sinceMs: now - 86_400_000 });
   });
 
+  it('counts failed or unmeasured joins while preserving identified live joins only in history (P-033)', async () => {
+    const now = Date.UTC(2026, 9, 13, 12);
+    const insert = async (status: string, detail: Record<string, unknown>) => {
+      await db.sql`INSERT INTO harness_shared.pipeline_events
+        (workspace_id, install_slug, kind, status, detail, created_at)
+        VALUES ('ws', ${SLUG}, 'green_checkpoint', ${status},
+          ${JSON.stringify(detail)}::text::jsonb, ${new Date(now - 1000)})`;
+    };
+    for (let i = 0; i < 10; i++) {
+      await insert('skipped-joined-attempt', {
+        gateFireId: `healthy-${i}`, attemptId: 'attempt-live', runnerId: 'runner-live', runnerLiveness: 'live',
+      });
+    }
+    for (const [fire, detail] of [
+      ['legacy', {}],
+      ['unknown', { attemptId: 'attempt-live', runnerId: 'runner-live', runnerLiveness: 'unknown' }],
+      ['dead', { attemptId: 'attempt-live', runnerId: 'runner-live', runnerLiveness: 'dead' }],
+      ['missing-runner', { attemptId: 'attempt-live', runnerLiveness: 'live' }],
+      ['missing-attempt', { runnerId: 'runner-live', runnerLiveness: 'live' }],
+      ['blank-runner', { attemptId: 'attempt-live', runnerId: ' ', runnerLiveness: 'live' }],
+    ] as const) {
+      await insert('skipped-joined-attempt', { gateFireId: fire, ...detail });
+      await insert('skipped-joined-attempt', { gateFireId: fire, ...detail });
+    }
+    await insert('error', { gateFireId: 'abort', runnerLiveness: 'live', runnerId: 'runner-live', attemptId: 'attempt-live' });
+    await insert('skipped-runner-liveness-unknown', { gateFireId: 'unmeasured' });
+
+    const result = await readGateNonVerdictReasons(db.sql, { workspaceId: 'ws', installSlug: SLUG }, now);
+    expect(result.reasons.map(({ reason, count }) => ({ reason, count }))).toEqual([
+      { reason: 'skipped-joined-attempt', count: 6 },
+      { reason: 'error', count: 1 },
+      { reason: 'skipped-runner-liveness-unknown', count: 1 },
+    ]);
+    const history = await db.sql`SELECT count(*)::int AS count FROM harness_shared.pipeline_events
+      WHERE workspace_id = 'ws' AND install_slug = ${SLUG} AND detail->>'gateFireId' LIKE 'healthy-%'`;
+    expect(history[0]?.count).toBe(10);
+  });
+
   it('reads complete gate windows in one snapshot, scopes exactly and exposes spanning attempts', async () => {
     const start = Date.parse('2026-10-05T10:00:00Z');
     const end = Date.parse('2026-10-05T11:00:00Z');

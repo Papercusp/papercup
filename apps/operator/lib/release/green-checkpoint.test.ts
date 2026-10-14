@@ -159,6 +159,7 @@ import {
   liveIncumbentAfterAttachConflict,
   ownCgroupUnits,
   runnerUnitIsOwn,
+  checkpointQualificationAttachmentRefusalSummary,
   attachRaceSkipSummary,
   matchFailingFilesToChanged,
   unmatchedFailingFiles,
@@ -3838,6 +3839,33 @@ describe("qualification attach race (WI-6554700010009570)", () => {
     transaction: { runId, candidate: "0a16d4a6fa0000000000000000000000000000aa", currentPhysicalRunner: runner },
   });
   const self = { pid: 4000001, runId: "8d95fde3-run" };
+
+  it("reports a candidate refusal with matching own-unit ids without claiming launcher skew (P-033)", () => {
+    const runner = { ...incumbentRunner, id: 'same-fire', unit: 'own.scope' };
+    const summary = checkpointQualificationAttachmentRefusalSummary({
+      ...conflict(runner), refusalReason: 'candidate-mismatch',
+      transaction: { ...conflict(runner).transaction, attemptId: 'attempt-1' },
+    }, { attemptId: 'attempt-1', gateFireId: 'same-fire', candidate: 'different-candidate', runId: self.runId }, ['own.scope']);
+    expect(summary).toContain('refusalReason=candidate-mismatch');
+    expect(summary).toContain('reservation id and transported gateFireId agree (same-fire)');
+    expect(summary).toContain('candidate=different-candidate');
+    expect(summary).not.toContain('version skew');
+    expect(summary).not.toContain('disagree');
+  });
+
+  it("claims own-unit launcher skew only for different physical ids (P-033)", () => {
+    const runner = { ...incumbentRunner, id: 'reserved-fire', unit: 'own.scope' };
+    const summary = checkpointQualificationAttachmentRefusalSummary({
+      ...conflict(runner), refusalReason: 'runner-held',
+      transaction: { ...conflict(runner).transaction, attemptId: 'attempt-1' },
+    }, { attemptId: 'attempt-1', gateFireId: 'attached-fire', candidate: 'candidate-1', runId: self.runId }, ['own.scope']);
+    expect(summary).toContain('reservation id and the transported gateFireId attached-fire disagree');
+    expect(summary).toContain('version skew');
+    expect(summary).toContain('refusalReason=runner-held');
+    expect(checkpointQualificationAttachmentRefusalSummary({ status: 'missing-identity' }, {
+      candidate: null, runId: self.runId,
+    }, [])).toBe('checkpoint qualification runner attachment refused: missing-identity; refusalReason=unknown');
+  });
 
   it("names a LIVE different runner so the losing fire stands down instead of crashing", async () => {
     const probe = vi.fn(async () => "live" as const);

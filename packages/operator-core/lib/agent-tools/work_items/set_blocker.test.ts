@@ -7,6 +7,21 @@ const setWorkItemClaimHold = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const getModes = vi.fn();
 const planItemNeedsHumanContradiction = vi.fn();
+const parkConsult = vi.fn();
+const parkWake = vi.fn();
+const parkNotify = vi.fn();
+vi.mock('../../consult/park-door', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../consult/park-door')>();
+  return {
+    ...actual,
+    makeProdParkDoorDeps: () => ({
+      now: () => Date.now(),
+      openConsult: (...args: unknown[]) => parkConsult(...args),
+      registerVerdictWake: (...args: unknown[]) => parkWake(...args),
+      notifyOwner: (...args: unknown[]) => parkNotify(...args),
+    }),
+  };
+});
 vi.mock('../../work-items', () => ({
   getWorkItem: (...args: unknown[]) => getWorkItem(...args),
   mergeWorkItemPayload: (...args: unknown[]) => mergeWorkItemPayload(...args),
@@ -45,9 +60,64 @@ beforeEach(() => {
   setWorkItemClaimHold.mockResolvedValue({ applicable: true, held: false });
   getModes.mockResolvedValue([]);
   planItemNeedsHumanContradiction.mockResolvedValue(null);
+  parkConsult.mockResolvedValue({ consultId: 'conv-r13' });
+  parkWake.mockResolvedValue(undefined);
+  parkNotify.mockResolvedValue(undefined);
 });
 
 describe('work_items:set_blocker', () => {
+  it('R-13 opens the decision-review consult and persists its ref before the set_blocker call returns', async () => {
+    const item = { id: 'WI-1', family: 'issue', state: 'open', payload: {} };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: patch }));
+    const deadline = new Date(Date.now() + 60 * 60_000).toISOString();
+
+    const out = await one({
+      id: item.id, kind: 'human', capability: 'product-decision', ref: 'decision:layout',
+      summary: 'Ship the compact layout as the default?', nextVerb: 'consult:reply',
+      defaultIfUnanswered: 'ship compact as default', decideBy: deadline,
+    });
+
+    expect(out).toMatchObject({ ok: true, changed: true });
+    expect(parkConsult).toHaveBeenCalledOnce();
+    expect(parkConsult).toHaveBeenCalledWith(expect.objectContaining({
+      originTaskRef: item.id,
+      cascade: expect.objectContaining({
+        workItemId: item.id, setterId: 'su-a', defaultAction: 'ship compact as default',
+        deadlineAt: deadline,
+      }),
+    }));
+    expect(parkWake).toHaveBeenCalledWith(expect.objectContaining({
+      subscriberId: 'su-a', eventKey: 'consult:park-verdict:conv-r13',
+    }));
+    expect(mergeWorkItemPayload).toHaveBeenCalledWith(item.id, expect.objectContaining({
+      externalBlockers: [expect.objectContaining({
+        ref: 'consult:conv-r13', capability: 'product-decision', status: 'active',
+        decideBy: deadline, evidence: expect.stringContaining('conv-r13'),
+      })],
+    }), expect.anything());
+    expect(out.activeBlockers).toEqual([expect.objectContaining({ ref: 'consult:conv-r13' })]);
+    expect(parkNotify).toHaveBeenCalledOnce();
+  });
+
+  it('R-13 leaves no blocker when the decision-review consult cannot be opened', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-1', family: 'issue', state: 'open', payload: {} });
+    parkConsult.mockRejectedValueOnce(new Error('consult unavailable'));
+
+    const out = await one({
+      id: 'WI-1', kind: 'human', capability: 'product-decision', ref: 'decision:layout',
+      summary: 'Ship the compact layout as the default?', nextVerb: 'consult:reply',
+      defaultIfUnanswered: 'ship compact as default',
+      decideBy: new Date(Date.now() + 60 * 60_000).toISOString(),
+    });
+
+    expect(out).toMatchObject({ ok: false, code: 'park_consult_failed' });
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(parkWake).not.toHaveBeenCalled();
+    expect(parkNotify).not.toHaveBeenCalled();
+  });
+
   it('blocker history CAS refuses a stale clear before any lifecycle change', async () => {
     const raw = [{ kind: 'event', ref: 'event:first', status: 'active', legacy: { retained: true },
       summary: 'Wait for first event', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z', createdBy: 'su-a' }];

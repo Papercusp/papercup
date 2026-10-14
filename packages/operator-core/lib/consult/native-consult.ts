@@ -12,6 +12,9 @@ export const nativeConsultConstraintsSchema = z.object({
   sourceBackend: z.enum(['claude', 'codex', 'omp']),
   targetBackend: z.enum(['claude', 'codex', 'omp']),
   sourceState: z.enum(['live', 'ended']),
+  requireSourcePlanClaims: z.boolean().optional().describe(
+    'Internal acceptance case: require a canonical nonexpired source-owner plan lease before retrieval and dispatch; does not change ranking floors.',
+  ),
 }).strict();
 export type NativeConsultConstraints = z.infer<typeof nativeConsultConstraintsSchema>;
 
@@ -112,6 +115,20 @@ export interface NativeConsultSourceObservation {
   eligible: boolean;
   reason: string;
   before?: NativeConsultBoundary;
+}
+
+/** A preliminary registry predicate cannot certify the later dispatch boundary. */
+export function nativePlanClaimRequirementMismatch(
+  before: NativeConsultBoundary, constraint: NativeConsultConstraints,
+): string | null {
+  if (!constraint.requireSourcePlanClaims) return null;
+  if (before.status !== 'measured') return 'required source plan leases were not measured';
+  const completedAt = Date.parse(before.completedAt);
+  if (!Number.isFinite(completedAt) || !before.planClaims.checked.some(claim =>
+    claim.owner === before.sourceOwnerId && !claim.expired && Date.parse(claim.expiresTs) > completedAt)) {
+    return 'required nonexpired source plan lease missing at dispatch boundary';
+  }
+  return null;
 }
 
 /** Filter the real ranked pool without changing its scores, order or floors.

@@ -25,7 +25,8 @@ export async function acceptNativeConsultScenario(input: {
     return { ok: false, mode: 'native-consult', error: 'work_item_not_held' };
   }
   const { scenario } = input;
-  const constraints = { sourceBackend: scenario.sourceBackend, targetBackend: scenario.targetBackend, sourceState: scenario.sourceState };
+  const constraints = { sourceBackend: scenario.sourceBackend, targetBackend: scenario.targetBackend, sourceState: scenario.sourceState,
+    ...(scenario.requireSourcePlanClaims === undefined ? {} : { requireSourcePlanClaims: scenario.requireSourcePlanClaims }) };
   const accepted = await deps.accept({
     workspaceId: input.workspaceId, requesterId: input.identity.ownerId,
     requestKey: scenario.request_key, question: scenario.question,
