@@ -5,6 +5,7 @@
  * up its own resources. It never restores over the production instance.
  */
 import { randomBytes } from 'node:crypto';
+import { z } from 'zod';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { executeSql, jsonCells, makeCtx, ROOT_SECRET, type Ctx } from './provision-cloud-sql';
 
@@ -176,11 +177,91 @@ export async function restoreDrill(options: DrillOptions = {}): Promise<DrillRec
   return receipt;
 }
 
+const savedReceiptSchema = z.object({
+  rawReceipt: z.object({
+    timestamp: z.string().datetime(),
+    operationId: z.string().uuid(),
+    receipt: z.object({
+      source: z.string(), scratch: z.string(), schema: z.string(),
+      restorePoint: z.string().datetime(), latestRecoveryTime: z.string().datetime(),
+      rpoMs: z.number().finite(), rtoMs: z.number().finite(),
+      beforeRows: z.number().int(), afterRows: z.number().int(), passed: z.boolean(),
+      cleanup: z.object({ sourceCanaryRemoved: z.boolean(), sourceDataApiClosed: z.boolean(), scratchDeleted: z.boolean() }),
+      cleanupErrors: z.array(z.string()).optional(),
+    }).passthrough(),
+  }).passthrough(),
+}).passthrough();
+
+/** Reconcile an interrupted drill without rerunning PITR or changing cloud data.
+ * The old receipt remains unchanged; current cleanup reads form a new execution.
+ */
+export async function reconcileRestoreDrill(input: unknown, options: { ctx?: Ctx; now?: () => number } = {}) {
+  const saved = savedReceiptSchema.parse(input);
+  const receipt = saved.rawReceipt.receipt;
+  const ctx = options.ctx ?? makeCtx();
+  const nonce = /^pc-pitr-drill-([a-f0-9]{12})$/.exec(receipt.scratch)?.[1];
+  if (receipt.source !== ctx.spec.instance || !nonce || receipt.schema !== `_p009_restore_${nonce}`)
+    throw new Error('restore_drill_receipt_identity_invalid');
+  const now = options.now ?? Date.now;
+  const startedAt = new Date(now()).toISOString();
+  const scope = [`--project=${ctx.spec.project}`, '--format=json', '--quiet'];
+  const [sourceRead, scratchRead, operationRead] = await Promise.all([
+    ctx.gcloud(['sql', 'instances', 'describe', receipt.source, ...scope]),
+    ctx.gcloud(['sql', 'instances', 'describe', receipt.scratch, ...scope]),
+    ctx.gcloud(['sql', 'operations', 'describe', saved.rawReceipt.operationId, ...scope]),
+  ]);
+  const decode = (r: { code: number; stdout: string }) => {
+    if (r.code !== 0) return null;
+    try { return JSON.parse(r.stdout); } catch { return null; }
+  };
+  const source = decode(sourceRead);
+  const operation = decode(operationRead);
+  const scratchNotFound = scratchRead.code !== 0 && /NOT_FOUND|was not found|does not exist|HTTPError 404/i.test(scratchRead.stderr);
+  const assertions = [
+    { id: 'saved-pitr-row-and-deadline-proof', passed: receipt.passed && judgeRestore(receipt) &&
+        Date.parse(receipt.latestRecoveryTime) >= Date.parse(receipt.restorePoint),
+      evidence: `Saved drill: beforeRows=${receipt.beforeRows}, afterRows=${receipt.afterRows}, rtoMs=${receipt.rtoMs}, rpoMs=${receipt.rpoMs}; this command does not repeat PITR.` },
+    { id: 'saved-canary-removal-proof', passed: receipt.cleanup.sourceCanaryRemoved,
+      evidence: 'Original receipt records source canary removal; SQL is not reopened for reconciliation.' },
+    { id: 'source-identity-and-protection', passed: source?.name === receipt.source && source?.project === ctx.spec.project &&
+        source?.state === 'RUNNABLE' && source?.settings?.deletionProtectionEnabled === true,
+      evidence: 'Fresh source describe must match the production project/instance, RUNNABLE state and enabled deletion protection.' },
+    { id: 'source-data-api-closed', passed: source?.settings?.dataApiAccess === 'DISALLOW_DATA_API',
+      evidence: 'Fresh source describe must explicitly report DISALLOW_DATA_API.' },
+    { id: 'scratch-absent', passed: scratchNotFound,
+      evidence: `Exact nonce-owned scratch describe: exitCode=${scratchRead.code}, notFound=${scratchNotFound}; permission and transport errors do not prove absence.` },
+    { id: 'clone-operation-identity-and-success', passed: operation?.name === saved.rawReceipt.operationId &&
+        operation?.targetId === receipt.scratch && operation?.targetProject === ctx.spec.project &&
+        operation?.operationType === 'CLONE' && operation?.status === 'DONE' && !operation?.error,
+      evidence: 'Fresh clone operation must match the saved operation, scratch and project, and be DONE without an error.' },
+  ];
+  return { schemaVersion: 1, kind: 'operational-test-evidence', framework: 'operational',
+    name: 'P-009 saved live PITR and current cleanup reconciliation',
+    command: ['npx', 'tsx', 'scripts/cloud-prod/backup-restore-drill.ts', 'verify-receipt'],
+    startedAt, finishedAt: new Date(now()).toISOString(), exitCode: assertions.every(a => a.passed) ? 0 : 1,
+    summary: 'Reconciles saved live Cloud SQL PITR row/deadline proof with fresh read-only source, scratch and clone-operation checks. Preserves the original cleanup failure. Does not verify nightly exports or alarm delivery.',
+    assertions, rawReceipt: saved.rawReceipt,
+    cleanupReconciliation: { project: ctx.spec.project, source: receipt.source, scratch: receipt.scratch,
+      sourceDescribeExitCode: sourceRead.code, scratchDescribeExitCode: scratchRead.code,
+      operationDescribeExitCode: operationRead.code, scratchNotFound },
+  };
+}
+
 export async function main(args: string[]): Promise<number> {
-  if (args.length !== 1 || !['plan', 'drill'].includes(args[0]!)) {
-    process.stderr.write('usage: backup-restore-drill.ts plan | drill\n'); return 2;
+  if (args.length !== 1 || !['plan', 'drill', 'verify-receipt'].includes(args[0]!)) {
+    process.stderr.write('usage: backup-restore-drill.ts plan | drill | verify-receipt < saved-evidence.json\n'); return 2;
   }
   const ctx = makeCtx();
+  if (args[0] === 'verify-receipt') {
+    let input = '';
+    for await (const chunk of process.stdin) {
+      input += chunk;
+      if (input.length > 256 * 1024) throw new Error('restore_drill_receipt_too_large');
+    }
+    const evidence = await reconcileRestoreDrill(JSON.parse(input), { ctx });
+    process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
+    return evidence.exitCode;
+  }
   if (args[0] === 'plan') {
     process.stdout.write(`${JSON.stringify({ source: ctx.spec.instance, databases: ctx.spec.databases,
       deadlineMs: RESTORE_DEADLINE_MS, mode: 'read-only', steps: ['check PITR window', 'create isolated canary schema',

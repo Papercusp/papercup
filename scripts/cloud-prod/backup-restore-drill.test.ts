@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EXPORT_MAX_AGE_MS, judgeExportHealth, judgeRestore, RESTORE_DEADLINE_MS, restoreDrill } from './backup-restore-drill';
+import { EXPORT_MAX_AGE_MS, judgeExportHealth, judgeRestore, RESTORE_DEADLINE_MS, restoreDrill, reconcileRestoreDrill } from './backup-restore-drill';
 import { makeCtx, type GcloudRunner } from './provision-cloud-sql';
 
 describe('completed export freshness (WI-10000694 recurrence guard)', () => {
@@ -98,5 +98,61 @@ describe('drill orchestration safety', () => {
     await expect(restoreDrill({ctx:f.ctx,nonce,now:()=>Date.parse('2026-10-14T20:01:00Z')})).rejects.toThrow('cleanup_incomplete:source_canary_cleanup_failed');
     expect(f.calls.some(c=>c[2]==='delete')).toBe(true);
     expect(f.calls.filter(c=>c[2]==='patch').at(-1)).toContain('--data-api-access=DISALLOW_DATA_API');
+  });
+});
+
+describe('read-only interrupted drill reconciliation', () => {
+  const operationId = 'ca618181-30c6-40ae-84ea-c66800000032';
+  const scratch = 'pc-pitr-drill-aabbccddeeff';
+  const saved = { rawReceipt: { timestamp: '2026-10-14T18:48:56.044Z', operationId, receipt: {
+    source: 'pc-cloud-prod-pg', scratch, schema: '_p009_restore_aabbccddeeff',
+    restorePoint: '2026-10-14T18:32:34.842Z', latestRecoveryTime: '2026-10-14T18:34:53.762Z',
+    beforeRows: 1, afterRows: 0, rtoMs: 976325, rpoMs: 17123, passed: true,
+    cleanup: { sourceCanaryRemoved: true, sourceDataApiClosed: true, scratchDeleted: false },
+    cleanupErrors: ['scratch_cleanup_failed'],
+  } } };
+  function environment(options: { scratchError?: string; scratchExists?: boolean; apiOpen?: boolean; wrongOperation?: boolean } = {}) {
+    const calls: string[][] = [];
+    const gcloud: GcloudRunner = async args => {
+      calls.push([...args]);
+      if (args[3] === scratch) return options.scratchExists ? { code: 0, stdout: '{}', stderr: '' } :
+        { code: 1, stdout: '', stderr: options.scratchError ?? 'HTTPError 404: instance was not found' };
+      const body = args[1] === 'operations' ? { name: operationId, targetId: options.wrongOperation ? 'other' : scratch,
+        targetProject: 'papercusp-cloud-prod', operationType: 'CLONE', status: 'DONE' } :
+        { name: 'pc-cloud-prod-pg', project: 'papercusp-cloud-prod', state: 'RUNNABLE',
+          settings: { deletionProtectionEnabled: true, dataApiAccess: options.apiOpen ? 'ALLOW_DATA_API' : 'DISALLOW_DATA_API' } };
+      return { code: 0, stdout: JSON.stringify(body), stderr: '' };
+    };
+    return { calls, ctx: makeCtx({ gcloud, log: () => {} }) };
+  }
+  it('records repaired cleanup separately and preserves the failed original receipt', async () => {
+    const f = environment();
+    const evidence = await reconcileRestoreDrill(saved, { ctx: f.ctx });
+    expect(evidence.exitCode).toBe(0);
+    expect(evidence.assertions.every(a => a.passed)).toBe(true);
+    expect(evidence.rawReceipt).toEqual(saved.rawReceipt);
+    expect(evidence.rawReceipt.receipt.cleanup.scratchDeleted).toBe(false);
+    expect(f.calls).toHaveLength(3);
+    expect(f.calls.every(c => c[2] === 'describe')).toBe(true);
+  });
+  it.each([{ scratchExists: true }, { scratchError: 'PERMISSION_DENIED' }, { scratchError: 'connection reset' },
+    { apiOpen: true }, { wrongOperation: true }])('fails closed on unresolved cleanup or mismatched cloud identity: %j', async options => {
+    const f = environment(options);
+    const evidence = await reconcileRestoreDrill(saved, { ctx: f.ctx });
+    expect(evidence.exitCode).toBe(1);
+    expect(f.calls.every(c => c[2] === 'describe')).toBe(true);
+  });
+  it('refuses a receipt naming another source before making cloud calls', async () => {
+    const f = environment();
+    await expect(reconcileRestoreDrill({ rawReceipt: { ...saved.rawReceipt,
+      receipt: { ...saved.rawReceipt.receipt, source: 'another-instance' } } }, { ctx: f.ctx })).rejects.toThrow('identity_invalid');
+    expect(f.calls).toEqual([]);
+  });
+  it('rejects a current-state clone even if the saved passed flag is true', async () => {
+    const f = environment();
+    const evidence = await reconcileRestoreDrill({ rawReceipt: { ...saved.rawReceipt,
+      receipt: { ...saved.rawReceipt.receipt, afterRows: 1 } } }, { ctx: f.ctx });
+    expect(evidence.assertions.find(a => a.id === 'saved-pitr-row-and-deadline-proof')?.passed).toBe(false);
+    expect(evidence.exitCode).toBe(1);
   });
 });
