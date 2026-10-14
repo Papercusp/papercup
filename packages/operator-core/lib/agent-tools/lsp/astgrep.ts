@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
+import { semgrepTaint } from '../../code-intelligence/semgrep-taint-facade';
 import {
   AST_GREP_LANGUAGES,
   astGrepFacade,
@@ -24,7 +25,7 @@ const LANGS = Object.keys(AST_GREP_LANGUAGES) as [AstGrepLanguage, ...AstGrepLan
 export default defineTool({
   name: 'code:structural',
   description:
-    'Find code by SHAPE with pinned ast-grep: `pattern` uses metavariables (`foo($X)`, `if ($C) { $$$BODY }`) and matches syntax, ignoring formatting and strings/comments. op:"search" lists matches; op:"rewrite_preview" also shows each proposed replacement; op:"syntax_index" indexes declarations/imports/inheritance from 1..16 explicit source files with source hashes and inferred relationships. Read-only: this tool cannot emit ast-grep --update-all. Returns { sites:[{path,line1,detail}], truncation, freshness, evidence?, error }; line1 is ONE-indexed. It knows no types: identically-shaped calls from different modules are indistinguishable.',
+    'Find code by SHAPE with pinned ast-grep: `pattern` uses metavariables (`foo($X)`, `if ($C) { $$$BODY }`) and matches syntax, ignoring formatting and strings/comments. op:"search" lists matches; op:"rewrite_preview" shows proposed replacements; op:"syntax_index" indexes declarations/imports/inheritance with source hashes. op:"taint" separately evaluates local data flow with admitted Semgrep OSS against explicit files and caller-declared taint.sources/sinks/sanitizers. Taint returns {analysisKind:"local-taint",findings,sources,analyzer,ruleSha256,freshness,truncation,dynamicBoundary,limitations,error}; it is inferred static evidence, never a runtime or vulnerability verdict. Other ops return {sites,truncation,freshness,evidence?,error}. Locations are ONE-indexed. All operations are read-only.',
   guidance: {
     when: 'The question is about FORM: where an idiom or anti-pattern occurs, the blast radius of a codemod, a lint-shaped sweep. Also when the code does not typecheck — this parses, it does not compile.',
     notWhen:
@@ -38,8 +39,8 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     op: z
-      .enum(['search', 'rewrite_preview', 'syntax_index'])
-      .describe('search lists matches; rewrite_preview reports replacements; syntax_index emits declarations/imports/inheritance with inferred relationships and source hashes. All are read-only.'),
+      .enum(['search', 'rewrite_preview', 'syntax_index', 'taint'])
+      .describe('search lists matches; rewrite_preview reports replacements; syntax_index emits inferred declarations; taint evaluates declared local data flow separately using Semgrep OSS. All are read-only.'),
     pattern: z
       .string()
       .min(1)
@@ -53,6 +54,11 @@ export default defineTool({
       .min(1)
       .optional()
       .describe('rewrite_preview only: replacement template, reusing the pattern\'s metavariables. NOTHING is written.'),
+    taint: z.object({
+      sources: z.array(z.string().min(1).max(2000)).min(1).max(8),
+      sinks: z.array(z.string().min(1).max(2000)).min(1).max(8),
+      sanitizers: z.array(z.string().min(1).max(2000)).max(8).optional(),
+    }).optional().describe('taint only: explicit source, sink and optional sanitizer patterns. No implicit security model or inter-file completeness claim.'),
     paths: z
       .array(z.string().min(1))
       .optional()
@@ -67,6 +73,8 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const root = args.rootPath ?? resolveAgentWorkspaceRoot(ctx);
+    if (args.op === 'taint') return { data: await semgrepTaint({ language: args.language, paths: args.paths,
+      rootPath: root, patterns: args.taint, limit: args.limit }) };
     if (args.op === 'syntax_index') return { data: await astGrepSyntaxIndex({ language: args.language, paths: args.paths, rootPath: root, limit: args.limit }) };
     if (!args.pattern) throw new Error(args.op + ' requires pattern');
     const answer = await astGrepFacade(args.op, {

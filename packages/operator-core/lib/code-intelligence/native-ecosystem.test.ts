@@ -7,6 +7,7 @@ import '../dream/capability-packets.test';
 import '../dream/capability-sampler.test';
 import './scoped-contracts.test';
 import './first-party-discovery.test';
+import './semgrep-taint-facade.test';
 import '../dream/capability-review.test';
 import '../dream/dream-evaluation.test';
 import '../dream/dream-study-graph-comparison.test';
