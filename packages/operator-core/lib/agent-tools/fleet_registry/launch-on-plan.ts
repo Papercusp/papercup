@@ -4121,6 +4121,21 @@ export default defineTool({
     // or a named pool account. Existing account/seat choices always win.
     effAccount = defaultMemberAccountRouting(effAccount);
 
+    // WI-6554700010011633: the wave's model and provider (and any per-member override) are
+    // final here; judge them against the workspace's inherited governance policy BEFORE any
+    // terminal opens. The kernel dispatch seat only saw the raw `model` argument.
+    {
+      const { judgeLaunchGovernance } = await import('../../governance-policy/session-governance');
+      const refusal = await judgeLaunchGovernance(workspaceId, [
+        { agent: effAgent ?? 'claude', model: effModel },
+        ...(args.members ?? []).flatMap((member) =>
+          member && (member.model || member.agent)
+            ? [{ agent: member.agent ?? effAgent ?? 'claude', model: member.model ?? effModel }]
+            : []),
+      ]);
+      if (refusal) return err(refusal);
+    }
+
     // EI-20362893066852316: a codex wave launched with a model the ChatGPT backend refuses
     // boots EVERY member into a hard per-turn refusal that only the member terminals see
     // (burned a 4-member wave on bare 'gpt-5.6', 2026-08-13). ONE tiny streaming request
