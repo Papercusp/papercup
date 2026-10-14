@@ -1,4 +1,5 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -20,6 +21,25 @@ const del = (p: string) => deletionClassFor(p, policy)?.id ?? null;
 describe('retention policy (disk-headroom P-003 / R-2)', () => {
   it('the shipped policy passes every structural check', () => {
     expect(validatePolicy(RETENTION_POLICY, HOME)).toEqual([]);
+  });
+
+  it('derives every named shell enforcer from the registry and pins its reviewed executable source', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const scripts = RETENTION_POLICY.flatMap((cls) => cls.enforcers.flatMap((enforcer) => {
+      const ref = enforcer.kind === 'existing' ? enforcer.ref : enforcer.kind === 'standing-reclaim' ? enforcer.via : undefined;
+      const path = ref?.split(' ')[0];
+      return path?.endsWith('.sh') ? [{ cls, enforcer, path }] : [];
+    }));
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const { cls, enforcer, path } of scripts) {
+      const bytes = readFileSync(join(root, path.replace(/^papercusp\//, '')));
+      expect('sourceSha256' in enforcer && enforcer.sourceSha256, `${cls.id}: re-review actual selector coverage before changing a pin`).toBe(createHash('sha256').update(bytes).digest('hex'));
+    }
+    const scratch = RETENTION_POLICY.find((cls) => cls.id === 'tmp-scratch')!;
+    expect(scratch.roots).toEqual(['/mnt/data/tmp', '/tmp']);
+    expect(scratch.keep).toEqual({ kind: 'max-age', maxAgeHours: 4 });
+    expect(scratch.enforcers).toEqual([{ kind: 'standing-reclaim' }]);
+    expect(RETENTION_POLICY.some((cls) => cls.id === 'mnt-tmp')).toBe(false);
   });
 
   it('every class has exactly one keep rule and at least one enforcer entry', () => {
@@ -62,7 +82,7 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
       expect(classifyPath(path, policy)).toMatchObject({ classId: 'os' });
       expect(del(path)).toBeNull();
     }
-    expect(del('/mnt/data/tmp/agent-fixture/expired')).toBe('mnt-tmp');
+    expect(del('/mnt/data/tmp/agent-fixture/expired')).toBe('tmp-scratch');
   });
 
   it('protects the owner macOS VM and deletes nothing on /mnt/backup (WI-6554700010011387)', () => {

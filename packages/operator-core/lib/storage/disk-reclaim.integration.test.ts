@@ -73,6 +73,29 @@ async function setup() {
 }
 
 describe('retention on a real fixture tree', () => {
+  it('reclaims an arbitrarily named expired tree while retaining held, leased, fresh and unknown trees', async () => {
+    const { root, options } = await setup();
+    const old = join(root, 'random-build-copy');
+    const held = join(root, 'another-arbitrary-name');
+    const leased = join(root, 'leased-build');
+    const fresh = join(root, 'recent-build');
+    for (const path of [old, held, leased, fresh]) { await mkdir(path); await writeFile(join(path, 'payload'), 'fixture'); }
+    const nowMs = options.nowMs;
+    await utimes(join(fresh, 'payload'), new Date(nowMs), new Date(nowMs));
+    const scanHolders = vi.fn(async () => ({ complete: true, byPath: new Map([[held, ['123']]]) }));
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees,
+      scanHolders, protectedPaths: [leased] });
+    expect(receipt.complete).toBe(true);
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: old, status: 'removed' }));
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: held, status: 'protected', reason: 'live process' }));
+    for (const path of [held, leased, fresh]) expect((await stat(path)).isDirectory()).toBe(true);
+    await expect(stat(old)).rejects.toMatchObject({ code: 'ENOENT' });
+    const unknown = join(root, 'unknown-holder'); await writeFile(unknown, 'keep');
+    const partial = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees,
+      scanHolders: async () => ({ complete: false, byPath: new Map() }) });
+    expect(partial.complete).toBe(false); expect(partial.policyExhausted).toBeNull();
+    expect(await readFile(unknown, 'utf8')).toBe('keep');
+  });
   it('retains a holder that appears after the initial census and durable removal intent', async () => {
     const { root, options } = await setup(); const path = join(root, 'later-held'); await writeFile(path, 'expired');
     let intent = false;
