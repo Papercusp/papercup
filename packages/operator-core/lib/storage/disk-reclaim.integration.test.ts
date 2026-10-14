@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod, open } from 'node:fs/promises';
 import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +12,7 @@ import { readDiskAlarmContext, runDiskSpaceAlarmOnce } from './disk-space-alarm'
 import { writeCensusRun } from './disk-consumer-census';
 import type { AttentionNotifyInput } from '../attention-notify';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { nativeRetentionCommand, readReclaimReceipt, runDiskReclaimOnce, writeReclaimAudit, type ReclaimSql } from './disk-reclaim';
+import { nativeRetentionCommand, readReclaimReceipt, runDiskReclaimOnce, writeReclaimAudit, removeRetentionFiles, type ReclaimSql } from './disk-reclaim';
 import { type RetentionClass } from './retention-policy';
 import { inspectRetentionTrees } from './disk-consumer-census';
 import { createFreshPgDb, applyEventSubstrateMigrationsForTest, COORD_SUBSCRIPTION_SUBSTRATE } from '../../test/_pg-helpers';
@@ -73,6 +73,96 @@ async function setup() {
 }
 
 describe('retention on a real fixture tree', () => {
+  const fileEffects: typeof removeRetentionFiles = (entries, options) => removeRetentionFiles(entries, options, {
+    repoRoot: resolve(dirname(fileURLToPath(import.meta.url)), '../../../..'),
+    command: async (_root, command, args) => ({ ok: true, detail: {
+      output: execFileSync(command, args, { encoding: 'utf8', timeout: 10_000 }),
+    } }),
+  });
+
+  it('uses fresh kernel leases for regular files while preserving open holders and effect intent', async () => {
+    const { root, options } = await setup();
+    const free = join(root, 'free'), held = join(root, 'held');
+    await writeFile(free, 'expired'); await writeFile(held, 'live descriptor');
+    const handle = await open(held, 'r');
+    const phases: string[] = [];
+    const scanHolders = vi.fn(options.scanHolders);
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees, fileEffects, scanHolders,
+        record: async (phase, detail) => {
+          phases.push(phase);
+          if (phase === 'remove-intent') expect(await stat((detail as { path: string }).path)).toBeDefined();
+        },
+      });
+      expect(receipt.complete).toBe(true);
+      expect(receipt.entries.find((entry) => entry.path === free)?.status).toBe('removed');
+      expect(receipt.entries.find((entry) => entry.path === held)).toMatchObject({ status: 'protected', reason: 'live process or kernel lease holder' });
+      expect(await stat(held)).toBeDefined();
+      expect(scanHolders).toHaveBeenCalledTimes(1); // Initial full census; fresh file proof is the kernel lease.
+      expect(phases.filter((phase) => phase === 'remove-intent')).toHaveLength(2);
+      expect(phases.indexOf('removed')).toBeGreaterThan(phases.lastIndexOf('remove-intent'));
+    } finally { await handle.close(); }
+  });
+
+  it('refuses changed file identity or write activity between intent and the kernel effect', async () => {
+    const { root, options } = await setup();
+    const path = join(root, 'changed'); await writeFile(path, 'expired');
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees, fileEffects,
+      record: async (phase) => { if (phase === 'remove-intent') await writeFile(path, 'new data'); },
+    });
+    expect(receipt.complete).toBe(true);
+    expect(receipt.entries.find((entry) => entry.path === path)?.status).toBe('changed');
+    expect(await readFile(path, 'utf8')).toBe('new data');
+  });
+
+  it('keeps directory checks fresh and preserves the exact file/directory oldest-first order', async () => {
+    const { root, options } = await setup();
+    const first = join(root, 'a-file'), second = join(root, 'b-directory'), third = join(root, 'c-file');
+    await writeFile(first, 'a'); await mkdir(second); await writeFile(third, 'c');
+    const scanHolders = vi.fn(options.scanHolders);
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees, fileEffects, scanHolders });
+    expect(receipt.complete).toBe(true);
+    expect(receipt.entries.filter((entry) => entry.status === 'removed').map((entry) => entry.path)).toEqual([first, second, third]);
+    expect(scanHolders).toHaveBeenCalledTimes(2);
+    expect(scanHolders).toHaveBeenLastCalledWith([second]);
+  });
+
+  it('refuses unknown native receipts and audit failures before any regular-file effect', async () => {
+    const { root, options } = await setup();
+    const path = join(root, 'keep'); await writeFile(path, 'data');
+    const effect = vi.fn(fileEffects);
+    const denied = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees, fileEffects: effect,
+      record: async (phase) => { if (phase === 'remove-intent') throw new Error('audit denied'); },
+    });
+    expect(denied.complete).toBe(false); expect(effect).not.toHaveBeenCalled();
+    expect(await stat(path)).toBeDefined();
+    const census = await inspectRetentionTrees(root, { retainAfterMs: options.nowMs - 24 * 3_600_000 });
+    const entries = census.entries.map((entry) => ({ ...entry, root, classId: 'fixture' }));
+    for (const output of ['not-json', '[]', '[{"path":"/foreign","status":"removed"}]']) {
+      await expect(removeRetentionFiles(entries, { retainAfterMs: options.nowMs }, {
+        command: async () => ({ ok: true, detail: { output } }),
+      })).rejects.toThrow();
+    }
+    expect(await stat(path)).toBeDefined();
+  });
+
+  it('reclaims owned read-only files with kernel leases and preserves every inode held through a hard-link alias', async () => {
+    const { root, options } = await setup();
+    const path = join(root, 'read-only'); await writeFile(path, 'expired'); await chmod(path, 0o400);
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees, fileEffects });
+    expect(receipt.complete).toBe(true);
+    expect(receipt.entries.find((entry) => entry.path === path)?.status).toBe('removed');
+    const held = join(root, 'held'); await writeFile(held, 'data');
+    const alias = join(fixture!, 'alias'); const { link } = await import('node:fs/promises'); await link(held, alias);
+    const handle = await open(alias, 'r');
+    try {
+      const protectedReceipt = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees, fileEffects });
+      expect(protectedReceipt.complete).toBe(true);
+      expect(protectedReceipt.entries.find((entry) => entry.path === held)?.status).toBe('protected');
+      expect(await readFile(held, 'utf8')).toBe('data');
+    } finally { await handle.close(); }
+  });
+
   it('runs the native cargo delegate repeatedly with captured receipts and no missed completion', async () => {
     fixture = await mkdtemp(join(tmpdir(), 'disk-retention-cargo-'));
     const shared = join(fixture, 'target');

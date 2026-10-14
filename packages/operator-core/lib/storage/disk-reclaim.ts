@@ -61,6 +61,8 @@ export interface DiskReclaimOptions {
   record?: (phase: string, details: unknown) => Promise<void>;
   /** Production reuses the streaming native census for complete max-age trees. */
   inspectTrees?: typeof import('./disk-consumer-census').inspectRetentionTrees;
+  /** Fresh kernel open-holder proof for consecutive regular files; directories still use /proc. */
+  fileEffects?: typeof removeRetentionFiles;
 }
 
 export type ReclaimSql = Pick<import('postgres').Sql, 'unsafe'>;
@@ -350,8 +352,45 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         if (!selected.length) continue;
         const holders = await outsideInspectionBudget(() => scan(selected.map((e) => e.path)));
         if (!holders.complete) { receipt.errors.push(`incomplete process-holder scan:${root.path}`); continue; }
-        for (const entry of selected) {
+        for (let index = 0; index < selected.length; index++) {
+          const entry = selected[index]!;
           if (budgetExpired()) { stopAtBudget(root.path); break; }
+          if (!receipt.dryRun && options.fileEffects && retainAfterMs !== undefined && !holders.byPath.has(entry.path)) {
+            // Preserve selection order across files and directories. A bounded
+            // group pays one managed-child launch, while EVERY unlink acquires
+            // its own kernel lease and checks identity/write activity afresh.
+            const batch: RetentionEntry[] = [];
+            for (let cursor = index; cursor < selected.length && batch.length < 64; cursor++) {
+              const candidate = selected[cursor]!;
+              if (holders.byPath.has(candidate.path) || JSON.stringify([...batch, candidate]).length > 60_000) break;
+              try { if (!(await lstat(candidate.path)).isFile()) break; }
+              catch { break; }
+              batch.push(candidate);
+            }
+            if (batch.length) {
+              try {
+                // All intents precede the child; the child checks each file
+                // immediately before its effect, after these database waits.
+                for (const candidate of batch) await outsideInspectionBudget(async () => options.record?.('remove-intent', candidate));
+                const outcomes = await outsideInspectionBudget(() => options.fileEffects!(batch, { retainAfterMs }));
+                receipt.entries.push(...outcomes);
+                for (const outcome of outcomes) {
+                  if (outcome.status === 'removed') {
+                    try { await outsideInspectionBudget(async () => options.record?.('removed', outcome)); }
+                    catch (err) { receipt.errors.push(`removed audit:${outcome.path}: ${message(err)}`); }
+                  }
+                  if (outcome.status === 'failed') receipt.errors.push(`remove:${outcome.path}: ${outcome.reason}`);
+                }
+              } catch (err) {
+                // Native partial/unknown results never become exhaustion proof.
+                receipt.entries.push(...batch.map((candidate) => ({ path: candidate.path, classId: candidate.classId,
+                  bytes: candidate.bytes, status: 'failed' as const, reason: message(err) })));
+                receipt.errors.push(`file effects:${root.path}: ${message(err)}`);
+              }
+              index += batch.length - 1;
+              continue;
+            }
+          }
           const outcome: DiskReclaimReceipt['entries'][number] = { path: entry.path, classId: entry.classId, bytes: entry.bytes, status: 'protected' };
           receipt.entries.push(outcome);
           if (holders.byPath.has(entry.path)) { outcome.reason = 'live process'; continue; }
@@ -456,6 +495,42 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
   return observed;
 }
 
+/** Reuse the managed delegate for a bounded regular-file effect group. Linux
+ * write leases refuse existing opens (including hard-link aliases) and notify
+ * the holder before a competing open can proceed. Unsupported proof fails closed.
+ */
+export async function removeRetentionFiles(entries: readonly RetentionEntry[], options: { retainAfterMs: number }, deps: {
+  command?: typeof nativeRetentionCommand;
+  repoRoot?: string;
+} = {}): Promise<DiskReclaimReceipt['entries']> {
+  if (!entries.length) return [];
+  const root = entries[0]!.root;
+  if (entries.length > 64 || entries.some((entry) => entry.root !== root || dirname(entry.path) !== root)) throw new Error('invalid regular-file effect group');
+  const rootStat = await lstat(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('file effect root is not a plain directory');
+  const repoRoot = deps.repoRoot ?? process.env.PAPERCUSP_INTEGRATION_ROOT ?? process.cwd();
+  const input = JSON.stringify({ root, rootDev: rootStat.dev, rootIno: rootStat.ino, uid: process.getuid?.(),
+    callerPid: process.pid, retainAfterMs: options.retainAfterMs,
+    entries: entries.map(({ path, dev, ino, newestWriteMs }) => ({ path, dev, ino, newestWriteMs })) });
+  if (input.length > 64_000) throw new Error('regular-file effect group exceeds native argument bound');
+  const result = await (deps.command ?? nativeRetentionCommand)(repoRoot, '/usr/bin/python3', [
+    join(repoRoot, 'scripts/lib/retention-file-lease.py'), input,
+  ], { stdoutOnly: true, outputLimit: 1024 * 1024, timeoutMs: 120_000 });
+  if (!result.ok || !result.detail || typeof result.detail !== 'object' || !('output' in result.detail) ||
+      typeof result.detail.output !== 'string') throw new Error('regular-file lease proof unavailable');
+  const rows: unknown = JSON.parse(result.detail.output);
+  if (!Array.isArray(rows) || rows.length !== entries.length) throw new Error('incomplete regular-file effect receipt');
+  return rows.map((row: unknown, index) => {
+    const entry = entries[index]!;
+    if (!row || typeof row !== 'object' || !('path' in row) || row.path !== entry.path ||
+        !('status' in row) || !['removed', 'protected', 'changed', 'failed'].includes(String(row.status)) ||
+        ('reason' in row && typeof row.reason !== 'string')) throw new Error('invalid regular-file effect receipt');
+    return { path: entry.path, classId: entry.classId, bytes: entry.bytes,
+      status: row.status as DiskReclaimReceipt['entries'][number]['status'],
+      ...('reason' in row ? { reason: row.reason as string } : {}) };
+  });
+}
+
 /** Runtime delegates preserve the owning program's leases and its original receipts. */
 export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 'dryRun'> = {}): Promise<DiskReclaimReceipt> {
   const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -513,7 +588,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   ];
   let runId = '';
   const { inspectRetentionTrees } = await import('./disk-consumer-census');
-  return runDiskReclaimOnce({ ...options, delegates, protectedPaths, inspectTrees: inspectRetentionTrees, record: async (phase, detail) => {
+  return runDiskReclaimOnce({ ...options, delegates, protectedPaths, inspectTrees: inspectRetentionTrees, fileEffects: removeRetentionFiles, record: async (phase, detail) => {
     if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;
     await writeReclaimAudit(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(), runId, phase, detail);
   } });
