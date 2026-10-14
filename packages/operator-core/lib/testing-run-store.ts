@@ -1657,6 +1657,16 @@ export function getRun(runId: string): RunSnapshot | null {
 
 const UNVERIFIED_VITEST_PASS_NOTE =
   '\n[coverage-gate] Vitest PASS withheld: the latest per-file ledger rows do not prove that every requested file passed.\n';
+const VITEST_COVERAGE_DIAGNOSTIC_RE = /\n\[coverage-gate:verification\] [^\n]*\n/g;
+
+type VitestCoverageWithheldReason =
+  | 'requested-files-unavailable'
+  | 'snapshot-store-unavailable'
+  | 'ledger-read-unavailable'
+  | 'ledger-empty'
+  | 'ledger-verdict-unavailable'
+  | 'ledger-not-passed'
+  | 'exact-file-coverage-unverified';
 
 function isWithheldUnverifiedVitestPass(snapshot: RunSnapshot): boolean {
   return snapshot.kind === 'vitest'
@@ -1674,9 +1684,20 @@ async function withholdUnverifiedVitestPass(
 
   const requestedFiles = requestedFilesFromValue(snapshot.requestedFiles);
   const sql = await snapshotSql(sqlOverride);
+  let reason: VitestCoverageWithheldReason = requestedFiles
+    ? 'snapshot-store-unavailable' : 'requested-files-unavailable';
+  let ledgerRowCount: number | null = null;
+  let ledgerStatus: DetachedRunLedgerRecovery['status'] | null = null;
   if (requestedFiles && sql) {
     const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
     const recovery = rows ? deriveDetachedRunLedgerRecovery(snapshot.runId, rows) : null;
+    ledgerRowCount = rows?.length ?? null;
+    ledgerStatus = recovery?.status ?? null;
+    reason = rows === null ? 'ledger-read-unavailable'
+      : rows.length === 0 ? 'ledger-empty'
+      : !recovery ? 'ledger-verdict-unavailable'
+      : recovery.status !== 'pass' ? 'ledger-not-passed'
+      : 'exact-file-coverage-unverified';
     if (recovery?.status === 'pass' && hasExactPassedFileCoverage(requestedFiles, recovery.files)) {
       if (!withheldPass) return snapshot;
       const restored: RunSnapshot = {
@@ -1687,15 +1708,24 @@ async function withholdUnverifiedVitestPass(
         output: snapshot.output.replace(
           UNVERIFIED_VITEST_PASS_NOTE,
           '\n[detached-recovery] recovered pass from exact requested-file ledger rows.\n',
-        ),
+        ).replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),
       };
       return persistReconciledSnapshot(snapshot, restored, sql);
     }
   }
 
-  if (withheldPass) return snapshot;
-  const unverified: RunSnapshot = { ...snapshot, status: 'error' };
-  appendSnapshotOutput(unverified, UNVERIFIED_VITEST_PASS_NOTE);
+  // Keep the compatibility marker used for late-ledger recovery, but record
+  // the prerequisite measured by this read. A query failure is unavailable;
+  // it is never labelled a timeout without evidence from that query.
+  const unverified: RunSnapshot = {
+    ...snapshot, status: 'error',
+    output: snapshot.output.replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),
+  };
+  if (!withheldPass) appendSnapshotOutput(unverified, UNVERIFIED_VITEST_PASS_NOTE);
+  appendSnapshotOutput(unverified, '\n[coverage-gate:verification] ' + JSON.stringify({
+    reason, requestedFileCount: requestedFiles?.length ?? null, ledgerRowCount, ledgerStatus,
+  }) + '\n');
+  if (withheldPass && unverified.output === snapshot.output) return snapshot;
   if (sql) await persistReconciledSnapshot(snapshot, unverified, sql);
   return unverified;
 }
@@ -1712,7 +1742,8 @@ export async function getRunAsync(runId: string, sqlOverride?: SqlLike, recovery
     if (local.snapshot.finishedAt !== null && local.finalization) await local.finalization;
     const snapshot = await withholdUnverifiedVitestPass({ ...local.snapshot }, sqlOverride);
     if ((local.snapshot.status === 'pass' && snapshot.status !== 'pass')
-      || (isWithheldUnverifiedVitestPass(local.snapshot) && snapshot.status === 'pass')) {
+      || (isWithheldUnverifiedVitestPass(local.snapshot)
+        && (snapshot.status === 'pass' || snapshot.output !== local.snapshot.output))) {
       Object.assign(local.snapshot, snapshot);
     }
     return snapshot;
