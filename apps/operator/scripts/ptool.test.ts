@@ -11,9 +11,11 @@ import {
   buildMcpUrl,
   isForeignNativeSessionRejection,
   shouldRetryWithoutNativeSession,
+  classifyConnectFailure,
   connectWithLocalRetry,
   connectWithOperatorCandidates,
   connectWithTokenFallback,
+  isModuleResolutionFailure,
   listToolsWithTokenFallback,
   listToolsWithNativeSessionFallback,
   codeRunRequestHash,
@@ -3043,6 +3045,65 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     expect(proxyError.message).toMatch(
       /\[2 connect attempt\(s\) over \d+s: 2x proxy-upstream-502\]$/,
     );
+  });
+});
+
+describe('ptool module-resolution failures are terminal, not retried (WI-6554700010012487)', () => {
+  // Server 0.0.26 shipped without @modelcontextprotocol/sdk; its ptool
+  // classified the import failure as `other` and retried it for the whole
+  // budget: "[83 connect attempt(s) over 119s: 83x other]".
+  const missingSdk = () => Object.assign(
+    new Error("Cannot find package '@modelcontextprotocol/sdk' imported from /usr/lib/Papercusp Server/sidecar/scripts/ptool.mjs"),
+    { code: 'ERR_MODULE_NOT_FOUND' },
+  );
+
+  it('classifies ESM, CJS and wrapped resolution failures as module-not-found', () => {
+    expect(isModuleResolutionFailure(missingSdk())).toBe(true);
+    expect(isModuleResolutionFailure(Object.assign(new Error('x'), { code: 'MODULE_NOT_FOUND' }))).toBe(true);
+    expect(isModuleResolutionFailure(new Error('connect failed', { cause: missingSdk() }))).toBe(true);
+    expect(classifyConnectFailure(missingSdk())).toBe('module-not-found');
+    // Negative controls: a transport refusal and a plain error stay retryable/other.
+    expect(isModuleResolutionFailure(Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }))).toBe(false);
+    expect(classifyConnectFailure(new Error('something else'))).toBe('other');
+  });
+
+  it('stops a local connect after ONE attempt when an in-attempt import cannot resolve', async () => {
+    const error = missingSdk();
+    const connectOnce = vi.fn().mockRejectedValue(error);
+    const sleep = vi.fn(async () => {});
+
+    await expect(
+      connectWithLocalRetry(connectOnce, 'http://127.0.0.1:3070', {}, {
+        maxAttempts: 20,
+        attemptTimeoutMs: 5_000,
+        totalTimeoutMs: 120_000,
+        sleep,
+      }),
+    ).rejects.toBe(error);
+
+    expect(connectOnce).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(error.message).toMatch(/\[1 connect attempt\(s\) over \d+s: 1x module-not-found\]$/);
+  });
+
+  it('never starts a connect attempt when the SDK bootstrap cannot resolve', async () => {
+    const importSdkModule = vi.fn().mockRejectedValue(missingSdk());
+    const connectOnce = vi.fn();
+    const sleep = vi.fn(async () => {});
+
+    await expect(
+      connectWithOperatorCandidates(connectOnce, ['http://127.0.0.1:3070', 'http://127.0.0.1:9071'], {}, {
+        prepareConnection: () => preparePtoolConnectionModules({ transport: 'http' }, { importSdkModule }),
+        maxAttempts: 20,
+        totalTimeoutMs: 120_000,
+        sleep,
+      }),
+    ).rejects.toThrow(/^ptool: SDK bootstrap failed before operator connection: Cannot find package '@modelcontextprotocol\/sdk'/);
+
+    // One import per SDK entrypoint, no retry, and no network attempt on either candidate.
+    expect(importSdkModule).toHaveBeenCalledTimes(2);
+    expect(connectOnce).not.toHaveBeenCalled();
+    expect(sleep).not.toHaveBeenCalled();
   });
 });
 

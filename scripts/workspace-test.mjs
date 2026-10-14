@@ -11,6 +11,7 @@
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ROUTER = resolve(REPO_ROOT, 'scripts/test-files.mjs');
@@ -75,6 +76,6 @@ export function main(argv = process.argv.slice(2)) {
   return result.status ?? 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   process.exit(main());
 }

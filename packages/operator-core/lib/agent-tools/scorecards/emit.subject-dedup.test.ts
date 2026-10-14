@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getRubric = vi.fn();
+const readRubric = vi.fn();
 const getRubricEvidenceIdentity = vi.fn();
 const getRubricPlanRevision = vi.fn();
 const readRubricPlanRevision = vi.fn();
@@ -17,6 +18,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...actual,
     getRubric: (...args: unknown[]) => getRubric(...args),
+    readRubric: (...args: unknown[]) => readRubric(...args),
     getRubricEvidenceIdentity: (...args: unknown[]) => getRubricEvidenceIdentity(...args),
     getRubricPlanRevision: (...args: unknown[]) => getRubricPlanRevision(...args),
     readRubricPlanRevision: (...args: unknown[]) => readRubricPlanRevision(...args),
@@ -38,6 +40,8 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
 
 import { emitScorecard } from './emit';
+import { asStructuredObservation } from '../../harness/improvements/observation-types';
+import { scorecardEvidenceFingerprint } from '../../scorecards';
 
 const RUBRIC = {
   rubricId: 'subject-dedup-test',
@@ -60,10 +64,51 @@ const RUBRIC = {
 const rubricRef = 'subject-dedup-test';
 const subjectRef = 'plan-alpha#SPEC-P-001@1';
 const ratings = { c1: { rating: 'pass', evidence: 'the same measured evidence' } };
+const rerunRecipe = {
+  schemaVersion: 1 as const,
+  evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+  evaluatorBuild: { sha: 'd740fc3802', version: '0.0.0' },
+  evaluatorRevision: 3,
+  classRef: 'plan-class-feature-ship',
+  args: {
+    harness: 'papercusp',
+    planItemIds: ['P-001'],
+    specFingerprint: 'spec-fingerprint-v1',
+  },
+  selection: {
+    planSlug: 'plan-alpha',
+    specId: 'SPEC-P-001',
+    specRevision: 1,
+    specFingerprint: 'spec-fingerprint-v1',
+    evidence: [{ evidenceKind: 'test', evidenceRef: 'packages/operator-core/lib/example.test.ts' }],
+  },
+  current: {
+    supplied: true,
+    fingerprints: [{
+      planSlug: 'plan-alpha',
+      specId: 'SPEC-P-001',
+      specRevision: 1,
+      specFingerprint: 'spec-fingerprint-v1',
+      evidenceKind: 'test',
+      evidenceRef: 'packages/operator-core/lib/example.test.ts',
+      sourceFingerprint: 'sha256-file-set-v1:source',
+      testFingerprint: 'sha256-file-set-v1:test',
+      fixtureFingerprint: null,
+      rubricFingerprint: null,
+      environmentFingerprint: null,
+    }],
+  },
+  derivation: {
+    kind: 'listSpecEvidence.currentness' as const,
+    classifier: 'classifySpecEvidenceCurrentness' as const,
+    unknownWhenMissing: true as const,
+  },
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
   getRubric.mockResolvedValue(RUBRIC);
+  readRubric.mockResolvedValue({ kind: 'found', rubric: RUBRIC });
   getRubricEvidenceIdentity.mockResolvedValue({ revision: 7, criteriaHash: 'criteria-v1', meaningRevision: null });
   getRubricPlanRevision.mockResolvedValue(7);
   readRubricPlanRevision.mockResolvedValue({ ok: true, revision: 7 });
@@ -126,5 +171,66 @@ describe('scorecards:emit unchanged-evidence subject scope', () => {
       previousIssueId: 'EI-same-subject',
     });
     expect(captureImprovement).toHaveBeenCalledOnce();
+  });
+
+  it('dedupes a stored raw recipe after listScorecards reconstructs replay args', async () => {
+    const normalized = asStructuredObservation({
+      rubricRef,
+      sourceHive: 'papercusp',
+      ratings,
+      rerunRecipe,
+    })?.rerunRecipe;
+    expect(normalized).toBeDefined();
+    expect(normalized!.args).not.toEqual(rerunRecipe.args);
+
+    const rawFingerprint = scorecardEvidenceFingerprint({ rubricRef, ratings, rerunRecipe });
+    expect(scorecardEvidenceFingerprint({ rubricRef, ratings, rerunRecipe: normalized! })).toBe(rawFingerprint);
+    expect(scorecardEvidenceFingerprint({
+      rubricRef,
+      ratings,
+      rerunRecipe: { ...normalized!, selection: { ...normalized!.selection, specRevision: 2 } },
+    })).not.toBe(rawFingerprint);
+    expect(scorecardEvidenceFingerprint({
+      rubricRef,
+      ratings,
+      rerunRecipe: {
+        ...normalized!,
+        current: { ...normalized!.current, fingerprints: [] },
+      },
+    })).not.toBe(rawFingerprint);
+    const sameSubject = {
+      issueId: 'EI-normalized-recipe',
+      createdBy: 'su-grader',
+      rubricRef,
+      sourceHive: 'papercusp',
+      subject: { kind: 'plan', ref: subjectRef },
+      ratings,
+      evidenceFingerprint: rawFingerprint,
+      rerunRecipe: normalized,
+      rubricRevision: RUBRIC.revision,
+      criteriaHash: RUBRIC.criteriaHash,
+    };
+    listScorecards.mockImplementation(async (filter: {
+      limit?: number;
+      subjectKind?: string;
+      subjectRef?: string;
+    }) => {
+      if (filter.limit !== 1) return [];
+      if (filter.subjectKind === 'plan' && filter.subjectRef === subjectRef) return [sameSubject];
+      return [];
+    });
+
+    const result = await emitScorecard(
+      { rubricRef, ratings, subject: { kind: 'plan', ref: subjectRef }, rerunRecipe },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(result, JSON.stringify({ result, rawFingerprint, normalized, sameSubject })).toMatchObject({
+      ok: true,
+      created: false,
+      reason: 'unchanged-evidence',
+      previousIssueId: 'EI-normalized-recipe',
+    });
+    expect(captureImprovement).not.toHaveBeenCalled();
   });
 });

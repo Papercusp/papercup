@@ -74,6 +74,28 @@ export function resolveRelatedWidenThreshold(env = process.env) {
 // selection across runs, while a different selection can never alias a full-suite pass.
 export const RELATED_FILTER_LIST_ENV = "PC_TEST_FILTER_LIST";
 
+// Expand only local npm aliases and && sequencing. Keep the command order and
+// each alias lifecycle; other shell syntax is deliberately left unsupported.
+function expandSelectionCommands(scripts, script, seen = new Set()) {
+  if (seen.has(script) || typeof scripts[script] !== 'string') throw new Error('invalid-local-script-chain');
+  const next = new Set([...seen, script]);
+  const expand = command => {
+    const alias = /^npm run ([\w:.-]+)$/.exec(command);
+    if (alias) return expandSelectionCommands(scripts, alias[1], next);
+    if (command.includes('&&') && !/[;|`"']|\$|&/.test(command.replaceAll('&&', ''))) {
+      const steps = command.split('&&').map(part => part.trim());
+      if (steps.some(part => !part)) throw new Error('invalid-local-script-chain');
+      return steps.flatMap(expand);
+    }
+    return [{ script, command }];
+  };
+  return [
+    ...(scripts[`pre${script}`] ? [{ script: `pre${script}`, command: scripts[`pre${script}`], lifecycle: true }] : []),
+    ...expand(scripts[script]),
+    ...(scripts[`post${script}`] ? [{ script: `post${script}`, command: scripts[`post${script}`], lifecycle: true }] : []),
+  ];
+}
+
 /** Preparation only: enumerate the maintained selector's actual task configs, never executions.
  * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
  */
@@ -101,6 +123,62 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
       lifecycleCommands: [...aliasScripts].flatMap(script => ['pre', 'post'].flatMap(prefix =>
         t.ws.scripts?.[`${prefix}${script}`] ? [{ script: `${prefix}${script}`, command: t.ws.scripts[`${prefix}${script}`] }] : [])) };
     let words = scriptCommandWords(resolvedCommand);
+    if (resolvedCommand.includes('&&')) {
+      try {
+        const steps = expandSelectionCommands(t.ws.scripts, t.script);
+        if (steps.length < 2 || steps.some(step => step.command.includes('&&')))
+          throw new Error('unsupported-task-command');
+        const prepared = steps.map(step => {
+          if (step.lifecycle) return { ...step, files: [], commandObligations: [{
+            kind: 'npm-lifecycle', command: step.command, inputs: null, executed: false }],
+            unenumerated: [{ reason: 'unexecuted-lifecycle-command' }] };
+          const leaf = enumerateAffectedTaskSelection([{ ...t, script: step.script,
+            ws: { ...t.ws, scripts: { [step.script]: step.command } } }], { root, filterDir, runResolver });
+          return { ...step, files: leaf.files, commandObligations: leaf.commandObligations,
+            unenumerated: leaf.unenumerated, discovery: leaf.tasks };
+        });
+        const commandObligations = prepared.flatMap((step, index) =>
+          (step.commandObligations ?? []).map(obligation => ({ ...obligation, step: index })));
+        entries.push({ ...task, runner: 'command-chain', steps: prepared,
+          files: [...new Set(prepared.flatMap(step => step.files))].sort(), commandObligations });
+        const stepFiles = prepared.flatMap(step => step.files);
+        if (new Set(stepFiles).size !== stepFiles.length)
+          unenumerated.push({ task: id, reason: 'overlapping-chain-file-population', command });
+        for (const [index, step] of prepared.entries()) for (const residue of step.unenumerated)
+          unenumerated.push({ task: id, step: index, command: step.command, reason: residue.reason });
+      } catch (error) { unenumerated.push({ task: id, reason: error.message, command }); }
+      continue;
+    }
+    const discoveryCommand = resolvedCommand === 'node scripts/el-tools-check.mjs' ?
+      [process.execPath, ['scripts/el-tools-check.mjs', '--print-selection']] :
+      resolvedCommand === 'bash bin/lib/run-selftests.sh' ?
+        ['/bin/bash', ['bin/lib/run-selftests.sh', '--print-selection']] : null;
+    if (discoveryCommand) {
+      try {
+        const output = execFileSync(discoveryCommand[0], discoveryCommand[1], {
+          cwd: wsRoot, encoding: 'utf8', timeout: 10_000 });
+        const marker = 'COMMAND_CHECK_SELECTION=';
+        const line = output.split(/\r?\n/).find(line => line.startsWith(marker));
+        const receipt = line && JSON.parse(line.slice(marker.length));
+        const validPath = file => typeof file === 'string' && file && !path.isAbsolute(file) &&
+          !file.includes('\\') && file.split('/').every(part => part && part !== '.' && part !== '..');
+        if (receipt?.kind !== 'command-check-inputs' || receipt.executed !== false ||
+            receipt.runtimeClosure !== 'unmeasured' || receipt.operationalAcceptance !== false ||
+            !Array.isArray(receipt.files) || !receipt.files.every(validPath) ||
+            new Set(receipt.files).size !== receipt.files.length ||
+            !Array.isArray(receipt.inputs) || !receipt.inputs.length ||
+            !receipt.inputs.every(input => validPath(input.path) && /^[a-f0-9]{64}$/.test(input.sha256) &&
+              createHash('sha256').update(readFileSync(path.resolve(root, input.path))).digest('hex') === input.sha256) ||
+            new Set(receipt.inputs.map(input => input.path)).size !== receipt.inputs.length ||
+            !receipt.files.every(file => receipt.inputs.some(input => input.path === file)))
+          throw new Error('invalid-command-check-discovery');
+        const commandObligations = [{ kind: 'command-check', command: resolvedCommand,
+          check: receipt.check, inputs: receipt.inputs, discovery: receipt, executed: false }];
+        entries.push({ ...task, runner: 'command-check', files: receipt.files.slice().sort(), commandObligations });
+        unenumerated.push({ task: id, reason: 'unexecuted-command-obligations', command });
+      } catch (error) { unenumerated.push({ task: id, reason: error.message, command }); }
+      continue;
+    }
     if (words[0] === 'node' && words.includes('--test')) {
       try {
         const patterns = [];
@@ -194,13 +272,22 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
       population.map(file => path.posix.join(task.dir, file)).sort(), config: result.config,
       ...(result.projects ? { projects: result.projects } : {}) });
   }
+  for (const task of entries) {
+    if (task.runner === 'command-chain' || !task.lifecycleCommands.length) continue;
+    task.commandObligations = [...(task.commandObligations ?? []), ...task.lifecycleCommands.map(step => ({
+      kind: 'npm-lifecycle', ...step, inputs: null, executed: false,
+    }))];
+    unenumerated.push({ task: task.id, reason: 'unexecuted-lifecycle-command', command: task.command });
+  }
   entries.sort((a, b) => tasks.findIndex(t => `${t.ws.name} :: ${t.script}` === a.id) -
     tasks.findIndex(t => `${t.ws.name} :: ${t.script}` === b.id));
   const files = [...new Set(entries.flatMap(task => task.files))].sort();
   const overlaps = files.filter(file => entries.filter(task => task.files.includes(file)).length > 1);
+  const commandObligations = entries.flatMap(task => (task.commandObligations ?? [])
+    .map(obligation => ({ ...obligation, task: task.id })));
   return { schemaVersion: 1, kind: 'full-gate', phase: 'selection-preparation',
     coverage: unenumerated.length === 0 && files.length > 0 && overlaps.length === 0 ? 'complete' : 'partial',
-    files, tasks: entries, unenumerated, overlaps, executed: false,
+    files, tasks: entries, commandObligations, unenumerated, overlaps, executed: false,
     runtimeClosure: 'unmeasured', operationalAcceptance: false };
 }
 

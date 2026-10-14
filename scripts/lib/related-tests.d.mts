@@ -23,6 +23,42 @@ export function enumerateAffectedTaskSelection(tasks: any, { root, filterDir, ru
     files: any[];
     tasks: ({
         runner: string;
+        steps: any;
+        files: any[];
+        commandObligations: any;
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    } | {
+        runner: string;
+        files: any;
+        commandObligations: {
+            kind: string;
+            command: any;
+            check: any;
+            inputs: any;
+            discovery: any;
+            executed: boolean;
+        }[];
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    } | {
+        runner: string;
         files: string[];
         shellPatterns: string[];
         lifecycleCommands: {
@@ -50,11 +86,18 @@ export function enumerateAffectedTaskSelection(tasks: any, { root, filterDir, ru
         script: any;
         command: any;
     })[];
-    unenumerated: {
+    commandObligations: any[];
+    unenumerated: ({
+        task: string;
+        step: any;
+        command: any;
+        reason: any;
+    } | {
         task: string;
         reason: any;
         command: any;
-    }[];
+        step?: undefined;
+    })[];
     overlaps: any[];
     executed: boolean;
     runtimeClosure: string;

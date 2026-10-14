@@ -651,6 +651,7 @@ export function connectWithOperatorCandidates<T>(connectOnce: (url: string, scop
  * focused diagnostics tests.
  */
 export function classifyConnectFailure(error: any): string;
+export function isModuleResolutionFailure(error: any): boolean;
 /**
  * EI-21504867146958629 recurrence guard companion: mutate the escaping error
  * IN PLACE so its original message stays the greppable prefix while the full

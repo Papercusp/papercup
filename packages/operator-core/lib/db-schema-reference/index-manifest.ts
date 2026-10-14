@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-10-13T02:33:33.741Z",
-  "migrationCountAtGeneration": 1274,
+  "generatedAt": "2026-10-14T13:29:45.517Z",
+  "migrationCountAtGeneration": 1291,
   "indexes": [
     {
       "schema": "audit",
@@ -3654,6 +3654,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "documents_blind_terms_gin",
+      "table": "documents",
+      "definition": "CREATE INDEX documents_blind_terms_gin ON harness_shared.documents USING gin (blind_terms) WHERE (sealed_content IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "documents_embedding_mode_idx",
       "table": "documents",
       "definition": "CREATE INDEX documents_embedding_mode_idx ON harness_shared.documents USING btree (workspace_id, user_id, embedding_mode) WHERE (embedding_mode IS NOT NULL)",
@@ -4617,6 +4624,55 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "goals",
       "definition": "CREATE INDEX goals_workspace_idx ON harness_shared.goals USING btree (workspace_id)",
       "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "governance_delegations_layer_idx",
+      "table": "governance_delegations",
+      "definition": "CREATE INDEX governance_delegations_layer_idx ON harness_shared.governance_delegations USING btree (layer_id)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "governance_delegations_pkey",
+      "table": "governance_delegations",
+      "definition": "CREATE UNIQUE INDEX governance_delegations_pkey ON harness_shared.governance_delegations USING btree (delegation_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "governance_delegations_principal_idx",
+      "table": "governance_delegations",
+      "definition": "CREATE INDEX governance_delegations_principal_idx ON harness_shared.governance_delegations USING btree (principal, layer_id) WHERE (revoked_at IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "governance_policy_layer_versions_pkey",
+      "table": "governance_policy_layer_versions",
+      "definition": "CREATE UNIQUE INDEX governance_policy_layer_versions_pkey ON harness_shared.governance_policy_layer_versions USING btree (layer_id, version)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "governance_policy_layers_level_scope_uq",
+      "table": "governance_policy_layers",
+      "definition": "CREATE UNIQUE INDEX governance_policy_layers_level_scope_uq ON harness_shared.governance_policy_layers USING btree (level, scope_ref)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "governance_policy_layers_parent_idx",
+      "table": "governance_policy_layers",
+      "definition": "CREATE INDEX governance_policy_layers_parent_idx ON harness_shared.governance_policy_layers USING btree (parent_layer_id)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "governance_policy_layers_pkey",
+      "table": "governance_policy_layers",
+      "definition": "CREATE UNIQUE INDEX governance_policy_layers_pkey ON harness_shared.governance_policy_layers USING btree (layer_id)",
+      "constraintBacked": true
     },
     {
       "schema": "harness_shared",
@@ -7280,6 +7336,27 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "organization_data_keys_one_active_idx",
+      "table": "organization_data_keys",
+      "definition": "CREATE UNIQUE INDEX organization_data_keys_one_active_idx ON harness_shared.organization_data_keys USING btree (organization_id) WHERE (state = 'active'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "organization_data_keys_pkey",
+      "table": "organization_data_keys",
+      "definition": "CREATE UNIQUE INDEX organization_data_keys_pkey ON harness_shared.organization_data_keys USING btree (organization_id, dek_version)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "organization_key_custody_pkey",
+      "table": "organization_key_custody",
+      "definition": "CREATE UNIQUE INDEX organization_key_custody_pkey ON harness_shared.organization_key_custody USING btree (organization_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
       "name": "orientation_class_reach_by_class",
       "table": "orientation_class_reach",
       "definition": "CREATE INDEX orientation_class_reach_by_class ON harness_shared.orientation_class_reach USING btree (workspace_id, sink, class_id)",
@@ -8004,6 +8081,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "plan_decisions_item_refs_gin",
       "table": "plan_decisions",
       "definition": "CREATE INDEX plan_decisions_item_refs_gin ON harness_shared.plan_decisions USING gin (item_refs)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "plan_decisions_lower_execution_tokens_idx",
+      "table": "plan_decisions",
+      "definition": "CREATE INDEX plan_decisions_lower_execution_tokens_idx ON harness_shared.plan_decisions USING gin (regexp_split_to_array(lower(body), '[^a-z0-9_-]+'::text))",
       "constraintBacked": false
     },
     {
@@ -9618,6 +9702,34 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "sensitive_action_approvals_pkey",
+      "table": "sensitive_action_approvals",
+      "definition": "CREATE UNIQUE INDEX sensitive_action_approvals_pkey ON harness_shared.sensitive_action_approvals USING btree (request_id, approver)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "sensitive_action_requests_open_idx",
+      "table": "sensitive_action_requests",
+      "definition": "CREATE INDEX sensitive_action_requests_open_idx ON harness_shared.sensitive_action_requests USING btree (workspace_id, created_at) WHERE (status = ANY (ARRAY['pending'::text, 'approved'::text]))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "sensitive_action_requests_pkey",
+      "table": "sensitive_action_requests",
+      "definition": "CREATE UNIQUE INDEX sensitive_action_requests_pkey ON harness_shared.sensitive_action_requests USING btree (request_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "sensitive_action_requests_target_idx",
+      "table": "sensitive_action_requests",
+      "definition": "CREATE INDEX sensitive_action_requests_target_idx ON harness_shared.sensitive_action_requests USING btree (target_layer_id, created_at)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "sentinel_says_pkey",
       "table": "sentinel_says",
       "definition": "CREATE UNIQUE INDEX sentinel_says_pkey ON harness_shared.sentinel_says USING btree (id)",
@@ -10206,6 +10318,48 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "siem_export_deliveries_idempotency_uq",
+      "table": "siem_export_deliveries",
+      "definition": "CREATE UNIQUE INDEX siem_export_deliveries_idempotency_uq ON harness_shared.siem_export_deliveries USING btree (stream_id, idempotency_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "siem_export_deliveries_pkey",
+      "table": "siem_export_deliveries",
+      "definition": "CREATE UNIQUE INDEX siem_export_deliveries_pkey ON harness_shared.siem_export_deliveries USING btree (delivery_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "siem_export_deliveries_stream_time_idx",
+      "table": "siem_export_deliveries",
+      "definition": "CREATE INDEX siem_export_deliveries_stream_time_idx ON harness_shared.siem_export_deliveries USING btree (stream_id, acknowledged_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "siem_export_streams_organization_idx",
+      "table": "siem_export_streams",
+      "definition": "CREATE INDEX siem_export_streams_organization_idx ON harness_shared.siem_export_streams USING btree (organization_id) WHERE (organization_id IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "siem_export_streams_pkey",
+      "table": "siem_export_streams",
+      "definition": "CREATE UNIQUE INDEX siem_export_streams_pkey ON harness_shared.siem_export_streams USING btree (stream_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "siem_export_streams_workspace_idx",
+      "table": "siem_export_streams",
+      "definition": "CREATE INDEX siem_export_streams_workspace_idx ON harness_shared.siem_export_streams USING btree (workspace_id) WHERE (workspace_id IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "slot_parked_messages_pending_idx",
       "table": "slot_parked_messages",
       "definition": "CREATE INDEX slot_parked_messages_pending_idx ON harness_shared.slot_parked_messages USING btree (workspace_id, harness_slug, slot_kind, slot_ref) WHERE ((delivered_ts IS NULL) AND (dropped_ts IS NULL))",
@@ -10545,6 +10699,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "task_ledger_bash_job_id_idx",
       "table": "task_ledger",
       "definition": "CREATE INDEX task_ledger_bash_job_id_idx ON harness_shared.task_ledger USING btree (((detail ->> 'bashJobId'::text))) WHERE ((class = 'bash-job'::text) AND (detail ? 'bashJobId'::text))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "task_ledger_consult_answer_lineage_idx",
+      "table": "task_ledger",
+      "definition": "CREATE INDEX task_ledger_consult_answer_lineage_idx ON harness_shared.task_ledger USING btree (workspace_id, ((detail #>> '{consultAnswer,answeringOwnerId}'::text[])), ((detail #>> '{consultAnswer,sourceOwnerId}'::text[]))) WHERE ((detail ? 'consultAnswer'::text) AND (NULLIF((detail #>> '{consultAnswer,answeringOwnerId}'::text[]), ''::text) IS NOT NULL) AND (NULLIF((detail #>> '{consultAnswer,sourceOwnerId}'::text[]), ''::text) IS NOT NULL) AND ((detail #>> '{consultAnswer,sourceOwnerId}'::text[]) IS DISTINCT FROM (detail #>> '{consultAnswer,answeringOwnerId}'::text[])))",
       "constraintBacked": false
     },
     {
@@ -11844,6 +12005,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "work_items_feature_family_scope_idx",
+      "table": "work_items",
+      "definition": "CREATE INDEX work_items_feature_family_scope_idx ON harness_shared.work_items USING btree (workspace_id, harness_slug) WHERE (item_kind <> ALL (ARRAY['bug'::text, 'change'::text, 'task'::text]))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "work_items_frontier_open_idx",
       "table": "work_items",
       "definition": "CREATE INDEX work_items_frontier_open_idx ON harness_shared.work_items USING btree (workspace_id, harness_slug) WHERE ((status = 'open'::text) AND (item_kind <> ALL (ARRAY['bug'::text, 'change'::text, 'task'::text])))",
@@ -12145,6 +12313,27 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "papercusp_auth",
+      "name": "directory_group_role_mappings_key",
+      "table": "directory_group_role_mappings",
+      "definition": "CREATE UNIQUE INDEX directory_group_role_mappings_key ON papercusp_auth.directory_group_role_mappings USING btree (organization_id, directory_id, group_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "directory_group_role_mappings_pkey",
+      "table": "directory_group_role_mappings",
+      "definition": "CREATE UNIQUE INDEX directory_group_role_mappings_pkey ON papercusp_auth.directory_group_role_mappings USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "directory_user_observations_pkey",
+      "table": "directory_user_observations",
+      "definition": "CREATE UNIQUE INDEX directory_user_observations_pkey ON papercusp_auth.directory_user_observations USING btree (external_organization_id, directory_id, directory_user_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
       "name": "external_identities_active_user_idx",
       "table": "external_identities",
       "definition": "CREATE INDEX external_identities_active_user_idx ON papercusp_auth.external_identities USING btree (hosted_user_id, provider) WHERE (status = 'active'::text)",
@@ -12197,6 +12386,34 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "hosted_billing_webhook_events_received_idx",
       "table": "hosted_billing_webhook_events",
       "definition": "CREATE INDEX hosted_billing_webhook_events_received_idx ON papercusp_auth.hosted_billing_webhook_events USING btree (received_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_budget_allocation_holds_allocation_idx",
+      "table": "hosted_budget_allocation_holds",
+      "definition": "CREATE INDEX hosted_budget_allocation_holds_allocation_idx ON papercusp_auth.hosted_budget_allocation_holds USING btree (control_workspace_id, organization_id, month, cost_class)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_budget_allocation_holds_pkey",
+      "table": "hosted_budget_allocation_holds",
+      "definition": "CREATE UNIQUE INDEX hosted_budget_allocation_holds_pkey ON papercusp_auth.hosted_budget_allocation_holds USING btree (control_workspace_id, organization_id, reservation_id, revision)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_budget_allocations_pkey",
+      "table": "hosted_budget_allocations",
+      "definition": "CREATE UNIQUE INDEX hosted_budget_allocations_pkey ON papercusp_auth.hosted_budget_allocations USING btree (control_workspace_id, organization_id, allocation_id, revision)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_budget_allocations_tree_idx",
+      "table": "hosted_budget_allocations",
+      "definition": "CREATE INDEX hosted_budget_allocations_tree_idx ON papercusp_auth.hosted_budget_allocations USING btree (control_workspace_id, organization_id, month, cost_class)",
       "constraintBacked": false
     },
     {
@@ -12309,6 +12526,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "hosted_mcp_oauth_requests_pkey",
       "table": "hosted_mcp_oauth_requests",
       "definition": "CREATE UNIQUE INDEX hosted_mcp_oauth_requests_pkey ON papercusp_auth.hosted_mcp_oauth_requests USING btree (handle_hash)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_outcome_cost_records_pkey",
+      "table": "hosted_outcome_cost_records",
+      "definition": "CREATE UNIQUE INDEX hosted_outcome_cost_records_pkey ON papercusp_auth.hosted_outcome_cost_records USING btree (control_workspace_id, organization_id, outcome_id, revision)",
       "constraintBacked": true
     },
     {
@@ -12541,6 +12765,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "magic_link_requests",
       "definition": "CREATE UNIQUE INDEX magic_link_requests_pkey ON papercusp_auth.magic_link_requests USING btree (token)",
       "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "organization_audit_events_export_idx",
+      "table": "organization_audit_events",
+      "definition": "CREATE INDEX organization_audit_events_export_idx ON papercusp_auth.organization_audit_events USING btree (organization_id, recorded_at, id)",
+      "constraintBacked": false
     },
     {
       "schema": "papercusp_auth",

@@ -659,7 +659,11 @@ describe('testing:runs payload-tier shape', () => {
 
   it('publishes testLayer for judges and preserves it when execution details are bounded', () => {
     expect(runsTool.agentRoles).toContain('judge');
-    const detailsShape = (runsTool.result as any).shape.runs.unwrap().element.shape.executionDetails.unwrap().shape;
+    const runShape = (runsTool.result as any).shape.runs.unwrap().element.shape;
+    expect(Object.keys(runShape)).toEqual(expect.arrayContaining([
+      'executionDetails', 'executionDetailsUnavailableReason',
+    ]));
+    const detailsShape = runShape.executionDetails.unwrap().shape;
     expect(Object.keys(detailsShape)).toContain('testLayer');
 
     const executionDetails = {

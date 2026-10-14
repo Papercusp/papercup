@@ -42,6 +42,8 @@ import { toIso } from '../_pg-timestamp';
 
 const DEFAULT_LIMIT = 30;
 const OUTPUT_TAIL_CHARS = 800;
+/** Keep source-filter diagnostics bounded without hiding whether the count is complete. */
+const OMITTED_SOURCE_RUN_IDS_LIMIT = 100;
 /** Inline budget for a bounded row's mutation diff; the full diff stays in the ledger row. */
 export const MUTANT_DIFF_INLINE_CHARS = 600;
 const NO_RUNS_RECORDED_REASON = 'no_runs_recorded' as const;
@@ -427,6 +429,7 @@ export default defineTool({
       '`runs:[]` or `groups:[]` includes `{ notRecorded:true, reason:"no_runs_recorded" }`; an empty ledger result is not evidence that the requested test passed or did not run.',
       '`count` = rows returned; `total` = rows matching the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
       'Row-list responses include `effectiveSourceFilter` and `omittedBySourceFilter`. The latter counts ledger rows matching all other selectors but removed by the effective source filter (before latestPerFile collapsing), so an empty filtered list is distinguishable from no recorded runs.',
+      '`omittedSourceRunIds` lists up to 100 durable IDs removed by that source filter, newest first; `omittedSourceRunIdsTruncated` says when more IDs remain. Use those IDs with `testRunIds` for an exact receipt read instead of guessing the hidden source.',
       'latestPerFile (default true, or false when you name a filePath) collapses to the most recent run per file — without it a file that failed an hour ago and has passed since still lists as failing.',
       '`saturationSuspect` is true only when a trustworthy host event-loop p95 sample was past the critical band, so the row is NOT reliable evidence of a genuine red — re-run before chasing it. false means a valid calm sample; null means the signal is unknown (no trustworthy host sample), not that the host was calm.',
       'SCOPE: no workspace/harness predicate is applied by default, deliberately. CI/gate rows carry NULL workspace_id/harness_slug (the CI reporter derives them from env vars CI never sets), so scoping by workspace silently excludes every CI row and reads as a clean "no failures" (EI-19324633485547042). Pass `workspace` only for per-hive Tests-tab rows, knowing it excludes CI.',
@@ -540,6 +543,8 @@ export default defineTool({
       source: z.enum(['ci', 'local', 'admin-ui', 'mutation-probe']).optional(),
       effectiveSourceFilter: z.string().optional(),
       omittedBySourceFilter: z.number().int().nonnegative().optional(),
+      omittedSourceRunIds: z.array(z.number().int().positive()).optional(),
+      omittedSourceRunIdsTruncated: z.boolean().optional(),
       sourceFilterHint: z.string().optional(),
       notRecorded: z.literal(true).optional(),
       reason: z.literal(NO_RUNS_RECORDED_REASON).optional(),
@@ -772,13 +777,25 @@ export default defineTool({
        LIMIT ${limit}`;
 
     const omittedRows = shouldCountSourceOmissions
-      ? await sql<Array<{ omitted_by_source_filter: string }>>`
-          SELECT count(*)::text AS omitted_by_source_filter
+      ? await sql<Array<{ id: string; omitted_by_source_filter: string }>>`
+          SELECT id::text,
+                 count(*) OVER ()::text AS omitted_by_source_filter
             FROM harness_shared.test_runs
             ${whereWithoutSource}
-             AND NOT COALESCE((${sourceFilter}), false)`
+             AND NOT COALESCE((${sourceFilter}), false)
+           ORDER BY finished_at DESC NULLS LAST, started_at DESC, id DESC
+           LIMIT ${OMITTED_SOURCE_RUN_IDS_LIMIT}`
       : [];
-    const omittedBySourceFilter = Number(omittedRows[0]?.omitted_by_source_filter ?? 0);
+    // A few lightweight SQL facades return their tagged fragment for an
+    // auxiliary query they do not model. Treat that as an unavailable
+    // diagnostic result rather than failing the primary ledger read; the
+    // production postgres client always returns an array here.
+    const omittedRowList = Array.isArray(omittedRows) ? omittedRows : [];
+    const omittedBySourceFilter = Number(omittedRowList[0]?.omitted_by_source_filter ?? 0);
+    const omittedSourceRunIds = omittedRowList
+      .map((row) => Number(row.id))
+      .filter((id): id is number => Number.isSafeInteger(id) && id > 0);
+    const omittedSourceRunIdsTruncated = omittedBySourceFilter > omittedSourceRunIds.length;
     const sourceFilterHint = sourceOmissionHint(omittedBySourceFilter, args.source);
 
     const total = rows.length > 0 ? Number(rows[0]!.total) : 0;
@@ -798,6 +815,8 @@ export default defineTool({
         latestPerFile,
         effectiveSourceFilter,
         omittedBySourceFilter,
+        ...(omittedSourceRunIds.length > 0 ? { omittedSourceRunIds } : {}),
+        ...(omittedSourceRunIdsTruncated ? { omittedSourceRunIdsTruncated: true } : {}),
         ...(sourceFilterHint ? { sourceFilterHint } : {}),
         runs: rows.map((r) => {
           const parsedDetails = parseStoredExecutionDetails(r.execution_details);

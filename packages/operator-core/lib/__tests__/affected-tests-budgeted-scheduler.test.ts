@@ -119,6 +119,18 @@ describe('R12 immutable full-gate comparison preparation', () => {
     expect(result.assertions.every(row => row.passed)).toBe(true);
     expect(result).toMatchObject({ ratio: 0.5, baselineWallMs: 200, candidateWallMs: 100, operationalAcceptance: false });
   });
+  it('refuses original command obligations even when a caller claims a complete test-file partition', () => {
+    for (const placement of ['selection', 'original-task', 'task', 'original-lifecycle', 'lifecycle']) {
+      const data = input();
+      const commandObligations = [{ command: 'node guard.mjs', executed: false }];
+      if (placement === 'selection') Object.assign(data.selection, { commandObligations });
+      if (placement === 'original-task') Object.assign(data.selection, { tasks: [{ commandObligations }] });
+      if (placement === 'task') Object.assign(data.tasks[0]!, { commandObligations });
+      if (placement === 'original-lifecycle') Object.assign(data.selection, { tasks: [{ lifecycleCommands: commandObligations }] });
+      if (placement === 'lifecycle') Object.assign(data.tasks[0]!, { lifecycleCommands: commandObligations });
+      expect(() => prepareBudgetedTaskComparison(data)).toThrow('native original command-obligation receipts required');
+    }
+  });
   it.each(['missing-repeat', 'duplicate-run', 'drift', 'skip', 'substitution', 'escape', 'oom',
     'unpaired', 'headroom', 'order', 'queue', 'slow', 'tampered-manifest'])
   ('fails closed on %s, with no operational acceptance from fixtures', defect => {
@@ -185,6 +197,20 @@ describe('R12 immutable full-gate comparison preparation', () => {
       const original = await readBudgetedTaskComparisonArtifacts(root, pins);
       expect(original.originalArtifactsResolved).toBe(true);
       expect(evaluateBudgetedTaskComparison(original.manifest, original.cohorts).ratio).toBe(0.5);
+      const obligationSelection = pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [],
+        files: data.selection.files, commandObligations: [{ command: 'node guard.mjs', executed: false }] });
+      data.selection.originalSha256 = obligationSelection.sha256;
+      const omissionManifest = prepareBudgetedTaskComparison(data);
+      await expect(readBudgetedTaskComparisonArtifacts(root, { ...pins,
+        manifest: pin('omission-manifest.json', omissionManifest) }))
+        .rejects.toThrow('Original command obligations were omitted');
+      const lifecycleSelection = pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [],
+        files: data.selection.files, tasks: [{ lifecycleCommands: [{ script: 'pretest', command: 'node build.mjs' }] }] });
+      data.selection.originalSha256 = lifecycleSelection.sha256;
+      await expect(readBudgetedTaskComparisonArtifacts(root, { ...pins,
+        manifest: pin('lifecycle-manifest.json', prepareBudgetedTaskComparison(data)) }))
+        .rejects.toThrow('Original command obligations were omitted');
+      pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [], files: data.selection.files });
       writeFileSync(join(root, 'child-1-long.json'), '{}');
       await expect(readBudgetedTaskComparisonArtifacts(root, pins)).rejects.toThrow('hash mismatch');
     } finally { rmSync(root, { recursive: true, force: true }); }

@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -153,6 +154,91 @@ describe('original gate selection preparation', () => {
       options([resolved(['a.test.ts']), resolved(['a.test.ts'])]));
     expect(result.coverage).toBe('partial');
     expect(result.overlaps).toEqual(['packages/core/a.test.ts']);
+  });
+
+  it('retains ordered local npm chains, lifecycle checks and unknown Astro steps without inventing files', () => {
+    const base = task();
+    base.ws.scripts = { test: 'npm run docs && npm run unit', docs: 'astro check',
+      unit: 'vitest run', preunit: 'node setup.mjs', postunit: 'node cleanup.mjs' };
+    const result = enumerateAffectedTaskSelection([base], options([resolved(['a.test.ts'])]));
+    expect(result.files).toEqual(['packages/core/a.test.ts']);
+    expect(result.coverage).toBe('partial');
+    expect(result.unenumerated.map(row => row.reason)).toEqual([
+      'unsupported-task-command', 'unexecuted-lifecycle-command', 'unexecuted-lifecycle-command',
+    ]);
+    const entry = result.tasks[0];
+    if (!('steps' in entry)) throw new Error('Original chain missing');
+    expect(entry.command).toBe(base.ws.scripts.test);
+    expect(entry.steps.map((step: { command: string }) => step.command)).toEqual([
+      'astro check', 'node setup.mjs', 'vitest run', 'node cleanup.mjs',
+    ]);
+    expect(result.commandObligations.map(row => row.command)).toEqual(['node setup.mjs', 'node cleanup.mjs']);
+    expect(result.executed).toBe(false);
+    for (const scripts of [{ test: 'npm run again && vitest run', again: 'npm run test' },
+      { test: 'npm run absent && vitest run' }]) {
+      expect(enumerateAffectedTaskSelection([{ ...base, ws: { ...base.ws, scripts } }], options([]))
+        .unenumerated[0].reason).toBe('invalid-local-script-chain');
+    }
+  });
+
+  it('retains the voice guard native input census as an unexecuted command obligation', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    const ws = { name: '@probe/operator', dir: 'apps/operator', scripts: { 'lint:el-tools': 'node scripts/el-tools-check.mjs' } };
+    const result = enumerateAffectedTaskSelection([{ ws, script: 'lint:el-tools' }], { root: repo });
+    expect(result.files).toEqual([]);
+    expect(result.coverage).toBe('partial');
+    expect(result.unenumerated[0].reason).toBe('unexecuted-command-obligations');
+    expect(result.commandObligations).toHaveLength(1);
+    const obligation = result.commandObligations[0];
+    expect(obligation).toMatchObject({ check: 'el-tools-drift', executed: false });
+    expect(obligation.inputs.map((input: { path: string }) => input.path)).toEqual(expect.arrayContaining([
+      'apps/operator/scripts/el-tools-check.mjs', 'apps/operator/scripts/el-agent-sync.mjs',
+    ]));
+    const defs = readdirSync(join(repo, 'packages/operator-core/lib/commands/defs'))
+      .filter(file => file.endsWith('.ts') && !file.endsWith('.test.ts') && file !== 'index.ts');
+    expect(obligation.inputs.filter((input: { path: string }) => input.path.startsWith('packages/operator-core/lib/commands/defs/')))
+      .toHaveLength(defs.length);
+    for (const input of obligation.inputs) expect(input.sha256)
+      .toBe(createHash('sha256').update(readFileSync(join(repo, input.path))).digest('hex'));
+    expect(result.runtimeClosure).toBe('unmeasured');
+    expect(result.operationalAcceptance).toBe(false);
+  });
+
+  it('refuses a repeated test-file population within an ordered chain', () => {
+    const base = task();
+    base.ws.scripts = { test: 'npm run one && npm run two', one: 'vitest run', two: 'vitest run' };
+    const result = enumerateAffectedTaskSelection([base], options([resolved(['a.test.ts'])]));
+    expect(result.files).toEqual(['packages/core/a.test.ts']);
+    expect(result.coverage).toBe('partial');
+    expect(result.unenumerated[0].reason).toBe('overlapping-chain-file-population');
+  });
+
+  it('discovers actual aggregate array and guard inputs without executing any selftest or hiding disk drift', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    const dir = mkdtempSync(join(tmpdir(), 'aggregate-selection-'));
+    try {
+      const lib = join(dir, 'desktop/bin/lib');
+      mkdirSync(lib, { recursive: true });
+      const source = readFileSync(join(repo, 'papercusp-desktop/bin/lib/run-selftests.sh'), 'utf8')
+        .replace(/TESTS=\([\s\S]*?\n\)/, 'TESTS=(\n  listed.selftest.sh\n)');
+      writeFileSync(join(lib, 'run-selftests.sh'), source);
+      writeFileSync(join(lib, 'pipefail-predicate.baseline.txt'), '');
+      for (const name of ['listed', 'unlisted']) writeFileSync(join(lib, `${name}.selftest.sh`),
+        `touch ${join(dir, 'executed')}\nexit 91\n`);
+      const result = enumerateAffectedTaskSelection([{ ws: { name: '@probe/desktop', dir: 'desktop',
+        scripts: { test: 'bash bin/lib/run-selftests.sh' } }, script: 'test' }], { root: dir });
+      expect(result.files).toEqual(['desktop/bin/lib/listed.selftest.sh']);
+      const obligation = result.commandObligations[0];
+      expect(obligation.discovery).toMatchObject({ listed: ['listed.selftest.sh'],
+        disk: ['listed.selftest.sh', 'unlisted.selftest.sh'],
+        guards: ['array-disk-completeness', 'pipefail-predicate-baseline'], executed: false });
+      expect(obligation.inputs.map((input: { path: string }) => input.path)).toContain('desktop/bin/lib/unlisted.selftest.sh');
+      expect(result.coverage).toBe('partial');
+      expect(existsSync(join(dir, 'executed'))).toBe(false);
+      rmSync(join(lib, 'listed.selftest.sh'));
+      expect(enumerateAffectedTaskSelection([{ ws: { name: '@probe/desktop', dir: 'desktop',
+        scripts: { test: 'bash bin/lib/run-selftests.sh' } }, script: 'test' }], { root: dir }).commandObligations).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('reuses the workspace launcher full-suite and integration configuration decisions', () => {

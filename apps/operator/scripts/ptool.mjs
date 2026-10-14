@@ -2947,6 +2947,7 @@ export async function connectWithLocalRetry(
       if (
         !local ||
         failureKind === 'uds-endpoint-unavailable' ||
+        failureKind === 'module-not-found' ||
         error?.code === 'PTOOL_CONNECTION_BOOTSTRAP_NOT_PREPARED' ||
         (isExplicitHttpConnectFailure(error) && !isRetryableLocalHttpConnectFailure(error)) ||
         (failureKind === 'proxy-upstream-502' &&
@@ -3099,6 +3100,7 @@ function connectHttpStatusOf(error) {
  */
 export function classifyConnectFailure(error) {
   if (isUdsEndpointUnavailable(error)) return 'uds-endpoint-unavailable';
+  if (isModuleResolutionFailure(error)) return 'module-not-found';
   if (/^local operator connection attempt timed out/.test(errorDetail(error))) return 'attempt-timeout';
   if (isRetryableLocalHttpConnectFailure(error)) {
     const status = connectHttpStatusOf(error);
@@ -3108,6 +3110,35 @@ export function classifyConnectFailure(error) {
   if (isExplicitHttpConnectFailure(error)) return `http-${connectHttpStatusOf(error) ?? 'unknown'}`;
   if (isTransportFailure(error)) return 'transport';
   return 'other';
+}
+
+/**
+ * A module that failed to RESOLVE is a packaging/install defect, never a
+ * transient connect condition: retrying cannot make a missing file appear.
+ * WI-6554700010012487: Server 0.0.26's ptool imported the SDK inside the
+ * connect attempt, so a missing @modelcontextprotocol/sdk classified as
+ * `other` and was retried for the full budget (83 attempts over 119s) before
+ * surfacing. The SDK import now runs once in preparePtoolConnectionModules;
+ * this keeps any import still made inside an attempt (the uds/auto native
+ * client) from re-opening that hole. Walks the cause chain.
+ */
+const MODULE_RESOLUTION_ERROR_CODES = new Set([
+  'ERR_MODULE_NOT_FOUND',
+  'MODULE_NOT_FOUND',
+  'ERR_PACKAGE_PATH_NOT_EXPORTED',
+  'ERR_UNSUPPORTED_DIR_IMPORT',
+]);
+
+export function isModuleResolutionFailure(error) {
+  const seen = new Set();
+  let current = error;
+  while (current && (typeof current === 'object' || typeof current === 'function')) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (MODULE_RESOLUTION_ERROR_CODES.has(current.code)) return true;
+    current = current.cause;
+  }
+  return false;
 }
 
 /** Explicit UDS discovery has no retryable handshake when the endpoint is absent. */
@@ -3518,7 +3549,14 @@ async function connect(
     if (mode !== 'http') {
       // Package-built plain JS: do not import a TS-only workspace package from
       // the installed Node CLI or copy its wire implementation into this file.
-      const { default: native } = await import('../../../packages/omp-plugin/dist/native-client.cjs');
+      // Same install:safe reader lease as the SDK bootstrap: the bundle still
+      // requires ajv from node_modules, so an import racing a reify could see
+      // a transient MODULE_NOT_FOUND. Under the lease a resolution failure is
+      // a real packaging defect, which connectWithLocalRetry treats as terminal.
+      const { default: native } = await importSdkModuleWithInstallAwareness(
+        'omp-plugin/dist/native-client.cjs',
+        { doImport: () => import('../../../packages/omp-plugin/dist/native-client.cjs') },
+      );
       const connected = await native.connectAgentMcp({
         url: url.href, headers: { Authorization: `Bearer ${token}` }, mode,
         name: 'ptool', timeoutMs, home: process.env.PAPERCUSP_OPERATOR_HOME,

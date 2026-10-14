@@ -54,17 +54,19 @@ describe('testing:runs mutation-probe visibility (R-2)', () => {
   const calls: Array<{ strings: string[]; values: unknown[] }> = [];
   let listedRows: unknown[] = [];
   let omitted = '0';
+  let omittedIds: string[] = [];
 
   beforeEach(() => {
     calls.length = 0;
     listedRows = [];
     omitted = '0';
+    omittedIds = [];
     sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
       const call = { strings: Array.from(strings), values };
       calls.push(call);
       if (call.strings.some((part) => part.includes('WITH filtered'))) return Promise.resolve(listedRows);
       if (call.strings.some((part) => part.includes('omitted_by_source_filter'))) {
-        return Promise.resolve([{ omitted_by_source_filter: omitted }]);
+        return Promise.resolve(omittedIds.map((id) => ({ id, omitted_by_source_filter: omitted })));
       }
       return call;
     });
@@ -91,6 +93,7 @@ describe('testing:runs mutation-probe visibility (R-2)', () => {
 
   it('a filePath lookup that matched only probe rows reports the count and names source "mutation-probe"', async () => {
     omitted = '3';
+    omittedIds = ['18917527', '18917525', '18917523'];
     const data = await run({ filePath: 'some-guard.test.ts' });
 
     expect(data.count).toBe(0);
@@ -99,7 +102,19 @@ describe('testing:runs mutation-probe visibility (R-2)', () => {
     // BAR R-9: the hint names BOTH arguments that return the hidden rows.
     expect(data.sourceFilterHint).toContain('testRunIds');
     expect(data.sourceFilterHint).toContain('3 matching row(s)');
+    expect(data.omittedSourceRunIds).toEqual([18917527, 18917525, 18917523]);
+    expect(data).not.toHaveProperty('omittedSourceRunIdsTruncated');
     expect(data).not.toHaveProperty('notRecorded');
+  });
+
+  it('marks the bounded hidden-ID list when more source-filtered rows exist', async () => {
+    omitted = '3';
+    omittedIds = ['18917527', '18917525'];
+    const data = await run({ filePath: 'some-guard.test.ts' });
+
+    expect(data.omittedBySourceFilter).toBe(3);
+    expect(data.omittedSourceRunIds).toEqual([18917527, 18917525]);
+    expect(data.omittedSourceRunIdsTruncated).toBe(true);
   });
 
   it('CONTROL: nothing hidden means no hint', async () => {
@@ -107,6 +122,7 @@ describe('testing:runs mutation-probe visibility (R-2)', () => {
     const data = await run({ filePath: 'some-guard.test.ts' });
 
     expect(data.omittedBySourceFilter).toBe(0);
+    expect(data).not.toHaveProperty('omittedSourceRunIds');
     expect(data).not.toHaveProperty('sourceFilterHint');
   });
 

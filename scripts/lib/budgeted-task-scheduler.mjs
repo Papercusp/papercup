@@ -42,6 +42,17 @@ export function prepareBudgetedTaskComparison(input) {
     Array.isArray(selection.unenumerated) && selection.unenumerated.length === 0 &&
     typeof selection.originalRef === "string" && selection.originalRef.trim() &&
     comparisonDigest(selection.originalSha256), "original complete full-gate selection required");
+  // File-only comparison receipts cannot certify source guards, lifecycle checks
+  // or shell aggregates. Preserve their original obligations until a native
+  // command-receipt contract qualifies them; never silently project them away.
+  const noCommandObligations = value => value === undefined ||
+    (Array.isArray(value) && value.length === 0);
+  const fileOnlyTask = task => noCommandObligations(task.commandObligations) &&
+    noCommandObligations(task.lifecycleCommands);
+  require(noCommandObligations(selection.commandObligations) &&
+    (!Array.isArray(selection.tasks) || selection.tasks.every(fileOnlyTask)) &&
+    (!Array.isArray(tasks) || tasks.every(fileOnlyTask)),
+  "native original command-obligation receipts required");
   require(/^[a-f0-9]{40}$/.test(source?.commit ?? "") &&
     comparisonDigest(source.receiptSha256) && comparisonDigest(source.dependencySha256) &&
     comparisonDigest(source.runtimeClosureSha256), "immutable source/dependency/runtime closure required");
@@ -220,6 +231,12 @@ export async function readBudgetedTaskComparisonArtifacts(evidenceRoot, pins) {
   if (prepared.manifestSha256 !== manifest.manifestSha256)
     throw new Error("Comparison manifest identity mismatch");
   const selection = await readPinned(manifest.selection.originalRef, manifest.selection.originalSha256);
+  if ((selection.commandObligations !== undefined &&
+       (!Array.isArray(selection.commandObligations) || selection.commandObligations.length)) ||
+      (Array.isArray(selection.tasks) && selection.tasks.some(task =>
+        ['commandObligations', 'lifecycleCommands'].some(key => task[key] !== undefined &&
+          (!Array.isArray(task[key]) || task[key].length)))))
+    throw new Error("Original command obligations were omitted from comparison receipts");
   if (selection.kind !== "full-gate" || selection.coverage !== "complete" ||
     !Array.isArray(selection.unenumerated) || selection.unenumerated.length !== 0 ||
     JSON.stringify(selection.files?.slice().sort()) !== JSON.stringify(manifest.selection.files))

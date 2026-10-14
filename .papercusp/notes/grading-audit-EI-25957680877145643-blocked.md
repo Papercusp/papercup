@@ -20,6 +20,12 @@
    So this session's shells run in an isolated network namespace and cannot reach loopback
    operator ports. This tells us nothing about whether the operator itself is up.
 
+4. Re-probed at 2026-10-14T13:25Z, after the "directed mail unread ~21m" inbox wake
+   (delivery #799341). Same results: no `papercusp` tools after the server re-sent its
+   instructions, health 000 on all four ports, zero listeners, now in netns
+   `net:[4026542757]`. The directed mail is still unread because this session cannot read
+   `coord:inbox`.
+
 ## Consequence
 
 - The currentness guard (`scorecard.gradingAuditCurrentness.state`) could not be read. Per the

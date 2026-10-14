@@ -156,12 +156,12 @@ describe('check-bundled-cli-entry-guards', () => {
     // commit its own mutant even when nothing goes wrong.
     const subject = process.env.PROBE_BUNDLE_HOST_SH || join(repoRoot, 'apps/operator/bin/bundle-host.sh');
     const script = readFileSync(subject, 'utf8');
-    const esbuildIdx = script.indexOf('npx --yes esbuild@');
+    const esbuildIdx = script.indexOf('bundle_host_esbuild');
     const scannerIdx = script.indexOf('check-bundled-cli-entry-guards.mjs');
     expect(esbuildIdx).toBeGreaterThan(-1);
     expect(scannerIdx).toBeGreaterThan(esbuildIdx);
     // The esbuild invocation itself must be failure-checked.
-    expect(script).toMatch(/if ! "\$\{COMMITTED_NODE\[@\]\}" "\$REPO_ROOT\/scripts\/npm-install-safe\.mjs"\s*\\\n\s*--repo-root "\$REPO_ROOT" --exec-under-cache-lock -- npx --yes esbuild@/);
+    expect(script).toMatch(/bundle_host_run_step host-compile bundle_host_esbuild/);
     // And it must exit between esbuild and the scanner, so the scanner never runs on a
     // metafile esbuild did not write.
     const between = script.slice(esbuildIdx, scannerIdx);
