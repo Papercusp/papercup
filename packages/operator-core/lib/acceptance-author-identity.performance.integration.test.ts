@@ -130,7 +130,7 @@ it('preserves cycles, bounded ancestry, consult ancestry, siblings and tenant ex
   expect(await lineagePartyKeys(candidates,{sql:withProjection(true),workspaceId})).toEqual(legacy);
 }, 60_000);
 
-it('plans consultAnswer lineage through the partial task-ledger index', async () => {
+it('uses the partial task-ledger index and scans consultAnswer edges once', async () => {
   const candidates = ['chain-0','chain-2','consult-fork','sibling-a','sibling-b','cycle-a','cycle-b','foreign-child'];
   const indexes: string[] = [];
   const nodes: Record<string, unknown>[] = [];
@@ -162,6 +162,11 @@ it('plans consultAnswer lineage through the partial task-ledger index', async ()
   });
   console.info('P004_CONSULT_ANSWER_INDEX_PLAN', JSON.stringify({ executionTimeMs, nodes }));
   expect(indexes).toContain('task_ledger_consult_answer_lineage_idx');
+  const populationScan = nodes.find((node) =>
+    node.relation === 'task_ledger' && Number(node.actualRows) >= 1000,
+  );
+  expect(populationScan, 'EXPLAIN ANALYZE should expose the full consultAnswer edge scan').toBeDefined();
+  expect(populationScan?.actualLoops).toBe(1);
 }, 30_000);
 
 it('completes 100 frozen candidate lookups below 500ms p95 with parity and a cheaper measured edge scan', async () => {

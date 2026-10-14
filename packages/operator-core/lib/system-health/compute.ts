@@ -2479,7 +2479,13 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
       const d = await checkMigrationDrift();
       migrationDrift = { unapplied: d.missing.length };
     } catch { /* drift unreadable — leave null */ }
+    let hostedControlPlane: InfraHealth['hostedControlPlane'] = null;
+    try {
+      const { readWorkspaceHostReliability } = await import('../workspace-host/observability-store');
+      hostedControlPlane = await readWorkspaceHostReliability(ctx.ws, ctx.now);
+    } catch { /* unobserved — do not manufacture healthy counts */ }
     const data: InfraHealth = {
+      hostedControlPlane,
       pg,
       gatewayReachable: ctx.gatewayReachable,
       hostPressure,
@@ -2518,6 +2524,19 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         m('worker cpu', perf?.worstWorkerCpuPct != null ? `${Math.round(perf.worstWorkerCpuPct)}%` : 'n/a'),
         m('host', perf ? (perf.stale ? 'stale' : (perf.hostState ?? '?')) : 'n/a', perfCrit ? 'crit' : (perf?.status === 'warn' ? 'warn' : undefined)),
         m('host pressure', hostPressure?.status ?? 'n/a', hostPressureTone),
+        m('hosted running / unhealthy / unobserved', hostedControlPlane?.hosts
+          ? `${hostedControlPlane.hosts.expectedRunning} / ${hostedControlPlane.hosts.unhealthy} / ${hostedControlPlane.hosts.unobserved}` : 'unknown',
+          (hostedControlPlane?.hosts?.unhealthy ?? 0) > 0 ? 'crit' : undefined),
+        m('Papercusp-owned running hosts', hostedControlPlane?.hosts?.platformOwnedRunning ?? 'unknown'),
+        m('hosted lifecycle success / failure (1h)', hostedControlPlane?.lifecycle
+          ? `${hostedControlPlane.lifecycle.succeeded} / ${hostedControlPlane.lifecycle.failed}` : 'unknown'),
+        m('hosted queued / running', hostedControlPlane?.lifecycle
+          ? `${hostedControlPlane.lifecycle.queued} / ${hostedControlPlane.lifecycle.running}` : 'unknown'),
+        m('provision / restore p95 ms (admission to success)', hostedControlPlane?.lifecycle?.successP95Ms ?? 'unknown'),
+        m('hosted provider connections degraded', hostedControlPlane?.providerConnections?.degraded ?? 'unknown'),
+        m('sampled hosted API errors / samples (1h)', hostedControlPlane?.api
+          ? `${hostedControlPlane.api.errors} / ${hostedControlPlane.api.samples}` : 'unknown'),
+        m('sampled hosted API success p95 ms', hostedControlPlane?.api?.p95Ms ?? 'unknown'),
         m('performance history', performanceHistory.note,
           performanceHistory.status === 'disabled' ? undefined : performanceHistory.status),
         m('disk', worstDisk === null ? 'n/a' : `${worstDisk}%`, worstDisk === null ? undefined : worstDisk >= DISK_USED_CRIT_PCT ? 'crit' : worstDisk >= DISK_USED_WARN_PCT ? 'warn' : undefined),

@@ -44,6 +44,15 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   sql = postgres(u.toString(), { max: 8, onnotice: () => {} });
   await ensureCoordPresenceTable(sql);
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
+      id bigserial PRIMARY KEY,
+      coord_owner_id text,
+      session_id text,
+      agent text,
+      started_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
 }, 120_000);
 
 afterAll(async () => {
@@ -58,6 +67,15 @@ const identity = (ownerId: string) => ({
   workspaceId: 'default',
 });
 const owner = () => `own_${randomBytes(4).toString('hex')}`;
+async function addSession(ownerId: string): Promise<{ nativeSessionId: string; advSessionId: number }> {
+  const nativeSessionId = `native_${randomBytes(4).toString('hex')}`;
+  const [row] = await sql<{ id: number | string }[]>`
+    INSERT INTO harness_shared.adv_sessions (coord_owner_id, session_id, agent)
+    VALUES (${ownerId}, ${nativeSessionId}, 'claude')
+    RETURNING id
+  `;
+  return { nativeSessionId, advSessionId: Number(row.id) };
+}
 
 /** Read the column back through the store's own getter (not raw SQL). */
 async function filesOf(ownerId: string): Promise<string[] | undefined> {
@@ -122,7 +140,7 @@ describe('supervisor liveness across declarations (EI-25888806017497809)', () =>
     const presence = store();
     await presence.write(identity(o), { intent: 'registered' });
     await presence.touchHeartbeat(o, { host: 'supervisor-box', pid: 4242, tty: '/dev/pts/42' });
-    await presence.setContextEstimate(o, 1234);
+    await presence.setContextEstimate(o, 1234, await addSession(o));
 
     await presence.write(identity(o), { intent: 'implementing the assigned lane' });
 
@@ -146,7 +164,7 @@ describe('supervisor liveness across declarations (EI-25888806017497809)', () =>
     const o = owner();
     const presence = store();
     await presence.write(identity(o), { host: 'old-box', pid: 4242, tty: '/dev/pts/42' });
-    await presence.setContextEstimate(o, 1234);
+    await presence.setContextEstimate(o, 1234, await addSession(o));
     await presence.write(identity(o), { host: 'new-box', pid: 5555, tty: '/dev/pts/55' });
     expect(await presence.get(o)).toMatchObject({
       host: 'new-box', pid: 5555, tty: '/dev/pts/55',

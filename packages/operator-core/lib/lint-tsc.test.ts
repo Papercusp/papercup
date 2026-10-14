@@ -3158,6 +3158,10 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
           `  argv: ['--files=lib/a.ts'],\n` +
           `});\n`,
       );
+      // The test runner preloads committed-source-loader, which also guards this child process.
+      // Give the generated driver a committed version before invoking Node.
+      git(['add', 'run.mjs']);
+      git(['commit', '-q', '-m', 'commit fixture runner']);
       let out: string;
       try {
         out = execFileSync('node', [join(root, 'run.mjs')], { encoding: 'utf-8', stdio: 'pipe' });
