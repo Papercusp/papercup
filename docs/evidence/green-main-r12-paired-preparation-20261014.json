@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "kind": "r12-paired-preparation",
   "status": "local-preparation-unapproved-no-operational-acceptance",
+  "referencePathConvention": "Home-directory references use ~. Native receipt text below normalizes only its root path to <repository-root>; archived original receipts and their hashes remain unchanged.",
   "report": {
     "reportId": "rpt_cd32bfd0-49df-4d2b-b912-6db895d2e6ae",
     "path": "/reports?sel=rpt_cd32bfd0-49df-4d2b-b912-6db895d2e6ae",
@@ -140,7 +141,13 @@
       "parametersBound": false,
       "operationalAcceptance": false
     },
-    "handlesDrained": [16329, 4093, 50036, 71996, 56799],
+    "handlesDrained": [
+      16329,
+      4093,
+      50036,
+      71996,
+      56799
+    ],
     "syncFire": "Background-worker attributed git-sync fire returned firedtrue/in_progress; not retried. Independent source reads prove both fix and guard committed."
   },
   "wrapperReport": {
@@ -156,9 +163,21 @@
     "scope": "This session's six named evidence/report paths only",
     "change": "Portable ~/.papercusp/scratch references preserve the original log targets; do not edit or restamp the logs.",
     "rootCause": "Absolute machine-home diagnostic paths were copied into shipped evidence docs.",
-    "guardItems": ["WI-6554700010012745", "WI-6554700010012746", "WI-6554700010012747", "WI-6554700010012748", "WI-6554700010012749", "WI-6554700010012750", "WI-6554700010012782", "WI-6554700010012783"],
+    "guardItems": [
+      "WI-6554700010012745",
+      "WI-6554700010012746",
+      "WI-6554700010012747",
+      "WI-6554700010012748",
+      "WI-6554700010012749",
+      "WI-6554700010012750",
+      "WI-6554700010012782",
+      "WI-6554700010012783"
+    ],
     "verification": "All six named files have zero findings using the canonical box/literal detectors and the live resolved literal set; portable original log targets exist; JSON parses. Full-tree guard commands still exit1 on existing dream/study/cycle-events.jsonl findings, outside this owned evidence scope.",
-    "guardLogs": ["~/.papercusp/scratch/c0523-evidence-box-guard.log", "~/.papercusp/scratch/c0523-evidence-literal-guard.log"],
+    "guardLogs": [
+      "~/.papercusp/scratch/c0523-evidence-box-guard.log",
+      "~/.papercusp/scratch/c0523-evidence-literal-guard.log"
+    ],
     "publishedReportHistory": "The original published report bodies and hashes remain immutable. Source MD path corrections do not rewrite those historical bodies. The current wrapper report above was published after correction and read back exactly.",
     "settlement": {
       "status": "done-committed",
@@ -310,7 +329,12 @@
   },
   "fullSelectionPreparation": {
     "status": "native-maintained-selection-preview-partial-no-operational-acceptance",
-    "reuses": ["scripts/affected-tests.mjs", "scripts/lib/related-tests.mjs#staticImportClosure", "libs/test-config/src/verifier-source.ts#VerifierSourceReceipt", "scripts/lib/budgeted-task-scheduler.mjs#readBudgetedTaskComparisonArtifacts"],
+    "reuses": [
+      "scripts/affected-tests.mjs",
+      "scripts/lib/related-tests.mjs#staticImportClosure",
+      "libs/test-config/src/verifier-source.ts#VerifierSourceReceipt",
+      "scripts/lib/budgeted-task-scheduler.mjs#readBudgetedTaskComparisonArtifacts"
+    ],
     "writerFindings": [
       "The maintained --dry/--dry-run route stops before taskContexts, the original duration history read and the execution boundary. Its status=dry-run tasks field is a task count; it does not enumerate every actual test file or attest runtime transforms.",
       "taskContexts selects relatedFiles only when a concrete list exists; unrestricted lanes use null. Treating that null as an empty file set would undercount the original gate population.",
@@ -343,26 +367,56 @@
       ]
     },
     "selectorExtension": {
-      "reuses": ["scripts/affected-tests.mjs final maintained tasks", "scripts/lib/related-tests.mjs", "scripts/resolve-vitest-config-contracts.mjs native resolveConfig", "Vitest tinyglobby engine/options", "scripts/workspace-test.mjs#workspaceTestInvocation"],
+      "reuses": [
+        "scripts/affected-tests.mjs final maintained tasks",
+        "scripts/lib/related-tests.mjs",
+        "scripts/resolve-vitest-config-contracts.mjs native resolveConfig",
+        "Vitest tinyglobby engine/options",
+        "scripts/workspace-test.mjs#workspaceTestInvocation"
+      ],
       "behavior": "Optional --print-selection resolves actual cwd, unit lanes, include/exclude and related-filter lists without collection or test execution. Unsupported commands and source/typecheck/project configs remain named residue. Config-owned template files outside a workspace are accepted only inside the repository; task overlaps prevent complete coverage.",
       "sourceAtRead": {
         "head": "d97dfa9d0fb11485b553db3840f44b68a558c170",
         "files": [
-          {"path": "scripts/affected-tests.mjs", "sha256": "5ff78ad6a0fe5ac69d3aaece385425445c7fb21cef48b4d40a298cdfe81ed1c3", "committedMatch": true},
-          {"path": "scripts/lib/related-tests.mjs", "sha256": "c753b314fc32cc4973bad7dd2e67d2c69c9949db1ca40b320eee98732551453d", "committedMatch": false},
-          {"path": "scripts/resolve-vitest-config-contracts.mjs", "sha256": "9b3098ea621bfa29049cad65defa0d4a666201898d1ca046e94acbd60528239d", "committedMatch": false},
-          {"path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts", "sha256": "0cdd998ea2933174e803aa89f14c204b29776b1644062eb73d687ce0de42a820", "committedMatch": false}
+          {
+            "path": "scripts/affected-tests.mjs",
+            "sha256": "5ff78ad6a0fe5ac69d3aaece385425445c7fb21cef48b4d40a298cdfe81ed1c3",
+            "committedMatch": true
+          },
+          {
+            "path": "scripts/lib/related-tests.mjs",
+            "sha256": "c753b314fc32cc4973bad7dd2e67d2c69c9949db1ca40b320eee98732551453d",
+            "committedMatch": false
+          },
+          {
+            "path": "scripts/resolve-vitest-config-contracts.mjs",
+            "sha256": "9b3098ea621bfa29049cad65defa0d4a666201898d1ca046e94acbd60528239d",
+            "committedMatch": false
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+            "sha256": "0cdd998ea2933174e803aa89f14c204b29776b1644062eb73d687ce0de42a820",
+            "committedMatch": false
+          }
         ],
         "limits": "Named local bytes only. Complete import/dependency/final-transform/runtime closure is unproven; automatic settlement is separate."
       },
       "verification": {
         "nativeTestRunId": "0f5c02fc-92ba-402b-bd7f-fdac8f81fd39",
-        "ledgerRunIds": [21244615, 21244616, 21244617],
+        "ledgerRunIds": [
+          21244615,
+          21244616,
+          21244617
+        ],
         "passed": 88,
         "failed": 0,
         "skipped": 0,
         "testFiles": 3,
-        "testPaths": ["packages/operator-core/lib/__tests__/related-tests-selection.test.ts", "packages/operator-core/lib/test-executor-runnability.test.ts", "packages/operator-core/lib/__tests__/affected-tests-selected-files-line.test.ts"],
+        "testPaths": [
+          "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+          "packages/operator-core/lib/test-executor-runnability.test.ts",
+          "packages/operator-core/lib/__tests__/affected-tests-selected-files-line.test.ts"
+        ],
         "positiveNativeControl": "Actual lane cwd/filter/exclude resolution and config-owned outside-workspace files are asserted through the changed native bridge; this does not run the fixture test files.",
         "typecheckLog": "~/.papercusp/scratch/c0523-selection-preparation-tsc-v3.log",
         "typecheck": "Scoped one test file, 0 errors, exit0; no full-project claim.",
@@ -418,7 +472,11 @@
       },
       "verification": {
         "nativeTestRunId": "96eb24c2-b4dc-484d-8290-daadb04bd63a",
-        "ledgerRunIds": [21244661, 21244662, 21244663],
+        "ledgerRunIds": [
+          21244661,
+          21244662,
+          21244663
+        ],
         "testPaths": [
           "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
           "packages/operator-core/lib/test-executor-runnability.test.ts",
@@ -438,9 +496,21 @@
       "sourceAtRead": {
         "head": "44df8c581ee86a53dc2bf69e2b35b196bcce6159",
         "files": [
-          { "path": "scripts/lib/related-tests.mjs", "sha256": "bf8d11933bc4b94f386b2156ef91c4e963ffbc58ec35b1f6cf4cdf3f14904fac", "committedMatch": true },
-          { "path": "scripts/resolve-vitest-config-contracts.mjs", "sha256": "573d0d0fc709e23ba5b2d36892a0937cdb120523ff07f17e88b68a40e364e8f5", "committedMatch": true },
-          { "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts", "sha256": "fea8dc37772e5ab43cfcecbc2097ce0a318a0f41d91f71934f85a3bac03180b8", "committedMatch": true }
+          {
+            "path": "scripts/lib/related-tests.mjs",
+            "sha256": "bf8d11933bc4b94f386b2156ef91c4e963ffbc58ec35b1f6cf4cdf3f14904fac",
+            "committedMatch": true
+          },
+          {
+            "path": "scripts/resolve-vitest-config-contracts.mjs",
+            "sha256": "573d0d0fc709e23ba5b2d36892a0937cdb120523ff07f17e88b68a40e364e8f5",
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+            "sha256": "fea8dc37772e5ab43cfcecbc2097ce0a318a0f41d91f71934f85a3bac03180b8",
+            "committedMatch": true
+          }
         ],
         "limits": "Named source/test bytes have automatically settled. Whole import/dependency/final-transform/runtime closure is unproven; document settlement and operational acceptance are separate."
       },
@@ -466,7 +536,200 @@
         "The comparison preparer presently requires every task to own nonempty selected files. Remaining command checks need an explicit original obligation representation and native receipts; removing those checks to satisfy the file partition is forbidden."
       ]
     },
-    "next": "Continue from nativeRunnerExtension and its original v3 log: four remaining command populations. Prepare Astro's actual sync/check chain and preserve the desktop aggregate and static voice-tool check as command obligations. Then freeze the NEW complete original selection, source and independent dependencies, and final-transform runtime closure. Neither v2 nor v3 is complete or bindable. D020/P006 remains held; no cohort, comparison, native acceptance or amendment review."
+    "next": "Prepare both actual Astro sync/check populations and the newly explicit fixture build pretest; qualify original voice/desktop aggregate execution receipts without dropping guards or inventing test files. Extend the existing comparison/native reader only with matching original command obligations and receipts. Full source/dependency/final-transform closure and four real ABBA runs remain unproduced; D020/P006 and all original plan residue stay held/unapproved/unshipped.",
+    "nativeCommandObligationPreparation": {
+      "status": "partial-original-population-preparation-no-operational-acceptance",
+      "reuses": [
+        "scripts/lib/related-tests.mjs#enumerateAffectedTaskSelection",
+        "scripts/lib/budgeted-task-scheduler.mjs#prepareBudgetedTaskComparison/readBudgetedTaskComparisonArtifacts",
+        "apps/operator/scripts/el-tools-check.mjs actual registry input discovery",
+        "papercusp-desktop/bin/lib/run-selftests.sh actual TESTS array and disk census"
+      ],
+      "behavior": "Native read-only --print-selection routes produce actual input hashes. Voice guard remains a command obligation with no fabricated test file; desktop retains its original ordered eight-step npm chain, 152 selected tests in this snapshot and unexecuted aggregate completeness/pipefail obligations. Lifecycle scripts and unknown Astro steps remain explicit residue. Duplicate chain populations and original command obligations omitted by file-only comparison manifests are refused.",
+      "sourceAtRead": {
+        "head": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+        "files": [
+          {
+            "path": "scripts/lib/related-tests.mjs",
+            "sha256": "9f466602136741b9c48354d7e6e2f1392abd7cc5fb707c00a08aa5a9d30820db",
+            "repositoryHead": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+            "committedMatch": false
+          },
+          {
+            "path": "scripts/lib/budgeted-task-scheduler.mjs",
+            "sha256": "1e110e168c50b1ac9bc962c43727711337ebbe4d29f63b579433cc490446f231",
+            "repositoryHead": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+            "committedMatch": false
+          },
+          {
+            "path": "apps/operator/scripts/el-tools-check.mjs",
+            "sha256": "1ed3c2f70d93d771a69a434f702789fb17169dbe1d49673282a3c79092ff5f41",
+            "repositoryHead": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+            "committedMatch": true
+          },
+          {
+            "path": "papercusp-desktop/bin/lib/run-selftests.sh",
+            "sha256": "66cc2631486ed5d0e7fa368a54bb751f1a27b58bfeeb85e5870b337986b2e586",
+            "repositoryHead": "8c6a895254e84de4574292661ccc201cb280accf",
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+            "sha256": "6769a8662da8a7e15788ea8b802f6f2c8264423f1144597acea683c068d53cd0",
+            "repositoryHead": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+            "committedMatch": false
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+            "sha256": "ef7a8e6286b816a0c374059e6017e8f424fd6e1115434092a8870eef7c2cff25",
+            "repositoryHead": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+            "committedMatch": false
+          }
+        ],
+        "limits": "Named bytes only; no complete import, dependency or runtime closure."
+      },
+      "nativePreview": {
+        "command": "node scripts/affected-tests.mjs --all --print-selection",
+        "log": "~/.papercusp/scratch/c0523-full-selection-command-obligations-v2.log",
+        "logSha256": "c9db38b78fc08eb934fd63c20fab959ff2feffc21153abb0189c6aebc56fe296",
+        "nativeExitCode": 0,
+        "coverage": "partial",
+        "files": 10136,
+        "representedTasks": 111,
+        "unenumerated": [
+          {
+            "task": "@papercusp/web :: lint:el-tools",
+            "reason": "unexecuted-command-obligations",
+            "command": "node scripts/el-tools-check.mjs"
+          },
+          {
+            "task": "@papercupai/operator-docs :: test",
+            "reason": "unsupported-task-command",
+            "command": "astro check"
+          },
+          {
+            "task": "@papercupai/papercusp-docs :: test",
+            "step": 0,
+            "command": "astro check",
+            "reason": "unsupported-task-command"
+          },
+          {
+            "task": "@papercusp/desktop :: test",
+            "step": 7,
+            "command": "bash bin/lib/run-selftests.sh",
+            "reason": "unexecuted-command-obligations"
+          },
+          {
+            "task": "@bug-drill/fixture :: test",
+            "reason": "unexecuted-lifecycle-command",
+            "command": "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run"
+          }
+        ],
+        "overlaps": [],
+        "executed": false,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false,
+        "commandObligations": [
+          {
+            "task": "@papercusp/web :: lint:el-tools",
+            "step": null,
+            "kind": "command-check",
+            "check": "el-tools-drift",
+            "command": "node scripts/el-tools-check.mjs",
+            "executed": false,
+            "inputs": 13
+          },
+          {
+            "task": "@bug-drill/fixture :: test",
+            "step": null,
+            "kind": "npm-lifecycle",
+            "check": null,
+            "command": "node scripts/build.mjs",
+            "executed": false,
+            "inputs": 0
+          },
+          {
+            "task": "@papercusp/desktop :: test",
+            "step": 7,
+            "kind": "command-check",
+            "check": "desktop-selftest-aggregate",
+            "command": "bash bin/lib/run-selftests.sh",
+            "executed": false,
+            "inputs": 36
+          }
+        ],
+        "scope": "This original log snapshot only; unresolved command checks remain partial. Counts do not certify a frozen comparison population."
+      },
+      "verification": {
+        "receipts": [
+          "~/.papercusp/scratch/c0523-command-obligation-tests-v1.json",
+          "~/.papercusp/scratch/c0523-command-obligation-tests-v3.json",
+          "~/.papercusp/scratch/c0523-command-obligation-scheduler-v2.json"
+        ],
+        "initialNativeRun": "e6ac7273-bc15-4287-910f-3a8902eacfe2",
+        "initialByFile": {
+          "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts": {
+            "passed": 146,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false,
+            "runId": 21244762
+          },
+          "packages/operator-core/lib/__tests__/desktop-selftests-registry-complete.test.ts": {
+            "passed": 5,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false,
+            "runId": 21244760
+          },
+          "packages/operator-core/lib/__tests__/related-tests-selection.test.ts": {
+            "passed": 72,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false,
+            "runId": 21244761
+          }
+        },
+        "finalSelectionReceipt": {
+          "content": [
+            {
+              "type": "text",
+              "text": "format: toon\nok: true\nrunId: 9ea7171c-ff13-4e25-99f4-4719ee318976\nroot: <repository-root>\npassed: 73\nfailed: 0\nskipped: 0\nfiles: 1\nfailures: []\nfailuresTruncated: false\ndurationMs: 1737\nbyFile:\n  \"packages/operator-core/lib/__tests__/related-tests-selection.test.ts\":\n    passed: 73\n    failed: 0\n    skipped: 0\n    collectionFailed: false\n    runId: 21244788\ntestRunIds[1]: 21244788\nrootSource: requested"
+            },
+            {
+              "type": "text",
+              "text": "See also: tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)"
+            }
+          ]
+        },
+        "testPaths": [
+          "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+          "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+          "packages/operator-core/lib/__tests__/desktop-selftests-registry-complete.test.ts"
+        ],
+        "positiveNativeControls": "Actual voice registry census; copied native shell aggregate with an unlisted disk file and selftests that write a sentinel if executed; ordered lifecycle/Astro chain, alias-cycle and repeated-file controls. Native original artifact reader rejects omitted command obligations. Legacy lifecycle metadata in either manifest tasks or independently read original task metadata is also refused.",
+        "typecheckLog": "~/.papercusp/scratch/c0523-command-obligation-tsc-v4.log",
+        "typecheck": "Final scoped two-file TypeScript check: zero errors, status clean, native exit0. Source JS/Bash syntax and named-path diff checks passed. No full-project typecheck claim.",
+        "retainedRedEvidence": "tsc-v1 was inconclusive after concurrent own edits; tsc-v2 named four implicit-any callback diagnostics. Explicit metadata types fixed those; v3 is clean. No operational receipts were generated. v4 is the final clean two-file check after the additional legacy lifecycle omission guard.",
+        "finalSchedulerReceipt": {
+          "content": [
+            {
+              "type": "text",
+              "text": "format: toon\nok: true\nrunId: 8a8857c8-79c2-44af-bee9-7a3e3b0dbeae\nroot: <repository-root>\npassed: 146\nfailed: 0\nskipped: 0\nfiles: 1\nfailures: []\nfailuresTruncated: false\ndurationMs: 3943\nbyFile:\n  \"packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts\":\n    passed: 146\n    failed: 0\n    skipped: 0\n    collectionFailed: false\n    runId: 21244814\ntestRunIds[1]: 21244814\nrootSource: requested"
+            },
+            {
+              "type": "text",
+              "text": "See also: tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)"
+            }
+          ]
+        }
+      },
+      "remainingWriterFindings": [
+        "The original fixture test has a real node scripts/build.mjs pretest, now retained rather than dropped. It still needs an original input/execution receipt.",
+        "Astro sync still precedes actual diagnostics. Both Astro populations remain unknown; prior pre-sync discovery cannot qualify them.",
+        "File-only comparison preparation and original-artifact readback refuse retained command obligations until a native command-receipt contract independently qualifies them. This refusal is intentional and cannot be removed to bind throughput."
+      ]
+    }
   },
   "next": "No native command handles remain. Prepare actual original full-gate inputs and runtime closure without launching the D020-held cohort. Wrapper local integration is complete; reuse saved proofs only at matching source hashes. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
 }
