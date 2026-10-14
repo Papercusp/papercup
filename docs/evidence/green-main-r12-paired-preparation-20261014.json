@@ -537,6 +537,328 @@
       ]
     },
     "next": "Prepare both actual Astro sync/check populations and the newly explicit fixture build pretest; qualify original voice/desktop aggregate execution receipts without dropping guards or inventing test files. Extend the existing comparison/native reader only with matching original command obligations and receipts. Full source/dependency/final-transform closure and four real ABBA runs remain unproduced; D020/P006 and all original plan residue stay held/unapproved/unshipped.",
+    "postSyncAstroPreparation": {
+      "status": "post-sync-population-preparation-partial-local-tests-pass",
+      "reuses": [
+        "scripts/resolve-vitest-config-contracts.mjs native config bridge",
+        "installed Astro sync and AstroCheck.linter.getRootFileNames",
+        "existing affected selection and command obligations"
+      ],
+      "behavior": "Explicit --sync-astro with --print-selection synchronizes each Astro workspace in a fresh process before using its native checker file population; excludes Vue/Svelte exactly as AstroCheck.lint does. Every original astro check stays an unexecuted command obligation. Default discovery records unsynchronized Astro tasks as residue.",
+      "nativePreview": {
+        "command": "node scripts/affected-tests.mjs --all --print-selection --sync-astro",
+        "nativeExitCode": 0,
+        "coverage": "partial",
+        "files": 10150,
+        "representedTasks": 112,
+        "unenumerated": [
+          {
+            "task": "@papercusp/web :: lint:el-tools",
+            "reason": "unexecuted-command-obligations",
+            "command": "node scripts/el-tools-check.mjs"
+          },
+          {
+            "task": "@papercupai/papercusp-docs :: test",
+            "reason": "overlapping-chain-file-population",
+            "command": "astro check && vitest run"
+          },
+          {
+            "task": "@papercupai/papercusp-docs :: test",
+            "step": 0,
+            "command": "astro check",
+            "reason": "unexecuted-command-obligations"
+          },
+          {
+            "task": "@papercusp/desktop :: test",
+            "step": 7,
+            "command": "bash bin/lib/run-selftests.sh",
+            "reason": "unexecuted-command-obligations"
+          },
+          {
+            "task": "@papercupai/operator-docs :: test",
+            "reason": "unexecuted-command-obligations",
+            "command": "astro check"
+          },
+          {
+            "task": "@bug-drill/fixture :: test",
+            "reason": "unexecuted-lifecycle-command",
+            "command": "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run"
+          }
+        ],
+        "overlaps": [],
+        "executed": false,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false
+      },
+      "astroPopulations": [
+        {
+          "task": "@papercupai/operator-docs :: test",
+          "files": [
+            "apps/operator-docs/.astro/types.d.ts",
+            "apps/operator-docs/astro.config.mjs",
+            "apps/operator-docs/preview-libs.mjs",
+            "apps/operator-docs/scripts/emit-md-twins.ts",
+            "apps/operator-docs/src/content.config.ts"
+          ],
+          "inputs": [
+            {
+              "path": "apps/operator-docs/.astro/types.d.ts",
+              "sha256": "38ea3df3779cce222cd51ba2c9dc9ac053a859208d3097aa3165f70c71517736"
+            },
+            {
+              "path": "apps/operator-docs/astro.config.mjs",
+              "sha256": "6993472fdbf21ab9bbcda9345a33613dc545263ac1a495a468dbd41fd3b33f61"
+            },
+            {
+              "path": "apps/operator-docs/package.json",
+              "sha256": "12b11ef288855eda499eb22d0ecbb173e9dd76a71bf4f757397887f6fdbb739a"
+            },
+            {
+              "path": "apps/operator-docs/preview-libs.mjs",
+              "sha256": "9d51db24d777db4f8e15511fde4986988587bdf2cdbe87c036a9d92e5766d792"
+            },
+            {
+              "path": "apps/operator-docs/scripts/emit-md-twins.ts",
+              "sha256": "bf6c2985def802869f4abccecc5135d6712997f611fa8d263f0e3cc5fec0830e"
+            },
+            {
+              "path": "apps/operator-docs/src/content.config.ts",
+              "sha256": "008b96738e944d342ff4509b61b2c642ba6e65856be5333f33c77b4cf4445e9a"
+            },
+            {
+              "path": "apps/operator-docs/tsconfig.json",
+              "sha256": "b5b0a5b04a14cddd7713c5e1c82e86c79c17c2f86b170e26e9b170b3d5e01cd9"
+            },
+            {
+              "path": "node_modules/@astrojs/check/dist/index.js",
+              "sha256": "b05f1c9b260328d1346e181692b129b6b0857242a280ed4c9adee91a9a86120a"
+            },
+            {
+              "path": "node_modules/@astrojs/language-server/dist/check.js",
+              "sha256": "976e0f5ec338819176946d70540b30e849c991f38628f8a2dc7f3ffeeedb5575"
+            },
+            {
+              "path": "node_modules/@astrojs/language-server/dist/index.js",
+              "sha256": "fcb349a2e8cfc8b1d41a069ab5aecd7d3f5cfcacfdec627b8a04c61c6043c5ab"
+            },
+            {
+              "path": "node_modules/astro/dist/cli/check/index.js",
+              "sha256": "b94135f773271f3c1b1d3a88b91bd99b106da53f896c18727c8275a7b8409671"
+            },
+            {
+              "path": "node_modules/astro/dist/core/sync/index.js",
+              "sha256": "cea429c3c942636b37eb206665883200289cd1f54df3129a987fae84519a86da"
+            },
+            {
+              "path": "node_modules/astro/package.json",
+              "sha256": "2103538a5b3908590beef260c7e7831eb635b05d0e7aa7dafac367982f7820a7"
+            },
+            {
+              "path": "node_modules/typescript/lib/typescript.js",
+              "sha256": "d3f3cd2b04b7f466f4484df921b744223f7bd1f3e353ec9110bdf52695b983d5"
+            }
+          ],
+          "sync": {
+            "status": "completed",
+            "beforePopulation": true
+          },
+          "diagnosticsExecuted": false
+        },
+        {
+          "task": "@papercupai/papercusp-docs :: test",
+          "files": [
+            "apps/papercusp-docs/.astro/types.d.ts",
+            "apps/papercusp-docs/astro.config.mjs",
+            "apps/papercusp-docs/lib/first-task.test.ts",
+            "apps/papercusp-docs/lib/pagefind-output.test.ts",
+            "apps/papercusp-docs/lib/public-build-parity.test.ts",
+            "apps/papercusp-docs/scripts/source-contract.d.mts",
+            "apps/papercusp-docs/src/components/Search.astro",
+            "apps/papercusp-docs/src/content.config.ts",
+            "apps/papercusp-docs/vitest.config.ts"
+          ],
+          "inputs": [
+            {
+              "path": "apps/papercusp-docs/.astro/types.d.ts",
+              "sha256": "38ea3df3779cce222cd51ba2c9dc9ac053a859208d3097aa3165f70c71517736"
+            },
+            {
+              "path": "apps/papercusp-docs/astro.config.mjs",
+              "sha256": "b49c893ae431be4c762d5bff4811f39ed199a310ec60c8e9ace1eb621cc4018e"
+            },
+            {
+              "path": "apps/papercusp-docs/lib/first-task.test.ts",
+              "sha256": "59af0c1a8b674e122780983e787b6a8f024863e69b6b697745f4d3a5ad7c1092"
+            },
+            {
+              "path": "apps/papercusp-docs/lib/pagefind-output.test.ts",
+              "sha256": "42fb06afa19b1591fc2009cbfa5db95b0b7216215237326457e658b79a25cb0b"
+            },
+            {
+              "path": "apps/papercusp-docs/lib/public-build-parity.test.ts",
+              "sha256": "d6ef273beb90ae21c1133221310783800847147265d92938d72c4bf5e7e3eb60"
+            },
+            {
+              "path": "apps/papercusp-docs/package.json",
+              "sha256": "c89117fe9e0380b1858e930d6e494c47019e6211a763f2eb60f81725271c0462"
+            },
+            {
+              "path": "apps/papercusp-docs/scripts/source-contract.d.mts",
+              "sha256": "505422ddfd98051a3605eef8d8b74d5a0cc119b18b2fb4a2e0407fe93f10627a"
+            },
+            {
+              "path": "apps/papercusp-docs/src/components/Search.astro",
+              "sha256": "03b3df097b9f30d82446fcf9a7ae0cd9d68bdba7dec5a29bcf915017a2f2af0d"
+            },
+            {
+              "path": "apps/papercusp-docs/src/content.config.ts",
+              "sha256": "ee756dfba4122d2acc94a39b2555d9f200fff56a87a8c0b10f9cd01df26a8b62"
+            },
+            {
+              "path": "apps/papercusp-docs/tsconfig.json",
+              "sha256": "b5b0a5b04a14cddd7713c5e1c82e86c79c17c2f86b170e26e9b170b3d5e01cd9"
+            },
+            {
+              "path": "apps/papercusp-docs/vitest.config.ts",
+              "sha256": "18ac79017161e9dd04f11a105e4ccd7af3748089c3672d08d916426ac0a57c0e"
+            },
+            {
+              "path": "node_modules/@astrojs/check/dist/index.js",
+              "sha256": "b05f1c9b260328d1346e181692b129b6b0857242a280ed4c9adee91a9a86120a"
+            },
+            {
+              "path": "node_modules/@astrojs/language-server/dist/check.js",
+              "sha256": "976e0f5ec338819176946d70540b30e849c991f38628f8a2dc7f3ffeeedb5575"
+            },
+            {
+              "path": "node_modules/@astrojs/language-server/dist/index.js",
+              "sha256": "fcb349a2e8cfc8b1d41a069ab5aecd7d3f5cfcacfdec627b8a04c61c6043c5ab"
+            },
+            {
+              "path": "node_modules/astro/dist/cli/check/index.js",
+              "sha256": "b94135f773271f3c1b1d3a88b91bd99b106da53f896c18727c8275a7b8409671"
+            },
+            {
+              "path": "node_modules/astro/dist/core/sync/index.js",
+              "sha256": "cea429c3c942636b37eb206665883200289cd1f54df3129a987fae84519a86da"
+            },
+            {
+              "path": "node_modules/astro/package.json",
+              "sha256": "2103538a5b3908590beef260c7e7831eb635b05d0e7aa7dafac367982f7820a7"
+            },
+            {
+              "path": "node_modules/typescript/lib/typescript.js",
+              "sha256": "d3f3cd2b04b7f466f4484df921b744223f7bd1f3e353ec9110bdf52695b983d5"
+            }
+          ],
+          "sync": {
+            "status": "completed",
+            "beforePopulation": true
+          },
+          "diagnosticsExecuted": false
+        }
+      ],
+      "chainOverlap": [
+        "apps/papercusp-docs/lib/first-task.test.ts",
+        "apps/papercusp-docs/lib/pagefind-output.test.ts",
+        "apps/papercusp-docs/lib/public-build-parity.test.ts"
+      ],
+      "verification": {
+        "status": "local-focused-tests-pass-no-operational-acceptance",
+        "lastFullSuite": "v7: 75 pass; requested1/executed1/matched1; skips0/childSubstituted0/nativeexit0. Current-local source at ab999ce99e with one dirty test path; native bridge source committed. Exact log saved.",
+        "typecheck": "v4 final named test file: zero errors, exit0/clean. Initial25errorred and out-of-scope broad scripts leg retained; no whole-project typecheck claim.",
+        "syntax": "Three changed .mjs pass node --check; named diff check passed.",
+        "originalReceipts": [
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-selection-tsc-v4.log",
+            "sha256": "cc62916294847b20bace2464df9652fd85648a3f318beb5c2557f61bdf6eeac8",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-full-selection-post-sync-v1.log",
+            "sha256": "5aa4c6cafc14eb7e1c91d501d8be1f9845c841f6c78c5e32129020a4874f2abb",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-full-selection-post-sync-v1.err",
+            "sha256": "8e06563e455ea8632c1b6589f908bb01d36116890ef7f016f25a95298288b6e7",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-native-selection-v1.log",
+            "sha256": "57a50b98efec753b28e344bb8e01ed47d680e819033480b4bb3c10ccd0325e27",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-native-selection-v1.err",
+            "sha256": "42b8f69f5a51d057cb8370769c70648829aa163d9612e2b71efd65231dcc91e9",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-selection-tests-v5.log",
+            "sha256": "701235c83b1d9d8ed4a1de7d55fc1ef03e779c9c745bac0e4084a4880b13100c",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-selection-tsc-v3.log",
+            "sha256": "e942eb8a5b717977453ef062510d7a51d844dd4a921338721c91d8cb8c4b8e0c",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-selection-tests-v7.log",
+            "sha256": "f5eee8ff6c597649cffd42e00e811bf81f31b49ea8da65c7804a9127cbf08a81",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-native-single-v6.log",
+            "sha256": "81710ea3f688993779f06b731b538b527800ddebc483ced98ea88830b0d34310",
+            "status": "saved"
+          }
+        ],
+        "correctedFixture": "v5 native config:setup injectTypes failure corrected to installed config:done hook; v6 targeted1pass/74explicitunselected preceded final no-skip suite."
+      },
+      "sourceAtRead": {
+        "head": "ab999ce99e3239c28c73b6f74f5a9383c501cbaa",
+        "files": [
+          {
+            "path": "scripts/lib/related-tests.mjs",
+            "sha256": "06382ac860a57d3ae84c79e30c48f1c762c3105e48a4e45fd317afd2ba052ccd",
+            "committedMatch": true
+          },
+          {
+            "path": "scripts/lib/related-tests.d.mts",
+            "sha256": "784ecb1fb6b6fc486804128c4074b9f78e5bdf087f61dd70d2eee1f4cc803902",
+            "committedMatch": true
+          },
+          {
+            "path": "scripts/resolve-vitest-config-contracts.mjs",
+            "sha256": "3468d577937872e0c7f76961ebb9735d0572e62963229d8bdd1fc2177c87c3b1",
+            "committedMatch": true
+          },
+          {
+            "path": "scripts/affected-tests.mjs",
+            "sha256": "ae2d34e41d0256d4657cc96c2ba4ce0e4db38a4bfcd4af36898af81cd9cde62e",
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+            "sha256": "01548bdd487062ef898b3118ec1f2a61df73ec4502b149ffe9f5d9892c47c543",
+            "committedMatch": false
+          }
+        ],
+        "limits": "Named source and generated output bytes only; no full dependency or final transformed runtime closure."
+      },
+      "guardRepairs": {
+        "items": [
+          "WI-6554700010012907",
+          "WI-6554700010012908"
+        ],
+        "state": "done",
+        "completionAuthority": "committed",
+        "scope": "Evidence references normalized; archived original receipts unchanged. Global identity lints still report study-log records outside this scoped repair."
+      },
+      "constraints": "D020/P006 hold, original six forms and whole-plan residue preserved. No benchmark/cohort, BAR apply, new agent, manual git or LIVE_GATE_OPS. Original fixture build pretest/voice/desktop checks remain unexecuted."
+    },
     "nativeCommandObligationPreparation": {
       "status": "partial-original-population-preparation-no-operational-acceptance",
       "reuses": [
