@@ -67,6 +67,7 @@ import {
   classifySpecEvidenceCurrentness,
   evidenceMeasurementSchema,
   listSpecEvidence,
+  type ListSpecEvidenceDiagnostics,
   measureAndPinEvidenceForScope,
   measureAndPinRepoFilesEvidenceAtRoot,
   measureRepoFilesEvidenceDetailedAtRoot,
@@ -2181,6 +2182,32 @@ describe('listSpecEvidence timestamp normalization', () => {
       expect(row?.currentness.unknownReasons).toEqual(
         expect.arrayContaining([expect.stringMatching(/^server-measurement-unavailable:.+/)]),
       );
+    });
+
+    it('records separate registry, filesystem, and commit maxima for root-resolution outliers', async () => {
+      const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+      h.rows = [boundRow(recipe, { source: measured.sourceFingerprint, test: measured.testFingerprint })];
+      const diagnostics: ListSpecEvidenceDiagnostics = {
+        phaseMs: {},
+        bindings: {
+          selectedRows: 0,
+          rowsWithRecipe: 0,
+          measured: 0,
+          unavailable: 0,
+          skipped: 0,
+          totalMeasurementMs: 0,
+          maxMeasurementMs: 0,
+        },
+      };
+
+      await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'], diagnostics });
+
+      expect(diagnostics.phaseMs).toEqual(expect.objectContaining({
+        resolveMeasurementRootsAndCommits: expect.any(Number),
+        measurementRootRegistryLookupMaxMs: expect.any(Number),
+        measurementRootRealpathMaxMs: expect.any(Number),
+        measurementCommitResolutionMaxMs: expect.any(Number),
+      }));
     });
 
     it.each([true, false])('boolean current=%s preserves independent measurement for current, moved and unavailable sources', async (current) => {

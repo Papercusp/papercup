@@ -3120,6 +3120,13 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const recordPhase = (name: string, startedAt: number) => {
     if (diagnostics) diagnostics.phaseMs[name] = Math.max(0, Date.now() - startedAt);
   };
+  const recordMaxPhase = (name: string, startedAt: number) => {
+    if (!diagnostics) return;
+    diagnostics.phaseMs[name] = Math.max(
+      diagnostics.phaseMs[name] ?? 0,
+      Math.max(0, Date.now() - startedAt),
+    );
+  };
   if (options.auditAsOf && options.includeRetracted !== true) {
     throw new Error('auditAsOf requires includeRetracted:true');
   }
@@ -3376,9 +3383,17 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     const rootHarnessSlug = dimension === 'fixture'
       ? recipe.fixtureRootHarnessSlug ?? primaryRootHarnessSlug
       : primaryRootHarnessSlug;
-    const root =
-      measurementRoots.get(rootHarnessSlug) ??
-      resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe, dimension).then((path) => realpath(path));
+    const existing = measurementRoots.get(rootHarnessSlug);
+    if (existing) return existing;
+    const root = (async () => {
+      const registryLookupStartedAt = diagnostics ? Date.now() : 0;
+      const path = await resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe, dimension);
+      recordMaxPhase('measurementRootRegistryLookupMaxMs', registryLookupStartedAt);
+      const realpathStartedAt = diagnostics ? Date.now() : 0;
+      const resolved = await realpath(path);
+      recordMaxPhase('measurementRootRealpathMaxMs', realpathStartedAt);
+      return resolved;
+    })();
     measurementRoots.set(rootHarnessSlug, root);
     return root;
   };
@@ -3389,7 +3404,13 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   // resolves null and keeps the working-tree measurement and its mutation-probe fence.
   const measurementCommits = new Map<string, Promise<string | null>>();
   const measurementCommitFor = (root: string): Promise<string | null> => {
-    const commit = measurementCommits.get(root) ?? resolveMeasurementCommit(root);
+    const existing = measurementCommits.get(root);
+    if (existing) return existing;
+    const commitStartedAt = diagnostics ? Date.now() : 0;
+    const commit = resolveMeasurementCommit(root).then((value) => {
+      recordMaxPhase('measurementCommitResolutionMaxMs', commitStartedAt);
+      return value;
+    });
     measurementCommits.set(root, commit);
     return commit;
   };
