@@ -36,6 +36,12 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
+    // scorecards:emit now uses the failure-aware writer read; keep this unit
+    // suite on the same mocked rubric fixtures instead of falling through to PG.
+    readRubric: async (rubricId: string) => {
+      const rubric = await getRubric(rubricId);
+      return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+    },
     getRubricEvidenceIdentity: (...a: unknown[]) => getRubricEvidenceIdentity(...a),
     // EI-21828643965337454 put the acceptance path behind a FAIL-CLOSED revision
     // read. Unstubbed, it reached the real PG-backed read, returned `ok:false`, and
@@ -944,6 +950,47 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect((res as { error?: string }).error).toContain('EI-PENDING-SUBJECT');
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('dedupes an identical same-author terminal replay before checking its pending audit', async () => {
+    getRubric.mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
+    getIssue.mockResolvedValue(null);
+    const args = {
+      rubricRef: 'goal-mode-e2e',
+      ratings: RATINGS,
+      terminal: true,
+      subject: { kind: 'plan' as const, ref: 'plan-x' },
+    };
+    const input = { createdBy: 'su-subject-author', ctxHarness: 'papercusp' };
+    const original = await emitScorecard(args, input);
+    expect(original).toMatchObject({ ok: true, created: true, gradingAuditPending: true });
+
+    const observation = captureImprovement.mock.calls[0]?.[0].payloadExtra.observation;
+    const pendingCard = {
+      ...observation,
+      issueId: 'EI-PENDING-IDENTICAL-REPLAY',
+      createdBy: input.createdBy,
+      rubricRef: args.rubricRef,
+      subject: args.subject,
+      gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity' },
+    };
+    listScorecards.mockImplementation(async (filter: { rubricRef?: string; limit?: number }) => {
+      if (filter.rubricRef === 'grading-integrity') return [];
+      return filter.limit === 1 || filter.limit === 100 ? [pendingCard] : [];
+    });
+    captureImprovement.mockClear();
+    dispatchPendingGradingAudits.mockClear();
+
+    const retry = await emitScorecard(args, input);
+
+    expect(retry).toMatchObject({
+      ok: true,
+      created: false,
+      reason: 'unchanged-evidence',
+      previousIssueId: pendingCard.issueId,
+    });
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(dispatchPendingGradingAudits).not.toHaveBeenCalled();
   });
 
   it('refuses a same-author re-emit while the subject still has a live pending audit', async () => {
