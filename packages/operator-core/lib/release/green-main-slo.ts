@@ -757,8 +757,8 @@ export function computeGreenMainSlo(input: GreenMainSloInput, thresholds: GreenM
       value: 1,
       threshold: 0,
       episodeKey: key('red-adding-admission', head),
-      title: `An admission added red on ${installSlug}`,
-      detail: `The round after admitting ${head.slice(0, 12)} recorded more failures than the round before it.`,
+      title: `A round after admission recorded more failures on ${installSlug}`,
+      detail: `The first round after admitting ${head.slice(0, 12)} reported more failing tests than the preceding round; this time-window signal shows association, not that the admission caused the increase.`,
     });
   }
   for (const rate of perSyncRedRate ?? []) {
