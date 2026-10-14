@@ -1967,7 +1967,15 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
-    schedule(msg: any): "superseded" | "duplicate" | "queued";
+    schedule(msg: any): "superseded" | "closed" | "duplicate" | "queued";
+    /**
+     * Close all detached re-arm work when this PTY host is ending. Every
+     * accepted message receives one terminal settlement so its delivery dedup
+     * slot cannot strand a future loop wake. The method is idempotent; a retry
+     * already blocked inside an injected wait will notice `disposed` when that
+     * wait returns and exit without recycling a dead child.
+     */
+    dispose(reason?: string): boolean;
 };
 /**
  * Submit verifier (WI-2930) — the POST-submit sibling of makeAgentBusyGate. The
@@ -4135,7 +4143,7 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
-export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "pending" | "completed" | "clear" | "cancelled";
+export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "completed" | "pending" | "clear" | "cancelled";
 /**
  * A minimal FIFO async mutex serializing the GATED-inject critical section within
  * a single host (EI-8822). Each control-socket connection runs its OWN async

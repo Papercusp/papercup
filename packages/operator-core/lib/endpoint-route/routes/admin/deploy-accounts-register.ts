@@ -1,7 +1,9 @@
 /**
  * POST /api/admin/deploy-accounts/register — register a Claude or Codex gateway credential.
  *
- * Body: { accountId, label?, provider?, value }
+ * Body: { accountId, label?, provider?, credentialType?, value }
+ *   credentialType = 'api-key' for an Anthropic Console key (sk-ant-api…); registered with
+ *                    the existing apikey:file: resolver and metered overflow policy.
  *   value = either a `claude setup-token` long-lived token (`sk-ant-oat…`) → written raw and
  *           registered as `credentialRef: token:<path>`, OR a `.credentials.json` bundle (JSON with
  *           a `claudeAiOauth` block) → written as-is and registered as `credentialRef: file:<path>`.
@@ -62,7 +64,7 @@ export default defineTool({
   async handler(req) {
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;
-    let body: { accountId?: string; label?: string; provider?: 'claude' | 'codex'; value?: string; egress?: { proxyUrl?: string; localAddress?: string } };
+    let body: { accountId?: string; label?: string; provider?: 'claude' | 'codex'; credentialType?: 'subscription' | 'api-key'; value?: string; egress?: { proxyUrl?: string; localAddress?: string } };
     try {
       body = await req.json();
     } catch {
@@ -70,6 +72,7 @@ export default defineTool({
     }
     const accountId = body?.accountId?.trim();
     const provider = body?.provider === 'codex' ? 'codex' : 'claude';
+    const isApiKey = body?.credentialType === 'api-key';
     const value = body?.value?.trim();
     // Optional per-account egress (per-account IP routing) — only kept if a field is set.
     const proxyUrl = body?.egress?.proxyUrl?.trim();
@@ -77,6 +80,12 @@ export default defineTool({
     const egress = proxyUrl || localAddress ? { proxyUrl: proxyUrl || undefined, localAddress: localAddress || undefined } : undefined;
     if (!accountId || !ID_RE.test(accountId)) {
       return Response.json({ ok: false, error: 'accountId required (allowed: A-Za-z0-9 . _ -)' }, { status: 400 });
+    }
+    if (body.credentialType !== undefined && body.credentialType !== 'subscription' && body.credentialType !== 'api-key') {
+      return Response.json({ ok: false, error: 'unsupported credentialType' }, { status: 400 });
+    }
+    if (isApiKey && provider !== 'claude') {
+      return Response.json({ ok: false, error: 'Anthropic API keys require the Claude provider' }, { status: 400 });
     }
     if (!value) return Response.json({ ok: false, error: provider === 'codex' ? 'value required (a bearer token or env:NAME reference)' : 'value required (a sk-ant-oat… token or a .credentials.json bundle)' }, { status: 400 });
 
@@ -88,7 +97,16 @@ export default defineTool({
       // accounts never served a request). A bearer's alphabet has no whitespace, so collapsing ALL
       // of it reconstructs the intended token. Bundles (JSON) are left untouched.
       const tokenValue = value.replace(/\s+/g, '');
-      if (provider === 'claude') {
+      if (isApiKey) {
+        if (!/^sk-ant-api[A-Za-z0-9_-]+$/.test(tokenValue)) {
+          return Response.json({ ok: false, error: 'value must be an Anthropic Console API key (sk-ant-api…). For a Max subscription, use browser login or a setup-token instead.' }, { status: 400 });
+        }
+        const credPath = papercuspPath('deploy-credentials', `${accountId}.anthropic-api-key`);
+        await mkdir(dirname(credPath), { recursive: true, mode: 0o700 });
+        await writeFile(credPath, tokenValue, { mode: 0o600 });
+        await chmod(credPath, 0o600);
+        credentialRef = `apikey:file:${credPath}`;
+      } else if (provider === 'claude') {
         // Discriminate: a setup-token (token:) vs a pasted .credentials.json bundle (file:).
         const isBundle = value.startsWith('{');
         if (isBundle) {
@@ -111,7 +129,7 @@ export default defineTool({
               ok: false,
               error: looksLikeOAuthCode
                 ? 'that looks like the OAuth code from claude.ai (code#state), not a token — paste it in the browser-login flow’s "code" box (step 3) instead. To use THIS tab, run `claude setup-token` and paste the sk-ant-oat… token it mints.'
-                : 'value must be a setup-token (sk-ant-oat…) or a .credentials.json bundle ({…})',
+                : 'value must be a setup-token (sk-ant-oat…) or a .credentials.json bundle ({…}). For a Console key (sk-ant-api…), choose Anthropic API key.',
             },
             { status: 400 },
           );

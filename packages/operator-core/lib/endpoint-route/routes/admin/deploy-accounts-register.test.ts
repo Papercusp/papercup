@@ -96,6 +96,51 @@ describe('POST /api/admin/deploy-accounts/register — egress + invalidation (su
     expect(lastRegisterInput()?.credentialRef).toMatch(/^token:/);
   });
 
+  it('registers an Anthropic API key privately with API-key authentication, without returning the key', async () => {
+    const key = 'sk-ant-api03-test-console-credential';
+    const { status, body } = await post({
+      accountId: 'console-api', provider: 'claude', credentialType: 'api-key', value: key,
+    });
+    expect(status).toBe(200);
+    expect(lastRegisterInput()).toMatchObject({
+      id: 'console-api', provider: 'claude',
+      credentialRef: 'apikey:file:/tmp/test-papercusp/deploy-credentials/console-api.anthropic-api-key',
+    });
+    expect(h.writeFile).toHaveBeenCalledWith(
+      '/tmp/test-papercusp/deploy-credentials/console-api.anthropic-api-key', key, { mode: 0o600 },
+    );
+    expect(h.chmod).toHaveBeenCalledWith('/tmp/test-papercusp/deploy-credentials/console-api.anthropic-api-key', 0o600);
+    expect(h.gatewayFetch).toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toContain(key);
+  });
+
+  it('joins a line-wrapped Console key before storing it', async () => {
+    expect((await post({ accountId: 'wrapped-api', credentialType: 'api-key', value: 'sk-ant-api03-first\nsecond\n' })).status).toBe(200);
+    expect(h.writeFile).toHaveBeenCalledWith(expect.any(String), 'sk-ant-api03-firstsecond', { mode: 0o600 });
+  });
+
+  it.each([OAT, '{"claudeAiOauth":{"accessToken":"oauth"}}', 'not-an-api-key'])('refuses a non-Console credential in API-key mode', async value => {
+    const { status, body } = await post({ accountId: 'wrong-kind', credentialType: 'api-key', value });
+    expect(status).toBe(400);
+    expect(body?.error).toMatch(/Anthropic Console API key/);
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.registerAccount).not.toHaveBeenCalled();
+  });
+
+  it('requires explicit API-key mode rather than treating a Console key as a subscription', async () => {
+    const { status, body } = await post({ accountId: 'wrong-mode', value: 'sk-ant-api03-test' });
+    expect(status).toBe(400);
+    expect(body?.error).toMatch(/choose Anthropic API key/);
+    expect(h.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('refuses API-key mode for Codex and unknown credential types before writing', async () => {
+    expect((await post({ accountId: 'wrong-provider', provider: 'codex', credentialType: 'api-key', value: 'sk-ant-api03-test' })).status).toBe(400);
+    expect((await post({ accountId: 'wrong-type', credentialType: 'unknown', value: OAT })).status).toBe(400);
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.registerAccount).not.toHaveBeenCalled();
+  });
+
   it('registers a Codex env credential without writing a token file', async () => {
     const { status } = await post({ accountId: 'codex-main', provider: 'codex', value: 'env:OPENAI_API_KEY' });
     expect(status).toBe(200);

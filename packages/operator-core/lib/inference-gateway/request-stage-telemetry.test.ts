@@ -2,6 +2,30 @@ import { describe, expect, it } from 'vitest';
 import { channel } from 'node:diagnostics_channel';
 import http from 'node:http';
 
+describe('provider queue-wait retention', () => {
+  it('keeps sparse-lane waits after another provider fills the shared timeline ring', () => {
+    let now = 0;
+    const collector = new GatewayRequestTelemetry({ recentCapacity: 2, now: () => now });
+    const complete = (provider: 'claude' | 'codex', wait: number) => {
+      const span = collector.begin({ provider, protocol: provider === 'claude' ? 'anthropic-messages' : 'openai-responses' });
+      span.routeSelected();
+      now += wait;
+      span.admitted();
+      span.finish('ok', 200);
+    };
+    complete('claude', 10);
+    complete('claude', 20);
+    for (let i = 0; i < 5; i++) complete('codex', 100 + i);
+    const snapshot = collector.snapshot();
+    expect(snapshot.recent.every(row => row.provider === 'codex')).toBe(true);
+    expect(snapshot.providerQueueWait.claude).toMatchObject({ count: 2, retained: 2, p50: 10 });
+    expect(snapshot.providerQueueWait.codex).toMatchObject({ count: 5, retained: 2, p50: 103 });
+    expect(snapshot.providerQueueWait.local).toMatchObject({ count: 0, retained: 0, p50: null });
+    snapshot.providerQueueWait.claude.p50 = -1;
+    expect(collector.snapshot().providerQueueWait.claude.p50).toBe(10);
+  });
+});
+
 describe('provider identity observations', () => {
   it('delivers exact owner/request/model/effort/account evidence to the maintained startup sink', () => {
     const records: unknown[] = [];

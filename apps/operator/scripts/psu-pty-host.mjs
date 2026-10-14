@@ -4890,6 +4890,15 @@ export function makeCarryRearmController({
   waitWakeModeRetry = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
 }) {
   const pending = new Set();
+  // A host teardown must close the detached re-arm loop before the PTY and its
+  // delivery dedup table disappear. Without this boundary, a production carry
+  // can remain pending forever after child-exit: the retry is waiting on a gate
+  // that can never settle, and later loop wakes are suppressed by
+  // pendingCount(). The async retry still observes this flag when an injected
+  // wait eventually resolves, so disposal is safe even when a gate cannot be
+  // cancelled synchronously.
+  let disposed = false;
+  const settledMessages = new WeakSet();
   // EI-18681914950138372: a SEPARATE tracking set, covering the carry-respawn's
   // FIRST delivery attempt — from the moment the host accepts the message
   // through to that attempt's conclusion (delivered / dropped / handed off to
@@ -4912,6 +4921,8 @@ export function makeCarryRearmController({
   // instead of being terminally dropped (see schedule() below).
   const latest = new Map();
   const pendingMessages = new Map();
+  const wasSettled = (msg) => msg != null && (typeof msg === 'object' || typeof msg === 'function') &&
+    settledMessages.has(msg);
   /**
    * P-005: the re-arm now covers EVERY gated mode, so the non-drill sentinel
    * must be namespaced BY MODE.
@@ -4938,9 +4949,37 @@ export function makeCarryRearmController({
     const drillId = String(msg?.drillId || '');
     return drillId || `${NON_DRILL_REARM_KEY}:${rearmModeOf(msg)}`;
   };
-  const settle = (key, outcome) => {
-    const messages = [...(pendingMessages.get(key) ?? [])];
-    onSettlement(messages, outcome);
+  const settle = (key, outcome, messagesOverride = null) => {
+    const messages = messagesOverride ?? [...(pendingMessages.get(key) ?? [])];
+    const unsettled = messages.filter((msg) => !wasSettled(msg));
+    if (!unsettled.length) return false;
+    for (const msg of unsettled) {
+      if (msg != null && (typeof msg === 'object' || typeof msg === 'function')) settledMessages.add(msg);
+    }
+    onSettlement(unsettled, outcome);
+    return true;
+  };
+  const terminalDropFor = (msg, reason, deliveryIds = []) => {
+    const drillId = String(msg?.drillId || '');
+    const isDrill = Boolean(drillId);
+    const mode = rearmModeOf(msg);
+    const kind = isDrill
+      ? 'carry-drill-carry-dropped'
+      : mode === 'carry-respawn' ? 'respawn-carry-dropped' : 'wake-rearm-dropped';
+    const extra = isDrill
+      ? {
+          drillId,
+          sessionClass: msg?.sessionClass ?? '',
+          reason,
+          rearmed: true,
+        }
+      : {
+          mode,
+          reason,
+          rearmed: true,
+          ...(deliveryIds.length ? { deliveryIds } : {}),
+        };
+    return { kind, extra, isDrill };
   };
   return {
     /** Live count of accepted first attempts and re-armed retries.
@@ -4966,6 +5005,7 @@ export function makeCarryRearmController({
      * not its age or ordering against a newer host generation.
      */
     refreshPendingMessage(msg) {
+      if (disposed) return false;
       const key = keyFor(msg);
       const deliveryId = String(msg?.deliveryId ?? '');
       if (!deliveryId || !pending.has(key)) return false;
@@ -4982,6 +5022,7 @@ export function makeCarryRearmController({
      *  accepted by the host, before it enters its own busy-gate wait — marks it
      *  in-flight so a wake arriving during that wait is correctly deferred. */
     beginFirstAttempt(msg) {
+      if (disposed) return;
       inFlight.add(msg);
     },
     /** EI-18681914950138372: call exactly once, when that first attempt has
@@ -5001,6 +5042,16 @@ export function makeCarryRearmController({
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
     schedule(msg) {
+      if (disposed) {
+        const key = keyFor(msg);
+        if (!wasSettled(msg)) {
+          const deliveryIds = msg?.deliveryId ? [String(msg.deliveryId)] : [];
+          const terminal = terminalDropFor(msg, 'host-ending', deliveryIds);
+          emitEvent(terminal.kind, terminal.extra);
+          settle(key, { delivered: false, reason: 'host-ending' }, [msg]);
+        }
+        return 'closed';
+      }
       const drillId = String(msg?.drillId || '');
       const isDrill = !!drillId;
       // Drills dedupe per-drillId; a production respawn (no drillId) dedupes
@@ -5097,6 +5148,10 @@ export function makeCarryRearmController({
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             attemptsMade = attempt + 1;
             const release = await acquireInject();
+            if (disposed) {
+              release();
+              return;
+            }
             // EI-19480099650947832: re-read the payload EVERY attempt — a later
             // request-compaction may have superseded it since the last one, and
             // the freshest carry document is always the right one to deliver.
@@ -5105,11 +5160,13 @@ export function makeCarryRearmController({
             let deliveryDeferred = false;
             let wakeModePauseReason = null;
             try {
+              if (disposed) return;
               // Check BEFORE waiting on the successor's output. Otherwise an
               // obsolete retry can retain pending wake suppression indefinitely.
               if (dropSuperseded(current)) return;
               if (waitIdle) {
                 const idle = await waitIdle();
+                if (disposed) return;
                 if (dropSuperseded(latest.get(key) ?? current)) return;
                 if (idle?.deferred) {
                   deferReason = idle.reason || 'owner-input-cap';
@@ -5119,6 +5176,7 @@ export function makeCarryRearmController({
               }
               if (hasPendingOwnerInput()) {
                 const clear = waitForOwnerInputClear ? await waitForOwnerInputClear() : null;
+                if (disposed) return;
                 if (dropSuperseded(latest.get(key) ?? current)) return;
                 if (clear?.deferred || hasPendingOwnerInput()) {
                   deferReason = clear?.reason || 'owner-input-cap';
@@ -5132,9 +5190,11 @@ export function makeCarryRearmController({
               // consuming the carry or holding the inject mutex.
               let atPrompt = null;
               wakeModePauseReason = await carryWakeModePauseReason(current);
+              if (disposed) return;
               if (wakeModePauseReason) deferReason = wakeModePauseReason;
               if (!wakeModePauseReason) {
                 atPrompt = await waitAtPrompt(capMs, current);
+                if (disposed) return;
                 if (dropSuperseded(latest.get(key) ?? current)) return;
                 // The owner may have started composing during the prompt wait.
                 if (hasPendingOwnerInput()) {
@@ -5149,6 +5209,7 @@ export function makeCarryRearmController({
                   observedMaxQuietMs = atPrompt.maxQuietForMs;
                 }
                 wakeModePauseReason = await carryWakeModePauseReason(latest.get(key) ?? current);
+                if (disposed) return;
                 if (wakeModePauseReason) deferReason = wakeModePauseReason;
               }
               if (!wakeModePauseReason) {
@@ -5184,6 +5245,7 @@ export function makeCarryRearmController({
                     drillId,
                     sessionClass: deliver.sessionClass ?? '',
                   });
+              if (disposed) return;
               const outcome = result ?? { delivered: false, reason: 'recycle-outcome-unavailable' };
               if (performDelivery && !isDrill && mode !== 'carry-respawn'
                 && !outcome.delivered && outcome.retryable) {
@@ -5287,6 +5349,40 @@ export function makeCarryRearmController({
         }
       })();
       return 'queued';
+    },
+    /**
+     * Close all detached re-arm work when this PTY host is ending. Every
+     * accepted message receives one terminal settlement so its delivery dedup
+     * slot cannot strand a future loop wake. The method is idempotent; a retry
+     * already blocked inside an injected wait will notice `disposed` when that
+     * wait returns and exit without recycling a dead child.
+     */
+    dispose(reason = 'host-ending') {
+      if (disposed) return false;
+      disposed = true;
+      const messagesByKey = new Map();
+      for (const [key, messages] of pendingMessages) {
+        messagesByKey.set(key, new Set(messages));
+      }
+      for (const msg of inFlight) {
+        const key = keyFor(msg);
+        const messages = messagesByKey.get(key) ?? new Set();
+        messages.add(msg);
+        messagesByKey.set(key, messages);
+      }
+      for (const [key, messages] of messagesByKey) {
+        const list = [...messages];
+        if (!list.some((msg) => !wasSettled(msg))) continue;
+        const deliveryIds = list.map((msg) => msg?.deliveryId).filter(Boolean).map(String);
+        const terminal = terminalDropFor(list[0], reason, deliveryIds);
+        emitEvent(terminal.kind, terminal.extra);
+        settle(key, { delivered: false, reason }, list);
+      }
+      pending.clear();
+      inFlight.clear();
+      latest.clear();
+      pendingMessages.clear();
+      return true;
     },
   };
 }
@@ -14915,6 +15011,15 @@ export function hostThroughPty(o) {
       // undeliverable so each sender's dedup slot clears instead of hanging.
       cancelUnparkRetry();
       releaseHeldDeliveries({ ok: false, reason: 'host-ending' });
+      // A deferred carry/loop wake is detached from this cleanup call and may
+      // be blocked in its prompt gate. Close that controller before killing the
+      // child so every accepted delivery gets a terminal host-ending outcome
+      // and no retry can later target the dead PTY.
+      try {
+        carryRearm.dispose('host-ending');
+      } catch (error) {
+        appendHostEvent(ownerId, 'carry-rearm-cleanup-failed', hostErrorEvidence(error));
+      }
       const endedSignal = signal ?? teardownSignal;
       // A PTY leader can exit before its descendants. Reap the group while its
       // forkpty pgid is still unambiguous, then remove our signal listeners.

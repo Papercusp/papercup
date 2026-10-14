@@ -840,6 +840,9 @@ export interface GatewayRequestTelemetrySnapshot {
   missingStageByName: Record<GatewayRequestStageName, number>;
   sampleCapacity: number;
   recentCapacity: number;
+  /** Latest queue waits per provider, independently bounded by recentCapacity.
+   * A busy provider cannot evict a quieter provider's latency measurements. */
+  providerQueueWait: Record<GatewayTelemetryProvider, GatewayPercentileSummary>;
   recent: GatewayRequestTimeline[];
 }
 
@@ -1289,6 +1292,7 @@ export class GatewayRequestTelemetry {
   private readonly outcomes = emptyOutcomes();
   private readonly missingStageByName = emptyMissingStages();
   private readonly stageSamples: Record<GatewayRequestStageName, BoundedSamples>;
+  private readonly providerQueueWait: Record<GatewayTelemetryProvider, BoundedSamples>;
   private readonly recent: GatewayRequestTimeline[] = [];
   private readonly sampleCapacity: number;
   private readonly recentCapacity: number;
@@ -1304,6 +1308,11 @@ export class GatewayRequestTelemetry {
   } = {}) {
     this.sampleCapacity = Math.max(1, Math.floor(opts.sampleCapacity ?? 4096));
     this.recentCapacity = Math.max(1, Math.floor(opts.recentCapacity ?? 256));
+    this.providerQueueWait = {
+      claude: new BoundedSamples(this.recentCapacity),
+      codex: new BoundedSamples(this.recentCapacity),
+      local: new BoundedSamples(this.recentCapacity),
+    };
     this.now = opts.now ?? Date.now;
     this.onStartupEvidence = opts.onStartupEvidence;
     this.stageSamples = Object.fromEntries(
@@ -1361,6 +1370,8 @@ export class GatewayRequestTelemetry {
       const value = timeline.durationsMs[stage];
       if (value !== undefined) this.stageSamples[stage].add(value);
     }
+    const queueWait = timeline.durationsMs.queueWait;
+    if (queueWait !== undefined) this.providerQueueWait[timeline.provider].add(queueWait);
     this.recent.push(timeline);
     if (this.recent.length > this.recentCapacity) {
       this.recent.splice(0, this.recent.length - this.recentCapacity);
@@ -1400,6 +1411,11 @@ export class GatewayRequestTelemetry {
       missingStageByName: { ...this.missingStageByName },
       sampleCapacity: this.sampleCapacity,
       recentCapacity: this.recentCapacity,
+      providerQueueWait: {
+        claude: this.providerQueueWait.claude.snapshot(),
+        codex: this.providerQueueWait.codex.snapshot(),
+        local: this.providerQueueWait.local.snapshot(),
+      },
       recent: this.recent.map((timeline) => ({
         ...timeline,
         cache: cloneCacheObservation(timeline.cache),
