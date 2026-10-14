@@ -249,6 +249,10 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     greenCmdOverride = null;
   }
   const greenCmd = greenCmdOverride ?? gate.greenCmd ?? gate.testCommand ?? DEFAULT_GREEN_CMD;
+  const [releaseRoot, checkpointRoot] = await Promise.all([
+    resolveSiblingTreeRoot({ integrationRoot: entry.path, name: `${slug}-release` }),
+    resolveSiblingTreeRoot({ integrationRoot: entry.path, name: `${slug}-checkpoint` }),
+  ]);
   const env: Record<string, string> = {
     PAPERCUSP_INTEGRATION_ROOT: entry.path,
     PAPERCUSP_RELEASE_SLUG: slug,
@@ -257,8 +261,8 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     PAPERCUSP_GREEN_CMD: greenCmd,
     // WI-6554700010009501: a hive nested inside another git work tree (the drill lives at
     // papercusp/apps/<slug>) must not get these trees derived inside that enclosing tree.
-    PAPERCUSP_RELEASE_ROOT: resolveSiblingTreeRoot({ integrationRoot: entry.path, name: `${slug}-release` }),
-    PAPERCUSP_CHECKPOINT_ROOT: resolveSiblingTreeRoot({ integrationRoot: entry.path, name: `${slug}-checkpoint` }),
+    PAPERCUSP_RELEASE_ROOT: releaseRoot,
+    PAPERCUSP_CHECKPOINT_ROOT: checkpointRoot,
     PAPERCUSP_CHECKPOINT_LOG_DIR: join(homedir(), '.papercusp', 'checkpoint-logs', slug),
   };
   // WI-2828: ALWAYS thread the resolved value (now always a string — resolveHiveReleaseGate

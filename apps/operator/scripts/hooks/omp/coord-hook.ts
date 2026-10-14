@@ -765,7 +765,21 @@ interface HookSessionLinkContext {
     getSessionId?: () => string;
     getSessionFile?: () => string | undefined;
     getCwd?: () => string;
+    /** OMP keeps a new session file lazy until the first assistant message.
+     * Managed session-port kickoffs need the user row discoverable before the
+     * model responds, so use the runtime's supported eager-persistence seam. */
+    ensureOnDisk?: () => Promise<void>;
   };
+}
+
+/** Materialize OMP's native session file before a managed kickoff is typed.
+ * This is deliberately a no-op for older/detached runtimes whose context does
+ * not expose the maintained SessionManager method. */
+export async function ensureNativeSessionOnDisk(ctx?: unknown): Promise<boolean> {
+  const ensure = (ctx as HookSessionLinkContext | undefined)?.sessionManager?.ensureOnDisk;
+  if (typeof ensure !== 'function') return false;
+  await ensure.call((ctx as HookSessionLinkContext).sessionManager);
+  return true;
 }
 
 function nativeSessionIdFromContext(ctx: unknown): string {
@@ -876,6 +890,11 @@ export async function withDeadline(p: Promise<unknown>, ms: number): Promise<voi
  *  detached). Bounded by SESSION_START_DEADLINE_MS so a slow operator can never
  *  drive the handler past pi's 30s framework cap (WI-3147). */
 export async function onSessionStart(ctx?: unknown): Promise<void> {
+  // OMP lazily creates a native JSONL file until an assistant message exists.
+  // Managed session-port delivery must be able to observe the first user row
+  // while the model is still working, so force the file into the durable store
+  // before any coordination/network work or kickoff can begin.
+  await ensureNativeSessionOnDisk(ctx);
   // activity:report is identity-preflighted from the MCP request URL. Cache the
   // native OMP session id supplied by the session_start context so pre-tool,
   // post-tool, and lifecycle reports all carry verified request context.

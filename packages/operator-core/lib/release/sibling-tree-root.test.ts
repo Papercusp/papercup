@@ -20,8 +20,8 @@ const trees = (map: Record<string, string>) => (dir: string) => {
 };
 
 describe('resolveSiblingTreeRoot (injected probe)', () => {
-  it('keeps the plain sibling for a top-level checkout', () => {
-    const r = describeSiblingTreeRoot({
+  it('keeps the plain sibling for a top-level checkout', async () => {
+    const r = await describeSiblingTreeRoot({
       integrationRoot: '/w/oddsmith',
       name: 'oddsmith-checkpoint',
       probe: () => null,
@@ -29,9 +29,9 @@ describe('resolveSiblingTreeRoot (injected probe)', () => {
     expect(r).toEqual({ root: '/w/oddsmith-checkpoint', enclosingWorkTree: null });
   });
 
-  it('hops above the enclosing work tree for a nested hive', () => {
+  it('hops above the enclosing work tree for a nested hive', async () => {
     const probe = trees({ '/w/papercusp': '/w/papercusp' });
-    const r = describeSiblingTreeRoot({
+    const r = await describeSiblingTreeRoot({
       integrationRoot: '/w/papercusp/apps/slack-asana-bug-drill',
       name: 'slack-asana-bug-drill-checkpoint',
       probe,
@@ -43,16 +43,16 @@ describe('resolveSiblingTreeRoot (injected probe)', () => {
     expect(r.root.startsWith('/w/papercusp/')).toBe(false);
   });
 
-  it('climbs to the OUTERMOST work tree when the enclosing tree is itself nested', () => {
+  it('climbs to the OUTERMOST work tree when the enclosing tree is itself nested', async () => {
     const probe = trees({ '/w/outer': '/w/outer', '/w/outer/libs/inner': '/w/outer/libs/inner' });
-    expect(outermostEnclosingWorkTree('/w/outer/libs/inner/apps', probe)).toBe('/w/outer');
+    expect(await outermostEnclosingWorkTree('/w/outer/libs/inner/apps', probe)).toBe('/w/outer');
     expect(
-      resolveSiblingTreeRoot({ integrationRoot: '/w/outer/libs/inner/apps/x', name: 'x-release', probe }),
+      await resolveSiblingTreeRoot({ integrationRoot: '/w/outer/libs/inner/apps/x', name: 'x-release', probe }),
     ).toBe('/w/outer-x-release');
   });
 
-  it('terminates when the probe keeps answering the same tree', () => {
-    expect(outermostEnclosingWorkTree('/a/b', () => '/a')).toBe('/a');
+  it('terminates when the probe keeps answering the same tree', async () => {
+    expect(await outermostEnclosingWorkTree('/a/b', () => '/a')).toBe('/a');
   });
 });
 
@@ -62,7 +62,7 @@ describe('gitEnclosingWorkTree (real git)', () => {
   const git = (cwd: string, ...args: string[]) =>
     execFileSync('git', ['-C', cwd, ...args], { stdio: 'ignore' });
 
-  it('relocates a hive nested in a real repo and ignores a stub .git dir above it', () => {
+  it('relocates a hive nested in a real repo and ignores a stub .git dir above it', async () => {
     // A stub `.git` holding only `info/` (this box has one at ~/.git). git rejects it, so it
     // must NOT count as an enclosing repo; a `.git`-existence walk would wrongly stop here.
     mkdirSync(path.join(base, '.git', 'info'), { recursive: true });
@@ -73,11 +73,11 @@ describe('gitEnclosingWorkTree (real git)', () => {
     git(outer, 'init', '-q');
     git(hive, 'init', '-q');
 
-    expect(gitEnclosingWorkTree(workspace)).toBeNull();
-    expect(resolveSiblingTreeRoot({ integrationRoot: outer, name: 'outer-checkpoint' })).toBe(
+    expect(await gitEnclosingWorkTree(workspace)).toBeNull();
+    expect(await resolveSiblingTreeRoot({ integrationRoot: outer, name: 'outer-checkpoint' })).toBe(
       path.join(workspace, 'outer-checkpoint'),
     );
-    expect(resolveSiblingTreeRoot({ integrationRoot: hive, name: 'drill-checkpoint' })).toBe(
+    expect(await resolveSiblingTreeRoot({ integrationRoot: hive, name: 'drill-checkpoint' })).toBe(
       path.join(workspace, 'outer-drill-checkpoint'),
     );
   });

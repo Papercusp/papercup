@@ -23,20 +23,24 @@
  * rejects as "not a git repository". A `.git`-existence walk would treat `~` as an
  * enclosing repo and move papercusp's OWN checkpoint out of `~/papercupai-workspace`.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import * as path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 /** Returns the git work tree containing `dir`, or null when `dir` is not inside one. */
-export type EnclosingWorkTreeProbe = (dir: string) => string | null;
+export type EnclosingWorkTreeProbe = (dir: string) => string | null | Promise<string | null>;
 
 /** Default probe: git's own answer, so invalid or stub `.git` entries are ignored. */
-export function gitEnclosingWorkTree(dir: string): string | null {
+export async function gitEnclosingWorkTree(dir: string): Promise<string | null> {
   try {
-    const top = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {
+    const { stdout } = await execFileAsync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 10_000,
-    }).trim();
+      maxBuffer: 64 * 1024,
+    });
+    const top = stdout.trim();
     return top ? path.resolve(top) : null;
   } catch {
     return null;
@@ -51,14 +55,14 @@ const MAX_ENCLOSING_HOPS = 16;
  * because the enclosing tree can itself be a submodule or nested clone; stopping at the
  * innermost one would still place the sibling inside the outer tree.
  */
-export function outermostEnclosingWorkTree(
+export async function outermostEnclosingWorkTree(
   dir: string,
   probe: EnclosingWorkTreeProbe = gitEnclosingWorkTree,
-): string | null {
+): Promise<string | null> {
   let outermost: string | null = null;
   let cursor = path.resolve(dir);
   for (let hop = 0; hop < MAX_ENCLOSING_HOPS; hop++) {
-    const top = probe(cursor);
+    const top = await probe(cursor);
     if (!top) break;
     const resolved = path.resolve(top);
     if (resolved === outermost) break;
@@ -85,9 +89,9 @@ export interface SiblingTreeRootResolution {
 }
 
 /** Where the named tree lives, plus the enclosing work tree that forced a relocation. */
-export function describeSiblingTreeRoot(input: SiblingTreeRootInput): SiblingTreeRootResolution {
+export async function describeSiblingTreeRoot(input: SiblingTreeRootInput): Promise<SiblingTreeRootResolution> {
   const parent = path.dirname(path.resolve(input.integrationRoot));
-  const enclosingWorkTree = outermostEnclosingWorkTree(parent, input.probe);
+  const enclosingWorkTree = await outermostEnclosingWorkTree(parent, input.probe);
   if (!enclosingWorkTree) {
     return { root: path.join(parent, input.name), enclosingWorkTree: null };
   }
@@ -101,6 +105,6 @@ export function describeSiblingTreeRoot(input: SiblingTreeRootInput): SiblingTre
 }
 
 /** The named sibling tree's path. See {@link describeSiblingTreeRoot}. */
-export function resolveSiblingTreeRoot(input: SiblingTreeRootInput): string {
-  return describeSiblingTreeRoot(input).root;
+export async function resolveSiblingTreeRoot(input: SiblingTreeRootInput): Promise<string> {
+  return (await describeSiblingTreeRoot(input)).root;
 }

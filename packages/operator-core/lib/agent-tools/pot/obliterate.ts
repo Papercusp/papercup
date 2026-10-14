@@ -290,11 +290,15 @@ export default defineTool({
       // <root>/apps/<slug>-checkpoint, and (WI-6554700010009501) the location
       // hive-release-env now derives, outside any enclosing git work tree. Remove both;
       // the Set collapses them when <root> is not itself inside a work tree.
+      const derivedCheckpointTree = await resolveSiblingTreeRoot({
+        integrationRoot: appTree,
+        name: `${slug}-checkpoint`,
+      });
       const targets = [
         ...new Set([
           appTree,
           join(root, 'apps', `${slug}-checkpoint`),
-          resolveSiblingTreeRoot({ integrationRoot: appTree, name: `${slug}-checkpoint` }),
+          derivedCheckpointTree,
           join(root, 'launch-context', `fleet-${slug}-launch-context.md`),
         ]),
       ];
