@@ -10,6 +10,7 @@ import {
   HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH,
   HOSTED_BROWSER_FIRST_WORKSPACE_PATH,
   HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH,
+  HOSTED_BROWSER_USER_EXPORT_PATH,
   HOSTED_BROWSER_QUERY_NAME,
   HOSTED_BROWSER_REST_QUERY_PATH,
   HOSTED_BROWSER_SELECT_WORKSPACE_PATH,
@@ -60,6 +61,26 @@ function tenantRunner(calls: Array<{ selectedWorkspaceId?: string }>) {
 }
 
 describe('hosted browser route boundary', () => {
+  it('lets a verified member export their own account without a selected workspace or accepting a body-selected user', async () => {
+    const member = createHostedPrincipal({ workspaceId: CONTROL_PLANE_WORKSPACE, userId: 'member',
+      activeOrganizationId: 'org-a', sessionId: 'session', sessionVersion: 1, permissions: ['workspace:view'] });
+    const exportUserData = vi.fn(async () => ({ receiptId: 'user-receipt', stores: [] }));
+    const browser = createHostedBrowserRoutes({ publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+      dependencies: { exportUserData } });
+    expect(browser.allowlist).toContainEqual({ method: 'POST', path: HOSTED_BROWSER_USER_EXPORT_PATH, access: 'session' });
+    const handler = routeHandler(browser.routes, HOSTED_BROWSER_USER_EXPORT_PATH);
+    const request = (origin: string) => new Request(`${ORIGIN}/api${HOSTED_BROWSER_USER_EXPORT_PATH}`, {
+      method: 'POST', headers: { origin }, body: JSON.stringify({ userId: 'someone-else', organizationId: 'other' }),
+    });
+    expect((await handler(request('https://other.test'), context(member))).status).toBe(403);
+    expect((await handler(request(ORIGIN), { ...context(), principal: undefined })).status).toBe(401);
+    expect(exportUserData).not.toHaveBeenCalled();
+    const response = await handler(request(ORIGIN), context(member));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-disposition')).toContain('user-data.json');
+    expect(exportUserData).toHaveBeenCalledExactlyOnceWith(member);
+  });
+
   it('exports the authenticated organization without a workspace and ignores caller-supplied scope', async () => {
     const account = createHostedPrincipal({ workspaceId: CONTROL_PLANE_WORKSPACE, userId: 'owner',
       activeOrganizationId: 'org-a', sessionId: 'session', sessionVersion: 1, permissions: ['members:manage'] });
