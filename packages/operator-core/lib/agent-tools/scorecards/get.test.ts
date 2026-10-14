@@ -13,6 +13,7 @@ import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@pa
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
+import { currentStageDiagnosticContext, STAGE_STALL_LOG_MS } from '../../sync/hyperbee/stage-stall-log';
 
 const { doorConstantsMock, gradingAuditRubricMock } = vi.hoisted(() => ({
   doorConstantsMock: vi.fn(),
@@ -172,17 +173,25 @@ describe('scorecards:get evidence-first projection', () => {
       rubricRevision: 10,
       criteriaHash: 'hash-before-edit',
     };
+    let rubricContext: ReturnType<typeof currentStageDiagnosticContext> = null;
     readScorecardEvidenceM.mockResolvedValue({
       kind: 'found',
       scorecard: { ...scorecard, gradingAudit },
     });
-    gradingAuditRubricMock.mockResolvedValue({
-      rubricId: 'grading-integrity',
-      revision: 12,
-      criteriaHash: 'hash-current',
+    gradingAuditRubricMock.mockImplementation(async () => {
+      rubricContext = currentStageDiagnosticContext();
+      return {
+        rubricId: 'grading-integrity',
+        revision: 12,
+        criteriaHash: 'hash-current',
+      };
     });
+    const metadata = vi.fn();
 
-    const result = await getTool.handler({ issueId: scorecard.issueId } as never, makeDispatchContext());
+    const result = await getTool.handler(
+      { issueId: scorecard.issueId } as never,
+      makeDispatchContext({ metadata }),
+    );
 
     expect(result).toMatchObject({
       data: {
@@ -199,6 +208,18 @@ describe('scorecards:get evidence-first projection', () => {
         },
       },
     });
+    expect(rubricContext).toMatchObject({
+      stage: 'scorecards-get-rubric-read',
+      boundary: 'await',
+    });
+    const diagnostics = (result as {
+      data: { diagnostics: { stages: Array<{ stage: string; outcome: string }> } };
+    }).data.diagnostics;
+    expect(diagnostics.stages).toEqual([
+      expect.objectContaining({ stage: 'scorecards-get-evidence-read', outcome: 'fulfilled' }),
+      expect.objectContaining({ stage: 'scorecards-get-rubric-read', outcome: 'fulfilled' }),
+    ]);
+    expect(metadata).toHaveBeenLastCalledWith({ scorecardsGetDiagnostics: diagnostics });
   });
 
   it('returns bounded phase timings correlated with the PG diagnostic context', async () => {
