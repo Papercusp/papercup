@@ -705,7 +705,9 @@ const scorecardEmitBaseShape = {
       .min(1)
       .max(120)
       .optional()
-      .describe('Issue id of the earlier scorecard this corrected filing replaces.'),
+      .describe(
+        'Issue id of the earlier scorecard this corrected filing replaces. Changed evidence from the same author automatically supersedes their latest current terminal card for the same subject and rubric identity; pass this explicitly for other corrections.',
+      ),
     baselineRef: z.string().min(1).max(120).optional().describe(
       'Preserved audited pre-repair scorecard for a comparable re-grade. Unlike supersedes, this does not replace or correct the baseline; use the same target and pinned rubric revision.',
     ),
@@ -3071,64 +3073,6 @@ export async function emitScorecard(
       };
     }
     let sourceHive = args.sourceHive ?? input.ctxHarness;
-    // P-013: a pending subject card is waiting for a GRADING-INTEGRITY audit,
-    // not another ordinary scorecard against the same rubric. Without this
-    // boundary a non-author auditor can accidentally file a second peer card
-    // that looks successful while leaving the original card pending until the
-    // far-end completion gate notices. Refuse the ambiguous form before any
-    // scorecard write and teach the only form that settles the pending stamp.
-    if (args.subject) {
-      const pendingSameSubject = (
-        await listScorecards({
-          rubricRef: args.rubricRef,
-          subjectRef: args.subject.ref,
-          limit: 100,
-        })
-      ).filter(
-        (card) =>
-          card.gradingAudit?.state === 'pending' &&
-          card.subject?.ref === args.subject?.ref &&
-          (card.subject?.kind ?? null) === (args.subject?.kind ?? null) &&
-          card.supersededBy == null &&
-          card.issueId !== args.supersedes,
-      );
-      // WI-10005211: a grading-integrity revision re-opens every settled audit
-      // (reservePendingGradingAudit), so a windowed grader's whole back-catalogue
-      // turns pending at once and each old card blocked the author's next card
-      // until it was re-audited, one at a time. A RE-OPENED audit is not the
-      // P-013 case: the card already carries an independent verdict, and its
-      // own author can never be the auditor. So the author's new card is not
-      // blocked by its own re-opened cards. A never-audited pending card still
-      // blocks everyone, and a non-author is still taught the audit shape.
-      const ownPending = pendingSameSubject.filter((card) => card.createdBy === input.createdBy);
-      const previouslyAudited = new Set<string>();
-      if (ownPending.length > 0) {
-        for (const audit of await listScorecards({
-          rubricRef: GRADING_INTEGRITY_RUBRIC_REF,
-          subjectRefs: ownPending.map((card) => card.issueId),
-          limit: 500,
-        })) {
-          if (audit.subject?.kind === 'scorecard' && audit.subject.ref && !audit.retracted) {
-            previouslyAudited.add(audit.subject.ref);
-          }
-        }
-      }
-      const pendingSubject = pendingSameSubject.find(
-        (card) => !(card.createdBy === input.createdBy && previouslyAudited.has(card.issueId)),
-      );
-      if (pendingSubject) {
-        return {
-          ok: false as const,
-          code: 'grading_audit_required' as const,
-          error:
-            `scorecard '${pendingSubject.issueId}' for rubric '${args.rubricRef}' has a pending grading audit — ` +
-            `either supersede it by passing supersedes:'${pendingSubject.issueId}' on a corrected ` +
-            'same-rubric scorecard, or emit the audit as { rubricRef:\'grading-integrity\', ratings, terminal:true, ' +
-            `subject:{ kind:'scorecard', ref:'${pendingSubject.issueId}' } } instead of filing another ` +
-            'same-rubric peer scorecard',
-        };
-      }
-    }
     if (args.baselineRef) {
       if (args.supersedes) {
         return { ok: false as const, code: 'baseline_correction_conflict',
@@ -3285,7 +3229,6 @@ export async function emitScorecard(
           })
         : latest.evidenceFingerprint)
       : null;
-    const sameCorrectionAlreadyExists = args.supersedes && latest?.supersedes === args.supersedes;
     // P-008: a terminal re-emit of IDENTICAL ratings is the finalization step, not a
     // duplicate — the fingerprint (rubricRef+ratings+snapshots, unchanged for
     // compatibility with stored rows) cannot see finality, so compare it separately.
@@ -3339,6 +3282,35 @@ export async function emitScorecard(
         subjectRubricIdentity,
       ).state !== 'current'
     );
+    let effectiveSupersedes = args.supersedes;
+    // A changed terminal card from the same author is a replacement, not a
+    // second current verdict. Persist the edge so read-time supersession and the
+    // pending-audit dispatcher can retire the old card/lease atomically. Keep
+    // provisional finalization, acceptance, baseline comparisons, forced samples,
+    // and grading-integrity audit corrections on their explicit contracts.
+    if (
+      !effectiveSupersedes &&
+      !args.force &&
+      !args.acknowledgeExisting &&
+      !args.acceptance &&
+      !args.baselineRef &&
+      args.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF &&
+      args.subject &&
+      provisional === undefined &&
+      latest &&
+      latest.createdBy === input.createdBy &&
+      latest.provisional === undefined &&
+      latest.acceptance === undefined &&
+      latest.baselineRef === undefined &&
+      !vettingChanged &&
+      !rubricIdentityChanged &&
+      !subjectRubricIdentityChanged &&
+      latestFingerprint !== evidenceFingerprint
+    ) {
+      effectiveSupersedes = latest.issueId;
+    }
+    const sameCorrectionAlreadyExists =
+      effectiveSupersedes && latest?.supersedes === effectiveSupersedes;
     if (
       !args.force &&
       !finalityChanged &&
@@ -3346,7 +3318,7 @@ export async function emitScorecard(
       !rubricIdentityChanged &&
       !subjectRubricIdentityChanged &&
       latestFingerprint === evidenceFingerprint &&
-      (!args.supersedes || sameCorrectionAlreadyExists)
+      (!effectiveSupersedes || sameCorrectionAlreadyExists)
     ) {
       // EI-25837260733792769: persistence and audit settlement can fail separately.
       // An exact retry by the original auditor must finish the guarded settlement,
@@ -3362,7 +3334,7 @@ export async function emitScorecard(
           ...(auditContext.dispatchReservation ? { dispatchReservation: auditContext.dispatchReservation } : {}),
           ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
           ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
-          ...(args.supersedes ? { supersedesAuditIssueId: args.supersedes } : {}),
+          ...(effectiveSupersedes ? { supersedesAuditIssueId: effectiveSupersedes } : {}),
         });
         if (recoveredAudit.ok) {
           try {
@@ -3409,6 +3381,60 @@ export async function emitScorecard(
           ...(recoveredAuditCleanupError ? { gradingAuditCleanupError: recoveredAuditCleanupError } : {}),
         } : {}),
       };
+    }
+
+    // P-013: a pending subject card is waiting for a GRADING-INTEGRITY audit,
+    // not another ordinary scorecard against the same rubric. Run this after
+    // exact replay dedup and the locked latest-card read: an identical retry is
+    // idempotent, and a same-author changed-evidence correction has its persisted
+    // supersedes edge before this pending-audit guard runs.
+    if (args.subject) {
+      const pendingSameSubject = (
+        await listScorecards({ rubricRef: args.rubricRef, subjectRef: args.subject.ref, limit: 100 })
+      ).filter(
+        (card) =>
+          card.gradingAudit?.state === 'pending' &&
+          card.subject?.ref === args.subject?.ref &&
+          (card.subject?.kind ?? null) === (args.subject?.kind ?? null) &&
+          card.supersededBy == null &&
+          card.issueId !== effectiveSupersedes,
+      );
+      // WI-10005211: a grading-integrity revision re-opens every settled audit
+      // (reservePendingGradingAudit), so a windowed grader's whole back-catalogue
+      // turns pending at once and each old card blocked the author's next card
+      // until it was re-audited, one at a time. A RE-OPENED audit is not the
+      // P-013 case: the card already carries an independent verdict, and its
+      // own author can never be the auditor. So the author's new card is not
+      // blocked by its own re-opened cards. A never-audited pending card still
+      // blocks everyone, and a non-author is still taught the audit shape.
+      const ownPending = pendingSameSubject.filter((card) => card.createdBy === input.createdBy);
+      const previouslyAudited = new Set<string>();
+      if (ownPending.length > 0) {
+        for (const audit of await listScorecards({
+          rubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          subjectRefs: ownPending.map((card) => card.issueId),
+          limit: 500,
+        })) {
+          if (audit.subject?.kind === 'scorecard' && audit.subject.ref && !audit.retracted) {
+            previouslyAudited.add(audit.subject.ref);
+          }
+        }
+      }
+      const pendingSubject = pendingSameSubject.find(
+        (card) => !(card.createdBy === input.createdBy && previouslyAudited.has(card.issueId)),
+      );
+      if (pendingSubject) {
+        return {
+          ok: false as const,
+          code: 'grading_audit_required' as const,
+          error:
+            `scorecard '${pendingSubject.issueId}' for rubric '${args.rubricRef}' has a pending grading audit — ` +
+            `either supersede it by passing supersedes:'${pendingSubject.issueId}' on a corrected ` +
+            'same-rubric scorecard, or emit the audit as { rubricRef:\'grading-integrity\', ratings, terminal:true, ' +
+            `subject:{ kind:'scorecard', ref:'${pendingSubject.issueId}' } } instead of filing another ` +
+            'same-rubric peer scorecard',
+        };
+      }
     }
 
     if (input.previewOnly) {
@@ -3465,7 +3491,7 @@ export async function emitScorecard(
                 subjectRef: args.subject?.ref ?? null,
                 operationRef: JSON.stringify({
                   terminal: args.terminal ?? null,
-                  supersedes: args.supersedes ?? null,
+                  supersedes: effectiveSupersedes ?? null,
                   acceptanceOf: args.acceptanceOf ?? null,
                   acknowledgeExisting: args.acknowledgeExisting ?? null,
                 }),
@@ -3712,7 +3738,7 @@ export async function emitScorecard(
           ...(args.targetHive ? { targetHive: args.targetHive } : {}),
           ...(instrumentSnapshots ? { instrumentSnapshots } : {}),
           evidenceFingerprint,
-          ...(args.supersedes ? { supersedes: args.supersedes } : {}),
+          ...(effectiveSupersedes ? { supersedes: effectiveSupersedes } : {}),
           ...(args.baselineRef ? { baselineRef: args.baselineRef } : {}),
           ...(gradedGeneration ? { gradedGeneration } : {}),
           ...(provisional ? { provisional } : {}),
@@ -3764,7 +3790,7 @@ export async function emitScorecard(
         ...(auditContext.dispatchReservation ? { dispatchReservation: auditContext.dispatchReservation } : {}),
         ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
         ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
-        ...(args.supersedes ? { supersedesAuditIssueId: args.supersedes } : {}),
+        ...(effectiveSupersedes ? { supersedesAuditIssueId: effectiveSupersedes } : {}),
       });
       if (releaseGradingAuditSubjectMutex) {
         await releaseGradingAuditSubjectMutex();
@@ -3904,7 +3930,7 @@ export async function emitScorecard(
             ...(auditSettlement.error ? { gradingAuditError: auditSettlement.error } : {}),
           }
         : {}),
-      ...(args.supersedes ? { supersedes: args.supersedes } : {}),
+      ...(effectiveSupersedes ? { supersedes: effectiveSupersedes } : {}),
       canonicalRatings: ratings,
       ...(releaseGateBinding ? { releaseGateBinding } : {}),
       ...(acceptanceRecord ? { acceptance: acceptanceRecord } : {}),
