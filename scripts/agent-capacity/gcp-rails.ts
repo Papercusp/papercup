@@ -162,14 +162,76 @@ function spotRates(family: Family): { vcpuHour: number; gbRamHour: number } {
   return p;
 }
 
-/** Hourly list price, disk included (the disk is never spot-discounted). */
-export function hourlyPriceUsd(machineType: string, diskGb = DEFAULT_DISK_GB, opts: { spot?: boolean } = {}): number {
-  const shape = parseMachineType(machineType);
-  const p = opts.spot ? spotRates(shape.family) : PRICES_2026_09_30[shape.family];
-  return shape.vcpus * p.vcpuHour + shape.ramGb * p.gbRamHour + diskHourUsd(shape.family, diskGb);
+/**
+ * Disks a run attaches at create besides the boot disk (WI-10005475, the swap-tier test): data disks
+ * of a priced Persistent Disk type, and NVMe Local SSDs. us-central1 on-demand, Cloud Billing Catalog
+ * API read 2026-10-14 07:40Z: "Balanced PD Capacity" 0.10, "SSD backed PD Capacity" 0.17 and
+ * "SSD backed Local Storage" 0.08 USD/GiB-month. A Local SSD is a fixed 375 GiB device that can only
+ * be added at create.
+ */
+export const EXTRA_DISK_GB_MONTH_2026_10_14 = { 'pd-balanced': 0.1, 'pd-ssd': 0.17 } as const;
+export type ExtraDiskType = keyof typeof EXTRA_DISK_GB_MONTH_2026_10_14;
+export const LOCAL_SSD_GB_MONTH_2026_10_14 = 0.08;
+export const LOCAL_SSD_GB = 375;
+/** Families here that take an attached NVMe Local SSD. E2 takes none; C4A only as fixed `-lssd` shapes. */
+export const LOCAL_SSD_FAMILIES: readonly Family[] = ['n2', 'n2d'];
+const MAX_LOCAL_SSDS = 8;
+
+export interface ExtraDisk {
+  type: ExtraDiskType;
+  gb: number;
+  /** Becomes /dev/disk/by-id/google-<deviceName> on the VM. */
+  deviceName: string;
 }
 
-export function worstCaseCents(machineType: string, maxHours: number, diskGb = DEFAULT_DISK_GB, opts: { spot?: boolean } = {}): number {
+export interface AttachedDisks {
+  extraDisks?: ExtraDisk[];
+  localSsds?: number;
+}
+
+/** Parse `--extra-disk=<type>:<gb>:<device-name>`, refusing an unpriced type or a malformed entry. */
+export function parseExtraDisk(raw: string): ExtraDisk {
+  const [type, gb, deviceName, ...rest] = raw.split(':');
+  if (rest.length || !deviceName) throw new Error(`--extra-disk expects <type>:<gb>:<device-name>, got '${raw}'`);
+  if (!(type in EXTRA_DISK_GB_MONTH_2026_10_14)) {
+    throw new Error(`unpriced extra disk type '${type}': one of ${Object.keys(EXTRA_DISK_GB_MONTH_2026_10_14).join(', ')}`);
+  }
+  return { type: type as ExtraDiskType, gb: Number(gb), deviceName };
+}
+
+function attachedDisksHourUsd(d: AttachedDisks): number {
+  const pd = (d.extraDisks ?? []).reduce((sum, x) => sum + x.gb * EXTRA_DISK_GB_MONTH_2026_10_14[x.type], 0);
+  const lssd = (d.localSsds ?? 0) * LOCAL_SSD_GB * LOCAL_SSD_GB_MONTH_2026_10_14;
+  return (pd + lssd) / HOURS_PER_MONTH;
+}
+
+/** Refuse attached disks the machine cannot take or that are malformed, before anything is priced or created. */
+function assertAttachedDisks(family: Family, d: AttachedDisks): void {
+  const extra = d.extraDisks ?? [];
+  if (extra.length && family === 'c4a') throw new Error('C4A takes only Hyperdisk: no Persistent Disk data disks');
+  const names = new Set<string>();
+  for (const x of extra) {
+    if (!(x.type in EXTRA_DISK_GB_MONTH_2026_10_14)) throw new Error(`unpriced extra disk type '${x.type}'`);
+    if (!Number.isInteger(x.gb) || x.gb < 10 || x.gb > 2048) throw new Error(`extra disk ${x.deviceName}: size ${x.gb} GB must be an integer 10-2048`);
+    if (!/^[a-z][a-z0-9-]{0,61}$/.test(x.deviceName)) throw new Error(`extra disk device name '${x.deviceName}' must be [a-z][a-z0-9-]`);
+    if (names.has(x.deviceName)) throw new Error(`duplicate extra disk device name '${x.deviceName}'`);
+    names.add(x.deviceName);
+  }
+  const n = d.localSsds ?? 0;
+  if (!Number.isInteger(n) || n < 0 || n > MAX_LOCAL_SSDS) throw new Error(`localSsds ${n} must be an integer 0-${MAX_LOCAL_SSDS}`);
+  if (n > 0 && !LOCAL_SSD_FAMILIES.includes(family)) {
+    throw new Error(`family '${family}' takes no attached Local SSD here (only ${LOCAL_SSD_FAMILIES.join(', ')})`);
+  }
+}
+
+/** Hourly list price, disk included (the disk is never spot-discounted). */
+export function hourlyPriceUsd(machineType: string, diskGb = DEFAULT_DISK_GB, opts: { spot?: boolean } & AttachedDisks = {}): number {
+  const shape = parseMachineType(machineType);
+  const p = opts.spot ? spotRates(shape.family) : PRICES_2026_09_30[shape.family];
+  return shape.vcpus * p.vcpuHour + shape.ramGb * p.gbRamHour + diskHourUsd(shape.family, diskGb) + attachedDisksHourUsd(opts);
+}
+
+export function worstCaseCents(machineType: string, maxHours: number, diskGb = DEFAULT_DISK_GB, opts: { spot?: boolean } & AttachedDisks = {}): number {
   return Math.ceil(hourlyPriceUsd(machineType, diskGb, opts) * maxHours * 100);
 }
 
@@ -199,6 +261,10 @@ export interface CreateSpec {
    * TERMINATED) until `teardown --run` deletes it. Default 'delete'.
    */
   onReclaim?: 'delete' | 'stop';
+  /** Persistent Disk data disks, created with the VM and auto-deleted with it (priced into the worst case). */
+  extraDisks?: ExtraDisk[];
+  /** Attached NVMe Local SSDs, 375 GiB each (n2/n2d only; priced into the worst case). */
+  localSsds?: number;
 }
 
 const LABEL_VALUE = /^[a-z0-9_-]{1,63}$/;
@@ -226,12 +292,13 @@ export function buildCreateArgs(spec: CreateSpec): string[] {
     throw new Error("onReclaim 'stop' needs a spot VM: an on-demand VM is never reclaimed, and 'stop' only removes its self-delete");
   }
   const diskGb = spec.diskGb ?? DEFAULT_DISK_GB;
+  assertAttachedDisks(parseMachineType(spec.machineType).family, spec);
   const labels: Record<string, string> = {
     ...(spec.extraLabels ?? {}),
     [LABEL_PLAN]: PLAN_SLUG,
     [LABEL_EPHEMERAL]: 'true',
     [LABEL_RUN]: spec.runId,
-    [LABEL_MAXCOST]: String(worstCaseCents(spec.machineType, spec.maxHours, diskGb, { spot: spec.spot })),
+    [LABEL_MAXCOST]: String(worstCaseCents(spec.machineType, spec.maxHours, diskGb, { spot: spec.spot, extraDisks: spec.extraDisks, localSsds: spec.localSsds })),
     [LABEL_PROVISIONING]: spec.spot ? 'spot' : 'standard',
     [LABEL_ON_RECLAIM]: onReclaim,
   };
@@ -260,6 +327,11 @@ export function buildCreateArgs(spec: CreateSpec): string[] {
   ];
   if (spec.metadataFromFile?.length) args.push(`--metadata-from-file=${spec.metadataFromFile.join(',')}`);
   if (spec.spot) args.push('--provisioning-model=SPOT');
+  // auto-delete=yes: the VM's own self-delete takes its data disks too, so no run leaves an orphan.
+  for (const d of spec.extraDisks ?? []) {
+    args.push(`--create-disk=auto-delete=yes,device-name=${d.deviceName},size=${d.gb}GB,type=${d.type}`);
+  }
+  for (let i = 0; i < (spec.localSsds ?? 0); i++) args.push('--local-ssd=interface=NVME');
   return args;
 }
 
@@ -353,7 +425,11 @@ export interface AdmissionVerdict {
 }
 
 export function admitCreate(spec: CreateSpec, census: Census): AdmissionVerdict {
-  const newCents = worstCaseCents(spec.machineType, spec.maxHours, spec.diskGb ?? DEFAULT_DISK_GB, { spot: spec.spot });
+  const newCents = worstCaseCents(spec.machineType, spec.maxHours, spec.diskGb ?? DEFAULT_DISK_GB, {
+    spot: spec.spot,
+    extraDisks: spec.extraDisks,
+    localSsds: spec.localSsds,
+  });
   const committedCents = committedWorstCaseCents(census);
   const ceilingCents = MAX_CONCURRENT_WORST_CASE_USD * 100;
   const admitted = committedCents + newCents <= ceilingCents;
@@ -465,6 +541,9 @@ async function main(argv: string[]): Promise<number> {
       imageProject: flag(argv, 'image-project'),
       spot: argv.includes('--spot'),
       onReclaim: reclaimFlag as CreateSpec['onReclaim'],
+      // Repeatable: every --extra-disk=<type>:<gb>:<device-name> is one data disk.
+      extraDisks: argv.filter((a) => a.startsWith('--extra-disk=')).map((a) => parseExtraDisk(a.slice('--extra-disk='.length))),
+      localSsds: flag(argv, 'local-ssds') ? Number(flag(argv, 'local-ssds')) : undefined,
     };
     const result = await createInstance(spec);
     console.log(JSON.stringify(result, null, 2));
@@ -475,7 +554,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(JSON.stringify(result, null, 2));
     return result.verified ? 0 : 4;
   }
-  console.error('usage: gcp-rails.ts census | create --run= --name= --machine-type= --max-hours= [--zone= --disk-gb= --metadata-from-file= --image-family= --image-project= --spot [--on-reclaim=stop]] | teardown --run=');
+  console.error('usage: gcp-rails.ts census | create --run= --name= --machine-type= --max-hours= [--zone= --disk-gb= --metadata-from-file= --image-family= --image-project= --spot [--on-reclaim=stop] --extra-disk=<pd-balanced|pd-ssd>:<gb>:<device-name> (repeatable) --local-ssds=<n>] | teardown --run=');
   return 2;
 }
 

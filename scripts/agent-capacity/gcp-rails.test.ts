@@ -9,6 +9,7 @@ import {
   LABEL_PROVISIONING,
   LABEL_RUN,
   MAX_CONCURRENT_WORST_CASE_USD,
+  parseExtraDisk,
   parseMachineType,
   PLAN_SLUG,
   readCensus,
@@ -158,6 +159,49 @@ describe('pricing', () => {
     expect(flagValue(e2, 'boot-disk-type')).toBe('pd-balanced');
     expect(flagValue(e2, 'boot-disk-provisioned-iops')).toBeUndefined();
     expect(flagValue(e2, 'image-family')).toBe('ubuntu-2404-lts-amd64');
+  });
+});
+
+describe('attached disks (WI-10005475 swap-tier test)', () => {
+  const swapDisks = [
+    { type: 'pd-balanced' as const, gb: 64, deviceName: 'swapbal' },
+    { type: 'pd-ssd' as const, gb: 64, deviceName: 'swapssd' },
+  ];
+
+  it('creates each data disk with the VM and auto-deletes it with the VM', () => {
+    const args = buildCreateArgs({ ...spec, extraDisks: swapDisks });
+    expect(args.filter((a) => a.startsWith('--create-disk='))).toEqual([
+      '--create-disk=auto-delete=yes,device-name=swapbal,size=64GB,type=pd-balanced',
+      '--create-disk=auto-delete=yes,device-name=swapssd,size=64GB,type=pd-ssd',
+    ]);
+    expect(args.some((a) => a.startsWith('--local-ssd'))).toBe(false);
+  });
+
+  it('prices data disks and Local SSDs into the worst-case label and the admission', () => {
+    const plain = hourlyPriceUsd('n2-standard-4');
+    const withDisks = hourlyPriceUsd('n2-standard-4', 50, { extraDisks: swapDisks, localSsds: 1 });
+    expect(withDisks - plain).toBeCloseTo((64 * 0.1 + 64 * 0.17 + 375 * 0.08) / 730, 8);
+    const args = buildCreateArgs({ ...spec, machineType: 'n2-standard-4', extraDisks: swapDisks, localSsds: 1 });
+    const labels = Object.fromEntries(flagValue(args, 'labels')!.split(',').map((kv) => kv.split('=')));
+    expect(labels[LABEL_MAXCOST]).toBe(String(worstCaseCents('n2-standard-4', 4, 50, { extraDisks: swapDisks, localSsds: 1 })));
+    const verdict = admitCreate({ ...spec, machineType: 'n2-standard-4', extraDisks: swapDisks, localSsds: 1 }, census([]));
+    expect(verdict.newCents).toBeGreaterThan(admitCreate({ ...spec, machineType: 'n2-standard-4' }, census([])).newCents);
+  });
+
+  it('adds one NVMe Local SSD per count on n2, and refuses it on e2, which takes none', () => {
+    const args = buildCreateArgs({ ...spec, machineType: 'n2-standard-4', localSsds: 2 });
+    expect(args.filter((a) => a === '--local-ssd=interface=NVME')).toHaveLength(2);
+    expect(() => buildCreateArgs({ ...spec, localSsds: 1 })).toThrow(/takes no attached Local SSD/);
+  });
+
+  it('refuses malformed, duplicate, unpriced or C4A data disks', () => {
+    expect(() => buildCreateArgs({ ...spec, extraDisks: [{ type: 'pd-ssd', gb: 5, deviceName: 'x' }] })).toThrow(/10-2048/);
+    expect(() => buildCreateArgs({ ...spec, extraDisks: [{ type: 'pd-ssd', gb: 20, deviceName: 'Bad_Name' }] })).toThrow(/device name/);
+    expect(() => buildCreateArgs({ ...spec, extraDisks: [swapDisks[0], swapDisks[0]] })).toThrow(/duplicate/);
+    expect(() => buildCreateArgs({ ...spec, machineType: 'c4a-standard-4', extraDisks: [swapDisks[0]] })).toThrow(/only Hyperdisk/);
+    expect(() => parseExtraDisk('pd-extreme:64:fast')).toThrow(/unpriced extra disk type/);
+    expect(() => parseExtraDisk('pd-ssd:64')).toThrow(/<type>:<gb>:<device-name>/);
+    expect(parseExtraDisk('pd-ssd:64:swapssd')).toEqual({ type: 'pd-ssd', gb: 64, deviceName: 'swapssd' });
   });
 });
 
