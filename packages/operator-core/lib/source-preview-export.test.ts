@@ -452,7 +452,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
     const materialized = join(tmp, 'materialized-dependency-source');
-    git(fixture.repo, ['clone', '--local', '--shared', fixture.repo, materialized]);
+    git(fixture.repo, ['clone', '--local', '--shared', '--recurse-submodules', fixture.repo, materialized]);
     const shadow = await import(new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href);
     write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha, sourceRepoRoot: fixture.repo }));
     shadow.linkNodeModulesShadow(join(fixture.repo, 'node_modules'), join(materialized, 'node_modules'), fixture.repo, materialized);
