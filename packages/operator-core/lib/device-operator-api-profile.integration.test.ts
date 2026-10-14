@@ -44,7 +44,9 @@ describe('disposable operator-api monitoring sources', () => {
     });
     // Retain original phase output even when readiness fails before the probe.
     console.log(result.stdout);
-    if (result.stderr) console.error(result.stderr);
+    // Child stderr also carries DB/provenance diagnostics. Retain its channel
+    // label; the exit-status assertion below decides whether the child failed.
+    if (result.stderr) console.log('[private operator child stderr]\n' + result.stderr);
     expect(result.status, (result.stderr ?? '').slice(-3000)).toBe(0);
     // Progress messages must never be mistaken for the final ready identity.
     // These retained stages also identify import/registry/DB/sidecar stalls.
@@ -106,5 +108,168 @@ describe('disposable operator-api monitoring sources', () => {
     expect(proof.gate).toMatchObject({ gate: 'wedged', red: true });
     expect(proof.missingGate).toBeNull();
     expect(existsSync(proof.home), 'Private runtime must be disposed').toBe(false);
+  }, 200_000);
+});
+
+describe('disposable operator-api device lifecycle', () => {
+  it('enforces expiry, revocation and workspace isolation through real HTTP and Postgres', () => {
+    const probe = `
+      import assert from 'node:assert/strict';
+      import { createHmac, randomUUID } from 'node:crypto';
+      import { Hono } from 'hono';
+      import { createAdaptorServer } from '@hono/node-server';
+      const e = process.env;
+      const id = e.PAPERCUSP_WORKSPACE_ID;
+      if (!id?.startsWith('test-runtime-') || e.PAPERCUSP_POT_HOME_SLUG !== id ||
+          e.PAPERCUSP_BACKGROUND_WORKERS !== '0' || e.PAPERCUSP_DBOS_ROUTINES !== '0') {
+        throw new Error('Disposable request-only identity required');
+      }
+      // A private signing key lets expiry be tested independently of signature
+      // rejection, without changing the production token TTL or wall clock.
+      e.MOBILE_JWT_SECRET = 'private-device-lifecycle-' + randomUUID();
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { registerRoute } = await import('./packages/operator-core/lib/endpoint-route/define-route.ts');
+      const { default: routes } = await import('./packages/operator-core/lib/endpoint-route/routes/device/pair.ts');
+      const { readRegistry, writeRegistry } = await import('./packages/operator-core/lib/workspace-registry.ts');
+      const { insertDevice } = await import('./packages/operator-core/lib/device-store.ts');
+      const { signDeviceToken } = await import('./packages/operator-core/lib/device-jwt.ts');
+      const { sql } = getOrgPg();
+      const other = id + '-other';
+      const registry = readRegistry();
+      assert(registry.workspaces.some(w => w.id === id));
+      writeRegistry({ ...registry, workspaces: [...registry.workspaces,
+        { id: other, name: 'Private second workspace', createdAt: Date.now() }] });
+      const app = new Hono().basePath('/api');
+      for (const route of routes) registerRoute(app, route);
+      const server = createAdaptorServer({ fetch: app.fetch });
+      await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', resolve);
+      });
+      const base = 'http://127.0.0.1:' + server.address().port;
+      const checks = [];
+      async function request(name, path, expected, { method = 'GET', token, body, workspace } = {}) {
+        const response = await fetch(base + '/api' + path, {
+          method, signal: AbortSignal.timeout(15000), headers: {
+            ...(token ? { authorization: 'Bearer ' + token } : {}),
+            ...(body ? { 'content-type': 'application/json' } : {}),
+            ...(workspace ? { 'x-papercusp-workspace': workspace } : {}),
+          }, ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+        const value = await response.json();
+        assert.equal(response.status, expected, name + ': ' + JSON.stringify(value));
+        checks.push({ name, status: response.status });
+        return value;
+      }
+      try {
+        const mint = await request('mint-current-remote-access', '/device/desktop/mint-pair-token', 200,
+          { method: 'POST', body: { workspaceId: id } });
+        assert.equal(mint.qrPayload?.workspaceId, id);
+        assert.equal(typeof mint.qrPayload?.pairToken, 'string');
+        assert(mint.qrPayload.pairToken.length > 0);
+        assert.equal(typeof mint.qrPayload.server, 'string');
+        assert(Number.isFinite(mint.expiresAt));
+        const pair = await request('redeem', '/device/pair', 200,
+          { method: 'POST', body: { pairToken: mint.qrPayload.pairToken } });
+        assert.equal(pair.workspaceId, id);
+        assert.equal(typeof pair.deviceId, 'string');
+        assert.equal(typeof pair.deviceToken, 'string');
+        await request('one-shot-reuse-refused', '/device/pair', 401,
+          { method: 'POST', body: { pairToken: mint.qrPayload.pairToken } });
+        const pending = await request('mint-expiry-probe', '/device/desktop/mint-pair-token', 200,
+          { method: 'POST', body: { workspaceId: id } });
+        assert.equal(pending.qrPayload?.workspaceId, id);
+        assert.equal(typeof pending.qrPayload?.pairToken, 'string');
+        assert(pending.qrPayload.pairToken.length > 0);
+        await sql\`UPDATE harness_shared.mobile_pair_tokens SET expires_at_ms = \${Date.now() - 1000}
+          WHERE pair_token = \${pending.qrPayload.pairToken}\`;
+        await request('expired-pair-token-refused', '/device/pair', 401,
+          { method: 'POST', body: { pairToken: pending.qrPayload.pairToken } });
+        const foreignId = randomUUID();
+        await insertDevice({ deviceId: foreignId, workspaceId: other,
+          userEmail: 'private@example.invalid', deviceLabel: 'Second workspace sentinel' });
+        const foreignToken = signDeviceToken({ sub: foreignId, workspace_id: other, device_kind: 'mobile' });
+        const devices = await request('workspace-A-device-read', '/device/devices', 200,
+          { token: pair.deviceToken, workspace: other });
+        assert(devices.devices.some(d => d.device_id === pair.deviceId));
+        assert(devices.devices.every(d => d.workspace_id === id));
+        assert(!devices.devices.some(d => d.device_id === foreignId));
+        const foreignDevices = await request('workspace-B-device-read', '/device/devices', 200,
+          { token: foreignToken, workspace: id });
+        assert(foreignDevices.devices.some(d => d.device_id === foreignId));
+        assert(foreignDevices.devices.every(d => d.workspace_id === other));
+        assert(!foreignDevices.devices.some(d => d.device_id === pair.deviceId));
+        await request('cross-workspace-revoke-has-no-effect', '/device/devices/' + foreignId, 200,
+          { method: 'DELETE', token: pair.deviceToken });
+        await request('foreign-device-still-authorized', '/device/heartbeat', 200,
+          { method: 'POST', token: foreignToken });
+        const config = await request('header-cannot-override-token-workspace', '/device/runtime-config', 200,
+          { token: pair.deviceToken, workspace: other });
+        assert.equal(config.workspaceId, id);
+        await request('unknown-workspace-switch-refused', '/device/workspace/switch', 403,
+          { method: 'POST', token: pair.deviceToken, body: { workspaceId: 'unregistered-workspace' } });
+        const [header, payload] = pair.deviceToken.split('.');
+        const claims = JSON.parse(Buffer.from(payload, 'base64url').toString());
+        const expiredPayload = Buffer.from(JSON.stringify({ ...claims,
+          exp: Math.floor(Date.now() / 1000) - 60 })).toString('base64url');
+        const signature = createHmac('sha256', e.MOBILE_JWT_SECRET)
+          .update(header + '.' + expiredPayload).digest('base64url');
+        const expired = header + '.' + expiredPayload + '.' + signature;
+        const attempts = [
+          ['/device/runtime-config', {}],
+          ['/device/heartbeat', { method: 'POST' }],
+          ['/device/workspace/switch', { method: 'POST', body: { workspaceId: other } }],
+        ];
+        for (const [path, options] of attempts) {
+          await request('expired-device-refused:' + path, path, 403, { ...options, token: expired });
+        }
+        // The valid original still works: the previous failures were expiry,
+        // not a revoked row or an invalid private signing configuration.
+        await request('unexpired-device-still-authorized', '/device/heartbeat', 200,
+          { method: 'POST', token: pair.deviceToken });
+        await request('desktop-revoke', '/device/desktop/devices/' + pair.deviceId, 200,
+          { method: 'DELETE' });
+        for (const [path, options] of attempts) {
+          await request('revoked-device-refused:' + path, path, 403,
+            { ...options, token: pair.deviceToken });
+        }
+        await request('other-workspace-survives-revocation', '/device/heartbeat', 200,
+          { method: 'POST', token: foreignToken });
+        console.log('PRIVATE_DEVICE_LIFECYCLE_PROOF=' + JSON.stringify({
+          workspace: id, otherWorkspace: other, home: e.HOME, transport: 'real-loopback-http',
+          database: 'disposable-migrated-postgres', checks,
+        }));
+      } finally {
+        await new Promise(resolve => server.close(resolve));
+        await sql.end();
+      }
+      process.exit(0);
+    `;
+    const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
+      cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 4 * 1024 * 1024,
+    });
+    console.log(result.stdout);
+    if (result.stderr) console.log('[private operator child stderr]\n' + result.stderr);
+    expect(result.status, (result.stderr ?? '').slice(-3000)).toBe(0);
+    const line = result.stdout.split('\n').find(row => row.startsWith('PRIVATE_DEVICE_LIFECYCLE_PROOF='));
+    expect(line, 'Real device authorization requests must execute').toBeDefined();
+    const proof = JSON.parse(line!.slice('PRIVATE_DEVICE_LIFECYCLE_PROOF='.length));
+    expect(proof.checks.map((check: { name: string }) => check.name)).toEqual([
+      'mint-current-remote-access', 'redeem', 'one-shot-reuse-refused',
+      'mint-expiry-probe', 'expired-pair-token-refused',
+      'workspace-A-device-read', 'workspace-B-device-read',
+      'cross-workspace-revoke-has-no-effect', 'foreign-device-still-authorized',
+      'header-cannot-override-token-workspace', 'unknown-workspace-switch-refused',
+      ...['/device/runtime-config', '/device/heartbeat', '/device/workspace/switch']
+        .map(path => 'expired-device-refused:' + path),
+      'unexpired-device-still-authorized', 'desktop-revoke',
+      ...['/device/runtime-config', '/device/heartbeat', '/device/workspace/switch']
+        .map(path => 'revoked-device-refused:' + path),
+      'other-workspace-survives-revocation',
+    ]);
+    expect(proof.transport).toBe('real-loopback-http');
+    expect(proof.database).toBe('disposable-migrated-postgres');
+    expect(existsSync(proof.home), 'Private device runtime must be disposed').toBe(false);
   }, 200_000);
 });
