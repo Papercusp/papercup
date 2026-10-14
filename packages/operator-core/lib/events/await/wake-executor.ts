@@ -712,6 +712,13 @@ export async function defaultEnsureCodexHomeForWake(
       fallbackCodexLaunchSpecFromAdvSession(sessionRow, input.owner);
     if (!record) return { ok: true, repaired: false, reason: 'no-launch-spec' };
     if (record.agent !== 'codex') return { ok: true, repaired: false, reason: 'unsupported-agent' };
+    // Runtime budget changes outlive the recorded launch argv. Match managed
+    // resume precedence so a wake cannot restore an obsolete native threshold.
+    const currentCompactionLimit = (await getPresence(input.owner))?.compactionLimit;
+    const compactionLimit =
+      typeof currentCompactionLimit === 'number' && Number.isFinite(currentCompactionLimit) && currentCompactionLimit > 0
+        ? Math.floor(currentCompactionLimit)
+        : parseLaunchCompactionLimitArgv(sessionRow?.launchArgv);
     const denyAmbientContext = !(await sessionAllowsAmbientContext({
       ownerId: input.owner, workspaceId: record.workspaceId,
     }));
@@ -738,7 +745,7 @@ export async function defaultEnsureCodexHomeForWake(
         mcpUrl: spec.mcpUrl,
         sid: input.owner,
         model: record.model,
-        compactionLimit: parseLaunchCompactionLimitArgv(sessionRow?.launchArgv),
+        compactionLimit,
         token: readSuperuserToken(),
         codexGatewayAccountId: input.codexGatewayAccountId ?? null,
         codexGatewayAuto: input.requireGatewayProvider === true,
