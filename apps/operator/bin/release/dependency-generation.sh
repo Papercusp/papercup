@@ -427,6 +427,13 @@ dependency_generation_enumerate_node_modules() {
 dependency_generation_tree_fingerprint() {
   local root="$1" local_path stat_record link_target
   [ -d "$root" ] || return 1
+  # A duplicate dependency-root alias is not a package link. Preserving it
+  # freezes a pointer to another checkout, rather than independent inputs, and
+  # later ships that checkout's path in source.tar (EI-25905977348768077).
+  if [ -L "$root/node_modules" ]; then
+    dependency_generation_log "FATAL: nested dependency-root symlink: $root/node_modules"
+    return 1
+  fi
   (
     cd "$root" || exit 1
     if [ "${DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT:-0}" != '1' ] \
@@ -642,6 +649,9 @@ dependency_generation_manifest_records_are_reusable() {
       return 1
     fi
     [ -d "$tree_root/$rel" ] || return 1
+    # Cache selection skips the deep fingerprint walk. Check the same invariant
+    # here so an older, otherwise correctly signed generation cannot bypass it.
+    [ ! -L "$tree_root/$rel/node_modules" ] || return 1
     previous="$rel"
   done < "$manifest"
 }

@@ -467,6 +467,43 @@ describe('WI-10002299: patch-package patches are dependency inputs', () => {
 });
 
 describe('immutable dependency generation', () => {
+  it.each(['1', '2'])('rejects a nested dependency-root alias before publication (walk jobs %s)', (jobs) => {
+    const integration = makeIntegration();
+    // The alias can be dangling: following it is neither necessary nor safe.
+    symlinkSync('/absent/other-checkout/node_modules', join(integration, 'node_modules/node_modules'));
+    const result = publish(integration, { DEPENDENCY_GENERATION_WALK_JOBS: jobs });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('nested dependency-root symlink');
+    expect(result.stdout).not.toMatch(/identity=v1-/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('refuses a legacy cached generation with a nested root alias even when its publication token matches', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generation = publishedPath(first.stdout);
+    const dependencyRoot = join(generation, 'tree/packages/a/node_modules');
+    chmodSync(dependencyRoot, 0o755);
+    symlinkSync(join(integration, 'node_modules'), join(dependencyRoot, 'node_modules'));
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'marker="$GENERATION/.papercusp-dependency-generation"',
+      'chmod u+w "$marker"',
+      'body="$(sed "/^publication_token=/d" "$marker")"',
+      'printf "%s\\n" "$body" > "$marker"',
+      'token="$(dependency_generation_publication_token "$GENERATION" 3)"',
+      'printf "publication_token=%s\\n" "$token" >> "$marker"',
+      'dependency_generation_publication_is_valid "$GENERATION"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, SCRIPT, GENERATION: generation },
+    });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(readFileSync(join(generation, '.papercusp-dependency-generation'), 'utf8'))
+      .toMatch(/publication_token=v3:[0-9a-f]{64}/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('excludes smoke repository churn from live trees and committed dependency inputs', () => {
     const integration = makeIntegration();
     const baselineRef = commitAllFixture(integration, 'product dependencies');

@@ -1051,24 +1051,39 @@ test('default governor is ACCOUNT-KEYED so a gateway 429 feeds the account-pool 
 });
 
 test('priority queue bounds forwarded concurrency (P-011 wiring)', async () => {
+  // `concurrency: 2` is the SEED window, not a cap (capless-inference-gateway-2026-08-28 P-010), and
+  // P-002 of gateway-admission-congestion-only-2026-10-13 grows the window on every clean success while
+  // requests wait. What the queue wiring must still guarantee: the burst is NOT forwarded as a herd, and
+  // upstream concurrency above the seed is EARNED — at most one extra slot per completed request.
+  const SEED = 2;
   let cur = 0;
   let peak = 0;
+  let completed = 0;
+  let completedAtPeak = 0;
   await boot(
     (_req, res) => {
       cur++;
-      peak = Math.max(peak, cur);
+      if (cur > peak) {
+        peak = cur;
+        completedAtPeak = completed;
+      }
       setTimeout(() => {
         cur--;
+        completed++;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end('{"ok":true}');
       }, 25);
     },
-    { concurrency: 2 },
+    { concurrency: SEED },
   );
   await Promise.all(
     Array.from({ length: 6 }, () => post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] })),
   );
-  assert.ok(peak <= 2, `upstream peak concurrency ${peak} must be ≤ the queue cap (2)`);
+  assert.ok(peak < 6, `the queue held part of the 6-deep burst back (upstream peak ${peak})`);
+  assert.ok(
+    peak <= SEED + completedAtPeak,
+    `upstream peak ${peak} ≤ seed ${SEED} + ${completedAtPeak} completed requests — growth is earned, not a herd`,
+  );
 });
 
 test('fails over to a second account when the active one hits its 5h budget (EI-535)', async () => {
@@ -3458,15 +3473,19 @@ test('[B-GW-2 chaos] extreme concurrency vs a HEALTHY upstream — all settle 20
   let cur = 0;
   let peak = 0;
   let windowAtPeak = 0; // the live admission window sampled at each new upstream-concurrency high-water mark
+  let completed = 0;
+  let completedAtPeak = 0; // upstream completions already observed when that high-water mark was set
   await boot(
     (_req, res) => {
       cur++;
       if (cur > peak) {
         peak = cur;
         windowAtPeak = Math.max(windowAtPeak, gw.stats().admission.maxConcurrent);
+        completedAtPeak = completed;
       }
       setTimeout(() => {
         cur--;
+        completed++;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end('{"ok":true}');
       }, 6);
@@ -3493,19 +3512,18 @@ test('[B-GW-2 chaos] extreme concurrency vs a HEALTHY upstream — all settle 20
     peak <= liveWindow,
     `upstream peak concurrency ${peak} stayed within the LIVE admission window (${liveWindow}) — no thundering herd`,
   );
-  // (2) The window is capless but GROWTH-RATE-BOUNDED (+1 per ${INCREASE_EVERY} clean samples from the
-  //     seed), so N clean requests cannot lift it past this. A herd would blow straight through it.
-  const growthCeiling = SEED + Math.floor(N / INCREASE_EVERY);
+  // (2) The window is capless and, while requests wait, grows on EVERY clean success
+  //     (gateway-admission-congestion-only-2026-10-13 P-002) — but only by +1 per completion, so upstream
+  //     concurrency above the seed is EARNED by requests that already finished. A herd (the burst forwarded
+  //     before anything completed) would blow straight through this; `increaseEvery` only paces growth
+  //     once the queue is empty.
   assert.ok(
-    peak <= growthCeiling,
-    `upstream peak concurrency ${peak} stayed within the capless window's growth ceiling (${growthCeiling} = seed ${SEED} + ${N}/${INCREASE_EVERY}) — growth is paced, not unbounded`,
+    peak <= SEED + completedAtPeak,
+    `upstream peak concurrency ${peak} ≤ seed ${SEED} + ${completedAtPeak} completed requests — growth is earned, not a herd`,
   );
-  // (3) The load-shape invariant the original assertion existed to protect: a 120-deep burst reaches
-  //     the upstream a few at a time, never as a herd.
-  assert.ok(
-    peak < N / 3,
-    `upstream peak concurrency ${peak} stayed far below the ${N}-deep burst — the burst was paced, not forwarded`,
-  );
+  // (3) The load-shape invariant the original assertion existed to protect: the 120-deep burst did not
+  //     reach the upstream all at once.
+  assert.ok(peak < N, `upstream peak concurrency ${peak} stayed below the ${N}-deep burst — the burst was paced, not forwarded`);
   assert.equal(gw.stats().totalRequests - before, N, 'every request was counted (counters never froze)');
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'all 120 admission slots drained back to 0 — no slot leak');
@@ -3523,13 +3541,19 @@ test('[B-GW-2 chaos] pool-wide throttle storm (slow upstream squats slots) under
   let mode: 'storm' | 'healthy' = 'storm';
   let cur = 0;
   let peak = 0;
+  let completed = 0;
+  let completedAtPeak = 0;
   await boot(
     (_req, res) => {
       cur++;
-      peak = Math.max(peak, cur);
+      if (cur > peak) {
+        peak = cur;
+        completedAtPeak = completed;
+      }
       const delay = mode === 'storm' ? 400 : 0; // storm: squat the slot; healthy: instant
       setTimeout(() => {
         cur--;
+        completed++;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end('{"ok":true}');
       }, delay);
@@ -3556,7 +3580,15 @@ test('[B-GW-2 chaos] pool-wide throttle storm (slow upstream squats slots) under
     gw.stats().shed429 - shedBefore >= shed.length,
     'the shed429 counter advanced — graceful load-shed is observable in /stats',
   );
-  assert.ok(peak <= 4, `upstream peak concurrency ${peak} never exceeded the cap (4) even under the storm`);
+  // `concurrency: 4` is the SEED window (capless P-010); a slow-but-200 upstream is a CLEAN success, so the
+  // window may grow while requests wait (P-002). The storm is still bounded: only ADMITTED work (4 running +
+  // 8 queued) ever reaches the upstream — shed requests never do — and growth above the seed is earned
+  // one slot per completed request.
+  assert.ok(peak <= 4 + 8, `upstream peak concurrency ${peak} ≤ admitted work (4 running + 8 queued) — shed load never reached the upstream`);
+  assert.ok(
+    peak <= 4 + completedAtPeak,
+    `upstream peak ${peak} ≤ seed 4 + ${completedAtPeak} completed requests — growth is earned, not a herd`,
+  );
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'all admission slots drained — the storm pinned no slot');
   // Bounded recovery: the moment the throttle clears, a fresh request succeeds FAST (no lingering wedge).
@@ -3850,12 +3882,13 @@ test('[B-GW-1 AIMD] a routed-around per-account 429 does NOT shrink global admis
   assert.equal(((await (await ask('/stats')).json()) as { inFlight: number }).inFlight, 0, 'no admission slot leaked');
 }, 20_000);
 
-test('[B-GW-1 AIMD] an UN-ROUTABLE pool-wide 429 (no healthy account) DOES shrink global concurrency — the safety net still fires', async () => {
-  // 6 accounts, ALL usage-cap-429: a request rotates through all 6, finds NO healthy account, and is
-  // forwarded the 429 — THAT un-routable 429 is genuine pool-wide saturation, so it records a throttle and
-  // shrinks the effective concurrency below the cap. (Contrast the routed-around test above: a 429 that
-  // finds a healthy account does NOT shrink it — that is the whole budget-aware fix.) The hard floor-clamp,
-  // additive recovery, and cap ceiling are covered exhaustively by the AIMD unit test (aimd-concurrency.test.ts).
+test('[B-GW-1 AIMD] an UN-ROUTABLE pool-wide USAGE-CAP 429 does NOT shrink global concurrency — out-of-usage parks the account, never the cap', async () => {
+  // 6 accounts, ALL usage-cap-429 ("session limit · resets …"): a request rotates through all 6, finds NO
+  // healthy account, and is forwarded the 429. Owner rule (directives #1830/#1831, plan
+  // gateway-admission-congestion-only-2026-10-13 P-001/P-002): an out-of-usage error blocks the ACCOUNT and
+  // must not affect the cap, even when no other account could take the request — shrinking the window
+  // cannot buy back quota, it only queues every other request behind a smaller gate. The congestion
+  // safety net is pinned by the bare-429 test below.
   resetGovernorRegistry(); // fresh per-account governors (the pool's accounts are registry-keyed)
   const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
   const pool = createFailoverPool(['A', 'B', 'C', 'D', 'E', 'F'].map(acct));
@@ -3878,10 +3911,46 @@ test('[B-GW-1 AIMD] an UN-ROUTABLE pool-wide 429 (no healthy account) DOES shrin
     admission: { maxConcurrent: number };
     aimd: { effective: number; floor: number; decreases: number };
   };
-  assert.ok(s.aimd.decreases >= 1, 'the un-routable pool-wide-saturation 429 DID trip an AIMD decrease');
+  assert.equal(s.aimd.decreases, 0, `an out-of-usage 429 must NOT trip an AIMD decrease (got ${s.aimd.decreases})`);
+  assert.equal(s.aimd.effective, 16, `effective stays at the cap (got ${s.aimd.effective})`);
+}, 20_000);
+
+test('[B-GW-1 AIMD] an UN-ROUTABLE pool-wide CONGESTION 429 (no healthy account) DOES shrink global concurrency — the safety net still fires', async () => {
+  // 6 accounts, ALL bare 429 (rate_limit_error, no usage/session-limit wording, no window headers): a
+  // transient congestion throttle that no account could absorb. THAT is genuine pool-wide saturation, so it
+  // adds one unit of pressure (once per request, however many failovers) and, at decreaseThreshold 1,
+  // shrinks the effective concurrency below the cap — but gently (P-002: at most 25% per contraction) and
+  // never below the floor. Floor-clamp / recovery / cap ceiling: aimd-concurrency.test.ts.
+  resetGovernorRegistry(); // fresh per-account governors (the pool's accounts are registry-keyed)
+  const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => 't', invalidateToken: () => {} });
+  const pool = createFailoverPool(['A', 'B', 'C', 'D', 'E', 'F'].map(acct));
+  await boot(
+    (_req, res) => {
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Error' } }));
+    },
+    // A transient 429 is retried internally (backoff) before the gateway gives up; bound that budget so the
+    // un-routable outcome is reached well inside the test timeout.
+    { pool, concurrency: 16, aimd: { floor: 3, decreaseThreshold: 1 }, internalRetryDeadlineMs: 2000 },
+  );
+  const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
+  const status = r.status;
+  await r.text();
+  const s = (await (await ask('/stats')).json()) as {
+    admission: { maxConcurrent: number };
+    aimd: { effective: number; floor: number; decreases: number };
+  };
+  // The request fails: no account could take it. (Which terminal status the retry-deadline path returns —
+  // measured 502 here although its log says "shed 429" — is tracked separately; this test pins the WINDOW.)
+  assert.notEqual(
+    status,
+    200,
+    `pool exhausted → the request fails after rotation (got ${status}; aimd decreases=${s.aimd.decreases} effective=${s.aimd.effective})`,
+  );
+  assert.equal(s.aimd.decreases, 1, `one un-routable congestion request = exactly one decrease (got ${s.aimd.decreases})`);
   assert.ok(
-    s.aimd.effective < 16 && s.aimd.effective >= 3,
-    `effective shrank below the cap but never below the floor (got ${s.aimd.effective})`,
+    s.aimd.effective < 16 && s.aimd.effective >= 12,
+    `effective shrank below the cap by at most 25% (got ${s.aimd.effective})`,
   );
 }, 20_000);
 

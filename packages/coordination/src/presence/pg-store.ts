@@ -169,14 +169,16 @@ export class PgPresenceStore implements PresenceStore {
         -- parameter directly rather than EXCLUDED, because the VALUES row already
         -- COALESCEd the omitted case to '[]' to satisfy the NOT NULL column.
         current_files     = COALESCE(${filesJson}::text::jsonb, harness_shared.coord_presence.current_files),
-        host              = EXCLUDED.host,
-        pid               = EXCLUDED.pid,
-        -- Same "always set from this write's resolved value" rule as host/pid
-        -- above — every current write() caller passes tty as undefined (only the
-        -- supervisor beat's touchHeartbeat call genuinely knows it), so this
-        -- resets to NULL here and the next beat (<=60s) repopulates it, exactly
-        -- like host/pid's existing reset-then-repopulate cadence.
-        tty               = EXCLUDED.tty,
+        -- An intent-only declaration has no process evidence. Preserve the
+        -- supervisor's last binding atomically instead of erasing it until the
+        -- next beat. Explicit empty/null values still clear; a new reported pid
+        -- still invalidates the old process's context estimate below.
+        host              = CASE WHEN ${input.host !== undefined}
+                              THEN EXCLUDED.host ELSE harness_shared.coord_presence.host END,
+        pid               = CASE WHEN ${input.pid !== undefined}
+                              THEN EXCLUDED.pid ELSE harness_shared.coord_presence.pid END,
+        tty               = CASE WHEN ${input.tty !== undefined}
+                              THEN EXCLUDED.tty ELSE harness_shared.coord_presence.tty END,
         -- EI-19418749207847685: a carry-respawn REUSES the ownerId but starts a NEW
         -- process, so any cached context estimate describes a session that no longer
         -- exists. AGE alone cannot catch this — the estimate can be only minutes old
@@ -243,12 +245,9 @@ export class PgPresenceStore implements PresenceStore {
     //
     // WI-3898 P1 (+ EI-19948333346987654 for tty): pid/host/tty are set ONLY
     // when the caller actually reported them this beat — an omitted field is
-    // left UNTOUCHED, never clobbered to null/''. (Unlike write()'s ON
-    // CONFLICT, which unconditionally sets EXCLUDED.host/EXCLUDED.pid/
-    // EXCLUDED.tty — that's fine there because write() always carries a
-    // caller-resolved value; here a bare keepalive from a caller that
-    // doesn't know its own pid/tty must not erase a value a prior liveness
-    // beat recorded.)
+    // left UNTOUCHED, never clobbered to null/''. Intent-only write() calls
+    // preserve these fields too. Explicit write() values remain the way to
+    // clear a binding; neither path fabricates the operator's own process id.
     const pid = liveness?.pid;
     const host = liveness?.host;
     const tty = liveness?.tty;

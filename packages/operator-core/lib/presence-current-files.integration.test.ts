@@ -115,3 +115,53 @@ describe('coord_presence.current_files omission semantics (EI-18776963284535761)
     expect(row?.current_files).not.toBeNull();
   });
 });
+
+describe('supervisor liveness across declarations (EI-25888806017497809)', () => {
+  it('preserves a supervisor heartbeat when the next declaration omits liveness', async () => {
+    const o = owner();
+    const presence = store();
+    await presence.write(identity(o), { intent: 'registered' });
+    await presence.touchHeartbeat(o, { host: 'supervisor-box', pid: 4242, tty: '/dev/pts/42' });
+    await presence.setContextEstimate(o, 1234);
+
+    await presence.write(identity(o), { intent: 'implementing the assigned lane' });
+
+    expect(await presence.get(o)).toMatchObject({
+      intent: 'implementing the assigned lane',
+      host: 'supervisor-box', pid: 4242, tty: '/dev/pts/42', contextTokens: 1234,
+    });
+  });
+
+  it('keeps first registration unknown and permits an explicit liveness clear', async () => {
+    const o = owner();
+    const presence = store();
+    await presence.write(identity(o), { intent: 'registered' });
+    expect(await presence.get(o)).toMatchObject({ host: '', pid: null, tty: null });
+    await presence.touchHeartbeat(o, { host: 'supervisor-box', pid: 4242, tty: '/dev/pts/42' });
+    await presence.write(identity(o), { host: '', pid: null, tty: null });
+    expect(await presence.get(o)).toMatchObject({ host: '', pid: null, tty: null });
+  });
+
+  it('accepts a new process binding and invalidates the previous context estimate', async () => {
+    const o = owner();
+    const presence = store();
+    await presence.write(identity(o), { host: 'old-box', pid: 4242, tty: '/dev/pts/42' });
+    await presence.setContextEstimate(o, 1234);
+    await presence.write(identity(o), { host: 'new-box', pid: 5555, tty: '/dev/pts/55' });
+    expect(await presence.get(o)).toMatchObject({
+      host: 'new-box', pid: 5555, tty: '/dev/pts/55',
+      contextTokens: null, contextEstimatedAt: null,
+    });
+  });
+
+  it('does not restore retired liveness when the owner registers again', async () => {
+    const o = owner();
+    const presence = store();
+    await presence.write(identity(o), { host: 'old-box', pid: 4242, tty: '/dev/pts/42' });
+    await presence.clear(o);
+    await presence.write(identity(o), { intent: 'new native continuation' });
+    expect(await presence.get(o)).toMatchObject({ host: '', pid: null, tty: null });
+    await presence.touchHeartbeat(o, { host: 'new-box', pid: 5555 });
+    expect(await presence.get(o)).toMatchObject({ host: 'new-box', pid: 5555, tty: null });
+  });
+});
