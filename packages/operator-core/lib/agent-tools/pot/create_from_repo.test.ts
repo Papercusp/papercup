@@ -11,8 +11,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
+import type { StoredMcpResult, claimPendingMcpResult, finalizePendingMcpResult } from '../../endpoint-route/routes/transport/_mcp-result-replay';
+import type { CreatePotFromRepoResult } from './_create_from_repo';
 
-const receipts = vi.hoisted(() => ({ rows: new Map<string, any>(), claim: vi.fn(), finalize: vi.fn() }));
+const receipts = vi.hoisted(() => ({ rows: new Map<string, StoredMcpResult>(),
+  claim: vi.fn<typeof claimPendingMcpResult>(), finalize: vi.fn<typeof finalizePendingMcpResult>() }));
 vi.mock('../../endpoint-route/routes/transport/_mcp-result-replay', () => ({
   PENDING_MCP_RESULT_STATE: 'pending', claimPendingMcpResult: receipts.claim, finalizePendingMcpResult: receipts.finalize,
 }));
@@ -36,6 +39,9 @@ const ctx = { workspaceId: 'ws-1', principal: { workspaceId: 'ws-1' } };
 const call = (args: Record<string, unknown> = {}) =>
   tool.handler({ githubUrl: 'https://github.com/x/y', ...args } as never, ctx as never) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const createdResult: CreatePotFromRepoResult = { ok: true,
+  created: { potSlug: 'y-pot', memberSlug: 'y', memberPath: '/fixture/y' }, bindingUnverified: false,
+  publish: { skipped: 'unpublished_hive' }, gitSync: { seeded: false, reason: 'routine_exists' } };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -52,14 +58,14 @@ beforeEach(() => {
     return true;
   });
   ident.mockReturnValue({ source: 'operator' } as never);
-  mockResolvedTyped(createM, { ok: true, created: { potSlug: 'y-pot', memberSlug: 'y' } } as never);
+  mockResolvedTyped(createM, createdResult);
 });
 
 describe('keyed MCP pot creation', () => {
   const invoke = (key: string) => tool.handler({ githubUrl: 'https://github.com/x/y', force: true } as never,
     { ...ctx, transport: 'mcp', uiClientId: 'stable-owner', idempotencyKey: key } as never) as Promise<Out>;
   it('reserves before side effects and reuses one running operation across new connection contexts', async () => {
-    let finish!: (value: unknown) => void;
+    let finish!: (value: CreatePotFromRepoResult) => void;
     mockImplementationTyped(createM, () => new Promise(resolve => { finish = resolve; }));
     const first = body(await invoke('two-connections'));
     expect(first).toMatchObject({ accepted: true, status: 'in_progress' });
@@ -67,7 +73,7 @@ describe('keyed MCP pot creation', () => {
     await vi.waitFor(() => expect(createM).toHaveBeenCalledTimes(1));
     expect(body(await invoke('two-connections')).progressId).toBe(first.progressId);
     expect(createM).toHaveBeenCalledTimes(1);
-    finish({ ok: true, created: { potSlug: 'y-pot' } });
+    finish(createdResult);
     await vi.waitFor(() => expect(receipts.finalize).toHaveBeenCalledTimes(1));
     expect(body(await invoke('two-connections'))).toMatchObject({ created: { potSlug: 'y-pot' } });
     expect(createM).toHaveBeenCalledTimes(1);
