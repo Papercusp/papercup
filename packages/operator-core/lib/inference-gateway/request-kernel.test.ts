@@ -661,6 +661,60 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
   });
 });
 
+// WI-6554700010011504: a D-014 wedge-prevention budget that is already SPENT when an
+// attempt would start used to be clamped to a 1ms TTFB — the prompt was uploaded,
+// aborted at once, and the lane's own deadline surfaced as an "upstream stall" 502.
+// A spent budget is a SHED: no attempt is dispatched, and the error carries the status
+// the retry was trying to rescue (429 when nothing was rescued yet).
+describe('gateway request kernel spent retry budget (D-014 ttfbCapMs)', () => {
+  const overloaded = (context: GatewayKernelAttemptContext<RouteValue>): KernelResponse => ({
+    status: 529,
+    streaming: false,
+    transport: context.route.transport,
+    metadata: { contentType: 'application/json' },
+    body: null,
+    retryable: true,
+    discard: () => undefined,
+  });
+
+  it('sheds before the FIRST attempt with a non-retryable 429 and never dispatches upstream', async () => {
+    const executeAttempt = vi.fn(async (_prepared: PreparedAttempt, context: GatewayKernelAttemptContext<RouteValue>) =>
+      overloaded(context),
+    );
+    const f = fixture(laneRegistry.anthropicMessages, { policy: { ttfbCapMs: () => 0 }, executeAttempt });
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'retry-budget-exhausted', outcome: 'shed', status: 429, retryable: false });
+    expect(executeAttempt).not.toHaveBeenCalled();
+    expect(f.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1 });
+  });
+
+  it('carries the upstream status the retry was rescuing when the budget runs out between attempts', async () => {
+    let capCalls = 0;
+    // A positive budget for attempt 1, spent by the time attempt 2 would start.
+    const ttfbCapMs = () => (++capCalls === 1 ? 1_000 : -5);
+    const executeAttempt = vi.fn(async (_prepared: PreparedAttempt, context: GatewayKernelAttemptContext<RouteValue>) =>
+      overloaded(context),
+    );
+    const f = fixture(laneRegistry.anthropicMessages, { policy: { ttfbCapMs, maxAttempts: 3 }, executeAttempt });
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'retry-budget-exhausted', outcome: 'shed', status: 529, retryable: false });
+    expect(executeAttempt).toHaveBeenCalledTimes(1);
+    expect(f.counts()).toMatchObject({ failoverCalls: 1, releaseCount: 1, unregisterCount: 1 });
+  });
+
+  it('CONTROL: a budget that is still positive lets the failover attempt run and serve', async () => {
+    const f = fixture(laneRegistry.anthropicMessages, { policy: { ttfbCapMs: () => 1_000 }, streaming: false });
+
+    const result = await executeGatewayRequestKernel(f.options);
+
+    expect(result).toMatchObject({ status: 200, outcome: 'ok', attempts: 2 });
+  });
+});
+
 describe.each(laneCases.filter(({ lane }) => lane.capabilities.accountPinning !== 'none'))(
   '$id account pin contract',
   ({ lane }) => {
