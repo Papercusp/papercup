@@ -24,11 +24,33 @@ import {
   parseGovernedRequest,
   setGovernancePolicyLayer,
   simulateGovernancePolicy,
+  type ProposedLayer,
+  type SetLayerRequest,
 } from '../../governance-policy/control';
 import type { GovernedRequest } from '../../governance-policy/inherited-policy';
+import { resolveAgentIdentity } from '../coordination/identity';
+
+type AddExceptionRequest = Parameters<typeof addGovernancePolicyException>[0];
 
 function json(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
+}
+
+/**
+ * The actor stamped on a policy version row. Same order as reports/_shared#resolveOwnerId:
+ * `ctx.ownerId` is not a field of UnifiedToolContext (some dispatch paths attach one, most do
+ * not), so an explicit one wins and the canonical resolver covers the rest. Falls back to the
+ * role so a write is never recorded with no actor at all.
+ */
+function writeActor(ctx: Parameters<typeof resolveAgentIdentity>[0] & { role?: string; ownerId?: string }): string {
+  if (ctx.ownerId) return ctx.ownerId;
+  try {
+    const owner = resolveAgentIdentity(ctx).ownerId;
+    if (owner) return owner;
+  } catch {
+    /* malformed power-user context: fall through to the role */
+  }
+  return `role:${ctx.role ?? 'unknown'}`;
 }
 
 function requireRequest(raw: unknown): GovernedRequest {
@@ -66,13 +88,16 @@ export default defineTool({
       if (!isOperatorConfigWriteRole(ctx.role)) {
         throw new Error(`governance:policy ${args.op} requires operator, architect, or mug role`);
       }
-      const actor = ctx.ownerId ?? `role:${ctx.role}`;
+      const actor = writeActor(ctx);
+      // The wire schemas keep category keys as plain strings on purpose: control.ts validates
+      // them against the governed set (validateLayerInput) and names that set in its error, which
+      // a zod enum refusal would not. These casts hand the parsed shape to that validator.
       if (args.op === 'set') {
         const { op: _op, ...req } = args;
-        return json(await setGovernancePolicyLayer(req, actor));
+        return json(await setGovernancePolicyLayer(req as SetLayerRequest, actor));
       }
       const { op: _op, ...req } = args;
-      return json(await addGovernancePolicyException(req, actor));
+      return json(await addGovernancePolicyException(req as AddExceptionRequest, actor));
     }
 
     const workspaceId = args.workspaceId ?? ctx.workspaceId;
@@ -84,6 +109,8 @@ export default defineTool({
     if (args.op === 'explain') {
       return json(await explainGovernancePolicy(workspaceId, requireRequest(args.request)));
     }
-    return json(await simulateGovernancePolicy(workspaceId, args.proposed, args.requests.map(requireRequest)));
+    return json(
+      await simulateGovernancePolicy(workspaceId, args.proposed as ProposedLayer, args.requests.map(requireRequest)),
+    );
   },
 });
