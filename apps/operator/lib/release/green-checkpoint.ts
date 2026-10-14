@@ -13861,8 +13861,8 @@ async function runGreenCheckpointInner(
   const earlyTypecheckStartedAtMs = Date.now();
   // WI-38422: reject a candidate-scoped type regression BEFORE paying for
   // the full affected-test sweep. This deliberately reuses BOTH existing seams:
-  // `changedFilesForRange` is the exact committed last-green..candidate diff (including
-  // expanded submodule paths), and the real runner below is `lint:tsc -- --files=...`,
+  // `changedFilesForRange` is the exact committed initial-candidate or repair diff
+  // (including expanded submodule paths), and the real runner below is `lint:tsc -- --files=...`,
   // whose explicit attribution cannot confuse a peer's live working-tree edits for this
   // candidate's own files.
   //
@@ -13874,17 +13874,25 @@ async function runGreenCheckpointInner(
   let earlyPreflightFailure: Awaited<
     ReturnType<CheckpointDeps["runGreen"]>
   > | null = null;
+  // P-035: a frozen repair must not re-check the growing last-green backlog on every
+  // round. The early check is provisional, so use the cumulative candidate..repairHead
+  // delta; the mandatory unscoped post-suite typechecks still judge the whole head.
+  // Initial candidates and heads without a frozen repair lineage keep the full diff.
+  const earlyTypecheckBase = repairVerification && repairQueue &&
+    repairQueue.candidate !== candidate
+      ? repairQueue.candidate
+      : lastReady;
   if (deps.runChangedFileTypecheckPreflight && deps.changedFilesForRange) {
     const preflightStartedAtMs = Date.now();
     const elapsed = () =>
       `${((Date.now() - preflightStartedAtMs) / 1000).toFixed(1)}s`;
-    if (!lastReady) {
+    if (!earlyTypecheckBase) {
       deps.log(
         "early changed-file typecheck preflight: skipped (no prior green pin to diff from) — full gate retained",
       );
     } else {
       try {
-        const resolved = await deps.changedFilesForRange(lastReady, candidate);
+        const resolved = await deps.changedFilesForRange(earlyTypecheckBase, candidate);
         if (resolved === null) {
           deps.log(
             `early changed-file typecheck preflight: skipped after ${elapsed()} (changed-file resolution unavailable) — full gate retained`,
@@ -13905,7 +13913,7 @@ async function runGreenCheckpointInner(
           } else {
             const preflight =
               await deps.runChangedFileTypecheckPreflight(files, {
-                from: lastReady,
+                from: earlyTypecheckBase,
                 to: candidate,
               });
             const checkedFiles = preflight.checkedFiles?.length
@@ -13961,7 +13969,7 @@ async function runGreenCheckpointInner(
               const earlyLogPath = writeEarlyTypecheckFailureLog({
                 logDir: cfg.checkpointLogDir,
                 candidate,
-                base: lastReady,
+                base: earlyTypecheckBase,
                 runId: deps.runId,
                 checkedFiles: typecheckPreflight.checkedFiles,
                 failingFiles: typecheckPreflight.failingFiles,
@@ -22665,7 +22673,12 @@ export function realCheckpointDeps(
                   `TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} applied=false ` +
                     `reason=${reason}`,
                 );
-                const recorded = await recordGateReuseDecision(`${workspace}::${script}`, { offReason: reason });
+                const recorded = await recordGateReuseDecision(`${workspace}::${script}`, { offReason: reason }, {
+                  runContext: env.GREEN_CHECKPOINT === "1" && env.PAPERCUSP_TEST_RUN_SOURCE === "ci"
+                    ? "green-checkpoint"
+                    : "clean-local",
+                  runGroupId: env.PAPERCUSP_TEST_RUN_GROUP,
+                });
                 if (!recorded) log(`TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} alarm-recording-failed=true`);
                 return null;
               })
