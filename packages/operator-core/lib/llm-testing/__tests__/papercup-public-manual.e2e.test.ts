@@ -2578,7 +2578,8 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     let browserState: Awaited<ReturnType<ReturnType<typeof observePortalBrowser>>> | undefined;
     let guideMutation: { status: number; errorCode: string | null } | undefined;
     let operatorCreation: { status: number; hasConversationId: boolean } | undefined;
-    let creationPreflight: { status: number; errorCode: string | null; hasChatId: boolean; historyStatus?: number } | undefined;
+    let creationPreflight: { status: number; errorCode: string | null; hasChatId: boolean; historyStatus?: number;
+      citationControl?: { source: 'intercepted-no-model-stream'; href: string; visible: boolean } } | undefined;
     let interceptedModelTurns = 0;
     let browserOrigin: string | undefined;
     let configuredPublicOrigin: string | undefined;
@@ -2710,10 +2711,15 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       if (preflightOnly) {
         // The sidebar creates on Send, not on mount. Exercise its real creation
         // request but stop the following model turn at the browser boundary.
+        // Replay the exact saved FAQ citation through the compiled renderer
+        // before paying for another model turn. This is a presentation control,
+        // not model or persisted-answer evidence: upstream history stays empty.
+        const citationHref = '/docs/faq#does-closing-the-browser-stop-my-agents';
         await page.route(/\/api\/papercup-chat\/conversations\/[^/]+\/turns(?:\?.*)?$/, async (route) => {
           if (route.request().method() !== 'POST') return route.continue();
           interceptedModelTurns += 1;
-          await route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'event: done\ndata: {}\n\n' });
+          await route.fulfill({ status: 200, contentType: 'text/event-stream',
+            body: `event: delta\ndata: ${JSON.stringify({ text: `[Public FAQ](${citationHref})` })}\n\nevent: done\ndata: {}\n\n` });
         });
         stage = 'portal-create-preflight';
         await composer.fill('Disposable conversation creation control');
@@ -2741,6 +2747,11 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
         creationPreflight!.historyStatus = initialHistory.status;
         expect(initialHistory.status).toBe(200);
         expect(initialHistory.body.turns).toEqual([]);
+        const citation = page.locator(`a[href="${citationHref}"]`).first();
+        await citation.waitFor({ state: 'visible', timeout: 15_000 });
+        expect(await citation.textContent()).toBe('Public FAQ');
+        creationPreflight!.citationControl = { source: 'intercepted-no-model-stream',
+          href: (await citation.getAttribute('href'))!, visible: await citation.isVisible() };
         stage = 'passed-create-preflight';
         return;
       }
