@@ -4716,9 +4716,11 @@ function attributedMessageArgs(
   subject: string,
   suffix: string,
   intentBody: string | null,
+  sweepMessageBody: string | null = null,
 ): string[] {
   const args = ['-m', `${subject}${suffix}`];
   if (intentBody) args.push('-m', intentBody);
+  if (sweepMessageBody) args.push('-m', sweepMessageBody);
   if (g.coAuthor) args.push('-m', `Co-Authored-By: ${g.coAuthor}`);
   // P-004 (deterministic-commit-workitem-attribution-2026-06-22): bounded provenance
   // trailers so the commit↔work-item link travels IN git history (and is read back
@@ -5247,12 +5249,22 @@ export async function commitAttributedGroups(
         messageArgs: async () => {
           let subject = g.subject;
           let intentBody: string | null = null;
+          let sweepMessageBody: string | null = null;
           if (opts.diffSubjects !== false) {
             const ns = await privateGit(['diff', '--cached', '--numstat', ...(base ? [base] : []), '--', ...g.files], repoPath);
-            subject = diffDerivedSubject(g.files, ns.code === 0 ? parseNumstat(ns.stdout) : undefined);
-            if (g.subject && g.subject !== DEFAULT_GIT_SYNC_SUBJECT) intentBody = g.subject;
+            const stats = ns.code === 0 ? parseNumstat(ns.stdout) : undefined;
+            if (g.agent === null && (!stats || stats.length === 0)) {
+              // Match the catch-all fallback when numstat cannot describe a non-empty commit.
+              return attributedMessageArgs(g, message, '', null);
+            }
+            subject = diffDerivedSubject(g.files, stats);
+            if (g.agent === null) sweepMessageBody = message;
+            else if (g.subject && g.subject !== DEFAULT_GIT_SYNC_SUBJECT) intentBody = g.subject;
+          } else if (g.agent === null) {
+            // The catch-all path uses the supplied sweep message as-is when diff subjects are off.
+            return attributedMessageArgs(g, message, '', null);
           }
-          return attributedMessageArgs(g, subject, suffix, intentBody);
+          return attributedMessageArgs(g, subject, suffix, intentBody, sweepMessageBody);
         },
       });
       if (published.status === 'nothing') continue;
