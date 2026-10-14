@@ -1526,6 +1526,22 @@ async function defaultResolveAuthorSessionState(
  * same-agent-new-sid successor at rebind, which remains correct for them.
  */
 
+class ScorecardGenerationChangedBeforePersistError extends Error {
+  readonly code = 'generation_changed_re_gather_required' as const;
+
+  constructor(
+    readonly evidenceHostStartedAt: string,
+    readonly persistenceHostStartedAt: string,
+  ) {
+    super(
+      `The Scout bg-host restarted while scorecard evidence was being gathered ` +
+        `(hostStartedAt ${evidenceHostStartedAt} → ${persistenceHostStartedAt}). ` +
+        'Re-run scorecards:evaluate and scorecards:emit so every instrument snapshot belongs to one host generation. No scorecard was filed.',
+    );
+    this.name = 'ScorecardGenerationChangedBeforePersistError';
+  }
+}
+
 export async function emitScorecard(
   args: z.infer<typeof scorecardEmitArgs>,
   input: {
@@ -1729,8 +1745,13 @@ export async function emitScorecard(
   let releaseScorecardEmitMutex: (() => Promise<void>) | undefined;
   let releaseGradingAuditSubjectMutex: (() => Promise<void>) | undefined;
   try {
-    let runningGenerationRead = false;
-    let runningGeneration: Awaited<ReturnType<typeof readRunningGeneration>> | null = null;
+    // Bind the card to the Scout host generation that was current before this
+    // emit started resolving instrument snapshots and collecting evidence. The
+    // final persistence boundary below re-reads the watermark and refuses a
+    // card if a known host restart crossed this evidence window.
+    const evidenceGeneration = await readRunningGeneration().catch(() => null);
+    let runningGenerationRead = true;
+    let runningGeneration: Awaited<ReturnType<typeof readRunningGeneration>> | null = evidenceGeneration;
     const readCurrentGeneration = async () => {
       if (!runningGenerationRead) {
         runningGenerationRead = true;
@@ -3704,11 +3725,6 @@ export async function emitScorecard(
             windowEnd: args.subject.windowEnd ?? null,
           })
         : null;
-    // EI-23074025929199961: this stamp measures the SEPARATE Scout bg-host.
-    // Its boot HEAD differing from the querying build says nothing about this
-    // evaluator's freshness. Preserve and surface that telemetry, but never use
-    // it to refuse an otherwise valid scorecard. Exact evaluator build/selection
-    // and pass-claim checks remain in validateSpecTestAdequacyReplay above.
     const result = await captureImprovement({
       title: args.title ?? `Scorecard: ${rubric.title}${sourceHive ? ` — ${sourceHive}` : ''}`,
       kind: 'change',
@@ -3751,6 +3767,24 @@ export async function emitScorecard(
           ...(vetting ? { vetting } : {}),
           ...(checkRuns ? { checkRuns } : {}),
         },
+      },
+      // captureImprovement performs awaited preparation after this call begins.
+      // Re-read at its actual INSERT boundary so a host restart during that prep
+      // refuses before each create attempt, including contention retries.
+      beforeIssueCreate: async () => {
+        const persistenceGeneration = await readRunningGeneration().catch(() => null);
+        const evidenceHostStartedAt = evidenceGeneration?.hostStartedAt;
+        const persistenceHostStartedAt = persistenceGeneration?.hostStartedAt;
+        if (
+          evidenceHostStartedAt != null &&
+          persistenceHostStartedAt != null &&
+          evidenceHostStartedAt !== persistenceHostStartedAt
+        ) {
+          throw new ScorecardGenerationChangedBeforePersistError(
+            evidenceHostStartedAt,
+            persistenceHostStartedAt,
+          );
+        }
       },
       onIssuePersisted: async () => {
         if (releaseScorecardEmitMutex) {
@@ -3944,6 +3978,18 @@ export async function emitScorecard(
     };
   } catch (error) {
     if (error instanceof ObservationEvidenceError) return { ok: false as const, error: error.message };
+    if (error instanceof ScorecardGenerationChangedBeforePersistError) {
+      return {
+        ok: false as const,
+        code: error.code,
+        error: error.message,
+        reGatherRequired: true as const,
+        generationChange: {
+          evidenceHostStartedAt: error.evidenceHostStartedAt,
+          persistenceHostStartedAt: error.persistenceHostStartedAt,
+        },
+      };
+    }
     throw error;
   } finally {
     // Covers every refusal/exception between the final dedup read and capture,
@@ -3974,7 +4020,7 @@ export default defineTool({
     notWhen:
       'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
     returns:
-      'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. Successful emits surface `gradedGeneration`, `staleHost` and `deployedSha`: these describe the separate Scout bg-host relative to the querying build, not evaluator freshness. Exact spec-test-adequacy replay independently refuses changed evaluator builds or rule revisions, missing identities or contradicted pass claims. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
+      'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. If the Scout bg-host `hostStartedAt` changes between evidence gathering and persistence, returns code `generation_changed_re_gather_required` with `reGatherRequired:true` and writes no card; re-run evaluate and emit. Successful emits surface `gradedGeneration`, `staleHost` and `deployedSha`: these describe the separate Scout bg-host relative to the querying build, not evaluator freshness. Exact spec-test-adequacy replay independently refuses changed evaluator builds or rule revisions, missing identities or contradicted pass claims. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
     chaining:
       'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance adopts ratings via acceptanceOf; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
@@ -3987,6 +4033,10 @@ export default defineTool({
   // (60s), surfacing as a bare `write CONNECTION_CLOSED`. Same declaration as
   // testing:run, for the same reason; every DB access here manages its own connection.
   skipWorkspaceTx: true,
+  // EI-25881485881954432: this write receipt carries complete nested ratings and
+  // audit evidence. Keep the session's ambient payload-tier projector from
+  // pruning those fields before the result door can preserve the emit response.
+  ignoreSessionPayloadTier: true,
   // EI-20965113106044588: the deterministic gate can legitimately exceed the flat
   // 55s MCP deadline. Declaring the real tool budget makes effectiveMcpDeadlineMs
   // extend the transport race instead of returning request_timeout while the
@@ -4025,6 +4075,10 @@ export default defineTool({
       staleHost: z.boolean().nullable().optional(),
       deployedSha: z.string().nullable().optional(),
       code: z.string().optional(),
+      reGatherRequired: z.boolean().optional(),
+      generationChange: z
+        .object({ evidenceHostStartedAt: z.string(), persistenceHostStartedAt: z.string() })
+        .optional(),
       canonicalRatings: z.record(z.string(), z.unknown()).optional(),
       error: z.string().optional(),
     })
