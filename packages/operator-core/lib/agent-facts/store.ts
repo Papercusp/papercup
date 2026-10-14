@@ -2482,7 +2482,74 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       scopeRef: ref,
     });
   }
+
+  // P-003 (R-3): a re-assert that REPLACED a prior version cascades to every closed
+  // work item whose completion assumptions pinned that version; keys this write
+  // retired are retractions of their own. A re-assert of an unchanged body is a
+  // refresh, not a supersession (see retraction-cascade.ts). Never throws.
+  await cascadeAssertSupersession(sql, {
+    workspaceId: ws,
+    scope: input.scope,
+    scopeRef: ref,
+    key: row.key ?? key,
+    supersedesId: row.supersedes_id,
+    newId: writtenId,
+    newBody: typeof row.body === 'string' ? row.body : null,
+    retiredKeys: row.retired_keys ?? [],
+    by: input.createdBy ?? null,
+  });
   return fact;
+}
+
+async function cascadeAssertSupersession(
+  sql: Sql,
+  a: {
+    workspaceId: string;
+    scope: FactScope;
+    scopeRef: string | null;
+    key: string;
+    supersedesId: string | number | null | undefined;
+    newId: string | number | null | undefined;
+    newBody: string | null;
+    retiredKeys: readonly string[];
+    by: string | null;
+  },
+): Promise<void> {
+  try {
+    if (a.supersedesId == null && a.retiredKeys.length === 0) return;
+    const { cascadeFactChange, supersessionChangedBody } = await import('./retraction-cascade');
+    if (a.supersedesId != null) {
+      const oldId = Number(a.supersedesId);
+      if (await supersessionChangedBody(sql, oldId, a.newBody)) {
+        const newId = a.newId != null ? Number(a.newId) : null;
+        await cascadeFactChange(sql, {
+          kind: 'superseded',
+          workspaceId: a.workspaceId,
+          scope: a.scope,
+          scopeRef: a.scopeRef,
+          key: a.key,
+          versionId: oldId,
+          supersededBy: newId,
+          reason: `superseded by version ${newId ?? '?'}`,
+          by: a.by,
+        });
+      }
+    }
+    for (const retired of a.retiredKeys) {
+      await cascadeFactChange(sql, {
+        kind: 'retracted',
+        workspaceId: a.workspaceId,
+        scope: a.scope,
+        scopeRef: a.scopeRef,
+        key: retired,
+        versionId: null,
+        reason: `superseded by ${a.key}`,
+        by: a.by,
+      });
+    }
+  } catch (err) {
+    console.warn(`[retraction-cascade] assert hook failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /** Soft-retract by identity. Returns whether a live fact was retracted. */
@@ -2511,7 +2578,7 @@ export async function retractFact(
   // P-008 (a): retract the CURRENT version. A retraction is a state change on
   // the live value, not a new version — it does not fork the chain, and the
   // superseded tail must stay untouched or history would be rewritten by it.
-  const rows = await sql<{ key: string }[]>`
+  const rows = await sql<{ key: string; id: string | number }[]>`
     UPDATE harness_shared.agent_facts
        SET retracted_at = now(), retracted_by = ${retractedBy}, retraction_reason = ${reason}
      WHERE workspace_id = ${ws} AND scope = ${args.scope}
@@ -2519,8 +2586,23 @@ export async function retractFact(
        AND source_hive IS NULL
        AND superseded_at IS NULL
        AND retracted_at IS NULL
-    RETURNING key`;
-  return rows.length > 0;
+    RETURNING key, id`;
+  if (rows.length === 0) return false;
+  // P-003 (R-3): flag every closed work item whose completion assumptions cited
+  // this fact, and tell its terminal owner. Awaited (deterministic delivery) and
+  // never throws — a cascade failure cannot fail the retraction it follows.
+  const { cascadeFactChange } = await import('./retraction-cascade');
+  await cascadeFactChange(sql, {
+    kind: 'retracted',
+    workspaceId: ws,
+    scope: args.scope,
+    scopeRef: ref || null,
+    key: args.key.trim(),
+    versionId: rows[0].id != null ? Number(rows[0].id) : null,
+    reason,
+    by: retractedBy,
+  });
+  return true;
 }
 
 export type FactKeyState = 'live' | 'already-retracted' | 'already-superseded' | 'not-found';
