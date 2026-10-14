@@ -7,6 +7,28 @@ import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
 import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress } from '../test/isolated-integration-proof';
 
+it('retains native output when a later source snapshot is empty or shorter', () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-native-shrink-'));
+  const source = join(evidenceDir, 'source.log');
+  const task = { taskId: 'private-native', state: 'running' };
+  try {
+    writeFileSync(source, 'native output before source truncation\n');
+    retainIsolatedNativeTaskDiagnostics(evidenceDir, task, { stdout: source });
+    for (const next of ['', 'partial\n']) {
+      writeFileSync(source, next);
+      retainIsolatedNativeTaskDiagnostics(evidenceDir, task, { stdout: source });
+      expect(readFileSync(join(evidenceDir, 'native-task-stdout.log'), 'utf8'))
+        .toBe('native output before source truncation\n');
+      expect(JSON.parse(readFileSync(join(evidenceDir, 'native-task-diagnostics.json'), 'utf8')))
+        .toMatchObject({ files: { stdout: { source, captured: false, reason: 'source-shrank',
+          bytes: Buffer.byteLength(next), retainedBytes: Buffer.byteLength('native output before source truncation\n') } } });
+    }
+    writeFileSync(source, 'native output before source truncation\nnew output\n');
+    retainIsolatedNativeTaskDiagnostics(evidenceDir, task, { stdout: source });
+    expect(readFileSync(join(evidenceDir, 'native-task-stdout.log'), 'utf8')).toContain('new output');
+  } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
+});
+
 it('preserves failure progress and verifies a real reaped signal without certifying success', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-progress-'));
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });

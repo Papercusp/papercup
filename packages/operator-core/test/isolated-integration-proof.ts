@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readlinkSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
@@ -78,13 +78,17 @@ export function retainIsolatedWorkerProgress(evidenceDir: string, stage: string,
 }
 
 /** Snapshot native child diagnostics while its disposable home still exists.
- * Missing files are explicit and never erase a previously captured log. */
+ * Missing or shrinking files are explicit and never erase captured output. */
 export function retainIsolatedNativeTaskDiagnostics(evidenceDir: string, task: Record<string, unknown>,
   sources: Partial<Record<'stdout' | 'normalized' | 'boot', string>>) {
   const files = Object.fromEntries(Object.entries(sources).map(([kind, source]) => {
     try {
       const bytes = readFileSync(source);
-      writeFileSync(join(evidenceDir, `native-task-${kind}.log`), bytes, { mode: 0o600 });
+      const retained = join(evidenceDir, `native-task-${kind}.log`);
+      const retainedBytes = existsSync(retained) ? statSync(retained).size : 0;
+      if (bytes.length < retainedBytes)
+        return [kind, { source, bytes: bytes.length, retainedBytes, captured: false, reason: 'source-shrank' }];
+      writeFileSync(retained, bytes, { mode: 0o600 });
       return [kind, { source, bytes: bytes.length, captured: true }];
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
