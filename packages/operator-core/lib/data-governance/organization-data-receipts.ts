@@ -561,6 +561,72 @@ async function countRows(sql: Sql, store: string, workspaceIds: readonly string[
   return Number(rows[0]?.n ?? 0);
 }
 
+/** The content stores a legal hold keeps rows in. The data source row itself is kept separately. */
+export const HOLD_CONTENT_STORES = [
+  'harness_shared.chat_messages',
+  'harness_shared.chat_retrieval_units',
+  'harness_shared.documents',
+] as const;
+
+export interface HoldTarget {
+  readonly workspace_id: string;
+  readonly data_source_id: string;
+  /** null = the whole data source is held. */
+  readonly channel_id: string | null;
+}
+
+/**
+ * The one rule for which rows of `store` a hold keeps, as a WHERE clause over $1 workspace, $2 data
+ * source, $3 container. Chat stores match the source and, for a container hold, the channel (the chat
+ * purge rule); documents match the migration 1502 trigger: not chat-derived, container matched by
+ * document_hold_container_matches. Counting (holdConflicts) and e-discovery export share it.
+ */
+function holdCoverageWhere(store: (typeof HOLD_CONTENT_STORES)[number]): string {
+  if (store === 'harness_shared.documents') {
+    return `workspace_id = $1 AND source_id = $2::uuid AND NOT harness_shared.document_is_chat_derived(kind)
+      AND harness_shared.document_hold_container_matches(workspace_id, source_id, $3::text, metadata, permission_list_id)`;
+  }
+  return `workspace_id = $1 AND data_source_id = $2::uuid AND ($3::text IS NULL OR channel_id = $3)`;
+}
+
+function holdCoverageParams(h: HoldTarget): [string, string, string | null] {
+  return [h.workspace_id, h.data_source_id, h.channel_id];
+}
+
+export interface HoldContentExport {
+  readonly store: string;
+  readonly columns: readonly string[];
+  readonly excludedColumns: readonly string[];
+  readonly rows: readonly Record<string, unknown>[];
+}
+
+/**
+ * The rows one hold keeps, per content store, shaped like the organization export (secret-class
+ * and access-shaped columns are never exported). Rows are sorted by their JSON form, so the same
+ * held content always yields the same export. Throws for a store the processing map does not treat
+ * as pilot data plane: exporting an unclassified store would bypass its column exclusions.
+ */
+export async function exportHoldContent(sql: Sql, hold: HoldTarget): Promise<HoldContentExport[]> {
+  const treatments = new Map(planOrganizationDataOperation().map((t) => [t.store, t]));
+  const out: HoldContentExport[] = [];
+  for (const store of HOLD_CONTENT_STORES) {
+    const treatment = treatments.get(store);
+    if (!treatment || treatment.executor !== 'pilot-data-plane') {
+      throw new Error(`organization-data-receipts: ${store} is not a pilot data-plane store in the processing map`);
+    }
+    const live = await liveColumns(sql, store);
+    const excluded = live.filter((c) => treatment.excludedColumns.includes(c) || ACCESS_SHAPED_COLUMN.test(c));
+    const columns = live.filter((c) => !excluded.includes(c));
+    const rows = await sql.unsafe<Record<string, unknown>[]>(
+      `SELECT ${columns.map((c) => `"${c}"`).join(', ')} FROM ${quoted(store)} WHERE ${holdCoverageWhere(store)}`,
+      holdCoverageParams(hold),
+    );
+    const sorted = rows.map((r) => ({ key: JSON.stringify(r), row: { ...r } })).sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    out.push({ store, columns, excludedColumns: excluded, rows: sorted.map((s) => s.row) });
+  }
+  return out;
+}
+
 /** Active holds in the scope and, per hold, the rows each keeps (also the legal-hold listing, legal-holds.ts). */
 export async function holdConflicts(sql: Sql, workspaceIds: readonly string[]): Promise<HoldConflict[]> {
   const holds = await sql<{ id: string; workspace_id: string; data_source_id: string; channel_id: string | null; placed_at: Date }[]>`
@@ -570,22 +636,13 @@ export async function holdConflicts(sql: Sql, workspaceIds: readonly string[]): 
   const out: HoldConflict[] = [];
   for (const h of holds) {
     const retained: { store: string; rows: number }[] = [];
-    for (const store of ['harness_shared.chat_messages', 'harness_shared.chat_retrieval_units']) {
+    for (const store of HOLD_CONTENT_STORES) {
       const rows = await sql.unsafe<{ n: string }[]>(
-        `SELECT count(*)::text AS n FROM ${quoted(store)}
-          WHERE workspace_id = $1 AND data_source_id = $2::uuid AND ($3::text IS NULL OR channel_id = $3)`,
-        [h.workspace_id, h.data_source_id, h.channel_id],
+        `SELECT count(*)::text AS n FROM ${quoted(store)} WHERE ${holdCoverageWhere(store)}`,
+        holdCoverageParams(h),
       );
       retained.push({ store, rows: Number(rows[0]?.n ?? 0) });
     }
-    // Same coverage rule as the documents trigger (migration 1502), attributed to this hold.
-    const documents = await sql<{ n: string }[]>`
-      SELECT count(*)::text AS n FROM harness_shared.documents d
-       WHERE d.workspace_id = ${h.workspace_id} AND d.source_id = ${h.data_source_id}::uuid
-         AND NOT harness_shared.document_is_chat_derived(d.kind)
-         AND harness_shared.document_hold_container_matches(
-               d.workspace_id, d.source_id, ${h.channel_id}::text, d.metadata, d.permission_list_id)`;
-    retained.push({ store: 'harness_shared.documents', rows: Number(documents[0]?.n ?? 0) });
     const sources = await sql<{ n: string }[]>`
       SELECT count(*)::text AS n FROM harness_shared.data_sources WHERE workspace_id = ${h.workspace_id} AND id = ${h.data_source_id}::uuid`;
     retained.push({ store: 'harness_shared.data_sources', rows: Number(sources[0]?.n ?? 0) });
