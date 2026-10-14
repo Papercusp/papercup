@@ -20,7 +20,12 @@
  * dispatches, and identically for every provider.
  */
 import type postgres from 'postgres';
-import type { HostFetch } from '@papercusp/plugin-sdk';
+import {
+  PROVIDER_SOCIAL_DELETE_CAPABILITY,
+  PROVIDER_SOCIAL_POST_CAPABILITY,
+  PROVIDER_SOCIAL_REPLY_CAPABILITY,
+  type HostFetch,
+} from '@papercusp/plugin-sdk';
 import {
   listOwnedExternalTriggerSources,
   sourceTokenHarness,
@@ -32,7 +37,7 @@ import { resolveProviderServices } from '../integrations/service-credentials';
 import { string, type OutboundContext } from './resolve';
 
 /** Canonical datatypes the shared outbound verbs write. */
-export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket' | 'chat-message';
+export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket' | 'chat-message' | 'social-post';
 
 /**
  * The outbound capability vocabulary (D-014.2). Each is passed to `invoke` as
@@ -42,12 +47,19 @@ export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket' | '
  *  - `calendar.write`: operation `create` | `update`
  *  - `chat.reply`: `{ channelId, threadId, text }` → `{ channelId, threadId, messageTs }`
  *    (cupboard-distributable-integrations-2026-10-10 P-008, D-018)
+ *  - `social.post`: `{ destination, text, visibility, idempotencyKey, media? }` → `{ externalId, url? }`
+ *  - `social.reply`: `{ target, text, visibility, idempotencyKey }` → `{ externalId, url? }`
+ *  - `social.delete`: `{ externalId, target, idempotencyKey }` → `{ deleted, detail? }`
+ *    (provider-adapters-to-packages-2026-10-11 P-002; the host runs every social rail first)
  */
 export const OUTBOUND_CAPABILITIES = {
   mailDraft: 'mail.draft',
   mailSend: 'mail.send',
   calendarWrite: 'calendar.write',
   chatReply: 'chat.reply',
+  socialPost: PROVIDER_SOCIAL_POST_CAPABILITY,
+  socialReply: PROVIDER_SOCIAL_REPLY_CAPABILITY,
+  socialDelete: PROVIDER_SOCIAL_DELETE_CAPABILITY,
 } as const;
 
 /**
@@ -133,15 +145,29 @@ export async function resolveCapabilitySource(
     sourceId?: string | null;
     /** The account address to act as, matched case-insensitively. */
     providerAccountId?: string | null;
+    /**
+     * Narrow the pool to one provider. Social writes pass the post ref's
+     * platform here: the ref names the platform, so the acting source is the
+     * owner's connected source of THAT provider, never another platform's.
+     */
+    providerId?: string | null;
     defaultInstallSlug?: string;
   },
   deps: Pick<OutboundDispatchDeps, 'registry'> = {},
 ): Promise<OutboundTarget> {
   const registry = deps.registry ?? (await readyProviderRegistry());
+  const providerId = string(params.providerId);
+  if (providerId && !registry.get(providerId)) {
+    // Refused by name before any source lookup: there is no package to act through.
+    throw new Error(
+      `outbound_source_not_connected:${params.datatype}:${providerId} — no installed provider package serves ${providerId}`,
+    );
+  }
   const owned = await listOwnedExternalTriggerSources(sql, params.workspaceId, params.userId);
   const candidates: Candidate[] = owned.flatMap((row) => {
     const provider = providerForKind(row.kind, registry);
-    return provider && producesDatatype(provider, params.datatype) ? [{ row, provider }] : [];
+    if (!provider || !producesDatatype(provider, params.datatype)) return [];
+    return providerId && provider.id !== providerId ? [] : [{ row, provider }];
   });
 
   let pool = candidates;
@@ -163,7 +189,9 @@ export async function resolveCapabilitySource(
   }
   if (pool.length > 1) throw new Error(`outbound_source_ambiguous:${params.datatype}${connectedSuffix(pool)}`);
   const selected = pool[0];
-  if (!selected) throw new Error(`outbound_source_not_connected:${params.datatype}`);
+  if (!selected) {
+    throw new Error(`outbound_source_not_connected:${params.datatype}${providerId ? `:${providerId}` : ''}`);
+  }
 
   const { row: source, provider } = selected;
   if (source.ownerUserId !== params.userId) {
