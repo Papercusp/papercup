@@ -289,6 +289,10 @@ const RULES: ReadonlyArray<{
       // requireAllowedOriginOr403 — see the route's own auth comment in
       // admin/owner-presence-touch.ts.
       { method: 'POST', path: '/admin/owner-presence/touch', auth: VTL },
+      // WI-6554700010011967: the psu pty-host reports quota starvation from the
+      // same cookie-less local process; CSRF-guarded like owner-presence/touch,
+      // and it can only fire a fleet health event.
+      { method: 'POST', path: '/admin/psu-pty/quota-starvation', auth: VTL },
       // Same EI-338 cookie-less desktop-webview rationale as the VTL entries
       // above: AdminOps/TableAdmin/DbosClient/SchedulesClient bare-fetch these
       // from the packaged desktop app with no session cookie, so they only

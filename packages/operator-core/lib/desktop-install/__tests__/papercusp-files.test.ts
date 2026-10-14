@@ -781,8 +781,17 @@ describe('installPapercuspFiles', () => {
     });
     const prevCwd = process.cwd();
     process.chdir(tmpAppRoot);
+    // Auto-discovery can resolve the live repository hook sources. Another agent may be
+    // editing one while this suite runs, in which case the installer correctly warns
+    // that the source bytes are uncommitted. That environmental warning is unrelated to
+    // this layout assertion; allow only that specific warning and keep other warnings
+    // subject to vitest-fail-on-console.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const result = await installPapercuspFiles({ home: tmpHome });
+      for (const [message] of warn.mock.calls) {
+        expect(String(message)).toMatch(/^\[desktop-install\] cc hooks: \d+ file\(s\) UNCOMMITTED in .+ NOT contained in sha=/);
+      }
       expect(result.claudeHooksInstalled).toContain('pretooluse-locks-acquire.sh');
       expect(result.claudeHooksInstalled).toContain('userpromptsubmit-memory.sh');
       expect(result.claudeSettingsMerged).toBe(true);
@@ -790,6 +799,7 @@ describe('installPapercuspFiles', () => {
       const settings = JSON.parse(await fs.readFile(path.join(tmpHome, '.claude', 'settings.json'), 'utf8'));
       expect(JSON.stringify(settings.hooks?.UserPromptSubmit ?? [])).toContain('userpromptsubmit-memory.sh');
     } finally {
+      warn.mockRestore();
       process.chdir(prevCwd);
     }
   });

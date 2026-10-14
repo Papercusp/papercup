@@ -302,8 +302,12 @@ export async function setCompactionLimit(
 
 /** Cache the compaction-compliance watchdog's context-size estimate (tokens) for a
  *  session. No-op if the presence row does not exist. agent-managed-compaction. */
-export async function setContextEstimate(ownerId: string, tokens: number): Promise<void> {
-  await store.setContextEstimate(ownerId, tokens);
+export async function setContextEstimate(
+  ownerId: string,
+  tokens: number,
+  expectedSession: { nativeSessionId: string | null; advSessionId?: number | null },
+): Promise<boolean> {
+  return store.setContextEstimate(ownerId, tokens, expectedSession);
 }
 
 /** Invalidate a cached context estimate after the native session is replaced.

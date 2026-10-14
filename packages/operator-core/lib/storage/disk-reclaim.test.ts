@@ -97,7 +97,7 @@ describe('retention holder evidence', () => {
   it('retains scanner failure metrics across the privileged transport', async () => {
     const diagnostics = { elapsedMs: 12, processesTotal: 10, processesScanned: 9, descriptorsScanned: 40,
       deadlineExceeded: false, readFailures: 1, failureSamples: [{ operation: 'fd-directory', path: '/proc/5/fd', code: 'EACCES' }] };
-    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
     delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
       options.onSpawn(child as unknown as ChildProcess, 'incomplete-holder-task');
       child.stdout.write(JSON.stringify({ complete: false, byPath: [[process.cwd(), [String(process.pid)]]], diagnostics }));
@@ -109,7 +109,7 @@ describe('retention holder evidence', () => {
   });
 
   it('retains bounded stderr, task identity and signal when privilege transport fails', async () => {
-    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
     delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
       options.onSpawn(child as unknown as ChildProcess, 'denied-holder-task');
       child.stderr.write('x'.repeat(5000) + 'sudo: permission denied');
@@ -124,7 +124,7 @@ describe('retention holder evidence', () => {
 
   it.each(['not-json', JSON.stringify({ complete: true, byPath: [] }), JSON.stringify({ complete: true, byPath: [['/foreign', ['1']]] })])(
     'rejects privileged output without valid, caller-controlled evidence: %s', async (output) => {
-      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+      const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
       delegateSpawn.mockImplementationOnce(async (command, args, _spec, options) => {
         expect(command).toBe('/usr/bin/sudo');
         expect(args.slice(0, 2)).toEqual(['-n', process.execPath]);
@@ -135,6 +135,27 @@ describe('retention holder evidence', () => {
       expect((await scanRetentionHolders(['/scratch'], { uid: () => 1000, readStatus: async () => 'NSpid:\t1\n' })).complete).toBe(false);
     },
   );
+
+  it('streams oversized candidate sets without placing the payload in argv', async () => {
+    const paths = Array.from({ length: 14_000 }, (_, i) => `/scratch/expired-${i}`);
+    const chunks: Buffer[] = [];
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    child.stdin.on('data', (chunk: Buffer) => chunks.push(chunk));
+    delegateSpawn.mockImplementationOnce(async (command, args, _spec, options) => {
+      expect(command).toBe('/usr/bin/sudo');
+      expect(args.every((arg: string) => Buffer.byteLength(arg) < 128 * 1024)).toBe(true);
+      expect(options.spawnOptions.stdio[0]).toBe('pipe');
+      options.onSpawn(child as unknown as ChildProcess, 'large-holder-task');
+      child.stdout.write(JSON.stringify({ complete: true, byPath: [[process.cwd(), [String(process.pid)]]] }));
+      child.emit('close', 0, null);
+      return { child, taskId: 'large-holder-task' };
+    });
+    const result = await scanRetentionHolders(paths, { uid: () => 1000, readStatus: async () => 'NSpid:\t1\n' });
+    expect(result.complete).toBe(true);
+    const input = Buffer.concat(chunks).toString('utf8');
+    expect(Buffer.byteLength(input)).toBeGreaterThan(128 * 1024);
+    expect(JSON.parse(input)).toEqual([...paths, process.cwd()]);
+  });
 });
 
 describe('native retention completion', () => {

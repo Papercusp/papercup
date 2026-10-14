@@ -102,6 +102,16 @@ describe('retention on a real fixture tree', () => {
     expect(await readFile(path, 'utf8')).toBe('expired');
   });
 
+  it('delivers a candidate payload larger than the native argv limit through an enrolled input pipe', async () => {
+    const input = JSON.stringify(Array.from({ length: 14_000 }, (_, i) => `/scratch/expired-${i}`));
+    expect(Buffer.byteLength(input)).toBeGreaterThan(128 * 1024);
+    const result = await nativeRetentionCommand(repoRoot, process.execPath, ['--input-type=module', '-e',
+      "const chunks=[]; for await(const chunk of process.stdin) chunks.push(chunk); const input=Buffer.concat(chunks).toString('utf8'); console.log(JSON.stringify({bytes:Buffer.byteLength(input),paths:JSON.parse(input).length}));"],
+    { stdin: input, stdoutOnly: true });
+    expect(result.ok).toBe(true);
+    expect(JSON.parse((result.detail as { output: string }).output)).toEqual({ bytes: Buffer.byteLength(input), paths: 14_000 });
+  });
+
   it('runs the native cargo delegate repeatedly with captured receipts and no missed completion', async () => {
     fixture = await mkdtemp(join(tmpdir(), 'disk-retention-cargo-'));
     const shared = join(fixture, 'target');

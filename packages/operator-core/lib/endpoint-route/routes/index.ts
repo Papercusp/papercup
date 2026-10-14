@@ -35,6 +35,7 @@ import flagsSet from './flags/set';
 import workScopeRoutes from './work-scope/set';
 import governancePolicyRoutes from './governance-policy/policy';
 import governanceSiemExportRoutes from './governance-policy/siem-export';
+import governanceLegalHoldRoutes from './governance-policy/legal-holds';
 import flagsTestingFeatures from './flags/testing-features';
 import flagsPreset from './flags/preset';
 import flagsDashboardUrl from './flags/dashboard-url';
@@ -366,6 +367,8 @@ import adminDeployAccountsRegister from './admin/deploy-accounts-register';
 import adminInferenceGatewayStats from './admin/inference-gateway-stats';
 // owner-presence-human-turn-signal-2026-07-11 P-002 — human-turn presence signal (all backends).
 import adminOwnerPresenceTouch from './admin/owner-presence-touch';
+// WI-6554700010011967: psu pty host reports quota starvation -> fleet:member-quota-starved.
+import adminPsuPtyQuotaStarvation from './admin/psu-pty-quota-starvation';
 import adminDeployAccountsRemove from './admin/deploy-accounts-remove';
 import adminDeployAccountsReset from './admin/deploy-accounts-reset';
 // accounts-pool-tab-2026-06-15 P-002 — the experimental one-click OAuth account link.
@@ -651,6 +654,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(workScopeRoutes as AnyRoute[]),
   ...flatten(governancePolicyRoutes as AnyRoute[]),
   ...flatten(governanceSiemExportRoutes as AnyRoute[]),
+  ...flatten(governanceLegalHoldRoutes as AnyRoute[]),
   ...flatten(flagsTestingFeatures as AnyRoute[]),
   ...flatten(flagsPreset as AnyRoute),
   ...flatten(flagsDashboardUrl as AnyRoute),
@@ -901,6 +905,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminDeployAccountsRegister as AnyRoute),
   ...flatten(adminInferenceGatewayStats as AnyRoute),
   ...flatten(adminOwnerPresenceTouch as AnyRoute),
+  ...flatten(adminPsuPtyQuotaStarvation as AnyRoute),
   ...flatten(adminDeployAccountsRemove as AnyRoute),
   ...flatten(adminDeployAccountsReset as AnyRoute),
   ...flatten(adminDeployAccountsLinkStart as AnyRoute),

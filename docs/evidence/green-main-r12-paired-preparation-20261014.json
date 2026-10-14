@@ -110,6 +110,8 @@
   ],
   "nativeWrapperIntegration": {
     "issueId": "EI-25953680209463431",
+    "issueState": "done",
+    "completionAuthority": "committed",
     "rootCause": "The wrapper captured caller-owned args/pins across asynchronous native executor checks, so its artifact reader could observe a different original population than the recorded command.",
     "fix": "Detach scope, runtime units and nested cohort pins synchronously before the first dynamic import.",
     "guardPath": "packages/operator-core/lib/release/green-main-throughput.integration.test.ts",
@@ -140,6 +142,24 @@
     },
     "handlesDrained": [16329, 4093, 50036, 71996, 56799],
     "syncFire": "Background-worker attributed git-sync fire returned firedtrue/in_progress; not retried. Independent source reads prove both fix and guard committed."
+  },
+  "wrapperReport": {
+    "reportId": "rpt_be99026c-27a0-4178-b173-95f6d23e5163",
+    "path": "/reports?sel=rpt_be99026c-27a0-4178-b173-95f6d23e5163",
+    "sourcePath": "docs/evidence/green-main-r12-wrapper-progress-20261014.md",
+    "bodySha256": "27a8e6039e590617fd98335769df544f54518ded57be0295ee9d61b2203d672d",
+    "requestKey": "c0523-r12-wrapper-progress-20261014-edition1",
+    "readbackExact": true,
+    "visibility": "owner"
+  },
+  "evidencePathGuardRepair": {
+    "scope": "This session's six named evidence/report paths only",
+    "change": "Portable ~/.papercusp/scratch references preserve the original log targets; do not edit or restamp the logs.",
+    "rootCause": "Absolute machine-home diagnostic paths were copied into shipped evidence docs.",
+    "guardItems": ["WI-6554700010012745", "WI-6554700010012746", "WI-6554700010012747", "WI-6554700010012748", "WI-6554700010012749", "WI-6554700010012750"],
+    "verification": "All six named files have zero findings using the canonical box/literal detectors and the live resolved literal set; portable original log targets exist; JSON parses. Full-tree guard commands still exit1 on existing dream/study/cycle-events.jsonl findings, outside this owned evidence scope.",
+    "guardLogs": ["~/.papercusp/scratch/c0523-evidence-box-guard.log", "~/.papercusp/scratch/c0523-evidence-literal-guard.log"],
+    "publishedReportHistory": "The original published report bodies and hashes remain immutable. Source MD path corrections do not rewrite those historical bodies. The current wrapper report above was published after correction and read back exactly."
   },
   "next": "No native command handles remain. Prepare actual original full-gate inputs and runtime closure without launching the D020-held cohort. Wrapper local integration is complete; reuse saved proofs only at matching source hashes. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
 }

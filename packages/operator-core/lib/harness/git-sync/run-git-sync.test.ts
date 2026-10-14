@@ -3483,7 +3483,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(isTransientStatFailure('')).toBe(false);
   });
 
-  it('P-004 flag-ON (loadRoster supplied): peels a per-agent commit (intent + Co-Authored-By) before the catch-all', async () => {
+  it('P-004 flag-ON: commits the unattributed residual before per-agent groups', async () => {
     writeFileSync(join(repo, 'mine.txt'), 'a\n'); // attributed to cup-7
     writeFileSync(join(repo, 'other.txt'), 'b\n'); // unattributed → catch-all
     const out = await runGitSync('test', {
@@ -3501,6 +3501,12 @@ describe('runGitSync (real git, no submodule)', () => {
     // the per-agent commit carries a Co-Authored-By trailer crediting the agent (DERIVED attribution).
     const bodies = git(originDir, 'log', '--format=%B', 'main');
     expect(bodies).toContain('Co-Authored-By: Cup Seven <cup-7@agents.papercusp>');
+    const orderedSubjects = git(originDir, 'log', '--format=%s', '--reverse', 'main').split('\n');
+    const residualIndex = orderedSubjects.findIndex((subject) => subject.includes('auto-commit test'));
+    const attributedIndex = orderedSubjects.findIndex((subject) => subject.includes('wire the parser'));
+    expect(residualIndex).toBeGreaterThanOrEqual(0);
+    expect(attributedIndex).toBeGreaterThanOrEqual(0);
+    expect(residualIndex).toBeLessThan(attributedIndex);
     // both files landed; the tree is clean.
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });

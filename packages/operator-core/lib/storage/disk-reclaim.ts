@@ -134,11 +134,13 @@ async function scanPrivilegedRetentionHolders(paths: readonly string[], control:
   // Both namespaces and the ORIGINAL caller's PID are positive controls.
   const worker = `
     import { readFile } from 'node:fs/promises';
-    const paths = JSON.parse(process.argv[1]);
+    const input = [];
+    for await (const chunk of process.stdin) input.push(chunk);
+    const paths = JSON.parse(Buffer.concat(input).toString('utf8'));
     const status = await readFile('/proc/self/status', 'utf8');
     const ids = /^NSpid:\\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\\s+/);
     if (!ids || ids.length !== 1) process.exit(2);
-    const { openWriterPidsMany } = await import(process.argv[2]);
+    const { openWriterPidsMany } = await import(process.argv[1]);
     const result = await openWriterPidsMany(paths, {
       descendants: true, includeCwd: true, failClosed: true, deadlineMs: ${RETENTION_HOLDER_SCAN_MS},
     });
@@ -146,8 +148,8 @@ async function scanPrivilegedRetentionHolders(paths: readonly string[], control:
   `;
   const result = await nativeRetentionCommand(repoRoot, '/usr/bin/sudo', [
     '-n', process.execPath, '--import', require.resolve('tsx/esm'), '--input-type=module', '-e', worker,
-    '--', JSON.stringify(paths), join(repoRoot, 'packages/operator-core/lib/native-bg-task-ledger.ts'),
-  ], { stdoutOnly: true, outputLimit: 1024 * 1024, timeoutMs: RETENTION_HOLDER_SCAN_MS + 1_000 });
+    '--', join(repoRoot, 'packages/operator-core/lib/native-bg-task-ledger.ts'),
+  ], { stdin: JSON.stringify(paths), stdoutOnly: true, outputLimit: 1024 * 1024, timeoutMs: RETENTION_HOLDER_SCAN_MS + 1_000 });
   if (!result.ok || !result.detail || typeof result.detail !== 'object' ||
       !('output' in result.detail) || typeof result.detail.output !== 'string') {
     const detail = result.detail as { error?: string; code?: number | null; signal?: string | null; taskId?: string | null; stderr?: string; outputTruncated?: boolean } | null;
@@ -498,6 +500,8 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
 
 /** Bounded, enrolled execution of an existing native cleaner. */
 export async function nativeRetentionCommand(repoRoot: string, command: string, args: string[], options: {
+  /** Candidate lists can exceed the kernel's per-argument limit; keep them off argv. */
+  stdin?: string;
   stdoutOnly?: boolean; outputLimit?: number; timeoutMs?: number;
 } = {}) {
   const { managedSpawn } = await import('../task-manager/managed-spawn');
@@ -520,7 +524,7 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
       launchedBy: 'system:disk-retention', planSlug: 'disk-headroom-standing-reclaim-2026-10-12',
       runtimeMaxSec: Math.ceil(timeoutMs / 1000), detail: { subsystem: 'storage', operation: 'retention-delegate' },
     }, {
-      spawnOptions: { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] },
+      spawnOptions: { cwd: repoRoot, stdio: [options.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] },
       onSpawn: (child, id) => {
         taskId = id;
         timer = setTimeout(() => {
@@ -538,6 +542,18 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
         else child.stderr?.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4000); });
         child.once('error', (error) => done(false, { error: message(error), taskId, output }));
         child.once('close', (code, signal) => done(code === 0 && !(options.stdoutOnly && outputTruncated), { code, signal, taskId, output }));
+        if (options.stdin !== undefined) {
+          if (!child.stdin) {
+            done(false, { error: 'delegate input pipe unavailable', taskId, output });
+            child.kill('SIGKILL');
+          } else {
+            child.stdin.once('error', (error) => {
+              done(false, { error: `delegate input:${message(error)}`, taskId, output });
+              child.kill('SIGKILL');
+            });
+            child.stdin.end(options.stdin);
+          }
+        }
       },
     });
   } catch (error) { done(false, { error: message(error), taskId, output }); }
