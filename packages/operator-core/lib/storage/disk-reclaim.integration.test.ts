@@ -196,6 +196,71 @@ describe('retention on a real fixture tree', () => {
       for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { now.mockRestore(); }
   });
+  it('bounds effect work per root, records the remainder and resumes from a fresh policy census', async () => {
+    const { root, options } = await setup();
+    const secondRoot = join(fixture!, 'second-root'); await mkdir(secondRoot);
+    const paths = [join(root, 'old-a'), join(root, 'old-b'), join(secondRoot, 'old-c')];
+    for (const path of paths) await writeFile(path, 'expired');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const progress: unknown[] = [];
+    const scanHolders = vi.fn(async () => {
+      clock += 100;
+      return { complete: true, byPath: new Map<string, string[]>() };
+    });
+    const delegate = vi.fn(async () => ({ ok: true, detail: 'independent owner completed' }));
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, effectBudgetMs: 250,
+        policy: [...options.policy, { ...options.policy[0]!, id: 'second', roots: [secondRoot] }],
+        roots: [...options.roots, { path: secondRoot, classId: 'second' }], scanHolders,
+        record: async (phase, detail) => { if (phase === 'progress') progress.push(detail); },
+        delegates: [{ classId: 'independent-owner', run: delegate }],
+      });
+      expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
+      expect(receipt.errors).toEqual([expect.stringContaining(`incomplete retention effects:${root}:`)]);
+      expect(receipt.effects).toEqual([
+        { root, selected: 2, processed: 1, remaining: 1, nextPath: paths[1], elapsedMs: 300, stopped: true },
+        { root: secondRoot, selected: 1, processed: 1, remaining: 0, nextPath: null, elapsedMs: 200, stopped: false },
+      ]);
+      expect(progress).toContainEqual(receipt.effects![0]);
+      expect(delegate).toHaveBeenCalledOnce();
+      expect(scanHolders.mock.calls).toHaveLength(5);
+      await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(paths[1]!)).resolves.toBeDefined();
+      await expect(stat(paths[2]!)).rejects.toMatchObject({ code: 'ENOENT' });
+      const resumed = await runDiskReclaimOnce(options);
+      expect(resumed.complete).toBe(true); expect(resumed.policyExhausted).toBe(true);
+      expect(resumed.entries).toEqual([expect.objectContaining({ path: paths[1], status: 'removed' })]);
+    } finally { now.mockRestore(); }
+  });
+  it('charges durable intent waits to the effect budget before launching another safety check', async () => {
+    const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const scanHolders = vi.fn(options.scanHolders);
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, effectBudgetMs: 100, scanHolders,
+        record: async (phase) => { if (phase === 'remove-intent') clock += 100; },
+      });
+      expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
+      expect(receipt.effects?.[0]).toMatchObject({ processed: 0, remaining: 1, nextPath: path, stopped: true });
+      expect(scanHolders).toHaveBeenCalledOnce();
+      await expect(stat(path)).resolves.toBeDefined();
+    } finally { now.mockRestore(); }
+  });
+  it('finishes an in-flight removal audit without falsely leaving a fully processed root partial', async () => {
+    const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, effectBudgetMs: 100,
+        record: async (phase) => { if (phase === 'removed') clock += 10_000; },
+      });
+      expect(receipt.complete).toBe(true); expect(receipt.policyExhausted).toBe(true);
+      expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 0, nextPath: null, stopped: false, elapsedMs: 10_000 });
+      await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { now.mockRestore(); }
+  });
   it('serializes overlapping fixture passes with the real mutex and preserves the losing pass', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
     let signalEntered = () => {}; let releaseFirst = () => {};
@@ -501,9 +566,11 @@ describe('retention on a real fixture tree', () => {
         await writeReclaimAudit(sql as unknown as ReclaimSql, 'fixture-workspace', runId, phase, detail);
       } });
       const rows = await sql`SELECT action, details, jsonb_typeof(details) AS detail_type FROM harness_shared.audit_log WHERE subject = ${receipt.id} ORDER BY ts`;
-      expect(rows.map((r) => r.action)).toEqual(['disk-retention:started', 'disk-retention:remove-intent', 'disk-retention:removed', 'disk-retention:receipt']);
-      expect(rows.map((r) => r.detail_type)).toEqual(['object', 'object', 'object', 'object']);
-      expect(rows[1]!.details.path).toBe(path); expect(rows[3]!.details).toEqual(receipt);
+      expect(rows.map((r) => r.action)).toEqual(['disk-retention:started', 'disk-retention:progress', 'disk-retention:remove-intent', 'disk-retention:removed', 'disk-retention:progress', 'disk-retention:receipt']);
+      expect(rows.every((r) => r.detail_type === 'object')).toBe(true);
+      expect(rows[2]!.details.path).toBe(path); expect(rows.at(-1)!.details).toEqual(receipt);
+      expect(rows[1]!.details).toMatchObject({ root, selected: 1, processed: 0, remaining: 1, nextPath: path });
+      expect(rows[4]!.details).toMatchObject({ root, selected: 1, processed: 1, remaining: 0, nextPath: null });
       expect(await readReclaimReceipt(sql, 'fixture-workspace')).toEqual(receipt);
       expect(await readReclaimReceipt(sql, 'fixture-workspace', receipt.id)).toEqual(receipt);
       expect(await readReclaimReceipt(sql, 'other-workspace', receipt.id)).toBeNull();
