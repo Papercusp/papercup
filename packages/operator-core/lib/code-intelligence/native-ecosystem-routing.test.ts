@@ -59,7 +59,7 @@ describe('native baseline exposed semantic and packing handlers', () => {
 
   it('enumerates every admitted exposed operation even if the inventory omits one', () => {
     expect([...graphQuery.args.shape.op.options].sort()).toEqual([
-      'callers', 'callees', 'context', 'diagnostics', 'health', 'impact', 'implementations', 'references',
+      'callers', 'callees', 'communities', 'concept-search', 'context', 'contracts', 'diagnostics', 'flows', 'health', 'impact', 'implementations', 'references',
       'rename-preview', 'structural-search', 'symbol', 'symbol-search', 'text-search', 'trace',
     ].sort());
     expect(graphOperations.map(row => row.op).sort()).toEqual(['callers', 'callees', 'health', 'impact', 'symbol'].sort());

@@ -646,12 +646,20 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
   if (!['callers', 'symbol', 'callees', 'context', 'impact', 'trace', 'contracts', 'communities', 'flows', 'concept-search'].includes(op)) {
     return answer(q.name, started, now, { error: `unsupported first-party graph operation '${op}'` });
   }
-  if (op !== 'callers' && q.filePath && !/\.[cm]?[jt]sx?$/.test(q.filePath)) {
-    const unsupported = answer(q.name, started, now, { error: `Native graph ${op} is unsupported for '${extname(q.filePath)}'; this compiler route admits JS/TS only. Use the registered language's lsp:query or code:structural route.` });
-    return { ...unsupported, evidence: { ...unsupported.evidence!, languageCapabilities: [{
-      language: ({ '.rs': 'rust', '.py': 'python', '.go': 'go' } as Record<string, string>)[extname(q.filePath)] ?? 'unknown',
-      intent, status: 'unsupported',
-    }] } };
+  const unsupportedLanguages: Record<string, string> = { '.rs': 'rust', '.py': 'python', '.go': 'go',
+    '.c': 'c', '.h': 'c', '.cc': 'cpp', '.cpp': 'cpp', '.cxx': 'cpp', '.hpp': 'cpp' };
+  const unsupportedAnswer = (extensions: string[]): FirstPartyCallersAnswer => {
+    const unsupported = answer(q.name, started, now, { error: `Native graph ${op} is unsupported for '${extensions.join(', ')}'; this compiler route admits JS/TS only. Use the registered language's lsp:query or code:structural route.` });
+    return { ...unsupported, evidence: { ...unsupported.evidence!, languageCapabilities:
+      [...new Set(extensions.map(extension => unsupportedLanguages[extension] ?? 'unknown'))]
+        .map(language => ({ language, intent, status: 'unsupported' as const })) } };
+  };
+  if (q.filePath && !/\.[cm]?[jt]sx?$/.test(q.filePath)) {
+    return unsupportedAnswer([extname(q.filePath)]);
+  }
+  const unsupportedPaths = (q.paths ?? []).map(path => extname(path)).filter(extension => unsupportedLanguages[extension]);
+  if (unsupportedPaths.length) {
+    return unsupportedAnswer([...new Set(unsupportedPaths)]);
   }
   if (discovery && (!q.paths?.length || q.paths.some(path => path === '.' || path === './'))) {
     return answer(q.name, started, now, { error: 'Discovery requires explicit bounded source paths, not the whole repository.' });
@@ -702,6 +710,19 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
     ...(search.partial ? [`ripgrep could not read every path: ${search.partial}`] : []),
   ];
   if (search.files.length === 0) {
+    // A JS/TS-only candidate filter cannot establish absence in a directory
+    // containing another language. Inspect names, never infer support from an
+    // empty filtered search. Missing/unreadable census is also a refusal.
+    if (scope.scoped) {
+      const census = spawnSync(rgPath, ['--files', '-g', '!**/node_modules/**', '--', ...scope.paths],
+        { cwd: q.root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+      if (census.error || (census.status !== 0 && census.status !== 1)) {
+        return answer(q.name, started, now, { error: 'Source-language census failed; compiler absence is unverified.' });
+      }
+      const extensions = [...new Set(census.stdout.split('\n').map(path => extname(path))
+        .filter(extension => unsupportedLanguages[extension]))];
+      if (extensions.length) return unsupportedAnswer(extensions);
+    }
     // No searched source file contains the word: as strong an absence as grep's.
     return answer(q.name, started, now, {
       ...(op !== 'callers' ? { error: discovery ? 'No admitted JS/TS source files in the discovery scope.' : `No declaration named '${q.name}' in the searched source scope` } : {}),

@@ -79,6 +79,29 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 const lines = (sites: readonly { path: string; line1: number | null }[]): string[] =>
   sites.map((s) => `${s.path}:${s.line1}`).sort();
 
+describe('unsupported caller scopes cannot certify an empty', () => {
+  it.each([['rs', 'rust'], ['py', 'python'], ['go', 'go'], ['cpp', 'cpp']])(
+    'refuses %s as a file or directory while preserving a genuine JS/TS absence', (extension, language) => {
+      const project = mkdtempSync(join(tmpdir(), 'native-unsupported-callers-'));
+      try {
+        mkdirSync(join(project, 'foreign'));
+        writeFileSync(join(project, 'foreign', `control.${extension}`), 'target();\n');
+        writeFileSync(join(project, 'control.ts'), 'export const unrelated = 1;\n');
+        for (const paths of [[`foreign/control.${extension}`], ['foreign']]) {
+          const result = firstPartyCallers({ ts, root: project, name: 'target', paths });
+          expect(result.error).toContain('unsupported');
+          expect(result.sites).toEqual([]);
+          expect(result.freshness.health).not.toBe('healthy');
+          expect(result.evidence!.languageCapabilities).toEqual([{ language, intent: 'callers', status: 'unsupported' }]);
+        }
+        const absent = firstPartyCallers({ ts, root: project, name: 'target', paths: ['control.ts'] });
+        expect(absent.error).toBeNull();
+        expect(absent.sites).toEqual([]);
+        expect(absent.freshness.health).toBe('healthy');
+      } finally { rmSync(project, { recursive: true, force: true }); }
+    });
+});
+
 describe('firstPartyCallers', () => {
   it('unions every same-named declaration and follows an export-star chain through a stubbed barrel', () => {
     const a = firstPartyCallers({ ts, root, name: 'target' });

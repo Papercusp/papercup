@@ -15,6 +15,7 @@ import './task-brief-ledger.integration.test';
 import '../dream/capability-packets.integration.test';
 import './scoped-contracts.integration.test';
 import './first-party-discovery.integration.test';
+import './native-language-acceptance.integration.test';
 import '../dream/capability-review-sources.integration.test';
 // Enable the interfaces in this isolated fixture; analysis/transport code is real.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn().mockResolvedValue(true) }));

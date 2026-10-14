@@ -5,6 +5,7 @@ import { DREAM_BENCHMARK_CASES } from '../../test/dream-benchmark-cases';
 import { DREAM_BENCHMARK_LABELS } from '../../test/dream-benchmark-labels';
 import independentReview from '../../test/dream-benchmark-review.fixture.json';
 import { capabilityHash } from './capability-contracts';
+import { findBoxIdentityPaths, serializeIdentitySafeJson } from '../../../../scripts/lib/identity-leak-patterns.mjs';
 import {
   DREAM_EVALUATION_ARMS,
   DREAM_EVALUATION_COSTS,
@@ -49,6 +50,55 @@ const costs = (arm: DreamEvaluationCost['arm']): DreamEvaluationCost => ({
 });
 
 describe('frozen Dream evaluation protocol — P017', () => {
+  it('publishes study diagnostics without machine identities while preserving private evidence and measurements', () => {
+    const home = ['','home','study-machine-user','source','worker.ts'].join('/');
+    const original = { protocolPin: 'a'.repeat(64), blindHash: 'b'.repeat(64),
+      attempts: 4, accountedUsd: 0.949124, downstreamTrialsExecuted: 0,
+      diagnostic: JSON.stringify({ path: home, error: `Worker failed at ${home}` }) };
+    const before = JSON.stringify(original);
+    expect(findBoxIdentityPaths(before).length).toBeGreaterThan(0);
+    const encoded = serializeIdentitySafeJson(original, []);
+    const published = JSON.parse(encoded);
+    expect(findBoxIdentityPaths(encoded)).toEqual([]);
+    expect(published).toMatchObject({ protocolPin: original.protocolPin, blindHash: original.blindHash,
+      attempts: 4, accountedUsd: 0.949124, downstreamTrialsExecuted: 0 });
+    expect(JSON.stringify(original)).toBe(before);
+    expect(JSON.parse(published.diagnostic).path).not.toBe(home);
+  });
+  it('reconstructs the spent graph study without promoting unknown novelty or reopening downstream trials', () => {
+    const read = (name: string) => JSON.parse(readFileSync(new URL(`./study/${name}`, import.meta.url), 'utf8'));
+    const comparison = read('native-graph-protocol.json');
+    const blind = read('native-graph-calibration-blind-v2.json');
+    const frozenReview = read('native-graph-calibration-review-2026-10-14.json');
+    const unblinded = read('native-graph-calibration-unblinded-review-2026-10-14.json');
+    const saved = read('native-graph-evidence-summary.json');
+    expect(findBoxIdentityPaths(JSON.stringify(saved))).toEqual([]);
+    const blindHash = capabilityHash(JSON.stringify(blind));
+    expect(dreamEvaluationProtocolHash(comparison.protocol)).toBe(comparison.pin);
+    expect([frozenReview.blindHash, unblinded.blindHash, saved.blindHash]).toEqual([blindHash, blindHash, blindHash]);
+    expect(unblinded.blindPostId).toBe(frozenReview.posts[0].id);
+    expect(unblinded.posts[0].id).toBe(1179964);
+    expect(unblinded.posts[0].body).toContain('frozen labels UNCHANGED: both REJECT as frozen');
+    expect(unblinded.cases.map((row: { caseId: string }) => row.caseId).sort()).toEqual(
+      blind.cases.map((row: { caseId: string }) => row.caseId).sort());
+    const independent = { ref: 'native-graph-calibration-unblinded-review-2026-10-14.json',
+      labels: frozenReview.cases.map((label: { caseId: string }) => ({ ...label,
+        ...unblinded.cases.find((row: { caseId: string }) => row.caseId === label.caseId) })) };
+    const rebuilt = summarizeDreamGraphComparison({ protocol: comparison.protocol, attempts: saved.dreams, independent });
+    expect(rebuilt.treatments).toEqual(saved.treatments);
+    expect(rebuilt.matchedPairs).toEqual(saved.matchedPairs);
+    expect(rebuilt.completeAttempts).toBe(true);
+    expect(rebuilt.commonInput).toBe(true);
+    expect(rebuilt.verdict).toBe('inconclusive');
+    expect(rebuilt.treatments.map(row => row.attempts)).toEqual([2, 2]);
+    expect(rebuilt.treatments.map(row => row.qualifiedFamilies)).toEqual([0, 0]);
+    expect(rebuilt.treatments[1]).toMatchObject({ refinementCandidates: 1, noveltyUnknownCandidates: 1,
+      duplicateRate: null, refinementRate: null });
+    expect(saved.downstreamDisposition).toBe('not-applicable-no-qualified-candidates');
+    expect(saved.downstreamTrialsExecuted).toBe(0);
+    expect(saved.verifiedBeneficialExperiments).toBe(0);
+    expect(saved.usefulOutcomesPerDollar).toBeNull();
+  });
   it('NATIVE-GRAPH-COMPARISON: pins treatments, assignment count, sampler and independent executed outcomes without changing legacy pins', () => {
     const original = frozen();
     const common = { manifestRevision: 'current-v2', scope: { workspaceId: 'ws', potSlug: 'pot' },
