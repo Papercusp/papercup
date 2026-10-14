@@ -1432,6 +1432,13 @@ describe('public manual selected private runtime preflight', () => {
   });
   afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
 
+  it('refuses a supervisor-cleaned runtime before recreating its token or registry alias', () => {
+    for (const [key, value] of Object.entries(environment)) vi.stubEnv(key, value);
+    rmSync(root, { recursive: true, force: true });
+    expect(() => preparePublicManualHostedRuntime()).toThrow('hosted_fixture_runtime_removed');
+    expect(existsSync(root)).toBe(false);
+  });
+
   it('transports the supervisor home, state, registry and selected source while preserving the shared mutex domain', () => {
     const transported = publicManualHostedRuntimeEnvironment(environment);
     expect(transported).toMatchObject({ HOME: join(root, 'home'), TMPDIR: join(root, 'tmp'),

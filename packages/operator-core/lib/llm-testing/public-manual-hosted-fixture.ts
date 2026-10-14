@@ -68,9 +68,16 @@ export function assertPublicManualHostedRuntimeBudget(
 export function publicManualHostedRuntimeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const home = environment.HOME;
   if (!home || !isAbsolute(home)) throw new Error('hosted_fixture_private_home_required');
-  const runtimeRoot = dirname(realpathSync(home));
+  let canonicalHome: string;
+  try { canonicalHome = realpathSync(home); }
+  catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT')
+      throw new Error('hosted_fixture_runtime_removed', { cause });
+    throw cause;
+  }
+  const runtimeRoot = dirname(canonicalHome);
   if (!/^papercusp-test-runtime-[^/]+$/.test(basename(runtimeRoot))
-    || resolve(home) !== join(runtimeRoot, 'home') || realpathSync(home) !== resolve(home))
+    || resolve(home) !== join(runtimeRoot, 'home') || canonicalHome !== resolve(home))
     throw new Error('hosted_fixture_private_home_mismatch');
   const bindings = {
     HOME: join(runtimeRoot, 'home'),
