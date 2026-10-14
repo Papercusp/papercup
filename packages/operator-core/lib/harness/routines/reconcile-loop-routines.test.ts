@@ -3525,6 +3525,38 @@ describe("reconcileLoopRoutines — a warm 'suppressed-redundant' wake settles o
     expect(res.rearmed).toBe(0);
   });
 
+  // WI-6554700010012279: the wake-executor DROPPED this fire's delivery (superseded by a
+  // re-arm), so nothing was injected and no loop turn can ever exist for it. Execution
+  // recovery used to protect on the session's unrelated active inference and the loop stayed
+  // parked for over an hour. The ordinary signal ladder must settle and re-arm it.
+  it('re-arms a parked loop whose fire delivery was dropped, without consulting execution recovery', async () => {
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
+    const res = await reconcile({
+      sql: fakeSql([warmSuppressedRow({ last_wake_status: 'dropped', last_wake_channel: null })], []),
+      nowMs: T0 + 110_000,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      recoverExpectedExecution,
+    });
+    expect(recoverExpectedExecution).not.toHaveBeenCalled();
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).not.toBe('execution-recovery');
+  });
+
+  it('CONTROL: a dropped wake older than the current fire still consults execution recovery', async () => {
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
+    const res = await reconcile({
+      sql: fakeSql([warmSuppressedRow({ last_wake_status: 'dropped', last_wake_channel: null,
+        last_wake_at: pgString(T0 - 60_000) })], []),
+      nowMs: T0 + 110_000,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      recoverExpectedExecution,
+    });
+    expect(recoverExpectedExecution).toHaveBeenCalledTimes(1);
+    expect(res.rearmed).toBe(0);
+  });
+
   it.each(['coalesced', 'inbox'])('keeps the existing dispatch grace for an unproved %s wake', async channel => {
     const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
     const result = await reconcile({ sql: fakeSql([warmSuppressedRow({ last_wake_channel: channel })], []),

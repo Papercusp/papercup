@@ -1819,7 +1819,20 @@ export async function reconcileLoopRoutines(
         row.last_wake_status === 'delivered' &&
         ['suppressed-redundant', 'coalesced', 'inbox'].includes(row.last_wake_channel ?? '') &&
         loopTurnAtMs == null;
-      const executionRecovery = nonTurnWakeStillNeedsLoopTurn
+      // WI-6554700010012279: a wake the wake-executor DROPPED for this fire (for example
+      // superseded by a re-arm) injected nothing, so no loop turn can exist for it. Execution
+      // recovery protects on the session's unrelated active inference and never settles, which
+      // left the loop parked indefinitely (06:10-07:17Z incident). Send it to the ordinary
+      // signal ladder instead. A dropped wake is never suppressed there, because
+      // hasDeliveredWakeWithoutLoopTurn requires 'delivered'. Scoped to a wake stamped at or
+      // after this fire, so an older fire's drop cannot bypass recovery for a newer fire.
+      const droppedWakeAtMs = tsMs(row.last_wake_at);
+      const droppedWakeForThisFire =
+        row.last_wake_status === 'dropped' &&
+        droppedWakeAtMs != null &&
+        droppedWakeAtMs >= lastFiredMs &&
+        loopTurnAtMs == null;
+      const executionRecovery = nonTurnWakeStillNeedsLoopTurn || droppedWakeForThisFire
         ? { handled: false as const }
         : await (opts.recoverExpectedExecution ?? recoverExpectedLoopExecution)({
             sql: db,
