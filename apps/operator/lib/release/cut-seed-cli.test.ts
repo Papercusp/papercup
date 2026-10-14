@@ -18,7 +18,7 @@ import Corestore from 'corestore';
 import { openOwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
 import { cutHiveSeed } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
 import { SEED_EXCLUDED_TABLES } from '@papercusp/operator-core/lib/sync/hyperbee/seed-excluded-tables';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   parseGitDepth,
   parseHeadSnapshotTimeoutMs,
@@ -48,6 +48,38 @@ import {
   readSeedUuidIdempotencyDropPlans,
   exportSeedUuidIdempotencyCensus,
 } from "./cut-seed-cli";
+
+function spawnCutSeedCli(args: string[], options: { env?: NodeJS.ProcessEnv; timeout?: number } = {}) {
+  // test:file runs under committed-source-loader. Keep that loader in the child, but force the
+  // TypeScript CLI through its ESM path: tsx otherwise classifies this CommonJS-package .ts file
+  // as CJS and the source guard correctly refuses tsx's transformed Module._compile input.
+  const cliPath = fileURLToPath(new URL('./cut-seed-cli.ts', import.meta.url));
+  const cliUrl = pathToFileURL(cliPath).href;
+  const esmTypeScriptResolver = [
+    'export async function resolve(specifier, context, nextResolve) {',
+    '  const resolved = await nextResolve(specifier, context);',
+    '  if (resolved.url.startsWith("file:") &&',
+    '      (new URL(resolved.url).pathname.endsWith(".ts") || new URL(resolved.url).pathname.endsWith(".tsx")) &&',
+    '      !resolved.url.includes("/node_modules/"))',
+    '    return { ...resolved, format: "module-typescript" };',
+    '  return resolved;',
+    '}',
+  ].join('\n');
+  const bootstrap = [
+    'import { register } from "node:module";',
+    `register("data:text/javascript," + encodeURIComponent(${JSON.stringify(esmTypeScriptResolver)}), import.meta.url);`,
+    `process.argv = [process.execPath, ${JSON.stringify(cliPath)}, ...${JSON.stringify(args)}];`,
+    `await import(${JSON.stringify(cliUrl)});`,
+  ].join('\n');
+  const env = options.env ? { ...options.env } : { ...process.env };
+  const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', bootstrap], {
+    encoding: 'utf8', ...options, env,
+  });
+  expect(result.error, result.error?.message).toBeUndefined();
+  expect(result.signal).toBeNull();
+  expect(result.status).not.toBeNull();
+  return result;
+}
 
 describe('D166 private row-drop plan transport', () => {
   const installedPackages = ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal'].sort()
@@ -212,13 +244,9 @@ describe('D166 private row-drop plan transport', () => {
     try {
       const out = join(dir, 'prior-seed'); await mkdir(out);
       await writeFile(join(out, 'manifest.json'), 'prior bytes');
-      const result = spawnSync(process.execPath, ['--import', 'tsx',
-        fileURLToPath(new URL('./cut-seed-cli.ts', import.meta.url)), '--out', out,
+      const result = spawnCutSeedCli(['--out', out,
         '--uuid-idempotency-drop-plans', join(dir, 'missing.json'),
-        '--uuid-idempotency-drop-plans-sha256', 'a'.repeat(64)],
-      { encoding: 'utf8', timeout: 30_000 });
-      expect(result.error).toBeUndefined();
-      expect(result.signal).toBeNull();
+        '--uuid-idempotency-drop-plans-sha256', 'a'.repeat(64)], { timeout: 30_000 });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('fresh cut with --skip-corestore-refresh');
       expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior bytes');
@@ -278,11 +306,9 @@ describe('assertShippingCutDbTarget (WI-6554700010012344: a shipping cut never r
       // A MISSING --reuse-corestore: if the guard ever regresses, the CLI dies at
       // readReusableCorestore, right after a read-only epoch lookup and BEFORE the git
       // cut, instead of bundling the whole repo. (--no-git is refused earlier with reuse.)
-      const result = spawnSync(process.execPath, ['--import', 'tsx',
-        fileURLToPath(new URL('./cut-seed-cli.ts', import.meta.url)), '--out', out,
+      const result = spawnCutSeedCli(['--out', out,
         '--workspace-id', 'wi-6554700010012344-test',
-        '--reuse-corestore', join(dir, 'missing-corestore')],
-      { encoding: 'utf8', timeout: 60_000, env });
+        '--reuse-corestore', join(dir, 'missing-corestore')], { timeout: 60_000, env });
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain('REFUSING shipping cut');
       expect(result.stderr).toMatch(/via (discovery|fallback) \(/);
@@ -329,13 +355,11 @@ describe('exact private finding redaction input', () => {
       const out = join(f.dir, 'prior-seed');
       await mkdir(out);
       await writeFile(join(out, 'manifest.json'), 'prior seed bytes');
-      const result = spawnSync(process.execPath, [
-        '--import', 'tsx', fileURLToPath(new URL('./cut-seed-cli.ts', import.meta.url)),
+      const result = spawnCutSeedCli([
         '--out', out, '--store-dir', join(f.dir, 'absent-store'),
         '--redact-findings', join(f.dir, 'absent-report.json'),
         '--redact-finding-digests', f.digest,
-      ], { encoding: 'utf8', timeout: 30_000 });
-      expect(result.error).toBeUndefined();
+      ], { timeout: 30_000 });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('export redaction is unsupported for sealed content');
       expect(result.stdout + result.stderr).not.toContain(f.secret);
