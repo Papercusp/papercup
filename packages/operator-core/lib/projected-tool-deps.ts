@@ -61,6 +61,7 @@ import { selectNarrowedLaunchSpecBody } from './capability-envelope/identity-rec
 import type { IdentityLaunchAuditStamp } from './capability-envelope/identity-grants-port';
 import { checkAuditModeMutationGuard } from './capability-envelope/audit-mode-guard';
 import { enforceAppKeyScope } from './connected-apps/enforce';
+import { enforceInheritedPolicy } from './governance-policy/enforce';
 // Imported for its INSTALL side effect (D-017 §5): loading the store assigns the session
 // confinement resolver. This gate fails SILENTLY when unresolved — no resolver means every
 // session is unconfined, with nothing thrown and nothing logged — so installation is bound to
@@ -1005,6 +1006,12 @@ export const operatorKernelEnforcement: KernelEnforcementPort = async (request: 
   // Never throws for an app principal (a failed read is an explicit denial).
   const appScope = await enforceAppKeyScope(request);
   if (appScope) return appScope;
+  // Inherited organization → department → workspace governance policy (enterprise-readiness
+  // P-005). Same seat, every boundary, ahead of the resolver: a descendant layer or a resolver
+  // can never re-open what the organization refuses. Inert until the host installs the loader;
+  // never throws (a failed read is an explicit org_policy:unavailable denial).
+  const orgPolicy = await enforceInheritedPolicy(request);
+  if (orgPolicy) return orgPolicy;
   if (kernelEnforcementResolver) return kernelEnforcementResolver(request);
   return evaluateOperatorKernelRequest(request, request.ctx.kernelState);
 };

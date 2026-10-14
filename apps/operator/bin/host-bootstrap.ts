@@ -1788,6 +1788,13 @@ export function runBootstrap(): void {
         );
         installControlAnchorKernelResolver();
         observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'kernel-resolver' });
+        // Inherited governance policy (enterprise-readiness P-005): the same kernel seat now
+        // consults the PG policy store. Installed only here, at the real host bootstrap, so a
+        // unit test that imports the dispatcher never blocks on Postgres.
+        const { installGovernancePolicyEnforcement } = await import(
+          '@papercusp/operator-core/lib/governance-policy/enforce'
+        );
+        installGovernancePolicyEnforcement();
       } catch (e) {
         observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'startup-failed', scope: 'kernel-resolver' });
         console.warn(
