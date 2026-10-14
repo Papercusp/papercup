@@ -138,6 +138,139 @@ const GRADING_AUDIT_TASK_LABEL_PREFIX = 'grading-audit:';
  * next repair sweep reserve the same card and pay for another doomed boot.
  */
 export const GRADING_AUDIT_FAILURE_BACKOFF_MS = GRADING_AUDIT_RESERVATION_TTL_MS;
+
+/**
+ * EI-25965998744903219 — how long a pending card may sit with no live audit lease
+ * before a DESCENDANT-build dispatcher may call it stranded. An exact-build host
+ * dispatches within seconds of the emit and re-dispatches once a lease lapses, so
+ * two full lease windows of silence after the last stamp/lease is the evidence
+ * that no host is still serving the card's recorded evaluator build.
+ */
+export const GRADING_AUDIT_STRANDED_AFTER_MS = 2 * GRADING_AUDIT_RESERVATION_TTL_MS;
+
+/** The card fields the stranding verdict reads — structural, so list rows and full rows both fit. */
+export interface EvaluatorBuildStrandingCard {
+  gradingAudit?: {
+    state: string;
+    stampedAt?: string;
+    dispatchReservation?: { reservedAt: string };
+    lastDispatchReservation?: { reservedAt: string };
+  };
+  rerunRecipe?: {
+    evaluator?: string;
+    evaluatorBuild?: { sha: string | null; version: string };
+    args?: unknown;
+  };
+  supersededBy?: unknown;
+  retracted?: unknown;
+}
+
+export type EvaluatorBuildStranding =
+  | { stranded: false; reason: string }
+  | {
+      stranded: true;
+      reason: string;
+      recordedBuild: { sha: string | null; version: string };
+      liveBuild: { sha: string | null; version: string };
+      /** Latest of the card stamp and any (current or released) audit lease. */
+      idleSince: string;
+      /** The exact submittable re-grade call from the card's own rerun recipe, when it has one. */
+      regrade: { tool: string; args: unknown } | null;
+    };
+
+function latestIsoMs(values: ReadonlyArray<string | undefined>): number | null {
+  let best: number | null = null;
+  for (const value of values) {
+    if (!value) continue;
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms) && (best === null || ms > best)) best = ms;
+  }
+  return best;
+}
+
+/**
+ * EI-25965998744903219 — is this pending card STRANDED by evaluator-build drift?
+ *
+ * The exact-build fence (EI-25967923833762085, replay fidelity) makes every host
+ * whose evaluator build differs from the card's recorded one skip the card
+ * without touching it. That is correct while some host still serves the recorded
+ * build. Once none does — the auditor died, its lease lapsed, and staging moved
+ * past the build while release sits on an older one — the card reads 'pending'
+ * forever and every repair attempt returns the same neutral skip, which looks
+ * like a queue entry rather than a dead end (P-008/P-011, 2026-10-14: ~5h).
+ *
+ * A card is stranded from THIS host's view only when all hold:
+ *   1. it is a current pending card with a recorded evaluator build that differs
+ *      from the live one;
+ *   2. no audit lease is live, and nothing stamped or leased it for
+ *      `strandAfterMs` (an exact-build host would have re-dispatched by then);
+ *   3. the live build DESCENDS from the recorded one. An older or unrelated host
+ *      proves nothing: a newer exact-build host may still exist.
+ *
+ * The verdict never mutates the card or widens the fence. It names the remedy —
+ * re-grade on the current build, which mints a superseding card whose recorded
+ * build this host serves — so the caller can act instead of retrying.
+ */
+export function assessEvaluatorBuildStranding(
+  card: EvaluatorBuildStrandingCard,
+  liveBuild: { sha: string | null; version: string },
+  opts: {
+    nowMs: number;
+    root: string;
+    probe: GenerationAncestryProbe;
+    strandAfterMs?: number;
+    reservationTtlMs?: number;
+  },
+): EvaluatorBuildStranding {
+  const audit = card.gradingAudit;
+  if (audit?.state !== 'pending' || card.supersededBy || card.retracted) {
+    return { stranded: false, reason: 'not-a-current-pending-card' };
+  }
+  const recorded = card.rerunRecipe?.evaluatorBuild;
+  if (!recorded) return { stranded: false, reason: 'no-recorded-evaluator-build' };
+  if (recorded.sha === liveBuild.sha && recorded.version === liveBuild.version) {
+    return { stranded: false, reason: 'exact-build-dispatcher' };
+  }
+  const ttlMs = opts.reservationTtlMs ?? GRADING_AUDIT_RESERVATION_TTL_MS;
+  const liveLeaseMs = latestIsoMs([audit.dispatchReservation?.reservedAt]);
+  if (liveLeaseMs !== null && opts.nowMs - liveLeaseMs < ttlMs) {
+    return { stranded: false, reason: 'audit-lease-live' };
+  }
+  const idleSinceMs = latestIsoMs([
+    audit.stampedAt,
+    audit.dispatchReservation?.reservedAt,
+    audit.lastDispatchReservation?.reservedAt,
+  ]);
+  if (idleSinceMs === null) return { stranded: false, reason: 'no-stamp-or-lease-time' };
+  if (opts.nowMs - idleSinceMs < (opts.strandAfterMs ?? GRADING_AUDIT_STRANDED_AFTER_MS)) {
+    return { stranded: false, reason: 'within-exact-build-grace' };
+  }
+  const ancestry = assessGenerationAncestry(recorded.sha, liveBuild.sha, opts.root, opts.probe);
+  if (!ancestry.ok) {
+    return { stranded: false, reason: `live-build-not-proven-descendant:${ancestry.reason}` };
+  }
+  const recipe = card.rerunRecipe;
+  const regrade = recipe?.evaluator && recipe.args !== undefined
+    ? { tool: recipe.evaluator, args: recipe.args }
+    : null;
+  const idleSince = new Date(idleSinceMs).toISOString();
+  const recordedLabel = `${recorded.sha ?? 'unknown-sha'}@${recorded.version}`;
+  const liveLabel = `${liveBuild.sha ?? 'unknown-sha'}@${liveBuild.version}`;
+  return {
+    stranded: true,
+    recordedBuild: { sha: recorded.sha, version: recorded.version },
+    liveBuild: { sha: liveBuild.sha, version: liveBuild.version },
+    idleSince,
+    regrade,
+    reason:
+      `stranded: recorded evaluator build ${recordedLabel} has had no live audit lease since ${idleSince}, ` +
+      `and this host's build ${liveLabel} descends from it, so no exact-build dispatcher is serving the card. ` +
+      (regrade
+        ? `Re-grade on the current build with ${regrade.tool} using the card's rerunRecipe.args; ` +
+          'the new card supersedes this one and is audited on this build.'
+        : 'Re-grade it on the current build; the new card supersedes this one and is audited on this build.'),
+  };
+}
 /**
  * EI-22978598482930667 — reset-aware re-dispatch suppression.
  *
@@ -259,6 +392,8 @@ export interface PendingGradingAuditDispatchReceipt {
   conversationId?: string;
   routingFallback?: string;
   reason?: string;
+  /** EI-25965998744903219: set on a drift skip once no exact-build host can still serve the card. */
+  stranded?: Extract<EvaluatorBuildStranding, { stranded: true }>;
   terminalRecovery?: {
     retiredTaskIds: string[];
     attempts: number;
@@ -1141,10 +1276,12 @@ function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): s
     `Historical source evidence: when a criterion cites a committed file, use capability:git-evidence { op:'readFileAtCommit', commitSha:'<full SHA from the stored evidence>', path:'<repository-relative path>' } to inspect that exact blob. Do not use capability:git or current-tree capability:read as proof of historical contents. If the stored evidence lacks the full commit SHA or path, state that exact gap and do not infer from HEAD.`,
     `Historical source page budgeting: code:run has a 45-second foreground timeout ceiling. Do not fan out byte-page chains for multiple large blobs in one call; read one oversized blob's chain per code:run. If a single blob's full chain might approach the ceiling, read a bounded page segment and continue its exact next_cursor in a separate call, or issue the page reads directly. Preserve the complete bytes for the cited blob's integrity check.`,
     `External-checkout source evidence: when the cited binding's repository measurement names rootHarnessSlug, copy that exact registered slug into capability:git-evidence { op:'readFileAtCommit', commitSha, path, rootHarnessSlug }. Evidence attributed to the plan harness may have executed in another registered repository. A commit lookup failure in the plan repository does not establish absence in the recorded evidence repository; do not guess a directory or substitute HEAD. Follow byte-page next_cursor unchanged so the registered root remains pinned.`,
+    `Repository-pin recovery: before declaring a committed-file citation unresolvable, read the cited binding's full details with plans:get-spec-evidence and inspect measurementPin.files and measurementPin.repos. The recorded repo, head, gitlink, rootHarnessSlug and headBlob identify the source repository and exact blob; a test-run's shorter filePath does not replace the measurement pin's root-relative path. rootHarnessSlug selects a registered checkout, while repos[].repo may name a submodule inside it. Do not send a submodule's commit to the parent repository and treat that lookup failure as absent evidence. Use only a supported exact-blob route for the recorded repository; if that route cannot express the pin, report the exact unsupported locator instead of claiming the stored repository pin is missing.`,
     `Session-turn evidence: this judge may use sessions:read only with session:'self'; sessions:search and non-self transcript reads are outside its role. Do not try to open a referenced external session_turn. Use preserved evidence in the scorecard or linked plan/work-item records as those records; if the cited turn is not preserved there, state the exact unresolved ref and rate the criterion from the available evidence without inferring the missing turn from a summary.`,
     `Wake delivery: if an in-turn inbox nudge requires acknowledgment and identifies this judge's own delivery_id, acknowledge only that delivery with events:cancel { delivery_id }. Never cancel an await, tree, announcement, or another principal's delivery; do not guess an id.`,
     `Dispatch lease: key 'grading-audit:${card.issueId}', reservedAt '${reservationReservedAt}'. Before reading criterion evidence, re-read the exact target and continue only if gradingAudit.state is 'pending' and dispatchReservation.key and dispatchReservation.reservedAt exactly match this lease. A missing reservation at the START means this kickoff is stale: report the current state and stop. If a present reservation differs, treat it as a renewal only when your direct coord inbox contains a message from system:grading-audit-dispatch with summary "Renewed grading-audit lease for ${card.issueId}", and the message says your existing independent audit task is retained. Require the notice to identify this exact target '${card.issueId}', the current evidence fingerprint '${card.evidenceFingerprint ?? 'not recorded'}', the expected key 'grading-audit:${card.issueId}', and a renewed reservedAt that matches the target's current dispatchReservation exactly. Re-read scorecards:get and require the target is still current and pending with that exact target, fingerprint, key, and reservedAt; then use the renewed key and reservedAt as your effective lease for the audit and eventual gradingAuditReservation. Without that direct matching renewal, report the current state and stop without grading or emitting. This strict check applies only at the START of the audit; it does not authorize any unrelated reservation change. A lease that lapses after you began is handled by the pre-emit rule below.`,
     'MCP result-shape safety: concurrent scorecards:get pages can be replaced inline by a recoverable `papercusp.output-envelope/v1` wrapper when the shared result-door budget is exceeded. Inspect the outer response before reading scorecard.criteria. If it is an output envelope, follow its content reference with capability:read and restore the underlying scorecards:get result; never pass the wrapper to a scorecard field reader or treat absent inline fields as missing evidence.',
+    'Evidence completeness: follow rerunRecipeRead.read and every rerunRecipeRead.next, concatenate the exact JSON chunks in offset order, and parse only when rerunRecipeRead.complete is true. Follow evidenceRead.next through the entire criterion index, then read every indexed criterion through its final evidence page; evidenceRead.complete on a selected criterion applies only to that criterion. An incomplete page with a valid continuation is recoverable evidence, not a missing or unre-runnable recipe. Do not rate re-runnable-evidence from the first page. If a continuation fails, preserve the exact cursor request and returned failure; distinguish that retrieval failure from absent stored evidence.',
     'Do not modify implementation files, run shell commands, recruit peers, emit an ordinary same-rubric scorecard, or broaden scope.',
     `If the ordinary MCP tools are unavailable and you must use the documented scripts/mcp-call.mjs recovery path, stream each JSON payload through quoted stdin (--json -). If an intermediate file is unavoidable, first create a private directory with \`mktemp -d ${scratchTemplate}\` and keep every file inside it. Never read or write shared fixed names such as /tmp/eval-args.json or /tmp/eval.json: other grading auditors run concurrently and can overwrite them.`,
     `Emit exactly one COMPLETE terminal scorecards:emit audit: { rubricRef:'${GRADING_INTEGRITY_RUBRIC_REF}', terminal:true, subject:{ kind:'scorecard', ref:'${card.issueId}' }, ratings:{...}, gradingAuditReservation:{ key:'<effective key>', reservedAt:'<effective reservedAt>' } }. Include concrete evidence for every criterion in the grading-integrity rubric. The gradingAuditReservation field is required for this active lease; copy both values exactly from the lease you confirmed. If you verified a renewal at start or pre-emit, use its renewed key and reservedAt.`,
@@ -1336,6 +1473,7 @@ export async function dispatchPendingGradingAudits(
     );
   });
   const evaluatorBuildDriftIds = new Set(evaluatorBuildDriftPendingCards.map((card) => card.issueId));
+  const evaluatorBuildDriftById = new Map(evaluatorBuildDriftPendingCards.map((card) => [card.issueId, card] as const));
   // A shared sweep sees cards from multiple serving builds. This host's mismatch
   // proves only that it cannot replay the card; it does not invalidate evidence
   // minted by another still-serving evaluator or authorize killing its judge.
@@ -1479,6 +1617,24 @@ export async function dispatchPendingGradingAudits(
     const card = pendingById.get(issueId);
     if (!card) {
       if (evaluatorBuildDriftIds.has(issueId)) {
+        const driftCard = evaluatorBuildDriftById.get(issueId);
+        const stranding = driftCard
+          ? assessEvaluatorBuildStranding(driftCard, liveEvaluatorBuild, {
+              nowMs: deps.now?.() ?? Date.now(),
+              root: resolveAgentWorkspaceRoot({}),
+              probe: deps.generationAncestry ??
+                ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
+            })
+          : null;
+        if (driftCard && stranding?.stranded) {
+          return {
+            issueId,
+            rubricRef: driftCard.rubricRef,
+            state: 'skipped',
+            reason: stranding.reason,
+            stranded: stranding,
+          };
+        }
         return {
           issueId,
           state: 'skipped',
