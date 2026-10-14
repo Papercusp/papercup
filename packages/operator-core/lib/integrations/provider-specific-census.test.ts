@@ -139,9 +139,6 @@ export const CENSUS: readonly CensusEntry[] = [
   p('packages/operator-core/lib/external-triggers/social/bluesky-write-adapter.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/conformance.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/cursor-freshness.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/instagram-comments-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/instagram-common.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/instagram-write-adapter.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/linkedin-common.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/linkedin-write-adapter.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/mastodon-adapter.ts', 'social'),
@@ -182,7 +179,7 @@ export const CENSUS: readonly CensusEntry[] = [
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 42;
+export const CENSUS_HIGH_WATERMARK = 39;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.
