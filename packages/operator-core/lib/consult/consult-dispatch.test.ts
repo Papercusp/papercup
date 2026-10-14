@@ -22,6 +22,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { NativeConsultBoundary } from './native-consult';
 import {
   analyzeClaudeResumeTranscriptFile,
   __resetClaudeResumeTranscriptCacheForTests,
@@ -1539,6 +1540,63 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
 });
 
 describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes)', () => {
+  const leasedBoundary = (): Extract<NativeConsultBoundary, { status: 'measured' }> => ({
+    status: 'measured', capturedAt: '2026-09-26T12:00:00.000Z', completedAt: '2026-09-26T12:00:01.000Z',
+    readScope: 'fixture source and plan-lease endpoint', sourceAdvSessionId: 7,
+    sourceNativeSessionId: 'sess-1', sourceOwnerId: 'su-expert',
+    snapshot: { kind: 'live-jsonl', highWaterBytes: 12, completeBytes: 12, sha256: 'fixture-prefix',
+      archiveRelpath: null, fileIdentity: null },
+    claims: { checked: [], truncated: false, scope: 'no work-item claims' },
+    planClaims: { checked: [{ workspaceId: CTX.workspaceId, harnessSlug: 'papercusp', planSlug: 'source-plan',
+      itemId: 'P-001', claimId: 'source-lease-incarnation', owner: 'su-expert', livenessMode: 'activity',
+      ttlSec: 120, acquiredTs: '2026-09-26T11:59:00.000Z', expiresTs: '2026-09-26T12:01:00.000Z',
+      lastActivityTs: '2026-09-26T12:00:00.000Z', expired: false }],
+    truncated: false, scope: 'source-owner plan lease' },
+  });
+
+  it.each(['empty', 'expired', 'unmeasured'] as const)(
+    'refuses a selected native source with %s plan leases before a cascade launch', async state => {
+      const boundary = leasedBoundary();
+      if (state === 'empty') boundary.planClaims.checked = [];
+      if (state === 'expired') boundary.planClaims.checked[0]!.expiresTs = boundary.completedAt;
+      let captured = 0;
+      const { deps, calls } = makeFakes({
+        readDispatchChoice: async () => ({ reviewerModel: null,
+          nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex',
+            requireSourcePlanClaims: true } }),
+        captureNativeBoundary: async () => {
+          captured++;
+          return state === 'unmeasured' ? { status: 'unknown', reason: 'canonical claim reader unavailable' } : boundary;
+        },
+      });
+      const result = await makeConsultReachDispatcher(CTX, deps)({
+        responder: 'su-expert', conversationId: 'conv-native-lease', summary: 'native probe',
+        body: 'selected source lost its lease', evidence: OPTS.evidence,
+      });
+      expect(captured).toBe(1);
+      expect(result.dispatch).toMatchObject({ dispatched: false, attempts: [],
+        detail: expect.stringContaining(state === 'unmeasured' ? 'not measured' : 'nonexpired source plan lease missing') });
+      expect(calls.spawn).toHaveLength(0);
+      expect(calls.capacity).toHaveLength(0);
+      expect(calls.recorded[0]!.result.dispatched).toBe(false);
+    },
+  );
+
+  it('allows a native source with a measured nonexpired plan lease and no work-item claims', async () => {
+    const { deps, calls } = makeFakes({
+      readDispatchChoice: async () => ({ reviewerModel: null,
+        nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex',
+          requireSourcePlanClaims: true } }),
+      captureNativeBoundary: async () => leasedBoundary(),
+    });
+    const result = await makeConsultReachDispatcher(CTX, deps)({
+      responder: 'su-expert', conversationId: 'conv-native-lease', summary: 'native probe',
+      body: 'source with a plan-only claim', evidence: OPTS.evidence,
+    });
+    expect(result.dispatch).toMatchObject({ dispatched: true, agent: 'codex' });
+    expect(calls.spawn).toHaveLength(1);
+  });
+
   it('never substitutes seed models when the configured native target is absent', async () => {
     const { deps, calls } = makeFakes({
       readDispatchChoice: async () => ({ reviewerModel: null,
