@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
@@ -140,9 +140,27 @@ export function startParentDeathWatch(
     declaredByLauncher?: boolean;
     parentAlive?: (pid: number) => boolean;
     currentPpid?: () => number;
+    /**
+     * WI-6554700010011963: also arm when NOT under the desktop, as long as the
+     * launcher DECLARED the parent pid. Every sidecar launched through
+     * resolveSidecarSpawnPlan declares one, whichever host launched it: the
+     * desktop serve, a :3070 release host, a :3170 staging generation, or a
+     * lint-as-committed shadow. Before this flag the watch silently did nothing
+     * off-desktop. Superseded staging generations left their LSP daemons running
+     * for days (~17 GiB each); on 2026-10-14 16 such orphans held 99 GiB and
+     * pushed the desktop into swap. Only sidecar entries pass this. serve's own
+     * watch keeps the desktop-only contract, because a hand-launched serve
+     * legitimately outlives its shell.
+     */
+    armOutsideDesktop?: boolean;
+    /** Test seam: a stable identity for a pid (Linux: /proc start time). */
+    parentIdentity?: (pid: number) => string | null;
   } = {},
 ): void {
-  if (process.env.PAPERCUSP_DESKTOP !== "1") return;
+  const onDesktop = process.env.PAPERCUSP_DESKTOP === "1";
+  const declaredByLauncherHint =
+    opts.declaredByLauncher ?? resolveExpectedParentPid().declaredByLauncher;
+  if (!onDesktop && !(opts.armOutsideDesktop && declaredByLauncherHint)) return;
   // Headless rig frames (deb-hetzner-matrix / local-matrix) run the packaged
   // sidecar with PAPERCUSP_DESKTOP=1 for production parity but launch it from a
   // shell that exits right after spawn — there IS no desktop parent, so this
@@ -157,11 +175,25 @@ export function startParentDeathWatch(
   const isAlive = opts.parentAlive ?? pidAlive;
   const readPpid = opts.currentPpid ?? (() => process.ppid);
   if (!(originalPpid > 0)) return;
+  // Off-desktop the declared pid is the HOST that owns the sidecar's socket. That is
+  // often a cluster primary, while the direct ppid is a worker, so a ppid comparison
+  // would fire at once on a healthy sidecar. Only the declared-identity test is sound
+  // there. PIDs wrap about daily on the dev box, so liveness also compares the
+  // parent's start time: a recycled pid must not keep an orphan alive.
+  const ppidContractApplies = onDesktop;
+  const readIdentity = opts.parentIdentity ?? procStartIdentity;
+  const armedIdentity = declaredByLauncher ? readIdentity(originalPpid) : null;
 
   const orphanReason = (): string | null => {
     const currentPpid = readPpid();
-    if (isOrphanedFromParent(originalPpid, currentPpid)) {
+    if (ppidContractApplies && isOrphanedFromParent(originalPpid, currentPpid)) {
       return `now reparented to ${currentPpid}`;
+    }
+    if (declaredByLauncher && armedIdentity !== null) {
+      const now = readIdentity(originalPpid);
+      if (now !== null && now !== armedIdentity) {
+        return `declared parent pid ${originalPpid} was recycled by another process (ppid now ${currentPpid})`;
+      }
     }
     // Only sound when the launcher DECLARED its pid: then it is an identity we
     // can outlive-check. Against a bare ppid read this would be self-referential
@@ -176,7 +208,7 @@ export function startParentDeathWatch(
 
   const fire = (why: string): void => {
     const message =
-      `desktop parent pid ${originalPpid} is gone (${why}) — ` +
+      `${onDesktop ? "desktop" : "declared"} parent pid ${originalPpid} is gone (${why}) — ` +
       "self-terminating instead of running orphaned";
     // Write the durable evidence FIRST: the parent just died, so stdout may
     // already be a broken pipe and its silence is not evidence that fire()
@@ -223,5 +255,24 @@ export function startSidecarParentDeathWatch(
   sendSignal: (signal: NodeJS.Signals) => void = (signal) =>
     process.kill(process.pid, signal),
 ): void {
-  startParentDeathWatch(() => sendSignal("SIGTERM"), opts);
+  startParentDeathWatch(() => sendSignal("SIGTERM"), { armOutsideDesktop: true, ...opts });
+}
+
+/**
+ * Linux identity of a pid: its start time in clock ticks since boot (field 22 of
+ * /proc/<pid>/stat). It stays the same for the life of the process and differs
+ * for any later process that reuses the pid. Returns null when it cannot be read
+ * (non-Linux, or the pid is already gone); callers then fall back to the liveness
+ * check alone.
+ */
+export function procStartIdentity(pid: number): string | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // comm (field 2) may itself contain spaces/parens; fields resume after the LAST ')'.
+    const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    // rest[0] is field 3 (state), so field 22 (starttime) is rest[19].
+    return rest[19] ?? null;
+  } catch {
+    return null;
+  }
 }

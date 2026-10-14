@@ -534,6 +534,78 @@ describe("parent-death watch cannot go blind (EI-19486216732882752)", () => {
       );
       expect(signals).toEqual(["SIGTERM"]);
     });
+
+    describe("off-desktop sidecars (WI-6554700010011963: 16 orphaned sidecars held 99 GiB)", () => {
+      const withoutDesktop = (fn: () => void) => {
+        const prev = process.env.PAPERCUSP_DESKTOP;
+        delete process.env.PAPERCUSP_DESKTOP;
+        try { fn(); } finally {
+          if (prev === undefined) delete process.env.PAPERCUSP_DESKTOP;
+          else process.env.PAPERCUSP_DESKTOP = prev;
+        }
+      };
+
+      it("REGRESSION: a sidecar launched by a non-desktop host self-terminates once its declared parent is dead", () => {
+        // Measured shape: an LSP daemon launched by a superseded :3170 staging generation.
+        // PAPERCUSP_DESKTOP was unset, PAPERCUSP_DESKTOP_PARENT_PID=3750613 was gone, and
+        // the daemon had been reparented to systemd --user (4054). The old desktop-only gate
+        // returned before arming, so it ran for 2.5 days.
+        withoutDesktop(() => {
+          const signals: NodeJS.Signals[] = [];
+          serve.startSidecarParentDeathWatch(
+            { expectedPpid: 3750613, declaredByLauncher: true, currentPpid: () => 4054, parentAlive: () => false, parentIdentity: () => null },
+            (signal) => signals.push(signal),
+          );
+          expect(signals).toEqual(["SIGTERM"]);
+        });
+      });
+
+      it("does NOT fire for a healthy cluster-pinned sidecar whose direct ppid is a worker, not the declared host", () => {
+        // Live shape: declared parent 1516711 (host primary) is alive, and the direct parent is
+        // worker 867346. The desktop ppid-equality test would wrongly fire here.
+        withoutDesktop(() => {
+          const signals: NodeJS.Signals[] = [];
+          serve.startSidecarParentDeathWatch(
+            { expectedPpid: 1516711, declaredByLauncher: true, currentPpid: () => 867346, parentAlive: () => true, parentIdentity: () => "777" },
+            (signal) => signals.push(signal),
+          );
+          expect(signals).toEqual([]);
+        });
+      });
+
+      it("treats a RECYCLED declared parent pid as dead (PIDs wrap about daily on the dev box)", () => {
+        withoutDesktop(() => {
+          const identities = ["1000", "2000"]; // arm-time start ticks, then a NEW process on the same pid
+          const signals: NodeJS.Signals[] = [];
+          serve.startSidecarParentDeathWatch(
+            { expectedPpid: 3750613, declaredByLauncher: true, currentPpid: () => 4054, parentAlive: () => true, parentIdentity: () => identities.shift() ?? "2000" },
+            (signal) => signals.push(signal),
+          );
+          expect(signals).toEqual(["SIGTERM"]);
+        });
+      });
+
+      it("stays inert off-desktop when the launcher declared NO parent (no contract to enforce)", () => {
+        withoutDesktop(() => {
+          const signals: NodeJS.Signals[] = [];
+          serve.startSidecarParentDeathWatch(
+            { expectedPpid: 3750613, declaredByLauncher: false, currentPpid: () => 4054, parentAlive: () => false, parentIdentity: () => null },
+            (signal) => signals.push(signal),
+          );
+          expect(signals).toEqual([]);
+        });
+      });
+
+      it("keeps serve's OWN watch desktop-only: a hand-launched serve may outlive its shell", () => {
+        withoutDesktop(() => {
+          let fired = 0;
+          serve.startParentDeathWatch(() => void fired++, {
+            expectedPpid: 3750613, declaredByLauncher: true, currentPpid: () => 4054, parentAlive: () => false, parentIdentity: () => null,
+          });
+          expect(fired).toBe(0);
+        });
+      });
+    });
   });
 });
 
