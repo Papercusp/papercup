@@ -92,6 +92,40 @@ describe('describeUnreadRun', () => {
     expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['results pending']);
   });
 
+  it('does not turn an explicitly negated run status into an unread-run admission (EI-25989239695201915)', () => {
+    for (const status of [
+      'not still running',
+      'not currently still running',
+      "isn't still running",
+      'isn’t still running',
+      'no longer in-flight',
+      'never launched',
+      'not "still running"',
+    ]) {
+      const body = `Recovery GET completed exit1; it is ${status}.\n` +
+        'Read final.log: 117 PG and 24 unit tests passed; that is historical local proof.';
+      expect(describeUnreadRun(body, 0), status).toBeNull();
+      expect(naiveUnreadRun(body, 0), status).not.toBeNull();
+    }
+  });
+
+  it('keeps a separate current admission when another status is negated', () => {
+    const body = 'The completed GET is not still running; final.log was read.\n' +
+      'The new suite is still running; output at /tmp/current.log.';
+    expect(describeUnreadRun(body, 0)?.signals.inFlight).toEqual(['still running']);
+  });
+
+  it('keeps affirmative unread admissions and negation of a different predicate actionable', () => {
+    for (const status of [
+      'not yet read',
+      'not yet diagnosed',
+      'not just still running',
+      'not complete, still running',
+    ]) {
+      expect(describeUnreadRun(`The suite is ${status}; output at /tmp/current.log.`, 0), status).not.toBeNull();
+    }
+  });
+
   it('keeps quoted current admissions and ambiguous prior-run prose actionable', () => {
     for (const body of [
       'The current runner says "still running"; output at /tmp/current.log.',

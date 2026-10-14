@@ -8,7 +8,10 @@ import { createProviderRegistry, type ProviderRegistry } from '../integrations/p
 import { createWebhookRoutes } from '../endpoint-route/routes/webhooks';
 import { handleWebhookDelivery } from '../external-triggers/webhook';
 import { handleConnectorPushDelivery, handleConnectorPushVerification } from './connector-push';
-import type { admitConnectorRecord } from './connector-runtime';
+import { admitConnectorRecord } from './connector-runtime';
+import { ingestExternalTriggerEvent } from '../external-triggers/ingestion';
+import { upsertDatatype } from '../datatype-registry-store';
+import { SOCIAL_POST_SCHEMA_FIXTURE } from '../external-triggers/social/social-post-schema.fixture';
 
 const adapter = createRequire(import.meta.url)('../../../../libs/papercusp/plugins/instagram/index.cjs').providerAdapter as ProviderAdapter;
 const h = vi.hoisted(() => ({ sql: undefined as unknown }));
@@ -29,6 +32,7 @@ function dependencies() {
 }
 beforeAll(async () => {
   org = await createOrgTestDb(); h.sql = org.adminSql;
+  await upsertDatatype(org.adminSql, { id: 'social-post', workspaceId: WS, title: 'Social post', description: 'Recorded connector fixture', tier: 'first-class', nature: 'document', payloadSchema: SOCIAL_POST_SCHEMA_FIXTURE });
   const descriptor = await adapter.describe() as ProviderDescriptor;
   registry = createProviderRegistry();
   await registry.register({ descriptor, adapter, pluginName: 'instagram' });
@@ -81,5 +85,44 @@ describe('signed push normalization through the existing hook route', () => {
     });
     expect(result).toEqual({ status: 503, body: { ok: false, error: 'normalization_unavailable' } });
     expect(JSON.stringify(result)).not.toContain('sensitive-provider-error');
+  });
+
+  it('deduplicates signed mention redelivery in the real ledger and rejects invalid canonical payloads', async () => {
+    const emitted: string[] = [];
+    const admissions: string[] = [];
+    const realAdmit: typeof admitConnectorRecord = async (sql, input) => {
+      const outcome = await admitConnectorRecord(sql, input, {
+        sinksFor: async () => [],
+        ingest: (db, value) => ingestExternalTriggerEvent(db, value, { emit: async (event) => {
+          emitted.push(event.key);
+          return { ok: true, key: event.key, woken: 0, notified: [], msgId: null, waiters: 0 };
+        } }),
+      });
+      admissions.push(outcome); return outcome;
+    };
+    const body = JSON.stringify({ object: 'instagram', entry: [{ id: IG, changes: [{ field: 'mentions', value: { media_id: '333' } }] }] });
+    const signature = `sha256=${createHmac('sha256', 'test-app-secret').update(body).digest('hex')}`;
+    const deliver = () => handleConnectorPushDelivery({ sourceId, rawBody: Buffer.from(body), headers: new Headers({ 'x-hub-signature-256': signature }) }, { ...dependencies(), admit: realAdmit });
+    expect((await deliver()).status).toBe(200);
+    expect((await deliver()).status).toBe(200);
+    expect(admissions).toEqual(['admitted', 'deduped']);
+    expect(emitted).toEqual(['ext:instagram:mention']);
+    const rows = await org.adminSql<{ sink_kind: string; n: number }[]>`
+      SELECT sink_kind, count(*)::int AS n FROM harness_shared.trigger_deliveries
+       WHERE workspace_id = ${WS} AND source_id = ${sourceId}::uuid AND event_key = 'ext:instagram:mention'
+       GROUP BY sink_kind`;
+    expect(rows.find((row) => row.sink_kind === 'event-bus')?.n).toBe(1);
+    expect(rows.every((row) => row.n === 1)).toBe(true);
+
+    const original = registry;
+    registry = createProviderRegistry();
+    await registry.register({ descriptor: await adapter.describe(), pluginName: 'instagram', adapter: {
+      ...adapter, invoke: async () => ({ records: [{ datatype: 'social-post', nativeId: 'malformed', event: 'mention', payload: { id: 'malformed' }, version: '1' }] }),
+    } });
+    try {
+      expect(await deliver()).toEqual({ status: 503, body: { ok: false, error: 'record_admission_unavailable' } });
+      expect(admissions[2]).toBe('rejected');
+      expect(emitted).toHaveLength(1);
+    } finally { registry = original; }
   });
 });

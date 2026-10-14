@@ -100,6 +100,7 @@ export type SpecTriadScopeReason =
   | 'created-after-epoch'
   | 'created-before-epoch'
   | 'created-unknown'
+  | 'companion-excluded'
   | 'template-excluded';
 
 /**
@@ -122,6 +123,11 @@ export const SPEC_TRIAD_EXCLUDED_TEMPLATES: readonly string[] = ['rubric'];
 /** True when a plan row's `template` puts it outside the triad (and outside promotion). */
 export function isSpecTriadExcludedTemplate(template: string | null | undefined): boolean {
   return typeof template === 'string' && SPEC_TRIAD_EXCLUDED_TEMPLATES.includes(template);
+}
+
+/** Acceptance companion plans include legacy rows without a rubric template. */
+export function isSpecTriadCompanion(planSlug: string | null | undefined): boolean {
+  return typeof planSlug === 'string' && planSlug.startsWith('acceptance-');
 }
 
 export interface SpecTriadScope {
@@ -157,6 +163,7 @@ export function planInSpecTriadScope(
   if (!opts.flagEnabled) return { inScope: false, reason: 'flag-off' };
   // Before the declaration: a rubric row is not a plan, whatever its body says.
   if (isSpecTriadExcludedTemplate(plan.template)) return { inScope: false, reason: 'template-excluded' };
+  if (isSpecTriadCompanion(plan.planSlug)) return { inScope: false, reason: 'companion-excluded' };
 
   const declared = readSpecTriadDeclaration(plan.content);
   if (declared === 'exempt') return { inScope: false, reason: 'exempt-declared' };

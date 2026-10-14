@@ -121,6 +121,41 @@ const lane = (args: {
 };
 
 describe('evaluateExactPlanAdmission', () => {
+  it('checks only targeted coverage while resolving dependencies against the whole plan', () => {
+    const args = {
+      planSlug: 'plan-a',
+      planItems: [item('P-001'), item('P-002'), item('P-003', 'todo', ['P-004']), item('P-004', 'done')],
+      workItems: [
+        { id: 'WI-1a', family: 'issue' as const, sourcePlanItemIds: ['P-001'], payload: null },
+        { id: 'WI-1b', family: 'issue' as const, sourcePlanItemIds: ['P-001'], payload: null },
+        { id: 'WI-3', family: 'issue' as const, sourcePlanItemIds: ['P-003'], payload: null },
+      ],
+      laneHealth: lane({ issue: 1, featureReachable: false }),
+      requestedSeats: 1,
+    };
+    expect(evaluateExactPlanAdmission({ ...args, planItemIds: ['P-003'] })).toMatchObject({
+      ready: true, promotion: { duplicateActionable: [], missingActionableItemIds: [] },
+      parallelism: { readyWidth: 1, readyItemIds: ['P-003'] },
+    });
+    expect(evaluateExactPlanAdmission({ ...args, planItemIds: ['P-001'] })).toMatchObject({
+      ready: false, reason: 'duplicate-coverage',
+    });
+    expect(evaluateExactPlanAdmission({ ...args, planItems: args.planItems.map((row) =>
+      row.id === 'P-004' ? item('P-004', 'wip') : row), planItemIds: ['P-003'] })).toMatchObject({
+      ready: false, reason: 'no-actionable-plan-items',
+      parallelism: { nonReadyItems: [{ itemId: 'P-003', blockerIds: ['P-004'] }] },
+    });
+  });
+
+  it('refuses unknown item targets and preserves whole-plan admission by default', () => {
+    const args = { planSlug: 'plan-a', planItems: [item('P-001')],
+      workItems: [], laneHealth: null };
+    expect(evaluateExactPlanAdmission({ ...args, planItemIds: ['P-999'] })).toMatchObject({
+      ready: false, reason: 'invalid-plan-item-scope',
+    });
+    expect(evaluateExactPlanAdmission(args)).toMatchObject({ ready: false, reason: 'promotion-lag' });
+  });
+
   it('surfaces probable-mistake findings without changing an otherwise ready verdict', () => {
     const planItems = [
       item('P-001'),
@@ -720,6 +755,43 @@ describe('preflightExactPlanAdmission IO wiring', () => {
       },
     ]);
     mocks.readClaimSpecLaneHealth.mockResolvedValue(lane({ issue: 1, featureReachable: false }));
+  });
+
+  it('does not read plan claim floors or promotions for an explicit lanes-only scope', async () => {
+    mocks.listWorkItems.mockRejectedValue(new Error('unrelated promotion census unavailable'));
+    mocks.readClaimSpecLaneHealth.mockRejectedValue(new Error('unrelated floor measurement unavailable'));
+    expect(await preflightExactPlanAdmission({ workspaceId: 'ws-1', harnessSlug: 'papercusp',
+      planSlug: 'plan-a', actor: 'su-test', specId: 'lane-only', planItemIds: [], requestedSeats: 4,
+    })).toMatchObject({ ready: true, reason: 'ready', planItems: { total: 0 }, lane: null });
+    expect(mocks.listWorkItems).not.toHaveBeenCalled();
+    expect(mocks.readClaimSpecLaneHealth).not.toHaveBeenCalled();
+    mocks.getPlanRow.mockResolvedValue(null);
+    expect(await preflightExactPlanAdmission({ workspaceId: 'ws-1', harnessSlug: 'papercusp',
+      planSlug: 'missing', actor: 'su-test', specId: 'lane-only', planItemIds: [],
+    })).toMatchObject({ ready: false, reason: 'plan-not-found' });
+  });
+
+  it('narrows both coverage and the scheduler floor read to exactly the targeted items', async () => {
+    mocks.planItemsForRow.mockReturnValue([item('P-001'), item('P-002')]);
+    mocks.listWorkItems.mockResolvedValue([
+      { id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'], payload: null },
+      { id: 'F-2a', family: 'feature', sourcePlanItemIds: ['P-002'], payload: null },
+      { id: 'F-2b', family: 'feature', sourcePlanItemIds: ['P-002'], payload: null },
+    ]);
+    mocks.readClaimSpecLaneHealth.mockImplementationOnce(async ({ spec }) => {
+      expect(spec.view.filter).toEqual({ all: [
+        { field: 'plan', op: '=', value: 'plan-a' },
+        { field: 'plan_item', op: 'in', value: ['P-001'] },
+        { field: 'kind', op: 'in', value: ['bug', 'change', 'task'] },
+      ] });
+      expect(validateClaimSpec(spec)).toMatchObject({ ok: true });
+      return lane({ issue: 0, issueMatchedByFilter: 1, issueExcluded: { stopTheLine: 1 },
+        featureReachable: false });
+    });
+    expect(await preflightExactPlanAdmission({ workspaceId: 'ws-1', harnessSlug: 'papercusp',
+      planSlug: 'plan-a', actor: 'su-test', specId: 'scoped', planItemIds: ['P-001'],
+    })).toMatchObject({ ready: false, reason: 'floor-gated', claimKinds: ['bug', 'change', 'task'],
+      promotion: { duplicateActionable: [] }, actionableRows: [{ planItemId: 'P-001', workItemId: 'WI-1' }] });
   });
 
   it('reads the exact plan census, validates the generated spec, and wires scope into lane health', async () => {

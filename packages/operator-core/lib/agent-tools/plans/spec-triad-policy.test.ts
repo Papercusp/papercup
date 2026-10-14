@@ -119,7 +119,7 @@ describe('excluded templates (WI-10005441)', () => {
     expect(v.gated).toBe(false);
     expect(v.missing).toEqual([]);
     // Calibration: the same row without the template IS gated, so the template is what decides.
-    expect(specTriadGate({ ...rubric, template: null }, ON).gated).toBe(true);
+    expect(specTriadGate({ ...rubric, planSlug: 'ordinary-x', template: null }, ON).gated).toBe(true);
   });
 
   it('outranks an explicit specTriad: required declaration', () => {
@@ -140,6 +140,12 @@ describe('excluded templates (WI-10005441)', () => {
 });
 
 describe('specTriadGate', () => {
+  it('exempts acceptance companions without template metadata, even with an explicit required declaration', () => {
+    expect(specTriadGate({ planSlug: 'acceptance-x', content: planContent({ declare: 'required' }), created: '2026-10-01' }, ON))
+      .toMatchObject({ gated: false, triad: null, scope: { reason: 'companion-excluded' } });
+    expect(specTriadGate({ planSlug: 'acceptance-runtime-plane', content: planContent(), created: '2026-10-01' }, ON).gated).toBe(false);
+    expect(specTriadGate({ planSlug: 'ordinary-acceptance-x', content: planContent(), created: '2026-10-01' }, ON).gated).toBe(true);
+  });
   it('gates an in-scope plan that owes a leg, and names what it owes', () => {
     const v = specTriadGate({ planSlug: 'p', content: planContent(), created: '2026-08-10' }, ON);
     expect(v.gated).toBe(true);

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { lookupByMcpName, readJsonResult } from '@papercusp/agent-mcp';
 import { dispatchProjectedTool, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
 import scorecardEmitTool, {
   attachScorecardCompletionReceipt,
@@ -67,6 +68,64 @@ describe('dedicated acceptance judge lifecycle', () => {
     expect(shape?.acceptanceOf?.description ?? '').toMatch(/adopts its ratings verbatim/i);
     expect(String(scorecardEmitTool.description)).toMatch(/Every emit persists complete ratings/i);
     expect(JSON.stringify(scorecardEmitTool.guidance)).toMatch(/acceptance adopts ratings via acceptanceOf/i);
+  });
+
+  it('defers ambient result trimming until the result door can preserve a committed rating', () => {
+    // scorecards:emit is a write receipt. A session-tier bounded projection can
+    // strip one populated canonicalRatings entry before the outer result door
+    // has a chance to apply its scorecards:emit preservation path and spill the
+    // full result. Keep ambient trim off; explicit payloadTier overrides remain
+    // caller-controlled by the shared tier resolver.
+    expect(scorecardEmitTool.ignoreSessionPayloadTier).toBe(true);
+  });
+
+  it('preserves all six populated ratings through the real wrapper in a trimmed session', async () => {
+    const ratings = Object.fromEntries(
+      Array.from({ length: 6 }, (_, index) => [
+        `criterion-${index + 1}`,
+        { rating: 'pass', evidence: `verified criterion-${index + 1} ${'e'.repeat(1_800)}` },
+      ]),
+    );
+    const data = { ok: true, created: true, issueId: 'EI-trimmed-session-fixture', canonicalRatings: ratings };
+    expect(JSON.stringify(data).length).toBeGreaterThan(8_000);
+
+    // Exercise the registered defineTool wrapper and its actual payload-tier
+    // dispatch. Stub only the ledger-writing handler so this test does not add
+    // a synthetic scorecard to the shared workspace.
+    const handler = vi.spyOn(scorecardEmitTool, 'handler').mockResolvedValue({ data } as never);
+    try {
+      const projected = lookupByMcpName('scorecards:emit');
+      expect(projected?.ignoreSessionPayloadTier).toBe(true);
+      const dispatched = await dispatchProjectedTool(
+        projected!,
+        'scorecards:emit',
+        { rubricRef: 'test-rubric' },
+        {
+          log: vi.fn(),
+          signal: new AbortController().signal,
+          progress: vi.fn(),
+          emit: vi.fn(),
+          workspaceId: 'default',
+          runId: 'scorecards-emit-trimmed-session-regression',
+          isSuperuser: true,
+          uiClientId: 'su-scorecards-emit-test',
+          role: 'su',
+          gateBypass: { role: true, capability: true, quota: true },
+          transport: 'mcp',
+          requestedFormat: 'json',
+          contextTier: 'trimmed',
+          tx: {},
+        },
+        {},
+      );
+
+      expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+      const payload = readJsonResult<{ canonicalRatings: typeof ratings; _projection?: unknown }>(dispatched.result!);
+      expect(payload?._projection).toBeUndefined();
+      expect(payload?.canonicalRatings).toEqual(ratings);
+    } finally {
+      handler.mockRestore();
+    }
   });
 
   it('kills every live headless task for the exact acceptance-rubric label prefix', async () => {

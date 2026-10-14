@@ -1,4 +1,5 @@
 import type { ToolResult } from '@papercusp/tooldef';
+import { projectBoundedPayload } from '@papercusp/tooldef';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { drainDetached, trackDetached } from '../../detached-imports';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
@@ -276,6 +277,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 const repairQueueModule = await import('./repair-queue');
 const tool = repairQueueModule.default;
 const { assessFrozenRepairFixerAuthorization, repairQueueAbortCompletionReceipt } = repairQueueModule;
+const { decisionFieldsFirst } = repairQueueModule;
 type Out = { data?: unknown; content?: { text: string }[] };
 const body = (value: unknown) => {
   const out = value as Out;
@@ -518,6 +520,44 @@ describe('release:repair-queue', () => {
     });
   });
 
+  it('keeps delegated-fixer authorization visible when a large queue diagnostic is bounded', () => {
+    const callerAuthorization = {
+      status: 'authorized-delegate',
+      authorized: true,
+      callerSpawnId: 'fixer-1',
+      queueFixerSpawnId: 'fixer-1',
+      safeAction: 'Continue using this delegated fixer identity.',
+    };
+    const response = decisionFieldsFirst({
+      ok: true,
+      op: 'get',
+      target: { workspaceId: 'ws-1', installSlug: 'papercusp' },
+      repairQueue: Object.fromEntries(
+        Array.from({ length: 16 }, (_, i) => [`diagnostic${i}`, 'x'.repeat(2_000)]),
+      ),
+      repairQueueRead: { status: 'value', schemaVersion: 3 },
+      callerAuthorization,
+    });
+
+    const projected = projectBoundedPayload(response, {
+      toolName: 'release:repair-queue',
+      tier: 'trimmed',
+      targetChars: 1_500,
+    });
+
+    expect(projected).toMatchObject({
+      ok: true,
+      op: 'get',
+      callerAuthorization: {
+        status: 'authorized-delegate',
+        authorized: true,
+        callerSpawnId: 'fixer-1',
+        queueFixerSpawnId: 'fixer-1',
+      },
+    });
+    expect(JSON.stringify(projected)).toContain('authorized-delegate');
+  });
+
   describe('WI-10007509: get marks same-head-contradicted signature entries', () => {
     const leg = '@papercusp/operator-core :: test:lane-stateful';
     const mixedQueue = { ...queue, failingTests: [leg, 'lib/red.test.ts'] };
@@ -744,8 +784,9 @@ describe('release:repair-queue', () => {
       expect(keys.indexOf(decision)).toBeGreaterThanOrEqual(0);
       expect(keys.indexOf(decision)).toBeLessThan(keys.indexOf('repairQueue'));
     }
-    expect(keys.slice(-6).sort()).toEqual(
-      ['callerAuthorization', 'repairQueue', 'repairQueueRead', 'source', 'target', 'timings'].sort(),
+    expect(keys.indexOf('callerAuthorization')).toBeLessThan(keys.indexOf('repairQueue'));
+    expect(keys.slice(-5).sort()).toEqual(
+      ['repairQueue', 'repairQueueRead', 'source', 'target', 'timings'].sort(),
     );
     // WI-10005695: the response names where the admit spent its time, step by step.
     expect(result.timings.inFlight).toEqual([]);

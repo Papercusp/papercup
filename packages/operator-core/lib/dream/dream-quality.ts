@@ -99,9 +99,10 @@ export function reportDreamQuality(
       if (!Number.isFinite(run.costUsd) || run.costUsd < 0) throw new Error('Invalid recorded cost');
       if (run.outcome?.verdict === 'insight' && !run.review)
         fault('unresolved-review', 'minor', 'Completed proposal has no review result', run.runId);
-      if (run.review?.verdict === 'unverified')
+      const reviewPreflight = run.review?.schemaVersion === 'dream-capability-preflight-v1';
+      if (run.review?.verdict === 'unverified' && !reviewPreflight)
         fault('unresolved-review', 'minor', String(run.review.reason ?? 'Unverified review'), run.runId);
-      if (run.review && provenance) {
+      if (run.review && provenance && !reviewPreflight) {
         const review = run.review as unknown as CapabilityReviewResult;
         if (review.schemaVersion !== CAPABILITY_REVIEW_VERSION || !Array.isArray(review.coverage?.unknown))
           throw new Error('Missing capability review coverage');

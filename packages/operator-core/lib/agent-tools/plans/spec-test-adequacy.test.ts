@@ -3541,6 +3541,49 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['fixture-calibration'].suggestion).toContain('independent measurement');
   });
 
+  it('keeps fixture calibration unknown when test and mutation bindings lack fixture classification', () => {
+    const base = evidence();
+    const testBinding = evidence({
+      id: 42189,
+      evidenceKind: 'test',
+      evidenceRef: 'test:unclassified-fixture-use',
+      fingerprints: { ...base.fingerprints, fixtureFingerprint: null },
+      details: {
+        adequacy: {
+          ...((base.details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: undefined,
+          fixtureFree: undefined,
+        },
+      },
+    });
+    const mutationBinding = evidence({
+      id: 42206,
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation:unclassified-fixture-use',
+      fingerprints: { ...base.fingerprints, fixtureFingerprint: null },
+      details: {
+        adequacy: {
+          ...((base.details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: undefined,
+          fixtureFree: undefined,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['tree'] }),
+      evidence: [testBinding, mutationBinding],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
+    expect(result.ratings['fixture-calibration'].evidence).toContain(
+      'A null fixtureFingerprint does not establish fixture-free proof',
+    );
+    expect(result.ratings['fixture-calibration'].evidence).toContain('id=42189');
+    expect(result.ratings['fixture-calibration'].evidence).toContain('id=42206');
+  });
+
   describe('independently verified fixture absence', () => {
     function proofPair() {
       const base = evidence();

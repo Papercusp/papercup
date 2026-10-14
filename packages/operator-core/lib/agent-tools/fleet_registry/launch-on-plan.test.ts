@@ -62,9 +62,32 @@ import {
 } from './goal-fleet-launch-options';
 import { parseScratchReference } from '../../scratch-reference';
 import { applyResultDoorAsync } from '../../result-door';
-import type { ExactPlanAdmission } from '../plans/plan-admission-preflight';
+import { evaluateExactPlanAdmission, type ExactPlanAdmission } from '../plans/plan-admission-preflight';
+import type { PlanItem } from '@papercusp/plan-parser';
 import workItemsGet from '../work_items/get';
 import workItemsClaim from '../work_items/claim';
+
+describe('scoped lane admission', () => {
+  const planItem: PlanItem = { id: 'P-001', text: 'unrelated peer lane', storedStatus: 'todo',
+    importance: 'normal', blockedBy: [], decisionRefs: [], phase: null, lineNumber: 1, rawLine: '' };
+  const duplicatedPlan = { planSlug: 'plan-a', planItems: [planItem], laneHealth: null,
+    workItems: ['WI-1', 'WI-2'].map(id => ({ id, family: 'issue' as const,
+      sourcePlanItemIds: ['P-001'], payload: null })) };
+
+  it('accepts a lanes-only scope beside an unrelated duplicate-promoted item', () => {
+    expect(evaluateExactPlanAdmission({ ...duplicatedPlan, planItemIds: [] })).toMatchObject({
+      ready: true, reason: 'ready', promotion: { duplicateActionable: [] }, lane: null,
+    });
+  });
+
+  it('returns admission_refused when the lane targets a duplicate-promoted item', async () => {
+    const admission = evaluateExactPlanAdmission({ ...duplicatedPlan, planItemIds: ['P-001'] });
+    const result = await fleetAdmissionRefusalResult({ fleet: 'fleet-a', plan: 'plan-a',
+      harness: 'papercusp', workspaceId: 'ws-1', ownerId: 'owner-1', promotionFailsafe: null, admission });
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false, error: 'admission_refused',
+      reason: 'duplicate-coverage', blockingPlanItemIds: ['P-001'], blockingWorkItemIds: ['WI-1', 'WI-2'] });
+  });
+});
 
 describe('compact exact-plan admission refusal', () => {
   const input = (admission: Partial<ExactPlanAdmission> | null) => ({

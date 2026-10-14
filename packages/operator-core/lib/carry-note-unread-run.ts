@@ -155,6 +155,14 @@ function isRunScopedInFlight(text: string, index: number, length: number): boole
   return RUN_SUBJECT_BEFORE_IN_FLIGHT_RE.test(before) || RUN_SUBJECT_AFTER_IN_FLIGHT_RE.test(after);
 }
 
+/** Negation immediately governing this status is not an unread admission.
+ * Keep the match local: a completed result elsewhere must not suppress a
+ * separate pending run, and `not yet read` is itself an affirmative signal. */
+function isNegatedRunStatus(text: string, index: number): boolean {
+  const before = text.slice(Math.max(0, index - 80), index);
+  return /\b(?:not|never|no longer|(?:is|are|was|were|has|have|had|did|does|do|can|could|would|should)n['’]t)\s+(?:(?:currently|actively|actually|still)\s+){0,2}["'`“‘]?\s*$/i.test(before);
+}
+
 /**
  * Describe a checkpoint body that reports a launched-but-unread run in prose while
  * storing no `checks` rows.
@@ -178,6 +186,7 @@ export function describeUnreadRun(
 
   const inFlightText = withoutHistoricalQuotations(text);
   const inFlight = collect(inFlightText, IN_FLIGHT_RE, true, (match) => {
+    if (isNegatedRunStatus(inFlightText, match.index)) return false;
     if (!/^in[-\s]flight$/i.test(match[0])) return true;
     return isRunScopedInFlight(inFlightText, match.index, match[0].length);
   });

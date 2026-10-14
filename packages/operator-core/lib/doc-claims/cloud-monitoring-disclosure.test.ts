@@ -65,4 +65,22 @@ describe('maintained cloud monitoring disclosure', () => {
     expect(disclosure).toContain('stops future delivery');
     expect(disclosure).toContain('does not delete events already delivered');
   });
+
+  it('gives each exported event a distinct explicit purpose beside its allowed fields', () => {
+    const rows = disclosure.split('\n').filter(line => line.startsWith('| `cloud_') || line.startsWith('| `product_tutorial`'));
+    const purposes = new Set<string>();
+    for (const event of cloudFields().keys()) {
+      const matches = rows.filter(line => line.startsWith(`| \`${event}\` |`));
+      expect(matches, `purpose row population for ${event}`).toHaveLength(1);
+      const cells = matches[0]!.split('|').map(cell => cell.trim());
+      expect(cells, `event, purpose and property columns for ${event}`).toHaveLength(5);
+      const purpose = cells[2]!;
+      expect(purpose, `explicit purpose for ${event}`).toMatch(/[A-Za-z].*[A-Za-z]/);
+      expect(purpose, `placeholder purpose for ${event}`).not.toMatch(/^(?:unknown|none|n\/a|todo|tbd|\.{3}|-+)$/i);
+      expect(purpose.length, `useful purpose for ${event}`).toBeGreaterThan(12);
+      expect(purposes.has(purpose), `distinct purpose for ${event}`).toBe(false);
+      purposes.add(purpose);
+    }
+    expect(purposes.size).toBe(cloudFields().size);
+  });
 });

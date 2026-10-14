@@ -441,6 +441,43 @@ describe('emitScorecard', () => {
     });
   });
 
+  it('refuses to persist when the Scout host generation changes during evidence gathering', async () => {
+    readRunningGenerationM
+      .mockResolvedValueOnce({
+        deployedSha: 'release-sha',
+        hostStartedAt: '2026-09-11T00:00:00.000Z',
+        bootHeadSha: 'older-sha',
+        scoutCodeHash: 'older-code',
+        staleHost: true,
+      })
+      .mockResolvedValueOnce({
+        deployedSha: 'release-sha',
+        hostStartedAt: '2026-09-11T00:01:00.000Z',
+        bootHeadSha: 'older-sha',
+        scoutCodeHash: 'older-code',
+        staleHost: true,
+      });
+    captureM.mockImplementationOnce(async (captureInput) => {
+      await captureInput.beforeIssueCreate?.();
+      return { ok: true, created: true, issue: ISSUE_BASE, possibleDuplicates: [] };
+    });
+
+    const result = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'generation_changed_re_gather_required',
+      reGatherRequired: true,
+      generationChange: {
+        evidenceHostStartedAt: '2026-09-11T00:00:00.000Z',
+        persistenceHostStartedAt: '2026-09-11T00:01:00.000Z',
+      },
+    });
+    expect(readRunningGenerationM).toHaveBeenCalledTimes(2);
+    expect(captureM).toHaveBeenCalledTimes(1);
+    expect(captureM.mock.calls[0][0].beforeIssueCreate).toBeTypeOf('function');
+  });
+
   it('returns and persists unknown host parity when the comparison inputs are unavailable', async () => {
     const generation = {
       deployedSha: 'release-sha',
@@ -449,7 +486,13 @@ describe('emitScorecard', () => {
       scoutCodeHash: null,
       staleHost: null,
     };
-    readRunningGenerationM.mockResolvedValue(generation);
+    readRunningGenerationM
+      .mockResolvedValueOnce(generation)
+      .mockResolvedValueOnce({ ...generation, hostStartedAt: '2026-09-12T00:01:00.000Z' });
+    captureM.mockImplementationOnce(async (captureInput) => {
+      await captureInput.beforeIssueCreate?.();
+      return { ok: true, created: true, issue: ISSUE_BASE, possibleDuplicates: [] };
+    });
 
     const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
 
@@ -457,6 +500,7 @@ describe('emitScorecard', () => {
     expect(captureM.mock.calls[0][0]).toMatchObject({
       payloadExtra: { observation: { gradedGeneration: generation } },
     });
+    expect(readRunningGenerationM).toHaveBeenCalledTimes(2);
   });
 
   it('surfaces the running generation on a successful emit', async () => {
@@ -468,6 +512,10 @@ describe('emitScorecard', () => {
       staleHost: false,
     };
     readRunningGenerationM.mockResolvedValue(generation);
+    captureM.mockImplementationOnce(async (captureInput) => {
+      await captureInput.beforeIssueCreate?.();
+      return { ok: true, created: true, issue: ISSUE_BASE, possibleDuplicates: [] };
+    });
 
     const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
 

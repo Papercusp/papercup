@@ -241,14 +241,21 @@ function itemSearchText(item: PlanItem): string {
  * `criticalPathDepth` counts only non-terminal items, so completed setup does
  * not keep making a mature plan look artificially deep.
  */
-export function analyzePlanDagParallelism(planItems: readonly PlanItem[]): PlanDagParallelismDiagnostics {
+export function analyzePlanDagParallelism(
+  planItems: readonly PlanItem[],
+  planItemIds?: readonly string[],
+): PlanDagParallelismDiagnostics {
   const items = [...planItems];
   const byId = new Map(items.map((item) => [item.id, item]));
   const resolved = resolveEffectiveStatusForItems(items);
   const resolvedById = new Map(resolved.items.map((item) => [item.id, item]));
   const cycleMembers = new Set(resolved.cycleMembers);
   const danglingItems = new Set(resolved.missingRefs.map((entry) => entry.itemId));
-  const nonTerminalItems = resolved.items.filter((item) => !TERMINAL_STATUSES.has(item.storedStatus));
+  // Resolve against the complete DAG before narrowing the claimed lane. An
+  // out-of-scope dependency still blocks its consumer until it is terminal.
+  const scope = planItemIds === undefined ? null : new Set(planItemIds);
+  const nonTerminalItems = resolved.items.filter((item) =>
+    !TERMINAL_STATUSES.has(item.storedStatus) && (!scope || scope.has(item.id)));
   const nonTerminalIds = new Set(nonTerminalItems.map((item) => item.id));
   const readyItems = nonTerminalItems.filter(
     (item) => item.effectiveStatus === 'todo' && item.unresolvedBlockers.length === 0 && !item.needsHuman,

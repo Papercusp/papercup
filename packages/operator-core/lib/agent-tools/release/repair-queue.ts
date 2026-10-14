@@ -95,16 +95,19 @@ import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-
 import { executeWithGateActionReceipt } from '../../release/gate-action-receipt';
 import { asRecord, completedResultPayload } from '../abort-completion-payload';
 
-// WI-6554700010009422: a bounded-payload door keeps a response's LEADING fields and cuts the rest,
-// and every admit response spreads `...base` (the whole repairQueue diagnostic) before its decision
-// fields. A budget cut therefore kept the queue echo and dropped verdict/admitted/reason, so the
-// caller saw `ok:true` with no verdict. Bulky context keys always go LAST, after the decision fields.
-const TRAILING_CONTEXT_KEYS = ['target', 'source', 'repairQueue', 'repairQueueRead', 'callerAuthorization', 'timings'];
+// Bounded result doors keep leading fields. Put the small authorization verdict
+// before queue diagnostics so a large repairQueue cannot erase whether this
+// caller is the delegated fixer. Keep the bulky contextual fields last.
+const PRIORITY_CONTEXT_KEYS = ['callerAuthorization'];
+const TRAILING_CONTEXT_KEYS = ['target', 'source', 'repairQueue', 'repairQueueRead', 'timings'];
 export function decisionFieldsFirst(payload: unknown): unknown {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
   const rec = payload as Record<string, unknown>;
   const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(rec)) if (!TRAILING_CONTEXT_KEYS.includes(key)) out[key] = value;
+  for (const [key, value] of Object.entries(rec)) {
+    if (!TRAILING_CONTEXT_KEYS.includes(key) && !PRIORITY_CONTEXT_KEYS.includes(key)) out[key] = value;
+  }
+  for (const key of PRIORITY_CONTEXT_KEYS) if (key in rec) out[key] = rec[key];
   for (const key of TRAILING_CONTEXT_KEYS) if (key in rec) out[key] = rec[key];
   return out;
 }

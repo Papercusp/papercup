@@ -84,6 +84,27 @@ describe('Dream quality calibration and watchdog evidence', () => {
     expect(report.rejectedReview.population).toBe(0);
   });
 
+  it('accepts a persisted review-preflight refusal without reporting invalid or unresolved review provenance', () => {
+    const preflight = run('review-preflight');
+    preflight.status = 'rejected';
+    preflight.review = {
+      schemaVersion: 'dream-capability-preflight-v1',
+      verdict: 'unverified',
+      reason: 'search-unavailable',
+    };
+    preflight.outcome = {
+      verdict: 'unverified',
+      generationSkipped: true,
+      capabilityRun: dreamCapabilityRun(preflight),
+    };
+
+    const report = reportDreamQuality([preflight], scope);
+
+    expect(report.coverage).toEqual({ complete: true, inspected: 1, valid: 1 });
+    expect(codes(report)).toEqual([]);
+    expect(report.reviewPassRate).toEqual({ numerator: 0, denominator: 0, value: null });
+  });
+
   it('flags accounting faults and family concentration even when every review accepts', () => {
     const repeated = Array.from({ length: 6 }, (_, i) => run(`repeat-${i}`, 'same-family'));
     expect(codes(reportDreamQuality(repeated, scope))).toContain('family-concentration');

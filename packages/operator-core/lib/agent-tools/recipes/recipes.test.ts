@@ -148,6 +148,9 @@ import recipeRunTool from './run';
 import './candidates';
 import './merge';
 import './sweep';
+// The encoded-owner regression exercises the live condition reader through the
+// recipe's caller-scoped catalog preflight.
+import '../coordination/tools/conditions';
 // Authority fixtures below execute work_items:get; register it so P-015's current-catalog
 // preflight observes the same implementation that the production define-tool router loads.
 import '../work_items/get';
@@ -972,6 +975,43 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       },
     });
     expect(JSON.stringify(staleBody.results[0].authorityDiagnostics)).not.toContain(script);
+  });
+
+  it('rejects a condition recipe that pins an owner UUID inside its encoded key', async () => {
+    const script = `
+      const r = await tools.coord.conditions({ include_resolved: false });
+      const data = r && Array.isArray(r.open) ? r : JSON.parse(r.content?.[0]?.text ?? "{}");
+      const key = "alarm:codex-rollout-provider:%5B%22papercusp-workspace%22%2C%2240336%22%2C%22su-e5f812b6-2f01-4cb8-8d23-3299e65fc494%22%5D";
+      return { openCount: data.open_count ?? null, matches: (data.open ?? []).filter(x => x.condition_key === key) };
+    `;
+    const updatedAt = '2026-10-14T00:00:00.000Z';
+    getRecipeMock.mockResolvedValue({
+      id: 'read-codex-provider-condition',
+      title: 'Read Codex provider condition',
+      description: "Filter the live condition ledger to the admitted work-item's condition key.",
+      script,
+      updatedAt,
+      authorRole: 'operator',
+      toolsUsed: ['coord:conditions'],
+      runCount: 0,
+      successCount: 0,
+      status: 'active',
+      tags: [],
+    });
+
+    const result = await findTool('recipes:run').fn(
+      { id: 'read-codex-provider-condition' },
+      mkCtx('operator'),
+    );
+    const body = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+
+    expect(body.results[0]).toMatchObject({
+      ok: false,
+      id: 'read-codex-provider-condition',
+      error: 'authority_unresolved',
+    });
+    expect(body.results[0].reason).toContain('concrete agent owner id');
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
   });
 
   it('accepts the authority metadata emitted by recipes:get and still revalidates the live lane', async () => {
