@@ -251,7 +251,7 @@ describe('redacted render crash persistence (real PG)', () => {
       const prepared = prepareCloudTelemetryDelivery(makeReview('welcome', id), context, consent);
       if (!prepared.ok) throw new Error('synthetic identity preparation failed'); return prepared.envelope.properties.operation_id;
     });
-    const query = `SELECT event, properties.phase, properties.lesson, count() FROM events WHERE properties.operation_id IN (${opaqueOperations.map(id => `'${id}'`).join(',')}) GROUP BY event, properties.phase, properties.lesson ORDER BY event, properties.phase, properties.lesson`;
+    const query = `SELECT event, properties.phase, properties.lesson, uniqExact(uuid), count() FROM events WHERE properties.operation_id IN (${opaqueOperations.map(id => `'${id}'`).join(',')}) GROUP BY event, properties.phase, properties.lesson ORDER BY event, properties.phase, properties.lesson`;
     let rows: unknown[][] = [];
     for (let attempt = 0; attempt < 15; attempt++) {
       const result = await request(`/api/projects/${project.id}/query/`, { refresh: 'force_blocking', query: { kind: 'HogQLQuery', query } });
@@ -263,6 +263,16 @@ describe('redacted render crash persistence (real PG)', () => {
       ['cloud_workspace_provisioning', 'ready', null, 1], ['cloud_workspace_provisioning', 'requested', null, 1],
       ['product_tutorial', null, 'navigation', 1], ['product_tutorial', null, 'welcome', 1],
     ]);
+    // A stable vendor UUID does not promise physically unique storage. Verify
+    // the actual business query counts a witnessed operation once even when
+    // the sink retains retries, rather than relying on eventual vendor merges.
+    console.info('CLOUD_MONITORING_DELIVERY_CARDINALITY', JSON.stringify(rows));
+    const durationQuery = cloudMonitoringDashboardViews('staging').find(view => view.name === 'Confirmed ready duration')!.query
+      .replace('properties.synthetic = false', 'properties.synthetic = true')
+      .replace('AND timestamp >=', `AND properties.operation_id = '${opaqueOperations[0]}' AND timestamp >=`);
+    const duration = await request(`/api/projects/${project.id}/query/`, { refresh: 'force_blocking',
+      query: { kind: 'HogQLQuery', query: durationQuery } });
+    expect(duration.results).toEqual([['gcp', 10, 1]]);
     const environmentInsights = new Map<string, number[]>();
     for (const environment of ['staging', 'production'] as const) {
       const first = await ensureCloudMonitoringDashboard(environment), repeated = await ensureCloudMonitoringDashboard(environment);

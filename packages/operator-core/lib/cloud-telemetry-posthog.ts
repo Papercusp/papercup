@@ -32,6 +32,8 @@ export function deliverCloudPosthog(input: unknown, context: CloudTelemetryConte
     ])).digest('hex');
     // The maintained SDK supplies uuid at the event envelope. A property
     // named $insert_id alone does not select the capture event's identity.
+    // Storage may still expose repeated deliveries; business queries must
+    // aggregate by the witnessed operation rather than assume exactly once.
     const uuid = `${insertId.slice(0, 8)}-${insertId.slice(8, 12)}-5${insertId.slice(13, 16)}-8${insertId.slice(17, 20)}-${insertId.slice(20, 32)}`;
     const response = await fetch(`${config.host.replace(/\/+$/, '')}/batch/`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -53,7 +55,7 @@ export function cloudMonitoringDashboardViews(environment: CloudTelemetryContext
   return [
     { name: 'Portal activity', query: `SELECT toDate(timestamp) AS day, properties.action AS action, uniqExact(distinct_id) AS observed_users, uniqExact(properties.operation_id) AS observations FROM events WHERE event = 'cloud_portal_session' AND ${recent} GROUP BY day, action ORDER BY day DESC` },
     { name: 'Confirmed provisioning outcomes', query: `SELECT properties.provider AS provider, properties.hosting_mode AS hosting_mode, properties.phase AS phase, uniqExact(properties.operation_id) AS operations FROM events WHERE event = 'cloud_workspace_provisioning' AND properties.source = 'control-plane' AND ${recent} GROUP BY provider, hosting_mode, phase ORDER BY provider, phase` },
-    { name: 'Confirmed ready duration', query: `SELECT properties.provider AS provider, avg(toFloat(properties.duration_ms)) AS observed_mean_ms, count() AS observed_samples FROM events WHERE event = 'cloud_workspace_provisioning' AND properties.source = 'control-plane' AND properties.phase = 'ready' AND properties.duration_ms IS NOT NULL AND ${recent} GROUP BY provider` },
+    { name: 'Confirmed ready duration', query: `SELECT provider, avg(observed_duration_ms) AS observed_mean_ms, count() AS observed_samples FROM (SELECT properties.provider AS provider, properties.operation_id AS operation, max(toFloat(properties.duration_ms)) AS observed_duration_ms FROM events WHERE event = 'cloud_workspace_provisioning' AND properties.source = 'control-plane' AND properties.phase = 'ready' AND properties.duration_ms IS NOT NULL AND ${recent} GROUP BY provider, operation) GROUP BY provider` },
     { name: 'Public explanations reviewed', query: `SELECT properties.lesson AS lesson, uniqExact(distinct_id) AS observed_users, uniqExact(properties.operation_id) AS saved_reviews FROM events WHERE event = 'product_tutorial' AND properties.action = 'explanation_reviewed' AND properties.source = 'control-plane' AND ${recent} GROUP BY lesson ORDER BY saved_reviews DESC` },
     { name: 'Portal feature adoption', query: `SELECT properties.feature AS feature, uniqExact(distinct_id) AS observed_users, uniqExact(properties.operation_id) AS observations FROM events WHERE event = 'cloud_feature_adoption' AND ${recent} GROUP BY feature ORDER BY observed_users DESC` },
     { name: 'Safe service error codes', query: `SELECT properties.code AS code, properties.release AS release, uniqExact(properties.operation_id) AS observations FROM events WHERE event = 'cloud_error' AND ${recent} GROUP BY code, release ORDER BY observations DESC` },
