@@ -444,6 +444,20 @@
         ],
         "limits": "Named source/test bytes have automatically settled. Whole import/dependency/final-transform/runtime closure is unproven; document settlement and operational acceptance are separate."
       },
+      "report": {
+        "reportId": "rpt_651a9cf7-3c51-4e3c-b634-08dda27df657",
+        "guiReaderPath": "/reports?sel=rpt_651a9cf7-3c51-4e3c-b634-08dda27df657",
+        "returnedLegacyPath": "/reports/rpt_651a9cf7-3c51-4e3c-b634-08dda27df657",
+        "readerRouteVerifiedIn": "apps/operator-vite/src/components/reports/ReportsRoute.tsx",
+        "sourcePath": "docs/evidence/green-main-native-runner-selection-progress-20261014.md",
+        "bodySha256": "047013e430a70fda52c64de7dfd73985cd99e311094ac69761b6d5b53cb80db5",
+        "visibility": "owner",
+        "readbackExact": true,
+        "authorOwnerId": "su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+        "transportIdempotencyKey": "6d466409-40d5-42a6-a600-819407c0f6a3",
+        "requestKey": null,
+        "routeLimitation": "Pinned staging MCP schema discovery timed out before any publication. Captured as EI-25959982511553855, root cause unknown. The available Reports service publishes and reads back the complete body but its schema lacks request_key and returns a legacy reader path. This edition was sent once with the stable transport idempotency key; a handler-level request_key is not claimed. Never republish blindly or change this payload on retry."
+      },
       "remainingWriterFindings": [
         "Astro's actual CLI calls astro sync before @astrojs/check unless noSync is specified. A direct AstroCheck.getRootFileNames probe is a pre-sync discovery only and cannot certify that actual command population.",
         "The pre-sync probe is preserved at ~/.papercusp/scratch/c0523-astro-selection-probe.json, sha256 93f854e5fce29635723d79a2dd74925e3e25bf489cdc65e72f6bfc93b6c11a84. It ran no diagnostics, sync or tests and is not acceptance evidence.",
