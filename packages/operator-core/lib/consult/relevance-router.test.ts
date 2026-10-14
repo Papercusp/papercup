@@ -114,6 +114,23 @@ describe('problem-specific expertise qualification', () => {
       { scorer: async () => [0.9], contracts })).toEqual([null]);
   });
 
+  it('requires primary-issue evidence even when a passage matches the contextual preamble', async () => {
+    const question = 'For distributed request processing, which writer changed the resource lease? Preserve the receipt.';
+    const primary = 'For distributed request processing, which writer changed the resource lease?';
+    const issue = 'which writer changed the resource lease?';
+    const contracts = [{ name: 'request:deliver', description: 'Deliver a distributed request.' }];
+    const scorer = vi.fn(async (text: string, queries: string[]) => queries.map(query => {
+      if (query === primary) return 0.9;
+      if (query === issue) return text.startsWith('writer') ? 0.8 : 0.1;
+      return 0.2;
+    }));
+    const scores = await scoreSubjectEvidence(question, ['writer lease audit', 'distributed request delivery'],
+      Date.now() + 4000, { scorer, contracts });
+    expect(scores[0]).toBeGreaterThanOrEqual(SUBJECT_EVIDENCE_MIN_SCORE);
+    expect(scores[1]).toBeLessThan(SUBJECT_EVIDENCE_MIN_SCORE);
+    expect(scorer.mock.calls[0][1]).toEqual([primary, issue, 'request:deliver\nDeliver a distributed request.']);
+  });
+
   it('nominates competing primary actions without matching their operational boilerplate', () => {
     const contracts = [
       { name: 'db:migrate', description: 'Apply a SQL migration.' },
