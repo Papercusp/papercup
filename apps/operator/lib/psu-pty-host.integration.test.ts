@@ -2941,6 +2941,44 @@ describe('hostThroughPty real round-trip', () => {
     20_000,
   );
 
+  it('rejects unsupported control envelopes with a NACK and zero child input, then accepts a supported request', async () => {
+    const ownerId = `su-itest-control-version-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const signals = new EventEmitter();
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "process.stdin.setRawMode(true);process.stdin.on('data',d=>process.stdout.write('INPUT:'+d.toString('hex')+'\\n'));process.stdout.write('CONTROL_READY\\n');"],
+      cwd: '/tmp', env: hermeticEnv({ PAPERCUSP_SID: ownerId }), ownerId,
+      io, signalSource: signals, bridgeTty: false,
+    });
+    const send = (envelope: Record<string, unknown>): Promise<Record<string, unknown>> => new Promise((resolve, reject) => {
+      const conn = net.connect(sock, () => conn.end(JSON.stringify(envelope)));
+      const output = createTextCollector(conn);
+      conn.on('error', reject);
+      conn.on('close', () => {
+        try { resolve(JSON.parse(output.text().trim())); } catch (error) { reject(error); }
+      });
+    });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('CONTROL_READY'), { timeout: 5000 });
+      for (const envelope of [
+        { v: 1, mode: 'hooks-inventory', data: '/hooks' },
+        { v: 2, mode: 'raw', data: 'unsupported-version' },
+      ]) {
+        expect(await send({ ...envelope, ownerId })).toMatchObject({ ok: false, reason: 'unsupported-control-envelope' });
+      }
+      expect(captured()).not.toContain('INPUT:');
+      expect(await send({ v: 1, mode: 'raw', data: 'still-responsive', ownerId })).toMatchObject({ ok: true });
+      await vi.waitFor(() => expect(captured()).toContain(`INPUT:${Buffer.from('still-responsive').toString('hex')}`), { timeout: 5000 });
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(events.filter((event) => event.kind === 'control-payload-rejected' && event.reason === 'unsupported-control-envelope')).toHaveLength(2);
+    } finally {
+      signals.emit('SIGTERM');
+      await done.catch(() => undefined);
+    }
+  }, 20_000);
+
   it(
     "WI-2141435: control-payload-unaddressed fires with envelope:true for a v1 envelope that " +
       'simply omits ownerId, and envelope:false for a genuinely non-envelope legacy payload — the ' +
