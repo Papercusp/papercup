@@ -917,32 +917,57 @@ describe('reserveStoredQualificationRunner pre-suite retarget (WI-10005957)', ()
     expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(true);
   });
 
+  it('attributes the row-level pending-head refusal before runner retargeting without writing', async () => {
+    const current = wedgedAttempt({ pendingRepairHead: 'other-repair' });
+    const { statements } = transactionHarness({ qualificationTransaction: current, repair_queue: owningQueue() });
+
+    expect(await reserveStoredQualificationRunner(target, attach)).toMatchObject({
+      status: 'conflict', refusalReason: 'pending-head-queue-mismatch', transaction: current,
+    });
+    expect(statements[0].text).toContain('FOR UPDATE');
+    expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
+  });
+
   it('keeps failing closed whenever the same row does not prove the queue owns an unjudged head', async () => {
     const queue = owningQueue();
     const unadmitted = markFrozenCandidateVerificationRed(safeQueue(), { failingTests: ['broken.test.ts'], nowMs: 150 });
-    const cases: Array<{ name: string; transaction: Transaction; queue: unknown; candidate: string }> = [
+    const cases: Array<{ name: string; transaction: Transaction; queue: unknown; candidate: string; guard: string }> = [
       { name: 'queue owned by another attempt', transaction: wedgedAttempt(),
-        queue: { ...queue, qualificationAttemptId: 'attempt-other' }, candidate: 'repair-1' },
-      { name: 'CLI asks for a sha that is not the queue head', transaction: wedgedAttempt(), queue, candidate: 'other-sha' },
+        queue: { ...queue, qualificationAttemptId: 'attempt-other' }, candidate: 'repair-1', guard: 'queue-attempt-mismatch' },
+      { name: 'CLI asks for a sha that is not the queue head', transaction: wedgedAttempt(), queue, candidate: 'other-sha',
+        guard: 'queue-head-mismatch' },
       { name: 'queue head equals the frozen candidate (nothing to verify)', transaction: wedgedAttempt(),
-        queue: unadmitted, candidate: 'candidate-1' },
-      { name: 'a fixer is dispatched', transaction: wedgedAttempt(), queue: { ...queue, fixerSpawnId: 'spawn-1' }, candidate: 'repair-1' },
-      { name: 'a suite already judged under this attempt', candidate: 'repair-1', queue,
+        queue: { ...unadmitted, phase: 'ready-to-verify', unmeasuredRetestHead: 'candidate-1' },
+        candidate: 'candidate-1', guard: 'queue-head-already-judged' },
+      { name: 'queue is awaiting a fixer', transaction: wedgedAttempt(), queue: unadmitted, candidate: 'candidate-1',
+        guard: 'queue-not-ready-to-verify' },
+      { name: 'a fixer is dispatched', transaction: wedgedAttempt(), queue: { ...queue, fixerSpawnId: 'spawn-1' }, candidate: 'repair-1',
+        guard: 'queue-fixer-active' },
+      { name: 'a fixer dispatch is reserved', transaction: wedgedAttempt(), candidate: 'repair-1',
+        queue: { ...queue, dispatchReservation: { token: 'dispatch-1', claimedAtMs: 200, expiresAtMs: 500 } },
+        guard: 'queue-dispatch-reserved' },
+      { name: 'a suite already judged under this attempt', candidate: 'repair-1', queue, guard: 'attempt-already-judged',
         transaction: wedgedAttempt({
           consumedPhysicalRuns: [{
             ...wedgedAttempt().consumedPhysicalRuns![0]!, outcome: { kind: 'red', reason: 'not-green' },
           }],
         }) },
-      { name: 'the placeholder already attached a process', candidate: 'repair-1', queue,
+      { name: 'the placeholder already attached a process', candidate: 'repair-1', queue, guard: 'runner-already-attached',
         transaction: wedgedAttempt({
           currentPhysicalRunner: { ...wedgedAttempt().currentPhysicalRunner!, phase: 'materializing', pid: 99 },
         }) },
-      { name: 'no queue at all', transaction: wedgedAttempt(), queue: null, candidate: 'repair-1' },
+      { name: 'no queue at all', transaction: wedgedAttempt(), queue: null, candidate: 'repair-1', guard: 'queue-missing-or-unreadable' },
+      { name: 'malformed queue', transaction: wedgedAttempt(), queue: { phase: 'ready-to-verify' }, candidate: 'repair-1',
+        guard: 'queue-missing-or-unreadable' },
     ];
     for (const testCase of cases) {
       const { statements } = transactionHarness({ qualificationTransaction: testCase.transaction, repair_queue: testCase.queue });
       const result = await reserveStoredQualificationRunner(target, { ...attach, candidate: testCase.candidate });
       expect({ name: testCase.name, status: result.status }).toEqual({ name: testCase.name, status: 'conflict' });
+      expect(result).toMatchObject({
+        refusalReason: `candidate-mismatch:pre-suite-retarget-${testCase.guard}`,
+        transaction: testCase.transaction,
+      });
       expect(statements.some((statement) => statement.text.includes('UPDATE harness_shared.routines'))).toBe(false);
     }
   });

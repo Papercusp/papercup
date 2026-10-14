@@ -1220,18 +1220,27 @@ export function reserveQualificationRunner(
     nowMs?: number;
   },
 ): QualificationTransition {
-  if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
+  if (current.attemptId !== input.attemptId) {
+    return { status: 'conflict', transaction: current, refusalReason: 'attempt-id-mismatch' };
+  }
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const nowMs = input.nowMs ?? Date.now();
   const incumbent = current.currentPhysicalRunner;
   if (incumbent?.id === input.runnerId) {
-    if (
-      (current.candidate && input.candidate && current.candidate !== input.candidate.trim()) ||
-      (current.repairHead && input.repairHead && current.repairHead !== input.repairHead.trim()) ||
-      (current.runId && input.runId && current.runId !== input.runId.trim() &&
-        !storedRunIdIsFromEndedRunner(current) && !storedRunIdOrphanedAtUnattachedRunner(current)) ||
-      (incumbent.pidIdentity && input.pidIdentity && incumbent.pidIdentity !== input.pidIdentity)
-    ) return { status: 'conflict', transaction: current };
+    // Preserve the exact failed invariant. Matching physical ids do not imply that the
+    // candidate, logical run or process identity also matches (P-033).
+    const refusalReason =
+      current.candidate && input.candidate && current.candidate !== input.candidate.trim()
+        ? 'candidate-mismatch'
+        : current.repairHead && input.repairHead && current.repairHead !== input.repairHead.trim()
+          ? 'repair-head-mismatch'
+          : current.runId && input.runId && current.runId !== input.runId.trim() &&
+            !storedRunIdIsFromEndedRunner(current) && !storedRunIdOrphanedAtUnattachedRunner(current)
+            ? 'run-id-mismatch'
+            : incumbent.pidIdentity && input.pidIdentity && incumbent.pidIdentity !== input.pidIdentity
+              ? 'pid-identity-mismatch'
+              : null;
+    if (refusalReason) return { status: 'conflict', transaction: current, refusalReason };
     if (input.started !== true && input.pid == null && !input.unit) {
       return { status: 'idempotent', transaction: current };
     }
@@ -1263,7 +1272,7 @@ export function reserveQualificationRunner(
   }
   // A lease timeout alone cannot prove death. Unknown or live ownership keeps single flight.
   if (incumbent && (input.incumbentLiveness !== 'dead' || launchReservationInGrace(incumbent, nowMs))) {
-    return { status: 'conflict', transaction: current };
+    return { status: 'conflict', transaction: current, refusalReason: 'runner-held' };
   }
   const evidenceRefs = uniqueStrings(input.evidenceRefs ?? []);
   // Keep the two displacement causes distinct in the history: a lease that ran out is a runner that
@@ -1926,7 +1935,7 @@ async function mutateStoredQualification(
       const queueHead = frozenRepairQueueVerificationTarget(rowContext.rawRepairQueue);
       if (current?.pendingRepairHead && queueHead && current.pendingRepairHead !== queueHead) {
         return { status: 'conflict' as const, transaction: current,
-          ...(options.historicalRecovery ? { refusalReason: 'pending-head-queue-mismatch' } : {}) };
+          refusalReason: 'pending-head-queue-mismatch' };
       }
       // Keep async probes under this row lock. Moving the probe outside the mutation would let
       // it describe one runner while the following decision acts on a replacement.
@@ -2187,30 +2196,42 @@ export function retargetPreSuiteAttemptToOwningRepairHead(
   input: Pick<Parameters<typeof reserveQualificationRunner>[1], 'attemptId' | 'runnerId' | 'candidate' | 'started'>,
   rawRepairQueue: unknown,
 ): CheckpointQualificationTransaction {
+  return assessPreSuiteRepairRetarget(current, input, rawRepairQueue).transaction;
+}
+
+/** Preserve the failed locked-row guard so an attach refusal remains diagnosable later. */
+function assessPreSuiteRepairRetarget(
+  current: CheckpointQualificationTransaction,
+  input: Pick<Parameters<typeof reserveQualificationRunner>[1], 'attemptId' | 'runnerId' | 'candidate' | 'started'>,
+  rawRepairQueue: unknown,
+): { transaction: CheckpointQualificationTransaction; refusalReason?: string } {
+  const unchanged = { transaction: current };
+  const refused = (refusalReason: string) => ({ transaction: current, refusalReason });
   const requested = input.candidate?.trim();
-  if (!requested || input.started !== true) return current;
-  if (current.attemptId !== input.attemptId || current.outcome.kind !== 'pending') return current;
-  if (!current.candidate || current.candidate === requested) return current;
+  if (!requested || input.started !== true) return unchanged;
+  if (current.attemptId !== input.attemptId || current.outcome.kind !== 'pending') return unchanged;
+  if (!current.candidate || current.candidate === requested) return unchanged;
   const runner = current.currentPhysicalRunner;
-  if (!runner || runner.id !== input.runnerId || runner.phase !== 'launching' || runner.pid != null) return current;
+  if (!runner || runner.id !== input.runnerId) return unchanged;
+  if (runner.phase !== 'launching' || runner.pid != null) return refused('runner-already-attached');
   const everJudged = (current.consumedPhysicalRuns ?? []).some((run) => run.outcome.kind !== 'pre-suite-no-verdict');
-  if (everJudged) return current;
+  if (everJudged) return refused('attempt-already-judged');
   const queue = parseFrozenCandidateRepairQueue(rawRepairQueue);
-  if (
-    !queue ||
-    queue.phase !== 'ready-to-verify' ||
-    queue.qualificationAttemptId !== current.attemptId ||
-    queue.fixerSpawnId !== null ||
-    queue.dispatchReservation != null ||
-    queue.repairHead !== requested ||
-    !frozenRepairHeadAwaitsVerification(queue)
-  ) return current;
+  if (!queue) return refused('queue-missing-or-unreadable');
+  if (queue.phase !== 'ready-to-verify') return refused('queue-not-ready-to-verify');
+  if (queue.qualificationAttemptId !== current.attemptId) return refused('queue-attempt-mismatch');
+  if (queue.fixerSpawnId !== null) return refused('queue-fixer-active');
+  if (queue.dispatchReservation != null) return refused('queue-dispatch-reserved');
+  if (queue.repairHead !== requested) return refused('queue-head-mismatch');
+  if (!frozenRepairHeadAwaitsVerification(queue)) return refused('queue-head-already-judged');
   return {
-    ...current,
-    candidate: requested,
-    repairHead: requested,
-    currentPhysicalRunner: { ...runner, candidate: requested },
-    evidenceRefs: uniqueStrings([...current.evidenceRefs, `candidate:${requested}`, `retargeted-from:${current.candidate}`]),
+    transaction: {
+      ...current,
+      candidate: requested,
+      repairHead: requested,
+      currentPhysicalRunner: { ...runner, candidate: requested },
+      evidenceRefs: uniqueStrings([...current.evidenceRefs, `candidate:${requested}`, `retargeted-from:${current.candidate}`]),
+    },
   };
 }
 
@@ -2218,14 +2239,17 @@ export function reserveStoredQualificationRunner(
   target: GateVerdictTarget,
   input: Parameters<typeof reserveQualificationRunner>[1],
 ): Promise<StoredQualificationMutation> {
-  return mutateStoredQualification(target, async (current, context) =>
-    current
-      ? reserveQualificationRunner(retargetPreSuiteAttemptToOwningRepairHead(current, input, context.rawRepairQueue), {
-          ...input,
-          incumbentLiveness: input.incumbentLiveness ?? await probeRunnerLiveness(current.currentPhysicalRunner),
-        })
-      : { status: 'unreadable', error: 'missing attempt' },
-  );
+  return mutateStoredQualification(target, async (current, context) => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    const retarget = assessPreSuiteRepairRetarget(current, input, context.rawRepairQueue);
+    const transition = reserveQualificationRunner(retarget.transaction, {
+      ...input,
+      incumbentLiveness: input.incumbentLiveness ?? await probeRunnerLiveness(current.currentPhysicalRunner),
+    });
+    return transition.status === 'conflict' && transition.refusalReason === 'candidate-mismatch' && retarget.refusalReason
+      ? { ...transition, refusalReason: `candidate-mismatch:pre-suite-retarget-${retarget.refusalReason}` }
+      : transition;
+  });
 }
 
 export function recordStoredQualificationRunnerProgress(
