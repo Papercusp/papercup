@@ -38,9 +38,17 @@ describe('graph:query callers', () => {
     expect(a.coverage.limitations.join('\n')).toMatch(/callers ignores kind, uid/);
   }, 60_000);
 
-  it('leaves impact on the GitNexus facade', async () => {
-    // No dispatcher in this ctx: the facade refuses with a wiring fault, which proves the route.
+  // native-code-intelligence-ecosystem-and-dream-2026-10-09#P-008 moved impact
+  // to the first-party backend (query.ts native op list). This used to assert
+  // the opposite, from WI-10006543, when only callers was native.
+  it('answers impact with the first-party TypeScript backend', async () => {
     const a = await run({ op: 'impact', name: 'target' });
+    expect(a.backend).toBe('typescript-service');
+  }, 60_000);
+
+  it('leaves the non-native health op on the GitNexus facade', async () => {
+    // No dispatcher in this ctx: the facade refuses with a wiring fault, which proves the route.
+    const a = await run({ op: 'health' });
     expect(a.backend).not.toBe('typescript-service');
     expect(a.error).toBeTruthy();
   });

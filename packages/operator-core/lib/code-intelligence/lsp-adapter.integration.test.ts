@@ -21,6 +21,15 @@ import type { ManagedSpawnResult } from '../task-manager/managed-spawn';
 
 const capabilityDb = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined }));
 const spawnedClient = vi.hoisted(() => ({ latest: null as ManagedSpawnResult | null }));
+// The adapter is under test here, not the task ledger. The real registerTask
+// writes the LIVE task_ledger, which the integration harness refuses
+// (WI-10006585); the warn it logs then fails the test via fail-on-console.
+// Same stub as lsp-daemon-managed.integration.test.ts (WI-6554700010012311).
+vi.mock('../task-manager/enabled', () => ({ isTaskManagerEnabled: async () => true }));
+vi.mock('../task-manager/store', () => ({
+  registerTask: async (_spec: unknown, opts: { taskId: string }) => ({ taskId: opts.taskId, state: 'pending' }),
+  markSpawned: async () => {}, closeTask: async () => {},
+}));
 vi.mock('../task-manager/managed-spawn', async original => {
   const actual = await original<typeof import('../task-manager/managed-spawn')>();
   return { ...actual, managedSpawn: async (...args: Parameters<typeof actual.managedSpawn>) => {
