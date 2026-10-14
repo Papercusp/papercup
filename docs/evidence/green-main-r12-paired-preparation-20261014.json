@@ -156,7 +156,7 @@
     "scope": "This session's six named evidence/report paths only",
     "change": "Portable ~/.papercusp/scratch references preserve the original log targets; do not edit or restamp the logs.",
     "rootCause": "Absolute machine-home diagnostic paths were copied into shipped evidence docs.",
-    "guardItems": ["WI-6554700010012745", "WI-6554700010012746", "WI-6554700010012747", "WI-6554700010012748", "WI-6554700010012749", "WI-6554700010012750"],
+    "guardItems": ["WI-6554700010012745", "WI-6554700010012746", "WI-6554700010012747", "WI-6554700010012748", "WI-6554700010012749", "WI-6554700010012750", "WI-6554700010012782", "WI-6554700010012783"],
     "verification": "All six named files have zero findings using the canonical box/literal detectors and the live resolved literal set; portable original log targets exist; JSON parses. Full-tree guard commands still exit1 on existing dream/study/cycle-events.jsonl findings, outside this owned evidence scope.",
     "guardLogs": ["~/.papercusp/scratch/c0523-evidence-box-guard.log", "~/.papercusp/scratch/c0523-evidence-literal-guard.log"],
     "publishedReportHistory": "The original published report bodies and hashes remain immutable. Source MD path corrections do not rewrite those historical bodies. The current wrapper report above was published after correction and read back exactly."
