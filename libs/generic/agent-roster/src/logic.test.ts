@@ -291,6 +291,14 @@ describe('agentGlyph', () => {
 });
 
 describe('isRunningAgent / isTranscriptFresh', () => {
+  it.each(['live', 'parked', 'recorded'])('counts living %s sessions independently of heartbeat and loops', (sessionState) => {
+    expect(isRunningAgent({ sessionState, liveness: 'stale', loopArmed: false })).toBe(true);
+  });
+
+  it.each(['draining', 'suspect', 'ended', 'unknown', null])('does not count %s verdicts as living sessions', (sessionState) => {
+    expect(isRunningAgent({ sessionState, liveness: 'live', loopArmed: true })).toBe(false);
+  });
+
   it('retains a loop-armed agent whose presence heartbeat went stale', () => {
     expect(isRunningAgent({ liveness: 'stale', loopArmed: true })).toBe(true);
     expect(isRunningAgent({ liveness: 'stale', loopArmed: false })).toBe(false);

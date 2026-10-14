@@ -79,6 +79,7 @@ export interface BudgetedTaskCommandPreparationPins {
       Partial<Record<"beforeStderr" | "afterStderr", { ref: string; sha256: string }>> }>;
   /** ORIGINAL parent binds all lifecycle/test occurrences; standalone passes cannot qualify a chain. */
   chains?: Array<{ task: string; receipt: { ref: string; sha256: string };
+    logs: Record<"stdout" | "stderr", { ref: string; sha256: string }>;
     steps: Array<{ phase: "pre" | "test" | "post"; step: number | null;
       format: "command-preparation" | "node-test" | "vitest-json";
       receipt: { ref: string; sha256: string };

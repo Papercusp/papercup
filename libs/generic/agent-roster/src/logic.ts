@@ -318,10 +318,11 @@ export function displayName(
  * cadence even while parked between wakes, so broader fleet/ask surfaces retain
  * it even if its presence heartbeat has gone stale.
  *
- * The "agents running" pill deliberately does NOT use this broader predicate:
- * its wording promises agents running right now, so it filters on the server's
- * authoritative `sessionState === 'live'` verdict instead. Pure — exported for
- * the roster surfaces that intentionally include parked/wakeable agents.
+ * Running counts living sessions, including agents parked between turns.
+ * Thinking is the separate ongoing-turn subset (`isAgentThinking`). The
+ * authoritative lifecycle verdict takes precedence over heartbeat/loop state;
+ * draining and unknown verdicts do not establish a healthy living session.
+ * Older payloads without a lifecycle field retain the compatibility fallback.
  *
  * The oracle's verdict still bounds it from above: a session it has ruled gone
  * (`isSessionGone`) is not wakeable, so neither a still-fresh `liveness` nor an
@@ -330,7 +331,9 @@ export function displayName(
 export function isRunningAgent(
   a: Pick<RosterAgent, 'liveness' | 'loopArmed' | 'sessionState'>,
 ): boolean {
-  if (isSessionGone(a)) return false;
+  if (a.sessionState !== undefined) {
+    return a.sessionState === 'live' || a.sessionState === 'parked' || a.sessionState === 'recorded';
+  }
   return a.liveness !== 'stale' || Boolean(a.loopArmed);
 }
 

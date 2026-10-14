@@ -741,6 +741,9 @@ describe('frozen lineage carry policy', () => {
     'staging candidate c571e22c9e @15:29Z contains it + all 6 fix files, blob-equal to staging)',
     // The detector must not infer candidate selection from a diagnostic sentence that reports a passing regression.
     'Reproduced the reported :3170 staging-sync candidate text as a passing regression at the current staging HEAD',
+    // A directive may use current-build staging-probe evidence to complete an unrelated source item;
+    // this is not an instruction to select staging as the frozen judged candidate (EI-25876752493857561).
+    'Create and confirm-assignee on the final deployed verification task, add its typed gate blocker, then complete EI-25802391249880249 with root-cause and staging-probe evidence.',
     // EI-25198229614999965 — historical deletion correlation.
     'Root cause of candidate disappearance correlated to staging-sync prune 08:07:17Z, failed native precheck 08:07:14Z.',
   ])('allows descriptive checkpoint forensics without selecting a moving candidate: %s', (text) => {

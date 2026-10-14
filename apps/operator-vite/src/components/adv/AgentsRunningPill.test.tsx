@@ -13,6 +13,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 import { lexiconFor } from '@papercusp/lexicon';
+import { projectAdvRoster, type RosterSnapshot } from '@papercusp/operator-core/lib/sync-resolver/adv-roster-read';
 
 const H = vi.hoisted(() => ({
   active: [] as unknown[],
@@ -338,21 +339,27 @@ describe('<AgentsRunningPill>', () => {
     );
   });
 
-  it.each([false, true])('counts the entire ongoing-turn population with the roster open=%s', (open) => {
+  it.each([false, true])('distinguishes living sessions from ongoing turns with the roster open=%s', (open) => {
     nuqs.open = open;
     const live = Array.from({ length: 120 }, (_, i) => agent({
       ownerId: `live-${i}`, agent: ['claude', 'codex', 'omp'][i % 3],
       transcriptFresh: i < 20, thinkingResolvable: i < 20,
       machineLabel: i % 2 ? 'remote' : 'desktop', isLocal: i % 2 === 0,
     }));
-    H.active = [...live, ...['parked', 'draining', 'suspect', 'ended', 'recorded'].map(
+    const betweenTurns = Array.from({ length: 80 }, (_, i) => agent({
+      ownerId: `idle-${i}`, agent: ['claude', 'codex', 'omp'][i % 3],
+      sessionState: i % 2 ? 'parked' : 'recorded', liveness: 'stale', loopArmed: false,
+      transcriptFresh: true,
+    }));
+    const active = [...live, ...betweenTurns, ...['draining', 'suspect', 'ended'].map(
       (sessionState) => agent({ ownerId: sessionState, sessionState, transcriptFresh: true, loopArmed: true }),
     ), agent({ ownerId: 'unknown', sessionState: null, transcriptFresh: true })];
+    H.active = projectAdvRoster({ active } as RosterSnapshot, open ? 'full' : 'header').active;
     // Control: the old gauge reports exactly the misleading twenty, even
     // though the authoritative roster has 120 ongoing turns across backends.
     expect(live.filter(isTranscriptFresh)).toHaveLength(20);
     render(<Pill />);
-    expect(screen.getByTestId('agents-running-pill').textContent).toContain('120 agents running');
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('200 agents running');
     expect(screen.getByTestId('agents-thinking-count').textContent).toContain('120 thinking');
   });
 
@@ -363,7 +370,13 @@ describe('<AgentsRunningPill>', () => {
     H.active = [agent({ ownerId: 'a1', sessionState: 'parked', transcriptFresh: true }),
       agent({ ownerId: 'a2', transcriptFresh: false })];
     view.rerender(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('2 agents running');
     expect(screen.getByTestId('agents-thinking-count').textContent).toContain('1 thinking');
+    H.active = [agent({ ownerId: 'a1', sessionState: 'parked', liveness: 'stale' }),
+      agent({ ownerId: 'a2', sessionState: 'recorded', liveness: 'stale' })];
+    view.rerender(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('2 agents running');
+    expect(screen.queryByTestId('agents-thinking-count')).toBeNull();
     H.active = [agent({ sessionState: 'ended', transcriptFresh: true })];
     view.rerender(<Pill />);
     expect(screen.getByTestId('agents-running-pill').textContent).toContain('0 agents running');
@@ -398,7 +411,8 @@ describe('<AgentsRunningPill>', () => {
     ];
     render(<Pill />);
     const pill = screen.getByTestId('agents-running-pill');
-    expect(pill.textContent).toContain('1 agent running');
+    expect(pill.textContent).toContain('2 agents running');
+    expect(screen.getByTestId('agents-thinking-count').textContent).toContain('1 thinking');
   });
 
   it('opens the fleet-grouped roster popover with headers + rows', () => {

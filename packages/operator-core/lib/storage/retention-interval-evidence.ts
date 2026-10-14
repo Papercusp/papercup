@@ -130,7 +130,7 @@ export function assessDiskHeadroomSoak(input: unknown, requirements: unknown) {
     const ids = new Set(rows.map((x) => x.id));
     add(`sample-order:${path}`, ordered && ids.size === rows.length ? 'pass' : 'fail', 'Preserve strictly increasing, unique native samples; do not sort away gaps or duplicate records.');
     if (!ordered || ids.size !== rows.length) continue;
-    const before = rows.findLastIndex((x) => Date.parse(x.at) <= start);
+    const before = rows.reduce((last, row, index) => Date.parse(row.at) <= start ? index : last, -1);
     const after = rows.findIndex((x) => Date.parse(x.at) >= end);
     add(`window-coverage:${path}`, before >= 0 && after >= 0 ? 'pass' : 'unknown', 'Each device needs post-shipment samples bracketing both soak boundaries.');
     const window = rows.slice(Math.max(0, before), after < 0 ? undefined : after + 1);

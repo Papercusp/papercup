@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
-import { dirname, join, relative, isAbsolute } from "node:path";
+import { basename, dirname, join, relative, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { withFsMutex } from "./fs-mutex.mjs";
 // EI-21442389733525112: `task-exit-class.mjs` is dependency-free by design, so importing it
@@ -10,6 +10,7 @@ import { withFsMutex } from "./fs-mutex.mjs";
 // `bash_output.ts`. A refusal that does not carry this marker is indistinguishable from a
 // red test suite at every caller.
 import { formatTaskBudgetRefusal } from "./task-exit-class.mjs";
+import { scriptCommandWords } from "./executed-source-map.mjs";
 
 export const DURATION_HISTORY_VERSION = 1;
 
@@ -318,7 +319,8 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
   require(selection.schemaVersion === 1 && selection.kind === "full-gate" &&
     Array.isArray(selection.commandObligations) && Array.isArray(selection.tasks) &&
     Array.isArray(selection.fileOccurrences), "original native selection required");
-  require(Array.isArray(pins.commands) && pins.commands.length > 0 && pins.commands.length <= 64,
+  require(Array.isArray(pins.commands) && (pins.commands.length > 0 || pins.chains?.length > 0) &&
+    pins.commands.length <= 64,
     "bounded original command pins required");
   const sourceRoot = await realpath(pins.repositoryRoot);
   const matchCurrentInputs = async inputs => {
@@ -425,6 +427,7 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
       await matchCurrentInputs(inputs);
       qualified.push({ task: pin.task, step: pin.step, kind: obligation.kind, check: obligation.check,
         command: obligation.command, inputs, fileOccurrences: occurrences, receipt: pin.receipt,
+        startedAtMs: payload.started_at_ms, finishedAtMs: payload.completed_at_ms,
         nativeEvent: pin.nativeEvent, childWallMs: null, nativeExecutionWallMs,
         durationScope: "discovery-and-command", scriptsExecuted: 0, scriptOrder: [],
         voiceResult: { clientTools: Number(result[1]) } });
@@ -537,13 +540,194 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
     qualified.push({ task: pin.task, step: pin.step, kind: obligation.kind,
       ...(fixture ? { script: obligation.script } : { check: obligation.check }),
       command: obligation.command, inputs, fileOccurrences: occurrences,
+      startedAtMs: Date.parse(execution.startedAt), finishedAtMs: Date.parse(finishedAt),
       receipt: pin.receipt, childWallMs, scriptsExecuted: verdicts.length,
       scriptOrder: verdicts.map(row => row.script), ...(astro ? { diagnostics } : {}) });
   }
-  return freezeComparison({ mode: "command-preparation", selection, commands: qualified,
+  // Extend this same reader with native ordered occurrences. A list of successful
+  // standalone runs is not a chain: require the original parent to bind every
+  // child receipt and to contain their non-overlapping execution intervals.
+  const chainPopulation = selection.tasks.filter(task =>
+    Array.isArray(task.steps) && task.steps.length > 1 || task.lifecycleCommands?.length > 0)
+    .map(task => task.id);
+  require(new Set(chainPopulation).size === chainPopulation.length,
+    "unique original ordered task population required");
+  const chainPins = pins.chains ?? [];
+  require(Array.isArray(chainPins) && chainPins.length <= 64 &&
+    new Set(chainPins.map(chain => chain.task)).size === chainPins.length,
+  "bounded distinct original chain pins required");
+  const chains = [];
+  const usedArtifacts = new Set();
+  const uniqueArtifact = async pin => {
+    require(pin && comparisonPath(pin.ref), "original chain artifact pin required");
+    const path = await realpath(join(evidenceRoot, pin.ref));
+    require(!usedArtifacts.has(path), "original chain artifact reused across roles or steps");
+    usedArtifacts.add(path);
+  };
+  for (const chainPin of chainPins) {
+    const tasks = selection.tasks.filter(task => task.id === chainPin.task);
+    require(tasks.length === 1 && chainPopulation.includes(chainPin.task), "exact original ordered task required");
+    const task = tasks[0];
+    const lifecycle = task.lifecycleCommands ?? [];
+    require(Array.isArray(lifecycle) && lifecycle.every(row =>
+      row.script === `pre${task.script}` || row.script === `post${task.script}`) &&
+      new Set(lifecycle.map(row => row.script)).size === lifecycle.length,
+    "original lifecycle order must be explicit");
+    const expected = [
+      ...lifecycle.filter(row => row.script === `pre${task.script}`).map(row =>
+        ({ phase: "pre", step: null, command: row.command, script: row.script })),
+      ...(task.steps ?? [task]).map((step, index) =>
+        ({ phase: "test", step: task.steps ? index : null, command: step.command, script: step.script })),
+      ...lifecycle.filter(row => row.script === `post${task.script}`).map(row =>
+        ({ phase: "post", step: null, command: row.command, script: row.script })),
+    ];
+    require(expected.length > 1 && expected.length <= 64 && Array.isArray(chainPin.steps) &&
+      chainPin.steps.length === expected.length, "every original ordered occurrence required");
+    await uniqueArtifact(chainPin.receipt);
+    const parent = await readPinned(chainPin.receipt.ref, chainPin.receipt.sha256);
+    const parentStart = Date.parse(parent.execution?.startedAt);
+    const parentEnd = Date.parse(parent.execution?.completedAt);
+    require(parent.kind === "original-native-command-execution" && parent.cwd === task.dir &&
+      parent.originalCommand === task.command &&
+      same(parent.execution?.command, ["npm", "run", task.script]) &&
+      parent.execution.exitCode === 0 && parent.execution.signal === null && parent.execution.error === null &&
+      Number.isSafeInteger(parentStart) && Number.isSafeInteger(parentEnd) && parentEnd > parentStart &&
+      same(parent.steps, chainPin.steps.map(({ phase, step, receipt }) => ({ phase, step, receipt }))),
+    "successful original parent must bind every native step receipt");
+    require(chainPin.logs && Object.keys(chainPin.logs).length === 2, "two original parent logs required");
+    for (const role of ["stdout", "stderr"]) {
+      const log = chainPin.logs[role];
+      await uniqueArtifact(log);
+      require(parent.execution[role] === log.ref || parent.execution[role] === join(evidenceRoot, log.ref),
+        "parent log absent from original execution");
+      await readPinned(log.ref, log.sha256, false);
+    }
+    // Pin the actual npm entry point, including pre/post mappings, rather than
+    // accepting a parent with an unrelated script which happened to be green.
+    const packagePath = `${task.dir}/package.json`;
+    require(Array.isArray(parent.inputs) && parent.inputs.some(row => row.path === packagePath) &&
+      parent.inputs.every(row => comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
+      new Set(parent.inputs.map(row => row.path)).size === parent.inputs.length,
+    "original parent wrapper inputs required");
+    await matchCurrentInputs(parent.inputs);
+    const pkg = JSON.parse(await readFile(join(sourceRoot, packagePath), "utf8"));
+    require(pkg.scripts?.[task.script] === task.command &&
+      lifecycle.every(row => pkg.scripts?.[row.script] === row.command) &&
+      ["pre", "post"].every(phase => !pkg.scripts?.[`${phase}${task.script}`] ||
+        lifecycle.some(row => row.script === `${phase}${task.script}`)) &&
+      expected.every(row => row.phase !== "test" || !row.script || row.script === task.script ||
+        pkg.scripts?.[row.script] === row.command), "original npm chain mapping differs");
+    const steps = [];
+    let previousEnd = parentStart;
+    for (let index = 0; index < expected.length; index++) {
+      const original = expected[index], pin = chainPin.steps[index];
+      require(pin.phase === original.phase && pin.step === original.step,
+        "original chain phase or step order differs");
+      await uniqueArtifact(pin.receipt);
+      const prepared = qualified.filter(row => row.task === task.id && row.step === original.step &&
+        row.command === original.command && (original.phase === "test" ? row.kind === "command-check" :
+          row.kind === "npm-lifecycle" && row.script === original.script));
+      let step;
+      if (prepared.length) {
+        require(prepared.length === 1 && pin.format === "command-preparation" &&
+          same(pin.receipt, prepared[0].receipt), "exact qualified original command step required");
+        step = { ...prepared[0], phase: original.phase };
+      } else {
+        require(original.phase === "test" && ["node-test", "vitest-json"].includes(pin.format),
+          "native original test-step report required");
+        const words = scriptCommandWords(original.command);
+        require(pin.format === "node-test" ? basename(words[0] ?? "") === "node" && words.includes("--test") :
+          basename(words[0] ?? "") === "vitest" && words.includes("run"),
+        "native report format must match the original runner");
+        const occurrences = selection.fileOccurrences.filter(row => row.task === task.id &&
+          (row.step ?? null) === original.step);
+        const originalStep = task.steps ? task.steps[original.step] : task;
+        require(occurrences.length > 0 && occurrences.every(row => row.kind === "test-file" &&
+          row.command === original.command && comparisonPath(row.file)) &&
+          new Set(occurrences.map(row => row.file)).size === occurrences.length &&
+          same(occurrences.map(row => row.file).sort(), originalStep.files?.slice().sort()) &&
+          !selection.commandObligations.some(row => row.task === task.id &&
+            (row.step ?? null) === original.step && row.kind === "command-check"),
+        "complete original test-step occurrence population required");
+        const receipt = await readPinned(pin.receipt.ref, pin.receipt.sha256);
+        const execution = receipt.execution;
+        const startedAtMs = Date.parse(execution?.startedAt), finishedAtMs = Date.parse(execution?.completedAt);
+        require(receipt.kind === "original-native-command-execution" && receipt.cwd === task.dir &&
+          receipt.originalCommand === original.command &&
+          same(execution?.command, ["bash", "-lc", original.command]) && execution.exitCode === 0 &&
+          execution.signal === null && execution.error === null &&
+          Number.isSafeInteger(startedAtMs) && Number.isSafeInteger(finishedAtMs) && finishedAtMs > startedAtMs &&
+          Array.isArray(receipt.before?.inputs) && receipt.before.inputs.length > 0 &&
+          receipt.before.inputs.every(row => comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
+          new Set(receipt.before.inputs.map(row => row.path)).size === receipt.before.inputs.length &&
+          same(receipt.before.inputs, receipt.after?.inputs) &&
+          occurrences.every(row => receipt.before.inputs.some(input => input.path === row.file)),
+        "successful unchanged original test-step execution required");
+        const logs = {};
+        require(pin.logs && Object.keys(pin.logs).length === 3, "three original test-step logs required");
+        for (const role of ["stdout", "stderr", "report"]) {
+          const log = pin.logs[role];
+          await uniqueArtifact(log);
+          require(execution[role] === log.ref || execution[role] === join(evidenceRoot, log.ref),
+            "test-step log absent from original execution");
+          logs[role] = await readPinned(log.ref, log.sha256, role === "report");
+        }
+        const report = logs.report;
+        const reportRows = pin.format === "node-test" ? report.files : report.testResults;
+        require(Array.isArray(reportRows) && reportRows.length === occurrences.length,
+          "native report must contain every original file occurrence");
+        const reportFiles = [];
+        let testsPassed = 0;
+        for (const row of reportRows) {
+          const file = pin.format === "node-test" ? row.file : row.name;
+          require(typeof file === "string" && isAbsolute(file), "absolute native report file required");
+          const path = await realpath(file), within = relative(sourceRoot, path);
+          require(comparisonPath(within), "native report file escaped repository root");
+          reportFiles.push(within);
+          if (pin.format === "node-test") {
+            require(report.schemaVersion === 1 && Number.isSafeInteger(row.passed) && row.passed > 0 &&
+              row.failed === 0 && row.skipped === 0 && row.fileLevelFailure === null &&
+              Array.isArray(row.failedCases) && row.failedCases.length === 0,
+            "native node step must execute every assertion without skips or failures");
+            testsPassed += row.passed;
+          } else {
+            require(row.status === "passed" && Array.isArray(row.assertionResults) && row.assertionResults.length > 0 &&
+              row.assertionResults.every(assertion => assertion.status === "passed" &&
+                Array.isArray(assertion.failureMessages) && assertion.failureMessages.length === 0),
+            "native Vitest step must execute every assertion without skips or failures");
+            testsPassed += row.assertionResults.length;
+          }
+        }
+        require(new Set(reportFiles).size === reportFiles.length &&
+          same(reportFiles.sort(), occurrences.map(row => row.file).sort()) &&
+          (pin.format === "node-test" || report.success === true && report.numPassedTests === testsPassed &&
+            report.numTotalTests === testsPassed && report.numFailedTests === 0 && report.numPendingTests === 0 &&
+            report.numTodoTests === 0 && report.numFailedTestSuites === 0),
+        "complete no-skip original runner report required");
+        await matchCurrentInputs(receipt.before.inputs);
+        step = { task: task.id, phase: original.phase, step: original.step, command: original.command,
+          receipt: pin.receipt, fileOccurrences: occurrences, inputs: receipt.before.inputs,
+          startedAtMs, finishedAtMs, childWallMs: finishedAtMs - startedAtMs, testsPassed, format: pin.format };
+      }
+      require(step.startedAtMs >= previousEnd && step.finishedAtMs <= parentEnd,
+        "native chain step intervals overlap, reverse, or escape original parent");
+      previousEnd = step.finishedAtMs;
+      steps.push(step);
+    }
+    const occurrenceIdentity = rows => rows.map(row => JSON.stringify(row)).sort();
+    require(same(occurrenceIdentity(steps.flatMap(step => step.fileOccurrences)),
+      occurrenceIdentity(selection.fileOccurrences.filter(row => row.task === task.id))),
+    "original chain contains unqualified file occurrences");
+    chains.push({ task: task.id, receipt: chainPin.receipt, steps,
+      startedAtMs: parentStart, finishedAtMs: parentEnd, orderedOccurrencesQualified: true });
+  }
+  const missingChains = chainPopulation.filter(task => !chains.some(chain => chain.task === task));
+  return freezeComparison({ mode: "command-preparation", selection, commands: qualified, chains,
     originalArtifactsResolved: true, currentDeclaredInputsMatched: true,
-    orderedChainQualified: false, runtimeClosure: "unmeasured", operationalAcceptance: false,
-    populationSha256: comparisonHash({ selection: pins.selection, commands: qualified }) });
+    orderedChainQualified: chainPopulation.length > 0 && missingChains.length === 0,
+    orderedChainCoverage: { population: chainPopulation, qualified: chains.map(chain => chain.task), missing: missingChains },
+    runtimeClosure: "unmeasured", operationalAcceptance: false,
+    populationSha256: comparisonHash({ selection: pins.selection, commands: qualified, chains }) });
 }
 // EI-21669294176320490: the scheduler's worker/task counters are local to one
 // Node invocation.  A fleet of concurrent `test:affected` processes could

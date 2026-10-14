@@ -176,15 +176,19 @@ async function readAdvRosterUncached(opts: ReadAdvRosterOptions = {}) {
 
 export type RosterSnapshot = Awaited<ReturnType<typeof readAdvRosterUncached>>;
 
-/** The closed header needs live counts, thinking, machines and fleet colors,
+/** The closed header needs living-session and ongoing-turn counts, machines and fleet colors,
  * not session transcripts, checkpoints or ended-session history. Reuse the
  * same snapshot so the badge and its expanded roster share lifecycle truth. */
 export function projectAdvRoster(snapshot: RosterSnapshot, view: 'full' | 'header' = 'full') {
   if (view === 'full') return snapshot;
   return {
-    active: snapshot.active.filter((agent) => agent.sessionState === 'live').map((agent) => ({
+    // Keep both living and between-turn entries: the shared client predicate
+    // derives running and thinking independently, just as in the full roster.
+    active: snapshot.active.map((agent) => ({
       ownerId: agent.ownerId,
       sessionState: agent.sessionState,
+      liveness: agent.liveness,
+      loopArmed: agent.loopArmed,
       transcriptFresh: agent.transcriptFresh,
       thinking: agent.thinking,
       machineLabel: agent.machineLabel,

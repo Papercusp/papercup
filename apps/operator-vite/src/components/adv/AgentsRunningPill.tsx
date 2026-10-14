@@ -41,6 +41,7 @@ import {
   distinctMachineCount,
   groupByFleet,
   isAgentThinking,
+  isRunningAgent,
   resumableSessionId,
   thinkingStreamUrl,
   type RosterAgent,
@@ -233,13 +234,12 @@ export default function AgentsRunningPill() {
   // AgentInspectorModal used by a native row click.
   const [inspectOwnerRaw, setInspectOwner] = useQueryState('agentsInspect');
   const inspectOwner = typeof inspectOwnerRaw === 'string' && inspectOwnerRaw ? inspectOwnerRaw : null;
-  // The pill says "running", so membership comes from the authoritative shared
-  // session-lifecycle oracle — NOT heartbeat freshness and NOT an armed loop.
-  // Parked/ended processes may keep heartbeating for hours; counting those is
-  // what produced the owner-visible "65 running" while only 3 were live.
+  // Running counts living sessions, including agents between turns. Thinking
+  // counts the ongoing-turn subset; recent transcript output is neither gauge.
+  // Both compact and expanded snapshots carry the same lifecycle verdicts.
   // Memoed on `data` so identities stay stable across the 1s nowMs ticks.
   const running = useMemo(
-    () => ((data?.[0]?.active ?? []) as RosterAgent[]).filter(isAgentThinking),
+    () => ((data?.[0]?.active ?? []) as RosterAgent[]).filter(isRunningAgent),
     [data],
   );
   const activeOwnerIds = useMemo(() => new Set(running.map((a) => a.ownerId)), [running]);
@@ -290,7 +290,7 @@ export default function AgentsRunningPill() {
   const isRunning = running.length > 0;
   const groups = groupByFleet(running);
   const fleetDots = groups.filter((g) => g.slug !== null && g.color).slice(0, 6);
-  const thinkingCount = running.length;
+  const thinkingCount = running.filter(isAgentThinking).length;
   const machineCount = distinctMachineCount(running);
 
   return (
@@ -308,6 +308,7 @@ export default function AgentsRunningPill() {
           <button
             type="button"
             className={`pc-advshell__action pc-advshell__action--agents${isRunning ? ' is-running' : ''}`}
+            title="Running: living agent sessions, including agents between turns. Thinking: agents processing a turn."
             data-testid="agents-running-pill"
             aria-expanded={open}
             aria-controls="pc-advshell-agents-pop"

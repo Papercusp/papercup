@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
 import { projectAdvRoster, type RosterSnapshot } from './adv-roster-read';
 
 describe('header roster projection', () => {
-  it('preserves live badge facts while dropping large details and non-running sessions', () => {
+  it('preserves between-turn lifecycle facts while dropping large details', () => {
     const live = { ownerId: 'live', sessionState: 'live', transcriptFresh: true,
       machineLabel: 'desktop', isLocal: true, fleetSlug: 'repair', fleetColor: '#123456',
       checkpoint: 'large checkpoint'.repeat(1000), intent: 'large intent'.repeat(1000) };
@@ -10,8 +10,10 @@ describe('header roster projection', () => {
       ended: [live], pending: [live], starting: [], orphanedClaims: [],
       degradedFields: [{ field: 'ended', kind: 'read-failed', reason: 'unavailable' }] } as unknown as RosterSnapshot;
     const header = projectAdvRoster(snapshot, 'header');
-    expect(header.active).toEqual([{ ownerId: 'live', sessionState: 'live', transcriptFresh: true,
-      thinking: undefined, machineLabel: 'desktop', isLocal: true, fleetSlug: 'repair', fleetColor: '#123456' }]);
+    expect(header.active).toEqual(['live', 'parked'].map((sessionState) => ({
+      ownerId: sessionState, sessionState, liveness: undefined, loopArmed: undefined, transcriptFresh: true,
+      thinking: undefined, machineLabel: 'desktop', isLocal: true, fleetSlug: 'repair', fleetColor: '#123456',
+    })));
     expect(header).toHaveProperty('degradedFields', snapshot.degradedFields);
     expect(header).not.toHaveProperty('ended');
     expect(JSON.stringify(header)).not.toContain('large');
