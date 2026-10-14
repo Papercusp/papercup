@@ -26,7 +26,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { exportOrganizationData, type OrganizationDataExport } from './organization-data-receipts';
+import { exportOrganizationData, type HoldConflict, type OrganizationDataExport, type OrganizationDataScope } from './organization-data-receipts';
 import { organizationKeyCustodyState, organizationKeyService, type OrganizationKeyCustodyState } from './organization-key-registry';
 import { OrganizationKeyUnavailableError, type OrganizationKeyService } from './organization-keys';
 
@@ -42,6 +42,21 @@ const MAX_SEALED_FRAME_BYTES = 64 * 1024 * 1024;
 
 export const BACKUP_FORMAT = 'papercusp-organization-backup';
 export const BACKUP_FORMAT_VERSION = 1;
+
+/**
+ * Retention veto for an organization artifact. Supply a fresh holdConflicts read for the artifact's
+ * workspace scope immediately before pruning. Counts of live rows do not prove a backup redundant:
+ * any intersecting active hold keeps the artifact, including when it is the only historical copy.
+ * After release, ordinary age/count retention may prune it. No scheduled artifact pruner exists yet.
+ */
+export function organizationBackupRetentionDecision(
+  scope: Pick<OrganizationDataScope, 'workspaceIds'>,
+  activeHolds: readonly Pick<HoldConflict, 'holdId' | 'workspaceId'>[],
+): { prunable: boolean; holdIds: string[]; reason: 'legal-hold-active' | 'no-active-legal-hold' } {
+  const holdIds = [...new Set(activeHolds.filter((h) => scope.workspaceIds.includes(h.workspaceId)).map((h) => h.holdId))].sort();
+  return { prunable: holdIds.length === 0, holdIds,
+    reason: holdIds.length ? 'legal-hold-active' : 'no-active-legal-hold' };
+}
 
 type ByteSource = AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
 

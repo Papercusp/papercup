@@ -5,12 +5,15 @@ import { createHostedPrincipal, type HostedPrincipal } from '../auth/hosted-prin
 import type { VerifiedTenantServerContext } from '@papercusp/db-org';
 import type { SyncEvent } from '../sync-sse';
 import type { HostedFirstWorkspace, HostedFirstWorkspaceResult } from '../auth/hosted/first-workspace';
+import { HostedCustomerDeletionAdmissionError } from '../data-governance/hosted-customer-data';
 import {
   HOSTED_BROWSER_ACTION_PATH,
   HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH,
   HOSTED_BROWSER_FIRST_WORKSPACE_PATH,
   HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH,
   HOSTED_BROWSER_USER_EXPORT_PATH,
+  HOSTED_BROWSER_ORGANIZATION_DELETE_PATH,
+  HOSTED_BROWSER_USER_DELETE_PATH,
   HOSTED_BROWSER_QUERY_NAME,
   HOSTED_BROWSER_REST_QUERY_PATH,
   HOSTED_BROWSER_SELECT_WORKSPACE_PATH,
@@ -61,6 +64,39 @@ function tenantRunner(calls: Array<{ selectedWorkspaceId?: string }>) {
 }
 
 describe('hosted browser route boundary', () => {
+  it('admits deletion only with exact confirmation and authenticated scope, returning durable acceptance', async () => {
+    const requestCustomerDeletion = vi.fn(async () => ({ operationId: 'operation-1' }));
+    const browser = createHostedBrowserRoutes({ publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+      dependencies: { requestCustomerDeletion } });
+    const handler = routeHandler(browser.routes, HOSTED_BROWSER_USER_DELETE_PATH);
+    const request = (confirmation: string, origin = ORIGIN) => new Request(`${ORIGIN}/api${HOSTED_BROWSER_USER_DELETE_PATH}`, {
+      method: 'POST', headers: { origin }, body: JSON.stringify({ confirmation, userId: 'another-user',
+        organizationId: 'another-org', policy: { stripe: 'delete' }, operationId: 'caller-operation' }),
+    });
+    expect((await handler(request('DELETE MY ACCOUNT', 'https://other.test'), context())).status).toBe(403);
+    expect((await handler(request('DELETE MY ACCOUNT'), { ...context(), principal: null })).status).toBe(401);
+    expect((await handler(request('yes'), context())).status).toBe(400);
+    expect(requestCustomerDeletion).not.toHaveBeenCalled();
+    const response = await handler(request('DELETE MY ACCOUNT'), context());
+    expect(response.status).toBe(202); expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toEqual({ status: 'accepted', operationId: 'operation-1' });
+    expect(requestCustomerDeletion).toHaveBeenCalledExactlyOnceWith(principal, { kind: 'user', confirmation: 'DELETE MY ACCOUNT' });
+    expect(browser.allowlist).toContainEqual({ method: 'POST', path: HOSTED_BROWSER_ORGANIZATION_DELETE_PATH, access: 'session' });
+  });
+
+  it('reports pending retention and ownership transfer without exposing provider errors', async () => {
+    const requestCustomerDeletion = vi.fn(async () => { throw new HostedCustomerDeletionAdmissionError('retention_policy_pending'); });
+    const handler = routeHandler(createHostedBrowserRoutes({ publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+      dependencies: { requestCustomerDeletion } }).routes, HOSTED_BROWSER_ORGANIZATION_DELETE_PATH);
+    const request = () => new Request(`${ORIGIN}/api${HOSTED_BROWSER_ORGANIZATION_DELETE_PATH}`, {
+      method: 'POST', headers: { origin: ORIGIN }, body: JSON.stringify({ confirmation: 'DELETE ORGANIZATION' }),
+    });
+    expect((await handler(request(), context())).status).toBe(409);
+    requestCustomerDeletion.mockRejectedValueOnce(new Error('provider-secret-never-emit'));
+    const failed = await handler(request(), context());
+    expect(failed.status).toBe(503); expect(await failed.text()).not.toContain('provider-secret-never-emit');
+  });
+
   it('lets a verified member export their own account without a selected workspace or accepting a body-selected user', async () => {
     const member = createHostedPrincipal({ workspaceId: CONTROL_PLANE_WORKSPACE, userId: 'member',
       activeOrganizationId: 'org-a', sessionId: 'session', sessionVersion: 1, permissions: ['workspace:view'] });
@@ -73,7 +109,7 @@ describe('hosted browser route boundary', () => {
       method: 'POST', headers: { origin }, body: JSON.stringify({ userId: 'someone-else', organizationId: 'other' }),
     });
     expect((await handler(request('https://other.test'), context(member))).status).toBe(403);
-    expect((await handler(request(ORIGIN), { ...context(), principal: undefined })).status).toBe(401);
+    expect((await handler(request(ORIGIN), { ...context(), principal: null })).status).toBe(401);
     expect(exportUserData).not.toHaveBeenCalled();
     const response = await handler(request(ORIGIN), context(member));
     expect(response.status).toBe(200);
@@ -106,7 +142,7 @@ describe('hosted browser route boundary', () => {
     const admin = createHostedPrincipal({ ...principal, permissions: ['members:manage'] });
     const request = (headers: Record<string, string>) => new Request(`${ORIGIN}/api${HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH}`,
       { method: 'POST', headers });
-    expect((await handler(request({ origin: ORIGIN }), { ...context(), principal: undefined })).status).toBe(401);
+    expect((await handler(request({ origin: ORIGIN }), { ...context(), principal: null })).status).toBe(401);
     expect((await handler(request({ origin: 'https://other.test' }), context(admin))).status).toBe(403);
     expect((await handler(request({ origin: ORIGIN, 'x-papercusp-workspace': 'foreign' }), context(admin))).status).toBe(403);
     expect((await handler(request({ origin: ORIGIN }), context())).status).toBe(403);

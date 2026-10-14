@@ -64,7 +64,7 @@ import { featureRef, FEATURE_KIND, isQualifiedFeatureRef, implementsLinkScopes }
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
-import { boundedOrgTxn } from './pg-bounded-txn';
+import { boundedOrgTxn, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
 import { boundedPgReadTxn } from './pg-read-query';
 import type { ActiveOperationWorkerClaimRead } from './blueprint/operation-worker-binding';
 import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
@@ -9738,7 +9738,10 @@ export async function releaseWorkItem(
     releasingOwnerId?: string;
   } = {},
 ): Promise<WorkItem | null> {
-  const wi = await boundedOrgTxn((tx) => getWorkItem(id, opts.harness, {}, tx), { readOnly: true });
+  const wi = await boundedOrgTxn((tx) => getWorkItem(id, opts.harness, {}, tx), {
+    readOnly: true,
+    phase: 'work_items:release:read-preflight',
+  });
   if (!wi) return null;
   if (hasResourceGovernorReceiptPayload(wi.payload)) {
     throw new ResourceGovernorReleaseRequiredError(id);
@@ -9843,7 +9846,12 @@ export async function releaseWorkItem(
     const updated = await releaseIssue(id, { expectedAssignee: opts.expectedAssignee });
     const released = updated ? issueToWorkItem(updated) : null;
     await emitReleased(released);
-    if (released) await retireLifecycleBindingsForWorkItem(released);
+    if (released) {
+      await withOrgTxnTimeoutPhase(
+        'work_items:release:retire-lifecycle-bindings',
+        () => retireLifecycleBindingsForWorkItem(released),
+      );
+    }
     return released;
   }
   const { sql } = getOrgPg();

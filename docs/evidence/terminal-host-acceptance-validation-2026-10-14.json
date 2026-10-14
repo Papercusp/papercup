@@ -5,12 +5,15 @@
   "framework": "operational",
   "command": [
     "node",
+    "--import",
+    "tsx",
     "--input-type=module",
-    "readTerminalHostAcceptance(artifact, exact owner discovery, ownerId)"
+    "--eval",
+    "import validator from './apps/operator/lib/psu-pty-host-acceptance-evidence.ts'; import { homedir } from 'node:os'; import { join } from 'node:path'; const ownerId = 'su-f054245c-2b04-4a57-9eda-1655fbfcd8ae'; const result = validator.readTerminalHostAcceptance('docs/evidence/terminal-host-final-acceptance-2026-10-14.json', join(homedir(), '.papercusp', 'psu-pty', ownerId + '.json'), ownerId); console.log(JSON.stringify(result)); if (!result.passed) process.exitCode = 1;"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-14T20:39:37.740Z",
-  "finishedAt": "2026-10-14T20:39:37.741Z",
+  "startedAt": "2026-10-14T22:09:44.478Z",
+  "finishedAt": "2026-10-14T22:10:04.487Z",
   "summary": "Validates captured measurements and current host incarnation; does not re-trace, compare scrollback, or assert the captured native child generation is current.",
   "runtime": {
     "name": "psu-pty-host",
@@ -63,6 +66,18 @@
   ],
   "capturedEvidence": "docs/evidence/terminal-host-final-acceptance-2026-10-14.json",
   "capturedNativeId": "01a13bba-580d-7331-80df-8a9922b25097",
+  "currentProgress": {
+    "durationSec": 20,
+    "hostPidBefore": 3052562,
+    "hostPidAfter": 3052562,
+    "ptyPidBefore": 616197,
+    "ptyPidAfter": 616197,
+    "nativeBefore": "01a13c64-4ea3-70b2-8d64-3a69809a2045",
+    "nativeAfter": "01a13c64-4ea3-70b2-8d64-3a69809a2045",
+    "observedBefore": 1792015776006,
+    "observedAfter": 1792015790986,
+    "passed": true
+  },
   "instrument": {
     "path": "apps/operator/lib/psu-pty-host-acceptance-evidence.ts",
     "testPath": "apps/operator/lib/psu-pty-host-acceptance-evidence.test.ts"

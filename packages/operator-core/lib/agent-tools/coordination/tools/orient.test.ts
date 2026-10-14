@@ -1449,12 +1449,15 @@ describe('coord:orient args', () => {
     expect(portfolioStart).toBeGreaterThan(modesStart);
     expect(obligationsStart).toBeGreaterThan(portfolioStart);
     expect(obligationsStart).toBeLessThan(composeStart);
-    const obligationsSlice = source.slice(obligationsStart, composeStart);
+    const ownerReportStart = source.indexOf('const goalOwnerReportPromise =', obligationsStart);
+    expect(ownerReportStart).toBeGreaterThan(obligationsStart);
+    expect(ownerReportStart).toBeLessThan(composeStart);
+    const obligationsSlice = source.slice(obligationsStart, ownerReportStart);
     expect(obligationsSlice).toContain('readAgentObligationAgenda');
     expect(obligationsSlice).toContain('projectAgentTurnStartObligationBrief');
     expect(obligationsSlice).toMatch(/const goalObligationsPromise =\s*ownerId\s*\?/);
-    expect(source.slice(obligationsStart, composeStart)).toContain('const goalObligationsPromise =\n      ownerId');
-    expect(source.slice(obligationsStart, composeStart)).not.toContain('goalSubject && ownerId');
+    expect(obligationsSlice).toContain('const goalObligationsPromise =\n      ownerId');
+    expect(obligationsSlice).not.toContain('goalSubject && ownerId');
     expect(source.slice(portfolioStart, composeStart)).toContain('readGoalPortfolioBriefStaged');
     // EI-25191349922959563: the obligation fold (900ms budget) must read the
     // UNCOUNTED snapshot stage, never the counted display read it used to share.
@@ -1464,7 +1467,6 @@ describe('coord:orient args', () => {
     // window (overlapping the sequential folds) and is folded into
     // `modes.ownerReport`, the field the GOAL contract tells a holder to read
     // FIRST every wake.
-    const ownerReportStart = source.indexOf('const goalOwnerReportPromise =');
     expect(ownerReportStart).toBeGreaterThan(portfolioStart);
     expect(ownerReportStart).toBeLessThan(composeStart);
     expect(source.slice(ownerReportStart, composeStart)).toContain('readGoalOwnerReportObligation');

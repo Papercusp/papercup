@@ -15,10 +15,10 @@ import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { writeCorpusDocument } from '../data-sources/chat-retrieval-units';
+import { placeLegalHold, writeCorpusDocument } from '../data-sources/chat-retrieval-units';
 import { searchPotDocuments } from '../data-sources/documents-corpus';
 import { createTestKekProvider } from './kek-providers';
-import { contentSealing } from './organization-content-sealing';
+import { contentSealing, openDocument, sealDocuments } from './organization-content-sealing';
 import { organizationKeyService, useOrganizationKekProviders } from './organization-key-registry';
 import { blindToken, envelopeDekVersion, type KeyOperationContext } from './organization-keys';
 import { compareAndSwapSealedDocument, resealStaleOrganizationDocuments, staleSealedDocuments } from './organization-document-reseal';
@@ -148,6 +148,33 @@ describe('organization document re-seal sweep (P-016b follow-up U5)', () => {
     expect((await stored(REVOKED_WS, 'r')).sealed_content!.equals(revoked.sealed_content!)).toBe(true);
     expect(envelopeDekVersion(revoked.sealed_content!)).toBe(1);
     expect((await stored(PLAIN_WS, 'p')).text).toBe(plain.text);
+  });
+
+  it('re-seals a held non-chat document without losing its readable content or hold', async () => {
+    const [source] = await org.adminSql<{ id: string }[]>`INSERT INTO harness_shared.data_sources
+      (workspace_id, kind, permission_mapping, credential_ref)
+      VALUES (${WS}, 'github', ${org.adminSql.json({ mode: 'source-acl' })}, 'vault://held-reseal') RETURNING id`;
+    const sealing = (await contentSealing(org.adminSql, WS))!;
+    const [sealed] = await sealDocuments(org.adminSql, sealing, [{ title: 'Held board minutes', text: 'Cobalt decision preserved' }]);
+    const id = randomUUID();
+    await org.adminSql`INSERT INTO harness_shared.documents
+      (id, workspace_id, scope, pot_slug, source, kind, dedupe_key, source_id, title, text, sealed_content, blind_terms)
+      VALUES (${id}::uuid, ${WS}, 'pot', ${POT}, 'github', 'issue', ${id}, ${source!.id}::uuid, '', '',
+              ${sealed!.sealedContent}, ${sealed!.blindTerms as string[]}::text[])`;
+    const held = await placeLegalHold(org.adminSql, WS, { dataSourceId: source!.id, reason: 'preserve minutes', placedBy: 'reseal-test' });
+    const beforeVersion = envelopeDekVersion(sealed!.sealedContent)!;
+    await organizationKeyService(org.adminSql).rotateDek(organizationId, ctx);
+    const result = await resealStaleOrganizationDocuments(org.adminSql, { batchSize: 5_000 });
+    expect(result.failures).toEqual([]);
+    const [after] = await org.adminSql`SELECT sealed_content, title, text FROM harness_shared.documents WHERE id = ${id}::uuid`;
+    expect(envelopeDekVersion(after!.sealed_content)).toBe(beforeVersion + 1);
+    expect(after).toMatchObject({ title: '', text: '' });
+    const current = (await contentSealing(org.adminSql, WS))!;
+    expect(await openDocument(current, after!.sealed_content)).toMatchObject({ title: 'Held board minutes', text: 'Cobalt decision preserved' });
+    // Prove this exercises an enforced hold, rather than the chat-derived exemption.
+    await expect(org.adminSql`DELETE FROM harness_shared.documents WHERE id = ${id}::uuid`).rejects.toMatchObject({ code: '23514' });
+    const [hold] = await org.adminSql`SELECT released_at FROM harness_shared.data_source_legal_holds WHERE id = ${held.id}::uuid`;
+    expect(hold!.released_at).toBeNull();
   });
 });
 

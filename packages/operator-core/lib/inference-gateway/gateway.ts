@@ -151,6 +151,14 @@ import {
   type GatewayTelemetryTransport,
 } from './request-stage-telemetry';
 import {
+  GATEWAY_REQUEST_OUTCOME_DEFAULT_LIMIT,
+  GATEWAY_REQUEST_OUTCOME_MAX_LIMIT,
+  gatewayRequestOutcomeRecord,
+  recordGatewayRequestOutcome,
+  reportGatewayRequestOutcomes,
+  type GatewayRequestOutcomeStore,
+} from './gateway-request-outcome-store';
+import {
   codexCliResponsesCompletionSse,
   codexCliResponsesBody,
   extractResponsesInputText,
@@ -1318,6 +1326,8 @@ function respondGoalInferenceAdmissionRefusal(
 }
 
 export interface GatewayDeps {
+  /** Optional test seam; production writes and reads use the durable PostgreSQL store. */
+  requestOutcomeStore?: GatewayRequestOutcomeStore;
   /** Dedicated bounded-trial gateway only. No production grant issuer is implied.
    * When bound, every request is authenticated and only Codex HTTP Responses
    * inference is allowed. Reservations are never implicitly refunded on failure.
@@ -2600,6 +2610,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
             outcome: record.outcome, finalStatus: record.finalStatus, startedAt: record.startedAt,
           }))
         .catch(error => log('warn', `spawn first-request evidence write failed: ${error instanceof Error ? error.message : String(error)}`));
+    },
+    onCompleted: (timeline) => {
+      const row = gatewayRequestOutcomeRecord(gatewayProcessInstanceId, timeline);
+      const write = deps.requestOutcomeStore
+        ? deps.requestOutcomeStore.record(row)
+        : recordGatewayRequestOutcome(row);
+      void write.catch(error => log('warn', `request outcome evidence write failed: ${error instanceof Error ? error.message : String(error)}`));
     },
   });
   interface RequestTelemetryState {
@@ -11087,12 +11104,34 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // P-008 (gateway-rayobyte-hardening): the per-owner outcome ledger. `?owner=<id>` → that owner's
       // counters + recent events + last-routed account + live pin; no owner → the TOP erroring owners
       // (by non-ok outcomes) so "who is having a bad time right now" is one call.
-      const owner = decodeURIComponent(url.match(/[?&]owner=([^&]+)/)?.[1] ?? '');
+      const requestUrl = new URL(url, 'http://127.0.0.1');
+      const owner = requestUrl.searchParams.get('owner')?.trim() ?? '';
       if (owner) {
+        const parseBoundedInteger = (key: string): number | undefined => {
+          const raw = requestUrl.searchParams.get(key);
+          if (raw === null) return undefined;
+          if (!/^\d{1,16}$/.test(raw)) return NaN;
+          const value = Number(raw);
+          return Number.isSafeInteger(value) ? value : NaN;
+        };
+        const fromMs = parseBoundedInteger('from');
+        const toMs = parseBoundedInteger('to');
+        const requestedLimit = parseBoundedInteger('limit');
+        if ([fromMs, toMs, requestedLimit].some(value => value !== undefined && !Number.isFinite(value)) ||
+            fromMs !== undefined && toMs !== undefined && fromMs >= toMs) {
+          sendJson(res, 400, { ok: false, error: 'from/to must be increasing epoch-millisecond values; limit must be an integer' });
+          return;
+        }
+        const limit = requestedLimit === undefined
+          ? GATEWAY_REQUEST_OUTCOME_DEFAULT_LIMIT
+          : Math.max(1, Math.min(GATEWAY_REQUEST_OUTCOME_MAX_LIMIT, requestedLimit));
         const e = ownerLedger.get(owner) ?? null;
         const route = lastRouteByOwner.get(owner) ?? null;
         const pin = ownerPinMap.get(owner) ?? null;
-        sendJson(res, 200, {
+        const readOutcomes = deps.requestOutcomeStore
+          ? deps.requestOutcomeStore.report({ ownerId: owner, fromMs, toMs, limit })
+          : reportGatewayRequestOutcomes({ ownerId: owner, fromMs, toMs, limit });
+        void readOutcomes.then(requestOutcomes => sendJson(res, 200, {
           ok: true,
           now: Date.now(),
           owner,
@@ -11102,7 +11141,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           lastRoute: route,
           pin,
           stageTelemetry: requestStageTelemetry.snapshotForOwner(owner),
+          requestOutcomes,
           routingQuality: routingQualitySnapshot(owner),
+        })).catch(() => {
+          if (!res.headersSent) sendJson(res, 503, { ok: false, error: 'durable request outcome report unavailable', owner });
         });
         return;
       }

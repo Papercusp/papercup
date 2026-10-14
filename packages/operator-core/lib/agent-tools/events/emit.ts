@@ -25,7 +25,7 @@ import { softText, clampText, LIMITS } from '../limits';
 export default defineTool({
   name: 'events:emit',
   description:
-    'Fire an event key through the await-event primitive: every agent with an events:await on the key is woken (durable delivery — pty-inject / session-resume / inbox ladder); an optional `to` list also gets a coord inbox notify (never wakes). Use the key your waiter registered. Reports `waiters` — ACTIVE await registrations matched (excludes extra `to[]`) — so `waiters:0` with no `to[]` means the emit reached no one.',
+    'Fire an event key through the await-event primitive: every agent with an events:await on the key is woken (durable delivery — pty-inject / session-resume / inbox ladder); an optional `to` list also gets a coord inbox notify (never wakes) on a normal emit. On `announce:true`, `to` is rejected because the declaration is a latched gate notice that sends no notification; fire the returned key later to deliver. Use the key your waiter registered. Reports `waiters` — ACTIVE await registrations matched (excludes extra `to[]`) — so `waiters:0` with no `to[]` means the emit reached no one.',
   guidance: {
     when: "Announcing that the thing a peer is blocked on has happened: work is done, an artifact landed, a decision resolved. Pair with events:await — the waiter registers the key, you emit it. (To WAKE a parked AGENT, prefer the higher-level verbs: coord:wake to nudge, coord:dispatch to assign+wake, coord:send {wake:'required'} to message+wake.)",
     notWhen:
@@ -48,7 +48,7 @@ export default defineTool({
       .array(z.string().min(1))
       .max(50)
       .optional()
-      .describe("Additional NOTIFY audience: ownerIds, @plan:/@topic:/@object:/@file: selectors, '*' or 'human'. Wake-awaiters are excluded (their wake already carries it)."),
+      .describe("Additional NOTIFY audience for a normal event emit: ownerIds, @plan:/@topic:/@object:/@file: selectors, '*' or 'human'. Wake-awaiters are excluded (their wake already carries it). `announce:true` rejects `to` because declarations do not notify; announce with no recipients."),
     scope: z
       .enum(['hive', 'local'])
       .optional()

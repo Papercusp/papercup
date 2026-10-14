@@ -22,10 +22,12 @@
  * Without Remote access or a public URL nothing is subscribed, and polling alone keeps working.
  */
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import type postgres from 'postgres';
 import {
   PROVIDER_PUSH_SUBSCRIBE_CAPABILITY,
   PROVIDER_PUSH_UNSUBSCRIBE_CAPABILITY,
+  PROVIDER_INGRESS_NORMALIZE_CAPABILITY,
   type HostFetch,
   type ProviderPushDescriptor,
   type ProviderPushSubscription,
@@ -38,7 +40,11 @@ import type { WebhookDeliveryRequest, WebhookDeliveryResponse } from '../externa
 import { readyProviderRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { resolveProviderServices } from '../integrations/service-credentials';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
-import { CONNECTOR_SYNC_STATUSES, ProviderSyncFailure, wakeConnectorSource } from './connector-runtime';
+import { clientRegistrationRefOf, readOAuthClientRegistration } from '../integrations/oauth-client-registration';
+import { readProviderCredentialValue } from '../integrations/provider-credentials';
+import { DEFAULT_SOURCE_TOKEN_HARNESS } from '../external-triggers/source-store';
+import { isWebhookSourceId } from '../external-triggers/webhook-path';
+import { CONNECTOR_SYNC_STATUSES, ProviderSyncFailure, wakeConnectorSource, admitConnectorRecord, assertProviderRecords, type ConnectorSourceRow } from './connector-runtime';
 
 /** How long a handshake is accepted after the host opens the window for one `push.subscribe`. */
 export const PUSH_HANDSHAKE_WINDOW_SECONDS = 60;
@@ -201,8 +207,12 @@ export function pushSignatureMatches(input: {
   header: string | null | undefined;
   rawBody: Uint8Array;
   secrets: readonly string[];
+  prefix?: string;
 }): boolean {
-  const given = (input.header ?? '').trim().toLowerCase();
+  const raw = (input.header ?? '').trim();
+  const prefix = input.prefix ?? '';
+  if (!raw.startsWith(prefix)) return false;
+  const given = raw.slice(prefix.length).toLowerCase();
   if (!SIGNATURE_HEX.test(given)) return false;
   const candidate = Buffer.from(given, 'hex');
   const body = Buffer.from(input.rawBody);
@@ -233,6 +243,53 @@ export interface ConnectorPushDeliveryDependencies {
   encryptionKey?: string;
   now?: () => Date;
   wake?: typeof wakeConnectorSource;
+  /** Host-only seams; neither credential is handed to provider code. */
+  oauthSecretFor?: (provider: RegisteredProvider, registry: ProviderRegistry) => Promise<string | null>;
+  credentialFor?: typeof readProviderCredentialValue;
+  hostFetchFor?: (provider: RegisteredProvider, source: ConnectorSourceRow, registry: ProviderRegistry) => HostFetch;
+  admit?: typeof admitConnectorRecord;
+}
+
+function sourceHarness(source: ConnectorSourceRow): string {
+  return nonEmpty(source.config?.installSlug)?.trim() || DEFAULT_SOURCE_TOKEN_HARNESS;
+}
+
+async function oauthPushSecret(provider: RegisteredProvider, registry: ProviderRegistry): Promise<string | null> {
+  const ref = clientRegistrationRefOf(provider.descriptor, registry.list().map((p) => p.descriptor));
+  const registration = ref ? await readOAuthClientRegistration(ref) : null;
+  if (registration?.clientSecret) return registration.clientSecret;
+  if (registration?.clientSecretFile) return (await fs.readFile(registration.clientSecretFile, 'utf8')).trim() || null;
+  return null;
+}
+
+/** GET challenge at the same existing hook URL, using declared host-held credentials. */
+export async function handleConnectorPushVerification(
+  sourceId: string, params: URLSearchParams, deps: ConnectorPushDeliveryDependencies,
+): Promise<{ status: number; text: string }> {
+  const refused = { status: 403, text: 'verification_refused' };
+  if (!isWebhookSourceId(sourceId)) return { status: 404, text: 'not_found' };
+  const rows = await deps.sql<Array<{ workspaceId: string; kind: string; status: string; config: Record<string, unknown> }>>`
+    SELECT workspace_id AS "workspaceId", kind, status, config
+      FROM harness_shared.data_sources WHERE id = ${sourceId}::uuid LIMIT 1`;
+  const row = rows[0];
+  const provider = row ? (await deps.registry()).get(row.kind) : null;
+  const v = provider?.descriptor.push?.verification;
+  if (!row || !provider || !v || !SYNCABLE.has(row.status)) return { status: 404, text: 'not_found' };
+  if (!(await deps.remoteAccessEnabled(row.workspaceId))) return refused;
+  // Reject duplicate parameters rather than silently selecting an attacker's first value.
+  if ([v.modeParam, v.tokenParam, v.challengeParam].some((key) => params.getAll(key).length !== 1)
+    || params.get(v.modeParam) !== v.modeValue) return refused;
+  const challenge = params.get(v.challengeParam)!;
+  if (!/^[0-9]{1,100}$/.test(challenge)) return refused;
+  const harness = nonEmpty(row.config?.installSlug)?.trim() || DEFAULT_SOURCE_TOKEN_HARNESS;
+  let stored: string | null;
+  try { stored = await (deps.credentialFor ?? readProviderCredentialValue)(provider.descriptor, harness, v.credentialRef); }
+  catch { return refused; }
+  const token = params.get(v.tokenParam)!;
+  if (!stored || token.length > 4096) return refused;
+  const expected = createHash('sha256').update(stored).digest();
+  const given = createHash('sha256').update(token).digest();
+  return timingSafeEqual(expected, given) ? { status: 200, text: challenge } : refused;
 }
 
 function refuse(status: number, error: string, extra: Record<string, unknown> = {}): WebhookDeliveryResponse {
@@ -250,15 +307,20 @@ export async function handleConnectorPushDelivery(
   request: WebhookDeliveryRequest,
   deps: ConnectorPushDeliveryDependencies,
 ): Promise<WebhookDeliveryResponse | null> {
-  const rows = await deps.sql<Array<{ workspaceId: string; kind: string; status: string; handshakeOpenUntil: string | null }>>`
-    SELECT workspace_id AS "workspaceId", kind, status,
+  const rows = await deps.sql<Array<ConnectorSourceRow & { handshakeOpenUntil: string | null }>>`
+    SELECT id::text, workspace_id AS "workspaceId", kind, status, config, cursor,
+           owner_user_id AS "ownerUserId", credential_ref AS "credentialRef", scope,
+           backfill_status AS "backfillStatus", sync_failure_count AS "failureCount",
+           sync_wake_requested_at AS "wakeRequestedAt",
            cursor->'push'->>'handshakeOpenUntil' AS "handshakeOpenUntil"
       FROM harness_shared.data_sources
      WHERE id = ${request.sourceId}::uuid
      LIMIT 1`;
   const row = rows[0];
   if (!row) return null;
-  const push = (await deps.registry()).get(row.kind)?.descriptor.push;
+  const registry = await deps.registry();
+  const provider = registry.get(row.kind);
+  const push = provider?.descriptor.push;
   if (!push) return null;
   const openUntil = row.handshakeOpenUntil ? new Date(row.handshakeOpenUntil) : null;
   const target: ConnectorPushTarget = {
@@ -286,10 +348,38 @@ export async function handleConnectorPushDelivery(
     return { status: 200, body: { ok: true, handshake: true }, headers: { [handshakeHeader]: secret } };
   }
 
-  const secrets = await loadPushSecrets(deps.sql, target, dbKey);
+  let secrets: string[];
+  try {
+    const appSecret = push.signature.oauthClientSecret && provider
+      ? await (deps.oauthSecretFor ?? oauthPushSecret)(provider, registry) : null;
+    secrets = push.signature.oauthClientSecret ? (appSecret ? [appSecret] : []) : await loadPushSecrets(deps.sql, target, dbKey);
+  } catch { return refuse(401, 'signature_invalid', { reason: 'credential_unavailable' }); }
   if (secrets.length === 0) return refuse(401, 'signature_invalid', { reason: 'no_subscription' });
-  if (!pushSignatureMatches({ header: request.headers.get(push.signature.header), rawBody: request.rawBody, secrets })) {
+  if (!pushSignatureMatches({ header: request.headers.get(push.signature.header), rawBody: request.rawBody, secrets, prefix: push.signature.prefix })) {
     return refuse(401, 'signature_invalid', { reason: 'signature_invalid' });
+  }
+  if (push.delivery === 'normalize' && provider) {
+    let envelope: unknown;
+    try { envelope = JSON.parse(Buffer.from(request.rawBody).toString('utf8')); }
+    catch { return refuse(400, 'invalid_body'); }
+    try {
+      const fetch = deps.hostFetchFor?.(provider, row, registry) ?? createSourceHostFetch(deps.sql, {
+        providerId: provider.descriptor.id, workspaceId: row.workspaceId, harness: sourceHarness(row), registry,
+        reconnectRequired: (reason) => new ProviderSyncFailure({ kind: 'auth', message: reason }),
+      });
+      const result = await provider.adapter.invoke({ source: row.id, capability: PROVIDER_INGRESS_NORMALIZE_CAPABILITY,
+        args: { envelope, sourceConfig: row.config ?? {} } }, { fetch });
+      const records = (result as { records?: unknown } | null)?.records;
+      assertProviderRecords(records, provider);
+      for (const record of records) {
+        const outcome = await (deps.admit ?? admitConnectorRecord)(deps.sql, { source: row, providerId: provider.descriptor.id, record });
+        if (outcome === 'rejected') return refuse(503, 'record_admission_unavailable');
+      }
+      return { status: 200, body: { ok: true, records: records.length } };
+    } catch {
+      // Do not acknowledge a lost notification, or return provider error text/credentials.
+      return refuse(503, 'normalization_unavailable');
+    }
   }
   const woke = await (deps.wake ?? wakeConnectorSource)(deps.sql, { workspaceId: target.workspaceId, sourceId: target.sourceId });
   return { status: 200, body: { ok: true, woke } };

@@ -32,6 +32,9 @@ import {
   prepareVerifierDependencies,
   captureVerifierDependencies,
   runVerifierCommand,
+  readVerifierPhaseMeasurements,
+  estimateVerifierCommandBudget,
+  admitVerifierCommandBudget,
   validateVerifierInputs,
   runCli,
   verifyVerifierSource,
@@ -139,6 +142,41 @@ describe('source-preview export — R-1 selection parity with the installer cut'
 });
 
 describe('EI-25303741091409100 — pinned verifier source identity', () => {
+  const budgetPhases = { 'source.freeze': 103_607, 'receipt.write': 377,
+    'deps.source.before': 11_836, 'deps.snapshot': 140_626, 'deps.source.after-snapshot': 22_222,
+    'deps.inputs': 212, 'deps.measure': 3_197, 'deps.source.after-preflight': 9_789,
+    'deps.census': 556_985, 'deps.receipt.write': 2_778 };
+
+  it('refuses a 900-second envelope from measured phases before preparation and reserves the full final census', () => {
+    const estimate = estimateVerifierCommandBudget(budgetPhases, 60_000);
+    expect(estimate).toMatchObject({ dependencyCheckMs: 556_985, sourceCheckMs: 22_222,
+      cleanupMs: 140_626, childEstimateMs: 60_000, unknownChild: false });
+    expect(estimate.totalMs).toBeGreaterThan(900_000);
+    expect(() => admitVerifierCommandBudget(estimate, { nowMs: 1_000, preparation: true,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '901000' } })).toThrow('TASK_DEADLINE_REFUSAL');
+    expect(() => admitVerifierCommandBudget(estimate, { nowMs: 1_000,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '49368' } })).toThrow('TASK_DEADLINE_REFUSAL');
+    expect(admitVerifierCommandBudget(estimate, { nowMs: 1_000, env: {} }).deadlineEpochMs).toBeNull();
+    expect(admitVerifierCommandBudget(estimate, { nowMs: 1_000, preparation: true,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(estimate.totalMs + 1_001) } }).knownEstimateMs).toBe(estimate.totalMs);
+    expect(estimateVerifierCommandBudget(budgetPhases).unknownChild).toBe(true);
+  });
+
+  it('does not count failed or unfinished phase records as completed budget observations', () => {
+    const path = join(tmp, 'verifier-budget-history.jsonl');
+    const rows = [
+      { phase: 'deps.census', event: 'started', elapsedMs: 0 },
+      { phase: 'deps.census', event: 'failed', elapsedMs: 15, durationMs: 15 },
+      { phase: 'child.preflight', event: 'started', elapsedMs: 16 },
+    ].map((row, index) => ({ schemaVersion: 'verifier-phase-v1', sequence: index + 1, ...row }));
+    writeFileSync(path, rows.map(row => JSON.stringify(row)).join('\n'));
+    expect(readVerifierPhaseMeasurements(path)).toEqual({});
+    expect(() => estimateVerifierCommandBudget(readVerifierPhaseMeasurements(path)))
+      .toThrow('requires completed phase');
+    writeFileSync(path, JSON.stringify({ ...rows[0], sequence: 9 }));
+    expect(() => readVerifierPhaseMeasurements(path)).toThrow('Invalid verifier phase budget receipt');
+  });
+
   it('transports a complete list beyond the argv/env limit through file and piped stdout receipts', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-large-list-fixture'));
     const paths = Array.from({ length: 2000 }, (_, i) =>
@@ -534,7 +572,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(existsSync(join(tmp, 'refused-donor-receipt.json'))).toBe(false);
   });
 
-  it.each(['donor-change', 'child-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure'] as const)
+  it.each(['donor-change', 'child-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure', 'deadline-refusal', 'history-refusal'] as const)
     ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
@@ -572,11 +610,37 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const receiptPath = join(tmp, 'verifier-command-' + mode + '.receipt.json');
       const proofPath = join(tmp, 'verifier-command-' + mode + '.proof.json');
       const command = [process.execPath, provider, fixture.repo, mode, proofPath, '--provider-flag=literal'];
+      const budgetFrom = join(tmp, 'verifier-command-budget-' + mode + '.jsonl');
+      if (mode === 'history-refusal') {
+        let elapsedMs = 0;
+        const rows = Object.entries(budgetPhases).flatMap(([phase, durationMs], index) => [
+          { schemaVersion: 'verifier-phase-v1', sequence: index * 2 + 1, phase, event: 'started', elapsedMs },
+          { schemaVersion: 'verifier-phase-v1', sequence: index * 2 + 2, phase, event: 'completed', durationMs, elapsedMs: elapsedMs += durationMs },
+        ]);
+        writeFileSync(budgetFrom, rows.map(row => JSON.stringify(row)).join('\n'));
+      }
       const invocation = mode === 'donor-change'
         ? runCli(['verifier-run', '--repo', fixture.repo, '--ref', ref, '--inputs', provider,
           '--receipt', receiptPath, '--', ...command])
         : runVerifierCommand({ repo: fixture.repo, ref, inputs: [provider], receiptPath, command,
-          env: { ...process.env, NODE_OPTIONS: '--import=/nonexistent/ambient-loader', NODE_PATH: '/ambient/dependencies' } });
+          ...(mode === 'history-refusal' ? { budgetFrom } : {}),
+          childEstimateMs: mode === 'deadline-refusal' ? 600_000 : 0,
+          env: { ...process.env, NODE_OPTIONS: '--import=/nonexistent/ambient-loader', NODE_PATH: '/ambient/dependencies',
+            ...(['history-refusal', 'deadline-refusal'].includes(mode) ? { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 60_000) } : {}) } });
+      if (mode === 'deadline-refusal' || mode === 'history-refusal') {
+        await expect(invocation).rejects.toThrow('TASK_DEADLINE_REFUSAL');
+        expect(existsSync(proofPath)).toBe(false);
+        expect(readdirSync(join(fixture.repo, '.papercusp/scratch'))).toEqual([]);
+        const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(phases.some(row => row.phase === 'child.preflight' || row.phase === 'child.run')).toBe(false);
+        expect(phases.filter(row => row.event === 'failed').map(row => row.phase))
+          .toEqual([mode === 'history-refusal' ? 'source.admission' : 'child.admission']);
+        expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+        expect(readFileSync(join(fixture.repo, provider), 'utf8')).toBe(original);
+        if (mode === 'history-refusal') expect(existsSync(receiptPath)).toBe(false);
+        else expect(existsSync(receiptPath + '.dependencies.json')).toBe(true);
+        return;
+      }
       if (mode === 'frozen-tamper') await expect(invocation).rejects.toThrow('tampered verification source archive');
       else if (mode === 'dependency-tamper') await expect(invocation).rejects.toThrow('Verifier materialized dependencies changed during command');
       else if (mode === 'phase-io-failure') await expect(invocation).rejects.toThrow('EISDIR');
@@ -601,9 +665,9 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(phases.map(row => row.sequence)).toEqual(phases.map((_, index) => index + 1));
       expect(phases.every(row => Number.isFinite(row.elapsedMs) && row.elapsedMs >= 0)).toBe(true);
       expect(phases.filter(row => row.event === 'started').map(row => row.phase)).toEqual([
-        'source.freeze', 'receipt.write', 'deps.source.before', 'deps.snapshot',
+        'source.admission', 'source.freeze', 'receipt.write', 'deps.source.before', 'deps.snapshot',
         'deps.source.after-snapshot', 'deps.inputs', 'deps.measure', 'deps.source.after-preflight',
-        'deps.census', 'deps.receipt.write', 'child.run', 'deps.postverify',
+        'deps.census', 'deps.receipt.write', 'child.admission', 'child.preflight', 'child.run', 'deps.postverify',
         ...(mode === 'dependency-tamper' ? [] : ['source.postverify']), 'cleanup',
       ]);
       expect(phases.filter(row => row.event === 'failed').map(row => row.phase))

@@ -97,6 +97,7 @@ import {
   type WorkItem,
 } from '../../work-items';
 import { assessForceRelease, notifyForceRelease, recordForceReleaseAudit } from './release-force-guard';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 const releaseM = vi.mocked(releaseWorkItem);
 const holdM = vi.mocked(setWorkItemClaimHold);
@@ -214,6 +215,18 @@ describe('work_items:release handler (keyed-array)', () => {
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'WI-X' });
     expect(String(b.results[1].error)).toMatch(/WI-X.*not found/i);
+  });
+
+  it('preserves a labeled PG timeout in the runBulk item error', async () => {
+    releaseM.mockRejectedValue(
+      new OrgTxnTimeoutError('57014', new Error('statement canceled'), undefined, 'pg', 'read', 'work_items:release:read-preflight'),
+    );
+
+    const b = await body({ id: 'EI-timeout' });
+
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'EI-timeout' });
+    expect(b.results[0].error).toContain('[phase: work_items:release:read-preflight]');
+    expect(b.results[0].error).toContain('pg 57014 statement_timeout');
   });
 });
 

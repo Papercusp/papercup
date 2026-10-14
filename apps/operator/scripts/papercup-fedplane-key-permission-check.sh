@@ -156,6 +156,52 @@ KEYPERM_EXCLUDE_DIRS="${KEYPERM_EXCLUDE_DIRS-$EXCLUDE_DIRS_DEFAULT}"
 
 log() { echo "[fedplane-key-perm $(date +%H:%M:%S 2>/dev/null || true)] $*" >&2; }
 jstr() { printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
+summarize_scan_stderr() {
+  local root="$1" source="$2" file="$3" bytes summary capped="no"
+  [ -s "$file" ] || return 0
+  bytes="$(wc -c < "$file" 2>/dev/null | tr -d '[:space:]')"
+  bytes="${bytes:-0}"
+  [ "$bytes" -ge 32768 ] && capped="yes"
+  # Never forward stderr text or candidate paths to the journal. The raw files
+  # are private, temporary, and limited to 32 KiB each; only these fixed error
+  # classes and counts leave the temporary directory.
+  summary="$(awk '
+    function classify(line, lower) {
+      lower = tolower(line)
+      if (lower ~ /permission denied/) return "permission_denied"
+      if (lower ~ /operation not permitted/) return "operation_not_permitted"
+      if (lower ~ /no such file or directory/) return "no_such_file"
+      if (lower ~ /stale file handle/) return "stale_handle"
+      if (lower ~ /input\/output error|i\/o error/) return "io_error"
+      if (lower ~ /too many open files|cannot allocate memory|resource temporarily unavailable/) return "resource_exhaustion"
+      if (lower ~ /file name too long|invalid argument/) return "path_error"
+      return "other"
+    }
+    { lines++; classes[classify($0)]++ }
+    END {
+      if (lines == 0) exit
+      printf "stderr_lines=%d", lines
+      if (classes["permission_denied"]) printf " permission_denied=%d", classes["permission_denied"]
+      if (classes["operation_not_permitted"]) printf " operation_not_permitted=%d", classes["operation_not_permitted"]
+      if (classes["no_such_file"]) printf " no_such_file=%d", classes["no_such_file"]
+      if (classes["stale_handle"]) printf " stale_handle=%d", classes["stale_handle"]
+      if (classes["io_error"]) printf " io_error=%d", classes["io_error"]
+      if (classes["resource_exhaustion"]) printf " resource_exhaustion=%d", classes["resource_exhaustion"]
+      if (classes["path_error"]) printf " path_error=%d", classes["path_error"]
+      if (classes["other"]) printf " other=%d", classes["other"]
+      printf "\n"
+    }
+  ' "$file" 2>/dev/null)"
+  [ -n "$summary" ] || summary="diagnostic_summary=unavailable"
+  log "tier2: stderr diagnostics root=$root source=$source bytes=$bytes capped=$capped $summary"
+}
+scan_diagnostics_dir=""
+cleanup_scan_diagnostics() {
+  if [ -n "${scan_diagnostics_dir:-}" ]; then
+    rm -rf -- "$scan_diagnostics_dir" 2>/dev/null || true
+    scan_diagnostics_dir=""
+  fi
+}
 log "run: source=${PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_PATH:-$0} snapshot_sha256=${PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_SHA256:-unknown} roots=[$KEYPERM_DEEP_ROOTS] timeout_per_root=${KEYPERM_DEEP_TIMEOUT_S}s"
 
 # Build the shared `find` prune expression from KEYPERM_EXCLUDE_DIRS.
@@ -412,7 +458,7 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
   }
   trap 'stop_scan_on_signal 143' TERM
   trap 'stop_scan_on_signal 130' INT
-  trap stop_scan_progress EXIT
+  trap 'stop_scan_progress; cleanup_scan_diagnostics' EXIT
   progress_interval_s=300
   if [[ "$KEYPERM_DEEP_TIMEOUT_S" =~ ^[0-9]+$ ]]; then
     progress_interval_s=$((KEYPERM_DEEP_TIMEOUT_S / 6))
@@ -454,15 +500,34 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
     # extra process.
     # Best-effort class at priority 7 is the lowest best-effort level. Unlike
     # idle class, it can still make progress while the device has active work.
-    deep_out="$(timeout "$KEYPERM_DEEP_TIMEOUT_S" nice -n 10 ionice -c 2 -n 7 bash -c '
-        set -o pipefail
-        re="$1"; shift
-        # The current workspace population is over 1.1M eligible files. Larger
-        # batches cut process startup overhead; four concurrent batches overlap
-        # content reads while xargs enforces system argument-size limits.
-        find "$@" -print0 2>/dev/null | xargs -0 -r -P 4 -n 1000 bash -c "grep -laIE -m1 \"\$0\" \"\$@\" 2>/dev/null; status=\$?; [ \"\$status\" -eq 1 ] && exit 0; exit \"\$status\"" "$re"
-      ' _ "$KEY_HEADER_RE" "$root" "${PRUNE_ARGS[@]}" -type f -size -64k -size +100c)"
-    rc=$?
+    scan_diagnostics_dir="$(mktemp -d "${TMPDIR:-/tmp}/papercusp-keyperm-scan.XXXXXX" 2>/dev/null || true)"
+    find_stderr_file="$scan_diagnostics_dir/find.stderr"
+    grep_stderr_file="$scan_diagnostics_dir/grep.stderr"
+    deep_out=""
+    rc=125
+    if [ -n "$scan_diagnostics_dir" ] && chmod 700 "$scan_diagnostics_dir" 2>/dev/null &&
+      : > "$find_stderr_file" && : > "$grep_stderr_file" &&
+      chmod 600 "$find_stderr_file" "$grep_stderr_file" 2>/dev/null; then
+      deep_out="$(timeout "$KEYPERM_DEEP_TIMEOUT_S" nice -n 10 ionice -c 2 -n 7 bash -c '
+          set -o pipefail
+          diagnostic_dir="$1"; shift
+          re="$1"; shift
+          # ulimit -f is in 512-byte blocks: keep each temporary stderr file
+          # at or below 32 KiB even if a root produces thousands of errors.
+          ulimit -f 64 || exit 125
+          export KEYPERM_DIAG_DIR="$diagnostic_dir"
+          # The current workspace population is over 1.1M eligible files. Larger
+          # batches cut process startup overhead; four concurrent batches overlap
+          # content reads while xargs enforces system argument-size limits.
+          find "$@" -print0 2>"$diagnostic_dir/find.stderr" | xargs -0 -r -P 4 -n 1000 bash -c "grep -laIE -m1 \"\$0\" \"\$@\" 2>>\"\$KEYPERM_DIAG_DIR/grep.stderr\"; status=\$?; [ \"\$status\" -eq 1 ] && exit 0; exit \"\$status\"" "$re"
+        ' _ "$scan_diagnostics_dir" "$KEY_HEADER_RE" "$root" "${PRUNE_ARGS[@]}" -type f -size -64k -size +100c)"
+      rc=$?
+      summarize_scan_stderr "$root" "find" "$find_stderr_file"
+      summarize_scan_stderr "$root" "grep" "$grep_stderr_file"
+    else
+      log "tier2: bounded stderr diagnostics unavailable root=$root; skipping this root and preserving INDETERMINATE status"
+    fi
+    cleanup_scan_diagnostics
     stop_scan_progress
     root_finished_epoch="$(date +%s 2>/dev/null || echo "$root_started_epoch")"
     root_elapsed_s=$((root_finished_epoch - root_started_epoch))

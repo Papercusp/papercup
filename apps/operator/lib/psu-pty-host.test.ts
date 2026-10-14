@@ -8030,11 +8030,24 @@ describe('codex auth-failure detector (parked-agent-census P-004)', () => {
 
   // Verbatim codex-cli 0.162.1 copy, wrapped and styled the way the TUI paints it.
   const REAL = 'Your access token could not be refreshed. Please log out and sign in again.';
+  const MISSING_BEARER_401 = '401 Unauthorized: Missing bearer or basic authentication';
 
   it('matches the real codex copy, including a wrapped, word-joined repaint', () => {
     expect(realHost.codexAuthFailureMatch(`■ ${REAL}`, 'codex').matched).toBe(true);
     expect(realHost.codexAuthFailureMatch('Your access token could not be\nrefreshed.', 'codex').matched).toBe(true);
     expect(realHost.codexAuthFailureMatch('Please log out and sign inagain.', 'codex').matched).toBe(true);
+  });
+
+  it('detects and latches the Responses API missing-bearer 401 from the provider alarm', () => {
+    const wrapped = '401 Unauthorized:\nMissing bearer or basic authentication';
+    expect(realHost.codexAuthFailureMatch(MISSING_BEARER_401, 'codex').matched).toBe(true);
+    expect(realHost.codexAuthFailureMatch(wrapped, 'codex').matched).toBe(true);
+    expect(realHost.codexAuthFailureMatch(MISSING_BEARER_401, 'claude').matched).toBe(false);
+    expect(realHost.codexAuthFailureMatch('401 Unauthorized: Missing bearer token', 'codex').matched).toBe(false);
+
+    const detector = realHost.makeAuthBlockDetector({ agent: 'codex' });
+    expect(detector.observe(MISSING_BEARER_401)).toBe('detected');
+    expect(detector.snapshot().authBlocked).toBe(true);
   });
 
   it('never matches other agents or ordinary codex output', () => {

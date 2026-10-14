@@ -364,6 +364,18 @@ function remainingFromSnapshot(routing: unknown, excludeOwnerId: string): Array<
     .map((c) => ({ ownerId: c.ownerId, score: c.score, liveness: c.liveness ?? 'unknown' }));
 }
 
+/** A changed-facts follow-up may continue an undelivered finite menu. It does
+ * not reopen closed consultations, rerank expertise or replay tried sources. */
+function isUndeliveredRequesterFact(
+  row: ConsultStateRow,
+  reply?: { authorId: string; kind: ConsultReplyKind },
+): boolean {
+  return row.closed_at === null && row.responder_id === null &&
+    (row.state === 'no_qualified_responder' || row.state === 'no_launchable_responder') &&
+    reply?.authorId === row.requester_id && reply.kind === 'new_fact' &&
+    selectionFromRouting(row.routing).length > 0;
+}
+
 function gateCommon(
   row: ConsultStateRow | null,
   manualReply?: { authorId: string; kind: ConsultReplyKind },
@@ -375,7 +387,7 @@ function gateCommon(
     row.responder_id !== row.requester_id &&
     manualReply?.authorId === row.responder_id &&
     manualReply.kind === 'new_fact';
-  if (!POSTABLE_STATES.has(row.state) && !isManualNoQualifiedReply) {
+  if (!POSTABLE_STATES.has(row.state) && !isManualNoQualifiedReply && !isUndeliveredRequesterFact(row, manualReply)) {
     return {
       error: 'consult_not_open',
       state: row.state,
@@ -562,6 +574,7 @@ export async function consultReplyCore(
     };
   }
   const role: 'requester' | 'responder' = req.authorId === row.requester_id ? 'requester' : 'responder';
+  const resumesUndelivered = isUndeliveredRequesterFact(row, req);
 
   // Kind rules (D-001): the enum is the structural termination — untyped prose
   // ("ok thanks") has no valid kind and cannot enter the thread.
@@ -674,8 +687,8 @@ export async function consultReplyCore(
   const exchangesUsed = row.exchanges_used + (isPerspective ? 0 : 1);
   await sql`
     UPDATE harness_shared.consult_state
-       SET state = ${nextState},
-           exchanges_used = ${exchangesUsed},
+       SET state = CASE WHEN ${resumesUndelivered}::boolean THEN state ELSE ${nextState} END,
+           exchanges_used = CASE WHEN ${resumesUndelivered}::boolean THEN exchanges_used + 1 ELSE ${exchangesUsed} END,
            wakes_used = wakes_used + ${willWake ? 1 : 0},
            updated_at = ${now}::timestamptz
      WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
@@ -745,7 +758,7 @@ export async function consultReplyCore(
     | NonNullable<ConsultReplyResult['wake']>['reroute']
     | undefined = willWake && woke === 0 ? { status: 'not_confirmed_dead', to: null } : undefined;
   const confirmedDeadFollowup = role === 'requester' && responderConfirmedDead;
-  if (isPerspective || confirmedDeadFollowup) {
+  if (isPerspective || confirmedDeadFollowup || resumesUndelivered) {
     const adv = await advanceCascade(
       {
         workspaceId: req.workspaceId,
@@ -759,7 +772,7 @@ export async function consultReplyCore(
         // Safe narrowing: isPerspective ⇒ role 'responder', and the kind gate
         // above already restricted req.kind to RESPONDER_REPLY_KINDS — the
         // requester-only 'question' cannot reach this branch.
-        event: isPerspective
+        event: isPerspective || resumesUndelivered
           ? makeDigestEntry(req.authorId, req.kind as CascadeEventKind, now, req.body)
           : makeDigestEntry(
               answeringOwnerId ?? row.responder_id ?? req.authorId,
@@ -773,6 +786,7 @@ export async function consultReplyCore(
             ? 'awaiting_responder'
             : 'active',
         nowIso: now,
+        ...(resumesUndelivered ? { expectedState: row.state } : {}),
       },
       sql,
       deps.dispatch,
@@ -788,13 +802,13 @@ export async function consultReplyCore(
         ...(adv.pending ? { pending: true } : {}),
         ...(adv.refilled ? { refilled: true } : {}),
       };
-      if (confirmedDeadFollowup) {
+      if (confirmedDeadFollowup || resumesUndelivered) {
         requesterReroute = {
           status: adv.advanced ? 'advanced' : adv.exhausted ? 'exhausted' : 'unchanged',
           to: adv.advanced ? adv.next?.ownerId ?? null : null,
         };
       }
-    } else if (confirmedDeadFollowup) {
+    } else if (confirmedDeadFollowup || resumesUndelivered) {
       requesterReroute = { status: 'raced', to: null };
     }
   }
@@ -809,7 +823,7 @@ export async function consultReplyCore(
     requesterReroute?.status === 'advanced'
       ? `; the consult advanced to reviewer ${requesterReroute.to}`
       : requesterReroute?.status === 'exhausted'
-        ? '; the confirmed-ended responder had no remaining selected reviewer'
+        ? '; no remaining reviewer could be dispatched from the saved cascade'
         : requesterReroute?.status === 'raced'
           ? '; another operation advanced the cascade first'
           : requesterReroute?.status === 'unchanged'
@@ -830,7 +844,7 @@ export async function consultReplyCore(
     ok: true,
     post_id: postId,
     role,
-    state: nextState,
+    state: resumesUndelivered ? (await readState(sql, req.workspaceId, req.conversationId))?.state ?? nextState : nextState,
     exchanges_used: exchangesUsed,
     max_exchanges: row.max_exchanges,
     ...(role === 'requester'
@@ -838,7 +852,7 @@ export async function consultReplyCore(
           wake: {
             attempted: willWake,
             woke,
-            ...(willWake && woke === 0 && requesterReroute ? { reroute: requesterReroute } : {}),
+            ...((willWake && woke === 0 || resumesUndelivered) && requesterReroute ? { reroute: requesterReroute } : {}),
           },
         }
       : {}),

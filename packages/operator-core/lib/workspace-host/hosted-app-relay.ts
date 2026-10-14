@@ -68,6 +68,7 @@ export const APP_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
   { method: 'DELETE', pattern: /^\/api\/mcp$/, surface: 'app MCP session end' },
   // P-017 (D-032 #4): a signed webhook. The machine route checks the HMAC signature itself.
   { method: 'POST', pattern: WEBHOOK_PATH_RE, surface: 'signed webhook delivery' },
+  { method: 'GET', pattern: WEBHOOK_PATH_RE, surface: 'signed webhook verification' },
 ];
 
 export function decideAppHttpRoute(method: unknown, path: unknown): OperatorHttpRouteDecision {
@@ -93,6 +94,7 @@ const APP_FORWARDED_REQUEST_HEADERS = new Set([
   'papercusp-signature',
   'papercusp-event',
   'papercusp-delivery',
+  'x-hub-signature-256',
 ]);
 export const APP_HTTP_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   'content-type',
@@ -798,12 +800,12 @@ export async function handleHostedAppRelay(request: Request, deps: HostedAppRela
   }
 
   // P-017 (D-032 #4): a signed webhook carries no app key. The MACHINE checks its HMAC
-  // signature, so the portal skips the key check here, and admits only POST. Every other
+  // signature, so the portal skips the key check here, and admits only GET/POST. Every other
   // portal rule below (offline refusal, rate and bandwidth limits) still applies.
   const webhook = isWebhookPath(target.machinePath);
-  if (webhook && request.method.toUpperCase() !== 'POST') {
+  if (webhook && !['GET', 'POST'].includes(request.method.toUpperCase())) {
     audit('app_relay_refused', 'method_not_allowed');
-    return refuse(405, 'method_not_allowed', { allow: 'POST' });
+    return refuse(405, 'method_not_allowed', { allow: 'GET, POST' });
   }
 
   // D-005: app routes take a limited key and nothing else. Read from Authorization

@@ -115,13 +115,15 @@ function payload(id = 'edit-one', paths = ['sub/one.ts']) {
     tool_input: `*** Begin Patch\n${paths.map(p => `*** Update File: ${join(repo, p)}\n@@\n-a\n+b`).join('\n')}\n*** End Patch` };
 }
 
-async function hook(file: string, input: object, expectOperation = true) {
-  const result = await runHookProcess('bash', [join(hooks, file)], {
+async function hook(file: string, input: object, expectOperation = true, hookDirectory = hooks) {
+  const result = await runHookProcess('bash', [join(hookDirectory, file)], {
     input: JSON.stringify(input), env: {
       ...process.env, HOME: home, PAPERCUSP_LOCKS_CACHE_DIR: cache, PAPERCUSP_WORKSPACE_ROOT: ws,
       PAPERCUSP_CANONICAL_TREE: repo, PAPERCUSP_OPERATOR_URL: origin,
       PAPERCUSP_LOCKS_RELEASE_FALLBACK_URL: origin, PAPERCUSP_SID: owner, PAPERCUSP_LOCK_SID: owner,
       PAPERCUSP_NATIVE_SESSION_ID: session, CODEX_HOME: undefined,
+      PAPERCUSP_LIFECYCLE_REPLAY_TRACE: join(root, 'lifecycle-replays'),
+      PAPERCUSP_LIFECYCLE_RELEASE_HOOK: join(hooks, 'posttooluse-locks-release.sh'),
     },
   });
   expect(result.status).toBe(0);
@@ -135,6 +137,20 @@ async function hook(file: string, input: object, expectOperation = true) {
 }
 
 function record(id = 'edit-one') { return JSON.parse(fs.readFileSync(join(cache, id + '.operation.json'), 'utf8')); }
+
+function tracedLifecycle() {
+  const directory = join(root, 'lifecycle-hooks');
+  // Keep sibling imports intact: fail-open import failures must not look like
+  // a lifecycle fast path. The pending-operation controls exercise this copy.
+  fs.cpSync(hooks, directory, { recursive: true });
+  fs.writeFileSync(join(directory, 'posttooluse-locks-release.sh'), [
+    '#!/usr/bin/env bash',
+    'printf "replay\\n" >> "$PAPERCUSP_LIFECYCLE_REPLAY_TRACE"',
+    'exec bash "$PAPERCUSP_LIFECYCLE_RELEASE_HOOK" "$@"',
+    '',
+  ].join('\n'));
+  return { directory, trace: join(root, 'lifecycle-replays') };
+}
 
 // D-005: a record shaped like the pre-fix replays (EI-25871003145591038) —
 // never pinned, admission deadline long past, scope unrelated to the new call.
@@ -426,6 +442,57 @@ describe('native hook operation fence', () => {
     lateAcquire?.();
     expect(mutations.get(saved.operation.id)?.state).toBe('cancelled');
     expect(grants.size).toBe(0); expect(proofs.size).toBe(0);
+  });
+
+  it.each([
+    ['Stop', 'completed'], ['Stop', 'cancelled'],
+    ['SessionEnd', 'completed'], ['SessionEnd', 'cancelled'],
+  ] as const)('lifecycle %s skips terminal replay child for %s tombstone', async (event, terminal) => {
+    await hook('pretooluse-locks-acquire.sh', payload());
+    await hook('posttooluse-locks-release.sh', terminal === 'completed'
+      ? success() : { ...payload(), tool_response: { success: false } });
+    expect(record().terminal).toBe(terminal);
+    const tombstone = fs.readFileSync(join(cache, 'edit-one.operation.json'), 'utf8');
+    const sent = requests.filter(r => r.name.startsWith('locks:')).length;
+    const replay = tracedLifecycle();
+
+    await hook('lifecycle-report.sh', { hook_event_name: event, session_id: session }, true, replay.directory);
+
+    expect(fs.existsSync(replay.trace)).toBe(false);
+    expect(fs.readFileSync(join(cache, 'edit-one.operation.json'), 'utf8')).toBe(tombstone);
+    expect(requests.filter(r => r.name.startsWith('locks:'))).toHaveLength(sent);
+  });
+
+  it.each(['Stop', 'SessionEnd'])('lifecycle %s invokes the pending replay child and fences a lost reply', async (event) => {
+    loseAcquire = true;
+    await hook('pretooluse-locks-acquire.sh', payload());
+    const saved = record();
+    expect(saved.terminal).toBeUndefined();
+    const replay = tracedLifecycle();
+
+    await hook('lifecycle-report.sh', { hook_event_name: event, session_id: session }, true, replay.directory);
+    lateAcquire?.();
+
+    expect(fs.readFileSync(replay.trace, 'utf8')).toBe('replay\n');
+    expect(record()).toMatchObject({ terminal: 'cancelled', operation: saved.operation });
+    expect(mutations.get(saved.operation.id)?.state).toBe('cancelled');
+    expect(grants.size).toBe(0);
+    expect(proofs.size).toBe(0);
+  });
+
+  it('lifecycle terminal fast path preserves later positive native proof enrichment', async () => {
+    await hook('pretooluse-locks-acquire.sh', payload());
+    await hook('posttooluse-locks-release.sh', { ...payload(), tool_response: { success: false } });
+    const saved = record();
+    const replay = tracedLifecycle();
+    await hook('lifecycle-report.sh', { hook_event_name: 'Stop', session_id: session }, true, replay.directory);
+    expect(fs.existsSync(replay.trace)).toBe(false);
+
+    await hook('posttooluse-locks-release.sh', success());
+
+    expect(record()).toMatchObject({ terminal: 'completed', operation: saved.operation });
+    expect(proofs.get(saved.operation.id)?.paths).toEqual(['sub/one.ts']);
+    expect(requests.filter(r => r.name === 'locks:release')).toHaveLength(1);
   });
 
   it('successful retry finishes the earlier exact-scope operation but keeps an unrelated operation', async () => {

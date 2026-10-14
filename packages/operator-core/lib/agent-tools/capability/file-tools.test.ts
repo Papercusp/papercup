@@ -20,7 +20,12 @@ import readTool, { capabilityReadSeeAlso, DEFAULT_LIMIT, MAX_FILE_BYTES } from '
 import writeTool, { emptyWriteWouldDestroy, looksLikeDisplayFormattedRead } from './write';
 import editTool from './edit';
 import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
-import { writeScratchReference } from '../../scratch-reference';
+import * as scratchReference from '../../scratch-reference';
+import {
+  DURABLE_SCRATCH_REFERENCE_SCHEME,
+  storeVolatileScratchReference,
+  writeScratchReference,
+} from '../../scratch-reference';
 
 const editCaptureMocks = vi.hoisted(() => ({
   useCoordinatedLock: false,
@@ -461,6 +466,137 @@ describe('capability:read', () => {
     )) as { content: Array<{ text: string }> };
     expect(lines.content[0].text).toContain('second line');
     expect(lines.content[0].text).not.toContain('first line');
+  });
+
+  it('reads durable scratch-spool URIs as exact byte pages with the caller manifest context', async () => {
+    const payload = Buffer.from('durable result-page bytes', 'utf8');
+    const manifest = writeScratchReference({
+      filePath: join(DIR, 'durable-reference.spill'),
+      payload,
+      workspaceId: 'ws-1',
+      ownerId: 'su-owner',
+      audience: 'owner',
+      mediaType: 'text/plain',
+    });
+    const uri = DURABLE_SCRATCH_REFERENCE_SCHEME + '/' + 'a'.repeat(64);
+    const durableReader = vi.spyOn(
+      scratchReference,
+      'readDurableScratchReference',
+    ).mockResolvedValue({ manifest, payload });
+    const ownerCtx = {
+      ...baseCtx,
+      workspaceId: 'ws-1',
+      uiClientId: 'su-owner',
+      isSuperuser: true,
+    };
+
+    try {
+      const first = (await readTool.handler!({
+        uri,
+        byte_offset: 2,
+        byte_limit: 4,
+      }, ownerCtx as never)) as { content: Array<{ text: string }>; isError?: boolean };
+      expect(first.isError).not.toBe(true);
+      const firstPage = parse(first) as {
+        encoding: string;
+        data: string;
+        byte_offset: number;
+        byte_length: number;
+        eof: boolean;
+        next_cursor: { tool: string; args: Record<string, unknown> } | null;
+      };
+      expect(firstPage).toMatchObject({
+        encoding: 'base64',
+        byte_offset: 2,
+        byte_length: 4,
+        eof: false,
+        next_cursor: {
+          tool: 'capability:read',
+          args: { file_path: uri, byte_offset: 6, byte_limit: 4 },
+        },
+      });
+      expect(Buffer.from(firstPage.data, 'base64')).toEqual(payload.subarray(2, 6));
+
+      const next = (await readTool.handler!(
+        firstPage.next_cursor!.args as never,
+        ownerCtx as never,
+      )) as { content: Array<{ text: string }>; isError?: boolean };
+      expect(next.isError).not.toBe(true);
+      const nextPage = parse(next) as { byte_offset: number; data: string };
+      expect(nextPage.byte_offset).toBe(6);
+      expect(Buffer.from(nextPage.data, 'base64')).toEqual(payload.subarray(6, 10));
+      expect(durableReader).toHaveBeenNthCalledWith(1, uri, {
+        workspaceId: 'ws-1',
+        ownerId: 'su-owner',
+      });
+      expect(durableReader).toHaveBeenNthCalledWith(2, uri, {
+        workspaceId: 'ws-1',
+        ownerId: 'su-owner',
+      });
+    } finally {
+      durableReader.mockRestore();
+    }
+  });
+
+  it('rejects line, query, and view modes on durable and volatile scratch references', async () => {
+    const payload = Buffer.from('scratch mode guard payload', 'utf8');
+    const manifest = writeScratchReference({
+      filePath: join(DIR, 'durable-mode-guard.spill'),
+      payload,
+      workspaceId: 'ws-1',
+      ownerId: 'su-owner',
+      audience: 'owner',
+      mediaType: 'text/plain',
+    });
+    const durableUri = DURABLE_SCRATCH_REFERENCE_SCHEME + '/' + 'b'.repeat(64);
+    const durableReader = vi.spyOn(
+      scratchReference,
+      'readDurableScratchReference',
+    ).mockResolvedValue({ manifest, payload });
+    const volatile = storeVolatileScratchReference({
+      payload,
+      workspaceId: 'ws-1',
+      ownerId: 'su-owner',
+      audience: 'owner',
+      mediaType: 'text/plain',
+    });
+    expect(volatile).not.toBeNull();
+    if (!volatile) throw new Error('volatile scratch reference was not stored');
+    const ownerCtx = {
+      ...baseCtx,
+      workspaceId: 'ws-1',
+      uiClientId: 'su-owner',
+      isSuperuser: true,
+    };
+
+    try {
+      for (const entry of [
+        { uri: durableUri, missingWindow: 'durable_reference_requires_byte_window' },
+        { uri: volatile.uri, missingWindow: 'volatile_reference_requires_byte_window' },
+      ]) {
+        const missing = (await readTool.handler!(
+          { uri: entry.uri } as never,
+          ownerCtx as never,
+        )) as { content: Array<{ text: string }>; isError?: boolean };
+        expect(missing.isError).toBe(true);
+        expect(parse(missing).reason).toBe(entry.missingWindow);
+
+        for (const mode of [
+          { query: 'payload' },
+          { view_lines: { offset: 1, limit: 1 } },
+        ]) {
+          const mixed = (await readTool.handler!(
+            { uri: entry.uri, byte_offset: 0, byte_limit: 4, ...mode } as never,
+            ownerCtx as never,
+          )) as { content: Array<{ text: string }>; isError?: boolean };
+          expect(mixed.isError).toBe(true);
+          expect(parse(mixed).reason).toBe('mixed_window_modes');
+        }
+      }
+      expect(durableReader).not.toHaveBeenCalled();
+    } finally {
+      durableReader.mockRestore();
+    }
   });
 
   it('selects only requested MCP content items and rejects the wrong owner', async () => {

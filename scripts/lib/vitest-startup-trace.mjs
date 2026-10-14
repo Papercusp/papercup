@@ -1,7 +1,88 @@
 /** Passive, bounded diagnostics for Vitest's real forks lifecycle protocol. */
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+/** Reuse the OUT channel and this preload without enabling stderr diagnostics. */
+export function nativeProcessTraceEnv(env = process.env) {
+  if (!env.PC_EXECUTED_SOURCE_MAP_OUT?.trim()) return env;
+  const preload = `--import=${JSON.stringify(new URL('./vitest-startup-trace.mjs', import.meta.url).href)}`;
+  const options = env.NODE_OPTIONS ?? '';
+  return { ...env, NODE_OPTIONS: options.includes(preload) ? options : `${options} ${preload}`.trim() };
+}
+
+// These are observations, not a shell parser or a complete execution census.
+// Preserve each Node entry/exit and npm's actual exported spawn calls, including
+// lifecycle scripts. Missing preloads, shell builtins, signals and private spawn
+// implementations remain gaps in the parent receipt. Never alter stdio/options.
+function installNativeProcessTrace(out) {
+  const identity = randomUUID();
+  let root;
+  try {
+    const path = `${out}.native-processes`;
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    if (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink()) return;
+    root = realpathSync(path);
+  } catch { return; }
+  const lifecycle = env => ({ event: env.npm_lifecycle_event ?? null,
+    script: env.npm_lifecycle_script ?? null });
+  let remaining = 512;
+  const emit = (event, fields = {}, terminal = false) => {
+    if (!terminal && remaining-- < 0) return;
+    try {
+      let row = { schemaVersion: 1, kind: 'native-node-process-event', event,
+        processIdentity: identity, pid: process.pid, ppid: process.ppid, atMs: Date.now(), ...fields };
+      if (!terminal && remaining === -1) row = { ...row, event: 'trace-limit' };
+      let bytes = Buffer.from(JSON.stringify(row));
+      if (bytes.length > 128 * 1024) {
+        bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, kind: row.kind,
+          event: 'trace-event-too-large', processIdentity: identity, pid: process.pid,
+          ppid: process.ppid, atMs: row.atMs, omittedEvent: event }));
+      }
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const path = join(root, `${sha256}.json`);
+      try { writeFileSync(path, bytes, { flag: 'wx', mode: 0o600 }); }
+      catch (error) { if (error?.code !== 'EEXIST') return; }
+      // Do not replace redirected or changed evidence on a repeated write.
+      if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() ||
+          !readFileSync(path).equals(bytes)) return;
+    } catch { /* Observation failures never change the native command. */ }
+  };
+  try {
+    emit('node-entry', { executable: process.execPath, argv: process.argv.slice(),
+      execArgv: process.execArgv.slice(), cwd: process.cwd(), lifecycle: lifecycle(process.env),
+      nodeOptions: loaderIdentity(process.env.NODE_OPTIONS) });
+  } catch { /* Even an unavailable cwd must not prevent the native entry. */ }
+  process.once('exit', code => emit('node-exit', { code }, true));
+  const originalSpawn = childProcess.spawn;
+  childProcess.spawn = function(command, ...args) {
+    const childIdentity = randomUUID();
+    let child;
+    try { child = originalSpawn.call(this, command, ...args); }
+    catch (error) {
+      emit('child-spawn-error', { childIdentity, errorCode: error?.code ?? null });
+      throw error;
+    }
+    try {
+      const argv = Array.isArray(args[0]) ? args[0].slice() : [];
+      const options = (Array.isArray(args[0]) ? args[1] : args[0]) ?? {};
+      emit('child-spawn', { childIdentity, childPid: child.pid ?? null, command, argv,
+        cwd: options.cwd == null ? process.cwd() : String(options.cwd),
+        shell: options.shell ?? false, lifecycle: lifecycle(options.env ?? process.env),
+        stdioAccessible: { stdout: Boolean(child.stdout), stderr: Boolean(child.stderr) } });
+      child.once('close', (code, signal) => emit('child-close', {
+        childIdentity, childPid: child.pid ?? null, code, signal }));
+    } catch { /* Return the exact native child even if observation fails. */ }
+    return child;
+  };
+  syncBuiltinESMExports();
+}
+
+if (process.env.PC_EXECUTED_SOURCE_MAP_OUT?.trim()) {
+  installNativeProcessTrace(process.env.PC_EXECUTED_SOURCE_MAP_OUT.trim());
+}
 
 export function loaderIdentity(value = '') {
   const text = String(value);

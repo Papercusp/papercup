@@ -25,6 +25,8 @@ export const DISK_RECLAIM_STEP = 'disk-retention-reclaim';
 export const DISK_RECLAIM_CRONTAB = '0 12 * * * *';
 export const DISK_HEADROOM_BYTES = 100 * 1024 ** 3;
 const HOUR = 3_600_000;
+const EFFECT_BUDGET_SUFFIX = ': effect budget exhausted; resume with a fresh policy census';
+const effectBudgetError = (root: string) => `incomplete retention effects:${root}${EFFECT_BUDGET_SUFFIX}`;
 
 export interface RetentionEntry {
   path: string; root: string; classId: string;
@@ -70,6 +72,44 @@ export interface DiskReclaimOptions {
   record?: (phase: string, details: unknown) => Promise<void>;
   /** Production reuses the streaming native census for complete max-age trees. */
   inspectTrees?: typeof import('./disk-consumer-census').inspectRetentionTrees;
+}
+
+/** The workflow checkpoints each callback separately. Only safe, productive
+ * effect-budget stops continue; another pass rebuilds all eligibility evidence.
+ * The deadline comes from persisted receipt time, so recovery cannot reset it.
+ * A callback must return null before starting a pass whose deadline has elapsed.
+ */
+export async function drainScheduledDiskReclaim(
+  runBatch: (batch: number, notAfterMs: number | undefined) => Promise<DiskReclaimReceipt | null>,
+  limits: { maxBatches?: number; maxElapsedMs?: number } = {},
+): Promise<{ batches: number; lastReceiptId: string | null; stop: 'complete' | 'dry-run' | 'error' | 'no-progress' | 'batch-limit' | 'time-limit' }> {
+  const maxBatches = limits.maxBatches ?? 12;
+  const maxElapsedMs = limits.maxElapsedMs ?? 15 * 60_000;
+  if (!Number.isInteger(maxBatches) || maxBatches < 1 || !Number.isFinite(maxElapsedMs) || maxElapsedMs <= 0) {
+    throw new Error('invalid retention drain bounds');
+  }
+  let notAfterMs: number | undefined;
+  let lastReceiptId: string | null = null;
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const receipt = await runBatch(batch, notAfterMs);
+    const result = { batches: batch + (receipt ? 1 : 0), lastReceiptId: receipt?.id ?? lastReceiptId };
+    if (!receipt) return { ...result, stop: 'time-limit' };
+    lastReceiptId = receipt.id;
+    if (receipt.dryRun) return { ...result, stop: 'dry-run' };
+    if (receipt.complete) return { ...result, stop: 'complete' };
+    const started = Date.parse(receipt.startedAt), finished = Date.parse(receipt.finishedAt);
+    if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) return { ...result, stop: 'error' };
+    notAfterMs ??= started + maxElapsedMs;
+    const budgetErrors = new Set(receipt.effects?.filter((effect) => effect.stopped && effect.remaining > 0)
+      .map((effect) => effectBudgetError(effect.root)));
+    if (!receipt.errors.length || receipt.errors.some((error) => !budgetErrors.has(error)) ||
+        receipt.delegates.some((delegate) => !delegate.ok) || receipt.entries.some((entry) => entry.status === 'failed')) {
+      return { ...result, stop: 'error' };
+    }
+    if (!receipt.entries.some((entry) => entry.status === 'removed')) return { ...result, stop: 'no-progress' };
+    if (finished >= notAfterMs) return { ...result, stop: 'time-limit' };
+  }
+  return { batches: maxBatches, lastReceiptId, stop: 'batch-limit' };
 }
 
 export type ReclaimSql = Pick<import('postgres').Sql, 'unsafe'>;
@@ -578,7 +618,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const stopEffects = () => {
           if (Date.now() < effectDeadline) return false;
           effect.stopped = true;
-          receipt.errors.push(`incomplete retention effects:${root.path}: effect budget exhausted; resume with a fresh policy census`);
+          receipt.errors.push(effectBudgetError(root.path));
           return true;
         };
         await recordProgress();
@@ -602,7 +642,11 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
             // Rescan write activity + identity and process holders immediately before the effect.
             let fresh: RetentionEntry | null;
-            if (options.inspectTrees && retainAfterMs !== undefined) {
+            // A regular file's complete newest-write/identity census is one
+            // lstat. Preserve that check without spawning the tree inspector
+            // for every file; directories still require its complete walk.
+            const regularFile = options.inspectTrees && retainAfterMs !== undefined && (await lstat(entry.path)).isFile();
+            if (options.inspectTrees && retainAfterMs !== undefined && !regularFile) {
               const census = await outsideInspectionBudget(() => options.inspectTrees!(entry.root, { retainAfterMs, paths: [entry.path] }));
               if (census.error) throw new Error(census.error);
               const current = census.entries.find((candidate) => candidate.path === entry.path);

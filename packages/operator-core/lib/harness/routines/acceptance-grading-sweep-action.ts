@@ -82,6 +82,10 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
     if (launched > 0) {
       console.log(`[acceptance-grading-sweep] reconciled ${launched} pending grading-integrity auditor(s)`);
     }
+    // WI-6554700010013275: a stranded spec-test-adequacy card is re-certified on this build.
+    for (const recert of result.recertifications ?? []) {
+      console.log(`[acceptance-grading-sweep] stranded card ${recert.issueId} re-certification ${recert.state}: ${recert.reason}`);
+    }
   } catch (error) {
     // A grading-integrity repair must not suppress the independent acceptance
     // grading sweep. The next cadence retries the bounded queue read.

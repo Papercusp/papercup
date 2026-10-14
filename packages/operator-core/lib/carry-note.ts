@@ -607,6 +607,17 @@ function isHistoricalVerificationTransition(text: string, match: RegExpExecArray
   const before = text.slice(0, match.index);
   const after = text.slice(match.index + match[0].length);
 
+  // A past-tense lifecycle snapshot with an explicit start time is historical
+  // context, not proof that the unresolved state is still live. Keep the
+  // standalone `was pending` case strict (it may still describe a live verdict),
+  // while treating `was in-flight since <timestamp>` as a completed/earlier
+  // observation. This is deliberately bounded to the timestamped `since` form
+  // so affirmative `is in-flight` and `was pending` contradictions remain loud.
+  if (/^(?:was|were)\s+(?:in[-\s]?flight|pending|running|queued|awaiting|outstanding|unverified)\b/i.test(match[0])
+    && /^\s+[^.!?;\n]{0,120}\bsince\s+[^.!?;\n]+/i.test(after)) {
+    return true;
+  }
+
   const lastOpening = Math.max(before.lastIndexOf('('), before.lastIndexOf('['));
   const lastClosing = Math.max(before.lastIndexOf(')'), before.lastIndexOf(']'));
   if (lastOpening > lastClosing && /^(?:was|were)\b/i.test(match[0])) return true;
@@ -2051,6 +2062,15 @@ export function patchExistingCheckEntries(
  *     `sinceMs` it had inherited, and the old wording reads to the drop-report as a
  *     carried claim that vanished. Both were observed live, twice.
  */
+/** Omitted carried rows survive a replace-style checkpoint unless each
+ * retirement is named. Writers resolving refs before merging omit retireIds. */
+export function checkpointRowsMode(
+  requested: 'replace' | 'merge' | undefined,
+  retireIds?: readonly string[],
+): 'replace' | 'merge' {
+  return requested === 'replace' && retireIds !== undefined ? 'replace' : 'merge';
+}
+
 export function mergeCarryRows(opts: {
   /** The AUTHORITATIVE prior note. Inside a `transform` this is the locked row's. */
   priorNote: string | null | undefined;

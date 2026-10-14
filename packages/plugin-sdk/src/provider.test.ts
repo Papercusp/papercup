@@ -149,6 +149,16 @@ describe('validateProviderDescriptor: push', () => {
     expect(withPush({ signature }, ['ticket.read'])).toEqual([]);
   });
 
+  it('validates declared challenge credentials and normalization capability before registering push', () => {
+    const verification = { modeParam: 'hub.mode', modeValue: 'subscribe', tokenParam: 'hub.verify_token', challengeParam: 'hub.challenge', credentialRef: 'verify_token' };
+    const push = { signature: { ...signature, prefix: 'sha256=', oauthClientSecret: true }, verification, delivery: 'normalize' as const };
+    expect(validateProviderDescriptor({ ...base, capabilities: ['ingress.normalize'], setup: { credentials: [{ key: 'verify_token', label: 'Verify token' }] }, push })).toEqual([]);
+    expect(withPush(push)).toContain('provider.push.delivery normalize needs capability ingress.normalize');
+    expect(withPush(push)).toContain('provider.push.verification.credentialRef must name a host-held setup credential');
+    expect(withPush({ signature: { ...signature, prefix: 'sha256=\n' } })).toContain('provider.push.signature.prefix must be a short literal prefix');
+    expect(withPush({ signature: { ...signature, oauthClientSecret: true }, handshake: { header: 'x-secret' } })).toContain('provider.push.signature.oauthClientSecret needs OAuth and cannot use a handshake');
+  });
+
   it('a handshake needs push.subscribe and push.unsubscribe, since its secret only arrives during a subscribe', () => {
     expect(withPush({ handshake: { header: 'x-hook-secret' }, signature }, ['ticket.read', 'push.subscribe']))
       .toEqual(['provider.push.handshake needs capability push.unsubscribe']);

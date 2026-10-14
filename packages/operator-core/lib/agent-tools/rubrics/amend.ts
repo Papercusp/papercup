@@ -161,6 +161,7 @@ async function reviewReceiptKey(
     reason: args.reason ?? null,
     patch: amendmentPatch(args),
     reviewerModel: args.reviewerModel ?? null,
+    ...(args.reviewEvidencePost ? { reviewEvidencePost: args.reviewEvidencePost } : {}),
   };
   const digest = createHash('sha256').update(canonicalJson(request), 'utf8').digest('hex');
   return `review-${digest}`;
@@ -291,6 +292,9 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .describe(
         'dryRun only: the server posts preview.approval on this work-item and opens the routed review in the same call.',
       ),
+    reviewEvidencePost: z.string().trim().regex(/^thread-post:[1-9][0-9]*$/).optional().describe(
+      'dryRun with retained reviewPreviewPost only: your later non-empty local verification-evidence post on that same thread. After an ended reviewer objection, requests an independent re-review of the unchanged preview; retries with this evidence reuse its review.',
+    ),
     reviewerModel: z.object({
       agent: z.enum(['claude', 'codex', 'omp']),
       model: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/),
@@ -470,6 +474,10 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
     if (args.reviewerModel && !args.reviewPreviewPost && !args.requestReview) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewerModel'],
         message: 'reviewerModel requires dryRun:true and reviewPreviewPost or requestReview' });
+    }
+    if (args.reviewEvidencePost && (!args.reviewPreviewPost || args.dryRun !== true)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewEvidencePost'],
+        message: 'reviewEvidencePost requires dryRun:true and the retained reviewPreviewPost' });
     }
   },
 );
@@ -653,6 +661,7 @@ export default defineTool({
             // re-attributed to the review's system principal.
             launchCtx: ctx,
             ...(args.reviewerModel ? { reviewerModel: args.reviewerModel } : {}),
+            ...(args.reviewEvidencePost ? { reviewEvidencePost: args.reviewEvidencePost } : {}),
           });
         } catch (error) {
           const refusal = reviewerModelNotAllowedRefusal(error);

@@ -1389,6 +1389,24 @@ describe('current native benchmark execution', () => {
     expect((await f.run()).telemetry.generationError).toMatch(/snapshot bytes differ/);
     expect(f.ports.admit).toHaveBeenCalledOnce(); expect(f.ports.launch).not.toHaveBeenCalled();
   });
+  it.each(['su', 'stock'] as const)('refuses a valid changed context re-read before native generation: %s', async kind => {
+    const opts = kind === 'stock' ? { ...options, armId: 'baseline' } : options;
+    const f = fixture(opts), contextText = f.context.contextText + '\nUnexpected additional context.';
+    vi.mocked(f.ports.verifyContext).mockResolvedValue({ ...f.context, contextText,
+      contextTextSha256: createHash('sha256').update(contextText).digest('hex') });
+    const launchNative = vi.fn(async () => ({ agentStarted: true, tasks: [{ taskId: f.row.taskId }] }));
+    const { launch, ...common } = f.ports;
+    const result = kind === 'stock'
+      ? await currentStockBenchHarnessDriver(f.lifecycle, { ...common, launchNative }, opts)
+        .spinRunAndCost({ ...request, blueprintId: 'native-codex' })
+      : await f.run();
+    expect(result.telemetry.generationError).toMatch(/initial context changed before native generation/);
+    expect(f.ports.admit).toHaveBeenCalledOnce();
+    expect(f.ports.verifyContext).toHaveBeenCalledOnce();
+    expect(launch).not.toHaveBeenCalled();
+    expect(launchNative).not.toHaveBeenCalled();
+    expect(result.telemetry.armMeta?.currentExecution).toMatchObject({ initialContext: { status: 'restored' } });
+  });
   it.each([false, true])('releases the host gateway after cost collection even when lifecycle teardown fails=%s', async fails => {
     const f = fixture(), events: string[] = [];
     vi.mocked(f.lifecycle.collectCost).mockImplementation(async () => {

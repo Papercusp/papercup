@@ -2754,7 +2754,7 @@ describe('applyResultDoor', () => {
       expect(readSpill('ws-1', 'plans:get', RUN_ID)).toContain('m'.repeat(100));
     });
 
-    it('keeps scratch-reference byte pages readable after the aggregate cohort is exhausted', () => {
+    it('keeps direct and nested scratch-reference byte pages readable after the aggregate cohort is exhausted', () => {
       const scope = beginResultDoorAggregate({ sessionKey: 'owner-read-recovery', outputGroupId: 'turn-recovery' });
       const normalOpts = { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope };
       applyResultDoor(medium(), normalOpts);
@@ -2792,6 +2792,20 @@ describe('applyResultDoor', () => {
       });
       expect((recoveryPage._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
 
+      const nestedRecoveryPage = applyResultDoor(pageContent({ uri: 'papercusp://scratch/ws-1/plans:get/page' }), {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'capability:read',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope,
+      });
+      expect(JSON.parse((nestedRecoveryPage.content[0] as { text: string }).text)).toMatchObject({
+        ok: true,
+        encoding: 'base64',
+        byte_length: 1_024,
+      });
+      expect((nestedRecoveryPage._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
+
       const ordinaryPage = applyResultDoor(pageContent(), {
         toolName: 'capability:read',
         workspaceId: 'ws-1',
@@ -2800,6 +2814,16 @@ describe('applyResultDoor', () => {
       });
       const ordinaryEnvelope = JSON.parse((ordinaryPage.content[0] as { text: string }).text);
       expect(ordinaryEnvelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
+
+      const nestedOrdinaryPage = applyResultDoor(pageContent(), {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'capability:read',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope,
+      });
+      const nestedOrdinaryEnvelope = JSON.parse((nestedOrdinaryPage.content[0] as { text: string }).text);
+      expect(nestedOrdinaryEnvelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
     });
 
     // EI-21954450841272611, and independently EI-21733745031882912 /
@@ -3438,6 +3462,43 @@ describe('applyResultDoor', () => {
       };
       expect(spill.content[0].text).toBe(text);
     });
+
+    it.each([
+      ['direct work_items:get', 'work_items:get', undefined],
+      ['nested work_items:get', 'tools:invoke', 'work_items:get'],
+    ] as const)(
+      'gives %s a field-specific recovery route for clipped comment bodies',
+      (_shape, toolName, nestedTargetToolName) => {
+        const text = JSON.stringify({
+          results: [{
+            id: 'WI-1',
+            threadWindow: { posts: [{ body: 'comment prefix…', bodyChars: 1_874, bodyTruncated: true }] },
+          }],
+        });
+        const doored = applyResultDoor(
+          { content: [{ type: 'text' as const, text }] },
+          {
+            toolName,
+            ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+            workspaceId: 'ws-1',
+            runId: RUN_ID,
+          },
+        );
+        const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+        expect(envelope.incomplete).toMatchObject({
+          reason: 'under-budget-partial-result',
+          recoverable: false,
+        });
+        expect(envelope.incomplete.note).toContain('bodyTruncated/bodyChars');
+        expect(envelope.incomplete.note).toContain("payloadTier:'full'");
+        expect(envelope.incomplete.note).toContain('results[].threadWindow.posts[].body');
+        expect(envelope.incomplete.note).toContain('a spill cannot restore body bytes omitted by the upstream shaper');
+        expect((doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor).toMatchObject({
+          innerTruncationMarkers: ['bodyTruncated'],
+        });
+      },
+    );
 
     it('gives capability:read a schema-compatible recovery path for truncated evidence', () => {
       const text = JSON.stringify({

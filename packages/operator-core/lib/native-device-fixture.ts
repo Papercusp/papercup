@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Resolver, resolve4, resolveNs } from 'node:dns/promises';
-import { existsSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, closeSync, fstatSync, readSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cloudflareApi, type CloudflareApi, type CloudflareZone } from './own-tunnel/cloudflare-api';
@@ -25,6 +25,71 @@ export function fixtureFailure(error: unknown) {
     ? String(value.code) : undefined;
   return { message: detail.message, code: code(detail),
     causeCode: code(detail.cause), causeMessage: detail.cause instanceof Error ? detail.cause.message : undefined };
+}
+
+/** Keep public receipts useful without copying private operator logs or error text. */
+export interface FixtureHostReadiness {
+  kind: 'listener-pending' | 'listener-timeout' | 'host-exited' | 'request-startup-withheld' | 'fixture-stopped';
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  logState: 'read' | 'missing' | 'unreadable';
+  pendingMigrations?: string[];
+  pendingCount?: number;
+  failureCode?: string;
+}
+
+function fixtureHostReadiness(host: Pick<ChildProcess, 'exitCode' | 'signalCode'>, logPath: string,
+  kind: FixtureHostReadiness['kind'], error?: unknown): FixtureHostReadiness {
+  let tail = '', logState: FixtureHostReadiness['logState'] = 'read';
+  let fd: number | undefined;
+  try {
+    fd = openSync(logPath, 'r');
+    const size = fstatSync(fd).size;
+    const buffer = Buffer.alloc(Math.min(size, 32 * 1024));
+    tail = buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, size - buffer.length)).toString('utf8');
+  } catch (failure) {
+    logState = (failure as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unreadable';
+  } finally { if (fd !== undefined) closeSync(fd); }
+  const diagnostic: FixtureHostReadiness = { kind, exitCode: host.exitCode, signal: host.signalCode, logState };
+  const withheld = tail.match(/REQUEST STARTUP WITHHELD: ([^\r\n]*)/);
+  if (host.exitCode !== null || host.signalCode !== null) diagnostic.kind = 'host-exited';
+  else if (withheld) {
+    diagnostic.kind = 'request-startup-withheld';
+    // The writer is boot-migration-gate.ts. Only SQL basenames and a count leave
+    // the private log; tokens, connection strings and arbitrary errors never do.
+    diagnostic.pendingMigrations = [...new Set(withheld[1]!.match(/\b[0-9]{1,8}-[A-Za-z0-9_-]{1,160}\.sql\b/g) ?? [])].slice(0, 20);
+    const count = withheld[1]!.match(/^(\d{1,8}) migration\(s\) remain pending:/);
+    if (count) diagnostic.pendingCount = Number(count[1]);
+  }
+  const failure = fixtureFailure(error);
+  const code = failure.causeCode ?? failure.code;
+  if (code && /^[A-Z0-9_]{1,64}$/.test(code)) diagnostic.failureCode = code;
+  return diagnostic;
+}
+
+export async function waitForFixtureHost(host: Pick<ChildProcess, 'exitCode' | 'signalCode'>, logPath: string,
+  probe: () => Promise<void>, options: {
+    timeoutMs: number; pollMs: number; stopped?: () => boolean;
+    record: (diagnostic: FixtureHostReadiness) => void;
+    now?: () => number; pause?: (ms: number) => Promise<void>;
+  }) {
+  const now = options.now ?? Date.now;
+  const deadline = now() + options.timeoutMs;
+  const inspect = (error?: unknown) => {
+    const diagnostic = fixtureHostReadiness(host, logPath,
+      options.stopped?.() ? 'fixture-stopped' : now() >= deadline ? 'listener-timeout' : 'listener-pending', error);
+    options.record(diagnostic);
+    if (diagnostic.kind !== 'listener-pending') {
+      throw Object.assign(new Error('Fixture host readiness: ' + diagnostic.kind), { diagnostic });
+    }
+  };
+  let lastFailure: unknown;
+  for (;;) {
+    inspect(lastFailure);
+    try { await probe(); return; }
+    catch (error) { lastFailure = error; inspect(error); }
+    await (options.pause ?? delay)(options.pollMs);
+  }
 }
 
 export async function verifyFixtureZone(zone: CloudflareZone, readNs = resolveNs) {
@@ -206,10 +271,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       ['--import', 'tsx', resolve(ROOT, 'apps/operator/bin/hono-host.ts')], hostEnv, log);
     host = startHost('host.log');
     receipt.hostPid = host.pid;
-    const readyBy = Date.now() + 180_000;
-    for (;;) {
-      assert(!stopped && host.exitCode === null && host.signalCode === null, 'Fixture host exited before readiness');
-      try {
+    await waitForFixtureHost(host, resolve(evidence, 'host.log'), async () => {
         const health = await fetch(identity.base + '/api/health', { signal: AbortSignal.timeout(2000) });
         const registry = await fetch(identity.base + '/api/workspaces', { signal: AbortSignal.timeout(2000) });
         const h = await health.json(), r = await registry.json();
@@ -217,13 +279,8 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
         assert(r.current === identity.workspaceId && r.workspaces.length === 1 && r.workspaces[0].id === identity.workspaceId,
           'Private workspace registry mismatch');
         receipt.localBoundary = await verifyProtectedIngress('http://127.0.0.1:' + identity.ingressPort);
-        break;
-      } catch (error) {
-        receipt.localLastFailure = fixtureFailure(error); save();
-        if (Date.now() >= readyBy) throw error;
-        await delay(500);
-      }
-    }
+    }, { timeoutMs: 180_000, pollMs: 500, stopped: () => stopped,
+      record: diagnostic => { receipt.localReadiness = diagnostic; save(); } });
     // Track creation immediately, including a later config/DNS/token failure.
     const trackedApi: CloudflareApi = { ...api, createTunnel: async (accountId, name) => {
       const tunnel = await api.createTunnel(accountId, name);
@@ -303,10 +360,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
               Object.assign(receipt.interruption as object, value); save();
             });
           receipt.hostPid = host.pid;
-          const recoveryBy = Date.now() + 120_000;
-          for (;;) {
-            assert(host.exitCode === null && host.signalCode === null, 'Restored operator exited');
-            try {
+          await waitForFixtureHost(host, resolve(evidence, 'restored-host.log'), async () => {
               const health = await fetch(identity.base + '/api/health', { signal: AbortSignal.timeout(2000) });
               assert((await health.json()).ok === true, 'Restored operator health failed');
               receipt.restoredPublicBoundary = await verifyProtectedIngress(String(receipt.publicBase));
@@ -315,13 +369,8 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
                 'Recovery must preserve the original paired phone');
               Object.assign(receipt.interruption as object, { readyAt: new Date().toISOString(),
                 originalDevicePreserved: true }); save();
-              break;
-            } catch (error) {
-              receipt.recoveryLastFailure = fixtureFailure(error); save();
-              if (Date.now() >= recoveryBy) throw error;
-              await delay(1000);
-            }
-          }
+          }, { timeoutMs: 120_000, pollMs: 1000, stopped: () => stopped,
+            record: diagnostic => { receipt.recoveryReadiness = diagnostic; save(); } });
           interruptionDone = true;
         }
       }

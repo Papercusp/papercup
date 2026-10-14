@@ -2531,42 +2531,58 @@
     "operationalAcceptance": false
   },
   "nativeEvaluatorInputPreparation": {
-    "status": "prospective-maintained-guards-pass-current-local-commit-pending",
+    "status": "prospective-maintained-guards-pass-source-pins-settled-test-provenance-partial",
     "reused": ["executed-inputs-capture Recorder and per-file transport", "existing PC_EXECUTED_SOURCE_MAP_OUT diagnostics", "Vitest worker moduleRunner.evaluator.runInlinedModule", "maintained real armed-worker fixture"],
-    "behavior": "When the existing OUT channel is requested, capture the exact code argument before the worker evaluator call, preserve every invocation/version, and retain content-addressed code sidecars next to the OUT artifact. Repeated files are independently read and hashed; overwritten files or redirected artifacts remain explicit gaps. Delegate the original receiver, arguments, return object and thrown error unchanged. The ordinary persisted reuse-row contract excludes this diagnostic field.",
+    "behavior": "When the existing OUT channel is requested, capture the exact code argument before the worker evaluator call, correlate it through AsyncLocalStorage to the actual vm.runInThisContext/runInContext wrapper bytes, preserve every invocation/version, retain content-addressed code sidecars next to the OUT artifact, and record external evaluator IDs without claiming loader bytes. Repeated files are independently read and hashed; overwritten files or redirected artifacts remain explicit gaps. Delegate the original receiver, arguments, return object and thrown error unchanged. The ordinary persisted reuse-row contract excludes this diagnostic field.",
     "scope": "Vitest inlined evaluator inputs only. This is prospective fixture proof, not reconstructed historical execution or complete runtime closure.",
-    "limits": ["pre-setup evaluations unobserved", "external evaluations unobserved", "generated evaluator wrapper unobserved", "non-module runtime inputs outside evaluator", "other runners and original ordered-chain receipts remain unmeasured"],
+    "limits": ["pre-setup evaluations unobserved", "external loader bytes unobserved although evaluator call IDs are retained", "VM observations require the current Vitest wrapper shape and leave unmatched shapes explicit", "non-module runtime inputs outside evaluator", "other runners and original ordered-chain receipts remain unmeasured"],
     "sourceAtRead": {
-      "parentHead": "e0e17ba93618c0331da89cd145fe9eff69d40771",
-      "testConfigHead": "258f38719a64de9d46fca64780f612c486e05aae",
-      "committed": false,
+      "parentHead": "41fd8078b20f5b571fd91d838c787a50fbe6802e",
+      "testConfigHead": "b1bf690e46dfc7b6fee72f8ab0dafbbee4daa0ea",
+      "committed": true,
       "sourcePins": [
-        { "path": "libs/test-config/src/executed-inputs-capture.ts", "sha256": "dad32a54e93cbb75496a2b74d2f973e86be3a362b76cd71d15c5b36f1850361d" },
+        { "path": "libs/test-config/src/executed-inputs-capture.ts", "sha256": "5bbbc6d86e8df3c8dc7d53f4a3b8aa14bad21115a1b85208508bc38072649a90" },
         { "path": "libs/test-config/src/executed-inputs-capture-setup.ts", "sha256": "f6ead51b45d50e4a586520f87b68be06a6f95bc3473963f869e71a9f7e345233" },
-        { "path": "libs/test-config/src/executed-inputs-capture.test.ts", "sha256": "3e9723d692f71889e5c4c8ae631702b65a40962821112eb9114208efaeac3efb" },
-        { "path": "libs/test-config/src/executed-inputs-capture-armed-run.test.ts", "sha256": "308f6a30a1e80d5d6ca7e02b10d0b86455d8f39a0a0c0621a284e552bfafbb56" },
+        { "path": "libs/test-config/src/executed-inputs-capture.test.ts", "sha256": "1c2d8507dbd3a1225244ce166d76973c83bc2345311bf7d64bd9bd7655d5a851" },
+        { "path": "libs/test-config/src/executed-inputs-capture-armed-run.test.ts", "sha256": "73eb10b258c595fe3312edcc1a490f04cb11cbabfb89ee3a721a0405a8a46512" },
+        { "path": "libs/test-config/src/__fixtures__/armed-capture/sample.armed-fixture.ts", "sha256": "dc54023fb933ff9404ed5b78dc709c397448c50c7dbf23d27ca3e047a824e1d1" },
         { "path": "libs/test-config/src/executed-source-map-reporter.ts", "sha256": "b02afb8d0de245bf3eee26e7a5bcfb30820373b72c740cd2e68a073a87fbbd4a" }
       ]
     },
     "maintainedTests": {
       "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- libs/test-config/src/executed-inputs-capture.test.ts libs/test-config/src/executed-inputs-capture-armed-run.test.ts libs/test-config/src/executed-source-map-reporter.test.ts",
-      "log": "~/.papercusp/scratch/c0523-evaluator-inputs-tests-v2.log",
-      "logSha256": "ad41983509f328522c6ca07aa25fb489ce4158d09ff1a1a6a5ce759d860578d9",
+      "log": "~/.papercusp/scratch/c0523-vm-evaluator-inputs-tests-v2.log",
+      "logSha256": "b159cff26940df8cc20a3170f6e47c09fe8aafb6fdc8ebf2011186af6a63d2b2",
       "nativeExitCode": 0,
-      "testsPassed": 63,
+      "testsPassed": 66,
       "requested": 3, "executed": 3, "matched": 3, "childSubstituted": 0,
       "skippedTests": 1,
       "skip": "Pre-existing conditional test: the installed capture never calls a replaced process.cwd. It did not run in this armed parent; no evidence is claimed for that assertion.",
-      "provenance": "stamped-current-local; two of three named test paths dirty; pre/post parent head e0e17ba936",
+      "provenance": "unknown imported-source radius: parent HEAD moved cd7006bfe7 to 0e2f2291d5 during this native run; all three named test paths dirty. Current source pins later matched committed test-config b1bf690e46 and parent gitlink; that settlement does not retroactively stamp the test. This evaluator suite reported childSubstituted0. The separate parent-receipt suite reported 12 substitutions in three integration-only preview CLI children.",
       "realWorkerControl": "Actual worker evaluator input for the body-imported route differs from current TS disk and resolves to retained bytes with the exact recorded SHA-256 and length. The deliberately broken setup control still fails. Unit controls retain two code versions and thrown/return identity, and refuse changed or symlinked artifacts without overwriting them.",
       "previousLog": "~/.papercusp/scratch/c0523-evaluator-inputs-tests-v1.log"
     },
-    "typecheck": { "command": "npm run typecheck --workspace libs/test-config", "nativeExitCode": 0, "scope": "owning test-config workspace", "log": "~/.papercusp/scratch/c0523-evaluator-inputs-tsc-v2.log", "logSha256": "e9296e0b5f210d8ac8b12c783d300d2a7a746098c4a8bf7ddcf657b3fcb2fa94" },
+    "typecheck": { "command": "npm run typecheck --workspace libs/test-config", "nativeExitCode": 0, "scope": "owning test-config workspace", "log": "~/.papercusp/scratch/c0523-vm-evaluator-inputs-tsc-v2.log", "logSha256": "e9296e0b5f210d8ac8b12c783d300d2a7a746098c4a8bf7ddcf657b3fcb2fa94" },
+    "nativeParentExecutionReceiptPreparation": {
+      "status": "maintained-writer-and-journal-integration-pass-preparation-only",
+      "behavior": "Existing affected-tests child settlement now writes a content-addressed parent receipt before its finished pulse when OUT diagnostics are armed. The receipt retains actual command/cwd/timing/status, binary stdout/stderr, before/after wrapper-input hashes, and explicit gaps for original per-step boundaries, executable resolution, installed dependency/runtime closure and operational acceptance.",
+      "sourcePins": [
+        { "path": "scripts/lib/budgeted-task-scheduler.mjs", "sha256": "d3162e282fb26c950cd898ae12ffa8470b028685f78e49c96086ea8be01d9ed5" },
+        { "path": "scripts/lib/budgeted-task-scheduler.d.mts", "sha256": "0b49bc9bc32ce8b5061ae4dd10e71abf06a94e31d7b446be024384a541f3276d" },
+        { "path": "scripts/affected-tests.mjs", "sha256": "6339081f0a6abde50f341154078e0ff5bfd26010261fb553b3f395f5a4d35343" },
+        { "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts", "sha256": "690edba0471e13cc0ea0cbb156ebc2037a55623505f075b7da538eaca6188e64" }
+      ],
+      "maintainedTests": { "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts packages/operator-core/lib/__tests__/affected-tests-integration-only.test.ts", "log": "~/.papercusp/scratch/c0523-native-parent-receipt-tests-v2.log", "logSha256": "d456c36697a605e30d0e87efb4944e9722af2882ef4e174942fe81e0a02fdd7b", "nativeExitCode": 0, "testsPassed": 280, "requested": 2, "executed": 2, "matched": 2, "childSubstituted": 12, "skippedTests": 0, "provenance": "stamped local with 12 committed child substitutions; not a committed-source runtime verdict" },
+      "typecheck": { "command": "npm run typecheck -- --files=packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts,scripts/lib/budgeted-task-scheduler.d.mts", "nativeExitCode": 0, "log": "~/.papercusp/scratch/c0523-native-parent-receipt-tsc-v1.log", "logSha256": "a5349e6d9e579d2da2e8b43e147bf0fc48eeb73ba11b7691de110f0d27757243" },
+      "orderedChainQualified": false,
+      "runtimeClosure": "unmeasured",
+      "operationalAcceptance": false
+    },
     "diffWhitespaceCheck": "passed",
     "originalCommandsRerun": 0,
     "runtimeClosure": "partial-prospective-evaluator-observation",
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Dependency-census five pins are committed and its generation-1 readiness event fired; see green-main-materialized-dependencies-preparation-20261014.json. The existing worker OUT transport now retains prospective exact evaluator-input code, with 63 maintained passes, one explicit pre-existing skip and a clean owning-workspace typecheck. Settle its five current-local source pins through background git-sync; do not repeat tests without drift. Complete missing pre-setup/external/generated-wrapper and other-runner closure, and extend the existing native execution boundary to produce actual original chain parent/per-step receipts. Public-docs Astro->Vitest, fixture pretest->Vitest and desktop eight-step originals remain missing. Partial selection remains partial. Preserve D020/P006 hold, all six forms and complete outside-lineage review. Full plan remains unshipped."
+  "next": "Dependency-census readiness generation1 already fired. Existing OUT transport now retains evaluator inputs, actual VM wrapper bytes and external call IDs; 66 evaluator tests pass with one explicit pre-existing skip, imported-source provenance unknown and owning-workspace typecheck exit0. Test-config source bytes match committed b1bf690e46 and parent gitlink. Existing native affected-task journal now writes parent command/binary-stream/wrapper-input receipts; 280 maintained tests pass with 12 committed substitutions in integration-only preview children, and scoped scripts/operator-core typecheck exit0. These are local prospective preparation boundaries. Continue actual original per-step receipt production and pre-setup/external-loader/non-module/other-runner closure. Original public-docs, fixture and desktop chains remain missing. Do not repeat unchanged commands or saved guards absent drift. Preserve D020/P006 hold, all six forms, P018 genuine seven-day/idle/alarm/P028/P031 and complete outside-lineage/final shipment requirements. Full plan remains unshipped."
 }

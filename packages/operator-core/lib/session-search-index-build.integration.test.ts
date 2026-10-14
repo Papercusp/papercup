@@ -20,7 +20,9 @@ import {
   createIndexConcurrentlySql,
   readSessionSearchReadiness,
   runSessionSearchIndexBuildOnce as runSessionSearchIndexBuildOnceRaw,
+  sessionSearchIndexBuildFailureDetails,
   sessionSearchTierAvailability,
+  type SessionSearchIndexBuildResult,
   type SessionSearchReadiness,
 } from './session-search-index-build';
 
@@ -346,6 +348,21 @@ async function explainWithIndexes(s: postgres.Sql, query: string): Promise<strin
 }
 
 describe('runSessionSearchIndexBuildOnce', () => {
+  it('preserves per-index, vocabulary, and invalid-drop errors for the scheduled log', () => {
+    const result: SessionSearchIndexBuildResult = {
+      invalidDropped: [],
+      invalidDropFailures: [{ name: 'stale_idx', error: 'lock not available' }],
+      indexes: [{ name: 'title_idx', action: 'failed', elapsedMs: 12, error: 'operator does not exist' }],
+      vocab: [{ workspaceId: 'ws-1', action: 'failed', elapsedMs: 7, error: 'lease update failed' }],
+      truncated: false,
+    };
+    expect(sessionSearchIndexBuildFailureDetails(result)).toEqual([
+      'drop invalid stale_idx: lock not available',
+      'index title_idx: operator does not exist',
+      'vocabulary ws-1: lease update failed',
+    ]);
+  });
+
   it('skips with tables-missing on a database the migration has not reached', async () => {
     const bare = await createFreshPgDb('sess-search-bare');
     try {

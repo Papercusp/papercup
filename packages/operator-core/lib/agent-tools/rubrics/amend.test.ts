@@ -1041,6 +1041,24 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     );
   });
 
+  it('re-reviews a retained preview with evidence using a distinct receipt and reuses that receipt on retry', async () => {
+    const request = { ...patchArgs, reviewPreviewPost: 'thread-post:42' };
+    const evidence = { ...request, reviewEvidencePost: 'thread-post:50' };
+    expect(rubricsAmendArgs.safeParse({ ...patchArgs, reviewEvidencePost: 'thread-post:50' }).success).toBe(false);
+    expect(rubricsAmendArgs.safeParse({ ...evidence, dryRun: false }).success).toBe(false);
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    reviewMocks.openAcceptanceBarAmendmentReview.mockResolvedValue({ state: 'routed', conversationId: 'conv-evidence',
+      responderId: 'reviewer', screenedOut: [], previewPostRef: 'thread-post:42', next: 'await reviewer' });
+    const original = await body(request);
+    const rereview = await body(evidence);
+    const retry = await body(evidence);
+    expect(original.receipt.idempotencyKey).not.toBe(rereview.receipt.idempotencyKey);
+    expect(retry.receipt.idempotencyKey).toBe(rereview.receipt.idempotencyKey);
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledTimes(2);
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenLastCalledWith(expect.objectContaining({
+      previewPostRef: 'thread-post:42', reviewEvidencePost: 'thread-post:50' }));
+  });
+
   it('no amend or check-approver guidance tells the implementer to message a reviewer directly (D-001)', async () => {
     const { default: checkApproverTool } = await import('./check-approver');
     const rendered = JSON.stringify([

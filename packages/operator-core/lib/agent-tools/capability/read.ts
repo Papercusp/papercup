@@ -32,8 +32,10 @@ import { redactSensitiveText } from '../../sensitive-text';
 import {
   SCRATCH_REFERENCE_MAGIC,
   authorizeScratchReference,
+  isDurableScratchReferenceUri,
   isVolatileScratchReferenceUri,
   parseScratchReference,
+  readDurableScratchReference,
   readVolatileScratchReference,
   ScratchReferenceError,
   type ScratchReferenceManifest,
@@ -676,6 +678,52 @@ export default defineTool({
     const filePath = args.file_path ?? args.uri;
     if (!filePath) return err('missing_path', 'file_path or uri must be supplied.');
 
+    if (isDurableScratchReferenceUri(filePath)) {
+      if (args.byte_offset === undefined || args.byte_limit === undefined) {
+        return err(
+          'durable_reference_requires_byte_window',
+          'Durable scratch references support exact byte pages only; supply byte_offset and byte_limit from the cursor.',
+        );
+      }
+      if (
+        args.offset !== undefined || args.limit !== undefined || args.tail !== undefined ||
+        args.raw === true || args.content_indexes !== undefined || args.evidence_class !== undefined ||
+        args.query !== undefined || args.view_lines !== undefined
+      ) {
+        return err('mixed_window_modes', 'Durable scratch reference byte pages cannot be combined with other read modes.');
+      }
+      let ownerId: string | null = null;
+      try {
+        const identityCtx = ctx as ResolveIdentityCtx;
+        ownerId = resolveAgentIdentity(
+          identityCtx.sigVerifiedSpawn &&
+          !identityCtx.isSuperuser &&
+          !identityCtx.isPowerUser &&
+          identityCtx.uiClientId
+            ? { ...identityCtx, principal: undefined }
+            : identityCtx,
+        ).ownerId;
+      } catch {
+        ownerId = null;
+      }
+      try {
+        const reference = await readDurableScratchReference(filePath, {
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? null,
+          ownerId,
+        });
+        return renderByteWindow(
+          filePath,
+          args as ByteReadArgs,
+          reference.manifest.byteCount,
+          (offset, limit) => reference.payload.subarray(offset, offset + limit),
+          reference.manifest,
+        );
+      } catch (e: unknown) {
+        if (e instanceof ScratchReferenceError) return err(e.code, e.message);
+        return err('read_failed', e instanceof Error ? e.message : String(e));
+      }
+    }
+
     if (isVolatileScratchReferenceUri(filePath)) {
       if (args.byte_offset === undefined || args.byte_limit === undefined) {
         return err(
@@ -685,7 +733,8 @@ export default defineTool({
       }
       if (
         args.offset !== undefined || args.limit !== undefined || args.tail !== undefined ||
-        args.raw === true || args.content_indexes !== undefined || args.evidence_class !== undefined
+        args.raw === true || args.content_indexes !== undefined || args.evidence_class !== undefined ||
+        args.query !== undefined || args.view_lines !== undefined
       ) {
         return err('mixed_window_modes', 'In-memory scratch fallback byte pages cannot be combined with other read modes.');
       }

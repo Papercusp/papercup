@@ -70,7 +70,7 @@ import { acceptSyncTransportObservation } from './routes/desktop/telemetry-repor
 import { createHostedCloudMonitoringRoutes, HOSTED_BROWSER_MONITORING_PATH, HOSTED_BROWSER_MONITORING_EVENT_PATH } from './routes/hosted-cloud-monitoring';
 import { cloudProvisioningObservation, readCloudTelemetryConsent } from '../record-telemetry';
 import { getBuildInfo } from '../build-info';
-import { HostedCustomerDataAuthorizationError } from '../data-governance/hosted-customer-data';
+import { HostedCustomerDataAuthorizationError, HostedCustomerDeletionAdmissionError } from '../data-governance/hosted-customer-data';
 import type { OrganizationDataExport } from '../data-governance/organization-data-receipts';
 export { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH } from './routes/hosted-tutorial-progress';
 
@@ -86,6 +86,8 @@ export const HOSTED_BROWSER_FIRST_WORKSPACE_PATH = '/hosted/browser/onboarding/f
 export const HOSTED_BROWSER_SELECT_WORKSPACE_PATH = '/hosted/browser/onboarding/select-workspace' as const;
 export const HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH = '/hosted/browser/data/organization/export' as const;
 export const HOSTED_BROWSER_USER_EXPORT_PATH = '/hosted/browser/data/user/export' as const;
+export const HOSTED_BROWSER_ORGANIZATION_DELETE_PATH = '/hosted/browser/data/organization/delete' as const;
+export const HOSTED_BROWSER_USER_DELETE_PATH = '/hosted/browser/data/user/delete' as const;
 
 export const HOSTED_BROWSER_QUERY_NAME = 'workspaceHosts.control' as const;
 
@@ -101,6 +103,8 @@ export const HOSTED_BROWSER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: HOSTED_BROWSER_SELECT_WORKSPACE_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH, access: 'session' },
   { method: 'POST', path: HOSTED_BROWSER_USER_EXPORT_PATH, access: 'session' },
+  { method: 'POST', path: HOSTED_BROWSER_ORGANIZATION_DELETE_PATH, access: 'session' },
+  { method: 'POST', path: HOSTED_BROWSER_USER_DELETE_PATH, access: 'session' },
   { method: 'GET', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'session' },
   { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'session' },
   { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_HELP_PATH, access: 'session' },
@@ -141,6 +145,10 @@ export interface HostedBrowserRouteDependencies {
   /** Revalidates membership/session and exports through the hosted service transaction. */
   readonly exportOrganizationData?: (principal: HostedPrincipal) => Promise<OrganizationDataExport>;
   readonly exportUserData?: (principal: HostedPrincipal) => Promise<OrganizationDataExport>;
+  /** Service-transaction admission, followed by durable enqueue. Tenant and policy are server-owned. */
+  readonly requestCustomerDeletion?: (principal: HostedPrincipal, input: {
+    kind: 'organization' | 'user'; confirmation: string;
+  }) => Promise<{ operationId: string }>;
   readonly readControl?: (workspaceId: string, tx?: Sql) => Promise<unknown[]>;
   readonly deliverCloudTelemetry?: typeof import('../telemetry-flush')['deliverCloudPosthog'];
   readonly readConnection?: (
@@ -595,6 +603,38 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   const organizationExport = exportRoute(HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH, false, deps.exportOrganizationData);
   const userExport = exportRoute(HOSTED_BROWSER_USER_EXPORT_PATH, true, deps.exportUserData);
 
+  const deleteRoute = (path: string, kind: 'organization' | 'user') => defineTool({
+    method: 'POST', path, auth: { capabilities: [], kind: ['user'], trust: ['verified'] },
+    cors: { origins: [origin] }, sampleRate: 0,
+    async handler(request, ctx) {
+      const principal = ctx.principal;
+      if (!principal || !isHostedPrincipal(principal)) return jsonError('hosted_principal_required', 401);
+      if (principal.workspaceId !== controlPlaneWorkspaceId) return jsonError('control_plane_binding_mismatch', 403);
+      const csrf = exactOriginOr403(request, origin); if (csrf) return csrf;
+      const mismatch = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId); if (mismatch) return mismatch;
+      const body: unknown = await request.json().catch(() => null);
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+        || typeof (body as { confirmation?: unknown }).confirmation !== 'string') return jsonError('confirmation_required', 400);
+      const confirmation = (body as { confirmation: string }).confirmation;
+      if (confirmation !== (kind === 'user' ? 'DELETE MY ACCOUNT' : 'DELETE ORGANIZATION')) return jsonError('confirmation_required', 400);
+      if (!deps.requestCustomerDeletion) return jsonError('customer_deletion_unavailable', 503);
+      try {
+        // Read only the confirmation. Caller scope, policy, actor and workflow id are ignored.
+        const result = await deps.requestCustomerDeletion(principal, { kind, confirmation });
+        return Response.json({ status: 'accepted', operationId: result.operationId }, {
+          status: 202, headers: { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' },
+        });
+      } catch (error) {
+        if (error instanceof HostedCustomerDataAuthorizationError) return jsonError('customer_data_forbidden', 403);
+        if (error instanceof HostedCustomerDeletionAdmissionError) return jsonError(error.code,
+          error.code === 'retention_policy_pending' ? 409 : error.code === 'confirmation_required' ? 400 : 409);
+        return jsonError('customer_deletion_unavailable', 503);
+      }
+    },
+  });
+  const organizationDelete = deleteRoute(HOSTED_BROWSER_ORGANIZATION_DELETE_PATH, 'organization');
+  const userDelete = deleteRoute(HOSTED_BROWSER_USER_DELETE_PATH, 'user');
+
   const fallbackObservation = defineTool({
     method: 'POST',
     path: HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH,
@@ -883,7 +923,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   const monitoring = createHostedCloudMonitoringRoutes({ origin, controlPlaneWorkspaceId, runTenant });
   const tutorialAssistance = createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorkspaceId, runTenant, dependencies: deps.tutorialAssistance });
   return {
-    routes: [query, sse, fallbackObservation, connection, provision, action, firstWorkspace, selectWorkspace, organizationExport, userExport, ...tutorialProgress, ...tutorialAssistance, ...monitoring],
+    routes: [query, sse, fallbackObservation, connection, provision, action, firstWorkspace, selectWorkspace, organizationExport, userExport, organizationDelete, userDelete, ...tutorialProgress, ...tutorialAssistance, ...monitoring],
     allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,
   };
 }

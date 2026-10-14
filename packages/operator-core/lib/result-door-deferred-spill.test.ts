@@ -84,7 +84,7 @@ function volatileCursorFrom(out: DoorableResult): Record<string, unknown> {
   throw new Error('result has no recovery cursor');
 }
 
-function readVolatileText(cursor: Record<string, unknown>, workspaceId = 'ws-1'): string {
+function readVolatileText(cursor: Record<string, unknown>, workspaceId = 'ws-1', ownerId?: string): string {
   const args = cursor.args && typeof cursor.args === 'object'
     ? cursor.args as Record<string, unknown>
     : undefined;
@@ -95,7 +95,7 @@ function readVolatileText(cursor: Record<string, unknown>, workspaceId = 'ws-1')
       : undefined;
   if (!uri) throw new Error('volatile recovery cursor has no URI');
 
-  const reference = readVolatileScratchReference(uri, { workspaceId });
+  const reference = readVolatileScratchReference(uri, { workspaceId, ownerId });
   const bodyOffset = reference.manifest.bodyOffsetInPayload ?? 0;
   const pageText = reference.payload.subarray(bodyOffset).toString('utf8');
   try {
@@ -324,6 +324,127 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
+  it('promotes a timed-out volatile fallback only after the primary scratch deadline', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    let rejectWrite!: (error: Error) => void;
+    let signalStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
+    });
+    const durableUri = scratchReference.DURABLE_SCRATCH_REFERENCE_SCHEME + '/' + 'a'.repeat(64);
+    let persistedFallbackText: string | undefined;
+    const durablePersist = vi.spyOn(
+      scratchReference,
+      'persistVolatileScratchReference',
+    ).mockImplementation(async (uri, caller) => {
+      persistedFallbackText = readVolatileText(
+        { uri },
+        caller.workspaceId ?? 'ws-1',
+        caller.ownerId ?? undefined,
+      );
+      return { uri: durableUri, manifest: readVolatileScratchReference(uri, caller).manifest };
+    });
+    const original = oversized();
+    let resultPromise: Promise<DoorableResult> | undefined;
+
+    try {
+      resultPromise = applyResultDoorAsync(original, { ...OPTS, ownerId: 'su-1' });
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(durablePersist).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await resultPromise;
+      expect(durablePersist).toHaveBeenCalledTimes(1);
+      expect(durablePersist).toHaveBeenCalledWith(expect.stringMatching(/^papercusp:\/\/scratch-memory\//), {
+        workspaceId: 'ws-1',
+        ownerId: 'su-1',
+      });
+
+      const text = (result.content.find((item) => item.type === 'text') as { text: string }).text;
+      const body = JSON.parse(text) as { _projection?: { cursor?: Record<string, unknown> } };
+      const meta = result._meta?.resultDoor as {
+        spillPending?: boolean;
+        spillErrorCode?: string;
+        durableFallbackUri?: string;
+        recoveryCursor?: Record<string, unknown>;
+        pendingSpill?: { cursor?: Record<string, unknown> };
+      };
+      expect(meta).toMatchObject({
+        spillPending: true,
+        spillErrorCode: 'ETIMEDOUT',
+        durableFallbackUri: durableUri,
+        recoveryCursor: { kind: 'durable-scratch-page', uri: durableUri },
+        pendingSpill: { cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' } },
+      });
+      expect(body._projection?.cursor).toMatchObject({ kind: 'durable-scratch-page', uri: durableUri });
+      expect(text).toContain('exact workspace-scoped durable copy');
+      expect(text).not.toContain('papercusp://scratch-memory/');
+      expect(persistedFallbackText).toContain(original.content[0].text);
+    } finally {
+      rejectWrite(new Error('test cleanup'));
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      durablePersist.mockRestore();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps volatile recovery when durable timeout persistence exceeds its separate bound', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    let rejectWrite!: (error: Error) => void;
+    let signalStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
+    });
+    const durablePersist = vi.spyOn(
+      scratchReference,
+      'persistVolatileScratchReference',
+    ).mockImplementation(() => new Promise(() => {}));
+    const original = oversized();
+    let settled = false;
+    let resultPromise: Promise<DoorableResult> | undefined;
+
+    try {
+      resultPromise = applyResultDoorAsync(original, { ...OPTS, ownerId: 'su-1' }).then((result) => {
+        settled = true;
+        return result;
+      });
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(durablePersist).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await resultPromise;
+      const meta = result._meta?.resultDoor as { spillPending?: boolean; recoveryCursor?: Record<string, unknown> };
+      expect(settled).toBe(true);
+      expect(meta.spillPending).toBe(true);
+      expect(meta.recoveryCursor).toMatchObject({
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
+      });
+      expect(readVolatileText(meta.recoveryCursor!, 'ws-1', 'su-1')).toContain(original.content[0].text);
+    } finally {
+      rejectWrite(new Error('test cleanup'));
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      durablePersist.mockRestore();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
   it.each(['plans:get', 'events:status', 'work_items:list', 'coord:read'] as const)(
     'preserves the full volatile recovery for nested tools:invoke %s when a timed-out spill later fails',
     async (nestedTargetToolName) => {
@@ -357,6 +478,10 @@ describe('result-door deferred spill (WI-10004533)', () => {
       signalStarted();
       return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
     });
+    const durablePersist = vi.spyOn(
+      scratchReference,
+      'persistVolatileScratchReference',
+    ).mockRejectedValue(new Error('test spool unavailable'));
     let resultPromise: Promise<DoorableResult> | undefined;
     const original = oversized();
     try {
@@ -412,6 +537,7 @@ describe('result-door deferred spill (WI-10004533)', () => {
       rejectWrite(new Error('test cleanup'));
       await resultPromise?.catch(() => undefined);
       writer.mockRestore();
+      durablePersist.mockRestore();
       vi.useRealTimers();
       warn.mockRestore();
     }

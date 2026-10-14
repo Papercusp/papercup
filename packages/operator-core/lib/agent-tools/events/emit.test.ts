@@ -41,10 +41,12 @@ const call = async (args: Record<string, unknown>) => {
 beforeEach(() => vi.clearAllMocks());
 
 describe('events:emit envelope', () => {
-  it('validates announce/to incompatibility before the handler', () => {
+  it('validates and documents announce/to incompatibility before the handler', () => {
     expect(emit.args.safeParse({ event: 'g', announce: true, to: ['su-x'] }).success).toBe(false);
     expect(emit.args.safeParse({ event: 'g', announce: true }).success).toBe(true);
     expect(emit.args.safeParse({ event: 'g', to: ['su-x'] }).success).toBe(true);
+    expect(emit.description).toContain('`announce:true`, `to` is rejected');
+    expect(emit.args.shape.to.description).toContain('`announce:true` rejects `to`');
   });
 
   it('forwards source=identity.ownerId + workspaceId, and key/summary/payload/to', async () => {

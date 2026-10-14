@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, isAbsolute } from "node:path";
@@ -25,6 +25,122 @@ function freezeComparison(value) {
     Object.freeze(value);
   }
   return value;
+}
+
+/** OUT diagnostics at the existing affected-test child boundary. This records
+ * the real parent invocation and raw streams; it cannot certify unobserved npm
+ * lifecycle/shell steps, executable resolution or runtime dependency closure.
+ * Call before the finished pulse so a killed aggregate cannot lose this receipt. */
+export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
+  if (!input || typeof input.task !== "string" || !input.task ||
+      typeof input.attempt !== "string" || !input.attempt ||
+      typeof input.cwd !== "string" || !isAbsolute(input.cwd) ||
+      !Array.isArray(input.command) || !input.command.length || !input.command[0] ||
+      !input.command.every(word => typeof word === "string") ||
+      !(input.originalCommand == null || typeof input.originalCommand === "string") ||
+      !Number.isSafeInteger(input.startedAtMs) || !Number.isSafeInteger(input.finishedAtMs) ||
+      input.finishedAtMs < input.startedAtMs ||
+      !(input.exitCode === null || Number.isSafeInteger(input.exitCode)) ||
+      !(input.signal === null || typeof input.signal === "string") ||
+      !(input.error === null || typeof input.error === "string") ||
+      typeof input.captureComplete !== "boolean" ||
+      !Buffer.isBuffer(input.stdout) || !Buffer.isBuffer(input.stderr)) {
+    throw new Error("NATIVE_TASK_RECEIPT_REFUSAL malformed native child observation");
+  }
+  mkdirSync(evidenceRoot, { recursive: true });
+  if (!lstatSync(evidenceRoot).isDirectory() || lstatSync(evidenceRoot).isSymbolicLink()) {
+    throw new Error("NATIVE_TASK_RECEIPT_REFUSAL redirected artifact root");
+  }
+  const root = realpathSync(evidenceRoot);
+  const persist = (bytes, suffix) => {
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const ref = `${sha256}.${suffix}`, path = join(root, ref);
+    try { writeFileSync(path, bytes, { flag: "wx", mode: 0o600 }); } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() ||
+        !readFileSync(path).equals(bytes)) {
+      throw new Error("NATIVE_TASK_RECEIPT_REFUSAL artifact bytes differ or are redirected");
+    }
+    return { ref, sha256, byteLength: bytes.length };
+  };
+  const validInputs = rows => Array.isArray(rows) && rows.length > 0 &&
+    rows.every(row => row && comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
+    new Set(rows.map(row => row.path)).size === rows.length;
+  const before = validInputs(input.before) ? structuredClone(input.before) : null;
+  const after = validInputs(input.after) ? structuredClone(input.after) : null;
+  const canonical = rows => rows?.slice().sort((a, b) => a.path.localeCompare(b.path));
+  const sourceInputsUnchanged = before !== null && after !== null &&
+    JSON.stringify(canonical(before)) === JSON.stringify(canonical(after));
+  const logs = { stdout: persist(input.stdout, "stdout"), stderr: persist(input.stderr, "stderr") };
+  // Bind prospective process events to this actual child pid and time interval.
+  // Preserve all matching invocations; never turn the observed subset into an
+  // original ordered-chain qualification or silently infer shell-only steps.
+  const processTrace = { scope: "partial-node-processes", events: [], gaps: [
+    "shell-builtins-and-non-node-entries-unobserved", "private-or-sync-spawns-unobserved",
+    "per-step-streams-and-runtime-inputs-unobserved", "signal-exits-may-lack-node-exit",
+  ] };
+  if (input.processTrace && Number.isSafeInteger(input.processTrace.rootPid) &&
+      input.processTrace.rootPid > 0 && typeof input.processTrace.out === "string") {
+    try {
+      const path = `${input.processTrace.out}.native-processes`;
+      if (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink())
+        throw new Error("redirected native process trace");
+      const sourceRoot = realpathSync(path), names = readdirSync(sourceRoot);
+      if (names.length > 16384) throw new Error("native process trace population exceeds bound");
+      const rows = names.map(name => {
+        if (!/^[a-f0-9]{64}\.json$/.test(name)) throw new Error("unexpected native process artifact");
+        const file = join(sourceRoot, name), stat = lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024)
+          throw new Error("redirected or oversized native process artifact");
+        const bytes = readFileSync(file);
+        if (createHash("sha256").update(bytes).digest("hex") !== name.slice(0, 64))
+          throw new Error("native process artifact hash mismatch");
+        const row = JSON.parse(bytes.toString("utf8"));
+        if (row.schemaVersion !== 1 || row.kind !== "native-node-process-event" ||
+            !Number.isSafeInteger(row.pid) || !Number.isSafeInteger(row.ppid) ||
+            !Number.isSafeInteger(row.atMs) || typeof row.processIdentity !== "string")
+          throw new Error("malformed native process event");
+        return { row, bytes };
+      }).filter(({ row }) => row.atMs >= input.startedAtMs && row.atMs <= input.finishedAtMs);
+      const pids = new Set([input.processTrace.rootPid]);
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const { row } of rows) {
+          const pid = row.event === "node-entry" && pids.has(row.ppid) ? row.pid :
+            row.event === "child-spawn" && pids.has(row.pid) ? row.childPid : null;
+          if (Number.isSafeInteger(pid) && pid > 0 && !pids.has(pid)) { pids.add(pid); changed = true; }
+        }
+      }
+      const selected = rows.filter(({ row }) => pids.has(row.pid))
+        .sort((a, b) => a.row.atMs - b.row.atMs || a.bytes.compare(b.bytes));
+      if (!selected.some(({ row }) => row.event === "node-entry" && row.pid === input.processTrace.rootPid))
+        throw new Error("native process root entry absent");
+      processTrace.events = selected.map(({ row, bytes }) => ({ ...row,
+        artifact: persist(bytes, "process-event.json") }));
+      if (selected.some(({ row }) => ["trace-limit", "trace-event-too-large"].includes(row.event)))
+        processTrace.gaps.push("native-process-observation-truncated");
+    } catch (error) {
+      processTrace.events = [];
+      processTrace.gaps.push(`native-process-trace-unreadable:${String(error?.message ?? error)}`);
+    }
+  } else processTrace.gaps.push("native-process-trace-unobserved");
+  const receipt = { schemaVersion: 1, kind: "affected-task-native-execution", task: input.task,
+    attempt: input.attempt, originalCommand: input.originalCommand ?? null,
+    execution: { command: input.command.slice(), cwd: input.cwd,
+      startedAtMs: input.startedAtMs, finishedAtMs: input.finishedAtMs,
+      childWallMs: input.finishedAtMs - input.startedAtMs,
+      exitCode: input.exitCode, signal: input.signal, error: input.error,
+      captureComplete: input.captureComplete, logs },
+    before: { inputs: before }, after: { inputs: after }, sourceInputsUnchanged,
+    processTrace, steps: [], orderedChainQualified: false, runtimeClosure: "unmeasured",
+    gaps: ["original-step-boundaries-unobserved", "executable-resolution-unobserved",
+      "installed-dependency-runtime-closure-unobserved",
+      ...(!sourceInputsUnchanged ? ["wrapper-inputs-unknown-or-changed"] : []),
+      ...(!input.captureComplete ? ["raw-stream-capture-incomplete"] : [])],
+    operationalAcceptance: false };
+  const pin = persist(Buffer.from(JSON.stringify(receipt)), "receipt.json");
+  return freezeComparison({ root, receipt: pin, logs, observation: receipt });
 }
 
 /**

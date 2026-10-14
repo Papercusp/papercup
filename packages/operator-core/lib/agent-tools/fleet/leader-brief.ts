@@ -222,6 +222,12 @@ const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
  */
 export const LEADER_BRIEF_READ_CONCURRENCY = 4;
 export const LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS = 3_000;
+/**
+ * The canonical fleet-metrics census is independent from headcount. Its
+ * measured complete cohort took 3,272.388ms, so it needs its own bounded leg
+ * budget instead of inheriting the shorter headcount cutoff.
+ */
+export const LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS = 5_000;
 
 export type LeaderBriefSilentMembers =
   | { status: 'measured'; ownerIds: string[]; thresholdMs: number; paused: boolean }
@@ -457,6 +463,19 @@ async function boundedLeaderBriefRead<T>(
     // thunk failure as well, preserving the same fail-soft contract.
     return fallback;
   }
+}
+
+/** Apply the dedicated deadline to the canonical fleet-metrics leg. */
+export function boundedLeaderBriefFleetMetricsRead<T>(
+  work: () => Promise<T>,
+  fallback: T,
+): Promise<T> {
+  return boundedLeaderBriefRead(
+    'fleet-metrics',
+    work,
+    fallback,
+    LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS,
+  );
 }
 
 /**
@@ -4547,8 +4566,7 @@ export async function buildLeaderBrief(
       ? `work_items:burn_down { harness: '${fleetMetricsHarness}', fleet: '${fleet}', window: 'fleet-lifetime' }`
       : 'fleet:leader-brief { fleet, harness }',
   });
-  const fleetMetrics = await boundedLeaderBriefRead(
-    'fleet-metrics',
+  const fleetMetrics = await boundedLeaderBriefFleetMetricsRead(
     () =>
       readLeaderBriefFleetMetrics({
         workspaceId,
@@ -4557,7 +4575,6 @@ export async function buildLeaderBrief(
         assignee: ownerId,
       }),
     fleetMetricsFallback,
-    LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
   );
   const fleetLaneEffective = fleetLaneHealth?.effective ?? null;
   const fleetClaimableCount = fleetLaneEffective?.claimable ?? null;

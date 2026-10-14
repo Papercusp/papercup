@@ -389,7 +389,9 @@ export default defineTool({
     ],
   },
   capability: 'operator:write',
-  irreversible: (args) => args.op === 'force' && args.confirm === true,
+  // Dispatch classifies the raw envelope before schema coercion. Conservatively
+  // guard every force request so a truthy/coerced confirm cannot bypass premises.
+  irreversible: (args) => args.op === 'force',
   // The status branch only reads pipeline state; trigger/force remain writes. Keep the
   // static effect as `write` so unknown or malformed calls stay behind the dry-run gate.
   effectForCall: (args) => (args.op === 'status' || args.op === 'gate-history' ? 'read' : 'write'),

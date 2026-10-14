@@ -1,5 +1,6 @@
 /** DBOS adapter for the replay-safe P-010 customer deletion chain. */
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { createHash } from 'node:crypto';
 import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import {
   runHostedCustomerDeletion,
@@ -9,6 +10,20 @@ import {
 } from '../data-governance/hosted-customer-deletion';
 
 export const HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME = 'hosted-customer-deletion';
+
+/** One identity shared by the in-process executor and request-only DBOS client.
+ * Actual authority is verified from the admission ledger inside the workflow. */
+export function hostedCustomerDeletionEnqueueRequest(request: HostedCustomerDeletionRequest) {
+  if (![request.operationId, request.organizationId, request.requestedBy, request.policy?.approvalRef]
+    .every(value => typeof value === 'string' && value.trim().length > 0)
+    || !['delete', 'retain'].includes(request.policy.stripe) || !['delete', 'retain'].includes(request.policy.consent)
+    || (request.target.kind !== 'organization' && request.target.kind !== 'user')
+    || (request.target.kind === 'user' && request.target.userId !== request.requestedBy)) {
+    throw new Error('customer_deletion_enqueue_invalid');
+  }
+  const identity = createHash('sha256').update(JSON.stringify([request.organizationId, request.operationId])).digest('hex');
+  return { workflowId: `customer-deletion:${identity}`, deduplicationId: `customer-deletion:${identity}`, workflowInput: request };
+}
 
 export interface HostedCustomerDeletionWorkflowRuntime {
   readonly seams: HostedCustomerDeletionSeams;

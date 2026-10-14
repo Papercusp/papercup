@@ -286,7 +286,11 @@ describe('runDegradationSweepOnce — one alarm per episode against a durable op
 
 describe('mechanism registry', () => {
   it('seeds gate-pass-reuse once, scope-keyed (R-3)', () => {
-    expect(getDegradationMechanism('gate-pass-reuse')).toMatchObject({ scopeKeyed: true });
+    expect(getDegradationMechanism('gate-pass-reuse')).toMatchObject({
+      scopeKeyed: true,
+      observationWorkspaceId: 'default',
+      observationProcessTag: 'gate-reuse:green-checkpoint',
+    });
     expect(() => registerDegradationMechanism({ mechanism: 'gate-pass-reuse', description: 'dup' })).toThrow(/already registered/);
   });
 

@@ -99,6 +99,10 @@ export interface DegradationMechanism {
    * (a gate task), never a per-run id, or every run would open its own condition.
    */
   scopeKeyed?: boolean;
+  /** Optional observation tenant partition for mechanisms owned by one workspace. */
+  observationWorkspaceId?: string;
+  /** Optional producer tag when other producers share the same mechanism. */
+  observationProcessTag?: string;
   windowMs?: number;
   thresholds?: Partial<DegradationThresholds>;
   /** Optional adjacent-window detector for sudden applied-rate declines. */
@@ -151,6 +155,8 @@ registerDegradationMechanism({
     'green-checkpoint pass reuse: tasks whose prior passing proof could have been reused instead of re-running. ' +
     'A collapse means eligible passing proofs were not reused in the observed window.',
   scopeKeyed: true,
+  observationWorkspaceId: 'default',
+  observationProcessTag: 'gate-reuse:green-checkpoint',
   yieldDrop: {
     minPreviousEligible: DEGRADATION_MIN_ELIGIBLE,
     healthyAppliedRate: DEGRADATION_RECOVER_RATE,
@@ -657,8 +663,13 @@ export interface DegradationSweepResult {
 
 async function defaultReadWindows(m: DegradationMechanism, windowMs: number, now: Date): Promise<ScopedFallbackWindow[]> {
   const fo = await import('../degradation/fallback-observations');
-  if (m.scopeKeyed) return fo.readFallbackWindowsByScope(m.mechanism, windowMs, { now });
-  return [{ scope: null, window: await fo.readFallbackWindow(m.mechanism, windowMs, { now }) }];
+  const options = {
+    now,
+    ...(m.observationWorkspaceId ? { workspaceId: m.observationWorkspaceId } : {}),
+    ...(m.observationProcessTag ? { processTag: m.observationProcessTag } : {}),
+  };
+  if (m.scopeKeyed) return fo.readFallbackWindowsByScope(m.mechanism, windowMs, options);
+  return [{ scope: null, window: await fo.readFallbackWindow(m.mechanism, windowMs, options) }];
 }
 
 async function defaultReadPreviousWindows(
@@ -668,8 +679,13 @@ async function defaultReadPreviousWindows(
 ): Promise<ScopedFallbackWindow[]> {
   const fo = await import('../degradation/fallback-observations');
   const previousEnd = new Date(now.getTime() - windowMs);
-  if (m.scopeKeyed) return fo.readFallbackWindowsByScope(m.mechanism, windowMs, { now: previousEnd });
-  return [{ scope: null, window: await fo.readFallbackWindow(m.mechanism, windowMs, { now: previousEnd }) }];
+  const options = {
+    now: previousEnd,
+    ...(m.observationWorkspaceId ? { workspaceId: m.observationWorkspaceId } : {}),
+    ...(m.observationProcessTag ? { processTag: m.observationProcessTag } : {}),
+  };
+  if (m.scopeKeyed) return fo.readFallbackWindowsByScope(m.mechanism, windowMs, options);
+  return [{ scope: null, window: await fo.readFallbackWindow(m.mechanism, windowMs, options) }];
 }
 
 async function defaultReadOpenConditionKeys(): Promise<string[]> {

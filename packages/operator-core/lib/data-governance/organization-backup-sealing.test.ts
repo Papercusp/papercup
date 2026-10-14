@@ -8,12 +8,30 @@ import {
   BACKUP_ARTIFACT_ID_BYTES,
   collectBytes,
   openBackupArtifact,
+  organizationBackupRetentionDecision,
   sealBackupArtifact,
   type BackupKeyService,
 } from './organization-backup-sealing';
 import { OrganizationKeyUnavailableError } from './organization-keys';
 
 const ORG = 'org-a';
+
+describe('organization backup retention under legal hold', () => {
+  it('keeps every artifact in held scope, even when live held rows are absent', () => {
+    expect(organizationBackupRetentionDecision({ workspaceIds: ['held'] }, [
+      { holdId: 'hold-b', workspaceId: 'held' }, { holdId: 'hold-a', workspaceId: 'held' },
+      { holdId: 'hold-a', workspaceId: 'held' }, { holdId: 'other', workspaceId: 'unrelated' },
+    ])).toEqual({ prunable: false, holdIds: ['hold-a', 'hold-b'], reason: 'legal-hold-active' });
+  });
+
+  it('permits normal pruning after release and ignores holds in other scopes', () => {
+    const scope = { workspaceIds: ['released'] };
+    expect(organizationBackupRetentionDecision(scope, [])).toEqual({
+      prunable: true, holdIds: [], reason: 'no-active-legal-hold',
+    });
+    expect(organizationBackupRetentionDecision(scope, [{ holdId: 'other', workspaceId: 'unrelated' }]).prunable).toBe(true);
+  });
+});
 const calls = { encrypt: 0 };
 
 const fakeService: BackupKeyService = {

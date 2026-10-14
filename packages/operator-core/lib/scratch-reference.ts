@@ -12,6 +12,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { OutputAudience, OutputEvidenceClass } from './output-envelope';
+import type { GatewayPayloadSpool } from './inference-gateway/payload-spool';
 import {
   reserveScratchSpace,
   noteScratchWriteSettled,
@@ -31,6 +32,11 @@ const VOLATILE_SCRATCH_REFERENCE_MAX_ENTRY_BYTES = 16 * 1024 * 1024;
 const VOLATILE_SCRATCH_REFERENCE_MAX_BYTES = 64 * 1024 * 1024;
 const VOLATILE_SCRATCH_REFERENCE_MAX_ENTRIES = 64;
 const VOLATILE_SCRATCH_REFERENCE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** Short-lived durable rescue copies use the same expiry as the volatile fallback. */
+export const DURABLE_SCRATCH_REFERENCE_SCHEME = 'papercusp://scratch-spool';
+export const DURABLE_SCRATCH_REFERENCE_TTL_MS = VOLATILE_SCRATCH_REFERENCE_TTL_MS;
+const DURABLE_SCRATCH_REFERENCE_PAYLOAD_REF = /^[0-9a-f]{64}$/;
+const DURABLE_SCRATCH_REFERENCE_CONTENT_TYPE = 'application/vnd.papercusp.scratch-reference';
 
 interface VolatileScratchReferenceEntry {
   manifest: ScratchReferenceManifest;
@@ -349,6 +355,76 @@ export function storeVolatileScratchReference(input: {
 export function isVolatileScratchReferenceUri(uri: string): boolean {
   const prefix = `${VOLATILE_SCRATCH_REFERENCE_SCHEME}/`;
   return uri.startsWith(prefix) && VOLATILE_SCRATCH_REFERENCE_ID.test(uri.slice(prefix.length));
+}
+
+/** True only for a content-addressed durable scratch URI. */
+export function isDurableScratchReferenceUri(uri: string): boolean {
+  const prefix = `${DURABLE_SCRATCH_REFERENCE_SCHEME}/`;
+  return uri.startsWith(prefix) && DURABLE_SCRATCH_REFERENCE_PAYLOAD_REF.test(uri.slice(prefix.length));
+}
+
+/**
+ * Copy a still-authorized volatile fallback into the existing workspace-scoped
+ * Postgres payload spool. The embedded scratch manifest remains the authority
+ * for workspace, owner, expiry, and payload integrity; the content-addressed
+ * spool key only locates its framed bytes.
+ *
+ * `spool` is injectable for hermetic tests. Production creates the existing
+ * gateway spool with an expiry no later than the manifest, so its regular
+ * bounded sweeper can reclaim the rescue row without a new cleanup system.
+ */
+export async function persistVolatileScratchReference(
+  uri: string,
+  caller: { workspaceId?: string | null; ownerId?: string | null; nowMs?: number },
+  options: { spool?: GatewayPayloadSpool } = {},
+): Promise<{ uri: string; manifest: ScratchReferenceManifest }> {
+  const fallback = readVolatileScratchReference(uri, caller);
+  const nowMs = caller.nowMs ?? Date.now();
+  const remainingMs = Date.parse(fallback.manifest.expiresAt) - nowMs;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    throw new ScratchReferenceError('expired_reference', 'volatile scratch fallback expired before durable persistence');
+  }
+
+  const framed = Buffer.concat([scratchReferenceHeader(fallback.manifest), fallback.payload]);
+  const payloadSpool = await import('./inference-gateway/payload-spool');
+  if (framed.byteLength > payloadSpool.DEFAULT_MAX_SPOOL_BYTES) {
+    throw new ScratchReferenceError('invalid_reference', 'scratch fallback exceeds the durable payload-spool limit');
+  }
+  const spool = options.spool ?? payloadSpool.createGatewayPayloadSpool({
+    maxBytes: payloadSpool.DEFAULT_MAX_SPOOL_BYTES,
+    ttlMs: remainingMs,
+  });
+  const stored = await spool.spool(framed, { contentType: DURABLE_SCRATCH_REFERENCE_CONTENT_TYPE });
+  if (!stored.payloadRef || !DURABLE_SCRATCH_REFERENCE_PAYLOAD_REF.test(stored.payloadRef)) {
+    throw new ScratchReferenceError('invalid_reference', 'payload spool returned an invalid durable reference');
+  }
+  return {
+    uri: `${DURABLE_SCRATCH_REFERENCE_SCHEME}/${stored.payloadRef}`,
+    manifest: fallback.manifest,
+  };
+}
+
+/** Read and authorize a durable result-door copy from the existing payload spool. */
+export async function readDurableScratchReference(
+  uri: string,
+  caller: { workspaceId?: string | null; ownerId?: string | null; nowMs?: number },
+  options: { spool?: GatewayPayloadSpool } = {},
+): Promise<{ manifest: ScratchReferenceManifest; payload: Buffer }> {
+  if (!isDurableScratchReferenceUri(uri)) {
+    throw new ScratchReferenceError('invalid_reference', 'durable scratch reference URI is malformed');
+  }
+  const payloadRef = uri.slice(`${DURABLE_SCRATCH_REFERENCE_SCHEME}/`.length);
+  const spool = options.spool ?? (await import('./inference-gateway/payload-spool')).createGatewayPayloadSpool();
+  const framed = await spool.read(payloadRef);
+  if (!framed) {
+    throw new ScratchReferenceError('expired_reference', 'durable scratch reference expired or no longer resolves');
+  }
+  const parsed = parseScratchReference(framed);
+  if (!parsed) {
+    throw new ScratchReferenceError('invalid_reference', 'durable payload is not a scratch reference');
+  }
+  authorizeScratchReference(parsed.manifest, caller);
+  return { manifest: parsed.manifest, payload: parsed.payload };
 }
 
 /** Read and authorize one temporary reference. The returned buffer is read-only by convention. */

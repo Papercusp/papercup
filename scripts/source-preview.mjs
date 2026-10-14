@@ -45,6 +45,7 @@
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import assert from 'node:assert/strict';
 import { committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
+import { readTaskDeadlineEpochMs, formatTaskDeadlineRefusal } from './lib/budgeted-task-scheduler.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs, appendFileSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
@@ -779,12 +780,14 @@ export function captureVerifierDependencies({ dest, receipt }) {
 
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv }} options
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options
  * @returns {Promise<number>}
  */
-export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env }) {
+export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0 }) {
   if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
     throw new PreviewError('verifier command needs an explicit ref, external receipt and command', 2);
+  if (!Number.isSafeInteger(childEstimateMs) || childEstimateMs < 0)
+    throw new PreviewError('verifier child estimate must be a nonnegative integer', 2);
   const sourceRepo = realpathSync(repo);
   const donor = committedWorkRootDependencyDonor(sourceRepo);
   const scratch = join(sourceRepo, '.papercusp', 'scratch');
@@ -796,22 +799,31 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   try {
     writeVerifierTaskReceipt(owned, sourceRepo, env);
     assertOutsideArchive(owned, resolve(receiptPath));
-    runPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env);
+    const tracedPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env);
+    const measurements = {};
+    runPhase = async (phase, operation) => {
+      const before = performance.now();
+      const result = await tracedPhase(phase, operation);
+      measurements[phase] = Math.ceil(performance.now() - before);
+      return result;
+    };
+    await runPhase('source.admission', () => {
+      const estimate = budgetFrom
+        ? estimateVerifierCommandBudget(readVerifierPhaseMeasurements(budgetFrom), childEstimateMs)
+        : null;
+      admitVerifierCommandBudget(estimate, { env, preparation: true });
+    });
     const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref, dest: root,
       inputs, inputsFile, tauriInputs, gitCheckout: true }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
     const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase });
     await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
       `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
-    const childEnv = await runPhase('child.preflight', () => {
-      // Keep the expensive synchronous provenance check inside the phase receipt. The
-      // admission check runs first and refuses a run whose launcher deadline cannot reserve
-      // this measured population plus the child/post-check window.
-      admitVerifierSourceVerification({ root, expected: receipt, env });
-      return verifierSourceChildEnv({ root, receiptPath,
+    await runPhase('child.admission', () => admitVerifierCommandBudget(
+      estimateVerifierCommandBudget(measurements, childEstimateMs), { env }));
+    const childEnv = await runPhase('child.preflight', () => verifierSourceChildEnv({ root, receiptPath,
         env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
-          VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } });
-    });
+          VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } }));
     const exitCode = await runPhase('child.run', async () => {
       const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv, stdio: 'inherit' });
       const onInt = () => child.kill('SIGINT'), onTerm = () => child.kill('SIGTERM');
@@ -1001,72 +1013,71 @@ export function verifierSourceChildEnv({ root, receiptPath, env = process.env })
   return { ...env, VERIFY_TAURI_SOURCE_RECEIPT: receipt, VERIFY_TAURI_SOURCE_REF: expected.sourceCommit };
 }
 
-/**
- * The source verifier runs synchronously and walks the complete recorded population. A
- * task deadline therefore needs an admission check before that walk starts: otherwise a
- * verifier can spend the last part of its launcher lifetime in a pre-child check and be
- * killed without a child verdict or a cleanup phase. The estimate is intentionally derived
- * from the pinned population in the receipt and the bytes actually present in the tree; it
- * never lowers the source census or turns a timeout into a pass.
- */
-export const VERIFIER_TASK_DEADLINE_ENV = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
-export const VERIFIER_SOURCE_BYTES_PER_MS = 20_000;
-export const VERIFIER_SOURCE_ENTRY_MS = 0.25;
-export const VERIFIER_SOURCE_GIT_REPO_MS = 1_000;
-export const VERIFIER_POSTCHECK_RESERVE_MS = 15_000;
+const VERIFIER_PREPARATION_PHASES = ['source.freeze', 'receipt.write', 'deps.source.before',
+  'deps.snapshot', 'deps.source.after-snapshot', 'deps.inputs', 'deps.measure',
+  'deps.source.after-preflight', 'deps.census', 'deps.receipt.write'];
 
-/** @param {NodeJS.ProcessEnv} [env] @returns {number | null} */
-export function readVerifierTaskDeadline(env = process.env) {
-  const value = Number(env?.[VERIFIER_TASK_DEADLINE_ENV]);
-  return Number.isSafeInteger(value) && value > 0 ? value : null;
-}
-
-/**
- * Measure the work the next synchronous source verification will perform. The manifest is
- * the authority for the population; statting those paths measures the current bytes without
- * recursively walking an untrusted tree a second time.
- * @param {string} root
- * @param {{ files: { path: string }[], submodules?: { path: string }[] }} expected
+/** Read observations only, never acceptance evidence. A killed phase is not a duration.
+ * @param {string} path @returns {Record<string, number>}
  */
-export function measureVerifierSourceVerification(root, expected) {
-  assert.ok(expected && Array.isArray(expected.files) && expected.files.length > 0,
-    'verifier source population is required for deadline admission');
-  let bytes = 0;
-  for (const file of expected.files) {
-    const path = join(root, file.path);
-    const stat = lstatSync(path);
-    if (stat.isSymbolicLink()) bytes += Buffer.byteLength(readlinkSync(path));
-    else {
-      assert.ok(stat.isFile(), `verifier source population entry is not a file: ${file.path}`);
-      bytes += stat.size;
+export function readVerifierPhaseMeasurements(path) {
+  const rows = readFileSync(path, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const measurements = {};
+  const started = new Set();
+  let sequence = 0, elapsed = 0;
+  for (const row of rows) {
+    assert.ok(row.schemaVersion === 'verifier-phase-v1' && row.sequence === ++sequence &&
+      Number.isSafeInteger(row.elapsedMs) && row.elapsedMs >= elapsed && typeof row.phase === 'string',
+    'Invalid verifier phase budget receipt');
+    elapsed = row.elapsedMs;
+    if (row.event === 'started') {
+      assert.ok(!started.has(row.phase), 'Duplicate verifier phase start');
+      started.add(row.phase);
+    } else {
+      assert.ok(started.delete(row.phase) && ['completed', 'failed'].includes(row.event),
+        'Verifier phase terminal record lacks a start');
+      if (row.event === 'completed') {
+        assert.ok(Number.isSafeInteger(row.durationMs) && row.durationMs >= 0,
+          'Invalid verifier phase duration');
+        measurements[row.phase] = row.durationMs;
+      }
     }
   }
-  const entries = expected.files.length;
-  const repositories = 1 + (expected.submodules?.length ?? 0);
-  const estimatedMs = Math.max(1, Math.ceil(
-    bytes / VERIFIER_SOURCE_BYTES_PER_MS + entries * VERIFIER_SOURCE_ENTRY_MS +
-    repositories * VERIFIER_SOURCE_GIT_REPO_MS));
-  return { bytes, entries, repositories, estimatedMs };
+  return measurements;
 }
 
-/**
- * Refuse a verifier that cannot reserve time for its child and final attestations. A missing
- * deadline is UNKNOWN/unbounded and leaves the historical CLI behaviour unchanged.
+/** Reserve both complete final censuses and cleanup, using this run's observations or an
+ * explicitly selected earlier phase receipt. Estimates are prognoses, not guarantees;
+ * an omitted child estimate remains explicitly unknown. No source/dependency scope changes.
+ * @param {Record<string, number>} measurements @param {number} [childEstimateMs]
  */
-export function admitVerifierSourceVerification({ root, expected, env = process.env,
-  nowMs = Date.now(), reserveMs = VERIFIER_POSTCHECK_RESERVE_MS }) {
-  const deadlineEpochMs = readVerifierTaskDeadline(env);
-  const measurement = measureVerifierSourceVerification(root, expected);
-  if (deadlineEpochMs === null) return { admitted: true, deadlineEpochMs: null, remainingMs: null, reserveMs, measurement };
-  const remainingMs = deadlineEpochMs - nowMs;
-  if (remainingMs <= measurement.estimatedMs + reserveMs) {
-    throw new PreviewError(
-      `VERIFIER_DEADLINE_REFUSAL remainingMs=${Math.round(remainingMs)} ` +
-      `verificationEstimateMs=${measurement.estimatedMs} reserveMs=${reserveMs} ` +
-      `entries=${measurement.entries} bytes=${measurement.bytes} repositories=${measurement.repositories} ` +
-      '— refusing before the synchronous pre-child source check; raise the launching timeout.', 2);
-  }
-  return { admitted: true, deadlineEpochMs, remainingMs, reserveMs, measurement };
+export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0) {
+  for (const phase of VERIFIER_PREPARATION_PHASES)
+    assert.ok(Number.isSafeInteger(measurements[phase]) && measurements[phase] >= 0,
+      `Verifier budget requires completed phase: ${phase}`);
+  assert.ok(Number.isSafeInteger(childEstimateMs) && childEstimateMs >= 0, 'Invalid verifier child estimate');
+  const preparationMs = VERIFIER_PREPARATION_PHASES.reduce((total, phase) => total + measurements[phase], 0);
+  const sourceCheckMs = Math.max(...['deps.source.before', 'deps.source.after-snapshot',
+    'deps.source.after-preflight', 'child.preflight', 'source.postverify'].map(phase => measurements[phase] ?? 0));
+  const dependencyCheckMs = Math.max(measurements['deps.census'], measurements['deps.postverify'] ?? 0);
+  // With no completed cleanup receipt, reserve at least the observed snapshot/freezing
+  // work: deletion must still walk the whole population. This is a conservative proxy.
+  const cleanupMs = Math.max(measurements.cleanup ?? 0, measurements['source.freeze'], measurements['deps.snapshot']);
+  const remainingMs = sourceCheckMs * 2 + dependencyCheckMs + cleanupMs + childEstimateMs;
+  return { preparationMs, sourceCheckMs, dependencyCheckMs, cleanupMs, childEstimateMs,
+    unknownChild: childEstimateMs === 0, remainingMs: Math.ceil(remainingMs * 1.25),
+    totalMs: Math.ceil((preparationMs + remainingMs) * 1.25) };
+}
+
+/** Reuse the launcher's absolute deadline and the scheduler's attributable refusal. */
+export function admitVerifierCommandBudget(estimate, { env = process.env, nowMs = Date.now(), preparation = false } = {}) {
+  const deadlineEpochMs = readTaskDeadlineEpochMs(env);
+  const knownEstimateMs = estimate ? (preparation ? estimate.totalMs : estimate.remainingMs) : 0;
+  const remainingMs = deadlineEpochMs === null ? null : deadlineEpochMs - nowMs;
+  if (remainingMs !== null && (remainingMs <= 0 || remainingMs <= knownEstimateMs))
+    throw new PreviewError(formatTaskDeadlineRefusal({ remainingMs, knownEstimateMs,
+      knownTasks: estimate ? VERIFIER_PREPARATION_PHASES.length : 0, unknownTasks: estimate?.unknownChild === false ? 0 : 1 }), 2);
+  return { deadlineEpochMs, remainingMs, knownEstimateMs, estimate };
 }
 
 async function listFiles(dir) {
@@ -1948,7 +1959,7 @@ function parseArgs(argv) {
     else if (a === '--git-checkout') opts.gitCheckout = true;
     else if (a === '--tauri-inputs') opts.tauriInputs = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
-    else if (['--inputs-file', '--operator-api-root', '--operator-api-source-receipt',
+    else if (['--inputs-file', '--budget-from', '--child-estimate-ms', '--operator-api-root', '--operator-api-source-receipt',
       '--operator-api-source-sha', '--operator-api-inputs', '--operator-api-inputs-sha'].includes(a)) {
       const path = rest[++i];
       if (!path || path.startsWith('--')) throw new PreviewError(`missing value for ${a}`, 2);
@@ -1976,7 +1987,8 @@ async function main(argv) {
       throw new PreviewError('verifier-run requires --repo, --ref, --receipt, --inputs or --inputs-file and -- <command>', 2);
     return runVerifierCommand({ repo: opts.repo, ref: opts.ref, receiptPath: opts.receipt,
       inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'],
-      tauriInputs: opts.tauriInputs === true, command: opts.command });
+      tauriInputs: opts.tauriInputs === true, command: opts.command,
+      budgetFrom: opts['budget-from'], childEstimateMs: opts['child-estimate-ms'] === undefined ? 0 : Number(opts['child-estimate-ms']) });
   }
   if (cmd === 'verifier-inputs-check') {
     if (!opts.repo || !opts.ref || !(opts.inputs || opts['inputs-file'])) {

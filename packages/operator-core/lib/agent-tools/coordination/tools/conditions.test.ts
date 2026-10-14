@@ -32,6 +32,7 @@ import tool, {
   CONDITIONS_FAST_PATH_ROW_CAP,
   computeConditionStates,
   readConditionEnvelopes,
+  readConditionEnvelopesForKey,
   readLatestConditionEnvelope,
 } from "./conditions";
 
@@ -43,6 +44,8 @@ type Out = {
   open: Array<Record<string, unknown>>;
   resolved_count: number;
   resolved: Array<Record<string, unknown>>;
+  condition_key?: string;
+  condition_found?: boolean;
 };
 const call = async (args: Record<string, unknown> = {}): Promise<Out> => {
   const res = (await tool.handler(args as never, ctx())) as {
@@ -345,6 +348,61 @@ describe("computeConditionStates (pure)", () => {
 });
 
 describe("coord:conditions handler", () => {
+  it("condition_key performs an exact keyed lifecycle read instead of the aggregate scan", async () => {
+    M.pgFastPath = true;
+    M.pgQuery.mockImplementation(async (..._args: unknown[]) => [
+      { body: resolution(4, "target") },
+      { body: alarm(2, "target") },
+    ]);
+
+    const out = await call({ condition_key: "target" });
+
+    expect(out).toMatchObject({
+      condition_key: "target",
+      condition_found: true,
+      open_count: 0,
+      resolved_count: 1,
+    });
+    expect(out.resolved[0]).toMatchObject({
+      condition_key: "target",
+      resolved_at: at(4),
+    });
+    const [template, ...params] = M.pgQuery.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+    const text = template.join("?");
+    expect(text).toContain("body->>'condition_key' =");
+    expect(text).toContain("body->>'resolves_condition' =");
+    expect(text).toContain("body->'resolves_conditions' ?");
+    expect(params).toContain("target");
+  });
+
+  it("condition_key filters the non-PG seam and reports an unmatched key", async () => {
+    M.readLines.mockImplementation(async () => [alarm(1, "target"), alarm(2, "other")]);
+
+    const found = await call({ condition_key: "target" });
+    expect(found).toMatchObject({ condition_key: "target", condition_found: true, open_count: 1 });
+    expect(found.open.map((state) => state.condition_key)).toEqual(["target"]);
+
+    const missing = await call({ condition_key: "missing" });
+    expect(missing).toMatchObject({ condition_key: "missing", condition_found: false, open_count: 0, resolved_count: 0 });
+    expect(missing.open).toEqual([]);
+    expect(missing.resolved).toEqual([]);
+  });
+
+  it("readConditionEnvelopesForKey includes plural resolutions in the exact lookup", async () => {
+    M.readLines.mockImplementation(async () => [
+      alarm(1, "target"),
+      resolutionMany(2, ["target", "other"]),
+      alarm(3, "other"),
+    ]);
+
+    const envelopes = await readConditionEnvelopesForKey("target");
+    expect(envelopes).toHaveLength(2);
+    expect(envelopes.map((envelope) => envelope["resolves_condition"] ?? envelope["condition_key"])).toEqual([
+      "target",
+      "target",
+    ]);
+  });
+
   it("keeps recent PG resolutions inside the capped window and folds it chronologically", async () => {
     const key = "bounded-condition";
     M.pgFastPath = true;

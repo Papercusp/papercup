@@ -37,6 +37,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { resolveFsMutexLockRoot } from './lib/fs-mutex.mjs';
+import { snapshotMigrationSource } from './lib/with-test-pg-migrations.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -175,13 +176,15 @@ function resolveSqlDir() {
   // rather than silently seed a different migration inventory.
   const expected = process.env.PAPERCUSP_PG_SQL_DIR?.trim();
   if (expected && resolve(expected) !== resolve(hit)) {
-    const inventory = dir => readdirSync(dir).filter(name => name.endsWith('.sql')).sort()
+    const inventory = dir => readdirSync(dir).filter(name => name.endsWith('.sql') || name.endsWith('.sql.forward-compat.json')).sort()
       .map(name => [name, createHash('sha256').update(readFileSync(join(dir, name))).digest('hex')]);
     if (JSON.stringify(inventory(hit)) !== JSON.stringify(inventory(expected))) {
       throw new Error(`migration source inventory mismatch: supervisor ${hit}; candidate ${expected}`);
     }
   }
-  return hit;
+  // Once verified, use the candidate itself as the capture source. This also
+  // allows a caller's private source copy to outlive changes in the shared tree.
+  return expected ? resolve(expected) : hit;
 }
 
 let sqlDir;
@@ -392,6 +395,10 @@ function assertNotTerminating() {
 }
 
 async function main() {
+// Product restarts must use the same bytes that seeded this private database.
+// A live shared-tree migration arriving mid-test otherwise withholds the next
+// request listener because the disposable DB never reserved that new file.
+if (isolatedRuntime) sqlDir = snapshotMigrationSource(sqlDir, join(runtimeRoot, 'db-sql'));
 console.log(`[with-test-pg] booting throwaway PG on :${port} (datadir ${dataDir})`);
 console.log(`[with-test-pg] migrations: ${sqlDir}`);
 
@@ -554,6 +561,7 @@ if (runtimeRoot && runtimeId) {
     // operator state. Pin their original cache before isolating HOME/XDG;
     // otherwise Playwright silently resolves an empty runtime-local cache.
     PLAYWRIGHT_BROWSERS_PATH: browserCachePath(process.env),
+    PAPERCUSP_PG_SQL_DIR: sqlDir,
     TMPDIR: join(runtimeRoot, 'tmp'),
   };
 }

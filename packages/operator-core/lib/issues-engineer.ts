@@ -54,7 +54,7 @@ import { systemDistinctId } from './flag-distinct-id';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
-import { boundedOrgTxn } from './pg-bounded-txn';
+import { boundedOrgTxn, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
 import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClaimSelection } from './typed-properties-db';
 import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import { boundedPgReadTxn } from './pg-read-query';
@@ -112,7 +112,7 @@ import {
   isLegacyFleetScopeDowngradeAdmission,
   type LegacyFleetScopeDowngradeAdmission,
 } from './work-item-fleet-scope-recovery';
-import { audienceWhereSql, type WorkAudienceFilter } from './work-nature/agent-work-predicate';
+import { audienceWhereSql, ISSUE_FAMILY_ROUTE_KINDS, type WorkAudienceFilter } from './work-nature/agent-work-predicate';
 
 /**
  * EI-217141: a fleet leader's explicit assignment is the one narrow exception to
@@ -1877,36 +1877,49 @@ export function issueShapeWhereSql(sql: OrgSql, aliased: boolean, filter: ListIs
 export function issueMatchWhereSql(sql: OrgSql, aliased: boolean, filter: ListIssuesFilter) {
   const col = (c: string) => sql.unsafe(aliased ? `ei.${c}` : c);
   const q = filter.q?.trim();
-  // Capture coalesces deliberately keep the incoming prose in the append-only
-  // occurrence ledger instead of replacing the survivor's title/body. Keep the
-  // documented q read lossless by checking that ledger as well. The lookup is
-  // keyed by the canonical work-item identity (and the existing covering index
-  // on workspace + harness + item id), so this is not a free-text scan over the
-  // occurrence table. `reported_title` and evidence.body are the two fields
-  // written by improvements:capture for the caller's text.
-  const occurrenceTextMatch = q
-    ? sql`EXISTS (
-        SELECT 1
-          FROM harness_shared.work_item_occurrences occurrence
-         WHERE occurrence.workspace_id = ${col('workspace_id')}
-           AND occurrence.canonical_work_item_id = ${col('issue_id')}
-           AND occurrence.canonical_harness_slug = CASE
-             WHEN ${col('scope')} LIKE 'harness:%' THEN substring(${col('scope')} from 9)
-             ELSE ${col('scope')}
-           END
-           AND (
-             occurrence.reported_title ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
-             OR COALESCE(occurrence.evidence ->> 'body', '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
-           )
-      )`
-    : sql`FALSE`;
+  // Build a candidate set first so the substring indexes can reduce both the
+  // canonical work-item rows and the occurrence ledger before this identity join.
+  // Keep every literal predicate byte-matched to ISSUE_Q_SEARCH_INDEXES and retain
+  // the engineer_issues view's scope mapping for workspace-global items.
   return sql`
     ${
       q
-        ? sql`(
-            COALESCE(${col('title')}, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
-            OR COALESCE(${col('body')}, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
-            OR ${occurrenceTextMatch}
+        ? sql`EXISTS (
+            SELECT 1
+              FROM (
+                SELECT wi.workspace_id AS candidate_workspace_id,
+                       wi.feature_id AS candidate_issue_id,
+                       COALESCE(wi.payload -> '_ei' ->> 'scope',
+                                CASE WHEN wi.harness_slug = '' THEN 'operator'
+                                     ELSE 'harness:' || wi.harness_slug END) AS candidate_scope
+                  FROM harness_shared.work_items wi
+                 WHERE wi.workspace_id = ${issuesScopeWorkspace()}
+                   AND wi.item_kind = ANY(${[...ISSUE_FAMILY_ROUTE_KINDS]}::text[])
+                   AND (
+                     COALESCE(wi.title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
+                     OR COALESCE(wi.summary, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
+                   )
+                UNION ALL
+                SELECT wi.workspace_id AS candidate_workspace_id,
+                       wi.feature_id AS candidate_issue_id,
+                       COALESCE(wi.payload -> '_ei' ->> 'scope',
+                                CASE WHEN wi.harness_slug = '' THEN 'operator'
+                                     ELSE 'harness:' || wi.harness_slug END) AS candidate_scope
+                  FROM harness_shared.work_item_occurrences occurrence
+                  JOIN harness_shared.work_items wi
+                    ON wi.workspace_id = occurrence.workspace_id
+                   AND wi.harness_slug = occurrence.canonical_harness_slug
+                   AND wi.feature_id = occurrence.canonical_work_item_id
+                 WHERE occurrence.workspace_id = ${issuesScopeWorkspace()}
+                   AND wi.item_kind = ANY(${[...ISSUE_FAMILY_ROUTE_KINDS]}::text[])
+                   AND (
+                     occurrence.reported_title ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
+                     OR COALESCE(occurrence.evidence ->> 'body', '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
+                   )
+              ) q_match
+             WHERE q_match.candidate_workspace_id = ${col('workspace_id')}
+               AND q_match.candidate_issue_id = ${col('issue_id')}
+               AND q_match.candidate_scope = ${col('scope')}
           )`
         : sql`TRUE`
     }
@@ -3553,8 +3566,11 @@ export async function releaseIssue(
   // outcome even though the mutation eventually landed. Passing the transaction client into
   // the existing workspace/cooldown helpers keeps this change on the canonical surfaces while
   // making the whole issue-family release atomic and fail-fast.
+  let releasePhase = 'transaction-setup';
   const released = await boundedOrgTxn(async (tx) => {
+    releasePhase = 'resolve-workspace';
     const ws = await resolveIssueWorkspace(id, undefined, tx);
+    releasePhase = 'read-prior-holder';
     // EI-6480: capture the prior assignee BEFORE clearing it, so we can clean up that owner's
     // stale per-Hive claim lease below — else the just-freed issue stays lease-poisoned (reads
     // unclaimed yet fails lease arbitration for every new claimer) until the lease TTL lapses.
@@ -3576,6 +3592,7 @@ export async function releaseIssue(
     // terminal states retain their meaning. Without this normalization, an unassigned `wip`
     // issue is outside coord:dispatch's claimable frontier and remains stranded indefinitely.
     const releasePreservedStates = ['open', 'blocked', 'needs-human', ...ISSUE_TERMINAL_STATUSES];
+    releasePhase = 'compare-and-release-update';
     const rows = await tx<IssueRowDb[]>`
       UPDATE harness_shared.engineer_issues SET
          assignee = NULL,
@@ -3594,6 +3611,7 @@ export async function releaseIssue(
     if (!rows[0]) return null;
     const issue = toIssue(rows[0]);
     if (formerAssignee && formerHarnessSlug) {
+      releasePhase = 'persist-release-cooldown';
       await recordWorkItemReleaseCooldown(
         {
           workspaceId: ws,
@@ -3605,7 +3623,7 @@ export async function releaseIssue(
       );
     }
     return { issue, formerAssignee };
-  });
+  }, { phase: () => `work_items:release:issue:${releasePhase}` });
   if (!released) return null;
   const { issue, formerAssignee } = released;
   // Direct issue release callers (outside work_items:release) must retire the
@@ -3636,7 +3654,10 @@ export async function releaseIssue(
   const releasedARealHolder =
     formerAssignee != null && formerAssignee.trim() !== '' && formerAssignee.trim().toLowerCase() !== 'unassigned';
   if (releasedARealHolder) {
-    await deliver(issue, 'updated', `issue ${id} released (unassigned)`);
+    await withOrgTxnTimeoutPhase(
+      'work_items:release:issue:deliver',
+      () => deliver(issue, 'updated', `issue ${id} released (unassigned)`),
+    );
   }
   return issue;
 }

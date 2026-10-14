@@ -2,12 +2,74 @@ import { describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { execFile, fork } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loaderIdentity, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
+import { loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 
 describe('focused runner startup tracing', () => {
+  it('arms native observation only on the existing OUT channel, without changing stderr trace mode', () => {
+    const plain = { NODE_OPTIONS: '--conditions=test' };
+    expect(nativeProcessTraceEnv(plain)).toBe(plain);
+    const armed = nativeProcessTraceEnv({ ...plain, PC_EXECUTED_SOURCE_MAP_OUT: '/tmp/native.json' });
+    expect(armed.NODE_OPTIONS).toContain(plain.NODE_OPTIONS);
+    expect(armed.PAPERCUSP_TEST_STARTUP_TRACE).toBeUndefined();
+    expect(nativeProcessTraceEnv(armed).NODE_OPTIONS).toBe(armed.NODE_OPTIONS);
+  });
+
+  it.each([false, true])('retains actual npm lifecycle and compound-script Node entries, failure=%s', async fail => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-npm-process-'));
+    const out = join(dir, 'sources.json');
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'native-process-fixture', scripts: {
+      pretest: 'node pre.cjs', test: 'node first.cjs && node second.cjs', posttest: 'node post.cjs',
+    } }));
+    for (const name of ['pre', 'first', 'second', 'post']) {
+      writeFileSync(join(dir, `${name}.cjs`), `process.stdout.write(${JSON.stringify(name + '\n')});` +
+        (fail && name === 'second' ? 'process.exitCode = 7;' : ''));
+    }
+    try {
+      const env = nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+        PAPERCUSP_TEST_STARTUP_TRACE: '0' });
+      let stdout = '', stderr = '', code = 0;
+      try { ({ stdout, stderr } = await promisify(execFile)('npm', ['run', '--silent', 'test'], {
+        cwd: dir, env, timeout: 15_000,
+      })); } catch (error: any) { stdout = error.stdout; stderr = error.stderr; code = error.code; }
+      expect(code).toBe(fail ? 7 : 0);
+      expect(stdout).toBe(fail ? 'pre\nfirst\nsecond\n' : 'pre\nfirst\nsecond\npost\n');
+      expect(stderr).toBe('');
+      const rows = readdirSync(`${out}.native-processes`).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      const leaves = rows.filter(row => row.event === 'node-entry' && row.argv[1]?.endsWith('.cjs'))
+        .sort((a, b) => a.atMs - b.atMs);
+      expect(leaves.map(row => row.argv[1].slice(dir.length + 1))).toEqual(
+        fail ? ['pre.cjs', 'first.cjs', 'second.cjs'] : ['pre.cjs', 'first.cjs', 'second.cjs', 'post.cjs']);
+      expect(leaves.map(row => row.lifecycle.event)).toEqual(fail ? ['pretest', 'test', 'test'] :
+        ['pretest', 'test', 'test', 'posttest']);
+      for (const leaf of leaves) {
+        expect(rows.find(row => row.event === 'node-exit' && row.processIdentity === leaf.processIdentity))
+          .toMatchObject({ code: fail && leaf.argv[1].endsWith('second.cjs') ? 7 : 0 });
+      }
+      expect(rows.filter(row => row.event === 'child-spawn').map(row => row.lifecycle.script))
+        .toEqual(expect.arrayContaining(['node pre.cjs', 'node first.cjs && node second.cjs']));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 25_000);
+
+  it('keeps native output and exit status when the evidence directory is unavailable', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-process-unavailable-'));
+    const out = join(dir, 'sources.json');
+    writeFileSync(`${out}.native-processes`, 'not a directory');
+    try {
+      const env = nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+        PAPERCUSP_TEST_STARTUP_TRACE: '0' });
+      const result = await promisify(execFile)(process.execPath, ['-e',
+        "process.stdout.write('native stdout'); process.stderr.write('native stderr');"], {
+        env, timeout: 10_000,
+      });
+      expect(result).toMatchObject({ stdout: 'native stdout', stderr: 'native stderr' });
+      expect(readFileSync(`${out}.native-processes`, 'utf8')).toBe('not a directory');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('retains diagnostics by default and preserves inherited options without exposing values', () => {
     const env = { NODE_OPTIONS: '--import=https://secret:password@example.test/private --require=/private/key' };
     const enabled = startupTraceEnv(env);

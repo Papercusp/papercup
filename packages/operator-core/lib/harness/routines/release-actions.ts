@@ -5789,8 +5789,10 @@ export interface ReleaseFixerRecord {
   /** Stable failure signature (sorted failing test files) — dedup key across candidates. */
   signature?: string;
   candidate?: string;
-  /** When the fixer was last dispatched for this signature (epoch ms). */
+  /** When this dispatch attempt reserved the dedup slot (epoch ms). */
   at?: number;
+  /** Distinguishes an in-flight reservation from a confirmed fire or a failed fire. */
+  dispatchStatus?: 'reserved' | 'dispatched' | 'failed';
   /** The dispatched fixer's spawn id (fire-and-forget path) — null on the DBOS-durable
    *  path (which re-fires on crash itself) or a legacy record predating this field.
    *  THE signal P-014/D-009 added: the id we check liveness against. */
@@ -5868,7 +5870,7 @@ export interface ReleaseFixerDecision {
   dispatch: boolean;
   /** Notify the human this tick (rate-limited separately from dispatch). */
   notify: boolean;
-  reason: 'fresh' | 'covered' | 'self-heal';
+  reason: 'fresh' | 'covered' | 'self-heal' | 'dispatch-retry';
 }
 
 /** The fixer dedup / self-heal window (2h). The signature dedup that was the ONLY
@@ -5906,6 +5908,15 @@ export function decideReleaseFixerDispatch(args: {
   if (!sameRecent) {
     // A fresh failure (new signature, or the prior one aged out) — dispatch + notify.
     return { dispatch: true, notify: true, reason: 'fresh' };
+  }
+  if (lf.dispatchStatus === 'failed') {
+    // A reserved slot whose fire returned no spawn did not cover the gate. Retry now;
+    // only a notification actually sent by a prior successful fire starts the cooldown.
+    return {
+      dispatch: true,
+      notify: now - (lf.notifiedAt ?? 0) > notifyCooldownMs,
+      reason: 'dispatch-retry',
+    };
   }
   // Same failure within the window: the liveness-aware gate (D-009).
   if (args.fixerAlive !== false) {
@@ -7315,7 +7326,6 @@ export async function dispatchReleaseFixer(
   // Claim the dedup slot BEFORE firing (anti double-fire across ticks): a concurrent
   // tick now sees a fresh `at` with no spawn id → fixerAlive=null → covered → skips.
   // The spawn id is patched in after the fire below.
-  const notifiedAt = decision.notify ? now : (lf?.notifiedAt ?? null);
   const snapshotIdentity = candidateSnapshot.identity;
   const previousLastFixer = JSON.stringify(lf ?? null);
   const writeRecord = async (rec: ReleaseFixerRecord, expectedLastFixer: ReleaseFixerRecord | null): Promise<boolean> => {
@@ -7343,7 +7353,8 @@ export async function dispatchReleaseFixer(
     spawnId: null,
     runId: null,
     snapshotIdentity,
-    notifiedAt: notifiedAt ?? undefined,
+    dispatchStatus: 'reserved',
+    notifiedAt: lf?.notifiedAt,
   };
   // EI-22344736163383832: reserve the dedup slot only if the exact snapshot and prior
   // last_fixer record are still current. Two concurrent dispatchers now cannot both fire.
@@ -7353,45 +7364,6 @@ export async function dispatchReleaseFixer(
         'candidate snapshot or last_fixer changed before reservation',
     );
     return null;
-  }
-
-  // The condition is independent of the repeat owner-notification cooldown.
-  try {
-    const broadcastSevereEvent = deps.alarm?.broadcast ?? (await import('../../severe-event-broadcast')).broadcastSevereEvent;
-    await broadcastSevereEvent({
-      conditionKey: `alarm:release-fixer-dispatch:${ctx.installSlug}`,
-      summary: `Release gate held on ${ctx.installSlug} — fixer dispatched`,
-      body: `Candidate ${candidate.slice(0, 12)} has measured failures: ${(fixerTargets ?? []).join(', ')}.`,
-      oneShot: true,
-    });
-  } catch (e) { console.warn(`${orchestratorStdoutTag()} release-fixer condition failed: ${String(e)}`); }
-  // P-003: a user-facing notification (native OS notification on desktop, mobile push).
-  // Rate-limited by decision.notify so an hourly self-heal re-dispatch doesn't spam.
-  if (decision.notify) {
-    try {
-      const { notifyAttention } = await import('../../attention-notify');
-      const selfHeal = decision.reason === 'self-heal';
-      const input = {
-        kind: 'intervention',
-        title: selfHeal
-          ? 'Release gate still held — prior fixer died, re-dispatched'
-          : 'Release gate held — staging→main blocked',
-        body:
-          `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red${fixerTargets && fixerTargets.length > 0 ? `: ${fixerTargets.slice(0, 5).join(', ')}` : ''}); ` +
-          `${selfHeal ? 'the previous release-fixer ended without clearing it — a fresh one was' : 'a release-fixer was'} dispatched to diagnose it.`,
-        importance: 'high',
-        workspaceId: ctx.workspaceId,
-        data: {
-          candidate: candidate.slice(0, 12),
-          failing: (fixerTargets ?? []).slice(0, 10).join(','),
-          selfHeal: String(selfHeal),
-        },
-      } as const;
-      if (deps.alarm?.notify) await deps.alarm.notify(input);
-      else await notifyAttention(input);
-    } catch (e) {
-      console.warn(`${orchestratorStdoutTag()} release-red notify failed: ${e instanceof Error ? e.message : e}`);
-    }
   }
 
   // EI-7443: best-effort flake annotation for the CURRENTLY-failing files, from the
@@ -7454,36 +7426,91 @@ export async function dispatchReleaseFixer(
   } catch (e) {
     console.warn(`${orchestratorStdoutTag()} release-fixer fire failed: ${e instanceof Error ? e.message : e}`);
   }
-  // Patch the recorded fixer's spawn id so the NEXT tick can check ITS liveness (D-009).
-  const spawnId = fired?.spawn?.spawnId ?? null;
-  const runId = fired?.spawn?.runId ?? null;
-  let recordPatched = true;
-  if (spawnId || runId) {
-    recordPatched = await writeRecord(
-      { ...reservation, spawnId, runId },
-      reservation,
-    ).catch(() => false);
-    if (!recordPatched) {
-      console.warn(
-        `${orchestratorStdoutTag()} release-fixer record patch lost snapshot/last_fixer CAS for ${candidate.slice(0, 8)}`,
-      );
+  // A resolved launch target is not proof of a spawn: fireLaunchBlueprintForEvent returns a
+  // target object with spawn:null when the launch is unavailable. Persist that distinction so
+  // the next tick retries instead of treating unknown liveness as a durable fixer.
+  const spawn = fired?.spawn ?? null;
+  const spawnId = spawn?.spawnId ?? null;
+  const runId = spawn?.runId ?? null;
+  let settledRecord: ReleaseFixerRecord = {
+    ...reservation,
+    spawnId,
+    runId,
+    dispatchStatus: spawn ? 'dispatched' : 'failed',
+  };
+  let recordPatched = await writeRecord(settledRecord, reservation).catch(() => false);
+  if (!recordPatched) {
+    console.warn(
+      `${orchestratorStdoutTag()} release-fixer record patch lost snapshot/last_fixer CAS for ${candidate.slice(0, 8)}`,
+    );
+  }
+
+  if (spawn) {
+    // The condition is independent of the repeat owner-notification cooldown, but only
+    // report “fixer dispatched” after the fire path returned an actual spawn record.
+    try {
+      const broadcastSevereEvent = deps.alarm?.broadcast ?? (await import('../../severe-event-broadcast')).broadcastSevereEvent;
+      await broadcastSevereEvent({
+        conditionKey: `alarm:release-fixer-dispatch:${ctx.installSlug}`,
+        summary: `Release gate held on ${ctx.installSlug} — fixer dispatched`,
+        body: `Candidate ${candidate.slice(0, 12)} has measured failures: ${(fixerTargets ?? []).join(', ')}.`,
+        oneShot: true,
+      });
+    } catch (e) { console.warn(`${orchestratorStdoutTag()} release-fixer condition failed: ${String(e)}`); }
+
+    // P-003: a user-facing notification (native OS notification on desktop, mobile push).
+    // Rate-limited by decision.notify so an hourly self-heal re-dispatch doesn't spam.
+    if (decision.notify) {
+      let notificationSent = false;
+      try {
+        const { notifyAttention } = await import('../../attention-notify');
+        const selfHeal = decision.reason === 'self-heal';
+        const input = {
+          kind: 'intervention',
+          title: selfHeal
+            ? 'Release gate still held — prior fixer died, re-dispatched'
+            : 'Release gate held — staging→main blocked',
+          body:
+            `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red${fixerTargets && fixerTargets.length > 0 ? `: ${fixerTargets.slice(0, 5).join(', ')}` : ''}); ` +
+            `${selfHeal ? 'the previous release-fixer ended without clearing it — a fresh one was' : 'a release-fixer was'} dispatched to diagnose it.`,
+          importance: 'high',
+          workspaceId: ctx.workspaceId,
+          data: {
+            candidate: candidate.slice(0, 12),
+            failing: (fixerTargets ?? []).slice(0, 10).join(','),
+            selfHeal: String(selfHeal),
+          },
+        } as const;
+        if (deps.alarm?.notify) await deps.alarm.notify(input);
+        else await notifyAttention(input);
+        notificationSent = true;
+      } catch (e) {
+        console.warn(`${orchestratorStdoutTag()} release-red notify failed: ${e instanceof Error ? e.message : e}`);
+      }
+      if (notificationSent && recordPatched) {
+        const notifiedRecord = { ...settledRecord, notifiedAt: Date.now() };
+        const notifiedRecordPatched = await writeRecord(notifiedRecord, settledRecord).catch(() => false);
+        if (notifiedRecordPatched) settledRecord = notifiedRecord;
+        else console.warn(`${orchestratorStdoutTag()} release-fixer notification timestamp patch lost CAS for ${candidate.slice(0, 8)}`);
+      }
     }
   }
   await appendPipelineEvent({
     workspaceId: ctx.workspaceId,
     installSlug: ctx.installSlug,
     kind: 'release_fixer',
-    status: fired ? 'ok' : 'failed',
+    status: spawn ? 'ok' : 'failed',
     detail: {
       candidate: candidate.slice(0, 12),
       reason: decision.reason,
       spawnId: spawnId ?? undefined,
+      dispatchStatus: spawn ? 'dispatched' : 'failed',
       snapshotIdentity,
       recordPatched,
       ...(sameHeadContradicted.length > 0 ? { sameHeadContradicted: sameHeadContradicted.slice(0, 20) } : {}),
     },
   }).catch(() => {});
-  return { spawnId, runId };
+  return spawn ? { spawnId, runId } : null;
 }
 
 /** The fixed transient-unit name for the detached auto-deploy — fixed on

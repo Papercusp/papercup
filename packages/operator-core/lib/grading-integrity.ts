@@ -176,7 +176,83 @@ export type EvaluatorBuildStranding =
       idleSince: string;
       /** The exact submittable re-grade call from the card's own rerun recipe, when it has one. */
       regrade: { tool: string; args: unknown } | null;
+      /**
+       * WI-6554700010013275: the plans:certify-spec-clauses call that mints a superseding card
+       * on THIS build, for a spec-test-adequacy card whose recipe names a complete clause
+       * selection. Null for any other rubric, or a recipe too thin to select the clause.
+       */
+      recertify: StrandedRecertifyCall | null;
     };
+
+/** WI-6554700010013275 — the tool that re-grades a stranded spec-test-adequacy card on the live build. */
+export const STRANDED_RECERTIFY_TOOL = 'plans:certify-spec-clauses';
+/** Reservation-key prefix the sweep uses to claim one stranded card for re-certification. */
+export const STRANDED_RECERTIFY_KEY_PREFIX = 'grading-recertify:';
+/**
+ * Most stranded cards one reconcile pass re-certifies. Each call evaluates and may file a
+ * card (minutes, under emit's per-rubric mutex), so the pass runs them one at a time and
+ * leaves the rest for the next tick instead of holding the sweep for the whole backlog.
+ */
+export const STRANDED_RECERTIFY_LIMIT = 3;
+
+export interface StrandedRecertifyCall {
+  tool: typeof STRANDED_RECERTIFY_TOOL;
+  args: Record<string, unknown>;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function nonEmptyStringList(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.length > 0 && value.every((entry) => nonEmptyString(entry) !== undefined)
+    ? (value as string[])
+    : undefined;
+}
+
+/**
+ * WI-6554700010013275 — map a stranded spec-test-adequacy card's rerun recipe to the
+ * plans:certify-spec-clauses call that re-grades its clause on the live build.
+ *
+ * Keeps the recipe's SELECTION (plan, class, clause, evidence population) and drops every
+ * REPLAY pin — `evaluatorBuild`, `bindingIds`, `specRevision`/`specFingerprint`,
+ * `replaySnapshot`, `current`. Certification grades the live clause against server-measured
+ * evidence and mints a NEW card stamped with this host's build; it never replays the old card
+ * on a different build, so the exact-build replay fence (EI-25967923833762085) is untouched.
+ * `acknowledgeExisting` is set because the superseded card is itself an existing card.
+ */
+export function strandedSpecAdequacyRecertifyCall(
+  recipe: EvaluatorBuildStrandingCard['rerunRecipe'],
+): StrandedRecertifyCall | null {
+  if (recipe?.evaluator !== 'plans:evaluate-spec-test-adequacy') return null;
+  const raw = recipe.args;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const args = raw as Record<string, unknown>;
+  const slug = nonEmptyString(args.slug);
+  const classRef = nonEmptyString(args.classRef);
+  const specIds = nonEmptyStringList(args.specIds);
+  if (!slug || !classRef || !specIds) return null;
+  const harness = nonEmptyString(args.harness);
+  const workItemIds = nonEmptyStringList(args.workItemIds);
+  const evidenceRefs = nonEmptyStringList(args.evidenceRefs);
+  const planItemIds = nonEmptyStringList(args.planItemIds);
+  const limit = typeof args.limit === 'number' && Number.isInteger(args.limit) && args.limit > 0 ? args.limit : undefined;
+  return {
+    tool: STRANDED_RECERTIFY_TOOL,
+    args: {
+      ...(harness ? { harness } : {}),
+      slug,
+      classRef,
+      specIds,
+      ...(workItemIds ? { workItemIds } : {}),
+      ...(evidenceRefs ? { evidenceRefs } : {}),
+      ...(planItemIds ? { planItemIds } : {}),
+      ...(typeof args.includeDraft === 'boolean' ? { includeDraft: args.includeDraft } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      acknowledgeExisting: true,
+    },
+  };
+}
 
 function latestIsoMs(values: ReadonlyArray<string | undefined>): number | null {
   let best: number | null = null;
@@ -253,6 +329,7 @@ export function assessEvaluatorBuildStranding(
   const regrade = recipe?.evaluator && recipe.args !== undefined
     ? { tool: recipe.evaluator, args: recipe.args }
     : null;
+  const recertify = strandedSpecAdequacyRecertifyCall(recipe);
   const idleSince = new Date(idleSinceMs).toISOString();
   const recordedLabel = `${recorded.sha ?? 'unknown-sha'}@${recorded.version}`;
   const liveLabel = `${liveBuild.sha ?? 'unknown-sha'}@${liveBuild.version}`;
@@ -262,13 +339,17 @@ export function assessEvaluatorBuildStranding(
     liveBuild: { sha: liveBuild.sha, version: liveBuild.version },
     idleSince,
     regrade,
+    recertify,
     reason:
       `stranded: recorded evaluator build ${recordedLabel} has had no live audit lease since ${idleSince}, ` +
       `and this host's build ${liveLabel} descends from it, so no exact-build dispatcher is serving the card. ` +
-      (regrade
-        ? `Re-grade on the current build with ${regrade.tool} using the card's rerunRecipe.args; ` +
-          'the new card supersedes this one and is audited on this build.'
-        : 'Re-grade it on the current build; the new card supersedes this one and is audited on this build.'),
+      (recertify
+        ? `Re-grade on the current build with ${recertify.tool} ${JSON.stringify(recertify.args)}; ` +
+          'the new card supersedes this one and is audited on this build. The periodic grading sweep runs this call itself.'
+        : regrade
+          ? `Re-grade on the current build with ${regrade.tool} using the card's rerunRecipe.args; ` +
+            'the new card supersedes this one and is audited on this build.'
+          : 'Re-grade it on the current build; the new card supersedes this one and is audited on this build.'),
   };
 }
 /**
@@ -412,6 +493,23 @@ type GradingAuditRecoveryCode =
 export interface PendingGradingAuditDispatchResult {
   requestedTargetIds: string[];
   receipts: PendingGradingAuditDispatchReceipt[];
+  /**
+   * WI-6554700010013275: reconcilePendingGradingAudits only — one entry per stranded
+   * spec-test-adequacy card this pass tried to re-certify on the live build.
+   */
+  recertifications?: StrandedRecertifyReceipt[];
+}
+
+export type StrandedRecertifyState = 'recertified' | 'not-recertified' | 'deduped' | 'failed';
+
+export interface StrandedRecertifyReceipt {
+  issueId: string;
+  state: StrandedRecertifyState;
+  reason: string;
+  call: StrandedRecertifyCall;
+  /** The new card that superseded the stranded one (state 'recertified' only). */
+  supersededBy?: string;
+  counts?: unknown;
 }
 
 export interface DispatchPendingGradingAuditsInput {
@@ -428,6 +526,12 @@ export interface DispatchPendingGradingAuditsInput {
 }
 
 export interface DispatchPendingGradingAuditsDeps {
+  /**
+   * WI-6554700010013275: run one stranded card's re-certification call and return the
+   * plans:certify-spec-clauses reply body. Defaults to that tool's handler under the
+   * reconcile caller's context.
+   */
+  recertifyStranded?: (call: StrandedRecertifyCall, ctx: GradingAuditLaunchContext) => Promise<Record<string, unknown>>;
   listScorecards?: typeof listScorecards;
   /** Current evaluator build used to preflight pinned spec-test-adequacy recipes. */
   getEvaluatorBuild?: () => BuildInfo;
@@ -2508,7 +2612,131 @@ export async function reconcilePendingGradingAudits(
   deps: DispatchPendingGradingAuditsDeps = {},
 ): Promise<PendingGradingAuditDispatchResult> {
   await retireSettledGradingAuditTasks(input, deps);
-  return dispatchPendingGradingAudits(input, deps);
+  const result = await dispatchPendingGradingAudits(input, deps);
+  const recertifications = await recertifyStrandedSpecAdequacyCards(input, result.receipts, deps);
+  return recertifications.length > 0 ? { ...result, recertifications } : result;
+}
+
+async function defaultRecertifyStranded(
+  call: StrandedRecertifyCall,
+  ctx: GradingAuditLaunchContext,
+): Promise<Record<string, unknown>> {
+  // Lazy: certify-spec-clauses imports this module, so a static import would be a cycle.
+  const { default: certifyTool } = await import('./agent-tools/plans/certify-spec-clauses');
+  const args = certifyTool.args.parse(call.args);
+  const reply = (await certifyTool.handler(args, ctx as never)) as { data?: Record<string, unknown> } | undefined;
+  return reply?.data ?? {};
+}
+
+function describeRecertifyReply(
+  issueId: string,
+  call: StrandedRecertifyCall,
+  reply: Record<string, unknown>,
+): StrandedRecertifyReceipt {
+  const clauses = Array.isArray(reply.clauses) ? (reply.clauses as Array<Record<string, unknown>>) : [];
+  for (const clause of clauses) {
+    const superseded = clause.strandedSuperseded as { issueId?: unknown } | undefined;
+    const card = clause.card as { status?: unknown; issueId?: unknown } | undefined;
+    if (superseded?.issueId === issueId && card?.status === 'filed' && typeof card.issueId === 'string') {
+      return {
+        issueId,
+        state: 'recertified',
+        reason: `re-certified on this build: ${card.issueId} supersedes ${issueId} and is audited on this build`,
+        call,
+        supersededBy: card.issueId,
+        ...(reply.counts !== undefined ? { counts: reply.counts } : {}),
+      };
+    }
+  }
+  const evaluator = reply.evaluator as { error?: unknown; code?: unknown } | undefined;
+  const outcome = evaluator
+    ? `the evaluator refused (${String(evaluator.code ?? evaluator.error ?? 'no error given')})`
+    : clauses.length > 0
+      ? `no clause superseded it (${clauses
+          .map((clause) => {
+            const card = clause.card as { status?: unknown; code?: unknown } | undefined;
+            return `${String(clause.specId)}: ${String(card?.status)}${card?.code ? ` ${String(card.code)}` : ''}`;
+          })
+          .join('; ')})`
+      : 'certification returned no clauses';
+  return {
+    issueId,
+    state: 'not-recertified',
+    reason:
+      `${outcome}. The card stays stranded; the sweep retries it after ` +
+      `${GRADING_AUDIT_STRANDED_AFTER_MS / 60_000} quiet minutes, or run ${call.tool} by hand.`,
+    call,
+    ...(reply.counts !== undefined ? { counts: reply.counts } : {}),
+  };
+}
+
+/**
+ * WI-6554700010013275 — re-grade stranded spec-test-adequacy cards on the live build.
+ *
+ * EI-25965998744903219 made the dispatcher NAME a stranded card's remedy; this pass RUNS
+ * it, so a card that no exact-build host will ever audit stops needing a human to read the
+ * receipt. For each stranded receipt carrying a recertify call (at most
+ * STRANDED_RECERTIFY_LIMIT, one at a time):
+ *   1. claim the card's audit lease. The claim is atomic, so two sweeping hosts cannot both
+ *      re-certify one card; a held or backed-off lease means another dispatcher owns it;
+ *   2. release the lease at once. certify-spec-clauses supersedes a card only while it has
+ *      no live lease, and the release records the claim as lastDispatchReservation, which
+ *      restarts the stranding clock. That is the per-card dedup: a failed attempt is not
+ *      retried until the card has been quiet for GRADING_AUDIT_STRANDED_AFTER_MS again;
+ *   3. run plans:certify-spec-clauses. It files a new card on this build and supersedes
+ *      the stranded one through its own WI-6554700010008541 path.
+ * Every outcome is reported, and none of them throws out of the reconcile pass.
+ */
+async function recertifyStrandedSpecAdequacyCards(
+  input: DispatchPendingGradingAuditsInput,
+  receipts: readonly PendingGradingAuditDispatchReceipt[],
+  deps: DispatchPendingGradingAuditsDeps,
+): Promise<StrandedRecertifyReceipt[]> {
+  const candidates = receipts
+    .filter((receipt) => receipt.stranded?.recertify)
+    .slice(0, STRANDED_RECERTIFY_LIMIT);
+  if (candidates.length === 0) return [];
+  const workspaceId = input.ctx.workspaceId?.trim() || null;
+  const reserve = deps.reserve ?? reservePendingGradingAudit;
+  const release = deps.release ?? releasePendingGradingAudit;
+  const recertify = deps.recertifyStranded ?? defaultRecertifyStranded;
+  const results: StrandedRecertifyReceipt[] = [];
+  for (const receipt of candidates) {
+    const issueId = receipt.issueId;
+    const call = receipt.stranded!.recertify!;
+    const key = `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`;
+    try {
+      const claim = await reserve(issueId, key, { workspaceId, now: new Date(deps.now?.() ?? Date.now()) });
+      if (claim.status !== 'claimed' || !claim.reservation) {
+        results.push({
+          issueId,
+          state: 'deduped',
+          reason: `audit lease not claimable (${claim.status}); another dispatcher owns this card`,
+          call,
+        });
+        continue;
+      }
+      const released = await release(issueId, key, { workspaceId, reservedAt: claim.reservation.reservedAt });
+      if (!released) {
+        results.push({
+          issueId,
+          state: 'failed',
+          reason: 'the re-certification lease could not be released, so certification would refuse to supersede the card',
+          call,
+        });
+        continue;
+      }
+      results.push(describeRecertifyReply(issueId, call, await recertify(call, input.ctx)));
+    } catch (error) {
+      results.push({
+        issueId,
+        state: 'failed',
+        reason: error instanceof Error ? error.message : String(error),
+        call,
+      });
+    }
+  }
+  return results;
 }
 
 /**

@@ -19,6 +19,7 @@
 
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { mergeRoleQuota } from './quota-overrides';
+import { resolveDispatchPremises } from './agent-tools/premises-gate';
 import {
   PASS_THROUGH,
   papercuspComputeQuotaWindow,
@@ -2111,6 +2112,7 @@ const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => 
 /** Shared deps singleton. Same object reference is safe to pass to
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
+  resolvePremises: resolveDispatchPremises,
   aroundInvoke: installedPerUseChokepoint,
   // D-030 kernel seat: the generic dispatcher invokes this before any
   // decorators and immediately before handler execution. The resolver is

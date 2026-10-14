@@ -675,14 +675,24 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       }
     });
 
-    it('treats a grep error in the deep sweep as INDETERMINATE rather than clean', () => {
+    it('reports a bounded path-free grep error class and keeps the deep sweep INDETERMINATE', () => {
       const fx = withControl(fixture());
       const bin = join(fx.root, 'bin');
+      const hiddenPath = '/private/config/credential-name';
       mkdirSync(bin);
       const grepShim = join(bin, 'grep');
       writeFileSync(
         grepShim,
-        '#!/usr/bin/env bash\nfor arg in "$@"; do if [ "$arg" = "-laIE" ]; then exit 2; fi; done\nexec /usr/bin/grep "$@"\n',
+        [
+          '#!/usr/bin/env bash',
+          'for arg in "$@"; do',
+          '  if [ "$arg" = "-laIE" ]; then',
+          `    printf 'grep: ${hiddenPath}: Permission denied\\n' >&2`,
+          '    exit 2',
+          '  fi',
+          'done',
+          'exec /usr/bin/grep "$@"',
+        ].join('\n'),
       );
       chmodSync(grepShim, 0o755);
 
@@ -693,6 +703,9 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       });
 
       expect(out).toContain('scan command failed');
+      expect(out).toContain(`tier2: stderr diagnostics root=${fx.root} source=grep`);
+      expect(out).toContain('permission_denied=1');
+      expect(out).not.toContain(hiddenPath);
       expect(out).toContain('INDETERMINATE');
       expect(out).not.toContain('no exposed private keys found');
     });

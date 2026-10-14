@@ -65,7 +65,7 @@ const evidenceRef = z.object({
 export default defineTool({
   name: 'consult:reply',
   description:
-    'Post a TYPED reply into a consult thread. Responder kinds: answer (evidence REQUIRED — cite the transcript turns), clarifying_question, new_fact. Requester follow-up kinds: question, new_fact. Untyped posts into a consult are refused (conversations:post will not work); the exchange cap binds — at the cap, close instead.',
+    'Post a TYPED reply into a consult thread. Responder kinds: answer (evidence REQUIRED — cite the transcript turns), clarifying_question, new_fact. Requester follow-up kinds: question, new_fact. On an undelivered consult with a saved reviewer menu, requester new_fact continues its finite cascade through untried reviewers. Untyped posts into a consult are refused (conversations:post will not work); the exchange cap binds — at the cap, close instead.',
   guidance: {
     when:
       'You were routed a consult (a 🧭 wake naming a conversation) and are answering/clarifying from your own transcript — or you are the requester following up.',

@@ -20,6 +20,8 @@
  */
 import { DBOSClient } from '@dbos-inc/dbos-sdk';
 import { withDbosIdleTxGrace } from './bootstrap';
+import { hostedCustomerDeletionEnqueueRequest, HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME } from './hosted-customer-deletion-workflow';
+import type { HostedCustomerDeletionRequest } from '../data-governance/hosted-customer-deletion';
 import {
   WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME,
   workspaceHostDestroyEnqueueRequest,
@@ -60,6 +62,12 @@ export interface WorkspaceHostOperationEnqueuer {
   enqueueDestroy(input: StartWorkspaceHostDestroyInput): Promise<{ workflowId: string; operationId: string }>;
 }
 
+/** Reuses the existing version-pinned client and queue. The hosted process
+ * never registers, executes or recovers the customer deletion workflow. */
+export interface HostedCustomerDeletionEnqueuer {
+  enqueueCustomerDeletion(input: HostedCustomerDeletionRequest): Promise<{ workflowId: string; operationId: string }>;
+}
+
 export interface WorkspaceHostProvisioningClientOptions {
   readonly systemDatabaseUrl: string;
   /** The DBOS primary's `applicationVersion` (its `DBOS__APPVERSION`). Required. */
@@ -77,7 +85,7 @@ async function createDbosClient(systemDatabaseUrl: string): Promise<WorkspaceHos
 
 export function createWorkspaceHostProvisioningClient(
   options: WorkspaceHostProvisioningClientOptions,
-): WorkspaceHostProvisioningEnqueuer & WorkspaceHostOperationEnqueuer {
+): WorkspaceHostProvisioningEnqueuer & WorkspaceHostOperationEnqueuer & HostedCustomerDeletionEnqueuer {
   const appVersion = options.appVersion.trim();
   if (!appVersion) throw new Error('workspace_host_provisioning_client_app_version_required');
   if (!options.systemDatabaseUrl.trim()) {
@@ -95,11 +103,12 @@ export function createWorkspaceHostProvisioningClient(
   };
 
   // Every action is the one workspace-host workflow on its one queue; only the request differs.
-  const enqueueRequest = async (request: { workflowId: string; deduplicationId: string; workflowInput: unknown }) => {
+  const enqueueRequest = async (request: { workflowId: string; deduplicationId: string; workflowInput: unknown },
+    workflowName: string = WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME) => {
     const handle = await (await connected()).enqueue(
       {
         queueName: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME,
-        workflowName: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME,
+        workflowName,
         workflowID: request.workflowId,
         deduplicationID: request.deduplicationId,
         appVersion,
@@ -110,6 +119,10 @@ export function createWorkspaceHostProvisioningClient(
   };
 
   return {
+    async enqueueCustomerDeletion(input) {
+      const request = hostedCustomerDeletionEnqueueRequest(input);
+      return { workflowId: await enqueueRequest(request, HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME), operationId: input.operationId };
+    },
     async enqueue(input) {
       return { workflowId: await enqueueRequest(workspaceHostProvisioningEnqueueRequest(input)) };
     },

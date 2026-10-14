@@ -6319,9 +6319,10 @@ export function makeQuotaBlockDetector({
  *  token, a long-lived child keeps the spent token in memory and fails every
  *  turn with this copy. A fresh child re-reads the shared file and works.
  *  Measured 2026-10-10: 46 parked codex sessions sat on this error for 2+ days.
- *  The strings are taken verbatim from the codex-cli 0.162.1 binary (`strings`
- *  on vendor/x86_64-unknown-linux-musl/bin/codex). Widen only against copy
- *  read the same way. */
+ *  The native refresh strings are taken verbatim from the codex-cli 0.162.1
+ *  binary (`strings` on vendor/x86_64-unknown-linux-musl/bin/codex); the 401
+ *  pattern pins the Responses API's missing-bearer rejection copy. Widen only
+ *  against provider copy read the same way. */
 // `\s*` between words: the TUI wraps long errors and the ANSI strip can join
 // wrapped words without a space. A model quoting this copy in its own prose
 // can also match; the operator bounds auth recoveries per owner, so a false
@@ -6329,6 +6330,7 @@ export function makeQuotaBlockDetector({
 const CODEX_AUTH_FAILURE_PATTERNS = [
   /your\s*access\s*token\s*could\s*not\s*be\s*refreshed/i,
   /please\s*log\s*out\s*and\s*sign\s*in\s*again/i,
+  /\b401\s*Unauthorized\s*:\s*Missing\s*bearer\s*or\s*basic\s*authentication\b/i,
 ];
 const CLAUDE_AUTH_FAILURE_PATTERNS = [
   /OAuth\s*token\s*revoked\s*[·.]?\s*Please\s*run\s*\/login/i,

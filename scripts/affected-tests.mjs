@@ -220,6 +220,7 @@ import {
 // "serial" names, but after budgeted scheduling the sum is serial-equivalent work rather than
 // elapsed wall time. See scripts/lib/serial-phase.mjs.
 import { formatSerialPhaseSummary } from "./lib/serial-phase.mjs";
+import { nativeProcessTraceEnv } from "./lib/vitest-startup-trace.mjs";
 import {
   classifyAffectedBlastRadius,
   createCgroupMemoryObserver,
@@ -246,6 +247,7 @@ import {
   runBudgetedTasks,
   timeoutDurationEstimate,
   writeDurationHistoryAtomic,
+  writeBudgetedTaskNativeExecutionReceipt,
 } from "./lib/budgeted-task-scheduler.mjs";
 import {
   buildPassingTaskVerdictIdentity,
@@ -5839,9 +5841,16 @@ if (dry) {
 // runner identity). Everything about reaching the proofs is fail-OPEN toward running MORE: kill
 // switch, dirty checkout, no HEAD, no database, a slow read — each yields no skip list.
 async function armTestPassReuse(taskList) {
+  const runContext = process.env.GREEN_CHECKPOINT === "1" && process.env.PAPERCUSP_TEST_RUN_SOURCE === "ci"
+    ? "green-checkpoint"
+    : "clean-local";
+  const recordReuse = (task, decision) => recordGateReuseDecision(task, decision, {
+    runContext,
+    runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP,
+  });
   const allUnitTasks = taskList.filter((t) => t.script === 'test' || LANE_SCRIPTS.includes(t.script));
   for (const t of allUnitTasks.filter((task) => !scriptSupportsPassReuse(task.ws.scripts?.[task.script] ?? ''))) {
-    await recordGateReuseDecision(`${t.ws.name}::${t.script}`, { offReason: 'script-cannot-run-zero-files', eligible: t.relatedFiles?.length });
+    await recordReuse(`${t.ws.name}::${t.script}`, { offReason: 'script-cannot-run-zero-files', eligible: t.relatedFiles?.length });
   }
   const unitTasks = taskList.filter(
     (t) =>
@@ -5852,7 +5861,7 @@ async function armTestPassReuse(taskList) {
   if (unitTasks.length === 0) return;
   const off = async (reason) => {
     outSync(`TEST_PASS_REUSE applied=false reason=${reason}`);
-    for (const t of unitTasks) await recordGateReuseDecision(`${t.ws.name}::${t.script}`, { offReason: reason, eligible: t.relatedFiles?.length });
+    for (const t of unitTasks) await recordReuse(`${t.ws.name}::${t.script}`, { offReason: reason, eligible: t.relatedFiles?.length });
   };
   if (!testReuseEnabled()) return off("disabled-by-env");
   let judgedSha = null;
@@ -5924,7 +5933,6 @@ async function armTestPassReuse(taskList) {
     runnerIdentity = null;
   }
   if (!runnerIdentity) return off("no-runner-identity");
-  const runContext = process.env.GREEN_CHECKPOINT === "1" ? "green-checkpoint" : "clean-local";
   let client = null;
   try {
     client = await connectExecutedMapPg();
@@ -6061,7 +6069,7 @@ async function armTestPassReuse(taskList) {
       const label = `${t.ws.name}::${t.script}`;
       if (error) {
         outSync(`TEST_PASS_REUSE ws=${label} applied=false reason=proofs-unavailable(${error})`);
-        await recordGateReuseDecision(label, { offReason: 'proofs-unavailable', eligible: t.relatedFiles?.length });
+        await recordReuse(label, { offReason: 'proofs-unavailable', eligible: t.relatedFiles?.length });
         continue;
       }
       let candidates = reuseCandidates({ wsRel, relatedFiles: t.relatedFiles, proofFiles: proofs.keys() });
@@ -6116,11 +6124,11 @@ async function armTestPassReuse(taskList) {
         } catch (err) {
           t.reuseSkipped = [];
           outSync(`TEST_PASS_REUSE ws=${label} applied=false reason=skip-list-unwritable`);
-          await recordGateReuseDecision(label, { offReason: 'skip-list-unwritable', eligible: summary.candidates });
+          await recordReuse(label, { offReason: 'skip-list-unwritable', eligible: summary.candidates });
           continue;
         }
       }
-      await recordGateReuseDecision(label, { summary });
+      await recordReuse(label, { summary });
       // P-013: what the skip saved, from the files' last CI pass durations (a lower bound). A
       // failed read leaves the reuse decision untouched and only makes the estimate "unknown".
       let savings = { savedMs: 0, measured: 0, unmeasured: 0 };
@@ -7133,6 +7141,27 @@ function runCapturedTask(
     governedOptions,
     (_admissionContext, governedEnv, { inherited }) => new Promise((resolveRun) => {
     const startedAt = Date.now();
+    // Extend existing OUT diagnostics without replacing npm or its shell. The
+    // selected script is metadata; command below is the actual spawn invocation.
+    const nativeReceiptArmed = Boolean(inheritedExecutedMapOut || integrationSourceMapOut);
+    const nativeWrapperInputs = () => {
+      try {
+        const paths = ["package.json", relative(ROOT, join(ROOT, spawnTask.ws.dir, "package.json"))];
+        return [...new Set(paths)].map(path => ({
+          path, sha256: createHash("sha256").update(readFileSync(join(ROOT, path))).digest("hex"),
+        }));
+      } catch { return null; }
+    };
+    const nativeBefore = nativeReceiptArmed ? nativeWrapperInputs() : null;
+    const nativeObservation = (status, signal, error, stdoutBytes, stderrBytes, childPid = null) => nativeReceiptArmed ? {
+      task: spawnTaskKey, attempt: journalLabel, cwd, command: [cmd, ...argv],
+      originalCommand: spawnTask.ws.scripts[spawnTask.script] ?? null,
+      startedAtMs: startedAt, finishedAtMs: Date.now(), exitCode: status, signal,
+      error: error ? String(error.message ?? error) : null,
+      captureComplete: !error, stdout: stdoutBytes, stderr: stderrBytes,
+      before: nativeBefore, after: nativeWrapperInputs(),
+      processTrace: { out: integrationSourceMapOut || inheritedExecutedMapOut, rootPid: childPid },
+    } : null;
     const stdout = [];
     const stderr = [];
     let capturedBytes = 0;
@@ -7146,7 +7175,7 @@ function runCapturedTask(
     try {
       child = spawn(cmd, argv, {
         cwd,
-        env: governedEnv,
+        env: nativeProcessTraceEnv(governedEnv),
         stdio: ["ignore", "pipe", "pipe"],
         // Own a process group so the watchdog can reap npm -> shell -> vitest ->
         // worker descendants together. A direct-child kill leaves descendants
@@ -7175,6 +7204,7 @@ function runCapturedTask(
         stdout: "",
         stderr: "",
         error: spawnError,
+        __nativeExecution: nativeObservation(1, null, spawnError, Buffer.alloc(0), Buffer.alloc(0)),
         __elapsedMs: Date.now() - startedAt,
         __timeoutMs: taskTimeoutMs,
         __timeoutSource: taskTimeoutSource,
@@ -7353,6 +7383,8 @@ function runCapturedTask(
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),
         error: captureError ?? spawnError,
+        __nativeExecution: nativeObservation(status, signal, captureError ?? spawnError,
+          Buffer.concat(stdout), Buffer.concat(stderr), child.pid),
         __elapsedMs: Date.now() - startedAt,
         __timeoutMs: taskTimeoutMs,
         __timeoutSource: taskTimeoutSource,
@@ -7464,6 +7496,18 @@ function journalCapturedTaskOutput(t, r, allocation, label) {
   const lastOutput = stderr || stdout;
   const beforeFooter = lastOutput && !lastOutput.endsWith("\n") ? "\n" : "";
   const error = r.error ? JSON.stringify(r.error.message) : "none";
+  if (r.__nativeExecution) {
+    try {
+      const native = writeBudgetedTaskNativeExecutionReceipt(`${RUN_LOG_PATH}.native`, r.__nativeExecution);
+      appendAllSync(RUN_LOG_PATH, [`AFFECTED_TASK_NATIVE_RECEIPT=${JSON.stringify({
+        task: taskKey(t), attempt: label, root: native.root, receipt: native.receipt,
+        orderedChainQualified: false, runtimeClosure: "unmeasured", operationalAcceptance: false,
+      })}\n`]);
+    } catch (failure) {
+      rawErrSync(`AFFECTED_TASK_NATIVE_RECEIPT_FAILED task=${task} label=${label} ` +
+        `reason=${JSON.stringify(String(failure?.message ?? failure))}`);
+    }
+  }
   try {
     appendAllSync(RUN_LOG_PATH, [
       `\nAFFECTED_TASK_OUTPUT_BEGIN task=${task} label=${label} ` +

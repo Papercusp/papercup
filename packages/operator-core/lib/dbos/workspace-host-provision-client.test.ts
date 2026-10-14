@@ -4,6 +4,8 @@ import {
   createWorkspaceHostProvisioningClient,
   type WorkspaceHostProvisioningDbosClient,
 } from './workspace-host-provision-client';
+import { hostedCustomerDeletionEnqueueRequest, HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME } from './hosted-customer-deletion-workflow';
+import type { HostedCustomerDeletionRequest } from '../data-governance/hosted-customer-deletion';
 import {
   WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME,
   workspaceHostDestroyEnqueueRequest,
@@ -37,6 +39,37 @@ function fakeClient() {
 }
 
 describe('workspace-host provisioning DBOS client', () => {
+  it('shares its pinned pool and queue with customer deletion and preserves replay identity', async () => {
+    const { enqueue, createClient } = fakeClient();
+    const client = createWorkspaceHostProvisioningClient({ systemDatabaseUrl: 'postgres://example/papercusp',
+      appVersion: 'bg-host-v1', createClient });
+    const deletion: HostedCustomerDeletionRequest = { operationId: 'delete-1', organizationId: 'org-1', requestedBy: 'user-1',
+      target: { kind: 'organization' }, policy: { approvalRef: 'plan#D-policy', stripe: 'retain', consent: 'retain' } };
+    const expected = hostedCustomerDeletionEnqueueRequest(deletion);
+    const accepted = await client.enqueueCustomerDeletion(deletion);
+    expect(await client.enqueueCustomerDeletion(deletion)).toEqual(accepted);
+    await client.enqueue(input);
+    expect(createClient).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenNthCalledWith(1, { queueName: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME,
+      workflowName: HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME, workflowID: expected.workflowId,
+      deduplicationID: expected.deduplicationId, appVersion: 'bg-host-v1' }, deletion);
+    expect(enqueue.mock.calls[1]).toEqual(enqueue.mock.calls[0]);
+    expect(accepted).toEqual({ workflowId: expected.workflowId, operationId: 'delete-1' });
+    expect(hostedCustomerDeletionEnqueueRequest({ ...deletion, organizationId: 'org-2' }).workflowId).not.toBe(expected.workflowId);
+  });
+
+  it('rejects malformed deletion scope or pending retention before connecting', async () => {
+    const { enqueue, createClient } = fakeClient();
+    const client = createWorkspaceHostProvisioningClient({ systemDatabaseUrl: 'postgres://example/papercusp',
+      appVersion: 'bg-host-v1', createClient });
+    const deletion: HostedCustomerDeletionRequest = { operationId: 'delete-1', organizationId: 'org-1', requestedBy: 'user-1',
+      target: { kind: 'user', userId: 'other-user' }, policy: { approvalRef: 'plan#D-policy', stripe: 'retain', consent: 'retain' } };
+    await expect(client.enqueueCustomerDeletion(deletion)).rejects.toThrow('customer_deletion_enqueue_invalid');
+    await expect(client.enqueueCustomerDeletion({ ...deletion, target: { kind: 'organization' },
+      policy: { ...deletion.policy, approvalRef: '' } })).rejects.toThrow('customer_deletion_enqueue_invalid');
+    expect(createClient).not.toHaveBeenCalled(); expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it('enqueues the SAME workflow id, dedup key and input the in-process start would use', async () => {
     const { enqueue, createClient } = fakeClient();
     const client = createWorkspaceHostProvisioningClient({

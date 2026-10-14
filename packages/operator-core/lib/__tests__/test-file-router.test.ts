@@ -2869,7 +2869,9 @@ describe('TEST_FILE_RESULT presence is a verdict, so a run that executed nothing
   // Four corpus rows were written that way in ~37s each. The false reading is indistinguishable
   // from a true one AND argues for the wrong conclusion (drop the candidate), so it is the
   // expensive direction. `--dry` is chosen here deliberately: it is the one path that reaches the
-  // reporting branch WITHOUT spawning vitest, so this stays a fast unit test of the real main().
+  // reporting branch without executing tests. Route matching still runs `vitest list`, so the
+  // marker assertions inject a deterministic listing and the separate integration guard below
+  // exercises the real collection child.
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;
 
@@ -2885,14 +2887,34 @@ describe('TEST_FILE_RESULT presence is a verdict, so a run that executed nothing
   const linesFrom = (spy: ReturnType<typeof vi.spyOn>) =>
     spy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
 
+  const dryRunListOptions = () => ({
+    runVitestListImpl: async (_command: string, args: string[], options: { cwd: string }) => {
+      const requested = args.at(-1);
+      expect(requested).toBe('lib/__tests__/test-file-router.test.ts');
+      return {
+        status: 0,
+        stdout: `${resolve(options.cwd, requested!)}\n`,
+        stderr: '',
+        timedOut: false,
+        error: null,
+      };
+    },
+  });
+
   it('a dry run does NOT print TEST_FILE_RESULT', async () => {
-    const code = await main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
+    const code = await main(
+      ['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts'],
+      dryRunListOptions(),
+    );
     expect(code).toBe(0);
     expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
   });
 
   it('a dry run still reports machine-readably, under its own marker', async () => {
-    await main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
+    await main(
+      ['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts'],
+      dryRunListOptions(),
+    );
     const out = linesFrom(logSpy);
     expect(out).toContain('TEST_FILE_DRYRUN');
     expect(out).toMatch(/TEST_FILE_DRYRUN .*executed=0 .*status=dry-run/);
@@ -2906,7 +2928,7 @@ describe('TEST_FILE_RESULT presence is a verdict, so a run that executed nothing
     const out = linesFrom(logSpy);
     expect(out).toMatch(/TEST_FILE_DRYRUN requested=1 .*matched=1/);
     expect(out).toContain('matched lib/__tests__/test-file-router.test.ts');
-  });
+  }, 150_000);
 });
 
 describe('parseTransformFailure (EI-19462803905923939)', () => {

@@ -201,10 +201,10 @@ export function captureVerifierDependencies({ dest, receipt }: {
 };
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv }} options
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options
  * @returns {Promise<number>}
  */
-export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env }: {
+export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs }: {
     repo: string;
     ref: string;
     receiptPath: string;
@@ -213,6 +213,8 @@ export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile,
     tauriInputs?: boolean;
     command: string[];
     env?: NodeJS.ProcessEnv;
+    budgetFrom?: string;
+    childEstimateMs?: number;
 }): Promise<number>;
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
@@ -280,60 +282,35 @@ export function verifierSourceChildEnv({ root, receiptPath, env }: {
     VERIFY_TAURI_SOURCE_RECEIPT: string;
     VERIFY_TAURI_SOURCE_REF: any;
 };
-/** @param {NodeJS.ProcessEnv} [env] @returns {number | null} */
-export function readVerifierTaskDeadline(env?: NodeJS.ProcessEnv): number | null;
-/**
- * Measure the work the next synchronous source verification will perform. The manifest is
- * the authority for the population; statting those paths measures the current bytes without
- * recursively walking an untrusted tree a second time.
- * @param {string} root
- * @param {{ files: { path: string }[], submodules?: { path: string }[] }} expected
+/** Read observations only, never acceptance evidence. A killed phase is not a duration.
+ * @param {string} path @returns {Record<string, number>}
  */
-export function measureVerifierSourceVerification(root: string, expected: {
-    files: {
-        path: string;
-    }[];
-    submodules?: {
-        path: string;
-    }[];
-}): {
-    bytes: number;
-    entries: number;
-    repositories: number;
-    estimatedMs: number;
+export function readVerifierPhaseMeasurements(path: string): Record<string, number>;
+/** Reserve both complete final censuses and cleanup, using this run's observations or an
+ * explicitly selected earlier phase receipt. Estimates are prognoses, not guarantees;
+ * an omitted child estimate remains explicitly unknown. No source/dependency scope changes.
+ * @param {Record<string, number>} measurements @param {number} [childEstimateMs]
+ */
+export function estimateVerifierCommandBudget(measurements: Record<string, number>, childEstimateMs?: number): {
+    preparationMs: number;
+    sourceCheckMs: number;
+    dependencyCheckMs: number;
+    cleanupMs: number;
+    childEstimateMs: number;
+    unknownChild: boolean;
+    remainingMs: number;
+    totalMs: number;
 };
-/**
- * Refuse a verifier that cannot reserve time for its child and final attestations. A missing
- * deadline is UNKNOWN/unbounded and leaves the historical CLI behaviour unchanged.
- */
-export function admitVerifierSourceVerification({ root, expected, env, nowMs, reserveMs }: {
-    root: any;
-    expected: any;
+/** Reuse the launcher's absolute deadline and the scheduler's attributable refusal. */
+export function admitVerifierCommandBudget(estimate: any, { env, nowMs, preparation }?: {
     env?: NodeJS.ProcessEnv | undefined;
     nowMs?: number | undefined;
-    reserveMs?: number | undefined;
+    preparation?: boolean | undefined;
 }): {
-    admitted: boolean;
-    deadlineEpochMs: null;
-    remainingMs: null;
-    reserveMs: number;
-    measurement: {
-        bytes: number;
-        entries: number;
-        repositories: number;
-        estimatedMs: number;
-    };
-} | {
-    admitted: boolean;
-    deadlineEpochMs: number;
-    remainingMs: number;
-    reserveMs: number;
-    measurement: {
-        bytes: number;
-        entries: number;
-        repositories: number;
-        estimatedMs: number;
-    };
+    deadlineEpochMs: number | null;
+    remainingMs: number | null;
+    knownEstimateMs: any;
+    estimate: any;
 };
 export function noticeText(manifest: any): string;
 /**
@@ -688,19 +665,6 @@ export class PreviewError extends Error {
  * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
  */
 export const TAURI_VERIFIER_INPUTS: readonly string[];
-/**
- * The source verifier runs synchronously and walks the complete recorded population. A
- * task deadline therefore needs an admission check before that walk starts: otherwise a
- * verifier can spend the last part of its launcher lifetime in a pre-child check and be
- * killed without a child verdict or a cleanup phase. The estimate is intentionally derived
- * from the pinned population in the receipt and the bytes actually present in the tree; it
- * never lowers the source census or turns a timeout into a pass.
- */
-export const VERIFIER_TASK_DEADLINE_ENV: "PAPERCUSP_TASK_DEADLINE_EPOCH_MS";
-export const VERIFIER_SOURCE_BYTES_PER_MS: 20000;
-export const VERIFIER_SOURCE_ENTRY_MS: 0.25;
-export const VERIFIER_SOURCE_GIT_REPO_MS: 1000;
-export const VERIFIER_POSTCHECK_RESERVE_MS: 15000;
 export const ALLOWLIST_PATH: string;
 export { main as runCli };
 /**

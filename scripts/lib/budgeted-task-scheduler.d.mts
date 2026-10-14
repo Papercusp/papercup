@@ -9,6 +9,24 @@ export interface TaskBudgetInput {
   pidsReserve?: number | string;
 }
 
+export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, input: {
+  task: string; attempt: string; cwd: string; command: string[]; originalCommand?: string | null;
+  startedAtMs: number; finishedAtMs: number; exitCode: number | null; signal: string | null;
+  error: string | null; captureComplete: boolean; stdout: Buffer; stderr: Buffer;
+  before?: Array<{ path: string; sha256: string }> | null;
+  after?: Array<{ path: string; sha256: string }> | null;
+  processTrace?: { out: string; rootPid: number | null } | null;
+}): { root: string; receipt: { ref: string; sha256: string; byteLength: number };
+  logs: Record<'stdout' | 'stderr', { ref: string; sha256: string; byteLength: number }>;
+  observation: { kind: 'affected-task-native-execution'; sourceInputsUnchanged: boolean;
+    orderedChainQualified: false; runtimeClosure: 'unmeasured'; operationalAcceptance: false;
+    steps: never[]; gaps: string[];
+    processTrace: { scope: string; gaps: string[];
+      events: Array<{ [key: string]: unknown; artifact: { ref: string; sha256: string; byteLength: number } }> };
+    execution: { command: string[]; cwd: string; startedAtMs: number; finishedAtMs: number;
+      childWallMs: number; exitCode: number | null; signal: string | null; error: string | null;
+      captureComplete: boolean; logs: Record<'stdout' | 'stderr', { ref: string; sha256: string; byteLength: number }> } } };
+
 export interface BudgetedTaskComparisonInput {
   selection: { kind: "full-gate"; coverage: "complete"; unenumerated: string[];
     originalRef: string; originalSha256: string; files: string[];

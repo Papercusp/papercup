@@ -18,7 +18,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { applyClaimPathReadDeps } from '../test/_work-items-schema';
 import {
   ensureCoordCapabilityTables,
@@ -33,6 +33,7 @@ import { noteGoalClaimed, readAgentStateStamp, resetAgentStateStamps } from './a
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
+const M1512 = resolve(SQL_DIR, '1512-work-items-substring-trigram-indexes.sql');
 // Strip psql metacommands (\set) + GRANTs (the framework roles are absent in the
 // throwaway test DB; the test connects as owner so no grants are needed).
 const readMigration = (f: string) =>
@@ -189,6 +190,16 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
+  await db.sql.unsafe(`
+    CREATE TABLE harness_shared.work_item_occurrences (
+      occurrence_id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      canonical_harness_slug text NOT NULL,
+      canonical_work_item_id text NOT NULL,
+      reported_title text NOT NULL,
+      evidence jsonb NOT NULL DEFAULT '{}'::jsonb
+    )
+  `).simple();
   // After the hand-built adv_sessions above: every statement is IF NOT EXISTS.
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   // unify-work-items (142): adds the `kind` discriminator engineer_issues now carries.
@@ -206,6 +217,7 @@ beforeAll(async () => {
       harness_slug text NOT NULL, feature_id text NOT NULL, title text,
       status text NOT NULL DEFAULT 'todo', workspace_id text NOT NULL DEFAULT 'default',
       PRIMARY KEY (harness_slug, feature_id))`);
+  await applyMigrationForTest(db.sql, M1512);
   const opts = { getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' };
   subs = new PgEntitySubscriptionStore(opts);
   topicStore = new PgTopicStore(opts);
@@ -219,7 +231,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   resetAgentStateStamps();
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_entity_subscriptions, harness_shared.coord_threads, harness_shared.coord_thread_posts, harness_shared.coord_links, harness_shared.coord_topics, harness_shared.coord_event_log  RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_occurrences, harness_shared.coord_entity_subscriptions, harness_shared.coord_threads, harness_shared.coord_thread_posts, harness_shared.coord_links, harness_shared.coord_topics, harness_shared.coord_event_log  RESTART IDENTITY`;
 });
 
 describe('engineer issues surface (real PG)', () => {
@@ -962,6 +974,59 @@ describe('engineer issues surface (real PG)', () => {
     const globalRows = await issues.listIssues(globalFilter);
     expect(globalRows.map((i) => i.title).sort()).toEqual(['global needle', 'topic needle']);
     expect(await issues.countIssues(globalFilter)).toBe(globalRows.length);
+  });
+
+  it('q uses the trigram candidate indexes and keeps occurrence title/body matches lossless', async () => {
+    const title = await issues.createIssue({ title: 'needle in canonical title', createdBy: 'agA' });
+    const body = await issues.createIssue({ title: 'canonical body survivor', body: 'needle in canonical body', createdBy: 'agA' });
+    const occurrenceTitle = await issues.createIssue({ title: 'occurrence title survivor', createdBy: 'agA' });
+    const occurrenceBody = await issues.createIssue({ title: 'occurrence body survivor', createdBy: 'agA' });
+    const unrelated = await issues.createIssue({ title: 'unrelated canonical item', body: 'ordinary text', createdBy: 'agA' });
+
+    const identities = await db.sql<Array<{ workspace_id: string; harness_slug: string; feature_id: string }>>`
+      SELECT workspace_id, harness_slug, feature_id FROM harness_shared.work_items
+       WHERE feature_id = ANY(${[occurrenceTitle.id, occurrenceBody.id]}::text[])`;
+    for (const row of identities) {
+      await db.sql`
+        INSERT INTO harness_shared.work_item_occurrences
+          (workspace_id, canonical_harness_slug, canonical_work_item_id, reported_title, evidence)
+        VALUES (
+          ${row.workspace_id}, ${row.harness_slug}, ${row.feature_id},
+          ${row.feature_id === occurrenceTitle.id ? 'needle in reported title' : 'ordinary report'},
+          ${db.sql.json({ body: row.feature_id === occurrenceBody.id ? 'needle in reported body' : 'ordinary evidence' })}
+        )`;
+    }
+
+    await db.sql.unsafe('ANALYZE harness_shared.work_items');
+    await db.sql.unsafe('ANALYZE harness_shared.work_item_occurrences');
+    const plan = await db.sql.begin(async (tx) => {
+      await tx.unsafe('SET LOCAL enable_seqscan = off');
+      const where = issues.issueMatchWhereSql(
+        tx as Parameters<typeof issues.issueMatchWhereSql>[0],
+        false,
+        { q: 'needle' },
+      );
+      const rows = await tx`
+        EXPLAIN SELECT issue_id
+          FROM harness_shared.engineer_issues
+         WHERE ${where}
+      `;
+      return rows.map((row) => String(row['QUERY PLAN'])).join('\\\\n');
+    });
+    for (const name of [
+      'work_items_title_substring_trgm_idx',
+      'work_items_summary_substring_trgm_idx',
+      'work_item_occurrences_reported_title_trgm_idx',
+      'work_item_occurrences_evidence_body_trgm_idx',
+    ]) {
+      expect(plan).toContain(name);
+    }
+
+    const matches = await issues.listIssues({ q: 'needle' });
+    expect(new Set(matches.map((issue) => issue.id))).toEqual(
+      new Set([title.id, body.id, occurrenceTitle.id, occurrenceBody.id]),
+    );
+    expect(matches.map((issue) => issue.id)).not.toContain(unrelated.id);
   });
 
   // EI-18713447977097831: `searchIssuesForDedup` used to pass the new capture's

@@ -12,7 +12,7 @@ import { readDiskAlarmContext, runDiskSpaceAlarmOnce } from './disk-space-alarm'
 import { writeCensusRun } from './disk-consumer-census';
 import type { AttentionNotifyInput } from '../attention-notify';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { nativeRetentionCommand, readReclaimReceipt, runDiskReclaimOnce, writeReclaimAudit, type ReclaimSql } from './disk-reclaim';
+import { drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, runDiskReclaimOnce, writeReclaimAudit, type DiskReclaimReceipt, type ReclaimSql } from './disk-reclaim';
 import { type RetentionClass } from './retention-policy';
 import { inspectRetentionTrees } from './disk-consumer-census';
 import { readDiskHeadroomSoakEvidence } from './retention-interval-evidence';
@@ -202,6 +202,27 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.entries).toEqual([expect.objectContaining({ path, status: 'removed', classId: 'fixture' })]);
     await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  it('checks each regular file directly after intent without restarting the tree inspector', async () => {
+    const { root, options } = await setup();
+    const old = join(root, 'a-old'), changed = join(root, 'b-changed');
+    await writeFile(old, 'expired'); await writeFile(changed, 'keep after new write');
+    const inspectTrees = vi.fn(inspectRetentionTrees);
+    const phases: string[] = [];
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees, record: async (phase, detail) => {
+      if (phase === 'remove-intent') {
+        phases.push((detail as { path: string }).path);
+        if ((detail as { path: string }).path === changed) await utimes(changed, new Date(options.nowMs), new Date(options.nowMs));
+      }
+    } });
+    expect(receipt.complete, JSON.stringify(receipt.errors)).toBe(true);
+    expect(phases).toEqual([old, changed]);
+    expect(inspectTrees).toHaveBeenCalledTimes(1);
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: old, status: 'removed' }));
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: changed, status: 'changed' }));
+    expect(await readFile(changed, 'utf8')).toBe('keep after new write');
+  });
+
   it('drains complete classes and reaches the next root when safety checks outlast the inspection budget', async () => {
     const { root, options } = await setup();
     const secondRoot = join(fixture!, 'second-root'); await mkdir(secondRoot);
@@ -265,6 +286,39 @@ describe('retention on a real fixture tree', () => {
       expect(resumed.complete).toBe(true); expect(resumed.policyExhausted).toBe(true);
       expect(resumed.entries).toEqual([expect.objectContaining({ path: paths[1], status: 'removed' })]);
     } finally { now.mockRestore(); }
+  });
+  it('automatically drains bounded batches with a fresh census and protects a newly held remainder', async () => {
+    const { root, options } = await setup();
+    const paths = ['a', 'b', 'c', 'd'].map((name) => join(root, name));
+    for (const path of paths) await writeFile(path, 'expired');
+    let clock = options.nowMs, activeBatch = 0;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(clock);
+    const receipts: DiskReclaimReceipt[] = [];
+    const checks: Array<{ batch: number; paths: readonly string[] }> = [];
+    try {
+      const summary = await drainScheduledDiskReclaim(async (batch, notAfterMs) => {
+        if (notAfterMs !== undefined && clock >= notAfterMs) return null;
+        activeBatch = batch;
+        const receipt = await runDiskReclaimOnce({ ...options, nowMs: clock, effectBudgetMs: 250,
+          scanHolders: async (wanted) => {
+            checks.push({ batch: activeBatch, paths: [...wanted] }); clock += 100; vi.setSystemTime(clock);
+            return { complete: true, byPath: activeBatch > 0 ? new Map([[paths[1]!, ['123']]]) : new Map<string, string[]>() };
+          },
+        });
+        receipts.push(receipt); return receipt;
+      });
+      expect(summary).toMatchObject({ batches: 3, stop: 'complete' });
+      expect(receipts.map((receipt) => receipt.complete)).toEqual([false, false, true]);
+      expect(receipts.flatMap((receipt) => receipt.entries.filter((entry) => entry.status === 'removed').map((entry) => entry.path)))
+        .toEqual([paths[0], paths[2], paths[3]]);
+      expect(checks.filter((check) => check.paths.length > 1).map((check) => check.paths)).toEqual([paths, paths.slice(1), paths.slice(1).filter((path) => path !== paths[2])]);
+      for (const path of [paths[0]!, paths[2]!, paths[3]!]) {
+        expect(checks.some((check) => check.paths.length === 1 && check.paths[0] === path)).toBe(true);
+        await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+      expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+    } finally { vi.useRealTimers(); }
   });
   it('charges durable intent waits to the effect budget before launching another safety check', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');

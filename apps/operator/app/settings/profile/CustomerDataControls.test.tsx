@@ -10,6 +10,34 @@ afterEach(() => {
 });
 
 describe('hosted customer data downloads', () => {
+  it('requires exact confirmation and reports acceptance without claiming deletion completed', async () => {
+    window.__PAPERCUSP_HOSTED_BROWSER__ = hostedBrowserApiMarker('control');
+    const fetcher = vi.fn(async () => ({ status: 202, json: async () => ({ operationId: 'operation-1' }) }));
+    vi.stubGlobal('fetch', fetcher);
+    render(<CustomerDataControls />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete my account' }));
+    const submit = screen.getByRole('button', { name: 'Request deletion' }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Type DELETE MY ACCOUNT to confirm'), { target: { value: 'DELETE MY ACCOUNT' } });
+    fireEvent.click(submit);
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('operation-1'));
+    expect(screen.getByRole('status').textContent).toContain('does not confirm completion');
+    expect(fetcher).toHaveBeenCalledWith('/api/hosted/browser/data/user/delete', expect.objectContaining({
+      credentials: 'include', body: JSON.stringify({ confirmation: 'DELETE MY ACCOUNT' }),
+    }));
+  });
+
+  it('keeps confirmation visible when retention approval is pending', async () => {
+    window.__PAPERCUSP_HOSTED_BROWSER__ = hostedBrowserApiMarker('control');
+    vi.stubGlobal('fetch', vi.fn(async () => ({ status: 409, json: async () => ({ error: 'retention_policy_pending' }) })));
+    render(<CustomerDataControls />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete organization' }));
+    fireEvent.change(screen.getByLabelText('Type DELETE ORGANIZATION to confirm'), { target: { value: 'DELETE ORGANIZATION' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Request deletion' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('retention policy'));
+    expect(screen.getByLabelText('Type DELETE ORGANIZATION to confirm')).toBeTruthy();
+  });
+
   it('shows no hosted action on a local profile', () => {
     const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
     render(<CustomerDataControls />);

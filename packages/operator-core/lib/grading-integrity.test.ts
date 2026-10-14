@@ -22,7 +22,10 @@ import {
   GRADING_AUDIT_FAILURE_BACKOFF_MS,
   GRADING_AUDIT_RESERVATION_TTL_MS,
   GRADING_AUDIT_STRANDED_AFTER_MS,
+  STRANDED_RECERTIFY_KEY_PREFIX,
+  STRANDED_RECERTIFY_LIMIT,
   assessEvaluatorBuildStranding,
+  strandedSpecAdequacyRecertifyCall,
   type EvaluatorBuildStrandingCard,
   GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS,
@@ -602,6 +605,193 @@ describe('dispatchPendingGradingAudits', () => {
         }),
       }),
     ]);
+  });
+
+  describe('stranded spec-test-adequacy re-certification (WI-6554700010013275)', () => {
+    const nowMs = Date.parse('2026-10-14T18:00:00.000Z');
+    const liveBuild = () =>
+      ({ sha: 'd357aa11bb', version: '1.2.2' }) as ReturnType<NonNullable<DispatchPendingGradingAuditsDeps['getEvaluatorBuild']>>;
+    const recipeArgs = {
+      harness: 'papercusp',
+      slug: 'roadmap',
+      classRef: 'plan-class-feature-ship',
+      evaluatorBuild: { sha: '9cb343871d', version: '1.2.2' },
+      specIds: ['roadmap/ENT-P-008-OUTCOME'],
+      workItemIds: ['WI-10007903'],
+      evidenceRefs: ['test-run:4242'],
+      bindingIds: [44556],
+      specRevision: 1,
+      specFingerprint: 'fp-1',
+      replaySnapshot: true,
+      includeDraft: true,
+      current: [],
+    };
+    const strandedCard = (issueId: string, args: Record<string, unknown> = recipeArgs) =>
+      card(issueId, {
+        evidenceFingerprint: 'scorecard-evidence-v1',
+        rerunRecipe: {
+          schemaVersion: 1,
+          evaluator: 'plans:evaluate-spec-test-adequacy',
+          evaluatorBuild: { sha: '9cb343871d', version: '1.2.2' },
+          args,
+          selection: { bindingIds: [44556] },
+        } as unknown as NonNullable<ScorecardRow['rerunRecipe']>,
+        gradingAudit: {
+          state: 'pending',
+          metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          stampedAt: '2026-10-14T13:30:00.000Z',
+        },
+      });
+    const certifyReply = (supersededIssueId: string, newIssueId: string) => ({
+      ok: true,
+      counts: { clauses: 1, passing: 1, filed: 1, unchanged: 0, refused: 0, notPassing: 0 },
+      clauses: [
+        {
+          specId: 'roadmap/ENT-P-008-OUTCOME',
+          card: { status: 'filed', issueId: newIssueId },
+          strandedSuperseded: { issueId: supersededIssueId, evaluatorBuild: { sha: '9cb343871d', version: '1.2.2' } },
+        },
+      ],
+    });
+
+    it('keeps the recipe selection, drops every replay pin, and acknowledges the existing card', () => {
+      expect(
+        strandedSpecAdequacyRecertifyCall({ evaluator: 'plans:evaluate-spec-test-adequacy', args: recipeArgs }),
+      ).toEqual({
+        tool: 'plans:certify-spec-clauses',
+        args: {
+          harness: 'papercusp',
+          slug: 'roadmap',
+          classRef: 'plan-class-feature-ship',
+          specIds: ['roadmap/ENT-P-008-OUTCOME'],
+          workItemIds: ['WI-10007903'],
+          evidenceRefs: ['test-run:4242'],
+          includeDraft: true,
+          acknowledgeExisting: true,
+        },
+      });
+    });
+
+    it('offers no re-certification for another rubric or a recipe that cannot select the clause', () => {
+      expect(strandedSpecAdequacyRecertifyCall({ evaluator: 'scorecards:emit', args: recipeArgs })).toBeNull();
+      expect(strandedSpecAdequacyRecertifyCall({ evaluator: 'plans:evaluate-spec-test-adequacy', args: { slug: 'p' } })).toBeNull();
+      expect(strandedSpecAdequacyRecertifyCall(undefined)).toBeNull();
+    });
+
+    it('the periodic sweep re-certifies a stranded card on the live build and the new card supersedes it', async () => {
+      const d = deps();
+      const issueId = 'EI-stranded-recert';
+      d.listScorecards.mockResolvedValue([strandedCard(issueId)]);
+      d.reserve.mockResolvedValue({ status: 'claimed', reservation: { key: `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`, reservedAt: '2026-10-14T18:00:00.000Z' } });
+      const recertifyStranded = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['recertifyStranded']>>(async () => certifyReply(issueId, 'EI-new-card'));
+
+      // The routine's own call shape: no targetIds, so drift cards are selected from the backlog.
+      const result = await reconcilePendingGradingAudits(
+        { ctx, harness: 'papercusp' },
+        { ...d, now: () => nowMs, getEvaluatorBuild: liveBuild, recertifyStranded },
+      );
+
+      expect(d.reserve).toHaveBeenCalledTimes(1);
+      expect(d.reserve).toHaveBeenCalledWith(issueId, `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`, expect.objectContaining({ workspaceId: 'ws-test' }));
+      // Released BEFORE certification: certify supersedes only a card with no live lease.
+      expect(d.release).toHaveBeenCalledWith(issueId, `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`, expect.objectContaining({ reservedAt: '2026-10-14T18:00:00.000Z' }));
+      expect(d.release.mock.invocationCallOrder[0]).toBeLessThan(recertifyStranded.mock.invocationCallOrder[0]!);
+      expect(recertifyStranded).toHaveBeenCalledWith(
+        expect.objectContaining({ tool: 'plans:certify-spec-clauses', args: expect.objectContaining({ slug: 'roadmap', acknowledgeExisting: true }) }),
+        ctx,
+      );
+      expect(recertifyStranded.mock.calls[0]![0].args).not.toHaveProperty('evaluatorBuild');
+      expect(d.launch).not.toHaveBeenCalled();
+      expect(result.recertifications).toEqual([
+        expect.objectContaining({ issueId, state: 'recertified', supersededBy: 'EI-new-card' }),
+      ]);
+      // The dispatch receipt names the certify call, not the read-only evaluator.
+      expect(result.receipts).toEqual([
+        expect.objectContaining({ issueId, reason: expect.stringContaining('plans:certify-spec-clauses') }),
+      ]);
+    });
+
+    it('leaves a card whose lease another dispatcher holds, without certifying it', async () => {
+      const d = deps();
+      const issueId = 'EI-stranded-held';
+      d.listScorecards.mockResolvedValue([strandedCard(issueId)]);
+      d.reserve.mockResolvedValue({ status: 'already-reserved' });
+      const recertifyStranded = vi.fn(async () => certifyReply(issueId, 'EI-never'));
+
+      const result = await reconcilePendingGradingAudits(
+        { targetIds: [issueId], ctx },
+        { ...d, now: () => nowMs, getEvaluatorBuild: liveBuild, recertifyStranded },
+      );
+
+      expect(recertifyStranded).not.toHaveBeenCalled();
+      expect(d.release).not.toHaveBeenCalled();
+      expect(result.recertifications).toEqual([expect.objectContaining({ issueId, state: 'deduped' })]);
+    });
+
+    it('reports a certification that superseded nothing, or threw, and keeps going', async () => {
+      const d = deps();
+      d.listScorecards.mockResolvedValue([strandedCard('EI-stranded-a'), strandedCard('EI-stranded-b')]);
+      const recertifyStranded = vi
+        .fn<NonNullable<DispatchPendingGradingAuditsDeps['recertifyStranded']>>()
+        .mockResolvedValueOnce({
+          ok: true,
+          counts: { notPassing: 1 },
+          clauses: [{ specId: 'roadmap/ENT-P-008-OUTCOME', card: { status: 'not-passing' } }],
+        })
+        .mockRejectedValueOnce(new Error('certify exploded'));
+
+      const result = await reconcilePendingGradingAudits(
+        { targetIds: ['EI-stranded-a', 'EI-stranded-b'], ctx },
+        { ...d, now: () => nowMs, getEvaluatorBuild: liveBuild, recertifyStranded },
+      );
+
+      expect(result.recertifications).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ state: 'not-recertified', reason: expect.stringContaining('not-passing') }),
+          expect.objectContaining({ state: 'failed', reason: 'certify exploded' }),
+        ]),
+      );
+    });
+
+    it('re-certifies at most STRANDED_RECERTIFY_LIMIT cards per pass, one at a time', async () => {
+      const d = deps();
+      const ids = Array.from({ length: STRANDED_RECERTIFY_LIMIT + 2 }, (_, i) => `EI-stranded-${i}`);
+      d.listScorecards.mockResolvedValue(ids.map((id) => strandedCard(id)));
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const recertifyStranded = vi.fn(async (call: { args: Record<string, unknown> }) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await Promise.resolve();
+        inFlight -= 1;
+        return { ok: true, clauses: [], call };
+      });
+
+      const result = await reconcilePendingGradingAudits(
+        { targetIds: ids, ctx },
+        { ...d, now: () => nowMs, getEvaluatorBuild: liveBuild, recertifyStranded },
+      );
+
+      expect(recertifyStranded).toHaveBeenCalledTimes(STRANDED_RECERTIFY_LIMIT);
+      expect(maxInFlight).toBe(1);
+      expect(result.recertifications).toHaveLength(STRANDED_RECERTIFY_LIMIT);
+    });
+
+    it('does nothing for a stranded card whose recipe cannot select its clause', async () => {
+      const d = deps();
+      d.listScorecards.mockResolvedValue([strandedCard('EI-stranded-thin', { harness: 'papercusp', slug: 'roadmap' })]);
+      const recertifyStranded = vi.fn();
+
+      const result = await reconcilePendingGradingAudits(
+        { targetIds: ['EI-stranded-thin'], ctx },
+        { ...d, now: () => nowMs, getEvaluatorBuild: liveBuild, recertifyStranded },
+      );
+
+      expect(recertifyStranded).not.toHaveBeenCalled();
+      expect(d.reserve).not.toHaveBeenCalled();
+      expect(result).not.toHaveProperty('recertifications');
+      expect(result.receipts).toEqual([expect.objectContaining({ stranded: expect.objectContaining({ recertify: null }) })]);
+    });
   });
 
   describe('assessEvaluatorBuildStranding (EI-25965998744903219)', () => {

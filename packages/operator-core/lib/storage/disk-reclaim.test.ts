@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compilePolicy, type RetentionClass } from './retention-policy';
-import { createRetentionHolderScanner, nativeRetentionCommand, physicalRetentionRoots, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type RetentionEntry } from './disk-reclaim';
+import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type RetentionEntry } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -19,6 +19,52 @@ const policy: RetentionClass[] = [
 ];
 const compiled = compilePolicy(policy, '/home/test');
 const entry = (path: string, classId: string, ageHours: number): RetentionEntry => ({ path, root: path.slice(0, path.lastIndexOf('/')), classId, newestWriteMs: now - ageHours * HOUR, bytes: 100, dev: 1, ino: 1 });
+
+describe('bounded scheduled retention drain', () => {
+  const partial = (overrides: Partial<DiskReclaimReceipt> = {}): DiskReclaimReceipt => ({
+    schemaVersion: 1, id: 'batch-receipt', startedAt: new Date(0).toISOString(), finishedAt: new Date(1000).toISOString(),
+    dryRun: false, complete: false, policyExhausted: null, devices: [], delegates: [],
+    entries: [{ path: '/scratch/old', classId: 'scratch', status: 'removed', bytes: 1 }],
+    effects: [{ root: '/scratch', selected: 2, processed: 1, remaining: 1, nextPath: '/scratch/next', elapsedMs: 1000, stopped: true }],
+    errors: ['incomplete retention effects:/scratch: effect budget exhausted; resume with a fresh policy census'], ...overrides,
+  });
+  it('checkpoints productive batches until a fresh pass is complete', async () => {
+    const run = vi.fn().mockResolvedValueOnce(partial()).mockResolvedValueOnce(partial({ id: 'done', complete: true, errors: [] }));
+    expect(await drainScheduledDiskReclaim(run)).toEqual({ batches: 2, lastReceiptId: 'done', stop: 'complete' });
+    expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
+  });
+  it.each([
+    { errors: ['incomplete process-holder scan:/scratch'] },
+    { errors: ['incomplete tree scan: retention scan budget exhausted'] },
+    { delegates: [{ classId: 'owner', ok: false, detail: 'failed' }] },
+    { entries: [{ path: '/scratch/old', classId: 'scratch', status: 'failed' as const, bytes: 1 }] },
+    { effects: [] },
+    { finishedAt: 'unknown' },
+  ])('stops on a failure instead of repeatedly retrying it: %j', async (overrides) => {
+    const run = vi.fn().mockResolvedValue(partial(overrides));
+    expect((await drainScheduledDiskReclaim(run)).stop).toBe('error');
+    expect(run).toHaveBeenCalledOnce();
+  });
+  it('stops without a removal, including a dry run', async () => {
+    const run = vi.fn().mockResolvedValue(partial({ entries: [] }));
+    expect((await drainScheduledDiskReclaim(run)).stop).toBe('no-progress');
+    expect(run).toHaveBeenCalledOnce();
+    run.mockClear().mockResolvedValue(partial({ dryRun: true }));
+    expect((await drainScheduledDiskReclaim(run)).stop).toBe('dry-run');
+    expect(run).toHaveBeenCalledOnce();
+  });
+  it('bounds both batch count and elapsed work and preserves the deadline across replay', async () => {
+    const run = vi.fn().mockResolvedValue(partial());
+    expect(await drainScheduledDiskReclaim(run, { maxBatches: 2 })).toMatchObject({ batches: 2, stop: 'batch-limit' });
+    run.mockClear();
+    expect((await drainScheduledDiskReclaim(run, { maxElapsedMs: 1000 })).stop).toBe('time-limit');
+    expect(run).toHaveBeenCalledOnce();
+    // A replayed receipt still supplies the original deadline to the next step.
+    run.mockClear().mockResolvedValueOnce(partial()).mockResolvedValueOnce(null);
+    expect(await drainScheduledDiskReclaim(run)).toMatchObject({ batches: 1, stop: 'time-limit' });
+    expect(run.mock.calls[1]).toEqual([1, 900_000]);
+  });
+});
 
 describe('physical retention ownership', () => {
   const inspect = async () => ({ dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false });

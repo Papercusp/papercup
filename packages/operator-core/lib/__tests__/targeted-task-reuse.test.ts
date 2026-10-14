@@ -116,6 +116,7 @@ function deps(over: Record<string, unknown> = {}): Deps {
 
 const baseEnv = (extra: Record<string, string> = {}): Record<string, string | undefined> => ({
   GREEN_CHECKPOINT: '1',
+  PAPERCUSP_TEST_RUN_SOURCE: 'ci',
   AFFECTED_TEST_REUSE_AUDIT_RATE: '0',
   PATH: process.env.PATH,
   ...extra,
@@ -160,12 +161,38 @@ describe('gate reuse on the degradation rail (P-004)', () => {
       observeFallback: (mechanism: string, decision: { eligible: number; applied: number }) => calls.push({ mechanism, ...decision }),
       flushFallbackObservations: async () => { flushed++; return { failed: 0 }; },
     };
-    expect(await recordGateReuseDecision(TASK, { summary: { candidates: 20, otherRunner: 20, reused: 0 } }, writer)).toBe(true);
-    expect(await recordGateReuseDecision(TASK, { offReason: 'proofs-unavailable' }, writer)).toBe(true);
+    const gateContext = { runContext: 'green-checkpoint' as const, writer };
+    expect(await recordGateReuseDecision(TASK, { summary: { candidates: 20, otherRunner: 20, reused: 0 } }, gateContext)).toBe(true);
+    expect(await recordGateReuseDecision(TASK, { offReason: 'proofs-unavailable' }, gateContext)).toBe(true);
     expect(calls.map((row) => row.mechanism)).toEqual(['gate-pass-reuse', 'gate-pass-reuse']);
     expect(flushed).toBe(2);
-    expect(await recordGateReuseDecision(TASK, { offReason: 'dirty-checkout' }, { ...writer,
-      flushFallbackObservations: async () => { throw new Error('database offline'); } })).toBe(false);
+    expect(await recordGateReuseDecision(TASK, { offReason: 'dirty-checkout' }, {
+      runContext: 'green-checkpoint',
+      writer: { ...writer, flushFallbackObservations: async () => { throw new Error('database offline'); } },
+    })).toBe(false);
+  });
+
+  it('writes only green-checkpoint observations with a dedicated tenant, producer tag, and run correlation', async () => {
+    const calls: Array<{ mechanism: string; eligible: number; applied: number; options: Record<string, unknown> }> = [];
+    let flushed = 0;
+    const writer = {
+      observeFallback: (mechanism: string, decision: { eligible: number; applied: number }, options: Record<string, unknown>) =>
+        calls.push({ mechanism, ...decision, options }),
+      flushFallbackObservations: async () => { flushed++; return { failed: 0 }; },
+    };
+    expect(await recordGateReuseDecision(TASK, { offReason: 'dirty-checkout' }, { runContext: 'clean-local', writer })).toBe(true);
+    expect(calls).toEqual([]);
+    expect(flushed).toBe(0);
+
+    const runGroupId = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
+    expect(await recordGateReuseDecision(TASK, { offReason: 'dirty-checkout' }, {
+      runContext: 'green-checkpoint', runGroupId, writer,
+    })).toBe(true);
+    expect(calls).toMatchObject([{
+      mechanism: 'gate-pass-reuse', eligible: 1, applied: 0,
+      options: { workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint', correlationId: runGroupId },
+    }]);
+    expect(flushed).toBe(1);
   });
 
   it('does not let a throwing observation dependency change the repair skip decision', async () => {

@@ -29,6 +29,12 @@ const hiveMocks = vi.hoisted(() => ({
   potHomeSlugForHarness: vi.fn(),
 }));
 const parkReachability = vi.hoisted(() => ({ read: vi.fn() }));
+const conformanceClosure = vi.hoisted(() => ({
+  read: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
+}));
+vi.mock('../../spec-conformance/closure-guard', () => ({
+  conformanceClosureRefusal: (...args: unknown[]) => conformanceClosure.read(...args),
+}));
 vi.mock('../../external-condition-reachability', () => ({
   readEventConditionReachability: (...args: unknown[]) => parkReachability.read(...args),
 }));
@@ -349,6 +355,8 @@ function okState(workItem: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  conformanceClosure.read.mockReset();
+  conformanceClosure.read.mockResolvedValue(null);
   parkReachability.read.mockResolvedValue({
     verdict: 'reachable', basis: 'catalogued', evidence: 'catalogued unblocked producer is live',
   });
@@ -1200,6 +1208,50 @@ describe('work_items:complete (keyed-array)', () => {
     await one({ id: 'F-12', completion: { summary: 'shipped' } });
     expect(attachCompletionEvidenceToSettledItem).toHaveBeenCalled();
     expect(JSON.stringify(attachCompletionEvidenceToSettledItem.mock.calls)).not.toContain('checkpointChecksCarried');
+  });
+
+  it('forwards linked requirements to conformance preflight and persists the declarations', async () => {
+    const linked = { ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-001'] };
+    getWorkItem.mockResolvedValue(linked);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linked, state: 'passed' }));
+    const completion = { summary: 'R-1 delivered', discharges: ['R-1'], contributesTo: ['R-2'], tests: 'focused checks pass' };
+    const r = await one({ id: 'F-12', state: 'passed', completion });
+    expect(r.ok).toBe(true);
+    expect(conformanceClosure.read).toHaveBeenCalledWith(expect.objectContaining({
+      planSlug: 'requirement-plan', planItemIds: ['P-001'],
+      completion: expect.objectContaining({ discharges: ['R-1'], contributesTo: ['R-2'] }),
+    }));
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({
+      completionEvidence: expect.objectContaining({ discharges: ['R-1'], contributesTo: ['R-2'] }),
+    }));
+  });
+
+  it('refuses conformance violations before writing or emitting a linked completion', async () => {
+    getWorkItem.mockResolvedValue({ ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-001'] });
+    conformanceClosure.read.mockResolvedValue({
+      code: 'conformance_done_when_not_passing', error: 'R-1 failed.', requirements: ['R-1'],
+    });
+    const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'R-1 delivered', discharges: ['R-1'] } });
+    expect(r).toMatchObject({ ok: false, specConformanceRefusal: { code: 'conformance_done_when_not_passing' } });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(fireReactionInProcess).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unavailable conformance read without writing a completion', async () => {
+    getWorkItem.mockResolvedValue({ ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-001'] });
+    conformanceClosure.read.mockRejectedValue(new Error('ledger unavailable'));
+    const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'R-1 delivered', discharges: ['R-1'] } });
+    expect(r).toMatchObject({ ok: false, specConformanceRefusal: { code: 'conformance_check_unavailable', retryable: true } });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('keeps conformance preflight out of record-only and discard paths', async () => {
+    const linked = { ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-001'] };
+    getWorkItem.mockResolvedValue(linked);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linked, state: 'dropped' }));
+    await one({ id: 'F-12', recordOnly: true, completion: { summary: 'progress' } });
+    await one({ id: 'F-12', state: 'dropped', completion: { summary: 'Superseded work' } });
+    expect(conformanceClosure.read).not.toHaveBeenCalled();
   });
 
   it('synchronously converges a linked plan item and claim release before reporting success', async () => {

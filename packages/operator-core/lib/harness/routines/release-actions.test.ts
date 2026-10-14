@@ -151,7 +151,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 // EI-13723: dispatchReleaseFixer's actual fire step (dynamic-imported, so it's invisible to a
 // plain function-level mock) — stubbed so the EI-13723 dispatch-convergence tests below can
 // assert the fire was ATTEMPTED without touching the real blueprint-launch machinery.
-const fireLaunchBlueprintForEvent = vi.fn(async (..._a: unknown[]) => null);
+const fireLaunchBlueprintForEvent = vi.fn(async (..._a: unknown[]): Promise<unknown> => null);
 vi.mock('../../blueprint/launch-blueprint', () => ({
   fireLaunchBlueprintForEvent: (...a: unknown[]) => fireLaunchBlueprintForEvent(...a),
 }));
@@ -1834,6 +1834,16 @@ describe('decideReleaseFixerDispatch — liveness-aware dedup (P-014 / D-009)', 
   it('COVERED: same signature, liveness UNKNOWN (null — durable/legacy record) → skip, no regression', () => {
     const d = decideReleaseFixerDispatch({ lf: rec({ spawnId: null }), signature: SIG, now, fixerAlive: null });
     expect(d).toEqual({ dispatch: false, notify: false, reason: 'covered' });
+  });
+
+  it('RETRY: a failed fire with unknown liveness is not treated as a durable fixer', () => {
+    const d = decideReleaseFixerDispatch({
+      lf: rec({ spawnId: null, dispatchStatus: 'failed' }),
+      signature: SIG,
+      now,
+      fixerAlive: null,
+    });
+    expect(d).toEqual({ dispatch: true, notify: true, reason: 'dispatch-retry' });
   });
 
   it('SELF-HEAL: same signature, fixer DEAD → re-dispatch (the incident fix — was a 2h gap)', () => {
@@ -4821,6 +4831,93 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     fireLaunchBlueprintForEvent.mockResolvedValue(null);
   });
 
+  it('does not announce or suppress retries when the launch target returns no spawn', async () => {
+    const candidate = 'a'.repeat(40);
+    const failingTest = 'lint:identity-leak';
+    const snapshot = buildCandidateSnapshot({ candidate, failingTests: [failingTest] }, Date.now());
+    expect(snapshot).not.toBeNull();
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([{ lf: null, ftm: 'true', cs: snapshot }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]));
+    fireLaunchBlueprintForEvent.mockResolvedValueOnce({ spawn: null });
+    const timeline: string[] = [];
+    const broadcast = vi.fn(async () => { timeline.push('broadcast'); return true; });
+    const notify = vi.fn(async () => { timeline.push('notify'); });
+
+    const result = await dispatchReleaseFixer(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      candidate,
+      [failingTest],
+      undefined,
+      undefined,
+      {
+        checkCandidate: async () => ({ candidateExists: true, candidatePromoted: false }),
+        alarm: { broadcast, notify },
+      },
+    );
+
+    expect(result).toBeNull();
+    expect(timeline).toEqual([]);
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    const failedWrite = fakeSql.unsafe.mock.calls.find(([query, params]) =>
+      String(query).includes("metadata->'last_fixer'") &&
+      String((params as unknown[])[3]).includes('"dispatchStatus":"failed"'),
+    );
+    expect(failedWrite).toBeDefined();
+    expect(JSON.parse(String((failedWrite?.[1] as unknown[])[3])).last_fixer).toMatchObject({
+      signature: failingTest,
+      dispatchStatus: 'failed',
+      spawnId: null,
+      runId: null,
+    });
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'release_fixer',
+      status: 'failed',
+      detail: expect.objectContaining({ dispatchStatus: 'failed', recordPatched: true }),
+    }));
+  });
+
+  it('announces and notifies only after the launch returns a spawn record', async () => {
+    const candidate = 'b'.repeat(40);
+    const failingTest = 'lint:identity-leak';
+    const snapshot = buildCandidateSnapshot({ candidate, failingTests: [failingTest] }, Date.now());
+    expect(snapshot).not.toBeNull();
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([{ lf: null, ftm: 'true', cs: snapshot }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]));
+    const timeline: string[] = [];
+    fireLaunchBlueprintForEvent.mockImplementationOnce(async () => {
+      timeline.push('fire');
+      return { spawn: { spawnId: 'spawn-1', runId: 'run-1', durable: false } };
+    });
+    const broadcast = vi.fn(async () => { timeline.push('broadcast'); return true; });
+    const notify = vi.fn(async () => { timeline.push('notify'); });
+
+    const result = await dispatchReleaseFixer(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      candidate,
+      [failingTest],
+      undefined,
+      undefined,
+      {
+        checkCandidate: async () => ({ candidateExists: true, candidatePromoted: false }),
+        alarm: { broadcast, notify },
+      },
+    );
+
+    expect(result).toEqual({ spawnId: 'spawn-1', runId: 'run-1' });
+    expect(timeline).toEqual(['fire', 'broadcast', 'notify']);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'release_fixer',
+      status: 'ok',
+      detail: expect.objectContaining({ dispatchStatus: 'dispatched', recordPatched: true }),
+    }));
+  });
+
   it('builds a frozen-fixer brief that distinguishes the delegated child from the parent gate owner', () => {
     const repairQueue: FrozenCandidateRepairQueue = {
       schemaVersion: 1,
@@ -4921,6 +5018,8 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       expect(snapshot).not.toBeNull();
       fakeSql.unsafe
         .mockResolvedValueOnce(sqlRows([{ lf: null, ftm: 'true', cs: snapshot, legs: tickAt(tickHead) }]))
+        .mockResolvedValueOnce(sqlRows([{ written: true }]))
+        // A missing spawn is now persisted as a failed attempt so the next tick retries.
         .mockResolvedValueOnce(sqlRows([{ written: true }]));
       await dispatchReleaseFixer(
         { workspaceId: 'ws-42', installSlug: 'my-harness' },
@@ -4996,6 +5095,8 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       // dispatchReleaseFixer reads the snapshot written by the producer.
       .mockResolvedValueOnce(sqlRows([{ lf: null, ftm: 'true', cs: persistedSnapshot }]))
       // The exact snapshot/last_fixer CAS must report its row as written before firing.
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      // The mocked launch returns no spawn, so dispatchReleaseFixer records that failed fire.
       .mockResolvedValueOnce(sqlRows([{ written: true }]));
 
     const recorded = await recordCheckpointVerdict(

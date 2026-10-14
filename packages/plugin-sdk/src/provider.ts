@@ -127,7 +127,8 @@ export interface ProviderDescriptor {
   /**
    * How the provider's own webhooks reach the host and are verified (D-016). Pure data: the HOST
    * checks the handshake and the signature, so the ingress never branches on a provider name. A
-   * verified delivery only wakes the source's next sync; it is never a data path.
+   * verified delivery wakes the source's next sync by default. A descriptor may instead route it
+   * through ingress.normalize and the same record admission path as socket ingress and sync.
    */
   push?: ProviderPushDescriptor;
   /**
@@ -500,7 +501,17 @@ export const PROVIDER_ACL_REF_PATTERN = /^[A-Za-z0-9._:@#\/-]{1,200}$/;
  */
 export interface ProviderPushDescriptor {
   handshake?: { header: string };
-  signature: { header: string; algorithm: 'hmac-sha256'; encoding: 'hex' };
+  signature: {
+    header: string; algorithm: 'hmac-sha256'; encoding: 'hex';
+    /** Literal header prefix before the hex digest, e.g. sha256=. */
+    prefix?: string;
+    /** Use the existing host-held OAuth client registration secret instead of handshake secrets. */
+    oauthClientSecret?: boolean;
+  };
+  /** GET verification challenge; the host compares a declared setup credential and echoes the challenge. */
+  verification?: { modeParam: string; modeValue: string; tokenParam: string; challengeParam: string; credentialRef: string };
+  /** Default wake; normalize uses ingress.normalize and ordinary connector record admission. */
+  delivery?: 'wake' | 'normalize';
 }
 
 /** One remote webhook the provider holds for a source. `resource` is the provider's own id for what it watches. */
@@ -1039,7 +1050,7 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
       }
     }
   }
-  if (d.push !== undefined) issues.push(...pushDescriptorIssues(d.push, capabilities.filter(isNonEmptyString)));
+  if (d.push !== undefined) issues.push(...pushDescriptorIssues(d.push, capabilities.filter(isNonEmptyString), d));
   if (d.setup !== undefined) {
     const serviceHosts = (Array.isArray(d.serviceCredentials) ? d.serviceCredentials : []).flatMap((c) =>
       Array.isArray(c?.hosts) ? c.hosts.filter(isNonEmptyString) : [],
@@ -1075,7 +1086,7 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
   return issues;
 }
 
-function pushDescriptorIssues(push: unknown, capabilities: string[]): string[] {
+function pushDescriptorIssues(push: unknown, capabilities: string[], descriptor: Partial<ProviderDescriptor>): string[] {
   if (!push || typeof push !== 'object' || Array.isArray(push)) return ['provider.push must be an object'];
   const p = push as Partial<ProviderPushDescriptor>;
   const issues: string[] = [];
@@ -1084,6 +1095,21 @@ function pushDescriptorIssues(push: unknown, capabilities: string[]): string[] {
   if (!header(signature.header)) issues.push('provider.push.signature.header must be a lowercase header name');
   if (signature.algorithm !== 'hmac-sha256') issues.push('provider.push.signature.algorithm must be hmac-sha256');
   if (signature.encoding !== 'hex') issues.push('provider.push.signature.encoding must be hex');
+  if (signature.prefix !== undefined && (typeof signature.prefix !== 'string' || !/^[A-Za-z0-9=_-]{1,32}$/.test(signature.prefix))) issues.push('provider.push.signature.prefix must be a short literal prefix');
+  if (signature.oauthClientSecret !== undefined && typeof signature.oauthClientSecret !== 'boolean') issues.push('provider.push.signature.oauthClientSecret must be true or false');
+  if (signature.oauthClientSecret === true && (!descriptor.oauth || p.handshake)) issues.push('provider.push.signature.oauthClientSecret needs OAuth and cannot use a handshake');
+  if (p.delivery !== undefined && !['wake', 'normalize'].includes(p.delivery)) issues.push('provider.push.delivery must be wake or normalize');
+  if (p.delivery === 'normalize' && !capabilities.includes(PROVIDER_INGRESS_NORMALIZE_CAPABILITY)) issues.push('provider.push.delivery normalize needs capability ingress.normalize');
+  if (p.verification !== undefined) {
+    const v = p.verification;
+    for (const key of ['modeParam', 'tokenParam', 'challengeParam'] as const) {
+      if (typeof v?.[key] !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(v[key])) issues.push(`provider.push.verification.${key} must be a query parameter name`);
+    }
+    if (!isNonEmptyString(v?.modeValue) || v.modeValue.length > 100) issues.push('provider.push.verification.modeValue must be a short string');
+    if (new Set([v?.modeParam, v?.tokenParam, v?.challengeParam]).size !== 3) issues.push('provider.push.verification parameter names must differ');
+    const fields = descriptor.setup?.credentials;
+    if (!Array.isArray(fields) || !fields.some((field) => field?.key === v?.credentialRef && !field.perPrincipal)) issues.push('provider.push.verification.credentialRef must name a host-held setup credential');
+  }
   if (p.handshake !== undefined) {
     if (!header((p.handshake as { header?: unknown } | null)?.header)) {
       issues.push('provider.push.handshake.header must be a lowercase header name');

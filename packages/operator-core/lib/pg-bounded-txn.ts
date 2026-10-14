@@ -310,14 +310,16 @@ export class OrgTxnTimeoutError extends Error {
     blockerHint?: string,
     timeoutSource: 'pg' | 'caller-budget' = 'pg',
     operation: 'read' | 'write' = 'write',
+    phase?: string,
   ) {
     const subject = operation === 'read' ? 'operator read query' : 'operator write';
-    const base =
+    const baseMessage =
       timeoutSource === 'caller-budget'
         ? `${subject} was abandoned after exceeding the CALLER's own time budget (reported as pg ${pgCode} so it is never mistaken for "nothing matched"; PostgreSQL itself did not time out) — retry shortly`
         : pgCode === '55P03'
           ? `${subject} timed out waiting for a row/advisory lock (pg 55P03 lock_timeout) — retry shortly`
           : `${subject} exceeded its time budget (pg 57014 statement_timeout) — retry shortly`;
+    const base = phase ? `[phase: ${phase}] ${baseMessage}` : baseMessage;
     super(
       blockerHint
         ? `${base} — separate-connection blocker snapshot (not confirmed to block this operation): ${blockerHint}`
@@ -334,6 +336,37 @@ export class OrgTxnTimeoutError extends Error {
 
 /** PG SQLSTATEs that mean "couldn't finish in time": statement_timeout + lock_timeout. */
 const CONTENTION_CODES = new Set(['57014', '55P03']);
+
+/**
+ * Add a stable operation phase to PG timeouts raised by a post-transaction step.
+ * `boundedOrgTxn` labels errors while its callback is active; callers use this
+ * wrapper for awaited work after that transaction has committed. Keep an inner
+ * label when one already exists so the most specific phase survives.
+ */
+export async function withOrgTxnTimeoutPhase<T>(
+  phase: string,
+  operation: () => Promise<T>,
+  timeoutOperation: 'read' | 'write' = 'write',
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof OrgTxnTimeoutError) {
+      if (error.messageWithoutBlockerHint.startsWith('[phase: ')) throw error;
+      throw new OrgTxnTimeoutError(
+        error.pgCode,
+        error.cause,
+        error.blockerHint,
+        error.timeoutSource,
+        timeoutOperation,
+        phase,
+      );
+    }
+    const code = (error as { code?: unknown } | null)?.code;
+    if (typeof code !== 'string' || !CONTENTION_CODES.has(code)) throw error;
+    throw new OrgTxnTimeoutError(code, error, undefined, 'pg', timeoutOperation, phase);
+  }
+}
 
 /** Bound on the diagnostic query itself — this must never be the thing that hangs
  *  while we're trying to explain why something else hung. */
@@ -442,6 +475,8 @@ export interface BoundedOrgTxnOptions {
   statementTimeoutMs?: number;
   /** Per-lock-wait cap (PG lock_timeout), ms. Default ORG_TXN_DEFAULT_LOCK_TIMEOUT_MS. */
   lockTimeoutMs?: number;
+  /** Stable caller phase included in a propagated PG timeout; may change inside fn. */
+  phase?: string | (() => string);
   /** Start the transaction READ ONLY before applying its local timeouts. */
   readOnly?: boolean;
   /** Inject the sql client (tests / a non-default backend). Default getOrgPg().sql. */
@@ -554,7 +589,8 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
       // connection already aborted, so this runs on a fresh one and must never be
       // allowed to throw or hang in place of the real error.
       const blockerHint = await describeContentionAtFailure(sql, acquirePool).catch(() => undefined);
-      throw new OrgTxnTimeoutError(code, err, blockerHint, 'pg', opts.readOnly ? 'read' : 'write');
+      const phase = typeof opts.phase === 'function' ? opts.phase() : opts.phase;
+      throw new OrgTxnTimeoutError(code, err, blockerHint, 'pg', opts.readOnly ? 'read' : 'write', phase);
     }
     throw err;
   }

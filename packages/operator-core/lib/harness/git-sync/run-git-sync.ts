@@ -2840,6 +2840,35 @@ export const STALE_INDEX_LOCK_MS = 90_000;
  * a wrongly-kept orphan costs one more failed tick (the next tick re-checks)
  * while a wrongly-unlinked live lock truncates the index (EI-22703121889295786).
  */
+export interface LockHolderProbe {
+  held: boolean;
+  source: 'proc' | 'lsof' | 'unknown' | 'injected';
+  verdict: 'held' | 'absent' | 'unknown';
+}
+
+export async function probeLockHolder(
+  lockPath: string,
+  deps: {
+    procHolder?: (p: string) => Promise<boolean | null>;
+    lsofHolder?: (p: string) => Promise<boolean | null>;
+  } = {},
+): Promise<LockHolderProbe> {
+  const viaProc = await (deps.procHolder ?? procLockHolder)(lockPath);
+  if (viaProc !== null) {
+    return { held: viaProc, source: 'proc', verdict: viaProc ? 'held' : 'absent' };
+  }
+  // WI-10003529: no /proc (macOS). Before this fallback the function returned
+  // `true` here unconditionally, so on a Mac a lock orphaned by a restart was
+  // never reclaimed and every later git-sync tick failed until a human deleted
+  // it (P-203 Mac VM, 2026-09-27: two locks aged 50-70 min, lsof proved no holder).
+  const viaLsof = await (deps.lsofHolder ?? lsofLockHolder)(lockPath);
+  if (viaLsof !== null) {
+    return { held: viaLsof, source: 'lsof', verdict: viaLsof ? 'held' : 'absent' };
+  }
+  return { held: true, source: 'unknown', verdict: 'unknown' };
+}
+
+/** Backward-compatible boolean seam; use probeLockHolder when the journal needs the reason. */
 export async function lockHasLiveHolder(
   lockPath: string,
   deps: {
@@ -2847,14 +2876,7 @@ export async function lockHasLiveHolder(
     lsofHolder?: (p: string) => Promise<boolean | null>;
   } = {},
 ): Promise<boolean> {
-  const viaProc = await (deps.procHolder ?? procLockHolder)(lockPath);
-  if (viaProc !== null) return viaProc;
-  // WI-10003529: no /proc (macOS). Before this fallback the function returned
-  // `true` here unconditionally, so on a Mac a lock orphaned by a restart was
-  // never reclaimed and every later git-sync tick failed until a human deleted
-  // it (P-203 Mac VM, 2026-09-27: two locks aged 50-70 min, lsof proved no holder).
-  const viaLsof = await (deps.lsofHolder ?? lsofLockHolder)(lockPath);
-  return viaLsof ?? true; // neither instrument could prove absence → assume held
+  return (await probeLockHolder(lockPath, deps)).held;
 }
 
 /** WI-10003529: ask `lsof` whether any process holds `lockPath` open.
@@ -2950,6 +2972,8 @@ async function clearStaleGitLock(
     unlinkFile?: (p: string) => Promise<void>;
     now?: () => number;
     staleMs?: number;
+    /** Structured holder verdict, including an inconclusive fail-closed probe. */
+    probeHolder?: (lockPath: string) => Promise<LockHolderProbe>;
     /** LIVE-HOLDER GUARD (EI-22703121889295786): mtime alone is NOT proof the
      *  writer is dead — a `git add -A` walking a multi-MB tree can hold
      *  `index.lock` open for >90s without touching its mtime, and unlinking it
@@ -2962,7 +2986,6 @@ async function clearStaleGitLock(
   const unlinkFile = deps.unlinkFile ?? unlink;
   const now = deps.now ?? Date.now;
   const staleMs = deps.staleMs ?? STALE_INDEX_LOCK_MS;
-  const hasLiveHolder = deps.hasLiveHolder ?? lockHasLiveHolder;
   const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
   if (gd.code !== 0) return false;
   const lockPath = join(gd.stdout.trim(), lockName);
@@ -2976,10 +2999,24 @@ async function clearStaleGitLock(
     return false;
   }
   const holderCheckStarted = now();
-  const held = await hasLiveHolder(lockPath);
+  let holderProbe: LockHolderProbe;
+  if (deps.probeHolder) {
+    holderProbe = await deps.probeHolder(lockPath);
+  } else if (deps.hasLiveHolder) {
+    const held = await deps.hasLiveHolder(lockPath);
+    holderProbe = { held, source: 'injected', verdict: held ? 'held' : 'absent' };
+  } else {
+    holderProbe = await probeLockHolder(lockPath);
+  }
   const holderCheckMs = now() - holderCheckStarted;
   const holderCheck = `holder check ${(holderCheckMs / 1000).toFixed(1)}s${holderCheckMs >= SLOW_LOCK_HOLDER_CHECK_MS ? ' — SLOW (WI-10006519)' : ''}`;
-  if (held) {
+  if (holderProbe.verdict === 'unknown') {
+    log(
+      `[git-sync] ${repoPath}: ${lockName} is ${Math.round(ageMs / 1000)}s old; holder probe UNKNOWN — fail-closed stale-lock guard preserved the lock (proc and lsof could not answer; ${holderCheck})`,
+    );
+    return false;
+  }
+  if (holderProbe.held) {
     log(
       `[git-sync] ${repoPath}: ${lockName} is ${Math.round(ageMs / 1000)}s old but a LIVE process still holds it open — FRESH-BY-HOLDER, not touching it (unlinking under a live writer truncates the index; EI-22703121889295786; ${holderCheck})`,
     );

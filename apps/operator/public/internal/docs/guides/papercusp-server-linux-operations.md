@@ -1,11 +1,11 @@
 # Papercusp Server on Linux — install, configure, back up, restore, recover, offboard
 URL: /internal/docs/guides/papercusp-server-linux-operations
 
-Operator runbook for a supported candidate deployment of the Papercusp Server .deb (0.0.26) on Ubuntu 24.04: install, configure, diagnostics, backup, restore (clone check and in-place), crash/reboot recovery, and offboarding. Every step was run on an isolated clean VM on 2026-10-14. Also lists known gaps and the commitments that do not exist yet.
+Linux operator runbook with measured install/configuration, diagnostics, backup, clone/in-place restore, crash/reinstall recovery and offboarding on Ubuntu 24.04. Headless boot, configuration-archive restore and later packaged fixes remain explicitly unverified; no support/SLA/certification commitment.
 
 This runbook covers one supported candidate deployment: the **Papercusp Server** Debian package on **Ubuntu 24.04 (noble), amd64**, run as a systemd user service for one Linux user. It is the documented path required by `papercusp-enterprise-readiness-roadmap-2026-10-09` P-010 (work item WI-6554700010012436).
 
-**How it was verified.** Every command below was run on 2026-10-14 against `papercusp-server 0.0.26` (build `c864f7a1`) on an isolated clean-room VM (`vmctl` instance `p010a`). The drills covered a fresh install, a reinstall on retained data, three crash kinds, a reboot, a backup, a restore to a clone, an in-place restore after simulated data loss, a package purge, and user-data removal. Each result below says whether it was **verified** in that drill or is **not yet verified**.
+**How it was verified.** The verified lifecycle drills ran on 2026-10-14 against `papercusp-server 0.0.26` (build `c864f7a1`) on an isolated clean-room VM (`vmctl` instance `p010a`). The drills covered a fresh install, a reinstall on retained data, three crash kinds, a reboot, a backup, a restore to a clone, an in-place restore after simulated data loss, a package purge, and user-data removal. Each result below says whether it was **verified** in that drill or is **not yet verified**. Restoring the configuration archive and headless reboot without a login were not drilled. The later boot-helper, CLI SDK, PG credential and service-launch fixes have source tests; their packaged acceptance awaits the recut tracked on the four items below.
 
 > **Scope limits.** This is not a support agreement, an SLA, an RPO/RTO commitment, or a security certification. None of those exist yet; see [Commitments that do not exist yet](#commitments-that-do-not-exist-yet). macOS, Windows, multi-user hosts, and upgrades from earlier versions were not drilled.
 
@@ -164,8 +164,8 @@ sudo loginctl disable-linger USER   # if you enabled linger at install, by hand 
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | WI-6554700010012562 | Boot-start helper is not shipped in 0.0.26. Ships from 0.0.27 as `/usr/sbin/papercusp-server-enable-boot-start`; not yet verified on a built package | On 0.0.26, enable linger by hand for headless boot start              |
 | WI-6554700010012487 | `/usr/bin/ptool` fails: `@modelcontextprotocol/sdk` missing from the shipped sidecar                                                                 | No in-product snapshots or CLI diagnostics; use `pg_dump` and systemd |
-| WI-6554700010012477 | Embedded Postgres uses fixed default credentials on every install (unconfirmed)                                                                      | Keep the DB port local-only; treat backups as secret                  |
-| WI-6554700010012567 | GUI launched while the unit is stopped appears to run a server outside the unit (unconfirmed)                                                        | Start the unit before the GUI                                         |
+| WI-6554700010012477 | 0.0.26 accepted public default PG credentials; host-specific credential fix is source-verified, packaged acceptance pending                          | Keep the DB port local-only; treat backups as secret                  |
+| WI-6554700010012567 | 0.0.26 GUI/desktop-entry launches could bypass the unit; service-attachment fixes are source-verified, packaged acceptance pending                   | Start the unit before the GUI                                         |
 
 ## Commitments that do not exist yet
 

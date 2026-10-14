@@ -138,6 +138,7 @@ export const WORK_ITEMS_COMPLETION_CONTRACT = {
     },
     { key: 'self-review', description: 'Pilot self-review evidence is present and ledger-visible when applicable.' },
     { key: 'gate-red-lineage', description: 'A claimed red-gate repair is admitted on the judged lineage.' },
+    { key: 'spec-conformance-closure', description: 'Mapped requirements are named, discharged checks pass, and drift alarms have approved deviations.' },
     {
       key: 'conformance-review-independence',
       description: 'A conformance-review work-item is not closed by its plan implementer.',
@@ -275,6 +276,7 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 import { isGitTrackedPath, repoRelativePathUnderRoot, type GitTrackednessProbe } from '../../git-trackedness';
 import { getOrgPg } from '@papercusp/db-org';
 import { conformanceReviewClosureRefusal, conformanceReviewFromPayload } from '../../spec-conformance/conformance-review';
+import { conformanceClosureRefusal } from '../../spec-conformance/closure-guard';
 import {
   itemIsArmB,
   judgeSelfReview,
@@ -310,7 +312,11 @@ import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
 import { isNonCodeWorkItemKind, PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 import { COMPLETE_RECEIPT, toWorkItemReceipt } from './receipt';
-import { dispatchPendingGradingAudits } from '../../grading-integrity';
+import {
+  dispatchPendingGradingAudits,
+  STRANDED_RECERTIFY_LIMIT,
+  type PendingGradingAuditDispatchReceipt,
+} from '../../grading-integrity';
 import {
   designEvidenceCompletionGate,
   designFeatureCandidates,
@@ -3838,6 +3844,27 @@ async function completeOne(
                 })),
               }))
             : undefined;
+        // WI-6554700010013275: a STRANDED card has no auditor coming — its recorded evaluator
+        // build is served by no host — so "settle the pending audit" cannot happen. Say so and
+        // name the re-grade call, instead of a bare pending that invites waiting or re-emitting.
+        const strandedGradingAudits = (gradingAuditDispatch?.receipts ?? []).flatMap((receipt) => {
+          const stranded = (receipt as PendingGradingAuditDispatchReceipt).stranded;
+          return stranded
+            ? [{ issueId: receipt.issueId, reason: stranded.reason, recertify: stranded.recertify }]
+            : [];
+        });
+        const strandedGuidance = strandedGradingAudits.length
+          ? `Scorecard(s) ${strandedGradingAudits.map((entry) => entry.issueId).join(', ')} are STRANDED, not pending: ` +
+            'no host serves their recorded evaluator build, so waiting or scorecards:repair cannot settle them. ' +
+            strandedGradingAudits
+              .map((entry) =>
+                entry.recertify
+                  ? `Re-grade ${entry.issueId} with ${entry.recertify.tool} ${JSON.stringify(entry.recertify.args)}.`
+                  : `Re-grade ${entry.issueId} on the current build (${entry.reason}).`,
+              )
+              .join(' ') +
+            ` The periodic grading sweep also runs this re-grade itself, at most ${STRANDED_RECERTIFY_LIMIT} cards per pass. `
+          : '';
         const gradingAuditRetryGuidance =
           pendingGradingAuditTargetIds?.length && failedGradingAuditTargetIds?.length
             ? 'Retry after binding current proof, emitting terminal scorecards, settling any pending grading audits, and repairing the failed grading-integrity findings before emitting fresh terminal scorecards.'
@@ -3858,7 +3885,7 @@ async function completeOne(
                 : 'Retry after binding current proof and emitting terminal scorecards when required.';
         refuseGate(
           `refusing terminal completion for '${it.id}': spec-test-adequacy gate is not current: ${gate.reason}. ` +
-            `${gradingAuditRetryGuidance} ${SPEC_ADEQUACY_CURRENTNESS_GUIDANCE} No completion record or state transition was written.`,
+            `${strandedGuidance}${gradingAuditRetryGuidance} ${SPEC_ADEQUACY_CURRENTNESS_GUIDANCE} No completion record or state transition was written.`,
           {
             specAdequacy: {
               applicable: true,
@@ -3872,6 +3899,7 @@ async function completeOne(
                 ? { failedGradingAuditTargetIds: [...failedGradingAuditTargetIds] }
                 : {}),
               ...(failedGradingAudits?.length ? { failedGradingAudits: [...failedGradingAudits] } : {}),
+              ...(strandedGradingAudits.length ? { strandedGradingAudits } : {}),
               ...(gradingAuditDispatch ? { gradingAuditDispatch } : {}),
             },
           },
@@ -4200,6 +4228,28 @@ async function completeOne(
     setContractRequirement('conformance-review-independence', applicable, reviewError);
   }
 
+  // P-029: read the existing plan linkage and BAR map before any completion write.
+  if (closeIntentRequested && !isAbandonedClose && !duplicateCloseCoverageException) {
+    const stamp = finishPlanStamp(existing as unknown as Record<string, unknown>);
+    const planSlug = existing.sourcePlanSlug ?? stamp?.plan_slug;
+    const planItemIds = existing.sourcePlanItemIds?.length ? existing.sourcePlanItemIds : stamp ? [stamp.item_id] : [];
+    if (planSlug && planItemIds.length) {
+      try {
+        const refusal = await conformanceClosureRefusal({
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+          harnessSlug: existing.harness ?? stamp?.harness_slug ?? '',
+          planSlug, planItemIds, completion: it.completion,
+        });
+        if (refusal) refuseGate(refusal.error, { specConformanceRefusal: refusal });
+        setContractRequirement('spec-conformance-closure', true, refusal?.error);
+      } catch (error) {
+        const message = `Cannot establish linked-plan conformance at close: ${error instanceof Error ? error.message : String(error)}. No completion write was made.`;
+        refuseGate(message, { specConformanceRefusal: { code: 'conformance_check_unavailable', retryable: true } });
+        setContractRequirement('spec-conformance-closure', true, message);
+      }
+    } else setContractRequirement('spec-conformance-closure', false);
+  } else setContractRequirement('spec-conformance-closure', false);
+
   // ---- ONE refusal naming every unmet gate (EI-20286699547467039) -------------------
   // The last contract gate is above; emit the accumulated verdict here, still BEFORE any
   // completion record or state write. That preserves the atomicity each individual gate
@@ -4311,6 +4361,8 @@ async function completeOne(
   if (it.completion.whatLanded?.length) completionNarrative.whatLanded = it.completion.whatLanded;
   if (it.completion.deferred?.length) completionNarrative.deferred = it.completion.deferred;
   if (it.completion.coordNotes) completionNarrative.coordNotes = it.completion.coordNotes;
+  if (it.completion.discharges?.length) completionNarrative.discharges = it.completion.discharges;
+  if (it.completion.contributesTo?.length) completionNarrative.contributesTo = it.completion.contributesTo;
   if (checkpointChecksCarried?.length) {
     completionNarrative.checkpointChecksCarried = checkpointChecksCarried;
   }

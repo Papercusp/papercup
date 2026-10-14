@@ -135,6 +135,21 @@ export async function freezeHostedCustomerDeletionAccess(
         WHERE m.organization_id = ${request.organizationId}::uuid AND m.user_id = u.id))
      ORDER BY u.id FOR UPDATE OF u`;
   if (userId && (users.length !== 1 || users[0]?.status !== 'active')) reject('user-not-active');
+  for (const user of users) {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`hosted-deletion-user:${user.id}`}, 0))`;
+  }
+  // Re-read after acquiring the same per-user lock as the activation trigger.
+  // A concurrent new membership that committed while we waited must keep its
+  // shared account, rather than inheriting the earlier statement's snapshot.
+  if (!userId) {
+    const shared = await tx<{ user_id: string }[]>`
+      SELECT DISTINCT m.user_id::text AS user_id FROM papercusp_auth.organization_memberships m
+        JOIN papercusp_auth.organizations o ON o.id = m.organization_id
+       WHERE m.user_id = ANY(${tx.array(users.map(u => u.id))}::uuid[])
+         AND m.organization_id <> ${request.organizationId}::uuid AND m.status <> 'revoked' AND o.status <> 'deleted'`;
+    const sharedIds = new Set(shared.map(row => row.user_id));
+    for (const user of users) user.delete_user = !sharedIds.has(user.id);
+  }
   const identities = await tx<{ hosted_user_id: string; provider: string; subject: string }[]>`
     SELECT hosted_user_id::text AS hosted_user_id, provider, subject FROM papercusp_auth.external_identities
      WHERE hosted_user_id = ANY(${tx.array(users.map(u => u.id))}::uuid[]) ORDER BY provider, subject FOR UPDATE`;

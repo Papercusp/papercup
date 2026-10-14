@@ -141,6 +141,31 @@ describe('R-1 — roster population', () => {
     expect(body.nextCursor).toBeNull();
   });
 
+  it('matches the desktop population across the complete unfiltered cursor walk of one snapshot', async () => {
+    const snapshot = base();
+    snapshot.active.push(...Array.from({ length: 17 }, (_, i) => entry(`su-extra-${i}`, {
+      lastActiveAt: i % 3 === 0 ? null : '2026-10-13T10:00:00.000Z',
+    })));
+    snapshot.ended.push(ended(3), ended(4));
+    serve(snapshot);
+    const expected = desktopKeys(await desktopRoster());
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const { status, body } = await getJson(`?limit=3${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      expect(status).toBe(200);
+      expect(body.total).toBe(expected.length);
+      seen.push(...body.sessions.map((row: { key: string }) => row.key));
+      cursor = body.nextCursor;
+      pages += 1;
+      expect(pages).toBeLessThanOrEqual(expected.length + 1);
+    } while (cursor !== null);
+    expect(pages).toBeGreaterThan(3);
+    expect(new Set(seen).size).toBe(seen.length);
+    expect([...seen].sort()).toEqual(expected);
+  });
+
   it('reads the roster once, through the same call the desktop query makes', async () => {
     await getJson();
     await desktopRoster();
@@ -374,6 +399,51 @@ describe('R-23 — filters', () => {
     const expected = all.filter(predicate).map((r) => r.ownerId);
     expect(body.sessions.map((r: Row) => r.ownerId)).toEqual(expected);
     expect(body.total).toBe(expected.length);
+  });
+
+  it.each(filters)('%s returns the exact matching set across the complete filtered cursor walk', async (query, predicate) => {
+    // Replicate the mixed fixture so matching filters cross page boundaries;
+    // expected membership comes from the desktop fixture, not an unfiltered
+    // device response that could share the same population defect.
+    const snapshot = base();
+    const active = snapshot.active.flatMap(row => Array.from({ length: 5 }, (_, i) => ({
+      ...row, ownerId: i === 0 ? row.ownerId : `${row.ownerId}-${i}`,
+    })));
+    serve({ ...snapshot, active });
+    const desktop = await desktopRoster();
+    const rows: Row[] = [
+      ...[...desktop.active, ...desktop.starting, ...desktop.pending].map(row => ({
+        ownerId: row.ownerId, state: row.sessionState, fleet: row.fleetSlug,
+        pot: row.potSlug, label: row.label, intent: row.intent,
+      })),
+      ...desktop.ended.map(row => ({ ownerId: row.coordOwnerId as string | null,
+        state: 'ended', fleet: null, pot: null, label: row.label as string | null, intent: null })),
+    ];
+    const matches = (row: Row): boolean => {
+      // The search fixtures target all copies of the same safe text/owner.
+      if (query === 'q=SHIP') return row.ownerId?.startsWith('su-live') ?? false;
+      if (query === 'state=live&fleet=fleet-b&q=engineer') {
+        return row.state === 'live' && row.fleet === 'fleet-b' && (row.ownerId?.startsWith('su-global') ?? false);
+      }
+      return predicate(row);
+    };
+    const expected = rows.filter(matches).map(row => row.ownerId).sort();
+    const seen: Array<string | null> = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const { status, body } = await getJson(`?${query}&limit=2${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      expect(status).toBe(200);
+      expect(body.total).toBe(expected.length);
+      for (const row of body.sessions as Row[]) expect(matches(row)).toBe(true);
+      seen.push(...body.sessions.map((row: Row) => row.ownerId));
+      cursor = body.nextCursor;
+      pages += 1;
+      expect(pages).toBeLessThanOrEqual(rows.length + 1);
+    } while (cursor !== null);
+    expect([...seen].sort()).toEqual(expected);
+    expect(new Set(seen).size).toBe(seen.length);
+    if (expected.length > 2) expect(pages).toBeGreaterThan(1);
   });
 
   it('rejects an unknown state rather than widening the result', async () => {

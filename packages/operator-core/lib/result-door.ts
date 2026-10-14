@@ -68,6 +68,7 @@ import {
 } from './output-envelope';
 import {
   contentMetadata,
+  persistVolatileScratchReference,
   scratchReferencePayloadByteOffset,
   storeVolatileScratchReference,
   VOLATILE_SCRATCH_REFERENCE_TTL_MS,
@@ -81,6 +82,7 @@ import {
  *  it is exactly this value. */
 export const RESULT_DOOR_TOKENS = computeTurnDoors(0).resultEach;
 const RESULT_DOOR_SCRATCH_WRITE_WAIT_MS = 30_000;
+const RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS = 5_000;
 
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOOL_SEGMENT_REGEX = /^[A-Za-z0-9._:-]+$/;
@@ -374,6 +376,15 @@ function innerTruncationRecoveryInstruction(
   const recoveryTarget = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
   if (recoveryTarget === 'work_items:get' && markers.includes('checkpointTruncated')) {
     return 'The work-item checkpoint was clipped before this result door. Read the exact stored text with work_items:get { id, checkpointOnly:true, offset:0, limit:512 }; follow checkpointPage.nextOffset and restart at offset 0 if checkpointContentHash changes. payloadTier:\'full\' cannot restore checkpoint text already clipped by the tool.';
+  }
+  if (recoveryTarget === 'work_items:get' && markers.includes('bodyTruncated')) {
+    return (
+      'A work-item comment body was clipped by work_items:get\'s threadWindow shaper ' +
+      '(bodyTruncated/bodyChars). Re-read the same work item with payloadTier:\'full\' ' +
+      'and a narrow dispatch projection selecting results[].threadWindow.posts[].body. ' +
+      'Keep the projection narrow so the full response fits the result door; a spill ' +
+      'cannot restore body bytes omitted by the upstream shaper.'
+    );
   }
   if (markers.includes('textTruncated') && toolName === 'work_items:get') {
     return 'The clipped prior-attempt record has a field-specific recovery handle: read its rawRef and pass it in priorAttemptRefs to work_items:get. payloadTier:\'full\' does not expand source text already clipped by the tool.';
@@ -2290,7 +2301,8 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
           deferredScratchWrites: undefined,
           scratchWriteFailure: { error },
         });
-        return attachPendingScratchFallback(volatileFallback, pendingResult) ?? pendingResult;
+        const recoveryFallback = await persistTimedOutScratchFallback(volatileFallback, opts);
+        return attachPendingScratchFallback(recoveryFallback, pendingResult) ?? pendingResult;
       }
     }
     const failedResult = applyResultDoor(result, {
@@ -2308,12 +2320,112 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   return failedResult;
 }
 
+async function persistTimedOutScratchFallback<T extends DoorableResult>(
+  fallback: T,
+  opts: ResultDoorOpts,
+): Promise<T> {
+  const resultDoor = recordAt(fallback._meta?.resultDoor);
+  const volatileUri = typeof resultDoor?.volatileFallbackUri === 'string'
+    ? resultDoor.volatileFallbackUri
+    : null;
+  if (!volatileUri) return fallback;
+
+  const parts = scratchParts(opts);
+  const persisted = await withBoundedTimeout(
+    persistVolatileScratchReference(volatileUri, {
+      workspaceId: parts.workspaceId,
+      ownerId: opts.ownerId,
+    }),
+    {
+      fallback: null,
+      timeoutMs: RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS,
+      label: 'result-door durable timeout recovery',
+    },
+  );
+  if (persisted.degraded || !persisted.value) return fallback;
+
+  return promoteVolatileScratchFallback(
+    fallback,
+    volatileUri,
+    persisted.value.uri,
+    persisted.value.manifest,
+  );
+}
+
+function promoteVolatileScratchFallback<T extends DoorableResult>(
+  fallback: T,
+  volatileUri: string,
+  durableUri: string,
+  manifest: ScratchReferenceManifest,
+): T {
+  const rewrite = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      return value
+        .replaceAll(volatileUri, durableUri)
+        .replaceAll('exact in-process copy', 'exact workspace-scoped durable copy')
+        .replaceAll(
+          'This URI is not a file and is lost on server restart or cache eviction.',
+          'This URI is stored in the workspace-scoped payload spool.',
+        );
+    }
+    if (Array.isArray(value)) return value.map(rewrite);
+    const row = recordAt(value);
+    if (!row) return value;
+
+    const rewritten = Object.fromEntries(Object.entries(row).map(([key, entry]) => [key, rewrite(entry)]));
+    const args = recordAt(row.args);
+    if (
+      row.kind === 'volatile-scratch-page' &&
+      (row.uri === volatileUri || args?.uri === volatileUri)
+    ) {
+      return {
+        ...rewritten,
+        kind: 'durable-scratch-page',
+        uri: durableUri,
+        expiresAt: manifest.expiresAt,
+        args: { ...(recordAt(rewritten.args) ?? {}), uri: durableUri, byte_offset: 0, byte_limit: 3_072 },
+      };
+    }
+    return rewritten;
+  };
+
+  const content = fallback.content.map((item) => {
+    if (!isTextItem(item)) return item;
+    try {
+      return { ...item, text: JSON.stringify(rewrite(JSON.parse(item.text))) };
+    } catch {
+      return { ...item, text: item.text.replaceAll(volatileUri, durableUri) };
+    }
+  });
+  const resultDoor = recordAt(fallback._meta?.resultDoor);
+  return {
+    ...fallback,
+    content,
+    ...(fallback.structuredContent !== undefined ? { structuredContent: rewrite(fallback.structuredContent) } : {}),
+    _meta: {
+      ...(fallback._meta ?? {}),
+      ...(resultDoor
+        ? {
+            resultDoor: {
+              ...resultDoor,
+              durableFallbackUri: durableUri,
+              durableFallbackExpiresAt: manifest.expiresAt,
+              recoveryCursor: rewrite(resultDoor.recoveryCursor),
+              outputEnvelope: rewrite(resultDoor.outputEnvelope),
+            },
+          }
+        : {}),
+    },
+  } as T;
+}
+
 function attachPendingScratchFallback<T extends DoorableResult>(fallback: T, pending: T): T | null {
   const fallbackDoor = recordAt(fallback._meta?.resultDoor);
   const pendingDoor = recordAt(pending._meta?.resultDoor);
   const fallbackCursor = recordAt(fallbackDoor?.recoveryCursor);
   const pendingCursor = recordAt(pendingDoor?.recoveryCursor);
   const fallbackCanRecover = fallbackCursor?.kind === 'volatile-scratch-page' ||
+    fallbackCursor?.kind === 'durable-scratch-page' ||
     fallbackCursor?.kind === 'release-outcome-check';
   if (!fallbackCanRecover || !fallbackDoor || !pendingDoor || !pendingCursor) {
     return null;
@@ -2663,8 +2775,14 @@ function repairScorecardsGetProjection(sourceValue: unknown, projected: Record<s
   }
 }
 
-function isScratchReferenceBytePageResult(result: DoorableResult, toolName: string): boolean {
-  if (toolName !== 'capability:read' || result.content.length !== 1) return false;
+function isScratchReferenceBytePageResult(
+  result: DoorableResult,
+  opts: Pick<ResultDoorOpts, 'toolName' | 'nestedTargetToolName'>,
+): boolean {
+  const targetToolName = opts.toolName === 'tools:invoke'
+    ? opts.nestedTargetToolName
+    : opts.toolName;
+  if (targetToolName !== 'capability:read' || result.content.length !== 1) return false;
   const item = result.content[0];
   if (!isTextItem(item)) return false;
 
@@ -2755,7 +2873,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // forces capability:read to recurse. The page is already sized to fit the
     // per-result door by capability:read; ordinary reads still consume the
     // aggregate fan-out budget.
-    const recoveryBytePage = isScratchReferenceBytePageResult(result, opts.toolName);
+    const recoveryBytePage = isScratchReferenceBytePageResult(result, opts);
     const aggregate = opts.aggregateScope && !recoveryBytePage
       ? reserveAggregateBytes(
           opts.aggregateScope,

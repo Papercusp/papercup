@@ -1,7 +1,10 @@
 import { createServer, request } from 'node:http';
 import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, interruptFixtureHost, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns } from './native-device-fixture';
+import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, interruptFixtureHost, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
 import type { CloudflareApi } from './own-tunnel/cloudflare-api';
 
 const privateEnv = {
@@ -15,6 +18,54 @@ const privateEnv = {
 };
 
 describe('disposable native HTTPS fixture admission', () => {
+  it('distinguishes alive withheld startup, process exit and listener timeout without exposing private logs', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'fixture-readiness-'));
+    const log = join(directory, 'host.log');
+    const host = { exitCode: null as number | null, signalCode: null };
+    const probe = vi.fn(async () => { throw Object.assign(new Error('private connection detail'), { code: 'ECONNREFUSED' }); });
+    const rows: unknown[] = [];
+    const record = (row: unknown) => rows.push(row);
+    const pause = vi.fn(async () => undefined);
+    try {
+      writeFileSync(log, 'private-prefix'.repeat(5000) + '\n[boot-migrate] 🚨 REQUEST STARTUP WITHHELD: ' +
+        '1 migration(s) remain pending: 1510-example.sql. HTTP stays closed. private-pairing-secret\n');
+      await expect(waitForFixtureHost(host, log, probe, { timeoutMs: 120000, pollMs: 1000, record, pause }))
+        .rejects.toMatchObject({ diagnostic: { kind: 'request-startup-withheld', exitCode: null,
+          pendingCount: 1, pendingMigrations: ['1510-example.sql'], logState: 'read' } });
+      expect(probe).not.toHaveBeenCalled();
+      expect(pause).not.toHaveBeenCalled();
+      host.exitCode = 7;
+      await expect(waitForFixtureHost(host, log, probe, { timeoutMs: 120000, pollMs: 1000, record }))
+        .rejects.toMatchObject({ diagnostic: { kind: 'host-exited', exitCode: 7 } });
+      host.exitCode = null;
+      writeFileSync(log, 'private-pairing-secret\n');
+      let clock = 0;
+      await expect(waitForFixtureHost(host, log, probe, { timeoutMs: 100, pollMs: 50, record,
+        now: () => clock, pause: async ms => { clock += ms; } }))
+        .rejects.toMatchObject({ diagnostic: { kind: 'listener-timeout', failureCode: 'ECONNREFUSED' } });
+      expect(probe).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(rows)).not.toMatch(/private-prefix|private-pairing-secret|private connection detail/);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('continues ordinary listener startup and preserves a diagnostic before process death', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'fixture-listener-'));
+    const log = join(directory, 'host.log');
+    const host = { exitCode: null as number | null, signalCode: null };
+    const rows: unknown[] = [];
+    const record = (row: unknown) => rows.push(row);
+    try {
+      writeFileSync(log, 'ordinary startup\n');
+      const probe = vi.fn<() => Promise<void>>().mockRejectedValueOnce(new Error('not yet')).mockResolvedValueOnce();
+      await expect(waitForFixtureHost(host, log, probe, { timeoutMs: 1000, pollMs: 1, record,
+        pause: async () => undefined })).resolves.toBeUndefined();
+      expect(probe).toHaveBeenCalledTimes(2);
+      await expect(waitForFixtureHost(host, log, async () => { host.exitCode = 9; throw new Error('fetch failed'); },
+        { timeoutMs: 1000, pollMs: 1, record })).rejects.toMatchObject({ diagnostic: { kind: 'host-exited', exitCode: 9 } });
+      expect(rows.at(-1)).toMatchObject({ kind: 'host-exited', exitCode: 9 });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('actually stops and replaces its owned HTTP process while retaining its signing identity', async () => {
     let port = 0;
     const children: ReturnType<typeof spawn>[] = [];

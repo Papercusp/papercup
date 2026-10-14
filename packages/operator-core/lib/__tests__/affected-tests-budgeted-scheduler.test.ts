@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 import * as terminalCounters from '../../../../scripts/lib/terminal-counter-fields.mjs';
 
 import { parseTaskBudgetRefusal } from '../../../../scripts/lib/task-exit-class.mjs';
@@ -42,6 +43,7 @@ import {
   runBudgetedTasks,
   timeoutDurationEstimate,
   writeDurationHistoryAtomic,
+  writeBudgetedTaskNativeExecutionReceipt,
 } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS policy module, no declaration file.
@@ -56,6 +58,165 @@ const SCHEDULER_SRC = readFileSync(
   resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs'),
   'utf8',
 );
+
+describe('native affected-task parent receipt transport', () => {
+  it('binds real process-step artifacts to the native root while preserving chain/runtime refusal', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-process-parent-'));
+    try {
+      const out = join(root, 'source-map.json');
+      const command = [process.execPath, '-e', "require('node:child_process').spawn(process.execPath, ['-e', 'process.exitCode = 3'], {stdio:'inherit'});"];
+      const startedAtMs = Date.now();
+      const child = spawnSync(command[0]!, command.slice(1), { cwd: REPO_ROOT,
+        env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+          PAPERCUSP_TEST_STARTUP_TRACE: '0' }), timeout: 15_000 });
+      if (child.error) throw child.error;
+      const unrelated = spawnSync(process.execPath, ['-e', 'process.exitCode = 0'], {
+        env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+          PAPERCUSP_TEST_STARTUP_TRACE: '0' }), timeout: 15_000 });
+      if (unrelated.error) throw unrelated.error;
+      const input = { task: 'native-fixture :: test', attempt: 'initial', cwd: REPO_ROOT, command,
+        startedAtMs, finishedAtMs: Date.now(), exitCode: child.status, signal: child.signal,
+        error: null, captureComplete: true, stdout: child.stdout, stderr: child.stderr,
+        processTrace: { out, rootPid: child.pid } };
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input);
+      const trace = result.observation.processTrace;
+      expect(trace.events.map(row => row.event)).toEqual(expect.arrayContaining([
+        'node-entry', 'node-exit', 'child-spawn', 'child-close',
+      ]));
+      expect(trace.events.filter(row => row.event === 'node-entry')).toHaveLength(2);
+      expect(trace.events.some(row => row.pid === unrelated.pid)).toBe(false);
+      expect(trace.events.find(row => row.event === 'child-close')).toMatchObject({ code: 3 });
+      for (const row of trace.events) {
+        const bytes = readFileSync(join(result.root, row.artifact.ref));
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(row.artifact.sha256);
+      }
+      expect(result.observation.steps).toEqual([]);
+      expect(result.observation.orderedChainQualified).toBe(false);
+      expect(result.observation.runtimeClosure).toBe('unmeasured');
+      // Tampered or redirected process evidence is retained as a gap, never a
+      // fabricated step or a successful qualification.
+      const names = readdirSync(`${out}.native-processes`);
+      writeFileSync(join(`${out}.native-processes`, names[0]!), '{}');
+      const bad = writeBudgetedTaskNativeExecutionReceipt(join(root, 'bad'), input).observation;
+      expect(bad.processTrace.events).toEqual([]);
+      expect(bad.processTrace.gaps.join(' ')).toContain('hash mismatch');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  function nativeObservation() {
+    const command = [process.execPath, '-e',
+      'process.stdout.write(Buffer.from([0,255,10])); process.stderr.write(Buffer.from([254,13,10]));'];
+    const startedAtMs = Date.now();
+    const child = spawnSync(command[0]!, command.slice(1), { cwd: REPO_ROOT, timeout: 10_000 });
+    if (child.error) throw child.error;
+    const inputs = [{ path: 'package.json', sha256: createHash('sha256')
+      .update(readFileSync(join(REPO_ROOT, 'package.json'))).digest('hex') }];
+    return { task: 'native-fixture :: test', attempt: 'initial', cwd: REPO_ROOT, command,
+      originalCommand: 'native fixture', startedAtMs, finishedAtMs: Date.now(),
+      exitCode: child.status, signal: child.signal, error: null, captureComplete: true,
+      stdout: child.stdout, stderr: child.stderr, before: inputs, after: structuredClone(inputs) };
+  }
+  it('retains the actual command and binary streams in immutable independently hashed artifacts', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-task-receipt-'));
+    try {
+      const input = nativeObservation(), result = writeBudgetedTaskNativeExecutionReceipt(root, input);
+      expect(input.exitCode).toBe(0);
+      const original = JSON.parse(readFileSync(join(result.root, result.receipt.ref), 'utf8'));
+      expect(original.execution).toMatchObject({ command: input.command, cwd: REPO_ROOT, exitCode: 0,
+        captureComplete: true, startedAtMs: input.startedAtMs, finishedAtMs: input.finishedAtMs });
+      for (const role of ['stdout', 'stderr'] as const) {
+        const bytes = readFileSync(join(result.root, result.logs[role].ref));
+        expect(bytes).toEqual(input[role]);
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(result.logs[role].sha256);
+        expect(bytes.length).toBe(result.logs[role].byteLength);
+      }
+      expect(original.sourceInputsUnchanged).toBe(true);
+      expect(original.orderedChainQualified).toBe(false);
+      expect(original.steps).toEqual([]);
+      expect(original.gaps).toContain('original-step-boundaries-unobserved');
+      expect(original.runtimeClosure).toBe('unmeasured');
+      expect(original.operationalAcceptance).toBe(false);
+      // Rewriting the exact observation is idempotent; input mutation cannot alter its stored proof.
+      expect(writeBudgetedTaskNativeExecutionReceipt(root, input).receipt).toEqual(result.receipt);
+      input.command[0] = 'substituted';
+      expect(original.execution.command[0]).toBe(process.execPath);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('preserves partial capture, native errors and unknown or drifted wrapper inputs as gaps', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-task-gaps-'));
+    try {
+      const input = nativeObservation();
+      input.after[0]!.sha256 = '0'.repeat(64);
+      const changed = writeBudgetedTaskNativeExecutionReceipt(root, input).observation;
+      expect(changed.sourceInputsUnchanged).toBe(false);
+      expect(changed.gaps).toContain('wrapper-inputs-unknown-or-changed');
+      const partial = writeBudgetedTaskNativeExecutionReceipt(root, { ...input, before: null,
+        captureComplete: false, exitCode: null, signal: 'SIGTERM', error: 'capture interrupted' }).observation;
+      expect(partial.execution).toMatchObject({ exitCode: null, signal: 'SIGTERM', error: 'capture interrupted' });
+      expect(partial.gaps).toContain('raw-stream-capture-incomplete');
+      expect(partial.sourceInputsUnchanged).toBe(false);
+      expect(partial.operationalAcceptance).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('refuses overwritten and symlinked sidecars without replacing their bytes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-task-refusal-'));
+    try {
+      const input = nativeObservation(), first = writeBudgetedTaskNativeExecutionReceipt(root, input);
+      const path = join(root, first.logs.stdout.ref);
+      writeFileSync(path, 'overwritten');
+      expect(() => writeBudgetedTaskNativeExecutionReceipt(root, input)).toThrow('artifact bytes differ');
+      expect(readFileSync(path, 'utf8')).toBe('overwritten');
+      rmSync(path); symlinkSync(join(root, first.logs.stderr.ref), path);
+      expect(() => writeBudgetedTaskNativeExecutionReceipt(root, input)).toThrow('redirected');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('executes the production OUT observation and settled journal with native binary output', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-production-journal-'));
+    try {
+      const input = nativeObservation();
+      const task = { ws: { name: 'native-fixture', dir: 'packages/operator-core', scripts: { test: 'native fixture' } }, script: 'test' };
+      const observationStart = AFFECTED_TESTS_SRC.indexOf('const nativeReceiptArmed =');
+      const observationEnd = AFFECTED_TESTS_SRC.indexOf('const stdout = [];', observationStart);
+      expect(observationStart).toBeGreaterThan(0); expect(observationEnd).toBeGreaterThan(observationStart);
+      const observe = (out: string | null) => new Script(
+        `${AFFECTED_TESTS_SRC.slice(observationStart, observationEnd)}\nnativeObservation;`,
+      ).runInNewContext({ inheritedExecutedMapOut: out, integrationSourceMapOut: null,
+        ROOT: REPO_ROOT, spawnTask: task, spawnTaskKey: input.task, journalLabel: input.attempt,
+        startedAt: input.startedAtMs, cwd: input.cwd, cmd: input.command[0], argv: input.command.slice(1),
+        relative: (a: string, b: string) => resolve(b).slice(resolve(a).length + 1),
+        join, readFileSync, createHash, Date, Set });
+      expect(observe(null)(0, null, null, input.stdout, input.stderr)).toBeNull();
+      const observation = observe('requested.json')(0, null, null, input.stdout, input.stderr);
+      expect(observation.command).toEqual(input.command);
+      expect(observation.before).toHaveLength(2);
+      expect(observation.before).toEqual(observation.after);
+      const journalStart = AFFECTED_TESTS_SRC.indexOf('function journalCapturedTaskOutput(');
+      const journalEnd = AFFECTED_TESTS_SRC.indexOf('\n}\n\nfunction emitCapturedTaskOutput(', journalStart) + 2;
+      const log = join(root, 'run.log'), errors: string[] = [];
+      const journal = new Script(`(${AFFECTED_TESTS_SRC.slice(journalStart, journalEnd)})`).runInNewContext({
+        taskKey: () => input.task, RUN_LOG_PATH: log, writeBudgetedTaskNativeExecutionReceipt,
+        appendAllSync: (path: string, chunks: string[]) => appendFileSync(path, chunks.join('')),
+        rawErrSync: (text: string) => errors.push(text),
+        formatTaskOutcomeFields: () => ({ exitStatus: 0, signal: 'none' }),
+      });
+      const result = { status: 0, signal: null, error: null, stdout: input.stdout.toString(),
+        stderr: input.stderr.toString(), __nativeExecution: observation };
+      expect(journal(task, result, { lane: 'primary', workers: 1, memoryMb: 1 }, 'initial')).toBe(true);
+      const output = readFileSync(log, 'utf8');
+      const marker = JSON.parse(output.split('\n').find(line => line.startsWith('AFFECTED_TASK_NATIVE_RECEIPT='))!
+        .slice('AFFECTED_TASK_NATIVE_RECEIPT='.length));
+      const receipt = JSON.parse(readFileSync(join(marker.root, marker.receipt.ref), 'utf8'));
+      expect(receipt.execution.command).toEqual(input.command);
+      expect(readFileSync(join(marker.root, receipt.execution.logs.stdout.ref))).toEqual(input.stdout);
+      expect(marker.orderedChainQualified).toBe(false);
+      expect(errors).toEqual([]);
+      // Artifact failure is a diagnostic miss; the ordinary settled journal must still survive.
+      writeFileSync(join(marker.root, receipt.execution.logs.stdout.ref), 'tampered');
+      expect(journal(task, result, { lane: 'primary', workers: 1, memoryMb: 1 }, 'initial')).toBe(true);
+      expect(errors[0]).toContain('AFFECTED_TASK_NATIVE_RECEIPT_FAILED');
+      expect(readFileSync(log, 'utf8').match(/AFFECTED_TASK_OUTPUT_END/g)).toHaveLength(2);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('R12 immutable full-gate comparison preparation', () => {
   const hash = 'a'.repeat(64);
@@ -627,6 +788,11 @@ describe('R12 original ordered native occurrence qualification', () => {
       { cwd: join(repositoryRoot, 'app'), encoding: 'utf8', timeout: 10_000 });
     if (native.status !== 0) throw new Error(`native collector fixture failed: ${native.stderr}`);
     const nodeReport = JSON.parse(native.stdout);
+    if (nodeReport.files?.length !== 1 || nodeReport.files[0]?.file !== join(repositoryRoot, file)) {
+      throw new Error(`native collector fixture population differs: ${JSON.stringify(nodeReport.files?.map(
+        (row: { file: string; passed: number; failed: number }) => ({ file: row.file, passed: row.passed, failed: row.failed }),
+      ))}; stderr=${native.stderr}`);
+    }
     const command = format === 'node-test' ? 'node --test repeated.test.mjs' : 'vitest run';
     const packageBody = JSON.stringify({ scripts: { test: `${command} && ${command}` } });
     writeFileSync(join(repositoryRoot, 'app/package.json'), packageBody);

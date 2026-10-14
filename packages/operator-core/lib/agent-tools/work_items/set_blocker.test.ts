@@ -7,6 +7,8 @@ const setWorkItemClaimHold = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const getModes = vi.fn();
 const planItemNeedsHumanContradiction = vi.fn();
+const ownerAskRun = vi.fn();
+const makeCoordOpContext = vi.fn();
 const parkConsult = vi.fn();
 const parkWake = vi.fn();
 const parkNotify = vi.fn();
@@ -38,6 +40,12 @@ vi.mock('../../modes/store', () => ({
 vi.mock('../../scheduler/plan-item-lane-guard', () => ({
   planItemNeedsHumanContradiction: (...args: unknown[]) => planItemNeedsHumanContradiction(...args),
 }));
+vi.mock('../../coord-ops/ops/compose', () => ({
+  askOp: { run: (...args: unknown[]) => ownerAskRun(...args) },
+}));
+vi.mock('../../coord-ops/prod-caps', () => ({
+  buildCoordOpCtx: (...args: unknown[]) => makeCoordOpContext(...args),
+}));
 
 import tool, { ownerActionFlagsReleasedByClear } from './set_blocker';
 import { activeExternalBlockers } from '../../external-blockers';
@@ -60,6 +68,8 @@ beforeEach(() => {
   setWorkItemClaimHold.mockResolvedValue({ applicable: true, held: false });
   getModes.mockResolvedValue([]);
   planItemNeedsHumanContradiction.mockResolvedValue(null);
+  ownerAskRun.mockResolvedValue({ conversation_id: 'owner-ask-direct', answered: false, answer: null });
+  makeCoordOpContext.mockReturnValue({ coordOpContext: true });
   parkConsult.mockResolvedValue({ consultId: 'conv-r13' });
   parkWake.mockResolvedValue(undefined);
   parkNotify.mockResolvedValue(undefined);
@@ -98,6 +108,7 @@ describe('work_items:set_blocker', () => {
     }), expect.anything());
     expect(out.activeBlockers).toEqual([expect.objectContaining({ ref: 'consult:conv-r13' })]);
     expect(parkNotify).toHaveBeenCalledOnce();
+    expect(ownerAskRun).not.toHaveBeenCalled();
   });
 
   it('R-13 leaves no blocker when the decision-review consult cannot be opened', async () => {
@@ -741,6 +752,102 @@ describe('work_items:set_blocker', () => {
     const out = await one({ id: 'WI-1', kind: 'human', capability: 'credential', ref: 'credential:prod-db' });
     expect(out).toMatchObject({ ok: false, id: 'WI-1' });
     expect(out.error).toMatch(/structured ask requires both.*summary.*nextVerb/);
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('requires a closed-list human capability instead of parking an untyped engineering defect', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-1', family: 'issue', kind: 'bug', title: 'Parser panics on multibyte input',
+      summary: 'The parser needs an implementation fix.', state: 'open', payload: {},
+    });
+    const out = await one({
+      id: 'WI-1', kind: 'human', ref: 'parser:multibyte',
+      summary: 'Fix the parser panic on multibyte input.', nextVerb: 'edit the parser implementation',
+    });
+    expect(out).toMatchObject({ ok: false, code: 'human_blocker_capability_required' });
+    expect(out.error).toMatch(/explicit closed-list capability.*engineering defect.*remains agent work/s);
+    expect(ownerAskRun).not.toHaveBeenCalled();
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+
+  it('opens a real coord:ask-owner choice question and stores its conversation id on a direct capability blocker', async () => {
+    const item = { id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', payload: {} };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: patch }));
+
+    const out = await one({
+      id: 'WI-1', kind: 'human', capability: 'credential', ref: 'credential:staging-db',
+      summary: 'Can the credential holder provide staging database access?',
+      nextVerb: 'configure it through setup:save_key',
+      defaultIfUnanswered: 'stays parked and is resurfaced in the weekly owner digest',
+    });
+
+    expect(ownerAskRun).toHaveBeenCalledOnce();
+    expect(ownerAskRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question: expect.stringContaining('WI-1'),
+        body: expect.stringMatching(/Choose one option by number[\s\S]*1\.[\s\S]*2\.[\s\S]*3\.[\s\S]*If you do not answer:/),
+        timeout_s: 0,
+      }),
+      { coordOpContext: true },
+    );
+    expect(makeCoordOpContext).toHaveBeenCalledWith(expect.objectContaining({
+      identity: expect.objectContaining({ ownerId: 'su-a' }),
+      callerId: 'su-a',
+    }));
+    expect(mergeWorkItemPayload).toHaveBeenCalledWith('WI-1', expect.objectContaining({
+      externalBlockers: [expect.objectContaining({
+        kind: 'human', capability: 'credential', ref: 'credential:staging-db',
+        ownerAskConversationId: 'owner-ask-direct',
+      })],
+    }), expect.anything());
+    expect(out).toMatchObject({
+      ok: true,
+      ownerAsk: { conversationId: 'owner-ask-direct', options: expect.arrayContaining([
+        expect.stringContaining('approved secret/configuration surface'),
+      ]) },
+      activeBlockers: [expect.objectContaining({ ownerAskConversationId: 'owner-ask-direct' })],
+    });
+  });
+
+  it('does not open duplicate owner questions when the same direct capability blocker is reasserted', async () => {
+    const existing = {
+      kind: 'human', capability: 'physical-device', capabilitySource: 'explicit',
+      ref: 'device:lab-phone', summary: 'Can someone complete the phone pairing step?',
+      nextVerb: 'pair the lab phone', defaultIfUnanswered: 'stays parked',
+      ownerAskConversationId: 'owner-ask-existing', status: 'active',
+      createdAt: '2026-10-01T08:00:00.000Z', createdBy: 'su-a', updatedAt: '2026-10-01T08:00:00.000Z',
+    };
+    const item = { id: 'WI-1', family: 'issue', kind: 'bug', state: 'needs-human', payload: { externalBlockers: [existing] } };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: patch }));
+
+    const out = await one({
+      id: 'WI-1', kind: 'human', capability: 'physical-device', ref: 'device:lab-phone',
+      summary: existing.summary, nextVerb: existing.nextVerb,
+    });
+
+    expect(ownerAskRun).not.toHaveBeenCalled();
+    expect(out.ownerAsk).toMatchObject({ conversationId: 'owner-ask-existing' });
+    expect(mergeWorkItemPayload).toHaveBeenCalledWith('WI-1', expect.objectContaining({
+      externalBlockers: [expect.objectContaining({ ownerAskConversationId: 'owner-ask-existing' })],
+    }), expect.anything());
+  });
+
+  it('refuses to persist a direct capability blocker if coord:ask-owner cannot open the question', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', payload: {} });
+    ownerAskRun.mockRejectedValueOnce(new Error('conversation service unavailable'));
+
+    const out = await one({
+      id: 'WI-1', kind: 'human', capability: 'external-service-action', ref: 'service:enable-endpoint',
+      summary: 'Can the service operator enable this endpoint?',
+      nextVerb: 'enable the endpoint in the service console',
+      defaultIfUnanswered: 'stays parked',
+    });
+
+    expect(out).toMatchObject({ ok: false, code: 'owner_ask_failed' });
+    expect(out.error).toMatch(/coord:ask-owner could not be opened.*Blocker was not written/s);
     expect(mergeWorkItemPayload).not.toHaveBeenCalled();
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });

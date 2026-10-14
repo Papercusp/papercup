@@ -18,16 +18,19 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { placeLegalHold, releaseLegalHold } from '../data-sources/chat-retrieval-units';
 import { createTestKekProvider, type TestKekProvider } from './kek-providers';
 import {
   OrganizationKeyUnavailableError,
+  OrganizationKeyShredRefusedError,
   SEALED_SCOPES,
   createOrganizationKeyService,
   envelopeDekVersion,
   type KeyOperationContext,
   type OrganizationKeyUnavailableCode,
 } from './organization-keys';
-import { writeOrganizationDataReceipt, type KeyLifecycleRecord } from './organization-data-receipts';
+import { holdConflicts, writeOrganizationDataReceipt, type KeyLifecycleRecord } from './organization-data-receipts';
+import { organizationBackupRetentionDecision } from './organization-backup-sealing';
 
 let org: OrgTestDb;
 const WS = 'org-keys-test';
@@ -77,6 +80,52 @@ afterAll(async () => {
 });
 
 describe('organization key custody (P-016b)', () => {
+  it('refuses and audits shred for an omitted owned workspace, retaining backup keys until hold release', async () => {
+    const kms = createTestKekProvider();
+    const { organizationId } = await provisioned(kms);
+    const workspaceId = `held-key-${randomUUID()}`;
+    const controlWorkspaceId = `control-${workspaceId}`;
+    await org.adminSql`INSERT INTO harness_shared.workspace_host_connections (workspace_id, id, target, label, credential_ref)
+      VALUES (${controlWorkspaceId}, 'conn', 'gcp', 'key hold test', 'test:credential')`;
+    await org.adminSql`INSERT INTO harness_shared.workspace_hosts
+      (workspace_id, id, name, connection_id, target, scope_label, region, size, image, disk_gib, network, desired_state, observed_state)
+      VALUES (${controlWorkspaceId}, 'host', 'key hold test', 'conn', 'gcp', 'test-project', 'us-central1', 'e2-standard-4', 'image-v1', 64, 'default', 'running', 'running')`;
+    await org.adminSql`INSERT INTO harness_shared.customer_workspaces
+      (workspace_id, id, organization_id, workspace_host_id, display_name, state,
+       created_by_principal_kind, created_by_principal_id, billing_owner_kind, billing_owner_id)
+      VALUES (${controlWorkspaceId}, ${workspaceId}, ${organizationId}, 'host', 'key hold test', 'active',
+              'hosted-user', 'key-test', 'organization', 'key-test')`;
+    const [source] = await org.adminSql<{ id: string }[]>`INSERT INTO harness_shared.data_sources
+      (workspace_id, kind, permission_mapping, credential_ref)
+      VALUES (${workspaceId}, 'github', ${org.adminSql.json({ mode: 'source-acl' })}, 'vault://key-hold') RETURNING id`;
+    const held = await placeLegalHold(org.adminSql, workspaceId, {
+      dataSourceId: source!.id, reason: 'preserve historical backup', placedBy: actor.id,
+    });
+    const svc = service(kms);
+    const backup = await svc.encrypt(organizationId, 'backup', text('only historical copy'));
+    // Neither the hosted control id nor an empty caller scope may hide the customer's held slug.
+    for (const workspaceIds of [[controlWorkspaceId], []]) {
+      const error = await svc.shred(organizationId, { ...ctx, workspaceIds, confirmOrganizationId: organizationId }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(OrganizationKeyShredRefusedError);
+      expect(error).toMatchObject({ code: 'legal-hold-active', holdIds: [held.id] });
+      expect(await receiptRow((error as OrganizationKeyShredRefusedError).auditEventId)).toMatchObject({
+        action: 'organization.keys.shred_refused', actor_kind: 'system', organization_id: organizationId,
+        metadata: { code: 'legal-hold-active', holds: [{ holdId: held.id, workspaceId, dataSourceId: source!.id }] },
+      });
+    }
+    const [custody] = await org.adminSql`SELECT state FROM harness_shared.organization_key_custody WHERE organization_id = ${organizationId}::uuid`;
+    expect(custody!.state).toBe('enabled');
+    const deks = await org.adminSql`SELECT state, wrapped_dek FROM harness_shared.organization_data_keys WHERE organization_id = ${organizationId}::uuid`;
+    expect(deks.every((d) => d.state !== 'shredded' && d.wrapped_dek !== null)).toBe(true);
+    expect((await service(kms).decrypt(organizationId, 'backup', backup)).toString()).toBe('only historical copy');
+    const scope = { workspaceIds: [workspaceId] };
+    expect(organizationBackupRetentionDecision(scope, await holdConflicts(org.adminSql, scope.workspaceIds)).prunable).toBe(false);
+    await releaseLegalHold(org.adminSql, workspaceId, { id: held.id, releasedBy: actor.id });
+    expect(organizationBackupRetentionDecision(scope, await holdConflicts(org.adminSql, scope.workspaceIds)).prunable).toBe(true);
+    await svc.shred(organizationId, { ...ctx, workspaceIds: [], confirmOrganizationId: organizationId });
+    await keyError(service(kms).decrypt(organizationId, 'backup', backup), 'organization-key-shredded');
+  });
+
   it('provisions custody, seals every scope, and writes a provisioning receipt', async () => {
     const kms = createTestKekProvider();
     const { organizationId, kekRef, receiptId } = await provisioned(kms);

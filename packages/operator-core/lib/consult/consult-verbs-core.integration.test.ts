@@ -281,6 +281,9 @@ beforeAll(async () => {
   // The REAL migration — consult_state + consult_post_meta cannot drift.
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_844, 'utf8'));
+  await rootSql.unsafe(readFileSync(fileURLToPath(
+    new URL('../../../../libs/papercusp/libs/db/sql/1484-consult-state-no-launchable-responder.sql', import.meta.url),
+  ), 'utf8'));
 }, 120_000);
 
 afterAll(async () => {
@@ -681,6 +684,66 @@ describe('consultReplyCore — kind rules + transitions', () => {
         deps,
       ),
     ).toMatchObject({ error: 'consult_not_open', state: 'no_qualified_responder' });
+  });
+
+  it.each(['no_qualified_responder', 'no_launchable_responder'])('continues an undelivered consult (%s) from requester new facts without replaying tried reviewers', async (state) => {
+    const snapshot = menuSnapshot([RESPONDER, 'resp-next']);
+    const routing = { ...snapshot, selection: { min: 1, selected: snapshot.selection.selected.slice(0, 1) } };
+    const id = await seedConsult({ state, responderId: null, routing });
+    await rootSql`UPDATE harness_shared.consult_state SET cascade_digest = ${rootSql.json([
+      makeDigestEntry(RESPONDER, 'dispatch_failed', NOW.toISOString(), 'source port unavailable'),
+    ] as never)} WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    const { deps, reached, dispatchCalls } = makeDeps();
+    const reply = await consultReplyCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'new_fact', body: 'The containing runtime now supports exact source acquisition.' },
+      deps,
+    );
+    if ('error' in reply) throw new Error(reply.error);
+    expect(reply.cascade).toMatchObject({ advanced_to: 'resp-next', exhausted: false, woke: 1 });
+    expect(reply.wake).toMatchObject({ attempted: false, reroute: { status: 'advanced', to: 'resp-next' } });
+    expect(reply.state).toBe('active');
+    expect(dispatchCalls.map((call) => call.responder)).toEqual(['resp-next']);
+    expect(reached).toEqual([]);
+    expect(await stateRow(id)).toMatchObject({ state: 'active', responder_id: 'resp-next', cascade_cursor: 1, exchanges_used: 1 });
+  });
+
+  it.each(['no_qualified_responder', 'no_launchable_responder'])('does not restart undelivered consults (%s) for questions, missing selections, foreign authors or a spent exchange cap', async (state) => {
+    const routing = menuSnapshot([RESPONDER, 'resp-next']);
+    const id = await seedConsult({ state, responderId: null, routing });
+    const { deps, posts, dispatchCalls } = makeDeps();
+    for (const [authorId, kind] of [[REQUESTER, 'question'], ['unassigned', 'new_fact']] as const) {
+      expect(await consultReplyCore({ workspaceId: WS, authorId, conversationId: id, kind, body: 'b' }, deps))
+        .toMatchObject({ error: 'consult_not_open' });
+    }
+    const empty = await seedConsult({ state, responderId: null });
+    expect(await consultReplyCore({ workspaceId: WS, authorId: REQUESTER, conversationId: empty, kind: 'new_fact', body: 'b' }, deps))
+      .toMatchObject({ error: 'consult_not_open' });
+    const capped = await seedConsult({ state, responderId: null, routing, exchangesUsed: 4 });
+    expect(await consultReplyCore({ workspaceId: WS, authorId: REQUESTER, conversationId: capped, kind: 'new_fact', body: 'b' }, deps))
+      .toMatchObject({ error: 'exchange_cap' });
+    expect(posts).toEqual([]);
+    expect(dispatchCalls).toEqual([]);
+  });
+
+  it('concurrent changed facts launch the next saved reviewer once and preserve its active state', async () => {
+    const id = await seedConsult({ state: 'no_qualified_responder', responderId: null, routing: menuSnapshot([RESPONDER, 'resp-next']) });
+    const { deps, dispatchCalls } = makeDeps();
+    let posted = 0;
+    let release!: () => void;
+    const bothPosted = new Promise<void>((resolve) => { release = resolve; });
+    const originalPost = deps.post;
+    deps.post = async (input) => {
+      const result = await originalPost(input);
+      if (++posted === 2) release();
+      await bothPosted;
+      return result;
+    };
+    const replies = await Promise.all(['runtime fixed', 'source now retained'].map((body) => consultReplyCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'new_fact', body }, deps,
+    )));
+    expect(replies.every((reply) => !('error' in reply))).toBe(true);
+    expect(dispatchCalls.map((call) => call.responder)).toEqual(['resp-next']);
+    expect(await stateRow(id)).toMatchObject({ state: 'active', responder_id: 'resp-next', cascade_cursor: 1, exchanges_used: 2 });
   });
 
   it('the exchange cap refuses a reply with the close-instead nudge; close still works AT the cap', async () => {

@@ -13,6 +13,8 @@ import { COORD_ROLES } from '../coordination/roles';
 import { runBulk, bulkContent } from '../_bulk';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
+import { askOp } from '../../coord-ops/ops/compose';
+import { buildCoordOpCtx } from '../../coord-ops/prod-caps';
 import {
   getWorkItem,
   mergeWorkItemPayload,
@@ -26,6 +28,9 @@ import {
   EXTERNAL_BLOCKER_CAPABILITIES,
   OWNER_ASK_DEFAULT_ACTIONS,
   readExternalBlockers,
+  isDirectHumanCapability,
+  isHumanBlockerCapability,
+  type DirectHumanCapability,
   type ExternalBlockerCapability,
   type ExternalBlockerKind,
   type OwnerAskDefaultAction,
@@ -108,6 +113,79 @@ function normalizeBlockerInput(input: BlockerInput): NormalizedBlockerInput {
     kind: alias.kind,
     capability: input.capability ?? alias.capability,
   };
+}
+
+function directHumanCapabilityChoices(capability: DirectHumanCapability): string[] {
+  switch (capability) {
+    case 'credential':
+      return [
+        'I will provide it through the approved secret/configuration surface (do not paste a credential in chat).',
+        'Route this to the credential holder; I will identify the right person.',
+        'Keep this work-item parked until a credential holder is available.',
+      ];
+    case 'physical-device':
+      return [
+        'I will perform or attest the required physical-device interaction.',
+        'Route this to the person who has the device; I will identify them.',
+        'Keep this work-item parked until the device is available.',
+      ];
+    case 'external-service-action':
+      return [
+        'I will perform the action through the approved external-service integration.',
+        'Route this to the service operator; I will identify the right person.',
+        'Keep this work-item parked until the service action is available.',
+      ];
+    default:
+      return [];
+  }
+}
+
+function directHumanCapabilityQuestion(input: NormalizedBlockerInput, defaultIfUnanswered: string) {
+  const capability = input.capability as DirectHumanCapability;
+  const options = directHumanCapabilityChoices(capability);
+  return {
+    options,
+    question: `How should we resolve the ${capability} blocker for work-item ${input.id}?`,
+    body: [
+      `Blocker: ${input.summary?.trim() ?? input.ref ?? input.id}`,
+      `Reference: ${input.ref}`,
+      `Action that unblocks it: ${input.nextVerb?.trim()}`,
+      '',
+      'Choose one option by number or reply with the corresponding action:',
+      ...options.map((option, index) => `${index + 1}. ${option}`),
+      '',
+      `If you do not answer: ${defaultIfUnanswered}`,
+    ].join('\n'),
+  };
+}
+
+async function openDirectHumanCapabilityQuestion(
+  input: NormalizedBlockerInput,
+  identity: ReturnType<typeof resolveAgentIdentity>,
+  rawCtx: unknown,
+  defaultIfUnanswered: string,
+  supersedesConversationId?: string,
+) {
+  const { question, body, options } = directHumanCapabilityQuestion(input, defaultIfUnanswered);
+  const ctxHarness = (rawCtx as { harnessSlug?: unknown } | null)?.harnessSlug;
+  const coordContext = buildCoordOpCtx({
+    identity: { ownerId: identity.ownerId, ownerLabel: identity.ownerLabel },
+    workspaceId: identity.workspaceId ?? undefined,
+    harnessSlug:
+      input.harness ?? (typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined),
+    callerId: identity.ownerId,
+  });
+  const ask = await askOp.run(
+    {
+      question,
+      body,
+      timeout_s: 0,
+      poll_ms: 2000,
+      ...(supersedesConversationId ? { supersedes_conversation_id: supersedesConversationId } : {}),
+    },
+    coordContext,
+  );
+  return { conversationId: ask.conversation_id, options };
 }
 
 const fields = {
@@ -349,8 +427,8 @@ export default defineTool({
     // counted against the 1500-char prompt-weight budget and is demand-loaded via
     // tools:find instead of baked into every system prompt (the WI-9334 pattern).
     returns:
-      'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), and lifecycle. Clearing the LAST blocker returns a feature blocked→todo, or drops the issue-family claim hold. Internal work-item dependencies are not represented here — those stay in work_items:link{rel:\'blocks\'} and plan blocked-by. Omitted legacy rows infer live-dependency; human rows infer product-decision.',
-    when: "Work cannot proceed until a named event fires, a gate changes, runtime/external state is ready, or a human capability is available. A reversible judgment call is a park: kind:'product-decision' + defaultIfUnanswered + decideBy opens a peer review that proceeds on silence. Use a stable ref; name nextVerb when one exists.",
+      'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), ownerAsk (the real coord:ask-owner conversation and choice list opened for a credential/device/service action), and lifecycle. Clearing the LAST blocker returns a feature blocked→todo, or drops the issue-family claim hold. Internal work-item dependencies are not represented here — those stay in work_items:link{rel:\'blocks\'} and plan blocked-by. Omitted legacy rows infer live-dependency; new human rows require a closed-list capability.',
+    when: "Work cannot proceed until a named event fires, a gate changes, runtime/external state is ready, or a human capability is available. Direct credential/device/service blockers open a coord:ask-owner question with choices; a reversible product decision is a consult-backed park that proceeds on silence. Use a stable ref; name nextVerb when one exists.",
     notWhen:
       "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source). A vague concern with no actual stop condition is a comment, not a blocker. Do not block ordinary implementation on main/:3070/green-checkpoint — staging/current-build is the acceptance plane; only final shipment or a named deployed-only property waits on the release plane. For a non-final deployed-only exception, summary or evidence must state what staging/current-build cannot exercise and give a concrete reason (because/due to/since).",
     chaining:
@@ -440,6 +518,7 @@ export default defineTool({
       capabilityDispositions: z.unknown().optional(),
       lifecycle: z.unknown().optional(),
       park: z.unknown().optional(),
+      ownerAsk: z.object({ conversationId: z.string(), options: z.array(z.string()) }).optional(),
       error: z.string().optional(),
     })
     .passthrough(),
@@ -543,6 +622,17 @@ export default defineTool({
               blockerHistory: readExternalBlockers(workItem.payload),
               capabilityDisposition: externalBlockerCapabilityPolicy(input.capability ?? 'live-dependency'),
               autoCleared: false,
+            };
+          }
+          if (input.kind === 'human' && !isHumanBlockerCapability(input.capability)) {
+            return {
+              ok: false as const,
+              id: input.id,
+              code: 'human_blocker_capability_required',
+              error:
+                `work_item '${input.id}' human blocker rejected — choose an explicit closed-list capability ` +
+                `(${EXTERNAL_BLOCKER_CAPABILITIES.filter((capability) => capability !== 'live-dependency').join(', ')}). ` +
+                'An engineering defect or internal implementation failure remains agent work; do not park it as an untyped human blocker.',
             };
           }
           // WI-2141488: a bare work-item id MIXED with other conditions is still
@@ -675,6 +765,52 @@ export default defineTool({
           }
         }
 
+        let ownerAsk: { conversationId: string; options: string[] } | null = null;
+        let ownerAskConversationId: string | undefined;
+        if (!input.clear && input.kind === 'human' && isDirectHumanCapability(input.capability)) {
+          const currentAsk = activeExternalBlockers(workItem.payload).find(
+            (blocker) =>
+              blocker.kind === 'human' &&
+              blocker.capability === input.capability &&
+              blocker.ref === input.ref,
+          );
+          const effectiveDefault =
+            input.defaultIfUnanswered?.trim() || currentAsk?.defaultIfUnanswered?.trim() || '';
+          const unchangedAsk = Boolean(
+            currentAsk?.ownerAskConversationId &&
+            currentAsk.summary === input.summary?.trim() &&
+            currentAsk.nextVerb === input.nextVerb?.trim() &&
+            currentAsk.defaultIfUnanswered?.trim() === effectiveDefault,
+          );
+          if (unchangedAsk) {
+            ownerAskConversationId = currentAsk!.ownerAskConversationId;
+            ownerAsk = {
+              conversationId: ownerAskConversationId!,
+              options: directHumanCapabilityChoices(input.capability),
+            };
+          } else {
+            try {
+              ownerAsk = await openDirectHumanCapabilityQuestion(
+                input,
+                identity,
+                ctx,
+                effectiveDefault,
+                currentAsk?.ownerAskConversationId,
+              );
+              ownerAskConversationId = ownerAsk.conversationId;
+            } catch (error) {
+              return {
+                ok: false as const,
+                id: input.id,
+                code: 'owner_ask_failed',
+                error:
+                  `work_item '${input.id}' owner-capability blocker rejected — coord:ask-owner could not be opened: ` +
+                  `${error instanceof Error ? error.message : String(error)}. Blocker was not written.`,
+              };
+            }
+          }
+        }
+
         // A clear-only request may omit kind when the ref points to exactly one
         // active blocker. Keep the (kind, ref) identity strict when a ref is
         // reused across different blocker kinds, rather than clearing the wrong
@@ -767,6 +903,7 @@ export default defineTool({
             defaultIfUnanswered: input.defaultIfUnanswered,
             decideBy: parkOpened ? parkOpened.deadlineAt : input.decideBy,
             defaultAction: input.defaultAction,
+            ownerAskConversationId,
             clear: input.clear,
           },
           identity.ownerId,
@@ -786,6 +923,7 @@ export default defineTool({
                 (resolvedKind === 'human' ? 'product-decision' : 'live-dependency'),
             ),
             autoCleared: history.autoCleared,
+            ...(ownerAsk ? { ownerAsk } : {}),
           };
         }
 
@@ -821,6 +959,14 @@ export default defineTool({
           return {
             ok: false as const, id: input.id, code: 'blocker_history_conflict',
             error: 'Blocker history or lifecycle changed, or the row became unwritable. This attempt wrote no blocker history or lifecycle. Read work_items:get before retrying.',
+            ...(ownerAsk ? {
+              ownerAsk,
+              partialOutcome: {
+                blockerHistoryPersisted: false,
+                ownerAskOpened: true,
+                ownerAskConversationId: ownerAsk.conversationId,
+              },
+            } : {}),
           };
         }
 
@@ -931,6 +1077,7 @@ export default defineTool({
           autoCleared: history.autoCleared,
           lifecycle,
           ...(parkOpened ? { park: parkOpened } : {}),
+          ...(ownerAsk ? { ownerAsk } : {}),
           ...(resolvedKind === 'event' && !input.clear && !history.autoCleared ? { await: { event: resolvedRef } } : {}),
         };
       },

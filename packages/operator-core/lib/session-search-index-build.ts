@@ -377,10 +377,25 @@ export interface SessionSearchIndexBuildResult {
   skipped?: 'tables-missing' | 'long-running-transaction' | 'low-disk';
   /** Invalid leftovers (interrupted CONCURRENTLY builds) dropped this run. */
   invalidDropped: string[];
+  /** Failed attempts to remove invalid leftovers, including the PostgreSQL error. */
+  invalidDropFailures: Array<{ name: string; error: string }>;
   indexes: IndexBuildEntry[];
   vocab: VocabBuildEntry[];
   /** True when the time budget cut the run short. */
   truncated: boolean;
+}
+
+/** Preserve actionable per-step errors in the scheduled workflow's host logs. */
+export function sessionSearchIndexBuildFailureDetails(result: SessionSearchIndexBuildResult): string[] {
+  return [
+    ...result.invalidDropFailures.map((entry) => `drop invalid ${entry.name}: ${entry.error}`),
+    ...result.indexes
+      .filter((entry) => entry.action === 'failed')
+      .map((entry) => `index ${entry.name}: ${entry.error ?? 'unknown error'}`),
+    ...result.vocab
+      .filter((entry) => entry.action === 'failed')
+      .map((entry) => `vocabulary ${entry.workspaceId}: ${entry.error ?? 'unknown error'}`),
+  ];
 }
 
 interface VocabStateRow {
@@ -418,6 +433,7 @@ export async function runSessionSearchIndexBuildOnce(
   const o = { ...DEFAULTS, ...opts };
   const result: SessionSearchIndexBuildResult = {
     invalidDropped: [],
+    invalidDropFailures: [],
     indexes: [],
     vocab: [],
     truncated: false,
@@ -499,8 +515,12 @@ export async function runSessionSearchIndexBuildOnce(
     try {
       await sql.unsafe(`DROP INDEX CONCURRENTLY IF EXISTS harness_shared.${row.name}`);
       result.invalidDropped.push(row.name);
-    } catch {
-      // A leftover we cannot drop is retried next pass; it must not fail this one.
+    } catch (err) {
+      // A leftover we cannot drop is retried next pass; keep the exact reason visible.
+      result.invalidDropFailures.push({
+        name: row.name,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -514,15 +534,28 @@ export async function runSessionSearchIndexBuildOnce(
         continue;
       }
       const started = Date.now();
-      const [have] = await sql<Array<{ valid: boolean }>>`
-        SELECT i.indisvalid AS valid
+      const [have] = await sql<Array<{ valid: boolean; ready: boolean }>>`
+        SELECT i.indisvalid AS valid, i.indisready AS ready
           FROM pg_index i
           JOIN pg_class c ON c.oid = i.indexrelid
           JOIN pg_namespace n ON n.oid = c.relnamespace
          WHERE n.nspname = 'harness_shared' AND c.relname = ${spec.name}
       `;
-      if (have?.valid) {
+      if (have?.valid && have.ready) {
         result.indexes.push({ name: spec.name, action: 'present', elapsedMs: 0 });
+        continue;
+      }
+      const [inFlight] = await sql<Array<{ active: boolean }>>`
+        SELECT EXISTS (
+          SELECT 1
+            FROM pg_stat_progress_create_index p
+            JOIN pg_class c ON c.oid = p.index_relid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'harness_shared' AND c.relname = ${spec.name}
+        ) AS active
+      `;
+      if (inFlight?.active) {
+        result.indexes.push({ name: spec.name, action: 'in-flight', elapsedMs: 0 });
         continue;
       }
       if (overBudget()) {
@@ -543,6 +576,18 @@ export async function runSessionSearchIndexBuildOnce(
         // CONCURRENTLY cannot run inside a transaction block — sql.unsafe() on the pooled
         // connection issues it autocommit, which is what we want.
         await sql.unsafe(createIndexConcurrentlySql(spec));
+        const [builtIndex] = await sql<Array<{ valid: boolean; ready: boolean }>>`
+          SELECT i.indisvalid AS valid, i.indisready AS ready
+            FROM pg_index i
+            JOIN pg_class c ON c.oid = i.indexrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'harness_shared' AND c.relname = ${spec.name}
+        `;
+        if (!builtIndex?.valid || !builtIndex.ready) {
+          throw new Error(
+            `CREATE INDEX returned without a valid ready index (indisvalid=${Boolean(builtIndex?.valid)}, indisready=${Boolean(builtIndex?.ready)})`,
+          );
+        }
         result.indexes.push({ name: spec.name, action: 'built', elapsedMs: Date.now() - started });
       } catch (err) {
         result.indexes.push({

@@ -134,6 +134,53 @@ Current-build preparation and qualification do not depend on final green main. F
 
 Every final coverage statement must enumerate checked, not checked and not applicable entries, retain explicit unknowns and give each residue an owner. Real buyer/partner acceptance, provider/setup evidence, qualified legal/security/support commitments and shipped-artifact identity remain separate gates. This draft supplies none of those observations.
 
+## P-010 onboarding and operations handoff — 14 October 2026
+
+Candidate-independent preparation: WI-6554700010013487, child of P-010 WI-10007905. This section extends the existing assumed pilot contract under D-010; it creates no new service, support entitlement or legal agreement. P-008 WI-10007903 has committed completion: current-build certification card EI-25994049792062320 passed its independent grading audit at 22:09:50Z on 14 October 2026 (audit card EI-25994398301640672). P-010 remains open for the packaged acceptance below and its own parent acceptance review. P-024 separately verifies shipment of the exact released artifact.
+
+The operational profile exercised by P-010a WI-6554700010012436 is Papercusp Server 0.0.26, build `c864f7a1`, Ubuntu 24.04 amd64, one Linux user, systemd user service. That exercise qualifies this Linux operations path; it does not expand A-6 into a qualified hosted-control-plane, Windows, macOS or multi-user deployment. The [Server operations runbook](../../apps/operator-docs/src/content/docs/guides/papercusp-server-linux-operations.mdx) is the procedure. Its saved completion is committed and its raw evidence remains at `~/.papercusp/evidence/p010a-lifecycle-20261014/` on the build host. Those historical results are reused without repeating the drills to reconstruct proof.
+
+Before an internal trial, the administrator records the named workspace and allowlisted sources (A-7), employee and distinct reviewer principals (A-2/A-3), the simulated WorkOS directory setup (A-5), selected processing routes, approved workflow version and rollback reference, and finite budget allocation. The existing identity setup above, P-007 processing map and P-009 allocation ledger supply these fields. Missing principals, routes or allocation are unknown; they do not authorize a trial. The operator follows the runbook to install/configure the candidate, reads diagnostics before changing it, protects the backup and encryption key, and records exact artifact identity for restoration and offboarding.
+
+### Acceptance coverage and remaining packaged checks
+
+| P-010 obligation | Saved evidence or current preparation | Remaining condition |
+| --- | --- | --- |
+| Install and configure | P-010a: fresh Server install, systemd drop-in and unit-managed operator/PG | Candidate recut must carry the fixes below; no earlier-version upgrade or other OS claim |
+| Diagnostics and backup | Runbook: unit status/journal, health/discovery, bundled `pg_dump` and protected configuration archive | Packaged `ptool` call still awaits WI-6554700010012487; archive restoration was not drilled |
+| Restore | P-010a: clone and in-place restore; retained-state sentinel matched | This proves the measured database recovery only; backup retention, post-backup deletion and automatic deployment-wide authorization reconciliation remain separate disclosures |
+| Recovery | P-010a: operator/MainPID/PG crash recovery and reinstall on retained data | Headless reboot without autologin awaits WI-6554700010012562; no promised RTO/RPO |
+| Offboard | P-010a: package purge plus the explicit per-user leftovers list | Organization retention/legal-hold receipts follow the P-007 store population; package purge is not a universal customer-data deletion claim |
+| Security/data-processing/procurement | P-007 and P-008 committed completions, current-build SIEM certification with passed independent grading audit, and the source map below; D-010/A-10 missing-commitments statement | Parent acceptance must preserve those proof references and their internal/current-build scope; external review/signature stays excluded under D-010 |
+| Bounded pilot support | Internal exercise boundary below; existing temporary-support-grant mechanism | No staffed commercial coverage, response-time promise, price, signed DPA or certification |
+
+The four packaged residues require the GUI + Server + seed recut owned by su-def821c4 under WI-6554700010012560. The source boundary recorded for these fixes is superproject `6c39e4fa7d`, desktop `080b6b0d27609a5cb91adc97b48efd321a4b2038`; containment must be checked against the recut manifest, not inferred from its version or date. The old D-238 bank predates the fixes. The source tests and mutation proof are saved on the items; source proof alone does not close these package checks.
+
+| Owned residue | Exact remaining acceptance |
+| --- | --- |
+| WI-6554700010012562 | `dpkg -L` lists executable `/usr/sbin/papercusp-server-enable-boot-start`; enable linger/start for the test user, disable tty autologin, reboot, and observe a healthy operator with no login session |
+| WI-6554700010012487 | Installed `/usr/bin/ptool` completes a call; a missing SDK reports module-not-found promptly rather than a connect-retry loop |
+| WI-6554700010012477 | Fresh packaged installs generate host-specific PG credentials; the public default passwords are refused; keep credential values out of evidence |
+| WI-6554700010012567 | GUI and Server desktop-entry launches with the unit stopped start/attach to `papercusp-server.service`; operator stays in that unit's cgroup and tray Quit leaves it active; includes WI-6554700010013259's packaged leg |
+
+### Security and procurement disclosure map
+
+| Evidence seat | What it establishes | Explicit limit |
+| --- | --- | --- |
+| [Pilot processing map](../../packages/operator-core/lib/data-governance/pilot-processing-map.ts), P-007 WI-10007902 | Declared processing paths, stores, processors, ACL/revocation/deletion/retention treatment, enforcement seats, canary tests and unknowns; committed test/mutation evidence is on the P-007 completion | Provider retention is not recorded; a global provider API host does not establish processing region; logs/telemetry and backup destinations/retention retain explicit unknowns |
+| [Customer-data inventory](../../packages/operator-core/lib/auth/hosted/customer-data-map.ts) and [organization receipts](../../packages/operator-core/lib/data-governance/organization-data-receipts.ts) | Shared export/deletion/restore store population and receipts, with retained audit/billing and hold conflicts named | Restore reconciliation requires the caller's post-backup revocations/hold changes; an omitted change is not recovered automatically |
+| P-008 WI-10007903 | Committed current-build completion; certification EI-25994049792062320 and passed independent audit EI-25994398301640672 cover accepted/denied action correlation, redacted SIEM export and delivery/replay/tamper/access-denial evidence | Internal simulation on staging, not production SIEM-vendor or deployed-main qualification; no universal log-sink redaction claim |
+| [Hosted governance](../../packages/operator-core/lib/auth/hosted/governance.ts) | Versioned terms/privacy acceptance records; purpose/scopes/expiry/revocation for temporary staff-access records | A legal-acceptance record is not a signed DPA or assurance certification; grant validation is not proof of every support-access enforcement route |
+| [Assumption register](enterprise-assumed-profile-2026-10-13.md), D-010/A-10 | Buyer, workflow and procurement basis are labelled assumptions | Real buyer/partner evidence, external assurance, signed DPA/subprocessor sign-off, priced support/SLA and real MDM enrollment are missing/excluded, not substituted by internal evidence |
+
+### Finite internal pilot support boundary
+
+Engineering assumption for A-9 internal dogfood only: one named workspace, a maximum 14-day exercise window and four staff-hours of setup/incident investigation. The trial record must name the operator and distinct reviewer, start/end times and consumed effort before support work begins. The enterprise-readiness fleet leader owns engineering escalation; each concrete incident gets its own accountable work-item holder. This assigns engineering triage, not a customer support service or availability promise. Stop or narrow at the time/effort/spend boundary, or immediately on unauthorized action, ACL breach or restricted-content canary disclosure, and preserve incident and recovery evidence.
+
+Support access is separately scoped per incident: use the existing `createSupportAccessGrant`/`revokeSupportAccessGrant` path with organization/workspace, named staff principal and grantor, purpose, explicit non-wildcard scopes, visible banner and start/expiry. The internal exercise default is a one-hour read-only window, revoked at incident end. That one-hour limit is this exercise's chosen boundary; the current validator requires expiry after start and rejects wildcard scopes but does not enforce a maximum duration. `supportAccessState` distinguishes pending, active, expired and revoked; banner visibility follows that state. Route authorization must still be verified for the chosen support action. No permanent staff access, automatic extension, priced support, SLA or response-time guarantee is inferred.
+
+Diagnostics start with the runbook's existing health/status/discovery commands and a narrow redacted incident record containing artifact identity, time, failing step and exact evidence references. The known `ptool` package defect stays visible until its candidate test passes. Host logs and database/config archives can contain secrets or customer content; do not treat them as a safe bulk support export or as a qualified diagnostics bundle. Use the declared P-007/P-008 evidence boundary, preserve explicit unknowns, and never include generated PG passwords or encryption keys in the packet.
+
 ## Open evidence and immediate continuation
 
 - P-002: a real buyer/contact or dated, permission-approved interview notes identifying one recurring workflow, procurement conditions and buying authority. The existing owner question remains pending.

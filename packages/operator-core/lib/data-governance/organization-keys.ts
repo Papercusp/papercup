@@ -26,6 +26,7 @@
  */
 import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes } from 'node:crypto';
 import type { Sql } from 'postgres';
+import { appendOrganizationAuditEvent } from '../auth/hosted/governance';
 import {
   KEK_CONTEXT_ORGANIZATION_KEY,
   KekUnavailableError,
@@ -35,6 +36,8 @@ import {
   type KekWrapContext,
 } from './kek-providers';
 import {
+  authorizeDataOperation,
+  holdConflicts,
   writeOrganizationDataReceipt,
   type KeyLifecycleRecord,
   type KeyOperation,
@@ -50,6 +53,14 @@ export const DEFAULT_KEY_CACHE_TTL_MS = 60_000;
 
 export const SEALED_SCOPES = ['content', 'embedding', 'telemetry', 'backup'] as const;
 export type SealedScope = (typeof SEALED_SCOPES)[number];
+
+export class OrganizationKeyShredRefusedError extends Error {
+  readonly code = 'legal-hold-active';
+  constructor(readonly organizationId: string, readonly holdIds: readonly string[], readonly auditEventId: string) {
+    super(`organization-keys: active legal holds prevent shredding organization ${organizationId}`);
+    this.name = 'OrganizationKeyShredRefusedError';
+  }
+}
 
 export type OrganizationKeyUnavailableCode =
   | 'organization-key-unprovisioned'
@@ -526,23 +537,50 @@ export function createOrganizationKeyService(options: OrganizationKeyServiceOpti
     /** Crypto-shred. IRREVERSIBLE: the wrapped DEKs are removed. `confirmOrganizationId` must repeat the id. */
     async shred(organizationId: string, ctx: KeyOperationContext & { confirmOrganizationId: string }) {
       if (ctx.confirmOrganizationId !== organizationId) throw new Error('organization-keys: shred requires confirmOrganizationId to equal the organization id');
-      const receiptId = await sql.begin(async (t) => {
+      const auth = authorizeDataOperation('key-shred', organizationId, ctx.actor);
+      const result = await sql.begin(async (t) => {
         const tx = t as unknown as Sql;
+        // This rare irreversible operation serializes against even the low-level hold writers.
+        // Lock the workspace mapping too: a caller cannot omit a workspace or race a remapping.
+        // No KMS/network calls run while these locks are held.
+        await tx`LOCK TABLE harness_shared.customer_workspaces, harness_shared.data_source_legal_holds IN SHARE MODE`;
         const custody = await readCustody(tx, organizationId, true);
         if (!custody) throw new OrganizationKeyUnavailableError(organizationId, 'organization-key-unprovisioned', 'no key custody is provisioned');
         if (custody.state === 'shredded') throw new Error('organization-keys: already shredded');
+        // id is the data-plane slug; workspace_id is the hosting control workspace. Include deleted
+        // workspaces too, because their held content can survive in a backup.
+        const owned = await tx<{ id: string }[]>`
+          SELECT id FROM harness_shared.customer_workspaces WHERE organization_id = ${organizationId}`;
+        const workspaceIds = [...new Set([...owned.map((w) => w.id), ...ctx.workspaceIds])];
+        const holds = await holdConflicts(tx, workspaceIds);
+        if (holds.length) {
+          const auditEventId = await appendOrganizationAuditEvent({
+            organizationId, ...auth, action: 'organization.keys.shred_refused', purpose: ctx.purpose,
+            targetType: 'organization_key', targetId: organizationId,
+            metadata: {
+              code: 'legal-hold-active', workspaceIds,
+              holds: holds.map((h) => ({ holdId: h.holdId, workspaceId: h.workspaceId,
+                dataSourceId: h.dataSourceId, channelId: h.channelId,
+                retained: h.retained.map((r) => ({ store: r.store, rows: r.rows })) })),
+            },
+          }, tx);
+          // Return the refusal so its audit commits. Throwing inside sql.begin would erase it.
+          return { receiptId: null, refusal: { holdIds: holds.map((h) => h.holdId), auditEventId } };
+        }
         const shredded = await tx<{ dek_version: number }[]>`
           UPDATE harness_shared.organization_data_keys SET state = 'shredded', wrapped_dek = NULL
            WHERE organization_id = ${organizationId} AND state <> 'shredded' RETURNING dek_version`;
         await tx`UPDATE harness_shared.organization_key_custody SET state = 'shredded' WHERE organization_id = ${organizationId}`;
-        return receipt(tx, 'key-shred', organizationId, ctx, {
+        const receiptId = await receipt(tx, 'key-shred', organizationId, { ...ctx, workspaceIds }, {
           event: 'shredded', kekProvider: custody.kek_provider, kekRef: custody.kek_ref, kekGeneration: custody.kek_generation,
           activeDekVersion: custody.active_dek_version, dekVersions: shredded.map((r) => r.dek_version).sort((a, b) => a - b),
           custodyState: 'shredded',
         });
+        return { receiptId, refusal: null };
       });
+      if (result.refusal) throw new OrganizationKeyShredRefusedError(organizationId, result.refusal.holdIds, result.refusal.auditEventId);
       evict(organizationId);
-      return { receiptId };
+      return { receiptId: result.receiptId! };
     },
   };
 }

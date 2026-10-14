@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { DbCallDeadlineError } from '@papercusp/db-org';
-import { boundedOrgTxn, OrgTxnTimeoutError, sampleCandidateWaitOnce } from './pg-bounded-txn';
+import { boundedOrgTxn, OrgTxnTimeoutError, sampleCandidateWaitOnce, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const BOUNDED_TXN_MODULE = pathToFileURL(fileURLToPath(new URL('./pg-bounded-txn.ts', import.meta.url))).href;
@@ -536,6 +536,69 @@ describe('boundedOrgTxn', () => {
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);
     expect((err as OrgTxnTimeoutError).pgCode).toBe('57014');
     expect((err as OrgTxnTimeoutError).cause).toMatchObject({ code: '57014' });
+  });
+
+  it('includes the active caller phase while preserving timeout code and cause', async () => {
+    let phase = 'release:resolve-workspace';
+    const cause = pgError('57014');
+    const err = await boundedOrgTxn(
+      async () => {
+        phase = 'release:read-prior-holder';
+        throw cause;
+      },
+      { client: fakeClient(), phase: () => phase },
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect(err).toMatchObject({ pgCode: '57014', cause });
+    expect((err as OrgTxnTimeoutError).message).toContain('[phase: release:read-prior-holder]');
+    expect((err as OrgTxnTimeoutError).messageWithoutBlockerHint).toContain('[phase: release:read-prior-holder]');
+  });
+
+  it('keeps the conservative setup phase when PG times out before caller work starts', async () => {
+    const cause = pgError('57014');
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => cb(async (strings: TemplateStringsArray) => {
+        if (strings.join('?').includes('set_config')) throw cause;
+        return [];
+      }),
+    } as never;
+    const caller = vi.fn(async () => 'unreachable');
+    const err = await boundedOrgTxn(caller, {
+      client,
+      phase: 'work_items:release:issue:transaction-setup',
+    }).catch((error) => error);
+
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect(err).toMatchObject({ pgCode: '57014', cause });
+    expect((err as OrgTxnTimeoutError).message).toContain('[phase: work_items:release:issue:transaction-setup]');
+    expect(caller).not.toHaveBeenCalled();
+  });
+
+  it('labels a PG timeout from an awaited post-transaction step', async () => {
+    const cause = pgError('57014');
+    const err = await withOrgTxnTimeoutPhase('work_items:release:issue:deliver', async () => {
+      throw cause;
+    }).catch((error) => error);
+
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect(err).toMatchObject({ pgCode: '57014', cause });
+    expect((err as OrgTxnTimeoutError).message).toContain('[phase: work_items:release:issue:deliver]');
+  });
+
+  it('preserves a bounded transaction phase when an outer phase wrapper is present', async () => {
+    const cause = pgError('57014');
+    const err = await withOrgTxnTimeoutPhase(
+      'work_items:release:post-transaction',
+      () => boundedOrgTxn(async () => { throw cause; }, {
+        client: fakeClient(),
+        phase: 'work_items:release:issue:compare-and-release-update',
+      }),
+    ).catch((error) => error);
+
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect((err as OrgTxnTimeoutError).message).toContain('[phase: work_items:release:issue:compare-and-release-update]');
+    expect((err as OrgTxnTimeoutError).message).not.toContain('work_items:release:post-transaction');
   });
 
   it('maps a PG 55P03 (lock_timeout) to OrgTxnTimeoutError', async () => {
