@@ -5012,7 +5012,16 @@
         "qualifiedLocalCpuSourceMap": "/dev/shm/get-feedback-d029-qualified-20261014T1207.sources.json",
         "qualifiedLocalCpuRuntime": "Explicit papercusp-workspace/papercusp ledger passes1/0/0 on owned CPU/q8 endpoint37989, source build52da9a8f73; launch1507699 to serving1508575 ancestry[1508575,1508377,1508373,1507699], private migrated DB, governed warmup7489ms. Natural2 and unchanged original5 each falseExpertSelections0/unavailable0, true lease expert retained. Startup console warning failure absent.",
         "sourceLimit": "Dirty-tree ledger; captured worker originals status=changed because agent-tools/tools/find.ts changed during execution. Named router, fixture, integration and spawn files captured stable and disk matches pinned52da9a8f7338c0ec746c9f427b74a0bb157b3331. Config/main-process/child source graph remains unknown. No retroactive clean/current/fullgraph or shipment claim.",
-        "committedQualification": "One maintained lint:as-committed trial at exact52da9a8f7338c0ec746c9f427b74a0bb157b3331 is running to resolve measured concurrent imported-source drift; startup8/router49/ownedCPU are the named scope. Log /dev/shm/get-feedback-d029-committed-20261014T1211.log and prospective source map beside it. This is not a HEAD/maps-only replay."
+        "committedQualification": {
+          "commit": "52da9a8f7338c0ec746c9f427b74a0bb157b3331",
+          "testRuns": [21244560, 21244562, 21244563],
+          "result": "Clean Papercusp ledger passes: subject-evidence integration 1/0/0, startup-timeout 8/0/0, relevance-router unit 49/0/0; the unit group totals57, not57 router tests. All worktreeDirty=false and source commit exact.",
+          "log": "/dev/shm/get-feedback-d029-committed-20261014T1211.log",
+          "sourceMap": "/dev/shm/get-feedback-d029-committed-20261014T1211.sources.json",
+          "sourceMapResult": "recordedSha exact, worktreeDirty=false, stable sourceEvidence for startup-timeout and relevance-router; opaqueReasons are config-deps-unavailable plus child-process/socket boundaries. No source changes during the committed run.",
+          "semanticResult": "Natural2 and unchanged original5 populations each falseExpertSelections0/unavailable0; true lease expert retained. Startup trace no longer fails console severity.",
+          "scope": "This qualifies the D029 source candidate and logging recurrence guard. Native actor/ABA/physical-call/retention, full source/backend matrix, whole graph, independent acceptance, R6 and exact R7 shipment remain separate obligations."
+        }
       }
     },
     "remaining": "EI259448 D029 local semantic candidate now passes explicit papercusp CPU21244516 after startup telemetry source repair; committed qualification and original native42423cbd actor/ABA/physical-call/retention remain open. Original warmup/deletion, whole graph/independent/R6 and exactR7 shipment remain open. Earlier DB-target stderr severity is source-complete under EI259485 with committed scoped6pass, separate from the new startup trace. All prior receipts and original538eeb7/960d986 remain immutable. No HEAD/maps-only replay."
