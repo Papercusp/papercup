@@ -164,7 +164,7 @@ describe('original gate selection preparation', () => {
     expect(result.files).toEqual(['packages/core/a.test.ts']);
     expect(result.coverage).toBe('partial');
     expect(result.unenumerated.map(row => row.reason)).toEqual([
-      'unsupported-task-command', 'unexecuted-lifecycle-command', 'unexecuted-lifecycle-command',
+      'astro-sync-not-requested', 'unexecuted-lifecycle-command', 'unexecuted-lifecycle-command',
     ]);
     const entry = result.tasks[0];
     if (!('steps' in entry)) throw new Error('Original chain missing');
@@ -172,7 +172,7 @@ describe('original gate selection preparation', () => {
     expect(entry.steps.map((step: { command: string }) => step.command)).toEqual([
       'astro check', 'node setup.mjs', 'vitest run', 'node cleanup.mjs',
     ]);
-    expect(result.commandObligations.map(row => row.command)).toEqual(['node setup.mjs', 'node cleanup.mjs']);
+    expect(result.commandObligations.map(row => row.command)).toEqual(['astro check', 'node setup.mjs', 'node cleanup.mjs']);
     expect(result.executed).toBe(false);
     for (const scripts of [{ test: 'npm run again && vitest run', again: 'npm run test' },
       { test: 'npm run absent && vitest run' }]) {
@@ -180,6 +180,78 @@ describe('original gate selection preparation', () => {
         .unenumerated[0].reason).toBe('invalid-local-script-chain');
     }
   });
+
+  it('requires explicit Astro sync and refuses pre-sync or tampered populations without dropping the check', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'astro-selection-qualification-'));
+    try {
+      const file = 'packages/core/checked.ts';
+      mkdirSync(join(dir, 'packages/core'), { recursive: true });
+      writeFileSync(join(dir, file), 'export const checked = true;');
+      const hash = createHash('sha256').update(readFileSync(join(dir, file))).digest('hex');
+      const receipt = { ok: true, enumerated: true, repositoryFiles: [file],
+        inputs: [{ path: file, sha256: hash }], sync: { status: 'completed', beforePopulation: true },
+        executed: false, runtimeClosure: 'unmeasured', operationalAcceptance: false };
+      const request = task('test', 'astro check');
+      let called = false;
+      const blocked = enumerateAffectedTaskSelection([request], { root: dir,
+        runResolver: () => { called = true; return [receipt]; } });
+      expect(called).toBe(false);
+      expect(blocked.unenumerated[0].reason).toBe('astro-sync-not-requested');
+      expect(blocked.commandObligations).toMatchObject([{ command: 'astro check', executed: false }]);
+      for (const bad of [{ ...receipt, sync: undefined }, { ...receipt, executed: true },
+        { ...receipt, inputs: [{ path: file, sha256: 'f'.repeat(64) }] },
+        { ...receipt, repositoryFiles: [] }, { ...receipt, operationalAcceptance: true }]) {
+        const result = enumerateAffectedTaskSelection([request], { root: dir, syncAstro: true,
+          runResolver: () => [bad] });
+        expect(result.coverage).toBe('partial');
+        expect(result.files).toEqual([]);
+        expect(result.commandObligations).toMatchObject([{ command: 'astro check', executed: false }]);
+      }
+      const accepted = enumerateAffectedTaskSelection([request], { root: dir, syncAstro: true,
+        runResolver: (requests: unknown[]) => {
+          expect(requests).toMatchObject([{ runner: 'astro-check', syncBeforeCheck: true }]);
+          return [receipt];
+        } });
+      expect(accepted.files).toEqual([file]);
+      expect(accepted.coverage).toBe('partial');
+      expect(accepted.unenumerated[0].reason).toBe('unexecuted-command-obligations');
+      expect(accepted.commandObligations[0].inputs).toEqual(receipt.inputs);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('uses the native Astro checker population after sync while keeping diagnostics unexecuted', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    // Astro excludes node_modules from its project population, so keep the
+    // isolated fixture in the repo's ignored scratch area, with inherited deps.
+    const parent = join(repo, '.papercusp/scratch');
+    mkdirSync(parent, { recursive: true });
+    const dir = mkdtempSync(join(parent, 'astro-selection-fixture-'));
+    try {
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
+      writeFileSync(join(dir, 'astro.config.mjs'), `export default { integrations: [{ name: 'selection-fixture', hooks: {
+        'astro:config:setup': ({injectTypes}) => injectTypes({filename: 'selection-generated.d.ts', content: 'declare const syncedValue: string;'})
+      }}] };`);
+      writeFileSync(join(dir, 'tsconfig.json'), '{"extends":"astro/tsconfigs/strict","include":[".astro/types.d.ts","src/**/*"],"exclude":["dist"]}');
+      writeFileSync(join(dir, 'src/checked.ts'), 'export const broken: string = 123;');
+      writeFileSync(join(dir, 'src/page.astro'), '<p>Hello</p>');
+      writeFileSync(join(dir, 'src/skipped.vue'), '<template>hello</template>');
+      writeFileSync(join(dir, 'src/skipped.svelte'), '<p>hello</p>');
+      const relativeDir = dir.slice(repo.length + 1).replaceAll('\\', '/');
+      const result = enumerateAffectedTaskSelection([{ ws: { name: '@probe/astro', dir: relativeDir,
+        scripts: { test: 'astro check' } }, script: 'test' }], { root: repo, syncAstro: true });
+      expect(result.unenumerated).toMatchObject([{ reason: 'unexecuted-command-obligations' }]);
+      expect(result.files).toEqual(expect.arrayContaining([
+        `${relativeDir}/.astro/types.d.ts`, `${relativeDir}/src/checked.ts`, `${relativeDir}/src/page.astro`,
+      ]));
+      expect(result.files.some(file => /\.(vue|svelte)$/.test(file))).toBe(false);
+      expect(readFileSync(join(dir, '.astro/types.d.ts'), 'utf8')).toContain('selection-generated.d.ts');
+      expect(result.commandObligations[0]).toMatchObject({ check: 'astro-check', executed: false,
+        discovery: { sync: { status: 'completed', beforePopulation: true }, executed: false } });
+      expect(result.runtimeClosure).toBe('unmeasured');
+      expect(result.operationalAcceptance).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 40_000);
 
   it('retains the voice guard native input census as an unexecuted command obligation', () => {
     const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');

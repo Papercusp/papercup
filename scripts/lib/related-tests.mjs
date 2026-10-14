@@ -98,8 +98,10 @@ function expandSelectionCommands(scripts, script, seen = new Set()) {
 
 /** Preparation only: enumerate the maintained selector's actual task configs, never executions.
  * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
+ * @param {Array<object>} tasks
+ * @param {{root?: string, filterDir?: string, runResolver?: Function, syncAstro?: boolean}} [options]
  */
-export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runResolver } = {}) {
+export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runResolver, syncAstro = false } = {}) {
   const unenumerated = [];
   const requests = [];
   const selected = [];
@@ -133,7 +135,7 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
             kind: 'npm-lifecycle', command: step.command, inputs: null, executed: false }],
             unenumerated: [{ reason: 'unexecuted-lifecycle-command' }] };
           const leaf = enumerateAffectedTaskSelection([{ ...t, script: step.script,
-            ws: { ...t.ws, scripts: { [step.script]: step.command } } }], { root, filterDir, runResolver });
+            ws: { ...t.ws, scripts: { [step.script]: step.command } } }], { root, filterDir, runResolver, syncAstro });
           return { ...step, files: leaf.files, commandObligations: leaf.commandObligations,
             unenumerated: leaf.unenumerated, discovery: leaf.tasks };
         });
@@ -147,6 +149,19 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
         for (const [index, step] of prepared.entries()) for (const residue of step.unenumerated)
           unenumerated.push({ task: id, step: index, command: step.command, reason: residue.reason });
       } catch (error) { unenumerated.push({ task: id, reason: error.message, command }); }
+      continue;
+    }
+    if (resolvedCommand === 'astro check') {
+      const obligation = { kind: 'command-check', check: 'astro-check', command: resolvedCommand,
+        inputs: null, executed: false };
+      if (!syncAstro) {
+        entries.push({ ...task, runner: 'astro-check', files: [], commandObligations: [obligation] });
+        unenumerated.push({ task: id, reason: 'astro-sync-not-requested', command });
+      } else {
+        selected.push({ ...task, runner: 'astro-check', commandObligations: [obligation] });
+        requests.push({ runner: 'astro-check', root: wsRoot, repositoryRoot: root,
+          enumerateFiles: true, syncBeforeCheck: true });
+      }
       continue;
     }
     const discoveryCommand = resolvedCommand === 'node scripts/el-tools-check.mjs' ?
@@ -261,16 +276,39 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
   for (const [i, task] of selected.entries()) {
     const result = results[i];
     const population = result?.repositoryFiles ?? result?.files;
+    if (task.runner === 'astro-check' && (result?.sync?.status !== 'completed' ||
+        result.sync.beforePopulation !== true || result.executed !== false ||
+        result.runtimeClosure !== 'unmeasured' || result.operationalAcceptance !== false ||
+        !Array.isArray(population) || !population.length ||
+        !Array.isArray(result.inputs) || !result.inputs.length ||
+        new Set(result.inputs.map(input => input.path)).size !== result.inputs.length ||
+        !result.inputs.every(input => typeof input.path === 'string' && input.path &&
+          !path.isAbsolute(input.path) && !input.path.includes('\\') &&
+          input.path.split('/').every(part => part && part !== '.' && part !== '..') &&
+          /^[a-f0-9]{64}$/.test(input.sha256) && (() => {
+            try { return createHash('sha256').update(readFileSync(path.resolve(root, input.path))).digest('hex') === input.sha256; }
+            catch { return false; }
+          })()) || !population.every(file => result.inputs.some(input => input.path === file)))) {
+      entries.push({ ...task, files: [] });
+      unenumerated.push({ task: task.id, reason: result?.error ?? 'invalid-post-sync-astro-population', command: task.command });
+      continue;
+    }
     if (result?.ok !== true || result.enumerated !== true || !Array.isArray(population) ||
         population.some(file => typeof file !== 'string' || !file || path.isAbsolute(file) ||
           file.includes('\\') || file.split('/').some(part => part === '..' || part === '.')) ||
         new Set(population).size !== population.length) {
+      if (task.runner === 'astro-check') entries.push({ ...task, files: [] });
       unenumerated.push({ task: task.id, reason: result?.error ?? 'invalid-config-file-population', command: task.command });
       continue;
     }
     entries.push({ ...task, files: result.repositoryFiles ? population.slice().sort() :
       population.map(file => path.posix.join(task.dir, file)).sort(), config: result.config,
+      ...(task.runner === 'astro-check' ? { sync: result.sync, commandObligations: [{
+        ...task.commandObligations[0], inputs: result.inputs, discovery: result,
+      }] } : {}),
       ...(result.projects ? { projects: result.projects } : {}) });
+    if (task.runner === 'astro-check')
+      unenumerated.push({ task: task.id, reason: 'unexecuted-command-obligations', command: task.command });
   }
   for (const task of entries) {
     if (task.runner === 'command-chain' || !task.lifecycleCommands.length) continue;

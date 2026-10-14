@@ -14,8 +14,15 @@ export function resolveRelatedWidenThreshold(env?: Record<string, string | undef
 };
 /** Preparation only: enumerate the maintained selector's actual task configs, never executions.
  * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
+ * @param {Array<object>} tasks
+ * @param {{root?: string, filterDir?: string, runResolver?: Function, syncAstro?: boolean}} [options]
  */
-export function enumerateAffectedTaskSelection(tasks: any, { root, filterDir, runResolver }?: {}): {
+export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, filterDir, runResolver, syncAstro }?: {
+    root?: string;
+    filterDir?: string;
+    runResolver?: Function;
+    syncAstro?: boolean;
+}): {
     schemaVersion: number;
     kind: string;
     phase: string;
@@ -26,6 +33,26 @@ export function enumerateAffectedTaskSelection(tasks: any, { root, filterDir, ru
         steps: any;
         files: any[];
         commandObligations: any;
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    } | {
+        runner: string;
+        files: never[];
+        commandObligations: {
+            kind: string;
+            check: string;
+            command: any;
+            inputs: null;
+            executed: boolean;
+        }[];
         lifecycleCommands: {
             script: string;
             command: any;
@@ -72,7 +99,21 @@ export function enumerateAffectedTaskSelection(tasks: any, { root, filterDir, ru
         script: any;
         command: any;
     } | {
+        files: never[];
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    } | {
         projects?: any;
+        sync?: any;
+        commandObligations?: any[] | undefined;
         files: any[];
         config: any;
         lifecycleCommands: {

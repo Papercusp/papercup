@@ -20,6 +20,7 @@ import { expandWorkspaces as expandRootWorkspaces } from './assert-workspace-lin
 //   --all           ignore git diff; run every workspace's tests
 //   --dry           print what would run, don't run
 //   --print-selection  emit resolved file/config preparation plus unknown-task residue, then exit
+//   --sync-astro       with --print-selection, sync generated Astro inputs before discovery
 //
 // Diagnostics:
 //   --print-affected                  print `AFFECTED_WS\t<name>`, one runnable
@@ -1100,6 +1101,11 @@ const changedPathsOverride = (() => {
 })();
 const printAffected = has("--print-affected");
 const printSelection = has("--print-selection");
+const syncAstroSelection = has("--sync-astro");
+if (syncAstroSelection && !printSelection) {
+  errSync('--sync-astro requires --print-selection');
+  process.exit(2);
+}
 
 // ── P-009 part (a): the `--coverage` passthrough ───────────────────────────────
 //
@@ -1174,6 +1180,7 @@ const KNOWN_FLAGS = [
   "--changed-paths",
   "--print-affected",
   "--print-selection",
+  "--sync-astro",
   "--related",
   "--el-suite",
   "--exclude",
@@ -5653,7 +5660,8 @@ if (coverageRequested) {
 if (printSelection) {
   // Reuse the final maintained selection and native config bridge. This never emits an
   // executed-file line, loads duration history, acquires test admission, or runs a cohort.
-  const selection = enumerateAffectedTaskSelection(tasks, { root: ROOT, filterDir: RUN_LOG_ROOT });
+  const selection = enumerateAffectedTaskSelection(tasks, { root: ROOT, filterDir: RUN_LOG_ROOT,
+    syncAstro: syncAstroSelection });
   outSync(`AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}`);
   terminalSuppressed = true;
   process.exit(0);
