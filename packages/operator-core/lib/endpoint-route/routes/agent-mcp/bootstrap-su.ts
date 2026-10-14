@@ -191,6 +191,8 @@ export interface BootstrapSuResult {
    * `envelopeEnv.CODEX_HOME`.
    */
   codexHome: string | null;
+  /** Resolved managed budget used by Codex config and native CLI argv. */
+  compactionLimit?: number | null;
   /**
    * The omp coordination extension path (`~/.papercusp/papercusp-coord.ts`)
    * the launcher loads via `-e` for lock enforcement, or null if not
@@ -1265,6 +1267,15 @@ export function normalizeLaunchArgv(v: unknown): string[] | null {
 /** Read the requested soft context ceiling from the same psu argv persisted for replay. */
 export function codexCompactionLimitFromLaunchArgv(argv: unknown): number | null {
   return parseLaunchCompactionLimitArgv(argv);
+}
+
+/** A SAME-owner successor retains later budget changes, even without a launch flag. */
+export async function codexCompactionLimitForBootstrap(ownerId: string, argv: unknown): Promise<number | null> {
+  const { getPresence } = await import('../../../agent-tools/coordination/presence');
+  const current = (await getPresence(ownerId))?.compactionLimit;
+  return typeof current === 'number' && Number.isFinite(current) && current > 0
+    ? Math.floor(current)
+    : codexCompactionLimitFromLaunchArgv(argv);
 }
 
 /**
@@ -3000,9 +3011,11 @@ export const bootstrapSu = defineTool({
     // a raw launch — no per-launch .mcp.json needed for su).
     let promptFile = '';
     let codexHome: string | null = null;
+    let codexCompactionLimit: number | null = null;
     const ambientContextAllowed = await sessionAllowsAmbientContext({ ownerId: sid, workspaceId: workspace });
     try {
       if (agent === 'codex') {
+        codexCompactionLimit = await codexCompactionLimitForBootstrap(sid, launchArgv);
         // D-006: the superuser bearer is baked into the home's config.toml
         // (codex 0.135's bearer_token_env_var doesn't deliver for HTTP MCP).
         // Read it server-side — it never transits the bootstrap HTTP response.
@@ -3013,9 +3026,8 @@ export const bootstrapSu = defineTool({
           promptText,
           sid,
           model,
-          // Preserve the per-session cap in Codex's native config from the first
-          // turn; repair paths read the identical value back from launch_argv.
-          compactionLimit: codexCompactionLimitFromLaunchArgv(launchArgv),
+          // Current registered budget wins over stale or absent launch argv.
+          compactionLimit: codexCompactionLimit,
           token: readSuperuserToken(),
           codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
           // WI-3645: explicit-auto → the UNPINNED gateway provider block (header omitted;
@@ -3390,6 +3402,7 @@ export const bootstrapSu = defineTool({
       stateRevision: launchArtifact.stateRevision,
       compositionSource: launchArtifact.compositionSource,
       codexHome,
+      compactionLimit: codexCompactionLimit,
       coordExtPath,
       envelopeEnv,
       accountNotice: accountPin.notice,
