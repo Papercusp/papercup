@@ -6247,7 +6247,7 @@ describe("psu-launcher arg parsing", () => {
       }),
     ).resolves.toBe(false);
     expect(String(networkLog.mock.calls[0]?.[0])).toContain(
-      "Check this machine's network",
+      "The underlying transport cause has not been established",
     );
     expect(String(networkLog.mock.calls[0]?.[0])).not.toContain("429");
 
@@ -8692,6 +8692,49 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
       transformVersion: SESSION_PORT_TRANSFORM_VERSION,
     });
+  });
+
+  it.each([
+    ["pending", { status: "pending", targetAdvSessionId: 99 }, "session_port_ack_outcome_unknown"],
+    ["missing status", { targetAdvSessionId: 99 }, "session_port_ack_outcome_unknown"],
+    ["missing target", { status: "delivered" }, "session_port_ack_outcome_unknown"],
+    ["wrong target", { status: "delivered", targetAdvSessionId: 100 }, "session_port_ack_refused"],
+    ["wrong port", { id: "33333333-3333-4333-8333-333333333333", status: "delivered", targetAdvSessionId: 99 }, "session_port_ack_refused"],
+    ["terminal failure", { status: "failed", targetAdvSessionId: 99 }, "session_port_ack_refused"],
+  ])("EI-259750: preserves typed %s acknowledgement receipts without accepting delivery", async (_label, port, code) => {
+    const appendEventImpl = vi.fn();
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, error: "upstream reset SECRET-PAYLOAD", forwardingResult: "outcome_unknown" }), { status: 502 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, port }), { status: 200 }));
+    const failure = await reportSessionPortDelivery(
+      { portId: "22222222-2222-4222-8222-222222222222", targetAdvSessionId: 99, workspace: "test" },
+      { persisted: true, renderedHash: "a".repeat(64), nativeRef: "/native/SECRET-PATH.jsonl" },
+      { fetchImpl, operatorUrl: "http://operator", token: "SECRET-TOKEN", coordOwnerId: "su-test", appendEventImpl },
+    ).catch((error) => error);
+    expect(failure.code).toBe(code);
+    expect(failure.acknowledgement.receipts).toHaveLength(2);
+    expect(failure.acknowledgement.receipts[0]).toMatchObject({ stage: "delivery", httpStatus: 502, forwardingResult: "outcome_unknown" });
+    expect(failure.acknowledgement.receipts[1]).toMatchObject({ stage: "status", httpStatus: 200 });
+    expect(fetchImpl.mock.calls.map((call) => call[1].method)).toEqual(["POST", "GET"]);
+    expect(appendEventImpl).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 2; i++) {
+      expect(fetchImpl.mock.calls[i][1].headers["x-papercusp-mcp-trace-id"]).toBe(failure.acknowledgement.receipts[i].traceId);
+      expect(appendEventImpl.mock.calls[i][2]).toMatchObject({ portId: "22222222-2222-4222-8222-222222222222", expectedTargetAdvSessionId: 99, stage: i === 0 ? "delivery" : "status" });
+    }
+    expect(JSON.stringify(appendEventImpl.mock.calls)).not.toContain("SECRET");
+  });
+
+  it("EI-259750: records an invalid JSON status body as unknown rather than swallowing the receipt", async () => {
+    const fetchImpl = vi.fn().mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValueOnce(new Response("not JSON", { status: 200 }));
+    const error = await reportSessionPortDelivery(
+      { portId: "22222222-2222-4222-8222-222222222222", targetAdvSessionId: 99 },
+      { persisted: true, renderedHash: "a".repeat(64), nativeRef: "/native/rollout.jsonl" },
+      { fetchImpl, operatorUrl: "http://operator", token: "token" },
+    ).catch((failure) => failure);
+    expect(error.code).toBe("session_port_ack_outcome_unknown");
+    expect(error.acknowledgement.receipts[1]).toMatchObject({ stage: "status", httpStatus: 200, errorName: "SyntaxError" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("token-finalizes a prepared port when target bootstrap never minted a row", async () => {
