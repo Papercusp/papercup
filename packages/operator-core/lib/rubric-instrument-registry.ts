@@ -32,7 +32,10 @@ import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
-import { NATIVE_ADOPTION_INSTRUMENT_KEYS } from './code-intelligence/native-adoption';
+import {
+  NATIVE_ADOPTION_INSTRUMENT_KEYS, measureNativeAdoptionWindow,
+  nativeAdoptionCriterionForInstrument, rateNativeAdoption,
+} from './code-intelligence/native-adoption';
 
 /** The explicit manual binding: the criterion is deliberately graded by a person. */
 export const MANUAL_INSTRUMENT_KEY = 'none';
@@ -149,8 +152,17 @@ export interface PlatformInstrument {
   key: string;
   evaluator: 'platform';
   description: string;
-  /** Where the in-process resolver lives; these keys are never executed here. */
+  /** The subject-window resolver; scheduled measurement is separately opt-in below. */
   resolvedBy: 'scorecards:instrument-snapshots';
+  /** Opt-in scheduled measurement; subject-only instruments remain scorecard-owned. */
+  rescore?: {
+    windowMs: number;
+    unit: InstrumentUnit;
+    resolve(window: { workspaceId: string; windowStart: string; windowEnd: string }): Promise<{
+      verdict: 'pass' | 'fail' | 'unknown';
+      detail: string;
+    }>;
+  };
 }
 
 /** Validates retained evidence; it does not execute or independently remeasure a benchmark. */
@@ -596,11 +608,22 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
   });
   for (const key of platformComputedInstrumentKeys()) {
     if (registry.has(key)) continue;
+    const adoptionCriterion = nativeAdoptionCriterionForInstrument(key);
     registry.set(key, {
       key,
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
+      ...(adoptionCriterion ? { rescore: {
+        windowMs: 72 * 60 * 60_000,
+        unit: 'count' as const,
+        resolve: async (window: { workspaceId: string; windowStart: string; windowEnd: string }) => {
+          const metrics = await measureNativeAdoptionWindow(window);
+          const rating = rateNativeAdoption(metrics)[adoptionCriterion];
+          return { verdict: rating.verdict,
+            detail: `${window.windowStart}..${window.windowEnd}: ${rating.reason}` };
+        },
+      } } : {}),
     });
   }
   return registry;
