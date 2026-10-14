@@ -39,6 +39,19 @@ export const ORG_POLICY_CODE_PREFIX = 'org_policy:';
 /** The administration tool can never be locked out by the policy it administers. */
 export const GOVERNANCE_ADMIN_TOOLS: ReadonlySet<string> = new Set(['governance:policy']);
 
+/**
+ * The /admin/governance-policy pane's HTTP doors (endpoint-route/routes/governance-policy/policy.ts)
+ * run the SAME operation as `governance:policy`, but they are route-only defineTools, so the
+ * dispatch identity is their path, not that tool name. Match the path segment whatever prefix
+ * the projection adds (`/api`, a method) so a deny-all org rule can never lock the pane out.
+ */
+const GOVERNANCE_ADMIN_ROUTE = /(?:^|[\s/])governance-policy\/(?:explain|simulate|set|add-exception)$/;
+
+/** True for the governance administration surface — the tool and its admin-pane HTTP doors. */
+export function isGovernanceAdminTool(toolName: string): boolean {
+  return GOVERNANCE_ADMIN_TOOLS.has(toolName) || GOVERNANCE_ADMIN_ROUTE.test(toolName);
+}
+
 const CACHE_TTL_MS = 5_000;
 
 type ChainLoader = (workspaceId: string) => Promise<ChainLoad>;
@@ -175,7 +188,7 @@ export async function enforceInheritedPolicy(
     const workspaceId = request.ctx?.workspaceId;
     if (!workspaceId) return null;
     const subject = governedRequestOf(request);
-    if (subject.tools?.some((t) => GOVERNANCE_ADMIN_TOOLS.has(t))) return null;
+    if (subject.tools?.some((t) => isGovernanceAdminTool(t))) return null;
     const now = deps.now?.() ?? new Date();
     const load = deps.loadChain
       ? await deps.loadChain(workspaceId).catch((err: unknown) => ({ status: 'unavailable' as const, reason: err instanceof Error ? err.message : String(err) }))

@@ -26,6 +26,7 @@ import {
   enforceInheritedPolicy,
   governedRequestOf,
   invalidateGovernancePolicyCache,
+  isGovernanceAdminTool,
   isGovernancePolicyEnforcementInstalled,
   setGovernancePolicyChainLoader,
 } from './enforce';
@@ -225,5 +226,27 @@ describe('anti-lockout', () => {
     expect(admin?.decision).not.toBe('deny');
     const other = await operatorKernelEnforcement({ phase: 'preflight', boundary: 'dispatch', toolName: 'coord:send', capabilities: [], args: {}, ctx: ctx() });
     expect(other).toMatchObject({ decision: 'deny', code: 'org_policy:denied' });
+  });
+
+  it('never refuses the admin pane HTTP doors under a deny-all chain, whatever prefix the projection adds', async () => {
+    install({ status: 'ok', chain: [layer({ layerId: 'org-acme', level: 'organization', rules: { tools: { allow: [] } } })] } as ChainLoad);
+    for (const toolName of [
+      '/governance-policy/set',
+      '/governance-policy/add-exception',
+      '/api/governance-policy/simulate',
+      'POST /governance-policy/explain',
+    ]) {
+      const door = await operatorKernelEnforcement({ phase: 'enforce', boundary: 'dispatch', toolName, capabilities: [], args: {}, ctx: ctx() });
+      expect(door?.decision, toolName).not.toBe('deny');
+    }
+  });
+
+  it('does not widen the exemption to look-alike routes', async () => {
+    install({ status: 'ok', chain: [layer({ layerId: 'org-acme', level: 'organization', rules: { tools: { allow: [] } } })] } as ChainLoad);
+    for (const toolName of ['/governance-policy-evil/set', '/governance-policy/settings', '/xgovernance-policy/set', 'governance:policy-shadow']) {
+      expect(isGovernanceAdminTool(toolName), toolName).toBe(false);
+      const out = await operatorKernelEnforcement({ phase: 'enforce', boundary: 'dispatch', toolName, capabilities: [], args: {}, ctx: ctx() });
+      expect(out, toolName).toMatchObject({ decision: 'deny', code: 'org_policy:denied' });
+    }
   });
 });
