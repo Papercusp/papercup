@@ -1348,6 +1348,11 @@ function isReadOnlyToolCall(m: unknown): boolean {
   const name = forwardedToolName(m);
   if (name === null) return false;
   if (READ_ONLY_TOOLS_LOOKUP.has(name)) return true;
+  // loop:checkpoint is mixed-effect: `{ read: true }` is a pure carry snapshot,
+  // while every other shape can write. Replay only that exact read mode after a
+  // post-connect reset; leave checkpoint writes on the keyed path.
+  if (isLoopCheckpointReadOnlyContinuationArgs(name, forwardedToolArgs(m)))
+    return true;
   // release:cut is a mixed-effect tool. Only its status operation reads local
   // markers/logs and systemd state; every other operation must keep the keyed path.
   if (name === RELEASE_CUT_NAME) {
