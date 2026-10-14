@@ -10,7 +10,7 @@ import { orgTemplateKey, provisionOrgTemplate } from '../../test/_org-test-db';
 import { flushFallbackObservations } from '../degradation/fallback-observations';
 import { buildSidecarAwareReranker, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
 import { isEmbedSidecarRunning, probeSidecarHealth, readEmbedSidecarRecord, stopEmbedSidecar } from '../memory/embed-sidecar-spawn';
-import { scoreSubjectEvidence, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
+import { scoreSubjectEvidence, subjectEvidenceQuery, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
 import { evaluateSubjectCases, HELD_OUT_SUBJECT_CASES, NATURAL_QUESTION_SUBJECT_CASES } from './subject-evidence.fixtures';
 import '../agent-tools/index';
 
@@ -142,6 +142,9 @@ describe('registered subject evidence with the real local scorer', () => {
       try {
         const scores = await baseScorer(query, contracts, opts);
         console.info('subject-contract-scores', JSON.stringify({ contracts: contracts.map(c => c.split('\n')[0]), scores }));
+        if (contracts[0]?.includes('?')) {
+          console.info('subject-natural-contract-pairs', JSON.stringify({ passage: query, contracts, scores }));
+        }
         return scores;
       } catch (error) {
         const failure = { contracts: contracts.map(c => c.split('\n')[0]),
@@ -207,6 +210,13 @@ describe('registered subject evidence with the real local scorer', () => {
     console.info('subject-scorer-ready', JSON.stringify({ warmupMs: Date.now() - warmStart }));
     const naturalMeasurements = [];
     for (const scenario of NATURAL_QUESTION_SUBJECT_CASES) {
+      // Keep the production direction separate from this diagnostic. The same
+      // primary question and passages, on the same owned runtime, distinguish
+      // a query/document representation error from missing contrast contracts.
+      const primary = subjectEvidenceQuery(scenario.subject)!;
+      const forward = await scorer(primary, scenario.passages.map(p => p.text), { deadline: Date.now() + 4000 });
+      console.info('subject-natural-forward-pairs', JSON.stringify({ id: scenario.id, query: primary,
+        passages: scenario.passages, scores: forward }));
       const scores = await scoreSubjectEvidence(scenario.subject, scenario.passages.map(p => p.text),
         Date.now() + 4000, { scorer });
       naturalMeasurements.push({ id: scenario.id, scores });
