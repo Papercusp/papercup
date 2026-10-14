@@ -314,6 +314,7 @@ import {
   LIVE_HOST_IDLE_THRESHOLD_MS,
   startSupervisorBeat,
   spawnInherit,
+  printPsuResumeHint,
 } from "../scripts/psu-launcher.mjs";
 import {
   nativeSchedulerDenyFlag,
@@ -6113,6 +6114,32 @@ describe("psu-launcher arg parsing", () => {
     expect(verdict.message).not.toContain("earliest known recovery");
   });
 
+  it('codexAutoPoolVerdict: launches through a known temporary cooldown, while preserving quota/unknown refusals', async () => {
+    const now = Date.UTC(2026, 9, 14, 18, 16, 40);
+    const stats = { codexHealthyAccounts: 0, codexTotalAccounts: 8,
+      codexEarliestRecoveryAt: Date.UTC(2026, 9, 14, 18, 18, 44, 413),
+      codexUnserviceableCause: 'temporary-cooldown' as const };
+    const verdict = codexAutoPoolVerdict({ agent: 'codex', account: 'auto', stats, now });
+    expect(verdict.kind).toBe('warn');
+    expect(verdict.message).toContain('temporarily cooling down');
+    expect(verdict.message).toContain('not a usage or credit wall');
+    expect(verdict.message).not.toContain('REFUSING');
+    expect(verdict.message).not.toContain('Every model call would fail');
+    const log = vi.fn();
+    await expect(preflightCodexAutoPool({ agent: 'codex', account: 'auto', log, env: {},
+      fetchImpl: vi.fn(async () => ({ ok: true, json: async () => ({ ...stats,
+        codexEarliestRecoveryAt: Date.now() + 120_000 }) })) as unknown as typeof fetch })).resolves.toBe(true);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('temporarily cooling down'));
+    const blocked = codexAutoPoolVerdict({ agent: 'codex', account: 'auto', now,
+      stats: { ...stats, codexUnserviceableCause: 'accounts-unserviceable' } });
+    expect(blocked.kind).toBe('refuse');
+    expect(blocked.message).toContain('credential quarantine');
+    expect(blocked.message).not.toContain('fully walled');
+    expect(blocked.message).not.toContain('Every model call would fail fast with 429');
+    expect(codexAutoPoolVerdict({ agent: 'codex', account: 'auto', now,
+      stats: { ...stats, codexUnserviceableCause: undefined } }).kind).toBe('refuse');
+  });
+
   it.each([
     { kind: "timeout" as const, diagnosis: "upstream response timeout" },
     { kind: "dns" as const, diagnosis: "DNS lookup error" },
@@ -9689,6 +9716,42 @@ describe("findUntrackedSession (resume a non-psu session by searching the agent 
   });
 });
 
+describe("direct su-ID tracked-session recovery", () => {
+  const owner = "su-12345678-1234-4abc-8abc-123456789abc";
+  const latest = { id: 31413, agent: "codex", coordOwnerId: owner, sessionId: "latest-native-id" };
+
+  it.each(["claude", "codex", "omp"])("resolves the latest %s row even when an older row is cached", async (agent) => {
+    const source = { ...latest, agent };
+    const apiImpl = vi.fn(async () => ({
+      exact: { id: source.id, ownerId: owner, requestedAgentId: owner },
+      sessions: [{ ...source, id: 99, sessionId: "older-native-id" }, source],
+    }));
+    expect(await resolveDirectTrackedResumeSession([{ ...source, id: 99 }], owner, { apiImpl })).toBe(source);
+    expect(apiImpl).toHaveBeenCalledExactlyOnceWith(`/api/adv/sessions/resumable?agentId=${owner}`);
+    expect(resumeEnvFor(source).PAPERCUSP_SID).toBe(owner);
+  });
+
+  it.each([
+    { name: "absent agent", result: { sessions: [] } },
+    { name: "old server without exact resolution", result: { sessions: [latest] } },
+    { name: "different owner", result: { exact: { id: latest.id, ownerId: "su-other", requestedAgentId: owner }, sessions: [latest] } },
+    { name: "different requested agent", result: { exact: { id: latest.id, ownerId: owner, requestedAgentId: "su-other" }, sessions: [latest] } },
+    { name: "different row", result: { exact: { id: 999, ownerId: owner, requestedAgentId: owner }, sessions: [latest] } },
+  ])("refuses a $name response", async ({ result }) => {
+    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl: async () => result })).toBeNull();
+  });
+
+  it("propagates owner lookup failure instead of interpreting the su ID as a native thread", async () => {
+    await expect(resolveDirectTrackedResumeSession([], owner, {
+      apiImpl: async () => { throw new Error("operator unavailable"); },
+    })).rejects.toThrow("operator unavailable");
+  });
+
+  it.each([["--resume", owner], [`--resume=${owner}`]])("parses the owner ID in %j", (...args) => {
+    expect(parseArgs(args)).toMatchObject({ resume: true, resumeId: owner });
+  });
+});
+
 describe("direct numeric tracked-session recovery (EI-24966472541417677)", () => {
   const source = {
     id: 31413,
@@ -11885,6 +11948,44 @@ describe("usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 
 
 describe("spawnInherit — plain fallback owns and cleans up the backend process group (EI-20234301056067173)", () => {
   const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  it.each([null, "SIGINT"])("prints the psu resume hint after an interactive exit (%s) and before returning control", async (signal) => {
+    const child = Object.assign(new EventEmitter(), { pid: 4142, kill: vi.fn() });
+    const write = vi.fn();
+    const processExit = vi.fn();
+    const processKill = vi.fn();
+    const owner = "su-12345678-1234-4abc-8abc-123456789abc";
+    spawnInherit({
+      wrapperBin: "codex", cwd: "/tmp", env: { PAPERCUSP_SID: owner },
+      spawnImpl: () => child, signalSource: new EventEmitter(),
+      processApi: { pid: 9000, stdin: { isTTY: true }, stdout: { isTTY: true, write }, exit: processExit, kill: processKill },
+      reportSessionEndedImpl: async () => undefined,
+    });
+    child.emit("exit", 0, signal);
+    await flush();
+    expect(write).toHaveBeenCalledExactlyOnceWith(`\npsu: Resume this agent with: psu --resume ${owner}\n`);
+    const end = signal ? processKill : processExit;
+    expect(write.mock.invocationCallOrder[0]).toBeLessThan(end.mock.invocationCallOrder.at(-1)!);
+    child.emit("exit", 0, signal);
+    expect(write).toHaveBeenCalledOnce();
+  });
+
+  it("suppresses resume hints in headless or nonterminal runs", () => {
+    const write = vi.fn();
+    const tty = { stdin: { isTTY: true }, stdout: { isTTY: true, write } };
+    expect(printPsuResumeHint({ PAPERCUSP_SID: "su-test", PAPERCUSP_PSU_HEADLESS: "1" }, tty as never)).toBe(false);
+    expect(printPsuResumeHint({ PAPERCUSP_SID: "su-test" }, { ...tty, stdout: { isTTY: false, write } } as never)).toBe(false);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("uses a tracked session ID for other roles and never prints unsafe shell input", () => {
+    const write = vi.fn();
+    const tty = { stdin: { isTTY: true }, stdout: { isTTY: true, write } };
+    expect(printPsuResumeHint({ PAPERCUSP_SID: "role-worker", PAPERCUSP_ADV_SESSION_ID: "31413" }, tty as never)).toBe(true);
+    expect(write).toHaveBeenLastCalledWith("\npsu: Resume this agent with: psu --resume 31413\n");
+    printPsuResumeHint({ PAPERCUSP_SID: "su-owner; echo unsafe", PAPERCUSP_ADV_SESSION_ID: "$(unsafe)" }, tty as never);
+    expect(write).toHaveBeenLastCalledWith("\npsu: Resume this agent with: psu --resume\n");
+  });
 
   it("finalizes only after Node confirms the direct child spawned", async () => {
     const child = new EventEmitter() as EventEmitter & {
