@@ -7,7 +7,7 @@
  * gives an honest end-to-end probe of the CHILD PROCESS's actual env without
  * mocking anything — the exact vector a bee's `capability:git` would have had.
  */
-import { execFile, execFileSync } from 'node:child_process';
+import { ChildProcess, execFile, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -140,10 +140,12 @@ describe('standalone scratch Git failure diagnostics (EI-25802116941940647)', ()
       callback(Object.assign(new Error('deadline fixture'), { code: null, signal: 'SIGTERM', killed: true }), '', '');
       return true;
     });
-    vi.mocked(execFile).mockImplementationOnce(((...args: unknown[]) => {
+    vi.mocked(execFile).mockImplementationOnce((...args) => {
       callback = args.at(-1) as typeof callback;
-      return { kill };
-    }) as typeof execFile);
+      const child = new ChildProcess();
+      child.kill = kill;
+      return child;
+    });
     try {
       const result = runLocalGit(['checkout', '--detach', 'fixture'], STATE, never);
       expect(vi.mocked(execFile).mock.calls.at(-1)?.[2]).toMatchObject({ timeout: 0 });
@@ -177,14 +179,16 @@ describe('standalone scratch Git failure diagnostics (EI-25802116941940647)', ()
       callback(Object.assign(new Error('deadline fixture'), { code: null, signal: 'SIGTERM', killed: true }), '', '');
       return true;
     });
-    vi.mocked(execFile).mockImplementationOnce(((...args: unknown[]) => {
+    vi.mocked(execFile).mockImplementationOnce((...args) => {
       callback = args.at(-1) as typeof callback;
       // Model execFile's native wall timer too: the old implementation kills
       // both controls after thaw; only the suspension-aware runner separates them.
       const options = args[2] as { timeout: number };
       if (options.timeout > 0) setTimeout(() => kill(), options.timeout);
-      return { kill };
-    }) as typeof execFile);
+      const child = new ChildProcess();
+      child.kill = kill;
+      return child;
+    });
     try {
       const result = runLocalGit(['checkout', '--detach', 'fixture'], STATE, never);
       writeFileSync(record, `frozen_total_ms=${freezeMs}\n`);
