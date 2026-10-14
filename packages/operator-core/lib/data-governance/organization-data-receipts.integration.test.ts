@@ -15,8 +15,15 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { createPersonalGrant } from '../personal-vault/store';
-import { placeLegalHold, upsertChatMessages } from '../data-sources/chat-retrieval-units';
+import { createPersonalGrant, purgePersonalSource, upsertPersonalDocuments } from '../personal-vault/store';
+import {
+  CHAT_DERIVED_DOCUMENT_KINDS,
+  CHAT_WINDOW_DOCUMENT_KIND,
+  containerPermissionRef,
+  placeLegalHold,
+  releaseLegalHold,
+  upsertChatMessages,
+} from '../data-sources/chat-retrieval-units';
 import {
   ORGANIZATION_CORPUS_SCOPE,
   mapProviderIdentity,
@@ -291,6 +298,93 @@ describe('organization data receipts (P-007c)', () => {
       'harness_shared.trigger_webhook_secrets', 'harness_shared.connector_push_secrets', 'harness_shared.admission_rules']) {
       expect(byStore.get(store)!.rowCount, store).toBe(1);
     }
+  });
+
+  // ── P-017a (WI-6554700010012462, migration 1502): legal holds on the document route ──
+
+  it('the document hold exemption is exactly the chat-derived kinds the code writes', async () => {
+    const [fn] = await org.adminSql<{ src: string }[]>`
+      SELECT prosrc AS src FROM pg_proc
+       WHERE proname = 'document_is_chat_derived' AND pronamespace = 'harness_shared'::regnamespace`;
+    const sqlKinds = [...fn!.src.matchAll(/'([^']+)'/g)].map((m) => m[1]).sort();
+    expect(sqlKinds).toEqual([...CHAT_DERIVED_DOCUMENT_KINDS].sort());
+    const [probe] = await org.adminSql<{ chat: boolean; issue: boolean }[]>`
+      SELECT harness_shared.document_is_chat_derived(${CHAT_WINDOW_DOCUMENT_KIND}) AS chat,
+             harness_shared.document_is_chat_derived('issue') AS issue`;
+    expect(probe).toEqual({ chat: true, issue: false });
+  });
+
+  it('a held container keeps its documents, access list and members through deletion, and the trigger refuses to destroy them', async () => {
+    await seed({ hold: false });
+    // A connector whose content lives only in documents; lists keyed the way connectors key them.
+    const [gh] = await org.adminSql<{ id: string }[]>`
+      INSERT INTO harness_shared.data_sources (workspace_id, kind, permission_mapping, credential_ref)
+      VALUES (${WS}, 'github', ${org.adminSql.json({ mode: 'source-acl' })}, 'vault://org-data-receipts/github')
+      RETURNING id`;
+    const ghId = gh!.id;
+    const heldList = await upsertPermissionList(org.adminSql, WS, { source: 'github', sourceRef: containerPermissionRef(ghId, 'acme/held'), title: 'acme/held' });
+    const openList = await upsertPermissionList(org.adminSql, WS, { source: 'github', sourceRef: containerPermissionRef(ghId, 'acme/open'), title: 'acme/open' });
+    await replacePermissionListMembers(org.adminSql, WS, heldList.id, [SLACK_ALICE]);
+    await replacePermissionListMembers(org.adminSql, WS, openList.id, [SLACK_ALICE]);
+    await upsertOrganizationDocuments(org.adminSql, WS, heldList.id, [
+      { source: 'github', kind: 'issue', dedupeKey: 'acme/held#1', sourceId: ghId, title: 'held issue', text: 'Held issue body.' },
+      // A chat-derived render: its content is held in chat_messages, so the document hold exempts it.
+      { source: 'github', kind: CHAT_WINDOW_DOCUMENT_KIND, dedupeKey: 'acme/held#window', sourceId: ghId, title: 'window', text: 'Rendered window.' },
+    ]);
+    await upsertOrganizationDocuments(org.adminSql, WS, openList.id, [
+      { source: 'github', kind: 'issue', dedupeKey: 'acme/open#1', sourceId: ghId, title: 'open issue', text: 'Open issue body.' },
+    ]);
+    const hold = await placeLegalHold(org.adminSql, WS, { dataSourceId: ghId, channelId: 'acme/held', reason: 'litigation 9', placedBy: 'owner' });
+
+    const held = org.adminSql`workspace_id = ${WS} AND dedupe_key = 'acme/held#1'`;
+    await expect(org.adminSql`DELETE FROM harness_shared.documents WHERE ${held}`).rejects.toThrow(/document_under_legal_hold/);
+    await expect(org.adminSql`UPDATE harness_shared.documents SET text = '' WHERE ${held}`).rejects.toThrow(/cannot be erased/);
+    await expect(org.adminSql`UPDATE harness_shared.documents SET source_id = NULL WHERE ${held}`).rejects.toThrow(/cannot be moved/);
+    // Updates that keep the content pass, including an upsert that omits the source.
+    await org.adminSql`UPDATE harness_shared.documents SET metadata = ${org.adminSql.json({ labels: ['bug'] })} WHERE ${held}`;
+    await upsertOrganizationDocuments(org.adminSql, WS, heldList.id, [
+      { source: 'github', kind: 'issue', dedupeKey: 'acme/held#1', title: 'held issue', text: 'Held issue body, edited.' },
+    ]);
+
+    const out = await deleteOrganizationData(org.adminSql, {
+      scope, actor, purpose: 'customer deletion request', confirmOrganizationId: scope.organizationId,
+    });
+
+    const docs = await org.adminSql<{ dedupe_key: string; source_id: string }[]>`
+      SELECT dedupe_key, source_id::text AS source_id FROM harness_shared.documents WHERE workspace_id = ${WS}`;
+    expect(docs).toEqual([{ dedupe_key: 'acme/held#1', source_id: ghId }]);
+    const lists = await org.adminSql<{ id: string }[]>`
+      SELECT id::text AS id FROM harness_shared.document_permission_lists WHERE workspace_id = ${WS}`;
+    expect(lists.map((l) => l.id)).toEqual([heldList.id]);
+    expect(await count('harness_shared.document_permission_members')).toBe(1);
+    const conflict = out.holdConflicts.find((c) => c.holdId === hold.id)!;
+    expect(conflict.retained).toEqual(expect.arrayContaining([{ store: 'harness_shared.documents', rows: 1 }]));
+    const byStore = new Map(out.stores.map((s) => [s.store, s]));
+    expect(byStore.get('harness_shared.documents')).toMatchObject({ outcome: 'deleted', rowCount: 3, rowsRemaining: 1 });
+    expect(byStore.get('harness_shared.document_permission_lists')).toMatchObject({ outcome: 'deleted', rowsRemaining: 1 });
+
+    // Released, the document is deleted like any other.
+    await releaseLegalHold(org.adminSql, WS, { id: hold.id, releasedBy: 'owner' });
+    await org.adminSql`DELETE FROM harness_shared.documents WHERE ${held}`;
+    expect(await count('harness_shared.documents')).toBe(0);
+  });
+
+  it('a personal purge keeps the documents of a held source and reports them as held', async () => {
+    await seed({ hold: false });
+    await upsertPersonalDocuments(org.adminSql, WS, alice, [
+      { source: 'mail', kind: 'message', dedupeKey: 'mail:held-1', title: 'held mail', text: 'Held mail body.', sourceId, providerAccountId: 'alice@example.com' },
+      { source: 'mail', kind: 'message', dedupeKey: 'mail:unsourced-1', title: 'other mail', text: 'Other mail body.' },
+    ]);
+    await placeLegalHold(org.adminSql, WS, { dataSourceId: sourceId, reason: 'litigation 10', placedBy: 'owner' });
+
+    const out = await purgePersonalSource(org.adminSql, WS, alice, 'mail');
+
+    expect(out).toMatchObject({ documents: 1, held: 1 });
+    const left = await org.adminSql<{ title: string }[]>`
+      SELECT title FROM harness_shared.documents WHERE workspace_id = ${WS} AND user_id = ${alice}`;
+    expect(left).toEqual([{ title: 'held mail' }]);
+    // A cascade from the user is a delete too: the held document blocks it.
+    await expect(org.adminSql`DELETE FROM harness_shared.users WHERE id = ${alice}`).rejects.toThrow(/document_under_legal_hold/);
   });
 
   it('a restore that brings back a revoked identity is reconciled and the identity is denied again', async () => {

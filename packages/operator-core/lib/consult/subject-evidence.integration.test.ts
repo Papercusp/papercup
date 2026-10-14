@@ -11,7 +11,7 @@ import { flushFallbackObservations } from '../degradation/fallback-observations'
 import { buildSidecarAwareReranker, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
 import { isEmbedSidecarRunning, probeSidecarHealth, readEmbedSidecarRecord, stopEmbedSidecar } from '../memory/embed-sidecar-spawn';
 import { scoreSubjectEvidence, SUBJECT_EVIDENCE_MIN_SCORE } from './relevance-router';
-import { evaluateSubjectCases, HELD_OUT_SUBJECT_CASES } from './subject-evidence.fixtures';
+import { evaluateSubjectCases, HELD_OUT_SUBJECT_CASES, NATURAL_QUESTION_SUBJECT_CASES } from './subject-evidence.fixtures';
 import '../agent-tools/index';
 
 describe('registered subject evidence with the real local scorer', () => {
@@ -20,10 +20,16 @@ describe('registered subject evidence with the real local scorer', () => {
   let privateDb: MigratedTestDb | undefined;
   const savedHome = process.env.PAPERCUSP_HOME;
   const savedPort = process.env.PAPERCUSP_EMBED_SIDECAR_PORT;
+  const savedEnable = process.env.PAPERCUSP_EMBED_SIDECAR;
   const databaseEnvKeys = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL',
     'DATABASE_URL', 'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY'] as const;
   const savedDatabaseEnv = databaseEnvKeys.map(key => [key, process.env[key]] as const);
   beforeAll(async () => {
+    // A plain test:file invocation must exercise an owned source runtime too.
+    // Preserve explicit in-process/shared-runtime choices as distinct evidence.
+    if (savedEnable === undefined && !process.env.PAPERCUSP_EMBED_SIDECAR_URL) {
+      process.env.PAPERCUSP_EMBED_SIDECAR = '1';
+    }
     // A scorer-only test owns its lazily spawned sidecar. The default Gemma
     // startup is unrelated to this fixture and can overlap the first bounded
     // measurements. Reuse the maintained reranker-only warm profile; explicit
@@ -91,6 +97,8 @@ describe('registered subject evidence with the real local scorer', () => {
       }
     }
     if (configuredPrivateWarmup) delete process.env.PAPERCUSP_EMBED_SIDECAR_WARM;
+    if (savedEnable === undefined) delete process.env.PAPERCUSP_EMBED_SIDECAR;
+    else process.env.PAPERCUSP_EMBED_SIDECAR = savedEnable;
   });
 
   it('measures labelled held-out top choice, recall and explicit no-expert outcomes', async () => {
@@ -197,6 +205,16 @@ describe('registered subject evidence with the real local scorer', () => {
       throw error;
     }
     console.info('subject-scorer-ready', JSON.stringify({ warmupMs: Date.now() - warmStart }));
+    const naturalMeasurements = [];
+    for (const scenario of NATURAL_QUESTION_SUBJECT_CASES) {
+      const scores = await scoreSubjectEvidence(scenario.subject, scenario.passages.map(p => p.text),
+        Date.now() + 4000, { scorer });
+      naturalMeasurements.push({ id: scenario.id, scores });
+    }
+    const natural = evaluateSubjectCases(naturalMeasurements, SUBJECT_EVIDENCE_MIN_SCORE,
+      NATURAL_QUESTION_SUBJECT_CASES);
+    console.info('subject-natural-question-metrics', JSON.stringify(natural.cases));
+    console.info('subject-natural-question-summary', JSON.stringify(natural.summary));
     const measurements = [];
     for (const scenario of HELD_OUT_SUBJECT_CASES) {
       const scores = await scoreSubjectEvidence(scenario.subject, scenario.passages.map(p => p.text), Date.now() + 4000, { scorer });
@@ -208,6 +226,10 @@ describe('registered subject evidence with the real local scorer', () => {
     const { cases: measured, summary } = evaluateSubjectCases(measurements, SUBJECT_EVIDENCE_MIN_SCORE);
     console.info('subject-held-out-metrics', JSON.stringify(measured));
     console.info('subject-held-out-summary', JSON.stringify(summary));
+    expect(natural.summary.unavailable, 'natural-question measurements must be available').toBe(0);
+    expect(natural.cases[0].selected).toEqual(['lease-auditor']);
+    expect(natural.cases[1].selected).toEqual([]);
+    expect(natural.summary.falseExpertSelections).toBe(0);
     const positives = measured.filter(r => r.relevant.length);
     const negatives = measured.filter(r => !r.relevant.length);
     expect(summary.unavailable, `all labelled measurements must be available: ${JSON.stringify({ runtime, failures })}`).toBe(0);

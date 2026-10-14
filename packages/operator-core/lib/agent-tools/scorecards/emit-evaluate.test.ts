@@ -36,12 +36,22 @@ const readRunningGenerationM = vi.hoisted(() => vi.fn());
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
   const getRubric = vi.fn();
+  const readRubric = vi.fn(async (rubricId: string) => {
+    const rubric = await getRubric(rubricId);
+    return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+  });
+  const readRubricWithoutSeeding = vi.fn(async (rubricId: string) => {
+    const rubric = await getRubric(rubricId);
+    return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+  });
   const getRubricCriteriaHash = vi.fn(async (_rubricId: string): Promise<string | null> => null);
   const getRubricPlanRevision = vi.fn(async (_rubricId: string): Promise<number | null> => 7);
   return {
     ...actual,
     getRubric,
     getRubricWithoutSeeding: getRubric,
+    readRubric,
+    readRubricWithoutSeeding,
     getRubricCriteriaHash,
     getRubricPlanRevision,
     readRubricPlanRevision: vi.fn(async () => ({ ok: true as const, revision: 7 })),
@@ -97,7 +107,14 @@ vi.mock('../../acceptance-author-identity', () => ({
   resolvePlanImplementerIdentities: vi.fn(async () => [] as string[]),
 }));
 
-import { getRubric, getRubricCriteriaHash, getRubricPlanRevision, readRubricPlanRevision } from '../../rubrics';
+import {
+  getRubric,
+  getRubricCriteriaHash,
+  getRubricPlanRevision,
+  readRubric,
+  readRubricPlanRevision,
+  readRubricWithoutSeeding,
+} from '../../rubrics';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { getIssue, type EngineerIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
@@ -111,6 +128,8 @@ const getRubricM = vi.mocked(getRubric);
 const getRubricCriteriaHashM = vi.mocked(getRubricCriteriaHash);
 const getRubricPlanRevisionM = vi.mocked(getRubricPlanRevision);
 const readRubricPlanRevisionM = vi.mocked(readRubricPlanRevision);
+const readRubricM = vi.mocked(readRubric);
+const readRubricWithoutSeedingM = vi.mocked(readRubricWithoutSeeding);
 const captureM = vi.mocked(captureImprovement);
 const listM = vi.mocked(listScorecards);
 const getIssueM = vi.mocked(getIssue);
@@ -272,6 +291,14 @@ beforeEach(() => {
   lineageRelatedM.mockImplementation(async (author, candidate) => author === candidate);
   planImplementersM.mockResolvedValue([]);
   getRubricM.mockResolvedValue(RUBRIC);
+  readRubricM.mockImplementation(async (rubricId) => {
+    const rubric = await getRubricM(rubricId);
+    return rubric ? { kind: 'found', rubric } : { kind: 'missing' };
+  });
+  readRubricWithoutSeedingM.mockImplementation(async (rubricId) => {
+    const rubric = await getRubricM(rubricId);
+    return rubric ? { kind: 'found', rubric } : { kind: 'missing' };
+  });
   getRubricPlanRevisionM.mockResolvedValue(7);
   getRubricCriteriaHashM.mockResolvedValue(null);
   readRubricPlanRevisionM.mockResolvedValue({ ok: true, revision: 7 });
@@ -1747,6 +1774,7 @@ describe('evaluateScorecard', () => {
 
   it('does not collapse a failed backing-plan read into a false not-found', async () => {
     getRubricM.mockResolvedValue(null);
+    readRubricWithoutSeedingM.mockResolvedValue({ kind: 'read-failed' });
     readRubricPlanRevisionM.mockResolvedValue({ ok: false, revision: null });
 
     const r = await evaluateScorecard({ rubricRef: 'active-acceptance-rubric' });
@@ -1758,7 +1786,25 @@ describe('evaluateScorecard', () => {
         'retry or verify independently before treating it as absent',
     });
     expect(r.error).not.toContain('not found');
-    expect(readRubricPlanRevisionM).toHaveBeenCalledWith('active-acceptance-rubric');
+    expect(readRubricWithoutSeedingM).toHaveBeenCalledWith('active-acceptance-rubric');
+    expect(readRubricPlanRevisionM).not.toHaveBeenCalled();
+  });
+
+  it('scorecards:emit reports a backing-plan read failure without claiming the rubric is missing', async () => {
+    readRubricM.mockResolvedValue({ kind: 'read-failed' });
+
+    const result = await emitScorecard(
+      { rubricRef: 'grading-integrity', ratings: RATINGS },
+      { createdBy: 'su-grader' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error:
+        "rubric 'grading-integrity' could not be resolved because the backing plan read failed; " +
+        'retry or verify independently before treating it as absent',
+    });
+    expect(result.error).not.toContain('not found');
   });
 
   it.each(['evaluate', 'emit'] as const)(

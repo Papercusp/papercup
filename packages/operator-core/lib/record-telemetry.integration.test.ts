@@ -209,4 +209,78 @@ describe('redacted render crash persistence (real PG)', () => {
     }
     expect(rows).toEqual([[identities[1], 1]]);
   }, 90_000);
+
+  it.runIf(process.env.PAPERCUSP_TEST_POSTHOG_LIVE === 'true')('ingests distinct confirmed phases and saved reviews once, rejects forged browser reviews, and materializes isolated business views', async () => {
+    const { getPosthogConfigWithSource } = await import('./posthog-config');
+    const { deliverCloudPosthog, ensureCloudMonitoringDashboard, cloudMonitoringDashboardViews } = await import('./telemetry-flush');
+    const config = getPosthogConfigWithSource().config;
+    if (!config) throw new Error('configured PostHog required');
+    const request = async (path: string, body?: unknown) => {
+      const response = await fetch(config.host.replace(/\/+$/, '') + path, { headers: {
+        authorization: `Bearer ${config.personalApiKey}`, 'content-type': 'application/json' },
+        ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(15_000) });
+      expect(response.status, `PostHog ${path}`).toBe(200); return response.json();
+    };
+    const projects = await request('/api/projects/');
+    const project = projects.results.find((value: { api_token: string }) => value.api_token === config.projectKey);
+    expect(project).toBeDefined();
+    const organization = randomUUID(), user = randomUUID();
+    const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: organization,
+      userId: user, selectedWorkspaceId: randomUUID(), sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:view'] });
+    const scoped = async <T>(fn: (tx: Sql) => Promise<T>) => await db.adminSql.begin(async transaction => {
+      const tx = transaction as unknown as Sql;
+      await tx.unsafe('SET LOCAL ROLE hosted_app');
+      await tx`SELECT set_config('app.organization_id', ${organization}, true), set_config('app.user_id', ${user}, true)`;
+      return fn(tx);
+    }) as T;
+    const readConsent = () => scoped(tx => readCloudTelemetryConsent(tx, principal));
+    const consent = await scoped(tx => writeCloudTelemetryConsent(tx, principal, {
+      disclosure_version: DEFAULT_CLOUD_TELEMETRY_CONSENT.disclosure_version, analytics: true }));
+    const context = { principal, environment: 'staging' as const, release: process.env.PAPERCUSP_TEST_BUILD_SHA?.slice(0,40) ?? 'abcdef1234567',
+      origin: 'control-plane' as const, hostingMode: 'byoc' as const, synthetic: true };
+    const operation_id = randomUUID(), reviewOperation = randomUUID(), forgedOperation = randomUUID();
+    const makePhase = (phase: 'requested' | 'ready') => ({ event: 'cloud_workspace_provisioning', operation_id,
+      properties: { phase, provider: 'gcp', hosting_mode: 'unknown', ...(phase === 'ready' ? { duration_ms: 10 } : {}) } });
+    const makeReview = (lesson: string, operation = reviewOperation) => ({ event: 'product_tutorial', operation_id: operation,
+      properties: { lesson_id: 'product-guide', lesson_version: 3, action: 'explanation_reviewed', lesson } });
+    const events = [makePhase('requested'), makePhase('ready'), makePhase('ready'), makeReview('welcome'), makeReview('navigation'), makeReview('navigation')];
+    for (const event of events) expect(await deliverCloudPosthog(event, context, readConsent)).toEqual({ delivered: true });
+    expect(await deliverCloudPosthog(makeReview('welcome', forgedOperation), { ...context, origin: 'portal' }, readConsent))
+      .toEqual({ delivered: false, code: 'unwitnessed_outcome' });
+    const opaqueOperations = [operation_id, reviewOperation, forgedOperation].map(id => {
+      const prepared = prepareCloudTelemetryDelivery(makeReview('welcome', id), context, consent);
+      if (!prepared.ok) throw new Error('synthetic identity preparation failed'); return prepared.envelope.properties.operation_id;
+    });
+    const query = `SELECT event, properties.phase, properties.lesson, count() FROM events WHERE properties.operation_id IN (${opaqueOperations.map(id => `'${id}'`).join(',')}) GROUP BY event, properties.phase, properties.lesson ORDER BY event, properties.phase, properties.lesson`;
+    let rows: unknown[][] = [];
+    for (let attempt = 0; attempt < 15; attempt++) {
+      const result = await request(`/api/projects/${project.id}/query/`, { refresh: 'force_blocking', query: { kind: 'HogQLQuery', query } });
+      expect(result.is_cached).toBe(false); rows = result.results;
+      if (rows.length === 4) break;
+      await new Promise(resolve => setTimeout(resolve, 2_000));
+    }
+    expect(rows.map(row => [row[0], row[1] || null, row[2] || null, row[3]])).toEqual([
+      ['cloud_workspace_provisioning', 'ready', null, 1], ['cloud_workspace_provisioning', 'requested', null, 1],
+      ['product_tutorial', null, 'navigation', 1], ['product_tutorial', null, 'welcome', 1],
+    ]);
+    const environmentInsights = new Map<string, number[]>();
+    for (const environment of ['staging', 'production'] as const) {
+      const first = await ensureCloudMonitoringDashboard(environment), repeated = await ensureCloudMonitoringDashboard(environment);
+      expect(repeated.dashboardId).toBe(first.dashboardId); expect(repeated.insightIds).toEqual(first.insightIds);
+      const dashboard = await request(`/api/projects/${project.id}/dashboards/${first.dashboardId}/`);
+      expect(dashboard.name).toBe(`Papercusp cloud monitoring — ${environment}`);
+      expect(first.insightIds).toHaveLength(cloudMonitoringDashboardViews(environment).length);
+      environmentInsights.set(environment, first.insightIds);
+      for (const id of first.insightIds) {
+        const insight = await request(`/api/projects/${project.id}/insights/${id}/`);
+        expect(insight.dashboards).toEqual([first.dashboardId]);
+        expect(insight.query.source.query).toContain(`properties.environment = '${environment}'`);
+      }
+      console.info('CLOUD_MONITORING_DASHBOARD_RECEIPT', JSON.stringify({ environment, ...first }));
+      const excluded = await request(`/api/projects/${project.id}/query/`, { refresh: 'force_blocking', query: { kind: 'HogQLQuery',
+        query: `SELECT count() FROM events WHERE properties.synthetic = false AND properties.environment = '${environment}' AND properties.operation_id IN (${opaqueOperations.map(id => `'${id}'`).join(',')})` } });
+      expect(excluded.results).toEqual([[0]]);
+    }
+    expect(environmentInsights.get('staging')!.filter(id => environmentInsights.get('production')!.includes(id))).toEqual([]);
+  }, 180_000);
 });

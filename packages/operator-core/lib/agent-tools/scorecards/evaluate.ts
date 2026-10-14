@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { getRubricWithoutSeeding, readRubricPlanRevision } from '../../rubrics';
+import { readRubricWithoutSeeding } from '../../rubrics';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -240,22 +240,20 @@ export async function evaluateScorecard(
   args: z.infer<typeof scorecardEvaluateArgs>,
   caller?: ScorecardEvaluateCaller,
 ) {
-  const rubric = await getRubricWithoutSeeding(args.rubricRef);
-  if (!rubric) {
-    // The seed-free lookup is intentionally fail-soft for read callers. Pair its null
-    // with the revision-spine read so a transient DB/data-plane failure cannot
-    // become a false authoritative "not found" during grading preflight.
-    const revisionRead = await readRubricPlanRevision(args.rubricRef);
-    if (!revisionRead.ok) {
-      return {
-        ok: false as const,
-        error:
-          `rubric '${args.rubricRef}' could not be resolved because the backing plan read failed; ` +
-          'retry or verify independently before treating it as absent',
-      };
-    }
+  const rubricRead = await readRubricWithoutSeeding(args.rubricRef);
+  if (rubricRead.kind === 'ambiguous') throw rubricRead.error;
+  if (rubricRead.kind === 'read-failed') {
+    return {
+      ok: false as const,
+      error:
+        `rubric '${args.rubricRef}' could not be resolved because the backing plan read failed; ` +
+        'retry or verify independently before treating it as absent',
+    };
+  }
+  if (rubricRead.kind === 'missing') {
     return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
   }
+  const rubric = rubricRead.rubric;
 
   // Keep the documented read-only preflight aligned with scorecards:emit. An
   // adopted acceptance rubric can be individually resolvable while its BAR

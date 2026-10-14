@@ -29,6 +29,8 @@ import { emitScorecardForToolContext, scorecardEmitArgs, SCORECARD_EMIT_TIMEOUT_
 import { listScorecards } from '../../scorecards';
 import { getBuildInfo } from '../../build-info';
 import { GRADING_AUDIT_RESERVATION_TTL_MS } from '../../grading-integrity';
+import { getWorkItem } from '../../work-items';
+import { specTestAdequacyCompletionGate } from '../work_items/spec-test-adequacy-gate';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -37,6 +39,9 @@ const argsSchema = z.object({
     .enum(PLAN_CLASS_RUBRIC_REFS)
     .describe('Existing plan-class standard rubric referenced by the plan acceptance rubric.'),
   workItemIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+  completionWorkItemId: z.string().trim().min(1).optional().describe(
+    'Work item whose existing spec-test-adequacy completion gate should be checked before filing. Advisory only; does not change the certification evidence selection. A single workItemIds entry supplies the default target.',
+  ),
   evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
@@ -179,6 +184,44 @@ export default defineTool({
       return { data: { ok: false, dryRun, evaluator: evaluation } };
     }
 
+    // A plan-level PASS may combine proofs from several work items. Completion
+    // consumes only its target's bindings and reconciled behavior contract, so
+    // reuse that gate rather than deriving a second readiness verdict here.
+    const completionWorkItemId = args.completionWorkItemId ??
+      (args.workItemIds?.length === 1 ? args.workItemIds[0] : undefined);
+    const completionReadiness = await (async () => {
+      if (!completionWorkItemId) return {
+        status: 'not-checked' as const,
+        note: 'Certification can combine evidence from multiple work items. It does not establish that any work item can close. Supply completionWorkItemId to check the existing scoped completion gate.',
+      };
+      try {
+        const workItem = await getWorkItem(completionWorkItemId, args.harness);
+        if (!workItem) return {
+          status: 'unavailable' as const,
+          workItemId: completionWorkItemId,
+          reason: 'The target work item could not be resolved.',
+        };
+        const gate = await specTestAdequacyCompletionGate({
+          workItem,
+          attestation: { classRef: args.classRef },
+        });
+        return {
+          status: gate.ok ? 'ready' as const : 'not-ready' as const,
+          workItemId: completionWorkItemId,
+          scope: 'spec-test-adequacy' as const,
+          checkedBeforeFiling: true,
+          gate,
+          note: 'This is the existing spec-test-adequacy gate before card filing, not the full work-item completion contract. Filing does not change this snapshot.',
+        };
+      } catch (error) {
+        return {
+          status: 'unavailable' as const,
+          workItemId: completionWorkItemId,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })();
+
     const rows = Array.isArray(evaluation.rows) ? (evaluation.rows as EvaluatorRow[]) : [];
     const clauses: ClauseOutcome[] = [];
     // Sequential on purpose: scorecards:emit serializes on a per-rubric mutex anyway, and
@@ -294,6 +337,7 @@ export default defineTool({
         ...(typeof evaluation.governingNote === 'string' ? { governingNote: evaluation.governingNote } : {}),
         counts,
         clauses,
+        completionReadiness,
       },
     };
   },

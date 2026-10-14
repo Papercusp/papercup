@@ -100,6 +100,20 @@ try {
 let managedTaskSocket;
 let managedTaskBusAddress;
 let runtimeRoot = null;
+async function createIsolatedRuntimeRoot() {
+  // PG and Vitest may use /dev/shm, but Linux SRT replaces /dev with a
+  // private device namespace and deliberately skips /dev allowWrite mounts.
+  // Native HOME/TMPDIR must survive that namespace. Resolve symlinks too;
+  // changing PG's capacity-selected volume would not fix this placement rule.
+  let base = await realpath(tmpdir());
+  const masked = path => process.platform === 'linux' && /^\/(dev|proc)(\/|$)/.test(path);
+  if (masked(base)) {
+    await mkdir('/tmp/pcv', { recursive: true });
+    base = await realpath('/tmp/pcv');
+    if (masked(base)) throw new Error('isolated native runtime temporary root resolves into the sandbox device namespace');
+  }
+  return mkdtemp(join(base, 'papercusp-test-runtime-'));
+}
 if (managedTasks) {
   try {
     if (process.platform !== 'linux' || !process.env.XDG_RUNTIME_DIR?.trim()) {
@@ -109,7 +123,7 @@ if (managedTasks) {
     // Select and probe one exact owned route. Some hosts have a stale private
     // manager socket while the manager is healthy through the session bus.
     // Never let the native client fall back to an unprobed ambient bus.
-    runtimeRoot = await mkdtemp(join(tmpdir(), 'papercusp-test-runtime-'));
+    runtimeRoot = await createIsolatedRuntimeRoot();
     const privateRuntime = join(runtimeRoot, 'xdg-runtime');
     await mkdir(join(privateRuntime, 'systemd'), { recursive: true, mode: 0o700 });
     const failures = [];
@@ -210,7 +224,7 @@ if (!tmpdirHasCriticalHeadroom(tmpdir())) {
   throw new Error('private Postgres storage preflight failed: no temporary volume has critical headroom');
 }
 const dataDir = await mkdtemp(join(tmpdir(), 'papercusp-test-pg-'));
-runtimeRoot ??= isolatedRuntime ? await mkdtemp(join(tmpdir(), 'papercusp-test-runtime-')) : null;
+runtimeRoot ??= isolatedRuntime ? await createIsolatedRuntimeRoot() : null;
 const runtimeId = isolatedRuntime ? `test-runtime-${randomUUID().slice(0, 12)}` : null;
 const port = await freePort();
 

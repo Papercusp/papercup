@@ -410,6 +410,9 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
   const child = sidecarProcess;
   return new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
+      // Settle the deadline before kill(): injected children can emit exit
+      // synchronously, but that exit is the guard's effect, not its cause.
+      reject(new Error('Spawner sidecar startup timeout'));
       if (!sidecarReady && sidecarProcess) {
         // EI-20200233989444731: kill the SCOPE first. This path then drops the only
         // reference we hold (`sidecarProcess = null`), so a payload that survived a
@@ -422,7 +425,6 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
         sidecarProcess = null;
         sidecarScopeUnit = null;
       }
-      reject(new Error('Spawner sidecar startup timeout'));
     }, 10000);
 
     // Listen for ready handshake. Decode across chunk boundaries — the
@@ -495,7 +497,11 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
       reject(err);
     });
 
-    child.on('exit', (code) => {
+    child.on('exit', (code, signal) => {
+      // This child's handshake cannot arrive after exit. Clear its timer even
+      // when crash recovery starts another child before the original deadline.
+      const exitedBeforeReady = !sidecarReady;
+      clearTimeout(timeout);
       // The child found a LIVE sidecar on the shared path and declined to start
       // (listenUnixSocketExclusive). Same outcome as the stderr bind-race case above,
       // read off the exit code because this event can arrive before that stderr line.
@@ -504,7 +510,7 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
         adoptedSocketPath = resolvedSocket;
         console.log(`[spawner-sidecar] a live sidecar already serves ${resolvedSocket}; adopting it.`);
       }
-      const msg = code !== null ? `exit code ${code}` : 'killed';
+      const msg = code !== null ? `exit code ${code}` : signal ? `signal ${signal}` : 'killed';
       // A deliberate stopSpawnerSidecar() is a graceful shutdown, not a crash —
       // "died" here would be misleading noise (mirrors substrate's same guard).
       if (!deliberateStop) {
@@ -529,6 +535,11 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
         return;
       }
 
+      if (exitedBeforeReady) {
+        reject(Object.assign(new Error(`Spawner sidecar exited before ready (${msg})`), {
+          code: 'SIDECAR_STARTUP_EXIT', exitCode: code, signal: signal ?? null,
+        }));
+      }
       scheduleRespawn(resolvedSocket);
     });
   });

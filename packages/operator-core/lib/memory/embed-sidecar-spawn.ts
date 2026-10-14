@@ -628,8 +628,26 @@ export async function spawnEmbedSidecar(): Promise<void> {
       }
     });
 
+    // The DB resolver writes its redacted target to stderr to keep CLI stdout
+    // parseable. Stderr is a transport, not a severity: recognise only that
+    // complete informational record and keep every other diagnostic a warning.
+    // Buffer lines so a chunk boundary or a mixed chunk cannot hide a warning.
+    let stderrBuffer = '';
+    const reportStderr = (line: string) => {
+      const text = line.trim();
+      if (!text) return;
+      if (/^\[db\] target source=\S+ endpoint=\S+$/.test(text)) console.log('[embed-sidecar-err]', text);
+      else console.warn('[embed-sidecar-err]', text);
+    };
     sidecarProcess.stderr?.on('data', (chunk: Buffer) => {
-      console.warn('[embed-sidecar-err]', chunk.toString().trim());
+      stderrBuffer += chunk.toString();
+      const lines = stderrBuffer.split('\n');
+      stderrBuffer = lines.pop()!;
+      for (const line of lines) reportStderr(line);
+    });
+    sidecarProcess.stderr?.on('end', () => {
+      reportStderr(stderrBuffer);
+      stderrBuffer = '';
     });
 
     sidecarProcess.on('error', (err) => {

@@ -941,6 +941,40 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
     expect(res.paused).toBe(1);
   });
 
+  it('WI-6554700010012442 — re-arms (never vetoes) a fire-starved loop whose owner keeps taking real turns via other wakes', async () => {
+    const sql = fakeSql([{ id: 'rt-starved-busy', target_owner_id: 'su-starved-busy' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          [
+            'su-starved-busy',
+            status({
+              ownerId: 'su-starved-busy',
+              turnsStalled: false,
+              fireStarved: true,
+              ...NO_POST_ARM_FIRE,
+              lastRealTurnAt: new Date(Date.now() - 30_000).toISOString(),
+            }),
+          ],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
+    const probeReachability = reach(false);
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, rearm, probeReachability, broadcast },
+    );
+
+    expect(rearm).toHaveBeenCalledWith(sql, 'rt-starved-busy', expect.stringContaining('WI-6554700010012442'));
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(res.reArmedFireStarved).toEqual(['su-starved-busy']);
+    expect(res.vetoedByRecentTurn).toEqual([]);
+    expect(res.paused).toBe(0);
+  });
+
   it('THE DISCRIMINATION: identical turn/fire shape, UNREACHABLE owner → disarmed, not re-armed', async () => {
     // Byte-identical to the fire-starved case above. Only the reachability probe differs, and
     // that alone must flip the outcome — this is the WI-6639 corpse the ordering check would

@@ -156,6 +156,7 @@ KEYPERM_EXCLUDE_DIRS="${KEYPERM_EXCLUDE_DIRS-$EXCLUDE_DIRS_DEFAULT}"
 
 log() { echo "[fedplane-key-perm $(date +%H:%M:%S 2>/dev/null || true)] $*" >&2; }
 jstr() { printf '%s' "$1" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
+log "run: source=${PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_PATH:-$0} snapshot_sha256=${PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_SHA256:-unknown} roots=[$KEYPERM_DEEP_ROOTS] timeout_per_root=${KEYPERM_DEEP_TIMEOUT_S}s"
 
 # Build the shared `find` prune expression from KEYPERM_EXCLUDE_DIRS.
 # Echoes nothing when the list is empty, which is a legitimate (noisy) mode.
@@ -395,9 +396,54 @@ DEEP_STATUS="disabled"
 DEEP_FAILURE_DETAIL=""
 if [ "$KEYPERM_DEEP" = 1 ]; then
   DEEP_STATUS="ok"
+  progress_pid=""
+  stop_scan_progress() {
+    if [ -n "$progress_pid" ]; then
+      kill "$progress_pid" 2>/dev/null || true
+      wait "$progress_pid" 2>/dev/null || true
+      progress_pid=""
+    fi
+  }
+  stop_scan_on_signal() {
+    signal_status="$1"
+    trap '' TERM INT
+    stop_scan_progress
+    exit "$signal_status"
+  }
+  trap 'stop_scan_on_signal 143' TERM
+  trap 'stop_scan_on_signal 130' INT
+  trap stop_scan_progress EXIT
+  progress_interval_s=300
+  if [[ "$KEYPERM_DEEP_TIMEOUT_S" =~ ^[0-9]+$ ]]; then
+    progress_interval_s=$((KEYPERM_DEEP_TIMEOUT_S / 6))
+    [ "$progress_interval_s" -lt 1 ] && progress_interval_s=1
+    [ "$progress_interval_s" -gt 300 ] && progress_interval_s=300
+  fi
   for root in $KEYPERM_DEEP_ROOTS; do
     [ -d "$root" ] || { log "tier2: skip missing root $root"; continue; }
     log "tier2: content sweep of $root (timeout ${KEYPERM_DEEP_TIMEOUT_S}s)"
+    root_started_epoch="$(date +%s 2>/dev/null || echo 0)"
+    (
+      progress_sleep_pid=""
+      stop_progress() {
+        if [ -n "$progress_sleep_pid" ]; then
+          kill "$progress_sleep_pid" 2>/dev/null || true
+          wait "$progress_sleep_pid" 2>/dev/null || true
+        fi
+        exit 0
+      }
+      trap stop_progress TERM INT
+      while :; do
+        sleep "$progress_interval_s" &
+        progress_sleep_pid=$!
+        wait "$progress_sleep_pid" || break
+        progress_sleep_pid=""
+        now_epoch="$(date +%s 2>/dev/null || echo "$root_started_epoch")"
+        elapsed_s=$((now_epoch - root_started_epoch))
+        log "tier2: scan still running root=$root elapsed=${elapsed_s}s/${KEYPERM_DEEP_TIMEOUT_S}s"
+      done
+    ) &
+    progress_pid=$!
     # The WHOLE pipeline runs under one timeout, because the expensive half is
     # the grep, not the find. It is wrapped in `bash -c` so that `timeout`'s own
     # exit status is what lands in $? — a naive
@@ -415,6 +461,11 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
         find "$@" -print0 2>/dev/null | xargs -0 -r -P 4 -n 1000 bash -c "grep -laIE -m1 \"\$0\" \"\$@\" 2>/dev/null; status=\$?; [ \"\$status\" -eq 1 ] && exit 0; exit \"\$status\"" "$re"
       ' _ "$KEY_HEADER_RE" "$root" "${PRUNE_ARGS[@]}" -type f -size -64k -size +100c)"
     rc=$?
+    stop_scan_progress
+    root_finished_epoch="$(date +%s 2>/dev/null || echo "$root_started_epoch")"
+    root_elapsed_s=$((root_finished_epoch - root_started_epoch))
+    partial_output_bytes="$(printf '%s' "$deep_out" | wc -c)"
+    log "tier2: root result root=$root status=$rc elapsed=${root_elapsed_s}s partial_output_bytes=$partial_output_bytes"
     # 124 is timeout(1)'s own "the command timed out" status. Partial output from
     # a killed sweep is not a complete answer, so it is reported as such rather
     # than folded into the clean case.

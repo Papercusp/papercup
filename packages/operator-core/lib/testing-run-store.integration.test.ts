@@ -87,7 +87,8 @@ describe('native operational execution provenance (real PG and kernel)', () => {
       treeSha: 'a'.repeat(40), pid: process.pid });
     const result = await executeOperationalRun({
       filePath: 'lib/testing-run-store.integration.test.ts', name: 'measured operational check',
-      command: ['native', 'actual-kernel-observation'], framework: 'operational',
+      command: ['executeGreenMainAdmissionWindow', workspaceId, 'original-install',
+        '1791000000000', '1791604800000'], framework: 'operational',
       runtimeUnits: ['native-check-runtime'],
       run: async () => {
         if (drift) await reportRuntimeVintage({ workspaceId, unit: 'native-check-runtime',
@@ -108,7 +109,9 @@ describe('native operational execution provenance (real PG and kernel)', () => {
     expect(row.workspace_id).toBe(workspaceId);
     expect(row.harness_slug).toBe('operational-harness');
     const execution = parseTestRunExecutionDetails(row.execution_details);
-    expect(execution).toMatchObject({ passed: 1, failed: 0, worktreeDirty: false });
+    expect(execution).toMatchObject({ passed: 1, failed: 0, worktreeDirty: false,
+      operational: { schemaVersion: 1, command: ['executeGreenMainAdmissionWindow',
+        workspaceId, 'original-install', '1791000000000', '1791604800000'] } });
     expect(execution?.runtimeEnvironmentBefore).toBeDefined();
     expect(execution?.runtimeEnvironmentAfter).toBeDefined();
     expect(Boolean(stableRecordedRuntimeEnvironment(execution?.runtimeEnvironmentBefore,

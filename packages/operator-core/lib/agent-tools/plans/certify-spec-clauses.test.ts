@@ -85,6 +85,11 @@ const getRubricPlanRevision = vi.fn();
 const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
+const completionGate = vi.fn();
+
+vi.mock('../work_items/spec-test-adequacy-gate', () => ({
+  specTestAdequacyCompletionGate: (...args: unknown[]) => completionGate(...args),
+}));
 
 vi.mock('../../rubrics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../rubrics')>()),
@@ -140,6 +145,7 @@ const MEASUREMENT = {
   kind: 'repo-files' as const,
   sourcePaths: ['src/reconnect.ts'],
   testPaths: ['test/reconnect.test.ts'],
+  fixturePaths: ['test/reconnect.fixture.json'],
 };
 const FIXTURE_MEASUREMENT = { ...MEASUREMENT, fixturePaths: ['test/reconnect.fixture.json'] };
 const CASE_TITLE = 'acknowledged events are not replayed';
@@ -185,7 +191,7 @@ function bindingRow(
     evidence_ref: over.evidenceRef,
     source_fingerprint: fingerprints.sourceFingerprint,
     test_fingerprint: fingerprints.testFingerprint,
-    fixture_fingerprint: over.evidenceKind === 'fixture' ? fixtureBound.fixtureFingerprint : null,
+    fixture_fingerprint: fixtureBound.fixtureFingerprint,
     rubric_fingerprint: null,
     environment_fingerprint: null,
     coverage_evidence_ref: 42,
@@ -200,11 +206,11 @@ function bindingRow(
     ...(mutant ? { test_run_source: 'mutation-probe', mutation_failure_tail: null, mutation_execution_details: execution } : {}),
     details: {
       adequacy: {
-        fixtureFree: over.evidenceKind !== 'fixture',
+        fixtureFree: false,
         testCases: [CASE_TITLE],
         // An empty scenarioIds list is malformed contract metadata (scenarioIds:invalid).
         ...(mutant ? { scenarioIds: ['acknowledged-event-negative-control'] } : {}),
-        ...(over.evidenceKind === 'fixture' ? { fixtureCalibrated: true } : {}),
+        fixtureCalibrated: true,
         falsifiable: true,
         testLayer: 'integration',
         pathReachable: true,
@@ -302,6 +308,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  completionGate.mockResolvedValue({ ok: true, applicable: true, checked: ['SPEC-PASS@1'] });
   h.planSlug = PLAN;
   h.orgQueries = [];
   await writeSubject('export const ackedEventsReplayed = false;\n');
@@ -546,6 +553,49 @@ describe('plans:certify-spec-clauses', () => {
     expect(result.clauses?.find((c) => c.specId === 'SPEC-PASS')?.card).toEqual({ status: 'would-file' });
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(dispatchTool).not.toHaveBeenCalled();
+  });
+
+  it('does not claim work-item readiness from an unscoped certification', async () => {
+    const result = await certify({ specIds: ['SPEC-PASS'], dryRun: true });
+    expect(result).toMatchObject({
+      counts: { passing: 1 },
+      completionReadiness: { status: 'not-checked', note: expect.stringContaining('multiple work items') },
+    });
+    expect(completionGate).not.toHaveBeenCalled();
+  });
+
+  it('reports the real scoped gate refusal without changing the globally passing clause or filing a duplicate', async () => {
+    // The real evaluator reads the combined clause cohort; the completion seam
+    // supplies the canonical refusal for a target missing its sibling's proof.
+    h.rows[0]!.work_item_id = 'WI-parent';
+    completionGate.mockResolvedValue({
+      ok: false, applicable: true, retryable: true, checked: [],
+      reason: 'SPEC-PASS@1: target WI-101 lacks clause-bound mutation proof',
+    });
+    const result = await certify({ specIds: ['SPEC-PASS'], completionWorkItemId: 'WI-101', dryRun: true });
+    expect(completionGate).toHaveBeenCalledWith({
+      workItem: { id: 'WI-101', harness: 'papercusp', kind: 'bug' },
+      attestation: { classRef: 'plan-class-feature-ship' },
+    });
+    expect(result).toMatchObject({
+      ok: true, counts: { passing: 1, filed: 0 },
+      clauses: [{ specId: 'SPEC-PASS', verdict: 'pass', card: { status: 'would-file' } }],
+      completionReadiness: {
+        status: 'not-ready', workItemId: 'WI-101', checkedBeforeFiling: true,
+        gate: { ok: false, reason: expect.stringContaining('mutation proof') },
+      },
+    });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('defaults the advisory target from one workItemIds entry and preserves unavailable gate evidence', async () => {
+    completionGate.mockRejectedValue(new Error('completion measurement unavailable'));
+    const result = await certify({ specIds: ['SPEC-PASS'], workItemIds: ['WI-101'], dryRun: true });
+    expect(completionGate).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      ok: true, counts: { passing: 1 },
+      completionReadiness: { status: 'unavailable', workItemId: 'WI-101', reason: 'completion measurement unavailable' },
+    });
   });
 
   it('dryRun reports a pending grading-audit refusal for an existing clause card', async () => {

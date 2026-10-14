@@ -119,6 +119,11 @@ export interface CompactionRecovery {
    *  restores CONTEXT, not a TURN. This path already reads loop status LIVE, so
    *  the check reflects the world now rather than the last persisted anchor. */
   wakeSourceLostWarning?: string;
+  /** P-001 (carry-recheck-and-governed-memory-2026-10-14): the carried checks' probes (loop
+   *  carry-note + held items), RUN at automatic recovery and rendered as holds / changed /
+   *  could-not-run. Set only on the automatic boundary path — coord:orient replays the same
+   *  probes itself (`continuityProbes`). Absent when no carried check has a probe. */
+  carriedProbes?: string;
   /** Held (assigned, non-terminal) work-items + their checkpoints. `body` is the
    *  item's description (capped) so the post-compaction agent doesn't re-fetch it
    *  via work_items:get — measured at 43% of post-compaction orients
@@ -506,13 +511,57 @@ export async function buildCompactionRecovery(
  * carry-respawn and OMP deterministic maintenance compaction. Fail-soft like
  * every underlying leg: an incomplete marker is still delivered, but it tells
  * the successor to use the retained orient fallback exactly once. */
+/**
+ * P-001 (carry-recheck-and-governed-memory-2026-10-14): collect the carried checks the successor
+ * inherits — loop carry-note first, then held items (reusing the held-item rows the carry document
+ * already read) — through the SAME collector coord:orient uses, and run their probes through the
+ * bounded read-only runner. Never throws; null when no carried check has a probe.
+ */
+export async function defaultRecoveryCarriedProbes(
+  ownerId: string,
+  workspaceId: string,
+  opts: { sessionHarness?: string | null; heldItems?: CarryBriefHeldItem[] },
+): Promise<string | null> {
+  const readAtIso = new Date().toISOString();
+  try {
+    const [{ collectContinuityProbeSources }, { carriedProbeBlockForDelivery }] = await Promise.all([
+      import('../../continuity-probes'),
+      import('../../carry-probe-eval'),
+    ]);
+    const held = opts.heldItems;
+    const sources = await collectContinuityProbeSources(
+      ownerId,
+      workspaceId,
+      held
+        ? {
+            readHeldWorkItems: async () =>
+              held.map((h) => ({ id: h.id, harness: h.harness ?? null, checkpoint: h.checkpoint ?? null })),
+          }
+        : {},
+    );
+    return await carriedProbeBlockForDelivery(sources, { harness: opts.sessionHarness ?? null, readAtIso });
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return (
+      `🧪 CARRIED PROBES — COULD NOT RUN at compaction recovery (readAt=${readAtIso}): ${why.slice(0, 220)}. ` +
+      `This is NOT evidence the carried checks hold; run their re-checks before relying on them.`
+    );
+  }
+}
+
 export async function buildAutomaticCompactionRecovery(
   ownerId: string,
   workspaceId: string,
-  opts: { sessionHarness?: string | null; heldItems?: CarryBriefHeldItem[] } = {},
+  opts: {
+    sessionHarness?: string | null;
+    heldItems?: CarryBriefHeldItem[];
+    /** Injectable for tests; defaults to defaultRecoveryCarriedProbes. */
+    carriedProbesFn?: typeof defaultRecoveryCarriedProbes;
+  } = {},
 ): Promise<AutomaticCompactionRecovery> {
-  const [recovery, memoryEpoch] = await Promise.all([
-    buildCompactionRecovery(ownerId, workspaceId, opts),
+  const { carriedProbesFn, ...recoveryOpts } = opts;
+  const [recovery, memoryEpoch, carriedProbes] = await Promise.all([
+    buildCompactionRecovery(ownerId, workspaceId, recoveryOpts),
     (async () => {
       try {
         const [{ currentSessionEpoch }, { getOrgPg }] = await Promise.all([
@@ -524,7 +573,9 @@ export async function buildAutomaticCompactionRecovery(
         return 0;
       }
     })(),
+    (carriedProbesFn ?? defaultRecoveryCarriedProbes)(ownerId, workspaceId, recoveryOpts).catch(() => null),
   ]);
+  if (carriedProbes) recovery.carriedProbes = carriedProbes;
   return {
     marker: {
       schemaVersion: AUTOMATIC_COMPACTION_RECOVERY_SCHEMA,

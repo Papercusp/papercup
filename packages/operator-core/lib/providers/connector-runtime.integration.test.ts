@@ -26,6 +26,7 @@ import type {
   ProviderSyncRequest,
 } from '@papercusp/plugin-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { upsertChatMessages } from '../data-sources/chat-retrieval-units';
 import { createDatatypeDestinationSinks } from '../data-sources/datatype-destination-sink';
 import { getDatatype, upsertDatatype } from '../datatype-registry-store';
 import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../external-triggers/ingestion';
@@ -769,6 +770,57 @@ describe('container readership and source scope (D-026)', () => {
       members: [member('U0')],
       containers: [{ ref: 'C1', members: [] }],
     });
+  });
+
+  it('applies each coverage window after the page is admitted and before its cursor commits (WI-6554700010012278)', async () => {
+    const cursorsSeen: Array<string | null> = [];
+    const reconcileCoverage = vi.fn(async (_sql: unknown, source: { id: string }, _coverage: unknown) => {
+      cursorsSeen.push((await state(source.id)).cursor);
+      return { tombstoned: 2 };
+    });
+    const window = { datatype: 'email-message', containerRef: 'C1', from: '2026-09-30T10:00:00.000Z', to: '2026-09-30T11:00:00.000Z', nativeIds: ['m1'] };
+    const thread = { ...window, threadRef: 'T1', nativeIds: [] };
+    const src = await orgSource();
+    handler = async () => ({ ...page([mail('m1')], 'x', false), coverage: [window, thread] });
+    expect(await syncOne(src, { reconcileCoverage })).toMatchObject({ outcome: 'synced', coverageTombstoned: 4 });
+    expect(reconcileCoverage.mock.calls.map((call) => call[2])).toEqual([window, thread]);
+    expect(reconcileCoverage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: src }), window);
+    expect(cursorsSeen).toEqual([null, null]);
+    expect(await state(src)).toMatchObject({ cursor: 'x', failure_count: 0 });
+
+    // A window for a datatype the descriptor does not declare is refused before anything is erased.
+    reconcileCoverage.mockClear();
+    const bad = await orgSource();
+    handler = async () => ({ ...page([], 'x', false), coverage: [{ ...window, datatype: 'chat-message' }] });
+    await syncOne(bad, { reconcileCoverage });
+    expect(await state(bad)).toMatchObject({ cursor: null, failure_count: 1 });
+    expect(reconcileCoverage).not.toHaveBeenCalled();
+  });
+
+  it('by default, a chat-message coverage window tombstones the stored messages it no longer holds (WI-6554700010012278)', async () => {
+    const declared = descriptor.datatypes;
+    descriptor.datatypes = [...declared, 'chat-message'];
+    try {
+      const src = await orgSource();
+      await upsertChatMessages(org.adminSql, WS, src, [
+        { channelId: 'C1', providerMessageId: 'C1:1.1', threadKey: null, body: 'kept', postedAt: '2026-09-30T10:00:00Z' },
+        { channelId: 'C1', providerMessageId: 'C1:1.2', threadKey: null, body: 'deleted offline', postedAt: '2026-09-30T10:01:00Z' },
+      ]);
+      handler = async () => ({
+        ...page([], 'x', false),
+        coverage: [{ datatype: 'chat-message', containerRef: 'C1', nativeIds: ['C1:1.1'] }, { datatype: 'email-message', containerRef: 'C1', nativeIds: [] }],
+      });
+      expect(await syncOne(src)).toMatchObject({ outcome: 'synced', coverageTombstoned: 1 });
+      const rows = await org.adminSql<{ provider_message_id: string; deleted: boolean }[]>`
+        SELECT provider_message_id, deleted_at IS NOT NULL AS deleted FROM harness_shared.chat_messages
+         WHERE workspace_id = ${WS} AND data_source_id = ${src}::uuid ORDER BY provider_message_id`;
+      expect(rows).toEqual([
+        { provider_message_id: 'C1:1.1', deleted: false },
+        { provider_message_id: 'C1:1.2', deleted: true },
+      ]);
+    } finally {
+      descriptor.datatypes = declared;
+    }
   });
 
   it("passes the source's scope on every sync request", async () => {

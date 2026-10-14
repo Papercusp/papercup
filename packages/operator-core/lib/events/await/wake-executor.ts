@@ -150,6 +150,7 @@ import {
   shortCarryHash,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
+  type CheckEntry,
 } from '../../carry-note';
 import {
   clipLoopCheckpointForWake,
@@ -1848,6 +1849,32 @@ function formatCarryNoteSnapshotIdentity(identity: CarryNoteSnapshotIdentity): s
     `readStatus=${identity.readFailed ? 'failed' : 'ok'}`;
 }
 
+/**
+ * Default delivery-time carried-probe block (P-001). Loaded lazily so a wake whose note carries no
+ * probe never loads the runner or its dispatcher. Never throws: an import failure is rendered as an
+ * explicit could-not-run line, never as silence a reader would take for "everything holds".
+ */
+export async function defaultCarriedProbeBlock(input: {
+  ownerId: string;
+  checks: ReadonlyArray<CheckEntry>;
+  harness: string;
+  readAtIso: string;
+}): Promise<string | null> {
+  try {
+    const { carriedProbeBlockForDelivery, carriedProbeSources } = await import('../../carry-probe-eval');
+    return await carriedProbeBlockForDelivery(
+      carriedProbeSources({ loop: { ownerId: input.ownerId, checks: input.checks } }),
+      { harness: input.harness, readAtIso: input.readAtIso },
+    );
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return (
+      `🧪 CARRIED PROBES — COULD NOT RUN at delivery (readAt=${input.readAtIso}): ${why.slice(0, 220)}. ` +
+      `This is NOT evidence the carried checks hold; run their re-checks before relying on them.`
+    );
+  }
+}
+
 export async function rehydrateLoopWakeText(
   d: DeliveryWork,
   baseText: string,
@@ -1863,6 +1890,12 @@ export async function rehydrateLoopWakeText(
     /** Capture the exact delivery-time snapshot used to compose the live block. */
     captureLoopCarryNoteMeta?: (meta: DeliveryCarryNoteMeta) => void;
     getLoopStatusFn?: typeof getLoopStatus;
+    /**
+     * P-001 (carry-recheck-and-governed-memory-2026-10-14): run the carried checks' probes at
+     * delivery and render holds / changed / could-not-run. Injectable for tests; the default
+     * reuses the bounded read-only continuity-probe runner (carry-probe-eval.ts).
+     */
+    carriedProbeBlockFn?: typeof defaultCarriedProbeBlock;
   } = {},
 ): Promise<string> {
   try {
@@ -1936,6 +1969,18 @@ export async function rehydrateLoopWakeText(
     const checksNow = carryNoteReadFailed
       ? '🧪 CARRIED CHECKS — UNKNOWN: the delivery-time carry-note read failed; do not infer that no checks are open.'
       : renderLoopChecksBlock(checks);
+    // P-001 (carry-recheck-and-governed-memory-2026-10-14, D-004): the block above prints each
+    // carried check's claim and probe; RUN the probes too, so a stale claim is reported as changed
+    // at delivery instead of being trusted. Only the note already read here is probed — no extra
+    // store read on the wake path — and the runner refuses any non-read-only probe undispatched.
+    const probesNow = checks.some((check) => check.probe !== undefined)
+      ? await (deps.carriedProbeBlockFn ?? defaultCarriedProbeBlock)({
+          ownerId: d.subscriberId,
+          checks,
+          harness: marker.harness,
+          readAtIso: deliveryReadAtIso,
+        })
+      : null;
     const ageMs = readableNote && meta.updatedAtMs != null ? Date.now() - meta.updatedAtMs : null;
     const ageStr = ageMs != null ? `${Math.max(0, Math.round(ageMs / 1000))}s` : 'unknown';
 
@@ -2047,6 +2092,7 @@ export async function rehydrateLoopWakeText(
       checkpointState +
       `\n\nCurrent open walls:\n${wallsNow}\n` +
       (checksNow ? `${checksNow}\n` : '') +
+      (probesNow ? `${probesNow}\n` : '') +
       // EI-21988107654213811: the delivery read is ordered only to its own
       // readAt instant. A newer loop:checkpoint can be written immediately
       // afterward, so the authority claim must not make a recipient trust this

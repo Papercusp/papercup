@@ -607,10 +607,16 @@ export async function scoreSubjectEvidence(subject: string, texts: string[], dea
     }).catch(error => { subjectScorer = null; throw error; });
   }
   const scorer = deps.scorer ?? await subjectScorer!;
-  if (!TOOL_SUBJECT_PATTERN.test(subject)) return scorer(query, texts, { deadline });
+  // Explicit source paths identify code directly. A natural question has no
+  // registered target contract, but still needs the same competing-action
+  // qualification: absolute similarity overcredits generic procedural overlap.
+  if (!TOOL_SUBJECT_PATTERN.test(subject) && extractPathTokens(subject).includes(subject)) {
+    return scorer(query, texts, { deadline });
+  }
   // At most 24 passages × (target + 3 contrasts), all on the same 4s deadline.
   // Reverse retrieval asks which contract explains THIS passage, avoiding the
-  // procedural vocabulary that made broad tool descriptions false friends.
+  // procedural vocabulary that made broad tool descriptions and natural
+  // questions false friends. For a natural question the full query is retained.
   return Promise.all(texts.map(async text => {
     const contrasts = subjectContrasts(subject, text, contracts);
     if (!contrasts.length || Date.now() >= deadline) return null;

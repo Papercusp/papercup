@@ -4118,6 +4118,46 @@ describe('clean sync outcome', () => {
     ]);
   });
 
+  it('WI-6554700010012434: leaves local-sync as soon as the local lock set is released, before the record step', async () => {
+    // dev:restart's P-031 drain (probeInFlightLocalSync) treats active+'local-sync' as
+    // "this fire still holds its local lock set". The marker must stop saying so once
+    // cleanupLocks has run, not only after the record step.
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    const releaseSnapshots: Array<{ owner: string; activityPatches: number }> = [];
+    const pushSpy = vi
+      .spyOn(releaseTrace, 'push')
+      .mockImplementation((...items: Array<{ owner: string; resource: string }>) => {
+        for (const item of items) {
+          releaseSnapshots.push({ owner: item.owner, activityPatches: gitSyncActivityPatches().length });
+        }
+        return Array.prototype.push.apply(releaseTrace, items);
+      });
+    try {
+      await action(ctx);
+    } finally {
+      pushSpy.mockRestore();
+    }
+
+    // The primary lock set is released while only the local-sync marker exists.
+    const owners = primaryLockOwners();
+    const primaryReleases = releaseSnapshots.filter(({ owner }) => owners.has(owner));
+    expect(primaryReleases.length).toBeGreaterThan(0);
+    expect(new Set(primaryReleases.map(({ activityPatches }) => activityPatches))).toEqual(new Set([1]));
+
+    // The record step's outcome patch already sees the fire out of local-sync.
+    const patches = allRoutinePatches();
+    const recordIndex = patches.findIndex((patch) => 'last_status' in patch);
+    expect(recordIndex).toBeGreaterThan(-1);
+    const markerBeforeRecord = patches
+      .slice(0, recordIndex)
+      .filter((patch) => 'git_sync_activity' in patch)
+      .at(-1)?.git_sync_activity;
+    expect(markerBeforeRecord).toMatchObject({ active: true, phase: 'post-legs', outcome_status: 'synced' });
+
+    // A fast record step does not restamp the fresh marker a second time.
+    expect(gitSyncActivityPatches().map((activity) => activity.phase)).toEqual(['local-sync', 'post-legs', 'complete']);
+  });
+
   it.each([errorOutcome, conflictOutcome])('EI-25545265520729999: records measured HEAD while preserving a $status outcome', async (partial) => {
     const head = 'e'.repeat(40);
     runGitSyncMock.mockResolvedValue({ ...partial, headSha: head, committedCount: 1 });

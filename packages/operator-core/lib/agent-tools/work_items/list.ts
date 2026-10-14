@@ -25,6 +25,8 @@ import { cachedRead, type CachedReadCtx } from "../../cache";
 import { trackPhase } from "@papercusp/tooldef";
 import { attachHolderContext } from "./_holder-lens";
 import { holderContextReader, HOLDER_CONTEXT_SCHEMA } from "../coordination/holder-advisory";
+import { activeWorkspaceId } from '../../workspace-registry';
+import { auditPrDelivery, prDeliveryAuditScopeSchema, prDeliveryAuditResultSchema } from '../../work-admission/pr-delivery-audit';
 
 /**
  * SWR backstop for work_items:list (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -259,6 +261,9 @@ export default defineTool({
   // unrelated coordination/write tools.
   agentRoles: [...COORD_ROLES, 'judge'],
   args: z.object({
+    prDeliveryAudit: prDeliveryAuditScopeSchema.optional().describe(
+      'Read-only PR-bypass audit of EVERY admission from explicit workflow ruleIds, including disabled rules and rules omitting delivery:pr. Returns {prDeliveryAudit}; missing evidence or truncated populations are unknown. Ordinary list filters do not narrow this audit.',
+    ),
     harness: z.string().max(80).optional(),
     q: z
       .string()
@@ -401,7 +406,7 @@ export default defineTool({
       ),
     limit: z.number().int().positive().max(500).optional(),
   }),
-  result: z.array(WORK_ITEM_ROW),
+  result: z.union([z.array(WORK_ITEM_ROW), z.object({ prDeliveryAudit: prDeliveryAuditResultSchema })]),
   // Freshness negotiation (agent-tool-delta-client-rollout-2026-06-23, P-001) — the #1
   // LLM-agent re-read by total bytes×repeats (queen/bee/overwatch poll the backlog ~3×/wake,
   // ~25KB/call). The diffable unit is the WorkItem row set (the data IS the array), keyed by
@@ -430,6 +435,10 @@ export default defineTool({
     trimmed: (data) => shapeWorkItemsList(data, "trimmed"),
   },
   async handler(args, ctx) {
+    if (args.prDeliveryAudit) {
+      const workspaceId = (ctx as { workspaceId?: string }).workspaceId ?? activeWorkspaceId();
+      return { data: { prDeliveryAudit: await auditPrDelivery(workspaceId, args.prDeliveryAudit) } };
+    }
     const q = args.q?.trim() || undefined;
     // EI-21592729279587188: resolve the sourcePlanSlug/plan alias pair ONCE, here, so
     // every downstream site (the cache key AND the store filter) sees the same value.

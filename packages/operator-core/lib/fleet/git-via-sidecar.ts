@@ -59,6 +59,7 @@ export interface GitRunResult {
   code: number;
   stdout: string;
   stderr: string;
+  error?: { code: string | null; signal: string | null; killed: boolean };
 }
 
 /**
@@ -75,6 +76,7 @@ export interface GitStdinRunResult {
   code: number;
   stdout: Buffer;
   stderr: string;
+  error?: GitRunResult['error'];
 }
 
 /**
@@ -310,7 +312,7 @@ export class SidecarCircuitOpenError extends Error {
   constructor(readonly retryAfterMs: number) {
     super(
       `spawner sidecar circuit OPEN — skipping the sidecar for ${Math.max(1, Math.ceil(retryAfterMs / 1000))}s ` +
-        `(${SIDECAR_BREAKER_TRIP_AFTER} consecutive real fallbacks; local spawn is being used instead)`,
+        `(${SIDECAR_BREAKER_TRIP_AFTER} consecutive real failures; caller fallback policy applies)`,
     );
     this.name = 'SidecarCircuitOpenError';
   }
@@ -938,6 +940,7 @@ export async function runGitStdinViaSpawnerSidecar(
       code: number;
       stderr?: string;
       stdoutBytes?: number;
+      error?: GitStdinRunResult['error'];
     }>(
       'process:exec',
       {
@@ -965,7 +968,9 @@ export async function runGitStdinViaSpawnerSidecar(
     if (!isSidecarInfrastructureFault({ code: res.code, stderr: res.stderr ?? '' })) {
       observeFallback('spawner-sidecar-exec', { eligible: 1, applied: 1, reason: 'applied' });
     }
-    return { code: res.code, stdout, stderr: res.stderr ?? '' };
+    return { code: res.code, stdout, stderr: res.stderr ?? '',
+      ...(res.error ? { error: res.error } : {}),
+    };
   } finally {
     // Never leave blob contents lying around, on success or failure.
     await fsp.rm(stdinPath, { force: true }).catch(() => {});

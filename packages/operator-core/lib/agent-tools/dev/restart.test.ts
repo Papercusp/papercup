@@ -117,6 +117,7 @@ vi.mock('../../release/gate-collision-guard', async (importOriginal) => {
     checkGitSyncCollision: vi.fn(),
     checkStagingSyncCollision: vi.fn(),
     acquireGitSyncRestartBarrier: vi.fn(),
+    waitForInFlightLocalSync: vi.fn(),
   };
 });
 // WI-2140796: the bg-host quiesce preflight. isQuiesceSensitiveTarget stays real
@@ -157,6 +158,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { BUDGET, HARD_CAP, promptWeight } from '../tool-guidance-budget';
 import {
   acquireGitSyncRestartBarrier,
+  waitForInFlightLocalSync,
   checkGateCollision,
   checkGitSyncCollision,
   checkStagingSyncCollision,
@@ -212,6 +214,7 @@ const gitSyncCollisionM = vi.mocked(checkGitSyncCollision);
 const stagingSyncCollisionM = vi.mocked(checkStagingSyncCollision);
 const gitSyncBarrierM = vi.mocked(acquireGitSyncRestartBarrier);
 const gitSyncBarrierReleaseM = vi.fn(async () => undefined);
+const localSyncWaitM = vi.mocked(waitForInFlightLocalSync);
 const quiesceM = vi.mocked(checkBgHostQuiesce);
 /** A quiesce verdict. Defaults to "not quiesced" (see beforeEach). */
 const quiesceVerdict = (over: Record<string, unknown> = {}) =>
@@ -470,6 +473,8 @@ beforeEach(() => {
     expiresAt: '2026-08-27T19:00:00.000Z',
     release: gitSyncBarrierReleaseM,
   });
+  localSyncWaitM.mockReset();
+  localSyncWaitM.mockResolvedValue({ probeFailed: false, targetCgroupPath: null, inFlight: [] });
 });
 
 afterAll(() => {
@@ -1544,6 +1549,72 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
     expect(b.note).toMatch(/before draining/i);
     expect(spawnM).not.toHaveBeenCalled();
     expect(auditUnsafeM).not.toHaveBeenCalled();
+    expect(localSyncWaitM).not.toHaveBeenCalled();
+  });
+
+  // WI-6554700010010484 (P-031): a local-sync pass whose leases lapsed reads clear to
+  // the cgroup preflight AND lets the barrier acquire; only its activity marker shows it.
+  it('refuses under a HELD barrier while a lapsed-lease local-sync pass is still committing', async () => {
+    gitSyncCollisionM.mockResolvedValue(clearGitSyncCollision());
+    localSyncWaitM.mockResolvedValue({
+      probeFailed: false,
+      targetCgroupPath: '/user.slice/papercusp-dev-api.service',
+      inFlight: [
+        {
+          installSlug: 'papercusp',
+          owner: 'system:git-sync:4242:fire',
+          ownerPid: 4242,
+          startedAtMs: Date.parse('2026-10-14T08:00:00.000Z'),
+          updatedAtMs: Date.parse('2026-10-14T08:01:00.000Z'),
+          cgroupRelation: 'same',
+        },
+      ],
+    });
+    const b = body(
+      await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'reload code', git_sync_drain_sec: 120 }),
+    );
+
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'git_sync_local_sync_in_flight',
+      restarted: false,
+      drained: false,
+      waited_sec: 30,
+      in_flight: [{ install_slug: 'papercusp', owner_pid: 4242, updated_at: '2026-10-14T08:01:00.000Z' }],
+    });
+    expect(localSyncWaitM).toHaveBeenCalledWith('bg-host', { waitSec: 30 });
+    expect(gitSyncBarrierM).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      expect.objectContaining({ maxDrainSec: 120, holdExtraSec: 30 }),
+    );
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it('refuses fail-closed when the activity markers cannot be read', async () => {
+    gitSyncCollisionM.mockResolvedValue(clearGitSyncCollision());
+    localSyncWaitM.mockResolvedValue({ probeFailed: true, targetCgroupPath: null, inFlight: [] });
+    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
+
+    expect(b).toMatchObject({ ok: false, reason: 'git_sync_local_sync_probe_failed', drained: false });
+    expect(localSyncWaitM).toHaveBeenCalledWith('dev', { waitSec: 10 });
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
+    expect(guardM).not.toHaveBeenCalled();
+  });
+
+  it('does not consult local-sync markers under the wedged-host override (no barrier is taken)', async () => {
+    gitSyncCollisionM.mockResolvedValue(clearGitSyncCollision());
+    await call({
+      confirm: true,
+      authorize: true,
+      target: 'dev',
+      reason: 'wedged host',
+      override_git_sync_collision: true,
+    });
+    expect(gitSyncBarrierM).not.toHaveBeenCalled();
+    expect(localSyncWaitM).not.toHaveBeenCalled();
   });
 
   it('retries transient workspace contention while acquiring the barrier', async () => {

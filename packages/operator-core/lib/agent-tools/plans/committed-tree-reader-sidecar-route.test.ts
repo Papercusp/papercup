@@ -154,4 +154,25 @@ describe('committed-tree blob reader sidecar routing', () => {
     expect(sidecar.localSpawn).toHaveBeenCalledTimes(1);
     expect(sidecar.fallback).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { code: 'ETIMEDOUT', signal: 'SIGTERM', killed: true },
+    { code: null, signal: 'SIGTERM', killed: false },
+  ])('preserves a missing exit status with its distinct termination metadata: %j', async (error) => {
+    sidecar.run.mockResolvedValue({ code: -1, stdout: Buffer.alloc(0), stderr: 'child stopped', error });
+    await expect(defaultBlobBatchReader(repoDir, ['a'.repeat(40)])).rejects.toMatchObject({
+      ...error,
+      message: `Command failed (no exit status; code=${error.code ?? 'none'}, signal=SIGTERM, killed=${error.killed}): git -C ${repoDir} cat-file --batch\nchild stopped`,
+    });
+    expect(sidecar.localSpawn).not.toHaveBeenCalled();
+    expect(sidecar.fallback).not.toHaveBeenCalled();
+  });
+
+  it('preserves typed infrastructure failure while rejecting the enabled sidecar route', async () => {
+    const error = { code: 'SIDECAR_SETTLEMENT_FAILED', signal: null, killed: false };
+    sidecar.run.mockResolvedValue({ code: -1, stdout: Buffer.alloc(0), stderr: 'spawner sidecar settlement failed', error });
+    await expect(defaultBlobBatchReader(repoDir, ['a'.repeat(40)])).rejects.toMatchObject(error);
+    expect(sidecar.localSpawn).not.toHaveBeenCalled();
+    expect(sidecar.fallback).toHaveBeenCalledWith('committed-tree-reader', expect.objectContaining(error), undefined, 'rejected');
+  });
 });

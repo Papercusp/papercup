@@ -71,6 +71,26 @@ describe('durable recovery against isolated Postgres', () => {
     expect((await state(f.input.routineId)).parked).toBe(true);
   });
 
+  // WI-6554700010012442 — before the fix this returned handled:true on every sweep, so both
+  // callers `continue`d and the parked loop was never re-armed by anything.
+  it('hands a spent unknown-probe budget to the ordinary actors instead of holding the loop parked', async () => {
+    const f = await routine('recovery-spent-budget');
+    f.host.execution!.phase = 'unknown';
+    const prior = { status: 'unknown', reason: 'native-start-unverified', probes: 2, attempts: 0,
+      nextProbeAt: nowMs - 1, observedAt: nowMs - 30_000, generation: '1:1:2', lastAttemptAt: null };
+    await sql`UPDATE harness_shared.routines SET metadata = ${sql.json({ executionRecovery: prior })}
+      WHERE id = ${f.input.routineId}`;
+    expect(await recoverExpectedLoopExecution(f.input, f.deps)).toMatchObject({ handled: false,
+      state: { status: 'blocked', probes: 3 } });
+    expect(f.deps.arm).not.toHaveBeenCalled();
+    expect(await state(f.input.routineId)).toMatchObject({ parked: true, active: true,
+      metadata: { executionRecovery: { status: 'blocked', probes: 3, nextProbeAt: nowMs + 300_000 } } });
+    // Inside the block's backoff a fresh controller still hands off, and spends no probe.
+    expect(await recoverExpectedLoopExecution(f.input, { ...f.deps })).toMatchObject({ handled: false,
+      state: { status: 'blocked', probes: 3 } });
+    expect((await state(f.input.routineId)).metadata.executionRecovery.probes).toBe(3);
+  });
+
   it('serializes racing reconciler/guard actors and preserves microsecond fire identity', async () => {
     const f = await routine('recovery-race');
     const results = await Promise.all([recoverExpectedLoopExecution(f.input, f.deps), recoverExpectedLoopExecution(f.input, f.deps)]);
@@ -88,7 +108,8 @@ describe('durable recovery against isolated Postgres', () => {
     expect(first).toMatchObject({ parked: true, active: true, metadata: { executionRecovery: {
       status: 'blocked', reason: 'inbox-wake-repair-failed', attempts: 1, nextProbeAt: nowMs + 30_000 } } });
     // A fresh controller reads the stored deadline; it cannot spend another retry early.
-    await recoverExpectedLoopExecution(f.input, { ...f.deps });
+    // A transient blocked prerequisite is still HELD (handled), unlike a spent budget.
+    expect(await recoverExpectedLoopExecution(f.input, { ...f.deps })).toMatchObject({ handled: true });
     expect(f.deps.arm).toHaveBeenCalledTimes(1);
     f.host.execution!.observedAt = nowMs + 30_000;
     const next = await recoverExpectedLoopExecution({ ...f.input, nowMs: nowMs + 30_000 }, {

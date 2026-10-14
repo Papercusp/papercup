@@ -109,7 +109,12 @@ import {
   checkStagingSyncCollision,
   isGateSensitiveTarget,
   isGitSyncSensitiveTarget,
+  waitForInFlightLocalSync,
 } from '../../release/gate-collision-guard';
+
+/** WI-6554700010010484: post-barrier wait for a lapsed-lease local-sync pass (seconds). */
+const LOCAL_SYNC_IN_FLIGHT_MIN_WAIT_SEC = 10;
+const LOCAL_SYNC_IN_FLIGHT_MAX_WAIT_SEC = 30;
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 120;
@@ -2179,11 +2184,21 @@ export default defineTool({
     // target untouched, and a held barrier must cover the entire drain through
     // the delayed systemctl handoff.
     let gitSyncBarrier: Awaited<ReturnType<typeof acquireGitSyncRestartBarrier>> | null = null;
+    // WI-6554700010010484: after the barrier is HELD, wait this long for a local-sync
+    // pass whose leases lapsed (it no longer holds the barrier, so it never yields).
+    // Bounded so the extended lease still covers the kill handoff.
+    const localSyncWaitSec = Math.min(
+      Math.max(gitSyncDrainSec, LOCAL_SYNC_IN_FLIGHT_MIN_WAIT_SEC),
+      LOCAL_SYNC_IN_FLIGHT_MAX_WAIT_SEC,
+    );
     try {
       gitSyncBarrier =
         isGitSyncSensitiveTarget(target) && args.override_git_sync_collision !== true
           ? await acquireWithContentionRetry(() =>
-              acquireGitSyncRestartBarrier(ownerLabel, undefined, { maxDrainSec: gitSyncDrainSec }),
+              acquireGitSyncRestartBarrier(ownerLabel, undefined, {
+                maxDrainSec: gitSyncDrainSec,
+                holdExtraSec: localSyncWaitSec,
+              }),
             )
           : null;
     } catch (error) {
@@ -2227,6 +2242,46 @@ export default defineTool({
       barrierReleaseAttempted = true;
       await gitSyncBarrier.release().catch(() => {});
     };
+
+    // WI-6554700010010484 (P-031): the barrier and the cgroup preflight both key on
+    // LOCK LEASES. A pass whose leases lapsed while its local commit stage keeps
+    // running reads clear to both, so check the writer-backed activity marker of the
+    // process doing the commit before anything is drained or signalled.
+    if (gitSyncBarrier?.acquired && isGitSyncSensitiveTarget(target)) {
+      const localSync = await waitForInFlightLocalSync(target, { waitSec: localSyncWaitSec });
+      if (localSync.probeFailed || localSync.inFlight.length > 0) {
+        await releaseGitSyncBarrierOnAbort();
+        await releaseCooldownOnAbort();
+        const passes = localSync.inFlight.map((pass) => ({
+          install_slug: pass.installSlug,
+          owner: pass.owner,
+          owner_pid: pass.ownerPid,
+          started_at: pass.startedAtMs === null ? null : new Date(pass.startedAtMs).toISOString(),
+          updated_at: new Date(pass.updatedAtMs).toISOString(),
+          cgroup_relation: pass.cgroupRelation,
+        }));
+        return json({
+          ok: false,
+          target,
+          reason: localSync.probeFailed ? 'git_sync_local_sync_probe_failed' : 'git_sync_local_sync_in_flight',
+          restarted: false,
+          drained: false,
+          in_flight: passes,
+          waited_sec: localSyncWaitSec,
+          note: localSync.probeFailed
+            ? 'Restart REFUSED before draining — the git-sync activity markers could not be read, so whether a local ' +
+              'commit is in flight inside this cgroup is unknown. Nothing was drained or signalled and the barrier was ' +
+              'released. Retry once the database read is healthy; override_git_sync_collision:true is for a WEDGED host only.'
+            : `Restart REFUSED before draining — a git-sync local commit stage is still running inside ${target}'s ` +
+              `cgroup after ${localSyncWaitSec}s under the held barrier (${passes
+                .map((pass) => `${pass.install_slug} pid ${pass.owner_pid}`)
+                .join(', ')}). Its lock leases have lapsed, so the barrier could not see it, and restarting now would ` +
+              'SIGKILL the commit. Nothing was drained or signalled and the barrier was released; retry after the pass ' +
+              'settles (watch routines:list health.git_sync_activity for phase:"complete"). ' +
+              'override_git_sync_collision:true is for a WEDGED host only.',
+        });
+      }
+    }
 
     // `daemon-reload` refreshes the whole user manager. Skip that global
     // operation for code-only restarts when systemd confirms this unit's

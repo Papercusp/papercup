@@ -274,7 +274,7 @@ export interface SidecarFirstExecDeps {
     cmd: string,
     args: string[],
     opts: { cwd: string; timeoutMs: number; env: NodeJS.ProcessEnv },
-  ) => Promise<{ code: number; stdout: string; stderr: string }>;
+  ) => Promise<{ code: number; stdout: string; stderr: string; error?: ExecResult['error'] }>;
   local?: AsyncExec;
   noteFallback?: (error: unknown) => void;
 }
@@ -303,7 +303,7 @@ export function createSidecarFirstExec(deps: SidecarFirstExecDeps = {}): AsyncEx
     if (!enabled()) return local();
     const viaSidecar = deps.viaSidecar ?? ((c, a, o) => mod!.runCommandViaSpawnerSidecar(c, a, o));
     const noteFallback = deps.noteFallback ?? ((e: unknown) => mod!.noteSidecarFallback('sync-exec-replay', e));
-    let res: { code: number; stdout: string; stderr: string };
+    let res: { code: number; stdout: string; stderr: string; error?: ExecResult['error'] };
     try {
       res = await viaSidecar(cmd, [...args], {
         cwd: process.cwd(),
@@ -318,7 +318,9 @@ export function createSidecarFirstExec(deps: SidecarFirstExecDeps = {}): AsyncEx
       noteFallback(new Error(res.stderr));
       return local();
     }
-    return { status: res.code >= 0 ? res.code : null, stdout: res.stdout, stderr: res.stderr };
+    return { status: res.code >= 0 ? res.code : null, stdout: res.stdout, stderr: res.stderr,
+      ...(res.error ? { error: res.error } : {}),
+    };
   };
 }
 

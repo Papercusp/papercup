@@ -1801,7 +1801,7 @@ export interface HarnessTestFileRow {
   outputTail: string | null;
   /** Exact completed assertion counts when the source report exposed them. */
   execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed'
-    | 'failedCaseTitles' | 'passedCaseTitles' | 'passedCaseTitlesTruncated'>;
+    | 'failedCaseTitles' | 'passedCaseTitles' | 'passedCaseTitlesTruncated' | 'operational'>;
 }
 
 /** Minimal shape of the jest-compatible vitest `--reporter=json` output. */

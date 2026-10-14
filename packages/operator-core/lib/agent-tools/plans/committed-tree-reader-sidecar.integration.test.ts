@@ -189,6 +189,37 @@ describe('committed blob reader through private real IPC', () => {
     await expectHandoffsRemoved();
   });
 
+  it.each([
+    { script: 'setInterval(() => {}, 1000)', timeoutMs: 200,
+      error: { code: 'ETIMEDOUT', signal: 'SIGTERM', killed: true } },
+    { script: 'process.kill(process.pid, "SIGTERM")', timeoutMs: 5000,
+      error: { code: null, signal: 'SIGTERM', killed: false } },
+  ])('distinguishes deadline cancellation from external signal through real IPC: $error', async ({ script, timeoutMs, error }) => {
+    await startRealSidecar();
+    const call = SpawnerIpcClient.prototype.call;
+    vi.spyOn(SpawnerIpcClient.prototype, 'call').mockImplementation(function<T>(
+      this: SpawnerIpcClient, method: string, params?: unknown, opts?: SpawnerCallOpts,
+    ): Promise<T> {
+      // Change only the private fixture's child. The production executor,
+      // transport, fd handoff and committed reader retain the actual failure.
+      return call.call(this, method, method === 'process:exec' ? {
+        ...(params as ExecParams), command: process.execPath, args: ['-e', script], timeoutMs,
+      } : params, opts) as Promise<T>;
+    });
+    const diagnostics = createCommittedTreeDiagnostics();
+    await expect(readCommittedFiles(repo, commit, [FILE], {
+      git: async (_cwd: string, args: readonly string[]) => git(...args), diagnostics,
+    })).rejects.toMatchObject({ ...error, message: expect.stringContaining(
+      `no exit status; code=${error.code ?? 'none'}, signal=SIGTERM, killed=${error.killed}`,
+    ) });
+    expect(handoffs).toHaveLength(1);
+    expect(handoffs[0].result).toMatchObject({ code: -1, stdoutBytes: 0, error });
+    expect(diagnostics).toMatchObject({ batchAttempts: 1, batchSucceeded: 0, batchFailed: 1,
+      blobsVerified: 0, batchRoutes: { sidecar: 1, local: 0, injected: 0 } });
+    expect(readerLocalSpawns()).toEqual([]);
+    await expectHandoffsRemoved();
+  });
+
   it('keeps loop turns responsive during a real RPC timeout and preserves the same error', async () => {
     const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let received!: () => void;

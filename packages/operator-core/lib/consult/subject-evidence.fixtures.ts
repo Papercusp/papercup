@@ -26,18 +26,35 @@ export const HELD_OUT_SUBJECT_CASES = [
   ] },
 ] as const;
 
+/** D023 adds a separate population without changing the five registered-tool
+ * labels above. Procedural overlap is insufficient for lease/actor expertise. */
+const nativeLeaseQuestion = 'For native isolated session-port consults, what evidence distinguishes child mutation of source plan leases from legitimate source renewal, system cleanup, and mutate-then-revert? I need a concrete actor-correlated before/after audit that preserves the original native receipt when timeout cleanup runs.';
+export const NATURAL_QUESTION_SUBJECT_CASES = [
+  { id: 'native-lease-actor', subject: nativeLeaseQuestion, relevant: ['lease-auditor'], passages: [
+    { id: 'lease-auditor', text: 'I captured the source plan claims before the isolated child launched, then correlated every claim acquisition, renewal, release and revert with its caller owner and native physical-call receipt. Source renewals and system cleanup had distinct actors. I retained the source prefix and original child transcript before timeout cleanup, and checked the append-only history for mutate-then-revert between equal endpoints.' },
+    { id: 'continuation-recovery', text: 'I verified my continuation identity and AUTO state before/after recovering the storage scanner. The successor resumed its own held work and preserved its checkpoint.' },
+    { id: 'protected-data-scan', text: 'I checked the storage scanner before/after its reclaim pass. Protected customer data must remain intact; inspect the original receipt when reporting the result.' },
+  ] },
+  { id: 'native-lease-no-expert', subject: nativeLeaseQuestion, relevant: [], passages: [
+    { id: 'continuation-policy', text: 'A fresh continuation checks whoami, reads its checkpoint and declares its plan lane. Before/after identity verification prevents working under the wrong owner.' },
+    { id: 'receipt-delivery', text: 'The session-port kickoff parent waited for a receipt after native delivery. I repaired the acknowledgement ordering so the parent stops waiting once delivery is confirmed.' },
+  ] },
+] as const;
+
 /** One result per declared case. Unknown scores stay unknown in the aggregate;
  * incomplete populations cannot produce an apparently precise verdict. */
 export function evaluateSubjectCases(
   results: readonly { id: string; scores: readonly (number | null)[] }[],
   minScore: number,
+  population: readonly { id: string; relevant: readonly string[];
+    passages: readonly { id: string; text: string }[] }[] = HELD_OUT_SUBJECT_CASES,
 ) {
-  if (results.length !== HELD_OUT_SUBJECT_CASES.length ||
+  if (results.length !== population.length ||
     new Set(results.map(r => r.id)).size !== results.length ||
-    results.some(r => !HELD_OUT_SUBJECT_CASES.some(c => c.id === r.id))) {
+    results.some(r => !population.some(c => c.id === r.id))) {
     throw new Error('subject-evaluation-population-mismatch');
   }
-  const cases = HELD_OUT_SUBJECT_CASES.map(scenario => {
+  const cases = population.map(scenario => {
     const result = results.find(r => r.id === scenario.id)!;
     if (result.scores.length !== scenario.passages.length) throw new Error('subject-evaluation-score-shape');
     const scores = result.scores.map(score => typeof score === 'number' && Number.isFinite(score) &&

@@ -170,6 +170,16 @@ const HOLD_GUARDS: Readonly<Record<string, string>> = {
   // Any hold row, released or not: holds are retained audit rows and reference their source ON DELETE RESTRICT.
   'harness_shared.data_sources': `NOT EXISTS (SELECT 1 FROM harness_shared.data_source_legal_holds h
       WHERE h.workspace_id = t.workspace_id AND h.data_source_id = t.id)`,
+  // Migration 1502: the documents trigger refuses to delete a held document, so the deletion skips it.
+  'harness_shared.documents':
+    'NOT harness_shared.document_under_hold(t.workspace_id, t.source_id, t.kind, t.metadata, t.permission_list_id)',
+  // A held document keeps its access list: the list (documents reference it ON DELETE RESTRICT) and its members.
+  'harness_shared.document_permission_lists': `NOT EXISTS (SELECT 1 FROM harness_shared.documents d
+      WHERE d.workspace_id = t.workspace_id AND d.permission_list_id = t.id
+        AND harness_shared.document_under_hold(d.workspace_id, d.source_id, d.kind, d.metadata, d.permission_list_id))`,
+  'harness_shared.document_permission_members': `NOT EXISTS (SELECT 1 FROM harness_shared.documents d
+      WHERE d.workspace_id = t.workspace_id AND d.permission_list_id = t.list_id
+        AND harness_shared.document_under_hold(d.workspace_id, d.source_id, d.kind, d.metadata, d.permission_list_id))`,
 };
 
 /**
@@ -302,7 +312,7 @@ export function authorizeDataOperation(
   return { actorKind: actor.kind, actorId: nonEmpty(actor.id, 'actor id') };
 }
 
-function validateScope(scope: OrganizationDataScope): OrganizationDataScope {
+export function validateScope(scope: OrganizationDataScope): OrganizationDataScope {
   const workspaceIds = [...new Set(scope.workspaceIds.map((w) => nonEmpty(w, 'workspaceId')))];
   if (!workspaceIds.length) throw new Error('organization-data-receipts: at least one workspaceId is required');
   return { organizationId: nonEmpty(scope.organizationId, 'organizationId'), workspaceIds };
@@ -551,7 +561,8 @@ async function countRows(sql: Sql, store: string, workspaceIds: readonly string[
   return Number(rows[0]?.n ?? 0);
 }
 
-async function holdConflicts(sql: Sql, workspaceIds: readonly string[]): Promise<HoldConflict[]> {
+/** Active holds in the scope and, per hold, the rows each keeps (also the legal-hold listing, legal-holds.ts). */
+export async function holdConflicts(sql: Sql, workspaceIds: readonly string[]): Promise<HoldConflict[]> {
   const holds = await sql<{ id: string; workspace_id: string; data_source_id: string; channel_id: string | null; placed_at: Date }[]>`
     SELECT id, workspace_id, data_source_id, channel_id, placed_at FROM harness_shared.data_source_legal_holds
      WHERE workspace_id = ANY(${workspaceIds as string[]}::text[]) AND released_at IS NULL
@@ -567,6 +578,14 @@ async function holdConflicts(sql: Sql, workspaceIds: readonly string[]): Promise
       );
       retained.push({ store, rows: Number(rows[0]?.n ?? 0) });
     }
+    // Same coverage rule as the documents trigger (migration 1502), attributed to this hold.
+    const documents = await sql<{ n: string }[]>`
+      SELECT count(*)::text AS n FROM harness_shared.documents d
+       WHERE d.workspace_id = ${h.workspace_id} AND d.source_id = ${h.data_source_id}::uuid
+         AND NOT harness_shared.document_is_chat_derived(d.kind)
+         AND harness_shared.document_hold_container_matches(
+               d.workspace_id, d.source_id, ${h.channel_id}::text, d.metadata, d.permission_list_id)`;
+    retained.push({ store: 'harness_shared.documents', rows: Number(documents[0]?.n ?? 0) });
     const sources = await sql<{ n: string }[]>`
       SELECT count(*)::text AS n FROM harness_shared.data_sources WHERE workspace_id = ${h.workspace_id} AND id = ${h.data_source_id}::uuid`;
     retained.push({ store: 'harness_shared.data_sources', rows: Number(sources[0]?.n ?? 0) });
@@ -626,9 +645,10 @@ export async function deleteOrganizationData(
       operation: 'deletion', scope, purpose: input.purpose, stores, holdConflicts: conflicts,
       limitations: [
         ...BASE_LIMITATIONS,
-        'Derived organization documents of a held channel are deleted; the held content is kept in chat_messages.',
+        'Chat-derived documents (chat-message, chat-thread, chat-window) of a held channel are deleted; the held content is kept in chat_messages.',
+        'Other documents of a held source or container are kept, with their permission lists and members.',
         'A data source that any legal hold (active or released) names is kept: hold records are retained audit rows that reference it.',
-        'A legal hold covers chat content only: trigger deliveries, trigger bindings and other data-source dependents of a held source are deleted with the rest of the scope.',
+        'A legal hold covers chat content and documents only: trigger deliveries, trigger bindings and other data-source dependents of a held source are deleted with the rest of the scope.',
         'Backups taken before this deletion still hold the deleted rows until they expire.',
       ],
       schemaVersion: await readSchemaVersion(t),

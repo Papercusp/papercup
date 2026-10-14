@@ -33,6 +33,15 @@ describe('closed cloud telemetry contract', () => {
   it('accepts the disclosed portal metadata', () => {
     expect(cloudTelemetryEventSchema.safeParse(event).success).toBe(true);
   });
+  it('allows only fixed public product-guide metadata, without task-success claims', () => {
+    const guide = { ...event, event: 'product_tutorial', properties: {
+      lesson_id: 'product-guide', lesson_version: 3, action: 'lesson_displayed', lesson: 'welcome' } };
+    expect(cloudTelemetryEventSchema.safeParse(guide).success).toBe(true);
+    for (const properties of [{ ...guide.properties, lesson: 'private-task-title' },
+      { ...guide.properties, action: 'task_succeeded' }, { ...guide.properties, prompt: 'secret' }]) {
+      expect(cloudTelemetryEventSchema.safeParse({ ...guide, properties }).success).toBe(false);
+    }
+  });
   it.each(['prompt', 'code', 'terminal', 'input_tokens', 'accountId', 'rlResetAt', 'stack', 'url', 'organization_id', 'userId', 'environment', 'release', '__proto__'])('rejects the undisclosed property %s', key => {
     const properties = JSON.parse(JSON.stringify({ action: 'signed_in', [key]: 'private-value' }));
     expect(cloudTelemetryEventSchema.safeParse({ ...event, properties }).success).toBe(false);

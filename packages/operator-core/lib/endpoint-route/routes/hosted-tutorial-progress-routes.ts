@@ -6,14 +6,17 @@ import { readTutorialProgress, updateTutorialProgress, tutorialProgressUpdateSch
   readAccountTutorialProgress, updateAccountTutorialProgress, accountTutorialProgressUpdateSchema, AccountTutorialProgressConflict } from '../../onboarding/cloud-tutorial-progress';
 import { isHostedPrincipal } from '../../auth/hosted-principal';
 import { sameTutorialScope } from '../../onboarding/cloud-tutorial-lesson';
+import { cloudProductTutorialReviewEvents, readCloudTelemetryConsent, type CloudTelemetryContext } from '../../cloud-telemetry';
+import { getBuildInfo } from '../../build-info';
 
 // Kept separate from paid assistance so the Portal auth prebundle does not
 // import the agent/voice graph merely to persist a user's guide preferences.
 export const HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH = '/hosted/browser/onboarding/tutorial-progress' as const;
 
-export function createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspaceId, runTenant }: {
+export function createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspaceId, runTenant, deliver }: {
   origin: string; controlPlaneWorkspaceId: string;
   runTenant: <T>(context: VerifiedTenantServerContext, fn: (tx: Sql) => Promise<T>) => Promise<T>;
+  deliver?: typeof import('../../cloud-telemetry-posthog')['deliverCloudPosthog'];
 }) {
   return (['GET', 'POST'] as const).map(method => defineTool({
     method, path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH,
@@ -42,8 +45,23 @@ export function createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspa
           sessionId: principal.sessionId, sessionVersion: principal.sessionVersion,
         } };
         try {
-          const record = await runTenant(accountContext, tx => parsed?.success
-            ? updateAccountTutorialProgress(tx, scope, parsed.data) : readAccountTutorialProgress(tx, scope));
+          const { record, reviews } = await runTenant(accountContext, async tx => {
+            const previous = await readAccountTutorialProgress(tx, scope, { lock: Boolean(parsed?.success) });
+            const record = parsed?.success ? await updateAccountTutorialProgress(tx, scope, parsed.data) : previous;
+            return { record, reviews: parsed?.success ? cloudProductTutorialReviewEvents(previous, record!) : [] };
+          });
+          if (reviews.length) {
+            const context: CloudTelemetryContext = { principal, origin: 'control-plane', hostingMode: 'byoc',
+              environment: process.env.PORT === '3170' ? 'staging' : process.env.NODE_ENV === 'production' ? 'production' : 'development',
+              release: getBuildInfo().sha ?? '', observedAt: new Date().toISOString() };
+            // Commit succeeded. Optional analytics cannot hold the response or
+            // turn a saved choice into an error, even with a stalled sink.
+            void (async () => {
+              const sender = deliver ?? (await import('../../cloud-telemetry-posthog')).deliverCloudPosthog;
+              for (const event of reviews) await sender(event, context,
+                () => runTenant(accountContext, tx => readCloudTelemetryConsent(tx, principal)));
+            })().catch(() => {});
+          }
           return Response.json({ record }, { headers: { 'cache-control': 'no-store' } });
         } catch (error) {
           if (error instanceof AccountTutorialProgressConflict) return Response.json({ error: 'tutorial_progress_conflict', record: error.current }, { status: 409, headers: { 'cache-control': 'no-store' } });

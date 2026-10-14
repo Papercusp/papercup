@@ -1402,6 +1402,11 @@ export function listHosts(dir?: string): any[];
  *  what listHosts admits as a discovery record (WI-6554700010008431). */
 export function pruneDead(dir?: string): void;
 export function reportOwnerHumanTurn(now?: number): void;
+export function reportQuotaStarvation(ownerId: any, signal: any, { env, fetchImpl, timeoutMs }?: {
+    env?: NodeJS.ProcessEnv | undefined;
+    fetchImpl?: typeof fetch | undefined;
+    timeoutMs?: number | undefined;
+}): Promise<boolean>;
 /**
  * Read the effective per-agent wake mode through the loopback admin coord
  * read-only verb. A missing route, failed request, or malformed response is

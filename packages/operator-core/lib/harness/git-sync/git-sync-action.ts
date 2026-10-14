@@ -4367,6 +4367,31 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     liveness.stop();
   }
 
+  // `postLegsMarker` tracks the last phase this action wrote after the local lock set
+  // was released (null until a post-legs write lands); see stampPostLegsBoundary below.
+  let postLegsMarker: { phase: GitSyncActivityPhase; at: number } | null = null;
+  // WI-6554700010012434 (P-031 residue): the local lock set is released just above,
+  // but the marker used to keep reading phase:'local-sync' through stash-check,
+  // content revalidation and the record step, until the explicit post-legs write
+  // after record. dev:restart's in-flight drain (probeInFlightLocalSync) keys on
+  // phase:'local-sync', so it refused or waited on a fire that held nothing. Every
+  // step from here on is a post-leg (the record step already is one), so leave
+  // 'local-sync' the moment the locks are gone. Best-effort: a failed write leaves
+  // postLegsMarker null, and the write after record still lands.
+  const localLocksReleasedAt = Date.now();
+  const localLocksReleasedMarkerWritten = await writeActivity({
+    active: true,
+    phase: 'post-legs',
+    started_at: activityStartedAt,
+    updated_at: localLocksReleasedAt,
+    completed_at: null,
+    outcome_status: outcome.status,
+  }).then(
+    () => true,
+    () => false,
+  );
+  if (localLocksReleasedMarkerWritten) postLegsMarker = { phase: 'post-legs', at: localLocksReleasedAt };
+
   // WI-3072: stash-detection recurrence guard — read-only (no lock needed), runs
   // regardless of the sync outcome (even a conflict/error tick should still surface a
   // surprise stash). Best-effort end-to-end, including resolving the repo path itself
@@ -4446,10 +4471,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // phase:'completion-settlement' with a frozen N/200 and a frozen updated_at.
   // routines:list then reported a healthy fire as "in flight, still recording progress"
   // and, after three intervals, as stuck (observed 2026-09-28 and 2026-09-30).
-  // `postLegsMarker` tracks the last phase this action wrote (null until the explicit
-  // 'post-legs' write below); a leg boundary restamps it when the marker is not already
-  // a fresh 'post-legs' one. A full-object write also drops the stale settlement_progress.
-  let postLegsMarker: { phase: GitSyncActivityPhase; at: number } | null = null;
+  // `postLegsMarker` (declared above, set by the lock-release write) lets a leg boundary
+  // restamp the marker when it is not already a fresh 'post-legs' one. A full-object
+  // write also drops the stale settlement_progress.
   const stampPostLegsBoundary = async (leg: string): Promise<void> => {
     if (postLegsMarker === null || postLegsLiveness.timedOut) return;
     // The settlement leg owns the marker through its own progress callback.
@@ -4510,16 +4534,23 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
 
     // `recordOutcome` writes the local stage's status before any GitHub bridge or
     // P2P post-leg runs. Keep that local result visible, but explicitly mark the
-    // whole action non-terminal until every later leg has settled.
-    await writeActivity({
-      active: true,
-      phase: 'post-legs',
-      started_at: activityStartedAt,
-      updated_at: Date.now(),
-      completed_at: null,
-      outcome_status: outcome.status,
-    });
-    postLegsMarker = { phase: 'post-legs', at: Date.now() };
+    // whole action non-terminal until every later leg has settled. The lock-release
+    // write already marked it; restamp only when that marker is missing or stale.
+    const recordedAt = Date.now();
+    if (
+      postLegsMarker?.phase !== 'post-legs' ||
+      recordedAt - postLegsMarker.at >= GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS
+    ) {
+      await writeActivity({
+        active: true,
+        phase: 'post-legs',
+        started_at: activityStartedAt,
+        updated_at: recordedAt,
+        completed_at: null,
+        outcome_status: outcome.status,
+      });
+      postLegsMarker = { phase: 'post-legs', at: recordedAt };
+    }
 
     // event-await-… P-102: git-sync:committed[:<sha>] — wake anyone awaiting "is my
     // edit a local git commit yet". Remote origin/staging egress is a distinct,

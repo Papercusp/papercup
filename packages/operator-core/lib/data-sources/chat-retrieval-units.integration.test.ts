@@ -18,6 +18,7 @@ import {
   runChatRollupPass,
   placeLegalHold,
   purgeExpiredChatMessages,
+  reconcileChatMessageCoverage,
   releaseLegalHold,
   rollupChatUnits,
   tombstoneChatMessage,
@@ -300,6 +301,51 @@ describe('chat retrieval units (P-015)', () => {
     const after = await org.adminSql<{ provider_message_id: string; held_revisions: unknown[] }[]>`
       SELECT provider_message_id, held_revisions FROM harness_shared.chat_messages WHERE workspace_id = ${WS}`;
     expect(after.map((m) => [m.provider_message_id, m.held_revisions.length])).toEqual([['6.2', 0]]);
+  });
+
+  it('coverage tombstones stored messages a fully read window no longer holds, and nothing outside it (WI-6554700010012278)', async () => {
+    await upsertChatMessages(org.adminSql, WS, sourceId, [
+      msg('10.1', '2026-09-30T09:00:00Z', 'before the window'),
+      msg('10.2', '2026-09-30T10:00:00Z', 'still live'),
+      msg('10.3', '2026-09-30T10:05:00Z', 'deleted offline'),
+      msg('10.4', '2026-09-30T10:10:00Z', 'thread root', '10.4'),
+      msg('10.5', '2026-09-30T10:11:00Z', 'reply deleted offline', '10.4'),
+      msg('10.6', '2026-09-30T11:00:00Z', 'after the window'),
+    ]);
+    // A channel window covers messages outside any thread, bounds inclusive.
+    const window = { channelId: CH, from: '2026-09-30T10:00:00Z', to: '2026-09-30T10:30:00Z', liveProviderMessageIds: ['10.2'] };
+    expect(await reconcileChatMessageCoverage(org.adminSql, WS, sourceId, window)).toEqual({ tombstoned: 1 });
+    // Replaying the same window changes nothing.
+    expect(await reconcileChatMessageCoverage(org.adminSql, WS, sourceId, window)).toEqual({ tombstoned: 0 });
+    // A thread window covers the whole thread, root included.
+    expect(await reconcileChatMessageCoverage(org.adminSql, WS, sourceId, {
+      channelId: CH, threadKey: '10.4', liveProviderMessageIds: ['10.4'],
+    })).toEqual({ tombstoned: 1 });
+    // Another channel's window touches nothing in this one.
+    expect(await reconcileChatMessageCoverage(org.adminSql, WS, sourceId, { channelId: 'T1:COTHER', liveProviderMessageIds: [] }))
+      .toEqual({ tombstoned: 0 });
+    const rows = await org.adminSql<{ provider_message_id: string; deleted: boolean; body: string | null }[]>`
+      SELECT provider_message_id, deleted_at IS NOT NULL AS deleted, body FROM harness_shared.chat_messages
+       WHERE workspace_id = ${WS} AND data_source_id = ${sourceId}::uuid ORDER BY provider_message_id`;
+    expect(rows).toEqual([
+      { provider_message_id: '10.1', deleted: false, body: 'before the window' },
+      { provider_message_id: '10.2', deleted: false, body: 'still live' },
+      { provider_message_id: '10.3', deleted: true, body: null },
+      { provider_message_id: '10.4', deleted: false, body: 'thread root' },
+      { provider_message_id: '10.5', deleted: true, body: null },
+      { provider_message_id: '10.6', deleted: false, body: 'after the window' },
+    ]);
+  });
+
+  it('coverage under a legal hold tombstones the message but keeps its text (WI-6554700010012278)', async () => {
+    await upsertChatMessages(org.adminSql, WS, sourceId, [msg('11.1', '2026-09-30T10:00:00Z', 'held text')]);
+    await placeLegalHold(org.adminSql, WS, { dataSourceId: sourceId, channelId: CH, reason: 'litigation 43', placedBy: 'owner' });
+    expect(await reconcileChatMessageCoverage(org.adminSql, WS, sourceId, { channelId: CH, liveProviderMessageIds: [] }))
+      .toEqual({ tombstoned: 1 });
+    const [row] = await org.adminSql<{ deleted: boolean; body: string | null }[]>`
+      SELECT deleted_at IS NOT NULL AS deleted, body FROM harness_shared.chat_messages
+       WHERE workspace_id = ${WS} AND provider_message_id = '11.1'`;
+    expect(row).toEqual({ deleted: true, body: 'held text' });
   });
 
   it('erases a tombstone kept by a hold once the hold is released', async () => {

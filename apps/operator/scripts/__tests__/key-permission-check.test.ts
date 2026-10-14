@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -87,6 +87,19 @@ function runProbe(fx: Fixture, env: Record<string, string> = {}): string {
   return `${result.stdout ?? ''}${result.stderr ?? ''}`;
 }
 
+async function waitForFile(path: string, timeoutMs = 4_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      readFileSync(path);
+      return;
+    } catch {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    }
+  }
+  throw new Error(`timed out waiting for ${path}`);
+}
+
 /**
  * Every fixture gets a hardened control key, so the positive control passes and
  * a finding assertion is never secretly measuring the probe's self-validation.
@@ -110,6 +123,18 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
   it('passes bash syntax validation', () => {
     const result = spawnSync('bash', ['-n', PROBE], { encoding: 'utf8' });
     expect(`${result.status} ${result.stderr ?? ''}`).toBe('0 ');
+  });
+
+  it('logs the source identity and hash supplied by the snapshot launcher', () => {
+    const fx = withControl(fixture());
+    const source = '/run/papercusp-script-snapshots/key-permission-check.sh';
+    const sha256 = 'a'.repeat(64);
+    const out = runProbe(fx, {
+      PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_PATH: source,
+      PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_SHA256: sha256,
+    });
+
+    expect(out).toContain(`run: source=${source} snapshot_sha256=${sha256}`);
   });
 
   it('keeps the systemd cap above all per-root deep-scan budgets', () => {
@@ -466,19 +491,169 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       expect(out.match(/id_ed25519/g)?.length).toBe(1);
     });
 
-    it('treats a timed-out deep sweep as INDETERMINATE rather than clean', () => {
-      // A killed find prints nothing and looks exactly like a clean one. The
-      // naive `deep_out="$(timeout … | xargs grep …)"; rc=${PIPESTATUS[0]}` reads
-      // the ASSIGNMENT's status (grep's), never timeout's, so a killed sweep
-      // reported rc=1 and was indistinguishable from success.
+    it('treats a timed-out bounded deep sweep as INDETERMINATE rather than clean', () => {
+      // A killed find prints nothing and looks exactly like a clean one. Keep
+      // the fixture bounded: test the timeout path with a delayed shim, never
+      // by walking the host's entire filesystem.
       const fx = withControl(fixture());
+      const slowRoot = join(fx.root, 'slow-root');
+      const bin = join(fx.root, 'bin');
+      mkdirSync(slowRoot, { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      const findShim = join(bin, 'find');
+      writeFileSync(
+        findShim,
+        [
+          '#!/usr/bin/env bash',
+          'case " $* " in *"$KEYPERM_TEST_SLOW_ROOT"*) exec /usr/bin/sleep 3 ;; esac',
+          'exec /usr/bin/find "$@"',
+        ].join('\n'),
+      );
+      chmodSync(findShim, 0o755);
+
       const out = runProbe(fx, {
         KEYPERM_DEEP: '1',
-        KEYPERM_DEEP_ROOTS: '/',
+        KEYPERM_DEEP_ROOTS: slowRoot,
         KEYPERM_DEEP_TIMEOUT_S: '1',
+        KEYPERM_TEST_SLOW_ROOT: slowRoot,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
       });
       expect(out).toContain('INDETERMINATE');
       expect(out).toMatch(/TIMED OUT|timed out/);
+      expect(out).toContain(slowRoot);
+    });
+
+    it('logs periodic progress for a slow bounded root', () => {
+      const fx = withControl(fixture());
+      const slowRoot = join(fx.root, 'slow-root');
+      const bin = join(fx.root, 'bin');
+      mkdirSync(slowRoot, { recursive: true });
+      mkdirSync(bin, { recursive: true });
+      const findShim = join(bin, 'find');
+      writeFileSync(
+        findShim,
+        [
+          '#!/usr/bin/env bash',
+          'case " $* " in *"$KEYPERM_TEST_SLOW_ROOT"*) /usr/bin/sleep 2 ;; esac',
+          'exec /usr/bin/find "$@"',
+        ].join('\n'),
+      );
+      chmodSync(findShim, 0o755);
+
+      const out = runProbe(fx, {
+        KEYPERM_DEEP: '1',
+        KEYPERM_DEEP_ROOTS: slowRoot,
+        KEYPERM_DEEP_TIMEOUT_S: '6',
+        KEYPERM_TEST_SLOW_ROOT: slowRoot,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+      });
+
+      expect(out).toContain(`tier2: scan still running root=${slowRoot}`);
+      expect(out).toContain(`tier2: root result root=${slowRoot} status=0`);
+    });
+
+    it('reaps the progress sleeper when the scanner receives TERM', async () => {
+      const fx = withControl(fixture());
+      const slowRoot = join(fx.root, 'slow-root');
+      const bin = join(fx.root, 'bin');
+      const findReady = join(fx.root, 'find-ready');
+      const findRelease = join(fx.root, 'find-release');
+      const sleepPidFile = join(fx.root, 'progress-sleep.pid');
+      mkdirSync(slowRoot, { recursive: true });
+      mkdirSync(bin, { recursive: true });
+
+      const findShim = join(bin, 'find');
+      writeFileSync(
+        findShim,
+        [
+          '#!/usr/bin/env bash',
+          'case " $* " in',
+          '  *"$KEYPERM_TEST_DEEP_ROOT"*)',
+          '    : > "$KEYPERM_TEST_FIND_READY"',
+          '    while [ ! -e "$KEYPERM_TEST_FIND_RELEASE" ]; do /usr/bin/sleep 0.05; done',
+          '    ;;',
+          'esac',
+          'exec /usr/bin/find "$@"',
+        ].join('\n'),
+      );
+      chmodSync(findShim, 0o755);
+
+      const sleepShim = join(bin, 'sleep');
+      writeFileSync(
+        sleepShim,
+        [
+          '#!/usr/bin/env bash',
+          'printf "%s\\n" "$$" > "$KEYPERM_TEST_SLEEP_PID_FILE"',
+          'exec /usr/bin/sleep "$@"',
+        ].join('\n'),
+      );
+      chmodSync(sleepShim, 0o755);
+
+      const child = spawn('bash', [PROBE], {
+        env: {
+          ...process.env,
+          KEYPERM_NO_FILE: '1',
+          KEYPERM_DEEP: '1',
+          KEYPERM_DEEP_ROOTS: slowRoot,
+          KEYPERM_DEEP_TIMEOUT_S: '12',
+          KEYPERM_SSH_ROOTS: fx.root,
+          KEYPERM_POSITIVE_CONTROL: join(fx.sshDir, 'control'),
+          KEYPERM_STATE_DIR: join(fx.root, 'state'),
+          KEYPERM_TEST_DEEP_ROOT: slowRoot,
+          KEYPERM_TEST_FIND_READY: findReady,
+          KEYPERM_TEST_FIND_RELEASE: findRelease,
+          KEYPERM_TEST_SLEEP_PID_FILE: sleepPidFile,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+        },
+      });
+      let stderr = '';
+      child.stderr?.setEncoding('utf8');
+      child.stderr?.on('data', (chunk: string) => {
+        stderr += chunk;
+      });
+      const closed = new Promise<number | null>((resolveClose, rejectClose) => {
+        child.once('error', rejectClose);
+        child.once('close', resolveClose);
+      });
+
+      try {
+        await waitForFile(sleepPidFile);
+        await waitForFile(findReady);
+        expect(child.kill('SIGTERM')).toBe(true);
+        await new Promise((resolveWait) => setTimeout(resolveWait, 30));
+        writeFileSync(findRelease, 'continue\n');
+
+        let timer: NodeJS.Timeout | undefined;
+        const timedOut = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('scanner did not exit after TERM')), 4_000);
+        });
+        const status = await Promise.race([closed, timedOut]);
+        if (timer) clearTimeout(timer);
+        expect(status).toBe(143);
+
+        const sleepPid = Number(readFileSync(sleepPidFile, 'utf8').trim());
+        expect(Number.isInteger(sleepPid)).toBe(true);
+        let sleeperAlive = false;
+        try {
+          process.kill(sleepPid, 0);
+          sleeperAlive = true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        }
+        expect(sleeperAlive).toBe(false);
+        // TERM is sent as soon as the progress sleeper starts, before the
+        // progress interval elapses. The adjacent slow-root case verifies the
+        // progress line; this case verifies cleanup without requiring one.
+      } finally {
+        writeFileSync(findRelease, 'cleanup\n');
+        if (child.exitCode === null) child.kill('SIGKILL');
+        try {
+          const sleepPid = Number(readFileSync(sleepPidFile, 'utf8').trim());
+          if (Number.isInteger(sleepPid)) process.kill(sleepPid, 'SIGKILL');
+        } catch {
+          // The source's cleanup already reaped the recorded child.
+        }
+      }
     });
 
     it('treats a grep error in the deep sweep as INDETERMINATE rather than clean', () => {

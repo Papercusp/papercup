@@ -20,6 +20,10 @@ import {
   type HostedPrincipalResolver,
 } from '../auth/hosted-principal-resolver';
 import { HostedSessionCookieCodec } from '../auth/hosted-session';
+import { createHostedPrincipal } from '../auth/hosted-principal';
+import { readCloudTelemetryConsent } from '../cloud-telemetry';
+import { getBuildInfo } from '../build-info';
+import { createHash } from 'node:crypto';
 import {
   HostedRuntimeMembershipAuthority,
   HostedServiceIdentityDirectory,
@@ -227,6 +231,22 @@ export async function createHostedAuthRuntime(
     sessionStore,
     sessionCookieCodec,
     publicOrigin: configuration.publicOrigin,
+    onSessionEstablished: async session => {
+      const principal = createHostedPrincipal({ workspaceId: configuration.controlPlaneWorkspaceId,
+        activeOrganizationId: session.organizationId, userId: session.userId, sessionId: session.id,
+        sessionVersion: session.permissionVersion, selectedWorkspaceId: session.workspaceId ?? undefined, permissions: [] });
+      const digest = createHash('sha256').update(session.id).digest('hex');
+      const operation_id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+      const { deliverCloudPosthog } = await import('../cloud-telemetry-posthog');
+      return deliverCloudPosthog({ event: 'cloud_portal_session', operation_id, properties: { action: 'signed_in' } },
+        { principal, origin: 'control-plane', hostingMode: 'byoc', release: getBuildInfo().sha ?? '',
+          environment: process.env.PORT === '3170' ? 'staging' : process.env.NODE_ENV === 'production' ? 'production' : 'development',
+          observedAt: session.createdAt.toISOString() },
+        () => runTenant({ principal: { kind: 'user', profile: 'hosted', authMethod: 'cookie-session', trust: 'verified',
+          slug: session.userId, workspaceId: configuration.controlPlaneWorkspaceId, userId: session.userId,
+          activeOrganizationId: session.organizationId, sessionId: session.id, sessionVersion: session.permissionVersion } },
+        tx => readCloudTelemetryConsent(tx, principal)));
+    },
   });
   const app = createHostedAuthApp(mounted, resolvePrincipal);
   // Reuse exact hosted leaves and the same tenant/session authority. The Help

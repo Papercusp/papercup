@@ -1,5 +1,5 @@
 /** EI-25449368540823559: exercise teardown without rerunning security journeys. */
-import { fork, spawn } from 'node:child_process';
+import { fork, spawn, spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,65 @@ import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp
 
 const root = resolve(import.meta.dirname, '../../..');
 const workerOptions = isolatedWorkerOptions(30_000);
+
+it.runIf(process.platform === 'linux')('keeps native HOME and TMPDIR visible through the real sandbox device namespace', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-native-namespace-evidence-'));
+  const deviceTmp = await mkdtemp('/dev/shm/isolated-native-namespace-');
+  const hiddenConfig = join(deviceTmp, 'config.toml');
+  await writeFile(hiddenConfig, 'host-visible-device-control');
+  // This is the production SRT device mount, with no compensating /dev/shm
+  // bind. Host readability alone missed the original CODEX_HOME failure.
+  expect(readFileSync(hiddenConfig, 'utf8')).toBe('host-visible-device-control');
+  const hidden = spawnSync('bwrap', ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
+    '--die-with-parent', '--', '/bin/cat', hiddenConfig], { encoding: 'utf8', timeout: 10_000 });
+  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: deviceTmp };
+  delete env.PC_HEAVY_PREEMPT_READY_FILE;
+  delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+  let child: ReturnType<typeof fork> | undefined;
+  try {
+    expect(hidden.error).toBeUndefined();
+    expect(hidden, hidden.stderr).toMatchObject({ status: 1, stdout: '' });
+    expect(hidden.stderr).toContain('No such file or directory');
+    child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime', '--', process.execPath, '-e', `
+      const assert = require('node:assert/strict');
+      const { spawnSync } = require('node:child_process');
+      const { mkdtempSync, writeFileSync, readFileSync, realpathSync } = require('node:fs');
+      const { join, dirname } = require('node:path');
+      for (const path of [process.env.HOME, process.env.TMPDIR, process.env.XDG_RUNTIME_DIR]) {
+        const physical = realpathSync(path);
+        assert.ok(!['/dev', '/proc'].some(prefix => physical === prefix || physical.startsWith(prefix + '/')), path);
+      }
+      const nativeHome = mkdtempSync(join(process.env.TMPDIR, 'codex-spawn-'));
+      const config = join(nativeHome, 'config.toml');
+      const state = join(nativeHome, 'native-state');
+      writeFileSync(config, 'native-config-visible');
+      const runtimeRoot = dirname(process.env.HOME);
+      const result = spawnSync('bwrap', ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
+        '--bind', runtimeRoot, runtimeRoot, '--die-with-parent', '--', '/bin/sh', '-c',
+        'cat "$1"; printf native-state > "$2"; test -d "$HOME"', 'native-control', config, state],
+        { encoding: 'utf8', timeout: 10_000 });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, 'native-config-visible');
+      assert.equal(readFileSync(state, 'utf8'), 'native-state');
+      console.log('native-runtime-namespace-control');
+    `], { cwd: root, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    const result = await captureIsolatedWorker(child, evidenceDir, isolatedWorkerOptions(120_000));
+    expect(result, result.output.slice(-6000)).toMatchObject({ code: 0, signal: null, timedOut: false,
+      exitWaitTimedOut: false, stdioDrainTimedOut: false });
+    expect(result.output).toContain('native-runtime-namespace-control');
+    const stages = result.output.split('\n').filter(line => line.startsWith('[with-test-pg] cleanup '))
+      .map(line => JSON.parse(line.slice('[with-test-pg] cleanup '.length)));
+    const complete = stages.find(message => message.stage === 'complete');
+    expect(complete).toMatchObject({ runtimeRemoved: true, pgDataRemoved: true });
+    expect(existsSync(complete.runtimeRoot)).toBe(false);
+    expect(existsSync(complete.dataDir)).toBe(false);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await rm(evidenceDir, { recursive: true, force: true });
+    await rm(deviceTmp, { recursive: true, force: true });
+  }
+}, 180_000);
 
 it('pre-mints the private operator spawn-signing key before admitting its first native launch', async () => {
   const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-spawn-signing-'));

@@ -233,6 +233,29 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     expect(secondSettled).toBe(true);
   });
 
+  it.each([
+    { code: 17, signal: null, reason: 'exit code 17' },
+    { code: null, signal: 'SIGTERM', reason: 'signal SIGTERM' },
+  ])('rejects all startup callers with the actual pre-ready exit: $reason', async ({ code, signal, reason }) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const child = makeChild();
+    spawnMock.mockReturnValueOnce(child);
+    const first = spawnSpawnerSidecar('/tmp/spawner-sidecar-early-exit.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+    const second = spawnSpawnerSidecar('/tmp/spawner-sidecar-early-exit.sock');
+    let firstError: unknown;
+    let secondError: unknown;
+    void first.catch((error) => { firstError = error; });
+    void second.catch((error) => { secondError = error; });
+    child.emit('exit', code, signal);
+    await vi.waitFor(() => {
+      expect(firstError).toMatchObject({ message: `Spawner sidecar exited before ready (${reason})`,
+        code: 'SIDECAR_STARTUP_EXIT', exitCode: code, signal });
+      expect(secondError).toBe(firstError);
+    }, { timeout: 500 });
+    expect(warning).toHaveBeenCalledWith(`[spawner-sidecar] died (${reason})`);
+  });
+
   it('rejects every coalesced startup caller when the ready handshake times out', async () => {
     const child = makeChild();
     child.kill.mockImplementation(() => {
@@ -259,6 +282,17 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     await firstRejection;
     await Promise.resolve();
     expect(secondSettled).toBe(true);
+  });
+
+  it('retains the startup timeout cause when its kill emits exit synchronously', async () => {
+    const child = makeChild();
+    spawnMock.mockReturnValueOnce(child);
+    const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar-kill-exit.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+    const rejection = expect(ready).rejects.toThrow('Spawner sidecar startup timeout');
+    await vi.advanceTimersByTimeAsync(10_000);
+    await rejection;
+    expect(child.kill).toHaveBeenCalled();
   });
 
   // EI-19479764372783341. Landing unconfined is a legitimate degrade (a box with

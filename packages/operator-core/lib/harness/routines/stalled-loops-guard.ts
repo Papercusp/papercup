@@ -1215,6 +1215,28 @@ export async function sweepStalledLoops(
     // exempt exactly the comatose-host population WI-6639 targets.
     const realTurnMs = status.lastRealTurnAt ? Date.parse(status.lastRealTurnAt) : NaN;
     if (Number.isFinite(realTurnMs) && nowMs - realTurnMs < turnsStalledFloorMs(status.intervalSec)) {
+      // WI-6554700010012442 — this veto guards a DISARM. A fire-starved loop whose owner keeps
+      // producing real turns through OTHER wakes (inbox, fleet awaits) is the clearest re-arm
+      // case there is: the recent turn already proves the owner reachable, and the re-arm is
+      // the reversible remedy (one fire clears `fireStarved`, since `firesSinceArm` leaves 0).
+      // Vetoing it left a loop parked for ~66 min with zero fires and nothing acting on it.
+      if (status.fireStarved) {
+        reArmedFireStarved.push(ownerId);
+        console.warn(
+          `[stalled-loops-guard] FIRE-STARVED ${ownerId}: zero fires since the arm, yet a real turn ` +
+            `landed ${Math.round((nowMs - realTurnMs) / 1000)}s ago through another wake. Re-arming ` +
+            `(WI-6554700010012442).`,
+        );
+        if (!dryRun) {
+          await rearm(
+            sql,
+            routineId,
+            `stalled-loops-guard (WI-6554700010012442): fire-starved — zero fires since the arm while ` +
+              `real turns kept landing (lastRealTurnAt ${status.lastRealTurnAt})`,
+          );
+        }
+        continue;
+      }
       vetoedByRecentTurn.push(ownerId);
       console.warn(
         `[stalled-loops-guard] VETO ${ownerId}: turnsStalled:true but a real turn landed ` +

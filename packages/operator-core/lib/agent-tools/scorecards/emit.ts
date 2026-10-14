@@ -17,6 +17,7 @@ import { deriveAgentRunEvidenceRecordSafe, type EvidenceRecordSql } from './agen
 import {
   classifyRubricEvidenceCurrentness,
   getRubric,
+  readRubric,
   getRubricCriteriaHash,
   getRubricEvidenceIdentity,
   getRubricPlanRevision,
@@ -1596,8 +1597,18 @@ export async function emitScorecard(
       error: clippedScorecardTextMessage(clippedPath),
     };
   }
-  const rubric = await getRubric(args.rubricRef);
-  if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
+  const rubricRead = await readRubric(args.rubricRef);
+  if (rubricRead.kind === 'ambiguous') throw rubricRead.error;
+  if (rubricRead.kind === 'read-failed') {
+    return {
+      ok: false as const,
+      error:
+        `rubric '${args.rubricRef}' could not be resolved because the backing plan read failed; ` +
+        'retry or verify independently before treating it as absent',
+    };
+  }
+  if (rubricRead.kind === 'missing') return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
+  const rubric = rubricRead.rubric;
   if ((args.rubricRevision !== undefined && args.rubricRevision !== rubric.revision) ||
       (args.criteriaHash !== undefined && args.criteriaHash !== rubric.criteriaHash)) {
     return { ok: false as const, code: 'scorecard_rubric_identity_mismatch',
@@ -1750,7 +1761,17 @@ export async function emitScorecard(
       // but that narrowing does not flow through the aliased conjunction — bind the ref
       // once so the guard and the message cannot disagree about its nullability.
       const vettedRubricRef = args.subject!.ref;
-      const subjectRubric = await getRubric(vettedRubricRef);
+      const subjectRubricRead = await readRubric(vettedRubricRef);
+      if (subjectRubricRead.kind === 'ambiguous') throw subjectRubricRead.error;
+      if (subjectRubricRead.kind === 'read-failed') {
+        return {
+          ok: false as const,
+          error:
+            `vetting subject '${vettedRubricRef}' could not be resolved because the backing plan read failed; ` +
+            'retry or verify independently before treating it as absent',
+        };
+      }
+      const subjectRubric = subjectRubricRead.kind === 'found' ? subjectRubricRead.rubric : null;
       if (subjectRubric?.kind === 'acceptance' && subjectRubric.status === 'active') {
         return {
           ok: false as const,
@@ -2434,7 +2455,17 @@ export async function emitScorecard(
             `vettingConsult/vettingWorkItem and cite the separately emitted meta-rubric scorecard instead`,
         };
       }
-      const vettedRubric = await getRubric(subjectRef);
+      const vettedRubricRead = await readRubric(subjectRef);
+      if (vettedRubricRead.kind === 'ambiguous') throw vettedRubricRead.error;
+      if (vettedRubricRead.kind === 'read-failed') {
+        return {
+          ok: false as const,
+          error:
+            `vetting subject '${subjectRef}' could not be resolved because the backing plan read failed; ` +
+            'retry or verify independently before treating it as absent',
+        };
+      }
+      const vettedRubric = vettedRubricRead.kind === 'found' ? vettedRubricRead.rubric : null;
       if (!vettedRubric) {
         return {
           ok: false as const,

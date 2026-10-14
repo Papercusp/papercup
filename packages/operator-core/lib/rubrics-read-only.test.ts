@@ -18,7 +18,7 @@ vi.mock('./pg-read-query', async (importOriginal) => {
   };
 });
 
-const { getRubricWithoutSeeding } = await import('./rubrics');
+const { getRubricWithoutSeeding, readRubric, readRubricWithoutSeeding } = await import('./rubrics');
 
 describe('getRubricWithoutSeeding', () => {
   beforeEach(() => {
@@ -55,5 +55,34 @@ describe('getRubricWithoutSeeding', () => {
     expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
     expect(h.boundedPgReadTxn).toHaveBeenCalledWith(expect.any(Function));
     expect(h.sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a transient backing-row read failure instead of reporting a miss', async () => {
+    h.sql.mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(readRubricWithoutSeeding('active-rubric')).resolves.toEqual({ kind: 'read-failed' });
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+    expect(h.sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a successful empty direct lookup as a genuine miss', async () => {
+    h.sql.mockResolvedValueOnce([]);
+
+    await expect(readRubricWithoutSeeding('absent-rubric')).resolves.toEqual({ kind: 'missing' });
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps writer lookup failures distinct from a missing rubric', async () => {
+    h.sql.mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(readRubric('active-rubric')).resolves.toEqual({ kind: 'read-failed' });
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps writer lookup misses distinct without running the seedable library scan in tests', async () => {
+    h.sql.mockResolvedValueOnce([]);
+
+    await expect(readRubric('absent-rubric')).resolves.toEqual({ kind: 'missing' });
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
   });
 });

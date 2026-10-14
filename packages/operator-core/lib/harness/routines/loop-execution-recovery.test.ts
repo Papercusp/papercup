@@ -80,6 +80,58 @@ describe('expected loop execution recovery', () => {
     expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'block', state: { status: 'blocked', reason: 'native-start-retry-exhausted' } });
   });
 
+  // WI-6554700010012442 — a spent budget must stay a hand-off ('block'). Before the fix the
+  // backoff window answered 'observe' (unknown probes) or 'protect' (retries), so the loop was
+  // held for every 5-minute window between re-blocks, indefinitely.
+  it('hands off a spent unknown-probe budget for the whole backoff, never re-holding the loop', () => {
+    const i = fixture(); i.host.execution!.phase = 'unknown';
+    for (let n = 0; n < 3; n++) {
+      const decision = decideLoopExecutionRecovery(i);
+      i.prior = decision.state;
+      i.nowMs = decision.state.nextProbeAt;
+      i.host.execution!.observedAt = i.nowMs;
+      i.inference.observedAt = i.nowMs;
+    }
+    const blocked = i.prior!;
+    expect(blocked).toMatchObject({ status: 'blocked', probes: 3 });
+    i.nowMs = blocked.nextProbeAt - 1;
+    i.host.execution!.observedAt = i.nowMs;
+    i.inference.observedAt = i.nowMs;
+    expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'block', state: { status: 'blocked', probes: 3 } });
+    i.host.execution!.phase = 'failed';
+    expect(decideLoopExecutionRecovery(i).action).toBe('block');
+    i.host.execution!.phase = 'unknown';
+    i.nowMs = blocked.nextProbeAt;
+    i.host.execution!.observedAt = i.nowMs;
+    i.inference.observedAt = i.nowMs;
+    expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'block', state: { status: 'blocked', probes: 4 } });
+  });
+
+  it('hands off a spent retry budget during its backoff', () => {
+    const i = fixture();
+    for (let n = 0; n < 6; n++) {
+      const decision = decideLoopExecutionRecovery(i);
+      i.prior = decision.state;
+      i.nowMs = decision.state.nextProbeAt;
+      i.host.execution!.observedAt = i.nowMs;
+      i.inference.observedAt = i.nowMs;
+    }
+    expect(i.prior).toMatchObject({ status: 'blocked', reason: 'native-start-retry-exhausted' });
+    i.nowMs = i.prior!.nextProbeAt - 1;
+    i.host.execution!.observedAt = i.nowMs;
+    i.inference.observedAt = i.nowMs;
+    expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'block', state: { reason: 'native-start-retry-exhausted' } });
+  });
+
+  it('keeps a transient blocked prerequisite on its paced retry (not a spent budget)', () => {
+    const i = fixture();
+    i.prior = { status: 'blocked', reason: 'inbox-wake-repair-failed', attempts: 1, probes: 0,
+      nextProbeAt: nowMs + 30_000, observedAt: nowMs, generation: '1:1:2', lastAttemptAt: nowMs };
+    expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'protect', state: { reason: 'recovery-backoff' } });
+    i.host.execution!.phase = 'unknown';
+    expect(decideLoopExecutionRecovery(i).action).toBe('observe');
+  });
+
   it('requires current-fire completion before using the normal settle path', () => {
     const i = fixture(); i.host.execution!.phase = 'settled';
     expect(decideLoopExecutionRecovery(i).action).toBe('settle');

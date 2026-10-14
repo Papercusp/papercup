@@ -2,7 +2,7 @@
 
 // Shared implementation of the operator's existing browser consent boundary.
 // An unavailable host endpoint drops events; it never implies consent.
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { useOperatorWorkspaceLocation, type OperatorWorkspaceLocation } from './seam';
 import { cloudTelemetryEventSchema, cloudTelemetryConsentSchema, CLOUD_MONITORING_DISCLOSURE_VERSION, type CloudTelemetryConsent } from '@papercusp/operator-core/lib/telemetry-kinds';
@@ -47,6 +47,7 @@ export async function captureBrowserTelemetry(event: string, properties: Record<
     // vendor SDK, accepts arbitrary properties, or infers desktop consent.
     if (event === 'cloud_tutorial' && (properties.action === 'complete' ||
       ['agent', 'task', 'result', 'revision', 'practice'].includes(String(properties.step)))) return;
+    if (event === 'product_tutorial' && properties.action === 'explanation_reviewed') return;
     const parsed = cloudTelemetryEventSchema.safeParse({ event, operation_id: crypto.randomUUID(), properties });
     if (!parsed.success || ['cloud_workspace_provisioning', 'cloud_diagnostic_aggregate'].includes(parsed.data.event)) return;
     try {
@@ -63,8 +64,13 @@ export async function captureBrowserTelemetry(event: string, properties: Record<
 
 export function PostHogProvider({ children }: { children: ReactNode }) {
   const workspaceLocation = useOperatorWorkspaceLocation();
+  const portalVisit = useRef(false);
   useEffect(() => {
-    if (workspaceLocation === 'cloud') return;
+    if (workspaceLocation === 'cloud') {
+      if (!portalVisit.current) { portalVisit.current = true;
+        void captureBrowserTelemetry('cloud_portal_session', { action: 'returned' }, 'cloud'); }
+      return;
+    }
     if (state.client) return;
     let cancelled = false;
     void consentedClient(() => cancelled).catch(() => {});
@@ -92,7 +98,10 @@ function HostedMonitoringPreferences() {
         if (!response.ok) throw new Error('unavailable');
         const data = await response.json();
         const parsed = cloudTelemetryConsentSchema.parse(data.consent);
-        if (!cancelled) setConsent(parsed);
+        if (!cancelled) {
+          setConsent(parsed);
+          void captureBrowserTelemetry('cloud_feature_adoption', { feature: 'monitoring' }, 'cloud');
+        }
       }).catch(() => { if (!cancelled) setError('Monitoring choices are unavailable. No choice has been changed.'); });
     return () => { cancelled = true; };
   }, []);
@@ -113,7 +122,7 @@ function HostedMonitoringPreferences() {
     <p>Both choices start off. Papercusp collects only the metadata described here when you enable them.</p>
     <label><input type="checkbox" checked={consent?.analytics.enabled ?? false} disabled={!consent || saving}
       onChange={event => { void update('analytics', event.target.checked); }} /> Share portal analytics</label>
-    <p>Sign-in and return visits, setup and public guide steps, feature choices, confirmed provisioning status, and safe error codes.
+    <p>Sign-in and return visits, setup and public guide steps, saved explanation reviews, feature choices, confirmed provisioning status, and safe error codes.
       Identity is pseudonymous and separated by organization and environment.</p>
     <label><input type="checkbox" checked={consent?.diagnostics.enabled ?? false} disabled={!consent || saving}
       onChange={event => { void update('diagnostics', event.target.checked); }} /> Allow aggregate diagnostic export</label>

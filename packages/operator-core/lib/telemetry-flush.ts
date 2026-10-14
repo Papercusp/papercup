@@ -29,45 +29,9 @@ import { getPosthogConfigWithSource } from './posthog-config';
 import { POSTHOG_PUBLIC_DEFAULTS } from './posthog-public-defaults';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import { deliverCloudTelemetry, type CloudTelemetryContext } from './record-telemetry';
 import { customerAgentExecutionRequired } from './auth/loopback-peer-trust';
-import { createHash } from 'node:crypto';
 
-/** Existing capture ingress is separate from the flag/admin API. A healthy
- * project listing cannot prove that events can enter the ingestion pipeline. */
-export async function readCloudCaptureHealth(): Promise<{ healthy: boolean; status: number | null }> {
-  const config = getPosthogConfigWithSource().config ?? POSTHOG_PUBLIC_DEFAULTS;
-  try {
-    const response = await fetch(`${config.host.replace(/\/+$/, '')}/batch/`, { signal: AbortSignal.timeout(2_000) });
-    // The maintained capture server rejects a missing payload with 400.
-    return { healthy: response.status === 400, status: response.status };
-  } catch { return { healthy: false, status: null }; }
-}
-
-/** Strict cloud delivery shares the maintained PostHog configuration and batch
- * transport. Unlike local crash archives it never has an internal-build bypass
- * or a backlog: every delivery rechecks the customer's current scoped choice. */
-export function deliverCloudPosthog(input: unknown, context: CloudTelemetryContext, readConsent: () => Promise<unknown>) {
-  return deliverCloudTelemetry(input, context, { readConsent, send: async envelope => {
-    const configured = getPosthogConfigWithSource().config;
-    const config = configured ?? POSTHOG_PUBLIC_DEFAULTS;
-    // Retries of one phase share an identity; a requested phase must never
-    // deduplicate the later server-confirmed ready outcome of that operation.
-    const insertId = createHash('sha256').update(JSON.stringify([
-      envelope.event, envelope.properties.operation_id,
-      'phase' in envelope.properties ? envelope.properties.phase : null,
-      'action' in envelope.properties ? envelope.properties.action : null,
-      'lesson' in envelope.properties ? envelope.properties.lesson : null,
-    ])).digest('hex');
-    const response = await fetch(`${config.host.replace(/\/+$/, '')}/batch/`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ api_key: config.projectKey, batch: [{ ...envelope,
-        properties: { ...envelope.properties, $insert_id: insertId } }] }),
-      signal: AbortSignal.timeout(2_000),
-    });
-    if (!response.ok) throw new Error('cloud_telemetry_delivery_rejected');
-  } });
-}
+export { readCloudCaptureHealth, deliverCloudPosthog, cloudMonitoringDashboardViews, ensureCloudMonitoringDashboard } from './cloud-telemetry-posthog';
 
 interface BufferedReport {
   received_at: string;

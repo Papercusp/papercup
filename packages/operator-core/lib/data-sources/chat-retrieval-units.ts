@@ -67,10 +67,22 @@ import {
   upsertPersonalDocuments,
 } from '../personal-vault/store';
 import type { PersonalDocumentInput } from '../personal-vault/types';
-import { upsertOrganizationDocuments, type OrganizationDocumentInput } from './documents-corpus';
+import { storedDocumentContent, upsertOrganizationDocuments, type OrganizationDocumentInput } from './documents-corpus';
 
 export const DEFAULT_WINDOW_GAP_MINUTES = 30;
 export const DEFAULT_CHAT_MESSAGE_DATATYPE = 'chat-message';
+export const CHAT_THREAD_DOCUMENT_KIND = 'chat-thread';
+export const CHAT_WINDOW_DOCUMENT_KIND = 'chat-window';
+/**
+ * Document kinds rendered from chat_messages. Their content is held in chat_messages, so migration
+ * 1502 `document_is_chat_derived` exempts exactly these kinds from document legal holds (pinned by
+ * organization-data-receipts.integration.test.ts).
+ */
+export const CHAT_DERIVED_DOCUMENT_KINDS = [
+  DEFAULT_CHAT_MESSAGE_DATATYPE,
+  CHAT_THREAD_DOCUMENT_KIND,
+  CHAT_WINDOW_DOCUMENT_KIND,
+] as const;
 const DEFAULT_ROLLUP_BATCH = 200;
 /** How long a bucket waits after its first failed render; the delay doubles with each further failure. */
 export const DEFAULT_ROLLUP_RETRY_DELAY_SECONDS = 300;
@@ -287,6 +299,58 @@ export async function tombstoneChatMessage(
   return { tombstoned: true, held: row.held };
 }
 
+/**
+ * Tombstone every live stored message in a window the provider read in full and did not find
+ * (WI-6554700010012278). A provider that reads a channel's complete live set for a window names
+ * it as coverage; a message stored in that window but absent from the live set was deleted while
+ * no live delete reached us (the daemon was offline). Each one goes through
+ * `tombstoneChatMessage`, so a legal hold still keeps its text and its unit is re-queued.
+ *
+ * Without `threadKey` the window is the channel's messages outside any thread; with it, the whole
+ * thread including its root. `from` and `to` bound `posted_at` inclusively; an absent bound is open.
+ * Replaying the same window is a no-op: a tombstone is never live again.
+ */
+export async function reconcileChatMessageCoverage(
+  sql: Sql,
+  workspaceId: string,
+  dataSourceId: string,
+  input: {
+    channelId: string;
+    threadKey?: string | null;
+    from?: string | Date | null;
+    to?: string | Date | null;
+    liveProviderMessageIds: readonly string[];
+  },
+): Promise<{ tombstoned: number }> {
+  const channelId = nonEmpty(input.channelId, 'invalid_chat_channel_id');
+  const threadKey = input.threadKey?.trim() || null;
+  const from = input.from ? toDate(input.from, 'invalid_chat_coverage_from') : null;
+  const to = input.to ? toDate(input.to, 'invalid_chat_coverage_to') : null;
+  const live = [...new Set(input.liveProviderMessageIds)];
+  const missing = await sql<Array<{ provider_message_id: string; thread_key: string | null; posted_at: Date }>>`
+    SELECT provider_message_id, thread_key, posted_at
+      FROM harness_shared.chat_messages
+     WHERE workspace_id = ${workspaceId}
+       AND data_source_id = ${dataSourceId}::uuid
+       AND channel_id = ${channelId}
+       AND deleted_at IS NULL
+       AND ${threadKey === null ? sql`thread_key IS NULL` : sql`thread_key = ${threadKey}`}
+       AND (${from}::timestamptz IS NULL OR posted_at >= ${from}::timestamptz)
+       AND (${to}::timestamptz IS NULL OR posted_at <= ${to}::timestamptz)
+       AND NOT (provider_message_id = ANY(${sql.array(live)}::text[]))`;
+  let tombstoned = 0;
+  for (const row of missing) {
+    const result = await tombstoneChatMessage(sql, workspaceId, dataSourceId, {
+      channelId,
+      providerMessageId: row.provider_message_id,
+      postedAt: row.posted_at,
+      threadKey: row.thread_key,
+    });
+    if (result.tombstoned) tombstoned += 1;
+  }
+  return { tombstoned };
+}
+
 interface SourceRow {
   id: string;
   kind: string;
@@ -385,14 +449,17 @@ export function storedDedupeKey(route: Extract<CorpusRoute, { write: true }>, un
   return dedupeKeyFor({ source: route.source, kind, dedupeKey: unitKey, providerAccountId: route.providerAccountId });
 }
 
+/** A pot row is sealed under the organization key exactly like an organization row (migration 1503). */
 async function upsertPotDocument(sql: Sql, workspaceId: string, potSlug: string, doc: OrganizationDocumentInput): Promise<void> {
+  const [c] = await storedDocumentContent(sql, workspaceId, [doc]);
   await sql`
     INSERT INTO harness_shared.documents
       (workspace_id, user_id, scope, pot_slug, source, kind, external_id,
-       occurred_at, participants, title, text, metadata, dedupe_key)
+       occurred_at, participants, title, text, metadata, dedupe_key, sealed_content, blind_terms)
     VALUES (${workspaceId}, NULL, 'pot', ${potSlug}, ${doc.source}, ${doc.kind},
             ${doc.externalId ?? null}, ${doc.occurredAt ?? null}, ${doc.participants ?? []}::text[],
-            ${doc.title ?? ''}, ${doc.text ?? ''}, ${sql.json((doc.metadata ?? {}) as never)}, ${doc.dedupeKey})
+            ${c!.title}, ${c!.text}, ${sql.json((doc.metadata ?? {}) as never)}, ${doc.dedupeKey},
+            ${c!.sealedContent}, ${c!.blindTerms}::text[])
     ON CONFLICT (workspace_id, pot_slug, source, dedupe_key) WHERE scope = 'pot'
     DO UPDATE SET kind = EXCLUDED.kind,
                   external_id = EXCLUDED.external_id,
@@ -400,6 +467,8 @@ async function upsertPotDocument(sql: Sql, workspaceId: string, potSlug: string,
                   participants = EXCLUDED.participants,
                   title = EXCLUDED.title,
                   text = EXCLUDED.text,
+                  sealed_content = EXCLUDED.sealed_content,
+                  blind_terms = EXCLUDED.blind_terms,
                   metadata = EXCLUDED.metadata,
                   updated_at = now()`;
 }
@@ -707,7 +776,7 @@ async function rollupBucket(
     const list = route.write && route.scope === 'organization'
       ? await ensurePermissionList(sql, workspaceId, route.source, containerPermissionRef(bucket.data_source_id, bucket.channel_id))
       : null;
-    const docKind = unitKind === 'thread' ? 'chat-thread' : 'chat-window';
+    const docKind = unitKind === 'thread' ? CHAT_THREAD_DOCUMENT_KIND : CHAT_WINDOW_DOCUMENT_KIND;
     const target = route.write
       ? {
           scope: route.scope,

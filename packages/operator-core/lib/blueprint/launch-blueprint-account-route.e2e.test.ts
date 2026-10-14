@@ -10,6 +10,7 @@ import { accountsForProvider, isSpawnEligible } from '../deployment/account-pool
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../../test/private-http-workspace-preflight';
+import { CODEX_SAFE_DEFAULT_MODEL } from '../model-context-budget.mjs';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const options = isolatedWorkerOptions(240_000);
@@ -38,12 +39,16 @@ it('records the exact real primary blueprint request on its private spawn row', 
       'packages/operator-core/lib/inference-gateway/launch.ts',
       'packages/operator-core/lib/inference-gateway/gateway.ts',
       'packages/operator-core/lib/inference-gateway/spawn-env.ts',
+      'packages/operator-core/lib/inference-gateway/error-body-scrub.ts',
+      'packages/operator-core/lib/inference-gateway/codex-model-refusals.ts',
+      'packages/operator-core/lib/model-context-budget.mjs',
       'packages/operator-core/lib/fleet/spawn-tree.ts',
       'packages/operator-core/lib/gym/gym-db-init.ts',
       'libs/papercusp/packages/orchestrator/src/invoke.ts',
       'libs/papercusp/packages/orchestrator/src/spawn-mcp.ts'],
     retainedArtifacts: ['phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-build.log',
       'phases/execute/account-route.json', 'phases/execute/account-route-preflight.json',
+      'phases/execute/provider-response.json',
       'phases/execute/shared-effects.json',
       'phases/execute/worker.log'],
     prepare: evidenceDir => {
@@ -91,6 +96,12 @@ it('records the exact real primary blueprint request on its private spawn row', 
       expect(receipt.route.resolvedAccountIds).toContain(receipt.firstRequest.servingAccountId);
       expect(receipt.firstRequest.model).toBe(receipt.route.launchedModel);
       expect(receipt.firstRequest.effort).toBe(receipt.route.launchedEffort);
+      const [model, effort] = CODEX_SAFE_DEFAULT_MODEL.split(':');
+      expect(receipt.route).toMatchObject({ ownerId: receipt.spawnId, accountRoute: 'auto',
+        requestedBackend: 'codex', launchedBackend: 'codex', requestedModel: model,
+        launchedModel: model, requestedEffort: effort, launchedEffort: effort });
+      expect(receipt.upstream).toMatchObject({ requestShape: { model, effort }, error: null });
+      expect(receipt.childConfig).toMatchObject({ model, effort });
       expect(receipt.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(receipt.runtimeInputs.invoke).toBe(join(root, 'libs/papercusp/packages/orchestrator/bin/invoke-once.ts'));
       expect(receipt.privateGateUnchanged).toBe(true);

@@ -869,6 +869,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'polling fleet:leader-brief for repeated recovery-only member cycles',
   },
   {
+    family: 'fleet-member-quota-starved',
+    keyTemplate: 'fleet:member-quota-starved:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      "A member's CLI has been quota/usage-limit blocked past the starvation threshold (default 5 min) and every wake sent to it failed, so its claims are not progressing while its presence still reads alive. Payload: agentId, agent, accountId, ageMs, attemptedGatedInjections. The leader can reroute the member's claims or relaunch it on another account, instead of waiting 40+ min for presence to decay to suspect. Fires at most once per blocked episode per member.",
+    emitter:
+      'fleet-transition-events (packages/operator-core/lib/fleet-transition-events.ts) — reported by the member\'s psu pty host through POST /api/admin/psu-pty/quota-starvation',
+    exists: true,
+    replacesPoll: 'polling coord:presence / fleet:leader-brief for a member that stopped taking turns',
+  },
+  {
     family: 'goal-drain-dead',
     keyTemplate: 'goal:drain-dead:<goalId>',
     params: [{ name: 'goalId', required: true, describe: 'the goal whose drain fleet you hold' }],

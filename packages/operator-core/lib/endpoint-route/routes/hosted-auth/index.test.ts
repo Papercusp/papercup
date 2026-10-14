@@ -96,6 +96,7 @@ function setup(
     permissionVersion: 7,
   }),
   selfSignup?: HostedSelfSignupAdmission,
+  onSessionEstablished?: HostedAuthRouteDependencies['onSessionEstablished'],
 ) {
   const flowStore = new MemoryFlowStore();
   const sessionStore = new MemorySessionStore();
@@ -107,6 +108,7 @@ function setup(
     sessionCookieCodec: codec,
     bindIdentity,
     ...(selfSignup ? { selfSignup } : {}),
+    ...(onSessionEstablished ? { onSessionEstablished } : {}),
     publicOrigin: ORIGIN,
     clock: () => NOW,
     randomBytes: fixedEntropy(),
@@ -256,6 +258,20 @@ describe('hosted auth route contract', () => {
     );
     expect(replay.status).toBe(400);
     expect(await replay.json()).toMatchObject({ error: { code: 'invalid_state_already-consumed' } });
+  });
+
+  it('observes only a persisted authenticated session and never waits on analytics', async () => {
+    const observer = vi.fn<NonNullable<HostedAuthRouteDependencies['onSessionEstablished']>>(() => new Promise(() => {}));
+    const s = setup(undefined, undefined, undefined, observer);
+    const started = await begin(s);
+    const callback = () => invoke(s.route('GET', '/hosted/auth/callback'),
+      new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=code-1&state=${started.state}`, {
+        headers: { cookie: `${HOSTED_AUTH_FLOW_COOKIE}=${encodeURIComponent(started.flowCookie)}` } }));
+    expect((await callback()).status).toBe(303);
+    expect(observer).toHaveBeenCalledTimes(1);
+    expect(observer.mock.calls[0]![0]).toBe(s.sessionStore.current);
+    expect((await callback()).status).toBe(400);
+    expect(observer).toHaveBeenCalledTimes(1);
   });
 
   it('keeps explicit sign-up separate from read-only sign-in binding', async () => {

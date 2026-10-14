@@ -33,6 +33,9 @@ vi.mock('./control-anchor', () => ({
 vi.mock('../../memory/session-epoch-ledger', () => ({
   currentSessionEpoch: vi.fn(async () => 23),
 }));
+vi.mock('../../carry-probe-eval', () => ({
+  carriedProbeBlockForDelivery: vi.fn(async () => null),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(() => ({ sql: {} })),
@@ -370,5 +373,85 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
       'control-state-mismatch',
       'legacy-control-generation-mismatch',
     ]);
+  });
+});
+
+// P-001 (carry-recheck-and-governed-memory-2026-10-14, R-1): compaction recovery RUNS the carried
+// probes the successor inherits, instead of only handing it their text.
+describe('automatic compaction recovery — carried probes run at recovery', () => {
+  const BLOCK = '🧪 CARRIED PROBES re-run at delivery — 0 hold · 1 changed · 0 could not run:\n  ✗ CHANGED — gate is green [WI-1 #g]: observed "red"';
+
+  it('attaches the probe block to the recovery and passes the already-read held items through', async () => {
+    const { buildAutomaticCompactionRecovery } = await import('./compaction-recovery');
+    const carriedProbesFn = vi.fn(async () => BLOCK);
+    const heldItems = [{ id: 'WI-1', title: 't', harness: 'h', checkpoint: 'c', holderProof: { ownerId: 'owner-x', workspaceId: 'ws-1' } }];
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      sessionHarness: 'h',
+      heldItems: heldItems as never,
+      carriedProbesFn,
+    });
+    expect(carriedProbesFn).toHaveBeenCalledWith('owner-x', 'ws-1', { sessionHarness: 'h', heldItems });
+    expect(delivery.recovery.carriedProbes).toBe(BLOCK);
+  });
+
+  it('omits the field when there is nothing to run, and never lets a probe failure break recovery', async () => {
+    const { buildAutomaticCompactionRecovery } = await import('./compaction-recovery');
+    const none = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', { heldItems: [], carriedProbesFn: async () => null });
+    expect('carriedProbes' in none.recovery).toBe(false);
+    const thrown = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      heldItems: [],
+      carriedProbesFn: async () => {
+        throw new Error('boom');
+      },
+    });
+    expect('carriedProbes' in thrown.recovery).toBe(false);
+    expect(thrown.recovery.coverage.heldItems).toBe(true);
+  });
+
+  it('the default collector probes held-item checks from the supplied rows without re-reading them', async () => {
+    const [{ defaultRecoveryCarriedProbes }, { carriedProbeBlockForDelivery }, { readHeldWorkItems }, { renderCarryNote }] =
+      await Promise.all([
+        import('./compaction-recovery'),
+        import('../../carry-probe-eval'),
+        import('../../carry-brief'),
+        import('../../carry-note'),
+      ]);
+    vi.mocked(readHeldWorkItems).mockClear();
+    vi.mocked(carriedProbeBlockForDelivery).mockResolvedValueOnce(BLOCK);
+    const probe = { kind: 'state-cell', cell: 'gate.greenCheckpoint.verdict', schemaRevision: 'r', expect: { path: '$.value', op: 'eq', value: 'green' } };
+    const checkpoint = renderCarryNote({ checks: [{ id: 'g', claim: 'gate is green', recheck: 'state:read', probe: probe as never }] });
+    const out = await defaultRecoveryCarriedProbes('owner-x', 'ws-1', {
+      sessionHarness: 'h',
+      heldItems: [{ id: 'WI-1', harness: 'h', checkpoint } as never],
+    });
+    expect(out).toBe(BLOCK);
+    expect(readHeldWorkItems).not.toHaveBeenCalled();
+    const [sources, deps] = vi.mocked(carriedProbeBlockForDelivery).mock.calls.at(-1)! as unknown as [Array<Record<string, any>>, Record<string, any>];
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({ source: { kind: 'work-item', id: 'WI-1', harness: 'h' }, checkIndex: 0 });
+    expect(sources[0]!.check.claim).toBe('gate is green');
+    expect(sources[0]!.check.probe).toMatchObject({ kind: 'state-cell', cell: 'gate.greenCheckpoint.verdict' });
+    expect(deps).toMatchObject({ harness: 'h', readAtIso: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) });
+  });
+
+  it('the carry document renders the probe block for a successor, but not for a judge', async () => {
+    const { renderAutomaticCompactionRecovery } = await import('../../carry-doc');
+    const delivery = {
+      marker: {
+        schemaVersion: 'post-compaction-recovery-v1',
+        complete: false,
+        memoryEpoch: 1,
+        controlGeneration: null,
+        controlStateHash: null,
+        fallback: { verb: 'coord:orient', args: { afterCompaction: true }, when: [] },
+      },
+      recovery: {
+        selfRecall: 'recall',
+        coverage: { selfSession: false, control: false, heldItems: true, staleness: null },
+        carriedProbes: BLOCK,
+      },
+    } as never;
+    expect(renderAutomaticCompactionRecovery(delivery)).toContain('✗ CHANGED — gate is green [WI-1 #g]: observed "red"');
+    expect(renderAutomaticCompactionRecovery(delivery, 'judge')).not.toContain('CARRIED PROBES');
   });
 });

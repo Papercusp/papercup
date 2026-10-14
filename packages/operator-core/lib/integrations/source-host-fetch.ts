@@ -81,7 +81,7 @@ export function createSourceHostFetch(sql: postgres.Sql, opts: SourceHostFetchOp
       // A source whose credential ref is not the install's pasted-credential store holds its own
       // account credential (an OAuth connection), which host.fetch prefers (WI-6554700010008555).
       const ownCredential = row.credentialRef != null && row.credentialRef !== providerSetupStoreKey(row.kind);
-      return { sourceId: row.id, providerId: row.kind, ownCredential };
+      return { sourceId: row.id, providerId: row.kind, ownCredential, config: row.config };
     },
     async accessToken(resolved) {
       const row = await getExternalTriggerSource(sql, opts.workspaceId, resolved.sourceId);

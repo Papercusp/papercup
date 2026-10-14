@@ -94,6 +94,22 @@ describe('native operational execution witnesses', () => {
     expect(f.deps.readRuntime).toHaveBeenCalledWith(['staging-api'], 'workspace-test');
   });
 
+  it('retains the original native command scope despite callback properties or argument mutation', async () => {
+    const f = fixture();
+    const command = ['executeGreenMainAdmissionWindow', 'workspace-test', 'install-test',
+      '1791000000000', '1791604800000'];
+    f.definition.command = [...command];
+    f.definition.run.mockImplementation(async () => {
+      f.definition.command[2] = 'different-install';
+      return { exitCode: 0, summary: 'Original history checked.',
+        assertions: [{ id: 'actual-result', passed: true, evidence: 'Observed' }],
+        operational: { schemaVersion: 1, command: ['forged'] } } as any;
+    });
+    expect(await executeOperationalRun(f.definition, f.ctx, f.deps)).toMatchObject({ ok: true });
+    expect(f.deps.persist.mock.calls[0][0].rows[0].execution)
+      .toMatchObject({ operational: { schemaVersion: 1, command } });
+  });
+
   it('keeps failed measurements absent and persists the actual thrown-check failure', async () => {
     const f = fixture();
     f.deps.readRuntime.mockRejectedValue(new Error('ledger unavailable'));

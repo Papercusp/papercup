@@ -15,6 +15,7 @@ import {
   HOSTED_BROWSER_SSE_PATH,
   createHostedBrowserRoutes,
   hostedProvisionBringUp,
+  type HostedBrowserRouteDependencies,
 } from './hosted-browser';
 
 const ORIGIN = 'https://app.papercusp.com';
@@ -164,6 +165,46 @@ describe('hosted browser route boundary', () => {
     });
     expect(readControl).toHaveBeenCalledTimes(1);
     expect(tenantCalls).toEqual([{ selectedWorkspaceId: SELECTED_WORKSPACE }]);
+  });
+
+  it('observes readiness only for the selected bound host and persisted active workspace; isolates analytics failure', async () => {
+    const operation = { id: '00000000-0000-4000-8000-000000000002', action: 'provision', status: 'succeeded',
+      startedAt: '2026-10-14T08:00:00Z', finishedAt: '2026-10-14T08:01:00Z', error: { message: NEVER_EMIT_MARKER } };
+    const readBoundWorkspaceState = vi.fn(async () => 'active');
+    const deliverCloudTelemetry = vi.fn<NonNullable<HostedBrowserRouteDependencies['deliverCloudTelemetry']>>(async () => { throw new Error('analytics down'); });
+    const handler = routeHandler(createHostedBrowserRoutes({ publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+      dependencies: { runTenant: tenantRunner([]), readBoundHostId: async () => 'own-host', readBoundWorkspaceState,
+        readControl: async () => [{ kind: 'workspace', id: 'own-host', target: 'gcp', observedState: 'running', operation },
+          { kind: 'workspace', id: 'foreign-host', target: 'gcp', observedState: 'running', operation: { ...operation, id: '00000000-0000-4000-8000-000000000003' } }],
+        deliverCloudTelemetry } }).routes, HOSTED_BROWSER_REST_QUERY_PATH);
+    const request = () => new Request(`${ORIGIN}/api${HOSTED_BROWSER_REST_QUERY_PATH}?name=${HOSTED_BROWSER_QUERY_NAME}`);
+    expect((await handler(request(), context())).status).toBe(200);
+    await vi.waitFor(() => expect(deliverCloudTelemetry).toHaveBeenCalledTimes(1));
+    const [event, telemetryContext] = deliverCloudTelemetry.mock.calls[0] as unknown as [unknown, { principal: HostedPrincipal; origin: string; observedAt: string }];
+    expect(event).toMatchObject({ event: 'cloud_workspace_provisioning', operation_id: operation.id,
+      properties: { phase: 'ready', duration_ms: 60_000, hosting_mode: 'unknown' } });
+    expect(JSON.stringify(event)).not.toContain(NEVER_EMIT_MARKER);
+    expect(telemetryContext.principal).toBe(principal);
+    expect(telemetryContext.origin).toBe('control-plane');
+    expect(telemetryContext.observedAt).toBe(operation.finishedAt);
+    expect((await handler(request(), context())).status).toBe(200);
+    await vi.waitFor(() => expect(deliverCloudTelemetry).toHaveBeenCalledTimes(2));
+    expect(deliverCloudTelemetry.mock.calls[1]?.[0]).toEqual(event);
+    readBoundWorkspaceState.mockResolvedValue('provisioning');
+    expect((await handler(request(), context())).status).toBe(200);
+    await vi.waitFor(() => expect(readBoundWorkspaceState).toHaveBeenCalledTimes(3));
+    expect(deliverCloudTelemetry).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns the successful portal read while the analytics sink remains unresolved', async () => {
+    const deliverCloudTelemetry = vi.fn(() => new Promise<{ delivered: boolean }>(() => {}));
+    const handler = routeHandler(createHostedBrowserRoutes({ publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+      dependencies: { runTenant: tenantRunner([]), readBoundHostId: async () => 'own-host', readBoundWorkspaceState: async () => 'active',
+        readControl: async () => [{ kind: 'workspace', id: 'own-host', target: 'gcp', observedState: 'running',
+          operation: { id: '00000000-0000-4000-8000-000000000002', action: 'provision', status: 'succeeded',
+            startedAt: '2026-10-14T08:00:00Z', finishedAt: '2026-10-14T08:01:00Z' } }], deliverCloudTelemetry } }).routes, HOSTED_BROWSER_REST_QUERY_PATH);
+    expect((await handler(new Request(`${ORIGIN}/api${HOSTED_BROWSER_REST_QUERY_PATH}?name=${HOSTED_BROWSER_QUERY_NAME}`), context())).status).toBe(200);
+    await vi.waitFor(() => expect(deliverCloudTelemetry).toHaveBeenCalledTimes(1));
   });
 
   it('rejects a mismatched workspace header before touching tenant data', async () => {

@@ -535,7 +535,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
           : activeLoopRewakeBlockedReason === 'max-duration-exhausted'
             ? 'its next attempted fire would exceed maxDurationSec'
             : activeLoopRewakeBlockedReason === 'fire-starved'
-              ? 'it is fire-starved (zero fires despite at least two expected opportunities and an overdue nextFireAt)'
+              ? 'it is fire-starved (zero fires since the arm despite at least three expected opportunities, while its turn sits parked with no nextFireAt or its concrete nextFireAt is overdue)'
               : activeLoopRewakeBlockedReason === 'wake-unreachable'
                 ? 'the current owner reachability probe found no delivery route for a fresh turn'
               : activeLoopRewakeBlockedReason === 'last-fire-parked'

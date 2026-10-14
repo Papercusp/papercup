@@ -8,11 +8,68 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
+import { classifyHttpError } from '@papercusp/papercusp-shared/agent';
+import { CODEX_REFUSAL_BODY_MAX_BYTES, codexModelRefusalDetail, isCodexModelRefusal } from '../lib/inference-gateway/codex-model-refusals';
+import { presentedSecretsFromHeaders, scrubErrorText } from '../lib/inference-gateway/error-body-scrub';
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
 import { PANEL_LABELS, type PanelKey, type SystemHealth } from '../lib/system-health/types';
 import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSourceFile } from '../lib/verifier-source';
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
   CommittedReaderPreparationHandoff } from './isolated-integration-proof';
+
+/** Retain the actual provider refusal before a disposable journey asserts success.
+ * Drain a clone, preserving the consumer's original body. Successful model content
+ * and request content are never retained; failure details use the gateway scrubber. */
+export async function retainPrivateProviderResponse(evidenceDir: string, response: Response,
+  init: RequestInit & { diagnosticAccountId?: string } = {}) {
+  const requestBytes = typeof init.body === 'string' ? Buffer.from(init.body)
+    : init.body instanceof Uint8Array ? Buffer.from(init.body) : Buffer.alloc(0);
+  let request: any;
+  try { request = JSON.parse(requestBytes.toString('utf8')); } catch { /* measured below as unparseable */ }
+  const label = (value: unknown) => typeof value === 'string' && /^[a-z0-9_.-]{1,100}$/i.test(value) ? value : null;
+  const fields = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.keys(value).filter(key => /^[a-z0-9_]{1,100}$/i.test(key)).sort() : [];
+  const requestShape = { bytes: requestBytes.length, parsed: Boolean(request), fields: fields(request),
+    model: label(request?.model), effort: label(request?.reasoning?.effort), stream: request?.stream === true,
+    instructionsBytes: typeof request?.instructions === 'string' ? Buffer.byteLength(request.instructions) : null,
+    inputCount: Array.isArray(request?.input) ? request.input.length : null,
+    toolsCount: Array.isArray(request?.tools) ? request.tools.length : null,
+    toolFields: Array.isArray(request?.tools) ? [...new Set(request.tools.flatMap(fields))].sort() : [] };
+  const presented = presentedSecretsFromHeaders(Object.fromEntries(new Headers(init.headers).entries()));
+  // Also scrub echoed request content. Schema labels still diagnose malformed tools.
+  const collectContent = (value: unknown, key = '') => {
+    if (typeof value === 'string' && !['model', 'effort', 'type', 'name'].includes(key) && value.length >= 12)
+      presented.push(value);
+    else if (value && typeof value === 'object')
+      for (const [name, child] of Object.entries(value)) collectContent(child, name);
+  };
+  collectContent(request);
+  const failed = response.status >= 400;
+  // Look ahead far enough to scrub a presented value crossing the sample boundary.
+  const sampleLimit = CODEX_REFUSAL_BODY_MAX_BYTES + Math.max(0, ...presented.map(value => Buffer.byteLength(value)));
+  const chunks: Buffer[] = [];
+  let bytes = 0, sampledBytes = 0;
+  const reader = response.clone().body?.getReader();
+  try {
+    if (reader) for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      bytes += next.value.byteLength;
+      if (failed && sampledBytes < sampleLimit) {
+        const sample = Buffer.from(next.value.subarray(0, sampleLimit - sampledBytes));
+        chunks.push(sample); sampledBytes += sample.length;
+      }
+    }
+  } finally { reader?.releaseLock(); }
+  const text = failed ? scrubErrorText(Buffer.concat(chunks).toString('utf8'), presented) : '';
+  const classified = failed ? classifyHttpError({ status: response.status, message: text }, 'openai') : null;
+  const observation = { status: response.status, accountId: init.diagnosticAccountId ?? null,
+    requestShape, response: { bytes, sampledBytes, truncated: failed && bytes > sampledBytes },
+    error: classified ? { class: classified.class, retryable: classified.retryable,
+      modelRefusal: isCodexModelRefusal(response.status, text), detail: codexModelRefusalDetail(text) } : null };
+  writeFileSync(join(evidenceDir, 'provider-response.json'), JSON.stringify(observation), { mode: 0o600 });
+  return observation;
+}
 
 /** Stop admission before reaping descendants that can keep the host's pipes open. */
 export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: () => Promise<void>, graceMs = 5_000) {

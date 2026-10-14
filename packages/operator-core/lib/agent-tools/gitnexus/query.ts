@@ -115,7 +115,7 @@ export default defineTool({
   description:
     'Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Native operations use current JS/TS snapshots. Discovery requires explicit bounded paths; communities are weak call components, flows are possible zero-incoming call paths, and concept-search fuses symbol/path and source-text rankings. Discovery is inferred retrieval evidence; semantic similarity and runtime execution are unmeasured. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.',
   guidance: {
-    when: 'You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.',
+    when: 'For "who calls X?", use op:"callers", name and bounded paths; for "what does X call?", use op:"callees". Call-site rg also matches comments and strings; use compiler topology to establish calls or change impact.',
     notWhen:
       'Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.',
     chaining:

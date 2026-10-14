@@ -96,6 +96,8 @@ export interface ExecResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** Actual process failure, retained separately from argv-heavy stderr. */
+  error?: { code: string | null; signal: string | null; killed: boolean };
   /** The captured stream that crossed maxBuffer, when a cap was supplied. */
   maxBufferExceeded?: 'stdout' | 'stderr';
   /** Bytes the child wrote to `stdoutPath` (fd-handoff mode only), so the
@@ -351,6 +353,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       let commandExited = false;
       let terminating = false;
       let spawnFailed = false;
+      let processError: ExecResult['error'];
       let hardTimer: ReturnType<typeof setTimeout> | null = null;
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       let idleCheck: ReturnType<typeof setImmediate> | null = null;
@@ -393,14 +396,18 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
           code: terminating ? -1 : code,
           stdout: stdout + outDecoder.end(),
           stderr: stderr + errDecoder.end(),
+          ...((terminating || code < 0) ? { error: processError ?? {
+            code: null, signal: child.signalCode, killed: terminating,
+          } } : {}),
           ...(maxBufferExceeded ? { maxBufferExceeded } : {}),
         });
       };
       const timeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : 0;
       const idleTimeoutMs = params.idleTimeoutMs && params.idleTimeoutMs > 0 ? params.idleTimeoutMs : 0;
-      const terminate = (reason: string, includeDiagnostic = true): void => {
+      const terminate = (reason: string, includeDiagnostic = true, errorCode = 'ETIMEDOUT'): void => {
         if (settled || commandExited || terminating) return;
         terminating = true;
+        processError = { code: errorCode, signal: null, killed: true };
         clearTimers();
         if (includeDiagnostic) {
           stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
@@ -429,7 +436,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
           maxBufferExceeded = stream;
           // Keep child stderr as the rejected execFile-style stderr. The local
           // adapter builds the maxBuffer error message from the typed marker.
-          terminate(stream + ' maxBuffer length exceeded', false);
+          terminate(stream + ' maxBuffer length exceeded', false, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
         }
       };
       const armIdleTimer = (): void => {
@@ -460,7 +467,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
               try {
                 bytes = (await stdoutHandle.stat()).size;
               } catch (error) {
-                if (current()) terminate(`could not verify stdout-file progress: ${String(error)}`);
+                if (current()) terminate(`could not verify stdout-file progress: ${String(error)}`, true, 'SIDECAR_OUTPUT_UNVERIFIED');
                 return;
               }
               // Pipe progress, cancellation or close may have won while fstat
@@ -497,7 +504,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         hardTimer.unref?.();
       }
       armIdleTimer();
-      const onAbort = (): void => terminate('aborted by caller');
+      const onAbort = (): void => terminate('aborted by caller', true, 'ABORT_ERR');
       if (deps.signal) {
         removeAbortListener = () => deps.signal?.removeEventListener('abort', onAbort);
         deps.signal.addEventListener('abort', onAbort, { once: true });
@@ -519,6 +526,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       });
       child.on('error', async (e) => {
         spawnFailed = true;
+        processError = { code: (e as NodeJS.ErrnoException).code ?? null, signal: null, killed: false };
         stderr += String(e);
         try {
           await execution.cancel(`sidecar process spawn error: ${String(e)}`);
@@ -529,6 +537,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         }
       });
       child.on('close', async (code, signal) => {
+        if (processError) processError.signal = signal;
         if (signal && !maxBufferExceeded) stderr += `${stderr ? '\n' : ''}${params.command} terminated by signal ${signal}`;
         try {
           await waitForCommandExit();
@@ -538,6 +547,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
           if (!spawnFailed) await execution.finish({ cpuWeight: 1 });
           finish(code ?? -1);
         } catch (settlementError) {
+          processError = { code: 'SIDECAR_SETTLEMENT_FAILED', signal, killed: terminating };
           stderr += `${stderr ? '\n' : ''}sidecar process admission settlement failed: ${String(settlementError)}`;
           finish(-1);
         }

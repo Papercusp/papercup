@@ -331,7 +331,7 @@ describe('createSidecarFirstExec (WI-10005145 / P-017: no fork from the big host
   type Call = { where: 'sidecar' | 'local'; cmd: string; args: string[]; timeoutMs?: number };
   function harness(opts: {
     enabled: boolean;
-    sidecar?: () => Promise<{ code: number; stdout: string; stderr: string }>;
+    sidecar?: () => Promise<{ code: number; stdout: string; stderr: string; error?: ExecResult['error'] }>;
   }) {
     const calls: Call[] = [];
     const fallbacks: unknown[] = [];
@@ -379,6 +379,21 @@ describe('createSidecarFirstExec (WI-10005145 / P-017: no fork from the big host
     const h = harness({ enabled: true, sidecar: async () => ({ code: -1, stdout: '', stderr: 'timed out' }) });
     expect(await h.exec('git', ['log'], { timeout: 50 })).toEqual({ status: null, stdout: '', stderr: 'timed out' });
     expect(h.calls.map((c) => c.where)).toEqual(['sidecar']);
+    expect(h.fallbacks).toEqual([]);
+  });
+
+  it.each([
+    { code: 'ETIMEDOUT', signal: 'SIGTERM', killed: true },
+    { code: null, signal: 'SIGTERM', killed: false },
+    { code: 'SIDECAR_SETTLEMENT_FAILED', signal: null, killed: false },
+  ])('preserves distinct sidecar failure evidence without replay: %j', async (error) => {
+    const h = harness({ enabled: true, sidecar: async () => ({
+      code: -1, stdout: '', stderr: 'git -C /long/repository ls-tree ' + 'a'.repeat(300), error,
+    }) });
+    const result = await h.exec('git', ['ls-tree'], { timeout: 50 });
+    expect(result.status).toBeNull();
+    expect(result.error).toEqual(error);
+    expect(h.calls.map(c => c.where)).toEqual(['sidecar']);
     expect(h.fallbacks).toEqual([]);
   });
 });

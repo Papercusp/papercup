@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -84,9 +85,10 @@ describe('papercusp-script-snapshot.sh', () => {
       const result = await runWrapper(root, [await helperFixture(root)], shim.env);
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toBe('helper-0\nhelper-39\nlib-9\n');
-      // Per-file copying launched 3 hashes per helper (150 for these 50). Batched it is
-      // constant: 3 for the launcher's self-copy, 3 for the target, 3 per helper directory.
-      expect(await shim.launches()).toBeLessThanOrEqual(12);
+      // Per-file copying launched 3 hashes per helper (150 for these 50). Batching keeps the
+      // count constant: 3 for the launcher self-copy, 3 for the target, 1 for its identity,
+      // and 3 per helper directory.
+      expect(await shim.launches()).toBeLessThanOrEqual(13);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -256,6 +258,42 @@ echo MUTATED
       expect(result.status).toBe(0);
       expect(result.stdout.trim()).toBe('ORIGINAL');
       expect(await readFile(target, 'utf8')).toContain('MUTATED');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('exports the primary source path and hash of the exact target snapshot', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'papercusp-script-snapshot-identity-'));
+    try {
+      const target = join(dir, 'target.sh');
+      const body = [
+        '#!/usr/bin/env bash',
+        'set -u',
+        'printf "source=%s\\n" "$PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_PATH"',
+        'printf "hash=%s\\n" "$PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_SHA256"',
+        'sha256sum -- "$0" | awk \'{print "executed_sha=" $1}\'',
+        '',
+      ].join('\n');
+      await writeExecutable(target, body);
+      const expectedSha = createHash('sha256').update(body).digest('hex');
+
+      const result = await runWrapper(
+        dir,
+        [target],
+        {
+          PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_PATH: '/stale/inherited-source.sh',
+          PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_SHA256: 'stale-inherited-hash',
+        },
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('source=' + target);
+      expect(result.stdout).toContain('hash=' + expectedSha);
+      expect(result.stdout).toContain('executed_sha=' + expectedSha);
+      expect(result.stderr).toContain('[script-snapshot] target source=' + target + ' sha256=' + expectedSha);
+      expect(result.stdout).not.toContain('stale/inherited-source.sh');
+      expect(result.stdout).not.toContain('stale-inherited-hash');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -803,7 +841,11 @@ describe('bundle-host.sh checkout pin is honoured only from a snapshot (WI-10006
       await writeExecutable(probe, probeScript(block));
 
       const viaLauncher = await runWrapper(root, [probe], { BUNDLE_HOST_OPERATOR_DIR: pinned }, PIN_ENV.slice(1));
-      expect([viaLauncher.status, viaLauncher.stdout, viaLauncher.stderr]).toEqual([0, pinned, '']);
+      const probeSha = createHash('sha256').update(await readFile(probe)).digest('hex');
+      expect([viaLauncher.status, viaLauncher.stdout]).toEqual([0, pinned]);
+      expect(viaLauncher.stderr).toContain(
+        '[script-snapshot] target source=' + probe + ' sha256=' + probeSha,
+      );
       const unpinned = await runWrapper(root, [probe], {}, PIN_ENV);
       expect(unpinned.status).toBe(78);
       expect(unpinned.stderr).toContain('running from a script snapshot');

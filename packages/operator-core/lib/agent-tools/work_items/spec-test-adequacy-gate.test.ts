@@ -277,6 +277,31 @@ function passingDeps() {
 }
 
 describe('specTestAdequacyCompletionGate', () => {
+  it('refuses a work-item close when the globally passing clause needs proof bound to a sibling work item', async () => {
+    const deps = passingDeps();
+    const combined = passingEvidence().map((row, index) => ({
+      ...row,
+      workItemId: index === 0 ? WORK_ITEM.id : 'WI-parent',
+      fingerprints: { ...row.fingerprints, fixtureFingerprint: 'sha256:calibrated-fixture' },
+      details: {
+        ...row.details,
+        adequacy: { ...(row.details.adequacy as Record<string, unknown>), fixtureFree: false, fixtureCalibrated: true },
+      },
+      currentness: { ...row.currentness, dimensions: { ...row.currentness.dimensions, fixture: 'current' as const } },
+    }));
+    expect(evaluateSpecTestAdequacy({ clause: clause(), evidence: combined, classRef: 'plan-class-feature-ship' }).verdict)
+      .toBe('pass');
+    deps.listEvidence.mockImplementation(async (options) =>
+      combined.filter((row) => !options.workItemIds || options.workItemIds.includes(row.workItemId)),
+    );
+    const result = await specTestAdequacyCompletionGate({
+      workItem: WORK_ITEM, attestation: { classRef: 'plan-class-feature-ship' },
+    }, deps);
+    expect(deps.listEvidence).toHaveBeenCalledWith(expect.objectContaining({ workItemIds: [WORK_ITEM.id] }));
+    expect(result).toMatchObject({ ok: false, applicable: true, checked: [] });
+    if (!result.ok) expect(result.reason).toContain('falsifiability');
+  });
+
   it('derives an omitted completion class and preserves its proof requirements', async () => {
     const deps = passingDeps();
     const { classRef: _classRef, ...attestation } = ATTESTATION;

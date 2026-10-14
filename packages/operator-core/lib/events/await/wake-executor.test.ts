@@ -2103,6 +2103,68 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
       if (m) rmSync(m[1], { force: true });
     }
   });
+
+  // P-001 (carry-recheck-and-governed-memory-2026-10-14, R-1): the LIVE RE-CHECK block RUNS the
+  // carried probes it prints, instead of only printing them.
+  it('runs the delivery-time carried probes and places their result inside the live re-check block', async () => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const probe = {
+      kind: 'state-cell',
+      cell: 'gate.greenCheckpoint.verdict',
+      schemaRevision: 'rev-test',
+      expect: { path: '$.value', op: 'eq', value: 'green' },
+    } as const;
+    const note = renderCarryNote({
+      did: 'Shipped the fix.',
+      checks: [
+        { claim: 'gate is green', recheck: 'state:read gate', probe: probe as never },
+        { claim: 'prose-only claim', recheck: 'look at it' },
+      ],
+    });
+    const carriedProbeBlockFn = vi.fn(async (_input: unknown) => '🧪 CARRIED PROBES re-run at delivery — 0 hold · 1 changed · 0 could not run:\n  ✗ CHANGED — gate is green [loop check 1]: observed "red"');
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-probe' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs: Date.now() - 1_000 })),
+      carriedProbeBlockFn,
+    });
+    expect(carriedProbeBlockFn).toHaveBeenCalledTimes(1);
+    const arg = carriedProbeBlockFn.mock.calls[0]![0] as { ownerId: string; harness: string; readAtIso: string; checks: Array<{ claim: string }> };
+    expect(arg.ownerId).toBe('su-probe');
+    expect(arg.harness).toBe('papercusp');
+    expect(arg.readAtIso).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    // every carried check reaches the runner; it skips the probe-less one itself
+    expect(arg.checks.map((c) => c.claim)).toEqual(['gate is green', 'prose-only claim']);
+    expect(out).toContain('✗ CHANGED — gate is green [loop check 1]: observed "red"');
+    const block = out.slice(0, out.indexOf(STALE_TEXT));
+    expect(block.indexOf('CARRIED PROBES')).toBeGreaterThan(block.indexOf('LIVE RE-CHECK'));
+    expect(block.indexOf('CARRIED PROBES')).toBeLessThan(block.indexOf('TRUST THIS BLOCK'));
+  });
+
+  it('does not run the probe runner when no carried check has a probe', async () => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const note = renderCarryNote({ did: 'x', checks: [{ claim: 'prose-only claim', recheck: 'look' }] });
+    const carriedProbeBlockFn = vi.fn(async () => 'SHOULD NOT APPEAR');
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-probe' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs: Date.now() - 1_000 })),
+      carriedProbeBlockFn,
+    });
+    expect(carriedProbeBlockFn).not.toHaveBeenCalled();
+    expect(out).not.toContain('SHOULD NOT APPEAR');
+    expect(out).not.toContain('CARRIED PROBES');
+  });
+
+  it('the default probe block renders nothing when there is nothing to run', async () => {
+    const { defaultCarriedProbeBlock } = await import('./wake-executor');
+    const out = await defaultCarriedProbeBlock({
+      ownerId: 'su-probe',
+      checks: [],
+      harness: 'papercusp',
+      readAtIso: '2026-10-14T09:00:00.000Z',
+    });
+    // no checks → nothing to run → no block at all (never a false "all hold")
+    expect(out).toBeNull();
+  });
 });
 
 // EI-21971731335245747: the wake reader selects the carry-note by the wake MARKER's

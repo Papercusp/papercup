@@ -1,6 +1,7 @@
 /**
  * gateway-admission-congestion-only-2026-10-13: live acceptance through the
  * existing request-stage telemetry and test ledger, without issuing paid requests.
+ * The .integration.test.ts suffix selects the maintained integration test layer.
  * Before grading, dev:pipeline_position must confirm gateway.ts and
  * provider-admission-lifecycle.ts are loaded by the gateway runtime.
  * The retained ring is the population; report its dates and counts. Empty or
@@ -11,7 +12,7 @@
  * live-admission-operational-2026-10-14.json (76 requests, queueWait p50 689ms).
  * A 2x tolerance permits ordinary variation while detecting a material slowdown.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { GatewayRequestTimeline } from './request-stage-telemetry';
 
 const CLAUDE_BASELINE_P50_MS = 689;
@@ -89,16 +90,27 @@ describe('live admission latency oracle controls', () => {
 const gateRun = Boolean(process.env.PAPERCUSP_GATE_FIRE_ID) || process.cwd().includes('papercusp-checkpoint');
 const requested = Boolean(process.env.PAPERCUSP_TEST_RUN_GROUP) || process.env.PAPERCUSP_GATEWAY_ADMISSION_LIVE === '1';
 describe.skipIf(gateRun || !requested)('LIVE gateway admission latency', () => {
-  it('keeps Codex queueWait p50 below 2s, completes a short turn below 30s, and preserves Claude latency', async () => {
+  let measured: ReturnType<typeof assess>;
+  beforeAll(async () => {
     const response = await fetch('http://127.0.0.1:8788/admin/stats', { signal: AbortSignal.timeout(10_000) });
     expect(response.status).toBe(200);
     const stats = await response.json() as { queueDepth: number; processStartedAt: number;
       requestStages: { recent: Sample[] } };
     expect(Number.isFinite(stats.processStartedAt)).toBe(true);
-    const measured = assess(stats.requestStages.recent, stats.queueDepth);
+    measured = assess(stats.requestStages.recent, stats.queueDepth);
     console.log(JSON.stringify({ kind: 'gateway-live-admission', evidencePlane: 'live',
       processStartedAt: stats.processStartedAt, sampledAt: Date.now(),
       claudeBaselineP50Ms: CLAUDE_BASELINE_P50_MS, claudeTolerance: CLAUDE_TOLERANCE, ...measured }));
-    expect(measured.failures, JSON.stringify(measured)).toEqual([]);
+    expect(measured.failures).not.toContain('herd-present');
+    expect(measured.failures).not.toContain('insufficient-sample');
+  });
+  it('keeps Codex queueWait p50 below 2s', () => {
+    expect(measured.failures, JSON.stringify(measured)).not.toContain('codex-queue');
+  });
+  it('completes a short Codex turn below 30s', () => {
+    expect(measured.failures, JSON.stringify(measured)).not.toContain('short-codex-turn');
+  });
+  it('preserves Claude queueWait p50 within twice its 689ms baseline', () => {
+    expect(measured.failures, JSON.stringify(measured)).not.toContain('claude-regression');
   });
 });

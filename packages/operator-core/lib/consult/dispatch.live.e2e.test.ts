@@ -3,7 +3,7 @@
  * profile supplies questions and runtime selectors, never outcomes or pins.
  */
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
@@ -68,12 +68,13 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
     expect(process.env.PAPERCUSP_SID, 'preserve the authenticated session identity').toBeTruthy();
     const route = call('dev:pipeline_position', {
       path: 'packages/operator-core/lib/consult/consult-dispatch.ts', testClass: 'operator-api',
-      projection: { pick: ['currentBuildTestRoute', 'servingRuntimes'] },
+      expectedSourceSha256: createHash('sha256').update(readFileSync(
+        resolve(root, 'packages/operator-core/lib/consult/consult-dispatch.ts'))).digest('hex'),
+      projection: { pick: ['currentBuildTestRoute', 'acceptedSource'] },
     }, profile.origin);
     expect(route.currentBuildTestRoute.readiness).toBe('ready');
-    expect(route.servingRuntimes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ runtime: 'staging-operator', containsChange: true }),
-    ]));
+    expect(route.acceptedSource.matches).toBe(true);
+    expect(route.acceptedSource.runtimeContainment['staging-operator']).toBe(true);
 
     const measured = await executeOperationalRun({
       filePath: 'packages/operator-core/lib/consult/dispatch.live.e2e.test.ts',

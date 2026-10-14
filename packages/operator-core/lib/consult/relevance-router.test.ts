@@ -83,10 +83,30 @@ describe('problem-specific expertise qualification', () => {
   it('scores a natural question with punctuation without requiring a named tool contract', async () => {
     const question = 'Which lease writer caused the before/after change? Note: preserve the native cleanup receipt.';
     const scorer = vi.fn(async () => [0.9, 0.1]);
+    const contracts = [{ name: 'session:request-compaction', description: 'Recover a generic continuation.' }];
     expect(subjectEvidenceQuery(question)).toBe(question);
-    expect(await scoreSubjectEvidence(question, ['lease actor audit', 'generic continuation'],
-      Date.now() + 4000, { scorer, contracts: [] })).toEqual([0.9, 0.1]);
-    expect(scorer).toHaveBeenCalledWith(question, ['lease actor audit', 'generic continuation'], expect.any(Object));
+    expect(await scoreSubjectEvidence(question, ['lease actor audit with generic continuation'],
+      Date.now() + 4000, { scorer, contracts })).toEqual([0.9]);
+    expect(scorer).toHaveBeenCalledWith('lease actor audit with generic continuation',
+      [question, 'session:request-compaction\nRecover a generic continuation.'], expect.any(Object));
+  });
+
+  it('rejects natural-question procedural overlap when another primary action explains the passage better', async () => {
+    const question = 'Which native lease actor changed the source?';
+    const contracts = [{ name: 'session:request-compaction', description: 'Recover a generic continuation.' }];
+    const scorer = vi.fn(async (passage: string, _texts: string[]) => passage.startsWith('lease') ? [0.92, 0.2] : [0.78, 0.95]);
+    const deadline = Date.now() + 4000;
+    const scores = await scoreSubjectEvidence(question,
+      ['lease actor with generic continuation', 'generic continuation before/after recovery'], deadline, { scorer, contracts });
+    expect(scores[0]).toBeGreaterThanOrEqual(SUBJECT_EVIDENCE_MIN_SCORE);
+    expect(scores[1]).toBeLessThan(SUBJECT_EVIDENCE_MIN_SCORE);
+    for (const call of scorer.mock.calls) expect(call[1]).toEqual([
+      question, 'session:request-compaction\nRecover a generic continuation.',
+    ]);
+    expect(await scoreSubjectEvidence(question, ['generic continuation'], deadline,
+      { scorer, contracts: [] })).toEqual([null]);
+    expect(await scoreSubjectEvidence(question, ['generic continuation'], deadline,
+      { scorer: async () => [0.9], contracts })).toEqual([null]);
   });
 
   it('nominates competing primary actions without matching their operational boilerplate', () => {

@@ -130,6 +130,28 @@
             "pkce": { "type": "boolean" },
             "clientRegistrationRef": { "type": "string" },
             "credentialGroup": { "type": "string" },
+            "resourceToken": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["url", "hosts", "collectionField", "idField", "tokenField", "configKey"],
+              "description": "Host-only account-to-resource credential exchange. Selects the resource from persisted source config and never exposes its token to the provider.",
+              "properties": {
+                "url": { "type": "string" },
+                "hosts": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+                "collectionField": { "type": "string", "minLength": 1 },
+                "idField": { "type": "string", "minLength": 1 },
+                "tokenField": { "type": "string", "minLength": 1 },
+                "configKey": { "type": "string", "minLength": 1 },
+                "nextUrlField": { "type": "string", "minLength": 1 },
+                "permissions": {
+                  "type": "object", "additionalProperties": false, "required": ["field", "required"],
+                  "properties": {
+                    "field": { "type": "string", "minLength": 1 },
+                    "required": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+                  }
+                }
+              }
+            },
             "identity": {
               "type": "object",
               "additionalProperties": false,

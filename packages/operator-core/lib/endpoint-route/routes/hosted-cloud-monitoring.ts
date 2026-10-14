@@ -3,7 +3,7 @@ import type { VerifiedTenantServerContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { isHostedPrincipal } from '../../auth/hosted-principal';
 import { getBuildInfo } from '../../build-info';
-import { readCloudTelemetryConsent, writeCloudTelemetryConsent, type CloudTelemetryContext } from '../../record-telemetry';
+import { readCloudTelemetryConsent, writeCloudTelemetryConsent, type CloudTelemetryContext } from '../../cloud-telemetry';
 import { cloudTelemetryConsentUpdateSchema, cloudTelemetryEventSchema } from '../../telemetry-kinds';
 import { exactOriginOr403, jsonError, workspaceHeaderMismatch } from '../hosted-browser-context';
 
@@ -57,7 +57,10 @@ export function createHostedCloudMonitoringRoutes({ origin, controlPlaneWorkspac
         if (['cloud_diagnostic_aggregate', 'cloud_workspace_provisioning'].includes(parsed.data.event)) {
           return jsonError('unwitnessed_outcome', 400);
         }
-        const sender = deliver ?? (await import('../../telemetry-flush')).deliverCloudPosthog;
+        if (parsed.data.event === 'product_tutorial' && parsed.data.properties.action === 'explanation_reviewed') {
+          return jsonError('unwitnessed_outcome', 400);
+        }
+        const sender = deliver ?? (await import('../../cloud-telemetry-posthog')).deliverCloudPosthog;
         const context: CloudTelemetryContext = { principal,
           environment: process.env.PORT === '3170' ? 'staging' : process.env.NODE_ENV === 'production' ? 'production' : 'development',
           release: getBuildInfo().sha ?? '', origin: 'portal', hostingMode: 'byoc' };

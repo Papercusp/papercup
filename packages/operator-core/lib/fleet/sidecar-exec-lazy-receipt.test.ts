@@ -207,6 +207,21 @@ describe('execProcess lazy receipt (real child processes)', () => {
     ...extra,
   });
 
+  it('distinguishes a sidecar deadline from an external child signal', async () => {
+    const { execution } = receiptSpies();
+    const timed = await execProcess({ command: process.execPath,
+      args: ['-e', 'setInterval(() => {}, 1000)'], timeoutMs: 200,
+    }, { beginExecution: async () => execution, killGraceMs: 100 });
+    expect(timed.code).toBe(-1);
+    expect(timed.error).toEqual({ code: 'ETIMEDOUT', signal: 'SIGTERM', killed: true });
+
+    const signalled = await execProcess({ command: process.execPath,
+      args: ['-e', 'process.kill(process.pid, "SIGTERM")'], timeoutMs: 5000,
+    }, { beginExecution: async () => execution });
+    expect(signalled.code).toBe(-1);
+    expect(signalled.error).toEqual({ code: null, signal: 'SIGTERM', killed: false });
+  });
+
   it('a fast read-only git exec never touches the governor (no admit, no lease, no settle)', async () => {
     const { execution, finish, cancel } = receiptSpies();
     const begin = vi.fn(async () => execution);
@@ -379,6 +394,7 @@ describe('execProcess lazy receipt (real child processes)', () => {
     });
     const result = await execProcess(run(['commit', '-m', 'x']), { beginExecution: async () => execution, lazyReceiptMs: 5_000 });
     expect(result.code).toBe(-1);
+    expect(result.error).toEqual({ code: 'SIDECAR_SETTLEMENT_FAILED', signal: null, killed: false });
     expect(result.stderr).toContain('sidecar process admission settlement failed');
   });
 

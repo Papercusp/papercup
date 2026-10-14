@@ -24,6 +24,16 @@
  * effect on the next read with no cache to invalidate.
  */
 import type { Sql } from 'postgres';
+import {
+  contentSealing,
+  openDocument,
+  queryBlindTerms,
+  rankSealedDocuments,
+  sealDocuments,
+  sealedCandidateLimit,
+  type ContentSealing,
+  type ContentSealingDeps,
+} from '../data-governance/organization-content-sealing';
 import { authorizePersonalAccess, type PersonalAuthorization } from '../personal-vault/authorization';
 import { discloseDocuments } from '../personal-vault/disclosure-ledger';
 import type { DocumentLabel } from '../personal-vault/disclosure-labels';
@@ -52,6 +62,49 @@ async function documentsLexicalLeg(sql: Sql, query: string): Promise<{ leg: Lexi
   });
   return { leg, tsRank };
 }
+
+interface SealedCandidateRow {
+  id: string;
+  occurred_at: string | null;
+  sealed_content: Buffer;
+}
+
+/**
+ * The sealed leg of a documents search (migration 1503): `fetch` returns the candidate rows whose
+ * blind_terms overlap the query's tokens, already filtered by the caller's access rule. Each one is
+ * decrypted and kept only if the plaintext matches the websearch query; tsRank is its ts_rank_cd.
+ */
+async function sealedLeg<R extends SealedCandidateRow>(
+  sql: Sql,
+  sealing: ContentSealing,
+  query: string,
+  limit: number,
+  fetch: (tokens: string[], candidateLimit: number) => Promise<R[]>,
+): Promise<Array<Omit<R, 'sealed_content'> & { title: string; text: string; tsRank: number }>> {
+  const tokens = await queryBlindTerms(sql, sealing, query);
+  if (tokens.length === 0) return [];
+  const candidates = await fetch(tokens, sealedCandidateLimit(limit));
+  const opened: Array<Omit<R, 'sealed_content'> & { title: string; text: string }> = [];
+  for (const { sealed_content: blob, ...row } of candidates) {
+    opened.push({ ...row, ...(await openDocument(sealing, blob)) });
+  }
+  const ranks = await rankSealedDocuments(sql, query, opened);
+  return opened.filter((r) => ranks.has(r.id)).map((r) => ({ ...r, tsRank: ranks.get(r.id)! }));
+}
+
+/**
+ * Plaintext and sealed hits ranked together. A BM25 score has no sealed counterpart, so once the
+ * sealed leg ran every result is ordered and scored by tsRank (then recency).
+ */
+function mergeLegs<T extends { score: number; tsRank: number; occurredAt: string | null }>(plain: T[], sealed: T[], limit: number): T[] {
+  return [...plain, ...sealed]
+    .map((r) => ({ ...r, score: r.tsRank }))
+    .sort((a, b) => b.tsRank - a.tsRank || (b.occurredAt ?? '').localeCompare(a.occurredAt ?? ''))
+    .slice(0, limit);
+}
+
+const sealedOverlap = (sql: Sql, tokens: string[]) =>
+  sql`cardinality(ARRAY(SELECT unnest(d.blind_terms) INTERSECT SELECT unnest(${tokens}::text[])))`;
 
 /**
  * Vault grant scope that authorizes organization-corpus reads. personalScope()
@@ -198,6 +251,31 @@ export interface OrganizationDocumentInput {
   title?: string;
   text?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * The data source the document came from. Legal holds (migration 1502) cover a document through
+   * its source, so a document written without one can never be held. An upsert that omits it keeps
+   * the stored value.
+   */
+  sourceId?: string | null;
+}
+
+/**
+ * The stored form of each document's title and text: plaintext, or sealed under the organization key
+ * when the workspace's organization holds key custody (organization-content-sealing.ts, migration
+ * 1503). Custody in a revoked or shredded state throws OrganizationKeyUnavailableError.
+ */
+export async function storedDocumentContent(
+  sql: Sql,
+  workspaceId: string,
+  docs: readonly { title?: string; text?: string }[],
+  deps: ContentSealingDeps = {},
+): Promise<Array<{ title: string; text: string; sealedContent: Buffer | null; blindTerms: string[] | null }>> {
+  const plain = docs.map((d) => ({ title: d.title ?? '', text: d.text ?? '' }));
+  if (plain.length === 0) return [];
+  const sealing = await contentSealing(sql, workspaceId, deps);
+  if (!sealing) return plain.map((d) => ({ ...d, sealedContent: null, blindTerms: null }));
+  const sealed = await sealDocuments(sql, sealing, plain);
+  return sealed.map((s) => ({ title: '', text: '', sealedContent: s.sealedContent, blindTerms: s.blindTerms }));
 }
 
 export async function upsertOrganizationDocuments(
@@ -205,27 +283,37 @@ export async function upsertOrganizationDocuments(
   workspaceId: string,
   permissionListId: string,
   documents: readonly OrganizationDocumentInput[],
+  deps: ContentSealingDeps = {},
 ): Promise<{ upserted: number }> {
+  const prepared = documents.map((doc) => ({
+    doc,
+    source: normalizePersonalSource(doc.source),
+    kind: nonEmpty(doc.kind, 'invalid_document_kind'),
+    dedupeKey: nonEmpty(doc.dedupeKey, 'invalid_document_dedupe_key'),
+  }));
+  const content = await storedDocumentContent(sql, workspaceId, documents, deps);
   let upserted = 0;
-  for (const doc of documents) {
-    const source = normalizePersonalSource(doc.source);
-    const kind = nonEmpty(doc.kind, 'invalid_document_kind');
-    const dedupeKey = nonEmpty(doc.dedupeKey, 'invalid_document_dedupe_key');
+  for (const [i, { doc, source, kind, dedupeKey }] of prepared.entries()) {
+    const c = content[i]!;
     const rows = await sql`
       INSERT INTO harness_shared.documents
         (workspace_id, user_id, scope, permission_list_id, source, kind, external_id,
-         occurred_at, participants, title, text, metadata, dedupe_key)
+         occurred_at, participants, title, text, metadata, dedupe_key, source_id, sealed_content, blind_terms)
       VALUES (${workspaceId}, NULL, 'organization', ${permissionListId}::uuid, ${source}, ${kind},
               ${doc.externalId ?? null}, ${doc.occurredAt ?? null}, ${doc.participants ?? []}::text[],
-              ${doc.title ?? ''}, ${doc.text ?? ''}, ${sql.json((doc.metadata ?? {}) as never)}, ${dedupeKey})
+              ${c.title}, ${c.text}, ${sql.json((doc.metadata ?? {}) as never)}, ${dedupeKey},
+              ${doc.sourceId ?? null}::uuid, ${c.sealedContent}, ${c.blindTerms}::text[])
       ON CONFLICT (workspace_id, source, dedupe_key) WHERE scope = 'organization'
       DO UPDATE SET permission_list_id = EXCLUDED.permission_list_id,
+                    source_id = COALESCE(EXCLUDED.source_id, harness_shared.documents.source_id),
                     kind = EXCLUDED.kind,
                     external_id = EXCLUDED.external_id,
                     occurred_at = EXCLUDED.occurred_at,
                     participants = EXCLUDED.participants,
                     title = EXCLUDED.title,
                     text = EXCLUDED.text,
+                    sealed_content = EXCLUDED.sealed_content,
+                    blind_terms = EXCLUDED.blind_terms,
                     metadata = EXCLUDED.metadata,
                     updated_at = now()
       RETURNING id`;
@@ -284,6 +372,7 @@ export async function searchOrganizationDocuments(
   const snippetChars = Math.max(80, Math.min(1200, params.snippetChars ?? 600));
   const sources = [...new Set((params.sources ?? []).map(normalizePersonalSource))];
   const sourceFilter = sources.length ? sql`AND d.source = ANY(${sources})` : sql``;
+  const sealing = await contentSealing(sql, params.workspaceId);
   const { leg, tsRank } = await documentsLexicalLeg(sql, params.query);
   const rows = await sql<Array<{
     id: string; source: string; kind: string; external_id: string | null; occurred_at: string | null;
@@ -326,11 +415,53 @@ export async function searchOrganizationDocuments(
     score: Number(r.score),
     tsRank: Number(r.ts_rank),
   }));
+  const sealed = sealing
+    ? await sealedLeg(sql, sealing, params.query, limit, (tokens, candidateLimit) => sql<Array<{
+        id: string; source: string; kind: string; external_id: string | null; occurred_at: string | null;
+        participants: string[]; metadata: Record<string, unknown>; permission_list_id: string; sealed_content: Buffer;
+      }>>`
+        SELECT d.id, d.source, d.kind, d.external_id, d.occurred_at::text AS occurred_at, d.participants,
+               d.metadata, d.permission_list_id, d.sealed_content
+          FROM harness_shared.documents d
+         WHERE d.workspace_id = ${params.workspaceId}
+           AND d.scope = 'organization' AND d.user_id IS NULL
+           AND d.sealed_content IS NOT NULL AND d.blind_terms && ${tokens}::text[]
+           ${sources.length ? sql`AND d.source = ANY(${sources})` : sql``}
+           AND EXISTS (
+             SELECT 1
+               FROM harness_shared.document_permission_members m
+               JOIN harness_shared.provider_identity_mappings p
+                 ON p.workspace_id = m.workspace_id
+                AND p.provider = m.provider
+                AND p.provider_user_id = m.provider_user_id
+                AND p.revoked_at IS NULL
+              WHERE m.workspace_id = d.workspace_id
+                AND m.list_id = d.permission_list_id
+                AND p.user_id = ${params.principalUserId}::uuid)
+         ORDER BY ${sealedOverlap(sql, tokens)} DESC, d.occurred_at DESC NULLS LAST
+         LIMIT ${candidateLimit}`)
+    : [];
+  const merged = sealing
+    ? mergeLegs(documents, sealed.map((r) => ({
+        id: r.id,
+        source: r.source,
+        kind: r.kind,
+        externalId: r.external_id,
+        occurredAt: r.occurred_at,
+        participants: r.participants,
+        title: r.title,
+        snippet: r.text.slice(0, snippetChars),
+        metadata: r.metadata,
+        permissionListId: r.permission_list_id,
+        score: r.tsRank,
+        tsRank: r.tsRank,
+      })), limit)
+    : documents;
   const disclosed = await discloseDocuments(sql, {
     workspaceId: params.workspaceId,
     userId: params.principalUserId,
     agentOwnerId: params.agentOwnerId,
-    documents,
+    documents: merged,
     via: ORGANIZATION_SEARCH_VIA,
   });
   return {
@@ -396,6 +527,7 @@ export async function searchPotDocuments(
   const snippetChars = Math.max(80, Math.min(1200, params.snippetChars ?? 600));
   const sources = [...new Set((params.sources ?? []).map(normalizePersonalSource))];
   const sourceFilter = sources.length ? sql`AND d.source = ANY(${sources})` : sql``;
+  const sealing = await contentSealing(sql, params.workspaceId);
   const { leg, tsRank } = await documentsLexicalLeg(sql, params.query);
   const rows = await sql<Array<{
     id: string; source: string; kind: string; external_id: string | null; occurred_at: string | null;
@@ -426,11 +558,42 @@ export async function searchPotDocuments(
     score: Number(r.score),
     tsRank: Number(r.ts_rank),
   }));
+  const sealed = sealing
+    ? await sealedLeg(sql, sealing, params.query, limit, (tokens, candidateLimit) => sql<Array<{
+        id: string; source: string; kind: string; external_id: string | null; occurred_at: string | null;
+        participants: string[]; metadata: Record<string, unknown>; pot_slug: string; sealed_content: Buffer;
+      }>>`
+        SELECT d.id, d.source, d.kind, d.external_id, d.occurred_at::text AS occurred_at, d.participants,
+               d.metadata, d.pot_slug, d.sealed_content
+          FROM harness_shared.documents d
+         WHERE d.workspace_id = ${params.workspaceId}
+           AND d.scope = 'pot' AND d.user_id IS NULL AND d.pot_slug = ${potSlug}
+           AND d.sealed_content IS NOT NULL AND d.blind_terms && ${tokens}::text[]
+           ${sources.length ? sql`AND d.source = ANY(${sources})` : sql``}
+         ORDER BY ${sealedOverlap(sql, tokens)} DESC, d.occurred_at DESC NULLS LAST
+         LIMIT ${candidateLimit}`)
+    : [];
+  const merged = sealing
+    ? mergeLegs(documents, sealed.map((r) => ({
+        id: r.id,
+        source: r.source,
+        kind: r.kind,
+        externalId: r.external_id,
+        occurredAt: r.occurred_at,
+        participants: r.participants,
+        title: r.title,
+        snippet: r.text.slice(0, snippetChars),
+        metadata: r.metadata,
+        potSlug: r.pot_slug,
+        score: r.tsRank,
+        tsRank: r.tsRank,
+      })), limit)
+    : documents;
   const disclosed = await discloseDocuments(sql, {
     workspaceId: params.workspaceId,
     userId: params.principalUserId,
     agentOwnerId: params.agentOwnerId,
-    documents,
+    documents: merged,
     via: POT_SEARCH_VIA,
   });
   return { results: disclosed.documents, withheld: disclosed.withheld, disclosed: disclosed.disclosed };

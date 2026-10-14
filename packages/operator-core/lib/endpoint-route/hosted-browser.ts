@@ -68,6 +68,8 @@ import { createHostedTutorialAssistanceRoutes } from './routes/hosted-tutorial-a
 import { exactOriginOr403, jsonError, selectedHostedPrincipal, tenantContext, workspaceHeaderMismatch, type HostedPrincipalSelection } from './hosted-browser-context';
 import { acceptSyncTransportObservation } from './routes/desktop/telemetry-report';
 import { createHostedCloudMonitoringRoutes, HOSTED_BROWSER_MONITORING_PATH, HOSTED_BROWSER_MONITORING_EVENT_PATH } from './routes/hosted-cloud-monitoring';
+import { cloudProvisioningObservation, readCloudTelemetryConsent } from '../record-telemetry';
+import { getBuildInfo } from '../build-info';
 export { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH } from './routes/hosted-tutorial-progress';
 
 export const HOSTED_BROWSER_REST_QUERY_PATH = '/hosted/browser/rest-query' as const;
@@ -131,6 +133,7 @@ export interface HostedBrowserRouteDependencies {
   /** Injectable in route tests; production uses the canonical tenant wrapper. */
   readonly runTenant?: HostedTenantContextRunner;
   readonly readControl?: (workspaceId: string, tx?: Sql) => Promise<unknown[]>;
+  readonly deliverCloudTelemetry?: typeof import('../telemetry-flush')['deliverCloudPosthog'];
   readonly readConnection?: (
     workspaceId: string,
     connectionId: string,
@@ -591,6 +594,28 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
       const startedAt = Date.now();
       try {
         const rows = await wrapTenantRead(principal, runTenant, (tx) => readControl(controlPlaneWorkspaceId, tx));
+        if (rows.some(row => row && typeof row === 'object' && 'operation' in row)) {
+          // The primary read has already succeeded. Optional analytics neither
+          // delays nor changes its response; every asynchronous delivery still
+          // revalidates this user's current tenant/session and consent.
+          void (async () => {
+            const [hostId, state] = await wrapTenantRead(principal, runTenant, tx => Promise.all([
+              (deps.readBoundHostId ?? readCustomerWorkspaceHostId)(controlPlaneWorkspaceId, principal.selectedWorkspaceId!, tx),
+              (deps.readBoundWorkspaceState ?? readCustomerWorkspaceState)(controlPlaneWorkspaceId, principal.selectedWorkspaceId!, tx),
+            ]));
+            if (!hostId) return;
+            const deliver = deps.deliverCloudTelemetry ?? (await import('../telemetry-flush')).deliverCloudPosthog;
+            for (const row of rows) {
+              if (!row || typeof row !== 'object' || !('id' in row) || row.id !== hostId) continue;
+              const observation = cloudProvisioningObservation(row, state);
+              if (!observation) continue;
+              await deliver(observation.event, { principal, origin: 'control-plane', hostingMode: 'byoc',
+                environment: process.env.PORT === '3170' ? 'staging' : process.env.NODE_ENV === 'production' ? 'production' : 'development',
+                release: getBuildInfo().sha ?? '', observedAt: observation.observedAt },
+              () => wrapTenantRead(principal, runTenant, tx => readCloudTelemetryConsent(tx, principal)));
+            }
+          })().catch(() => {});
+        }
         const completedAt = Date.now();
         return new Response(
           JSON.stringify({
@@ -813,7 +838,8 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     },
   });
 
-  const tutorialProgress = createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspaceId, runTenant });
+  const tutorialProgress = createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspaceId, runTenant,
+    deliver: deps.deliverCloudTelemetry });
   const monitoring = createHostedCloudMonitoringRoutes({ origin, controlPlaneWorkspaceId, runTenant });
   const tutorialAssistance = createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorkspaceId, runTenant, dependencies: deps.tutorialAssistance });
   return {

@@ -9,7 +9,7 @@ vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'local-workspa
 vi.mock('./setup-wizard-install-id', () => ({ ensureInstallId: local.install }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (definition: unknown) => definition }));
-import { deliverCloudPosthog, readCloudCaptureHealth, flushTelemetry } from './telemetry-flush';
+import { deliverCloudPosthog, readCloudCaptureHealth, flushTelemetry, cloudMonitoringDashboardViews, ensureCloudMonitoringDashboard } from './telemetry-flush';
 import telemetryConfig from './endpoint-route/routes/desktop/telemetry-config';
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.clearAllMocks(); });
 
@@ -35,6 +35,8 @@ describe('strict cloud PostHog transport', () => {
     const bodies = fetcher.mock.calls.map(call => JSON.parse(String((call as unknown as [string, RequestInit])[1].body)));
     expect(bodies[0].batch[0].properties.$insert_id).toBe(bodies[1].batch[0].properties.$insert_id);
     expect(bodies[0].batch[0].properties.$insert_id).toMatch(/^[a-f0-9]{64}$/);
+    expect(bodies[0].batch[0].uuid).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-5[a-f0-9]{3}-8[a-f0-9]{3}-[a-f0-9]{12}$/);
+    expect(bodies[0].batch[0].uuid).toBe(bodies[1].batch[0].uuid);
     expect(JSON.stringify(bodies)).not.toMatch(/tenant-a|user-a|session-a/);
     expect(await deliverCloudPosthog(event, context, async () => DEFAULT_CLOUD_TELEMETRY_CONSENT)).toMatchObject({ delivered: false });
     expect(await deliverCloudPosthog({ ...event, properties: { ...event.properties, prompt: 'private' } }, context, readConsent)).toMatchObject({ delivered: false });
@@ -73,6 +75,28 @@ describe('strict cloud PostHog transport', () => {
     }
     const ids = bodies.map(body => body.batch[0]!.properties.$insert_id);
     expect(ids[0]).not.toBe(ids[1]); expect(ids[1]).toBe(ids[2]);
+  });
+
+  it('keeps business views environment-scoped, excludes synthetic/private-runtime events and counts confirmed readiness only', () => {
+    for (const environment of ['production', 'staging', 'development'] as const) {
+      const views = cloudMonitoringDashboardViews(environment);
+      for (const view of views) {
+        expect(view.query).toContain(`properties.environment = '${environment}'`);
+        expect(view.query).toContain('properties.synthetic = false');
+        expect(view.query).toContain("properties.source IN ('portal', 'control-plane')");
+        expect(view.query).not.toMatch(/cloud_diagnostic_aggregate|input_tokens|output_tokens|task_succeeded/);
+      }
+      expect(views.find(view => view.name === 'Confirmed ready duration')!.query).toContain("properties.phase = 'ready'");
+      expect(views.find(view => view.name === 'Public explanations reviewed')!.query).toContain("properties.source = 'control-plane'");
+      expect(views.find(view => view.name === 'Observed seven-day portal return')!.query).toContain('INTERVAL 7 DAY');
+    }
+    expect(() => cloudMonitoringDashboardViews('invalid' as 'staging')).toThrow('invalid_monitoring_environment');
+  });
+
+  it('requires configured dashboard authorization and performs no write when it is unavailable', async () => {
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
+    await expect(ensureCloudMonitoringDashboard('production')).rejects.toThrow('posthog_dashboard_credentials_unavailable');
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it('keeps legacy reports and browser SDK local on customer hosts despite opt-in and maintainer flags', async () => {

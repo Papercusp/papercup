@@ -13,6 +13,9 @@
 # stable too, and makes this helper safe to edit while a service is starting.
 set -uo pipefail
 
+# Do not let a parent or prior nested invocation supply stale target identity.
+unset PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_PATH PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_SHA256
+
 hash_file() {
   local path="${1:-}"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -266,11 +269,26 @@ snapshot_script() {
 }
 
 argv=("$1" "${@:2}")
+primary_snapshot_seen=0
 for index in "${!argv[@]}"; do
   case "${argv[$index]}" in
     *.sh)
       if [[ -f "${argv[$index]}" ]]; then
-        argv[$index]="$(snapshot_script "${argv[$index]}")" || exit $?
+        source_token="${argv[$index]}"
+        snapshot_path="$(snapshot_script "$source_token")" || exit $?
+        if [[ "$primary_snapshot_seen" = 0 ]]; then
+          primary_source_path="$(resolve_path "$source_token")" || exit 64
+          primary_snapshot_sha256="$(hash_file "$snapshot_path")" || {
+            echo "[script-snapshot] cannot hash target snapshot: $snapshot_path" >&2
+            exit 69
+          }
+          export PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_PATH="$primary_source_path"
+          export PAPERCUSP_SCRIPT_SNAPSHOT_SOURCE_SHA256="$primary_snapshot_sha256"
+          printf '[script-snapshot] target source=%s sha256=%s\n' \
+            "$primary_source_path" "$primary_snapshot_sha256" >&2
+          primary_snapshot_seen=1
+        fi
+        argv[$index]="$snapshot_path"
       fi
       ;;
   esac

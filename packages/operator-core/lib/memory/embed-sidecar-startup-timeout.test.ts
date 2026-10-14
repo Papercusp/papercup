@@ -135,6 +135,35 @@ describe('spawnEmbedSidecar READY deadline (WI-10005932)', () => {
     expect(fake.children[0].killed).toBe(false);
   });
 
+  it('preserves informational database stderr across chunks without promoting it to a warning', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const started = spawnEmbedSidecar();
+    const child = fake.children[0];
+    child.stderr.emit('data', Buffer.from('[db] target source=env end'));
+    expect(console.log).not.toHaveBeenCalledWith('[embed-sidecar-err]', expect.anything());
+    child.stderr.emit('data', Buffer.from('point=localhost:32769\n'));
+    expect(console.log).toHaveBeenCalledWith('[embed-sidecar-err]', '[db] target source=env endpoint=localhost:32769');
+    expect(warning).not.toHaveBeenCalled();
+    say(child, `${EMBED_SIDECAR_READY_LINE} port=41301`);
+    await started;
+  });
+
+  it('keeps actual warnings, mixed stderr and an unterminated final diagnostic visible', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const started = spawnEmbedSidecar();
+    const child = fake.children[0];
+    child.stderr.emit('data', Buffer.from('[db] target source=env endpoint=localhost:32769\nmodel warmup failed\n[db] target source=env endpoint=localhost:32769 WARNING\nlast failure'));
+    child.stderr.emit('end');
+    expect(warning.mock.calls).toEqual([
+      ['[embed-sidecar-err]', 'model warmup failed'],
+      ['[embed-sidecar-err]', '[db] target source=env endpoint=localhost:32769 WARNING'],
+      ['[embed-sidecar-err]', 'last failure'],
+    ]);
+    expect(console.log).toHaveBeenCalledWith('[embed-sidecar-err]', '[db] target source=env endpoint=localhost:32769');
+    say(child, `${EMBED_SIDECAR_READY_LINE} port=41301`);
+    await started;
+  });
+
   it('still kills and rejects a child that never reaches READY by the deadline', async () => {
     process.env[EMBED_SIDECAR_STARTUP_TIMEOUT_ENV] = '20000';
     const outcome = spawnEmbedSidecar().then(

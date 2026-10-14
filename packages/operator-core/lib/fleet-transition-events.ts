@@ -66,6 +66,7 @@
  */
 
 import { emitAwaitedEvent } from './events/await/engine';
+import { buildKey } from './events/await/catalog';
 import type { ContextPressureBucket } from './agent-tools/coordination/context-pressure';
 import { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
 import type { WorkItem } from './work-items';
@@ -79,7 +80,8 @@ export type FleetTransitionKind =
   | 'repeated-recovery'
   | 'admission-blocked'
   | 'claim-released'
-  | 'item-completed';
+  | 'item-completed'
+  | 'member-quota-starved';
 
 /** Build the awaitable key for one fleet transition. Single-sourced so the
  *  emitters, the catalog entries and the tests can never drift on the shape.
@@ -984,6 +986,71 @@ export function emitFleetItemCompletedEvent(
       }),
     )
     .catch((e: unknown) => failSoft(`item-completed for ${fleetSlug}/${item.id}`, e));
+}
+
+/**
+ * What a psu pty host's quota-block starvation guard reports
+ * (makeQuotaBlockStarvationGuard in apps/operator/scripts/psu-pty-host.mjs): the
+ * member's CLI sat behind a quota/usage-limit block past the threshold while every
+ * gated wake injection failed. Numbers are null when the host omitted them.
+ */
+export interface FleetMemberQuotaStarvation {
+  blockedSinceMs: number | null;
+  ageMs: number | null;
+  thresholdMs: number | null;
+  attemptedGatedInjections: number | null;
+  successfulGatedInjections: number | null;
+  /** The member's agent backend (claude / codex / omp), when the host knows it. */
+  agent: string | null;
+  /** The account the member's session bills to, when the host knows it. */
+  accountId: string | null;
+}
+
+/**
+ * Fire `fleet:member-quota-starved:<slug>` — a member is alive but cannot take a
+ * turn because its account is quota-blocked, and wakes sent to it are not being
+ * delivered (WI-6554700010011967). Without this the leader only finds out when the
+ * member's presence decays to `suspect`, 40+ minutes later. The member's claims are
+ * not progressing; the leader can reroute the work or relaunch the member on
+ * another account.
+ *
+ * The key is built through the catalog (`buildKey`), so the event catalog and this
+ * emitter cannot disagree on its shape. The host's guard alerts once per blocked
+ * episode, so this fires at most once per episode per member.
+ *
+ * Resolves true when the event was emitted. Never rejects: a health signal must
+ * not fail the request that carries it.
+ */
+export async function emitFleetMemberQuotaStarvedEvent(
+  fleetSlug: string | null | undefined,
+  agentId: string,
+  signal: FleetMemberQuotaStarvation,
+  deps: FleetTransitionEventsDeps = {},
+): Promise<boolean> {
+  if (!fleetSlug || !agentId) return false;
+  const emit = deps.emit ?? emitAwaitedEvent;
+  const minutes = signal.ageMs == null ? null : Math.round(signal.ageMs / 60_000);
+  const attempts = signal.attemptedGatedInjections ?? 0;
+  try {
+    await emit({
+      key: buildKey('fleet-member-quota-starved', { slug: fleetSlug }),
+      summary:
+        `fleet ${fleetSlug}: ${agentId} is quota-blocked` +
+        (minutes == null ? '' : ` for ${minutes}m`) +
+        ` with ${attempts} undelivered wake(s) — its claims are not progressing; reroute them or relaunch it on another account`,
+      payload: {
+        fleetSlug,
+        transition: 'member-quota-starved',
+        agentId,
+        ...signal,
+      },
+      source: 'fleet',
+    });
+    return true;
+  } catch (e: unknown) {
+    failSoft(`member-quota-starved for ${fleetSlug}/${agentId}`, e);
+    return false;
+  }
 }
 
 /** Resolve the workspace for a fleet lookup. Injectable so the announce helpers

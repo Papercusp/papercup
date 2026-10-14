@@ -33,6 +33,15 @@ const PROBE_INTERVAL_MS = 30_000;
 const MAX_UNKNOWN_PROBES = 3;
 const MAX_RECOVERY_ATTEMPTS = 5;
 
+/** WI-6554700010012442 — a SPENT budget: the unknown-state probes or the recovery attempts ran
+ * out. Recovery can do nothing more for this loop, so its `block` hands the loop to the
+ * ordinary actors (reconciler signal ladder, stalled-loops guard) instead of holding it.
+ * A transient `blocked` (inbox-wake-repair-failed) keeps `probes: 0` and its paced retry. */
+function isSpentBlock(s: ExecutionRecoveryState | null | undefined): boolean {
+  return s?.status === 'blocked'
+    && (s.reason === 'native-start-retry-exhausted' || Number(s.probes) >= MAX_UNKNOWN_PROBES);
+}
+
 /** Pure decision. Positive operation evidence wins over any silence clock. */
 export function decideLoopExecutionRecovery(i: ExecutionRecoveryInput): {
   action: 'protect' | 'settle' | 'observe' | 'recover' | 'block';
@@ -70,7 +79,10 @@ export function decideLoopExecutionRecovery(i: ExecutionRecoveryInput): {
   if (fresh && e.phase === 'failed' && Number(e.lastProgressAt) >= i.firedAt
     && inferenceFresh && i.inference.active === 0) {
     if (i.nowMs - Number(e.lastProgressAt) < PROBE_INTERVAL_MS) return protect('failure-settle-grace', 'unknown');
-    if (prior && i.nowMs < prior.nextProbeAt) return protect('recovery-backoff', prior.status);
+    if (prior && i.nowMs < prior.nextProbeAt) {
+      // WI-6554700010012442: a spent budget stays handed off during its backoff, too.
+      return isSpentBlock(prior) ? { action: 'block', state: prior } : protect('recovery-backoff', prior.status);
+    }
     if (state.attempts >= MAX_RECOVERY_ATTEMPTS) {
       return { action: 'block', state: { ...state, status: 'blocked', reason: 'native-start-retry-exhausted', nextProbeAt: i.nowMs + 300_000 } };
     }
@@ -78,7 +90,9 @@ export function decideLoopExecutionRecovery(i: ExecutionRecoveryInput): {
       attempts: state.attempts + 1, probes: 0, lastAttemptAt: i.nowMs,
       nextProbeAt: i.nowMs + Math.min(300_000, PROBE_INTERVAL_MS * 2 ** state.attempts) } };
   }
-  if (prior && i.nowMs < prior.nextProbeAt) return { action: 'observe', state: prior };
+  // WI-6554700010012442: inside a spent block's backoff the answer is still 'block' (hand off).
+  // Returning 'observe' here held the loop for every 5-minute window between re-blocks.
+  if (prior && i.nowMs < prior.nextProbeAt) return { action: isSpentBlock(prior) ? 'block' : 'observe', state: prior };
   state.probes++;
   state.reason = !fresh ? 'native-observation-unavailable' : !inferenceFresh || i.inference.active == null
     ? 'inference-observation-unavailable' : 'native-start-unverified';
@@ -145,6 +159,21 @@ export async function recoverExpectedLoopExecution(input: {
           WHERE id = ${input.routineId} AND active = TRUE AND next_fire_at = 'infinity'::timestamptz`;
       }
       return { handled: decision.action === 'protect', state: decision.state };
+    }
+    // WI-6554700010012442 — a spent budget is a HAND-OFF, not a hold. Returning handled:true here
+    // made both callers `continue` past every other actor, so a supported host whose native
+    // observation stayed unavailable kept its loop parked forever: the reconciler never re-armed
+    // it and the stalled-loops guard never reached its fire-starved re-arm. The blocked state is
+    // still recorded, so the reason stays visible on the routine row.
+    if (decision.action === 'block') {
+      if (!input.dryRun && (prior?.status !== decision.state.status || prior?.reason !== decision.state.reason
+        || prior?.probes !== decision.state.probes || prior?.attempts !== decision.state.attempts
+        || prior?.nextProbeAt !== decision.state.nextProbeAt)) {
+        await tx`UPDATE harness_shared.routines
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || ${tx.json({ executionRecovery: { ...decision.state } })}
+          WHERE id = ${input.routineId} AND active = TRUE AND next_fire_at = 'infinity'::timestamptz`;
+      }
+      return { handled: false, state: decision.state };
     }
     if (input.dryRun) return { handled: true, state: decision.state, rearmed: decision.action === 'recover' };
     let rearmed = false;

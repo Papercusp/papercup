@@ -14954,7 +14954,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "You need call-graph topology: who calls a symbol, what it calls, or the blast radius of changing it.",
+        "when": "For \"who calls X?\", use op:\"callers\", name and bounded paths; for \"what does X call?\", use op:\"callees\". Call-site rg also matches comments and strings; use compiler topology to establish calls or change impact.",
         "notWhen": "Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.",
         "chaining": "op:\"context\" → op:\"impact\" for the change radius → op:\"trace\", target:\"name\" for a forward call path. Use paths to bound compiler source scope. Static paths do not establish runtime execution. op:\"health\" reports index freshness; lsp:query handles references/diagnostics."
       }

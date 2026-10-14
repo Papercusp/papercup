@@ -285,14 +285,19 @@ export const defaultBlobBatchReader: BlobBatchReader = async (repoDir, blobIds, 
       throw error;
     }
     if (isSidecarInfrastructureFault(sidecarResult)) {
-      const error = new Error(sidecarResult.stderr);
+      const error = Object.assign(new Error(sidecarResult.stderr), sidecarResult.error);
       noteSidecarFallback('committed-tree-reader', error, undefined, 'rejected');
       throw error;
     }
     if (sidecarResult.code !== 0) {
-      throw new Error(
-        `Command failed (exit ${sidecarResult.code}): git -C ${repoDir} cat-file --batch\n${sidecarResult.stderr}`,
-      );
+      const why = sidecarResult.code < 0
+        ? sidecarResult.error
+          ? `no exit status; code=${sidecarResult.error.code ?? 'none'}, signal=${sidecarResult.error.signal ?? 'none'}, killed=${sidecarResult.error.killed}`
+          : 'no exit status'
+        : `exit ${sidecarResult.code}`;
+      throw Object.assign(new Error(
+        `Command failed (${why}): git -C ${repoDir} cat-file --batch\n${sidecarResult.stderr}`,
+      ), sidecarResult.error);
     }
     return parseCatFileBatch(sidecarResult.stdout);
   }

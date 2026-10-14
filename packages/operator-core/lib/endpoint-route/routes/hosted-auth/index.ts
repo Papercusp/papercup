@@ -86,6 +86,8 @@ export interface HostedAuthRouteDependencies {
   readonly selfSignup?: HostedSelfSignupAdmission;
   readonly clock?: () => Date;
   readonly randomBytes?: (size: number) => Uint8Array;
+  /** Metadata observer after session persistence; cannot delay authentication. */
+  readonly onSessionEstablished?: (session: HostedSession) => Promise<unknown>;
 }
 
 type AnyRoute = RouteDefinition<any>;
@@ -587,6 +589,7 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
         }
       }
 
+      try { void deps.onSessionEstablished?.(session).catch(() => {}); } catch { /* Optional metadata observer. */ }
       return redirect(new URL(returnTo, origin).toString(), [
         deps.sessionCookieCodec.serialize(session.id, session.expiresAt, now),
         deleteFlowCookie(),

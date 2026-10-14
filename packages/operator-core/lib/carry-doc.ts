@@ -1608,6 +1608,11 @@ export function renderAutomaticCompactionRecovery(
       `- changes after the prior summary (${recovery.staleness_warnings.summaryAt}): ${recovery.staleness_warnings.warnings.join(' · ')}`,
     );
   }
+  // P-001 (carry-recheck-and-governed-memory-2026-10-14): the carried checks' probes, RUN when this
+  // recovery was built — a changed probe tells the successor which carried claim no longer holds.
+  if (recovery.carriedProbes && !judgeSafe) {
+    lines.push(recovery.carriedProbes);
+  }
   if (marker.complete) {
     lines.push(postCompactionRecoveryInstruction(role));
   }

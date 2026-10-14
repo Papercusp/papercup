@@ -11,6 +11,11 @@ import { startGatewayService } from '../lib/inference-gateway/launch';
 import { fireLaunchBlueprint } from '../lib/blueprint/launch-blueprint';
 import { readProcessIdentity } from '../lib/process-identity';
 import { harnessPackageDir, invokeOnceBin, tsxBin } from '../lib/harness-paths';
+import { CODEX_SAFE_DEFAULT_MODEL } from '../lib/model-context-budget.mjs';
+import { retainPrivateProviderResponse } from './private-http-workspace-preflight';
+
+// Reuse the maintained launch policy rather than a retired fixture model id.
+const [primaryModel, primaryEffort] = CODEX_SAFE_DEFAULT_MODEL.split(':');
 
 function descendants(rootPid: number): number[] {
   const parents = new Map<number, number>();
@@ -84,7 +89,7 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
   let spawnId: string | undefined;
   let stopped = false;
   let nativeProcesses: Array<{ pid: number; identity: ReturnType<typeof readProcessIdentity> }> = [];
-  let upstream: { status: number; requests: number } | undefined;
+  let upstream: (Awaited<ReturnType<typeof retainPrivateProviderResponse>> & { requests: number }) | undefined;
   let requestCount = 0;
   let releaseResponse: (() => void) | undefined;
   const responseHeld = new Promise<void>(done => { releaseResponse = done; });
@@ -98,8 +103,7 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       const response = await fetch(url, init);
       // Read the real body while withholding it from the native child. No mock response
       // or model completion can reach the child before its whole lineage is stopped.
-      await response.clone().text();
-      upstream = { status: response.status, requests: requestCount };
+      upstream = { ...await retainPrivateProviderResponse(evidenceDir, response, init), requests: requestCount };
       ready!();
       await responseHeld;
       return response;
@@ -167,7 +171,8 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
     assert.ok(mounts[0]?.options.includes('ro'), 'actual native mount must deny canonical tree writes');
     return { pid: child.pid, sha256: createHash('sha256').update(bytes).digest('hex'),
       provider: config.model_provider, baseUrl: provider.base_url, ownerId: provider.http_headers['x-papercusp-owner'],
-      accountPinPresent: false, model: config.model, mcpOrigin: mcp.origin, mcpOwnerId: mcp.searchParams.get('client'),
+      accountPinPresent: false, model: config.model, effort: config.model_reasoning_effort,
+      mcpOrigin: mcp.origin, mcpOwnerId: mcp.searchParams.get('client'),
       canonicalMount: mounts[0] };
   }
   return {
@@ -175,7 +180,7 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       console.log('BLUEPRINT_ACCOUNT_ROUTE_PHASE launch-real-primary');
       const launched = await fireLaunchBlueprint('release-fix', { installSlug: workspace, workspaceId: workspace,
         kickoff: 'Inert routing proof: reply READY without tools.', timeoutMs: 90_000,
-        bodyExtra: { account: 'auto', spawnBackend: 'codex', spawnModel: 'gpt-5.4:high' } });
+        bodyExtra: { account: 'auto', spawnBackend: 'codex', spawnModel: CODEX_SAFE_DEFAULT_MODEL } });
       spawnId = launched.spawn?.spawnId ?? undefined;
       assert.ok(spawnId, 'production blueprint launcher must return its exact spawn identity');
       await Promise.race([realResponseReady, eventually(async () => {
@@ -185,7 +190,7 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       }, 'real primary response', 100_000), new Promise((_, reject) => {
         const timer = setTimeout(() => reject(new Error('real first provider response timed out')), 100_000); timer.unref();
       })]);
-      assert.equal(upstream?.status, 200, 'real upstream must accept and serve the request');
+      assert.equal(upstream?.status, 200, `real upstream must accept and serve the request: ${JSON.stringify(upstream?.error)}`);
       assert.ok(await measureNative(), 'actual invoke handoff must precede the provider response');
       assert.ok(nativeProcesses.length > 1, 'real native descendant must exist');
       const childConfig = measureChildConfig();
@@ -212,6 +217,15 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       assert.equal(row.first_gateway_request.model, row.account_route.launchedModel);
       assert.equal(row.first_gateway_request.effort, row.account_route.launchedEffort);
       assert.equal(childConfig.model, row.account_route.launchedModel);
+      assert.equal(childConfig.effort, row.account_route.launchedEffort);
+      assert.equal(row.account_route.requestedBackend, 'codex');
+      assert.equal(row.account_route.launchedBackend, 'codex');
+      assert.equal(row.account_route.requestedModel, primaryModel);
+      assert.equal(row.account_route.launchedModel, primaryModel);
+      assert.equal(row.account_route.requestedEffort, primaryEffort);
+      assert.equal(row.account_route.launchedEffort, primaryEffort);
+      assert.equal(upstream?.requestShape.model, primaryModel);
+      assert.equal(upstream?.requestShape.effort, primaryEffort);
       // Host exit closes admission. Descendant reaping then closes inherited
       // pipes; waiting for pipe-close before reaping would deadlock this order.
       await stopInvokeHost(stopNative);
@@ -228,7 +242,7 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
         canonicalTreeReadOnly: true, privateMcp: true,
         gatewayRuntime: ownerReport.process, privateGateUnchanged: true, privateClaims: Number(state.claims),
         runtimeInputs,
-        declared: { account: 'auto', backend: 'codex', model: 'gpt-5.4', effort: 'high', codexGatewayPresent: false },
+        declared: { account: 'auto', backend: 'codex', model: primaryModel, effort: primaryEffort, codexGatewayPresent: false },
         preflight: { observedAt: source.observedAt, headroom: source.headroom,
           accountIds: source.accounts.map((account: any) => account.id) } };
     },

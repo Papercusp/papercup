@@ -3827,6 +3827,53 @@ export function reportOwnerHumanTurn(now = Date.now()) {
 }
 
 /**
+ * WI-6554700010011967: tell the operator this agent is quota-starved, so the
+ * operator can fire `fleet:member-quota-starved:<slug>` for its fleet leader. Before
+ * this the starvation verdict stayed a host-local event, and the leader only
+ * learned of it when presence decayed to `suspect` 40+ min later.
+ * Fire-and-forget with a short abort: the returned promise resolves true on a 2xx
+ * response and false otherwise, and never rejects (tests await it; the host does
+ * not).
+ */
+export function reportQuotaStarvation(
+  ownerId,
+  signal,
+  { env = process.env, fetchImpl = globalThis.fetch, timeoutMs = 1500 } = {},
+) {
+  const agent = typeof ownerId === 'string' ? ownerId.trim() : '';
+  if (!agent || typeof fetchImpl !== 'function') return Promise.resolve(false);
+  try {
+    const rawBase =
+      typeof env?.PAPERCUSP_OPERATOR_URL === 'string' ? env.PAPERCUSP_OPERATOR_URL.trim() : '';
+    const rawWs = typeof env?.PAPERCUSP_WORKSPACE === 'string' ? env.PAPERCUSP_WORKSPACE.trim() : '';
+    const workspace = rawWs || 'default';
+    const url = new URL('/api/admin/psu-pty/quota-starvation', rawBase || 'http://127.0.0.1:3270');
+    url.searchParams.set('workspace', workspace);
+    const accountId =
+      typeof env?.PAPERCUSP_ACCOUNT_ID === 'string' && env.PAPERCUSP_ACCOUNT_ID.trim()
+        ? env.PAPERCUSP_ACCOUNT_ID.trim()
+        : null;
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeoutMs);
+    if (typeof t.unref === 'function') t.unref();
+    return Promise.resolve()
+      .then(() =>
+        fetchImpl(url.toString(), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...(signal ?? {}), ownerId: agent, workspace, accountId }),
+          signal: ac.signal,
+        }),
+      )
+      .then((res) => Boolean(res?.ok))
+      .catch(() => false)
+      .finally(() => clearTimeout(t));
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
+/**
  * Read the effective per-agent wake mode through the loopback admin coord
  * read-only verb. A missing route, failed request, or malformed response is
  * deliberately `null`: carry-rearm must retain its payload unless the server
@@ -10304,6 +10351,8 @@ export function hostThroughPty(o) {
         agent: String(env.PAPERCUSP_AGENT ?? '') || null,
       };
       appendHostEvent(ownerId, 'quota-block-starvation', extra);
+      // Tell the fleet leader now, not when presence decays to suspect.
+      void reportQuotaStarvation(ownerId, extra, { env });
       try {
         writeTerminalDiagnostic(
           `psu-pty-host: QUOTA BLOCK STARVATION for ${ownerId} — ` +

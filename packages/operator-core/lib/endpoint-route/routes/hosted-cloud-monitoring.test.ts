@@ -5,7 +5,7 @@ import { createHostedPrincipal } from '../../auth/hosted-principal';
 import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from '../../telemetry-kinds';
 
 const h = vi.hoisted(() => ({ read: vi.fn(), write: vi.fn() }));
-vi.mock('../../record-telemetry', () => ({ readCloudTelemetryConsent: h.read, writeCloudTelemetryConsent: h.write }));
+vi.mock('../../cloud-telemetry', () => ({ readCloudTelemetryConsent: h.read, writeCloudTelemetryConsent: h.write }));
 vi.mock('../../build-info', () => ({ getBuildInfo: () => ({ sha: 'abcdef1234567', version: '1' }) }));
 import { createHostedCloudMonitoringRoutes, HOSTED_BROWSER_MONITORING_PATH, HOSTED_BROWSER_MONITORING_EVENT_PATH } from './hosted-cloud-monitoring';
 
@@ -67,5 +67,12 @@ describe('hosted monitoring ingress', () => {
       properties: { code: 'render_failure', fingerprint: 'a'.repeat(64) } }), context());
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ delivered: false, code: 'delivery_unavailable' });
+  });
+  it('rejects a browser-forged saved explanation review before consulting the sink', async () => {
+    const f = fixture();
+    const response = await f.event(request({ event: 'product_tutorial', operation_id: '00000000-0000-4000-8000-000000000001',
+      properties: { lesson_id: 'product-guide', lesson_version: 3, action: 'explanation_reviewed', lesson: 'welcome' } }), context());
+    expect(response.status).toBe(400); expect(await response.json()).toEqual({ ok: false, error: 'unwitnessed_outcome', message: 'unwitnessed_outcome' });
+    expect(f.deliver).not.toHaveBeenCalled();
   });
 });

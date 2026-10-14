@@ -437,6 +437,7 @@ export function operationalExecution(artifact: OperationalEvidenceArtifact) {
   const passedTitles = allPassedTitles.slice(0, MAX_RECORDED_PASSED_CASES);
   const passedCaseTitlesTruncated = allPassedTitles.length > passedTitles.length;
   return {
+    operational: { schemaVersion: 1 as const, command: [...artifact.command] },
     passed: artifact.assertions.length - failing.length,
     failed: failing.length + (unexplainedExit ? 1 : 0),
     skipped: 0,
@@ -501,6 +502,8 @@ export async function executeOperationalRun(
   const harnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
   if (!harnessSlug) return { ok: false, error: 'harness_required' as const };
   const units = [...definition.runtimeUnits];
+  // Pin the arguments before execution: a callback cannot replace the install/window it checked.
+  const command = [...definition.command];
   if (!units.length || units.length > 32 || new Set(units).size !== units.length
     || units.some(unit => !unit || unit.trim() !== unit || unit.length > 120)) {
     return { ok: false, error: 'invalid_runtime_units' as const };
@@ -550,7 +553,7 @@ export async function executeOperationalRun(
   // Explicit fields prevent a callback from smuggling timestamps, layer or pins.
   const artifact = operationalEvidenceArtifactSchema.parse({
     schemaVersion: 1, kind: 'operational-test-evidence', name: definition.name,
-    framework: definition.framework, command: definition.command,
+    framework: definition.framework, command,
     startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(),
     exitCode: result.exitCode, summary: result.summary, assertions: result.assertions,
   });

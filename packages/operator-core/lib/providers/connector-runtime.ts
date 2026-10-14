@@ -32,6 +32,7 @@ import { hostname } from 'node:os';
 import type postgres from 'postgres';
 import type {
   HostFetch,
+  ProviderCoverage,
   ProviderRecord,
   ProviderMembershipSnapshot,
   ProviderSyncError,
@@ -53,6 +54,7 @@ import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { resolveProviderServices } from '../integrations/service-credentials';
 import {
   PROVIDER_ACL_REF_PATTERN,
+  providerCoverageIssues,
   PROVIDER_SYNC_ADOPT_CAPABILITY,
   PROVIDER_SYNC_WAKE_CAPABILITY,
   providerSyncErrorOf,
@@ -67,6 +69,7 @@ import {
   createDatatypeDestinationSinks,
   type DataSourceMembershipOutcome,
 } from '../data-sources/datatype-destination-sink';
+import { DEFAULT_CHAT_MESSAGE_DATATYPE, reconcileChatMessageCoverage } from '../data-sources/chat-retrieval-units';
 import { createRelationshipGraphSink } from '../relationship-graph/graph-sink';
 import { createInteractionParticipantSink, isInteractionDatatype } from '../relationship-graph/participants';
 import { graphDefaultHarness, isGraphEntityDatatype } from '../relationship-graph/resolver';
@@ -141,6 +144,8 @@ export interface ConnectorSourceOutcome {
   missingConfig?: string[];
   /** What the last membership snapshot this pass carried did to the source's permission list (D-015.4). */
   membership?: DataSourceMembershipOutcome;
+  /** Stored objects this pass's coverage windows found deleted at the provider and tombstoned. */
+  coverageTombstoned?: number;
   hasMore: boolean;
   error?: string;
   /** The afterSourceSynced hook failed (the pass itself succeeded). */
@@ -176,6 +181,16 @@ export interface ConnectorSyncDeps {
     source: ConnectorSourceRow,
     input: MembershipInput,
   ) => Promise<DataSourceMembershipOutcome>;
+  /**
+   * Applies one coverage window of a page: tombstones what is stored in the window and absent from
+   * its live set. Returns null for a datatype with nothing stored to reconcile. Defaults to the chat
+   * raw-message reconciler (WI-6554700010012278).
+   */
+  reconcileCoverage?: (
+    sql: postgres.Sql,
+    source: ConnectorSourceRow,
+    coverage: ProviderCoverage,
+  ) => Promise<{ tombstoned: number } | null>;
   /** Parameters of the provider's configured service credentials (D-018.1). */
   servicesFor?: (provider: RegisteredProvider) => Promise<ProviderServices | undefined>;
   leaseOwner?: string;
@@ -196,6 +211,26 @@ async function defaultAfterSourceSynced(sql: postgres.Sql, source: ConnectorSour
 
 function defaultServicesFor(provider: RegisteredProvider): Promise<ProviderServices | undefined> {
   return resolveProviderServices(provider.descriptor.serviceCredentials);
+}
+
+/**
+ * Chat messages are the one stored datatype with deletes to reconcile: a message deleted while the
+ * daemon was offline never sends a live delete, so a fully read window is the only way to learn of
+ * it. Any other datatype has nothing stored here to tombstone.
+ */
+async function defaultReconcileCoverage(
+  sql: postgres.Sql,
+  source: ConnectorSourceRow,
+  coverage: ProviderCoverage,
+): Promise<{ tombstoned: number } | null> {
+  if (coverage.datatype !== DEFAULT_CHAT_MESSAGE_DATATYPE) return null;
+  return reconcileChatMessageCoverage(sql, source.workspaceId, source.id, {
+    channelId: coverage.containerRef,
+    threadKey: coverage.threadRef ?? null,
+    from: coverage.from ?? null,
+    to: coverage.to ?? null,
+    liveProviderMessageIds: coverage.nativeIds,
+  });
 }
 
 /** A provider-declared sync failure, thrown by host-side code that maps one. */
@@ -421,6 +456,14 @@ function assertPage(page: unknown, provider: RegisteredProvider): asserts page i
     if (!wellFormedMembers(snapshot?.members) || !wellFormedContainers) {
       throw new ProviderSyncFailure({ kind: 'transient', message: `provider ${provider.descriptor.id} returned a malformed membership snapshot` });
     }
+  }
+  // Coverage erases what it does not name, so a malformed window is refused outright.
+  const coverageIssues = providerCoverageIssues(p.coverage, provider.descriptor.datatypes);
+  if (coverageIssues.length > 0) {
+    throw new ProviderSyncFailure({
+      kind: 'transient',
+      message: `provider ${provider.descriptor.id} returned malformed coverage: ${coverageIssues.join('; ')}`,
+    });
   }
 }
 
@@ -698,6 +741,7 @@ async function syncSource(
     ingest: NonNullable<ConnectorSyncDeps['ingest']>;
     sinksFor: NonNullable<ConnectorSyncDeps['sinksFor']>;
     applyMembership: NonNullable<ConnectorSyncDeps['applyMembership']>;
+    reconcileCoverage: NonNullable<ConnectorSyncDeps['reconcileCoverage']>;
     owner: string;
     services?: ProviderServices;
   },
@@ -805,6 +849,13 @@ async function syncSource(
           ...(page.membership.containers ? { containers: page.membership.containers } : {}),
         });
       }
+      // A coverage window names the complete live set the provider read; what is stored there and
+      // absent was deleted while no live delete reached us. It applies after the page's records are
+      // admitted and before the cursor covering it commits, so a replayed page converges.
+      for (const window of page.coverage ?? []) {
+        const reconciled = await deps.reconcileCoverage(sql, working, window);
+        if (reconciled) outcome.coverageTombstoned = (outcome.coverageTombstoned ?? 0) + reconciled.tombstoned;
+      }
       const backfillStatus = mode === 'backfill' ? (page.hasMore ? 'running' : 'complete') : 'complete';
       if (!(await commitCursor(sql, working, deps.owner, opts.leaseSeconds, page.nextCursor, backfillStatus))) {
         return { ...outcome, outcome: 'leased-elsewhere' };
@@ -887,6 +938,7 @@ export async function runConnectorSync(
   const ingest = deps.ingest ?? ((db, input) => ingestExternalTriggerEvent(db, input));
   const sinksFor = deps.sinksFor ?? defaultSinksFor;
   const applyMembership = deps.applyMembership ?? defaultApplyMembership;
+  const reconcileCoverage = deps.reconcileCoverage ?? defaultReconcileCoverage;
   const hostFetchFor = deps.hostFetchFor ?? defaultHostFetchFor;
   const sources = await listDueConnectorSources(sql, opts.workspaceId, [...byKind.keys()], opts.sourceIds);
   const servicesFor = deps.servicesFor ?? defaultServicesFor;
@@ -923,7 +975,7 @@ export async function runConnectorSync(
       servicesByProvider.set(provider.descriptor.id, await servicesFor(provider));
     }
     const services = servicesByProvider.get(provider.descriptor.id);
-    const outcome = await syncSource(sql, provider, source, resolved, { hostFetch, ingest, sinksFor, applyMembership, owner, services });
+    const outcome = await syncSource(sql, provider, source, resolved, { hostFetch, ingest, sinksFor, applyMembership, reconcileCoverage, owner, services });
     if (outcome.outcome === 'synced') {
       try {
         await afterSourceSynced(sql, source);

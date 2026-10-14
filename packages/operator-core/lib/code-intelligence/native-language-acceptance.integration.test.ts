@@ -3,16 +3,93 @@
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import type { Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
-vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn().mockResolvedValue(true) }));
+import type postgres from 'postgres';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+
+const storage = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined, tasks: [] as string[] }));
+vi.mock('@papercusp/db-org', async original => ({
+  ...await original<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => {
+    if (!storage.sql) throw new Error('native language acceptance database is not initialized');
+    return { sql: storage.sql };
+  },
+}));
+vi.mock('@papercusp/flags/server', async original => ({
+  ...await original<typeof import('@papercusp/flags/server')>(), getFlag: async () => true,
+}));
+vi.mock('../task-manager/managed-spawn', async original => {
+  const actual = await original<typeof import('../task-manager/managed-spawn')>();
+  return { ...actual, managedSpawn: async (...args: Parameters<typeof actual.managedSpawn>) => {
+    const result = await actual.managedSpawn(args[0], args[1], args[2], { ...args[3], workspaceId });
+    storage.tasks.push(result.taskId);
+    const [row] = await storage.sql!`SELECT workspace_id FROM harness_shared.task_ledger WHERE task_id = ${result.taskId}`;
+    expect(row).toMatchObject({ workspace_id: workspaceId });
+    return result;
+  } };
+});
 import graphQuery from '../agent-tools/gitnexus/query';
 import lspQuery from '../agent-tools/lsp/query';
+import { killTask } from '../task-manager/control';
+import { closeTask } from '../task-manager/store';
+import { taskTerminalEventKey } from '../task-manager/task-terminal-events';
 import type { CodeIntelAnswer } from './contracts';
 import { nativeLanguageControls } from './fair-comparison-corpus';
 import { shutdownAllLspClients } from './lsp-adapter';
+import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
+import { runLspDaemonServer } from './lsp-daemon-server';
+
+// Reuse the pinned LSP fixtures' real dispatcher, private persistence and
+// terminal-latch cleanup. An exposed-tool test must never borrow a live daemon.
+const eventEngine = await import('../events/await/engine');
+const workspaceId = `test-native-language-acceptance-${process.pid}`;
+const previousSocket = process.env[LSP_DAEMON_SOCKET_ENV];
+let socketRoot: string | undefined;
+let server: Server | undefined;
+let db: OrgTestDb | undefined;
+let previousAutoPump: boolean | undefined;
+beforeAll(async () => {
+  db = await createOrgTestDb();
+  storage.sql = db.adminSql;
+  previousAutoPump = eventEngine.setAutoPumpEnabledForTests(false);
+  socketRoot = mkdtempSync(join(tmpdir(), 'native-language-daemon-'));
+  process.env[LSP_DAEMON_SOCKET_ENV] = join(socketRoot, 'fixture.sock');
+  server = runLspDaemonServer();
+  await once(server, 'listening');
+}, 120_000);
+afterAll(async () => {
+  try {
+    await shutdownAllLspClients();
+    if (server) await new Promise<void>(done => server!.close(() => done()));
+    for (const taskId of storage.tasks.splice(0)) {
+      const outcome = await killTask(taskId, { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 500 });
+      if (!outcome.ok && outcome.error !== 'already_gone') throw new Error(`LSP fixture cleanup refused: ${outcome.error}`);
+      if (!outcome.ok) await closeTask(taskId, { state: 'stranded', exitReason: 'fixture verified process gone at teardown' });
+      await expect.poll(async () => {
+        const [row] = await storage.sql!`
+          SELECT task.state, task.ended_at IS NOT NULL AS ended,
+                 fire.last_payload->>'taskId' AS emitted_task,
+                 fire.last_payload->>'state' = task.state AS matching_state
+            FROM harness_shared.task_ledger task
+            LEFT JOIN harness_shared.event_key_fires fire ON fire.event_key = ${taskTerminalEventKey(taskId)}
+           WHERE task.task_id = ${taskId}`;
+        return row;
+      }, { timeout: 5_000, interval: 20 }).toMatchObject({ ended: true, emitted_task: taskId, matching_state: true });
+    }
+  } finally {
+    if (previousAutoPump !== undefined) eventEngine.setAutoPumpEnabledForTests(previousAutoPump);
+    if (previousSocket === undefined) delete process.env[LSP_DAEMON_SOCKET_ENV];
+    else process.env[LSP_DAEMON_SOCKET_ENV] = previousSocket;
+    if (socketRoot) rmSync(socketRoot, { recursive: true, force: true });
+    await db?.cleanup();
+    storage.sql = undefined;
+  }
+}, 60_000);
 
 const controls = nativeLanguageControls();
 const operations = { callers: 'callers', callees: 'callees', definition: 'symbol', impact: 'impact' } as const;
@@ -113,7 +190,7 @@ describe('native P026 remaining authored language acceptance', () => {
       const language = kase.language === 'javascript' ? 'typescript' : kase.language;
       const symbols = (await lspQuery.handler(lspQuery.args.parse({ op: 'workspace_symbols',
         rootPath: root, file: path, language, name: kase.subject, limit: 20 }),
-      { projectDir: root } as never) as { data: CodeIntelAnswer }).data;
+      { projectDir: root, workspaceId } as never) as { data: CodeIntelAnswer }).data;
       let answer = symbols;
       if (kase.intent === 'references' && !symbols.error && symbols.sites.length) {
         const cursor = symbols.sites.find(site => site.path === path)!;
@@ -121,7 +198,7 @@ describe('native P026 remaining authored language acceptance', () => {
         const line = source.split('\n')[cursor.line1! - 1]!;
         answer = (await lspQuery.handler(lspQuery.args.parse({ op: 'references', rootPath: root,
           file: path, line1: cursor.line1, character: line.indexOf(kase.subject), limit: 20 }),
-        { projectDir: root } as never) as { data: CodeIntelAnswer }).data;
+        { projectDir: root, workspaceId } as never) as { data: CodeIntelAnswer }).data;
       }
       const neutral = new Set(keys.get(kase.id)!.neutral);
       const sites = answer.sites.map(site => `${site.path}:${site.line1}`)

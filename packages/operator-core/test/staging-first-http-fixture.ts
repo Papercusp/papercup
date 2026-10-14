@@ -134,6 +134,16 @@ async function main() {
   assert.ok(hostIdentity, 'private host kernel identity required');
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'session-capability') {
+    const receipt = await (await import('./session-capability-http-scenario')).measureSessionCapabilityScenario({
+      workspace, api: base + '/api', expectedSha: health.sha,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('SESSION_CAPABILITY_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostPid: host.pid,
+      hostStopped: true, bundleSha256, health }));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'codex-budget') {
     const receipt = await (await import('./codex-budget-http-scenario')).measureCodexBudgetScenario({
       workspace, base, headers, evidenceDir,

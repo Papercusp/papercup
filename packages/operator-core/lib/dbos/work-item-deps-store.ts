@@ -601,60 +601,75 @@ export async function mutateWorkItemDependencies(
   const sql = opts.sql ?? (getOrgPg().sql as Sql);
   return withWorkItemDependencyAdmissionTransaction(
     sql,
-    async (tx) => {
-      const itemWorkspaceId = input.itemWorkspaceId ?? input.workspaceId;
-      await lockDependencyMutationEndpoints(tx, itemWorkspaceId, input.mutations);
-      const current = await loadStoredDependencyEdges(tx, input.workspaceId);
-      const candidate = applyDependencyMutations(current, input.mutations);
-      const { nodes, lifecycleRows, outOfScopeIdentityKeys } = await loadDependencyNodes(tx, itemWorkspaceId, [
-        ...current,
-        ...candidate,
-      ]);
-      const before = analyseStoredEdges(nodes, current);
-      const after = analyseStoredEdges(nodes, candidate);
-      const findings = newlyRejectedFindings(before, after, current, candidate, outOfScopeIdentityKeys);
-      const lifecycleConflicts = newlyActiveDependantConflicts(current, candidate, lifecycleRows);
-      if (lifecycleConflicts.length > 0) {
-        findings.push({
-          policy: getDependencyPolicy('active-dependant-unreconciled')!,
-          cycles: [],
-          endpointDefects: [],
-          stranded: [],
-          lifecycleConflicts,
-        });
-      }
-      if (findings.length > 0) {
-        throw new WorkItemDependencyAdmissionError(findings, before, after, {
-          ...dependencyGraphPerformanceTelemetry({
-            operation: 'mutation',
-            durationMs: performance.now() - startedAt,
-            nodes: after.verdicts.length,
-            edges: candidate.length,
-          }),
-          event: 'dependency-mutation-rejected',
-          policyCodes: findings.map((finding) => finding.policy.code),
-        });
-      }
-      const diff = await applyStoredEdgeDiff(tx, input.workspaceId, current, candidate);
-      return {
-        ...diff,
-        before,
-        after,
-        telemetry: {
-          ...dependencyGraphPerformanceTelemetry({
-            operation: 'mutation',
-            durationMs: performance.now() - startedAt,
-            nodes: after.verdicts.length,
-            edges: candidate.length,
-          }),
-          event: 'dependency-mutation-committed',
-          policyCodes: [],
-          ...diff,
-        },
-      };
-    },
+    (tx) => mutateWorkItemDependenciesInTransaction(tx, input, startedAt),
     opts.retry,
   );
+}
+
+/**
+ * The same admission writer for a larger atomic operation. The caller must
+ * open its root transaction through withWorkItemDependencyAdmissionTransaction;
+ * reject READ COMMITTED callers rather than weakening graph write-skew safety.
+ */
+export async function mutateWorkItemDependenciesInTransaction(
+  tx: Sql,
+  input: WorkItemDependencyBatchInput,
+  startedAt = performance.now(),
+): Promise<WorkItemDependencyBatchResult> {
+  const isolation = await tx<{ transaction_isolation: string }[]>`SHOW transaction_isolation`;
+  if (isolation[0]?.transaction_isolation !== 'serializable') {
+    throw new Error('dependency mutation requires a SERIALIZABLE admission transaction');
+  }
+  const itemWorkspaceId = input.itemWorkspaceId ?? input.workspaceId;
+  await lockDependencyMutationEndpoints(tx, itemWorkspaceId, input.mutations);
+  const current = await loadStoredDependencyEdges(tx, input.workspaceId);
+  const candidate = applyDependencyMutations(current, input.mutations);
+  const { nodes, lifecycleRows, outOfScopeIdentityKeys } = await loadDependencyNodes(tx, itemWorkspaceId, [
+    ...current,
+    ...candidate,
+  ]);
+  const before = analyseStoredEdges(nodes, current);
+  const after = analyseStoredEdges(nodes, candidate);
+  const findings = newlyRejectedFindings(before, after, current, candidate, outOfScopeIdentityKeys);
+  const lifecycleConflicts = newlyActiveDependantConflicts(current, candidate, lifecycleRows);
+  if (lifecycleConflicts.length > 0) {
+    findings.push({
+      policy: getDependencyPolicy('active-dependant-unreconciled')!,
+      cycles: [],
+      endpointDefects: [],
+      stranded: [],
+      lifecycleConflicts,
+    });
+  }
+  if (findings.length > 0) {
+    throw new WorkItemDependencyAdmissionError(findings, before, after, {
+      ...dependencyGraphPerformanceTelemetry({
+        operation: 'mutation',
+        durationMs: performance.now() - startedAt,
+        nodes: after.verdicts.length,
+        edges: candidate.length,
+      }),
+      event: 'dependency-mutation-rejected',
+      policyCodes: findings.map((finding) => finding.policy.code),
+    });
+  }
+  const diff = await applyStoredEdgeDiff(tx, input.workspaceId, current, candidate);
+  return {
+    ...diff,
+    before,
+    after,
+    telemetry: {
+      ...dependencyGraphPerformanceTelemetry({
+        operation: 'mutation',
+        durationMs: performance.now() - startedAt,
+        nodes: after.verdicts.length,
+        edges: candidate.length,
+      }),
+      event: 'dependency-mutation-committed',
+      policyCodes: [],
+      ...diff,
+    },
+  };
 }
 
 /**

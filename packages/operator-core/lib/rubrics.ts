@@ -1032,6 +1032,13 @@ type RubricPlanRowRead =
   | { kind: 'ambiguous'; error: RubricRefAmbiguousError }
   | { kind: 'error' };
 
+/** A rubric lookup keeps a failed backing read distinct from an authoritative miss. */
+export type RubricLookupResult =
+  | { kind: 'found'; rubric: Rubric }
+  | { kind: 'missing' }
+  | { kind: 'ambiguous'; error: RubricRefAmbiguousError }
+  | { kind: 'read-failed' };
+
 /**
  * Read one rubric-template plan by its explicit slug. Explicit rubric reads are
  * normally issued by scorecard/audit paths, where scanning the capped shared
@@ -1537,10 +1544,51 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
  * inaccessible rows return null without attempting a seed/reclaim.
  */
 export async function getRubricWithoutSeeding(rubricId: string): Promise<Rubric | null> {
+  const result = await readRubricWithoutSeedingResult(rubricId);
+  if (result.kind === 'ambiguous') throw result.error;
+  return result.kind === 'found' ? result.rubric : null;
+}
+
+/**
+ * Read one rubric without seeding, preserving the difference between a missing row
+ * and a failed read. Use this in grading decisions where `null` would become a
+ * misleading "not found" result.
+ */
+export async function readRubricWithoutSeeding(rubricId: string): Promise<RubricLookupResult> {
+  return readRubricWithoutSeedingResult(rubricId);
+}
+
+/**
+ * Resolve one rubric for a writer. A genuine miss keeps getRubric's lazy first-party
+ * seed behavior; a failed direct read never triggers the broader seedable lookup or
+ * turns into an authoritative miss.
+ */
+export async function readRubric(rubricId: string): Promise<RubricLookupResult> {
+  let result = await readRubricWithoutSeedingResult(rubricId);
+  if (result.kind !== 'missing' || process.env.VITEST) return result;
+
+  try {
+    await ensureFirstPartyRubricsSeeded();
+  } catch {
+    return { kind: 'read-failed' };
+  }
+  result = await readRubricWithoutSeedingResult(rubricId);
+  return result;
+}
+
+async function readRubricWithoutSeedingResult(rubricId: string): Promise<RubricLookupResult> {
   const direct = await readRubricPlanRowById(rubricId);
-  if (direct.kind === 'ambiguous') throw direct.error;
-  if (direct.kind !== 'found') return null;
-  return (await mapRubricPlanRows([direct.row]))[0] ?? null;
+  if (direct.kind === 'ambiguous') return direct;
+  if (direct.kind === 'error') return { kind: 'read-failed' };
+  if (direct.kind === 'missing') return direct;
+
+  try {
+    const rubric = (await mapRubricPlanRows([direct.row]))[0];
+    // A present but malformed row cannot safely be presented as a missing rubric.
+    return rubric ? { kind: 'found', rubric } : { kind: 'read-failed' };
+  } catch {
+    return { kind: 'read-failed' };
+  }
 }
 
 export async function getRubric(rubricId: string, revision?: number): Promise<Rubric | null> {
