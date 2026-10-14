@@ -410,6 +410,7 @@ export async function probeAccountCapacity(
             { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION },
             claudeAuthModeForRef(account.credentialRef),
             token,
+            account.anthropicWorkspaceId,
           ),
           body: JSON.stringify({
             model: CAPACITY_PROBE_MODEL,
