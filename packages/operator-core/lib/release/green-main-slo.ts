@@ -42,6 +42,42 @@ import type { FrozenRepairProgress } from './freeze-disposition';
 
 const HOUR_MS = 60 * 60 * 1000;
 
+/**
+ * Native R12 receipt preparation: resolve the immutable full-file-set ABBA artifacts,
+ * then record the exact manifest/pins/population under the existing native executor.
+ * This does not launch a comparison or satisfy D020. Its input producer still needs
+ * original full-gate selection, complete runtime closure and all four real cohorts.
+ * Pure fixture proofs and historical 32-file calibration never supply those inputs.
+ */
+export async function executeGreenMainThroughputComparison(args: {
+  workspaceId: string; harnessSlug: string; projectDir: string; runtimeUnits: string[];
+  evidenceRoot: string;
+  pins: import('../../../../scripts/lib/budgeted-task-scheduler.mjs').BudgetedTaskComparisonArtifactPins;
+}) {
+  const { executeOperationalRun } = await import('../agent-tools/testing/record-run');
+  const { readBudgetedTaskComparisonArtifacts, evaluateBudgetedTaskComparison } =
+    await import('../../../../scripts/lib/budgeted-task-scheduler.mjs');
+  return executeOperationalRun({ filePath: 'packages/operator-core/lib/release/green-main-slo.ts',
+    name: 'Original immutable full-gate throughput comparison', framework: 'operational',
+    command: ['executeGreenMainThroughputComparison', args.workspaceId, args.harnessSlug,
+      args.evidenceRoot, args.pins.manifest.ref, args.pins.manifest.sha256,
+      args.pins.source.ref, args.pins.dependencies.ref, args.pins.runtimeClosure.ref,
+      ...args.pins.cohorts.flatMap(pin => [pin.ref, pin.sha256])], runtimeUnits: args.runtimeUnits,
+    run: async () => {
+      const original = await readBudgetedTaskComparisonArtifacts(args.evidenceRoot, args.pins);
+      const evaluation = evaluateBudgetedTaskComparison(original.manifest, original.cohorts);
+      return { exitCode: evaluation.assertions.every(assertion => assertion.passed) ? 0 : 1,
+        assertions: evaluation.assertions.map(assertion => ({ id: assertion.name, passed: assertion.passed,
+          evidence: `manifest=${original.manifest.manifestSha256}; population=${original.populationSha256}` })),
+        summary: `Original throughput artifacts: manifest_sha256=${original.manifest.manifestSha256}; ` +
+          `file_set_sha256=${original.manifest.fileSetSha256}; original_population_sha256=${original.populationSha256}; ` +
+          `files=${original.manifest.selection.files.length}; baseline_wall_ms=${evaluation.baselineWallMs}; ` +
+          `candidate_wall_ms=${evaluation.candidateWallMs}; ratio=${evaluation.ratio}. ` +
+          'No cohort launch or policy promotion; statistical semantics await complete outside-lineage BAR review.' };
+    },
+  }, args);
+}
+
 /** Original snapshots only; no current gate read, verdict or queue mutation. */
 export async function readGreenMainRepairRoundWindow(sql: Sql,
   scope: { workspaceId: string; installSlug: string },
