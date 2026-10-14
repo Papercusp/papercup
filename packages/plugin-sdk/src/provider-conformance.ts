@@ -29,6 +29,7 @@ import {
   providerLiveSearchResultIssue,
   providerSocialDeleteResultIssue,
   providerSocialWriteResultIssue,
+  providerCoverageIssues,
   providerSyncErrorOf,
   validateProviderDescriptor,
   type HostFetch,
@@ -321,6 +322,12 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
       }
       if (page.nextCursor !== null && typeof page.nextCursor !== 'string') {
         result.malformed = 'nextCursor must be a string or null';
+        return result;
+      }
+      // The host refuses a page with malformed coverage (it would tombstone the wrong window).
+      const coverageIssues = providerCoverageIssues(page.coverage, descriptor.datatypes ?? []);
+      if (coverageIssues.length > 0) {
+        result.malformed = `malformed coverage: ${coverageIssues.join('; ')}`;
         return result;
       }
       result.pages.push(page);

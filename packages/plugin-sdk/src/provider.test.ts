@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   normalizeProviderOptions,
+  providerCoverageIssues,
   PROVIDER_OPTIONS_MAX,
   providerOptionSourceOf,
   PROVIDER_APP_DEFINITION_MAX_LENGTH,
@@ -536,5 +537,39 @@ describe('provider option sources (P-004, D-005)', () => {
     expect(list.options).toHaveLength(PROVIDER_OPTIONS_MAX);
     expect(list.truncated).toBe(true);
     expect(normalizeProviderOptions(null)).toEqual({ options: [], truncated: false });
+  });
+});
+
+describe('providerCoverageIssues (WI-6554700010012278)', () => {
+  const datatypes = ['chat.message'];
+  const window = {
+    datatype: 'chat.message',
+    containerRef: 'C123',
+    from: '2026-10-01T00:00:00.000Z',
+    to: '2026-10-08T00:00:00.000Z',
+    nativeIds: ['C123:1.0'],
+  };
+
+  it('accepts no coverage, a container window, a thread window and an empty live set', () => {
+    expect(providerCoverageIssues(undefined, datatypes)).toEqual([]);
+    expect(providerCoverageIssues([window], datatypes)).toEqual([]);
+    expect(providerCoverageIssues([{ datatype: 'chat.message', containerRef: 'C123', threadRef: '1.0', nativeIds: [] }], datatypes))
+      .toEqual([]);
+  });
+
+  it('refuses each malformed field, because coverage erases whatever it does not name', () => {
+    expect(providerCoverageIssues({}, datatypes)).toEqual(['coverage must be an array']);
+    expect(providerCoverageIssues([null], datatypes)).toEqual(['coverage[0] must be an object']);
+    expect(providerCoverageIssues([{ ...window, datatype: 'mail.message' }], datatypes))
+      .toEqual(["coverage[0].datatype must be one of the descriptor's datatypes"]);
+    expect(providerCoverageIssues([{ ...window, containerRef: 'has space' }], datatypes)).toHaveLength(1);
+    expect(providerCoverageIssues([{ ...window, threadRef: ' ' }], datatypes)).toEqual(['coverage[0].threadRef must be a non-empty string']);
+    expect(providerCoverageIssues([{ ...window, from: 'yesterday' }], datatypes)).toEqual(['coverage[0].from must be an ISO-8601 time']);
+    expect(providerCoverageIssues([{ ...window, from: window.to, to: window.from }], datatypes))
+      .toEqual(['coverage[0].from must not be after coverage[0].to']);
+    expect(providerCoverageIssues([{ ...window, nativeIds: undefined }], datatypes))
+      .toEqual(['coverage[0].nativeIds must be an array of non-empty native ids']);
+    expect(providerCoverageIssues([{ ...window, nativeIds: [''] }], datatypes))
+      .toEqual(['coverage[0].nativeIds must be an array of non-empty native ids']);
   });
 });

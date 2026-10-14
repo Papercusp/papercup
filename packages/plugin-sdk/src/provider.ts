@@ -47,6 +47,28 @@ export interface ProviderOAuthDescriptor {
    * account id at `idField` (dot path). Must be https and inside `egressHosts`.
    */
   identity?: ProviderOAuthIdentity;
+  /**
+   * Some APIs mint a resource credential from the connected account (for example a Page
+   * credential). The host selects the resource from the SOURCE config and injects its token;
+   * neither the account token nor the exchange response is exposed to the package.
+   */
+  resourceToken?: ProviderOAuthResourceToken;
+}
+
+export interface ProviderOAuthResourceToken {
+  /** Account-authenticated HTTPS collection endpoint, inside egressHosts. */
+  url: string;
+  /** Hosts on which the resource token replaces the account token. */
+  hosts: string[];
+  collectionField: string;
+  idField: string;
+  tokenField: string;
+  /** String source-config field identifying the resource. Never supplied by the package call. */
+  configKey: string;
+  /** All listed permissions must be present on the selected resource before any API call. */
+  permissions?: { field: string; required: string[] };
+  /** Optional next-page URL field; the host follows only the same origin and path. */
+  nextUrlField?: string;
 }
 
 export interface ProviderOAuthIdentity {
@@ -606,6 +628,72 @@ export interface ProviderSyncPage {
    * commits `nextCursor`; a full replacement is idempotent, so a replayed page converges.
    */
   membership?: ProviderMembershipSnapshot;
+  /**
+   * Windows this page read COMPLETELY from the remote (WI-6554700010012278). Each entry says
+   * "these are every live object of `datatype` in this window right now", so the host tombstones
+   * what it stored for the window that `nativeIds` does not name — the only way a delete made
+   * while no live feed was listening (the daemon offline, a socket gap) ever reaches the store.
+   * Emit a window only after every remote page for it was read: a partial window would erase
+   * live objects. The host applies coverage after the page's records and before `nextCursor`.
+   */
+  coverage?: ProviderCoverage[];
+}
+
+/**
+ * One completely read window of a container (WI-6554700010012278). Without `threadRef` it covers
+ * the container's objects that sit outside any thread; with it, the whole thread, root included.
+ * `from`/`to` bound the window by the object's post time (inclusive); omit them for no bound.
+ */
+export interface ProviderCoverage {
+  /** One of the descriptor's declared datatypes. */
+  datatype: string;
+  /** The container read; for chat, the channel. Matches {@link PROVIDER_ACL_REF_PATTERN}. */
+  containerRef: string;
+  /** The thread read, when the window is one thread. */
+  threadRef?: string;
+  /** ISO-8601 lower bound of the window (inclusive). */
+  from?: string;
+  /** ISO-8601 upper bound of the window (inclusive). */
+  to?: string;
+  /** The native id of every live object in the window. Anything else stored there was deleted. */
+  nativeIds: string[];
+}
+
+/**
+ * Why a page's `coverage` is unusable, or [] when it is well formed. The host's connector runtime
+ * and the conformance kit both validate coverage through this one function.
+ */
+export function providerCoverageIssues(coverage: unknown, datatypes: readonly string[]): string[] {
+  if (coverage === undefined) return [];
+  if (!Array.isArray(coverage)) return ['coverage must be an array'];
+  const issues: string[] = [];
+  const isTime = (value: unknown) => typeof value === 'string' && !Number.isNaN(Date.parse(value));
+  coverage.forEach((entry: Partial<ProviderCoverage> | null, index) => {
+    const at = `coverage[${index}]`;
+    if (!entry || typeof entry !== 'object') {
+      issues.push(`${at} must be an object`);
+      return;
+    }
+    if (typeof entry.datatype !== 'string' || !datatypes.includes(entry.datatype)) {
+      issues.push(`${at}.datatype must be one of the descriptor's datatypes`);
+    }
+    if (typeof entry.containerRef !== 'string' || !PROVIDER_ACL_REF_PATTERN.test(entry.containerRef)) {
+      issues.push(`${at}.containerRef must match ${PROVIDER_ACL_REF_PATTERN}`);
+    }
+    if (entry.threadRef !== undefined && (typeof entry.threadRef !== 'string' || entry.threadRef.trim() === '')) {
+      issues.push(`${at}.threadRef must be a non-empty string`);
+    }
+    for (const bound of ['from', 'to'] as const) {
+      if (entry[bound] !== undefined && !isTime(entry[bound])) issues.push(`${at}.${bound} must be an ISO-8601 time`);
+    }
+    if (isTime(entry.from) && isTime(entry.to) && Date.parse(entry.from!) > Date.parse(entry.to!)) {
+      issues.push(`${at}.from must not be after ${at}.to`);
+    }
+    if (!Array.isArray(entry.nativeIds) || !entry.nativeIds.every((id) => typeof id === 'string' && id !== '')) {
+      issues.push(`${at}.nativeIds must be an array of non-empty native ids`);
+    }
+  });
+  return issues;
 }
 
 /** Signals the host interprets; a provider throws or returns these instead of retrying itself. */
@@ -864,7 +952,38 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
         if (!parsed) issues.push('provider.oauth.identity.body must be a JSON string');
       }
     }
-    for (const url of [oauth.authorizeUrl, oauth.tokenUrl, oauth.identity?.url]) {
+    if (oauth.resourceToken !== undefined) {
+      const exchange: Partial<ProviderOAuthResourceToken> = oauth.resourceToken &&
+        typeof oauth.resourceToken === 'object' && !Array.isArray(oauth.resourceToken) ? oauth.resourceToken : {};
+      if (!isHttpsUrl(exchange.url)) issues.push('provider.oauth.resourceToken.url must be an https URL');
+      else {
+        const endpoint = new URL(exchange.url!);
+        if (endpoint.username || endpoint.password || endpoint.hash) {
+          issues.push('provider.oauth.resourceToken.url must not contain credentials or a fragment');
+        }
+      }
+      if (!Array.isArray(exchange.hosts) || exchange.hosts.length === 0 ||
+        exchange.hosts.some((host) => !isNonEmptyString(host) || host.includes('*') || host !== host.toLowerCase() ||
+          !providerEgressAllows(egress.filter(isNonEmptyString), host))) {
+        issues.push('provider.oauth.resourceToken.hosts must be nonempty and inside provider.egressHosts');
+      }
+      const path = (value: unknown) => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*$/.test(value) &&
+        !value.split('.').some((part) => ['__proto__', 'prototype', 'constructor'].includes(part));
+      for (const key of ['collectionField', 'idField', 'tokenField', 'configKey'] as const) {
+        if (!path(exchange[key]) || (key === 'configKey' && exchange[key]?.includes('.'))) {
+          issues.push(`provider.oauth.resourceToken.${key} must name a field`);
+        }
+      }
+      if (exchange.nextUrlField !== undefined && !path(exchange.nextUrlField)) {
+        issues.push('provider.oauth.resourceToken.nextUrlField must name a field');
+      }
+      if (exchange.permissions !== undefined && (!path(exchange.permissions?.field) ||
+        !Array.isArray(exchange.permissions?.required) || exchange.permissions.required.length === 0 ||
+        !exchange.permissions.required.every(isNonEmptyString))) {
+        issues.push('provider.oauth.resourceToken.permissions must name a field and required permissions');
+      }
+    }
+    for (const url of [oauth.authorizeUrl, oauth.tokenUrl, oauth.identity?.url, oauth.resourceToken?.url]) {
       if (!isHttpsUrl(url)) continue;
       const host = new URL(url as string).hostname;
       if (host !== '127.0.0.1' && host !== 'localhost' && !providerEgressAllows(egress.filter(isNonEmptyString), host)) {
