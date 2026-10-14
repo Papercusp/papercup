@@ -1014,6 +1014,20 @@ export async function detectRunningSharedPg(
 
 /** Start (or attach to) Postgres and ensure HARNESS_ADMIN_DATABASE_URL is set. */
 async function ensurePostgres(): Promise<PgHandle | null> {
+  // cloud-portal-public-release-2026-10-13 P-005 / R-3 / D-009: a production boot validates its
+  // explicit database URLs and refuses embedded PG before anything else. A refusal throws, and
+  // main().catch exits non-zero. A no-op outside PAPERCUSP_DEPLOYMENT_ENVIRONMENT=production.
+  // Lazy like the other boot-only imports here, so non-production boots never load it.
+  const { assertProductionDatabaseConfiguration, describeDatabaseEndpoint } = await import(
+    "@papercusp/db-org/production-database-policy"
+  );
+  const production = assertProductionDatabaseConfiguration(process.env);
+  if (production) {
+    log(
+      `production database: admin ${describeDatabaseEndpoint(production.admin)} via ${production.adminVar}, ` +
+        `app ${describeDatabaseEndpoint(production.app)} via HARNESS_DATABASE_URL`,
+    );
+  }
   if (process.env.PAPERCUSP_USE_EMBEDDED_PG === "0") {
     const admin = process.env.HARNESS_ADMIN_DATABASE_URL;
     if (!admin) {
