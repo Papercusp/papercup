@@ -6,7 +6,7 @@ export function loaderIdentity(value?: string): {
     bytes: number;
     switches: string[];
 };
-export function startupTraceEnv(env: any): any;
+export function startupTraceEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
 /**
  * @param {any} child - a forked child process (its `send` is wrapped in place).
  * @param {(row: Record<string, unknown>) => void} emit - receives one diagnostic row per startup event.

@@ -50,8 +50,7 @@
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { EXIT_NOT_CHECKED } from './not-checked.mjs';
 
 export { EXIT_NOT_CHECKED };
@@ -358,7 +357,7 @@ export function runGuardWithIndexFaultGuard(main, { guard } = {}) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv.includes('--audit-sink')) {
+if (isCliEntry(import.meta.url) && process.argv.includes('--audit-sink')) {
   const result = probeIndexAuditSink();
   console.log(JSON.stringify(result));
   process.exitCode = result.status === 'live' ? 0 : EXIT_NOT_CHECKED;

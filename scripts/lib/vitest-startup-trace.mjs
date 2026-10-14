@@ -13,10 +13,14 @@ export function loaderIdentity(value = '') {
   };
 }
 
-export function startupTraceEnv(env) {
-  if (env?.PAPERCUSP_TEST_STARTUP_TRACE !== '1') return env;
+export function startupTraceEnv(env = process.env) {
+  // A timeout cannot enable a preload retroactively. Keep the bounded lifecycle
+  // trace in the router's existing captured stderr unless explicitly disabled.
+  if (env.PAPERCUSP_TEST_STARTUP_TRACE === '0') return env;
   const preload = `--import=${JSON.stringify(new URL('./vitest-startup-trace.mjs', import.meta.url).href)}`;
-  return { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} ${preload}`.trim() };
+  const options = env.NODE_OPTIONS ?? '';
+  return { ...env, PAPERCUSP_TEST_STARTUP_TRACE: '1',
+    NODE_OPTIONS: options.includes(preload) ? options : `${options} ${preload}`.trim() };
 }
 
 /**

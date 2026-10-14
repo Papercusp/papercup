@@ -1,22 +1,56 @@
 import { describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { fork } from 'node:child_process';
+import { execFile, fork } from 'node:child_process';
+import { promisify } from 'node:util';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loaderIdentity, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 
 describe('focused runner startup tracing', () => {
-  it('is opt-in and preserves inherited options without exposing values', () => {
+  it('retains diagnostics by default and preserves inherited options without exposing values', () => {
     const env = { NODE_OPTIONS: '--import=https://secret:password@example.test/private --require=/private/key' };
-    expect(startupTraceEnv(env)).toBe(env);
-    const enabled = startupTraceEnv({ ...env, PAPERCUSP_TEST_STARTUP_TRACE: '1' });
+    const enabled = startupTraceEnv(env);
+    expect(enabled.PAPERCUSP_TEST_STARTUP_TRACE).toBe('1');
     expect(enabled.NODE_OPTIONS).toContain(env.NODE_OPTIONS);
     expect(enabled.NODE_OPTIONS).toContain('vitest-startup-trace.mjs');
+    expect(startupTraceEnv(enabled).NODE_OPTIONS).toBe(enabled.NODE_OPTIONS);
+    const disabled = { ...env, PAPERCUSP_TEST_STARTUP_TRACE: '0' };
+    expect(startupTraceEnv(disabled)).toBe(disabled);
     const identity = loaderIdentity(env.NODE_OPTIONS);
     expect(identity.switches).toEqual(['--import', '--require']);
     expect(identity.sha256).toHaveLength(64);
     expect(JSON.stringify(identity)).not.toMatch(/secret|password|private|example/);
+  });
+
+  it('captures the real preload and fork handshake without an opt-in switch', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vitest-startup-preload-'));
+    const worker = join(dir, 'vitest-worker.cjs');
+    const parent = join(dir, 'parent.cjs');
+    writeFileSync(worker, `process.on('message', message => {
+      if (message.type === 'start') process.send({ type: 'started' });
+      if (message.type === 'stop') process.send({ type: 'stopped' }, () => process.disconnect());
+    });`);
+    writeFileSync(parent, `const { fork } = require('node:child_process');
+      const child = fork(${JSON.stringify(worker)}, { execArgv: [] });
+      child.on('message', message => {
+        if (message.type === 'started') child.send({ type: 'stop' });
+      });
+      child.send({ type: 'start', config: { secret: 'never-log' } });`);
+    try {
+      const env = startupTraceEnv({ ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: undefined });
+      const { stderr } = await promisify(execFile)(process.execPath, [parent], { env, timeout: 10_000 });
+      const rows = stderr.split('\n').filter(line => line.startsWith('TEST_FILE_STARTUP_TRACE '))
+        .map(line => JSON.parse(line.slice('TEST_FILE_STARTUP_TRACE '.length)));
+      expect(rows.map(row => row.event)).toEqual(expect.arrayContaining([
+        'node-loaded', 'worker-forked', 'start-sent', 'started-received',
+        'stop-sent', 'stopped-received', 'worker-exit', 'worker-close',
+      ]));
+      expect(rows.find(row => row.event === 'started-received')).toMatchObject({ error: false });
+      expect(stderr).not.toContain('never-log');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('observes the real start/started exchange without changing send semantics', () => {
