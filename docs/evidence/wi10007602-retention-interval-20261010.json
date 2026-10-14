@@ -1,4 +1,137 @@
 {
+  "nativeNewTempCandidateQualification1052Z20261014": {
+    "schemaVersion": "native-new-temp-candidate-evidence-v1",
+    "qualification": {
+      "taskId": "0mv7zq7mi10vv3gkaxi",
+      "logPath": ".papercusp/scratch/bash-be035811-d4e.log",
+      "logSha256": "606b3e0c776207c81ef46aafaa57dfc6e3de845a0e4ca87b0735f5f797e8f8ce",
+      "terminalExitCode": 0,
+      "receipt": {
+        "kind": "native-new-eight-candidate-retention-inspection",
+        "readAt": "2026-10-14T10:52:22.850Z",
+        "instrument": "maintained inspectRetentionTrees + selectRetentionEntries; assembly inline/manual; no evidence binding attempted",
+        "classId": "mnt-tmp",
+        "keep": {
+          "kind": "max-age",
+          "maxAgeHours": 168
+        },
+        "cutoff": "2026-10-07T10:52:22.850Z",
+        "paths": [
+          "/mnt/data/tmp/live-fed-gate-20261013-194853",
+          "/mnt/data/tmp/live-fed-gate-20261013-095447",
+          "/mnt/data/tmp/tsx-1000",
+          "/mnt/data/tmp/wi-10007411-source.w23IxG",
+          "/mnt/data/tmp/papercusp-vm-release-trust.F6Bi65",
+          "/mnt/data/tmp/papercusp-git-scratch-SzSdwS",
+          "/mnt/data/tmp/papercusp-git-scratch-GmqoGW",
+          "/mnt/data/tmp/wi41095-admission-source-20261011T1342Z"
+        ],
+        "before": [
+          {
+            "path": "/mnt/data/tmp/live-fed-gate-20261013-194853",
+            "dev": "66304",
+            "inode": "16643176214",
+            "uid": "1000",
+            "mtimeNs": "1791940556403645301",
+            "ctimeNs": "1791940556403645301",
+            "rootAllocatedB": "4096"
+          },
+          {
+            "path": "/mnt/data/tmp/live-fed-gate-20261013-095447",
+            "error": "ENOENT"
+          },
+          {
+            "path": "/mnt/data/tmp/tsx-1000",
+            "dev": "66304",
+            "inode": "16110933061",
+            "uid": "1000",
+            "mtimeNs": "1791975141638415544",
+            "ctimeNs": "1791975141638415544",
+            "rootAllocatedB": "21061632"
+          },
+          {
+            "path": "/mnt/data/tmp/wi-10007411-source.w23IxG",
+            "dev": "66304",
+            "inode": "5368808547",
+            "uid": "1000",
+            "mtimeNs": "1791897318871476838",
+            "ctimeNs": "1791897318871476838",
+            "rootAllocatedB": "0"
+          },
+          {
+            "path": "/mnt/data/tmp/papercusp-vm-release-trust.F6Bi65",
+            "dev": "66304",
+            "inode": "3223044694",
+            "uid": "1000",
+            "mtimeNs": "1791867398308419288",
+            "ctimeNs": "1791867398308419288",
+            "rootAllocatedB": "4096"
+          },
+          {
+            "path": "/mnt/data/tmp/papercusp-git-scratch-SzSdwS",
+            "dev": "66304",
+            "inode": "1549393239",
+            "uid": "1000",
+            "mtimeNs": "1791851235779048058",
+            "ctimeNs": "1791851235779048058",
+            "rootAllocatedB": "8192"
+          },
+          {
+            "path": "/mnt/data/tmp/papercusp-git-scratch-GmqoGW",
+            "dev": "66304",
+            "inode": "15034419262",
+            "uid": "1000",
+            "mtimeNs": "1791849196097002285",
+            "ctimeNs": "1791849196097002285",
+            "rootAllocatedB": "8192"
+          },
+          {
+            "path": "/mnt/data/tmp/wi41095-admission-source-20261011T1342Z",
+            "dev": "66304",
+            "inode": "9132510096",
+            "uid": "1000",
+            "mtimeNs": "1791726030925536597",
+            "ctimeNs": "1791726030925536597",
+            "rootAllocatedB": "8192"
+          }
+        ],
+        "result": {
+          "entries": [],
+          "retained": [],
+          "inspectedNodes": 7,
+          "retainedRecentTrees": 7
+        },
+        "selected": [],
+        "sourceHashes": {
+          "packages/operator-core/lib/storage/disk-consumer-census.ts": "bf136c9c45175cbd81e4f230c16e2471e013573c3fe5b61493f53d30b82b6b77",
+          "packages/operator-core/lib/storage/disk-reclaim.ts": "14102834c69d0d67a0e715821f07af89df497c0bbc299bdd3fc119c40a2d059d",
+          "packages/operator-core/lib/storage/retention-policy.ts": "5744bca6680b10953f4b3ddbf3c24489141f9289678cbf7ae4e4306626d56490"
+        },
+        "scope": "eight exact candidate roots; planning only; current eligibility/holders/reference guards still required before any effect; nested allocation not exclusive"
+      }
+    },
+    "shallowAgeScreen": {
+      "taskId": "0mv7zlzlmp4xfdlly1l",
+      "logPath": ".papercusp/scratch/bash-7272f9bd-fb0.log",
+      "logSha256": "12c66a2dc63c65806f0c8d1026283b387acb1d645de4c5563cf9f85d51931fa0",
+      "terminalExitCode": 0,
+      "readAt": "2026-10-14T10:48:58Z",
+      "entriesRead": 106366,
+      "recentRoots": 90308,
+      "olderRootsCount": 16058,
+      "readFailures": 0,
+      "elapsedS": 7.303719758987427,
+      "scope": "One complete direct-entry iteration at the captured time; no stable-population witness, no subtree allocation or eligibility claim; logged oldest24 are a bounded sample."
+    },
+    "failedAssembly": {
+      "taskId": "0mv7zoj1v77cs11dbvt",
+      "logPath": ".papercusp/scratch/bash-0f458d8c-64c.log",
+      "exitCode": 1,
+      "cause": "Caller imported unused nonexistent classifyConsumer; removed after reading actual maintained exports. No inspection or mutation occurred in failed assembly."
+    },
+    "conclusion": "PRESERVE seven current roots: each retained by maintained recent-write guard at168h. One exact path returned ENOENT at inspection. Zero selected deletion; no measured current reclaim or sustained headroom claim. FullR5 remains open.",
+    "noInstrumentDeclaration": "Read-only maintained inspectors are source-hashed in the receipt; shell/JSON assembly is inline manual. No operational/manual evidence binding attempted."
+  },
   "nativeNewDataWriter1032Z20261014": {
     "schemaVersion": "native-positive-data-fd-growth-evidence-v1",
     "taskId": "0mv7z0y2j1t8lode1ml",
