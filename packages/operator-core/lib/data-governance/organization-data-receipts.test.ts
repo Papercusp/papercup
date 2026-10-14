@@ -172,6 +172,15 @@ describe('authorizeDataOperation', () => {
     expect(authorizeDataOperation('deletion', ORG, { kind: 'customer_user', principal: p }).actorId).toBe(p.userId);
   });
 
+  it('permits a member to export only their own user scope, without granting organization export or deletion', () => {
+    const p = principal(['workspace:view']);
+    const actor = { kind: 'customer_user' as const, principal: p };
+    expect(authorizeDataOperation('export', ORG, actor, p.userId).actorId).toBe(p.userId);
+    expect(() => authorizeDataOperation('export', ORG, actor, '33333333-3333-4333-8333-333333333333'))
+      .toThrow('requires members:manage');
+    expect(() => authorizeDataOperation('deletion', ORG, actor, p.userId)).toThrow('requires workspace:destroy');
+  });
+
   it('refuses a member without the permission, and a principal of another organization', () => {
     expect(() => authorizeDataOperation('export', ORG, { kind: 'customer_user', principal: principal(['workspace:view']) }))
       .toThrow(/requires members:manage/);
