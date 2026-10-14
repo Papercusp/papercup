@@ -28,6 +28,36 @@ ${decisions}
 `);
 
 describe('staging-first activation guard', () => {
+  it.each(['green-checkpoint', 'main', ':3070'])(
+    'does not pair a scanned %s subject with measured condition recovery',
+    (subject) => {
+      const parsed = plan(
+        ['P-003', 'P-008', 'P-017'].map(
+          (id) => `- **${id}** \`todo\` Implement condition recovery using staging.`,
+        ),
+        `### D-013 — Condition recovery\nDate: 2026-10-13\nScan ${subject} routine rows after markers disappear, then resolve only after measured absent markers, verified live runners, terminal qualification, or verified live fresh progress.\nRelated: P-003, P-008, P-017`,
+      );
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    },
+  );
+
+  it.each(['green-checkpoint', 'main', ':3070'])(
+    'preserves a true implementation prerequisite after %s recovery prose',
+    (subject) => {
+      for (const separator of ['; ', '. ']) {
+        const gate = `implementation may start only after ${subject} is green`;
+        const parsed = plan(
+          ['- **P-003** `todo` Implement condition recovery using staging.'],
+          `### D-013 — Condition recovery\nDate: 2026-10-13\nScan ${subject} routine rows, then resolve only after measured recovery${separator}${gate}.\nRelated: P-003`,
+        );
+        const [problem, ...rest] = stagingFirstActivationProblems(parsed);
+        expect(rest).toEqual([]);
+        expect(problem).toEqual(expect.objectContaining({ itemId: 'P-003', code: 'non_final_deployed_main_wait' }));
+        expect(problem!.triggers).toContainEqual({ source: 'decision D-013', clause: expect.stringContaining(gate) });
+      }
+    },
+  );
+
   it.each(['main-loop', 'main loop', 'main event loop', 'main-event-loop'])(
     'does not classify the Node runtime %s as a main deployment prerequisite',
     (runtimePhrase) => {
