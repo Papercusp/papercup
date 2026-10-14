@@ -3089,10 +3089,10 @@ export function mergeClaudeHookSettings(
   // nudge that misses the writes agents actually make is the failure mode the file exists to stop.
   if (has('posttooluse-frozen-candidate-edit-nudge.mjs'))
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-frozen-candidate-edit-nudge.mjs'), {
-      // …plus tools:invoke: a trimmed psu surface reaches capability:edit/write ONLY through it, so
-      // without this every su edit is absent from the frozen-repair edit ledger and hunk-exact
-      // admission refuses no-ledgered-hunks. The hook unwraps the envelope; other invokes extract nothing.
-      matcher: `${fileWriteMatcher}|mcp__.*__tools_invoke`,
+      // …plus capability:patch's per-hunk path shape and tools:invoke: a trimmed psu surface reaches
+      // capability:edit/write/patch through the invoke wrapper. Keep this matcher local instead of
+      // widening every file-write guard, whose input contracts do not all accept the patch payload.
+      matcher: [fileWriteMatcher, 'mcp__.*__capability_patch', 'mcp__.*__tools_invoke'].join('|'),
       hooks: cmd('posttooluse-frozen-candidate-edit-nudge.mjs'),
     });
   // merge_registry_census_drift_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'

@@ -303,8 +303,10 @@ describe('P-019 hook/module HUNK parity — the ledger writer and the replay rea
     ['mcp__papercusp-su__capability_edit', { file_path: 'lib/a.ts', old_string: 'o', new_string: 'n' }],
     ['mcp__papercusp-su__capability_write', { file_path: 'lib/a.ts', content: 'w' }],
     ['mcp__papercusp-su__capability_multi_edit', { file_path: 'lib/a.ts', edits: [{ old_string: 'x', new_string: 'y' }] }],
+    ['mcp__papercusp-su__capability_patch', { edits: [{ file_path: 'lib/a.ts', old_string: 'x', new_string: 'y' }] }],
     ['mcp__papercusp-su__tools_invoke', { name: 'capability:edit', args: { file_path: 'lib/a.ts', old_string: 'o', new_string: 'n' } }],
     ['mcp__papercusp-su__tools_invoke', { name: 'capability:write', args: { file_path: 'lib/a.ts', content: 'w' } }],
+    ['mcp__papercusp-su__tools_invoke', { name: 'capability:patch', args: { edits: [{ file_path: 'lib/a.ts', old_string: 'x', new_string: 'y' }] } }],
     ['mcp__papercusp-su__tools_invoke', { name: 'capability:read', args: { file_path: 'lib/a.ts' } }],
     ['mcp__papercusp-su__tools_invoke', { name: 'capability:edit' }],
     ['write_file', { path: 'lib/a.ts', content: 'codex' }],
@@ -335,6 +337,26 @@ describe('P-019 hook/module HUNK parity — the ledger writer and the replay rea
     const otherInvoke = { tool_name: 'mcp__papercusp-su__tools_invoke', tool_input: { name: 'capability:read', args: { file_path: 'lib/a.ts' } } };
     expect(hookHunksFrom(otherInvoke)).toEqual([]);
     expect(editedPathsFrom(otherInvoke)).toEqual([]);
+  });
+  it('keeps each capability:patch hunk ledger-ready with its own path and edit index', () => {
+    const args = {
+      edits: [
+        { file_path: 'lib/a.ts', old_string: 'a', new_string: 'A' },
+        { file_path: 'lib/b.ts', old_string: 'b', new_string: 'B', replace_all: true },
+      ],
+    };
+    const expected = [
+      { path: 'lib/a.ts', hunk: { kind: 'edit', old: 'a', new: 'A', replaceAll: false }, editIndex: 0 },
+      { path: 'lib/b.ts', hunk: { kind: 'edit', old: 'b', new: 'B', replaceAll: true }, editIndex: 1 },
+    ];
+    const direct = { tool_name: 'mcp__papercusp-su__capability_patch', tool_input: args };
+    const wrapped = { tool_name: 'mcp__papercusp-su__tools_invoke', tool_input: { name: 'capability:patch', args } };
+
+    expect(hunksFromToolCall(direct.tool_name, direct.tool_input)).toEqual(expected);
+    expect(hookHunksFrom(direct)).toEqual(expected);
+    expect(hunksFromToolCall(wrapped.tool_name, wrapped.tool_input)).toEqual(expected);
+    expect(hookHunksFrom(wrapped)).toEqual(expected);
+    expect(editedPathsFrom(wrapped)).toEqual(['lib/a.ts', 'lib/b.ts']);
   });
   it('is a real check — a deliberately different extraction is caught', () => {
     const wrong = hunksFromToolCall('Edit', { file_path: 'a', old_string: 'o', new_string: 'n' }).map((h) => ({

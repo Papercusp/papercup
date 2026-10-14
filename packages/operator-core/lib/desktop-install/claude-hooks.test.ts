@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mergeClaudeHookSettings } from './papercusp-files';
 
 // mergeClaudeHookSettings is the TS port of install-standalone-mcp.sh's merge_* helpers
@@ -212,6 +213,12 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(postMatcherOf('posttooluse-tool-prompt-weight-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-mock-cast-escape-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-css-design-primitives-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    const frozenEditMatcher = postMatcherOf('posttooluse-frozen-candidate-edit-nudge.mjs')!;
+    expect(frozenEditMatcher).toBe(
+      FILE_WRITE_MATCHER + '|mcp__.*__capability_patch|mcp__.*__tools_invoke',
+    );
+    expect(new RegExp(frozenEditMatcher).test('mcp__papercusp-su__capability_patch')).toBe(true);
+    expect(new RegExp(frozenEditMatcher).test('mcp__papercusp-su__tools_invoke')).toBe(true);
     expect(postMatcherOf('posttooluse-registry-census-drift-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-cli-entry-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-resource-governor-nudge.mjs')).toBe('Edit|Write|MultiEdit');
@@ -280,6 +287,16 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
 });
 
 describe('mergeClaudeHookSettings — non-destructive + idempotent', () => {
+  it('keeps the standalone installer wired for direct and tools:invoke-wrapped capability:patch calls', () => {
+    const installer = readFileSync(
+      new URL('../../../../apps/operator/scripts/install-standalone-mcp.sh', import.meta.url),
+      'utf8',
+    );
+    expect(installer).toContain(
+      "'matcher': 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit|patch)|mcp__.*__tools_invoke'",
+    );
+  });
+
   it('never clobbers a user-defined foreign statusLine', () => {
     const cfg = mergeClaudeHookSettings(
       { statusLine: { type: 'command', command: '/usr/local/bin/my-statusline' } },

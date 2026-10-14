@@ -32685,7 +32685,7 @@
           "POST"
         ]
       },
-      "description": "Register a completed non-Vitest check in harness_shared.test_runs and return testRunIds for plans:bind-spec-evidence. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256 for those bytes. Mutation probes need exact MUTATION_PROBE_EVIDENCE_JSON records and cannot use shared .papercusp/scratch. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256,rawLogCommit?} adds failed-case identities from a committed raw log after validating the original scoped receipt; rawLogCommit pins a full Git revision when the published log is redacted. It never changes that receipt or runs a test. A legacy operational receipt with NULL execution is recovered by appending a labelled row only when its scope, outcome, timestamps and original committed artifact bytes agree. Evidence JSON limit: 262144 bytes; pin bulky raw artifacts by SHA-256. Verdict derives from exitCode + assertions, not caller input. Idempotent by artifact hash.",
+      "description": "For a live plan terminal check, pass planTerminalCensus:{slug} instead of evidenceFile/expectedSha256. It executes the canonical population, refuses unexplained drops and changes, then writes native operational evidence. Register a completed non-Vitest check in harness_shared.test_runs and return testRunIds for plans:bind-spec-evidence. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256 for those bytes. Mutation probes need exact MUTATION_PROBE_EVIDENCE_JSON records and cannot use shared .papercusp/scratch. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256,rawLogCommit?} adds failed-case identities from a committed raw log after validating the original scoped receipt; rawLogCommit pins a full Git revision when the published log is redacted. It never changes that receipt or runs a test. A legacy operational receipt with NULL execution is recovered by appending a labelled row only when its scope, outcome, timestamps and original committed artifact bytes agree. Evidence JSON limit: 262144 bytes; pin bulky raw artifacts by SHA-256. Verdict derives from exitCode + assertions, not caller input. Idempotent by artifact hash.",
       "capabilities": [
         "testing:run"
       ],
@@ -32748,7 +32748,7 @@
       "guidance": {
         "when": "A completed Playwright, Cargo, node, shell, desktop, or other operational acceptance run needs a numeric ledger record; or historical mutation case identities need recovery.",
         "notWhen": "Not for Vitest (use testing:run), temporary logs, or checks that did not run.",
-        "chaining": "Run check → commit docs/evidence JSON → testing:record-run → bind returned IDs with plans:bind-spec-evidence."
+        "chaining": "Run check → commit docs/evidence JSON → testing:record-run → bind returned IDs with plans:bind-spec-evidence. The planTerminalCensus variant executes directly and returns the same numeric ledger IDs."
       }
     },
     {

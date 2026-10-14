@@ -19,7 +19,7 @@
  * successor's brief. What was missing is a refusal at the launch, before the
  * irreversible edge is written.
  *
- * RULE. A resume (non-fork) or successor that RETAINS identity R, launched by an
+ * RULE. A resume, fork or successor sourced from reviewer identity R, launched by an
  * agent caller C (C ≠ R, C not a `system:*` actor), is refused when either:
  *   1. R is (or was) a reviewer on a non-terminal acceptance review-target
  *      reservation for plan P, and C, or an ancestor of C, is one of P's
@@ -83,7 +83,7 @@ export interface ReviewerRelaunchGuardInput {
   workspaceId: string;
   /** The caller (C). */
   launcherOwnerId: string | null | undefined;
-  /** The identity a resume/successor retains (R); null for fresh launches and forks. */
+  /** The source reviewer identity (R), including forks; null for fresh launches. */
   retainedOwnerId: string | null | undefined;
 }
 
@@ -129,8 +129,8 @@ function sqlDeps(sql: Sql): ReviewerRelaunchGuardDeps {
 }
 
 /**
- * Returns the conflict that makes this resume/successor launch unsafe for
- * acceptance independence, or null when it is safe (or not a retaining launch).
+ * Returns the conflict that makes recovery of this reviewer unsafe for
+ * acceptance independence, or null when it is safe (or has no reviewer source).
  */
 export async function findReviewerRelaunchConflict(
   input: ReviewerRelaunchGuardInput,

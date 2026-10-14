@@ -210,7 +210,7 @@ export function unwrapToolsInvoke(payload) {
   if (!/(^|_)tools_invoke$/.test(name)) return payload;
   const input = payload?.tool_input;
   const inner = typeof input?.name === 'string' ? input.name : '';
-  if (!/^capability:(edit|write|multi_?edit)$/i.test(inner)) return { ...payload, tool_input: {} };
+  if (!/^capability:(edit|write|multi_?edit|patch)$/i.test(inner)) return { ...payload, tool_input: {} };
   return { ...payload, tool_name: inner.replace(':', '_'), tool_input: input.args };
 }
 
@@ -361,11 +361,12 @@ export function hunksFrom(rawPayload) {
   const name = String(payload?.tool_name ?? '').toLowerCase();
   if (name === 'apply_patch') return hunksFromCodexApplyPatch(input);
   if (!input || typeof input !== 'object') return [];
-  const isMulti = /multi_?edit/.test(name);
+  const isPatch = /(^|_)capability_patch$/.test(name);
+  const isMulti = /multi_?edit/.test(name) || isPatch;
   const isEdit = !isMulti && /(^|_)edit(?:_file)?$/.test(name);
   const isWrite = /(^|_)write(_file)?$/.test(name);
   const filePath = typeof input.file_path === 'string' ? input.file_path : typeof input.path === 'string' ? input.path : null;
-  if (!filePath) return [];
+  if (!filePath && !isMulti) return [];
   const str = (v) => (typeof v === 'string' ? v : null);
   if (isMulti) {
     const out = [];
@@ -374,7 +375,9 @@ export function hunksFrom(rawPayload) {
       const o = str(e.old_string);
       const n = str(e.new_string);
       if (o === null || n === null) return;
-      out.push({ path: str(e.file_path) ?? filePath, hunk: { kind: 'edit', old: o, new: n, replaceAll: e.replace_all === true }, editIndex: index });
+      const editPath = str(e.file_path) ?? filePath;
+      if (!editPath) return;
+      out.push({ path: editPath, hunk: { kind: 'edit', old: o, new: n, replaceAll: e.replace_all === true }, editIndex: index });
     });
     return out;
   }

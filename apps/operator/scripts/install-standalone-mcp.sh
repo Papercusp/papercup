@@ -1088,7 +1088,7 @@ with open(path, 'w') as f:
 PYEOF
 }
 
-# merge_frozen_candidate_edit_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+# merge_frozen_candidate_edit_hook — PostToolUse, native + capability edit/patch and invoke calls
 # (frozen-candidate-compliance-enforcement-2026-08-30 P-004). Advisory only; warns that an
 # edit to one of the frozen candidate's failing paths lands ABOVE the sha the gate is judging,
 # and names the single sanctioned command that puts it on the judged lineage.
@@ -1115,7 +1115,7 @@ def drop_ours(entry):
 
 hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
-arr.append({'matcher': 'Edit|Write|MultiEdit', 'hooks': [{'type': 'command', 'command': hook}]})
+arr.append({'matcher': 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit|patch)|mcp__.*__tools_invoke', 'hooks': [{'type': 'command', 'command': hook}]})
 hooks['PostToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)

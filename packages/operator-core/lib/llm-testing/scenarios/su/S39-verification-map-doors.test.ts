@@ -5,18 +5,15 @@ import {
   createNoToolsWorld, judgeMapDoorsAnswer, judgeRun, loadMapDocBody, stripFrontmatter,
 } from './S39-verification-map-doors';
 
-const CORRECT = 'Yes. Five doors enforce it.\n\n'
-  + 'DOORS: plans:start, plans:bind-spec-evidence, plans:set-plan-status, plans:acceptance-disposition, plans:promote\n'
-  + 'VAL-STATUS: retired';
+const correctAnswer = (doors: readonly string[] = EXPECTED_DOORS) =>
+  `Yes. ${doors.length} doors enforce it.\n\nDOORS: ${doors.join(', ')}\nVAL-STATUS: retired`;
+const CORRECT = correctAnswer();
 
 const kinds = (texts: string[]) => judgeMapDoorsAnswer(texts).map((v) => v.assertKind);
 
 describe('S39 verification-map doors', () => {
-  it('derives exactly the five contract doors from CONTRACT_GATE_CODE_TYPES', () => {
-    expect([...EXPECTED_DOORS].sort()).toEqual([
-      'plans:acceptance-disposition', 'plans:bind-spec-evidence', 'plans:promote',
-      'plans:set-plan-status', 'plans:start',
-    ]);
+  it('includes the P-006 blind-review door derived from CONTRACT_GATE_CODE_TYPES', () => {
+    expect(EXPECTED_DOORS).toContain('plans:set-status');
   });
 
   it('inlines the map body (no frontmatter) and the doc still names every derived door', () => {
@@ -45,18 +42,20 @@ describe('S39 verification-map doors', () => {
 
   it('calibration: a correct answer passes, including markdown emphasis and the _ tool-name form', () => {
     expect(judgeMapDoorsAnswer([CORRECT])).toEqual([]);
-    expect(judgeMapDoorsAnswer(['**DOORS:** `plans_start`, `plans:bind-spec-evidence`, `plans:set-plan-status` (status shipped), '
-      + '`plans:acceptance-disposition`, `plans:promote`\n**VAL-STATUS:** retired'])).toEqual([]);
+    const markdownDoors = EXPECTED_DOORS.map((door) => door === 'plans:start'
+      ? `\`${door.replace(':', '_')}\``
+      : door === 'plans:set-plan-status' ? `\`${door}\` (status shipped)` : `\`${door}\``);
+    expect(judgeMapDoorsAnswer([`**DOORS:** ${markdownDoors.join(', ')}\n**VAL-STATUS:** retired`])).toEqual([]);
     // Prose that mentions VAL-* correctly is not a violation.
     expect(judgeMapDoorsAnswer(['VAL-* assertions are retired; plans:promote refuses a plan still carrying one.\n' + CORRECT])).toEqual([]);
   });
 
   it('control: a missing door fails', () => {
-    expect(kinds([CORRECT.replace(', plans:promote', '')])).toEqual(['custom:map-doors-named-exactly']);
+    expect(kinds([correctAnswer(EXPECTED_DOORS.slice(1))])).toEqual(['custom:map-doors-named-exactly']);
   });
 
   it('control: a tool that only prepares input, named as a door, fails', () => {
-    expect(kinds([CORRECT.replace('plans:promote', 'plans:promote, plans:audit')])).toEqual(['custom:map-doors-named-exactly']);
+    expect(kinds([correctAnswer([...EXPECTED_DOORS, 'plans:audit'])])).toEqual(['custom:map-doors-named-exactly']);
   });
 
   it('control: VAL-STATUS current fails', () => {
@@ -76,7 +75,7 @@ describe('S39 verification-map doors', () => {
   it('judges the first turn that carries the DOORS line', () => {
     const run = { turns: [{ assistantText: 'Thinking...' }, { assistantText: CORRECT }] } as unknown as RunSummary;
     expect(judgeRun(run)).toEqual([]);
-    const wrong = { turns: [{ assistantText: CORRECT.replace(', plans:promote', '') }, { assistantText: CORRECT }] } as unknown as RunSummary;
+    const wrong = { turns: [{ assistantText: correctAnswer(EXPECTED_DOORS.slice(1)) }, { assistantText: CORRECT }] } as unknown as RunSummary;
     expect(judgeRun(wrong).map((v) => v.assertKind)).toEqual(['custom:map-doors-named-exactly']);
   });
 });

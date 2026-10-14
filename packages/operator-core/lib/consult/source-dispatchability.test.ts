@@ -91,6 +91,21 @@ describe('filterDispatchableRoute', () => {
     }]);
   });
 
+  it('fails open when the persisted cooldown read is unavailable', async () => {
+    const out = await filterDispatchableRoute(
+      route(['cooling']),
+      (candidate, workspaceId) => probeConsultSourceDispatchable(candidate, workspaceId, {
+        readCooldown: async () => { throw new Error('pg unavailable'); },
+      }),
+      { workspaceId: 'workspace-1' },
+    );
+    expect(out).toEqual(expect.objectContaining({
+      qualified: expect.any(Array),
+      snapshot: expect.objectContaining({ candidates: expect.any(Array) }),
+    }));
+    expect(out.snapshot.candidates.map((candidate) => candidate.ownerId)).toEqual(['cooling']);
+  });
+
   it('fails OPEN: candidates not probed within the budget are kept', async () => {
     const out = await filterDispatchableRoute(
       route(['fast-dead', 'slow-dead']),
