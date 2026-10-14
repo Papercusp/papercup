@@ -5,11 +5,18 @@
  * A stub `sudo` on a private PATH stands in for the real binary, so the default
  * probe (`sudo -n true`) runs for real without needing real privilege.
  */
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { chmodSync, mkdtempSync, promises as fsp, rmSync, writeFileSync } from 'node:fs';
+import { request, type ClientRequest, type IncomingMessage, type RequestOptions } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resolveCensusSudo } from './disk-consumer-census';
+import { measureDocker, resolveCensusSudo } from './disk-consumer-census';
+
+vi.mock('node:http', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:http')>()),
+  request: vi.fn(),
+}));
 
 const isRoot = process.getuid?.() === 0;
 
@@ -62,5 +69,85 @@ describe('resolveCensusSudo', () => {
     } finally {
       getuid.mockRestore();
     }
+  });
+});
+
+describe('measureDocker response deadlines', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(fsp, 'access').mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.mocked(request).mockReset();
+  });
+
+  // The engine's disk-usage walk can legitimately exceed 20 seconds. Model the
+  // HTTP client's timeout and a delayed response independently of the reader.
+  function engineWithDiskUsageDelay(delayMs: number): void {
+    vi.mocked(request).mockImplementation((options, onResponse) => {
+      const opts = options as RequestOptions;
+      const req = new EventEmitter();
+      let responseTimer: ReturnType<typeof setTimeout>;
+      let deadlineTimer: ReturnType<typeof setTimeout>;
+      Object.assign(req, {
+        end() {
+          deadlineTimer = setTimeout(() => req.emit('timeout'), Number(opts.timeout));
+          responseTimer = setTimeout(() => {
+            clearTimeout(deadlineTimer);
+            const res = new EventEmitter();
+            Object.assign(res, { statusCode: 200, setEncoding() {} });
+            onResponse?.(res as IncomingMessage);
+            res.emit('data', JSON.stringify(opts.path === '/info'
+              ? { DockerRootDir: '/fixture/docker' }
+              : {
+                  LayersSize: 64,
+                  Containers: [{ SizeRw: 2 }, { SizeRw: 3 }],
+                  Volumes: [{ UsageData: { Size: 80 } }],
+                  BuildCache: [{ Size: 7 }],
+                }));
+            res.emit('end');
+          }, opts.path === '/info' ? 0 : delayMs);
+        },
+        destroy(error: Error) {
+          clearTimeout(responseTimer);
+          clearTimeout(deadlineTimer);
+          req.emit('error', error);
+        },
+      });
+      return req as ClientRequest;
+    });
+  }
+
+  it('accepts a valid Docker disk-usage response after the old 20-second diagnostic cutoff', async () => {
+    engineWithDiskUsageDelay(25_000);
+    const result = measureDocker();
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(await result).toEqual({
+      kind: 'docker',
+      rootDir: '/fixture/docker',
+      parts: [
+        { consumer: 'docker:images', bytes: 64 },
+        { consumer: 'docker:containers', bytes: 5 },
+        { consumer: 'docker:volumes', bytes: 80 },
+        { consumer: 'docker:build-cache', bytes: 7 },
+      ],
+    });
+  });
+
+  it('reports an explicit short deadline as a timeout rather than an empty inventory', async () => {
+    engineWithDiskUsageDelay(25_000);
+    const result = expect(measureDocker(20_000)).rejects.toThrow('docker /system/df timed out');
+    await vi.advanceTimersByTimeAsync(20_000);
+    await result;
+  });
+
+  it('still bounds an unresponsive engine with the maintained default deadline', async () => {
+    engineWithDiskUsageDelay(200_000);
+    const result = expect(measureDocker()).rejects.toThrow('docker /system/df timed out');
+    await vi.advanceTimersByTimeAsync(180_000);
+    await result;
   });
 });
