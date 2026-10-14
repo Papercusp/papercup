@@ -637,6 +637,16 @@ export function runBootstrap(): void {
       const { validateDeclaredSingletons } = await import(
         '@papercusp/operator-core/lib/startup/validate-declared-singletons'
       );
+      // Request-only hosts do not own the background routine plane. Their private
+      // operator-api fixtures intentionally start without materialized learning
+      // singletons, so validating here emits a false FATAL even though the fixture
+      // is serving normally. The background owner keeps this guard and its signal.
+      if (requestOnlyHost()) {
+        console.log(
+          '[declared-singletons] startup validation skipped — request-only host does not own background routines',
+        );
+        return;
+      }
       // A fresh operator host's first boot validates before the asynchronous dogfood-hive
       // bootstrap has had a chance to register its first project. This applies to both the
       // packaged desktop and an isolated Hono host: in that known empty-workspace window,
