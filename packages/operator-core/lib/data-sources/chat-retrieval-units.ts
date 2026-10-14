@@ -50,6 +50,13 @@
  * transaction, else a transaction of its own) and re-queued after a retry delay, so one
  * always-failing bucket cannot stop the rest of the queue (WI-6554700010011913). Failures are
  * returned in ChatRollupResult.failures for the caller to report.
+ *
+ * The retry delay doubles with each consecutive failure up to a cap, and a bucket that fails
+ * DEFAULT_ROLLUP_DEAD_LETTER_ATTEMPTS times in a row is dead-lettered: it stays in the queue with
+ * its last error but is no longer dequeued, so a permanent failure stops retrying instead of being
+ * reported every few minutes forever (WI-6554700010012111). A new message in the bucket, or a
+ * routing change to its data source (trigger data_sources_requeue_chat_buckets), revives it. A new
+ * message does not reset a bucket that is still backing off, so a busy channel still reaches the cap.
  */
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
@@ -65,8 +72,22 @@ import { upsertOrganizationDocuments, type OrganizationDocumentInput } from './d
 export const DEFAULT_WINDOW_GAP_MINUTES = 30;
 export const DEFAULT_CHAT_MESSAGE_DATATYPE = 'chat-message';
 const DEFAULT_ROLLUP_BATCH = 200;
-/** How long a bucket whose render failed waits before it is dequeued again. */
+/** How long a bucket waits after its first failed render; the delay doubles with each further failure. */
 export const DEFAULT_ROLLUP_RETRY_DELAY_SECONDS = 300;
+/** The longest a failed bucket waits between renders. */
+export const DEFAULT_ROLLUP_MAX_RETRY_DELAY_SECONDS = 6 * 3600;
+/** Consecutive failed renders after which a bucket is dead-lettered (kept, but no longer dequeued). */
+export const DEFAULT_ROLLUP_DEAD_LETTER_ATTEMPTS = 8;
+
+/**
+ * Seconds a bucket waits after its `attempts`-th consecutive failure: `baseSeconds` doubled per
+ * earlier failure, capped at `maxSeconds` (never below `baseSeconds`).
+ */
+export function rollupRetryDelaySeconds(attempts: number, baseSeconds: number, maxSeconds: number): number {
+  const base = Math.max(0, baseSeconds);
+  const exponent = Math.min(Math.max(0, Math.floor(attempts) - 1), 30);
+  return Math.min(Math.max(base, maxSeconds), base * 2 ** exponent);
+}
 /** Failures listed in a result; `failed` still counts every one. */
 const MAX_REPORTED_ROLLUP_FAILURES = 20;
 
@@ -137,10 +158,14 @@ async function enqueue(
   channelId: string,
   bucket: { kind: BucketKind; key: string },
 ): Promise<void> {
+  // New input revives a dead-lettered bucket (failure state cleared, due now). A bucket still backing
+  // off keeps its schedule, so a channel that keeps receiving messages still reaches the cap.
   await sql`
-    INSERT INTO harness_shared.chat_rollup_queue (workspace_id, data_source_id, channel_id, bucket_kind, bucket_key)
+    INSERT INTO harness_shared.chat_rollup_queue AS q (workspace_id, data_source_id, channel_id, bucket_kind, bucket_key)
     VALUES (${workspaceId}, ${dataSourceId}::uuid, ${channelId}, ${bucket.kind}, ${bucket.key})
-    ON CONFLICT DO NOTHING`;
+    ON CONFLICT (workspace_id, data_source_id, channel_id, bucket_kind, bucket_key) DO UPDATE
+       SET attempts = 0, last_error = NULL, first_failed_at = NULL, dead_lettered_at = NULL, queued_at = now()
+     WHERE q.dead_lettered_at IS NOT NULL`;
 }
 
 /**
@@ -467,8 +492,10 @@ export interface ChatRollupResult {
   documentsWritten: number;
   /** Buckets whose source routes no corpus row, by reason. */
   corpusSkipped: Partial<Record<CorpusSkipReason, number>>;
-  /** Buckets whose render threw. Each was rolled back on its own and re-queued after the retry delay. */
+  /** Buckets whose render threw. Each was rolled back on its own and re-queued after its retry delay. */
   failed: number;
+  /** Of `failed`, the buckets that reached the attempt cap and were dead-lettered instead of retried. */
+  deadLettered: number;
   /** The first failures (at most MAX_REPORTED_ROLLUP_FAILURES), for the caller to report. */
   failures: ChatRollupFailure[];
 }
@@ -479,6 +506,10 @@ export interface ChatRollupFailure {
   bucketKind: 'thread' | 'day';
   bucketKey: string;
   error: string;
+  /** Consecutive failed renders of this bucket, this one included. */
+  attempts: number;
+  /** True when this failure reached the cap: the bucket is no longer retried until it is revived. */
+  deadLettered: boolean;
 }
 
 interface QueuedBucket {
@@ -486,6 +517,9 @@ interface QueuedBucket {
   channel_id: string;
   bucket_kind: BucketKind;
   bucket_key: string;
+  /** Consecutive failed renders before this one. */
+  attempts: number;
+  first_failed_at: Date | null;
 }
 
 type ResolvedSource = { source: SourceRow; route: CorpusRoute };
@@ -512,20 +546,28 @@ function rollupErrorText(cause: unknown): string {
 
 /**
  * Re-render up to `limit` due buckets. Each bucket renders in its own savepoint (or
- * transaction): a bucket that throws is rolled back alone and re-queued `retryDelaySeconds`
- * later, and the rest of the batch still commits. Run inside a transaction so a failure of the
+ * transaction): a bucket that throws is rolled back alone and re-queued after its retry delay
+ * (`retryDelaySeconds` doubled per earlier consecutive failure, capped at `maxRetryDelaySeconds`),
+ * and the rest of the batch still commits. The `deadLetterAttempts`-th consecutive failure
+ * dead-letters the bucket instead of re-queueing it. Run inside a transaction so a failure of the
  * dequeue itself, or a lost connection, re-queues the whole batch.
  */
 export async function rollupChatUnits(
   sql: Sql,
   workspaceId: string,
-  opts: { dataSourceId?: string; limit?: number; gapMinutes?: number; retryDelaySeconds?: number } = {},
+  opts: {
+    dataSourceId?: string; limit?: number; gapMinutes?: number;
+    retryDelaySeconds?: number; maxRetryDelaySeconds?: number; deadLetterAttempts?: number;
+  } = {},
 ): Promise<ChatRollupResult> {
   const limit = Math.max(1, Math.min(1000, opts.limit ?? DEFAULT_ROLLUP_BATCH));
   const gapMs = Math.max(1, opts.gapMinutes ?? DEFAULT_WINDOW_GAP_MINUTES) * 60_000;
   const retryDelaySeconds = Math.max(0, opts.retryDelaySeconds ?? DEFAULT_ROLLUP_RETRY_DELAY_SECONDS);
+  const maxRetryDelaySeconds = Math.max(0, opts.maxRetryDelaySeconds ?? DEFAULT_ROLLUP_MAX_RETRY_DELAY_SECONDS);
+  const deadLetterAttempts = Math.max(1, Math.floor(opts.deadLetterAttempts ?? DEFAULT_ROLLUP_DEAD_LETTER_ATTEMPTS));
   const sourceFilter = opts.dataSourceId ? sql`AND data_source_id = ${opts.dataSourceId}::uuid` : sql``;
-  // Only due buckets: a bucket that failed waits out its retry delay (queued_at in the future).
+  // Only due, live buckets: a failed bucket waits out its retry delay (queued_at in the future), and
+  // a dead-lettered one waits to be revived.
   const buckets = await sql<QueuedBucket[]>`
     DELETE FROM harness_shared.chat_rollup_queue q
      WHERE (q.workspace_id, q.data_source_id, q.channel_id, q.bucket_kind, q.bucket_key) IN (
@@ -533,14 +575,15 @@ export async function rollupChatUnits(
          FROM harness_shared.chat_rollup_queue
         WHERE workspace_id = ${workspaceId} ${sourceFilter}
           AND queued_at <= now()
+          AND dead_lettered_at IS NULL
         ORDER BY queued_at
         LIMIT ${limit}
         FOR UPDATE SKIP LOCKED)
-    RETURNING q.data_source_id, q.channel_id, q.bucket_kind, q.bucket_key`;
+    RETURNING q.data_source_id, q.channel_id, q.bucket_kind, q.bucket_key, q.attempts, q.first_failed_at`;
 
   const result: ChatRollupResult = {
     buckets: buckets.length, unitsWritten: 0, unitsUnchanged: 0, unitsRemoved: 0, documentsWritten: 0, corpusSkipped: {},
-    failed: 0, failures: [],
+    failed: 0, deadLettered: 0, failures: [],
   };
   const sources = new Map<string, ResolvedSource>();
   for (const bucket of buckets) {
@@ -548,22 +591,34 @@ export async function rollupChatUnits(
     try {
       counts = await isolated(sql, (inner) => rollupBucket(inner, workspaceId, bucket, sources, gapMs));
     } catch (cause) {
+      const error = rollupErrorText(cause);
+      const attempts = (bucket.attempts ?? 0) + 1;
+      const deadLettered = attempts >= deadLetterAttempts;
+      const delaySeconds = rollupRetryDelaySeconds(attempts, retryDelaySeconds, maxRetryDelaySeconds);
       result.failed += 1;
+      if (deadLettered) result.deadLettered += 1;
       if (result.failures.length < MAX_REPORTED_ROLLUP_FAILURES) {
         result.failures.push({
           dataSourceId: bucket.data_source_id,
           channelId: bucket.channel_id,
           bucketKind: bucket.bucket_kind,
           bucketKey: bucket.bucket_key,
-          error: rollupErrorText(cause),
+          error,
+          attempts,
+          deadLettered,
         });
       }
-      // A source deleted meanwhile has nothing left to render, so only a live source re-queues.
+      // A source deleted meanwhile has nothing left to render, so only a live source re-queues. A row
+      // queued meanwhile (possible only outside a transaction: new input or a routing change) is newer
+      // than this failure and keeps its own state.
       await sql`
         INSERT INTO harness_shared.chat_rollup_queue
-          (workspace_id, data_source_id, channel_id, bucket_kind, bucket_key, queued_at)
+          (workspace_id, data_source_id, channel_id, bucket_kind, bucket_key, queued_at,
+           attempts, last_error, first_failed_at, dead_lettered_at)
         SELECT ${workspaceId}, ${bucket.data_source_id}::uuid, ${bucket.channel_id}, ${bucket.bucket_kind},
-               ${bucket.bucket_key}, now() + make_interval(secs => ${retryDelaySeconds}::double precision)
+               ${bucket.bucket_key}, now() + make_interval(secs => ${delaySeconds}::double precision),
+               ${attempts}::int, ${error}::text, COALESCE(${bucket.first_failed_at}::timestamptz, now()),
+               CASE WHEN ${deadLettered}::boolean THEN now() END
          WHERE EXISTS (SELECT 1 FROM harness_shared.data_sources
                         WHERE workspace_id = ${workspaceId} AND id = ${bucket.data_source_id}::uuid)
         ON CONFLICT DO NOTHING`;
@@ -894,7 +949,8 @@ export interface ChatRollupPassResult extends ChatRollupResult {
 export async function runChatRollupPass(
   sql: Sql,
   opts: {
-    workspaceId: string; maxBatches?: number; batchSize?: number; gapMinutes?: number; retryDelaySeconds?: number; now?: Date;
+    workspaceId: string; maxBatches?: number; batchSize?: number; gapMinutes?: number; retryDelaySeconds?: number;
+    maxRetryDelaySeconds?: number; deadLetterAttempts?: number; now?: Date;
   },
 ): Promise<ChatRollupPassResult> {
   const { workspaceId } = opts;
@@ -915,11 +971,13 @@ export async function runChatRollupPass(
     documentsWritten: 0,
     corpusSkipped: {},
     failed: 0,
+    deadLettered: 0,
     failures: [],
   };
   for (let i = 0; i < maxBatches; i += 1) {
     const batch = await tx((inner) => rollupChatUnits(inner, workspaceId, {
       limit: batchSize, gapMinutes: opts.gapMinutes, retryDelaySeconds: opts.retryDelaySeconds,
+      maxRetryDelaySeconds: opts.maxRetryDelaySeconds, deadLetterAttempts: opts.deadLetterAttempts,
     }));
     result.batches += 1;
     result.buckets += batch.buckets;
@@ -928,6 +986,7 @@ export async function runChatRollupPass(
     result.unitsRemoved += batch.unitsRemoved;
     result.documentsWritten += batch.documentsWritten;
     result.failed += batch.failed;
+    result.deadLettered += batch.deadLettered;
     result.failures.push(...batch.failures.slice(0, MAX_REPORTED_ROLLUP_FAILURES - result.failures.length));
     for (const [reason, count] of Object.entries(batch.corpusSkipped) as Array<[CorpusSkipReason, number]>) {
       result.corpusSkipped[reason] = (result.corpusSkipped[reason] ?? 0) + count;
