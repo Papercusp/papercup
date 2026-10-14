@@ -279,10 +279,10 @@ export function consultExpiryFindSilentResponders(
           history.posts.every((post) =>
             post.author_id != null &&
             post.author_id !== row.answeringOwnerId &&
-            row.priorResponderIds?.includes(post.author_id))
+            (post.author_id === row.requesterId || row.priorResponderIds?.includes(post.author_id)))
         ) {
-          // A prior selectee's decline caused this route. Its post is not a
-          // pickup by the current selection, including a reserved answerer.
+          // Requester follow-ups and prior selectees' declines are not pickup
+          // by the current selection, including a reserved answerer.
           // Keep the current answerer's posts even if prior identities overlap.
           silent.add(row.conversationId);
         }

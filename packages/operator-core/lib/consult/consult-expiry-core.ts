@@ -123,6 +123,8 @@ export interface ReviewWorkItemRequest {
 export interface SilentResponderCandidate {
   workspaceId: string;
   conversationId: string;
+  /** Requester follow-ups do not establish pickup by the answering session. */
+  requesterId?: string;
   /** Null means dispatch never stamped an answering session. After the pickup
    * window, an empty thread is evidence of failed dispatch, not source silence. */
   answeringOwnerId: string | null;
@@ -323,6 +325,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
       return [{
         workspaceId: row.workspace_id,
         conversationId: row.conversation_id,
+        requesterId: row.requester_id,
         answeringOwnerId: selection.answeringOwnerId,
         routedAt: timestampToIso(row.updated_at),
         ...(selection.priorResponderIds.length > 0 ? { priorResponderIds: selection.priorResponderIds } : {}),

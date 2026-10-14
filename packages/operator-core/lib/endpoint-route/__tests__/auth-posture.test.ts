@@ -409,16 +409,6 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     // Signup is additionally gated in-handler: first-account bootstrap, then
     // the OPEN_SIGNUP flag (default OFF).
     'POST /auth/signup',
-    // Documenso e-signature completion (routes/pot/contracts.ts). The self-hosted
-    // Documenso server POSTs here from its own host, so loopback would break signing.
-    // The handler authenticates every delivery: verifyWebhook constant-time compares
-    // X-Documenso-Secret with DOCUMENSO_WEBHOOK_SECRET and refuses invalid_webhook (a
-    // secret under 24 chars is not_configured). completed() uses the body only to find
-    // the contract: it re-reads the envelope with the API key, matches both signers to
-    // the contract, and downloads the sealed PDF and certificate itself (documenso.ts).
-    // Added 2026-10-13 (WI-6554700010009809) on the gate-lint-green fleet leader's AUTO
-    // ruling: a disclosed agent decision, not an owner-typed sign-off.
-    'POST /dao-hr/documenso/webhook',
     'DELETE /device/desktop/devices/:deviceId',
     'POST /device/desktop/mint-pair-token',
     'POST /device/pair',
@@ -426,15 +416,22 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     'POST /flags/webhook',
   ]);
   /**
-   * Own-auth TRANSPORT surfaces — `auth: 'public'` at the route layer is the
-   * design, not a gap: each enforces bearer/principal auth in its own
-   * dispatch (the composite resolver / mcpHandler), and remote reachability
-   * is intentional (the phone calls built-in tools cross-origin through the
-   * tunnel; remote MCP rides /:transport). NOT part of the owner-ratified
-   * 16-row table — flagged for owner review on WI-99; do not grow this set
-   * without the same own-auth story.
+   * Own-auth routes — `auth: 'public'` at the route layer is intentional:
+   * each route authenticates its caller in its handler or dispatch. Remote
+   * reachability is part of the contract (for example, mobile built-in tools
+   * and MCP transport calls across the tunnel). These are NOT owner-ratified
+   * `public!` exceptions; keep them separate and require the same explicit
+   * own-auth story before adding an entry.
    */
-  const OWN_AUTH_TRANSPORTS: ReadonlySet<string> = new Set([
+  const OWN_AUTH_ROUTES: ReadonlySet<string> = new Set([
+    // Documenso e-signature completion (routes/pot/contracts.ts). The self-hosted
+    // provider POSTs here remotely, so loopback would break signing. The handler
+    // constant-time compares X-Documenso-Secret with DOCUMENSO_WEBHOOK_SECRET and
+    // refuses invalid_webhook (a secret under 24 chars is not_configured). The
+    // event body only identifies a candidate contract: completion re-reads the
+    // envelope with the API key, matches both signers, and downloads the sealed
+    // PDF and certificate itself (documenso.ts).
+    'POST /dao-hr/documenso/webhook',
     'POST /agent-tools/*',
     'PUT /agent-tools/*',
     'PATCH /agent-tools/*',
@@ -484,7 +481,7 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     const offenders = ALL_ROUTES.filter((r) => MUTATING.has(r.method))
       .filter((r) => (r.auth as unknown) === 'public')
       .map((r) => `${r.method} ${r.path}`)
-      .filter((key) => !OWNER_PUBLIC.has(key) && !OWN_AUTH_TRANSPORTS.has(key));
+      .filter((key) => !OWNER_PUBLIC.has(key) && !OWN_AUTH_ROUTES.has(key));
     expect(
       offenders,
       `PUBLIC mutating route(s) — declare auth: 'loopback' (the Wave-1 rule) or get ` +

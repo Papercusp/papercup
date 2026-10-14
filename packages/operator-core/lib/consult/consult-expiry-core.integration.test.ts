@@ -631,7 +631,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(reachCalls[0]).toMatchObject({ responder: 'resp-2', conversationId: id, workspaceId: WS });
   });
 
-  it.each(['resp-prior-fork', 'resp-prior'])('recovers a reserved cascade answerer after a thrown launch with prior replies from %s', async (priorAuthor) => {
+  it.each(['resp-prior-fork', 'resp-prior', 'req-1'])('recovers a reserved cascade answerer after a thrown launch with non-answerer posts from %s', async (priorAuthor) => {
     const id = await seedConsult({
       expiresAt: FUTURE,
       cascadeCursor: 1,
