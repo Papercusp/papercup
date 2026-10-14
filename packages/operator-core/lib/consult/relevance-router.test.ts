@@ -126,6 +126,23 @@ describe('problem-specific expertise qualification', () => {
       .toEqual(['gateway:owner_report']);
   });
 
+  it('reserves an explicit primary action despite stronger navigation-name matches', () => {
+    const contracts = [
+      { name: 'fleet:delivery', description: 'Set fleet broadcast delivery.' },
+      { name: 'session:carry', description: 'Recover a session carry document.' },
+      { name: 'coord:session_reaper_config', description: 'Read idle session reaper settings.' },
+      { name: 'coord:ack', description: 'Acknowledge received messages.' },
+    ];
+    const contrasts = subjectContrasts('Which native lease actor changed the source?',
+      'session parent waited for native delivery; repaired acknowledgement ordering', contracts);
+    expect(contrasts).toHaveLength(3);
+    expect(contrasts[0].name).toBe('coord:ack');
+    expect(new Set(contrasts.map(c => c.name)).size).toBe(3);
+    expect(contrasts.map(c => c.name)).toContain('fleet:delivery');
+    expect(subjectContrasts('coord:send', 'acknowledgement delivery', contracts).map(c => c.name))
+      .not.toContain('coord:ack');
+  });
+
   it('compares the registered primary action without unrelated operational notes', () => {
     expect(subjectEvidenceQuery('db:migrate',
       'Apply a SQL migration file, coordinated. DRY RUN unless confirm:true; drain before applying.'))

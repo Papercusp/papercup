@@ -69,7 +69,7 @@ import { selectRanked, type Selected, type SelectionVia } from '@papercusp/ranke
 import { withIterativeScan } from '@papercusp/search';
 import { lexicalLeg } from '../search/lexical/rank';
 import { withDeadlineFallback } from '../sync-resolver/attention-counts';
-import { categoryOf, searchTools } from '../cupboard/tools-search';
+import { categoryOf, contentTokens, searchTools, tokenize } from '../cupboard/tools-search';
 import type { ToolDiscoveryEntry } from '../cupboard/tools-discovery';
 import type { RerankScoreFn } from '@papercusp/rerank';
 import type { NativeConsultConstraints } from './native-consult';
@@ -577,13 +577,29 @@ export const SUBJECT_EVIDENCE_CONTRAST_LIMIT = 3;
 export interface SubjectContract { name: string; description: string }
 
 /** Reuse tool discovery to nominate contrasting systems, never to establish
- * expertise. Nominate the same primary action that the crossencoder scores:
- * operational notes otherwise crowd real competing systems out of the cap. */
+ * expertise. Reserve one slot for an explicitly mentioned primary action:
+ * navigation names otherwise crowd acknowledgement/renewal work out of the
+ * bounded menu. Prefix matching is symmetric so an action noun can nominate
+ * its verb; this only nominates a contract for the measured crossencoder. */
 export function subjectContrasts(subject: string, text: string, contracts: readonly SubjectContract[]): SubjectContract[] {
   const entries: ToolDiscoveryEntry[] = contracts.filter(c => c.description.trim() && categoryOf(c.name) !== categoryOf(subject))
     .map(c => ({ tool: c.name, category: categoryOf(c.name), description: subjectEvidenceAction(c.description)!,
       status: 'available', provider: { kind: 'builtin', name: c.name } }));
-  return searchTools(entries, text, { limit: SUBJECT_EVIDENCE_CONTRAST_LIMIT })
+  const queryTokens = contentTokens(text);
+  const actionMatches = entries.flatMap(entry => {
+    const verb = tokenize(entry.description!)[0];
+    if (!verb || verb.length < 4) return [];
+    const match = Math.max(0, ...queryTokens.map(token =>
+      token.length >= 4 && (token.startsWith(verb) || verb.startsWith(token))
+        ? Math.min(token.length, verb.length) : 0));
+    return match ? [{ entry, match }] : [];
+  }).sort((a, b) => b.match - a.match || a.entry.tool.localeCompare(b.entry.tool));
+  const explicitAction = actionMatches[0]?.entry;
+  const discovered = searchTools(entries, text, { limit: SUBJECT_EVIDENCE_CONTRAST_LIMIT });
+  const nominated = explicitAction
+    ? [explicitAction, ...discovered.filter(c => c.tool !== explicitAction.tool)].slice(0, SUBJECT_EVIDENCE_CONTRAST_LIMIT)
+    : discovered;
+  return nominated
     .map(c => ({ name: c.tool, description: c.description! }));
 }
 
