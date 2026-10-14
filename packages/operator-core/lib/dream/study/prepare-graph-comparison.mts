@@ -11,6 +11,7 @@ import { moduleRepoRoot } from '../../module-repo-root.ts';
 import { STUDY_BLOCKS, validateStudyBlocks, type StudyBlock } from './accounting.mts';
 import { freezeImmutableArtifacts } from './freeze-artifacts.mts';
 import { studySampling } from './sampling.mts';
+import { isCliEntry } from '../../util/cli-entry';
 
 // Pre-registration describes future assessment; it does not manufacture labels.
 export const GRAPH_OUTCOME_DESIGN = {
@@ -91,7 +92,7 @@ async function main() {
     population: snapshot.eligible.length, paths, providerCalls: 0, settingsChanged: false, independentOutcomes: 'pending' }));
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   try { await main(); process.exit(0); }
   catch (error) { console.error(error); process.exit(1); }
 }
