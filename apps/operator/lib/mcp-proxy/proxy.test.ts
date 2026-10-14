@@ -362,6 +362,21 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(arr[1].method).toBe("tools/list");
     expect(arr[1].params).toBeUndefined();
   });
+  it.each([
+    { portId: "22222222-2222-4222-8222-222222222222", targetAdvSessionId: 99, status: "delivered" },
+    { session_id: "native-target", status: "ended" },
+    { method: "unknown/mutation" },
+    { jsonrpc: "2.0", method: "unknown/mutation" },
+    [],
+    null,
+    [{ method: "tools/list" }, { status: "delivered" }],
+    [{ method: "tools/call", params: { name: "coord:read" } }, { status: "delivered" }],
+  ])("EI-259750: does not infer replay safety from absent tools/call: %j", (payload) => {
+    const body = Buffer.from(JSON.stringify(payload));
+    const prepared = prepareForward("POST", {}, body, { keyingEnabled: true, genKey: gen });
+    expect(prepared.klass).toBe("opaque");
+    expect(prepared.body).toBe(body);
+  });
   it('non-JSON body → "opaque"', () => {
     expect(
       prepareForward("POST", {}, Buffer.from("not json"), {
@@ -1156,7 +1171,7 @@ function freePort(): Promise<number> {
 }
 function request(
   p: number,
-  body = '{"jsonrpc":"2.0"}',
+  body = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
   path = "/api/mcp",
   headers: http.OutgoingHttpHeaders = {},
 ): Promise<{
@@ -1467,7 +1482,8 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     await listen(proxy);
 
     try {
-      expect((await request(port(proxy))).status).toBe(200);
+      const ordinaryCall = '{"method":"tools/call","params":{"name":"unit:hold"}}';
+      expect((await request(port(proxy), ordinaryCall)).status).toBe(200);
       expect(clientSockets).toHaveLength(1);
       const listenerCountAfterConnect =
         clientSockets[0].listenerCount("connect");
@@ -1476,7 +1492,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       // listener to this already-connected socket. Twelve calls crossed Node's default
       // warning threshold in the incident; the count must remain stable after reuse.
       for (let i = 0; i < 12; i++) {
-        expect((await request(port(proxy))).status).toBe(200);
+        expect((await request(port(proxy), ordinaryCall)).status).toBe(200);
       }
       expect(clientSockets).toHaveLength(1);
       expect(clientSockets[0].listenerCount("connect")).toBe(
@@ -2901,6 +2917,41 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
 describe("WI-6740: upstream silence — bounded + replayed for the handshake, never for a tools/call", () => {
   const A_TOOLS_CALL =
     '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"x","arguments":{}}}';
+
+  it("EI-259750: waits for a delayed REST session-port delivery without aborting or replaying it", async () => {
+    let hits = 0;
+    const delivery = { portId: "22222222-2222-4222-8222-222222222222", targetAdvSessionId: 99, status: "delivered" };
+    const upstream = track(http.createServer((req, res) => {
+      hits++;
+      const collected = createTextCollector(req);
+      req.on("end", () => {
+        expect(JSON.parse(collected.text())).toEqual(delivery);
+        setTimeout(() => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, status: "delivered" }));
+        }, 180);
+      });
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream), handshakeTimeoutMs: 40, retryBackoffMs: 5, log: () => {} }));
+    await listen(proxy);
+    const response = await request(port(proxy), JSON.stringify(delivery), "/api/adv/sessions/port/delivery");
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ ok: true, status: "delivered" });
+    expect(hits).toBe(1);
+  });
+
+  it("EI-259750: a post-connect REST delivery reset is outcome_unknown with one upstream mutation", async () => {
+    let hits = 0;
+    const upstream = track(http.createServer((req) => { hits++; req.socket.destroy(); }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream), retryBackoffMs: 5, log: () => {} }));
+    await listen(proxy);
+    const response = await request(port(proxy), JSON.stringify({ status: "delivered", targetAdvSessionId: 99 }), "/api/adv/sessions/port/delivery");
+    expect(response.status).toBe(502);
+    expect(JSON.parse(response.body).forwardingResult).toBe("outcome_unknown");
+    expect(hits).toBe(1);
+  });
 
   it("replays a STALLED handshake and returns the eventual 200 (a client would have gone dark)", async () => {
     let calls = 0;
@@ -4934,6 +4985,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
       "/api/agent-mcp/console/bootstrap-su/session-resume-released",
       "/api/agent-mcp/console/bootstrap-su/session-respawned",
+      "/api/adv/sessions/port/delivery",
+      "/api/adv/sessions/port/status",
     ]) {
       expect(isReservedControlPlanePath(path)).toBe(true);
       expect(isCriticalContinuationCall(ordinaryBody, path)).toBe(true);
@@ -9745,11 +9798,12 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     await listen(proxy);
 
     // Fill the 2-slot budget with requests the (gated) upstream will not answer yet.
-    const held1 = request(port(proxy));
-    const held2 = request(port(proxy));
+    const ordinaryCall = '{"method":"tools/call","params":{"name":"unit:hold"}}';
+    const held1 = request(port(proxy), ordinaryCall);
+    const held2 = request(port(proxy), ordinaryCall);
     await new Promise((r) => setTimeout(r, 80)); // let both register as in-flight
 
-    const shed = await request(port(proxy));
+    const shed = await request(port(proxy), ordinaryCall);
     expect(shed.status).toBe(429);
     const shedBody = JSON.parse(shed.body);
     expect(shedBody).toMatchObject({

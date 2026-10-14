@@ -22,6 +22,7 @@ import {
   socketPathFor,
   metaPathFor,
   eventLogPathForOwner,
+  appendHostEvent,
   encodeControl,
   KICKOFF_PROOF_PATH_ENV,
   KICKOFF_PROOF_TOKEN_ENV,
@@ -48,6 +49,7 @@ import {
   PSU_PTY_DIR,
   IDENTITY_ACTIVATION_REFUSED_REASON,
 } from '../scripts/psu-pty-host.mjs';
+import { reportSessionPortDelivery } from '../scripts/psu-launcher.mjs';
 
 // WI-10008170: the production default `onExit` is `process.exit` — right for the
 // CLI, fatal here. Every test in this file hosts in-process, so a host that ends
@@ -2364,9 +2366,10 @@ describe('hostThroughPty real round-trip', () => {
     15_000,
   );
 
-  it.each(['claude', 'codex', 'omp'] as const)(
-    'publishes managed %s session-port parent proof before HTTP ack and preserves success across child exit',
-    async (agent) => {
+  it.each(['claude', 'codex', 'omp'].flatMap((agent) =>
+    ['accepted', 'unknown', 'refused'].map((outcome) => [agent, outcome] as const)))(
+    'publishes managed %s session-port parent proof before HTTP ack and handles %s acknowledgement (EI-259750)',
+    async (agent, outcome) => {
       const root = mkdtempSync(join(tmpdir(), 'psu-port-host-'));
       const agentDir = join(root, 'target-native-home');
       const sessionsDir = agent === 'claude'
@@ -2387,9 +2390,23 @@ describe('hostThroughPty real round-trip', () => {
       let finishAck!: () => void;
       const ackDone = new Promise<void>((resolve) => { finishAck = resolve; });
       const expectedReceipt = { token, persisted: true, nativeRef: nativeFile, reason: null };
+      const onExit = vi.fn();
+      let nativeProofObserved!: () => void;
+      const nativeProof = new Promise<void>((resolve) => { nativeProofObserved = resolve; });
       const onKickoffPersisted = vi.fn(async () => {
         expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual(expectedReceipt);
+        nativeProofObserved();
         await ackDone;
+        if (outcome !== 'accepted') {
+          const fetchImpl = vi.fn()
+            .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, forwardingResult: 'outcome_unknown' }), { status: 502 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, port: { status: outcome === 'unknown' ? 'pending' : 'failed', targetAdvSessionId: 999 } }), { status: 200 }));
+          return reportSessionPortDelivery(
+            { portId: '22222222-2222-4222-8222-222222222222', targetAdvSessionId: 999 },
+            { persisted: true, renderedHash: hash, nativeRef: nativeFile },
+            { fetchImpl, operatorUrl: 'http://operator', token: 'test', coordOwnerId: ownerId, appendEventImpl: appendHostEvent },
+          );
+        }
       });
       let done: Promise<number> | undefined;
       const childCode = [
@@ -2435,10 +2452,13 @@ describe('hostThroughPty real round-trip', () => {
           sessionPort: { renderedHash: hash },
           onKickoffPersisted,
           nativePersistenceTimeoutMs: 3000,
-          onExit: () => undefined,
+          onExit,
         });
+        await Promise.race([
+          nativeProof,
+          done.then(() => { throw new Error('fixture child exited before native proof'); }),
+        ]);
         const deadline = Date.now() + 5000;
-        while (onKickoffPersisted.mock.calls.length === 0 && Date.now() < deadline) await sleep(25);
         expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
         expect(onKickoffPersisted.mock.calls[0]?.[0], captured()).toEqual({
           persisted: true,
@@ -2447,6 +2467,29 @@ describe('hostThroughPty real round-trip', () => {
         });
         expect(readFileSync(nativeFile, 'utf8')).toContain('⟦turn-origin:session-port nonce:');
         expect(captured()).toContain(`ANSWER_OWNER:${ownerId}`);
+        if (outcome !== 'accepted') {
+          const originalNative = readFileSync(nativeFile, 'utf8');
+          finishAck();
+          const event = outcome === 'unknown' ? 'session-port-delivery-ack-pending' : 'session-port-delivery-ack-failed';
+          while (!readFileSync(eventLogPathForOwner(ownerId), 'utf8').includes(event) && Date.now() < deadline) await sleep(25);
+          expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8')).toContain(event);
+          if (outcome === 'unknown') {
+            expect(await Promise.race([done.then(() => true), sleep(100).then(() => false)])).toBe(false);
+            expect(onExit).not.toHaveBeenCalled();
+            expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual(expectedReceipt);
+            expect(readFileSync(nativeFile, 'utf8')).toBe(originalNative);
+            await rawInject(socketPathFor(ownerId), 'EXIT_AFTER_RECEIPT\n');
+            expect(await done).toBe(0);
+            expect(onExit.mock.calls[0]?.[1]).toBeFalsy();
+          } else {
+            await done;
+            // node-pty reports a signal kill with exitCode=0. The signal
+            // callback is the authoritative lifecycle evidence.
+            expect(onExit.mock.calls[0]?.[1]).toBe('SIGHUP');
+          }
+          expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
+          return;
+        }
         // Drive the child exit after the parent proof, while the HTTP ack is
         // still held, rather than racing transcript scanning with a timer.
         await rawInject(socketPathFor(ownerId), 'EXIT_AFTER_RECEIPT\n');
@@ -2459,6 +2502,7 @@ describe('hostThroughPty real round-trip', () => {
         expect(await done).toBe(0);
       } finally {
         finishAck();
+        await rawInject(socketPathFor(ownerId), 'EXIT_AFTER_RECEIPT\n').catch(() => undefined);
         await done?.catch(() => undefined);
         rmSync(root, { recursive: true, force: true });
       }
@@ -2481,6 +2525,7 @@ describe('hostThroughPty real round-trip', () => {
       chmodSync(proofPath, 0o600);
       const ownerId = `su-port-negative-${process.pid}-${failure}-${Math.floor(performance.now())}`;
       const { io } = fakeIo();
+      const onExit = vi.fn();
       const onKickoffPersisted = vi.fn(async (proof) => {
         expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toEqual({
           token, persisted: false, nativeRef: null, reason: proof.error,
@@ -2489,9 +2534,12 @@ describe('hostThroughPty real round-trip', () => {
       const childCode = [
         "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-        "process.stdout.write('omp v16.3.3\\nREADY\\n');let b='',submitted=false;",
+        // Isolate child-exit from missing-marker verification. Scheduling an
+        // exit after submission races the 300ms scanner and does not guarantee
+        // which valid negative disposition wins.
+        "process.stdout.write('omp v16.3.3\\nREADY\\n');if(process.env.PORT_FAILURE==='child-exit')process.exit(3);let b='',submitted=false;",
         // Submit proof exists, but the exact managed checksum does not.
-        "process.stdin.on('data',d=>{b+=d;if(!submitted&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){submitted=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',content:b.split('\\n')[0],timestamp:new Date().toISOString()})+'\\n');process.stdout.write('SUBMITTED\\n');if(process.env.PORT_FAILURE==='child-exit')setTimeout(()=>process.exit(3),50);}});",
+        "process.stdin.on('data',d=>{b+=d;if(!submitted&&b.includes(process.env.PORT_MARKER)&&(b.includes('\\r')||b.includes('\\n'))){submitted=true;fs.mkdirSync(path.dirname(process.env.PORT_NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.PORT_NATIVE_FILE,JSON.stringify({type:'message',role:'user',content:b.split('\\n')[0],timestamp:new Date().toISOString()})+'\\n');process.stdout.write('SUBMITTED\\n');}});",
         "setTimeout(()=>process.exit(2),10000);",
       ].join('');
       try {
@@ -2523,13 +2571,14 @@ describe('hostThroughPty real round-trip', () => {
           sessionPort: { renderedHash: hash },
           onKickoffPersisted,
           nativePersistenceTimeoutMs: 300,
-          onExit: () => undefined,
+          onExit,
         });
         expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
         expect(onKickoffPersisted.mock.calls[0]?.[0]).toMatchObject({ persisted: false, renderedHash: hash });
         const receipt = JSON.parse(readFileSync(proofPath, 'utf8'));
         expect(receipt.reason).toContain(failure === 'child-exit' ? 'target child exited' : 'not found in the omp native transcript');
         expect(receipt.persisted).toBe(false);
+        if (failure === 'child-exit') expect(onExit).toHaveBeenCalledWith(3, null);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
