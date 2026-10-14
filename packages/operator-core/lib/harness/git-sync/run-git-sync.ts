@@ -5068,6 +5068,8 @@ export async function commitAttributedGroups(
   message: string,
   opts: {
     diffSubjects?: boolean;
+    /** Paths that must stay in the anonymous residual group even when attributed. */
+    forceCatchAllPaths?: string[];
     /** Paths that must land before attributed source groups, normally superproject gitlinks. */
     priorityPaths?: string[];
     /** Keep attributed sources out of the catch-all when a protected priority path cannot land. */
@@ -5089,8 +5091,20 @@ export async function commitAttributedGroups(
   const dirtyPriorityPaths = allDirty.filter((f) => prioritySet.has(f));
   const blockedPriorityPaths = dirtyPriorityPaths.filter((f) => excludeSet.has(f));
   const dirty = allDirty.filter((f) => !excludeSet.has(f) && !prioritySet.has(f));
-  // The catch-all (agent=null) group is handled by the caller's add -A.
-  const groups = groupFilesForAttribution(dirty, attribution).filter((g) => g.agent !== null && g.files.length > 0);
+  // Commit the anonymous residual first. Script-created and otherwise unattributed
+  // files must not wait behind every per-agent group in a long local-sync pass.
+  // The caller's final add -A remains the safety net for arrivals and failed groups.
+  const forceCatchAll = new Set(opts.forceCatchAllPaths ?? []);
+  const groupAttribution =
+    forceCatchAll.size === 0
+      ? attribution
+      : new Map([...attribution].filter(([path]) => !forceCatchAll.has(path)));
+  const grouped = groupFilesForAttribution(dirty, groupAttribution);
+  const residual = grouped.find((g) => g.agent === null && g.files.length > 0);
+  const groups = [
+    ...(residual ? [residual] : []),
+    ...grouped.filter((g) => g.agent !== null && g.files.length > 0),
+  ];
   if (groups.length === 0) return { committedAny: false, committedCount: 0 };
   const suffix = skipCiSuffix(message);
   const log = opts.log ?? (() => {});
@@ -5098,13 +5112,13 @@ export async function commitAttributedGroups(
   let committedCount = 0;
 
   // Fail closed: a runner that drops `env` would run read-tree/add/reset on the SHARED index.
-  const opened = await openPrivateIndexSite(runGit, repoPath, 'attributed commits', 'attributed');
+  const opened = await openPrivateIndexSite(runGit, repoPath, 'per-agent and residual commits', 'attributed');
   if (!opened.ok) return { committedAny, committedCount, error: opened.error };
   const { site } = opened;
 
   if (dirtyPriorityPaths.length > 0) {
     if (blockedPriorityPaths.length > 0) {
-      opts.deferAttributedPaths?.([...new Set(groups.flatMap((g) => g.files))]);
+      opts.deferAttributedPaths?.([...new Set(groups.filter((g) => g.agent !== null).flatMap((g) => g.files))]);
       return {
         committedAny,
         committedCount,
@@ -5145,7 +5159,7 @@ export async function commitAttributedGroups(
       .filter((f) => prioritySet.has(f));
     if (remainingPriorityPaths.length > 0) {
       if (priority.status === 'nothing') {
-        opts.deferAttributedPaths?.([...new Set(groups.flatMap((g) => g.files))]);
+        opts.deferAttributedPaths?.([...new Set(groups.filter((g) => g.agent !== null).flatMap((g) => g.files))]);
       }
       return {
         committedAny,
@@ -5156,18 +5170,19 @@ export async function commitAttributedGroups(
   }
 
   for (const g of groups) {
+    const groupLabel = g.agent ? `attributed commit for ${g.agent}` : 'residual catch-all';
     const indexFile = site.newIndexFile();
     const privateGit = site.bindIndex(indexFile);
     try {
       // 1. The CAS base and a private index seeded from it.
-      const seeded = await seedPrivateIndex(runGit, privateGit, repoPath, indexFile, site.sharedIndex, 'attributed commit');
+      const seeded = await seedPrivateIndex(runGit, privateGit, repoPath, indexFile, site.sharedIndex, groupLabel);
       if (!seeded.ok) return { committedAny, committedCount, error: seeded.error };
       const { base, baseTree } = seeded;
 
       // 2. Stage ONLY this group's files, then guard exactly that index.
       const add = await privateGit(['add', '--', ...g.files], repoPath);
       if (add.code !== 0) {
-        return { committedAny, committedCount, error: `attributed add failed: ${gitFailureDetail(add)}` };
+        return { committedAny, committedCount, error: `${groupLabel} add failed: ${gitFailureDetail(add)}` };
       }
       if (opts.beforeCommit) {
         const guard = await opts.beforeCommit(privateGit);
@@ -5191,7 +5206,7 @@ export async function commitAttributedGroups(
         if (changed.code !== 0) {
           return {
             ok: false,
-            error: `attributed commit for ${g.agent} not published: could not list its paths: ${gitFailureDetail(changed)}`,
+            error: `${groupLabel} not published: could not list its paths: ${gitFailureDetail(changed)}`,
           };
         }
         const committedPaths = changed.stdout.split('\0').filter(Boolean);
@@ -5211,7 +5226,7 @@ export async function commitAttributedGroups(
         return {
           ok: false,
           error:
-            `attributed commit for ${g.agent} not published: the shared index could not be refreshed for ` +
+            `${groupLabel} not published: the shared index could not be refreshed for ` +
             `${committedPaths.length} path(s): ${gitFailureDetail(refresh)}`,
         };
       };
@@ -5226,8 +5241,8 @@ export async function commitAttributedGroups(
       const published = await publishPrivateIndexCommit(runGit, privateGit, repoPath, {
         base,
         baseTree,
-        label: 'attributed commit',
-        reflogMessage: `git-sync: attributed commit for ${g.agent}`,
+        label: groupLabel,
+        reflogMessage: g.agent ? `git-sync: attributed commit for ${g.agent}` : 'git-sync: residual catch-all',
         beforePublish: refreshSharedIndex,
         messageArgs: async () => {
           let subject = g.subject;
@@ -5244,7 +5259,7 @@ export async function commitAttributedGroups(
       if (published.status === 'error') return { committedAny, committedCount, error: published.error };
       if (published.status === 'cas-refused') {
         log(
-          `[git-sync] ${repoPath}: HEAD moved while ${g.agent}'s attributed commit was being built ` +
+          `[git-sync] ${repoPath}: HEAD moved while ${groupLabel} was being built ` +
             `(update-ref CAS refused: ${published.detail}) — not published; its ${g.files.length} file(s) ` +
             'stay dirty for the catch-all or the next tick',
         );
@@ -5291,10 +5306,9 @@ interface CommitRepoOpts {
   protectedHoldings: GitSyncLockHolding[];
   /** Re-read live holdings immediately before staging this repo. */
   refreshLiveLockHoldings?: () => Promise<GitSyncLockHolding[]>;
-  /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): path→agent map for THIS repo. When present
-   *  + non-empty, dirty files are peeled into per-agent commits first; the catch-all
-   *  `git add -A` commit (today's behavior) sweeps the remainder. Absent/empty = byte-identical
-   *  to today's single commit. */
+  /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): path→agent map for THIS repo. The
+   *  anonymous residual is committed first, then attributed groups; the final catch-all
+   *  `git add -A` still sweeps concurrent arrivals and failed groups. */
   attribution?: Map<string, FileAttribution>;
   /** Root-relative submodule gitlinks to commit before any attributed source groups. */
   priorityPaths?: string[];
@@ -6123,18 +6137,19 @@ async function commitOneRepoWithScratch(
       }
       return guard;
     };
-    // P-004: when an attribution map is supplied (flag GIT_SYNC_DERIVED_ATTRIBUTION on), peel
-    // each declaring agent's dirty files into its OWN commit (intent subject + Co-Authored-By)
-    // BEFORE the catch-all. Absent/empty → no-op, so the flag-OFF path stays byte-identical.
+    // P-004: commit the anonymous residual before per-agent groups so script-written files
+    // do not wait behind their full walk. The final whole-tree catch-all below still sweeps
+    // concurrent arrivals and any group that failed to publish.
     if (o.attribution && o.attribution.size > 0) {
       const res = await commitAttributedGroups(
         runGit,
         repoPath,
         o.attribution,
-        [...stagingExcludePaths, ...migrationCandidates, ...(o.forceCatchAllPaths ?? [])],
+        [...stagingExcludePaths, ...migrationCandidates],
         message,
         {
           diffSubjects: o.diffSubjects,
+          forceCatchAllPaths: o.forceCatchAllPaths,
           priorityPaths: o.priorityPaths,
           deferAttributedPaths: (paths) => {
             stagingExcludePaths = [...new Set([...stagingExcludePaths, ...paths])];
