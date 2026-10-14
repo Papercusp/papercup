@@ -31,9 +31,18 @@ function call(name: string, args: Record<string, unknown>, origin: string) {
     cwd: root, env, encoding: 'utf8', timeout: 180_000, maxBuffer: 2 * 1024 * 1024,
     input: JSON.stringify({ name, args: { ...args, payloadTier: 'full' } }),
   });
-  expect(result.status, result.stderr || result.stdout).toBe(0);
-  const value = JSON.parse(result.stdout);
-  expect(value.ok, JSON.stringify(value)).not.toBe(false);
+  let value: Record<string, any> | undefined;
+  try { value = JSON.parse(result.stdout); } catch { /* Report the original CLI failure below. */ }
+  if (result.status !== 0 || !value || value.ok === false) {
+    // stderr starts with connection traces. The actual tool refusal is normally
+    // in stdout; retain that receipt before throwing into the operational recorder.
+    const diagnostic = { name, status: result.status, signal: result.signal,
+      error: result.error?.message, receipt: value ?? result.stdout, stderr: result.stderr };
+    console.error('CBP_FINAL_MCP_FAILURE', JSON.stringify(diagnostic));
+    throw new Error(`MCP ${name} failed: ${JSON.stringify(value ?? result.stdout)}\n` +
+      `exit=${result.status} signal=${result.signal} error=${result.error?.message ?? 'none'}\n` +
+      result.stderr.slice(-1000));
+  }
   return value;
 }
 
@@ -137,6 +146,7 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
               throw new Error(`Owned matrix launcher failed (${task.task_id}): ${log.slice(-4000)}`);
             }
           };
+          let primaryError: unknown;
           try {
             let resumed!: Session;
             let port: Record<string, any> | undefined;
@@ -175,9 +185,20 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
               sourceAdvSessionId: source.id, targetAdvSessionId: resumed.id,
               port, nativePath: snapshot!.path, nativeSha256: snapshot!.sha256, nativeSessionId: snapshot!.id });
             console.info('CBP_FINAL_RESUME_OBSERVATION', JSON.stringify(observations.at(-1)));
+          } catch (error) {
+            primaryError = error;
+            throw error;
           } finally {
             // This task was created by this test; stop its managed subtree only.
-            call('processes:kill', { taskId: task.task_id, includeSubtree: true }, origin);
+            try {
+              const cleanup = call('processes:kill', { taskId: task.task_id,
+                includeSubtree: true, escalateAfterMs: 5000 }, origin);
+              console.info('CBP_FINAL_RESUME_CLEANUP', JSON.stringify({ taskId: task.task_id, receipt: cleanup }));
+            } catch (cleanupError) {
+              // A finally failure must not erase the observation that failed first.
+              throw new Error(`Owned matrix cleanup failed (${task.task_id}): ${String(cleanupError)}\n` +
+                `Primary observation failure: ${primaryError === undefined ? 'none' : String(primaryError)}`);
+            }
           }
         };
         for (const pair of SESSION_PORT_SUPPORTED_PAIRS) {
