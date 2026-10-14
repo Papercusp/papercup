@@ -52,6 +52,8 @@ import {
 } from './freshness';
 import { resolveCurrentTokens } from './freshness/resolvers';
 import { stampDeclaredDeps } from './freshness/stamp';
+import type { DepStamp } from './freshness/index';
+import { mergeCarryRefStampsIntoDeps, reconcileCarryRefStamps, stampCarryRefs } from './carry-ref-stamps';
 
 /**
  * First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
@@ -2985,6 +2987,13 @@ export async function setCarryNoteWithPrior(
     expectedHash?: string | null;
     /** Internal: use the bounded admin-pool transaction for su loop writes. */
     bounded?: boolean;
+    /**
+     * P-002 / D-006: version stamps for the references the incoming note cites
+     * (`stampCarryRefs`). Persisted beside the declared stamps under `deps.refs` and
+     * reconciled against the note actually stored (see `reconcileCarryRefStamps`).
+     * `undefined` keeps prior stamps the stored note still cites.
+     */
+    refStamps?: readonly DepStamp[];
   },
 ): Promise<SetCarryNoteResult> {
   const journalEnabled = opts?.journal ?? true;
@@ -3064,7 +3073,15 @@ export async function setCarryNoteWithPrior(
       };
     }
     // Unspecified ⇒ carry the prior declaration forward (see the `deps` opt doc).
-    const depsCol = depsSpecified ? (opts?.deps ?? null) : priorDeps;
+    const declaredDepsCol = depsSpecified ? (opts?.deps ?? null) : priorDeps;
+    // P-002 / D-006: reference stamps ride beside the declared stamps under `deps.refs`.
+    // A sealed note keeps none — the stamps would name what the sealed text cited.
+    const sealedAway = opts?.seal !== undefined && trimmed !== (effectiveNote ?? '').trim();
+    const depsCol = mergeCarryRefStampsIntoDeps(
+      declaredDepsCol,
+      sealedAway ? [] : reconcileCarryRefStamps(noteCol, opts?.refStamps, priorDeps),
+      priorDeps,
+    );
 
     if (noteCol === null && journal.length === 0) {
       // Nothing to store (cleared with no surviving journal) — delete the row.
@@ -3404,10 +3421,16 @@ export async function setLoopCarryNoteWithPrior(
     depsOpt = { deps: stamped.payload };
     if (stamped.warnings.length > 0) stampWarnings = stamped.warnings;
   }
+  // P-002: stamp the references the note cites, resolved in the session's concrete
+  // workspace (the loop scope itself is pinned to the coord workspace).
+  const refWs = concreteWorkspaceIdOrNull(ref.workspaceId);
+  const refStamps = refWs && typeof note === 'string' && note.trim()
+    ? await stampCarryRefs({ text: note, workspaceId: refWs, harness: ref.harness })
+    : undefined;
   const result = await setCarryNoteWithPrior(
     { scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() },
     note,
-    { ...substrateOpts, ...depsOpt, bounded: true },
+    { ...substrateOpts, ...depsOpt, ...(refStamps ? { refStamps } : {}), bounded: true },
   );
   if (stampWarnings) result.depsWarnings = stampWarnings;
   // WI-6974: the loop carry-note (note + walls + checks) is Orders-panel content,

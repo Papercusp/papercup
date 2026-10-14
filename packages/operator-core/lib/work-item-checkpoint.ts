@@ -49,6 +49,7 @@ import {
 } from './freshness';
 import { resolveCurrentTokens } from './freshness/resolvers';
 import { stampDeclaredDeps } from './freshness/stamp';
+import { stampCarryRefs } from './carry-ref-stamps';
 
 export interface WorkItemCheckpointRef {
   /**
@@ -293,6 +294,16 @@ export async function setWorkItemCheckpointWithPrior(
   // work-item checkpoint is the SAME kind of durable-continuity write a successor
   // inherits, so it deserves the SAME fail-fast + typed-error contract, not the
   // strictly worse "hang until the client times out with an unknown outcome" one.
+  // P-002 / D-006: stamp the references this checkpoint cites. Its own id is excluded —
+  // every checkpoint write moves the item's own version, so it would always read CHANGED.
+  const refStamps = typeof checkpoint === 'string' && checkpoint.trim()
+    ? await stampCarryRefs({
+        text: checkpoint,
+        workspaceId: ws,
+        harness: ref.harness,
+        exclude: [`work-item:${ref.workItemId}`],
+      })
+    : undefined;
   const { stored, priorLength, blockedReason } = await setCarryNoteWithPrior(
     { scope: workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), workspaceId: ws },
     checkpoint,
@@ -306,6 +317,7 @@ export async function setWorkItemCheckpointWithPrior(
       guard: opts?.guard,
       ...(opts?.transform ? { transform: opts.transform } : {}),
       ...(depsSpecified ? { deps: depsPayload } : {}),
+      ...(refStamps ? { refStamps } : {}),
       ...(opts?.workItem ? { workItem: opts.workItem } : {}),
       ...(opts?.writerOwnerId?.trim()
         ? {

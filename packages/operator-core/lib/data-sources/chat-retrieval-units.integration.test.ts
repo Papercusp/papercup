@@ -18,6 +18,7 @@ import {
   runChatRollupPass,
   placeLegalHold,
   purgeExpiredChatMessages,
+  purgeExpiredDocuments,
   reconcileChatMessageCoverage,
   releaseLegalHold,
   rollupChatUnits,
@@ -521,6 +522,108 @@ describe('chat retrieval units (P-015)', () => {
          SET config = '{"note": "renamed"}'::jsonb, scope = scope
        WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
     expect(await queuedBuckets()).toEqual([]);
+  });
+});
+
+// P-017c (WI-6554700010012583): document retention deletes a source's expired documents, keeps
+// the ones a legal hold covers (whole source, or the container by channelId or permission list),
+// and leaves chat-derived documents to the chat purge and rollup.
+describe('document retention (P-017c)', () => {
+  const NOW = new Date('2026-10-01T00:00:00Z');
+  const OLD = '2026-06-01T00:00:00Z';
+  const FRESH = '2026-09-28T00:00:00Z';
+
+  async function setRetention(id: string, maxAgeDays: unknown): Promise<void> {
+    await org.adminSql`
+      UPDATE harness_shared.data_sources SET retention_policy = ${org.adminSql.json({ maxAgeDays } as never)}
+       WHERE workspace_id = ${WS} AND id = ${id}::uuid`;
+  }
+
+  async function addDoc(
+    externalId: string,
+    opts: {
+      source?: string; kind?: string; occurredAt?: string | null; importedAt?: string; channelId?: string; permissionListId?: string;
+    } = {},
+  ): Promise<void> {
+    const metadata = opts.channelId ? { channelId: opts.channelId } : {};
+    const occurredAt = opts.occurredAt === undefined ? OLD : opts.occurredAt;
+    await org.adminSql`
+      INSERT INTO harness_shared.documents
+        (workspace_id, user_id, scope, source, source_id, kind, external_id, occurred_at, imported_at, title, text,
+         metadata, dedupe_key, permission_list_id)
+      VALUES (${WS}, ${alice}::uuid, 'personal', 'slack', ${opts.source ?? sourceId}::uuid, ${opts.kind ?? 'file'}, ${externalId},
+              ${occurredAt}::timestamptz, ${opts.importedAt ?? FRESH}::timestamptz, ${externalId}, ${`retention body ${externalId}`},
+              ${org.adminSql.json(metadata)}, ${`retention:${externalId}`}, ${opts.permissionListId ?? null}::uuid)`;
+  }
+
+  async function remaining(): Promise<string[]> {
+    const rows = await org.adminSql<{ external_id: string }[]>`
+      SELECT external_id FROM harness_shared.documents WHERE workspace_id = ${WS} ORDER BY external_id`;
+    return rows.map((r) => r.external_id);
+  }
+
+  it('deletes expired documents, keeps unexpired ones, and leaves chat-derived kinds alone', async () => {
+    await setRetention(sourceId, 30);
+    await addDoc('old');
+    await addDoc('fresh', { occurredAt: FRESH });
+    // No source time: the age is the import time.
+    await addDoc('old-import', { occurredAt: null, importedAt: OLD });
+    await addDoc('new-import', { occurredAt: null, importedAt: FRESH });
+    await addDoc('chat-message-old', { kind: 'chat-message' });
+    await addDoc('chat-thread-old', { kind: 'chat-thread' });
+    await addDoc('chat-window-old', { kind: 'chat-window' });
+
+    expect(await purgeExpiredDocuments(org.adminSql, WS, { now: NOW })).toEqual({ documentsExpired: 2, documentsHeldKept: 0 });
+    expect(await remaining()).toEqual(['chat-message-old', 'chat-thread-old', 'chat-window-old', 'fresh', 'new-import']);
+  });
+
+  it('leaves a source with no numeric maxAgeDays untouched', async () => {
+    const noPolicy = await makeSource('source-acl');
+    await setRetention(sourceId, '30');
+    await addDoc('string-policy');
+    await addDoc('no-policy', { source: noPolicy });
+
+    expect(await purgeExpiredDocuments(org.adminSql, WS, { now: NOW })).toEqual({ documentsExpired: 0, documentsHeldKept: 0 });
+    expect(await remaining()).toEqual(['no-policy', 'string-policy']);
+  });
+
+  it('keeps and counts expired documents under a whole-source hold until the hold is released', async () => {
+    const other = await makeSource('source-acl');
+    await setRetention(sourceId, 30);
+    await setRetention(other, 30);
+    await addDoc('held-a');
+    await addDoc('held-b', { channelId: CH });
+    await addDoc('other-old', { source: other });
+    const hold = await placeLegalHold(org.adminSql, WS, { dataSourceId: sourceId, reason: 'audit 17c', placedBy: 'owner' });
+
+    expect(await purgeExpiredDocuments(org.adminSql, WS, { now: NOW })).toEqual({ documentsExpired: 1, documentsHeldKept: 2 });
+    expect(await remaining()).toEqual(['held-a', 'held-b']);
+
+    await releaseLegalHold(org.adminSql, WS, { id: hold.id, releasedBy: 'owner' });
+    expect(await purgeExpiredDocuments(org.adminSql, WS, { now: NOW })).toEqual({ documentsExpired: 2, documentsHeldKept: 0 });
+    expect(await remaining()).toEqual([]);
+  });
+
+  it('a container hold keeps only that container, matched by channelId or by permission list', async () => {
+    await setRetention(sourceId, 30);
+    const list = await upsertPermissionList(org.adminSql, WS, { source: 'slack', sourceRef: containerPermissionRef(sourceId, CH), title: '#general' });
+    await addDoc('in-channel', { channelId: CH });
+    await addDoc('in-list', { permissionListId: list.id });
+    await addDoc('other-channel', { channelId: 'T1:CRANDOM' });
+    await placeLegalHold(org.adminSql, WS, { dataSourceId: sourceId, channelId: CH, reason: 'litigation 17c', placedBy: 'owner' });
+
+    expect(await purgeExpiredDocuments(org.adminSql, WS, { now: NOW })).toEqual({ documentsExpired: 1, documentsHeldKept: 2 });
+    expect(await remaining()).toEqual(['in-channel', 'in-list']);
+  });
+
+  it('the connector-sync driver pass runs document retention and reports both counts', async () => {
+    await setRetention(sourceId, 30);
+    await addDoc('expired');
+    await addDoc('held', { channelId: CH });
+    await placeLegalHold(org.adminSql, WS, { dataSourceId: sourceId, channelId: CH, reason: 'litigation 17c', placedBy: 'owner' });
+
+    expect(await runChatRollupPass(org.adminSql, { workspaceId: WS, now: NOW })).toMatchObject({ documentsExpired: 1, documentsHeldKept: 1 });
+    expect(await remaining()).toEqual(['held']);
   });
 });
 

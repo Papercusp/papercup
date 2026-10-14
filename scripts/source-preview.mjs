@@ -44,6 +44,7 @@
 //
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import assert from 'node:assert/strict';
+import { committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs, appendFileSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
@@ -729,18 +730,19 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
 export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env }) {
   if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
     throw new PreviewError('verifier command needs an explicit ref, external receipt and command', 2);
-  const donor = realpathSync(repo);
-  const scratch = join(donor, '.papercusp', 'scratch');
+  const sourceRepo = realpathSync(repo);
+  const donor = committedWorkRootDependencyDonor(sourceRepo);
+  const scratch = join(sourceRepo, '.papercusp', 'scratch');
   await fs.mkdir(scratch, { recursive: true });
   const owned = await fs.mkdtemp(join(scratch, 'verifier-command-'));
   const root = join(owned, 'invoked-source');
   /** @type {VerifierPhaseRunner} */
   let runPhase = async (_phase, operation) => operation();
   try {
-    writeVerifierTaskReceipt(owned, donor, env);
+    writeVerifierTaskReceipt(owned, sourceRepo, env);
     assertOutsideArchive(owned, resolve(receiptPath));
     runPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env);
-    const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: donor, ref, dest: root,
+    const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref, dest: root,
       inputs, inputsFile, tauriInputs, gitCheckout: true }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
     await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase });

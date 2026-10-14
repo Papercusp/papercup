@@ -1402,6 +1402,15 @@ export function listHosts(dir?: string): any[];
  *  what listHosts admits as a discovery record (WI-6554700010008431). */
 export function pruneDead(dir?: string): void;
 export function reportOwnerHumanTurn(now?: number): void;
+/**
+ * WI-6554700010011967: tell the operator this agent is quota-starved, so the
+ * operator can fire `fleet:member-quota-starved:<slug>` for its fleet leader. Before
+ * this the starvation verdict stayed a host-local event, and the leader only
+ * learned of it when presence decayed to `suspect` 40+ min later.
+ * Fire-and-forget with a short abort: the returned promise resolves true on a 2xx
+ * response and false otherwise, and never rejects (tests await it; the host does
+ * not).
+ */
 export function reportQuotaStarvation(ownerId: any, signal: any, { env, fetchImpl, timeoutMs }?: {
     env?: NodeJS.ProcessEnv | undefined;
     fetchImpl?: typeof fetch | undefined;

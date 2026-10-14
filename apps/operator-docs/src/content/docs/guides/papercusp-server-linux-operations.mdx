@@ -31,7 +31,7 @@ systemctl --user enable --now papercusp-server.service
 
 - **Verified:** the package postinst *enables* `papercusp-server.service` for every user (symlink in `/etc/systemd/user/default.target.wants/`) but does **not start** it. You must start it yourself.
 - **Verified:** first start reaches a healthy operator in about 15 s on a warm reinstall and up to about 3 min on a cold first boot, which seeds the embedded database.
-- **Not yet verified, so treat it as required:** on a headless host nothing keeps the user's systemd manager running without a login. `loginctl` reported `Linger=no` after install. The reboot drill passed only because the test VM auto-logs-in its user. For a server with no interactive login, run `sudo loginctl enable-linger USER`. The package's boot-start helper is not shipped in 0.0.26 (WI-6554700010012562).
+- **Required on a headless host:** nothing keeps the user's systemd manager running without a login. `loginctl` reported `Linger=no` after install, and the reboot drill passed only because the test VM auto-logs-in its user. On 0.0.26, run `sudo loginctl enable-linger USER`, then `systemctl --user enable --now papercusp-server.service` as that user. From Server 0.0.27 the package ships `/usr/sbin/papercusp-server-enable-boot-start` (0.0.26 does not include it, per release decision D-237), which does both steps and checks that they took: `sudo papercusp-server-enable-boot-start --user USER` (`--disable` reverses it). A reboot with no login session has not been drilled on either path yet (WI-6554700010012562).
 - If you also install the GUI package, **start the unit before the first GUI launch**. A GUI started while the unit is stopped appears to run its own server outside the unit, and that server ignores your drop-in configuration (WI-6554700010012567, unconfirmed).
 
 The process tree under the unit looks like this: `papercusp-server --headless-service` → `node …/sidecar/serve.mjs --ensure` → `postgres -D ~/.papercusp-workspaces/.shared/embedded-pg-data`.
@@ -138,7 +138,7 @@ systemctl --user start papercusp-server.service   # then wait for /api/health
 | Operator process killed (`kill -9` on the node operator) | The unit restarts it | Healthy in 10 s; `NRestarts=1` |
 | Unit main process killed | systemd restarts the unit | Healthy in 5 s; `NRestarts=2` |
 | Postgres postmaster killed | The operator respawns Postgres; no unit restart | Healthy; new postmaster pid |
-| Host reboot | The user manager starts the enabled unit | Healthy 15 s after boot, **only with a login session** (see Install) |
+| Host reboot | The user manager starts the enabled unit | Healthy 15 s after boot **with a login session**. With linger and no login session: not yet verified (see Install) |
 | Package removed by mistake, user data kept | Reinstall the same `.deb`, then `systemctl --user start papercusp-server.service` | Healthy in 15 s with the prior data intact |
 
 If the unit enters a restart loop, read the last 200 journal lines and the newest files in `~/.papercusp/logs` first, then check free disk.
@@ -164,7 +164,7 @@ rm -rf ~/.papercusp ~/.papercusp-workspaces ~/.local/state/papercusp \
        ~/.local/share/com.papercusp.gui ~/.local/share/applications/papercusp-tutorial.desktop \
        ~/papercusp-app.log
 systemctl --user daemon-reload
-sudo loginctl disable-linger USER   # if you enabled it at install
+sudo loginctl disable-linger USER   # if you enabled linger at install, by hand or with the boot-start helper
 ```
 
 **Verified:** this list leaves no Papercusp entries under the home directory. The last three paths were found as leftovers in the drill and are easy to miss.
@@ -173,7 +173,7 @@ sudo loginctl disable-linger USER   # if you enabled it at install
 
 | Item | Gap | Effect on this runbook |
 |---|---|---|
-| WI-6554700010012562 | Boot-start helper (`enable-boot-start.sh`) is not shipped in 0.0.26 | Enable linger by hand for headless boot start |
+| WI-6554700010012562 | Boot-start helper is not shipped in 0.0.26. Ships from 0.0.27 as `/usr/sbin/papercusp-server-enable-boot-start`; not yet verified on a built package | On 0.0.26, enable linger by hand for headless boot start |
 | WI-6554700010012487 | `/usr/bin/ptool` fails: `@modelcontextprotocol/sdk` missing from the shipped sidecar | No in-product snapshots or CLI diagnostics; use `pg_dump` and systemd |
 | WI-6554700010012477 | Embedded Postgres uses fixed default credentials on every install (unconfirmed) | Keep the DB port local-only; treat backups as secret |
 | WI-6554700010012567 | GUI launched while the unit is stopped appears to run a server outside the unit (unconfirmed) | Start the unit before the GUI |

@@ -434,6 +434,41 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       .rejects.toThrow('ERR_MODULE_NOT_FOUND');
   });
 
+  it('freezes materialized committed source using its physical dependency donor', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-materialized-dependencies'));
+    git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+    const script = 'scripts/source-preview.mjs';
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    write(fixture.repo, script, "import value from '@native-proof/runtime';\nif (value !== 'private-snapshot') throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    // Keep the physical-donor precondition and real independent Node resolution;
+    // substitute only the expensive production dependency census/copy.
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ntest ! -L "$2/node_modules/.bin"\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+    write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/node_modules/\n/.papercusp/scratch/\n');
+    git(fixture.repo, ['add', script, helper, '.gitignore']);
+    git(fixture.repo, ['commit', '-qm', 'materialized dependency donor fixture']);
+    const sha = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    write(fixture.repo, 'node_modules/.bin/probe', '#!/bin/sh\n');
+    write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
+      name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
+    write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+    const materialized = join(tmp, 'materialized-dependency-source');
+    git(fixture.repo, ['clone', '--local', '--shared', fixture.repo, materialized]);
+    const shadow = await import(new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href);
+    write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha, sourceRepoRoot: fixture.repo }));
+    shadow.linkNodeModulesShadow(join(fixture.repo, 'node_modules'), join(materialized, 'node_modules'), fixture.repo, materialized);
+    expect((await fsPromises.lstat(join(materialized, 'node_modules/.bin'))).isSymbolicLink()).toBe(true);
+    const receiptPath = join(tmp, 'materialized-dependency-source-receipt.json');
+    const options = { repo: materialized, ref: sha, inputs: [script], receiptPath,
+      command: [process.execPath, script, 'verifier-measure'] };
+    expect(await runVerifierCommand(options)).toBe(0);
+    expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(sha);
+    // The recorded donor must never make a mismatched source identity acceptable.
+    write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha: '0'.repeat(40), sourceRepoRoot: fixture.repo }));
+    await expect(runVerifierCommand({ ...options, receiptPath: join(tmp, 'refused-donor-receipt.json') }))
+      .rejects.toThrow('retained source commit does not match');
+    expect(existsSync(join(tmp, 'refused-donor-receipt.json'))).toBe(false);
+  });
+
   it.each(['donor-change', 'child-failure', 'frozen-tamper', 'phase-io-failure'] as const)
     ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));

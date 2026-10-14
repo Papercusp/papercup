@@ -239,6 +239,23 @@ export function verifyCommittedWorkRoot(workRoot, expectedSha, requiredPaths = [
   return { root, sha: expectedSha };
 }
 
+/** A shadow install is a source reader, not a physical dependency donor. */
+export function committedWorkRootDependencyDonor(workRoot) {
+  let root = realpathSync(workRoot);
+  const visited = new Set();
+  while (existsSync(join(root, OWNER_MARKER))) {
+    if (visited.has(root)) throw new Error('lint-as-committed: cyclic dependency donor provenance');
+    visited.add(root);
+    const marker = JSON.parse(readFileSync(join(root, OWNER_MARKER), 'utf8'));
+    verifyCommittedWorkRoot(root, marker.sha);
+    if (typeof marker.sourceRepoRoot !== 'string' || !isAbsolute(marker.sourceRepoRoot)) {
+      throw new Error('lint-as-committed: retained source has no dependency donor provenance; rematerialize the recorded commit');
+    }
+    root = realpathSync(marker.sourceRepoRoot);
+  }
+  return root;
+}
+
 /** Keep the existing owner marker alive for the lifetime of a dependent artifact. */
 export function retainCommittedWorkRoot(workRoot, expectedSha, artifactPath) {
   const { root } = verifyCommittedWorkRoot(workRoot, expectedSha);
@@ -1119,7 +1136,7 @@ function main() {
       bail(2);
     }
     try {
-      writeFileSync(join(workRoot, OWNER_MARKER), JSON.stringify({ pid: process.pid, keep: args.keep, createdAtMs: Date.now(), sha }));
+      writeFileSync(join(workRoot, OWNER_MARKER), JSON.stringify({ pid: process.pid, keep: args.keep, createdAtMs: Date.now(), sha, sourceRepoRoot: repoRoot }));
     } catch {
       /* best-effort: an unmarked tree still ages out by mtime */
     }

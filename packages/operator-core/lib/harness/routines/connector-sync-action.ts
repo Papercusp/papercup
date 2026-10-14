@@ -138,8 +138,8 @@ export interface ConnectorSyncActionDeps {
   runParticipantBackfills?: typeof runPendingParticipantBackfills;
   runGoogleContacts?: (ctx: SystemActionCtx, sql: Sql) => Promise<GoogleContactsPersonalVaultPollResult>;
   runChatRollup?: (sql: Sql, opts: { workspaceId: string }) => Promise<{
-    buckets: number; unitsWritten: number; unitsRemoved: number; expired: number; legacyMigrated: number;
-    failed: number; deadLettered: number; failures: ChatRollupFailure[];
+    buckets: number; unitsWritten: number; unitsRemoved: number; expired: number; documentsExpired: number;
+    documentsHeldKept: number; legacyMigrated: number; failed: number; deadLettered: number; failures: ChatRollupFailure[];
   }>;
 }
 
@@ -198,12 +198,17 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
   let chatRollupError: string | null = null;
   const chat = await (provided.runChatRollup ?? runChatRollupPass)(sql, { workspaceId: ctx.workspaceId }).catch((cause: unknown) => {
     chatRollupError = errorText(cause);
-    return { buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0, failed: 0, deadLettered: 0, failures: [] };
+    return {
+      buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, documentsExpired: 0, documentsHeldKept: 0,
+      legacyMigrated: 0, failed: 0, deadLettered: 0, failures: [],
+    };
   });
-  if (chat.buckets > 0 || chat.expired > 0 || chat.legacyMigrated > 0) {
+  if (chat.buckets > 0 || chat.expired > 0 || chat.documentsExpired > 0 || chat.documentsHeldKept > 0 || chat.legacyMigrated > 0) {
     console.log(
       '[connector-sync] chat rollup buckets=' + chat.buckets + ' unitsWritten=' + chat.unitsWritten +
-        ' unitsRemoved=' + chat.unitsRemoved + ' expired=' + chat.expired + ' legacyMigrated=' + chat.legacyMigrated,
+        ' unitsRemoved=' + chat.unitsRemoved + ' expired=' + chat.expired +
+        ' documentsExpired=' + chat.documentsExpired + ' documentsHeldKept=' + chat.documentsHeldKept +
+        ' legacyMigrated=' + chat.legacyMigrated,
     );
   }
   const softErrors = [
@@ -248,6 +253,8 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
       chatUnitsWritten: chat.unitsWritten,
       chatUnitsRemoved: chat.unitsRemoved,
       chatExpired: chat.expired,
+      chatDocumentsExpired: chat.documentsExpired,
+      chatDocumentsHeldKept: chat.documentsHeldKept,
       chatLegacyMigrated: chat.legacyMigrated,
       chatRollupFailed: chatRollupError ? 1 : 0,
       chatBucketsFailed: chat.failed,
