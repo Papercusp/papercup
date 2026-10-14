@@ -133,6 +133,10 @@ vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async 
 vi.mock('../agent-tools/coordination/tools/conditions', () => ({
   readConditionEnvelopes: async () => [], computeConditionStates: () => [],
 }));
+vi.mock('../agent-tools/coordination/log', () => ({
+  coordScopeReady: vi.fn(async () => {}),
+  coordScopeWorkspace: vi.fn(() => 'workspace'),
+}));
 vi.mock('../agent-tools/coordination/presence', () => ({
   setContextEstimate: setEstimateMock,
   clearContextEstimate: clearEstimateMock,
@@ -232,6 +236,10 @@ function fakeSql(opts: {
   activeSessionOwners?: string[];
   /** Exercise the fail-open lifecycle-read path. */
   activeSessionOwnersError?: boolean;
+  /** Exercise the fail-open condition-family read path. */
+  conditionEpisodesError?: boolean;
+  /** Open compaction episodes returned by the family-scoped lifecycle read. */
+  conditionEpisodes?: Array<{ condition_key: string; opened_at: string | Date }>;
   spawnRecords?: Record<string, { model_spec: string | null; model_tier: string | null }>;
   /** P-003: claim-freshness rows keyed by owner (the work_item_claims⋈carry_notes read). */
   claimFreshness?: Record<
@@ -275,6 +283,10 @@ function fakeSql(opts: {
       if (opts.activeSessionOwnersError) return Promise.reject(new Error('adv session read failed'));
       const owners = opts.activeSessionOwners ?? (opts.seeded ?? []).map((row) => row.owner_id);
       return Promise.resolve(owners.map((owner_id) => ({ owner_id })));
+    }
+    if (q.includes('harness_shared.coord_event_log') && q.includes('jsonb_array_elements_text')) {
+      if (opts.conditionEpisodesError) return Promise.reject(new Error('condition query failed'));
+      return Promise.resolve(opts.conditionEpisodes ?? []);
     }
     if (q.includes('compaction_limit IS NULL')) return Promise.resolve(opts.unseeded ?? []);
     if (q.includes('compaction_limit IS NOT NULL')) return Promise.resolve(opts.seeded ?? []);
@@ -456,6 +468,21 @@ describe('original compaction durable episodes', () => {
     await h.run([], { activeSessionOwnersError: true });
     expect(h.open.size).toBe(2);
     expect(h.resolvedKeys).toEqual([]);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('ended-session lifecycle read failed'));
+  });
+  it('logs condition-family read failures and exact-key resolutions that return false', async () => {
+    const h = fixture();
+    const key = h.key('over-limit');
+    await checkCompactionCompliance(fakeSql({ conditionEpisodesError: true }), {
+      rail: { resolve: async () => true },
+    });
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('ended-session condition read failed'));
+
+    h.open.set(key, Date.now() - 100);
+    h.deps.rail!.resolve = async () => false;
+    await h.run([], { activeSessionOwners: [] });
+    expect(h.open.has(key)).toBe(true);
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(`condition recovery returned false for exact key ${key}`));
   });
   it('preserves an episode when the condition reader returns duplicate lifecycle evidence', async () => {
     const h = fixture();
@@ -2273,6 +2300,19 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     expect(unknownResolved).toEqual([]);
   });
 
+  it('reads old compaction episodes outside the generic condition window before lifecycle recovery', async () => {
+    const endedKey = compactionConditionKey('workspace', 'ended-old', 'over-limit');
+    const resolved: string[] = [];
+    const deps: CompactionComplianceDeps = {
+      rail: { resolve: async (event) => { resolved.push(event.conditionKey); return true; } },
+    };
+    await checkCompactionCompliance(fakeSql({
+      activeSessionOwners: [],
+      conditionEpisodes: [{ condition_key: endedKey, opened_at: new Date(Date.now() - 86_400_000) }],
+    }), deps);
+    expect(resolved).toEqual([endedKey]);
+  });
+
   it('a context-DEAD session (P-019) is not double-counted as dark telemetry', async () => {
     resetContextDeathEscalationsForTests();
     estimateMock.mockResolvedValue(null);
@@ -2635,6 +2675,15 @@ describe('EI-16190 pre-cutover-process self-check', () => {
     // particular entry's content (which may grow over time).
     const ancientBoot = Date.parse('2000-01-01T00:00:00Z');
     expect(staleCutoversForProcessStart(ancientBoot).length).toBeGreaterThan(0);
+  });
+
+  it('registers the ended-session exact-key recovery cutover for stale watchdog processes', () => {
+    const recoveryCutover = WATCHDOG_BEHAVIOR_CUTOVERS.find(
+      (cutover) => cutover.id === 'ended-session-compaction-exact-key-recovery',
+    );
+    expect(recoveryCutover).toBeDefined();
+    expect(staleCutoversForProcessStart(recoveryCutover!.atMs - 1)).toContainEqual(recoveryCutover);
+    expect(staleCutoversForProcessStart(recoveryCutover!.atMs)).not.toContainEqual(recoveryCutover);
   });
 
   it('startCompactionComplianceWatchdog escalates ONCE when this process predates a known cutover', async () => {

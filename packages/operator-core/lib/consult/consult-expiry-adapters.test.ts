@@ -257,6 +257,8 @@ describe('consultExpiryFindSilentResponders', () => {
     const routedAt = new Date(now.getTime() - 31 * 60_000).toISOString();
     const histories = {
       prior: { total: 2, posts: [{ author_id: 'su-prior-source' }, { author_id: 'su-prior-fork' }] },
+      requester: { total: 2, posts: [{ author_id: 'su-requester' }, { author_id: 'su-requester' }] },
+      mixed: { total: 2, posts: [{ author_id: 'su-prior-fork' }, { author_id: 'su-requester' }] },
       current: { total: 1, posts: [{ author_id: 'su-reserved' }] },
       unknown: { total: 1, posts: [{ author_id: 'su-unknown' }] },
       anonymous: { total: 1, posts: [{ author_id: null }] },
@@ -266,6 +268,7 @@ describe('consultExpiryFindSilentResponders', () => {
     };
     const rows = Object.keys(histories).map((conversationId) => ({
       workspaceId: ROW_WS, conversationId, answeringOwnerId: 'su-reserved', routedAt,
+      requesterId: 'su-requester',
       priorResponderIds: ['su-prior-source', 'su-prior-fork', ...(conversationId === 'overlap' ? ['su-reserved'] : [])],
     }));
     const found = await consultExpiryFindSilentResponders({
@@ -278,7 +281,7 @@ describe('consultExpiryFindSilentResponders', () => {
       now: () => now,
     })(rows);
 
-    expect(found).toEqual(new Set(['prior']));
+    expect(found).toEqual(new Set(['prior', 'requester', 'mixed']));
   });
 
   it.each(['unknown', 'live', 'parked'])('keeps prior replies from bypassing %s answerer liveness and pickup grace', async (sessionState) => {

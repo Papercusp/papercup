@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseRequirementBars } from './acceptance-bar-seed';
 import {
+  amendedRequirementBarKeys,
   diffAmendedCriteriaAgainstRequirements,
   rerenderAmendedRequirementBlocks,
 } from './acceptance-bar-amendment-requirements-drift';
@@ -304,5 +305,35 @@ describe('rerenderAmendedRequirementBlocks', () => {
       .toEqual({ content: planContent, rerendered: [] });
     expect(rerenderAmendedRequirementBlocks(planContent, { nextCriteria: amended(), changedBars: [] }))
       .toEqual({ content: planContent, rerendered: [] });
+  });
+
+  it('EI-25970739425963382: detects and renders every stated acceptance field', () => {
+    const acceptance = { ...sections.acceptance, mandatory: true, role: 'outcome', passRatings: ['pass'], coversBarKeys: ['R-1'] };
+    const content = planContent.replace(JSON.stringify(sections), JSON.stringify({ ...sections, acceptance }));
+    const parsed = parseRequirementBars(content);
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
+    const criteria = inSyncCriteria();
+    Object.assign(criteria[0]!, { mandatory: false, role: 'disclosure', passRatings: ['partial'], coversBarKeys: ['R-2'] });
+    const before = diffAmendedCriteriaAgainstRequirements({ requirementBars: parsed.bars, nextCriteria: criteria, changedBars: ['R-1'] });
+    expect(before.entries[0]?.fields).toEqual(['passRatings', 'mandatory', 'role', 'coversBarKeys']);
+    const rendered = rerenderAmendedRequirementBlocks(content, { nextCriteria: criteria, changedBars: ['R-1'] });
+    const after = parseRequirementBars(rendered.content);
+    if (!after.ok) throw new Error(JSON.stringify(after.problems));
+    expect(after.bars[0]!.criterion).toMatchObject({ mandatory: false, role: 'disclosure', passRatings: ['partial'], coversBarKeys: ['R-2'] });
+    expect(diffAmendedCriteriaAgainstRequirements({ requirementBars: after.bars, nextCriteria: criteria, changedBars: ['R-1'] }).inSync).toBe(true);
+  });
+
+  it('EI-25970739425963382: renders replication and declared production configuration independently of meaning selection', () => {
+    const prior = inSyncCriteria();
+    const criteria = inSyncCriteria();
+    Object.assign(criteria[0]!, { replication: 'Repeat the export on a fresh fixture.', productionConfiguration: { flags: { 'papercusp-loops': true } } });
+    const changedBars = amendedRequirementBarKeys(prior, criteria);
+    expect(changedBars).toEqual(['R-1']);
+    const rendered = rerenderAmendedRequirementBlocks(planContent, { nextCriteria: criteria, changedBars });
+    const parsed = parseRequirementBars(rendered.content);
+    if (!parsed.ok) throw new Error(JSON.stringify(parsed.problems));
+    expect(parsed.bars[0]!.criterion).toMatchObject({ replication: 'Repeat the export on a fresh fixture.', productionConfiguration: { flags: { 'papercusp-loops': true } } });
+    expect(diffAmendedCriteriaAgainstRequirements({ requirementBars: parsed.bars, nextCriteria: criteria, changedBars }).inSync).toBe(true);
+    expect(amendedRequirementBarKeys(prior, inSyncCriteria())).toEqual([]);
   });
 });

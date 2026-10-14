@@ -208,6 +208,16 @@ describe('hosted customer PTY identity', () => {
     expect(fresh).not.toEqual(req);
     f.adapter.close(); expect(await next).toEqual({ ok: false });
   });
+  it('requests diagnostics separately and returns only the correlated control-plane consent', async () => {
+    const f = await authorityHarness();
+    const pending = f.adapter.resolveCustomerPrincipal('http', undefined, true);
+    const req = f.sent.find(m => m.type === 'session.authorize') as Extract<HostedHostOutboundEnvelope, { type: 'session.authorize' }>;
+    expect(req.diagnostics).toBe(true);
+    const monitoringConsent = { disclosure_version: '2026-10-13', diagnostics: { enabled: false, since: null }, analytics: { enabled: false, since: null } };
+    await f.adapter.accept({ ...req, type: 'session.authorized', authority: { ...authority, monitoringConsent } });
+    expect(await pending).toMatchObject({ ok: true, monitoringConsent });
+    f.adapter.close();
+  });
 
   it.each(['userId', 'sessionId', 'controlPlaneWorkspaceId', 'organizationId',
     'customerWorkspaceId', 'sessionVersion', 'permissions'])(

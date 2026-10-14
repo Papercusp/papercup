@@ -36,15 +36,23 @@ export type RequirementsDriftField =
   | 'method'
   | 'check'
   | 'replication'
+  | 'productionConfiguration'
   | 'requiredScope'
   | 'requiredTestLayers'
   | 'evidencePlane'
-  | 'evidenceRuntime';
+  | 'evidenceRuntime'
+  | 'passRatings'
+  | 'mandatory'
+  | 'role'
+  | 'coversBarKeys';
 
 /** Compared whenever the plan block is explicit: the seeder never supplies a default for them. */
-const VERIFICATION_FIELDS = ['method', 'check', 'replication'] as const;
+const VERIFICATION_FIELDS = ['method', 'check', 'replication', 'productionConfiguration'] as const;
 /** Compared only when the plan block states them: otherwise the seeder derives them from the map. */
-const STATED_ACCEPTANCE_FIELDS = ['requiredScope', 'requiredTestLayers', 'evidencePlane', 'evidenceRuntime'] as const;
+const STATED_ACCEPTANCE_FIELDS = [
+  'requiredScope', 'requiredTestLayers', 'evidencePlane', 'evidenceRuntime',
+  'passRatings', 'mandatory', 'role', 'coversBarKeys',
+] as const;
 
 export interface RequirementsDriftEntry {
   barKey: string;
@@ -101,6 +109,20 @@ const barNumber = (barKey: string): number => {
   const match = /^R-(\d+)$/.exec(barKey);
   return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 };
+
+/** Requirement text also represents METHOD/replication, which do not change BAR meaning. */
+export function amendedRequirementBarKeys(
+  priorCriteria: ReadonlyArray<Record<string, unknown>>,
+  nextCriteria: ReadonlyArray<Record<string, unknown>>,
+): string[] {
+  const priorByBar = new Map(priorCriteria.map((criterion) => [criterion.barKey, criterion]));
+  const fields = ['model', 'driftMarkers', ...VERIFICATION_FIELDS, ...STATED_ACCEPTANCE_FIELDS] as const;
+  return nextCriteria.flatMap((criterion) => {
+    const barKey = typeof criterion.barKey === 'string' ? criterion.barKey.trim() : '';
+    const prior = priorByBar.get(barKey);
+    return barKey && (!prior || fields.some((field) => !sameStructure(prior[field], criterion[field]))) ? [barKey] : [];
+  }).sort((a, b) => barNumber(a) - barNumber(b) || a.localeCompare(b));
+}
 
 export function diffAmendedCriteriaAgainstRequirements(input: {
   requirementBars: readonly ParsedRequirementBar[];

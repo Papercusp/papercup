@@ -51,6 +51,8 @@ import { clearContextUsage, recordContextUsage, setContextGaugeEnabled } from '.
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../agent-tools/coordination/compaction-recovery';
 import { addressContinuationToOwner } from '../carry-respawn-addressing';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { coordScopeReady, coordScopeWorkspace } from '../agent-tools/coordination/log';
+import { MESSAGE_GC_RETENTION_DAYS } from '../agent-tools/coordination/message-log-gc';
 import { hostname } from 'node:os';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
@@ -78,7 +80,76 @@ async function raiseCompactionCondition(workspace: string, owner: string, kind: 
     else await broadcastSevereEvent(event);
   } catch (error) { console.warn(`[compaction-watchdog] condition delivery failed: ${String(error)}`); }
 }
-async function readOpenCompactionConditions(): Promise<Array<{ conditionKey: string; openedAtMs: number }>> {
+async function readOpenCompactionConditions(
+  sql?: Sql,
+  now = Date.now(),
+): Promise<Array<{ conditionKey: string; openedAtMs: number }>> {
+  // The generic conditions reader is deliberately capped at the newest 25k
+  // envelopes across every subsystem. Compaction alarms are one-shot, so an
+  // old open episode can fall out of that window while its owner's adv_session
+  // is later marked ended. Read this family directly for lifecycle cleanup so
+  // unrelated condition traffic cannot hide an episode from recovery.
+  if (sql) {
+    try {
+      const sinceBound = new Date(now - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
+      await coordScopeReady();
+      const workspaceId = coordScopeWorkspace();
+      const familyPrefix = 'alarm:compaction-compliance:%';
+      const rows = await sql<Array<{ condition_key: string; opened_at: string | Date }>>`
+        WITH raw AS (
+          SELECT id, ts, body
+            FROM harness_shared.coord_event_log
+           WHERE workspace_id = ${workspaceId}
+             AND surface = 'messages'
+             AND ts >= ${sinceBound}
+             AND (
+               body->>'condition_key' LIKE ${familyPrefix}
+               OR body->>'resolves_condition' LIKE ${familyPrefix}
+               OR (
+                 jsonb_typeof(body->'resolves_conditions') = 'array'
+                 AND EXISTS (
+                   SELECT 1
+                     FROM jsonb_array_elements_text(body->'resolves_conditions') AS resolved(condition_key)
+                    WHERE resolved.condition_key LIKE ${familyPrefix}
+                 )
+               )
+             )
+        ), events AS (
+          SELECT id, ts, body->>'condition_key' AS condition_key, false AS resolved
+            FROM raw
+           WHERE body->>'condition_key' LIKE ${familyPrefix}
+             AND NOT (body ? 'resolves_condition' OR body ? 'resolves_conditions')
+          UNION ALL
+          SELECT id, ts, body->>'resolves_condition' AS condition_key, true AS resolved
+            FROM raw
+           WHERE body->>'resolves_condition' LIKE ${familyPrefix}
+          UNION ALL
+          SELECT raw.id, raw.ts, resolved.condition_key, true AS resolved
+            FROM raw
+            CROSS JOIN LATERAL jsonb_array_elements_text(
+              CASE WHEN jsonb_typeof(raw.body->'resolves_conditions') = 'array'
+                THEN raw.body->'resolves_conditions' ELSE '[]'::jsonb END
+            ) AS resolved(condition_key)
+           WHERE resolved.condition_key LIKE ${familyPrefix}
+        ), latest AS (
+          SELECT DISTINCT ON (condition_key) condition_key, ts, resolved
+            FROM events
+           ORDER BY condition_key, id DESC
+        )
+        SELECT condition_key, ts AS opened_at
+          FROM latest
+         WHERE NOT resolved
+      `;
+      return rows
+        .map((row) => ({ conditionKey: row.condition_key, openedAtMs: Date.parse(String(row.opened_at)) }))
+        .filter((row) => Number.isFinite(row.openedAtMs));
+    } catch (error) {
+      // A failed lifecycle-condition read is unknown state; recovery remains
+      // fail-open and the normal sweep may retry on the next tick.
+      console.warn(`[compaction-watchdog] ended-session condition read failed: ${String(error)}`);
+      return [];
+    }
+  }
   const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
   return computeConditionStates(await readConditionEnvelopes())
     .filter(row => row.open && row.condition_key.startsWith('alarm:compaction-compliance:'))
@@ -106,8 +177,14 @@ async function recoverCompactionEpisodes(episodes: Array<{ conditionKey: string;
   if (!Number.isFinite(measuredAtMs) || measuredAtMs <= 0 || measuredAtMs > Date.now()) return;
   for (const episode of episodes) {
     if (episode.openedAtMs > measuredAtMs || episodes.filter(row => row.conditionKey === episode.conditionKey).length !== 1) continue;
-    try { await resolveAlarm(episode.conditionKey, 'compaction-compliance-watchdog', deps.rail); }
-    catch (error) { console.warn(`[compaction-watchdog] condition recovery failed: ${String(error)}`); }
+    try {
+      const resolved = await resolveAlarm(episode.conditionKey, 'compaction-compliance-watchdog', deps.rail);
+      if (!resolved) {
+        console.warn(`[compaction-watchdog] condition recovery returned false for exact key ${episode.conditionKey}`);
+      }
+    } catch (error) {
+      console.warn(`[compaction-watchdog] condition recovery failed for ${episode.conditionKey}: ${String(error)}`);
+    }
   }
 }
 
@@ -177,7 +254,8 @@ async function recoverEndedSessionSignalEpisodes(
          AND ended_at IS NULL
          AND ended_by IS NULL
     `;
-  } catch {
+  } catch (error) {
+    console.warn(`[compaction-watchdog] ended-session lifecycle read failed: ${String(error)}`);
     return;
   }
   const active = new Set(activeOwners.map((row) => row.owner_id));
@@ -2404,10 +2482,11 @@ export async function checkCompactionCompliance(
   // now definitively ended; active owners and episodes requiring follow-up
   // action remain untouched.
   try {
-    const openEpisodes = await (deps.readOpenConditions ?? readOpenCompactionConditions)();
+    const openEpisodes = await (deps.readOpenConditions ?? (() => readOpenCompactionConditions(sql)))();
     await recoverEndedSessionSignalEpisodes(sql, openEpisodes, deps);
-  } catch {
+  } catch (error) {
     // A failed lifecycle read must never turn an unknown owner into recovery.
+    console.warn(`[compaction-watchdog] ended-session recovery failed: ${String(error)}`);
   }
   // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the
   // in-process gauge switch the (sync) result-annotator reads. Best-effort — a flag-infra
@@ -3232,6 +3311,13 @@ export const WATCHDOG_BEHAVIOR_CUTOVERS: ReadonlyArray<{ id: string; atMs: numbe
       'native /compact retired fleet-wide (WI-4998) — carry-respawn is the only context cut from this ' +
       'point on; a pre-cutover process still types the retired mode:"compact" (dropped loudly by ' +
       'psu-pty-host as of this same fix, but the SENDER is the thing that needs restarting).',
+  },
+  {
+    id: 'ended-session-compaction-exact-key-recovery',
+    atMs: Date.parse('2026-10-14T16:20:00Z'),
+    note:
+      'ended-session compaction alarms are read by family and resolved with an exact-key latest-envelope check; ' +
+      'pre-cutover watchdog processes can miss old open episodes outside the generic condition fold (WI-6554700010009854).',
   },
 ];
 

@@ -252,6 +252,43 @@ test('allocation evidence identifies a pending request and its failed outcome wi
   assert.equal(JSON.stringify(receipts).includes('private output'), false);
 });
 
+test('combined reaper allocation retains exact daemon create and start boundaries without private attributes', async () => {
+  const owner = 'daohr-documenso-12345678-abc-reaper', receipts = [], secret = randomUUID();
+  const result = await dockerAllocation(['run', '--name', owner, secret], {}, {
+    onProgress: receipt => receipts.push(receipt),
+    spawnChild: () => spawn(process.execPath, ['-e', 'process.stdout.write("reaper-id")']),
+    readEvents: args => {
+      assert.deepEqual(args.slice(0, 2), ['events', '--since']);
+      assert.equal(args[args.indexOf('--filter') + 1], 'container=' + owner);
+      assert.ok(Number(args[2]) <= Number(args[4]));
+      const event = (name, Action, timeMs) => JSON.stringify({ Action,
+        Actor: { Attributes: { name, credential: secret } }, timeNano: String(BigInt(timeMs) * 1_000_000n) });
+      const now = Date.now();
+      return { status: 0, stdout: [event(owner, 'create', now - 10), event(owner, 'start', now),
+        event('peer-container', 'start', now)].join('\n') };
+    },
+  });
+  assert.equal(result, 'reaper-id');
+  assert.deepEqual(receipts.map(row => row.status), ['started', 'completed', 'daemon-event', 'daemon-event']);
+  const events = receipts.filter(row => row.status === 'daemon-event');
+  assert.deepEqual(events.map(row => row.daemonAction), ['create', 'start']);
+  assert.ok(events.every(row => row.resource === owner && Number.isFinite(Date.parse(row.at))));
+  assert.ok(events[1].elapsedMs >= events[0].elapsedMs);
+  assert.equal(JSON.stringify(receipts).includes(secret), false);
+  assert.equal(JSON.stringify(receipts).includes('peer-container'), false);
+});
+
+test('unavailable daemon history preserves the failed allocation outcome and records the evidence gap', async () => {
+  const owner = 'daohr-documenso-12345678-abc-reaper', receipts = [];
+  await assert.rejects(dockerAllocation(['run', '--name', owner], {}, {
+    onProgress: receipt => receipts.push(receipt),
+    spawnChild: () => spawn(process.execPath, ['-e', 'process.exitCode=7']),
+    readEvents: () => { throw new Error('private daemon response'); },
+  }), /run 7/);
+  assert.deepEqual(receipts.map(row => row.status), ['started', 'failed', 'events-unavailable']);
+  assert.equal(JSON.stringify(receipts).includes('private daemon response'), false);
+});
+
 test('container start remains joined past its warning and cleanup follows the actual daemon outcome', { timeout: 5000 }, async () => {
   const owner = 'daohr-documenso-12345678-abc', containers = [], calls = [];
   let warned, cleaned = false, finished = false;

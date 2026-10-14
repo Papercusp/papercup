@@ -171,7 +171,7 @@ export interface HostedHostRelayClose {
 export type HostedHostRelayEnvelope = HostedHostRelayOpen | HostedHostRelayMessage | HostedHostRelayClose;
 
 export type HostedHostOutboundEnvelope =
-  | { type: 'session.authorize'; channelId: string; requestId: string }
+  | { type: 'session.authorize'; channelId: string; requestId: string; diagnostics?: true }
   | { type: 'relay'; channelId: string; payload: unknown }
   | { type: 'relay.close'; channelId: string; reason: string };
 
@@ -913,7 +913,7 @@ export class HostedWorkspaceHostSessionAdapter {
 
   /** Private host API. A relay label is never a principal: query the current
    * ticket-bound control-plane session for EACH call on the authenticated socket. */
-  resolveCustomerPrincipal(channelId: string, signal?: AbortSignal): ReturnType<HostedCustomerCommandDependencies['resolvePrincipal']> {
+  resolveCustomerPrincipal(channelId: string, signal?: AbortSignal, diagnostics?: true): ReturnType<HostedCustomerCommandDependencies['resolvePrincipal']> {
     const channel = this.channels.get(channelId);
     if (this.closed || signal?.aborted || !channel || channel.kind !== 'operator-http'
       || channel.plane || this.authorityPending.size >= 64) return Promise.resolve({ ok: false });
@@ -939,14 +939,14 @@ export class HostedWorkspaceHostSessionAdapter {
             userId: channel.userId, sessionId: channel.hostedSessionId,
             sessionVersion: a.sessionVersion as number, permissions: a.permissions });
           if (!principal.permissions.has('workspace:operate')) throw new Error('denied');
-          resolve({ ok: true, principal });
+          resolve({ ok: true, principal, ...(diagnostics ? { monitoringConsent: a.monitoringConsent } : {}) });
         } catch { resolve({ ok: false }); }
       };
       this.authorityPending.set(requestId, { channelId, settle });
       timer = setTimeout(() => settle(null), 15_000);
       signal?.addEventListener('abort', onAbort, { once: true });
       if (signal?.aborted) { onAbort(); return; }
-      try { this.options.send({ type: 'session.authorize', channelId, requestId }); }
+      try { this.options.send({ type: 'session.authorize', channelId, requestId, ...(diagnostics ? { diagnostics } : {}) }); }
       catch { settle(null); }
     });
   }
@@ -1216,7 +1216,7 @@ export class HostedWorkspaceHostSessionAdapter {
         audit: (action, detail) => this.audit(action, principal, channelId, detail),
         ...(this.options.operatorHttp?.origin ? { origin: this.options.operatorHttp.origin } : {}),
         ...(this.options.operatorHttp?.fetch ? { fetch: this.options.operatorHttp.fetch } : {}),
-        ...(handleRequest ? { handleRequest: (request: Request) => {
+        handleRequest: async (request: Request) => {
           // Capture this CHANNEL OBJECT, not merely its reusable id. A delayed
           // request cannot acquire authority from a replacement channel.
           const current = () => {
@@ -1235,8 +1235,18 @@ export class HostedWorkspaceHostSessionAdapter {
                 AbortSignal.any([lifetime.signal, request.signal, ...(signal ? [signal] : [])]));
             },
           });
-          return handleRequest(request, Object.freeze({ channelId, sessionHost }));
-        } } : {}),
+          if (request.method === 'POST' && /^\/api\/harness\/[^/]+\/insights\/diagnostic-export$/.test(new URL(request.url).pathname)) {
+            const signal = sessionHost.customerInvocationSignal(channelId, request.signal);
+            const { handleCustomerDiagnosticExport } = await import('../harness-insights/load-tokens');
+            return handleCustomerDiagnosticExport(request, {
+              workspaceId: this.options.binding.customerWorkspaceId,
+              organizationId: this.options.binding.organizationId,
+              controlPlaneWorkspaceId: this.options.binding.controlPlaneWorkspaceId,
+              authorize: () => current() ? this.resolveCustomerPrincipal(channelId, signal, true) : Promise.resolve({ ok: false }),
+            });
+          }
+          return handleRequest?.(request, Object.freeze({ channelId, sessionHost }));
+        },
       });
       this.channels.set(channelId, { kind: 'operator-http', userId, hostedSessionId, http,
         lifetime });

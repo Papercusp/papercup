@@ -31,6 +31,7 @@ describe('decideOperatorHttpRoute', () => {
     ['GET', '/api/zero-harness/sse'],
     ['GET', '/api/harness/portal/agent-chats?limit=50'],
     ['POST', '/api/harness/portal/agent-chats/chat-1/messages'],
+    ['POST', '/api/harness/customer/insights/diagnostic-export'],
     ['POST', '/api/operator/conversations'],
     ['POST', '/api/operator/conversations/c1/turns'],
     ['POST', '/api/agent-mcp/operator-converse'],

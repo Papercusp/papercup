@@ -159,6 +159,7 @@ export async function dockerAllocation(args, environment = {}, {
   spawnChild = spawn, pendingAfterMs = 30_000,
   onPending = () => console.error('[documenso-sandbox] Docker ' + args[0] + ' request still pending; waiting for its outcome before cleanup'),
   onProgress = receipt => console.error('[documenso-sandbox-docker] ' + JSON.stringify(receipt)),
+  readEvents = eventArgs => spawnSync('docker', eventArgs, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 }),
 } = {}) {
   const startedAt = Date.now();
   // Never log argv, output or environment: those can contain credentials.
@@ -189,7 +190,38 @@ export async function dockerAllocation(args, environment = {}, {
   } catch (error) {
     progress('failed');
     throw error;
-  } finally { clearTimeout(warning); }
+  } finally {
+    clearTimeout(warning);
+    // Keep run atomic: a separate create/start would strand an unstarted reaper
+    // if the wrapper died between requests. Read its exact daemon history after
+    // the joined request, so late bridge setup can be distinguished from create.
+    if (args[0] === 'run' && resource) {
+      try {
+        const events = readEvents(['events', '--since', String(Math.floor(startedAt / 1000)),
+          '--until', String(Math.ceil(Date.now() / 1000)), '--filter', 'container=' + resource,
+          '--format', '{{json .}}']);
+        if (events.error || events.status !== 0) throw new Error('event history unavailable');
+        let matched = 0;
+        for (const line of (events.stdout ?? '').split('\n')) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+          const action = event.Action ?? event.status;
+          if (event.Actor?.Attributes?.name !== resource ||
+              !['create', 'start', 'die', 'kill', 'destroy'].includes(action)) continue;
+          const timeMs = event.timeNano ? Math.floor(Number(event.timeNano) / 1_000_000) : Number(event.time) * 1000;
+          if (!Number.isFinite(timeMs) || timeMs < startedAt - 1000) continue;
+          onProgress({ operation: 'run', resource, status: 'daemon-event', daemonAction: action,
+            at: new Date(timeMs).toISOString(), elapsedMs: Math.max(0, timeMs - startedAt) });
+          matched++;
+        }
+        if (!matched) throw new Error('no matching event history');
+      } catch {
+        // A bounded diagnostic failure cannot replace the allocation outcome.
+        onProgress({ operation: 'run', resource, status: 'events-unavailable',
+          at: new Date().toISOString(), elapsedMs: Date.now() - startedAt });
+      }
+    }
+  }
 }
 
 /** Start is also a daemon mutation: wait for its outcome before cleanup, and
