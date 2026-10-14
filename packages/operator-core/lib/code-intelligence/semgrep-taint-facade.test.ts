@@ -63,14 +63,27 @@ describe('local-taint evidence admission boundaries', () => {
   it('compiles for the CommonJS root and launches provisioning while preserving the source guard', async () => {
     const root = fileURLToPath(new URL('../../../../', import.meta.url));
     const script = new URL('../../../../scripts/provision-lsp.ts', import.meta.url);
-    // The documented tsx CLI must compile at the actual root's CJS boundary;
-    // the guarded child uses the existing native fixture's scoped ESM loader.
+    // Reuse cut-seed-cli.test.ts's guarded CLI pattern. This command loads
+    // source only; scoped tsImport cannot resolve its CJS package subpaths.
     expect(() => transformSync(readFileSync(script, 'utf8'), { format: 'cjs', loader: 'ts' })).not.toThrow();
-    const bootstrap = 'import { tsImport } from "tsx/esm/api"; ' +
-      'process.argv = [process.execPath, ' + JSON.stringify(fileURLToPath(script)) + ', "semgrep"]; ' +
-      'await tsImport(' + JSON.stringify(script.href) + ', import.meta.url);';
+    const resolver = [
+      'export async function resolve(specifier, context, nextResolve) {',
+      '  const resolved = await nextResolve(specifier, context);',
+      '  if (resolved.url.startsWith("file:") &&',
+      '      (new URL(resolved.url).pathname.endsWith(".ts") || new URL(resolved.url).pathname.endsWith(".tsx")) &&',
+      '      !resolved.url.includes("/node_modules/"))',
+      '    return { ...resolved, format: "module-typescript" };',
+      '  return resolved;',
+      '}',
+    ].join('\n');
+    const bootstrap = [
+      'import { register } from "node:module";',
+      'register("data:text/javascript," + encodeURIComponent(' + JSON.stringify(resolver) + '), import.meta.url);',
+      'process.argv = [process.execPath, ' + JSON.stringify(fileURLToPath(script)) + ', "semgrep"];',
+      'await import(' + JSON.stringify(script.href) + ');',
+    ].join('\n');
     const result = await promisify(execFile)(process.execPath,
-      ['--input-type=module', '-e', bootstrap],
+      ['--import', 'tsx', '--input-type=module', '-e', bootstrap],
       { cwd: root, timeout: 30_000, maxBuffer: 16 * 1024 });
     expect(JSON.parse(result.stdout)).toMatchObject({ version: SEMGREP_VERSION, reused: true, distributionAdmission: false });
   }, 45_000);

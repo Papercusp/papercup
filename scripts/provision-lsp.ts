@@ -7,8 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { GOPLS_VERSION, LSP_VENDOR_DIR, PYRIGHT_VERSION } from '../packages/operator-core/lib/code-intelligence/lsp-adapter';
-import { provisionSemgrepRuntime } from '../packages/operator-core/lib/code-intelligence/semgrep-taint-facade';
+import { GOPLS_VERSION, LSP_VENDOR_DIR, PYRIGHT_VERSION } from '../packages/operator-core/lib/code-intelligence/lsp-adapter.ts';
+import { provisionSemgrepRuntime } from '../packages/operator-core/lib/code-intelligence/semgrep-taint-facade.ts';
 
 async function main() {
   for (const language of process.argv.slice(2)) {
