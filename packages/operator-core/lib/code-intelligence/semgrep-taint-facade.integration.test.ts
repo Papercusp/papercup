@@ -29,6 +29,7 @@ describe('native P031 maintained local-taint reference evaluation', () => {
       const result = await analyze(root, aliases[fixture.language], [fixture.file]);
       expect(result.error, JSON.stringify(result)).toBeNull();
       expect(result.freshness).toEqual({ health: 'healthy', staleVsDisk: false });
+      expect(result.scanCoverage).toEqual({ requested: 1, scanned: 1, complete: true });
       expect(result.findings.map(finding => finding.line1)).toEqual([fixture.positiveSinkLine]);
       expect(result.sources).toEqual([{ path: fixture.file, language: aliases[fixture.language],
         contentHash: createHash('sha256').update(fixture.source).digest('hex') }]);
@@ -37,6 +38,19 @@ describe('native P031 maintained local-taint reference evaluation', () => {
       expect(result.dynamicBoundary).toBe('unknown');
       expect(result.limitations.join(' ')).toContain('callback targets');
       expect(readFileSync(file, 'utf8')).toBe(fixture.source);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 90_000);
+  it('accounts for every selected source before returning a healthy empty finding set', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-taint-complete-negatives-'));
+    try {
+      for (const file of ['first.ts', 'second.ts']) writeFileSync(join(root, file), 'function literal_negative() { sink("safe"); }\n');
+      const result = await analyze(root, 'ts', ['first.ts', 'second.ts']);
+      expect(result.error, JSON.stringify(result)).toBeNull();
+      expect(result.findings).toEqual([]);
+      expect(result.scanCoverage).toEqual({ requested: 2, scanned: 2, complete: true });
+      expect(result.sources.map(source => source.path)).toEqual(['first.ts', 'second.ts']);
+      expect(result.sourceCompleteness).toBe('unverified');
+      expect(result.dynamicBoundary).toBe('unknown');
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 90_000);
   it('refuses an out-of-scope symlink before interpreting analyzer output', async () => {
