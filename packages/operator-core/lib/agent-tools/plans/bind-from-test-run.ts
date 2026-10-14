@@ -673,10 +673,23 @@ function canonicalAdequacyOutcome(value: unknown): string {
 }
 
 function runFacts(row: TestRunEvidenceRow, kind: DerivedTestRunBinding['evidenceKind']): RunFacts {
+  const execution = executionDetails(row.execution_details);
   const testLayer = recordedTestLayer(row.execution_details);
   const status = String(row.status ?? '');
-  const collectionFailed = executionDetails(row.execution_details).collectionFailed === true;
+  const collectionFailed = execution.collectionFailed === true;
   const executed = status === 'pass' || status === 'fail';
+  // A raw mutation-probe failure is only a caught mutant when the reporter
+  // measured at least one failed assertion. A launch/collection crash can also
+  // produce status=fail, and its output_tail is only a diagnostic tail that may
+  // contain session hook or environment noise. New reporter rows carry the
+  // structured failedCaseTitles/counts; legacy rows without them stay unknown.
+  const measuredMutantFailure =
+    deriveKind(row) === 'mutation' &&
+    status === 'fail' &&
+    execution.collectionFailed === false &&
+    Number(execution.failed) > 0 &&
+    Array.isArray(execution.failedCaseTitles) &&
+    execution.failedCaseTitles.some((title) => typeof title === 'string' && title.length > 0);
   const outcome =
     kind === 'test' || (kind === 'counterexample' && deriveKind(row) !== 'mutation')
       ? // A caller-declared counterexample over an ordinary test run is still a test execution.
@@ -690,8 +703,12 @@ function runFacts(row: TestRunEvidenceRow, kind: DerivedTestRunBinding['evidence
           // like a mutant row fabricated `survived` for a caught mutant (WI-10004591). A failed
           // verdict stays the raw status — the row cannot say whether it survived or misfired.
           ({ pass: 'caught' } as Record<string, string>)[status] ?? status
-        : // A mutant run that FAILED is a caught mutant; one that PASSED survived.
-          ({ fail: 'caught', pass: 'survived' } as Record<string, string>)[status] ?? status;
+      : // A mutant run that FAILED is caught only when a failed assertion was
+        // measured; a failed launch/collection remains unknown. A passing
+        // mutant is still a measured survivor.
+          (status === 'fail'
+            ? (measuredMutantFailure ? 'caught' : 'unknown')
+            : ({ pass: 'survived' } as Record<string, string>)[status] ?? status);
   return {
     ...(testLayer ? { testLayer } : {}),
     collected: !collectionFailed && status !== 'error',
