@@ -315,6 +315,13 @@ function stubSql(rows: unknown[]): postgres.Sql {
   return ((..._ignored: unknown[]) => Promise.resolve(rows)) as unknown as postgres.Sql;
 }
 
+function capturingStubSql(rows: unknown[], capture: { query: string }): postgres.Sql {
+  return ((parts: TemplateStringsArray, ..._values: unknown[]) => {
+    capture.query = Array.from(parts).join(' /* interpolation */ ');
+    return Promise.resolve(rows);
+  }) as unknown as postgres.Sql;
+}
+
 describe('readTriggerPlanRunPayload', () => {
   it('returns the private payload resolved server-side from the local trigger run', async () => {
     const sql = stubSql([{ triggerRunId: 'run-1', args: gmailArgs() }]);
@@ -331,6 +338,17 @@ describe('readTriggerPlanRunPayload', () => {
     const result = await readTriggerPlanRunPayload(sql, 'papercusp-workspace', 42);
     expect(result.source).toBe('slack');
     expect(result.payload.channelId).toBe('C123');
+  });
+
+  it('resolves a plan run ref regardless of the trigger receipt status', async () => {
+    const capture = { query: '' };
+    const sql = capturingStubSql([{ triggerRunId: 'run-failed', args: slackArgs() }], capture);
+    const result = await readTriggerPlanRunPayload(sql, 'papercusp-workspace', 1347);
+
+    expect(result.triggerRunId).toBe('run-failed');
+    expect(result.payload.channelId).toBe('C123');
+    expect(capture.query).toContain('tr.plan_run_ref = ');
+    expect(capture.query).not.toContain("tr.status = 'succeeded'");
   });
 
   it('refuses a non-positive or non-integral planRunId before touching the database', async () => {

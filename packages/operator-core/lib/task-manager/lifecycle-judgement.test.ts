@@ -437,6 +437,8 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('If live.unaccountedGroups is missing or not an array, leave the result unknown');
     expect(summary).toContain('never coerce a missing group list to []');
     expect(summary).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from the unfiltered census');
+    expect(summary).toContain('processes:list { scopeUnit, live:true, includeEnded:true }');
+    expect(summary).toContain('the ageSec-bearing row is terminal and the default tasks[] filter would hide it');
     expect(summary).toContain('When live.unaccountedGroups is empty, the same-kind control prerequisite is structurally unavailable, not a failed read');
     expect(summary).toContain('independently walk the complete, readable Papercusp cgroupfs subtree');
     expect(summary).toContain('complete, readable Papercusp cgroupfs subtree under /sys/fs/cgroup');
@@ -524,6 +526,8 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('live.exactScopeUnitMatches');
     expect(brief).toContain('taskId-filtered processes:list result cannot prove absence');
     expect(brief).toContain('When live.unaccountedGroups is non-empty, require a known-present same-kind control from that census');
+    expect(brief).toContain('processes:list { scopeUnit, live:true, includeEnded:true }');
+    expect(brief).toContain('the ageSec-bearing row is terminal and the default tasks[] filter would hide it');
     expect(brief).toContain('When live.unaccountedGroups is empty, that same-kind control prerequisite is structurally unavailable, not a failed read');
     expect(brief).toContain('recursively enumerate the complete, readable Papercusp slice subtree under /sys/fs/cgroup by exact scopeUnit');
     expect(brief).toContain('a populated peer pc-*.scope elsewhere in that subtree');

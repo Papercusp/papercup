@@ -455,7 +455,7 @@ export async function launchAcceptanceGraderForGate(
     // need a grade before completion, so use the existing recruitment-only
     // gate to decide whether the immediate retry may launch that judge.
     gate = await evaluateRecruitment(slug, {
-      harnessSlug: harness ?? ctx.harnessSlug,
+      harnessSlug: harnessScopedCtx(harness, ctx).harnessSlug,
       gradingRecruitment: true,
       // Recruitment evaluates the same proof as the strict gate. Keep the exact
       // comparison inputs; dropping opaque dimensions makes current proof unknown.

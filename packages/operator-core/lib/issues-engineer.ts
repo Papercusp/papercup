@@ -874,7 +874,7 @@ export const ISSUE_COLS_WATCHDOG_KEY_ONLY = ISSUE_COLS.replace(/(^|,\s*)payload(
 
 /** Select the smallest issue row projection requested by a list caller. */
 export function issueListColumns(
-  filter: Pick<ListIssuesFilter, 'includeBody' | 'includePayload' | 'includeWatchdogKey' | 'payloadProjection'>,
+  filter: Pick<ListIssuesFilter, 'includeBody' | 'includePayload' | 'includeWatchdogKey' | 'payloadProjection' | 'bodyProjection'>,
 ): string {
   if (filter.includeBody === false && filter.includePayload === false) {
     return filter.includeWatchdogKey === true ? ISSUE_COLS_BODYLESS_WATCHDOG_KEY_ONLY : ISSUE_COLS_BODYLESS_PAYLOADLESS;
@@ -897,13 +897,20 @@ function issueListQueryProjection(filter: Parameters<typeof issueListColumns>[0]
   columns: string;
   join: string;
 } {
-  const columns = issueListColumns(filter);
+  let columns = issueListColumns(filter);
   if (!['fleetMetrics', 'fleetMetricsCensus'].includes(filter.payloadProjection ?? '') || filter.includePayload === false) {
     return { columns, join: '' };
   }
   // Derive the expression from the existing shared projection policy; an
   // archival-key change must reach both physical work-item families together.
   const payload = projectWorkItemColumns('payload,', filter.payloadProjection, 'state').replace(/ AS payload,$/, '');
+  if (filter.bodyProjection === 'fleetMetricsCensus' && filter.includeBody !== false &&
+      filter.payloadProjection === 'fleetMetricsCensus') {
+    // Readiness stage validation hashes body text only for enrolled rows. A
+    // summary-filtered claim spec opts out of this projection at the source reader.
+    columns = columns.replace(/(^|,\s*)body(\s*,)/,
+      "$1CASE WHEN COALESCE(_fleet_metric_payload.value ? 'implementationReadiness', FALSE) THEN body ELSE NULL::text END AS body$2");
+  }
   return {
     columns: columns.replace(`${payload} AS payload`, '_fleet_metric_payload.value AS payload')
       .replace(/(^|,\s*)severity(\s*,)/, "$1COALESCE(_fleet_metric_ei.metadata->>'severity', 'minor') AS severity$2")
@@ -1475,6 +1482,8 @@ export interface ListIssuesFilter {
   includePayload?: boolean;
   /** Shared internal source policy. Explicit includePayload:false takes precedence. */
   payloadProjection?: WorkItemReadOptions['payloadProjection'];
+  /** Internal metric-census policy: return bodies only for readiness-enrolled rows. */
+  bodyProjection?: 'fleetMetricsCensus';
   /**
    * Keep `payload.watchdogKey` alive across an `includePayload: false` read, as a
    * rebuilt one-field payload (see {@link ISSUE_COLS_BODYLESS_WATCHDOG_KEY_ONLY}).

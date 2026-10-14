@@ -45,6 +45,7 @@ import { createHash } from "node:crypto";
 import { join, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parse as parseYaml } from "yaml";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const MIRROR_REMOTE = "github.com/Papercusp/templates";
@@ -88,6 +89,35 @@ export function isMirrorRemote(remote) {
       parsed.owner.toLowerCase() === MIRROR_OWNER.toLowerCase() &&
       parsed.repo.toLowerCase() === MIRROR_REPO.toLowerCase(),
   );
+}
+
+/** Refuse bundle publication until its blueprint manifests exist in the public source repos. */
+export async function validatePublishedBundleBlueprints(bundleFile, runGh) {
+  const bundle = parseYaml(await fs.readFile(bundleFile, "utf8"));
+  const units = [...(bundle.blueprint ? [bundle.blueprint] : []), ...(bundle.blueprints ?? [])];
+  const repositories = new Map();
+  for (const unit of units) {
+    const repository = parseGithubRemote(unit.githubUrl ?? "");
+    const ref = unit.listingRef ?? "";
+    if (!repository || !/^[A-Za-z0-9._/-]*$/.test(ref) || ref.split("/").some(segment => segment === "." || segment === "..")) {
+      throw new Error(`unsafe bundle blueprint source: ${unit.id}`);
+    }
+    const repo = `${repository.owner}/${repository.repo}`;
+    let paths = repositories.get(repo.toLowerCase());
+    if (!paths) {
+      const tree = JSON.parse(runGh("api", `repos/${repo}/git/trees/HEAD?recursive=1`));
+      if (tree.truncated !== false || !Array.isArray(tree.tree)) {
+        throw new Error(`cannot verify complete public blueprint tree: ${repo}`);
+      }
+      paths = new Set(tree.tree.filter(entry => entry.type === "blob").map(entry => entry.path));
+      repositories.set(repo.toLowerCase(), paths);
+    }
+    const manifest = ref ? `${ref}/blueprint.yaml` : "blueprint.yaml";
+    if (!paths.has(manifest)) {
+      throw new Error(`workspace-host bundle references unpublished blueprint "${unit.id}": ${repo}/${manifest}; publish the blueprint mirror before the bundle`);
+    }
+  }
+  return { blueprints: units.length, repositories: repositories.size };
 }
 
 // Source-shippable packages vendored into the mirror (zero runtime deps,
@@ -502,6 +532,12 @@ async function main(argv) {
         throw new Error(
           "refusing to sync: origin '" + origin + "' is not " + MIRROR_REMOTE,
         );
+      // The bundle is published by this repo, but its blueprints live in another mirror. Local
+      // source coverage cannot prove those dependencies were published first (EI-25968237672096071).
+      await validatePublishedBundleBlueprints(
+        expected.get("bundles/workspace-host/bundle.yaml"),
+        runGh,
+      );
       runGit(
         "fetch",
         "origin",

@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 965,
+  "count": 966,
   "tools": [
     {
       "name": "ablation:report",
@@ -22897,6 +22897,80 @@
       "guidance": {
         "when": "Last call after every cleanup finding was acted or reported.",
         "notWhen": "Mid-pass."
+      }
+    },
+    {
+      "name": "plans:conformance",
+      "http": {
+        "path": "/api/agent-tools/plans/conformance",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Spec-conformance writes on a plan. op:'propose-deviation' { slug, requirement, reason } records a proposed deviation from a requirement as a Decision; op:'approve-deviation' { slug, requirement, proposal, ownerTurnRef? } approves it. An owner-sourced requirement needs ownerTurnRef verified as an owner turn. Approved deviations suppress the requirement's drift alarm.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "A plan requirement cannot or should no longer be met. Propose the deviation, then approve it with the right authority, instead of leaving the requirement red or editing it away.",
+        "notWhen": "Changing what a requirement says (edit the plan). An ordinary ruling (plans:add-decision).",
+        "chaining": "propose-deviation → (owner-sourced: coord:ask-owner, cite the answer's [turn:…]) → approve-deviation."
       }
     },
     {

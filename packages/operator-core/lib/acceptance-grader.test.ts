@@ -79,6 +79,28 @@ describe('native terminal API-error provenance', () => {
     })).resolves.toBeNull();
   });
 
+  it('classifies a final native HTTP 5xx when the PTY only has generic mid-response text', async () => {
+    const log = '●API Error: Server error mid-response. The response above may be incomplete.\n❯';
+    const native = record({ apiErrorStatus: 500 });
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      readLogTail: (path) => path === 'native.jsonl' ? native : log,
+      nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId,
+      maxRechecks: 0, detectStartupStall: false,
+    })).resolves.toMatchObject({
+      code: 'inference_gateway_error', evidence: expect.stringContaining('500'),
+    });
+  });
+
+  it('does not classify generic mid-response text from native 4xx metadata alone', async () => {
+    const log = '●API Error: Server error mid-response. The response above may be incomplete.\n❯';
+    const native = record({ apiErrorStatus: 429 });
+    await expect(detectAcceptanceGraderTerminalFailure('judge.log', {
+      readLogTail: (path) => path === 'native.jsonl' ? native : log,
+      nativeTranscriptPath: 'native.jsonl', nativeSessionId: sessionId,
+      maxRechecks: 0, detectStartupStall: false,
+    })).resolves.toBeNull();
+  });
+
   it('keeps recovery unconfirmed when the native transcript cannot be read', async () => {
     const log = "●API Error: 400 role 'system' is not supported on this model\n✻ Worked for 1m 9s · done\n❯";
     await expect(detectAcceptanceGraderTerminalFailure('judge.log', {

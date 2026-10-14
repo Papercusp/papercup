@@ -1539,9 +1539,12 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledTimes(1));
       child.emit('close', 0, null);
       await expect(pending).resolves.toMatchObject({ status: 0, signal: null, timedOut: false });
-      expect(probeScopeSupportImpl).toHaveBeenCalledWith(expect.objectContaining({ env, systemdRunPath: '/usr/bin/systemd-run' }));
+      const tracedEnv = expect.objectContaining({ ...env, PAPERCUSP_TEST_STARTUP_TRACE: '1',
+        NODE_OPTIONS: expect.stringContaining('/scripts/lib/vitest-startup-trace.mjs') });
+      expect(probeScopeSupportImpl).toHaveBeenCalledWith(expect.objectContaining({ env: tracedEnv, systemdRunPath: '/usr/bin/systemd-run' }));
       expect(spawnImpl).toHaveBeenCalledWith('/usr/bin/setsid', ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
-        expect.objectContaining({ env }));
+        expect.objectContaining({ env: tracedEnv }));
+      expect(env).toEqual({ PATH: '/usr/bin', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/stale/bus' });
       expect(progress).toContainEqual(expect.stringContaining('TEST_FILE_SCOPE_PREFLIGHT'));
       expect(progress).toContainEqual(expect.stringContaining(reason));
     },
@@ -1631,7 +1634,10 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     expect(spawnImpl).toHaveBeenCalledWith(
       '/usr/bin/setsid',
       ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
-      expect.objectContaining({ env: { PATH: '/usr/bin' }, stdio: ['ignore', 'pipe', 'pipe'] }),
+      expect.objectContaining({ env: expect.objectContaining({ PATH: '/usr/bin',
+        PAPERCUSP_TEST_STARTUP_TRACE: '1',
+        NODE_OPTIONS: expect.stringContaining('/scripts/lib/vitest-startup-trace.mjs') }),
+        stdio: ['ignore', 'pipe', 'pipe'] }),
     );
     child.emit('close', 0, null);
     await expect(resultPromise).resolves.toMatchObject({ status: 0, signal: null, timedOut: false });

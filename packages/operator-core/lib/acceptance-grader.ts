@@ -464,7 +464,7 @@ type AcceptanceGraderLogTailReader = (path: string) => string | Promise<string>;
 
 /** Native API-error metadata separates a failed assistant turn from quoted
  * diagnostics in the frozen user brief or a successful assistant answer. */
-export function hasAcceptanceGraderNativeApiError(rawTranscript: string, sessionId: string): boolean {
+function acceptanceGraderNativeApiErrorStatus(rawTranscript: string, sessionId: string): number | null {
   type NativeTurn = { type?: unknown; sessionId?: unknown; isSidechain?: unknown;
     isApiErrorMessage?: unknown; apiErrorStatus?: unknown;
     message?: { role?: unknown; stop_reason?: unknown } | null };
@@ -481,11 +481,16 @@ export function hasAcceptanceGraderNativeApiError(rawTranscript: string, session
       lastTurn = null;
     }
   }
-  return lastTurn?.type === 'assistant' && lastTurn.message?.role === 'assistant' &&
-    lastTurn.isApiErrorMessage === true &&
-    typeof lastTurn.apiErrorStatus === 'number' && lastTurn.apiErrorStatus >= 400 && lastTurn.apiErrorStatus < 600 &&
-    typeof lastTurn.message.stop_reason === 'string' &&
-    ['end_turn', 'stop_sequence'].includes(lastTurn.message.stop_reason);
+  const status = lastTurn?.apiErrorStatus;
+  if (lastTurn?.type !== 'assistant' || lastTurn.message?.role !== 'assistant' ||
+      lastTurn.isApiErrorMessage !== true || typeof status !== 'number' || status < 400 || status >= 600 ||
+      typeof lastTurn.message.stop_reason !== 'string' ||
+      !['end_turn', 'stop_sequence'].includes(lastTurn.message.stop_reason)) return null;
+  return status;
+}
+
+export function hasAcceptanceGraderNativeApiError(rawTranscript: string, sessionId: string): boolean {
+  return acceptanceGraderNativeApiErrorStatus(rawTranscript, sessionId) !== null;
 }
 
 /**
@@ -578,18 +583,25 @@ export async function detectAcceptanceGraderTerminalFailure(
   if (!logPath) return null;
   const boundedRechecks = Math.max(0, Math.floor(maxRechecks));
   const boundedDelay = Math.max(0, Math.floor(delayMs));
-  const nativeApiError = async (): Promise<boolean> => {
-    if (!nativeTranscriptPath || !nativeSessionId) return false;
+  const nativeApiErrorStatus = async (): Promise<number | null> => {
+    if (!nativeTranscriptPath || !nativeSessionId) return null;
     try {
-      return hasAcceptanceGraderNativeApiError(await readLogTail(nativeTranscriptPath), nativeSessionId);
+      return acceptanceGraderNativeApiErrorStatus(await readLogTail(nativeTranscriptPath), nativeSessionId);
     } catch {
-      return false;
+      return null;
     }
   };
   let latestRawLog = '';
   for (let recheck = 0; recheck <= boundedRechecks; recheck += 1) {
     latestRawLog = await readLogTail(logPath);
-    const nativeCompletedApiError = await nativeApiError();
+    const nativeStatus = await nativeApiErrorStatus();
+    if (nativeStatus !== null && nativeStatus >= 500) {
+      return {
+        code: 'inference_gateway_error',
+        evidence: `native final assistant API error status ${nativeStatus}`,
+      };
+    }
+    const nativeCompletedApiError = nativeStatus !== null;
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
       allowInferenceGatewayError: allowInferenceGatewayError || nativeCompletedApiError,
@@ -615,7 +627,14 @@ export async function detectAcceptanceGraderTerminalFailure(
   for (let recheck = 0; recheck < boundedStartupRechecks; recheck += 1) {
     await sleep(boundedStartupDelay);
     latestRawLog = await readLogTail(logPath);
-    const nativeCompletedApiError = await nativeApiError();
+    const nativeStatus = await nativeApiErrorStatus();
+    if (nativeStatus !== null && nativeStatus >= 500) {
+      return {
+        code: 'inference_gateway_error',
+        evidence: `native final assistant API error status ${nativeStatus}`,
+      };
+    }
+    const nativeCompletedApiError = nativeStatus !== null;
     const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog, {
       allowStandaloneWeeklyLimit,
       allowInferenceGatewayError: allowInferenceGatewayError || nativeCompletedApiError,

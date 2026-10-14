@@ -1185,6 +1185,8 @@ export interface ListWorkItemsFilter {
    * false before the post-handler tier shaper runs (WI-42508).
    */
   includeBody?: boolean;
+  /** Internal metric-census policy: return issue bodies only for readiness-enrolled rows. */
+  bodyProjection?: 'fleetMetricsCensus';
 }
 
 /**
@@ -1503,6 +1505,7 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
       // shaping a placement row. Keep the flags explicit so direct/internal
       // callers retain the full projection by default.
       includeBody: filter.includeBody,
+      bodyProjection: filter.bodyProjection,
       includePayload: filter.includePayload,
       payloadProjection: filter.payloadProjection,
       audit: filter.audit,

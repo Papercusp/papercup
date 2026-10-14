@@ -34,6 +34,7 @@ import {
   driftTotal,
   isMirrorRemote,
   parseGithubRemote,
+  validatePublishedBundleBlueprints,
 } from '../../../scripts/templates-mirror-sync.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../../../scripts/templates-mirror-sync.mjs', import.meta.url));
@@ -47,6 +48,7 @@ const MOBILE_TEMPLATE_REFS = [
 ] as const;
 
 let tmp: string;
+let publishedBlueprintTree: string;
 
 /** A minimal but structurally faithful canonical tree + mirror clone. */
 async function makeCanonicalRoot(root: string, vendored: string[] = VENDORED) {
@@ -82,6 +84,10 @@ async function makeMirrorInSync(root: string, mirror: string) {
 
 beforeAll(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'mirror-sync-test-'));
+  const bundle = parseBundleManifest(await fs.readFile(join(REPO_ROOT, 'content-bundles/workspace-host/bundle.yaml'), 'utf8'));
+  publishedBlueprintTree = JSON.stringify({ truncated: false, tree: bundle.blueprints!.map(unit => ({
+    type: 'blob', path: `${unit.listingRef}/blueprint.yaml`,
+  })) });
 });
 afterAll(async () => {
   if (tmp) await rm(tmp, { recursive: true, force: true });
@@ -268,6 +274,39 @@ describe('mirror origin guard', () => {
   });
 });
 
+describe('workspace-host bundle publication dependency guard', () => {
+  it('refuses a locally declared blueprint missing from the public mirror before publication', async () => {
+    const root = join(tmp, 'unpublished-blueprint');
+    await fs.mkdir(root);
+    const bundle = join(root, 'bundle.yaml');
+    await fs.writeFile(bundle, 'name: host\nblueprints:\n  - id: su\n    githubUrl: https://github.com/Papercusp/blueprints\n    listingRef: su\n');
+    const calls: string[][] = [];
+    const runGh = (...args: string[]) => { calls.push(args); return JSON.stringify({ truncated: false, tree: [{ type: 'blob', path: 'base/blueprint.yaml' }] }); };
+    await expect(validatePublishedBundleBlueprints(bundle, runGh)).rejects.toThrow(/unpublished blueprint "su"/);
+    expect(calls).toEqual([['api', 'repos/Papercusp/blueprints/git/trees/HEAD?recursive=1']]);
+  });
+
+  it('accepts complete published manifests and fetches each repository once', async () => {
+    const root = join(tmp, 'published-blueprints');
+    await fs.mkdir(root);
+    const bundle = join(root, 'bundle.yaml');
+    await fs.writeFile(bundle, 'name: host\nblueprints:\n  - id: base\n    githubUrl: https://github.com/Papercusp/blueprints\n    listingRef: base\n  - id: su\n    githubUrl: https://github.com/Papercusp/blueprints\n    listingRef: su\n');
+    const calls: string[][] = [];
+    const runGh = (...args: string[]) => { calls.push(args); return JSON.stringify({ truncated: false, tree: ['base', 'su'].map(id => ({ type: 'blob', path: `${id}/blueprint.yaml` })) }); };
+    await expect(validatePublishedBundleBlueprints(bundle, runGh)).resolves.toEqual({ blueprints: 2, repositories: 1 });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('fails closed on a truncated public tree instead of assuming omitted manifests exist', async () => {
+    const root = join(tmp, 'truncated-blueprints');
+    await fs.mkdir(root);
+    const bundle = join(root, 'bundle.yaml');
+    await fs.writeFile(bundle, 'name: host\nblueprints:\n  - id: base\n    githubUrl: https://github.com/Papercusp/blueprints\n    listingRef: base\n');
+    await expect(validatePublishedBundleBlueprints(bundle, () => JSON.stringify({ truncated: true, tree: [] })))
+      .rejects.toThrow(/cannot verify complete public blueprint tree/);
+  });
+});
+
 /**
  * A canonical package with NO tsconfig.json — the real shape of
  * libs/generic/pot-app-seam, which ships package.json + src/ and nothing else.
@@ -368,6 +407,7 @@ describe('protected-main mirror publishing', () => {
       'const fs = require("node:fs");',
       'const args = process.argv.slice(2);',
       'fs.appendFileSync(process.env.PC_TEST_GH_LOG, JSON.stringify(args) + "\\n");',
+      'if (args[0] === "api") { process.stdout.write(process.env.PC_TEST_GH_BLUEPRINT_TREE); process.exit(0); }',
       'if (args[0] === "auth" && args[1] === "status") process.exit(0);',
       'if (args[0] === "pr" && args[1] === "list") {',
       '  const pr = fs.existsSync(process.env.PC_TEST_GH_STATE)',
@@ -415,6 +455,7 @@ describe('protected-main mirror publishing', () => {
       PC_TEST_GH_STATE: ghState,
       PC_TEST_GH_LOG: ghLog,
       PC_TEST_REAL_GIT: realGit,
+      PC_TEST_GH_BLUEPRINT_TREE: publishedBlueprintTree,
     };
     const runSync = () =>
       spawnSync('node', [SCRIPT, '--mirror', mirror, '--push'], {
@@ -498,6 +539,7 @@ describe('protected-main mirror publishing', () => {
       '#!/usr/bin/env node',
       'const args = process.argv.slice(2);',
       'if (args[0] === "auth" && args[1] === "status") process.exit(0);',
+      'if (args[0] === "api") { process.stdout.write(process.env.PC_TEST_GH_BLUEPRINT_TREE); process.exit(0); }',
       'if (args[0] === "pr" && args[1] === "list") { process.stdout.write("[]"); process.exit(0); }',
       'process.stderr.write("unexpected gh command: " + args.join(" ") + "\\n");',
       'process.exit(2);',
@@ -527,6 +569,7 @@ describe('protected-main mirror publishing', () => {
       ...process.env,
       PATH: fakeBin + delimiter + (process.env.PATH ?? ''),
       PC_TEST_REAL_GIT: realGit,
+      PC_TEST_GH_BLUEPRINT_TREE: publishedBlueprintTree,
     };
     const result = spawnSync('node', [SCRIPT, '--mirror', mirror, '--push'], {
       encoding: 'utf8',

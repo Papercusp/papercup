@@ -420,6 +420,15 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  it('fails closed when recruitment has only the operator harness sentinel', async () => {
+    const evaluate = vi.fn();
+    await expect(launchAcceptanceGraderForGate('plan-a',
+      { satisfied: false, code: 'plan_items_unfinished' },
+      { workspaceId: 'ws-test', harnessSlug: '*' } as never,
+      undefined, undefined, evaluate as never)).rejects.toThrow('No harness specified');
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+
   it('keeps exact current evidence comparisons when evaluating the ceremony recruitment tail', async () => {
     const current = [{
       planSlug: 'plan-a', specId: 'delivery', specRevision: 3,

@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
-import { jsonResponse, recordedHostFetch, runProviderConformance, validateProviderDescriptor, type HostFetch, type ProviderAdapter } from '@papercusp/plugin-sdk';
+import { jsonResponse, recordedHostFetch, runProviderConformance, validateProviderDescriptor, type HostFetch, type ProviderAdapter, type ProviderRecord, type ProviderSyncPage } from '@papercusp/plugin-sdk';
 
 const adapter = createRequire(import.meta.url)('../../../../../libs/papercusp/plugins/facebook-pages/index.cjs').providerAdapter as ProviderAdapter;
 const API = 'https://graph.facebook.com/v23.0';
@@ -27,8 +27,8 @@ function fake() {
 }
 
 async function drain(fetch: HostFetch, cursor: string | null = null) {
-  const records: any[] = [];
-  const pages: any[] = [];
+  const records: ProviderRecord[] = [];
+  const pages: ProviderSyncPage[] = [];
   for (let n = 0; n < 20; n++) {
     const page = await adapter.syncPage({ source: 'facebook-source', cursor, mode: cursor ? 'incremental' : 'backfill', config }, { fetch });
     pages.push(page); records.push(...page.records); cursor = page.nextCursor;
@@ -80,6 +80,34 @@ describe('Facebook Pages provider package (P-027)', () => {
       await expect(drain(async () => { calls++; return jsonResponse(status, { error: { message: 'secret body' } }); })).rejects.toMatchObject({ kind });
       expect(calls).toBe(1);
     }
+  });
+
+  it('keeps equal-timestamp boundary ids and finds edits beyond older ranked rows', async () => {
+    const before = await drain(fake().fetch);
+    const fetch: HostFetch = async ({ request }) => new URL(request.url).pathname.endsWith('/published_posts')
+      ? jsonResponse(200, { data: [post('123_1', 1), post('123_3', 3), post('123_4', 3), post('123_2', 2, { updated_time: at(7) })] })
+      : jsonResponse(200, { data: [] });
+    expect((await drain(fetch, before.cursor)).records.map((r) => r.nativeId)).toEqual(['123_4', '123_2']);
+  });
+
+  it('dedupes overlapping pages and keeps resume lossless', async () => {
+    const fetch: HostFetch = async ({ request }) => {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith('/comments')) return jsonResponse(200, { data: [] });
+      return url.searchParams.has('after')
+        ? jsonResponse(200, { data: [post('123_1', 1), post('123_2', 2)] })
+        : jsonResponse(200, { data: [post('123_1', 1)], paging: { next: `${API}/123/published_posts?after=second` } });
+    };
+    const full = await drain(fetch);
+    expect(full.records.map((r) => r.nativeId)).toEqual(['123_1', '123_2']);
+    expect((await drain(fetch, full.pages[0].nextCursor)).records.map((r) => r.nativeId)).toEqual(['123_2']);
+  });
+
+  it('applies configured bounds and resets a cursor when the Page changes', async () => {
+    const page = await adapter.syncPage({ source: 's', config: { ...config, maxPostPages: 1 }, cursor: null, mode: 'backfill' }, fake());
+    expect(JSON.parse(page.nextCursor!).phase).toBe('comments');
+    const changed = recordedHostFetch([{ url: (u) => u.pathname === '/v23.0/999/published_posts', response: jsonResponse(200, { data: [] }) }]);
+    expect((await adapter.syncPage({ source: 's', config: { ...config, pageId: '999' }, cursor: page.nextCursor, mode: 'incremental' }, changed)).hasMore).toBe(false);
   });
 
   it('refuses malformed cursors, unsafe paging and ambiguous writes before retrying', async () => {
