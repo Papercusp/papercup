@@ -62,7 +62,7 @@ function identityEdges(sql: Sql, workspaceId: string) {
            AND launch_parent_owner IS NOT NULL
            AND NULLIF(coord_owner_id, '') IS NOT NULL
            AND NOT EXISTS (
-                 SELECT 1
+                 SELECT routed_sel->>'ownerId'
                    FROM harness_shared.consult_state routed
                    CROSS JOIN LATERAL jsonb_array_elements(
                           CASE jsonb_typeof(routed.routing -> 'selection' -> 'selected')
@@ -74,6 +74,20 @@ function identityEdges(sql: Sql, workspaceId: string) {
                     AND routed_sel->>'answeringOwnerId' = adv_sessions.coord_owner_id
                     AND NULLIF(routed_sel->>'ownerId', '') IS NOT NULL
                     AND routed_sel->>'ownerId' IS DISTINCT FROM routed_sel->>'answeringOwnerId'
+                 UNION ALL
+                 -- The consult dispatcher persists this mapping on the task row
+                 -- before launch. The selection stamp is best-effort and can be
+                 -- absent even when the routed fork exists, so consultAnswer is
+                 -- the durable fallback for suppressing the requester's launch edge.
+                 SELECT ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}'
+                   FROM harness_shared.task_ledger AS ledger_answer
+                  WHERE ledger_answer.workspace_id = adv_sessions.workspace_id
+                    AND ledger_answer.detail ? 'consultAnswer'
+                    AND ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}' = adv_sessions.coord_owner_id
+                    AND NULLIF(ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}', '') IS NOT NULL
+                    AND NULLIF(ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}', '') IS NOT NULL
+                    AND ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}'
+                        IS DISTINCT FROM ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}'
                )
         UNION
         SELECT parent_spawn_id, spawn_id
@@ -106,9 +120,9 @@ function identityEdges(sql: Sql, workspaceId: string) {
         -- transcript's lineage — is not evaluated at all. Exclusion must follow
         -- the KNOWLEDGE, not the process that started the session.
         --
-        -- Derived, never a second hand-maintained field: this is the same
-        -- answeringOwnerId the consult participant gate is already keyed on, so
-        -- an identity that can post on a consult is exactly one this covers.
+        -- Prefer the routed selection stamp for older/current state, and use the
+        -- dispatcher's durable task-ledger record when that best-effort stamp is
+        -- absent. Both rows name the same expert -> answering-session lineage.
         SELECT sel->>'ownerId',
                sel->>'answeringOwnerId'
           FROM harness_shared.consult_state cs
@@ -122,6 +136,19 @@ function identityEdges(sql: Sql, workspaceId: string) {
            AND NULLIF(sel->>'ownerId', '') IS NOT NULL
            AND NULLIF(sel->>'answeringOwnerId', '') IS NOT NULL
            AND sel->>'ownerId' IS DISTINCT FROM sel->>'answeringOwnerId'
+        UNION
+        -- P-004 fallback: consult-dispatch writes consultAnswer in the task ledger
+        -- before spawning. Unlike the consult_state answeringOwnerId selection
+        -- stamp, this durable mapping survives the common no-stamp path.
+        SELECT ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}',
+               ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}'
+          FROM harness_shared.task_ledger AS ledger_answer
+         WHERE ledger_answer.workspace_id = ${workspaceId}
+           AND ledger_answer.detail ? 'consultAnswer'
+           AND NULLIF(ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}', '') IS NOT NULL
+           AND NULLIF(ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}', '') IS NOT NULL
+           AND ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}'
+               IS DISTINCT FROM ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}'
   `;
 }
 
