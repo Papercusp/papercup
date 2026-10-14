@@ -11,7 +11,9 @@ export const nativeConsultScenarioSchema = nativeConsultConstraintsSchema.extend
   tried: z.string().trim().min(1).max(12000),
   observed: z.string().trim().min(1).max(12000),
   decision_at_stake: z.string().trim().min(1).max(4000),
-  subject_ref: z.string().trim().min(1).max(500).optional(),
+  subject_ref: z.string().trim().min(1).max(500).optional().describe(
+    'Optional exact transcript corpus filter. It is matched against source-turn text before routing; use only a phrase or identifier expected to occur in eligible evidence, not a decision or experiment tag.',
+  ),
 }).strict();
 export type NativeConsultScenario = z.infer<typeof nativeConsultScenarioSchema>;
 
