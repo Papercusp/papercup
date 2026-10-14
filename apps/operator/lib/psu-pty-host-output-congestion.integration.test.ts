@@ -1,8 +1,10 @@
 // @vitest-environment node
 import { EventEmitter } from 'node:events';
+import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { hostThroughPty, metaPathFor, socketPathFor } from '../scripts/psu-pty-host.mjs';
@@ -16,6 +18,67 @@ async function until(predicate: () => boolean) {
 }
 
 describe('managed PTY terminal output congestion', () => {
+  it.skipIf(process.platform === 'win32')('keeps the real host responsive when stderr shares a stalled terminal', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-diagnostic-congestion-'));
+    const inputPath = join(root, 'input');
+    const startedPath = join(root, 'diagnostic-started');
+    const tickPath = join(root, 'tick');
+    const ownerId = `su-diagnostic-congestion-${process.pid}-${Date.now()}`;
+    const hostModule = pathToFileURL(join(process.cwd(), 'scripts/psu-pty-host.mjs')).href;
+    const childProgram = "const fs=require('fs');process.stdin.setRawMode(true);process.stdin.on('data',d=>{if(d.includes(4))process.exit(0);fs.appendFileSync(process.env.INPUT_PATH,d);});";
+    const program = `
+      import { writeFileSync } from 'node:fs';
+      import { hostThroughPty } from ${JSON.stringify(hostModule)};
+      let ticks = 0;
+      const timer = setInterval(() => writeFileSync(process.env.TICK_PATH, String(++ticks)), 20);
+      const done = hostThroughPty({
+        command: process.execPath, args: ['-e', ${JSON.stringify(childProgram)}],
+        cwd: ${JSON.stringify(root)}, ownerId: ${JSON.stringify(ownerId)},
+        env: process.env, onExit() {},
+        onSpawn: () => new Promise((_, reject) => setTimeout(() => {
+          writeFileSync(process.env.STARTED_PATH, 'ready');
+          reject(new Error('DIAGNOSTIC_PAYLOAD:' + 'x'.repeat(2 * 1024 * 1024)));
+        }, 50)),
+      });
+      done.then(code => { clearInterval(timer); process.exit(code); });
+    `;
+    const pty = createRequire(import.meta.url)('@lydell/node-pty');
+    const terminal = pty.spawn(process.execPath, ['--input-type=module', '-e', program], {
+      cwd: process.cwd(), cols: 80, rows: 24,
+      env: hermeticEnv({ INPUT_PATH: inputPath, STARTED_PATH: startedPath, TICK_PATH: tickPath }),
+    });
+    let exited = false;
+    let bytesDrained = 0;
+    terminal.onData((data: string) => { bytesDrained += Buffer.byteLength(data); });
+    const exit = new Promise<void>((resolve) => terminal.onExit(() => { exited = true; resolve(); }));
+    // Both stdout and stderr are real POSIX TTY descriptors. Pause the reader,
+    // rather than sending XOFF or freezing the host, to isolate output blocking.
+    terminal.pause();
+    try {
+      await until(() => existsSync(startedPath));
+      const ticksBefore = Number(readFileSync(tickPath, 'utf8'));
+      terminal.write('owner-input');
+      await until(() => existsSync(inputPath) && readFileSync(inputPath, 'utf8') === 'owner-input');
+      await until(() => Number(readFileSync(tickPath, 'utf8')) >= ticksBefore + 3);
+      expect(bytesDrained).toBe(0);
+      terminal.resume();
+      await until(() => bytesDrained >= 2 * 1024 * 1024);
+      terminal.write('\x04');
+      await exit;
+      expect(existsSync(metaPathFor(ownerId))).toBe(false);
+      expect(existsSync(socketPathFor(ownerId))).toBe(false);
+    } finally {
+      terminal.resume();
+      if (!exited) {
+        terminal.write('\x04');
+        await Promise.race([exit, new Promise((resolve) => setTimeout(resolve, 1000))]);
+        if (!exited) terminal.kill('SIGKILL');
+        await exit;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it('pauses PTY output while still delivering owner input, then drains in order and cleans up', async () => {
     const root = mkdtempSync(join(tmpdir(), 'psu-output-congestion-'));
     const inputPath = join(root, 'input');
