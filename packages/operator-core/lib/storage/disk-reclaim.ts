@@ -265,6 +265,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       const progress = receipt.scan = { inspectedNodes: 0, retainedRecentTrees: 0, stoppedAtRoot: null as string | null };
       const budget = { left: options.maxEntries ?? 100_000, deadline: Date.now() + (options.budgetMs ?? 60_000), progress };
       const budgetExpired = () => budget.left <= 0 || Date.now() >= budget.deadline;
+      // This budget bounds tree inspection. Holder scans retain their own
+      // native deadline; audit and deletion waits must not spend the next
+      // root's inspection allowance after a class has been fully enumerated.
+      const outsideInspectionBudget = async <T>(operation: () => Promise<T>): Promise<T> => {
+        const pausedAt = Date.now();
+        try { return await operation(); }
+        finally { budget.deadline += Math.max(0, Date.now() - pausedAt); }
+      };
       let budgetStopped = false;
       const stopAtBudget = (root: string) => {
         if (!budgetStopped) receipt.errors.push('incomplete tree scan: retention scan budget exhausted');
@@ -299,7 +307,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         if (budgetStopped) break;
         const selected = selectRetentionEntries(entries, policy, started);
         if (!selected.length) continue;
-        const holders = await scan(selected.map((e) => e.path));
+        const holders = await outsideInspectionBudget(() => scan(selected.map((e) => e.path)));
         if (!holders.complete) { receipt.errors.push('incomplete process-holder scan'); continue; }
         for (const entry of selected) {
           if (budgetExpired()) { stopAtBudget(root.path); break; }
@@ -309,17 +317,17 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           try {
             // Write the intent before the last identity/holder checks, so a
             // slow database round trip cannot widen the check-to-effect window.
-            if (!receipt.dryRun) await options.record?.('remove-intent', entry);
+            if (!receipt.dryRun) await outsideInspectionBudget(async () => options.record?.('remove-intent', entry));
             // Rescan write activity + identity and process holders immediately before the effect.
             const fresh = await inspectEntry(entry.path, entry.root, entry.classId, budget);
             if (!fresh) throw new Error('entry identity unavailable');
-            const freshHolders = await scan([entry.path]);
+            const freshHolders = await outsideInspectionBudget(() => scan([entry.path]));
             if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) { outcome.reason = 'process evidence unavailable or held'; continue; }
             if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs) { outcome.status = 'changed'; continue; }
             if (receipt.dryRun) { outcome.status = 'would-remove'; continue; }
-            await rm(entry.path, { recursive: true, force: false });
+            await outsideInspectionBudget(() => rm(entry.path, { recursive: true, force: false }));
             outcome.status = 'removed';
-            await options.record?.('removed', outcome);
+            await outsideInspectionBudget(async () => options.record?.('removed', outcome));
           } catch (err) {
             outcome.status = 'failed'; outcome.reason = message(err);
             if (budgetExpired()) { stopAtBudget(root.path); break; }

@@ -128,6 +128,33 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.entries).toEqual([expect.objectContaining({ path, status: 'removed', classId: 'fixture' })]);
     await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
   });
+  it('drains complete classes and reaches the next root when safety checks outlast the inspection budget', async () => {
+    const { root, options } = await setup();
+    const secondRoot = join(fixture!, 'second-root'); await mkdir(secondRoot);
+    const paths = [join(root, 'old-a'), join(root, 'old-b'), join(secondRoot, 'old-c')];
+    await Promise.all(paths.map((path) => writeFile(path, 'expired')));
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const scanHolders = vi.fn(async () => {
+      clock += 500;
+      return { complete: true, byPath: new Map<string, string[]>() };
+    });
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, budgetMs: 100,
+        policy: [...options.policy, { ...options.policy[0]!, id: 'second', roots: [secondRoot] }],
+        roots: [...options.roots, { path: secondRoot, classId: 'second' }],
+        scanHolders, record: async () => { clock += 500; },
+      });
+      expect(receipt.errors).toEqual([]); expect(receipt.complete).toBe(true);
+      expect(receipt.policyExhausted).toBe(true);
+      expect(receipt.scan?.stoppedAtRoot).toBeNull();
+      expect(receipt.entries.map((entry) => entry.path).sort()).toEqual([...paths].sort());
+      expect(receipt.entries.every((entry) => entry.status === 'removed')).toBe(true);
+      // One class-level scan and a fresh immediate scan for every effect.
+      expect(scanHolders).toHaveBeenCalledTimes(5);
+      for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { now.mockRestore(); }
+  });
   it('serializes overlapping fixture passes with the real mutex and preserves the losing pass', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
     let signalEntered = () => {}; let releaseFirst = () => {};
