@@ -2824,6 +2824,15 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
   });
 
   it('releases the git-sync barrier after an accepted restart job returns active without a PID transition', async () => {
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG-NO-PID',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 22,
+    });
     mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
     mockImplementationTyped(guardM, runGuard(fenceOk(22)));
     bgHostRestartReadinessM.mockResolvedValueOnce({
