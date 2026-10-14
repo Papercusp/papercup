@@ -69,7 +69,7 @@ describe('retention holder evidence', () => {
     const deps = { uid: () => 1000, readStatus: async () => 'NSpid:\t1\n' };
     const launch = (output: string) => delegateSpawn.mockImplementationOnce(async (_command, _args, spec, options) => {
       expect(spec.runtimeMaxSec).toBe(31);
-      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+      const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
       options.onSpawn(child as unknown as ChildProcess, 'holder-read-task');
       child.stderr.write('Running as unit: holder-read-task.scope\n');
       child.stdout.write(output); child.emit('close', 0, null);
