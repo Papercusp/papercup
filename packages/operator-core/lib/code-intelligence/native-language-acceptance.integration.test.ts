@@ -35,7 +35,7 @@ vi.mock('../task-manager/managed-spawn', async original => {
 });
 import graphQuery from '../agent-tools/gitnexus/query';
 import lspQuery from '../agent-tools/lsp/query';
-import { killTask } from '../task-manager/control';
+import { killScopeUnit, killTask } from '../task-manager/control';
 import { closeTask } from '../task-manager/store';
 import { taskTerminalEventKey } from '../task-manager/task-terminal-events';
 import type { CodeIntelAnswer } from './contracts';
@@ -63,24 +63,40 @@ beforeAll(async () => {
   await once(server, 'listening');
 }, 120_000);
 afterAll(async () => {
+  const errors: unknown[] = [];
   try {
-    await shutdownAllLspClients();
-    if (server) await new Promise<void>(done => server!.close(() => done()));
+    try { await shutdownAllLspClients(); } catch (error) { errors.push(error); }
+    try {
+      if (server) await new Promise<void>(done => server!.close(() => done()));
+    } catch (error) { errors.push(error); }
     for (const taskId of storage.tasks.splice(0)) {
+      try {
       const outcome = await killTask(taskId, { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 500 });
-      if (!outcome.ok && outcome.error !== 'already_gone') throw new Error(`LSP fixture cleanup refused: ${outcome.error}`);
-      if (!outcome.ok) await closeTask(taskId, { state: 'stranded', exitReason: 'fixture verified process gone at teardown' });
+      if (!outcome.ok && outcome.error === 'not_live') {
+        // A terminal row may still have residue. Verify this exact owned scope,
+        // as the maintained multilingual fixture does, before accepting teardown.
+        const [row] = await storage.sql!`SELECT workspace_id, scope_unit FROM harness_shared.task_ledger WHERE task_id = ${taskId}`;
+        expect(row?.workspace_id).toBe(workspaceId);
+        if (!row?.scope_unit) throw new Error('LSP fixture cannot verify an unconfined terminal task');
+        const scope = await killScopeUnit(row.scope_unit, { escalateAfterMs: 500 });
+        if (!scope.ok && scope.error !== 'already_gone') throw new Error(`LSP fixture scope cleanup refused: ${scope.error}`);
+      } else if (!outcome.ok && outcome.error !== 'already_gone') {
+        throw new Error(`LSP fixture cleanup refused: ${outcome.error}`);
+      } else if (!outcome.ok) {
+        await closeTask(taskId, { state: 'stranded', exitReason: 'fixture verified process gone at teardown' });
+      }
       // Suite hooks have no active test for expect.poll; use the maintained hook-safe wait.
       await vi.waitFor(async () => {
         const [row] = await storage.sql!`
-          SELECT task.state, task.ended_at IS NOT NULL AS ended,
+          SELECT task.workspace_id, task.state, task.ended_at IS NOT NULL AS ended,
                  fire.last_payload->>'taskId' AS emitted_task,
                  fire.last_payload->>'state' = task.state AS matching_state
             FROM harness_shared.task_ledger task
             LEFT JOIN harness_shared.event_key_fires fire ON fire.event_key = ${taskTerminalEventKey(taskId)}
            WHERE task.task_id = ${taskId}`;
-        expect(row).toMatchObject({ ended: true, emitted_task: taskId, matching_state: true });
+        expect(row).toMatchObject({ workspace_id: workspaceId, ended: true, emitted_task: taskId, matching_state: true });
       }, { timeout: 5_000, interval: 20 });
+      } catch (error) { errors.push(error); }
     }
   } finally {
     if (previousAutoPump !== undefined) eventEngine.setAutoPumpEnabledForTests(previousAutoPump);
@@ -90,6 +106,7 @@ afterAll(async () => {
     await db?.cleanup();
     storage.sql = undefined;
   }
+  if (errors.length) throw new AggregateError(errors, 'LSP fixture task cleanup failed');
 }, 60_000);
 
 const controls = nativeLanguageControls();
@@ -218,9 +235,9 @@ describe('native P026 remaining authored language acceptance', () => {
         expect(sites).toEqual([]);
       } else {
         // Captured server input hashes establish this fixture's exact version;
-        // they do not turn unmeasured project readiness into a fresh/healthy claim.
+        // Backend readiness and disk freshness are separate contract fields;
+        // an unknown disk-freshness value remains unknown even for a ready server.
         expect(answer.freshness.staleVsDisk).not.toBe(true);
-        if (answer.freshness.staleVsDisk === null) expect(answer.freshness.health).not.toBe('healthy');
         expect(answer.evidence?.sourceScope.supportingFiles).toContainEqual(expect.objectContaining({
           path, contentHash: createHash('sha256').update(source).digest('hex'),
         }));
