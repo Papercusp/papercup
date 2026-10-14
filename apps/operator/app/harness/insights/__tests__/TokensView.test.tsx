@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { configureOperatorUi, OperatorWorkspaceLocationProvider } from '@papercusp/operator-ui/seam';
 import type { TokensDashboardSnapshot } from '@papercusp/operator-core/lib/harness-insights/card-types';
 const h = vi.hoisted(() => ({ snapshot: null as TokensDashboardSnapshot | null }));
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: h.snapshot ? [h.snapshot] : [],
@@ -32,5 +33,21 @@ describe('TokensView local diagnostics', () => {
     expect(screen.getByText(/does not measure provider-account usage/)).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Recent local calls' }).textContent).toContain('Unknown');
     expect(screen.getByTestId('tokens-stat-cost').textContent).toContain('Recorded model cost');
+  });
+  it('sends only an explicit bounded request through the customer host seam and keeps local usage after refusal', async () => {
+    h.snapshot = snapshot();
+    const apiFetch = vi.fn(async () => Response.json({ delivered: false, code: 'consent_disabled' }, { status: 202 }));
+    configureOperatorUi({ apiFetch });
+    render(<OperatorWorkspaceLocationProvider location="cloud"><TokensView slug="customer" /></OperatorWorkspaceLocationProvider>);
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(screen.getByRole('region', { name: 'Aggregate diagnostic export' }).textContent).toContain('off by default');
+    fireEvent.change(screen.getByRole('combobox', { name: 'Export period' }), { target: { value: String(7 * 86400000) } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send aggregate diagnostics' }));
+    await screen.findByText('Enable aggregate diagnostic export in Settings → Profile first.');
+    const [path, init] = apiFetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(path).toBe('/api/harness/customer/insights/diagnostic-export');
+    expect(JSON.parse(String(init.body))).toEqual({ operation_id: expect.any(String), window_ms: 7 * 86400000 });
+    expect(screen.getByTestId('tokens-stat-cost')).toBeTruthy();
+    configureOperatorUi({ apiFetch: (path, init) => fetch(path, init) });
   });
 });

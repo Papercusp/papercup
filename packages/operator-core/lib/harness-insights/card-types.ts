@@ -269,6 +269,8 @@ export interface TokensDashboardSnapshot {
     estimatedUsd: number;
     reportedUsd?: number;
     unpricedCalls?: number;
+    /** Rows with incomplete token counters cannot support an exact aggregate export. */
+    unknownTokenCalls?: number;
     runs: number;
     inputTokens: number;
     outputTokens: number;

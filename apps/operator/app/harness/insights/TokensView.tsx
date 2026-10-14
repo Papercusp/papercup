@@ -22,10 +22,11 @@
  * rather than a fabricated breakdown.
  */
 
-import type { CSSProperties, ReactNode } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import { Coins, RefreshCw, Cpu, UserRound, CalendarDays, Info } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import type { TokensDashboardSnapshot, TokenGroupRow } from '@papercusp/operator-core/lib/harness-insights/card-types';
+import { operatorUi, useOperatorWorkspaceLocation } from '@papercusp/operator-ui/seam';
 
 // ─── number formatting (matches SpendCard's idiom) ──────────────────
 function formatUsd(n: number): string {
@@ -174,6 +175,24 @@ function DayTrend({ snapshot }: { snapshot: TokensDashboardSnapshot }) {
 }
 
 export function TokensView({ slug }: { slug: string }): ReactNode {
+  const location = useOperatorWorkspaceLocation();
+  const [exporting, setExporting] = useState(false);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [exportWindow, setExportWindow] = useState(24 * 60 * 60 * 1000);
+  const exportDiagnostics = async () => {
+    setExporting(true); setExportStatus(null);
+    try {
+      const response = await operatorUi().apiFetch(`/api/harness/${encodeURIComponent(slug)}/insights/diagnostic-export`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operation_id: crypto.randomUUID(), window_ms: exportWindow }),
+      });
+      const result = await response.json();
+      setExportStatus(response.ok && result.delivered === true ? 'Aggregate accepted for delivery.' :
+        result.code === 'consent_disabled' ? 'Enable aggregate diagnostic export in Settings → Profile first.' :
+        'Aggregate was not delivered. Check your monitoring choice and local usage availability.');
+    } catch { setExportStatus('Aggregate was not delivered. Local diagnostics remain available.'); }
+    finally { setExporting(false); }
+  };
   const sync = useSyncQuery<TokensDashboardSnapshot>({
     queryName: 'insights.tokens',
     args: { harness: slug },
@@ -206,6 +225,18 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
       <p style={SUB}>This local ledger covers calls this runtime observes. It does not measure provider-account usage,
         subscription balances, invoices, or cloud bills. Papercusp service charges are separate.
         Customer usage stays local unless you explicitly authorize aggregate diagnostic export.</p>
+      {location === 'cloud' && <section style={CARD} aria-label="Aggregate diagnostic export">
+        <p style={SUB}>Send only call and token counts, provider-reported or estimated model cost, and the count of unpriced calls
+          to Papercusp’s PostHog at flags.papercuspai.com. No prompts, code, private tasks, logs, account details or host/cloud bills.
+          Export is off by default; enable it in Settings → Profile. The period starts after your latest opt-in.
+          Revocation stops future delivery. Previously sent events remain under the project’s current unlimited retention.</p>
+        <label>Export period <select aria-label="Export period" value={exportWindow} disabled={exporting}
+          onChange={event => setExportWindow(Number(event.target.value))}>
+          <option value={24 * 60 * 60 * 1000}>Last 24 hours</option><option value={7 * 24 * 60 * 60 * 1000}>Last 7 days</option>
+        </select></label>
+        <button type="button" disabled={exporting} onClick={() => { void exportDiagnostics(); }}>Send aggregate diagnostics</button>
+        {exportStatus && <p role="status">{exportStatus}</p>}
+      </section>}
 
       {sync.loading && !snap ? (
         <div style={EMPTY}>Loading token spend…</div>
