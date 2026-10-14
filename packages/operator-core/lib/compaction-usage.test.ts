@@ -127,6 +127,28 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     expect(statement.join('')).toContain('ORDER BY started_at DESC, id DESC');
   });
 
+  it('excludes terminal adv-session rows while keeping the active control selectable', async () => {
+    const rows = [
+      { id: 24, agent: 'claude', session_id: 'ended-with-time', started_at: '2026-10-14T12:00:00Z', ended_at: '2026-10-14T12:01:00Z', ended_by: 'self' },
+      { id: 23, agent: 'claude', session_id: 'ended-with-writer-only', started_at: '2026-10-14T11:00:00Z', ended_at: null, ended_by: 'reconciler' },
+      { id: 22, agent: 'claude', session_id: 'native-active', started_at: '2026-10-14T10:00:00Z', ended_at: null, ended_by: null },
+    ];
+    advSessionRowsMock.mockImplementation(async (strings) => {
+      const query = strings.join('');
+      const excludesTerminalRows = query.includes('ended_at IS NULL') && query.includes('ended_by IS NULL');
+      return excludesTerminalRows ? rows.filter((row) => row.ended_at == null && row.ended_by == null) : rows;
+    });
+
+    await expect(resolveSessionRef('su-ended')).resolves.toMatchObject({
+      agent: 'claude',
+      sessionId: 'native-active',
+      sessionKey: 22,
+    });
+    const statement = advSessionRowsMock.mock.calls[0]?.[0];
+    expect(statement.join('')).toContain('ended_at IS NULL');
+    expect(statement.join('')).toContain('ended_by IS NULL');
+  });
+
   it('reads the newest valid last_token_usage and effective model window, never cumulative usage', async () => {
     const event = (tokens: number, total: number, window = 258_400) =>
       JSON.stringify({
