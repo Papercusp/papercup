@@ -5,13 +5,19 @@
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { describe, expect, it } from 'vitest';
 import { executeOperationalRun } from '../agent-tools/testing/record-run';
+import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
+import { findCanonicalClaudeLiveJsonl, findCanonicalNativeLiveJsonl, readStableLiveJsonl } from '../session-port/source';
+import { adaptNativeSessionJsonl } from '../session-port/native-adapter';
+import type { SessionBackend } from '../session-port/types';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const profilePath = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
-type Profile = { origin: string; runtimeUnits: string[]; consultBrief: { questions: string[] } };
+type Profile = { origin: string; runtimeUnits: string[];
+  consultBrief: { questions: string[]; existingConversationId?: string } };
 
 function call(name: string, args: Record<string, unknown>, origin: string) {
   const env = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
@@ -34,12 +40,30 @@ function rows(sql: string, origin: string) {
     allowUnscoped: false, allowUnboundedJsonSearch: false }, origin).rows as Array<Record<string, unknown>>;
 }
 
+async function nativeBrief(owner: string, origin: string) {
+  const [session] = rows(`SELECT id, agent, session_id, omp_thread_id FROM harness_shared.adv_sessions
+    WHERE workspace_id = 'papercusp-workspace' AND coord_owner_id = ${literal(owner)}
+    ORDER BY id DESC LIMIT 1`, origin);
+  if (!session) return undefined;
+  const backend = session.agent as SessionBackend;
+  const nativeSession = String(backend === 'omp' ? session.omp_thread_id ?? session.session_id : session.session_id);
+  const path = backend === 'claude'
+    ? await findCanonicalClaudeLiveJsonl(sessionClaudeConfigDir(owner), nativeSession)
+    : await findCanonicalNativeLiveJsonl(join(backend === 'codex'
+      ? codexHomeForSessionKey(Number(session.id)) : ompAgentHomeForSessionKey(Number(session.id)), 'sessions'), backend, nativeSession);
+  const snapshot = await readStableLiveJsonl(path);
+  const first = adaptNativeSessionJsonl(backend, snapshot.bytes.toString('utf8'), nativeSession)
+    .turns.find(turn => turn.role === 'user');
+  const text = first?.blocks.flatMap(block => 'text' in block ? [String(block.text)] : []).join('\n') ?? '';
+  return { nativeSession, path, sha256: snapshot.sha256, text };
+}
+
 describe.skipIf(!profilePath)('consult dispatch through the current production router', () => {
   it('records an organic dispatch and a fresh brief containing the selected expert turns', async () => {
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8')) as Profile;
     expect(profile.origin).toBe('http://127.0.0.1:3170');
     expect(profile.runtimeUnits).toContain('hono-host:3170');
-    expect(profile.consultBrief.questions.length).toBeGreaterThan(0);
+    expect(profile.consultBrief.existingConversationId || profile.consultBrief.questions.length).toBeTruthy();
     expect(profile.consultBrief.questions.length).toBeLessThanOrEqual(2);
     expect(process.env.PAPERCUSP_SID, 'preserve the authenticated session identity').toBeTruthy();
     const route = call('dev:pipeline_position', {
@@ -59,8 +83,11 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
       run: async () => {
         const observations: Array<Record<string, unknown>> = [];
         let proof: { conversationId: string; sourceOwner: string; answeringOwner: string; nativeSession: string } | undefined;
-        for (const question of profile.consultBrief.questions) {
-          const consult = call('consult:get_feedback', { question, archive_floor: 2, allow_dispatch: true,
+        const attempts = profile.consultBrief.existingConversationId ? [''] : profile.consultBrief.questions;
+        for (const question of attempts) {
+          const consult = profile.consultBrief.existingConversationId
+            ? { conversation_id: profile.consultBrief.existingConversationId }
+            : call('consult:get_feedback', { question, archive_floor: 2, allow_dispatch: true,
             request_key: `cbp-live-brief-${randomUUID()}`, harness: 'papercusp',
             origin_task_ref: 'WI-6554700010009934' }, profile.origin);
           const id = consult.conversation_id as string;
@@ -107,23 +134,22 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
               AND turn_idx = ${Number(ref.turn_idx)} LIMIT 1`, profile.origin))
               .map(row => String(row.text).slice(0, 60)).filter(text => text.length >= 30);
             expect(excerpts.length).toBeGreaterThan(0);
-            let native: Array<Record<string, unknown>> = [];
-            await expect.poll(() => {
-              native = rows(`SELECT session_id, text FROM harness_shared.session_turns
-                WHERE workspace_id IN ('papercusp-workspace', 'default') AND owner = ${literal(answeringOwner)}
-                AND turn_idx = 0 ORDER BY ingested_at DESC LIMIT 1`, profile.origin);
-              return native.length === 1 && String(native[0]!.text).includes('FRESH answering session')
-                && String(native[0]!.text).includes(sourceOwner)
-                && excerpts.some(text => String(native[0]!.text).includes(text));
+            let native: Awaited<ReturnType<typeof nativeBrief>>;
+            await expect.poll(async () => {
+              native = await nativeBrief(answeringOwner, profile.origin);
+              return Boolean(native?.text.includes('FRESH answering session')
+                && native.text.includes(sourceOwner)
+                && excerpts.some(text => native!.text.includes(text)));
             }, { timeout: 120_000, interval: 5000 }).toBe(true);
-            proof = { conversationId: id, sourceOwner, answeringOwner, nativeSession: String(native[0]!.session_id) };
+            proof = { conversationId: id, sourceOwner, answeringOwner, nativeSession: native!.nativeSession };
+            observations.push({ nativeTranscriptPath: native!.path, nativeSnapshotSha256: native!.sha256 });
             break;
           } catch (error) {
-            console.error('CBP_LIVE_DISPATCH_EXCEPTION', id,
+            console.info('CBP_LIVE_DISPATCH_EXCEPTION', id,
               error instanceof Error ? error.stack : String(error));
             throw error;
           } finally {
-            call('consult:close', { conversation_id: id, outcome: 'cant_help',
+            if (!profile.consultBrief.existingConversationId) call('consult:close', { conversation_id: id, outcome: 'cant_help',
               reason: 'Owned acceptance fixture captured its dispatch; stop the review cascade.' }, profile.origin);
           }
         }

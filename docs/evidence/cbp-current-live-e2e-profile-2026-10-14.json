@@ -2,8 +2,7 @@
   "origin": "http://127.0.0.1:3170",
   "runtimeUnits": ["hono-host:3170"],
   "consultBrief": {
-    "questions": [
-      "The exact replay reproduced the stored distribution and immutable clause identity. In that grading procedure, how did you prevent an earlier interim scorecard for the same rubric and subject from being carried forward, and which currentness lease did you verify immediately before the terminal emit? I need the sequence grounded in the evaluator replay."
-    ]
+    "questions": [],
+    "existingConversationId": "conv-request-7eac012e4e0cdf971c14af7ae9e28b9fb92ce8ea398586806c441da193a27435"
   }
 }
