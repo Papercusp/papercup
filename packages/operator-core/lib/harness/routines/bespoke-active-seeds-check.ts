@@ -90,6 +90,8 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // cannot see" omission the bulk-run-watchdog entry below records.
   { name: 'acceptance-drain-sweep', seedScript: 'seed-acceptance-drain-sweep-routine.ts' },
   { name: 'acceptance-grading-sweep', seedScript: 'seed-acceptance-grading-sweep-routine.ts' },
+  // spec-driven-tooling-integration-2026-10-05 P-031 (R-23).
+  { name: 'spec-conformance-sweep', seedScript: 'seed-spec-conformance-sweep-routine.ts' },
   // WI-6554700010012443 U5: the DEK-rotation re-seal sweep for sealed organization documents.
   { name: 'organization-content-reseal', seedScript: 'seed-organization-content-reseal-routine.ts' },
   // EI-21921833535413808: the scheduled walled-account re-probe — landed defaulting ACTIVE
