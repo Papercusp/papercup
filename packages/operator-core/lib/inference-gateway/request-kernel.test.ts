@@ -1056,3 +1056,163 @@ describe('gateway request kernel caller-supplied span adoption', () => {
     expect(f.routeB.delayMs).toBeUndefined();
   });
 });
+
+/**
+ * gateway-admission-congestion-only-2026-10-13 R-3 / P-003 — pace uploads, not open streams.
+ *
+ * Each case runs the REAL kernel against a REAL one-slot PriorityAdmissionQueue, so "the
+ * slot is free" is the queue's own `running` counter and a second request actually being
+ * admitted — not a fake's bookkeeping. The CONTROL arm is the same fixture without the
+ * hook, which is what makes the release assertion a discriminator rather than a vacuous truth.
+ */
+describe('gateway request kernel releases the admission slot while a response streams (R-3)', () => {
+  const lane = laneRegistry.openaiResponses;
+
+  /** A stream that yields one chunk, then waits for `open()` before its last chunk. */
+  function gatedStream() {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    async function* body(): AsyncIterable<Uint8Array> {
+      yield Buffer.from('first');
+      await gate;
+      yield Buffer.from('second');
+    }
+    return { body: body(), open };
+  }
+
+  function streamingFixture(
+    body: AsyncIterable<Uint8Array>,
+    queue: PriorityAdmissionQueue,
+    opts: { releaseForStream: boolean; policy?: Partial<GatewayKernelPolicy> },
+  ) {
+    let attemptSignal: AbortSignal | undefined;
+    const f = fixture(lane, {
+      policy: opts.policy,
+      executeAttempt: async (_prepared, context) => {
+        attemptSignal = context.signal;
+        return {
+          status: 200,
+          streaming: true,
+          transport: context.route.transport,
+          metadata: { contentType: 'text/event-stream' },
+          body,
+          discard: () => {
+            f.events.push('discard');
+          },
+        };
+      },
+    });
+    f.options.admission.run = (_context, task) => queue.run(0, task, { tier: 1 });
+    if (opts.releaseForStream) {
+      f.options.admission.releaseForStream = () => {
+        f.events.push(`release-for-stream:running=${queue.snapshot().running}`);
+      };
+    }
+    return { ...f, attemptSignal: () => attemptSignal };
+  }
+
+  const text = (written: Uint8Array[]) => written.map((chunk) => Buffer.from(chunk).toString());
+
+  it('frees the slot once the response streams, so a second request is admitted while the first is still open', async () => {
+    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 4 });
+    const first = gatedStream();
+    const second = gatedStream();
+    const a = streamingFixture(first.body, queue, { releaseForStream: true });
+    const b = streamingFixture(second.body, queue, { releaseForStream: true });
+
+    const pendingA = executeGatewayRequestKernel(a.options);
+    await vi.waitFor(() => expect(a.events).toContain('downstream:write:first'));
+    // A's stream is open (gated before its last chunk) and no longer holds the only slot.
+    expect(queue.snapshot()).toMatchObject({ running: 0, queued: 0 });
+
+    const pendingB = executeGatewayRequestKernel(b.options);
+    await vi.waitFor(() => expect(b.events).toContain('downstream:write:first'));
+    expect(a.events, 'B was admitted while A was still streaming').not.toContain('downstream:end');
+
+    first.open();
+    second.open();
+    await expect(pendingA).resolves.toMatchObject({ status: 200, outcome: 'ok' });
+    await expect(pendingB).resolves.toMatchObject({ status: 200, outcome: 'ok' });
+
+    // The hook ran INSIDE the slot, before a single byte was relayed.
+    expect(a.events).toContain('release-for-stream:running=1');
+    expect(a.events.indexOf('release-for-stream:running=1')).toBeLessThan(a.events.indexOf('downstream:start:200'));
+    // The relay outside the slot is complete and its in-flight handle is released once, last.
+    expect(text(a.written)).toEqual(['first', 'second']);
+    expect(a.counts()).toMatchObject({ unregisterCount: 1, discardCount: 0 });
+    expect(a.events.indexOf('inflight:unregister:ok:200')).toBeGreaterThan(a.events.indexOf('downstream:end'));
+    expect(queue.snapshot()).toMatchObject({ running: 0, queued: 0 });
+  });
+
+  it('CONTROL: without the hook the stream keeps its slot, so the second request waits for it', async () => {
+    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 4 });
+    const first = gatedStream();
+    const second = gatedStream();
+    const a = streamingFixture(first.body, queue, { releaseForStream: false });
+    const b = streamingFixture(second.body, queue, { releaseForStream: false });
+
+    const pendingA = executeGatewayRequestKernel(a.options);
+    await vi.waitFor(() => expect(a.events).toContain('downstream:write:first'));
+    expect(queue.snapshot()).toMatchObject({ running: 1 });
+
+    const pendingB = executeGatewayRequestKernel(b.options);
+    await vi.waitFor(() => expect(queue.snapshot().queued).toBe(1));
+    expect(b.events, 'B must not be admitted while A streams in the slot').not.toContain('inflight:register');
+
+    first.open();
+    await expect(pendingA).resolves.toMatchObject({ status: 200, outcome: 'ok' });
+    second.open();
+    await expect(pendingB).resolves.toMatchObject({ status: 200, outcome: 'ok' });
+    expect(b.events.indexOf('inflight:register')).toBeGreaterThan(-1);
+  });
+
+  it('keeps every relay guard outside the slot: a stalled released stream still aborts upstream and releases its handle', async () => {
+    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 1 });
+    async function* stallsAfterFirst(): AsyncIterable<Uint8Array> {
+      yield Buffer.from('first');
+      await new Promise<void>(() => undefined);
+    }
+    const f = streamingFixture(stallsAfterFirst(), queue, {
+      releaseForStream: true,
+      policy: { bodyIdleTimeoutMs: 5 },
+    });
+
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'upstream-body-idle', outcome: 'upstream-error', status: 504 });
+    expect(f.attemptSignal()?.aborted).toBe(true);
+    expect(f.counts()).toMatchObject({ unregisterCount: 1 });
+    expect(f.events).toContain('inflight:unregister:upstream-error:504');
+    expect(queue.snapshot()).toMatchObject({ running: 0, queued: 0 });
+  });
+
+  it('a failing release hook discards the response and fails the request inside the slot', async () => {
+    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 1 });
+    const f = streamingFixture(chunks('first'), queue, { releaseForStream: true });
+    f.options.admission.releaseForStream = () => {
+      throw new Error('bookkeeping failed');
+    };
+
+    await expect(executeGatewayRequestKernel(f.options)).rejects.toBeInstanceOf(GatewayRequestKernelError);
+
+    expect(f.events).toContain('discard');
+    expect(f.written).toEqual([]);
+    expect(f.counts()).toMatchObject({ unregisterCount: 1 });
+    expect(queue.snapshot()).toMatchObject({ running: 0, queued: 0 });
+  });
+
+  it('a non-streaming response never calls the hook and is relayed inside the slot', async () => {
+    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 1 });
+    const f = fixture(lane, { streaming: false });
+    f.options.admission.run = (_context, task) => queue.run(0, task, { tier: 1 });
+    const hook = vi.fn();
+    f.options.admission.releaseForStream = hook;
+
+    await expect(executeGatewayRequestKernel(f.options)).resolves.toMatchObject({ status: 200, outcome: 'ok' });
+
+    expect(hook).not.toHaveBeenCalled();
+    expect(f.counts()).toMatchObject({ unregisterCount: 1 });
+  });
+});

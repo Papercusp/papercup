@@ -58,6 +58,12 @@ import {
   ProviderAdmissionLifecycle,
   type ProviderLaneId,
 } from './provider-admission-lifecycle';
+import {
+  claudeRateLimitScope,
+  codexCliRateLimitScope,
+  codexRateLimitScope,
+  type RateLimitScope,
+} from './upstream-outcome-classifier';
 import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, FIVE_HOURS_MS, type AccountBurnAction } from './account-failover';
 import { selectAffectedOwners } from './affected-owners';
 import { CLAUDE_CONTEXT_1M_BETA, withClientBetas, scrubSecrets } from './credential-store';
@@ -6628,7 +6634,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       let lastExhaustResetAt = 0;
 
       // ── the deferred pair (seam 3) ───────────────────────────────────────────
-      let pendingThrottle = false;
+      /** The scope of a 429 awaiting the routing decision (WI-6554700010011426), or null. */
+      let pendingThrottle: RateLimitScope | null = null;
       let pendingTransport: { account: ActiveAccount; egressKey: string; stalled: boolean } | null = null;
 
       /** The live account-level egress circuit (gateway.ts pre-migration :4222-4257). */
@@ -6673,13 +6680,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
        * this pass produced no further attempt.
        */
       const resolvePending = (nextReason: ClaudeRouteReason | null) => {
-        if (pendingThrottle) {
-          pendingThrottle = false;
+        const throttleScope = pendingThrottle;
+        if (throttleScope) {
+          pendingThrottle = null;
           // Fix B: a 429 we successfully routed around is a ROUTING event, not
           // pool-wide over-drive, and must stay invisible to global AIMD. A next
           // attempt of ANY reason is exactly the live `routedAround` — both the
-          // cross-account rotate and the sibling-IP retry set it.
-          if (nextReason === null) providerAdmission.recordThrottle('claude');
+          // cross-account rotate and the sibling-IP retry set it. The shared
+          // classifier also keeps an account-scoped (usage-cap) 429 off the window.
+          providerAdmission.recordOutcome(
+            'claude',
+            { kind: 'rate-limited', scope: throttleScope, routedAround: nextReason !== null },
+            stageSpan?.requestId,
+          );
         }
         const transport = pendingTransport;
         if (transport) {
@@ -6814,8 +6827,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (res.writableEnded || res.destroyed) return;
         // EI-7168: this request was admitted, got a 2xx, already recorded its
         // optimistic success, and then died mid-relay — the expensive failure.
-        // Correct that record with an immediate hard clamp, once.
-        providerAdmission.recordHardFailure('claude');
+        // Correct that record with one unit of congestion pressure for this request
+        // (WI-6554700010011426: sustained across distinct requests, never an instant clamp).
+        providerAdmission.recordOutcome('claude', { kind: 'transport-failure' }, stageSpan?.requestId);
         if (!sseForward) {
           try {
             res.destroy();
@@ -7040,6 +7054,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // re-admitting would deadlock on itself); step (iii-b) swaps in the real
               // controller HERE and drops the bridge's, so exactly one of the two admits.
               run: (context, task) => kernelAdmission.run(context, task),
+              // R-3 / P-003: once the response streams, hand the lane slot back. This
+              // request's self-heal registry entry leaves with it (the registry must stay a
+              // subset of HELD slots, or the valve could reclaim a healthy stream and the
+              // reconcile guard reads `registry>slots`). The per-account governor slot
+              // (`gov.acquire`) is untouched and still bounds per-account concurrency.
+              ...(kernelAdmission.releaseForStream
+                ? {
+                    releaseForStream: () => {
+                      const entry = inFlightReg.get(reqId);
+                      if (entry) {
+                        inFlightReg.delete(reqId);
+                        if (!entry.reclaimed) lastDrainAt.claude = Date.now();
+                      }
+                      kernelAdmission.releaseForStream?.();
+                    },
+                  }
+                : {}),
               observeAttempt: ({ context, response, error }) => {
                 // Settle the previous attempt's deferred effects now that the
                 // adapter's routing answer is visible on THIS attempt's route.
@@ -7097,10 +7128,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   }
                   const stalled = error.code === 'ttfb-timeout';
                   // WI-6554700010009426: an admitted attempt that died on the wire (TTFB
-                  // deadline / transport) spent its slot and produced nothing — contract
-                  // the lane exactly like a mid-relay death (EI-7168), so a herd queues
-                  // here instead of saturating egress with full-body re-uploads.
-                  providerAdmission.recordHardFailure('claude');
+                  // deadline / transport) spent its slot and produced nothing. It adds ONE
+                  // unit of congestion pressure per request (WI-6554700010011426, plan D-001):
+                  // a herd of distinct failing requests still contracts the lane, but one
+                  // slow prompt failing over cannot walk the window down attempt by attempt.
+                  providerAdmission.recordOutcome('claude', { kind: 'transport-failure' }, stageSpan?.requestId);
                   log(
                     'error',
                     `upstream fetch ${stalled ? 'STALLED (aborted)' : 'failed'} request=${requestRef} code=${error.code} on '${account.accountId}': ${error.message}`,
@@ -7238,9 +7270,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     if (coldRestCause !== 'not-cold-rest') {
                       shape429Suffix += ` [cold-rest-cause=${coldRestCause} since-readmit=${msSinceReadmit ?? '-'}ms]`;
                     }
-                    // Deferred: an AIMD throttle is recorded only for a 429 that
-                    // could NOT be routed around (seam 3).
-                    pendingThrottle = true;
+                    // Deferred: settled once the routing decision is known (seam 3).
+                    // The SHAPE decides account-scoped vs transient (WI-6554700010011426).
+                    pendingThrottle = claudeRateLimitScope(shape429);
                   }
 
                   if (status === 529) {
@@ -8401,6 +8433,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // the slot this request already holds. It is also why the slot cannot move down to
           // this seam: this transport commits its response head BEFORE the kernel call below.
           run: (context, task) => kernelAdmission.run(context, task),
+          // R-3 / P-003: hand the lane slot back once the response streams.
+          ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
           observeAttempt: ({ context, error }) => {
             attemptsSeen = context.attempt;
             const account = context.route.accountId ?? cli.accountId;
@@ -8419,7 +8453,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
             if (isCodexRateLimitFailure(error.message)) {
               codexUpstream429++;
               recordRoutingUpstream429('codex', account);
-              providerAdmission.recordThrottle('codex');
+              // Admission hears this 429 only if the request ENDS on it (the terminal
+              // handler below): a 429 the kernel fails over past is a routing event,
+              // not congestion (WI-6554700010011426).
               recordOwnerOutcome(routing.ownerId, 'upstream_429', { account, status: 429, detail: 'cli-bridge' });
               log('warn', `inference-gateway: codex-cli bridge rate-limited on '${account}': ${error.message}`);
             } else {
@@ -8550,6 +8586,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ? detail
         : `inference-gateway: codex-cli bridge failed: ${detail}`;
       const rateLimited = isCodexRateLimitFailure(lastFailureDetail || detail);
+      if (rateLimited) {
+        // The request ENDS on a rate limit nothing routed around. The shared
+        // classifier keeps a usage/session-limit wall off the window.
+        providerAdmission.recordOutcome(
+          'codex',
+          { kind: 'rate-limited', scope: codexCliRateLimitScope(lastFailureDetail || detail), routedAround: false },
+          stageSpan?.requestId,
+        );
+      }
       const rateShape = rateLimited
         ? shapeTerminalThrottle({
             attempts: attemptsSeen,
@@ -8877,7 +8922,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // window kept EXPANDING (5878→6196) through ~8,900 TTFB timeouts while a
           // mass-resume herd saturated egress; every abort failed over and re-uploaded
           // the whole body, and the gateway collapsed for ~35 min (claude too).
-          providerAdmission.recordHardFailure('codex');
+          // WI-6554700010011426: but contracting on EVERY attempt over-corrected — a few
+          // huge prompts timing out across their failovers pinned the window at its floor
+          // of 4 with 100+ queued. One unit of pressure per REQUEST, sustained across
+          // distinct requests (plan D-001), keeps the herd guard and frees the lane.
+          providerAdmission.recordOutcome('codex', { kind: 'transport-failure' }, stageSpan?.requestId);
           const description = describeFetchError(error);
           const edge = codexReachability.noteTransportFailure(id, description, classifyTransportFailure(error), Date.now());
           if (edge === 'became-unreachable') {
@@ -8995,6 +9044,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // the slot this request already holds. It is also why the slot cannot move down to
             // this seam: this transport commits its response head BEFORE the kernel call below.
             run: (context, task) => kernelAdmission.run(context, task),
+            // R-3 / P-003: hand the lane slot back once the response streams.
+            ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
             observeAttempt: ({ context, response, error }) => {
               attemptsThisPass = context.attempt;
               attemptsSeen = attemptsUsed + context.attempt;
@@ -9056,7 +9107,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (response.status === 429) {
                 codexUpstream429++;
                 recordRoutingUpstream429('codex', account);
-                providerAdmission.recordThrottle('codex');
+                // Admission hears only a TERMINAL 429 (downstream.start below), classified
+                // there: a routed-around or out-of-usage 429 is not congestion (WI-6554700010011426).
                 recordOwnerOutcome(routing.ownerId, 'upstream_429', { account, status: 429 });
               } else if (response.status >= 200 && response.status < 300) {
                 providerAdmission.recordSuccess('codex');
@@ -9095,6 +9147,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // confirm → un-wedge → capacity-gated wake recovery (stall-waker.ts).
               if (status === 429) {
                 const parsed = parseCodexRateReset(metadata.headers);
+                // The ladder is exhausted, so nothing routed around this 429. The shared
+                // classifier counts it as congestion only when it is TRANSIENT; an
+                // exhausted (out-of-usage / weekly) window leaves the window alone.
+                providerAdmission.recordOutcome(
+                  'codex',
+                  { kind: 'rate-limited', scope: codexRateLimitScope(parsed), routedAround: false },
+                  stageSpan?.requestId,
+                );
                 const now = Date.now();
                 const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
                 // The absorb is a bet the POOL recovers inside the budget — ask the pool when that is
@@ -10108,6 +10168,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // whole body, so exactly one of the two admits and re-admitting here would deadlock
             // against the slot this request already holds.
             run: (context, task) => kernelAdmission.run(context, task),
+            // R-3 / P-003: hand the lane slot back once the response streams.
+            ...(kernelAdmission.releaseForStream ? { releaseForStream: () => kernelAdmission.releaseForStream?.() } : {}),
             observeAttempt: ({ context, response, error }) => {
               attemptsThisPass = context.attempt;
               attemptsSeen = attemptsUsed + context.attempt;
@@ -10141,10 +10203,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
               deps.onResponse?.(response.metadata.headers, response.status, responseModel, account);
               if (response.status === 429) {
                 // Counted here even when the kernel goes on to rotate: the old path
-                // recorded the throttle against the account that emitted it.
+                // recorded the throttle against the account that emitted it. Admission
+                // hears only the TERMINAL 429, classified in downstream.start (WI-6554700010011426).
                 codexUpstream429++;
                 recordRoutingUpstream429('codex', account);
-                providerAdmission.recordThrottle('codex');
                 recordOwnerOutcome(wantOwner, 'upstream_429', { account, status: 429 });
               } else if (response.status >= 200 && response.status < 300) {
                 providerAdmission.recordSuccess('codex');
@@ -10181,6 +10243,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // covers the rest.)
               if (status === 429) {
                 const parsed = parseCodexRateReset(metadata.headers);
+                // The ladder is exhausted, so nothing routed around this 429. The shared
+                // classifier counts it as congestion only when it is TRANSIENT; an
+                // exhausted (out-of-usage / weekly) window leaves the window alone.
+                providerAdmission.recordOutcome(
+                  'codex',
+                  { kind: 'rate-limited', scope: codexRateLimitScope(parsed), routedAround: false },
+                  stageSpan?.requestId,
+                );
                 const now = Date.now();
                 const ladderResetAt = parsed.resetAt ?? (parsed.transient ? now + bare429FailoverBackoffMs : 0);
                 // Same pool-horizon gate as the OAuth lane (P-003): absorb only when the pool can recover
@@ -10486,6 +10556,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
      * controller implements this; the kernel-facing `run` remains pass-through.
      */
     park?<TResult>(wait: () => Promise<void>, resume: () => Promise<TResult>): Promise<TResult>;
+    /**
+     * R-3 / P-003 (gateway-admission-congestion-only-2026-10-13): free the lane slot this
+     * request holds because its committed response is now STREAMING, while the handler
+     * keeps relaying outside the slot. Only the remote provider-lane controller implements
+     * it; a local lane omits it (its streaming is the GPU work the slot paces). Handlers
+     * forward it to the kernel as `releaseForStream`, which calls it at the commit point.
+     */
+    releaseForStream?(): void;
   };
 
   /**
@@ -10525,7 +10603,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     url: string,
     laneAdmission: GatewayLaneAdmission,
   ): Promise<void> {
-    return laneAdmission.run(undefined, () => proxyAdmitted(req, res, url, passThroughLaneAdmission));
+    // R-3: the admitted handler keeps the pass-through `run`, but can still hand its slot
+    // back once the response streams.
+    const admittedLaneControl: GatewayLaneAdmission = laneAdmission.releaseForStream
+      ? { run: passThroughLaneAdmission.run, releaseForStream: laneAdmission.releaseForStream }
+      : passThroughLaneAdmission;
+    return laneAdmission.run(undefined, () => proxyAdmitted(req, res, url, admittedLaneControl));
   }
 
   async function proxyOpenAi(
@@ -10534,12 +10617,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     url: string,
     laneAdmission: GatewayLaneAdmission,
   ): Promise<void> {
-    const admittedLaneControl: GatewayLaneAdmission = laneAdmission.park
-      ? {
-          run: passThroughLaneAdmission.run,
-          park: laneAdmission.park,
-        }
-      : passThroughLaneAdmission;
+    const admittedLaneControl: GatewayLaneAdmission =
+      laneAdmission.park || laneAdmission.releaseForStream
+        ? {
+            run: passThroughLaneAdmission.run,
+            ...(laneAdmission.park ? { park: laneAdmission.park } : {}),
+            // R-3: hand the slot back once the response streams.
+            ...(laneAdmission.releaseForStream ? { releaseForStream: laneAdmission.releaseForStream } : {}),
+          }
+        : passThroughLaneAdmission;
     return laneAdmission.run(undefined, () => proxyOpenAiAdmitted(req, res, url, admittedLaneControl));
   }
 
@@ -11607,12 +11693,29 @@ export function createInferenceGateway(deps: GatewayDeps) {
         req.off('aborted', onCallerGone);
         res.off('close', onCallerGone);
       };
+      // R-3 / P-003 — PACE UPLOADS, NOT OPEN STREAMS. The handler runs to completion as
+      // `outcome`, but the queue callback settles on whichever comes first: the handler
+      // finishing, or `releaseForStream` firing at the kernel's commit point because the
+      // response is now streaming. Either way the slot is freed by the queue's own
+      // task-settle path (still the sole release authority), and the codex registry entry
+      // below leaves `inFlightReg` with it, keeping the registry a subset of held slots.
+      // The caller still receives the handler's own result or failure via `outcome`.
+      let outcome!: Promise<TResult>;
+      let markReleased!: () => void;
+      const released = new Promise<void>((resolve) => {
+        markReleased = resolve;
+      });
+      releaseCurrentSlot = () => markReleased();
+      const runUntilReleased = async (): Promise<void> => {
+        outcome = task();
+        await Promise.race([outcome, released]);
+      };
       return admissionQueue
         .run(
           pri,
           async () => {
             markProviderAdmitted();
-            if (providerId !== 'codex') return task();
+            if (providerId !== 'codex') return runUntilReleased();
             const reqId = ++reqSeq;
             inFlightReg.set(reqId, {
               id: reqId,
@@ -11637,7 +11740,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               },
             });
             try {
-              return await task();
+              return await runUntilReleased();
             } finally {
               const entry = inFlightReg.get(reqId);
               if (entry) {
@@ -11648,9 +11751,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
           },
           { signal: abandoned.signal, ...(tier !== undefined ? { tier } : {}) },
         )
+        .then(() => outcome)
         .finally(detach);
     };
+    /** R-3: releases the slot of the run currently in flight (a park re-entry installs its own). */
+    let releaseCurrentSlot: (() => void) | null = null;
     const providerLaneAdmission: GatewayLaneAdmission = {
+      releaseForStream: () => releaseCurrentSlot?.(),
       run: async (_context, initialTask) => {
         let task = initialTask;
         for (;;) {

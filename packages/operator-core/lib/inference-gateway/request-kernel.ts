@@ -166,6 +166,25 @@ export interface GatewayKernelAdmissionController<TRoute, TChunk, TMetadata> {
   ): Promise<TResult>;
   /** AIMD/rate feedback remains lane-specific data, but the kernel guarantees one callback per attempt. */
   observeAttempt?(feedback: GatewayKernelAttemptFeedback<TRoute, TChunk, TMetadata>): MaybePromise<void>;
+  /**
+   * PACE UPLOADS, NOT OPEN STREAMS (gateway-admission-congestion-only-2026-10-13 R-3 / P-003).
+   *
+   * When a lane supplies this hook and the committed response STREAMS, the request leaves
+   * the admitted lifecycle before its body is relayed: the kernel calls this hook (still
+   * inside the slot), returns from `run`'s task — so the lane's queue frees the slot
+   * through its own task-settle path, which stays the sole release authority — and then
+   * relays the stream OUTSIDE the slot. A remote provider's scarce resource is the
+   * upload and the time to first byte, not the number of streams already answering, so
+   * holding a slot for a multi-minute stream only queues everyone else behind it.
+   *
+   * The hook is the lane's chance to move slot-scoped bookkeeping (a self-heal registry
+   * entry, a drain clock) off the held set at the moment the slot frees. A throw is a
+   * lifecycle failure: the response is discarded and the request fails inside the slot.
+   *
+   * Lanes whose streaming IS the scarce resource (a local GPU backend generates while it
+   * streams) omit the hook and keep the slot for the whole relay.
+   */
+  releaseForStream?(context: GatewayKernelContext & { route: GatewayKernelRoute<TRoute> }): MaybePromise<void>;
 }
 
 export interface GatewayKernelAdapter<TRoute, TPrepared, TChunk, TMetadata> {
@@ -892,6 +911,18 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
   let finalOutcome: GatewayRequestOutcome = 'unclassified';
   let failure: GatewayRequestKernelError | null = null;
   let timeline: GatewayRequestTimeline | null = null;
+  /**
+   * R-3: a streaming response handed out of the slot by `releaseForStream`, relayed
+   * after `admission.run` returns. A holder object rather than a `let` because it is
+   * assigned inside the admitted callback, where TypeScript cannot see the write.
+   */
+  const detached: {
+    stream: {
+      response: GatewayKernelUpstreamResponse<TChunk, TMetadata>;
+      abortUpstream: (reason: unknown) => void;
+      inFlight: GatewayKernelInFlightHandle | null;
+    } | null;
+  } = { stream: null };
 
   try {
     route = await abortable(
@@ -1137,6 +1168,27 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
 
           streaming = response.streaming;
           span.setStreaming(streaming);
+          if (streaming && opts.admission.releaseForStream) {
+            // R-3: the response is committed (no further attempt can be chosen), so the
+            // upload this slot was paced for is done. Hand the stream out of the slot and
+            // relay it after `admission.run` returns. A hook failure discards the response
+            // inside the slot, exactly like an observeAttempt failure above.
+            try {
+              await opts.admission.releaseForStream({ ...base, route: currentRoute });
+            } catch (error) {
+              try {
+                await response.discard?.();
+              } catch (discardError) {
+                throw new AggregateError(
+                  [error, discardError],
+                  'gateway stream release and response cleanup both failed',
+                );
+              }
+              throw error;
+            }
+            detached.stream = { response, abortUpstream, inFlight };
+            break;
+          }
           if (streaming) span.beginStage('stream');
           try {
             await pumpResponse({
@@ -1154,6 +1206,10 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
           finalOutcome = response.outcome ?? classifyGatewayTelemetryOutcome(response.status);
           break;
         }
+
+        // A stream handed out of the slot is relayed (and its in-flight handle released)
+        // after `admission.run` returns; nothing more happens inside the slot.
+        if (detached.stream) return;
 
         if (finalStatus === null || !route) {
           throw new GatewayRequestKernelError('gateway request exhausted its attempt budget without a response', {
@@ -1186,6 +1242,46 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
       }
       if (lifecycleFailure) throw lifecycleFailure;
     });
+
+    // R-3: relay a stream released by `releaseForStream` OUTSIDE the slot. Every relay
+    // guard (body idle, downstream idle, request ceiling, caller abort) is the same one
+    // the in-slot relay uses; only the slot is no longer held while bytes flow.
+    const released = detached.stream;
+    if (released) {
+      let relayFailure: GatewayRequestKernelError | null = null;
+      span.beginStage('stream');
+      try {
+        await pumpResponse({
+          response: released.response,
+          downstream: opts.downstream,
+          signal: requestController.signal,
+          bodyIdleTimeoutMs: opts.policy.bodyIdleTimeoutMs,
+          downstreamIdleTimeoutMs: opts.policy.downstreamIdleTimeoutMs,
+          abortUpstream: released.abortUpstream,
+        });
+        finalStatus = released.response.status;
+        finalOutcome = released.response.outcome ?? classifyGatewayTelemetryOutcome(released.response.status);
+      } catch (error) {
+        relayFailure = normalizeError(error, requestController.signal);
+        finalOutcome = relayFailure.outcome;
+        finalStatus = relayFailure.status;
+      } finally {
+        span.endStage('stream');
+      }
+      if (released.inFlight) {
+        try {
+          await released.inFlight.unregister({ outcome: finalOutcome, status: finalStatus });
+        } catch (error) {
+          throw new GatewayRequestKernelError('gateway in-flight unregister failed after stream relay', {
+            code: 'gateway-error',
+            outcome: 'gateway-error',
+            status: 500,
+            cause: relayFailure ? new AggregateError([relayFailure, error]) : error,
+          });
+        }
+      }
+      if (relayFailure) throw relayFailure;
+    }
   } catch (error) {
     failure = normalizeError(error, requestController.signal);
     finalOutcome = failure.outcome;
