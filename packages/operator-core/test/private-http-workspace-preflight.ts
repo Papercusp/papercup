@@ -38,7 +38,7 @@ export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessE
  * to spawn. Request failures converge; process termination never retries. */
 export async function waitForPrivateOperator(options: {
   host: ChildProcess; base: string; headers?: Record<string, string>; evidenceDir: string;
-  hostIdentity?: string; environment: NodeJS.ProcessEnv; timeoutMs?: number;
+  hostIdentity?: string | null; environment: NodeJS.ProcessEnv; timeoutMs?: number;
 }) {
   const { host, base, headers, evidenceDir, environment } = options;
   const started = Date.now();
