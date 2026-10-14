@@ -50,6 +50,7 @@ export interface PlanSpecQualityResult {
     invalidExemptionSpecIds: string[];
     draftSpecIds: string[];
     atomicityClauseDiagnostics: SpecQualityAtomicityClauseDiagnostic[];
+    atomicityDetectorControls: Array<{ behavior: string; expected: 'atomic' | 'compound'; actual: 'atomic' | 'compound'; passed: boolean }>;
     prerequisiteRuntimeBarMismatches: Array<{
       prerequisiteItemId: string;
       barKey: string;
@@ -623,6 +624,21 @@ export function evaluatePlanSpecQuality(input: {
       ? `; ${draftSourceBarExcludedCount} draft sourceBar-pinned projection(s) excluded from the active population`
       : '') +
     '; per-clause dispositions are in details.atomicityClauseDiagnostics.';
+  // Exercise both sides of the predicate in the result itself. A no-hit census
+  // alone cannot show that a broken detector would reject a compound contract.
+  const atomicityDetectorControls = [
+    { behavior: 'The price sheet reproduces measured costs, separates platform margin and specifies an allowance.', expected: 'compound' as const },
+    { behavior: 'The customer journey satisfies the security and operating promises.', expected: 'compound' as const },
+    { behavior: 'The price sheet reproduces the measured cost for each workload case.', expected: 'atomic' as const },
+    { behavior: 'The customer journey stops when the inference allowance is exhausted.', expected: 'atomic' as const },
+  ].map((control) => {
+    const actual = specBehaviorNonAtomicReason(control.behavior) === null ? 'atomic' as const : 'compound' as const;
+    return { ...control, actual, passed: actual === control.expected };
+  });
+  const atomicityControlsPassed = atomicityDetectorControls.every((control) => control.passed);
+  const atomicityControlEvidence =
+    ' Detector controls: two compound counterexamples rejected and two single-outcome controls accepted; see details.atomicityDetectorControls.' +
+    ' Coverage is structural pattern detection, not a proof of arbitrary natural-language semantics.';
   ratings['atomic-observable-behavior'] =
     behavioral.length === 0
       ? notApplicable(
@@ -631,12 +647,14 @@ export function evaluatePlanSpecQuality(input: {
         )
       : itemBehavioral.length === 0
         ? notApplicable(`Only sourceBar-pinned projections are present; they are not independent item contracts.${atomicityCoverage}`)
+      : !atomicityControlsPassed
+        ? unknown(`The atomicity detector failed its counterexample/single-outcome controls; no atomicity pass is earned.${atomicityCoverage}`)
       : atomicityFailures.length
         ? fail(
             atomicityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; ') + '.' + atomicityCoverage,
             'Split compound outcomes into atomic clauses with one observable behavior each.',
           )
-        : pass(`${itemBehavioral.length} independent item behavior clause(s) are structurally atomic.${projectionEvidence}${atomicityCoverage}`);
+        : pass(`${itemBehavioral.length} independent item behavior clause(s) passed the supported structural atomicity checks.${projectionEvidence}${atomicityCoverage}${atomicityControlEvidence}`);
 
   const falsifiabilityFailures = itemBehavioral
     .map((clause) => ({ clause, reason: specBehaviorNonFalsifiableReason(clause.behavior) }))
@@ -750,6 +768,7 @@ export function evaluatePlanSpecQuality(input: {
       invalidExemptionSpecIds,
       draftSpecIds,
       atomicityClauseDiagnostics,
+      atomicityDetectorControls,
       prerequisiteRuntimeBarMismatches: runtimeBarMismatches,
     },
     scorecardDraft: {

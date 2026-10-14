@@ -114,7 +114,7 @@ const MULTI_OBSERVABLE_CONJUNCTION_RE = new RegExp(
 const MULTI_SUBJECT_SHARED_PREDICATE_RE =
   /\b(?:[^,.;]+,\s*){2,}(?:and|or)\s+[^,.;]+\s+(?:is|are|was|were|has|have|accepts?|allows?|becomes?|creates?|deletes?|denies|emits?|fails?|includes?|omits?|records?|rejects?|remains?|returns?|shows?|starts?|stops?|updates?|writes?)\b/i;
 const ADDITIONAL_OBSERVABLE_VERB =
-  '(?:dismiss(?:es)?|exists?|keeps?|promotes?|proven|reaches?|receiv(?:e|es|ed|ing)|refuses?|renders?|stays?|turns?|carr(?:y|ies|ied|ying)|preserv(?:e|es|ed|ing)|mak(?:e|es|ing)|made)';
+  '(?:dismiss(?:es)?|exists?|keeps?|promotes?|proven|reaches?|receiv(?:e|es|ed|ing)|refuses?|renders?|stays?|turns?|carr(?:y|ies|ied|ying)|preserv(?:e|es|ed|ing)|mak(?:e|es|ing)|made|reproduc(?:e|es|ed|ing)|separat(?:e|es|ed|ing)|specif(?:y|ies|ied|ying))';
 const EXTENDED_OBSERVABLE_VERB = '(?:' + OBSERVABLE_VERB + '|' + ADDITIONAL_OBSERVABLE_VERB + ')';
 const EXTENDED_OBSERVABLE_PREDICATE_RE = new RegExp('\\b' + EXTENDED_OBSERVABLE_VERB + '\\b', 'i');
 const MULTI_EXTENDED_CONJUNCTION_RE = new RegExp(
@@ -140,6 +140,11 @@ const MULTI_OBJECT_CONJUNCTION_RE = new RegExp(
 );
 const INDEPENDENT_CLAUSE_SUBJECT_RE =
   /^(?:a|an|the|both|each|every|this|that|these|those|class-[a-z0-9-]+)\b/i;
+// An umbrella journey claim conceals its individual acceptance outcomes, even
+// when it has only one grammatical predicate. A concrete journey transition
+// (for example "stops at exhaustion") remains a single observable obligation.
+const UMBRELLA_JOURNEY_REQUIREMENTS_RE =
+  /\b(?:journey|flow)\b[^.;\n]{0,100}\b(?:satisf(?:y|ies)|meets?|fulfills?)\b[^.;\n]{0,160}\b(?:promises|requirements|expectations|obligations)\b/i;
 const IMPLEMENTATION_PRESENCE_RE =
   /\b(?:(?:is|are|was|were)\s+)?(?:present|implemented|exists?)\s+in\s+(?:the\s+)?(?:current\s+)?(?:source[ -]code|code(?:base)?|repository|repo|tree|implementation)\b/i;
 // `has` is often the present-perfect auxiliary (`the shared tree has moved`).
@@ -232,6 +237,9 @@ export function specBehaviorNonAtomicReason(rawBehavior: string): string | null 
   if (/[.!?]\s+(?=[A-Z0-9])/.test(behavior)) return 'behavior contains multiple sentences';
   if (MULTI_SUBJECT_SHARED_PREDICATE_RE.test(behavior)) {
     return 'behavior groups multiple subjects under one predicate';
+  }
+  if (UMBRELLA_JOURNEY_REQUIREMENTS_RE.test(behavior)) {
+    return 'behavior hides multiple requirements behind a journey or flow';
   }
   if (
     MULTI_OBSERVABLE_CONJUNCTION_RE.test(behavior) ||

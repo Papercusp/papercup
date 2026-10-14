@@ -282,7 +282,7 @@ describe('evaluatePlanSpecQuality', () => {
       const result = evaluate([...bundleProjections, ...independentContracts]);
       const atomicity = result.ratings['atomic-observable-behavior'];
       expect(atomicity.rating).toBe('pass');
-      expect(atomicity.evidence).toContain('3 independent item behavior clause(s) are structurally atomic.');
+      expect(atomicity.evidence).toContain('3 independent item behavior clause(s) passed the supported structural atomicity checks.');
       // WI-10006862: the rating states the population it covers, so a grader can tell the
       // excluded projections were not judged atomic.
       expect(atomicity.evidence).toContain(
@@ -752,6 +752,43 @@ describe('evaluatePlanSpecQuality', () => {
     });
 
     expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
+  });
+
+  it.each([
+    'A versioned pilot price sheet reproduces idle, normal, heavy and burst costs from measured inputs, separates platform/consumption margin and specifies finite allowances and numeric experiment thresholds.',
+    'The pinned current-build customer journey satisfies the hosted security/privacy and operating promises.',
+  ])('rejects the independently audited compound contract: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause({ behavior })], classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('fail');
+    expect(result.details.atomicityClauseDiagnostics).toContainEqual(
+      expect.objectContaining({ disposition: 'evaluated', rating: 'fail', reason: expect.any(String) }),
+    );
+  });
+
+  it.each([
+    'The price sheet reproduces the measured cost for each workload case.',
+    'The price sheet reports the platform contribution margin.',
+    'The price sheet specifies the inference allowance.',
+    'A revoked customer session is denied access to its workspace.',
+    'The customer journey stops when the inference allowance is exhausted.',
+  ])('accepts a single observable obligation: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause({ behavior })], classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
+    expect(result.details.atomicityDetectorControls).toEqual([
+      expect.objectContaining({ expected: 'compound', actual: 'compound', passed: true }),
+      expect.objectContaining({ expected: 'compound', actual: 'compound', passed: true }),
+      expect.objectContaining({ expected: 'atomic', actual: 'atomic', passed: true }),
+      expect.objectContaining({ expected: 'atomic', actual: 'atomic', passed: true }),
+    ]);
+    expect(result.ratings['atomic-observable-behavior'].evidence).toContain('not a proof of arbitrary natural-language semantics');
   });
 
   it('does not count byte-identical behavior text as independent coverage for multiple plan items', () => {
