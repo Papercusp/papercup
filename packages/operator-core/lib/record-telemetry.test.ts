@@ -11,11 +11,37 @@ vi.mock('./operator-state-pg', () => ({
   },
 }));
 
-import { recordTelemetryReport, MAX_TELEMETRY_REPORTS, prepareCloudTelemetryDelivery, deliverCloudTelemetry, safeCloudError, type CloudTelemetryContext } from './record-telemetry';
+import { recordTelemetryReport, MAX_TELEMETRY_REPORTS, prepareCloudTelemetryDelivery, deliverCloudTelemetry, safeCloudError, cloudProvisioningObservation, cloudProductTutorialReviewEvents, type CloudTelemetryContext } from './record-telemetry';
+import type { AccountTutorialProgressRecord } from './onboarding/cloud-tutorial-progress';
 import { createHostedPrincipal } from './auth/hosted-principal';
 import { DEFAULT_CLOUD_TELEMETRY_CONSENT, type CloudTelemetryConsent } from './telemetry-kinds';
 
 beforeEach(() => store.clear());
+
+describe('control-plane provisioning witness', () => {
+  const row = { kind: 'workspace', id: 'private-host', target: 'gcp', name: 'private-name', observedState: 'running',
+    operation: { id: '00000000-0000-4000-8000-000000000001', action: 'provision', status: 'succeeded',
+      startedAt: '2026-10-14T08:00:00Z', finishedAt: '2026-10-14T08:01:00Z', request: { prompt: 'secret' }, error: { message: 'secret' } } };
+  it('requires persisted active bring-up and terminal provision success; exports only bounded metadata', () => {
+    const observation = cloudProvisioningObservation(row, 'active');
+    expect(observation).toMatchObject({ observedAt: row.operation.finishedAt, event: { event: 'cloud_workspace_provisioning',
+      operation_id: row.operation.id, properties: { phase: 'ready', provider: 'gcp', hosting_mode: 'unknown', duration_ms: 60_000 } } });
+    expect(JSON.stringify(observation)).not.toMatch(/private|secret|prompt|request|message/);
+    for (const state of ['provisioning', 'failed', null]) expect(cloudProvisioningObservation(row, state)).toBeNull();
+    expect(cloudProvisioningObservation({ ...row, observedState: 'degraded' }, 'active')).toBeNull();
+    expect(cloudProvisioningObservation({ ...row, operation: { ...row.operation, action: 'restart' } }, 'active')).toBeNull();
+    expect(cloudProvisioningObservation({ ...row, operation: { ...row.operation, id: 'unverified-id' } }, 'active')).toBeNull();
+  });
+  it('records persisted attempts and terminal failures without fabricating readiness or free-form failure content', () => {
+    expect(cloudProvisioningObservation({ ...row, operation: { ...row.operation, status: 'queued', finishedAt: undefined } }, 'provisioning'))
+      .toMatchObject({ observedAt: row.operation.startedAt, event: { properties: { phase: 'requested' } } });
+    expect(cloudProvisioningObservation({ ...row, operation: { ...row.operation, status: 'failed' } }, 'failed'))
+      .toMatchObject({ event: { properties: { phase: 'failed' } } });
+    expect(cloudProvisioningObservation({ ...row, operation: { ...row.operation, status: 'failed' } }, 'failed')?.event.properties)
+      .not.toHaveProperty('failure_code');
+    expect(cloudProvisioningObservation({ ...row, operation: { ...row.operation, finishedAt: undefined } }, 'active')).toBeNull();
+  });
+});
 
 describe('recordTelemetryReport', () => {
   it('enqueues a report newest-first into the telemetry_reports ring and returns it', async () => {
@@ -66,6 +92,22 @@ describe('cloud final-delivery privacy boundary', () => {
     properties: { period_start: '2026-10-13T12:00:00Z', period_end: '2026-10-13T13:00:00Z', calls: 1,
       input_tokens: 12, output_tokens: 3, cache_read_tokens: 0, cache_creation_tokens: 0,
       provider_cost_usd: null, estimated_cost_usd: 0.01, unpriced_calls: 0 } };
+
+  it('witnesses only newly committed public explanation reviews and never backfills or exports tutorial scope', () => {
+    const previous: AccountTutorialProgressRecord = { scope: { tenantId: 'tenant-a', userId: 'user-a' }, version: 3,
+      revision: 4, mutationId: 'old', disposition: 'active', currentLessonId: 'navigation', reviewedLessonIds: ['welcome'] };
+    const next = { ...previous, revision: 5, mutationId: 'private-mutation', reviewedLessonIds: ['welcome', 'navigation', 'workspace'] };
+    const reviews = cloudProductTutorialReviewEvents(previous, next);
+    expect(reviews.map(review => review.properties)).toEqual(['navigation', 'workspace'].map(lesson => ({
+      lesson_id: 'product-guide', lesson_version: 3, action: 'explanation_reviewed', lesson })));
+    expect(cloudProductTutorialReviewEvents(previous, next)).toEqual(reviews);
+    expect(cloudProductTutorialReviewEvents(next, next)).toEqual([]);
+    expect(cloudProductTutorialReviewEvents(null, next)).toEqual([]);
+    expect(cloudProductTutorialReviewEvents(previous, { ...next, scope: { ...next.scope, tenantId: 'other' } })).toEqual([]);
+    expect(JSON.stringify(reviews)).not.toMatch(/tenant-a|user-a|private-mutation|task_succeeded/);
+    expect(prepareCloudTelemetryDelivery(reviews[0], context, consent)).toEqual({ ok: false, code: 'unwitnessed_outcome' });
+    expect(prepareCloudTelemetryDelivery(reviews[0], { ...context, origin: 'control-plane' }, consent).ok).toBe(true);
+  });
 
   it('derives stable opaque user/tenant identities across sessions and separates tenants/environments', () => {
     const a = prepareCloudTelemetryDelivery(event, context, consent);

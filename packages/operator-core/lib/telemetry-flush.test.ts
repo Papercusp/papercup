@@ -34,7 +34,7 @@ describe('strict cloud PostHog transport', () => {
     expect(await deliverCloudPosthog(event, context, readConsent)).toEqual({ delivered: true });
     const bodies = fetcher.mock.calls.map(call => JSON.parse(String((call as unknown as [string, RequestInit])[1].body)));
     expect(bodies[0].batch[0].properties.$insert_id).toBe(bodies[1].batch[0].properties.$insert_id);
-    expect(bodies[0].batch[0].properties.$insert_id).toBe(bodies[0].batch[0].properties.operation_id);
+    expect(bodies[0].batch[0].properties.$insert_id).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(bodies)).not.toMatch(/tenant-a|user-a|session-a/);
     expect(await deliverCloudPosthog(event, context, async () => DEFAULT_CLOUD_TELEMETRY_CONSENT)).toMatchObject({ delivered: false });
     expect(await deliverCloudPosthog({ ...event, properties: { ...event.properties, prompt: 'private' } }, context, readConsent)).toMatchObject({ delivered: false });
@@ -43,6 +43,36 @@ describe('strict cloud PostHog transport', () => {
   it('returns a dropped-event receipt for capture rejection without rejecting product work', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 502 })));
     expect(await deliverCloudPosthog(event, context, async () => consent)).toEqual({ delivered: false, code: 'delivery_unavailable' });
+  });
+
+  it('deduplicates readiness retries without collapsing distinct provisioning phases', async () => {
+    const bodies: Array<{ batch: Array<{ properties: { $insert_id: string } }> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return new Response('{}', { status: 200 });
+    }));
+    for (const phase of ['requested', 'ready', 'ready', 'failed'] as const) {
+      expect(await deliverCloudPosthog({ event: 'cloud_workspace_provisioning', operation_id: event.operation_id,
+        properties: { phase, provider: 'gcp', hosting_mode: 'byoc' } },
+      { ...context, origin: 'control-plane' }, async () => consent)).toEqual({ delivered: true });
+    }
+    const ids = bodies.map(body => body.batch[0]!.properties.$insert_id);
+    expect(ids[1]).toBe(ids[2]);
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it('deduplicates guide review retries without collapsing distinct public lessons in one mutation', async () => {
+    const bodies: Array<{ batch: Array<{ properties: { $insert_id: string } }> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body))); return new Response('{}', { status: 200 });
+    }));
+    for (const lesson of ['welcome', 'navigation', 'navigation']) {
+      expect(await deliverCloudPosthog({ event: 'product_tutorial', operation_id: event.operation_id,
+        properties: { lesson_id: 'product-guide', lesson_version: 3, action: 'explanation_reviewed', lesson } },
+      { ...context, origin: 'control-plane' }, async () => consent)).toEqual({ delivered: true });
+    }
+    const ids = bodies.map(body => body.batch[0]!.properties.$insert_id);
+    expect(ids[0]).not.toBe(ids[1]); expect(ids[1]).toBe(ids[2]);
   });
 
   it('keeps legacy reports and browser SDK local on customer hosts despite opt-in and maintainer flags', async () => {

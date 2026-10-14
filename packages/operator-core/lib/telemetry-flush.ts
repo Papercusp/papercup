@@ -31,6 +31,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { deliverCloudTelemetry, type CloudTelemetryContext } from './record-telemetry';
 import { customerAgentExecutionRequired } from './auth/loopback-peer-trust';
+import { createHash } from 'node:crypto';
 
 /** Existing capture ingress is separate from the flag/admin API. A healthy
  * project listing cannot prove that events can enter the ingestion pipeline. */
@@ -50,10 +51,18 @@ export function deliverCloudPosthog(input: unknown, context: CloudTelemetryConte
   return deliverCloudTelemetry(input, context, { readConsent, send: async envelope => {
     const configured = getPosthogConfigWithSource().config;
     const config = configured ?? POSTHOG_PUBLIC_DEFAULTS;
+    // Retries of one phase share an identity; a requested phase must never
+    // deduplicate the later server-confirmed ready outcome of that operation.
+    const insertId = createHash('sha256').update(JSON.stringify([
+      envelope.event, envelope.properties.operation_id,
+      'phase' in envelope.properties ? envelope.properties.phase : null,
+      'action' in envelope.properties ? envelope.properties.action : null,
+      'lesson' in envelope.properties ? envelope.properties.lesson : null,
+    ])).digest('hex');
     const response = await fetch(`${config.host.replace(/\/+$/, '')}/batch/`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ api_key: config.projectKey, batch: [{ ...envelope,
-        properties: { ...envelope.properties, $insert_id: envelope.properties.operation_id } }] }),
+        properties: { ...envelope.properties, $insert_id: insertId } }] }),
       signal: AbortSignal.timeout(2_000),
     });
     if (!response.ok) throw new Error('cloud_telemetry_delivery_rejected');

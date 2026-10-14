@@ -12,6 +12,7 @@
  * delivery uses the closed schemas below before anything leaves its host.
  */
 import { z } from 'zod';
+import { productTutorialLessonIds } from './onboarding/product-tutorial-lesson';
 
 /** Browser-safe contract shared by the hosted ingress and its final writer.
  * Identity, environment, release and observation time are server-owned. */
@@ -46,9 +47,14 @@ const cloudTelemetryEventUnion = z.discriminatedUnion('event', [
     step: z.enum(['connection', 'configuration', 'workspace', 'agent', 'task', 'result', 'revision', 'practice']).optional(),
     status: z.enum(['loading', 'ready', 'waiting', 'delayed', 'error', 'blocked', 'missing-target', 'complete']).optional(),
   }),
+  cloudEvent('product_tutorial', {
+    lesson_id: z.literal('product-guide'), lesson_version: z.literal(3),
+    action: z.enum(['start', 'resume', 'pause', 'skip', 'guide_closed', 'lesson_displayed', 'explanation_reviewed', 'waiting', 'recovery', 'help_requested']),
+    lesson: z.string().max(120).refine(id => productTutorialLessonIds.has(id)).optional(),
+  }),
   cloudEvent('cloud_workspace_provisioning', {
     phase: z.enum(['requested', 'ready', 'failed', 'destroyed']),
-    provider: z.enum(['gcp', 'aws', 'azure', 'local']), hosting_mode: z.enum(['managed', 'byoc']),
+    provider: z.enum(['gcp', 'aws', 'azure', 'local']), hosting_mode: z.enum(['managed', 'byoc', 'unknown']),
     duration_ms: counter.max(7 * 24 * 60 * 60 * 1000).optional(),
     failure_code: z.enum(['provider_refused', 'timeout', 'connection_unavailable', 'internal_failure']).optional(),
   }),
