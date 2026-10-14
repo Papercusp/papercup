@@ -308,7 +308,6 @@ export default function AgentsRunningPill() {
           <button
             type="button"
             className={`pc-advshell__action pc-advshell__action--agents${isRunning ? ' is-running' : ''}`}
-            title="Running: living agent sessions, including agents between turns. Thinking: agents processing a turn."
             data-testid="agents-running-pill"
             aria-expanded={open}
             aria-controls="pc-advshell-agents-pop"
@@ -339,7 +338,7 @@ export default function AgentsRunningPill() {
             )}
           </button>
         )}
-        tooltipLabel="Agents running — grouped by fleet"
+        tooltipLabel="Agents running — grouped by fleet. Running: living agent sessions, including agents between turns. Thinking: agents processing a turn."
         side="bottom"
         align="end"
         ariaLabel="Agents running"
