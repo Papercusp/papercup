@@ -380,7 +380,79 @@
       "readbackExact": true,
       "authorOwnerId": "su-c05233eb-d1be-4e44-b16e-51d9d3532894"
     },
-    "next": "Resolve the eight actual remaining command/project populations without dropping non-Vitest obligations. Then freeze the NEW complete original selection, pin source and independent dependencies, and obtain final-transform runtime closure. The 9902-file preview is partial and cannot bind throughput parameters. D020/P006 remains held; no cohort, comparison, native acceptance or amendment review."
+    "nativeRunnerExtension": {
+      "status": "native-maintained-selection-preview-partial-no-operational-acceptance",
+      "reuses": [
+        "scripts/lib/related-tests.mjs#enumerateAffectedTaskSelection",
+        "scripts/lib/executed-source-map.mjs#scriptCommandWords",
+        "Node native globSync after npm POSIX shell path expansion",
+        "Vitest createVitest/globTestSpecifications/close"
+      ],
+      "behavior": "Follows acyclic single local npm aliases while retaining original commands and named pre/post lifecycle commands; resolves explicit TEMPLATE_CHECKS_CONFIG; resolves Node test path populations without importing tests; resolves Vitest project inheritance, in-source tests and typecheck pools through native specification discovery without collection. Unsupported arguments/chains remain residue.",
+      "nativePreview": {
+        "command": "node scripts/affected-tests.mjs --all --print-selection",
+        "log": "~/.papercusp/scratch/c0523-full-selection-preparation-v3.log",
+        "logSha256": "cb6a9e1562f8f25d132d5695f24b731acc1b330d72bf898deebbb97409af8e8b",
+        "nativeExitCode": 0,
+        "coverage": "partial",
+        "files": 9979,
+        "enumeratedTasks": 108,
+        "unenumeratedTasks": 4,
+        "overlappingFiles": 0,
+        "executed": false,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false,
+        "resolvedPriorResidue": [
+          "@bug-drill/fixture :: test",
+          "@papercusp/cli :: test",
+          "@papercusp/perf-test-wdio :: test",
+          "@papercusp/cupboard-worker :: test"
+        ],
+        "residue": [
+          "@papercusp/web :: lint:el-tools",
+          "@papercupai/operator-docs :: test",
+          "@papercupai/papercusp-docs :: test",
+          "@papercusp/desktop :: test"
+        ],
+        "scope": "Current-local maintained selection snapshot. Counts describe this original log, not the moving tree. v2 above is preserved as a historical preparation snapshot. No frozen comparison population or runtime receipt."
+      },
+      "verification": {
+        "nativeTestRunId": "96eb24c2-b4dc-484d-8290-daadb04bd63a",
+        "ledgerRunIds": [21244661, 21244662, 21244663],
+        "testPaths": [
+          "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+          "packages/operator-core/lib/test-executor-runnability.test.ts",
+          "packages/operator-core/lib/__tests__/affected-tests-selected-files-line.test.ts"
+        ],
+        "passed": 92,
+        "failed": 0,
+        "skipped": 0,
+        "testFiles": 3,
+        "receipt": "~/.papercusp/scratch/c0523-selection-native-runners-tests-v2.json",
+        "receiptSha256": "f18a70f62b684e1ae82e53eddc097b2c69fe61f9f8fd19132dd8e56ca8aa2acc",
+        "positiveNativeControl": "Fixtures throw if imported or executed. Native project/in-source/typecheck discovery and Node shell-before-native glob expansion are asserted through actual producer paths. Alias-cycle, unknown env, unsupported Node flags and mixed-chain controls remain partial.",
+        "typecheck": "Scoped one test file, zero errors, exit0. Initial two union-property test diagnostics corrected with explicit metadata narrowing; initial red log retained.",
+        "typecheckLog": "~/.papercusp/scratch/c0523-selection-native-runners-tsc-v2.log",
+        "typecheckLogSha256": "2d12e2a92ed115a490fc7bfa011b96242fb2024bddeda27e9f2279ece048670b"
+      },
+      "sourceAtRead": {
+        "head": "44df8c581ee86a53dc2bf69e2b35b196bcce6159",
+        "files": [
+          { "path": "scripts/lib/related-tests.mjs", "sha256": "bf8d11933bc4b94f386b2156ef91c4e963ffbc58ec35b1f6cf4cdf3f14904fac", "committedMatch": true },
+          { "path": "scripts/resolve-vitest-config-contracts.mjs", "sha256": "573d0d0fc709e23ba5b2d36892a0937cdb120523ff07f17e88b68a40e364e8f5", "committedMatch": true },
+          { "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts", "sha256": "fea8dc37772e5ab43cfcecbc2097ce0a318a0f41d91f71934f85a3bac03180b8", "committedMatch": true }
+        ],
+        "limits": "Named source/test bytes have automatically settled. Whole import/dependency/final-transform/runtime closure is unproven; document settlement and operational acceptance are separate."
+      },
+      "remainingWriterFindings": [
+        "Astro's actual CLI calls astro sync before @astrojs/check unless noSync is specified. A direct AstroCheck.getRootFileNames probe is a pre-sync discovery only and cannot certify that actual command population.",
+        "The pre-sync probe is preserved at ~/.papercusp/scratch/c0523-astro-selection-probe.json, sha256 93f854e5fce29635723d79a2dd74925e3e25bf489cdc65e72f6bfc93b6c11a84. It ran no diagnostics, sync or tests and is not acceptance evidence.",
+        "The desktop test command includes multiple Node scripts plus the maintained selftest aggregate. The aggregate's completeness and pipefail source guards are real command obligations as well as its named shell test files; a Node-only population would omit them.",
+        "The voice-tool guard is a standalone static check over its maintained sync and registry inputs. It cannot be represented honestly by fabricating a test-file result.",
+        "The comparison preparer presently requires every task to own nonempty selected files. Remaining command checks need an explicit original obligation representation and native receipts; removing those checks to satisfy the file partition is forbidden."
+      ]
+    },
+    "next": "Continue from nativeRunnerExtension and its original v3 log: four remaining command populations. Prepare Astro's actual sync/check chain and preserve the desktop aggregate and static voice-tool check as command obligations. Then freeze the NEW complete original selection, source and independent dependencies, and final-transform runtime closure. Neither v2 nor v3 is complete or bindable. D020/P006 remains held; no cohort, comparison, native acceptance or amendment review."
   },
   "next": "No native command handles remain. Prepare actual original full-gate inputs and runtime closure without launching the D020-held cohort. Wrapper local integration is complete; reuse saved proofs only at matching source hashes. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
 }
