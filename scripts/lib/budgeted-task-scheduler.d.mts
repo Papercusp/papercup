@@ -11,7 +11,9 @@ export interface TaskBudgetInput {
 
 export interface BudgetedTaskComparisonInput {
   selection: { kind: "full-gate"; coverage: "complete"; unenumerated: string[];
-    originalRef: string; originalSha256: string; files: string[] };
+    originalRef: string; originalSha256: string; files: string[];
+    fileOccurrences?: Array<{ task: string; step: number | null; command: string;
+      file: string; kind: "test-file" | "check-input" }> };
   source: { commit: string; receiptSha256: string; dependencySha256: string;
     runtimeClosureSha256: string; files: Array<{ path: string; sha256: string }> };
   tasks: Array<{ id: string; files: string[] }>;

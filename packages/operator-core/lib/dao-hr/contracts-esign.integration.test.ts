@@ -14,7 +14,7 @@ const templates=[{templateKey:'sample-employment-agreement-employee-us-de',versi
 const offer=()=>createHiringOffer({...key,roleId,personId:'PER-candidate',actorPersonId:'PER-author',engagementType:'employee',jurisdiction:'US-DE',pay:{amount:'5000.25',currency:'USD',cadence:'monthly'},overrides:{shares:1000}},{sql:db.adminSql});
 const prepare=(offerId:string)=>prepareContractExecution({...key,offerId,actorPersonId:'PER-author',companyPersonId:'PER-reviewer',startDate:'2026-11-01',templates},{sql:db.adminSql});
 const event=(row:ContractExecution)=>({event:'DOCUMENT_COMPLETED',createdAt:'2026-10-11T20:00:00.000Z',payload:{envelopeId:row.envelope_id,externalId:row.contract_id,status:'COMPLETED'}});
-const adapter=()=>new DocumensoAdapter({baseUrl:'https://signing.example.test',apiKey:'fixture-key',webhookSecret:secret},async(url,init)=>{
+const adapter=(companySigned=true)=>new DocumensoAdapter({baseUrl:'https://signing.example.test',apiKey:'fixture-key',webhookSecret:secret},async(url,init)=>{
   const path=new URL(String(url)).pathname;
   if(path.endsWith('/create')){sent++;return Response.json({id:'envelope-'+sent});}
   if(path.endsWith('/distribute')){
@@ -23,7 +23,7 @@ const adapter=()=>new DocumensoAdapter({baseUrl:'https://signing.example.test',a
   }
   if(path.endsWith('/download'))return new Response(new Uint8Array(completion.source_pdf),{headers:{'Content-Type':'application/pdf'}});
   return Response.json({id:completion.envelope_id,externalId:completion.contract_id,status:'COMPLETED',completedAt:'2026-10-11T20:00:00.000Z',
-    recipients:completion.signers.map(s=>({...s,role:'SIGNER',signingStatus:'SIGNED',signedAt:'2026-10-11T19:00:00.000Z',authOptions:{accessAuth:['ACCOUNT']}})),envelopeItems:[{id:'item'}]});
+    recipients:completion.signers.map((s,i)=>({...s,role:'SIGNER',signingStatus:i===1&&!companySigned?'NOT_SIGNED':'SIGNED',signedAt:i===1&&!companySigned?null:'2026-10-11T19:00:00.000Z',authOptions:{accessAuth:['ACCOUNT']}})),envelopeItems:[{id:'item'}]});
 });
 beforeAll(async()=>{
   db=await createOrgTestDb();
@@ -53,6 +53,21 @@ describe('P006 — persisted signing execution (schema-derived provider simulati
     await expect(db.adminSql`UPDATE harness_shared.dao_hr_contracts SET merge_values='{}'::jsonb WHERE contract_id=${completion.contract_id}`).rejects.toThrow('immutable');
     expect((await prepare(saved.offerId)).contract_id).toBe(completion.contract_id);
   });
+  it('refuses non-completion events without advancing the persisted signing state',async()=>{
+    completion=await startContractSigning({...key,offerId:completion.offer_id,actorPersonId:'PER-author'},{sql:db.adminSql,adapter:adapter()});
+    await expect(completeContractSigning(secret,{...event(completion),event:'DOCUMENT_SIGNED'},{sql:db.adminSql,adapter:adapter()})).rejects.toMatchObject({code:'invalid_webhook'});
+    const unchanged=await getContractExecution({...key,offerId:completion.offer_id},{sql:db.adminSql});
+    expect(unchanged.state).toBe('signing');
+    expect(unchanged.sealed_pdf).toBeNull();expect(unchanged.audit_certificate).toBeNull();expect(unchanged.document_hash).toBeNull();
+    expect((await listHiringHistory({...key,subjectKind:'offer',subjectId:completion.offer_id},{sql:db.adminSql})).filter(e=>e.state==='signed')).toHaveLength(0);
+  });
+  it('refuses an unsigned company signer despite a completed provider envelope',async()=>{
+    await expect(completeContractSigning(secret,event(completion),{sql:db.adminSql,adapter:adapter(false)})).rejects.toMatchObject({code:'invalid_completion'});
+    const unchanged=await getContractExecution({...key,offerId:completion.offer_id},{sql:db.adminSql});
+    expect(unchanged.state).toBe('signing');expect(unchanged.completion_proof).toBeNull();
+    expect(unchanged.sealed_pdf).toBeNull();expect(unchanged.audit_certificate).toBeNull();
+    expect((await getHiringOffer({...key,offerId:completion.offer_id},{sql:db.adminSql})).state).toBe('contract-generated');
+  });
   it('single dispatch persists the envelope, completion stores both artifacts and SHA256, replay writes one signed transition',async()=>{
     const provider=adapter(),input={...key,offerId:completion.offer_id,actorPersonId:'PER-author'};
     completion=await startContractSigning(input,{sql:db.adminSql,adapter:provider});
@@ -63,6 +78,7 @@ describe('P006 — persisted signing execution (schema-derived provider simulati
     expect(completion.state).toBe('signed');expect(completion.can_bind).toBe(false);
     expect(completion.document_hash).toBe('0x'+createHash('sha256').update(completion.sealed_pdf!).digest('hex'));
     expect(completion.audit_certificate!.length).toBeGreaterThan(100);
+    expect(completion.completion_proof).toMatchObject({source:'webhook',event:{event:'DOCUMENT_COMPLETED',payload:{envelopeId:completion.envelope_id,externalId:completion.contract_id}}});
     await completeContractSigning(secret,event(completion),{sql:db.adminSql,adapter:provider});
     await expect(requireHiringStage({...key,offerId:completion.offer_id,stage:'hire'},{sql:db.adminSql})).resolves.toMatchObject({state:'signed'});
     const events=await listHiringHistory({...key,subjectKind:'offer',subjectId:completion.offer_id},{sql:db.adminSql});

@@ -348,9 +348,20 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
   const overlaps = files.filter(file => entries.filter(task => task.files.includes(file)).length > 1);
   const commandObligations = entries.flatMap(task => (task.commandObligations ?? [])
     .map(obligation => ({ ...obligation, task: task.id })));
+  // A unique source-file census is not an execution population: Astro may
+  // check the same source that Vitest subsequently executes. Keep the original
+  // ordered occurrences and their roles, without relabeling check inputs as tests.
+  const fileOccurrences = entries.flatMap(task => {
+    if (task.runner === 'command-chain') return task.steps.flatMap((step, index) =>
+      step.files.map(file => ({ task: task.id, step: index, command: step.command, file,
+        kind: step.discovery?.[0]?.runner === 'astro-check' ? 'check-input' : 'test-file' })));
+    return task.files.map(file => ({ task: task.id, step: null,
+      command: task.resolvedCommand ?? task.command, file,
+      kind: task.runner === 'astro-check' ? 'check-input' : 'test-file' }));
+  });
   return { schemaVersion: 1, kind: 'full-gate', phase: 'selection-preparation',
     coverage: unenumerated.length === 0 && files.length > 0 && overlaps.length === 0 ? 'complete' : 'partial',
-    files, tasks: entries, commandObligations, unenumerated, overlaps, executed: false,
+    files, fileOccurrences, tasks: entries, commandObligations, unenumerated, overlaps, executed: false,
     runtimeClosure: 'unmeasured', operationalAcceptance: false };
 }
 

@@ -16,6 +16,8 @@ export interface ActiveAccount {
    *  `Authorization: Bearer` + the oauth beta; `api-key` = an Anthropic Console key sent as
    *  `x-api-key`. Absent ⇒ `oauth` (every pre-existing account). */
   authMode?: 'oauth' | 'api-key';
+  /** Per-account Anthropic workspace; never inherited from a caller or another account. */
+  anthropicWorkspaceId?: string;
   /** Metered spend policy (anthropic-credits-gateway-2026-09-30 P-008, D-003). `overflow` (absent ⇒
    *  this): while billed per token — an api-key account, or a subscription in usage-credits overage —
    *  the account serves only when no included-allowance account can. `never`: unselectable while

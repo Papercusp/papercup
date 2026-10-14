@@ -32,18 +32,20 @@ afterEach(async () => {
   delete process.env.OPENAI_BASE_URL_UPSTREAM;
 });
 
-async function startUpstream(): Promise<{ base: string; lastAuth: () => string | undefined; requests: () => number }> {
+async function startUpstream(): Promise<{ base: string; lastAuth: () => string | undefined; lastWorkspace: () => string | undefined; requests: () => number }> {
   let lastAuth: string | undefined;
+  let lastWorkspace: string | undefined;
   let requests = 0;
   upstream = http.createServer((req, res) => {
     requests++;
     lastAuth = req.headers['authorization'] as string | undefined;
+    lastWorkspace = req.headers['anthropic-workspace-id'] as string | undefined;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{"ok":true}');
   });
   await new Promise<void>((r) => upstream!.listen(0, '127.0.0.1', () => r()));
   const port = (upstream!.address() as { port: number }).port;
-  return { base: `http://127.0.0.1:${port}`, lastAuth: () => lastAuth, requests: () => requests };
+  return { base: `http://127.0.0.1:${port}`, lastAuth: () => lastAuth, lastWorkspace: () => lastWorkspace, requests: () => requests };
 }
 
 const bindingDigest = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -500,6 +502,27 @@ test('reloadPool HOT-SWAPS the account pool from the DB source-of-truth, no rest
   });
   assert.equal(res.status, 200);
   assert.equal(up.lastAuth(), 'Bearer d-tok', 'a hot-reload-ADDED account serves live — pool swapped without a restart');
+});
+
+test('API workspace bindings reach upstream and a binding-only change hot-reloads', async () => {
+  const up = await startUpstream();
+  let workspace = 'wrkspc_first';
+  svc = await startGatewayService({
+    port: 0, upstreamBase: up.base, log: () => {},
+    resolveAccounts: async (_ws, provider) => provider === 'codex' ? [] : [{ accountId: 'api', credentialRef: 'apikey:env:TEST_API_KEY', anthropicWorkspaceId: workspace, source: 'pool' as const }],
+    makeResolver: () => ({ kind: 'apikey', authMode: 'api-key', current: async () => ['sk', 'ant', 'usr', 'fixture'].join('-'), invalidate: () => {} }),
+    observePool: () => () => {}, poolReloadIntervalMs: 0,
+  });
+  const send = () => fetch(`http://127.0.0.1:${svc!.port}/v1/messages`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-account': 'api' },
+    body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  assert.equal((await send()).status, 200);
+  assert.equal(up.lastWorkspace(), 'wrkspc_first');
+  workspace = 'wrkspc_second';
+  assert.equal((await svc.reloadPool()).changed, true);
+  assert.equal((await send()).status, 200);
+  assert.equal(up.lastWorkspace(), 'wrkspc_second');
 });
 
 test('/admin/config + /admin/reload expose the live config + on-demand hot-reload (B-HOT-2)', async () => {

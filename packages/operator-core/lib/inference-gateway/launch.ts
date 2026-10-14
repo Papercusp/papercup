@@ -823,6 +823,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       // anthropic-credits-gateway-2026-09-30 P-005: an `apikey:` account authenticates with
       // x-api-key; the request path picks the headers per attempt from this (P-006).
       authMode: resolver.authMode,
+      ...(account.anthropicWorkspaceId ? { anthropicWorkspaceId: account.anthropicWorkspaceId } : {}),
       // P-008: the account's metered spend policy (overflow | never) — selection ranks metered
       // serving behind included allowance, and `never` makes it unselectable while metered.
       ...(account.meteredPolicy ? { meteredPolicy: account.meteredPolicy } : {}),
@@ -843,7 +844,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     a
       .map(
         (x) =>
-          `${x.accountId}|${x.credentialRef}|${egSig(x.egress)}|${(x.egressPool ?? []).map(egSig).join('+')}|${x.meteredPolicy ?? ''}`,
+          `${x.accountId}|${x.credentialRef}|${egSig(x.egress)}|${(x.egressPool ?? []).map(egSig).join('+')}|${x.meteredPolicy ?? ''}|${x.anthropicWorkspaceId ?? ''}`,
       )
       .join(',');
 

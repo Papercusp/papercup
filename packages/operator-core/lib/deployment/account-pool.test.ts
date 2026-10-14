@@ -113,6 +113,20 @@ function poolOf(...ids: string[]): AccountPool {
 }
 
 describe('registerAccount', () => {
+  it('persists, preserves, updates and explicitly clears an Anthropic workspace binding', () => {
+    const input = { id: 'api', credentialRef: 'apikey:env:TEST_API_KEY' };
+    let p = registerAccount(emptyPool(), { ...input, anthropicWorkspaceId: 'wrkspc_first' }, T0);
+    expect(normalizeAccount(JSON.parse(JSON.stringify(getAccount(p, 'api')))).anthropicWorkspaceId).toBe('wrkspc_first');
+    p = registerAccount(p, input, T0 + 1);
+    expect(getAccount(p, 'api')?.anthropicWorkspaceId).toBe('wrkspc_first');
+    p = registerAccount(p, { ...input, anthropicWorkspaceId: 'wrkspc_second' }, T0 + 2);
+    expect(getAccount(p, 'api')?.anthropicWorkspaceId).toBe('wrkspc_second');
+    p = registerAccount(p, { ...input, anthropicWorkspaceId: null }, T0 + 3);
+    expect(getAccount(p, 'api')?.anthropicWorkspaceId).toBeUndefined();
+    expect(() => registerAccount(p, { ...input, anthropicWorkspaceId: 'wrong' }, T0)).toThrow(/anthropicWorkspaceId/);
+    expect(() => registerAccount(p, { ...input, provider: 'codex', anthropicWorkspaceId: 'wrkspc_wrong_provider' }, T0)).toThrow(/anthropicWorkspaceId/);
+  });
+
   it('blocks failed credentials across quota resets, sticky pins and permissive selectors until repair', () => {
     let pool = registerAccount(emptyPool(), { id: 'bad', credentialRef: 'token:bad' }, T0);
     pool = registerAccount(pool, { id: 'good', credentialRef: 'token:good' }, T0);

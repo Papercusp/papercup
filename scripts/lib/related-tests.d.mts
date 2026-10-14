@@ -28,6 +28,7 @@ export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, fil
     phase: string;
     coverage: string;
     files: any[];
+    fileOccurrences: any[];
     tasks: ({
         runner: string;
         steps: any;

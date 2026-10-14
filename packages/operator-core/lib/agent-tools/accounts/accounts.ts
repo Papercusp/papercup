@@ -94,6 +94,7 @@ export default defineTool({
     id: z.string().min(1).describe('Stable account id (A-Za-z0-9 . _ - only; becomes part of the rate-bucket key)'),
     provider: z.enum(['claude', 'codex']).optional().describe("Provider for this account. Defaults to 'claude'."),
     credentialRef: z.string().min(1).describe('Credential reference. Claude: token:<path> | file:<path> | absolute/~ .credentials.json | apikey:env:NAME | apikey:file:<path> | apikey:credentials (Console API key). Codex: token:<path> or env:NAME bearer credential.'),
+    anthropicWorkspaceId: z.string().regex(/^wrkspc_[A-Za-z0-9_-]+$/).nullable().optional().describe('Anthropic workspace for a user-scoped API key; null clears the binding.'),
     label: z.string().min(1).optional().describe('Optional human label'),
     egress: z
       .object({
@@ -130,7 +131,7 @@ export default defineTool({
       // writer registered in between, which is exactly how owner-registered accounts
       // silently vanished from the Deploy Accounts page.
       const next = await updateAccountPool(
-        (pool) => registerAccount(pool, { id: args.id, provider: args.provider, credentialRef: args.credentialRef, label: args.label, egress: args.egress, egressPool: args.egressPool, meteredPolicy: args.meteredPolicy }, Date.now()),
+        (pool) => registerAccount(pool, { id: args.id, provider: args.provider, credentialRef: args.credentialRef, label: args.label, egress: args.egress, egressPool: args.egressPool, meteredPolicy: args.meteredPolicy, anthropicWorkspaceId: args.anthropicWorkspaceId }, Date.now()),
         ws,
       );
       return ok({ account: getAccount(next, args.id) });

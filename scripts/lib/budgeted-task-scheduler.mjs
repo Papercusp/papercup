@@ -53,6 +53,19 @@ export function prepareBudgetedTaskComparison(input) {
     (!Array.isArray(selection.tasks) || selection.tasks.every(fileOnlyTask)) &&
     (!Array.isArray(tasks) || tasks.every(fileOnlyTask)),
   "native original command-obligation receipts required");
+  // This reader still certifies one file execution per task. Ordered repeated
+  // checks/runs require independently measured step receipts, even when their
+  // union looks exactly like the legacy partition. Keep native occurrence
+  // metadata when it is a one-to-one file-only population; never deduplicate it.
+  const fileOnlyOccurrences = rows => rows === undefined || (Array.isArray(rows) &&
+    rows.every(row => row && row.kind === 'test-file' && comparisonPath(row.file) &&
+      typeof row.task === 'string' && typeof row.command === 'string' && row.command.trim() &&
+      (row.step === null || Number.isSafeInteger(row.step) && row.step >= 0)) &&
+    new Set(rows.map(row => row.file)).size === rows.length &&
+    JSON.stringify(rows.map(row => row.file).sort()) === JSON.stringify(selection.files?.slice().sort()) &&
+    rows.every(row => tasks?.some(task => task.id === row.task && task.files?.includes(row.file))));
+  require(fileOnlyOccurrences(selection.fileOccurrences),
+    "native original command-step occurrence receipts required");
   require(/^[a-f0-9]{40}$/.test(source?.commit ?? "") &&
     comparisonDigest(source.receiptSha256) && comparisonDigest(source.dependencySha256) &&
     comparisonDigest(source.runtimeClosureSha256), "immutable source/dependency/runtime closure required");
@@ -237,6 +250,13 @@ export async function readBudgetedTaskComparisonArtifacts(evidenceRoot, pins) {
         ['commandObligations', 'lifecycleCommands'].some(key => task[key] !== undefined &&
           (!Array.isArray(task[key]) || task[key].length)))))
     throw new Error("Original command obligations were omitted from comparison receipts");
+  if (JSON.stringify(selection.fileOccurrences) !== JSON.stringify(manifest.selection.fileOccurrences))
+    throw new Error("Original command-step file occurrences were omitted or changed");
+  // Legacy original artifacts may lack fileOccurrences but still retain steps.
+  // Even distinct files do not prove those commands ran in their original order.
+  if (Array.isArray(selection.tasks) && selection.tasks.some(task =>
+    Array.isArray(task.steps) && task.steps.length > 1))
+    throw new Error("Original ordered command-step population requires native step receipts");
   if (selection.kind !== "full-gate" || selection.coverage !== "complete" ||
     !Array.isArray(selection.unenumerated) || selection.unenumerated.length !== 0 ||
     JSON.stringify(selection.files?.slice().sort()) !== JSON.stringify(manifest.selection.files))

@@ -110,6 +110,8 @@ export interface ClaudeAccount {
    * REFERENCE the host resolves, never the secret — safe to persist/federate.
    */
   credentialRef: string;
+  /** Anthropic workspace selected for a multi-workspace Console API key. */
+  anthropicWorkspaceId?: string;
   /** Native provider rejected this credential. Re-registration clears it after repair. */
   credentialFailure?: { observedAt: number; ownerId: string } | null;
   /** Fences delayed host events from a credential registered/repaired later. */
@@ -395,6 +397,7 @@ export function registerAccount(
     egressPool?: AccountEgress[];
     provider?: AccountProvider;
     meteredPolicy?: 'overflow' | 'never';
+    anthropicWorkspaceId?: string | null;
   },
   now: number,
 ): AccountPool {
@@ -406,6 +409,10 @@ export function registerAccount(
   if (!credentialRef) throw new AccountPoolError('credentialRef is required');
 
   const provider = normalizeAccountProvider(input.provider);
+  const anthropicWorkspaceId = input.anthropicWorkspaceId?.trim();
+  if (anthropicWorkspaceId && (provider !== 'claude' || !/^wrkspc_[A-Za-z0-9_-]+$/.test(anthropicWorkspaceId))) {
+    throw new AccountPoolError('anthropicWorkspaceId must be a wrkspc_… id on a Claude account');
+  }
 
   if (getAccount(pool, id)) {
     return {
@@ -420,6 +427,7 @@ export function registerAccount(
               label: input.label ?? a.label,
               egress: input.egress ?? a.egress,
               egressPool: input.egressPool ?? a.egressPool,
+              anthropicWorkspaceId: input.anthropicWorkspaceId === null ? undefined : anthropicWorkspaceId ?? a.anthropicWorkspaceId,
               ...((input.meteredPolicy ?? a.meteredPolicy) ? { meteredPolicy: input.meteredPolicy ?? a.meteredPolicy } : {}),
             }
           : a,
@@ -433,6 +441,7 @@ export function registerAccount(
     label: input.label,
     egress: input.egress,
     egressPool: input.egressPool,
+    ...(anthropicWorkspaceId ? { anthropicWorkspaceId } : {}),
     ...(input.meteredPolicy ? { meteredPolicy: input.meteredPolicy } : {}),
     addedAt: now,
     credentialUpdatedAt: now,

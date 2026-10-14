@@ -2,6 +2,7 @@
  * so this suite is tree evidence and never claims live Documenso acceptance. */
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { bytesToHex, createAddressFromString } from '@ethereumjs/util';
 import type { Hex, Address } from 'viem';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -72,7 +73,7 @@ beforeAll(async()=>{
     const path=new URL('../../../../libs/papercusp/libs/db/sql/'+file,import.meta.url);
     await db.adminSql.unsafe(readFileSync(existsSync(path)?path:new URL(path.href+'.DRAFT'),'utf8'));
   }
-  for(const [id,title,email] of [['PER-author','Author','author@example.test'],['PER-reviewer','Reviewer','reviewer@example.test'],['PER-candidate','Candidate','candidate@example.test'],['PER-second','Other candidate','second@example.test'],['PER-race','Concurrent candidate','race@example.test'],['PER-resigner','Resigning member','resigner@example.test']])
+  for(const [id,title,email] of [['PER-author','Author','author@example.test'],['PER-reviewer','Reviewer','reviewer@example.test'],['PER-candidate','Candidate','candidate@example.test'],['PER-second','Other candidate','second@example.test'],['PER-race','Concurrent candidate','race@example.test'],['PER-resigner','Resigning member','resigner@example.test'],['PER-expired','Expired proposal candidate','expired@example.test']])
     await db.adminSql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,title,payload) VALUES (${key.workspaceId},'papercusp',${id!},'person',${title!},${db.adminSql.json({email})})`;
   await grantDaoHrAdmin({...key,personId:'PER-author',bootstrapOperator:'fixture'},{sql:db.adminSql});
   await grantDaoHrAdmin({...key,personId:'PER-reviewer',grantedBy:'PER-author'},{sql:db.adminSql});
@@ -128,6 +129,8 @@ describe('P007 — identity, one hire vote, acceptance and membership',()=>{
     const [existing]=await db.adminSql<Array<{offer_id:string}>>`SELECT offer_id FROM harness_shared.dao_hr_contracts WHERE candidate_github_id=42`;
     const k={...key,offerId:existing!.offer_id},d=deps(),admin={...d,wallet:wallet(0)};
     const prepared=await prepareHireProposal(k,policy,admin);
+    const signed=await row(k.offerId),sealedHash=('0x'+createHash('sha256').update(signed.sealed_pdf!).digest('hex')) as Hex;
+    expect(prepared.plan.grantId).toBe(sealedHash);
     // jsonb reorders keys: replay must return the identical frozen plan.
     expect((await prepareHireProposal(k,policy,admin)).plan.proposalId).toBe(prepared.plan.proposalId);
     await expect(db.adminSql`UPDATE harness_shared.dao_hr_contracts SET hire_plan='{}'::jsonb WHERE offer_id=${k.offerId}`).rejects.toThrow('immutable');
@@ -143,7 +146,9 @@ describe('P007 — identity, one hire vote, acceptance and membership',()=>{
     await expect(recordHireExecution(k,policy,creation.transactionHash,d)).rejects.toMatchObject({code:'invalid_proof'});
     await recordHireExecution(k,policy,execution,d);
     expect((await row(k.offerId)).state).toBe('signed'); // sample cannot become legally binding
-    const stored=await e.read(e.equity,'grants',[p.grantId]) as unknown[];
+    expect((await row(k.offerId)).grant_id).toBe(sealedHash);
+    const stored=await e.read(e.equity,'grants',[sealedHash]) as unknown[];
+    expect(String(stored[1])).toBe('1000');
     expect(String(stored[3])).toBe(String((await e.getBlock({blockNumber:BigInt((await row(k.offerId)).hire_execution_proof!.blockNumber)})).timestamp));
     const acceptance=await prepareHireAcceptance(k,policy,d);
     await expect(admitHire(k,policy,execution,d)).rejects.toMatchObject({code:'invalid_proof'});
@@ -167,20 +172,48 @@ describe('P007 — identity, one hire vote, acceptance and membership',()=>{
     const proposalsAfter=await e.getContractEvents({address:e.governor.address,abi:e.governor.abi,eventName:'ProposalCreated',fromBlock:0n,toBlock:e.blockNumber()});
     expect(proposalsAfter).toEqual(proposalsBefore);
   },120_000);
-  it('a defeated hire lapses the conditional contract and refuses acceptance or admission',async()=>{
+  it('proposal-rejected: an against vote lapses the conditional contract and refuses acceptance or admission',async()=>{
     const k=await signedOffer('PER-second');
     const d={...deps(),identity:async()=>({githubUserId:43,githubLogin:'second',verifiedEmails:['second@example.test']}),wallet:wallet(2)};
     await verifyOnboardingIdentity(k,d);
     const admin={...d,wallet:wallet(0)},prepared=await prepareHireProposal(k,policy,admin);
     const created=await e.raw(prepared.unsignedTransaction.data,prepared.unsignedTransaction.to,0,e.governor.abi);confirm();
     await recordHireProposal(k,policy,created.transactionHash,admin);
-    e.advance(86400+120);
+    e.advance(61);
+    await e.send(e.governor,'castVote',[BigInt(prepared.plan.proposalId),0],0);
+    e.advance(Number(await e.read(e.governor,'votingPeriod'))+1);
+    expect(Number(await e.read(e.governor,'state',[BigInt(prepared.plan.proposalId)]))).toBe(3);
     await expect(reconcileFailedHire(k,policy,admin)).resolves.toEqual({state:'lapsed'});
     expect((await row(k.offerId)).state).toBe('lapsed');
     await expect(prepareHireAcceptance(k,policy,d)).rejects.toMatchObject({code:'invalid_stage'});
     await expect(admitHire(k,policy,created.transactionHash,d)).rejects.toMatchObject({code:'invalid_stage'});
     expect((await listHiveMembers(key.workspaceId,scope,db.adminSql)).map(m=>m.githubUserId)).toEqual([42]);
     expect(onboardingChecklist(await row(k.offerId),await getWorkProfile({...key,personId:'PER-second'},{sql:db.adminSql})).slice(3).every(s=>!s.complete)).toBe(true);
+  },120_000);
+  it('proposal-expired: an unapproved voting window lapses without a grant, acceptance or membership',async()=>{
+    const k=await signedOffer('PER-expired'),who={githubUserId:46,githubLogin:'expired',verifiedEmails:['expired@example.test']};
+    const d={...deps(),identity:async()=>who,wallet:wallet(6)},admin={...d,wallet:wallet(0)};
+    await verifyOnboardingIdentity(k,d);
+    const prepared=await prepareHireProposal(k,policy,admin),p=prepared.plan;
+    const created=await e.raw(prepared.unsignedTransaction.data,prepared.unsignedTransaction.to,0,e.governor.abi);confirm();
+    await recordHireProposal(k,policy,created.transactionHash,admin);
+    const deadline=BigInt(String(await e.read(e.governor,'proposalDeadline',[BigInt(p.proposalId)])));
+    e.advance(deadline-e.now()+1n);
+    // GovernorTimelockControl reports a no-quorum expired voting window as
+    // Defeated (3); it has no queued-operation expiry. Exercise the real state.
+    expect(Number(await e.read(e.governor,'state',[BigInt(p.proposalId)]))).toBe(3);
+    await expect(e.raw(prepared.plan.calldatas[1]!,p.equity,0,e.equity.abi)).rejects.toThrow();
+    await expect(reconcileFailedHire(k,policy,admin)).resolves.toEqual({state:'lapsed'});
+    await expect(reconcileFailedHire(k,policy,admin)).resolves.toEqual({state:'lapsed'});
+    const lapsed=await row(k.offerId);
+    expect(lapsed.state).toBe('lapsed');expect(lapsed.grant_id).toBeNull();expect(lapsed.hire_execution_proof).toBeNull();
+    expect(lapsed.terms_acceptance_proof).toBeNull();expect(lapsed.admitted_at).toBeNull();
+    expect(String((await e.read(e.equity,'grants',[p.grantId]) as unknown[])[0])).toBe('0');
+    await expect(prepareHireAcceptance(k,policy,d)).rejects.toMatchObject({code:'invalid_stage'});
+    await expect(admitHire(k,policy,created.transactionHash,d)).rejects.toMatchObject({code:'invalid_stage'});
+    expect((await listHiveMembers(key.workspaceId,scope,db.adminSql)).map(m=>m.githubUserId)).toEqual([42]);
+    expect((await getHiringOffer(k,{sql:db.adminSql})).state).toBe('lapsed');
+    expect((await listHiringHistory({...k,subjectKind:'offer',subjectId:k.offerId},{sql:db.adminSql})).filter(h=>h.state==='lapsed')).toHaveLength(1);
   },120_000);
   it('refuses duplicate historical verified wallets before migration DDL and rolls back the fixture',async()=>{
     await expect(db.adminSql.begin(async tx=>{

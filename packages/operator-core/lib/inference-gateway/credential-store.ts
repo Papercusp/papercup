@@ -756,12 +756,13 @@ export function claudeAttemptHeaders(
   base: Record<string, string>,
   authMode: ClaudeAuthMode,
   token: string,
+  anthropicWorkspaceId?: string,
 ): Record<string, string> {
   const out: Record<string, string> = {};
   let beta: string | undefined;
   for (const [k, v] of Object.entries(base)) {
     const lk = k.toLowerCase();
-    if (lk === 'authorization' || lk === 'x-api-key') continue;
+    if (lk === 'authorization' || lk === 'x-api-key' || lk === 'anthropic-workspace-id') continue;
     if (lk === 'anthropic-beta') {
       beta = beta ? `${beta},${v}` : v;
       continue;
@@ -772,6 +773,7 @@ export function claudeAttemptHeaders(
   if (authMode === 'api-key') {
     flags.delete(CLAUDE_OAUTH_BETA);
     out['x-api-key'] = token;
+    if (anthropicWorkspaceId) out['anthropic-workspace-id'] = anthropicWorkspaceId;
   } else {
     flags.add(CLAUDE_OAUTH_BETA);
     out.authorization = `Bearer ${token}`;

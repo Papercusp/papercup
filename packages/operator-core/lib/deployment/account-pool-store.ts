@@ -783,6 +783,7 @@ export interface AccountStatusRow {
   provider: AccountProvider;
   label?: string;
   credentialRef: string;
+  anthropicWorkspaceId?: string;
   boundTo: string[];
   /** Can this account ACTUALLY serve right now — not rate-paused AND not usage-walled
    *  (`!accountFull`). WI-3310: this used to be the pause-only `isAvailable`, which read
@@ -896,6 +897,7 @@ export async function accountStatus(ws?: string, now = Date.now(), deps: Account
       provider: accountProvider(a),
       label: a.label,
       credentialRef: a.credentialRef,
+      ...(a.anthropicWorkspaceId ? { anthropicWorkspaceId: a.anthropicWorkspaceId } : {}),
       boundTo: a.boundTo,
       // WI-3310: `available` = "can actually serve" — pause-clear AND usage headroom. The old
       // pause-only read (`isAvailable`) told every consumer (stall-waker capacityBack, why-chain,

@@ -561,7 +561,7 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
         // P-006: the credential SHAPE follows the account this attempt landed on, so a rotation
         // from a subscription account to a Console API-key account switches Bearer+oauth-beta
         // for x-api-key mid-request. An account with no recorded mode is a subscription account.
-        headers: claudeAttemptHeaders(opts.baseHeaders, account.authMode ?? 'oauth', token),
+        headers: claudeAttemptHeaders(opts.baseHeaders, account.authMode ?? 'oauth', token, account.anthropicWorkspaceId),
         body: opts.body,
         accountId: account.accountId,
         dispatcher,
