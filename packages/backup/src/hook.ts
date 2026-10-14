@@ -137,6 +137,21 @@ export const HOT_SNAPSHOT_EXCLUDED_TABLE_DATA: readonly string[] = [
   // /mnt/data/Backup/db-dumps/pg/papercusp/), which includes all table data.
   'harness_shared.session_archives',
   'harness_shared.session_archive_files',
+  // EI-25164396022471391: measured on snapshot 78722 (2026-10-14), the included
+  // COPY volume had grown to ~50 GB, so a safety dump without host coverage
+  // could not finish. These three were ~14 GB of it and none is restore-critical:
+  // - session_turn_windows (~6.3 GB) is a trigger-maintained substring index
+  //   over session_turns, whose data is already excluded above. Its comment
+  //   says it is rebuildable (truncate it, reset session_turn_windows_state,
+  //   and the deferred job refills it).
+  // - fallback_observations (~4.6 GB, 19M rows) is best-effort degradation
+  //   telemetry read by the watchdog.
+  // - psu_pty_host_events (~2.9 GB) is psu-pty delivery telemetry ingested from
+  //   per-owner JSONL logs.
+  // The hourly host-level dump still carries their rows.
+  'harness_shared.session_turn_windows',
+  'harness_shared.fallback_observations',
+  'harness_shared.psu_pty_host_events',
 ] as const;
 
 const MIN_RESTORABLE_DUMP_BYTES = 10_000;
@@ -150,6 +165,55 @@ const GUARD_READY_SIGNAL = 'KOPIA_BACKUP_GUARD_READY\n';
 // PostgreSQL notices the broken connection (EI-21363741549000811).
 const PG_DUMP_STATEMENT_TIMEOUT_MS = 10 * 60_000;
 const PG_DUMP_LOCK_WAIT_TIMEOUT_MS = 30_000;
+/**
+ * Safety dumps (pre_destructive, pre-deploy, manual, no reason) gate a
+ * migration or a deploy. A fixed 900s budget cannot work for them:
+ * measured 2026-10-14 (EI-25164396022471391, snapshot 78722), the dump was
+ * still streaming at 10-20 MB/s when it was killed, and the included volume
+ * needed 42-83 minutes. A safety dump without host-dump coverage is the only
+ * restore point the migration has. It is therefore killed when it STOPS
+ * making progress (no pg_dump output for the stall window), and the absolute
+ * ceiling is only a backstop. The routine interval dump keeps its 900s budget,
+ * because it yields to the hourly sweep and is retried next interval.
+ *
+ * The 60-minute orphan sweep does not fail a dump that runs past an hour:
+ * the snapshot emits a progress heartbeat every 30s for its whole run, and
+ * a recent event counts as liveness (orphan-cleanup.ts).
+ */
+export const SAFETY_DUMP_STALL_TIMEOUT_MS = 5 * 60_000;
+export const SAFETY_DUMP_CEILING_MS = 3 * 60 * 60_000;
+// pg_dump issues one COPY per table, and the largest included table
+// (coord_thread_posts, ~11 GB) needs over 10 minutes at the measured rate. A
+// safety dump's per-statement bound therefore tracks its ceiling, still
+// ahead of the Node backstop. A stalled statement is caught by the stall
+// watchdog plus client_connection_check_interval below, not by this bound.
+const SAFETY_DUMP_STATEMENT_TIMEOUT_MS = SAFETY_DUMP_CEILING_MS - 5 * 60_000;
+// When the watchdog kills the client, the backend notices the closed socket
+// on its next poll even while it is blocked and writing nothing. This is the
+// PG14+ client-liveness check, a user-settable GUC. Without it, a killed
+// dump's backend can keep its AccessShareLocks until its statement ends
+// (EI-21363741549000811).
+const PG_DUMP_CLIENT_CHECK_INTERVAL_MS = 10_000;
+
+/** Watchdog budget for one dump, chosen by its trigger. */
+export interface DumpWatchdogPolicy {
+  /** Kill when pg_dump writes no output for this long (null = no stall check). */
+  stallTimeoutMs: number | null;
+  /** Kill unconditionally after this long once the guard lock is held. */
+  ceilingMs: number;
+  /** Server-side per-statement bound, kept ahead of the ceiling. */
+  statementTimeoutMs: number;
+}
+
+export function dumpWatchdogPolicy(deferToProgressingSweep: boolean): DumpWatchdogPolicy {
+  return deferToProgressingSweep
+    ? { stallTimeoutMs: null, ceilingMs: PG_DUMP_TIMEOUT_MS, statementTimeoutMs: PG_DUMP_STATEMENT_TIMEOUT_MS }
+    : {
+        stallTimeoutMs: SAFETY_DUMP_STALL_TIMEOUT_MS,
+        ceilingMs: SAFETY_DUMP_CEILING_MS,
+        statementTimeoutMs: SAFETY_DUMP_STATEMENT_TIMEOUT_MS,
+      };
+}
 const GIB = 1024n * 1024n * 1024n;
 
 /**
@@ -570,6 +634,7 @@ async function dumpPg(opts: {
   deferToProgressingSweep: boolean;
 }): Promise<PreSnapshotHookResult> {
   const tmp = allocateDumpTempPath(opts.outPath);
+  const policy = dumpWatchdogPolicy(opts.deferToProgressingSweep);
   // A crash/timeout from an earlier attempt must not become the next
   // snapshot's input. This is paired with the `*.tmp` Kopia policy rule.
   await unlink(tmp).catch(() => {});
@@ -585,8 +650,9 @@ async function dumpPg(opts: {
     // options, then append bounds that apply to this dump only.
     PGOPTIONS: [
       process.env.PGOPTIONS,
-      `-c statement_timeout=${PG_DUMP_STATEMENT_TIMEOUT_MS}`,
+      `-c statement_timeout=${policy.statementTimeoutMs}`,
       `-c lock_timeout=${PG_DUMP_LOCK_WAIT_TIMEOUT_MS}`,
+      `-c client_connection_check_interval=${PG_DUMP_CLIENT_CHECK_INTERVAL_MS}`,
     ].filter(Boolean).join(' '),
   };
   const pgDumpArgs = [
@@ -665,23 +731,56 @@ async function dumpPg(opts: {
 
     let settled = false;
     let dumpWatchdog: NodeJS.Timeout | undefined;
+    let stallWatchdog: NodeJS.Timeout | undefined;
     let guardReadinessWatchdog: NodeJS.Timeout | undefined;
+    // Progress = bytes pg_dump has written. Measured before gzip, whose
+    // buffering would hide steady progress behind long silent stretches.
+    let dumpedBytes = 0;
+    let lastProgressAt = Date.now();
+    dump.stdout.on('data', (d: Buffer | string) => {
+      dumpedBytes += typeof d === 'string' ? Buffer.byteLength(d) : d.length;
+      lastProgressAt = Date.now();
+    });
+    const abortDump = (reason: string) => {
+      if (settled) return;
+      stderr += `${reason}\n`;
+      killDumpTree();
+      gz.kill('SIGKILL');
+    };
+    // Re-armed one-shot timer rather than an interval. Each check either fires
+    // the kill or sleeps exactly until the current stall window would end.
+    const armStallWatchdog = (stallMs: number) => {
+      const check = () => {
+        stallWatchdog = undefined;
+        if (settled) return;
+        const idleMs = Date.now() - lastProgressAt;
+        if (idleMs >= stallMs) {
+          abortDump(`pg dump stalled: no output for ${stallMs}ms (${dumpedBytes} bytes dumped)`);
+          return;
+        }
+        stallWatchdog = setTimeout(check, stallMs - idleMs);
+      };
+      stallWatchdog = setTimeout(check, stallMs);
+    };
     const armDumpWatchdog = () => {
       if (settled || dumpWatchdog) return;
       if (guardReadinessWatchdog) {
         clearTimeout(guardReadinessWatchdog);
         guardReadinessWatchdog = undefined;
       }
+      // The stall window starts when the lock is held, not at spawn, so
+      // queueing behind the guard is not counted as a stall.
+      lastProgressAt = Date.now();
+      if (policy.stallTimeoutMs !== null) armStallWatchdog(policy.stallTimeoutMs);
       dumpWatchdog = setTimeout(() => {
-        stderr += `pg dump timed out after ${PG_DUMP_TIMEOUT_MS}ms\n`;
-        killDumpTree();
-        gz.kill('SIGKILL');
-      }, PG_DUMP_TIMEOUT_MS);
+        abortDump(`pg dump timed out after ${policy.ceilingMs}ms (${dumpedBytes} bytes dumped)`);
+      }, policy.ceilingMs);
     };
     const finalize = async (ok: boolean) => {
       if (settled) return;
       settled = true;
       if (dumpWatchdog) clearTimeout(dumpWatchdog);
+      if (stallWatchdog) clearTimeout(stallWatchdog);
       if (guardReadinessWatchdog) clearTimeout(guardReadinessWatchdog);
       if (!out.destroyed) out.end();
       let result: PreSnapshotHookResult;
