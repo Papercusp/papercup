@@ -77,6 +77,25 @@ export function retainIsolatedWorkerProgress(evidenceDir: string, stage: string,
   }) + '\n');
 }
 
+/** Snapshot native child diagnostics while its disposable home still exists.
+ * Missing files are explicit and never erase a previously captured log. */
+export function retainIsolatedNativeTaskDiagnostics(evidenceDir: string, task: Record<string, unknown>,
+  sources: Partial<Record<'stdout' | 'normalized' | 'boot', string>>) {
+  const files = Object.fromEntries(Object.entries(sources).map(([kind, source]) => {
+    try {
+      const bytes = readFileSync(source);
+      writeFileSync(join(evidenceDir, `native-task-${kind}.log`), bytes, { mode: 0o600 });
+      return [kind, { source, bytes: bytes.length, captured: true }];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return [kind, { source, captured: false, reason: 'missing' }];
+    }
+  }));
+  writeFileSync(join(evidenceDir, 'native-task-diagnostics.json'), JSON.stringify({
+    observedAt: new Date().toISOString(), task, files,
+  }), { mode: 0o600 });
+}
+
 /** A reaped signal termination proves cleanup, while the execute verdict stays failed. */
 export function assertIsolatedWorkerReaped(child: Pick<ChildProcess, 'exitCode' | 'signalCode'>,
   ended: { runtimeRemoved?: boolean; pgDataRemoved?: boolean } | undefined) {
@@ -548,6 +567,9 @@ export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[]
     'phases/prepare/verifier-source.json', 'phases/execute/worker-result.json',
     'phases/execute/lifecycle-observation.json',
     'phases/execute/worker-progress.ndjson',
+    'phases/execute/native-task-diagnostics.json', 'phases/execute/native-task-stdout.log',
+    'phases/execute/native-task-normalized.log', 'phases/execute/native-task-boot.log',
+    'phases/execute/native-result.json', 'phases/execute/operator-api-build-result.json',
     'phases/execute/portal-browser-source.json', 'phases/execute/portal-browser-receipt.json',
     'phases/execute/browser-inputs.json'].filter(path => existsSync(join(runDir, path)));
 }

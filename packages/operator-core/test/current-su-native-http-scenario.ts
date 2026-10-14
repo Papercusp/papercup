@@ -10,7 +10,8 @@ import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-d
 import type { PapercuspUnifiedToolContext } from '../lib/agent-tools/_tool-context';
 import { currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, currentBenchAssignmentId, currentBenchGatewayController } from '../lib/external-bench/current-su';
 import { liveBenchHarnessOps } from '../lib/external-bench/bench-harness-live';
-import { retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { psuLaunchLogPath } from '../lib/psu-launch-log.mjs';
 import { startFrontierSweLaunchAdapter } from '../lib/external-bench/frontier-swe-launch-adapter';
 import { startCodexHookBridge, type CodexHookBridge } from '../lib/external-bench/codex-hook-bridge';
 import { startBenchEgress, sweepBenchEgress } from '../lib/external-bench/bench-egress';
@@ -70,6 +71,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   const progress = (stage: string, evidence: Record<string, unknown> = {}) =>
     retainIsolatedWorkerProgress(evidenceDir, stage, evidence);
   let observedAuto = false;
+  let nativeDiagnosticsAt = 0;
   // This service has no provider credential, response generator or forwarding path.
   const listener = createServer(async (req, res) => {
     requests.push({ method: req.method, path: req.url, at: new Date().toISOString() });
@@ -131,6 +133,18 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
           },
           getTask: async id => {
             const task = await ports.getTask(id);
+            if (task && Date.now() - nativeDiagnosticsAt >= 1000) {
+              nativeDiagnosticsAt = Date.now();
+              const logPath = 'logPath' in task && typeof task.logPath === 'string' ? task.logPath : undefined;
+              const boot = typeof task.detail.coordOwnerId === 'string'
+                ? psuLaunchLogPath(task.detail.coordOwnerId, { home: process.env.HOME }) : null;
+              retainIsolatedNativeTaskDiagnostics(evidenceDir, { taskId: task.taskId,
+                workspaceId: task.workspaceId, state: task.state, sessionId: task.sessionId,
+                exitCode: task.exitCode, ownerId: task.detail.coordOwnerId }, {
+                ...(logPath ? { stdout: logPath, normalized: logPath.replace(/\.log$/, '.normalized.log') } : {}),
+                ...(boot ? { boot } : {}),
+              });
+            }
             progress('task-observed', { task: task && { taskId: task.taskId, workspaceId: task.workspaceId,
               sessionId: task.sessionId, state: task.state, exitCode: task.exitCode,
               ownerId: task.detail.coordOwnerId, label: task.detail.label, nativeStreamError: task.detail.nativeStreamError } });
