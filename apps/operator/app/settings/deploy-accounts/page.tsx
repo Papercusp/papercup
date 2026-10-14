@@ -59,6 +59,12 @@ function providerLabel(provider: AccountProvider): string {
   return provider === 'codex' ? 'Codex' : 'Claude';
 }
 
+function accountCredentialLabel(row: Pick<AccountRow, 'provider' | 'credentialRef'>): string {
+  return accountProvider(row) === 'claude' && row.credentialRef.startsWith('apikey:')
+    ? 'Anthropic API · paid credits'
+    : providerLabel(accountProvider(row));
+}
+
 function providerCredentialHint(provider: AccountProvider): string {
   return provider === 'codex'
     ? 'Codex accounts use a bearer token or env:NAME reference for the OpenAI-compatible gateway route.'
@@ -94,7 +100,7 @@ export default function DeployAccountsPage() {
   // server-side (account-link-cli.ts) and relays its link, so claude.ai accepts it (the CLI does
   // the client handshake a hand-built URL can't — accounts-pool-tab D-016). The setup-token paste
   // tab stays as the manual fallback.
-  const [linkMode, setLinkMode] = useState<'oauth' | 'token'>('oauth');
+  const [linkMode, setLinkMode] = useState<'oauth' | 'token' | 'api-key'>('oauth');
   const [provider, setProvider] = useState<'claude' | 'codex'>('claude');
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
   const [linkId, setLinkId] = useState<string | null>(null);
@@ -190,7 +196,7 @@ export default function DeployAccountsPage() {
       return;
     }
     if (!value.trim()) {
-      setAddError(provider === 'codex' ? 'Paste a Codex/OpenAI bearer token or env:NAME reference.' : 'Paste a setup-token (sk-ant-oat…) or a .credentials.json bundle.');
+      setAddError(linkMode === 'api-key' ? 'Paste an Anthropic Console API key (sk-ant-api…).' : provider === 'codex' ? 'Paste a Codex/OpenAI bearer token or env:NAME reference.' : 'Paste a setup-token (sk-ant-oat…) or a .credentials.json bundle.');
       return;
     }
     setBusy(true);
@@ -198,7 +204,7 @@ export default function DeployAccountsPage() {
       const r = await fetch('/api/admin/deploy-accounts/register', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ accountId, label: label || undefined, provider, value: value.trim() }),
+        body: JSON.stringify({ accountId, label: label || undefined, provider, value: value.trim(), ...(linkMode === 'api-key' ? { credentialType: 'api-key' } : {}) }),
       });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'register failed');
@@ -212,7 +218,7 @@ export default function DeployAccountsPage() {
     } finally {
       setBusy(false);
     }
-  }, [accountId, label, provider, value, resetForm, refresh]);
+  }, [accountId, label, provider, value, linkMode, resetForm, refresh]);
 
   // OAuth mode step A: start the provider CLI and capture its browser-login URL.
   const startOAuth = useCallback(async () => {
@@ -385,7 +391,7 @@ export default function DeployAccountsPage() {
             : 'Enter an account ID to continue.'
         : value.trim()
           ? 'Ready to link this account.'
-          : provider === 'codex' ? 'Paste a bearer token or env reference to continue.' : 'Paste a setup-token or credentials bundle to continue.';
+          : activeLinkMode === 'api-key' ? 'Paste an Anthropic API key to continue.' : provider === 'codex' ? 'Paste a bearer token or env reference to continue.' : 'Paste a setup-token or credentials bundle to continue.';
   const providerCounts = accounts.reduce(
     (acc, account) => {
       acc[accountProvider(account)] += 1;
@@ -479,6 +485,7 @@ export default function DeployAccountsPage() {
               className={`pc-da__mode${linkMode === 'oauth' ? ' is-active' : ''}`}
               onClick={() => {
                 setLinkMode('oauth');
+                setValue('');
                 setAddError(null);
               }}
             >
@@ -491,11 +498,32 @@ export default function DeployAccountsPage() {
               className={`pc-da__mode${linkMode === 'token' ? ' is-active' : ''}`}
               onClick={() => {
                 setLinkMode('token');
+                setValue('');
+                setAuthorizeUrl(null);
+                setLinkId(null);
                 setAddError(null);
               }}
             >
               {provider === 'codex' ? 'Paste a bearer token' : 'Paste a setup-token'}
             </button>
+            {provider === 'claude' && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={linkMode === 'api-key'}
+                className={`pc-da__mode${linkMode === 'api-key' ? ' is-active' : ''}`}
+                onClick={() => {
+                  setLinkMode('api-key');
+                  setValue('');
+                  setAuthorizeUrl(null);
+                  setLinkId(null);
+                  setCode('');
+                  setAddError(null);
+                }}
+              >
+                Anthropic API key
+              </button>
+            )}
           </div>
 
           <label className="pc-da__field">
@@ -578,6 +606,22 @@ export default function DeployAccountsPage() {
                 )}
               </>
             )
+          ) : activeLinkMode === 'api-key' ? (
+            <>
+              <div className="pc-da__step">
+                <span className="pc-da__step-label">2 · Use Anthropic API credits</span>
+                <p className="pc-da__step-hint">
+                  This account uses paid Anthropic API credits, billed separately from a Claude Max subscription.
+                  The gateway uses API credits when no subscription account has included allowance available.
+                  Create a key in the <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noreferrer">Anthropic Console</a>.
+                </p>
+              </div>
+              <div className="pc-da__field">
+                <label htmlFor="anthropic-api-key">3 · Anthropic API key</label>
+                <input id="anthropic-api-key" type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder="sk-ant-api…" autoComplete="off" spellCheck={false} aria-describedby="anthropic-api-key-hint" />
+                <small id="anthropic-api-key-hint">Stored privately on this machine. The key is never shown in the account list.</small>
+              </div>
+            </>
           ) : (
             <>
               <div className="pc-da__step">
@@ -823,7 +867,7 @@ function accountColumns(
       header: 'Provider',
       width: 0.75,
       toCopyText: (a) => a.provider || 'claude',
-      render: ({ row }) => <span className="pc-da__pill pc-da__pill--neutral">{providerLabel(accountProvider(row))}</span>,
+      render: ({ row }) => <span className="pc-da__pill pc-da__pill--neutral">{accountCredentialLabel(row)}</span>,
     },
     {
       key: 'status',
@@ -984,7 +1028,7 @@ function AccountCard({
       <AccountIdentity row={account} headroom={headroom} />
       <div className="pc-da__card-badges">
         {accountStatus(account)}
-        <span className="pc-da__pill pc-da__pill--neutral">{providerLabel(accountProvider(account))}</span>
+        <span className="pc-da__pill pc-da__pill--neutral">{accountCredentialLabel(account)}</span>
         <DefaultToggle
           row={account}
           defaultAccountId={defaultAccountId}
