@@ -192,6 +192,11 @@ export async function openWriterPidsMany(
     includeCwd?: boolean;
     /** Destructive callers must refuse missing/unreadable process evidence. */
     failClosed?: boolean;
+    /** Isolated native workers may use direct proc reads; host callers stay async. */
+    procIo?: {
+      readdir: (path: string) => string[] | Promise<string[]>;
+      readlink: (path: string) => string | Promise<string>;
+    };
   } = {},
 ): Promise<OpenWriterScan> {
   const started = Date.now();
@@ -199,9 +204,11 @@ export async function openWriterPidsMany(
   const wanted = new Set(paths);
   if (wanted.size === 0) return { byPath, complete: true };
   const procRoot = opts.procRoot ?? '/proc';
+  const readProcDirectory = opts.procIo?.readdir ?? readdir;
+  const readProcLink = opts.procIo?.readlink ?? readlink;
   let entries: string[];
   try {
-    entries = await readdir(procRoot);
+    entries = await readProcDirectory(procRoot);
   } catch (err) {
     return { byPath, complete: !opts.failClosed, ...(opts.failClosed ? { diagnostics: {
       reason: 'proc root unreadable', elapsedMs: Date.now() - started, readFailures: 1,
@@ -253,12 +260,12 @@ export async function openWriterPidsMany(
         }
       };
       if (opts.includeCwd) {
-        try { record(await readlink(join(procRoot, pid, 'cwd'))); }
+        try { record(await readProcLink(join(procRoot, pid, 'cwd'))); }
         catch (err) { readFailed(err, 'cwd', join(procRoot, pid, 'cwd')); }
       }
       let fds: string[];
       try {
-        fds = await readdir(fdDir);
+        fds = await readProcDirectory(fdDir);
       } catch (err) {
         readFailed(err, 'fd-directory', fdDir);
         processesScanned++;
@@ -269,7 +276,7 @@ export async function openWriterPidsMany(
         descriptorsScanned++;
         let target: string;
         try {
-          target = await readlink(join(fdDir, fd));
+          target = await readProcLink(join(fdDir, fd));
         } catch (err) {
           readFailed(err, 'fd', join(fdDir, fd));
           continue; // fd closed under us — skip

@@ -20,7 +20,7 @@
  * /proc is touched only for the fail-soft contract, never a live pid.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readdirSync, readlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -30,7 +30,7 @@ import {
   candidateNativeBgRecords,
   readLiveNativeBgTasks,
   renderNativeBgTaskWarning,
-  openWriterPidsMany,
+  openWriterPidsMany as scanOpenWriters,
   NATIVE_BG_TRACK_MAX_AGE_MS,
   type NativeBgTaskRecord,
 } from './native-bg-task-ledger';
@@ -311,7 +311,12 @@ describe('candidateNativeBgRecords', () => {
   });
 });
 
-describe('openWriterPidsMany (WI-10005283)', () => {
+describe.each([
+  { label: 'async host', procIo: undefined },
+  { label: 'isolated native worker', procIo: { readdir: readdirSync, readlink: readlinkSync } },
+])('openWriterPidsMany (WI-10005283) $label', ({ procIo }) => {
+  const openWriterPidsMany = (paths: readonly string[], opts: NonNullable<Parameters<typeof scanOpenWriters>[1]> = {}) =>
+    scanOpenWriters(paths, { ...opts, procIo });
   it.runIf(process.platform === 'linux')('detects path-only descriptors that Linux write leases do not exclude', async () => {
     const root = mkdtempSync(join(tmpdir(), 'retention-opath-'));
     const path = join(root, 'file'); writeFileSync(path, 'live path owner');
