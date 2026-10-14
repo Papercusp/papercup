@@ -59,7 +59,7 @@ export type CodeRunCaptureMode = 'auto' | 'never';
 export function codeRunKernelScope(ctx: UnifiedToolContext): string {
   if (!ctx.workspaceId?.trim()) throw new Error('kernel_workspace_required');
   const identity = resolveAgentIdentity(ctx);
-  return JSON.stringify([ctx.workspaceId, identity.ownerId, ctx.harnessSlug ?? null]);
+  return JSON.stringify([ctx.workspaceId, identity.ownerId, resolveConcreteHarnessSlug(undefined, ctx)]);
 }
 
 /** SHA-256 of the complete, validated outer code:run argument body. */
