@@ -283,6 +283,42 @@ export async function readConditionEnvelopes(): Promise<Record<string, unknown>[
   );
 }
 
+/**
+ * WI-6554700010011878: the NEWEST condition-keyed envelope (alarm OR resolution) that names
+ * `conditionKey`, or null when none survives in the retention window or there is no PG fast
+ * path. This is the per-emit read `broadcastSevereEvent` uses to enforce the one-shot
+ * contract, so it must NOT go through `readConditionEnvelopes`' bounded window: a long-open
+ * one-shot key that has fallen out of that window still has to read as open here.
+ *
+ * One backward seek on the conditions partial index that stops at the first match. Measured
+ * 2026-10-14 on 56k condition rows: 0.08ms for a busy open key, 341ms for a key with no row
+ * (full partial-index walk). Only first alarms and long-quiet keys pay the slow case.
+ */
+export async function readLatestConditionEnvelope(
+  conditionKey: string,
+): Promise<Record<string, unknown> | null> {
+  if (!coordHasPgFastPath()) return null;
+  const sql = coordSql();
+  const workspaceId = coordWorkspaceId();
+  const sinceBound = new Date(Date.now() - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
+  const rows = await sql<{ body: unknown }[]>`
+    SELECT body
+      FROM harness_shared.coord_event_log
+     WHERE workspace_id = ${workspaceId}
+       AND surface = 'messages'
+       AND ts >= ${sinceBound}
+       AND (body ? 'condition_key' OR body ? 'resolves_condition')
+       AND (body->>'condition_key' = ${conditionKey}
+            OR body->>'resolves_condition' = ${conditionKey}
+            OR body->'resolves_conditions' ? ${conditionKey})
+     ORDER BY id DESC
+     LIMIT 1
+  `;
+  const body = rows[0]?.body;
+  if (body === undefined || body === null) return null;
+  return (typeof body === "string" ? JSON.parse(body) : body) as Record<string, unknown>;
+}
+
 export default defineTool({
   name: "coord:conditions",
   description:
@@ -312,7 +348,13 @@ export default defineTool({
       .describe("Max resolved conditions returned (most recent kept). Default 10."),
   }),
   async handler(args) {
-    const states = computeConditionStates(await readConditionEnvelopes());
+    const envelopes = await readConditionEnvelopes();
+    const states = computeConditionStates(envelopes);
+    // WI-6554700010011878: the PG fold covers at most CONDITIONS_FAST_PATH_ROW_CAP of the
+    // newest condition rows. A full window means older keys can be MISSING from both lists,
+    // so say so on the aggregate: a capped fold must never read as the complete census.
+    const windowSaturated =
+      coordHasPgFastPath() && envelopes.length >= CONDITIONS_FAST_PATH_ROW_CAP;
     const open = states.filter((s) => s.open);
     const resolvedLimit = args.resolved_limit ?? 10;
     const resolved =
@@ -328,6 +370,17 @@ export default defineTool({
             open,
             resolved_count: states.length - open.length,
             resolved,
+            ...(windowSaturated
+              ? {
+                  window_saturated: {
+                    rows: envelopes.length,
+                    cap: CONDITIONS_FAST_PATH_ROW_CAP,
+                    note:
+                      "The fold read only the newest condition rows; conditions whose last alarm or " +
+                      "resolution is older than that window are missing from open and resolved.",
+                  },
+                }
+              : {}),
           }),
         },
       ],
