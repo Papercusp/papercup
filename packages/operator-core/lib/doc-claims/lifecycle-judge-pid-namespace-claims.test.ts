@@ -90,4 +90,12 @@ describe('the process-liveness insight explains PID-namespace readings', () => {
     expect(judge).toContain('Never normalize the absent array to `[]`');
     expect(judge).toContain('!Array.isArray(groups)');
   });
+
+  it('documents systemd DBus failures as blind absence probes in capability:bash', () => {
+    const judge = readFileSync(JUDGE_INSIGHT, 'utf8');
+    expect(judge).toContain('systemctl --user` readings from `capability:bash` as unknown, never as unit-absence evidence');
+    expect(judge).toContain('`wc -l` / `grep -c` pipelines exited successfully and converted the instrument failure into a plausible zero');
+    expect(judge).toContain('every absence-bearing shell probe used for a lifecycle verdict must query a known-present positive control in the same call');
+    expect(judge).toContain('if the control is missing or the command reports an error, discard every negative result and leave the verdict unknown');
+  });
 });

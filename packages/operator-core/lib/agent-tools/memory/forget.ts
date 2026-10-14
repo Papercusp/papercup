@@ -23,6 +23,7 @@ import { trackDetached } from '../../detached-imports';
 import { AGENT_TOOL_ACTOR_ID } from '../../memory/feedback';
 import { purgeJournalForMemory } from '../../memory/write-journal';
 import { getOperatorCache } from '../../cache/instance';
+import { captureSurfacedOutcome } from '../../memory/surfaced-outcomes';
 
 export default defineTool({
   name: 'memory:forget',
@@ -70,7 +71,7 @@ export default defineTool({
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
     }),
-  async handler(args) {
+  async handler(args, ctx) {
     const ids = mergeIds(args.id, args.ids);
     const backend = getMemoryBackend();
     // B1: bound the availability probe so a wedged store yields memory_timeout
@@ -162,6 +163,7 @@ export default defineTool({
           }
           throw err;
         }
+        const outcomeCapture = await captureSurfacedOutcome(ctx, [id], 'contradicted');
         // Learning signal (learning-system-audit P-050): an agent-driven forget is
         // the contradiction/staleness signal the extraction-adaptation loop reads
         // (memory_feedback → rebuildCustomInstructions). Fire-and-forget.
@@ -174,6 +176,7 @@ export default defineTool({
           ok: true as const,
           id,
           ...(reconciledAfterTimeout ? { reconciledAfterTimeout: true as const } : {}),
+          ...(!outcomeCapture.ok ? { outcomeCapture } : {}),
           ...(invalidateEntry ? { soft: true as const } : {}),
         };
       },

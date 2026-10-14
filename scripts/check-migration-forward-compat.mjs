@@ -50,6 +50,7 @@ import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { stripCommentsAndStrings, stripCommentsOnly, stripSqlComments, stripSqlCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 import { selectExplicitBasenames } from './lib/explicit-files.mjs';
 import { extractSqlTemplates } from './check-partial-index-alignment.mjs';
+import { listFilesIncludingUntracked } from './lib/tracked-files.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 /**
@@ -97,8 +98,13 @@ const SOURCE_SKIP_DIRS = new Set([
   'dist-host',
   'node_modules',
   'public',
+  'storybook-static',
   'target',
 ]);
+
+function isGeneratedSourcePath(file) {
+  return file.split('/').some((part) => SOURCE_SKIP_DIRS.has(part) || part.startsWith('dist-'));
+}
 
 /**
  * Migrations are immutable once applied, so historical files can never be fixed.
@@ -880,34 +886,21 @@ function sourceCommentsMasked(text, file) {
   return sourceFileExtension(file) === '.sql' ? stripSqlComments(text) : stripCommentsOnly(text, file);
 }
 
-function sourceFilesForRepo() {
-  const files = [];
-
-  function walk(absDir) {
-    let entries;
-    try {
-      entries = readdirSync(absDir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry.isSymbolicLink() || SOURCE_SKIP_DIRS.has(entry.name)) continue;
-      const abs = join(absDir, entry.name);
-      if (entry.isDirectory()) {
-        walk(abs);
-        continue;
-      }
-      const file = relative(resolve(__dirname, '..'), abs).split(sep).join('/');
-      if (!entry.isFile() || !isSourceFile(file) || file.startsWith(`${SQL_DIR_REL}/`)) continue;
-      const text = readScannedFile(abs, { allowMissing: true });
-      if (text !== null) files.push({ file, text });
-    }
-  }
-
+function sourceFilesForRepo({ columns = [], tables = [], unresolved = false } = {}) {
   const repoRoot = resolve(__dirname, '..');
-  for (const root of SOURCE_ROOTS) {
-    const abs = join(repoRoot, ...root.split('/'));
-    if (existsSync(abs)) walk(abs);
+  const files = [];
+  // Reuse the shared census: tracked plus new authoring files, excluding
+  // ignored build output, with its existing archive/submodule handling.
+  for (const file of listFilesIncludingUntracked(repoRoot).files) {
+    if (!SOURCE_ROOTS.some((root) => file.startsWith(`${root}/`))) continue;
+    if (!isSourceFile(file) || isGeneratedSourcePath(file) || file.startsWith(`${SQL_DIR_REL}/`)) continue;
+    const abs = join(repoRoot, file);
+    if (!statSync(abs, { throwIfNoEntry: false })?.isFile()) continue;
+    const text = readScannedFile(abs, { allowMissing: true });
+    if (text !== null && (!columns.length || columns.some((column) => text.includes(column))) &&
+      (!tables.length || unresolved || tables.some((table) => text.includes(table)))) {
+      files.push({ file, text });
+    }
   }
   return files;
 }
@@ -986,8 +979,6 @@ function sourceDependencyUnits(source) {
       const name = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text
         : ts.isIdentifier(node.expression) ? node.expression.text : '';
       if (/^(?:pgTable|sqliteTable|mysqlTable|table)$/.test(name)) add(node, true);
-      // A query may be assembled from adjacent literals. Inspect the whole
-      // argument as well as individual SQL strings, without combining calls.
       if (/^(?:unsafe|query|execute|exec)$/.test(name) && node.arguments[0]) add(node.arguments[0]);
     }
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) add(node);
@@ -1033,6 +1024,7 @@ export function findDraftColumnReferences(sqlText, sourceFiles = []) {
     const token = new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(column)}(?![A-Za-z0-9_$])`, 'ig');
     for (const source of sourceFiles) {
       if (source.file.startsWith(`${SQL_DIR_REL}/`)) continue;
+      if (isGeneratedSourcePath(source.file)) continue;
       // Masking can only remove text. Prove raw relevance before asking the
       // shared parser to mask an entire repository for a common column name.
       if (source.text.search(token) < 0) continue;
@@ -1402,6 +1394,7 @@ function main() {
     for (const f of selfTestFailures) console.error(`  - ${f}`);
     process.exit(1);
   }
+  console.error('check-migration-forward-compat: detector self-test passed');
 
   if (!existsSync(SQL_DIR)) {
     console.error(`check-migration-forward-compat: migrations dir not found: ${SQL_DIR}`);
@@ -1472,8 +1465,16 @@ function main() {
   const draftOffenders = [];
   const draftFiles = all.filter(isDraftMigrationFile).sort();
   if (draftFiles.length > 0) {
-    const sourceFiles = sourceFilesForRepo();
-    for (const { file, text } of readScannedFiles(SQL_DIR, draftFiles, { allowMissing: true })) {
+    console.error('check-migration-forward-compat: collecting source inventory for parked migration dependencies');
+    const draftSources = readScannedFiles(SQL_DIR, draftFiles, { allowMissing: true });
+    const columns = [...new Set(draftSources.flatMap(({ text }) => addedColumnsFor(text)))];
+    const targetInfo = draftSources.map(({ text }) => alterTargetsFor(text));
+    const tables = [...new Set(targetInfo.flatMap(({ tables }) => tables))];
+    const unresolved = targetInfo.some(({ unresolved }) => unresolved.length > 0);
+    const sourceFiles = sourceFilesForRepo({ columns, tables, unresolved });
+    console.error(`check-migration-forward-compat: collected ${sourceFiles.length} relevant source files`);
+    for (const { file, text } of draftSources) {
+      console.error(`check-migration-forward-compat: checking parked migration ${file}`);
       const dependency = findDraftColumnReferences(text, sourceFiles);
       if (dependency.references.length > 0) draftOffenders.push({ file, ...dependency });
     }

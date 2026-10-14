@@ -21,6 +21,14 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+vi.mock('../../memory/surfaced-outcomes', async (original) => ({
+  ...(await original<typeof import('../../memory/surfaced-outcomes')>()),
+  loadOutcomeCounts: vi.fn(async () => new Map()),
+}));
+vi.mock('@papercusp/db-org', async (original) => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: vi.fn() }),
+}));
 // Spread the REAL module and override only defineTool: a hand-listed factory
 // strands every export the tool graph later starts importing — AGENT_ROLES did
 // exactly that (testing/run.ts), breaking collection across this directory.
@@ -42,6 +50,7 @@ vi.mock('../../memory/backend', () => ({
 }));
 
 import list, { MEMORY_LIST_DEFAULT_LIMIT } from './list';
+import { loadOutcomeCounts } from '../../memory/surfaced-outcomes';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import type { MemoryEntry } from '../../memory/backend';
 
@@ -172,7 +181,28 @@ describe('memory:list — temporal passthrough + response contract', () => {
     useBackend(backend);
     const out = parse(await list.handler({}, ctx));
     expect(out.ok).toBe(true);
-    expect(out.results).toEqual([{ id: 'm1', memory: 'the user prefers nuqs', metadata: { kind: 'preference' } }]);
+    expect(out.results).toEqual([{ id: 'm1', memory: 'the user prefers nuqs', metadata: { kind: 'preference' }, outcomeCounts: null }]);
+  });
+
+  it('returns used and contradicted counts for each listed memory without inventing missing counts', async () => {
+    useBackend(okBackend([
+      { id: 'm1', text: 'first', scope: 'user-1' } as MemoryEntry,
+      { id: 'm2', text: 'second', scope: 'user-1' } as MemoryEntry,
+    ]).backend);
+    vi.mocked(loadOutcomeCounts).mockResolvedValueOnce(new Map([['m1', { used: 3, contradicted: 2 }]]));
+    const out = parse(await list.handler({}, ctx));
+    expect(out.results).toMatchObject([
+      { id: 'm1', outcomeCounts: { used: 3, contradicted: 2 } },
+      { id: 'm2', outcomeCounts: null },
+    ]);
+  });
+
+  it('reports unavailable outcome counts explicitly while preserving the memory list', async () => {
+    useBackend(okBackend([{ id: 'm1', text: 'first', scope: 'user-1' } as MemoryEntry]).backend);
+    vi.mocked(loadOutcomeCounts).mockRejectedValueOnce(new Error('counts unavailable'));
+    expect(parse(await list.handler({}, ctx))).toMatchObject({
+      ok: true, results: [{ id: 'm1', outcomeCounts: null }], outcomeCountsUnavailable: 'counts unavailable',
+    });
   });
 });
 

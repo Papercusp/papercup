@@ -1216,8 +1216,13 @@ export function deriveClaimHealth(
   if (holder?.monitorState !== undefined) {
     evidence.push({ writer: 'loop_status', signal: 'monitor_state', value: holder.monitorState ?? null });
   }
-  if (holder?.parkedOn?.length) {
-    evidence.push({ writer: 'events_await', signal: 'exact_dependency_waits', value: [...holder.parkedOn] });
+  const activeEventWaits = holder?.parkedOn ?? [];
+  const parkedDependencyWaits = activeEventWaits.filter((key) => key !== 'work-item:claimable');
+  if (activeEventWaits.length) {
+    evidence.push({ writer: 'events_await', signal: 'active_event_waits', value: [...activeEventWaits] });
+  }
+  if (parkedDependencyWaits.length) {
+    evidence.push({ writer: 'events_await', signal: 'exact_dependency_waits', value: [...parkedDependencyWaits] });
   }
   if (holder?.checkpointKind !== undefined) {
     evidence.push({ writer: 'work_items_checkpoint', signal: 'checkpoint_kind', value: holder.checkpointKind ?? null });
@@ -1233,7 +1238,11 @@ export function deriveClaimHealth(
     holder?.checkpointKind === 'authored' && isFreshIso(r.lastProgressAt, nowMs, expectedCadenceMs);
   const mechanicalOnly =
     holder?.checkpointKind === 'mechanical' && !freshProductive && !freshTool;
-  const dependencyWait = (holder?.parkedOn?.length ?? 0) > 0 || holder?.monitorState === 'parked-awaiting-capability';
+  // `work-item:claimable` is a broad queue wake (created-unclaimed, released,
+  // unblocked), not a dependency of a work-item this holder already owns. A
+  // member can keep that standing watch after draining its lane; treating it as
+  // this claim's dependency masks stale held work as `waiting` indefinitely.
+  const dependencyWait = parkedDependencyWaits.length > 0;
   const scheduledWait = holder?.monitorState === 'waiting' || holder?.monitorState === 'monitoring';
   const recoverable = holder?.sessionState === 'suspect' && holder.wakeable === true;
   const contradicted =

@@ -23,5 +23,7 @@ fi
 
 KOPIA_BIN="${KOPIA_PROTECTED_SNAPSHOT_BIN:-/usr/bin/kopia}"
 SUDO_BIN="${KOPIA_PROTECTED_SNAPSHOT_SUDO:-/usr/bin/sudo}"
-kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot create "$@"
+kopia_retention_pin_all "$SUDO_BIN" "$KOPIA_BIN" add || exit $?
+kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot create "--pin=$KOPIA_RETENTION_PIN" "$@" || exit $?
+kopia_retention_finish "$SUDO_BIN" "$KOPIA_BIN"
 

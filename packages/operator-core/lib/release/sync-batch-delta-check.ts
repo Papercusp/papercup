@@ -1145,6 +1145,125 @@ export async function fileRoutedRed(
   return deps.fileRed({ ...finding, assignee: null });
 }
 
+/** R-8 measures pickup, not the count returned by wakeRecipients. The source refs
+ * identify the original filing and wake rows; missing/retained-away rows remain
+ * unknown. This is the same original-population contract used by the SLO evaluators. */
+export interface SyncRedDeliveryWindow {
+  workspaceId: string;
+  harnessSlug: string;
+  windowStartMs: number;
+  windowEndMs: number;
+  observedAtMs: number;
+  status: 'complete' | 'capped' | 'unavailable';
+  total: number | null;
+  rows: Array<{
+    workItemId: string;
+    batchSha: string | null;
+    authorId: string | null;
+    filingRef: string;
+    redFiledAtMs: number;
+    wakes: Array<{
+      ref: string;
+      workItemId: string;
+      recipientId: string;
+      queuedAtMs: number;
+      deliveredAtMs: number | null;
+      turnStartedAtMs: number | null;
+      turnProof: string | null;
+    }>;
+  }>;
+}
+
+export const SYNC_RED_DELIVERY_LIMIT_MS = 15 * 60_000;
+
+/** A closed, explicitly complete original population is necessary for healthy.
+ * A measured late pickup is broken even when another row is unknown. Legacy
+ * delivery-channel receipts (including inbox/coalesced) never prove a turn. */
+export function evaluateSyncRedDeliveryWindow(history: SyncRedDeliveryWindow) {
+  const stamp = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+  const text = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+  const windowValid = text(history.workspaceId) && text(history.harnessSlug) &&
+    stamp(history.windowStartMs) && stamp(history.windowEndMs) &&
+    history.windowStartMs < history.windowEndMs && stamp(history.observedAtMs) &&
+    history.windowEndMs <= history.observedAtMs;
+  const complete = history.status === 'complete' && history.total === history.rows.length &&
+    history.rows.length > 0 && new Set(history.rows.map(r => r.workItemId)).size === history.rows.length &&
+    new Set(history.rows.map(r => r.filingRef)).size === history.rows.length;
+  const wakeRefs = new Set<string>();
+  const rows = history.rows.map(row => {
+    const unknown = (reason: string) => ({ workItemId: row.workItemId,
+      verdict: 'unknown' as const, elapsedMs: null, reason });
+    if (!windowValid || !text(row.workItemId) || !text(row.filingRef) ||
+        !row.batchSha || !/^[a-f0-9]{40}$/.test(row.batchSha) || !text(row.authorId) ||
+        !stamp(row.redFiledAtMs) || row.redFiledAtMs < history.windowStartMs ||
+        row.redFiledAtMs > history.windowEndMs) return unknown('Original filing identity or clock is missing.');
+    let invalid = false;
+    let measuredMiss = false;
+    const pickups: number[] = [];
+    for (const wake of row.wakes) {
+      if (!text(wake.ref) || wakeRefs.has(wake.ref) || wake.workItemId !== row.workItemId ||
+          wake.recipientId !== row.authorId || !stamp(wake.queuedAtMs) ||
+          wake.queuedAtMs < row.redFiledAtMs || wake.queuedAtMs > history.observedAtMs) {
+        invalid = true; continue;
+      }
+      wakeRefs.add(wake.ref);
+      if (wake.turnProof === 'not-picked-up' && history.observedAtMs - row.redFiledAtMs > SYNC_RED_DELIVERY_LIMIT_MS) {
+        measuredMiss = true;
+      }
+      if (wake.deliveredAtMs === null && wake.turnStartedAtMs === null) continue;
+      if (!stamp(wake.deliveredAtMs) || wake.deliveredAtMs < wake.queuedAtMs ||
+          wake.deliveredAtMs > history.observedAtMs) { invalid = true; continue; }
+      if (wake.turnStartedAtMs === null) continue;
+      if (!['observed', 'host-attested'].includes(wake.turnProof ?? '') ||
+          !stamp(wake.turnStartedAtMs) || wake.turnStartedAtMs < wake.deliveredAtMs ||
+          wake.turnStartedAtMs > history.observedAtMs) { invalid = true; continue; }
+      pickups.push(wake.turnStartedAtMs);
+    }
+    if (invalid) return unknown('Wake identity, chronology or pickup proof is invalid.');
+    if (pickups.length === 0) return measuredMiss
+      ? { workItemId: row.workItemId, verdict: 'broken' as const, elapsedMs: null, reason: 'Original measured missed pickup past the delivery limit.' }
+      : unknown('Queued/delivered is not pickup; original turn-start proof is absent.');
+    const elapsedMs = Math.min(...pickups) - row.redFiledAtMs;
+    return { workItemId: row.workItemId, verdict: elapsedMs <= SYNC_RED_DELIVERY_LIMIT_MS
+      ? 'healthy' as const : 'broken' as const, elapsedMs, reason: 'Original author pickup latency.' };
+  });
+  const verdict = rows.some(row => row.verdict === 'broken') ? 'broken' as const
+    : windowValid && complete && rows.every(row => row.verdict === 'healthy') ? 'healthy' as const : 'unknown' as const;
+  return { verdict, rows, assertions: [
+    { id: 'bounded-sync-red-delivery-window', passed: windowValid },
+    { id: 'complete-sync-red-delivery-population', passed: complete },
+    { id: 'original-author-pickup-proof', passed: rows.length > 0 && rows.every(row => row.verdict !== 'unknown') },
+    { id: 'author-delivery-at-most-15min', passed: verdict === 'healthy' },
+  ] };
+}
+
+/** Run the clocked detector on an original ledger snapshot through the maintained
+ * results writer. Fixtures only test this procedure; they are never live evidence.
+ * The caller supplies its complete archived join, including all missing pickups. */
+export async function executeSyncRedDeliveryWindow(history: SyncRedDeliveryWindow, args: {
+  projectDir: string; runtimeUnits: string[];
+}) {
+  const snapshot = structuredClone(history);
+  const { createHash } = await import('node:crypto');
+  const { executeOperationalRun } = await import('../agent-tools/testing/record-run');
+  const populationHash = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+  return executeOperationalRun({ filePath: 'packages/operator-core/lib/release/sync-batch-delta-check.ts',
+    name: 'Original sync-red author delivery latency', framework: 'operational',
+    command: ['executeSyncRedDeliveryWindow', snapshot.workspaceId, snapshot.harnessSlug,
+      String(snapshot.windowStartMs), String(snapshot.windowEndMs), populationHash], runtimeUnits: args.runtimeUnits,
+    run: async () => {
+      const result = evaluateSyncRedDeliveryWindow(snapshot);
+      return { exitCode: result.verdict === 'healthy' ? 0 : 1,
+        assertions: result.assertions.map(a => ({ ...a, evidence: `original_population_sha256=${populationHash}; verdict=${result.verdict}` })),
+        summary: `Original sync-red delivery population: ${snapshot.rows.length}; total=${snapshot.total}; ` +
+          `read=${snapshot.status}; verdict=${result.verdict}; original_population_sha256=${populationHash}; ` +
+          `elapsedMs=${result.rows.map(row => row.elapsedMs ?? 'unknown').join(',')}. ` +
+          'Caller snapshot provenance must be independently verified against its complete original filing/wake refs. ' +
+          'No fixture, queued/woken count, or current presence substitutes for original pickup proof.' };
+    },
+  }, { ...args, workspaceId: snapshot.workspaceId, harnessSlug: snapshot.harnessSlug });
+}
+
 export type SyncBatchDeltaStatus =
   | 'skipped'
   | 'bootstrapped'

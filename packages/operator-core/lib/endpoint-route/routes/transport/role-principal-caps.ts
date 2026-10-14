@@ -112,6 +112,9 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'work_items:write',
     'operator:read',
     'plans:read',
+    // Re-run the named release-readiness autoloop probe. The sole consumer of
+    // this capability also pins judge reads to the dispatched harness.
+    'autoloop:read',
     // EI-25692833751908142: the ship gate's independent_verification_missing is cleared by
     // an independent-verification binding, and the recruiter hands that job to the judge.
     // This opens ONLY plans:bind-independent-verification (that one evidence kind); judge

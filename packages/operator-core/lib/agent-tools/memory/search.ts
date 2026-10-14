@@ -413,6 +413,14 @@ export default defineTool({
       /* best-effort */
     }
 
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { loadOutcomeCounts, applyOutcomeRerank } = await import('../../memory/surfaced-outcomes');
+      hits = applyOutcomeRerank(hits, await withMemoryToolTimeout(loadOutcomeCounts(getOrgPg().sql, hits.map(hit => hit.id)), 'memory outcome ranking'));
+    } catch {
+      /* Outcome availability does not disable recall. */
+    }
+
     // EI-9031: when the production embedder (OpenAI) is in its post-exhaustion
     // cooldown, the 'auto' cascade has silently fallen back to the local vec table
     // — older OpenAI-embedded memories live in a DIFFERENT per-mode table, so an

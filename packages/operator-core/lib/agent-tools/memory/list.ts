@@ -16,6 +16,7 @@ import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
 import { getSessionUserOrDefault } from '../../auth';
 import { toWireRow } from './search';
+import { loadOutcomeCounts } from '../../memory/surfaced-outcomes';
 
 // `ephemeral` retired (docs-and-memory-as-projections D-006) — the store holds
 // only stable facts. Filter enum unified on the Claude-file taxonomy
@@ -113,11 +114,20 @@ export default defineTool({
       const offset = args.offset ?? 0;
       const limit = args.limit ?? MEMORY_LIST_DEFAULT_LIMIT;
       const page = entries.slice(offset, offset + limit);
+      let outcomes: Awaited<ReturnType<typeof loadOutcomeCounts>> | undefined;
+      let outcomeCountsUnavailable: string | undefined;
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        outcomes = await withMemoryToolTimeout(loadOutcomeCounts(getOrgPg().sql, page.map(row => row.id)), 'memory outcome counts');
+      } catch (error) {
+        outcomeCountsUnavailable = error instanceof Error ? error.message : String(error);
+      }
       const truncated = offset + page.length < entries.length;
       return {
         content: [{ type: 'text', text: JSON.stringify({
           ok: true,
-          results: page.map(toWireRow),
+          results: page.map(row => ({ ...toWireRow(row), outcomeCounts: outcomes?.get(row.id) ?? null })),
+          ...(outcomeCountsUnavailable ? { outcomeCountsUnavailable } : {}),
           total: entries.length,
           ...(truncated ? { truncated: true, next_offset: offset + page.length } : {}),
         }) }],

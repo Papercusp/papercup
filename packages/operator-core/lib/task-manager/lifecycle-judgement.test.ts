@@ -488,6 +488,26 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).not.toContain('For other kinds, use processes:list { taskId, live:true }');
   });
 
+  it('rejects capability:bash systemd DBus failures as absence evidence', () => {
+    const candidate = evaluate({
+      rows: [row({ taskId: 'dbus-absence', state: 'unaccounted', scopeUnit: 'pc-dbus-absence.scope' })],
+      residue: ['dbus-absence'],
+    }).candidates[0]!;
+    const guidance = [
+      lifecycleCandidateSummary(candidate),
+      lifecycleJudgeBrief([{ id: 'EI-DBUS', taskId: candidate.taskId, harnessSlug: 'papercusp' }]),
+    ];
+
+    for (const text of guidance) {
+      expect(text).toContain('systemctl --user show/list-units from capability:bash cannot reach the user manager D-Bus');
+      expect(text).toContain('Failed to connect to bus: Operation not permitted');
+      expect(text).toContain('grep -c masks it as exit 0 with a false zero');
+      expect(text).toContain('Treat systemd readings from that sandbox as unknown, never unit-absence evidence');
+      expect(text).toContain('query a known-present positive control in the same call');
+      expect(text).toContain('discard every negative result and leave the verdict unknown');
+    }
+  });
+
   it('keeps the claim subject summary stable across reconciliation refreshes', () => {
     const candidate = evaluate({
       rows: [row({ taskId: 'changing-candidate', state: 'unaccounted', scopeUnit: 'pc-changing.scope' })],

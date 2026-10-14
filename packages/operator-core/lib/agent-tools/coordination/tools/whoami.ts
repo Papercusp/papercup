@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, deriveFleetMembership } from '../identity';
-import { COORD_ROLES } from '../roles';
+import { COORD_READ_ROLES } from '../roles';
 import { inboxWakeKey } from '../inbox-wake';
 
 export default defineTool({
@@ -26,7 +26,8 @@ export default defineTool({
   // EI-20226779878046151: identity resolution is self-contained and does not
   // read ctx.tx; avoid an ambient org-app transaction for this orient leg.
   skipWorkspaceTx: true,
-  agentRoles: [...COORD_ROLES],
+  // Identity introspection is read-only; keep it on the narrow judge read lane.
+  agentRoles: [...COORD_READ_ROLES],
   args: z.object({}),
   async handler(_args, ctx) {
     // EI-1748: whoami is the IDENTITY-INTROSPECTION tool — when the server can't

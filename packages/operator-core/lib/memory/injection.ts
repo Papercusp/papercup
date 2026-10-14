@@ -1463,6 +1463,19 @@ async function buildBlockInner(
           harnessHits = harnessHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
           hiveHits = hiveHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
         }
+        const { loadOutcomeCounts, applyOutcomeRerank } = await import('./surfaced-outcomes');
+        const counts = await deadline.run(() => loadOutcomeCounts(sql, [
+          ...userResults.map(h => h.id), ...harnessHits.map(({ hit }) => hit.id), ...hiveHits.map(({ hit }) => hit.id),
+        ]), 'outcomes');
+        userResults = applyOutcomeRerank(userResults, counts);
+        const rerank = <T extends { hit: MemoryEntry }>(rows: T[]): T[] => {
+          const ranked = applyOutcomeRerank(rows.map(row => row.hit), counts);
+          const order = new Map(ranked.map((hit, i) => [hit.id, i]));
+          return rows.map(row => ({ ...row, hit: ranked.find(hit => hit.id === row.hit.id) ?? row.hit }))
+            .sort((a, b) => (order.get(a.hit.id) ?? 0) - (order.get(b.hit.id) ?? 0));
+        };
+        harnessHits = rerank(harnessHits);
+        hiveHits = rerank(hiveHits);
       } catch {
         /* hygiene, never load-bearing */
       } finally {

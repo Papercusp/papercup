@@ -7,13 +7,13 @@
  * here happens in a spawned child process through the public writer, and the
  * read happens in this process through the public reader.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
-const { readFallbackWindow, readFallbackWindowsByScope, pruneFallbackObservations, observeFallback, flushFallbackObservations } =
+const { readFallbackWindow, readFallbackWindowsByScope, pruneFallbackObservations, observeFallback, flushFallbackObservations, fallbackObservationCounters } =
   await import('./fallback-observations');
 
 const MODULE_URL = new URL('./fallback-observations.ts', import.meta.url).href;
@@ -170,6 +170,51 @@ describe('fallback observations — durable and readable across processes (real 
       scope: 'shared-task',
       window: { samples: 1, eligible: 1, applied: 0, reasons: [{ reason: 'dirty-checkout', eligible: 1 }] },
     });
+  });
+
+  it('BAR R-14: a real PostgreSQL write rejection is non-throwing, counted, and leaves no row', async () => {
+    // Calibrate the unit fixture's rejected INSERT against the actual driver and
+    // migrated table. This constraint exists only in createOrgTestDb's private DB.
+    await db.adminSql`
+      ALTER TABLE harness_shared.fallback_observations
+      ADD CONSTRAINT fallback_observations_test_write_failure
+      CHECK (reason <> 'forced-write-failure')
+    `;
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const before = fallbackObservationCounters().failed;
+      expect(() => observeFallback('write-rejection', {
+        eligible: 2, applied: 0, reason: 'forced-write-failure',
+      }, { sql: db.adminSql, workspaceId: WS })).not.toThrow();
+      await expect(flushFallbackObservations()).resolves.toMatchObject({ written: 0, failed: 1 });
+      expect(fallbackObservationCounters().failed).toBe(before + 1);
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('fallback_observations_test_write_failure'));
+
+      // Query storage directly so the oracle does not reuse the window reader.
+      const rows = await db.adminSql`
+        SELECT reason FROM harness_shared.fallback_observations
+        WHERE workspace_id = ${WS} AND mechanism = 'write-rejection'
+      `;
+      expect(rows).toHaveLength(0);
+
+      // The failed batch must not poison the next real write.
+      observeFallback('write-rejection', { eligible: 1, applied: 1, reason: 'applied' }, {
+        sql: db.adminSql, workspaceId: WS,
+      });
+      await expect(flushFallbackObservations()).resolves.toMatchObject({ written: 1, failed: 0 });
+      const recovered = await db.adminSql`
+        SELECT reason, eligible, applied FROM harness_shared.fallback_observations
+        WHERE workspace_id = ${WS} AND mechanism = 'write-rejection'
+      `;
+      expect(recovered).toEqual([{ reason: 'applied', eligible: 1, applied: 1 }]);
+      expect(fallbackObservationCounters().failed).toBe(before + 1);
+    } finally {
+      warning.mockRestore();
+      await db.adminSql`
+        ALTER TABLE harness_shared.fallback_observations
+        DROP CONSTRAINT fallback_observations_test_write_failure
+      `;
+    }
   });
 
   it('the table refuses an applied count above eligible', async () => {

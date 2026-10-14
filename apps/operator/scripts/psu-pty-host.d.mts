@@ -2428,7 +2428,8 @@ export function decodeQuotaRecovery(o: any): {
     };
 };
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
- *  a legacy idle-gated turn. Pure — exported for tests. */
+ *  a legacy idle-gated turn; an unsupported explicit envelope is never input.
+ *  Pure — exported for tests. */
 export function decodeControl(payload: any): {
     ownerId: any;
     gated: boolean;

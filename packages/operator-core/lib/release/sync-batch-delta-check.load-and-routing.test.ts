@@ -23,6 +23,7 @@ const captured = vi.hoisted(() => ({
   notificationFails: false,
   notificationAssignee: 'su-author-1' as string | null,
   wakeQueued: 1,
+  operationalRuns: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock('@papercusp/db-org', () => ({
@@ -59,6 +60,12 @@ vi.mock('../agent-tools/coordination/inbox-wake', () => ({
     return { queued: captured.wakeQueued, woken: captured.wakeQueued, staged: 0, timedOutTargets: [] };
   },
 }));
+vi.mock('../agent-tools/testing/record-run', () => ({
+  executeOperationalRun: async (input: { run: () => Promise<unknown> }, scope: unknown) => {
+    captured.operationalRuns.push({ input, scope });
+    return input.run();
+  },
+}));
 
 import { buildSyncBatchDeltaDeps, type RunResult } from './sync-batch-delta-check-deps';
 import { buildSyncLintGuardDeps } from './sync-batch-lint-guards-deps';
@@ -68,6 +75,8 @@ import {
   REDUCED_BUDGET,
   evaluateCapacity,
   evaluateCoverage,
+  evaluateSyncRedDeliveryWindow,
+  executeSyncRedDeliveryWindow,
   fileRoutedRed,
   idlePriorityArgv,
   pickRedAuthor,
@@ -80,6 +89,7 @@ import {
   type SyncBatch,
   type SyncBatchDeltaDeps,
   type SyncDeltaCursor,
+  type SyncRedDeliveryWindow,
 } from './sync-batch-delta-check';
 
 const SHA_A = 'a'.repeat(40);
@@ -87,6 +97,83 @@ const SHA_B = 'b'.repeat(40);
 const SHA_C = 'c'.repeat(40);
 const NOW = 10_000_000;
 const FULL = { maxConfirmRuns: 3, maxAttributionProbes: 8 };
+
+describe('R-8 original author delivery clock', () => {
+  function history(delayMs = 900_000): SyncRedDeliveryWindow {
+    return { workspaceId: 'ws-1', harnessSlug: 'h', windowStartMs: NOW - 1,
+      windowEndMs: NOW + 1, observedAtMs: NOW + 2_000_000, status: 'complete', total: 1,
+      rows: [{ workItemId: 'WI-77', batchSha: SHA_A, authorId: 'su-author-1',
+        filingRef: 'engineer_issues:WI-77', redFiledAtMs: NOW,
+        wakes: [{ ref: 'event_wake_deliveries:42', workItemId: 'WI-77', recipientId: 'su-author-1',
+          queuedAtMs: NOW + 100, deliveredAtMs: NOW + 200,
+          turnStartedAtMs: NOW + delayMs, turnProof: 'observed' }] }] };
+  }
+  it('accepts exact 900000ms original pickup and rejects 900001ms (independent fixed boundary)', () => {
+    expect(evaluateSyncRedDeliveryWindow(history())).toMatchObject({ verdict: 'healthy',
+      rows: [{ elapsedMs: 900_000, verdict: 'healthy' }] });
+    expect(evaluateSyncRedDeliveryWindow(history(900_001))).toMatchObject({ verdict: 'broken',
+      rows: [{ elapsedMs: 900_001, verdict: 'broken' }] });
+  });
+  it.each(['queued-only', 'delivered-without-pickup', 'coalesced', 'wrong-author', 'wrong-item',
+    'missing-filing-clock', 'missing-queue-clock', 'reversed-clock', 'future-pickup', 'missing-batch'])(
+    'never turns %s into delivery proof', defect => {
+      const h = history(), r = h.rows[0]!, w = r.wakes[0]!;
+      if (defect === 'queued-only') { w.deliveredAtMs = null; w.turnStartedAtMs = null; }
+      if (defect === 'delivered-without-pickup') w.turnStartedAtMs = null;
+      if (defect === 'coalesced') w.turnProof = 'superseded';
+      if (defect === 'wrong-author') w.recipientId = 'su-other';
+      if (defect === 'wrong-item') w.workItemId = 'WI-other';
+      if (defect === 'missing-filing-clock') r.redFiledAtMs = Number.NaN;
+      if (defect === 'missing-queue-clock') w.queuedAtMs = Number.NaN;
+      if (defect === 'reversed-clock') w.turnStartedAtMs = w.queuedAtMs - 1;
+      if (defect === 'future-pickup') w.turnStartedAtMs = h.observedAtMs + 1;
+      if (defect === 'missing-batch') r.batchSha = null;
+      expect(evaluateSyncRedDeliveryWindow(h).verdict).toBe('unknown');
+    });
+  it.each(['capped', 'unavailable', 'wrong-total', 'empty', 'duplicate', 'future-window'])(
+    'never passes an incomplete %s population', defect => {
+      const h = history();
+      if (defect === 'capped' || defect === 'unavailable') h.status = defect;
+      if (defect === 'wrong-total') h.total = 2;
+      if (defect === 'empty') { h.rows = []; h.total = 0; }
+      if (defect === 'duplicate') { h.rows.push(structuredClone(h.rows[0]!)); h.total = 2; }
+      if (defect === 'future-window') h.windowEndMs = h.observedAtMs + 1;
+      expect(evaluateSyncRedDeliveryWindow(h).verdict).toBe('unknown');
+    });
+  it('retains missing/manual wakes and measured late pickup across the whole population', () => {
+    const h = history();
+    h.rows.push({ ...structuredClone(h.rows[0]!), workItemId: 'WI-missing',
+      filingRef: 'engineer_issues:WI-missing', wakes: [] });
+    h.total = 2;
+    expect(evaluateSyncRedDeliveryWindow(h)).toMatchObject({ verdict: 'unknown',
+      rows: [{ verdict: 'healthy' }, { workItemId: 'WI-missing', verdict: 'unknown' }] });
+    h.rows[0]!.wakes[0]!.turnStartedAtMs = NOW + 900_001;
+    expect(evaluateSyncRedDeliveryWindow(h)).toMatchObject({ verdict: 'broken',
+      rows: [{ verdict: 'broken' }, { verdict: 'unknown' }] });
+  });
+  it('uses earliest proven pickup among retries, never the earliest queue or current activity', () => {
+    const h = history(900_001), row = h.rows[0]!;
+    row.wakes.unshift({ ...row.wakes[0]!, ref: 'event_wake_deliveries:41',
+      queuedAtMs: NOW, deliveredAtMs: null, turnStartedAtMs: null, turnProof: 'awaiting' });
+    expect(evaluateSyncRedDeliveryWindow(h).verdict).toBe('broken');
+    row.wakes.push({ ...row.wakes[1]!, ref: 'event_wake_deliveries:43', turnStartedAtMs: NOW + 899_999 });
+    expect(evaluateSyncRedDeliveryWindow(h)).toMatchObject({ verdict: 'healthy', rows: [{ elapsedMs: 899_999 }] });
+  });
+  it('records the same clocked verdict through the native executor with its input pinned before yielding', async () => {
+    const h = history(900_001);
+    const run = executeSyncRedDeliveryWindow(h, { projectDir: '/r', runtimeUnits: ['original-reader'] });
+    h.rows[0]!.wakes[0]!.turnStartedAtMs = NOW + 1000;
+    expect(await run).toMatchObject({ exitCode: 1, assertions: expect.arrayContaining([
+      { id: 'author-delivery-at-most-15min', passed: false, evidence: expect.stringContaining('verdict=broken') },
+    ]) });
+    expect(captured.operationalRuns.at(-1)?.scope).toMatchObject({ workspaceId: 'ws-1', harnessSlug: 'h' });
+  });
+  it('keeps a recorded not-picked-up outcome broken after 15 minutes', () => {
+    const h = history(), w = h.rows[0]!.wakes[0]!;
+    w.turnProof = 'not-picked-up'; w.turnStartedAtMs = null;
+    expect(evaluateSyncRedDeliveryWindow(h)).toMatchObject({ verdict: 'broken', rows: [{ verdict: 'broken' }] });
+  });
+});
 
 function batch(overrides: Partial<SyncBatch> = {}): SyncBatch {
   return { sha: SHA_C, committedAtMs: NOW - 60_000, agent: 'su-trailer', paths: ['packages/foo/src/a.ts'], ...overrides };

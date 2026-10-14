@@ -33,6 +33,7 @@ import { hiveScopeKey, narrowHarnessSlugsToSessionHive, potSlugsForHarnesses } f
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from '../../memory/workspace-scope-recall';
 import { systemDistinctId } from '../../flag-distinct-id';
 import { toWireRow } from './search';
+import { captureSurfacedOutcome } from '../../memory/surfaced-outcomes';
 
 /**
  * Resolve only the harness and hive pools visible to this session's workspace.
@@ -134,7 +135,8 @@ export default defineTool({
         if (row && isReadableRow(row, user.id, activeWorkspaceId, workspaceScopedRecall, sharedScopes)) results.push(toWireRow(row));
         else missing.push(ids[i]!);
       });
-      return reply({ ok: true, results, missing });
+      const outcomeCapture = await captureSurfacedOutcome(ctx, results.map(row => row.id), 'used');
+      return reply({ ok: true, results, missing, ...(!outcomeCapture.ok ? { outcomeCapture } : {}) });
     } catch (err) {
       // Degraded-never-silent, same contract as memory:list/search: a store problem returns
       // the { ok:false, reason } envelope, never a raw 500 and never a silent empty { ok:true }.

@@ -19,6 +19,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { captureSurfacedOutcome, citedMemoryIds } from '../../memory/surfaced-outcomes';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { lexicalSimilarity } from '@papercusp/memory';
@@ -918,6 +919,10 @@ export default defineTool({
       .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
       .catch(() => { /* best-effort */ });
 
+    const outcomeCapture = await captureSurfacedOutcome(ctx, citedMemoryIds(args.content), 'used');
+    const contradictionCapture = typeof superseded === 'string'
+      ? await captureSurfacedOutcome(ctx, [superseded], 'contradicted') : { ok: true };
+
     // Phase 4 P-015: persist anchors to harness_shared.memory_anchors so
     // Layer 1 (audit-memory-anchors.ts) and the settings-UI broken_anchors
     // enrichment can find them. Fire-and-forget — never load-bearing on
@@ -943,6 +948,7 @@ export default defineTool({
         text: JSON.stringify({
           ok: true,
           ids,
+          ...(!outcomeCapture.ok || !contradictionCapture.ok ? { outcomeCapture: { use: outcomeCapture, contradiction: contradictionCapture } } : {}),
           ...(args.supersede
             ? {
                 superseded: superseded ?? false,

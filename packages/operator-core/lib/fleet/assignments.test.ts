@@ -402,6 +402,29 @@ describe('summarizeOrphan — WI-5975', () => {
     );
   });
 
+  it('a lane-drained work-item:claimable watch does not mask a stalled held claim', () => {
+    const now = Date.parse('2026-07-26T06:30:00.000Z');
+    const health = deriveClaimHealth(
+      heldByLive,
+      {
+        sessionState: 'parked',
+        parkedOn: ['work-item:claimable'],
+        monitorState: 'parked-awaiting-capability',
+      },
+      now,
+    );
+
+    expect(health.status).toBe('suspect');
+    expect(health.reasons).toContain('heartbeat/liveness exists but no fresh authored or productive progress');
+    expect(shouldRecoverClaimFromHealth(health)).toBe(true);
+    expect(health.evidence).toContainEqual(
+      expect.objectContaining({ writer: 'events_await', signal: 'active_event_waits', value: ['work-item:claimable'] }),
+    );
+    expect(health.evidence).not.toContainEqual(
+      expect.objectContaining({ writer: 'events_await', signal: 'exact_dependency_waits' }),
+    );
+  });
+
   it('the oracle OUTRANKS the row heartbeat in both directions', () => {
     // Warm-dead: heartbeat still fresh, oracle says ended ⇒ genuinely reclaimable.
     const warmDead = summarizeOrphan({ ...heldByLive, holderAlive: true }, { sessionState: 'ended' });

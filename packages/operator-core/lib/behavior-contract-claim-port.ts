@@ -77,6 +77,7 @@ export async function getClaimTimeBehaviorContract(
     sourcePlanSlug: workItem.sourcePlanSlug,
     ...(workItem.sourcePlanItemIds ? { sourcePlanItemIds: workItem.sourcePlanItemIds } : {}),
   });
+  if (!contract || contract.enforceable.length === 0) return null;
   const paths = pathsOfPayload(workItem.payload) ?? [];
   const conventionQuery = {
     harness: harness ?? workItem.harness ?? '',
@@ -88,7 +89,6 @@ export async function getClaimTimeBehaviorContract(
   const conventions = conventionQuery.harness
     ? await governingConventions(conventionQuery).catch(() => null)
     : null;
-  if (contract.enforceable.length === 0 && !conventions?.conventions.length && !paths.length) return null;
   const staleEdges = contract.groups.reduce((n, g) => n + g.staleEdges.length, 0);
   const context: ClaimContext = {
     totalClauses: contract.enforceable.length,

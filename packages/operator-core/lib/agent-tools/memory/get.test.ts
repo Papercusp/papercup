@@ -13,6 +13,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+vi.mock('../../memory/surfaced-outcomes', async (original) => ({
+  ...(await original<typeof import('../../memory/surfaced-outcomes')>()),
+  captureSurfacedOutcome: vi.fn(async () => ({ ok: true })),
+}));
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (def: unknown) => def,
@@ -39,6 +43,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 }));
 
 import get from './get';
+import { captureSurfacedOutcome } from '../../memory/surfaced-outcomes';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { getFlag } from '@papercusp/flags/server';
@@ -82,6 +87,13 @@ beforeEach(() => {
 });
 
 describe('memory:get', () => {
+  it('records use only for memories returned to this session, excluding forbidden and missing ids', async () => {
+    backendWith({ mine: entry('mine', 'user-1'), theirs: entry('theirs', 'user-2') });
+    const ctx = { principal: { workspaceId: 'ws-test' }, uiClientId: 'reader', harnessSlug: '*' };
+    await run({ ids: ['mine', 'theirs', 'unknown'] }, ctx);
+    expect(captureSurfacedOutcome).toHaveBeenCalledExactlyOnceWith(ctx, ['mine'], 'used');
+  });
+
   it('reads one id and returns the shared wire row with kind folded into metadata', async () => {
     const getSpy = backendWith({ m1: entry('m1', 'user-1', { metadata: { a: 1 } }) });
     const out = await run({ id: 'm1' });

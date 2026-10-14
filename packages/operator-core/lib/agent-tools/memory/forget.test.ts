@@ -18,6 +18,10 @@ const h = vi.hoisted(() => ({
 vi.mock('../../memory/backend', () => ({
   getMemoryBackend: vi.fn(),
 }));
+vi.mock('../../memory/surfaced-outcomes', async (original) => ({
+  ...(await original<typeof import('../../memory/surfaced-outcomes')>()),
+  captureSurfacedOutcome: vi.fn(async () => ({ ok: true })),
+}));
 vi.mock('../../memory/write-journal', () => ({
   purgeJournalForMemory: h.purgeJournalForMemory,
 }));
@@ -33,6 +37,7 @@ vi.mock('../../memory/invalidate-user-memory-views', () => ({
 }));
 
 import forget from './forget';
+import { captureSurfacedOutcome } from '../../memory/surfaced-outcomes';
 import { getMemoryBackend } from '../../memory/backend';
 
 type FakeBackend = {
@@ -72,6 +77,18 @@ describe('memory:forget handler (bulk keyed-array)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     h.purgeJournalForMemory.mockResolvedValue(0);
+  });
+
+  it('records contradiction only after a successful forget in the caller session', async () => {
+    const b = fakeBackend();
+    b.forget.mockImplementation(async (id: string) => {
+      if (id === 'failed') throw new Error('delete failed');
+    });
+    useBackend(b);
+    const ctx = { uiClientId: 'forgetter' } as Parameters<typeof forget.handler>[1];
+    await forget.handler({ ids: ['deleted', 'failed'] }, ctx);
+    expect(captureSurfacedOutcome).toHaveBeenCalledExactlyOnceWith(ctx, ['deleted'], 'contradicted');
+    expect(b.forget.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(captureSurfacedOutcome).mock.invocationCallOrder[0]);
   });
 
   it('inline { id } deletes one and returns a single result', async () => {

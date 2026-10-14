@@ -6582,7 +6582,8 @@ export function decodeQuotaRecovery(o) {
 }
 
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
- *  a legacy idle-gated turn. Pure — exported for tests. */
+ *  a legacy idle-gated turn; an unsupported explicit envelope is never input.
+ *  Pure — exported for tests. */
 export function decodeControl(payload) {
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
   try {
@@ -6718,6 +6719,14 @@ export function decodeControl(payload) {
           expectedChildGeneration: o.expectedChildGeneration, expectedHostStartedAt: o.expectedHostStartedAt } : {}),
       };
     }
+    // EI-25920487778813638 / review1181823: a newer diagnostic mode sent to
+    // this host must not become a chat turn (or press Enter on an owner draft).
+    // Keep legacy text/ordinary JSON, but fail closed once BOTH wire markers
+    // identify an attempted control envelope, including unsupported versions.
+    if (o && typeof o === 'object' && !Array.isArray(o) &&
+        Object.hasOwn(o, 'v') && Object.hasOwn(o, 'mode')) {
+      return { mode: 'unsupported-control', data: '', gated: false, ...decodeOwnerIdentity(o) };
+    }
   } catch {
     /* not an envelope — fall through to legacy */
   }
@@ -6728,6 +6737,7 @@ export function decodeControl(payload) {
  *  turn: text + CR). Pure — kept for tests / one-shot external callers. NOTE the
  *  host no longer writes a turn in one shot; see controlWrites. */
 export function controlBytes(decoded) {
+  if (decoded.mode === 'unsupported-control') return '';
   return decoded.mode === 'raw' ? decoded.data : `${decoded.data}\r`;
 }
 
@@ -9215,6 +9225,7 @@ export function shouldDeferWakeForPendingRespawn(mode, pendingRespawnCount) {
  *  Claude Code TUI's paste detector (the CR becomes a literal newline and the
  *  turn never submits). Pure — exported for tests. */
 export function controlWrites(decoded, crDelayMs = TURN_SUBMIT_CR_DELAY_MS) {
+  if (decoded.mode === 'unsupported-control') return [];
   // raw (force-interrupt byte) and osc (recolor bytes) are both ONE immediate
   // verbatim write — no idle gate, no submit CR.
   if (decoded.mode === 'raw' || decoded.mode === 'osc') return [{ data: decoded.data, delayMs: 0 }];
@@ -9299,6 +9310,7 @@ export function bracketedPasteFrame(text) {
  *  @param {{ bracketedPaste?: boolean }} [opts]
  */
 export function controlWritesForAgent(decoded, agent, env = process.env, opts = {}) {
+  if (decoded.mode === 'unsupported-control') return [];
   if (decoded.mode === 'raw' || decoded.mode === 'osc') return controlWrites(decoded);
   if (decoded.mode === 'reset') return resetWritesForAgent(decoded, agent, env, opts);
   const normalized = String(agent || '').trim().toLowerCase();
@@ -13513,6 +13525,15 @@ export function hostThroughPty(o) {
           /* diagnostic only */
         }
         return { ok: false, reason: 'ownerId-mismatch' };
+      }
+      // Refuse before coalescing, idle/composer gates or any PTY writes. The
+      // socket NACK and durable event distinguish unsupported control from an
+      // accepted diagnostic; no capability is advertised by this prerequisite.
+      if (msg.mode === 'unsupported-control') {
+        appendHostEvent(ownerId, 'control-payload-rejected', {
+          reason: 'unsupported-control-envelope', bytes: payload.length,
+        });
+        return { ok: false, reason: 'unsupported-control-envelope' };
       }
       // WI-2141435: the guard above calls appendHostEvent ONLY on its reject path, so
       // its silence cannot distinguish "no violations" from "structurally blind to this

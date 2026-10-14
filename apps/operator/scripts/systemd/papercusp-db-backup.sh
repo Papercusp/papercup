@@ -69,6 +69,8 @@ set -uo pipefail
 # host-dump-coverage-defaults.test.ts — change both or that test goes red.
 DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
 BACKUP_SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+# Reuse the installed shared Kopia helper for the hold lease and dump rotation.
+source "$(dirname "$BACKUP_SELF")/kopia-cache-bootstrap.sh"
 BACKUP_REPO_ROOT="$(git -C "$(dirname "$BACKUP_SELF")" rev-parse --show-toplevel 2>/dev/null || true)"
 STATUS="$DUMP/STATUS.json"
 LOG="$DUMP/db-backup.log"
@@ -744,8 +746,16 @@ dump_one() {
     # erroring its snapshot of db-dumps every cycle (found 2026-07-12: errors:4).
     # On FAILURE we still leave the existing "$out" untouched (see the branch
     # above), so last-known-good survives a bad run without any .prev.
-    rm -rf "$out"
-    mv -f "$out.tmp" "$out"
+    if [ "$db" = "$BACKUP_MIGRATION_ADVISORY_DATABASE" ]; then
+      if ! kopia_with_hold_lease "$db" kopia_install_dump_if_held "$out"; then
+        log "$label FAIL — legal-hold rotation lease unavailable; previous dump preserved"
+        rm -f "$dumperr"
+        return 1
+      fi
+    else
+      rm -rf "$out"
+      mv -f "$out.tmp" "$out"
+    fi
     sz=$(du -sb "$out" 2>/dev/null | cut -f1)
     log "$label ok ($(numfmt --to=iec "${sz:-0}" 2>/dev/null || echo "${sz:-0}") , $(pg_restore -l "$out" 2>/dev/null | grep -c '^[0-9]') objects)"
     rm -f "$dumperr"
