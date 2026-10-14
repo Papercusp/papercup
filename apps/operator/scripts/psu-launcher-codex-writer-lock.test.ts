@@ -84,6 +84,14 @@ describe('Codex carry startup identity (EI-24961854655864836)', () => {
       readStartupPid: () => null, readHolder: () => held,
     })).toBeNull();
   });
+
+  it('returns null without reading writer locks when the startup PID is absent', () => {
+    const readHolder = vi.fn(() => held);
+    expect(codexNativeIdForPty('/isolated', 12, {
+      readStartupPid: () => null, readHolder,
+    })).toBeNull();
+    expect(readHolder).not.toHaveBeenCalled();
+  });
 });
 
 /** A verbatim /proc/locks excerpt from the box while the bug was reproducing.
@@ -378,7 +386,10 @@ describe('calibration: a real flock is visible through the real /proc/locks', ()
   it.runIf(haveProcLocks && haveFlock)('finds the pid of a live flock holder', async () => {
     const lockPath = join(dir, 'calibration.lock');
     writeFileSync(lockPath, '');
-    const holder = spawn('flock', ['-x', lockPath, '-c', 'sleep 10'], { stdio: 'ignore' });
+    // Keep the lock and sleep in one PID. Killing flock's default shell child
+    // otherwise leaves its sleep descendant alive in the test runner's scope.
+    const holder = spawn('flock', ['--no-fork', '-x', lockPath, 'sleep', '10'], { stdio: 'ignore' });
+    const exited = new Promise<void>((resolve) => holder.once('exit', () => resolve()));
     try {
       const st = statSync(lockPath);
       const { major, minor } = devMajorMinor(st.dev);
@@ -404,6 +415,7 @@ describe('calibration: a real flock is visible through the real /proc/locks', ()
         if (localHolder === null) await new Promise((r) => setTimeout(r, 20));
       }
       expect(localHolder).toBe(pid);
+      expect(readFileSync(`/proc/${holder.pid}/task/${holder.pid}/children`, 'utf8').trim()).toBe('');
 
       // NEGATIVE CONTROL, same instrument: an inode nobody locked must read as free.
       // Without this, a parser that returned the first WRITE row it saw would pass above.
@@ -418,6 +430,7 @@ describe('calibration: a real flock is visible through the real /proc/locks', ()
       ).toBeNull();
     } finally {
       holder.kill('SIGKILL');
+      await exited;
     }
   });
 });
