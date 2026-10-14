@@ -41,9 +41,43 @@ function sourceBlock(source: string, time: string): string[] {
   ];
 }
 
-function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, unknown> = {}) {
+interface UnitCgroupFixture {
+  unit: string;
+  /** cgroup.procs content, one pid per line. */
+  procs: string;
+  /** Successive `systemctl show -p SubState` answers; the last one repeats. */
+  subStates: string[];
+}
+
+function runHealthcheck(
+  dumpSnapshotAgeSeconds: number,
+  status: Record<string, unknown> = {},
+  unitCgroup?: UnitCgroupFixture,
+) {
   const root = mkdtempSync(join(tmpdir(), 'kopia-healthcheck-source-age-'));
   tempDirs.push(root);
+  // Every run gets its OWN unit-cgroup root (absent unless a fixture is given), so no
+  // case ever reads the host's real kopia unit cgroups (WI-6554700010011924).
+  const unitCgroupRoot = join(root, 'unit-cgroups');
+  const fakeSystemctl = join(root, 'systemctl-stub.sh');
+  const subStateCounter = join(root, 'substate-count');
+  if (unitCgroup) {
+    const cg = join(unitCgroupRoot, 'app.slice', unitCgroup.unit);
+    mkdirSync(cg, { recursive: true });
+    writeFileSync(join(cg, 'cgroup.procs'), unitCgroup.procs);
+  }
+  writeFileSync(
+    fakeSystemctl,
+    [
+      '#!/usr/bin/env bash',
+      'n=$(cat "$TEST_SUBSTATE_COUNTER" 2>/dev/null || echo 0)',
+      'IFS=, read -ra states <<< "$TEST_SUBSTATES"',
+      'i=$(( n < ${#states[@]} ? n : ${#states[@]} - 1 ))',
+      'echo $((n + 1)) > "$TEST_SUBSTATE_COUNTER"',
+      'printf "%s\\n" "${states[$i]}"',
+    ].join('\n') + '\n',
+  );
+  chmodSync(fakeSystemctl, 0o755);
 
   const home = join(root, 'home');
   const dumpDir = join(root, 'db-dumps');
@@ -127,10 +161,15 @@ function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, u
       BACKUP_ALERT_CMD: alertStub,
       TEST_ALERT_LOG: alertLog,
       MAX_SNAP_AGE_S: '3600',
+      KOPIA_UNIT_CGROUP_ROOT: unitCgroupRoot,
+      KOPIA_HEALTHCHECK_SYSTEMCTL: fakeSystemctl,
+      TEST_SUBSTATES: (unitCgroup?.subStates ?? ['dead']).join(','),
+      TEST_SUBSTATE_COUNTER: subStateCounter,
     },
   });
 
   return {
+    systemctlCalls: existsSync(subStateCounter) ? Number(readFileSync(subStateCounter, 'utf8').trim()) : 0,
     result,
     log: readFileSync(join(logDir, 'healthcheck.log'), 'utf8'),
     alertLog: existsSync(alertLog) ? readFileSync(alertLog, 'utf8') : '',
@@ -197,5 +236,70 @@ describe('Kopia healthcheck dump duty cycle (WI-10004603)', () => {
     expect(run.result.status, evidence).toBe(1);
     expect(evidence).toContain('Postgres dump source snapshot is STALE');
     expect(evidence).not.toContain('near-continuous');
+  });
+});
+
+describe('Kopia healthcheck: a process that outlived its stopped unit (WI-6554700010011924)', () => {
+  // Measured 2026-10-14 04:53Z: ExecStopPost timed out, systemd logged "Unit process
+  // ... remains running after unit stopped", and the unit sat in auto-restart for 30 min
+  // with a root process still in its cgroup. Nothing paged.
+  it('fails when a stopped kopia unit still holds a process in its cgroup', () => {
+    const run = runHealthcheck(10 * 60, {}, {
+      unit: 'kopia-home-snapshot.service',
+      procs: '3691914\n473367\n',
+      subStates: ['auto-restart'],
+    });
+    const evidence = [run.result.stdout, run.result.stderr, run.log].join('\n');
+
+    expect(run.result.status, evidence).toBe(1);
+    expect(evidence).toContain('outlived their stopped unit');
+    expect(evidence).toContain('kopia-home-snapshot.service is stopped but its cgroup still holds pid(s) 3691914 473367');
+    expect(run.log).not.toContain('OK: dump ');
+  });
+
+  it('stays green while the unit is legitimately running', () => {
+    const run = runHealthcheck(10 * 60, {}, {
+      unit: 'kopia-snapshots.service',
+      procs: '4242\n',
+      subStates: ['running'],
+    });
+
+    expect(run.result.status, [run.result.stdout, run.result.stderr, run.log].join('\n')).toBe(0);
+    expect(run.log).toContain('OK: dump ');
+  });
+
+  it('does not flag a unit that starts between the two SubState reads', () => {
+    const run = runHealthcheck(10 * 60, {}, {
+      unit: 'kopia-home-snapshot.service',
+      procs: '5151\n',
+      subStates: ['auto-restart', 'start-pre'],
+    });
+
+    expect(run.result.status, [run.result.stdout, run.result.stderr, run.log].join('\n')).toBe(0);
+    expect(run.systemctlCalls).toBe(2);
+  });
+
+  it('asks systemd nothing when the unit cgroup is empty', () => {
+    const run = runHealthcheck(10 * 60, {}, {
+      unit: 'kopia-home-snapshot.service',
+      procs: '',
+      subStates: ['failed'],
+    });
+
+    expect(run.result.status, [run.result.stdout, run.result.stderr, run.log].join('\n')).toBe(0);
+    expect(run.systemctlCalls).toBe(0);
+  });
+
+  it('does not let the leftover check hide a stale dump source (it runs last)', () => {
+    const run = runHealthcheck(3 * 60 * 60, {}, {
+      unit: 'kopia-home-snapshot.service',
+      procs: '3691914\n',
+      subStates: ['auto-restart'],
+    });
+    const evidence = [run.result.stdout, run.result.stderr, run.log].join('\n');
+
+    expect(run.result.status, evidence).toBe(1);
+    expect(evidence).toContain('Postgres dump source snapshot is STALE');
+    expect(evidence).not.toContain('outlived their stopped unit');
   });
 });

@@ -266,7 +266,10 @@ if [ "${1:-}" = "--self-test" ]; then
     # default to the real $HOME/.papercusp/backup-health (polluting live host state)
     # AND the new dedup window would make check N's page suppress check N+1's.
     rm -rf "$tmp/state"; mkdir -p "$tmp/state"
-    env BACKUP_ALERT_CMD="$stub" HEALTHCHECK_STATE_DIR="$tmp/state" "$@" bash "$self" >/dev/null 2>&1
+    # KOPIA_UNIT_CGROUP_ROOT: never read the host's real unit cgroups from a self-test
+    # (a live leftover there would flip an unrelated case; WI-6554700010011924).
+    env BACKUP_ALERT_CMD="$stub" HEALTHCHECK_STATE_DIR="$tmp/state" \
+        KOPIA_UNIT_CGROUP_ROOT="$tmp/no-unit-cgroups" "$@" bash "$self" >/dev/null 2>&1
     local got_exit=$?
     local got_paged=no; [ -s "$tmp/paged" ] && got_paged=yes
     if [ "$got_exit" = "$want_exit" ] && [ "$got_paged" = "$want_paged" ]; then
@@ -687,6 +690,43 @@ if [ -f "$STATUS" ] && grep -q '"periodSec"' "$STATUS" 2>/dev/null; then
   if [ -n "${run_s:-}" ] && [ "$run_s" -gt "$MAX_DUMP_RUN_S" ] 2>/dev/null; then
     fail "Postgres dump run is near-continuous: the last run took $(dur "$run_s") (limit $(dur "$MAX_DUMP_RUN_S")) of its hourly timer period. Once a run outlasts the hour, the next start is a no-op and the backup never rests. Read the per-tier times in db-backup.log; lever: PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC in papercusp-db-backup.sh (WI-10004603)."
   fi
+fi
+
+# ── 3. A KOPIA PROCESS THAT OUTLIVED ITS STOPPED UNIT (WI-6554700010011924) ──
+# The user manager cannot kill the root-owned sudo/Kopia children of these units
+# ("Failed to kill control group ... Operation not permitted"). When a stop, or its
+# ExecStopPost cleanup, times out under load, the walk keeps running in the unit's
+# cgroup after the unit has stopped: OUTSIDE kopia-global.lock, until the next start's
+# ExecStartPre reaps it (up to RestartSec=30min later). Measured 2026-10-13 (three
+# concurrent walks, WI-6554700010011790) and again 2026-10-14 04:53Z, where systemd
+# logged only "Unit process ... remains running after unit stopped".
+# Signal: SubState says nothing should run, yet the unit's cgroup still has processes.
+# SubState is read BEFORE and AFTER the cgroup read, so a unit that starts mid-check
+# is never mistaken for a leftover. cgroupfs files always report size 0, so the
+# content is read, never tested with -s. LAST on purpose, like the duty check.
+UNIT_CGROUP_ROOT="${KOPIA_UNIT_CGROUP_ROOT:-/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service}"
+SYSTEMCTL_BIN="${KOPIA_HEALTHCHECK_SYSTEMCTL:-/usr/bin/systemctl}"
+unit_stopped() { # true when the unit's SubState means "no process should be running"
+  case "$("$SYSTEMCTL_BIN" --user show -p SubState --value "$1" 2>/dev/null)" in
+    dead|failed|auto-restart|auto-restart-queued) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+unit_procs() { tr '\n' ' ' < "$1/cgroup.procs" 2>/dev/null | sed 's/ *$//'; }
+leftover=""
+if [ -d "$UNIT_CGROUP_ROOT" ]; then
+  for unit in kopia-home-snapshot.service kopia-snapshots.service; do
+    cg=$(find "$UNIT_CGROUP_ROOT" -maxdepth 3 -type d -name "$unit" 2>/dev/null | head -1)
+    [ -n "$cg" ] || continue
+    [ -n "$(unit_procs "$cg")" ] || continue   # empty cgroup: no systemctl round trip
+    unit_stopped "$unit" || continue
+    procs=$(unit_procs "$cg")
+    [ -n "$procs" ] && unit_stopped "$unit" || continue
+    leftover="${leftover:+$leftover; }$unit is stopped but its cgroup still holds pid(s) $procs"
+  done
+fi
+if [ -n "$leftover" ]; then
+  fail "Kopia process(es) outlived their stopped unit: $leftover. They run outside kopia-global.lock until the unit's next start reaps them (ExecStartPre --cleanup). Inspect with: sudo ps -o pid,etimes,args -p <pid>. See WI-6554700010011924."
 fi
 
 echo "[$(date -Iseconds)] OK: dump $(( age / 60 ))m old, snapshot $(( snap_age / 60 ))m old" >> "$LOG"
