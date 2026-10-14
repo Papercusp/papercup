@@ -16383,11 +16383,13 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
     const movingTip = await commit("c", "3", "current staging tip");
+    const roundAtMs = Date.now() - 15 * 60 * 1_000;
     let queue: FrozenCandidateRepairQueue | null = {
       ...unassignedQueue(frozen, ready),
       attempts: 0,
       openedAtMs: Date.now() - 16 * 60 * 1_000,
       updatedAtMs: Date.now() - 15 * 60 * 1_000,
+      convergenceRounds: [{ round: 1, head: frozen, failingCount: 1, atMs: roundAtMs }],
     };
     const { deps, calls } = stubDeps(true);
     deps.readFrozenRepairQueue = async () => queue;
@@ -16433,6 +16435,9 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
       reason: "repair-in-progress",
     });
     expect(result.candidate).not.toBe(movingTip);
+    expect(dispositions[0]?.repairProgress?.rounds).toEqual([
+      { round: 1, head: frozen, atMs: roundAtMs },
+    ]);
     expect(result.summary).toContain("held");
     expect(result.summary).toContain("op: 'admit'");
     expect(calls.filter((c) => c === "escalate")).toHaveLength(1);

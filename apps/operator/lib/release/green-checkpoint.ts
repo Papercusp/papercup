@@ -231,9 +231,10 @@ import {
   type FrozenRepairFullGateTrigger,
   type FrozenRepairRoundExecution,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
-import type {
-  FreezeAndConvergeDisposition,
-  TickFreezeObservation,
+import {
+  deriveTickFreezeDisposition,
+  type FreezeAndConvergeDisposition,
+  type TickFreezeObservation,
 } from "@papercusp/operator-core/lib/release/freeze-disposition";
 import {
   describeIntegrationRoot,
@@ -12698,6 +12699,7 @@ async function runGreenCheckpointInner(
         `release:repair-queue { op: 'admit', paths: [...] } to resume verification`;
       deps.log(summary);
       await deps.recordFreezeDisposition?.({
+        ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue }),
         enabled: true,
         state: "held",
         reason: summary,
@@ -12762,6 +12764,7 @@ async function runGreenCheckpointInner(
           // P-004: a retire CLEARS the queue, so this is precisely the disposition no
           // `repairQueue` reader can ever see. Record it before the run moves on.
           await deps.recordFreezeDisposition?.({
+            ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue: abandonedQueue }),
             enabled: true,
             state: "retired",
             reason:
@@ -12806,6 +12809,7 @@ async function runGreenCheckpointInner(
           );
           // P-004: the hold is now a READ, not a log line.
           await deps.recordFreezeDisposition?.({
+            ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue }),
             enabled: true,
             state: "held",
             reason: summary,
@@ -12889,6 +12893,7 @@ async function runGreenCheckpointInner(
             `release:repair-queue { op: 'admit', paths: [...] } to resume verification`;
           deps.log(summary);
           await deps.recordFreezeDisposition?.({
+            ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue }),
             enabled: true,
             state: "held",
             reason: summary,
@@ -19654,18 +19659,9 @@ export async function runPostSuiteLegs(
 
 /**
  * EI-22062873162576188: choose the account rows a release-fixer dispatch will ACTUALLY
- * authenticate as, out of the provider pool `accountStatus()` reports.
- *
- * WI-606293 added the capacity preflight but measured the POOL, and the dispatch does not
- * use the pool. A blueprint-launched fixer sets neither PAPERCUSP_CODEX_GATEWAY nor
- * PAPERCUSP_ACCOUNT_ID (launch-blueprint.ts carries no account plumbing), and
- * writeSignedSpawnCodexHome then symlinks ~/.codex/auth.json into the per-spawn
- * CODEX_HOME (orchestrator/spawn-mcp.ts) — so it egresses DIRECTLY on the local CLI
- * credential and never reaches a gateway pool account.
- *
- * Consequence measured 2026-09-02: one of seven codex rows had headroom, the preflight
- * passed on THAT row, and three consecutive dispatches died at turn 1 on the walled local
- * credential — each burning a frozen-repair-queue attempt on a guaranteed failure.
+ * authenticate as, out of the provider pool `accountStatus()` reports. The red-event
+ * dispatcher explicitly sends account:'auto', so its child is gateway-routed even when
+ * this checkpoint runner's own environment has no gateway markers.
  *
  * Narrowing is by `credentialRef`, which is measured rather than assumed. When it does not
  * resolve we deliberately fall back to the whole pool: an unknown must keep failing OPEN
@@ -20361,31 +20357,14 @@ export function realCheckpointDeps(
           summary: `no ${provider} accounts in the pool to measure; not withholding on an unknown`,
         };
       }
-      // EI-22062873162576188: WI-606293 measured the POOL, but the DISPATCH does not use
-      // the pool, and they are not the same population. A blueprint-launched fixer sets
-      // neither PAPERCUSP_CODEX_GATEWAY nor PAPERCUSP_ACCOUNT_ID (launch-blueprint.ts has
-      // no account plumbing at all), and writeSignedSpawnCodexHome then symlinks
-      // ~/.codex/auth.json into the per-spawn CODEX_HOME (orchestrator/spawn-mcp.ts), so
-      // the agent egresses DIRECTLY on the LOCAL CLI credential and never reaches a
-      // gateway pool account. "Some pool account has headroom" is therefore not evidence
-      // that THIS fixer can run.
-      //
-      // Measured 2026-09-02: exactly one of seven codex rows (aviynw5_codex) had headroom,
-      // this preflight passed on it, and three consecutive dispatches died at turn 1 on
-      // the walled LOCAL credential ("You've hit your usage limit ... Sep 8th") — each one
-      // burning a frozen-repair-queue attempt on a guaranteed failure, which is the exact
-      // waste WI-606293 added this preflight to prevent.
-      //
-      // So narrow to the row the fixer will actually authenticate as whenever we can
-      // identify it. Identification is by credentialRef, which is measured, not assumed;
-      // when it does not resolve we fall back to the pool, because an unknown must keep
-      // failing OPEN rather than withhold (same rule as the stale-reading branch below).
+      // release-actions.ts passes account:'auto' to the durable launcher. The child route
+      // is therefore the gateway pool; the ambient environment here belongs to the gate
+      // runner and cannot identify the child's credential. Measure the same pool the child
+      // can use, rather than incorrectly withholding on the runner's local ~/.codex login.
       const { measured, scope } = selectFixerCapacityRows({
         rows,
         provider,
-        gatewayRouted:
-          !!process.env.PAPERCUSP_CODEX_GATEWAY ||
-          !!process.env.PAPERCUSP_ACCOUNT_ID?.trim(),
+        gatewayRouted: true,
         localCodexHome:
           process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex"),
       });
