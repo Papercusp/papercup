@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { openWriterPidsMany, type OpenWriterScan } from '../native-bg-task-ledger';
 import { readRegistry } from '../workspace-registry';
+import { mapWithConcurrency } from '../gym/concurrency';
 import { sampleDiskSnapshots, type DiskSnapshot } from './disk-space-alarm';
 import {
   RETENTION_POLICY, compilePolicy, containsClassRoot, deletionClassFor,
@@ -41,12 +42,13 @@ export interface DiskReclaimReceipt {
   entries: Array<{ path: string; classId: string; status: 'removed' | 'would-remove' | 'protected' | 'changed' | 'failed'; bytes: number; reason?: string }>;
   delegates: Array<{ classId: string; ok: boolean; detail: unknown }>;
   errors: string[];
-  scan?: { inspectedNodes: number; retainedRecentTrees: number; stoppedAtRoot: string | null };
+  scan?: { inspectedNodes: number; retainedRecentTrees: number; stoppedAtRoot: string | null; incompleteRoots?: string[] };
 }
 export interface DiskReclaimOptions {
   dryRun?: boolean; home?: string; policy?: readonly RetentionClass[];
   /** Dependency seams also permit an isolated fixture tree; production uses the policy roots. */
   roots?: Array<{ path: string; classId: string }>;
+  /** Inspection bounds apply independently to each policy root; an incomplete root cannot starve another. */
   nowMs?: number; maxEntries?: number; budgetMs?: number;
   sample?: () => Promise<DiskSnapshot[]>;
   scanHolders?: (paths: readonly string[]) => Promise<OpenWriterScan>;
@@ -262,49 +264,51 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       // A registered workspace's tool run dirs belong exclusively to scratch-gc.
       const workspaceIds = (options.registeredWorkspaces ?? (() => readRegistry().workspaces.map((x) => x.id)))();
       const protectedPaths = (options.protectedPaths ?? []).map((path) => resolve(path));
-      const progress = receipt.scan = { inspectedNodes: 0, retainedRecentTrees: 0, stoppedAtRoot: null as string | null };
-      const budget = { left: options.maxEntries ?? 100_000, deadline: Date.now() + (options.budgetMs ?? 60_000), progress };
-      const budgetExpired = () => budget.left <= 0 || Date.now() >= budget.deadline;
-      // This budget bounds tree inspection. Holder scans retain their own
-      // native deadline; audit and deletion waits must not spend the next
-      // root's inspection allowance after a class has been fully enumerated.
-      const outsideInspectionBudget = async <T>(operation: () => Promise<T>): Promise<T> => {
-        const pausedAt = Date.now();
-        try { return await operation(); }
-        finally { budget.deadline += Math.max(0, Date.now() - pausedAt); }
-      };
-      let budgetStopped = false;
-      const stopAtBudget = (root: string) => {
-        if (!budgetStopped) receipt.errors.push('incomplete tree scan: retention scan budget exhausted');
-        progress.stoppedAtRoot ??= root;
-        budgetStopped = true;
-      };
+      const progress = receipt.scan = { inspectedNodes: 0, retainedRecentTrees: 0, stoppedAtRoot: null as string | null, incompleteRoots: [] as string[] };
       for (const root of roots) {
-        if (budgetExpired()) { stopAtBudget(root.path); break; }
-        const entries: RetentionEntry[] = [];
+        const budget = { left: options.maxEntries ?? 100_000, deadline: Date.now() + (options.budgetMs ?? 60_000), progress };
+        const budgetExpired = () => budget.left <= 0 || Date.now() >= budget.deadline;
+        // Each root gets the same inspection allowance. Holder scans retain
+        // their own native deadline; effect waits do not spend that allowance.
+        const outsideInspectionBudget = async <T>(operation: () => Promise<T>): Promise<T> => {
+          const pausedAt = Date.now();
+          try { return await operation(); }
+          finally { budget.deadline += Math.max(0, Date.now() - pausedAt); }
+        };
+        let budgetStopped = false;
+        const stopAtBudget = (root: string) => {
+          if (!progress.incompleteRoots.length) receipt.errors.push('incomplete tree scan: retention scan budget exhausted');
+          progress.stoppedAtRoot ??= root;
+          if (!progress.incompleteRoots.includes(root)) progress.incompleteRoots.push(root);
+          budgetStopped = true;
+        };
+        if (budgetExpired()) { stopAtBudget(root.path); continue; }
+        let entries: RetentionEntry[] = [];
         const keep = policy.classes.get(root.classId)?.keep;
         const retainAfterMs = keep?.kind === 'max-age' ? started - keep.maxAgeHours * HOUR : undefined;
         try {
-          for (const name of await readdir(root.path)) {
-            if (budgetExpired()) { stopAtBudget(root.path); break; }
+          const inspected = await mapWithConcurrency(await readdir(root.path), 16, async (name) => {
+            if (budgetStopped) return null;
+            if (budgetExpired()) { stopAtBudget(root.path); return null; }
             const path = join(root.path, name);
-            if (root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) continue;
-            if (protectedPaths.some((protectedPath) => overlap(path, protectedPath))) continue;
+            if (root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) return null;
+            if (protectedPaths.some((protectedPath) => overlap(path, protectedPath))) return null;
             // Refuse nested policy roots before walking (e.g. a scratch PG data dir).
-            if (!deletionClassFor(path, policy) || containsClassRoot(path, policy)) continue;
+            if (!deletionClassFor(path, policy) || containsClassRoot(path, policy)) return null;
             try {
-              const entry = await inspectEntry(path, root.path, root.classId, budget, retainAfterMs);
-              if (entry) entries.push(entry);
+              return await inspectEntry(path, root.path, root.classId, budget, retainAfterMs);
             }
             catch (err) {
-              if (budgetExpired()) { stopAtBudget(root.path); break; }
+              if (budgetExpired()) { stopAtBudget(root.path); return null; }
               receipt.errors.push(`inspect:${path}: ${message(err)}`);
+              return null;
             }
-          }
+          });
+          entries = inspected.filter((entry): entry is RetentionEntry => entry !== null);
         } catch (err) { if (!absent(err)) receipt.errors.push(`list:${root.path}: ${message(err)}`); }
         // An incomplete class census cannot establish oldest-first selection.
         // Leave its entries untouched and retain the independent owner delegates.
-        if (budgetStopped) break;
+        if (budgetStopped) continue;
         const selected = selectRetentionEntries(entries, policy, started);
         if (!selected.length) continue;
         const holders = await outsideInspectionBudget(() => scan(selected.map((e) => e.path)));

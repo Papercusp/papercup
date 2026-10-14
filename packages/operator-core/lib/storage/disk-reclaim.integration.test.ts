@@ -15,6 +15,16 @@ import { nativeRetentionCommand, readReclaimReceipt, runDiskReclaimOnce, writeRe
 import { type RetentionClass } from './retention-policy';
 import { createFreshPgDb, applyEventSubstrateMigrationsForTest, COORD_SUBSCRIPTION_SUBSTRATE } from '../../test/_pg-helpers';
 
+const inspectionProbe = vi.hoisted(() => ({ before: undefined as ((path: string) => (() => void) | undefined) | undefined }));
+vi.mock('node:fs/promises', async (original) => {
+  const actual = await original<typeof import('node:fs/promises')>();
+  return { ...actual, lstat: async (...args: Parameters<typeof actual.lstat>) => {
+    const done = inspectionProbe.before?.(String(args[0]));
+    try { return await actual.lstat(...args); }
+    finally { done?.(); }
+  } };
+});
+
 const nativeDb = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined }));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...await original<typeof import('@papercusp/db-org')>(),
@@ -48,7 +58,7 @@ vi.mock('../../../../scripts/lib/fs-mutex.mjs', async (original) => {
 });
 
 let fixture: string | undefined;
-afterEach(async () => { if (fixture) await rm(fixture, { recursive: true, force: true }); fixture = undefined; });
+afterEach(async () => { inspectionProbe.before = undefined; if (fixture) await rm(fixture, { recursive: true, force: true }); fixture = undefined; });
 
 async function setup() {
   fixture = await mkdtemp(join(tmpdir(), 'disk-retention-'));
@@ -175,6 +185,40 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.errors).toEqual([]); expect(receipt.complete).toBe(true);
     expect(receipt.entries).toEqual([expect.objectContaining({ path, status: 'removed' })]);
     await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it('bounds concurrent entry inspection while retaining the exact oldest-first effects', async () => {
+    const { root, options } = await setup();
+    const paths = Array.from({ length: 32 }, (_, i) => join(root, `old-${i}`));
+    await Promise.all(paths.map((path) => writeFile(path, 'expired')));
+    let active = 0, peak = 0;
+    inspectionProbe.before = (path) => {
+      if (!path.startsWith(root + '/')) return;
+      peak = Math.max(peak, ++active);
+      return () => { active--; };
+    };
+    const receipt = await runDiskReclaimOnce({ ...options, dryRun: true });
+    expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+    expect(peak).toBeGreaterThan(1); expect(peak).toBeLessThanOrEqual(16); expect(active).toBe(0);
+    expect(receipt.entries.map((entry) => entry.path).sort()).toEqual([...paths].sort());
+    expect(receipt.entries.every((entry) => entry.status === 'would-remove')).toBe(true);
+    for (const path of paths) expect(await stat(path)).toBeTruthy();
+  });
+  it('keeps an incomplete root intact and still reclaims an independent complete root', async () => {
+    const { root, options } = await setup();
+    const firstPaths = Array.from({ length: 32 }, (_, i) => join(root, `old-${i}`));
+    await Promise.all(firstPaths.map((path) => writeFile(path, 'expired')));
+    const secondRoot = join(fixture!, 'second-root'); await mkdir(secondRoot);
+    const secondPath = join(secondRoot, 'old'); await writeFile(secondPath, 'expired');
+    const receipt = await runDiskReclaimOnce({ ...options, maxEntries: 3,
+      policy: [...options.policy, { ...options.policy[0]!, id: 'second', roots: [secondRoot] }],
+      roots: [...options.roots, { path: secondRoot, classId: 'second' }],
+    });
+    expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
+    expect(receipt.errors).toEqual(['incomplete tree scan: retention scan budget exhausted']);
+    expect(receipt.scan?.incompleteRoots).toEqual([root]);
+    expect(receipt.entries).toEqual([expect.objectContaining({ path: secondPath, status: 'removed' })]);
+    await expect(stat(secondPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    for (const path of firstPaths) expect(await stat(path)).toBeTruthy();
   });
   it('enforces expiry when both disks already exceed the 100 GiB target (D-005)', async () => {
     const { root, options } = await setup(); const path = join(root, 'expired'); await writeFile(path, 'expired');
