@@ -15,6 +15,7 @@ import type { ToolResult } from '@papercusp/tooldef';
 import { resolveAgentIdentity } from '../coordination/identity';
 import type { IdleRecipientReport } from '../coordination/inbox-wake';
 import { COORD_REPLY_ROLES } from '../coordination/roles';
+import { lookupEndedSessions } from '../coordination/dead-session-recipient-guidance';
 import { hardText } from '../limits';
 import { consultPostAbortCompletionReceipt } from './abort-completion';
 import { DECISION_REVIEW_POSITIONS, OBJECTION_BASES, OWNER_AUTHORITY_TOPICS } from '../../consult/decision-review';
@@ -23,10 +24,23 @@ const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
 /** A follow-up may reroute only on a complete, positive ended-session verdict. */
 export function isConfirmedDeadConsultResponder(
-  report: Pick<IdleRecipientReport, 'confirmedDead' | 'degraded'> | null | undefined,
+  report:
+    | (Pick<IdleRecipientReport, 'confirmedDead' | 'degraded'> &
+        Partial<Pick<IdleRecipientReport, 'live' | 'aliveNotWakeable' | 'dormantScheduled'>>)
+    | null
+    | undefined,
   responder: string,
+  endedSessions?: ReadonlyMap<string, string | null>,
 ): boolean {
-  return report?.degraded !== true && report?.confirmedDead?.includes(responder) === true;
+  const currentlyActionable =
+    report?.live?.includes(responder) === true ||
+    report?.aliveNotWakeable?.includes(responder) === true ||
+    report?.dormantScheduled?.some(({ ownerId }) => ownerId === responder) === true;
+  if (currentlyActionable) return false;
+  return (
+    endedSessions?.has(responder) === true ||
+    (report?.degraded !== true && report?.confirmedDead?.includes(responder) === true)
+  );
 }
 
 /**
@@ -159,12 +173,19 @@ export default defineTool({
             wake: true,
           });
           if (r.woke !== 0) return { woke: r.woke };
-          const report = await reportIdleRecipients([opts.responder], {
-            workspaceId: identity.workspaceId ?? undefined,
-          });
+          const [report, endedSessions] = await Promise.all([
+            reportIdleRecipients([opts.responder], {
+              workspaceId: identity.workspaceId ?? undefined,
+            }),
+            // coord:send's `unknown_recipient` diagnosis uses this same
+            // adv_sessions.ended_at evidence. The liveness report can remain
+            // inconclusive when that exact ended fork is absent from the live
+            // roster, so preserve the terminal record as an independent signal.
+            lookupEndedSessions([opts.responder], identity.workspaceId),
+          ]);
           return {
             woke: r.woke,
-            confirmedDead: isConfirmedDeadConsultResponder(report, opts.responder),
+            confirmedDead: isConfirmedDeadConsultResponder(report, opts.responder, endedSessions),
           };
         },
         // D-011 seam 2 of 2: a cascade advance addresses an expert who is NOT

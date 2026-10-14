@@ -1062,6 +1062,7 @@ describe('evaluateScorecardInstrumentContract (rubric/instrument contract)', () 
     });
     expect(missing.valid).toBe(false);
     expect(missing.missingSnapshots).toEqual(['metrics.cycle']);
+    expect(missing.positiveClaimsWithoutSnapshots).toEqual(['metrics.cycle']);
 
     const bad = evaluateScorecardInstrumentContract({
       rubric: rubric(),
@@ -1076,6 +1077,24 @@ describe('evaluateScorecardInstrumentContract (rubric/instrument contract)', () 
     expect(bad.staleSnapshots).toEqual(['metrics.cycle']);
     expect(bad.extraSnapshots).toEqual(['extra']);
     expect(bad.verdictMismatches).toEqual(['metrics.cycle']);
+  });
+
+  it('identifies unsupported positive ratings on non-release-gating instrument bindings', () => {
+    const nonRelease = rubric({ releaseGating: false });
+    const positive = evaluateScorecardInstrumentContract({
+      rubric: nonRelease,
+      ratings: { cycle: { rating: 'healthy', evidence: 'The report looks healthy.' } },
+      nowMs: Date.parse('2026-07-15T00:01:00Z'),
+    });
+    expect(positive.valid).toBe(false);
+    expect(positive.positiveClaimsWithoutSnapshots).toEqual(['metrics.cycle']);
+
+    const negative = evaluateScorecardInstrumentContract({
+      rubric: nonRelease,
+      ratings: { cycle: { rating: 'fail', evidence: 'The report shows a failure.' } },
+      nowMs: Date.parse('2026-07-15T00:01:00Z'),
+    });
+    expect(negative.positiveClaimsWithoutSnapshots).toEqual([]);
   });
 
   it('pins post-watermark snapshots to the declared watermark', () => {

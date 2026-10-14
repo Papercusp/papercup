@@ -15,6 +15,48 @@ describe('consult follow-up confirmed-dead classifier', () => {
     expect(isConfirmedDeadConsultResponder({ degraded: false, idle: ['responder-1'] } as never, 'responder-1')).toBe(false);
     expect(isConfirmedDeadConsultResponder({ degraded: true, confirmedDead: ['responder-1'] }, 'responder-1')).toBe(false);
   });
+
+  it('uses an exact ended-session record when the wake liveness report cannot confirm death', () => {
+    const ended = new Map<string, string | null>([['responder-1', '2026-10-12T20:49:14.671778-04:00']]);
+    expect(
+      isConfirmedDeadConsultResponder(
+        { degraded: false, confirmedDead: [], live: [], aliveNotWakeable: [], dormantScheduled: [] },
+        'responder-1',
+        ended,
+      ),
+    ).toBe(true);
+    expect(
+      isConfirmedDeadConsultResponder(
+        { degraded: false, confirmedDead: [], live: [], aliveNotWakeable: [], dormantScheduled: [] },
+        'responder-2',
+        ended,
+      ),
+    ).toBe(false);
+  });
+
+  it('does not let an ended-session record override current liveness evidence', () => {
+    const ended = new Map<string, string | null>([['responder-1', '2026-10-12T20:49:14.671778-04:00']]);
+    expect(
+      isConfirmedDeadConsultResponder(
+        { degraded: false, confirmedDead: [], live: ['responder-1'], aliveNotWakeable: [], dormantScheduled: [] },
+        'responder-1',
+        ended,
+      ),
+    ).toBe(false);
+    expect(
+      isConfirmedDeadConsultResponder(
+        {
+          degraded: false,
+          confirmedDead: [],
+          live: [],
+          aliveNotWakeable: [],
+          dormantScheduled: [{ ownerId: 'responder-1' } as never],
+        },
+        'responder-1',
+        ended,
+      ),
+    ).toBe(false);
+  });
 });
 
 // consult-backed-parking-2026-10-12 P-004 — bars R-4 (stance required on a

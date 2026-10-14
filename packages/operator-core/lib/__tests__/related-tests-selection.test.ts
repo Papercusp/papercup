@@ -68,6 +68,79 @@ describe('original gate selection preparation', () => {
     expect(enumerateAffectedTaskSelection([task()], options([])).coverage).toBe('partial');
   });
 
+  it('follows local aliases, preserves lifecycle commands and refuses missing or cyclic aliases', () => {
+    const base = task();
+    base.ws.scripts = { test: 'npm run test:unit', 'test:unit': 'vitest run', pretest: 'node build.mjs' };
+    const result = enumerateAffectedTaskSelection([base], options([resolved(['a.test.ts'])]));
+    expect(result.tasks[0].command).toBe('npm run test:unit');
+    expect(result.tasks[0].resolvedCommand).toBe('vitest run');
+    expect(result.tasks[0].lifecycleCommands).toEqual([{ script: 'pretest', command: 'node build.mjs' }]);
+    for (const scripts of [{ test: 'npm run missing' }, { test: 'npm run again', again: 'npm run test' }]) {
+      expect(enumerateAffectedTaskSelection([{ ...base, ws: { ...base.ws, scripts } }], options([])).coverage).toBe('partial');
+    }
+  });
+
+  it('retains template config environment without admitting arbitrary shell assignments', () => {
+    const requests: Array<{ env: Record<string, string> }> = [];
+    const result = enumerateAffectedTaskSelection([task('test', 'TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run')],
+      { root: '/repo', runResolver: (batch: Array<{ env: Record<string, string> }>) => {
+        requests.push(...batch); return [resolved(['a.test.ts'])];
+      } });
+    expect(result.coverage).toBe('complete');
+    expect(requests[0].env).toEqual({ TEMPLATE_CHECKS_CONFIG: 'template-checks.json' });
+    expect(enumerateAffectedTaskSelection([task('test', 'UNKNOWN=value vitest run')], options([])).coverage).toBe('partial');
+  });
+
+  it('enumerates npm shell expansion before native Node globs without importing a test', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'node-selection-'));
+    try {
+      const ws = join(dir, 'packages/core');
+      mkdirSync(join(ws, 'src/one/deep'), { recursive: true });
+      for (const file of ['src/one/a.node-test.ts', 'src/one/deep/b.node-test.ts'])
+        writeFileSync(join(ws, file), 'throw new Error("selection executed a test");');
+      const result = enumerateAffectedTaskSelection([task('test', 'node --test --test-global-setup=preflight.mjs src/**/*.node-test.ts')], { root: dir });
+      expect(result.unenumerated).toEqual([]);
+      // The unquoted npm shell glob already matched one level, so Node receives
+      // that literal path, not the original recursive pattern.
+      expect(result.files).toEqual(['packages/core/src/one/a.node-test.ts']);
+      if (!('shellPatterns' in result.tasks[0])) throw new Error('Node selection metadata missing');
+      expect(result.tasks[0].shellPatterns).toEqual(['src/one/a.node-test.ts']);
+      expect(result.executed).toBe(false);
+      for (const command of ['node --test --test-name-pattern=foo src/*.ts', 'node --test src/*.ts && node more.mjs',
+        'node --test ../outside.ts', 'node --test'])
+        expect(enumerateAffectedTaskSelection([task('test', command)], { root: dir }).coverage).toBe('partial');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('uses native Vitest project inheritance and in-source/typecheck discovery without collection', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    const dir = mkdtempSync(join(tmpdir(), 'project-selection-'));
+    try {
+      const ws = join(dir, 'packages/core');
+      mkdirSync(ws, { recursive: true });
+      writeFileSync(join(ws, 'vitest.config.mts'), `export default {test:{projects:[
+        {test:{name:'unit',include:['a.test.ts']}},
+        {test:{name:'source',include:[],includeSource:['inside.ts']}},
+        {test:{name:'types',typecheck:{enabled:true,only:true,include:['a.test-d.ts']}}}
+      ]}};`);
+      writeFileSync(join(ws, 'a.test.ts'), 'throw new Error("selection executed a test");');
+      writeFileSync(join(ws, 'inside.ts'), 'if (import.meta.vitest) throw new Error("selection executed source");');
+      writeFileSync(join(ws, 'a.test-d.ts'), 'throw new Error("selection executed typecheck");');
+      const result = enumerateAffectedTaskSelection([task()], { root: dir, runResolver: (requests: unknown[]) => {
+        const output = execFileSync(process.execPath, [join(repo, 'scripts/resolve-vitest-config-contracts.mjs')],
+          { cwd: repo, input: JSON.stringify({ requests }), encoding: 'utf8', timeout: 30_000 });
+        return JSON.parse(output.split('\n').reverse().find(line => line.startsWith('PC_VITEST_CONFIG_CONTRACTS='))!
+          .slice('PC_VITEST_CONFIG_CONTRACTS='.length)).results;
+      } });
+      expect(result.unenumerated).toEqual([]);
+      expect(result.files).toEqual(['packages/core/a.test-d.ts', 'packages/core/a.test.ts', 'packages/core/inside.ts']);
+      if (!('projects' in result.tasks[0])) throw new Error('Vitest project metadata missing');
+      expect(result.tasks[0].projects.map((project: { name: string }) => project.name).sort()).toEqual(['source', 'types', 'unit']);
+      expect(result.executed).toBe(false);
+      expect(result.runtimeClosure).toBe('unmeasured');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 40_000);
+
   it('refuses duplicate, escaping, or unqualified file populations', () => {
     for (const result of [resolved(['../outside.test.ts']), resolved(['a.test.ts', 'a.test.ts']),
       { ok: true, files: ['a.test.ts'] }]) {

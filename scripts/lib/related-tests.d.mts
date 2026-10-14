@@ -21,15 +21,35 @@ export function enumerateAffectedTaskSelection(tasks: any, { root, filterDir, ru
     phase: string;
     coverage: string;
     files: any[];
-    tasks: {
-        files: any[];
-        config: any;
+    tasks: ({
+        runner: string;
+        files: string[];
+        shellPatterns: string[];
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
         id: string;
         workspace: any;
         dir: any;
         script: any;
         command: any;
-    }[];
+    } | {
+        projects?: any;
+        files: any[];
+        config: any;
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    })[];
     unenumerated: {
         task: string;
         reason: any;

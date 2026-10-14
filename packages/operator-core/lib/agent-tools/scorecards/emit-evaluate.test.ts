@@ -1859,6 +1859,30 @@ describe('evaluateScorecard', () => {
     expect((r as { delta: { changedCriteria: string[] } }).delta.changedCriteria.sort()).toEqual(['crit-a', 'crit-b']);
   });
 
+  it.each(['evaluate', 'emit'] as const)(
+    '%s refuses a positive rating when a bound artifact key has no snapshot, even without release gating',
+    async (door) => {
+      const artifactKey = 'docs/evidence/retained-report.json:summary';
+      getRubricM.mockResolvedValue({
+        ...RUBRIC,
+        releaseGating: false,
+        criteria: [{ ...RUBRIC.criteria[0], instrumentKey: artifactKey }],
+      } as Rubric);
+      const ratings = { 'crit-a': { rating: 'pass', evidence: 'The artifact appears healthy.' } };
+
+      const result = door === 'evaluate'
+        ? await evaluateScorecard({ rubricRef: 'test-rubric', ratings })
+        : await emitScorecard({ rubricRef: 'test-rubric', ratings }, { createdBy: 'su-1' });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining(artifactKey),
+        instrumentContract: { missingSnapshots: [artifactKey], positiveClaimsWithoutSnapshots: [artifactKey] },
+      });
+      if (door === 'emit') expect(captureM).not.toHaveBeenCalled();
+    },
+  );
+
   it('keeps every skeleton + canonical-rating row through an ambient trimmed dispatch', async () => {
     const criteria = Array.from({ length: 26 }, (_, i) => ({
       key: `criterion-${i + 1}`,

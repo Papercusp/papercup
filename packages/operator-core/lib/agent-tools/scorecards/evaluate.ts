@@ -353,6 +353,20 @@ export async function evaluateScorecard(
       ratings,
       instrumentSnapshots,
     });
+    if (instrumentContract.positiveClaimsWithoutSnapshots.length) {
+      return {
+        ok: false as const,
+        error:
+          `positive rating requires an instrument snapshot for: ${instrumentContract.positiveClaimsWithoutSnapshots.join(', ')}. ` +
+          'Supply a resolvable snapshot or rate only what the available evidence supports.',
+        skeleton,
+        canonicalRatings: ratings,
+        evidenceFingerprint: unboundEvidenceFingerprint,
+        instrumentContract,
+        instrumentSnapshots,
+        latest: latest ?? null,
+      };
+    }
     if (args.rubricRef === 'work-on-everything-stewardship-health' && instrumentContract.verdictMismatches.length) {
       return {
         ok: false as const,

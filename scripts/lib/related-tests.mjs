@@ -21,7 +21,7 @@
 // `related-tests.test.ts` pins them.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { globSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { stripCommentsAndStrings, stripCommentsOnly } from "./strip-comments-and-strings.mjs";
 import { listFilesIncludingUntracked } from "./tracked-files.mjs";
@@ -81,10 +81,51 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
   const unenumerated = [];
   const requests = [];
   const selected = [];
+  const entries = [];
   for (const t of tasks) {
     const id = `${t.ws.name} :: ${t.script}`;
     const command = t.ws.scripts?.[t.script] ?? '';
-    let words = scriptCommandWords(command);
+    // Follow only a single local npm alias. Shell chains and unfollowable/cyclic
+    // aliases stay residue; guessing their leaves could silently drop a guard.
+    let resolvedCommand = command;
+    const aliasScripts = new Set([t.script]);
+    let alias;
+    while ((alias = /^npm run ([\w:.-]+)$/.exec(resolvedCommand))) {
+      if (aliasScripts.has(alias[1]) || !t.ws.scripts?.[alias[1]]) break;
+      aliasScripts.add(alias[1]);
+      resolvedCommand = t.ws.scripts[alias[1]];
+    }
+    const wsRoot = path.resolve(root, t.ws.dir);
+    const task = { id, workspace: t.ws.name, dir: t.ws.dir, script: t.script, command,
+      ...(resolvedCommand !== command ? { resolvedCommand } : {}),
+      lifecycleCommands: [...aliasScripts].flatMap(script => ['pre', 'post'].flatMap(prefix =>
+        t.ws.scripts?.[`${prefix}${script}`] ? [{ script: `${prefix}${script}`, command: t.ws.scripts[`${prefix}${script}`] }] : [])) };
+    let words = scriptCommandWords(resolvedCommand);
+    if (words[0] === 'node' && words.includes('--test')) {
+      try {
+        const patterns = [];
+        for (let i = 1; i < words.length; i++) {
+          const word = words[i];
+          if (word === '--test' || word.startsWith('--test-global-setup=')) continue;
+          if (word === '--import' && words[i + 1] && /^[\w./@-]+$/.test(words[i + 1])) { i++; continue; }
+          // These are inert path globs, never arbitrary shell source. npm's POSIX
+          // shell expands them BEFORE Node's own native glob discovery.
+          if (!/^[\w./@*?\[\]-]+$/.test(word) || word.startsWith('-')) throw new Error('unsupported-node-test-argument');
+          patterns.push(word);
+        }
+        if (!patterns.length || resolvedCommand !== words.join(' ')) throw new Error('unsupported-node-test-command');
+        const shellPatterns = execFileSync('/bin/sh', ['-c', `printf '%s\\0' ${patterns.join(' ')}`],
+          { cwd: wsRoot, encoding: 'utf8', timeout: 10_000 }).split('\0').filter(Boolean);
+        const files = globSync(shellPatterns, { cwd: wsRoot, exclude: name => name === 'node_modules' })
+          .map(file => path.posix.join(t.ws.dir, file.replaceAll('\\', '/'))).sort();
+        if (!files.length || files.some(file => !statSync(path.resolve(root, file)).isFile() ||
+            path.relative(root, path.resolve(root, file)).startsWith('../'))) throw new Error('invalid-node-test-population');
+        entries.push({ ...task, runner: 'node-test', files: [...new Set(files)], shellPatterns });
+      } catch (error) {
+        unenumerated.push({ task: id, reason: error.message, command });
+      }
+      continue;
+    }
     const pureWrapper = words[0] === 'node' && /(?:^|\/)run-vitest-pure-lane\.mjs$/.test(words[1] ?? '');
     const workspaceWrapper = words[0] === 'node' && /(?:^|\/)workspace-test\.mjs$/.test(words[1] ?? '');
     if (workspaceWrapper) {
@@ -93,12 +134,13 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
       if (!invocation.routed) words = invocation.args;
     }
     const direct = /(?:^|\/)vitest$/.test(words[0] ?? '');
-    const envWords = command.trim().split(/\s+/).filter(word => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+    const envWords = resolvedCommand.trim().split(/\s+/).filter(word => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
     const laneWord = envWords.find(word => word.startsWith('PC_TEST_LANE='));
     const lane = laneWord?.slice('PC_TEST_LANE='.length);
     const rest = words.slice(pureWrapper ? 2 : 1);
-    let supported = (direct || pureWrapper) && !/[;&|`"']|\$\(/.test(command) &&
-      envWords.every(word => /^PC_TEST_LANE=(pure|stateful)$/.test(word));
+    let supported = (direct || pureWrapper) && !/[;&|`"']|\$\(/.test(resolvedCommand) &&
+      envWords.every(word => /^PC_TEST_LANE=(pure|stateful)$/.test(word) ||
+        /^TEMPLATE_CHECKS_CONFIG=[\w./-]+$/.test(word));
     for (let i = 0; i < rest.length; i++) {
       const word = rest[i];
       if (['run', '--passWithNoTests', '--no-passWithNoTests'].includes(word)) continue;
@@ -110,16 +152,15 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
       unenumerated.push({ task: id, reason: 'unsupported-task-command', command });
       continue;
     }
-    const wsRoot = path.resolve(root, t.ws.dir);
-    const route = resolveTaskReportExpectation({ command: workspaceWrapper ? words.join(' ') : command, wsDir: wsRoot });
+    const route = resolveTaskReportExpectation({ command: workspaceWrapper ? words.join(' ') : resolvedCommand, wsDir: wsRoot });
     if (route.config === null && route.reason !== 'no-config') {
       unenumerated.push({ task: id, reason: route.reason, command });
       continue;
     }
-    const env = lane ? { PC_TEST_LANE: lane } : {};
+    const env = Object.fromEntries(envWords.map(word => [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)]));
     if (Array.isArray(t.relatedFiles) && t.relatedFiles.length > 0)
       env[RELATED_FILTER_LIST_ENV] = writeRelatedFilterList(filterDir, t.relatedFiles).path;
-    selected.push({ id, workspace: t.ws.name, dir: t.ws.dir, script: t.script, command });
+    selected.push(task);
     requests.push({ root: wsRoot, repositoryRoot: root, config: route.config ?? false, enumerateFiles: true, env });
   }
   const resolveRequests = runResolver ?? (requests => {
@@ -139,7 +180,6 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
   } catch (error) {
     results = requests.map(() => ({ ok: false, error: error.message }));
   }
-  const entries = [];
   for (const [i, task] of selected.entries()) {
     const result = results[i];
     const population = result?.repositoryFiles ?? result?.files;
@@ -151,8 +191,11 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
       continue;
     }
     entries.push({ ...task, files: result.repositoryFiles ? population.slice().sort() :
-      population.map(file => path.posix.join(task.dir, file)).sort(), config: result.config });
+      population.map(file => path.posix.join(task.dir, file)).sort(), config: result.config,
+      ...(result.projects ? { projects: result.projects } : {}) });
   }
+  entries.sort((a, b) => tasks.findIndex(t => `${t.ws.name} :: ${t.script}` === a.id) -
+    tasks.findIndex(t => `${t.ws.name} :: ${t.script}` === b.id));
   const files = [...new Set(entries.flatMap(task => task.files))].sort();
   const overlaps = files.filter(file => entries.filter(task => task.files.includes(file)).length > 1);
   return { schemaVersion: 1, kind: 'full-gate', phase: 'selection-preparation',
