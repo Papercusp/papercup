@@ -7,6 +7,14 @@
   "subjectPlanRevision": 129,
   "rubricRef": "acceptance-green-main-cycle-time-2026-10-08",
   "rubricRevision": 5,
+  "postgresPlanValidation": {
+    "componentKeys": ["recovery", "admission", "idle", "invariants", "alarm_filing"],
+    "syntaxAndColumnReferences": "valid",
+    "method": "Read-only EXPLAIN (FORMAT JSON) of each template against the live test_runs schema using explicit non-evidence sentinel parameters.",
+    "sourcePath": "docs/evidence/green-main-native-receipt-settlement-20261014.json",
+    "schemaRevisionBinding": "Still unbound; the ContinuityProbe writer resolves schemaRevision:live to its own exact registry revision before an approved amendment is stored.",
+    "operationalAcceptance": false
+  },
   "reuses": [
     "harness_shared.test_runs",
     "executeOperationalRun",
