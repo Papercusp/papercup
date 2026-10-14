@@ -1794,7 +1794,31 @@ export {
   providerOptionSourceIssues,
   providerOptionSourceOf,
   normalizeProviderOptions,
+  PROVIDER_SYNC_ERROR_KINDS,
+  providerSyncErrorOf,
+  PROVIDER_SOCIAL_POST_CAPABILITY,
+  PROVIDER_SOCIAL_REPLY_CAPABILITY,
+  PROVIDER_SOCIAL_DELETE_CAPABILITY,
+  providerSocialWriteResultIssue,
+  providerSocialDeleteResultIssue,
 } from './provider';
+export {
+  runProviderConformance,
+  formatProviderConformanceReport,
+  recordedHostFetch,
+  jsonResponse,
+  PROVIDER_CONFORMANCE_CHECKS,
+  CONFORMANCE_UNREADABLE_CURSOR,
+} from './provider-conformance';
+export type {
+  ProviderConformanceHarness,
+  ProviderConformanceInvocation,
+  ProviderConformanceReport,
+  ProviderConformanceFinding,
+  ProviderConformanceCheck,
+  RecordedExchange,
+  RecordedHostFetch,
+} from './provider-conformance';
 export type {
   ProviderOptionSource,
   ProviderOption,
@@ -1825,6 +1849,8 @@ export type {
   ProviderLiveSearchHit,
   ProviderLiveSearchResult,
   ProviderSyncError,
+  ProviderSocialWriteResult,
+  ProviderSocialDeleteResult,
   ProviderInvokeRequest,
   ProviderServiceCredential,
   ProviderServices,

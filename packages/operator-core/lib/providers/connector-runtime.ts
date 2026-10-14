@@ -55,6 +55,7 @@ import {
   PROVIDER_ACL_REF_PATTERN,
   PROVIDER_SYNC_ADOPT_CAPABILITY,
   PROVIDER_SYNC_WAKE_CAPABILITY,
+  providerSyncErrorOf,
   type ProviderAdoptResult,
   type ProviderServices,
   type ProviderSourceScope,
@@ -82,7 +83,6 @@ export const DEFAULT_CONNECTOR_MAX_PAGES = 20;
 export const CONNECTOR_DEGRADED_AFTER_FAILURES = 3;
 const BACKOFF_BASE_SECONDS = 30;
 const BACKOFF_MAX_SECONDS = 3_600;
-const SYNC_ERROR_KINDS = new Set<ProviderSyncError['kind']>(['cursor-expired', 'rate-limited', 'auth', 'transient']);
 
 export interface ConnectorSourceRow {
   id: string;
@@ -213,21 +213,9 @@ export class ProviderSyncFailure extends Error {
  */
 export function classifyProviderSyncError(cause: unknown): ProviderSyncError {
   if (cause instanceof ProviderSyncFailure) return cause.failure;
-  const candidates = [cause, (cause as { data?: unknown } | null)?.data];
-  for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== 'object') continue;
-    const kind = (candidate as { kind?: unknown }).kind;
-    if (typeof kind !== 'string' || !SYNC_ERROR_KINDS.has(kind as ProviderSyncError['kind'])) continue;
-    const message = String((candidate as { message?: unknown }).message ?? (cause as { message?: unknown })?.message ?? kind);
-    if (kind === 'rate-limited') {
-      const retry = Number((candidate as { retryAfterSeconds?: unknown }).retryAfterSeconds);
-      return Number.isFinite(retry) && retry >= 0
-        ? { kind, retryAfterSeconds: retry, message }
-        : { kind, message };
-    }
-    return { kind: kind as 'cursor-expired' | 'auth' | 'transient', message };
-  }
-  return { kind: 'transient', message: cause instanceof Error ? cause.message : String(cause) };
+  // One reader shared with the SDK conformance kit (P-026), so a package that passes the kit is
+  // classified identically here.
+  return providerSyncErrorOf(cause) ?? { kind: 'transient', message: cause instanceof Error ? cause.message : String(cause) };
 }
 
 /** Exponential per-source backoff for the Nth consecutive failure (1-based). */

@@ -615,6 +615,72 @@ export type ProviderSyncError =
   | { kind: 'auth'; message: string }
   | { kind: 'transient'; message: string };
 
+/** The four {@link ProviderSyncError} kinds, in the order the host documents them. */
+export const PROVIDER_SYNC_ERROR_KINDS = ['cursor-expired', 'rate-limited', 'auth', 'transient'] as const;
+
+/**
+ * Read a {@link ProviderSyncError} out of whatever a provider threw: the error object itself, an
+ * `Error` carrying a `kind`, or a daemon JSON-RPC error carrying one in `data`. Returns null when
+ * nothing recognisable was thrown; the host treats that as `transient`. The host's connector
+ * runtime and the provider conformance kit both read errors through this one function, so a
+ * package that passes the kit is read the same way in production.
+ */
+export function providerSyncErrorOf(cause: unknown): ProviderSyncError | null {
+  const candidates = [cause, (cause as { data?: unknown } | null)?.data];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const kind = (candidate as { kind?: unknown }).kind;
+    if (typeof kind !== 'string' || !(PROVIDER_SYNC_ERROR_KINDS as readonly string[]).includes(kind)) continue;
+    const message = String((candidate as { message?: unknown }).message ?? (cause as { message?: unknown })?.message ?? kind);
+    if (kind === 'rate-limited') {
+      const retry = Number((candidate as { retryAfterSeconds?: unknown }).retryAfterSeconds);
+      return Number.isFinite(retry) && retry >= 0 ? { kind, retryAfterSeconds: retry, message } : { kind, message };
+    }
+    return { kind: kind as 'cursor-expired' | 'auth' | 'transient', message };
+  }
+  return null;
+}
+
+/**
+ * Social write capabilities (provider-adapters-to-packages-2026-10-11 P-002). The host runs its
+ * rails (destination trust, disclosure, the registry write gate, the publish flag) BEFORE it
+ * invokes one of these, so a package only performs the platform call.
+ */
+export const PROVIDER_SOCIAL_POST_CAPABILITY = 'social.post';
+export const PROVIDER_SOCIAL_REPLY_CAPABILITY = 'social.reply';
+export const PROVIDER_SOCIAL_DELETE_CAPABILITY = 'social.delete';
+
+/** Result of `social.post` and `social.reply`: the platform id of the created post. */
+export interface ProviderSocialWriteResult {
+  externalId: string;
+  /** Public permalink, when the platform returns or documents one. */
+  url?: string;
+}
+
+/** Result of `social.delete`. `deleted:false` means the platform reported nothing to delete. */
+export interface ProviderSocialDeleteResult {
+  deleted: boolean;
+  detail?: string;
+}
+
+/** Why `value` is not a {@link ProviderSocialWriteResult}, or null when it is one. */
+export function providerSocialWriteResultIssue(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'result must be an object';
+  const v = value as Record<string, unknown>;
+  if (!isNonEmptyString(v.externalId)) return 'externalId must be a non-empty string';
+  if (v.url !== undefined && !isHttpsUrl(v.url)) return 'url, when present, must be an https URL';
+  return null;
+}
+
+/** Why `value` is not a {@link ProviderSocialDeleteResult}, or null when it is one. */
+export function providerSocialDeleteResultIssue(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'result must be an object';
+  const v = value as Record<string, unknown>;
+  if (typeof v.deleted !== 'boolean') return 'deleted must be a boolean';
+  if (v.detail !== undefined && typeof v.detail !== 'string') return 'detail, when present, must be a string';
+  return null;
+}
+
 export interface ProviderInvokeRequest {
   source: string;
   capability: string;
