@@ -446,9 +446,10 @@ describe.each([
     expect(scan.byPath.size).toBe(0);
   });
 
-  it('keeps the event loop turning while it walks — the regression this item fixed was a SYNC walk', async () => {
-    // A synchronous scanner resolves with ZERO interleaved macrotasks; that is
-    // exactly the multi-second main-thread stall seen in session:request-compaction.
+  it('uses backend-appropriate event-loop behavior while it walks', async () => {
+    // The operator host must yield while it scans /proc; the isolated privileged
+    // worker intentionally uses direct sync builtins and must not change that
+    // contract into an async implementation.
     const holders: Record<string, string[]> = {};
     for (let pid = 1000; pid < 1200; pid++) holders[String(pid)] = ['/dev/null', '/dev/zero', '/tmp/x'];
     const proc = fakeProc(holders);
@@ -464,7 +465,8 @@ describe.each([
       const scan = await openWriterPidsMany(['/tmp/wanted.log'], { procRoot: proc });
       running = false;
       expect(scan.complete).toBe(true);
-      expect(ticks).toBeGreaterThan(0);
+      if (procIo) expect(ticks).toBe(0);
+      else expect(ticks).toBeGreaterThan(0);
     } finally {
       rmSync(proc, { recursive: true, force: true });
     }
