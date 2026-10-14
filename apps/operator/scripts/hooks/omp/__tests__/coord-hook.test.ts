@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   promises as fs,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -15,6 +16,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findNativeTranscriptMarker } from '../../../../scripts/psu-pty-host.mjs';
 
 import { ompSessionsLinkArgsSchema } from '@papercusp/operator-core/lib/agent-tools/omp/sessions';
 import {
@@ -132,6 +134,7 @@ import {
   _stallWatchdogArmed,
   hookOwnerId,
   linkAdvSessionFromContext,
+  ensureNativeSessionOnDisk,
   onSessionShutdown,
   onSessionStart,
   withDeadline,
@@ -2922,6 +2925,46 @@ describe('formatTurnStartReminder', () => {
 });
 
 describe('register (OMP adapter)', () => {
+  it('makes a managed seed natively readable before any assistant response', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omp-seed-persistence-'));
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(async () => ({ ok: false })) as unknown as typeof fetch;
+    const marker = '⟦turn-origin:session-port nonce:13710410db2a0c23⟧';
+    const sinceMs = Date.now() - 1000;
+    const userRow = { type: 'message', timestamp: new Date().toISOString(),
+      message: { role: 'user', content: [{ type: 'text', text: `${marker}\nseed` }] } };
+    // OMP's fresh SessionManager buffers entries until an assistant exists,
+    // unless ensureOnDisk has enabled persistence. Exercise that boundary
+    // with the production host reader, including a negative lazy control.
+    const lazySession = (name: string) => {
+      const agentDir = join(root, name);
+      const sessionDir = join(agentDir, 'sessions');
+      mkdirSync(sessionDir, { recursive: true });
+      const file = join(sessionDir, 'native.jsonl');
+      const entries: unknown[] = [];
+      let eager = false;
+      const write = () => writeFileSync(file, entries.map(row => JSON.stringify(row)).join('\n') + '\n');
+      return {
+        file, env: { PI_CODING_AGENT_DIR: agentDir },
+        appendUser() { entries.push(userRow); if (eager) write(); },
+        async ensureOnDisk() { eager = true; write(); },
+      };
+    };
+    try {
+      const control = lazySession('lazy-control');
+      control.appendUser();
+      expect(findNativeTranscriptMarker({ agent: 'omp', env: control.env, marker, sinceMs })).toBeNull();
+      const session = lazySession('managed-target');
+      await onSessionStart({ sessionManager: session });
+      session.appendUser();
+      expect(findNativeTranscriptMarker({ agent: 'omp', env: session.env, marker, sinceMs })).toBe(session.file);
+      await expect(ensureNativeSessionOnDisk({ sessionManager: {} })).resolves.toBe(false);
+    } finally {
+      global.fetch = originalFetch;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   /**
    * Smoke test for the corrected OMP HookAPI contract (verified
    * 2026-05-20 against @oh-my-pi/pi-coding-agent installed version):
