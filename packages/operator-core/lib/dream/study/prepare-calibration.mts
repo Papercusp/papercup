@@ -3,8 +3,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getOrgPg } from "@papercusp/db-org";
 import { mapDreamRun } from "../../dream/dream-run-store.ts";
-import { STUDY_BLOCKS, validateStudyBlocks } from "./accounting.mts";
-import { buildCalibrationBundle } from "./calibration.mts";
+import { STUDY_BLOCKS } from "./accounting.mts";
+import { buildCalibrationBundle, calibrationStudyScope } from "./calibration.mts";
 import { freezeImmutableArtifacts } from "./freeze-artifacts.mts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -15,8 +15,9 @@ const blocks = await Promise.all(
     JSON.parse(await readFile(resolve(here, b.file), "utf8")),
   ),
 );
-validateStudyBlocks(blocks);
-const pins = blocks.map((b) => b.pin);
+const comparisonFile = process.argv.find(arg => arg.startsWith('--comparison='))?.slice('--comparison='.length);
+const comparison = comparisonFile ? JSON.parse(await readFile(resolve(here, comparisonFile), 'utf8')) : undefined;
+const { pins, prefix } = calibrationStudyScope(blocks, comparison);
 const { sql } = getOrgPg();
 try {
   // An uncapped census over exactly the frozen study identities; no live/global backlog.
@@ -30,8 +31,8 @@ try {
   // never silently replace or partially extend a frozen batch.
   await freezeImmutableArtifacts(
     [
-      ["calibration-blind-v2.json", blind],
-      ["calibration-key-v2.json", key],
+      [prefix + "calibration-blind-v2.json", blind],
+      [prefix + "calibration-key-v2.json", key],
     ].map(([file, value]) => ({
       path: resolve(here, file as string),
       bytes: JSON.stringify(value, null, 2) + "\n",

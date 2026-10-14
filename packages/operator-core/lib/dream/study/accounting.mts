@@ -1,6 +1,52 @@
 import { dreamEvaluationProtocolHash, DreamEvaluationProtocolSchema, DreamPilotPinSchema, type DreamEvaluationArm, type DreamPilotPin } from '../../dream/dream-evaluation.ts';
 import type { Sql } from 'postgres';
 import { sumBlenderTicks, type BlenderTick } from './blender-guard.mts';
+import type { CapabilityPacketDeps, CapabilityPacketBuild, verifyCapabilityPacket } from '../capability-packets.ts';
+import type { CodeIntelAnswer } from '../../code-intelligence/contracts.ts';
+
+/** Observe the original verification queries, without replaying them or changing the frozen packet. */
+export function studyPacketVerifier(ports: {
+  verify: typeof verifyCapabilityPacket;
+  graph: NonNullable<CapabilityPacketDeps['graph']>;
+  readArtifact: CapabilityPacketDeps['readArtifact'];
+  record: (entry: unknown) => Promise<void>;
+}): typeof verifyCapabilityPacket {
+  return async (packet, input) => {
+    const queries: unknown[] = [];
+    const graph: NonNullable<CapabilityPacketDeps['graph']> = async (...args) => {
+      const [, repositoryId, symbol, path, paths] = args;
+      const request = { repositoryId, symbol, path, paths };
+      let answer: CodeIntelAnswer;
+      try { answer = await ports.graph(...args); }
+      catch (error) {
+        queries.push({ request, error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
+      queries.push({ request, error: answer.error, freshness: answer.freshness,
+        truncation: answer.truncation, sites: answer.sites, evidence: answer.evidence });
+      return answer;
+    };
+    const result = await ports.verify(packet, input, { graph, readArtifact: ports.readArtifact });
+    if (!result.fresh) {
+      // The existing study log retains the exact failed invocation. Later successful
+      // rebuilds cannot substitute for this evidence or explain a historical failure.
+      const value = packet as { graph?: unknown; sources?: Array<{ id: string; path: string; sourceHash: string }> } | null;
+      await ports.record({ phase: 'packet-freshness-failure', unitId: input.unit.id,
+        scope: input.scope, manifestRevision: input.manifestRevision, result,
+        sourceHashes: value?.sources?.map(({ id, path, sourceHash }) => ({ id, path, sourceHash })),
+        packetGraph: value?.graph, queries });
+    }
+    return result;
+  };
+}
+
+/** Persist builder refusal before paid/control phases, retaining its exact reason and unit. */
+export async function requireStudyPacket(unitId: string, built: CapabilityPacketBuild,
+  record: (entry: unknown) => Promise<void>) {
+  if (built.status === 'ready') return built.packet;
+  await record({ phase: 'packet-build-failure', unitId, result: built });
+  throw new Error('Study packet unavailable: ' + unitId + ': ' + built.reason);
+}
 
 // These are blocks of ONE finite study. Changing model never resets admission.
 export const STUDY_BLOCKS = {

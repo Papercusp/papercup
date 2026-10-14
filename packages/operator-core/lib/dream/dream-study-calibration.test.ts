@@ -1,10 +1,11 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
 import type { DreamRun } from './dream-run-store';
-import { buildCalibrationBundle } from './study/calibration.mts';
+import { buildCalibrationBundle, calibrationStudyScope } from './study/calibration.mts';
 import { freezeImmutableArtifacts } from './study/freeze-artifacts.mts';
 
 const roots: string[] = [];
@@ -33,6 +34,24 @@ async function runs() {
 }
 
 describe('frozen study calibration evidence preparation', () => {
+  it('isolates the exact native comparison without overwriting legacy calibration editions', () => {
+    const load = (file: string) => JSON.parse(readFileSync(new URL('./study/' + file, import.meta.url), 'utf8'));
+    const blocks = [load('protocol.json'), load('protocol-luna.json')];
+    const comparison = load('native-graph-protocol.json');
+    expect(calibrationStudyScope(blocks)).toEqual({ pins: blocks.map(block => block.pin), prefix: '' });
+    expect(calibrationStudyScope(blocks, comparison)).toEqual({ pins: [comparison.pin], prefix: 'native-graph-' });
+    expect(() => calibrationStudyScope(blocks, { ...comparison, pin: 'a'.repeat(64) })).toThrow();
+    expect(() => calibrationStudyScope(blocks, blocks[0])).toThrow('registered graph/control');
+  });
+  it('keeps graph treatment identity only in the unblinded key', async () => {
+    const rows = await runs();
+    const provenance = rows[0]!.outcome!.capabilityRun as Record<string, any>;
+    provenance.evaluation.graphTreatment = 'control';
+    const { blind, key } = buildCalibrationBundle([rows[0]!]);
+    expect(key.selected[0]).toMatchObject({ graphTreatment: 'control' });
+    expect(JSON.stringify(blind)).not.toContain('graphTreatment');
+    expect(JSON.stringify(blind)).not.toContain(rows[0]!.runId);
+  });
   it('does not leak metadata through production-shaped truncated narrative priors or their locators', async () => {
     const rows = await runs();
     rows[0]!.review!.priorMatches = [
@@ -129,6 +148,22 @@ describe('frozen study calibration evidence preparation', () => {
       if (prior.capture.parseStatus === 'truncated')
         expect(prior.capture.fullTextRef).toMatchObject({ resolver: 'capability-review-sources.readCurrent' });
     }
+  });
+  it('retains bounded JSON code priors as incomplete even though their source hash identifies raw file bytes', async () => {
+    const rows = await runs();
+    const prefix = JSON.stringify({ path: 'large.test.ts', source: 'source'.repeat(4000) }).slice(0, 12000);
+    rows[0]!.review!.priorMatches = [{ ref: 'code-source:large.test.ts', kind: 'test', text: prefix,
+      contentHash: 'captured-envelope-hash', sourceHash: 'raw-file-hash',
+      locator: { kind: 'code', id: 'source:large.test.ts', path: 'large.test.ts' } }];
+    const bundle = buildCalibrationBundle([rows[0]!]);
+    const capture = (bundle.key.selected[0]!.originalReview!.priorMatches as any[])[0].capture;
+    expect(capture).toMatchObject({ parseStatus: 'truncated', truncated: true, storedChars: 12000,
+      fullTextRef: { resolver: 'capability-review-sources.readCurrent', ref: 'code-source:large.test.ts',
+        locator: { kind: 'code', id: 'source:large.test.ts' } } });
+    expect((bundle.key.selected[0]!.originalReview!.priorMatches as any[])[0].text).toBe(prefix);
+    rows[0]!.review!.priorMatches = [{ ref: 'code-source:large.test.ts', kind: 'test', text: prefix,
+      contentHash: 'captured-envelope-hash', sourceHash: 'raw-file-hash' }];
+    expect(() => buildCalibrationBundle([rows[0]!])).toThrow('no resolvable full-text reference');
   });
   it('refuses an unparseable JSON prior without proven truncation and a resolver', async () => {
     const rows = await runs();

@@ -1,7 +1,8 @@
-import { readFile, appendFile } from 'node:fs/promises';
+import { readFile, appendFile, open, realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, join, relative, isAbsolute, sep } from 'node:path';
+import { homedir } from 'node:os';
 import { getOrgPg } from '@papercusp/db-org';
 import { installFlagOverrideStore } from '../../flag-override-store.ts';
 import { productionDreamCycle } from '../../dream/dream-cycle-action.ts';
@@ -10,11 +11,11 @@ import { capabilityHash } from '../../dream/capability-contracts.ts';
 import { preflightCapabilityReview, rerankCapabilityPriors } from '../../dream/capability-review.ts';
 import { buildCapabilityReviewSources } from '../../dream/capability-review-sources.ts';
 import { getCurrentCapabilityManifest, getPilotCapabilityManifest } from '../../dream/capability-catalog.ts';
-import { buildCapabilityPacket } from '../../dream/capability-packets.ts';
+import { buildCapabilityPacket, queryCapabilityGraph, verifyCapabilityPacket } from '../../dream/capability-packets.ts';
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from '../../dream/capability-sampler.ts';
 import { CAPABILITY_DREAM_PROMPT_VERSION } from '../../dream/capability-pass.ts';
 import { studySampling } from './sampling.mts';
-import { STUDY_BLOCKS, validateStudyBlocks, prepareStudyPilot, readStudyTotals } from './accounting.mts';
+import { STUDY_BLOCKS, validateStudyBlocks, prepareStudyPilot, readStudyTotals, studyPacketVerifier, requireStudyPacket } from './accounting.mts';
 import { DEFAULT_DREAM_REVIEW_CONFIG } from '../../dream/dream-config.ts';
 import { getDreamRun } from '../../dream/dream-run-store.ts';
 import { dreamCapabilityRun } from '../../dream/dream-run-provenance.ts';
@@ -53,6 +54,30 @@ const log = async (entry: unknown) => {
   await appendFile(resolve(here, 'cycle-events.jsonl'), line + '\n');
   console.log(line);
 };
+const verifyPacket = studyPacketVerifier({ verify: verifyCapabilityPacket, graph: queryCapabilityGraph,
+  // Preserve the verifier's private-pack root, byte budget, fatal UTF-8 and
+  // growth checks. Its bounded artifact reader is private to the frozen source.
+  readArtifact: async path => {
+    const packRoot = await realpath(join(homedir(), '.papercusp', 'scratch', 'packs'));
+    const file = await realpath(resolve(packRoot, path));
+    const rel = relative(packRoot, file);
+    if (!rel || rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel))
+      throw new Error('Evidence escapes repository scope');
+    const handle = await open(file, 'r');
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > 64 * 1024 * 1024) throw new Error('Evidence exceeds the artifact byte budget');
+      const buffer = Buffer.alloc(info.size + 1);
+      let total = 0;
+      while (total < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+        if (bytesRead === 0) break;
+        total += bytesRead;
+      }
+      if (total > info.size) throw new Error('Evidence grew during its bounded read');
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, total));
+    } finally { await handle.close(); }
+  }, record: log });
 async function tool(name: string, args: object) {
   const raw = await new Promise<string>((done, fail) => {
     const child = spawn('ptool', [name, '--workspace=' + workspaceId, '--harness=papercusp', '--json', '-'], {
@@ -107,8 +132,7 @@ const packetScope = { workspaceId, potSlug: 'papercusp', repositoryId: 'papercus
 const packets = [];
 for (const unit of manifest.units) {
   const built = await buildCapabilityPacket({ rootPath: root, scope: packetScope, unit, manifestRevision: manifest.revision });
-  if (built.status !== 'ready') throw new Error('Study packet unavailable: ' + unit.id);
-  packets.push(built.packet);
+  packets.push(await requireStudyPacket(unit.id, built, log));
 }
 const snapshot = await buildCapabilitySamplingSnapshot({ rootPath: root, scope: packetScope, manifest, packets });
 if (snapshot.fingerprint !== frozen.protocol.sourceSnapshot) throw new Error('Frozen study source snapshot changed');
@@ -128,7 +152,7 @@ if (sample.status !== 'selected' || (arm === 'structured-triple' && !sample.sele
 if (graphComparison) {
   const reviewReadiness = await preflightCapabilityReview({ rootPath: root, manifest, selection: sample.selection,
     dreamerModel: frozen.protocol.models.generator, config: { model: frozen.protocol.models.reviewer },
-    sources: buildCapabilityReviewSources({ sql, scope: packetScope, rootPath: root, manifest, packets }) });
+    sources: buildCapabilityReviewSources({ sql, scope: packetScope, rootPath: root, manifest, packets, verifyPacket }) });
   await log({ phase: 'current-review-readiness', result: reviewReadiness });
   if (!reviewReadiness.ready) {
     await sql.end();
@@ -161,7 +185,7 @@ try {
     cycle: { maxDreamsPerCycle: 1, maxCostUsd: frozen.protocol.limits.cycleUsd, rolling24hCostUsd: frozen.protocol.limits.rollingDayUsd },
     sampler,
     pass: { model: frozen.protocol.models.generator }, review: { model: frozen.protocol.models.reviewer },
-  });
+  }, { verifyPacket });
   await log({ phase: 'cycle-result', arm, protocolPin: frozen.pin, result });
   for (const run of result.runs) {
     const saved = await getDreamRun(sql, { workspaceId, runId: run.runId });

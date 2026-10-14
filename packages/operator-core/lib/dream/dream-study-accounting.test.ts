@@ -1,11 +1,62 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { dreamComparisonInputHash, dreamEvaluationProtocolHash, type DreamPilotPin } from './dream-evaluation';
-import { STUDY_BLOCKS, prepareStudyPilot, readStudyTotals, requireStudyRoom, validateStudyBlocks, type StudyTotal } from './study/accounting.mts';
+import { STUDY_BLOCKS, prepareStudyPilot, readStudyTotals, requireStudyRoom, validateStudyBlocks, studyPacketVerifier, requireStudyPacket, type StudyTotal } from './study/accounting.mts';
+import type { CodeIntelAnswer } from '../code-intelligence/contracts';
+import type { BuildCapabilityPacketInput } from './capability-packets';
 
 const blocks = Object.values(STUDY_BLOCKS).map(block => JSON.parse(readFileSync(new URL('./study/' + block.file, import.meta.url), 'utf8')));
 const limits = validateStudyBlocks(blocks);
 const row = (pin: string, attempts: number, cost: number, arm: StudyTotal['arm'] = 'structured-pair'): StudyTotal => ({ pin, attempts, cost, arm });
+
+describe('study packet freshness failure evidence', () => {
+  it('records a packet-builder refusal before throwing with its exact reason', async () => {
+    const record = vi.fn(async (_entry: unknown) => {});
+    const built = { status: 'unavailable' as const, reason: 'Compiler graph differs from current cited source', costUsd: 0, durationMs: 42 };
+    await expect(requireStudyPacket('capability:packer', built, record))
+      .rejects.toThrow('Study packet unavailable: capability:packer: Compiler graph differs from current cited source');
+    expect(record).toHaveBeenCalledWith({ phase: 'packet-build-failure', unitId: 'capability:packer', result: built });
+  });
+  const input = { rootPath: '/study', scope: { workspaceId: 'ws', potSlug: 'pot', repositoryId: 'repo' },
+    unit: { id: 'capability:packer' }, manifestRevision: 'manifest' } as BuildCapabilityPacketInput;
+  const packet = { graph: { status: 'measured', candidates: ['original-boundary'] },
+    sources: [{ id: 'code', path: 'source.ts', sourceHash: 'original-hash' }] };
+  it.each(['compiler-refusal', 'changed-relationship', 'worker-throw'])(
+    'retains the offending packet and the original %s without replaying the query', async failure => {
+      const answer = { error: failure === 'compiler-refusal' ? 'compiler deadline exceeded' : null,
+        sites: [{ path: 'source.ts', line1: 2 }], freshness: { health: 'unknown' },
+        evidence: { sourceScope: { sourceFingerprint: 'unchanged-source' }, relationships: ['changed-edge'] },
+        truncation: { truncated: false } } as unknown as CodeIntelAnswer;
+      const graph = vi.fn(async () => {
+        if (failure === 'worker-throw') throw new Error('worker startup failed');
+        return answer;
+      });
+      const refusal = { fresh: false as const, reason: 'Compiler graph differs from current cited source' };
+      const record = vi.fn(async (_entry: unknown) => {});
+      const verify = studyPacketVerifier({ graph, record, readArtifact: async () => 'artifact',
+        verify: async (_packet, current, deps) => {
+          try { await deps!.graph!(current.rootPath, 'repo', 'packer', 'source.ts', ['source.ts']); } catch {}
+          return refusal;
+        } });
+      expect(await verify(packet, input)).toBe(refusal);
+      expect(graph).toHaveBeenCalledTimes(1);
+      expect(record).toHaveBeenCalledTimes(1);
+      expect(record.mock.calls[0]![0]).toMatchObject({ phase: 'packet-freshness-failure', unitId: input.unit.id,
+        sourceHashes: packet.sources, packetGraph: packet.graph, result: refusal,
+        queries: [{ request: { symbol: 'packer', path: 'source.ts' },
+          ...(failure === 'worker-throw' ? { error: 'worker startup failed' } : { evidence: answer.evidence, error: answer.error }) }] });
+      expect(packet.graph.candidates).toEqual(['original-boundary']);
+    },
+  );
+  it('preserves a passing verdict and fails closed when failed evidence cannot be saved', async () => {
+    const record = vi.fn(async (_entry: unknown) => { throw new Error('evidence persistence failed'); });
+    const ports = { graph: vi.fn(), record, readArtifact: async () => 'artifact' };
+    expect(await studyPacketVerifier({ ...ports, verify: async () => ({ fresh: true }) })(packet, input)).toEqual({ fresh: true });
+    expect(record).not.toHaveBeenCalled();
+    await expect(studyPacketVerifier({ ...ports, verify: async () => ({ fresh: false, reason: 'changed' }) })(packet, input))
+      .rejects.toThrow('evidence persistence failed');
+  });
+});
 
 describe('finite Dream study accounting across model blocks', () => {
   it('retains the original failures and unknown reservation after a model switch', () => {

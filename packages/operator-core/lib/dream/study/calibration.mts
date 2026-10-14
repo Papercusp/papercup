@@ -3,6 +3,18 @@ import { CapabilityProposalSchema } from "../../dream/capability-pass.ts";
 import { DREAM_UTILITY_CONTRACT } from "../../dream/dream-evaluation.ts";
 import { dreamCapabilityRun } from "../../dream/dream-run-provenance.ts";
 import type { DreamRun } from "../../dream/dream-run-store.ts";
+import { validateStudyBlocks, type StudyBlock } from './accounting.mts';
+import { DreamEvaluationProtocolSchema } from '../dream-evaluation.ts';
+
+/** Reuse the calibration pipeline while isolating the frozen comparison's exact cohort. */
+export function calibrationStudyScope(blocks: StudyBlock[], comparison?: StudyBlock) {
+  validateStudyBlocks(blocks);
+  if (!comparison) return { pins: blocks.map(block => block.pin), prefix: '' };
+  if (!DreamEvaluationProtocolSchema.parse(comparison.protocol).comparison?.graphAblation)
+    throw new Error('Calibration comparison requires a registered graph/control study');
+  validateStudyBlocks([...blocks, comparison]);
+  return { pins: [comparison.pin], prefix: 'native-graph-' };
+}
 
 const PRIOR_TEXT_LIMIT = 12_000;
 
@@ -69,13 +81,10 @@ export function annotatePriorCaptureMetadata(
         contentHash !== sourceHash;
       const truncated =
         text !== null &&
-        (text.length > PRIOR_TEXT_LIMIT ||
-          hashShowsTruncation ||
-          (text.length >= PRIOR_TEXT_LIMIT &&
-            sourceHashCoversFullText &&
-            (contentHash === null ||
-              sourceHash === null ||
-              contentHash !== sourceHash)));
+        // prior() caps ALL source kinds. Code sourceHash identifies raw file
+        // bytes (or a packet), so it cannot establish completeness of the JSON
+        // envelope. A ceiling-length capture is conservatively incomplete.
+        (text.length >= PRIOR_TEXT_LIMIT || hashShowsTruncation);
       const trimmed = text?.trimStart() ?? "";
       const looksLikeJson = trimmed.startsWith("{") || trimmed.startsWith("[");
       let format: "json" | "text" | "unknown" =
@@ -254,6 +263,7 @@ export function buildCalibrationBundle(runs: DreamRun[], limit = 6) {
       runId: e.run.runId,
       stratum: e.stratum,
       arm: e.provenance.evaluation!.arm,
+      ...(e.provenance.evaluation!.graphTreatment ? { graphTreatment: e.provenance.evaluation!.graphTreatment } : {}),
       protocolPin: e.provenance.evaluation!.protocolPin,
       sourceSnapshot: e.provenance.sampling?.log.snapshotFingerprint,
       originalReview: annotatePriorCaptureMetadata(e.run.review),
