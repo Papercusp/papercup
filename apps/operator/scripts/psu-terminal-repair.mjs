@@ -5,7 +5,8 @@
  * Only the exact known legacy function is eligible; unknown source fails closed.
  */
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readlinkSync } from 'node:fs';
+import { basename } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { metaPathFor } from './psu-pty-host.mjs';
 import { closeInspector, createCdpClient, discoverInspector } from '../../../scripts/cdp-inspector.mjs';
@@ -100,6 +101,10 @@ export async function repairTerminalHost({ pid, ownerId, apply = false }) {
   const before = JSON.parse(readFileSync(metaPath, 'utf8'));
   if (before.ownerId !== ownerId || before.pid !== pid || before.bridgeTty !== true)
     throw new Error('Discovery identity or interactive terminal changed; repair refused');
+  const argv = readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0');
+  const entry = argv.find((arg) => arg.endsWith('/psu-launcher.mjs'));
+  if (!entry || !/^node(?:js)?$/.test(basename(readlinkSync('/proc/' + pid + '/exe'))))
+    throw new Error('Discovery PID is not a Node terminal host; repair refused before signaling');
   const started = startTicks(pid);
   if (await discoverInspector({ portCount: 1 })) throw new Error('Inspector port is already occupied; leave the existing debugger alone');
   process.kill(pid, 'SIGUSR1');
@@ -116,7 +121,7 @@ export async function repairTerminalHost({ pid, ownerId, apply = false }) {
   try {
     await client.connect();
     const identity = (await client.evaluate('({pid:process.pid,entry:process.argv[1]})', { returnByValue: true })).result.value;
-    if (identity?.pid !== pid || !identity.entry?.endsWith('/psu-launcher.mjs') || startTicks(pid) !== started)
+    if (identity?.pid !== pid || identity.entry !== entry || startTicks(pid) !== started)
       throw new Error('Inspector identity mismatch; repair refused');
     verified = true;
     const scripts = [];

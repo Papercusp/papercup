@@ -56,25 +56,28 @@ describe('terminal identity repair adoption', () => {
       };
       ${legacy}
       globalThis.captured=()=>codexNativeIdForPty('/home',process.pid);
+      process.stdout.write('MODULE_READY\\n');
       setInterval(()=>{},1000);
     `);
     const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', file], { stdio: ['ignore', 'pipe', 'pipe'] });
     let client: ReturnType<typeof createCdpClient> | undefined;
     let stderr = '';
     try {
-      const url = await new Promise<string>((resolve, reject) => {
+      const ready = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Module never reached readiness: ' + stderr)), 5000);
+        let output = '';
+        child.stdout.on('data', (data) => { output += data; if (output.includes('MODULE_READY')) { clearTimeout(timer); resolve(); } });
+        child.once('exit', (code) => { clearTimeout(timer); reject(new Error('Fixture exited before readiness: ' + code + ' ' + stderr)); });
+        child.once('error', reject);
+      });
+      const inspector = new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('Inspector not ready: ' + stderr)), 5000);
         child.stderr.on('data', (data) => { stderr += data; const match = stderr.match(/ws:\/\/127\.0\.0\.1:\d+\/[^\s]+/); if (match) { clearTimeout(timer); resolve(match[0]); } });
         child.once('error', reject);
       });
+      const [url] = await Promise.all([inspector, ready]);
       client = createCdpClient(url, { requestTimeoutMs: 3000 });
       await client.connect();
-      let ready = false;
-      for (let i = 0; i < 100 && !ready; i++) {
-        ready = (await client.evaluate('typeof globalThis.captured === "function"', { returnByValue: true })).result.value;
-        if (!ready) await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      expect(ready).toBe(true);
       const sample = async () => (await client!.evaluate('({pid:process.pid,result:captured(),globalReads,localReads:globalThis.localReads||0})', { returnByValue: true })).result.value;
       const before = await sample();
       expect(before).toMatchObject({ pid: child.pid, result: 'native-thread', globalReads: 1, localReads: 0 });

@@ -457,7 +457,7 @@ describe('the guard is falsifiable', () => {
       masked.replace('const { startEmbeddedPostgresServer } = await import(', 'const { startExternalPostgresServer } = await import('),
       masked.split("PAPERCUSP_SKIP_PG_DISCOVERY: '1'").join("PAPERCUSP_SKIP_PG_DISCOVERY: '0'"),
       masked.replace("!['localhost', '127.0.0.1', '[::1]'].includes(testAdminUrl.hostname)", 'true'),
-      masked.replace('PAPERCUSP_PG_PORT: String(port)', 'PAPERCUSP_PG_PORT: String(port + 1)'),
+      masked.split('PAPERCUSP_PG_PORT: String(port)').join('PAPERCUSP_PG_PORT: String(port + 1)'),
       masked.replace('const testAdminUrl = new URL(pg.urls.admin)', 'const testAdminUrl = new URL(process.env.DATABASE_URL)'),
       masked.replace('PAPERCUSP_TEST_PG_ADMIN_URL: testAdminUrl.toString()', 'PAPERCUSP_TEST_PG_ADMIN_URL: process.env.DATABASE_URL'),
     ]) expect(isTestPgSupervisor(TEST_PG_SUPERVISOR, mutated)).toBe(false);

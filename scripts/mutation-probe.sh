@@ -1322,8 +1322,10 @@ propagate_test_run_scope() {
 #                            runner that executes outside this process tree)
 #   test_runs:<id>[,<id>]    every row landed — bind from these ids
 #   missing:<reason>         rows were attempted and NONE landed
+#   unconfirmed:<reason>     an INSERT timed out; persistence is unresolved
 #   partial:<ids>;missing:<n>:<reason>
-# Per file the best outcome wins (inserted > timeout > failed): a flush that
+#   partial:<ids>;unconfirmed:<n>:<reason>
+# Per file the settled outcome wins (inserted > failed > timeout): a flush that
 # timed out can still land and append its own `inserted` line before exit.
 test_run_receipt_file() {
   printf '%s/test-run-receipts.%s.jsonl' "$SCRATCH" "$1"
@@ -1337,7 +1339,7 @@ summarize_ledger_receipts() {
   fi
   node -e '
     const fs = require("fs");
-    const rank = { inserted: 3, timeout: 2, failed: 1 };
+    const rank = { inserted: 3, failed: 2, timeout: 1 };
     const best = new Map();
     for (const line of fs.readFileSync(process.argv[1], "utf8").split("\n")) {
       if (!line.trim()) continue;
@@ -1351,11 +1353,14 @@ summarize_ledger_receipts() {
     const rows = [...best.values()];
     const ids = rows.filter((r) => r.outcome === "inserted").map((r) => clean(r.id));
     const lost = rows.filter((r) => r.outcome !== "inserted");
-    const reason = lost.length ? clean(lost[0].outcome + "_" + (lost[0].reason || "unknown")) : "";
+    const pending = lost.find((r) => r.outcome === "timeout");
+    const unresolved = pending || lost[0];
+    const disposition = pending ? "unconfirmed" : "missing";
+    const reason = unresolved ? clean(unresolved.outcome + "_" + (unresolved.reason || "unknown")) : "";
     if (!rows.length) process.stdout.write("none");
     else if (!lost.length) process.stdout.write("test_runs:" + ids.join(","));
-    else if (!ids.length) process.stdout.write("missing:" + reason);
-    else process.stdout.write("partial:" + ids.join(",") + ";missing:" + lost.length + ":" + reason);
+    else if (!ids.length) process.stdout.write(disposition + ":" + reason);
+    else process.stdout.write("partial:" + ids.join(",") + ";" + disposition + ":" + lost.length + ":" + reason);
   ' "$file" 2>/dev/null || printf 'unreadable'
 }
 
@@ -2664,13 +2669,13 @@ for phase in baseline copy-baseline; do
   phase_ledger="$BASELINE_LEDGER"
   [ "$phase" != "copy-baseline" ] || phase_ledger="$COPY_BASELINE_LEDGER"
   case "$phase_ledger" in
-    missing:*|partial:*|unreadable)
+    missing:*|unconfirmed:*|partial:*|unreadable)
       log "⚠️  $phase ledger: $phase_ledger — the passing control has incomplete test_runs evidence; do not claim ledger-backed baseline proof from its exit status." ;;
   esac
 done
 case "$MUTANT_LEDGER" in
-  missing:*|partial:*|unreadable)
-    log "⚠️  mutant ledger: $MUTANT_LEDGER — the guard ran, but its test_runs row did not land (WI-10006245). There is no mutant FAIL row to bind as evidence: re-run the probe, or bind from a row that exists." ;;
+  missing:*|unconfirmed:*|partial:*|unreadable)
+    log "⚠️  mutant ledger: $MUTANT_LEDGER — the guard ran, but these receipts do not confirm complete test_runs evidence (WI-10006245). A timed-out INSERT may still have landed: reconcile the exact run group in the ledger before replaying, and bind only from a confirmed mutant FAIL row." ;;
 esac
 
 # A guard is falsifiable when it FAILS on the mutant. Report the verdict in

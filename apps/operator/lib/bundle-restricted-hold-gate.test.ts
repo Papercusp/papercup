@@ -147,7 +147,7 @@ describe('runGate', () => {
     const main = writeMetafile('hono-host.mjs.meta.json', ['bin/hono-host.ts']);
     const { code } = gate(opts => runBundleRestrictedHoldPreflight({ ...opts,
       spawn: (() => ({ status: null, signal: 'SIGKILL', error: new Error('ETIMEDOUT'),
-        pid: 0, output: [], stdout: '', stderr: '' })) as typeof spawnSync,
+        pid: 0, output: [], stdout: '', stderr: '' })) as unknown as typeof spawnSync,
     }), [main]);
     expect(code).toBe(GATE_EXIT.refuse);
     expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');

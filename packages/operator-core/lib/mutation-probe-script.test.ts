@@ -389,7 +389,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       expect(out).not.toMatch(/mutant ledger: /);
     });
 
-    it('preserves a missing copy baseline separately from the landed original and mutant receipts', () => {
+    it('preserves an unresolved copy baseline separately from the landed original and mutant receipts', () => {
       const { code, out } = runProbeIO([
         '--file', subject, '--mutate', 's/beta/BETA/',
         '--test', guardWritingReceipts({
@@ -399,13 +399,13 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
         }),
       ]);
       expect(code, out).toBe(0);
-      expect(resultOf(out).line).toContain('baseline_ledger=test_runs:11 copy_baseline_ledger=missing:timeout_pg_insert_timeout_15000ms mutant_ledger=test_runs:42');
+      expect(resultOf(out).line).toContain('baseline_ledger=test_runs:11 copy_baseline_ledger=unconfirmed:timeout_pg_insert_timeout_15000ms mutant_ledger=test_runs:42');
       expect(resultOf(out).result).toMatchObject({
         baselineLedger: 'test_runs:11',
-        copyBaselineLedger: 'missing:timeout_pg_insert_timeout_15000ms',
+        copyBaselineLedger: 'unconfirmed:timeout_pg_insert_timeout_15000ms',
         mutantLedger: 'test_runs:42',
       });
-      expect(out).toContain('copy-baseline ledger: missing:timeout_pg_insert_timeout_15000ms');
+      expect(out).toContain('copy-baseline ledger: unconfirmed:timeout_pg_insert_timeout_15000ms');
       expect(read()).toBe(ORIGINAL);
     });
 
@@ -419,7 +419,37 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
           ],
         }),
       ]);
-      expect(resultOf(out).ledger).toBe('partial:7;missing:1:timeout_pg_insert_timeout_15000ms');
+      expect(resultOf(out).ledger).toBe('partial:7;unconfirmed:1:timeout_pg_insert_timeout_15000ms');
+    });
+
+    it('reports a timed-out mutant INSERT as unconfirmed and asks for reconciliation before replay', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          mutant: [{ filePath: 'a.test.ts', status: 'fail', outcome: 'timeout', reason: 'pg_insert_timeout_15000ms' }],
+        }),
+      ]);
+      expect(code, out).toBe(0);
+      expect(resultOf(out).ledger).toBe('unconfirmed:timeout_pg_insert_timeout_15000ms');
+      expect(out).toContain('A timed-out INSERT may still have landed');
+      expect(out).toContain('reconcile the exact run group in the ledger before replaying');
+      expect(out).not.toContain('There is no mutant FAIL row');
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('prefers a late rejected INSERT over its earlier timeout', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          mutant: [
+            { filePath: 'a.test.ts', status: 'fail', outcome: 'timeout', reason: 'pg_insert_timeout_15000ms' },
+            { filePath: 'a.test.ts', status: 'fail', outcome: 'failed', reason: 'connection_closed' },
+          ],
+        }),
+      ]);
+      expect(code, out).toBe(0);
+      expect(resultOf(out).ledger).toBe('missing:failed_connection_closed');
+      expect(read()).toBe(ORIGINAL);
     });
 
     it('says none when no ledger writer ran in the guard', () => {

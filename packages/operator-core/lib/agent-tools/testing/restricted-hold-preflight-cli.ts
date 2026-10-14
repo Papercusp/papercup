@@ -24,7 +24,7 @@
  *         JSON, a crash, a timeout), so a broken preflight can never read as an admit.
  */
 import { readFile } from 'node:fs/promises';
-import { RESTRICTED_HOLD_PREFLIGHT_EXIT, RESTRICTED_HOLD_PREFLIGHT_MARKER } from '../../../../../scripts/lib/restricted-hold-preflight.mjs';
+import { recordBundleHoldProgress, RESTRICTED_HOLD_PREFLIGHT_EXIT, RESTRICTED_HOLD_PREFLIGHT_MARKER } from '../../../../../scripts/lib/restricted-hold-preflight.mjs';
 import {
   restrictedHoldBundleRefusal,
   restrictedHoldRefusal,
@@ -98,7 +98,9 @@ async function main(): Promise<void> {
       misuse(`${TEST_CENSUS_ENV} must name a JSON array of restricted holdings ([] = nothing held)`);
       return;
     }
-    refusal = await restrictedHoldBundleRefusal(root, inputs, injected ? { holdings: async () => injected } : {});
+    refusal = await restrictedHoldBundleRefusal(root, inputs, {
+      ...(injected ? { holdings: async () => injected } : {}), progress: recordBundleHoldProgress,
+    });
   } else if (args[0] === '--tree') {
     const roots = args.slice(1);
     if (roots.length === 0) {

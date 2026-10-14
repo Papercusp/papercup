@@ -1794,7 +1794,8 @@
       "qualified": false,
       "failureItem": "EI-25971079786392324",
       "rootCause": "unknown",
-      "diagnostics": "/tmp/inno-uninst-selftest.Nw1E1M",
+      "diagnostics": "~/.papercusp/scratch/c0523-inno-uninstall-cleanup-diagnostics-v1",
+      "diagnosticArchiveScope": "Unmodified original harness, compiled executable, Wine boot/compiler and installer logs copied from the failing run before temporary-directory cleanup; no rerun or correction of historical evidence.",
       "observation": "Compilation passed; the installer phase failed to connect to the owned Wine server. Product cleanup acceptance was not measured."
     },
     "fixtureBuild": {

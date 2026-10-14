@@ -627,11 +627,15 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     sessionId: 'test-sid',
   };
   beforeEach(() => {
+    // A fleet-launched test runner carries its own launcher provenance. Keep
+    // this suite's "not supplied" cases independent of the invoking session.
+    vi.stubEnv('PAPERCUSP_LAUNCHED_BY', undefined);
     spawnMock.mockReset();
     taskEnrolment.begin.mockClear();
     taskEnrolment.complete.mockClear();
     taskControl.kill.mockClear();
   });
+  afterEach(() => vi.unstubAllEnvs());
 
   it('keeps the default kickoff-proof budget beyond the headless MCP verification worst case', () => {
     expect(KICKOFF_PROOF_WINDOW_MS).toBeGreaterThanOrEqual(headlessRoleMcpVerifyWorstCaseMs());
