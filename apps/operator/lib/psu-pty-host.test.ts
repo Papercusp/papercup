@@ -6331,7 +6331,7 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
   });
 });
 
-describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-refused drills)', () => {
+describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-refused drills)', () => {
   const DRILL_MSG = {
     mode: 'carry-respawn',
     data: '⟦carry-drill:d-77⟧ first prompt',
@@ -6345,6 +6345,7 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     recycleError = null,
     waitIdle,
     maxProductionAttempts,
+    maxDrillAttempts,
     readWakeMode,
     waitWakeModeRetry,
   } = {}) {
@@ -6380,6 +6381,7 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
       emitEvent: (kind, extra) => events.push({ kind, ...extra }),
       capMs: 1234,
       ...(maxProductionAttempts === undefined ? {} : { maxProductionAttempts }),
+      ...(maxDrillAttempts === undefined ? {} : { maxDrillAttempts }),
       readWakeMode,
       waitWakeModeRetry,
     });
@@ -6419,8 +6421,8 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     expect(h.controller.pendingCount()).toBe(0);
   });
 
-  it('a retry that ALSO defers drops terminally with rearmed:true and never recycles', async () => {
-    const h = makeHarness({ promptResults: [{ deferred: true }] });
+  it('drops terminally with rearmed:true when its bounded retry budget is exhausted', async () => {
+    const h = makeHarness({ promptResults: [{ deferred: true }], maxDrillAttempts: 1 });
     expect(h.controller.schedule(DRILL_MSG)).toBe('queued');
     await h.settle();
     expect(h.recycles).toEqual([]);
@@ -6431,6 +6433,31 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
       rearmed: true,
     });
     expect(h.releaseCount()).toBe(1);
+    expect(h.controller.pendingCount()).toBe(0);
+  });
+
+  it('re-polls a busy drill and performs its single lifecycle cut at the next safe boundary', async () => {
+    const h = makeHarness({
+      promptResults: [{ deferred: true }, { deferred: false }],
+      maxDrillAttempts: 2,
+    });
+    expect(h.controller.schedule(DRILL_MSG)).toBe('queued');
+    await h.settle();
+    expect(h.recycles).toHaveLength(1);
+    expect(h.recycles[0]).toEqual({
+      data: DRILL_MSG.data,
+      opts: {
+        systemPromptAddendum: DRILL_MSG.systemPromptAddendum,
+        drillId: 'd-77',
+        sessionClass: 'gateway-claude-headless',
+      },
+    });
+    expect(h.order).toEqual([
+      'acquire', 'prompt', 'release',
+      'acquire', 'prompt', 'recycle', 'release',
+    ]);
+    expect(h.events.filter((e) => e.kind === 'carry-drill-rearm-queued')).toHaveLength(1);
+    expect(h.events.filter((e) => e.kind === 'carry-drill-carry-dropped')).toEqual([]);
     expect(h.controller.pendingCount()).toBe(0);
   });
 
@@ -6824,7 +6851,8 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
 
   // WI-5623: a PRODUCTION respawn is a MUST-DELIVER — it RE-POLLS across
   // successive busy-gate windows instead of dropping after one retry. A drill
-  // stays one-shot. (The old behavior — drop after one defer — meant 0/22
+  // still performs one lifecycle cut, but can wait for a later safe boundary.
+  // (The old behavior — drop after one defer — meant 0/22
   // production deliveries: autonomous/headless sessions are near-continuously
   // busy and rarely present the 1.5s idle window inside a single window, so the
   // respawn dropped before the session's next idle/recycle boundary and the
