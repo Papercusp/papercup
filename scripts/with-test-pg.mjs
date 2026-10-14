@@ -27,7 +27,7 @@
  * Teardown is best-effort but unconditional: the postmaster is stopped and the temp
  * datadir removed on normal exit, on a failing child, and on SIGINT/SIGTERM.
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { access, stat, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { constants, existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -223,6 +223,7 @@ let childFinishPromise = null;
 let cleanupPromise = null;
 let terminatingSignal = null;
 let cleanupStartedAt = null;
+let managedTaskCleanupEnv = null;
 function cleanupStage(stage, detail = {}) {
   // Cleanup is operational evidence for every isolated CLI. The proof flag
   // gates original-worker admission and detailed /proc sampling, not whether
@@ -287,7 +288,54 @@ async function cleanupOwnedState() {
   cleanupStartedAt = Date.now();
   // Keep failed exit fences visible while stopping the other owned resources.
   await cleanupOwnedTestState({ child, childLifetime, profileProcess, profileLifetime, pg,
-    dataDir, runtimeRoot, isolatedRuntime, cleanupStage, observePrivatePgStop });
+    dataDir, runtimeRoot, isolatedRuntime, cleanupStage, observePrivatePgStop,
+    stopManagedTasks: managedTasks && managedTaskCleanupEnv ? stopPrivateManagedTasks : null });
+}
+
+async function stopPrivateManagedTasks() {
+  // A task scope is outside the worker's process group. After that worker has
+  // stopped, reuse the private ledger and maintained controller to reap exact
+  // owned scopes, including terminal rows with surviving processes. Never
+  // enumerate or signal ambient user-manager units.
+  const script = `
+    import assert from 'node:assert/strict';
+    const workspace = process.env.PAPERCUSP_WORKSPACE_ID;
+    assert.match(workspace, /^test-runtime-/);
+    const url = new URL(process.env.HARNESS_ADMIN_DATABASE_URL);
+    assert.ok(['localhost', '127.0.0.1'].includes(url.hostname));
+    assert.equal(url.port, process.env.PAPERCUSP_PG_PORT);
+    assert.notEqual(url.port, '5432');
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { listTasks } = await import('./packages/operator-core/lib/task-manager/store.ts');
+    const { killTask } = await import('./packages/operator-core/lib/task-manager/control.ts');
+    const { absCgroupDir, walkCgroupTree } = await import('./packages/operator-core/lib/task-manager/cgroup-read.ts');
+    try {
+      const tasks = await listTasks({ workspaceId: workspace, includeEnded: true, limit: 2000 });
+      assert.ok(tasks.length < 2000, 'private task census exceeded its bounded read');
+      let reaped = 0;
+      for (const task of tasks) {
+        assert.equal(task.workspaceId, workspace);
+        if (!task.confined || !task.cgroupPath || !task.scopeUnit) {
+          assert.ok(task.endedAt || !task.pid, 'live private task has no verifiable scope');
+          continue;
+        }
+        if (!walkCgroupTree(absCgroupDir(task.cgroupPath)).length) continue;
+        const result = await killTask(task.taskId, { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 5000 });
+        assert.equal(walkCgroupTree(absCgroupDir(task.cgroupPath)).length, 0,
+          'private task scope survived stop: ' + JSON.stringify(result));
+        reaped++;
+      }
+      console.log('PRIVATE_MANAGED_TASK_CLEANUP ' + JSON.stringify({ workspace, checked: tasks.length, reaped }));
+    } finally { await getOrgPg().sql.end({ timeout: 1 }); }
+  `;
+  await new Promise((done, reject) => {
+    execFile(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script],
+      { cwd: ROOT, env: managedTaskCleanupEnv, timeout: 60000, maxBuffer: 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) reject(new Error('private managed task cleanup failed: ' + error.message + '\n' + stderr.slice(-4000)));
+        else { console.log(stdout.trim()); done(); }
+      });
+  });
 }
 
 // Maintained integration callers fork a dedicated process group. That group
@@ -725,6 +773,8 @@ if (!['postgres:', 'postgresql:'].includes(testAdminUrl.protocol) ||
     !testAdminUrl.username || !testAdminUrl.pathname.slice(1)) {
   throw new Error('private integration admin preflight failed: URL does not identify the owned Postgres');
 }
+if (managedTasks) managedTaskCleanupEnv = { ...childEnv, ...runtimeEnv,
+  PAPERCUSP_PG_PORT: String(port), PAPERCUSP_SKIP_PG_DISCOVERY: '1' };
 child = spawn(cmd[0], childArgs, {
   cwd: ROOT,
   stdio: observedRuntime ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit',

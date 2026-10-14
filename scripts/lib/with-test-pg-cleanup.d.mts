@@ -3,6 +3,8 @@ export interface CleanupOwnedTestStateOptions {
   childLifetime?: { terminate(): Promise<void> } | null;
   profileProcess?: { pid?: number } | null;
   profileLifetime?: { terminate(): Promise<void> } | null;
+  /** Reap private ledger-owned scopes while the private database is available. */
+  stopManagedTasks?: (() => Promise<void>) | null;
   pg?: { stop(): Promise<void>; health?(): unknown } | null;
   dataDir: string;
   runtimeRoot?: string | null;

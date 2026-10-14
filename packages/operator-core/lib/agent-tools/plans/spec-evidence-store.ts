@@ -16,7 +16,8 @@ import {
   stableRecordedRuntimeEnvironment,
 } from '@papercusp/test-config/execution-details';
 import { CALIBRATION_LEGS } from '@papercusp/test-config/mutation-descriptor';
-import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
+import { listRuntimeVintage } from '../../runtime-vintage';
+import { measureRuntimeEnvironment } from '../../remote-runtime-identity';
 import { defaultEvidenceRoot } from '@papercusp/verification-harness';
 import { pgTimestampToIso } from '../../pg-timestamp';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from '../../acceptance-author-identity';
@@ -867,7 +868,7 @@ async function liveRuntimeEnvironment(
 ): Promise<{ environmentFingerprint?: string | null }> {
   if (!measurement.runtimeUnits || measurement.completedRuntime) return {};
   return {
-    environmentFingerprint: measureRuntimeVintageEnvironment(
+    environmentFingerprint: await measureRuntimeEnvironment(
       await listRuntimeVintage(workspaceId), measurement.runtimeUnits),
   };
 }
@@ -923,7 +924,7 @@ export async function measureWorkItemsEvidenceForScope(
   const entries = ids.map((id) => ({ id, status: statusById.get(id) ?? null }));
   const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
   const environmentFingerprint = parsed.runtimeUnits
-    ? measureRuntimeVintageEnvironment(runtimeRows ?? await listRuntimeVintage(workspaceId), parsed.runtimeUnits)
+    ? await measureRuntimeEnvironment(runtimeRows ?? await listRuntimeVintage(workspaceId), parsed.runtimeUnits)
     : undefined;
   return {
     sourceFingerprint: `sha256-work-item-set-v1:${digest}`,
@@ -2658,7 +2659,8 @@ export interface SupersessionResult {
  * current unit proof. A sibling is withdrawn only when it proves the same subject — the test
  * run's file (the same `test_runs.file_path` the evaluator reads as testRunProvenance), else
  * `details.testRun.filePath`, else the evidence ref — AND claims nothing the superseding row
- * does not: an `adequacy.targeted` that differs, or `adequacy.causalPairIds` outside the
+ * does not: an `adequacy.targeted` that differs under the clause's accepted-target policy,
+ * or `adequacy.causalPairIds` outside the
  * superseding row's set, is a different proof. Survivors are returned in `kept` with that
  * reason, so a caller who meant to clear them retracts those ids explicitly.
  */
@@ -2673,12 +2675,27 @@ export async function supersedeSpecEvidenceAtRevision(
     const siblings = await tx<
       Array<Omit<SupersessionKeptRow, 'keep_reason'> & { keep_reason: SupersessionKeepReason | null }>
     >`
-      WITH clause_rows AS (
+      WITH target_policy AS (
+        SELECT CASE WHEN jsonb_typeof(r.falsifier->'requiredScenarios') = 'array'
+                    THEN jsonb_array_length(r.falsifier->'requiredScenarios') = 0
+                    ELSE true END AS accepts_self_target
+          FROM harness_shared.plan_spec_clause_revisions r
+         WHERE r.workspace_id = ${scope.workspaceId}
+           AND r.harness_slug = ${scope.harnessSlug}
+           AND r.plan_slug = ${options.planSlug}
+           AND r.spec_id = ${options.specId}
+           AND r.revision = ${options.specRevision}
+      ), clause_rows AS (
         SELECT b.id, b.work_item_id, b.evidence_ref,
                COALESCE(NULLIF(tr.file_path, ''), NULLIF(b.details->'testRun'->>'filePath', ''), b.evidence_ref)
                  AS subject,
-               CASE WHEN jsonb_typeof(b.details->'adequacy'->'targeted') = 'string'
-                    THEN b.details->'adequacy'->>'targeted' END AS targeted,
+               CASE WHEN jsonb_typeof(b.details->'adequacy'->'targeted') = 'string' THEN
+                      CASE WHEN (SELECT accepts_self_target FROM target_policy)
+                                 AND b.details->'adequacy'->>'targeted'
+                                     IN (${options.specId}, ${options.specId.toLowerCase()})
+                           THEN ${options.specId}
+                           ELSE b.details->'adequacy'->>'targeted' END
+                    END AS targeted,
                CASE WHEN jsonb_typeof(b.details->'adequacy'->'causalPairIds') = 'array'
                     THEN b.details->'adequacy'->'causalPairIds' ELSE '[]'::jsonb END AS causal_pair_ids
           FROM harness_shared.spec_evidence_bindings b
@@ -3404,6 +3421,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const probeSnapshots = await readRepoFilesProbeSnapshots(workingTreeRecipes, measurementRootFor);
   recordPhase('preReadProbeSnapshots', probeSnapshotsStartedAt);
   let runtimeRows: ReturnType<typeof listRuntimeVintage> | undefined;
+  // One control-plane read per remote runtime per evaluation (WI-6554700010011907).
+  const remoteRuntimeIdentities = new Map<string, Promise<string | null>>();
   const bindingMeasurementStatus = (status: 'measured' | 'unavailable' | 'skipped', startedAt: number) => {
     if (!diagnostics) return;
     const elapsedMs = Math.max(0, Date.now() - startedAt);
@@ -3556,8 +3575,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             ...(recipe.runtimeUnits ? { environmentFingerprint: recipe.completedRuntime
               ? await measureCompletedTestRuntime(row, recipe, detailed.files, scope, measurementRoot,
                 { onStaticGuidanceEquivalence: value => { sourceEquivalence = value; } })
-              : measureRuntimeVintageEnvironment(
-                await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits) } : {}),
+              : await measureRuntimeEnvironment(
+                await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits,
+                { memo: remoteRuntimeIdentities }) } : {}),
           };
           files = detailed.files;
         }

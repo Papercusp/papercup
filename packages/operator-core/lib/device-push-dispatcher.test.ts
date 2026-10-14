@@ -259,6 +259,19 @@ describe('stale FCM token reaping (WI-37477)', () => {
     expect(tokensToReap(targets, [{ platform: 'fcm', ok: false, status: 404, unregistered: true }])).toEqual([]);
   });
 
+  it('notifyWorkspace forwards the required session capability to the workspace target query', async () => {
+    const targets = vi.fn().mockResolvedValue([]);
+    vi.doMock('./device-store', () => ({ pushTargetsForWorkspace: targets, deletePushToken: vi.fn() }));
+    vi.resetModules();
+    const { notifyWorkspace } = await import('./device-push-dispatcher');
+    expect(await notifyWorkspace('ws-a', { title: 'Agent message', body: 'Review requested' },
+      { requiredCapability: 'agent-sessions' })).toEqual([]);
+    expect(targets).toHaveBeenCalledOnce();
+    expect(targets).toHaveBeenCalledWith('ws-a', 'agent-sessions');
+    vi.doUnmock('./device-store');
+    vi.resetModules();
+  });
+
   it('notifyWorkspace DELETES an unregistered token and leaves the healthy ones alone', async () => {
     const deleted: string[] = [];
     vi.doMock('./device-store', () => ({

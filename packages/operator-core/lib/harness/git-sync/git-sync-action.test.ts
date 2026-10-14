@@ -674,6 +674,7 @@ import {
   isGenericLockIntent,
   runWithGitSyncPerInstallLease,
   resolveGitServingStateWithBootRecovery,
+  resolveHiveGitActor,
   formatIntegratorErrorWarning,
   resetIntegratorErrorWarningsForTest,
   runBootstrapLeg,
@@ -762,6 +763,15 @@ describe('WI-10000734 omitted serving-handle recovery', () => {
 });
 
 describe('isIntegratorActorAdmitted — canonical signer membership gate (WI-38968)', () => {
+  it('P034: publication preserves an unavailable serving owner instead of reporting a missing hive key', async () => {
+    await expect(resolveHiveGitActor('ws-serving-recovery', 'papercusp', 'papercusp', 'repo', {
+      requireReady: true,
+      getBootedHarness: () => null,
+      bootSingleHarness: async () => ({ state: 'failed', error: 'owner snapshot has no serving handles' }),
+      getPgGitServingCapability: async () => ({ status: 'absent', retryable: true, reason: 'owner snapshot omitted handle' }),
+    })).rejects.toThrow('serving unavailable (unknown: lazy serving recovery failed: owner snapshot has no serving handles)');
+  });
+
   it('admits only an exact device pubkey present in the Pot roster', () => {
     expect(isIntegratorActorAdmitted('device-b', ['device-a', 'device-b'])).toBe(true);
     expect(isIntegratorActorAdmitted('device-c', ['device-a', 'device-b'])).toBe(false);

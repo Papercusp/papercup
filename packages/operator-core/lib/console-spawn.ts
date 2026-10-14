@@ -1430,6 +1430,21 @@ export const KICKOFF_PROOF_TOKEN_ENV = 'PAPERCUSP_KICKOFF_PROOF_TOKEN';
  * wait only runs this long on a slow or failing launch; a proof returns early. */
 export { KICKOFF_PROOF_WINDOW_MS };
 
+/**
+ * EI-25925116860039557: a quota refusal at launch can only be fixed by changing
+ * the route. That covers both a wall already visible at submit
+ * (`submit-verification-aborted-quota-blocked`) and a wall that answers the
+ * kickoff (`provider-quota-rejected`). The refusal therefore names the lever,
+ * so the caller does not repeat the same launch on the same account.
+ */
+export function kickoffQuotaLeverNote(reason: string | null | undefined): string {
+  if (typeof reason !== 'string' || !/quota/i.test(reason)) return '';
+  return (
+    ` — the launch account is out of quota; relaunch with account:'auto'` +
+    ` (gateway pool with failover) or pin a different account`
+  );
+}
+
 /** Injectable seams for the detached kickoff-proof receipt poll. */
 export interface KickoffProofProbes {
   readReceipt?: (path: string, token: string) => string;
@@ -2959,7 +2974,9 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
       if (cleaned) {
         return {
           status: 'error',
-          error: `headless kickoff was not submitted (${kickoffProof.reason}); task ${enrolment.taskId} was stopped or already gone`,
+          error:
+            `headless kickoff was not submitted (${kickoffProof.reason}); task ${enrolment.taskId} was stopped or already gone` +
+            kickoffQuotaLeverNote(kickoffProof.reason),
           code: 502,
           logPath,
         };

@@ -35,8 +35,285 @@ import {
   type FrozenRepairLatencySource,
 } from './frozen-candidate-repair-queue';
 import type { GateNonVerdictReasons } from './gate-fire-ledger';
+import { classifyGateOutcomeStatus, isGateFireId, VERDICT_BEARING_STATUSES } from './gate-fire-ledger';
+import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
+import type { Sql } from 'postgres';
 
 const HOUR_MS = 60 * 60 * 1000;
+
+/** Original snapshots only; no current gate read, verdict or queue mutation. */
+export async function readGreenMainRepairRoundWindow(sql: Sql,
+  scope: { workspaceId: string; installSlug: string },
+  window: { windowStartMs: number; windowEndMs: number; maxRows?: number }): Promise<PipelineEventWindowRead> {
+  const { windowStartMs, windowEndMs } = window;
+  const maxRows = window.maxRows ?? 10_000;
+  const base = { windowStartMs, windowEndMs, total: null, rows: [] };
+  if (!scope.workspaceId.trim() || !scope.installSlug.trim() ||
+      !Number.isSafeInteger(windowStartMs) || windowStartMs < 0 ||
+      !Number.isSafeInteger(windowEndMs) || windowStartMs >= windowEndMs ||
+      !Number.isSafeInteger(maxRows) || maxRows < 1 || maxRows > 50_000) {
+    return { ...base, status: 'invalid', reason: 'Exact scope, finite window and bounded population are required.' };
+  }
+  try {
+    const rows = await sql<{ id: string; status: string; detail: Record<string, unknown>;
+      created_at: Date | string; population_count: string | number }[]>`
+      WITH predecessor AS (
+        SELECT id, status, detail, created_at FROM harness_shared.pipeline_events
+        WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.installSlug}
+          AND kind = 'green_checkpoint_repair_latency' AND created_at <= ${new Date(windowStartMs)}
+        ORDER BY created_at DESC, id DESC LIMIT 1
+      ), population AS (
+        SELECT * FROM predecessor
+        UNION ALL
+        SELECT id, status, detail, created_at FROM harness_shared.pipeline_events
+        WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.installSlug}
+          AND kind = 'green_checkpoint_repair_latency'
+          AND (created_at > ${new Date(windowStartMs)} OR
+            (created_at = (SELECT created_at FROM predecessor) AND id > (SELECT id FROM predecessor)))
+          AND created_at <= ${new Date(windowEndMs)}
+      )
+      SELECT id::text, status, detail, created_at, count(*) OVER () AS population_count
+      FROM population ORDER BY created_at, id LIMIT ${maxRows + 1}`;
+    const total = rows.length ? Number(rows[0]!.population_count) : 0;
+    if (!Number.isSafeInteger(total) || total < rows.length ||
+        (total <= maxRows && total !== rows.length) || rows.some(row => Number(row.population_count) !== total)) {
+      return { ...base, status: 'unavailable', reason: 'Historical population count is inconsistent.' };
+    }
+    return { windowStartMs, windowEndMs, total, status: total > maxRows ? 'capped' : 'complete',
+      reason: total > maxRows ? 'Historical population exceeds the row budget.' : null,
+      rows: rows.slice(0, maxRows).map(row => ({ id: row.id, kind: 'green_checkpoint_repair_latency',
+        status: row.status, detail: row.detail, createdAtMs: new Date(row.created_at).getTime() })) };
+  } catch (error) {
+    return { ...base, status: 'unavailable', reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Completed round intervals from original snapshots, matching the SLO panel's
+ * consecutive-round population. Does not qualify an unfinished round, idle time,
+ * alarm delivery, the seven-day soak or shipment. Missing legacy data stays unknown.
+ */
+export function evaluateGreenMainRepairRoundWindow(history: PipelineEventWindowRead, observedAtMs = Date.now()) {
+  const windowValid = Number.isSafeInteger(history.windowStartMs) && history.windowStartMs >= 0 &&
+    Number.isSafeInteger(history.windowEndMs) && history.windowEndMs > history.windowStartMs &&
+    Number.isSafeInteger(observedAtMs) && observedAtMs >= history.windowEndMs;
+  const complete = history.status === 'complete' && history.total === history.rows.length && history.rows.length > 0 &&
+    new Set(history.rows.map(row => row.id)).size === history.rows.length;
+  const cycles = new Map<string, Map<number, { round: number; head: string; atMs: number }>>();
+  let qualified = complete;
+  for (const row of history.rows) {
+    const detail = row.detail;
+    const progress = detail?.repairProgress as { phase?: unknown; rounds?: unknown } | undefined;
+    const openedAtMs = (detail?.repairLatency as { stamps?: { openedAtMs?: unknown } } | undefined)?.stamps?.openedAtMs;
+    if (!row.id?.trim() || row.kind !== 'green_checkpoint_repair_latency' ||
+        !['converging', 'held', 'retired'].includes(row.status) ||
+        !Number.isSafeInteger(row.createdAtMs) || row.createdAtMs > history.windowEndMs ||
+        !Number.isSafeInteger(detail?.observedAtMs) || (detail.observedAtMs as number) > row.createdAtMs ||
+        typeof detail?.candidate !== 'string' || !detail.candidate.trim() ||
+        !Number.isSafeInteger(openedAtMs) || (openedAtMs as number) < 0 ||
+        (openedAtMs as number) > (detail.observedAtMs as number) ||
+        !['ready-to-test', 'awaiting-fixer', 'ready-to-verify', 'ready-to-promote', 'blocked'].includes(String(progress?.phase)) ||
+        !Array.isArray(progress?.rounds)) { qualified = false; continue; }
+    const key = JSON.stringify([detail.candidate, openedAtMs]);
+    const rounds = cycles.get(key) ?? new Map();
+    const snapshotOrdinals = new Set<number>();
+    for (const raw of progress.rounds) {
+      const round = raw as { round: number; head: string; atMs: number } | null;
+      if (!round || !Number.isSafeInteger(round.round) || round.round < 1 ||
+          snapshotOrdinals.has(round.round) || typeof round.head !== 'string' || !round.head.trim() ||
+          !Number.isSafeInteger(round.atMs) || round.atMs < (openedAtMs as number) ||
+          round.atMs > (detail.observedAtMs as number)) { qualified = false; continue; }
+      snapshotOrdinals.add(round.round);
+      const prior = rounds.get(round.round);
+      if (prior && (prior.head !== round.head || prior.atMs !== round.atMs)) qualified = false;
+      rounds.set(round.round, { round: round.round, head: round.head, atMs: round.atMs });
+    }
+    cycles.set(key, rounds);
+  }
+  const intervals: Array<{ cycle: string; fromRound: number; toRound: number; durationMs: number }> = [];
+  for (const [cycle, rounds] of cycles) {
+    const ordered = [...rounds.values()].sort((a, b) => a.round - b.round);
+    if (!ordered.length || ordered[0]!.round !== 1) qualified = false;
+    for (let i = 1; i < ordered.length; i++) {
+      const before = ordered[i - 1]!, after = ordered[i]!;
+      if (after.round !== before.round + 1 || after.atMs <= before.atMs) qualified = false;
+      if (after.atMs >= history.windowStartMs && after.atMs <= history.windowEndMs) {
+        intervals.push({ cycle, fromRound: before.round, toRound: after.round, durationMs: after.atMs - before.atMs });
+      }
+    }
+  }
+  const admissible = windowValid && complete && qualified && intervals.length > 0;
+  return { intervals, eventIds: history.rows.map(row => row.id), assertions: [
+    { id: 'bounded-repair-round-window', passed: windowValid, evidence: `start=${history.windowStartMs}; end=${history.windowEndMs}; observed=${observedAtMs}` },
+    { id: 'complete-repair-round-population', passed: complete, evidence: `read=${history.status}; population=${history.total}; rows=${history.rows.length}` },
+    { id: 'original-consecutive-repair-rounds', passed: complete && qualified, evidence: 'Original queue identity, ordinal and clock; missing/capped/conflicting snapshots do not qualify.' },
+    { id: 'nonempty-completed-repair-rounds', passed: admissible, evidence: `intervals=${intervals.length}` },
+    { id: 'completed-repair-rounds-at-most-45min', passed: admissible && intervals.every(round => round.durationMs <= 45 * 60_000), evidence: `max=${intervals.length ? Math.max(...intervals.map(round => round.durationMs)) : 'unknown'}ms` },
+  ] };
+}
+
+export async function executeGreenMainRepairRoundWindow(sql: Sql, args: {
+  workspaceId: string; harnessSlug: string; projectDir: string; installSlug: string;
+  runtimeUnits: string[]; windowStartMs: number; windowEndMs: number;
+}) {
+  const { createHash } = await import('node:crypto');
+  const { executeOperationalRun } = await import('../agent-tools/testing/record-run');
+  return executeOperationalRun({ filePath: 'packages/operator-core/lib/release/green-main-slo.ts',
+    name: 'Original completed repair-round history', framework: 'operational',
+    command: ['executeGreenMainRepairRoundWindow', args.workspaceId, args.installSlug,
+      String(args.windowStartMs), String(args.windowEndMs)], runtimeUnits: args.runtimeUnits,
+    run: async () => {
+      const history = await readGreenMainRepairRoundWindow(sql, args, args);
+      const evaluation = evaluateGreenMainRepairRoundWindow(history);
+      return { exitCode: evaluation.assertions.every(assertion => assertion.passed) ? 0 : 1,
+        assertions: evaluation.assertions,
+        summary: `Completed round history only: workspace=${args.workspaceId}; install=${args.installSlug}; ` +
+          `window=${args.windowStartMs}..${args.windowEndMs}; intervals=${evaluation.intervals.length}; ` +
+          `original_population_sha256=${createHash('sha256').update(JSON.stringify(history)).digest('hex')}. ` +
+          'Open rounds, idle actuators, alarms and shipment require separate evidence.' };
+    },
+  }, args);
+}
+
+/** Original red-to-green history only. This never reads or operates the current gate. */
+export async function readGreenMainRecoveryWindow(sql: Sql,
+  scope: { workspaceId: string; installSlug: string },
+  window: { windowStartMs: number; windowEndMs: number; maxRows?: number }): Promise<PipelineEventWindowRead> {
+  const { windowStartMs, windowEndMs } = window;
+  const maxRows = window.maxRows ?? 10_000;
+  const base = { windowStartMs, windowEndMs, total: null, rows: [] };
+  if (!scope.workspaceId.trim() || !scope.installSlug.trim() ||
+      !Number.isSafeInteger(windowStartMs) || windowStartMs < 0 ||
+      !Number.isSafeInteger(windowEndMs) || windowStartMs >= windowEndMs ||
+      !Number.isSafeInteger(maxRows) || maxRows < 1 || maxRows > 50_000) {
+    return { ...base, status: 'invalid', reason: 'Exact scope, finite window and bounded population are required.' };
+  }
+  const greenStatuses = VERDICT_BEARING_STATUSES.filter(status => classifyGateOutcomeStatus(status) === 'verdict-green');
+  try {
+    // Start at the last green, not the last verdict: repeated reds must not
+    // shorten a boundary-crossing outage. Count and rows share one snapshot.
+    const rows = await sql<{ id: string; status: string; detail: Record<string, unknown>;
+      created_at: Date | string; population_count: string | number }[]>`
+      WITH predecessor AS (
+        SELECT id, status, detail, created_at FROM harness_shared.pipeline_events
+        WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.installSlug}
+          AND kind = 'green_checkpoint' AND status = ANY(${greenStatuses}::text[])
+          AND created_at <= ${new Date(windowStartMs)}
+        ORDER BY created_at DESC, id DESC LIMIT 1
+      ), population AS (
+        SELECT * FROM predecessor
+        UNION ALL
+        SELECT id, status, detail, created_at FROM harness_shared.pipeline_events
+        WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.installSlug}
+          AND kind = 'green_checkpoint'
+          AND (created_at > COALESCE((SELECT created_at FROM predecessor), ${new Date(windowStartMs)})
+            OR (created_at = (SELECT created_at FROM predecessor) AND id > (SELECT id FROM predecessor)))
+          AND created_at <= ${new Date(windowEndMs)}
+      )
+      SELECT id::text, status, detail, created_at, count(*) OVER () AS population_count
+      FROM population ORDER BY created_at, id LIMIT ${maxRows + 1}`;
+    const total = rows.length ? Number(rows[0]!.population_count) : 0;
+    if (!Number.isSafeInteger(total) || total < rows.length ||
+        (total <= maxRows && total !== rows.length) || rows.some(row => Number(row.population_count) !== total)) {
+      return { ...base, status: 'unavailable', reason: 'Historical population count is inconsistent.' };
+    }
+    return { windowStartMs, windowEndMs, total, status: total > maxRows ? 'capped' : 'complete',
+      reason: total > maxRows ? 'Historical population exceeds the row budget.' : null,
+      rows: rows.slice(0, maxRows).map(row => ({ id: row.id, kind: 'green_checkpoint', status: row.status,
+        detail: row.detail, createdAtMs: new Date(row.created_at).getTime() })) };
+  } catch (error) {
+    return { ...base, status: 'unavailable', reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Goal's recovery-time portion. Median defines typical and nearest-rank defines p90;
+ * those statistical choices still require the pending outside-lineage BAR review.
+ * No repair-round, idle-actuator, alarm, invariant-soak or shipment assertion is implied.
+ */
+export function evaluateGreenMainRecoveryWindow(history: PipelineEventWindowRead, observedAtMs = Date.now()) {
+  const order = (a: PipelineEventWindowRead['rows'][number], b: PipelineEventWindowRead['rows'][number]) =>
+    a.createdAtMs - b.createdAtMs || String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
+  const rows = [...history.rows].sort(order);
+  const windowValid = Number.isSafeInteger(history.windowStartMs) && history.windowStartMs >= 0 &&
+    Number.isSafeInteger(history.windowEndMs) && history.windowEndMs > history.windowStartMs &&
+    Number.isSafeInteger(observedAtMs) && observedAtMs >= history.windowEndMs;
+  const complete = history.status === 'complete' && history.total === rows.length && rows.length > 0 &&
+    new Set(rows.map(row => row.id)).size === rows.length && rows.every(row =>
+      typeof row.id === 'string' && row.id.trim().length > 0 && row.kind === 'green_checkpoint' &&
+      Number.isSafeInteger(row.createdAtMs) && row.createdAtMs >= 0 && row.createdAtMs <= history.windowEndMs);
+  const groups = new Map<string, typeof rows>();
+  let qualified = complete;
+  for (const row of rows) {
+    const fireId = row.detail?.gateFireId;
+    if (!isGateFireId(fireId) || classifyGateOutcomeStatus(row.status) === 'unknown') { qualified = false; continue; }
+    const group = groups.get(fireId) ?? [];
+    group.push(row); groups.set(fireId, group);
+  }
+  const verdicts: typeof rows = [];
+  for (const group of groups.values()) {
+    const measured = group.filter(row => ['verdict-red', 'verdict-green', 'promotion-failed'].includes(classifyGateOutcomeStatus(row.status)));
+    // A scheduled fallback may repeat a producer's terminal receipt. Collapse
+    // only identical measured run/source/status; conflicting receipts stay red.
+    const identities = measured.map(row => JSON.stringify([row.status, row.detail.runId, row.detail.candidate,
+      row.detail.frozenCandidate, row.detail.repairHead, row.detail.verdictProvenance]));
+    if (new Set(identities).size > 1) qualified = false;
+    if (measured.length) verdicts.push(measured[0]!);
+  }
+  verdicts.sort(order);
+  const boundaryKnown = verdicts.length > 0 && verdicts[0]!.createdAtMs <= history.windowStartMs &&
+    classifyGateOutcomeStatus(verdicts[0]!.status) === 'verdict-green';
+  const episodes: Array<{ redEventId: string; greenEventId: string; redAtMs: number; greenAtMs: number; durationMs: number }> = [];
+  let openRed: (typeof rows)[number] | undefined;
+  for (const row of verdicts) {
+    const cls = classifyGateOutcomeStatus(row.status);
+    if (cls === 'verdict-red') openRed ??= row;
+    else if (cls === 'verdict-green' && openRed) {
+      episodes.push({ redEventId: openRed.id, greenEventId: row.id, redAtMs: openRed.createdAtMs,
+        greenAtMs: row.createdAtMs, durationMs: row.createdAtMs - openRed.createdAtMs });
+      openRed = undefined;
+    }
+  }
+  const durations = episodes.map(episode => episode.durationMs).sort((a, b) => a - b);
+  const medianMs = median(durations);
+  const p90Ms = durations.length ? durations[Math.ceil(durations.length * 0.9) - 1]! : null;
+  const admissible = windowValid && complete && qualified && boundaryKnown && !openRed && episodes.length > 0;
+  return { episodes, openRedEventId: openRed?.id ?? null, medianMs, p90Ms, eventIds: rows.map(row => row.id), assertions: [
+    { id: 'bounded-recovery-window', passed: windowValid, evidence: `start=${history.windowStartMs}; end=${history.windowEndMs}; observed=${observedAtMs}` },
+    { id: 'complete-recovery-population', passed: complete, evidence: `read=${history.status}; population=${history.total}; rows=${rows.length}; ${history.reason ?? 'no read error'}` },
+    { id: 'qualified-recovery-verdicts', passed: complete && qualified, evidence: 'Original fire identities and known statuses; duplicate measured receipts must agree.' },
+    { id: 'recovery-left-boundary-known', passed: complete && qualified && boundaryKnown, evidence: `predecessor=${verdicts[0]?.id ?? 'none'}` },
+    { id: 'all-red-episodes-closed', passed: complete && qualified && boundaryKnown && !openRed, evidence: `open-red=${openRed?.id ?? 'none'}` },
+    { id: 'nonempty-recovery-sample', passed: admissible, evidence: `episodes=${episodes.length}` },
+    { id: 'recovery-median-at-most-4h', passed: admissible && medianMs !== null && medianMs <= 4 * HOUR_MS, evidence: `median=${medianMs ?? 'unknown'}ms; episodes=${episodes.length}` },
+    { id: 'recovery-p90-at-most-8h', passed: admissible && p90Ms !== null && p90Ms <= 8 * HOUR_MS, evidence: `nearest-rank-p90=${p90Ms ?? 'unknown'}ms; episodes=${episodes.length}` },
+  ] };
+}
+
+/** Fresh native measurement of archived recovery history, with original population identity. */
+export async function executeGreenMainRecoveryWindow(sql: Sql, args: {
+  workspaceId: string; harnessSlug: string; projectDir: string; installSlug: string;
+  runtimeUnits: string[]; windowStartMs: number; windowEndMs: number;
+}) {
+  const { createHash } = await import('node:crypto');
+  const { executeOperationalRun } = await import('../agent-tools/testing/record-run');
+  return executeOperationalRun({ filePath: 'packages/operator-core/lib/release/green-main-slo.ts',
+    name: 'Original red-to-green recovery history', framework: 'operational',
+    command: ['executeGreenMainRecoveryWindow', args.workspaceId, args.installSlug,
+      String(args.windowStartMs), String(args.windowEndMs)], runtimeUnits: args.runtimeUnits,
+    run: async () => {
+      const history = await readGreenMainRecoveryWindow(sql, args, args);
+      const evaluation = evaluateGreenMainRecoveryWindow(history);
+      return { exitCode: evaluation.assertions.every(assertion => assertion.passed) ? 0 : 1,
+        assertions: evaluation.assertions,
+        summary: `Recovery history only: workspace=${args.workspaceId}; install=${args.installSlug}; ` +
+          `window=${args.windowStartMs}..${args.windowEndMs}; episodes=${evaluation.episodes.length}; ` +
+          `original_population_sha256=${createHash('sha256').update(JSON.stringify(history)).digest('hex')}; ` +
+          `first=${evaluation.eventIds[0] ?? 'none'}; last=${evaluation.eventIds.at(-1) ?? 'none'}. ` +
+          'Median/nearest-rank semantics await BAR review; other runtime targets require separate evidence.' };
+    },
+  }, args);
+}
 
 /** SLO thresholds. Pages are the owner-approved D-021 values; the alert targets are D-030. */
 export const GREEN_MAIN_SLO_DEFAULTS = {

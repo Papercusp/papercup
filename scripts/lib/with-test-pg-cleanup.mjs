@@ -21,6 +21,7 @@ export async function cleanupOwnedTestState(state) {
   await cleanupStage('start');
   if (childLifetime) await attempt('child-group-stop', () => childLifetime.terminate(), { pid: child.pid });
   if (profileLifetime) await attempt('profile-stop', () => profileLifetime.terminate(), { pid: profileProcess.pid });
+  if (state.stopManagedTasks) await attempt('managed-tasks-stop', state.stopManagedTasks);
 
   const stopObserving = observePrivatePgStop();
   // Waiting is a stage receipt, not evidence that a process has exited.

@@ -391,6 +391,32 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
     expect(classifyGitSyncFailingLeg('failed to push some refs to origin', 'push')).toBe('push');
   });
 
+  it.each([
+    'git-sync publication refused: serving unavailable (unknown: lazy serving recovery failed: migration gate failed: snapshot admission)',
+    'git-sync publication refused: serving capability has no usable device actor',
+  ])('escalates a serving refusal before push with its startup cause: %s', (cause) => {
+    const actual = `push failed: ${cause}`;
+    expect(classifyGitSyncFailingLeg(actual, 'push')).toBe('serving');
+    const decision = decideGitSyncEscalation({
+      ...base,
+      status: 'error',
+      consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS,
+      errors: [{ scope: 'libs/papercusp', message: actual }],
+    });
+    expect(decision.escalate).toBe(true);
+    expect(decision.broadcast).toContain('serving owner unavailable');
+    expect(decision.broadcast).toContain('repair substrate startup');
+    expect(decision.broadcast).toContain(cause);
+    expect(decision.broadcast).not.toContain('commits NOT reaching origin');
+    expect(decideGitSyncEscalation({
+      ...base,
+      status: 'error',
+      consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS + 1,
+      errors: [{ scope: 'libs/papercusp', message: actual }],
+    }).broadcast).toBeNull();
+    expect(decideGitSyncEscalation(base).clear).toBe(true);
+  });
+
   it('classifies a conflict as conflict, even though the text also mentions commit', () => {
     expect(classifyGitSyncFailingLeg('merge conflict in lib/x.ts; commit aborted', 'push')).toBe('conflict');
   });

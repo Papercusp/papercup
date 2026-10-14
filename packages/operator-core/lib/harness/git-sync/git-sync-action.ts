@@ -4223,7 +4223,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
               const { potHomeSlug, repoKey } = gate.hiveGitIdentity;
               const scope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
               const owner = await loadHiveEffectAuthority(workspaceId, potHomeSlug, scope);
-              const actor = owner ? await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey) : null;
+              const actor = owner
+                ? await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey, { requireReady: true })
+                : null;
               await requireHiveEffectAuthority(
                 owner && actor
                   ? {
@@ -5793,6 +5795,8 @@ interface GitServingBootResult {
 }
 
 export interface GitServingResolutionDeps {
+  /** Publication must retain the serving failure, rather than report a missing owner key. */
+  requireReady?: boolean;
   getBootedHarness?(workspaceId: string, harnessSlug: string): GitServingRecoveryHandle | null;
   bootSingleHarness?(workspaceId: string, harnessSlug: string): Promise<GitServingBootResult>;
   getPgGitServingCapability?(request: GitServingRequest): Promise<GitServingState>;
@@ -5888,6 +5892,9 @@ export async function resolveHiveGitActor(
     const resolve = (): Promise<GitServingState> => resolveGitServingStateWithBootRecovery(request, deps);
     const state = validateGitServingState(await resolve(), request);
     if (state.status !== 'ready') {
+      if (deps.requireReady) {
+        throw new Error(`git-sync publication refused: serving unavailable (${state.status}: ${state.reason})`);
+      }
       console.warn(
         `[git-sync] ${installSlug}: serving unavailable (${state.status}: ${state.reason}); retry next tick`,
       );
@@ -5895,7 +5902,10 @@ export async function resolveHiveGitActor(
     }
     const capability = state.capability;
     const actor = pickHiveGitActor(state, request);
-    if (!actor) return null;
+    if (!actor) {
+      if (deps.requireReady) throw new Error('git-sync publication refused: serving capability has no usable device actor');
+      return null;
+    }
     const { keychainId } = actor;
     return {
       ...actor,
@@ -5903,6 +5913,7 @@ export async function resolveHiveGitActor(
       sign: guardGitServingSigner(capability, request, resolve, (bytes) => signWithDeviceKey(keychainId, bytes)),
     };
   } catch (error) {
+    if (deps.requireReady) throw error;
     console.warn(
       `[git-sync] ${installSlug}: serving unavailable (unknown: ${error instanceof Error ? error.message : String(error)}); retry next tick`,
     );

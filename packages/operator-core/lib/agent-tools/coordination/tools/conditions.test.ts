@@ -28,7 +28,12 @@ vi.mock("../log", () => ({
   coordHasPgFastPath: () => M.pgFastPath,
 }));
 
-import tool, { computeConditionStates, readConditionEnvelopes } from "./conditions";
+import tool, {
+  CONDITIONS_FAST_PATH_ROW_CAP,
+  computeConditionStates,
+  readConditionEnvelopes,
+  readLatestConditionEnvelope,
+} from "./conditions";
 
 const ctx = (): never =>
   ({ ownerId: "owner-a", workspaceId: "ws-test", metadata: vi.fn(), log: vi.fn(), progress: vi.fn() }) as never;
@@ -399,5 +404,50 @@ describe("coord:conditions handler", () => {
     expect(capped.resolved).toHaveLength(2);
     // most recent first
     expect(capped.resolved.map((s) => s.condition_key)).toEqual(["c", "b"]);
+  });
+
+  // WI-6554700010011878: a fold over a FULL window is a floor, not the census.
+  it("marks window_saturated when the PG window came back full, and omits it otherwise", async () => {
+    M.pgFastPath = true;
+    const full = Array.from({ length: CONDITIONS_FAST_PATH_ROW_CAP }, (_, i) => ({ body: alarm(i % 60, `k${i % 7}`) }));
+    M.pgQuery.mockImplementation(async (..._args: unknown[]) => full);
+    const saturated = (await call()) as Out & { window_saturated?: Record<string, unknown> };
+    expect(saturated.window_saturated).toMatchObject({
+      rows: CONDITIONS_FAST_PATH_ROW_CAP,
+      cap: CONDITIONS_FAST_PATH_ROW_CAP,
+    });
+
+    M.pgQuery.mockImplementation(async (..._args: unknown[]) => full.slice(1));
+    const partial = (await call()) as Out & { window_saturated?: unknown };
+    expect(partial.window_saturated).toBeUndefined();
+  });
+});
+
+describe("readLatestConditionEnvelope (WI-6554700010011878)", () => {
+  it("returns null without a PG fast path and issues no query", async () => {
+    await expect(readLatestConditionEnvelope("k")).resolves.toBeNull();
+    expect(M.pgQuery).not.toHaveBeenCalled();
+  });
+
+  it("seeks the newest envelope naming the key in any of the three fields, outside the fold window", async () => {
+    M.pgFastPath = true;
+    M.pgQuery.mockImplementation(async (..._args: unknown[]) => [{ body: JSON.stringify(alarm(3, "k")) }]);
+    await expect(readLatestConditionEnvelope("k")).resolves.toMatchObject({ condition_key: "k", summary: "alarm k" });
+
+    const [template, ...params] = M.pgQuery.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+    const text = template.join("?param?");
+    expect(text).toContain("body->>'condition_key' =");
+    expect(text).toContain("body->>'resolves_condition' =");
+    expect(text).toContain("body->'resolves_conditions' ?");
+    expect(text).toMatch(/ORDER BY id DESC\s+LIMIT 1/);
+    expect(params).toContain("k");
+    expect(params).toContain("ws-test");
+    // Not the bounded fold read: a key older than the 25k window must still be found.
+    expect(params).not.toContain(CONDITIONS_FAST_PATH_ROW_CAP);
+  });
+
+  it("returns null when no envelope names the key", async () => {
+    M.pgFastPath = true;
+    await expect(readLatestConditionEnvelope("absent")).resolves.toBeNull();
   });
 });

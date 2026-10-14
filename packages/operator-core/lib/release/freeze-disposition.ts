@@ -61,6 +61,8 @@ export interface FreezeAndConvergeDisposition {
   enabled: boolean;
   /** P-007 (R-7): the repair path's latencies, derived from the queue the tick ended holding. */
   repairLatency?: FrozenRepairLatency | null;
+  /** Original round identities held by this tick; absence is legacy/unmeasured. */
+  repairProgress?: FrozenRepairProgress;
   state: FreezeAndConvergeState;
   /**
    * One line answering "why is it in that state". This is the sentence that previously
@@ -74,6 +76,12 @@ export interface FreezeAndConvergeDisposition {
   holdUntilMs?: number | null;
   /** `held` only: when the measured provider wall is expected to lift. */
   capacityRetryAtMs?: number | null;
+}
+
+export interface FrozenRepairProgress {
+  phase: FrozenRepairLatencySource['phase'];
+  /** Preserve ordinal gaps: a capped queue must not become a complete history. */
+  rounds: Array<{ round: number; head: string; atMs: number }>;
 }
 
 /** The shape merged into `gate_health` (a SHALLOW merge — never a replace). */
@@ -121,6 +129,7 @@ export interface GateRepairLatencyLedgerRow {
     reason: string;
     observedAtMs: number;
     repairLatency: FrozenRepairLatency;
+    repairProgress?: FrozenRepairProgress;
   };
 }
 
@@ -152,6 +161,7 @@ export function buildGateRepairLatencyLedgerRow(
       reason: disposition.reason,
       observedAtMs,
       repairLatency,
+      ...(disposition.repairProgress ? { repairProgress: disposition.repairProgress } : {}),
     },
   };
 }
@@ -280,7 +290,14 @@ export function deriveTickFreezeDisposition(
   // it is a property of the queue row, not of the branch that described it.
   const repairLatency = tickRepairLatency(observation);
   const core = deriveTickFreezeDispositionCore(observation);
-  return repairLatency ? { ...core, repairLatency } : core;
+  if (!repairLatency) return core;
+  const queue = observation.repairQueue!;
+  return { ...core, repairLatency,
+    ...(Array.isArray(queue.convergenceRounds) ? { repairProgress: {
+      phase: queue.phase as FrozenRepairLatencySource['phase'],
+      rounds: queue.convergenceRounds.map(({ round, head, atMs }) => ({ round, head, atMs })),
+    } } : {}),
+  };
 }
 
 function deriveTickFreezeDispositionCore(

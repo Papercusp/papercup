@@ -48,7 +48,7 @@ export const CHRONIC_CUMULATIVE_REBROADCAST_TICKS = 18;
 
 /** Which LEG of a git-sync tick failed (EI-19275994927087666). `disk-headroom` (WI-10004397)
  *  is not a git leg at all: the local disk is full, so no leg can run. */
-export type GitSyncFailingLeg = 'commit' | 'push' | 'conflict' | 'config-lock' | 'disk-headroom' | 'unknown';
+export type GitSyncFailingLeg = 'commit' | 'push' | 'serving' | 'conflict' | 'config-lock' | 'disk-headroom' | 'unknown';
 
 /**
  * PURE: classify which leg actually failed, from the error text git-sync recorded.
@@ -74,6 +74,10 @@ export function classifyGitSyncFailingLeg(
   // would misname it: that form read as "push failing — commits NOT reaching origin".
   if (isLocalDiskFullError(lastError)) return 'disk-headroom';
   const e = (lastError ?? '').toLowerCase();
+  // P034: beforePush refuses publication when the authenticated serving owner
+  // has not booted. Its wrapper may say "push failed", but no push was attempted.
+  if (e.includes('git-sync publication refused: serving unavailable') ||
+      e.includes('git-sync publication refused: serving capability has no usable device actor')) return 'serving';
   if (e.includes('conflict')) return 'conflict';
   if (e.includes('could not lock config file') && e.includes('config')) return 'config-lock';
   if (e.includes('commit failed') || e.includes('commit error')) return 'commit';
@@ -89,6 +93,8 @@ export function gitSyncLegPhrase(leg: GitSyncFailingLeg | null): string {
   switch (leg) {
     case 'push':
       return 'push failing — commits NOT reaching origin';
+    case 'serving':
+      return 'serving owner unavailable — authenticated publication refused before push; repair substrate startup';
     case 'commit':
       return 'COMMIT failing — nothing has reached the push stage; origin is unaffected';
     case 'conflict':

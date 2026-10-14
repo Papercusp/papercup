@@ -7427,6 +7427,9 @@ export async function dispatchReleaseFixer(
       kickoff,
       extra: ['--green-checkpoint-red', JSON.stringify({ candidate })],
       bodyExtra: {
+        // Model/backend resolution does not select an account. Keep the fixer on the
+        // provider pool so a walled local CLI credential cannot strand this dispatch.
+        account: 'auto',
         releaseFixerContext: {
           candidate: candidate.slice(0, 12),
           failingTests: (fixerTargets ?? []).slice(0, 20),

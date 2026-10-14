@@ -1965,6 +1965,50 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     expect(isTransportFailure(new Error('tool failed after dispatch'))).toBe(false);
   });
 
+  it.each(['docs:search', 'tools:invoke'])('delivers a valid docs search after 35 seconds through %s without replay', async (route) => {
+    vi.useFakeTimers();
+    try {
+      const searchArgs = { query: 'disk consumer census', harness: 'engineering', limit: 3, semantic: false };
+      const args = route === 'tools:invoke' ? { name: 'docs:search', args: searchArgs } : searchArgs;
+      const params = buildCallToolParams(route, args, { idempotencyKey: 'docs-search-delayed' });
+      const result = { content: [{ type: 'text', text: 'retained keyword result' }] };
+      const delayedClient = () => ({
+        callTool: vi.fn((_params: unknown, _schema: unknown, options: { timeout: number; maxTotalTimeout: number }) =>
+          new Promise((resolve, reject) => {
+            const deadline = setTimeout(() => {
+              clearTimeout(response);
+              reject(Object.assign(new Error('Request timed out'), { code: -32001 }));
+            }, Math.min(options.timeout, options.maxTotalTimeout));
+            const response = setTimeout(() => {
+              clearTimeout(deadline);
+              resolve(result);
+            }, 35_123);
+          })),
+      });
+
+      // Independent negative control: the old client budget loses the valid
+      // response even though it arrives within the server's foreground window.
+      const oldFailure = expect(callToolWithReplayRecovery(delayedClient(), params, {
+        timeoutMs: PTOOL_CALL_TOOL_TIMEOUT_MS,
+      })).rejects.toThrow('Request timed out');
+      await vi.advanceTimersByTimeAsync(35_123);
+      await oldFailure;
+
+      const client = delayedClient();
+      const reconnect = vi.fn();
+      const timeoutMs = timeoutForTool(route, args);
+      const delivered = expect(callToolWithReplayRecovery(client, params, { timeoutMs, reconnect }))
+        .resolves.toMatchObject({ result });
+      await vi.advanceTimersByTimeAsync(35_123);
+      await delivered;
+      expect(timeoutMs).toBeGreaterThan(55_000);
+      expect(client.callTool).toHaveBeenCalledTimes(1);
+      expect(reconnect).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not reconnect after a post-connect close while the original may still be running', async () => {
     const params = buildCallToolParams('work_items:complete', { id: 'EI-1' }, {
       idempotencyKey: 'ptool-key-1',

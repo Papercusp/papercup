@@ -19,6 +19,8 @@ import { carryUnchangedBarEvidenceBindings } from '../../acceptance-bar-amendmen
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntimeVintageStore,
   reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
+import { configureRemoteRuntimeDescribe, measureRuntimeEnvironment, resetRemoteRuntimeDescribe }
+  from '../../remote-runtime-identity';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repoRoot: '', siblingRoot: '' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -1048,6 +1050,53 @@ describe('exact spec evidence bindings', () => {
       }
     },
   );
+
+  // WI-6554700010011907: a live probe against a REMOTE managed resource has no local
+  // runtime-vintage row, so its environment stayed NULL and the proof could never read as
+  // current. A remote unit is read from the provider's control plane at bind time and again,
+  // independently, at read time; a settings change makes it stale and a failed read is unknown.
+  it('stores and re-measures a remote managed-resource runtime for live manual proof', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const unit = 'gcp-cloudsql:papercusp-cloud-prod/pc-cloud-prod-pg';
+    let settingsVersion: string | null = '8';
+    configureRemoteRuntimeDescribe(async () => settingsVersion === null ? null : JSON.stringify({
+      name: 'pc-cloud-prod-pg', project: 'papercusp-cloud-prod', createTime: '2026-10-14T03:25:36.604Z',
+      databaseVersion: 'POSTGRES_18', state: 'RUNNABLE', settings: { settingsVersion },
+    }));
+    configureRuntimeVintageStore(new InMemoryRuntimeVintageStore());
+    try {
+      const fingerprint = await measureRuntimeEnvironment([], [unit]);
+      expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      const binding = {
+        workItemId: 'WI-101', specId: 'SPEC-003-01', evidenceKind: 'manual' as const,
+        evidenceRef: 'live-remote-cloudsql-probe',
+        measurement: { schemaVersion: 1 as const, kind: 'repo-files' as const, sourcePaths: ['src/reconnect.ts'],
+          runtimeUnits: [unit] },
+        details: { evidencePlane: 'live', instrument: {
+          none: true as const,
+          reason: 'Only the binder built-in remote-runtime control-plane read is used; no external probe is run.',
+        } },
+      };
+      const result = await bindTool.handler!({ harness: HARNESS, slug: 'reconnect-plan', binding }, CTX);
+      const [first] = (result as { data: { results: Array<{ ok: boolean; status?: string; error?: string; message?: string }> } })
+        .data.results;
+      expect({ ok: first!.ok, status: first!.status, error: first!.error, message: first!.message })
+        .toEqual({ ok: true, status: 'created', error: undefined, message: undefined });
+      const [stored] = await db.sql`SELECT environment_fingerprint
+        FROM harness_shared.spec_evidence_bindings WHERE evidence_ref = ${binding.evidenceRef}`;
+      expect(stored.environment_fingerprint).toBe(fingerprint);
+      const read = async () => (await evidenceStore.listSpecEvidence({ harnessSlug: HARNESS,
+        planSlugs: ['reconnect-plan'], evidenceRefs: [binding.evidenceRef] }))[0]!.currentness;
+      expect(await read()).toMatchObject({ overall: 'current', dimensions: { environment: 'current' } });
+      settingsVersion = '9';
+      expect(await read()).toMatchObject({ dimensions: { environment: 'stale' } });
+      settingsVersion = null;
+      expect((await read()).dimensions.environment).not.toBe('current');
+    } finally {
+      resetRemoteRuntimeDescribe();
+      resetRuntimeVintageStore();
+    }
+  });
 
   it('keeps one shared proof reference for distinct spec clauses', async () => {
     await specs.setSpecClause(clause());
@@ -2418,6 +2467,39 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
       SET status = 'pass', finished_at = now(), execution_details = ${db.sql.json(executionDetails)}
       WHERE id = ${testRunId}`;
   }
+
+  it.each([
+    { scenario: 'exact self-target', oldTarget: 'SPEC-003-01', freshTarget: 'SPEC-003-01', requiredScenarios: [], replaced: true },
+    { scenario: 'lowercase self-target alias', oldTarget: 'SPEC-003-01', freshTarget: 'spec-003-01', requiredScenarios: [], replaced: true },
+    { scenario: 'canonical self-target alias', oldTarget: 'spec-003-01', freshTarget: 'SPEC-003-01', requiredScenarios: [], replaced: true },
+    { scenario: 'case-sensitive scenario targets', oldTarget: 'SPEC-003-01', freshTarget: 'spec-003-01', requiredScenarios: ['spec-003-01'], replaced: false },
+    { scenario: 'different scenario targets', oldTarget: 'scenario-a', freshTarget: 'scenario-b', requiredScenarios: ['scenario-a', 'scenario-b'], replaced: false },
+  ])('uses the accepted target policy for $scenario during supersession', async ({ oldTarget, freshTarget, requiredScenarios, replaced }) => {
+    const created = await specs.setSpecClause(clause({
+      falsifier: requiredScenarios.length ? { observation: 'A selected reconnect scenario fails.', requiredScenarios } : null,
+    }));
+    expect(created).toMatchObject({ status: 'created', specId: 'SPEC-003-01', revision: 1 });
+    const oldRun = await seedExternalEvidence(REPLAY_TEST);
+    const freshRun = await seedExternalEvidence(REPLAY_TEST);
+    await markRunAsPassing(freshRun.testRunId, REPLAY_TEST, 'fresh selected target');
+    const old = await bindViaTool({
+      evidenceKind: 'test', evidenceRef: 'test-run:old-target', testRunId: oldRun.testRunId,
+      details: { adequacy: { ...PASSED, targeted: oldTarget } },
+    });
+    const fresh = await bindViaTool({
+      evidenceKind: 'test', evidenceRef: 'test-run:fresh-target', testRunId: freshRun.testRunId,
+      details: { adequacy: { ...PASSED, targeted: freshTarget } },
+    }, true);
+    const [outcome] = fresh.supersession as Array<{
+      retracted: Array<{ bindingId: number }>;
+      kept: Array<{ bindingId: number; reason: string }>;
+    }>;
+    expect(outcome!.retracted.map(row => row.bindingId)).toEqual(replaced ? [old.id] : []);
+    expect(outcome!.kept).toEqual(replaced ? [] : [expect.objectContaining({ bindingId: old.id, reason: 'different-target' })]);
+    const live = await liveIds();
+    expect(live).toContain(fresh.id);
+    expect(live.includes(old.id)).toBe(!replaced);
+  });
 
   it('retracts the older same-kind row, keeps the mutation proof, and names the superseding binding', async () => {
     await specs.setSpecClause(clause());

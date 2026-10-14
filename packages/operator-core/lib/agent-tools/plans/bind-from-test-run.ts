@@ -39,6 +39,7 @@
  * attributed to ANOTHER harness is refused, never re-stamped.
  */
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
@@ -956,6 +957,50 @@ export function measurementLowerBound(
   return candidates.reduce((earliest, at) => (at.getTime() < earliest.getTime() ? at : earliest));
 }
 
+/** WI-6554700010011901: record-run's file_path names generated proof, not executable code.
+ * Qualify that writer's immutable output against its original commit and ledger before
+ * removing only the generated testPath from the execution-time guard. Source paths retain
+ * the guard, including an artifact explicitly declared as an input.
+ */
+async function committedOperationalOutput(
+  root: string, testPath: string, row: TestRunEvidenceRow, git: GitRunner,
+): Promise<{ sha256: string; commitSha: string } | null> {
+  const execution = executionDetails(row.execution_details);
+  const group = typeof execution.runGroupId === 'string'
+    ? /^(?:operational:|operational-recovery:[1-9]\d*:)([a-f0-9]{40})$/.exec(execution.runGroupId)
+    : null;
+  if (!group || !testPath.startsWith('docs/evidence/') || !testPath.endsWith('.json')) return null;
+  if (row.source !== 'local' || row.worktree_dirty !== false || !row.commit_sha || !FULL_SHA_RE.test(row.commit_sha)) {
+    throw new Error('operational output lacks a clean local committed receipt');
+  }
+  const file = await realpath(resolve(root, testPath));
+  if (!isWithin(await realOrResolved(root), file) || !(await stat(file)).isFile()) {
+    throw new Error('operational output is outside its repository');
+  }
+  const bytes = readFileSync(file);
+  const committed = await git(root, ['show', `${row.commit_sha}:${testPath}`]);
+  if (!bytes.equals(Buffer.from(committed, 'utf8'))) {
+    throw new Error('operational output differs from its recorded commit');
+  }
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  if (sha256.slice(0, 40) !== group[1]) throw new Error('operational output differs from its recorded hash');
+  // Load the recorder's maintained validation after binding modules initialize; this
+  // avoids introducing an eager tool-registration cycle or a second artifact schema.
+  const { parseOperationalEvidenceArtifact, operationalExecution } = await import('../testing/record-run');
+  const artifact = parseOperationalEvidenceArtifact(bytes);
+  const expected = operationalExecution(artifact);
+  const verdict = artifact.exitCode === 0 && artifact.assertions.every(assertion => assertion.passed) ? 'pass' : 'fail';
+  if (artifact.framework !== row.framework || verdict !== row.status
+    || isoOrNull(row.started_at ?? null) !== new Date(artifact.startedAt).toISOString()
+    || isoOrNull(row.finished_at) !== new Date(artifact.finishedAt).toISOString()
+    || execution.passed !== expected.passed || execution.failed !== expected.failed
+    || execution.skipped !== expected.skipped || execution.collectionFailed !== expected.collectionFailed
+    || (execution.runStartedAt !== undefined && Date.parse(String(execution.runStartedAt)) !== Date.parse(artifact.startedAt))) {
+    throw new Error('operational output does not match its recorded execution');
+  }
+  return { sha256, commitSha: row.commit_sha };
+}
+
 export interface TestRunBindingScope {
   workspaceId: string;
   harnessSlug: string;
@@ -1422,7 +1467,16 @@ export async function expandTestRunBinding(
   if (result.ok && !asCommitted) {
     const { testPaths } = result.binding.measurement;
     const sourcePaths = await expandRepoFilesEvidenceSourcePathsAtRoot(root, result.binding.measurement);
-    const measured = [...new Set([...testPaths, ...sourcePaths])].sort();
+    let output: { sha256: string; commitSha: string } | null;
+    try {
+      output = await committedOperationalOutput(root, testPath, row, deps.git ?? defaultGitRunner);
+    } catch (error) {
+      return { ok: false, error: 'test_run_as_committed_content_mismatch', testRunId,
+        message: `test-run ${testRunId} generated output cannot be authenticated: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    if (output) (result.binding.details.testRun as Record<string, unknown>).operationalArtifact = output;
+    const guardedTestPaths = output ? testPaths.filter(path => path !== testPath) : testPaths;
+    const measured = [...new Set([...guardedTestPaths, ...sourcePaths])].sort();
     const changed = await measuredFileModifiedAfterRun(
       root,
       measured,

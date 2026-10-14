@@ -3307,6 +3307,47 @@ export async function emitScorecard(
       latestFingerprint === evidenceFingerprint &&
       (!args.supersedes || sameCorrectionAlreadyExists)
     ) {
+      // EI-25837260733792769: persistence and audit settlement can fail separately.
+      // An exact retry by the original auditor must finish the guarded settlement,
+      // rather than strand the target behind unchanged-evidence dedup forever.
+      let recoveredAudit: Awaited<ReturnType<typeof recordGradingAudit>> | undefined;
+      let recoveredAuditCleanupError: string | undefined;
+      if (!input.previewOnly && auditContext && latest?.createdBy === auditContext.auditor) {
+        recoveredAudit = await recordGradingAudit(auditContext.subjectIssueId, {
+          auditIssueId: latest.issueId,
+          auditor: auditContext.auditor,
+          verdict: auditContext.verdict,
+          requireCurrentIdentity: true,
+          ...(auditContext.dispatchReservation ? { dispatchReservation: auditContext.dispatchReservation } : {}),
+          ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
+          ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
+          ...(args.supersedes ? { supersedesAuditIssueId: args.supersedes } : {}),
+        });
+        if (recoveredAudit.ok) {
+          try {
+            await (deps.closeSourceAuditConsults ?? closeSourceAuditConsults)(
+              input.workspaceId || activeWorkspaceId(), auditContext.subjectIssueId,
+            );
+          } catch (error) {
+            recoveredAuditCleanupError = error instanceof Error ? error.message : String(error);
+          }
+          const stamp = recoveredAudit.gradingAudit;
+          if (stamp && (stamp.state === 'passed' || stamp.state === 'failed')) {
+            await emitScorecardEmitted({
+              issueId: latest.issueId, rubricRef: args.rubricRef, rubricKind: rubric.kind ?? null,
+              subjectKind: args.subject?.kind ?? null, subjectRef: args.subject?.ref ?? null,
+              createdBy: latest.createdBy, hasAcceptance: Boolean(latest.acceptance),
+            }, {
+              workspaceId: input.workspaceId || activeWorkspaceId(), filed: false,
+              settledAudit: {
+                issueId: auditContext.subjectIssueId, state: stamp.state,
+                auditIssueId: stamp.auditIssueId ?? latest.issueId, auditor: stamp.auditor ?? null,
+                auditedAt: stamp.auditedAt ?? null, rubricRevision: stamp.rubricRevision ?? null,
+              },
+            });
+          }
+        }
+      }
       const acceptanceGraderCleanup =
         !input.previewOnly && rubric.kind === 'acceptance' && input.role === 'judge'
           ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
@@ -3320,6 +3361,12 @@ export async function emitScorecard(
         canonicalRatings: ratings,
         ...(vettingWarning ? { warning: vettingWarning } : {}),
         ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
+        ...(recoveredAudit ? {
+          gradingAuditRecorded: recoveredAudit.ok,
+          ...(recoveredAudit.gradingAudit ? { gradingAudit: recoveredAudit.gradingAudit } : {}),
+          ...(recoveredAudit.error ? { gradingAuditError: recoveredAudit.error } : {}),
+          ...(recoveredAuditCleanupError ? { gradingAuditCleanupError: recoveredAuditCleanupError } : {}),
+        } : {}),
       };
     }
 

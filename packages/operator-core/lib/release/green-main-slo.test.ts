@@ -1,8 +1,166 @@
 import { describe, expect, it } from 'vitest';
-import { computeGreenMainSlo, GREEN_MAIN_SLO_DEFAULTS, type GreenMainSloQueue } from './green-main-slo';
+import { computeGreenMainSlo, evaluateGreenMainRecoveryWindow, evaluateGreenMainRepairRoundWindow, GREEN_MAIN_SLO_DEFAULTS, type GreenMainSloQueue } from './green-main-slo';
+import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 
 const H = 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 13, 12, 0, 0);
+
+describe('original completed repair-round history', () => {
+  const start = NOW - H;
+  const history = (): PipelineEventWindowRead => ({
+    status: 'complete', total: 1, windowStartMs: start, windowEndMs: NOW, reason: null,
+    rows: [{ id: '1', kind: 'green_checkpoint_repair_latency', status: 'converging', createdAtMs: NOW,
+      detail: { candidate: 'a'.repeat(40), observedAtMs: NOW,
+        repairLatency: { stamps: { openedAtMs: start } },
+        repairProgress: { phase: 'awaiting-fixer', rounds: [
+          { round: 1, head: 'a'.repeat(40), atMs: start },
+          { round: 2, head: 'b'.repeat(40), atMs: start + 45 * 60_000 },
+        ] },
+      } }],
+  });
+  const passed = (input: PipelineEventWindowRead) => evaluateGreenMainRepairRoundWindow(input, NOW).assertions.every(a => a.passed);
+  it('accepts the exact 45-minute bound from original ordinals and clocks', () => {
+    const result = evaluateGreenMainRepairRoundWindow(history(), NOW);
+    expect(result.assertions.every(a => a.passed)).toBe(true);
+    expect(result.intervals).toMatchObject([{ fromRound: 1, toRound: 2, durationMs: 45 * 60_000 }]);
+  });
+  it('does not let a later fast round hide an earlier slow round', () => {
+    const h = history();
+    const rounds = (h.rows[0]!.detail.repairProgress as { rounds: Array<{ round: number; head: string; atMs: number }> }).rounds;
+    rounds[1]!.atMs = start + 46 * 60_000;
+    rounds.push({ round: 3, head: 'c'.repeat(40), atMs: start + 47 * 60_000 });
+    expect(evaluateGreenMainRepairRoundWindow(h, NOW).assertions.find(a => a.id === 'completed-repair-rounds-at-most-45min')!.passed).toBe(false);
+  });
+  it('deduplicates identical overlapping snapshots but rejects conflicting identities', () => {
+    const h = history(); h.rows.push({ ...structuredClone(h.rows[0]!), id: '2' }); h.total = 2;
+    expect(passed(h)).toBe(true);
+    expect(evaluateGreenMainRepairRoundWindow(h, NOW).intervals).toHaveLength(1);
+    (h.rows[1]!.detail.repairProgress as { rounds: Array<{ head: string }> }).rounds[1]!.head = 'c'.repeat(40);
+    expect(passed(h)).toBe(false);
+  });
+  it.each(['capped', 'unavailable', 'invalid'] as const)('fails closed for %s reads', status => {
+    expect(passed({ ...history(), status })).toBe(false);
+  });
+  it.each(['missing-progress', 'missing-opening', 'ordinal-gap', 'trimmed-prefix', 'duplicate-ordinal',
+    'future-round', 'reversed-clocks', 'missing-head', 'unknown-phase', 'future-snapshot',
+    'missing-population', 'duplicate-event', 'empty-rounds', 'empty-ledger'])(
+    'rejects %s rather than accepting a healthy retained subset', defect => {
+      const h = history(), row = h.rows[0]!;
+      const progress = row.detail.repairProgress as { phase: string; rounds: Array<{ round: number; head: string; atMs: number }> };
+      if (defect === 'missing-progress') delete row.detail.repairProgress;
+      if (defect === 'missing-opening') delete row.detail.repairLatency;
+      if (defect === 'ordinal-gap') progress.rounds[1]!.round = 3;
+      if (defect === 'trimmed-prefix') progress.rounds[0]!.round = 2;
+      if (defect === 'duplicate-ordinal') progress.rounds[1]!.round = 1;
+      if (defect === 'future-round') progress.rounds[1]!.atMs = NOW + 1;
+      if (defect === 'reversed-clocks') progress.rounds[1]!.atMs = start;
+      if (defect === 'missing-head') progress.rounds[1]!.head = '';
+      if (defect === 'unknown-phase') progress.phase = 'unknown';
+      if (defect === 'future-snapshot') row.detail.observedAtMs = NOW + 1;
+      if (defect === 'missing-population') h.total = 2;
+      if (defect === 'duplicate-event') { h.rows.push(structuredClone(row)); h.total = 2; }
+      if (defect === 'empty-rounds') progress.rounds = [];
+      if (defect === 'empty-ledger') { h.rows = []; h.total = 0; }
+      expect(passed(h)).toBe(false);
+    });
+  it('keeps queue incarnations separate and excludes intervals completed before the window', () => {
+    const h = history(); const old = structuredClone(h.rows[0]!); old.id = '2';
+    old.detail.repairLatency = { stamps: { openedAtMs: start - H } };
+    old.detail.repairProgress = { phase: 'awaiting-fixer', rounds: [
+      { round: 1, head: 'a'.repeat(40), atMs: start - H }, { round: 2, head: 'b'.repeat(40), atMs: start - 1 },
+    ] };
+    h.rows.push(old); h.total = 2;
+    expect(passed(h)).toBe(true);
+    expect(evaluateGreenMainRepairRoundWindow(h, NOW).intervals).toHaveLength(1);
+    expect(evaluateGreenMainRepairRoundWindow(h, NOW - 1).assertions[0]!.passed).toBe(false);
+  });
+});
+
+describe('original red-to-green recovery history', () => {
+  function history(durations = [H, 2 * H, 3 * H, 4 * H, 8 * H]): PipelineEventWindowRead {
+    const rows: PipelineEventWindowRead['rows'] = [];
+    let at = NOW;
+    const add = (status: string, time: number) => rows.push({ id: `event-${rows.length}`, kind: 'green_checkpoint',
+      status, createdAtMs: time, detail: { gateFireId: `fire-${rows.length}`, runId: `run-${rows.length}`, candidate: 'a'.repeat(40) } });
+    add('advanced', at);
+    for (const duration of durations) { add('not-green', at + 1); at += duration + 1; add('up-to-date', at); }
+    return { status: 'complete', total: rows.length, rows, reason: null, windowStartMs: NOW, windowEndMs: at };
+  }
+  const evaluate = (h: PipelineEventWindowRead) => evaluateGreenMainRecoveryWindow(h, h.windowEndMs);
+  const passed = (h: PipelineEventWindowRead, id: string) => evaluate(h).assertions.find(a => a.id === id)!.passed;
+  it('uses the first red through actual green and the original population', () => {
+    const h = history();
+    const result = evaluate(h);
+    expect(result.assertions.every(a => a.passed)).toBe(true);
+    expect(result.medianMs).toBe(3 * H);
+    expect(result.p90Ms).toBe(8 * H);
+    expect(result.eventIds).toEqual(h.rows.map(row => row.id));
+  });
+  it('does not reset an outage on a repeated red, skip or promotion failure', () => {
+    const h = history([9 * H]);
+    h.rows.splice(2, 0, ...['not-green', 'skipped-locked', 'not-fast-forward'].map((status, i) => ({
+      id: `interior-${i}`, kind: 'green_checkpoint' as const, status, createdAtMs: NOW + (i + 1) * H,
+      detail: { gateFireId: `interior-${i}` },
+    }))); h.total = h.rows.length;
+    expect(evaluate(h).episodes[0]!.durationMs).toBe(9 * H);
+    expect(passed(h, 'recovery-p90-at-most-8h')).toBe(false);
+  });
+  it('fails median and p90 independently', () => {
+    expect(passed(history([5 * H]), 'recovery-median-at-most-4h')).toBe(false);
+    expect(passed(history([H, H, H, H, 9 * H]), 'recovery-median-at-most-4h')).toBe(true);
+    expect(passed(history([H, H, H, H, 9 * H]), 'recovery-p90-at-most-8h')).toBe(false);
+  });
+  it('preserves a red episode that began before the observation window', () => {
+    const h = history([9 * H]); h.windowStartMs = NOW + 7 * H;
+    expect(evaluate(h).episodes[0]!.redAtMs).toBe(NOW + 1);
+    expect(passed(h, 'recovery-p90-at-most-8h')).toBe(false);
+  });
+  it('keeps an unfinished red in the population instead of grading only completed episodes', () => {
+    const h = history([H]); h.rows.push({ id: 'unfinished', kind: 'green_checkpoint', status: 'not-green',
+      createdAtMs: h.windowEndMs, detail: { gateFireId: 'unfinished' } }); h.total! += 1;
+    expect(evaluate(h).openRedEventId).toBe('unfinished');
+    expect(passed(h, 'all-red-episodes-closed')).toBe(false);
+    expect(passed(h, 'recovery-median-at-most-4h')).toBe(false);
+  });
+  it('collapses matching producer/fallback receipts, rejecting conflicting measured identities', () => {
+    const h = history([H]); const original = h.rows[2]!;
+    h.rows.push({ ...original, id: 'fallback' }); h.total! += 1;
+    expect(evaluate(h).episodes).toHaveLength(1);
+    expect(passed(h, 'qualified-recovery-verdicts')).toBe(true);
+    h.rows.at(-1)!.detail = { ...original.detail, candidate: 'b'.repeat(40) };
+    expect(passed(h, 'qualified-recovery-verdicts')).toBe(false);
+  });
+  it.each(['capped', 'invalid', 'unavailable'] as const)('rejects a %s healthy subset', status => {
+    const h = history(); h.status = status;
+    expect(passed(h, 'recovery-median-at-most-4h')).toBe(false);
+  });
+  it('rejects absent, duplicate or count-inconsistent populations', () => {
+    const h = history(); h.rows = []; h.total = 0;
+    expect(passed(h, 'complete-recovery-population')).toBe(false);
+    const duplicate = history(); duplicate.rows[1]!.id = duplicate.rows[0]!.id;
+    expect(passed(duplicate, 'complete-recovery-population')).toBe(false);
+    const count = history(); count.total! += 1;
+    expect(passed(count, 'complete-recovery-population')).toBe(false);
+  });
+  it('rejects unknown statuses, absent fire identity and missing left-boundary evidence', () => {
+    const h = history(); h.rows[1]!.status = 'unrecognized';
+    expect(passed(h, 'qualified-recovery-verdicts')).toBe(false);
+    const unidentified = history(); delete unidentified.rows[1]!.detail.gateFireId;
+    expect(passed(unidentified, 'qualified-recovery-verdicts')).toBe(false);
+    const boundary = history(); boundary.rows.shift(); boundary.total! -= 1;
+    expect(passed(boundary, 'recovery-left-boundary-known')).toBe(false);
+  });
+  it('rejects a future endpoint and invalid row clock', () => {
+    const h = history();
+    expect(evaluateGreenMainRecoveryWindow(h, h.windowEndMs - 1).assertions[0]!.passed).toBe(false);
+    h.rows[1]!.createdAtMs = NaN;
+    expect(passed(h, 'complete-recovery-population')).toBe(false);
+  });
+  it('does not infer recovery from a window containing only green verdicts', () => {
+    const h = history([]); h.windowEndMs += H;
+    expect(passed(h, 'nonempty-recovery-sample')).toBe(false);
+  });
+});
 
 function queue(overrides: Partial<GreenMainSloQueue> = {}): GreenMainSloQueue {
   return {

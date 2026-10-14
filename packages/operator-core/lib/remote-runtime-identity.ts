@@ -20,6 +20,7 @@
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from './runtime-vintage';
 
 /** Reads one control-plane document; resolves the raw stdout, or null on any failure. */
@@ -80,10 +81,23 @@ export const gcloudDescribe: RemoteDescribe = (argv) =>
     });
   });
 
+const state = pinModuleState('@papercusp/operator-core.remote-runtime-identity', () => ({
+  describe: null as RemoteDescribe | null,
+}));
+
+/** Test seam: replace the control-plane reader for every caller (e.g. a fake gcloud). */
+export function configureRemoteRuntimeDescribe(describe: RemoteDescribe): void {
+  state.describe = describe;
+}
+
+export function resetRemoteRuntimeDescribe(): void {
+  state.describe = null;
+}
+
 /** Identity digest of one remote runtime unit, or null when it cannot be established now. */
 export async function measureRemoteRuntimeIdentity(
   unit: string,
-  describe: RemoteDescribe = gcloudDescribe,
+  describe: RemoteDescribe = state.describe ?? gcloudDescribe,
 ): Promise<string | null> {
   const provider = providerFor(unit);
   const argv = provider?.describeArgv(unit);
@@ -121,7 +135,7 @@ export async function measureRuntimeEnvironment(
   const local = units.filter((unit) => !isRemoteRuntimeUnit(unit));
   const localFingerprint = local.length > 0 ? measureRuntimeVintageEnvironment(rows, local) : null;
   if (local.length > 0 && localFingerprint === null) return null;
-  const describe = deps.describe ?? gcloudDescribe;
+  const describe = deps.describe ?? state.describe ?? gcloudDescribe;
   const identities = await Promise.all(remote.map((unit) => {
     const cached = deps.memo?.get(unit);
     if (cached) return cached;

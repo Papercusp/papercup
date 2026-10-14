@@ -598,6 +598,23 @@ function observePortalBrowser(page: import('playwright').Page) {
         tag: element.tagName, label: element.getAttribute('aria-label'),
         placeholder: element.getAttribute('placeholder'), visible: element.getClientRects().length > 0,
       })),
+      // A citation label can be visible while the shared URL filter made its
+      // link inert. Retain that distinction without URL queries or credentials.
+      links: Array.from(document.querySelectorAll('a, .pc-chat__link-inert')).slice(0, 100).map((element) => {
+        const rawHref = element.getAttribute('href');
+        let href: string | null = null;
+        if (rawHref) {
+          try {
+            const url = new URL(rawHref, location.href);
+            href = ['http:', 'https:'].includes(url.protocol)
+              ? `${url.origin}${url.pathname}${/^#[a-z0-9_-]+$/i.test(url.hash) ? url.hash : ''}`
+              : url.protocol;
+          } catch { href = '[invalid-url]'; }
+        }
+        const style = getComputedStyle(element);
+        return { kind: element.tagName === 'A' ? 'anchor' : 'inert', text: element.textContent?.slice(0, 300),
+          href, visible: element.getClientRects().length > 0 && style.visibility !== 'hidden' && style.display !== 'none' };
+      }),
     }));
     return { browserText, dom, events, pagePath: path(page.url()) };
   };
@@ -757,18 +774,23 @@ describe('public manual Portal failure evidence', () => {
       const page = await browser.newPage();
       const capture = observePortalBrowser(page);
       await page.route('http://portal.test/**', (route) => route.fulfill({ status: 200,
-        contentType: 'text/html', body: '<title>Collapsed chat</title><p>Home</p><textarea aria-label="Message Papercup" style="display:none">private draft</textarea><script>console.error("fixture render failure"); throw new Error("fixture hydration failure")</script>' }));
+        contentType: 'text/html', body: '<title>Collapsed chat</title><p>Home</p><a href="/docs/faq?token=private-link-query#does-closing-the-browser-stop-my-agents">Public FAQ</a><span class="pc-chat__link-inert">Inert FAQ</span><a href="https://private-user:private-password@docs.example/docs/faq" style="display:none">Hidden FAQ</a><textarea aria-label="Message Papercup" style="display:none">private draft</textarea><script>console.error("fixture render failure"); throw new Error("fixture hydration failure")</script>' }));
       await page.goto('http://portal.test/?token=private-query');
       const state = await capture();
-      expect(state.browserText).toBe('Home');
+      expect(state.browserText).toContain('Home');
       expect(state.dom.textboxes).toEqual([{ tag: 'TEXTAREA', label: 'Message Papercup', placeholder: null, visible: false }]);
+      expect(state.dom.links).toEqual([
+        { kind: 'anchor', text: 'Public FAQ', href: 'http://portal.test/docs/faq#does-closing-the-browser-stop-my-agents', visible: true },
+        { kind: 'inert', text: 'Inert FAQ', href: null, visible: true },
+        { kind: 'anchor', text: 'Hidden FAQ', href: 'https://docs.example/docs/faq', visible: false },
+      ]);
       expect(state.events).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'console', message: 'fixture render failure' }),
         expect.objectContaining({ kind: 'pageerror', message: 'fixture hydration failure' }),
       ]));
       const evidence = serializePortalEvidence({ state, secret: 'fixture-cookie', bearer: 'fixture-bearer' },
         new Error('fixture-cookie'), ['fixture-cookie', 'fixture-bearer']);
-      for (const privateValue of ['private draft', 'private-query', 'fixture-cookie', 'fixture-bearer']) {
+      for (const privateValue of ['private draft', 'private-query', 'private-link-query', 'private-user', 'private-password', 'fixture-cookie', 'fixture-bearer']) {
         expect(evidence.includes(privateValue)).toBe(false);
       }
     } finally { await browser.close(); }
@@ -2795,7 +2817,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
           browserText = browserState.browserText;
         } catch (captureError) {
           // Diagnostics must never replace the original journey failure.
-          browserState = { browserText: '', dom: { title: '', readyState: 'unknown', textboxes: [] },
+          browserState = { browserText: '', dom: { title: '', readyState: 'unknown', textboxes: [], links: [] },
             events: [{ kind: 'capture-error', message: String(captureError) }], pagePath: '' };
         }
       }

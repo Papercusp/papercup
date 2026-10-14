@@ -61,4 +61,25 @@ describe('private PostgreSQL independent cleanup', () => {
       expect(f.stages.at(-1)).toEqual({ stage: 'complete', runtimeRemoved: true, pgDataRemoved: true });
     } finally { f.dispose(); }
   });
+
+  it.each([false, true])('fences detached managed tasks before private PG removal (fails=%s)', async fails => {
+    const f = fixture();
+    try {
+      const resources = { ...f.resources, stopManagedTasks: async () => {
+        f.calls.push('managed-tasks');
+        expect(existsSync(f.resources.dataDir)).toBe(true);
+        expect(existsSync(f.resources.runtimeRoot)).toBe(true);
+        if (fails) throw new Error('private task scope still populated');
+      } };
+      if (fails) {
+        await expect(cleanupOwnedTestState(resources)).rejects.toThrow(/unverified resource stops/);
+        expect(existsSync(f.resources.dataDir)).toBe(true);
+        expect(existsSync(f.resources.runtimeRoot)).toBe(true);
+      } else {
+        await cleanupOwnedTestState(resources);
+        expect(existsSync(f.resources.dataDir)).toBe(false);
+      }
+      expect(f.calls).toEqual(['child', 'profile', 'managed-tasks', 'observe', 'pg', 'observation-stopped']);
+    } finally { f.dispose(); }
+  });
 });

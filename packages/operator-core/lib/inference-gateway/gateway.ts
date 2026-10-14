@@ -8947,11 +8947,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             const r = codexReachability.snapshot(Date.now());
             log(
               'error',
-              `inference-gateway: Codex upstream UNREACHABLE — ${r.transportFailuresSinceResponse} network failures across ` +
+              `inference-gateway: Codex upstream UNREACHABLE — ${r.transportFailuresSinceResponse} transport failures across ` +
                 `${r.accountsFailingSinceResponse} account(s) with no HTTP response since ` +
                 `${r.lastResponseAt ? new Date(r.lastResponseAt).toISOString() : 'start'} (latest ${r.lastTransportFailureKind}: ${description}). ` +
-                `This is the network (this machine's connection/DNS, or the upstream itself), not account usage — ` +
-                `the "exhausted"/"UNSERVICEABLE" lines around it are accounts parked by these failures, not usage walls.`,
+                `The latest attempt ended before an HTTP response; the measured failure kind above distinguishes DNS, connection, and response-timeout failures. ` +
+                `Accounts parked by these failures do not establish usage exhaustion or a local network outage.`,
             );
           }
         },

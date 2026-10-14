@@ -262,6 +262,23 @@ describe('summarizeFreezeAndConverge', () => {
 });
 
 describe('buildGateRepairLatencyLedgerRow — R-7 durable latency ledger (EI-23420599799124840)', () => {
+  it('preserves original round ordinals and clocks beyond the mutable queue lifetime', () => {
+    const rounds = [{ round: 1, head: 'a'.repeat(40), atMs: T0, failingCount: 4 },
+      { round: 3, head: 'b'.repeat(40), atMs: T0 + 60_000, failingCount: 2 }];
+    const disposition = deriveTickFreezeDisposition({ flagEnabled: true, nowMs: T0 + 120_000,
+      repairQueue: { candidate: 'a'.repeat(40), phase: 'awaiting-fixer', openedAtMs: T0, convergenceRounds: rounds } });
+    const row = buildGateRepairLatencyLedgerRow(disposition, T0 + 120_000)!;
+    expect(row.detail.repairProgress).toEqual({ phase: 'awaiting-fixer', rounds: [
+      { round: 1, head: 'a'.repeat(40), atMs: T0 }, { round: 3, head: 'b'.repeat(40), atMs: T0 + 60_000 },
+    ] });
+    rounds[1]!.atMs = T0 + 90_000;
+    expect(row.detail.repairProgress!.rounds[1]!.atMs).toBe(T0 + 60_000);
+  });
+  it('keeps an absent legacy round vector unmeasured instead of inventing empty history', () => {
+    const disposition = deriveTickFreezeDisposition({ flagEnabled: true, nowMs: T0 + 60_000,
+      repairQueue: { candidate: 'a'.repeat(40), phase: 'awaiting-fixer', openedAtMs: T0 } });
+    expect(buildGateRepairLatencyLedgerRow(disposition, T0 + 60_000)!.detail).not.toHaveProperty('repairProgress');
+  });
   const latency = {
     redToFixerSpawnMs: 4 * 60_000,
     fixToAdmitMs: 9 * 60_000,

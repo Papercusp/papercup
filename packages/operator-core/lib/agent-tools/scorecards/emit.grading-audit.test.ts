@@ -68,7 +68,8 @@ vi.mock('../../harness/improvements/capture-core', () => ({
 // Keep scorecard writes inside the unit tier: these push notifications are
 // database-backed in production and are covered by their own integration tests.
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
-vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
+const emitScorecardEmitted = vi.hoisted(() => vi.fn());
+vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted }));
 vi.mock('../../scout/generation-watermark', () => ({
   readRunningGeneration: (...args: unknown[]) => readRunningGeneration(...args),
 }));
@@ -347,6 +348,7 @@ const exactReplayConsistencyGradedCard = () => {
 };
 
 beforeEach(() => {
+  emitScorecardEmitted.mockReset().mockResolvedValue(undefined);
   closeSourceAuditConsults.mockReset().mockResolvedValue(undefined);
   getRubric.mockReset().mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
   getRubricEvidenceIdentity.mockReset().mockImplementation(async (id: string) => {
@@ -834,6 +836,50 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   it('a failing rating settles the subject as failed', async () => {
     await emitScorecard({ ...auditArgs, ratings: FAIL_RATINGS }, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
+  });
+
+  it.each([[true, false], [true, true], [false, false]])('an identical retry finishes only the existing audit settlement (success=%s, cleanupFails=%s)', async (success, cleanupFails) => {
+    getIssue.mockResolvedValue(gradedCardWithReservation());
+    recordGradingAudit.mockRejectedValueOnce(new Error('connection closed after audit insert'));
+    const args = { ...auditArgs, gradingAuditReservation: activeReservation };
+    const input = { createdBy: 'su-auditor', ctxHarness: 'papercusp' };
+    await expect(emitScorecard(args, input)).rejects.toThrow('connection closed after audit insert');
+    const stored = captureImprovement.mock.calls[0][0].payloadExtra.observation;
+    listScorecards.mockResolvedValue([{ ...stored, issueId: 'EI-AUDIT-1', createdBy: input.createdBy }]);
+    recordGradingAudit.mockResolvedValueOnce(success
+      ? { ok: true, gradingAudit: { state: 'passed', auditIssueId: 'EI-AUDIT-1', auditor: input.createdBy } }
+      : { ok: false, error: 'dispatch reservation changed' });
+    if (cleanupFails) closeSourceAuditConsults.mockRejectedValueOnce(new Error('consult cleanup unavailable'));
+
+    const retry = await emitScorecard(args, input);
+    expect(retry).toMatchObject({ created: false, reason: 'unchanged-evidence', previousIssueId: 'EI-AUDIT-1', gradingAuditRecorded: success });
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+    expect(recordGradingAudit).toHaveBeenLastCalledWith('EI-CARD', expect.objectContaining({
+      auditIssueId: 'EI-AUDIT-1', auditor: input.createdBy, dispatchReservation: activeReservation, requireCurrentIdentity: true,
+    }));
+    if (success) {
+      if (cleanupFails) expect(retry).toMatchObject({ gradingAuditCleanupError: 'consult cleanup unavailable' });
+      expect(closeSourceAuditConsults).toHaveBeenCalledOnce();
+      expect(emitScorecardEmitted).toHaveBeenCalledWith(expect.objectContaining({ issueId: 'EI-AUDIT-1' }),
+        expect.objectContaining({ filed: false, settledAudit: expect.objectContaining({ issueId: 'EI-CARD', state: 'passed' }) }));
+    } else {
+      expect(retry).toMatchObject({ gradingAuditError: 'dispatch reservation changed' });
+      expect(closeSourceAuditConsults).not.toHaveBeenCalled();
+      expect(emitScorecardEmitted).not.toHaveBeenCalled();
+    }
+  });
+
+  it('does not attribute an identical stored audit to a different retrying auditor', async () => {
+    getIssue.mockResolvedValue(GRADED_CARD);
+    recordGradingAudit.mockRejectedValueOnce(new Error('settlement interrupted'));
+    await expect(emitScorecard(auditArgs, { createdBy: 'su-original', ctxHarness: 'papercusp' })).rejects.toThrow();
+    const stored = captureImprovement.mock.calls[0][0].payloadExtra.observation;
+    listScorecards.mockResolvedValue([{ ...stored, issueId: 'EI-AUDIT-1', createdBy: 'su-original' }]);
+    recordGradingAudit.mockClear();
+    const retry = await emitScorecard({ ...auditArgs, acknowledgeExisting: true }, { createdBy: 'su-other', ctxHarness: 'papercusp' });
+    expect(retry).toMatchObject({ created: false, reason: 'unchanged-evidence' });
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
   it('refuses unknown audit ratings before filing an orphan audit card', async () => {

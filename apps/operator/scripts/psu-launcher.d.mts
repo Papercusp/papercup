@@ -347,7 +347,7 @@ export function modelArgsFor(agent: string, model: string | null | undefined, { 
  * `buildEngineerOmpLaunchCommand` (P-032): omp `--model`/`-r`, claude
  * `--model`/`--resume`, codex `-m`/`resume`.
  */
-export function suWrapperExtraArgs(agent: any, { model, resumeSession, claudeSettings }?: {}): any[];
+export function suWrapperExtraArgs(agent: any, { model, resumeSession, claudeSettings, compactionLimit }?: {}): any[];
 /**
  * Map psu's repeated `--add-dir <dir>` onto each backend's native flag. claude
  * AND codex both expose `--add-dir` (extra tool-accessible directories); omp has
@@ -1947,7 +1947,7 @@ export function gatewayAutoEnv(provider?: string, ownerId?: string): {};
  *   agent?: string | null,
  *   model?: string | null,
  *   account?: string | null | { mode?: string, provider?: string },
- *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'accounts-unserviceable' | null } | null,
+ *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'accounts-unserviceable' | null, codexReachability?: { lastTransportFailureKind?: 'dns' | 'connect' | 'timeout' | 'other' | null } } | null,
  *   now?: number
  * }} input
  * @returns {{ kind: 'proceed' | 'warn' | 'refuse', message: string | null, recoveryAt: number | null }}
@@ -1964,6 +1964,9 @@ export function codexAutoPoolVerdict({ agent, model, account, stats, now, }?: {
         codexTotalAccounts?: number;
         codexEarliestRecoveryAt?: number | null;
         codexUnserviceableCause?: "upstream-unreachable" | "accounts-unserviceable" | null;
+        codexReachability?: {
+            lastTransportFailureKind?: "dns" | "connect" | "timeout" | "other" | null;
+        };
     } | null;
     now?: number;
 }): {

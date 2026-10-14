@@ -171,9 +171,13 @@ vi.mock('./config', () => ({
 import {
   allocateDumpTempPath,
   createGuardLogForwarder,
+  dumpWatchdogPolicy,
+  HOT_SNAPSHOT_EXCLUDED_TABLE_DATA,
   requiredFreeBytes,
   resolveKopiaBackupGuard,
   runPreSnapshotHook,
+  SAFETY_DUMP_CEILING_MS,
+  SAFETY_DUMP_STALL_TIMEOUT_MS,
   summarizeDumpFailure,
   terminateSpawnTree,
   WORKSPACE_BACKUP_GUARD_LABEL,
@@ -355,7 +359,8 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
     h.holdGuardOpen = true;
     try {
-      const pending = runPreSnapshotHook(ctx);
+      // The fixed 900s budget belongs to the routine interval dump only.
+      const pending = runPreSnapshotHook({ ...ctx, triggerReason: 'interval' });
       for (let i = 0; i < 100 && !h.pendingGuard; i += 1) await Promise.resolve();
       expect(h.pendingGuard).not.toBeNull();
 
@@ -533,12 +538,38 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
   });
 
   it('bounds PostgreSQL lock acquisition and statement lifetime below the client watchdog', async () => {
-    await runPreSnapshotHook(ctx);
+    await runPreSnapshotHook({ ...ctx, triggerReason: 'interval' });
     const c = pgDumpCall()!;
     expect(c.args).toContain('--lock-wait-timeout=30s');
     expect(c.env?.PGOPTIONS).toContain('-c statement_timeout=600000');
     expect(c.env?.PGOPTIONS).toContain('-c lock_timeout=30000');
   });
+
+  // EI-25164396022471391: a safety dump's single COPY of an ~11 GB table takes
+  // longer than 10 minutes, so its statement bound follows the safety ceiling
+  // and stays ahead of it.
+  it.each(['pre_destructive', 'pre-deploy', undefined] as const)(
+    'a %s safety dump bounds each statement by the safety ceiling, not 10 minutes',
+    async (triggerReason) => {
+      await runPreSnapshotHook({ ...ctx, triggerReason });
+      const opts = pgDumpCall()!.env?.PGOPTIONS ?? '';
+      const statementTimeout = Number(/-c statement_timeout=(\d+)/.exec(opts)?.[1]);
+      expect(statementTimeout).toBe(dumpWatchdogPolicy(false).statementTimeoutMs);
+      expect(statementTimeout).toBeGreaterThan(600_000);
+      expect(statementTimeout).toBeLessThan(SAFETY_DUMP_CEILING_MS);
+      expect(opts).toContain('-c lock_timeout=30000');
+    },
+  );
+
+  // A killed client must not leave its backend holding locks while blocked
+  // (EI-21363741549000811). The server-side liveness poll covers both kinds of dump.
+  it.each(['interval', 'pre_destructive'] as const)(
+    'a %s dump asks PostgreSQL to poll for a dead client',
+    async (triggerReason) => {
+      await runPreSnapshotHook({ ...ctx, triggerReason });
+      expect(pgDumpCall()!.env?.PGOPTIONS).toContain('-c client_connection_check_interval=10000');
+    },
+  );
 
   it('includes the vector extension required by harness_shared vector columns', async () => {
     await runPreSnapshotHook(ctx);
@@ -696,6 +727,147 @@ describe('free-space reserve is sized to the dump, not the disk (EI-201090347771
     // come from the pre-check — which is the point: under the old ordering the
     // orphaned .tmp was re-captured by every snapshot forever.
     expect(h.unlinkCalls.some((p) => p.endsWith('pg-embedded.sql.gz.tmp'))).toBe(true);
+  });
+});
+
+// EI-25164396022471391: measured 2026-10-14 (snapshot 78722), a pre_destructive
+// dump was still streaming at 10-20 MB/s when the fixed 900s watchdog killed it,
+// so every migration stayed gated. A safety dump is now killed when it stops
+// making progress, with a ceiling as backstop. The interval dump keeps 900s.
+describe('safety-dump watchdog: stall detection, not a fixed budget (EI-25164396022471391)', () => {
+  type HeldGuard = EventEmitter & { kill: ReturnType<typeof vi.fn>; stdout: EventEmitter };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    h.holdGuardOpen = true;
+  });
+  afterEach(() => {
+    h.pendingGuard?.emit('close', 1);
+    h.pendingGuard = null;
+    h.holdGuardOpen = false;
+    vi.useRealTimers();
+  });
+
+  // Returns the pending hook inside an object: returning the bare promise from
+  // an async helper would await the very dump the test is still driving.
+  const startHeldDump = async (triggerReason: string) => {
+    const pending = runPreSnapshotHook({ ...ctx, triggerReason });
+    for (let i = 0; i < 100 && !h.pendingGuard; i += 1) await Promise.resolve();
+    expect(h.pendingGuard).not.toBeNull();
+    const guard = h.pendingGuard as unknown as HeldGuard;
+    h.pendingGuardReady!.emit('data', Buffer.from('KOPIA_BACKUP_GUARD_READY\n'));
+    return { pending, guard };
+  };
+  const exitGuard = (guard: HeldGuard, code: number | null) => {
+    h.pendingGuard = null;
+    guard.emit('close', code);
+  };
+
+  it('kills a safety dump that writes nothing for the stall window, and says so', async () => {
+    const { pending, guard } = await startHeldDump('pre_destructive');
+
+    await vi.advanceTimersByTimeAsync(SAFETY_DUMP_STALL_TIMEOUT_MS - 1_000);
+    guard.stdout.emit('data', Buffer.alloc(1024)); // progress restarts the window
+    await vi.advanceTimersByTimeAsync(SAFETY_DUMP_STALL_TIMEOUT_MS - 1_000);
+    expect(guard.kill).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(guard.kill).toHaveBeenCalledWith('SIGKILL');
+    exitGuard(guard, null);
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining(
+        `pg dump stalled: no output for ${SAFETY_DUMP_STALL_TIMEOUT_MS}ms (1024 bytes dumped)`,
+      ),
+    });
+  });
+
+  it('lets a safety dump that keeps streaming run 90 minutes, far past the 900s budget', async () => {
+    const { pending, guard } = await startHeldDump('pre_destructive');
+
+    for (let minute = 0; minute < 90; minute += 1) {
+      guard.stdout.emit('data', Buffer.alloc(1_000));
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+    expect(guard.kill).not.toHaveBeenCalled();
+
+    exitGuard(guard, 0);
+    await expect(pending).resolves.toMatchObject({ ok: true });
+  });
+
+  it('still kills a progressing safety dump at the absolute ceiling', async () => {
+    const { pending, guard } = await startHeldDump('pre-deploy');
+    const minutes = SAFETY_DUMP_CEILING_MS / 60_000;
+
+    for (let minute = 0; minute < minutes - 1; minute += 1) {
+      guard.stdout.emit('data', Buffer.alloc(10));
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+    expect(guard.kill).not.toHaveBeenCalled();
+    guard.stdout.emit('data', Buffer.alloc(10));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(guard.kill).toHaveBeenCalledWith('SIGKILL');
+
+    exitGuard(guard, null);
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining(`pg dump timed out after ${SAFETY_DUMP_CEILING_MS}ms`),
+    });
+  });
+
+  it('keeps the routine interval dump on its fixed 900s budget with no stall check', async () => {
+    const { pending, guard } = await startHeldDump('interval');
+
+    await vi.advanceTimersByTimeAsync(SAFETY_DUMP_STALL_TIMEOUT_MS + 60_000);
+    expect(guard.kill).not.toHaveBeenCalled(); // silent past the stall window
+
+    await vi.advanceTimersByTimeAsync(900_000 - SAFETY_DUMP_STALL_TIMEOUT_MS - 60_000);
+    expect(guard.kill).toHaveBeenCalledWith('SIGKILL');
+
+    exitGuard(guard, null);
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('pg dump timed out after 900000ms'),
+    });
+  });
+
+  it('does not count time queued behind the guard lock as a stall', async () => {
+    const pending = runPreSnapshotHook({ ...ctx, triggerReason: 'pre_destructive' });
+    for (let i = 0; i < 100 && !h.pendingGuard; i += 1) await Promise.resolve();
+    const guard = h.pendingGuard as unknown as HeldGuard;
+
+    await vi.advanceTimersByTimeAsync(SAFETY_DUMP_STALL_TIMEOUT_MS + 60_000); // waiting, no READY yet
+    h.pendingGuardReady!.emit('data', Buffer.from('KOPIA_BACKUP_GUARD_READY\n'));
+    await vi.advanceTimersByTimeAsync(SAFETY_DUMP_STALL_TIMEOUT_MS - 1_000);
+    expect(guard.kill).not.toHaveBeenCalled();
+
+    exitGuard(guard, 0);
+    await expect(pending).resolves.toMatchObject({ ok: true });
+  });
+});
+
+describe('safety-dump budget fits the measured workload (EI-25164396022471391)', () => {
+  it('the ceiling covers the slowest measured full dump (~83 min at 10 MB/s)', () => {
+    const policy = dumpWatchdogPolicy(false);
+    expect(policy.ceilingMs).toBeGreaterThan(83 * 60_000);
+    expect(policy.statementTimeoutMs).toBeLessThan(policy.ceilingMs);
+    expect(policy.stallTimeoutMs).toBe(SAFETY_DUMP_STALL_TIMEOUT_MS);
+    expect(dumpWatchdogPolicy(true)).toEqual({
+      stallTimeoutMs: null,
+      ceilingMs: 900_000,
+      statementTimeoutMs: 600_000,
+    });
+  });
+
+  it('omits the rebuildable substring index and the two telemetry streams from the hot dump', () => {
+    expect(HOT_SNAPSHOT_EXCLUDED_TABLE_DATA).toEqual(expect.arrayContaining([
+      'harness_shared.session_turn_windows',
+      'harness_shared.fallback_observations',
+      'harness_shared.psu_pty_host_events',
+    ]));
+    // Restore-critical coordination state stays in the dump.
+    expect(HOT_SNAPSHOT_EXCLUDED_TABLE_DATA).not.toContain('harness_shared.coord_thread_posts');
+    expect(HOT_SNAPSHOT_EXCLUDED_TABLE_DATA).not.toContain('harness_shared.work_items');
   });
 });
 

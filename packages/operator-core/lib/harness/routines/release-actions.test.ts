@@ -4906,7 +4906,7 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     });
     type Fire = {
       kickoff: string;
-      bodyExtra: { releaseFixerContext: { failingTests: string[]; sameHeadContradicted?: string[] } };
+      bodyExtra: { account: string; releaseFixerContext: { failingTests: string[]; sameHeadContradicted?: string[] } };
     };
     const dispatchWithTick = async (repairQueue: FrozenCandidateRepairQueue, tickHead: string) => {
       spawnMock.mockImplementation((_cmd: unknown, args: string[]) => {
@@ -4942,6 +4942,7 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     it('hands the fixer only the real red, while the dedup signature and the queue keep both', async () => {
       const repairQueue = queue();
       const { fire, record } = await dispatchWithTick(repairQueue, repairQueue.repairHead);
+      expect(fire.bodyExtra.account).toBe('auto');
       expect(fire.bodyExtra.releaseFixerContext.failingTests).toEqual([RED]);
       expect(fire.bodyExtra.releaseFixerContext.sameHeadContradicted).toEqual([LANE]);
       expect(fire.kickoff).toContain(`Fix ONLY: ${RED}. Do NOT fix: ${LANE}.`);
@@ -5027,7 +5028,8 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       expect.objectContaining({
         installSlug: 'my-harness',
         workspaceId: 'ws-42',
-        bodyExtra: {
+        bodyExtra: expect.objectContaining({
+          account: 'auto',
           releaseFixerContext: expect.objectContaining({
             checkpointEvidence: {
               logPath: '/var/lib/papercusp/checkpoint-logs/manual-red.log',
@@ -5035,7 +5037,7 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
               integrationRoot: '/srv/papercusp',
             },
           }),
-        },
+        }),
         // EI-20978485106613438: the fixer must receive the full invoke budget; the old
         // 900_000ms value killed it at exactly 15 minutes before it could repair the gate.
         timeoutMs: 2_700_000,

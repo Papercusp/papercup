@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { GATE_INVARIANT_NAMES, readGateInvariantWindow, evaluateGateInvariantWindow,
   GATE_INVARIANT_ACCEPTANCE_WINDOW_MS, GATE_INVARIANT_HEARTBEAT_MS } from './gate-live-invariants';
+import { readGreenMainRecoveryWindow, evaluateGreenMainRecoveryWindow, readGreenMainRepairRoundWindow, evaluateGreenMainRepairRoundWindow } from './green-main-slo';
 
 describe('historical invariant acceptance (real PG)', () => {
   let db: FreshPgDb;
@@ -54,12 +55,88 @@ describe('historical invariant acceptance (real PG)', () => {
     expect(evaluateGateInvariantWindow(capped).assertions.every(assertion => assertion.passed)).toBe(false);
   });
 
+  it('reads recovery from the preceding green, retaining boundary reds and exact scope (real PG)', async () => {
+    const hour = GATE_INVARIANT_HEARTBEAT_MS;
+    const recoveryWindow = { windowStartMs: start + 7 * hour, windowEndMs: start + 10 * hour };
+    const add = async (at: number, status: string, workspace = scope.workspaceId) => {
+      const detail = { gateFireId: `fire-${at}`, runId: `run-${at}`, candidate: 'a'.repeat(40) };
+      const rows = await db.sql`INSERT INTO harness_shared.pipeline_events
+        (workspace_id, install_slug, kind, status, detail, created_at)
+        VALUES (${workspace}, ${scope.installSlug}, 'green_checkpoint', ${status},
+          ${JSON.stringify(detail)}::text::jsonb, ${new Date(at)}) RETURNING id::text`;
+      return rows[0]!.id as string;
+    };
+    await add(start - hour, 'advanced');
+    const expected = [await add(start, 'advanced'), await add(start + hour, 'not-green'),
+      await add(start + 6 * hour, 'not-green'), await add(start + 10 * hour, 'up-to-date')];
+    await add(start + 8 * hour, 'advanced', 'foreign');
+    await add(recoveryWindow.windowEndMs + 1, 'not-green');
+    await insert(start + 8 * hour);
+    const history = await readGreenMainRecoveryWindow(db.sql, scope, recoveryWindow);
+    expect(history).toMatchObject({ status: 'complete', total: 4 });
+    expect(history.rows.map(row => row.id)).toEqual(expected);
+    const result = evaluateGreenMainRecoveryWindow(history, recoveryWindow.windowEndMs);
+    expect(result.episodes[0]!.durationMs).toBe(9 * hour);
+    expect(result.assertions.find(a => a.id === 'recovery-p90-at-most-8h')!.passed).toBe(false);
+    expect(await readGreenMainRecoveryWindow(db.sql, scope, { ...recoveryWindow, maxRows: 1 }))
+      .toMatchObject({ status: 'capped', total: 4 });
+  });
+
+  it('fails closed for an empty recovery ledger and invalid scope (real PG)', async () => {
+    const history = await readGreenMainRecoveryWindow(db.sql, scope, window);
+    expect(history).toMatchObject({ status: 'complete', total: 0, rows: [] });
+    expect(evaluateGreenMainRecoveryWindow(history).assertions.every(a => a.passed)).toBe(false);
+    expect(await readGreenMainRecoveryWindow(db.sql, { ...scope, workspaceId: '' }, window))
+      .toMatchObject({ status: 'invalid', total: null });
+  });
+
+  it('retains a red written after the predecessor green at the same timestamp (real PG)', async () => {
+    for (const [i, status] of ['advanced', 'not-green'].entries()) {
+      await db.sql`INSERT INTO harness_shared.pipeline_events
+        (workspace_id, install_slug, kind, status, detail, created_at)
+        VALUES (${scope.workspaceId}, ${scope.installSlug}, 'green_checkpoint', ${status},
+          ${JSON.stringify({ gateFireId: `same-clock-${i}` })}::text::jsonb, ${new Date(start)})`;
+    }
+    const history = await readGreenMainRecoveryWindow(db.sql, scope, window);
+    expect(history.rows.map(row => row.status)).toEqual(['advanced', 'not-green']);
+    expect(evaluateGreenMainRecoveryWindow(history).assertions.find(a => a.id === 'all-red-episodes-closed')!.passed).toBe(false);
+  });
+
+  it('reads original repair snapshots with exact scope, boundary, population and cap (real PG)', async () => {
+    const add = async (at: number, workspace = scope.workspaceId, install = scope.installSlug, kind = 'green_checkpoint_repair_latency') => {
+      const detail = { candidate: 'a'.repeat(40), observedAtMs: at,
+        repairLatency: { stamps: { openedAtMs: start - 60_000 } },
+        repairProgress: { phase: 'awaiting-fixer', rounds: [
+          { round: 1, head: 'a'.repeat(40), atMs: start - 60_000 }, { round: 2, head: 'b'.repeat(40), atMs: start },
+        ] } };
+      const rows = await db.sql`INSERT INTO harness_shared.pipeline_events
+        (workspace_id, install_slug, kind, status, detail, created_at)
+        VALUES (${workspace}, ${install}, ${kind}, 'converging',
+          ${JSON.stringify(detail)}::text::jsonb, ${new Date(at)}) RETURNING id::text`;
+      return rows[0]!.id as string;
+    };
+    await add(start - 1);
+    const expected = [await add(start), await add(start + 1)];
+    await add(start + 1, 'foreign'); await add(start + 1, scope.workspaceId, 'foreign');
+    await add(start + 1, scope.workspaceId, scope.installSlug, 'green_checkpoint');
+    await add(window.windowEndMs + 1);
+    const history = await readGreenMainRepairRoundWindow(db.sql, scope, window);
+    expect(history).toMatchObject({ status: 'complete', total: 2 });
+    expect(history.rows.map(row => row.id)).toEqual(expected);
+    expect(evaluateGreenMainRepairRoundWindow(history, window.windowEndMs).assertions.every(a => a.passed)).toBe(true);
+    const capped = await readGreenMainRepairRoundWindow(db.sql, scope, { ...window, maxRows: 1 });
+    expect(capped).toMatchObject({ status: 'capped', total: 2 });
+    expect(evaluateGreenMainRepairRoundWindow(capped, window.windowEndMs).assertions.every(a => a.passed)).toBe(false);
+    expect(await readGreenMainRepairRoundWindow(db.sql, { ...scope, workspaceId: '' }, window)).toMatchObject({ status: 'invalid' });
+  });
+
   it('keeps absence and read failure distinct and refuses an invalid scope before querying', async () => {
     expect(await readGateInvariantWindow(db.sql, scope, window)).toMatchObject({ status: 'complete', total: 0, rows: [] });
     expect(await readGateInvariantWindow(db.sql, { ...scope, workspaceId: '' }, window)).toMatchObject({ status: 'invalid', total: null });
     await db.sql`DROP TABLE harness_shared.pipeline_events`;
     try {
       expect(await readGateInvariantWindow(db.sql, scope, window)).toMatchObject({ status: 'unavailable', total: null, rows: [] });
+      expect(await readGreenMainRepairRoundWindow(db.sql, scope, window)).toMatchObject({ status: 'unavailable', total: null, rows: [] });
     } finally {
       await db.sql`CREATE TABLE harness_shared.pipeline_events (
         id bigserial PRIMARY KEY, workspace_id text NOT NULL, install_slug text NOT NULL,
