@@ -131,6 +131,21 @@ describe('R12 immutable full-gate comparison preparation', () => {
       expect(() => prepareBudgetedTaskComparison(data)).toThrow('native original command-obligation receipts required');
     }
   });
+  it('pins the original one-to-one occurrence population and refuses check inputs or collapsed repeats', () => {
+    const data = input();
+    const fileOccurrences = data.tasks.flatMap(task => task.files.map(file => ({ task: task.id,
+      step: null, command: 'vitest run', file, kind: 'test-file' as const })));
+    const manifest = prepareBudgetedTaskComparison({ ...data, selection: { ...data.selection, fileOccurrences } });
+    expect(manifest.selection.fileOccurrences).toEqual(fileOccurrences);
+    expect(Object.isFrozen(manifest.selection.fileOccurrences)).toBe(true);
+    for (const bad of [[...fileOccurrences, fileOccurrences[0]!],
+      [{ ...fileOccurrences[0]!, kind: 'check-input' as const }, fileOccurrences[1]!],
+      [{ ...fileOccurrences[0]!, task: 'not-original' }, fileOccurrences[1]!],
+      [fileOccurrences[0]!]]) {
+      expect(() => prepareBudgetedTaskComparison({ ...data, selection: { ...data.selection, fileOccurrences: bad } }))
+        .toThrow('native original command-step occurrence receipts required');
+    }
+  });
   it.each(['missing-repeat', 'duplicate-run', 'drift', 'skip', 'substitution', 'escape', 'oom',
     'unpaired', 'headroom', 'order', 'queue', 'slow', 'tampered-manifest'])
   ('fails closed on %s, with no operational acceptance from fixtures', defect => {
@@ -197,6 +212,22 @@ describe('R12 immutable full-gate comparison preparation', () => {
       const original = await readBudgetedTaskComparisonArtifacts(root, pins);
       expect(original.originalArtifactsResolved).toBe(true);
       expect(evaluateBudgetedTaskComparison(original.manifest, original.cohorts).ratio).toBe(0.5);
+      const occurrences = data.tasks.flatMap(task => task.files.map(file => ({ task: task.id,
+        step: null, command: 'vitest run', file, kind: 'test-file' })));
+      const occurrenceSelection = pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [],
+        files: data.selection.files, fileOccurrences: occurrences });
+      data.selection.originalSha256 = occurrenceSelection.sha256;
+      await expect(readBudgetedTaskComparisonArtifacts(root, { ...pins,
+        manifest: pin('occurrence-omission-manifest.json', prepareBudgetedTaskComparison(data)) }))
+        .rejects.toThrow('Original command-step file occurrences were omitted or changed');
+      for (const secondFile of ['long.test.ts', 'short.test.ts']) {
+        const legacySelection = pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [],
+          files: data.selection.files, tasks: [{ steps: [{ files: ['long.test.ts'] }, { files: [secondFile] }] }] });
+        data.selection.originalSha256 = legacySelection.sha256;
+        await expect(readBudgetedTaskComparisonArtifacts(root, { ...pins,
+          manifest: pin('legacy-step-manifest.json', prepareBudgetedTaskComparison(data)) }))
+          .rejects.toThrow('Original ordered command-step population requires native step receipts');
+      }
       const obligationSelection = pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [],
         files: data.selection.files, commandObligations: [{ command: 'node guard.mjs', executed: false }] });
       data.selection.originalSha256 = obligationSelection.sha256;
