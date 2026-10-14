@@ -199,7 +199,11 @@ const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, "embedded-pg.json");
  * so its embedded Postgres roles must not carry the repo-public DEV passwords. This
  * 0600 file (in the 0700 state dir) holds the host's generated role passwords; the
  * embedded server keys every role to it and refuses to boot while a default still
- * authenticates. PAPERCUSP_PG_HOST_CREDENTIALS=1 opts any other host in. Once
+ * authenticates. PAPERCUSP_PG_HOST_CREDENTIALS=1 opts any other host in, and
+ * every packaged (release) desktop/Server launcher sets it, because any local
+ * account can reach a packaged install's loopback PG too (WI-6554700010012477,
+ * papercusp-desktop main.rs pg_host_credentials_for). Only developer launches
+ * keep the documented DEV defaults. Once
  * created, the file is also the persistent opt-in: the cluster is already keyed
  * to those secrets, so a later launch without the flag must keep using them.
  */
