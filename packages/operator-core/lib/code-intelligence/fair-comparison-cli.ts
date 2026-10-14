@@ -22,20 +22,109 @@
  * `report.json`; verdicts go in `verdicts.json` as { caseId: AdjudicationVerdict[] }.
  */
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { existsSync, statSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, loadavg } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import type { ArmDeps } from './engine-comparison-arms';
-import { preregister, type AdjudicationVerdict, type ArmCapabilities, type Preregistration } from './fair-comparison';
+import { hashCases, hashKeys, hashPreregistration, preregister, type AnswerKey, type AdjudicationVerdict, type ArmCapabilities, type Preregistration } from './fair-comparison';
 import { admitArm } from './fair-comparison-admission';
 import { createRgFairArm, type FairArm } from './fair-comparison-arms';
 import { FAIR_CORPUS, FAIR_CORPUS_COMMIT, initialKeys } from './fair-comparison-corpus';
 import { createCbmFairArm, createCgcArm, createCodegraphArm, createGitnexusFairArm, createTraceMcpArm } from './fair-comparison-engines';
 import { createLspQueryArm, createNoThirdPartyArm, loadVendoredTypescript } from './fair-comparison-first-party';
 import { acquireArmRunLock } from './fair-comparison-lock';
-import { runArm, scoreRuns, type ArmRun, type PendingSites } from './fair-comparison-run';
+import { runArm, scoreRuns, type ArmRun, type FairArmFactory, type PendingSites, type ResourceStage, type ArmResourceSample } from './fair-comparison-run';
+import type { FairCase } from './fair-comparison';
+
+export interface FrozenFairInputs {
+  readonly preregistration: Preregistration;
+  readonly cases: readonly FairCase[];
+  readonly keys: readonly AnswerKey[];
+  readonly controlFiles: Readonly<Record<string, string>>;
+  readonly sourcePins: readonly { readonly path: string; readonly sha256: string; readonly commit: string }[];
+}
+
+/** Verify the saved edition without regenerating questions, keys or controls. */
+export function validateFrozenInputs(inputs: FrozenFairInputs): FrozenFairInputs {
+  const registered = inputs.preregistration;
+  if (!registered?.protocol || hashPreregistration(registered) !== registered.hash)
+    throw new Error('frozen protocol content differs from its recorded hash');
+  if (hashCases(inputs.cases) !== registered.corpusHash || hashKeys(inputs.keys) !== registered.keyHash)
+    throw new Error('frozen cases or keys differ from preregistration');
+  const files = Object.entries(inputs.controlFiles);
+  if (files.some(([path, text]) => !path || path.startsWith('/') || path.includes('\\') ||
+    path.split('/').some(part => part === '..' || part === '.') || typeof text !== 'string'))
+    throw new Error('frozen control file path or bytes invalid');
+  const fixtureHash = createHash('sha256').update(JSON.stringify(files.sort(([a], [b]) => a.localeCompare(b)))).digest('hex');
+  if (fixtureHash !== registered.protocol.fixtureHash)
+    throw new Error('frozen control bytes differ from protocol fixture hash');
+  if (!inputs.sourcePins?.length || inputs.sourcePins.some(pin => pin.commit !== registered.protocol!.sourceCommit ||
+    !/^[a-f0-9]{64}$/.test(pin.sha256) || !pin.path || pin.path.startsWith('/') || pin.path.includes('\\') ||
+    pin.path.split('/').some(part => part === '..' || part === '.')))
+    throw new Error('frozen source custody needs safe pins at the protocol commit');
+  return inputs;
+}
+
+/** A directory name is not a source witness: check the frozen donor bytes. */
+export async function verifyFrozenSource(tree: string, inputs: FrozenFairInputs): Promise<void> {
+  validateFrozenInputs(inputs);
+  for (const pin of inputs.sourcePins) {
+    const actual = createHash('sha256').update(await readFile(join(tree, pin.path))).digest('hex');
+    if (actual !== pin.sha256) throw new Error(`frozen snapshot source mismatch: ${pin.path}`);
+  }
+}
+
+/** Protocol editions require their complete frozen bundle, never the old corpus. */
+export async function loadFairInputs(out: string, frozenPath?: string): Promise<FrozenFairInputs> {
+  if (frozenPath) {
+    const frozen = validateFrozenInputs(JSON.parse(await readFile(frozenPath, 'utf8')) as FrozenFairInputs);
+    if (existsSync(join(out, 'prereg.json'))) {
+      const saved = JSON.parse(await readFile(join(out, 'prereg.json'), 'utf8')) as Preregistration;
+      if (hashPreregistration(saved) !== saved.hash || saved.hash !== frozen.preregistration.hash)
+        throw new Error('output preregistration differs from frozen edition');
+    }
+    return frozen;
+  }
+  const registered = JSON.parse(await readFile(join(out, 'prereg.json'), 'utf8')) as Preregistration;
+  if (registered.protocol) throw new Error('protocol run requires --frozen with its saved cases, keys and controlFiles');
+  return { preregistration: registered, cases: FAIR_CORPUS.map(entry => entry.kase),
+    keys: initialKeys(FAIR_CORPUS), controlFiles: {}, sourcePins: [] };
+}
+
+export async function materializeFrozenControls(tree: string, inputs: FrozenFairInputs): Promise<void> {
+  validateFrozenInputs(inputs);
+  for (const [path, text] of Object.entries(inputs.controlFiles)) {
+    await mkdir(dirname(join(tree, path)), { recursive: true });
+    await writeFile(join(tree, path), text);
+  }
+}
+
+/** Restore before each question; mutations cannot leak into a later control. */
+export async function prepareFrozenControl(tree: string, kase: FairCase, inputs: FrozenFairInputs) {
+  const frozen = inputs.cases.find(candidate => candidate.id === kase.id);
+  if (!frozen || hashCases([frozen]) !== hashCases([kase])) throw new Error('worker question differs from frozen case');
+  await materializeFrozenControls(tree, inputs);
+  const path = kase.anchorFile;
+  if (!path || !(path in inputs.controlFiles)) return null;
+  const configs = Object.keys(inputs.controlFiles).filter(file => dirname(file) === dirname(path) && file !== path);
+  if (kase.configuration === 'unconfigured') for (const file of configs) await rm(join(tree, file));
+  if (kase.sourceState === 'stale') {
+    const before = inputs.controlFiles[path]!;
+    const after = before.replace('return target()', 'return 0').replace('{ target() }', '{ 0 }');
+    if (after === before) throw new Error('frozen stale control has no caller mutation');
+    await writeFile(join(tree, path), after);
+  } else if (kase.sourceState === 'deleted') await rm(join(tree, path));
+  const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+  return { path, configuration: kase.configuration, sourceState: kase.sourceState,
+    originalSourceHash: digest(inputs.controlFiles[path]!),
+    currentSourceHash: kase.sourceState === 'deleted' ? null : digest(await readFile(join(tree, path), 'utf8')),
+    configurationFiles: await Promise.all(configs.map(async file => ({ path: file,
+      hash: kase.configuration === 'unconfigured' ? null : digest(await readFile(join(tree, file), 'utf8')) }))) };
+}
 
 // Importing CLI helpers must not require execFile from a caller's narrow mock.
 // Reuse the lazy, typed wrapper pattern from git-batch; initialize on first run.
@@ -44,7 +133,8 @@ const run = ((...args: unknown[]) =>
   Reflect.apply((runMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 const BENCH = process.env.P017_BENCH ?? join(homedir(), '.papercusp', 'bench', 'fair-comparison-2026-10');
 const SNAPSHOT = join(BENCH, `snapshot-${FAIR_CORPUS_COMMIT.slice(0, 12)}`);
-const VENDOR_LSP = join(homedir(), '.papercusp', 'vendor', 'lsp');
+const VENDOR_HOME = process.env.P017_VENDOR_HOME ?? homedir();
+const VENDOR_LSP = join(VENDOR_HOME, '.papercusp', 'vendor', 'lsp');
 const deps: ArmDeps = { loadAvg1: () => loadavg()[0] ?? null };
 
 export const FAIR_ARM_IDS = ['rg', 'lsp-query', 'no-third-party', 'gitnexus', 'codebase-memory', 'codegraph', 'trace-mcp', 'codegraphcontext'] as const;
@@ -53,8 +143,8 @@ export type FairArmId = (typeof FAIR_ARM_IDS)[number];
 /** A file inside the operator-core tsconfig project: the lsp-query warm-up loads that one project. */
 export const LSP_WARMUP_ANCHOR = 'packages/operator-core/lib/code-intelligence/contracts.ts';
 
-const treeOf = (id: FairArmId): string => join(BENCH, 'trees', id);
-const homeOf = (id: FairArmId): string => join(BENCH, 'homes', id);
+const treeOf = (id: FairArmId): string => process.env.P017_TREE ?? join(BENCH, 'trees', id);
+const homeOf = (id: FairArmId): string => process.env.P017_HOME ?? join(BENCH, 'homes', id);
 
 /** Construct an arm. Construction starts nothing: engines spawn on index()/query(). */
 export async function buildArm(id: FairArmId): Promise<FairArm> {
@@ -79,12 +169,12 @@ export async function buildArm(id: FairArmId): Promise<FairArm> {
     case 'no-third-party':
       return createNoThirdPartyArm({ treeRoot, ts: loadVendoredTypescript(VENDOR_LSP), loadAvg1: deps.loadAvg1 });
     case 'gitnexus':
-      return createGitnexusFairArm({ version: '1.6.9', bin: join(homedir(), '.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus'), treeRoot, home, env: admitArm('gitnexus').env }, deps);
+      return createGitnexusFairArm({ version: '1.6.9', bin: join(VENDOR_HOME, '.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus'), treeRoot, home, env: admitArm('gitnexus').env }, deps);
     case 'codebase-memory':
       return createCbmFairArm(
         {
           version: 'dev',
-          bin: join(homedir(), '.papercusp/bench/engine-comparison-2026-10/vendor/cbm/build/bench/codebase-memory-mcp'),
+          bin: join(VENDOR_HOME, '.papercusp/bench/engine-comparison-2026-10/vendor/cbm/build/bench/codebase-memory-mcp'),
           treeRoot,
           home,
           cacheDir: join(home, 'cache'),
@@ -101,19 +191,180 @@ export async function buildArm(id: FairArmId): Promise<FairArm> {
   }
 }
 
-/** Expand the root package.json `workspaces` (exact dirs and one trailing `/*`) to package dirs. */
-export async function workspaceDirs(root: string, patterns: readonly string[]): Promise<string[]> {
-  const out: string[] = [];
-  for (const p of patterns) {
-    if (!p.endsWith('/*')) {
-      out.push(p);
-      continue;
+/** Logical files created after the source/dependency census. Missing reads stay unknown. */
+export async function indexFileCensus(roots: readonly string[], baseline: ReadonlySet<string>): Promise<ArmResourceSample['indexFiles']> {
+  const files: { path: string; bytes: number }[] = [];
+  async function visit(root: string): Promise<void> {
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      const path = join(root, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile() && !baseline.has(path)) files.push({ path, bytes: statSync(path).size });
     }
-    const parent = p.slice(0, -2);
-    const entries = await readdir(join(root, parent), { withFileTypes: true }).catch(() => []);
-    for (const e of entries) if (e.isDirectory()) out.push(`${parent}/${e.name}`);
   }
-  return out.filter((d) => existsSync(join(root, d, 'package.json')));
+  try { for (const root of roots) await visit(root); }
+  catch { return null; }
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** One managed worker per repetition; reuse the existing arm adapters and task metrics. */
+export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, frozenPath: string): Promise<FairArmFactory> {
+  const sourceCommit = inputs.preregistration.protocol!.sourceCommit;
+  const snapshot = join(BENCH, `snapshot-${sourceCommit.slice(0, 12)}`);
+  await verifyFrozenSource(snapshot, inputs);
+  const admitted = await buildArm(id);
+  return { capabilities: admitted.capabilities, unavailable: admitted.unavailable, async create(rep) {
+    const { managedSpawn } = await import('../task-manager/managed-spawn');
+    const { absCgroupDir, readProcessCgroupPath, sampleCgroup } = await import('../task-manager/cgroup-read');
+    const { deriveUserManagerRoot, scopeCgroupRelPath } = await import('../task-manager/types');
+    await mkdir(join(BENCH, 'repetitions'), { recursive: true });
+    const owned = await mkdtemp(join(BENCH, 'repetitions', `${id}-${rep}-`));
+    const treeRoot = join(owned, 'tree'), home = join(owned, 'home');
+    let child: import('node:child_process').ChildProcess | null = null;
+    let exited: Promise<void> | null = null;
+    let taskId: string | null = null;
+    let cgroupPath: string | null = null;
+    let scopeUnit: string | null = null;
+    const stop = async () => {
+      if (taskId) {
+        const { killScopeUnit, killTask } = await import('../task-manager/control');
+        const outcome = await killTask(taskId, { signal: 'SIGKILL', includeSubtree: true, reapTerminalResidue: true });
+        if (!outcome.ok && outcome.error !== 'already_gone') {
+          // A terminal confined row may be refused as not_live even after its
+          // cgroup has emptied. Confirm that kernel state instead of reading a
+          // refusal as either unconditional success or a surviving process.
+          const scope = outcome.error === 'not_live' && scopeUnit
+            ? await killScopeUnit(scopeUnit, { escalateAfterMs: 500 }) : null;
+          if (!scope || (!scope.ok && scope.error !== 'already_gone'))
+            throw new Error(`fresh worker task cleanup refused (${outcome.error}); isolated files retained`);
+        }
+      }
+      if (exited) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const drained = await Promise.race([exited.then(() => true),
+            new Promise<boolean>(done => { timer = setTimeout(() => done(false), 10_000); })]);
+          if (!drained) throw new Error('fresh worker task failed to drain; isolated files retained');
+        } finally { clearTimeout(timer); }
+      }
+      await rm(owned, { recursive: true, force: true });
+    };
+    try {
+      // Copy-on-write rather than hardlinks: freshness controls must never mutate
+      // the frozen donor when they replace or delete original source bytes.
+      await run('cp', ['-a', '--reflink=auto', snapshot, treeRoot]);
+      await verifyFrozenSource(treeRoot, inputs);
+      await mkdir(home);
+      await linkWorkspaces(treeRoot);
+      await materializeFrozenControls(treeRoot, inputs);
+      const before = await indexFileCensus([treeRoot, home], new Set());
+      if (!before) throw new Error('fresh repetition source/dependency census unreadable');
+      const baseline = new Set(before.map(file => file.path));
+      const workerArgv = ['--import', 'tsx', fileURLToPath(import.meta.url), 'worker', '--arm', id];
+      const launched = await managedSpawn(process.execPath, workerArgv,
+        { class: 'test-run', title: `fair comparison ${id} repetition ${rep}`,
+          argv: [process.execPath, ...workerArgv],
+          launchedBy: process.env.PAPERCUSP_SID ?? 'human', workItemId: 'WI-10007889',
+          runtimeMaxSec: 4 * 3600 },
+        { requireRegistration: true, spawnOptions: { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'inherit'],
+          env: { ...process.env, P017_BENCH: BENCH, P017_TREE: treeRoot, P017_HOME: home,
+            P017_VENDOR_HOME: VENDOR_HOME, P017_FROZEN: resolve(frozenPath) } } });
+      child = launched.child;
+      taskId = launched.taskId;
+      scopeUnit = launched.scopeUnit;
+      exited = child.exitCode !== null || child.signalCode !== null ? Promise.resolve()
+        : new Promise(done => child!.once('close', () => done()));
+      if (!launched.confined || !launched.scopeUnit) throw new Error('fresh worker task cgroup unavailable');
+      cgroupPath = scopeCgroupRelPath(deriveUserManagerRoot(readProcessCgroupPath(process.pid)), 'test-run', launched.scopeUnit);
+      let sequence = 0, buffer = '';
+      const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
+      child.stdout!.setEncoding('utf8');
+      child.stdout!.on('data', (chunk: string) => {
+        buffer += chunk;
+        let end: number;
+        while ((end = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+          if (!line.startsWith('FAIR_WORKER_REPLY=')) continue;
+          try {
+            const reply = JSON.parse(line.slice('FAIR_WORKER_REPLY='.length)) as { id: number; result?: unknown; error?: string };
+            const waiter = pending.get(reply.id); pending.delete(reply.id);
+            if (reply.error) waiter?.reject(new Error(reply.error)); else waiter?.resolve(reply.result);
+          } catch (error) { for (const waiter of pending.values()) waiter.reject(new Error(String(error))); pending.clear(); }
+        }
+      });
+      child.once('close', () => { for (const waiter of pending.values()) waiter.reject(new Error('fresh worker exited')); pending.clear(); });
+      child.once('error', error => { for (const waiter of pending.values()) waiter.reject(error); pending.clear(); });
+      const rpc = <T>(method: string, kase?: FairCase): Promise<T> => new Promise((done, reject) => {
+        if (child!.exitCode !== null || child!.signalCode !== null || child!.stdin!.destroyed) {
+          reject(new Error('fresh worker is no longer live')); return;
+        }
+        const requestId = ++sequence;
+        const timer = setTimeout(() => { pending.delete(requestId); reject(new Error(`fresh worker ${method} deadline`)); }, method === 'index' ? 4 * 3600_000 : 120_000);
+        pending.set(requestId, { resolve: value => { clearTimeout(timer); done(value as T); }, reject: error => { clearTimeout(timer); reject(error); } });
+        child!.stdin!.write(`${JSON.stringify({ id: requestId, method, kase })}\n`, error => {
+          if (error) { pending.delete(requestId); clearTimeout(timer); reject(error); }
+        });
+      });
+      const close = async () => {
+        try { await rpc('close'); } finally {
+          child!.stdin!.end();
+          await stop();
+        }
+      };
+      const confinedPath = cgroupPath;
+      return { identity: { taskId: launched.taskId, cgroupPath: confinedPath, treeRoot, home, sourceCommit,
+        runtimeVersion: admitted.capabilities.version },
+      arm: { capabilities: admitted.capabilities, unavailable: null,
+        index: () => rpc('index'), query: kase => rpc('query', kase), close },
+      async sampleResources(_stage: ResourceStage) {
+        const sample = sampleCgroup(absCgroupDir(confinedPath));
+        const indexFiles = await indexFileCensus([treeRoot, home], baseline);
+        const unknown: string[] = [];
+        if (sample.memoryBytes === null) unknown.push('memory.current unreadable');
+        if (sample.peakMemoryBytes === null) unknown.push('memory.peak unreadable');
+        if (indexFiles === null) unknown.push('index census unreadable');
+        // LSP adapters may start independently managed server tasks outside this
+        // scope. A task-only counter must not certify those costs as included.
+        if (id === 'lsp-query') unknown.push('language-server-task-costs-not-in-worker-scope');
+        unknown.push('native-tool-seam-and-configuration-invalidation-not-verified');
+        return { sampledAt: new Date().toISOString(), memoryCurrentBytes: sample.memoryBytes,
+          memoryPeakBytes: sample.peakMemoryBytes, indexFiles, unknown };
+      } };
+    } catch (error) {
+      await stop();
+      throw error;
+    }
+  } };
+}
+
+async function worker(id: FairArmId): Promise<void> {
+  const { createInterface } = await import('node:readline');
+  if (!process.env.P017_FROZEN) throw new Error('protocol worker requires frozen input custody');
+  const inputs = validateFrozenInputs(JSON.parse(await readFile(process.env.P017_FROZEN, 'utf8')) as FrozenFairInputs);
+  const arm = await buildArm(id);
+  let indexed = false;
+  for await (const line of createInterface({ input: process.stdin })) {
+    const request = JSON.parse(line) as { id: number; method: string; kase?: FairCase };
+    try {
+      if (request.method === 'query' && !indexed) throw new Error('worker query before frozen source indexing');
+      const control = request.method === 'query' ? await prepareFrozenControl(treeOf(id), request.kase!, inputs) : null;
+      const result = request.method === 'index' ? await arm.index() : request.method === 'query' ?
+        { ...await arm.query(request.kase!), control }
+        : request.method === 'close' ? await arm.close?.() ?? null : (() => { throw new Error('unknown worker method'); })();
+      if (request.method === 'index') indexed = (result as { ok?: boolean }).ok === true;
+      process.stdout.write(`FAIR_WORKER_REPLY=${JSON.stringify({ id: request.id, result })}\n`);
+      if (request.method === 'close') break;
+    } catch (error) { process.stdout.write(`FAIR_WORKER_REPLY=${JSON.stringify({ id: request.id, error: String(error) })}\n`); }
+  }
+}
+
+/** Reuse the maintained npm workspace resolver, including negated patterns. */
+export async function workspaceDirs(root: string, patterns: readonly string[]): Promise<string[]> {
+  const resolverUrl = new URL('../../../../scripts/assert-workspace-links.mjs', import.meta.url).href;
+  const { expandWorkspaces } = await import(resolverUrl) as {
+    expandWorkspaces(patterns: readonly string[], root: string): string[];
+  };
+  return expandWorkspaces(patterns, root);
 }
 
 /** node_modules/<name> -> workspace dir links, exactly what npm install creates for workspaces. */
@@ -158,12 +409,15 @@ const arg = (name: string, fallback?: string): string => {
 };
 const readJson = async <T>(p: string): Promise<T> => JSON.parse(await readFile(p, 'utf8')) as T;
 const cases = FAIR_CORPUS.map((e) => e.kase);
+const optionalArg = (name: string): string | undefined => process.argv.includes(`--${name}`) ? arg(name) : undefined;
 
 async function main(): Promise<void> {
   const cmd = process.argv[2];
+  if (cmd === 'worker') { await worker(arg('arm') as FairArmId); return; }
   const out = arg('out');
   await mkdir(out, { recursive: true });
   if (cmd === 'prereg') {
+    if (optionalArg('frozen')) throw new Error('the supplied edition is already frozen; use run --frozen, never re-register it');
     if (existsSync(join(out, 'prereg.json'))) throw new Error(`${out}/prereg.json exists: a preregistration is never rewritten`);
     const arms: ArmCapabilities[] = [];
     for (const id of FAIR_ARM_IDS) arms.push((await buildArm(id)).capabilities);
@@ -173,13 +427,15 @@ async function main(): Promise<void> {
   } else if (cmd === 'run') {
     const id = arg('arm') as FairArmId;
     if (!FAIR_ARM_IDS.includes(id)) throw new Error(`unknown arm ${id}; one of ${FAIR_ARM_IDS.join(', ')}`);
-    const prereg = await readJson<Preregistration>(join(out, 'prereg.json'));
+    const frozenPath = optionalArg('frozen');
+    const inputs = await loadFairInputs(out, frozenPath);
+    const prereg = inputs.preregistration;
     // Before prepareTree: a concurrent run of this arm shares its tree and HOME.
     const lock = await acquireArmRunLock(out, id);
     let result: ArmRun;
     try {
-      await prepareTree(id);
-      result = await runArm(await buildArm(id), cases, prereg);
+      if (prereg.protocol) result = await runArm(await freshFactory(id, inputs, frozenPath!), inputs.cases, prereg);
+      else { await prepareTree(id); result = await runArm(await buildArm(id), inputs.cases, prereg); }
       await writeFile(join(out, `${id}.run.json`), JSON.stringify(result, null, 2));
     } finally {
       await lock.release();
@@ -187,15 +443,18 @@ async function main(): Promise<void> {
     const answered = result.reps.flatMap((r) => r.answers).filter((a) => a.status === 'answered').length;
     console.log(`${id} index ok=${result.index?.ok} wallMs=${Math.round(result.index?.wallMs ?? 0)} reps=${result.reps.length} answered=${answered}`);
   } else if (cmd === 'score') {
-    const prereg = await readJson<Preregistration>(join(out, 'prereg.json'));
+    const inputs = await loadFairInputs(out, optionalArg('frozen'));
+    const prereg = inputs.preregistration;
     const runs: ArmRun[] = [];
     for (const f of (await readdir(out)).filter((n) => n.endsWith('.run.json')).sort()) runs.push(await readJson<ArmRun>(join(out, f)));
     const verdicts = existsSync(join(out, 'verdicts.json')) ? await readJson<Record<string, never[]>>(join(out, 'verdicts.json')) : {};
-    const scored = scoreRuns(runs, cases, initialKeys(FAIR_CORPUS), verdicts, prereg);
+    const scored = scoreRuns(runs, inputs.cases, inputs.keys, verdicts, prereg);
     await writeFile(join(out, 'pending.json'), JSON.stringify(scored.pending, null, 2));
     await writeFile(join(out, 'report.json'), JSON.stringify({ prereg: prereg.hash, aggregates: scored.aggregates, decision: scored.decision, keys: scored.keys }, null, 2));
     console.log(`score runs=${runs.length} pendingSites=${scored.pending.reduce((n, p) => n + p.sites.length, 0)} decision=${scored.decision.kind}`);
   } else if (cmd === 'adjudicate') {
+    const inputs = await loadFairInputs(out, optionalArg('frozen'));
+    if (inputs.preregistration.protocol) throw new Error('protocol adjudication requires review of the frozen multilingual sites; the legacy TypeScript-only adjudicator cannot certify it');
     const { autoAdjudicatePending, createAdjudicator } = await import('./fair-comparison-adjudicate');
     const { openTsTree } = await import('./fair-comparison-first-party');
     const pending = await readJson<PendingSites[]>(join(out, 'pending.json'));
@@ -205,7 +464,7 @@ async function main(): Promise<void> {
     await prepareTree('no-third-party');
     const t0 = Date.now();
     const tree = openTsTree(loadVendoredTypescript(VENDOR_LSP), treeOf('no-third-party'));
-    const result = autoAdjudicatePending(createAdjudicator(tree), cases, initialKeys(FAIR_CORPUS), pending, existing);
+    const result = autoAdjudicatePending(createAdjudicator(tree), inputs.cases, inputs.keys, pending, existing);
     await writeFile(join(out, 'verdicts.json'), JSON.stringify(result.verdicts, null, 2));
     await writeFile(join(out, 'adjudication-undecided.json'), JSON.stringify(result.undecided, null, 2));
     const pooled = pending.reduce((n, p) => n + p.sites.length, 0);
