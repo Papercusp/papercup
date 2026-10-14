@@ -24,6 +24,7 @@ import type { Sql } from 'postgres';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { SiemExportAccessError } from '../../../data-governance/siem-export';
 import { assertOrgAuditExportAuthorized } from '../../../data-governance/siem-export-org-audit';
+import type { RefusalContract } from '../../../capability-envelope/refusal-contract-types';
 import {
   LegalHoldError,
   listOrganizationLegalHolds,
@@ -39,6 +40,13 @@ export const LEGAL_HOLD_STATUS: Record<LegalHoldErrorCode, number> = {
   invalid: 400,
   not_found: 404,
   already_released: 409,
+};
+
+const LEGAL_HOLD_AUTHORIZATION_REFUSAL: RefusalContract = {
+  observed: { organizationApproval: 'not satisfied', requiredCapability: 'approve' },
+  liftsWhen:
+    'a human administrator has a valid organization root policy and holds governance approve over it; if the authorization check is unavailable, restore it and retry',
+  whoCanMakeItTrue: ['owner', 'host'],
 };
 
 const base = {
@@ -82,7 +90,9 @@ async function respond(
     return Response.json({ ok: true, op, ...(await run(sql, scope, { kind: 'staff_admin', id: principal })) });
   } catch (error) {
     if (error instanceof SiemExportAccessError) {
-      return Response.json({ ok: false, op, code: 'forbidden', error: error.message }, { status: 403 });
+      return Response.json({
+        ok: false, op, code: 'forbidden', error: error.message, refusal: LEGAL_HOLD_AUTHORIZATION_REFUSAL,
+      }, { status: 403 });
     }
     if (error instanceof LegalHoldError) {
       return Response.json({ ok: false, op, code: error.code, error: error.message }, { status: LEGAL_HOLD_STATUS[error.code] });

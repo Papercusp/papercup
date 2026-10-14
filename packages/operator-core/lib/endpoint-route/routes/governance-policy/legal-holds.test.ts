@@ -82,7 +82,15 @@ describe('legal-hold doors (P-017b)', () => {
     ] as const) {
       const out = await call(route, input);
       expect(out.status).toBe(403);
-      expect(out.body).toMatchObject({ ok: false, code: 'forbidden' });
+      expect(out.body).toMatchObject({
+        ok: false,
+        code: 'forbidden',
+        refusal: {
+          observed: { organizationApproval: 'not satisfied', requiredCapability: 'approve' },
+          liftsWhen: expect.stringContaining('human administrator'),
+          whoCanMakeItTrue: ['owner', 'host'],
+        },
+      });
     }
     expect(listOrganizationLegalHolds).not.toHaveBeenCalled();
     expect(placeOrganizationLegalHold).not.toHaveBeenCalled();
