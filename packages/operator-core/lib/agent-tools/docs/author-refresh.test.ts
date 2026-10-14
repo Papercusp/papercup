@@ -9,7 +9,9 @@ const h = vi.hoisted(() => {
     existsSync: vi.fn(() => false),
     mkdir: vi.fn(async () => undefined),
     writeFile: vi.fn(async () => undefined),
-    resolveHarnessDocPaths: vi.fn(async () => ({ docsRoot: '/tmp/docs-author-refresh-test' })),
+    resolveHarnessDocPaths: vi.fn(async () => ({ repoRoot: '/tmp/docs-author-refresh-test', docsRoot: '/tmp/docs-author-refresh-test' })),
+    generateNativeArchitecture: vi.fn(async () => ({ body: '## Source-backed architecture\n\nCited static relationship.',
+      documents: ['api.ts', 'target.ts'], sourceFingerprint: 'a'.repeat(64), statements: 1 })),
     safeJoinUnderRoot: vi.fn((_root: string, docId: string) => `/tmp/docs-author-refresh-test/${docId}`),
     anchorManualDoc: vi.fn(async (_args: { content: string }) => ({
       ok: true,
@@ -48,6 +50,7 @@ vi.mock('./_engineering-adapter', () => ({
   invalidateEngineeringAdapter: h.invalidateEngineeringAdapter,
 }));
 vi.mock('../../search/doc-embed-sync', () => ({ refreshDocPageSections: h.refreshDocPageSections }));
+vi.mock('../../harness/docs/native-architecture', () => ({ generateNativeArchitecture: h.generateNativeArchitecture }));
 
 import authorTool from './author';
 
@@ -72,6 +75,31 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.existsSync.mockImplementation(() => false);
   h.getAuthoredDocContent.mockResolvedValue(null);
+  h.generateNativeArchitecture.mockResolvedValue({ body: '## Source-backed architecture\n\nCited static relationship.',
+    documents: ['api.ts', 'target.ts'], sourceFingerprint: 'a'.repeat(64), statements: 1 });
+});
+
+describe('docs:author native architecture write boundary', () => {
+  const architecture = { name: 'entry', file: 'api.ts', paths: ['api.ts', 'target.ts'] };
+  it('persists the generated section and its source anchors through canonical authorship', async () => {
+    const result = await callAuthor({ ...baseArgs, architecture });
+    expect(JSON.parse(result.content[0].text).ok).toBe(true);
+    expect(h.generateNativeArchitecture).toHaveBeenCalledWith('/tmp/docs-author-refresh-test', architecture, expect.any(Function));
+    expect(h.anchorManualDoc).toHaveBeenCalledWith(expect.objectContaining({
+      documents: expect.arrayContaining(['api.ts', 'target.ts', baseArgs.documents[0]]),
+      content: expect.stringContaining('## Source-backed architecture'),
+    }));
+    expect(h.writeFile).toHaveBeenCalled();
+  });
+  it('refuses uncited graph evidence before canonical persistence, projection or search refresh', async () => {
+    h.generateNativeArchitecture.mockRejectedValueOnce(new Error('native_architecture_uncited_relationship'));
+    const result = await callAuthor({ ...baseArgs, architecture });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe('native_architecture_uncited_relationship');
+    expect(h.anchorManualDoc).not.toHaveBeenCalled();
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.refreshDocPageSections).not.toHaveBeenCalled();
+  });
 });
 
 describe('docs:author search refresh', () => {

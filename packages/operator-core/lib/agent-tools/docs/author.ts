@@ -44,6 +44,9 @@ import { engineeringAdapter, invalidateEngineeringAdapter } from './_engineering
 import { refreshDocPageSections } from '../../search/doc-embed-sync';
 import { findMdxCompileError } from '../../content-lint/mdx';
 import { completedResultPayload } from '../abort-completion-payload';
+import graphQuery from '../gitnexus/query';
+import { generateNativeArchitecture } from '../../harness/docs/native-architecture';
+import type { CodeIntelAnswer } from '../../code-intelligence/contracts';
 
 // ── Pure helpers (exported for unit tests — these encode the footgun-prevention) ──
 
@@ -623,6 +626,12 @@ const argsSchema = z.object({
     .describe(
       'What this doc documents (its drift anchor): repo file paths (packages/.../foo.ts), globs (src/**), feature ids (F-3), or "path :: symbol". STRONGLY recommended — without it the doc is NOT drift-tracked.',
     ),
+  architecture: z.object({
+    name: z.string().min(1),
+    file: z.string().min(1),
+    paths: z.array(z.string().min(1)).min(1).max(32),
+    limit: z.number().int().min(1).max(50).optional(),
+  }).optional().describe('Append a compiler-generated architecture section for this exact symbol and bounded source scope. Each static relationship cites current source hashes; stale or uncited evidence refuses before saving. Uses the existing graph:query context and doc drift anchors.'),
   tags: z.union([z.string(), z.array(z.string())]).optional().describe('Topic tags (frontmatter `tags`). A PROCEDURAL ordered-steps doc is the RUNBOOK genre: tag it `runbook`, end the slug `-runbook`, and say "runbook" in title/description so docs:search ranks it (agent-insights/runbooks-convention).'),
   plans: z.union([z.string(), z.array(z.string())]).optional().describe('Related plan slugs (frontmatter `plans`).'),
   normative: z.boolean().optional().describe('Optional OKF normative classification. On overwrite, omitted preserves the existing value.'),
@@ -759,7 +768,7 @@ export default defineTool({
     // (composeDoc strips leading frontmatter itself, so passing the already-stripped
     // body through is equivalent for the untouched case and simpler to read.)
     const preambleCheck = stripReadPreamble(stripCheck.body);
-    const authoredBody = preambleCheck.body;
+    let authoredBody = preambleCheck.body;
     if (preambleCheck.stripped) {
       warnings.push(
         "a docs:get read preamble (`# <title>` + `URL: …`) was stripped from `body` — that header is added by the READ surface, not part of the doc. " +
@@ -785,7 +794,21 @@ export default defineTool({
     }
     const descWarning = descriptionLengthWarning(description);
     if (descWarning) warnings.push(descWarning);
-    const documents = args.documents === undefined ? normalizeList(existingFrontmatter.documents) : normalizeList(args.documents);
+    let documents = args.documents === undefined ? normalizeList(existingFrontmatter.documents) : normalizeList(args.documents);
+    if (args.architecture) {
+      try {
+        const generated = await generateNativeArchitecture(paths.repoRoot, args.architecture, async request => {
+          const result = await graphQuery.handler(graphQuery.args.parse({ op: 'context', name: request.name,
+            file_path: request.file, paths: request.paths, limit: request.limit ?? 50 }),
+          { ...ctx, projectDir: paths.repoRoot } as never) as { data: CodeIntelAnswer };
+          return result.data;
+        });
+        authoredBody = `${authoredBody.trimEnd()}\n\n${generated.body}\n`;
+        documents = [...new Set([...documents, ...generated.documents])];
+      } catch (error) {
+        return err(error instanceof Error ? error.message : String(error));
+      }
+    }
     if (!documents.length) {
       warnings.push('no `documents` provided — the doc is NOT drift-tracked; pass `documents` (files/symbols it covers) so the drift sweep can flag it when that code changes.');
     }
