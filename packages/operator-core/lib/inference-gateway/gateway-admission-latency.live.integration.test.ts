@@ -61,6 +61,11 @@ function assess(recent: Sample[], queueDepth: number,
       to: recent.length ? Math.max(...recent.map((r) => r.finalizedAt)) : null }, failures };
 }
 
+function expectLiveSampleReady(measured: ReturnType<typeof assess>) {
+  expect(measured.failures, JSON.stringify(measured)).not.toContain('herd-present');
+  expect(measured.failures, JSON.stringify(measured)).not.toContain('insufficient-sample');
+}
+
 describe('live admission latency oracle controls', () => {
   function sample(provider: 'claude' | 'codex', wait = 100, total = 2000): Sample {
     return { provider, startedAt: 1000, finalizedAt: 1000 + total, finalStatus: 200,
@@ -73,6 +78,19 @@ describe('live admission latency oracle controls', () => {
   });
   it('rejects an empty population and a herd', () => {
     expect(assess([], 1).failures).toEqual(expect.arrayContaining(['herd-present', 'insufficient-sample']));
+  });
+  it('requires the shared live precondition at the exact sample floor and without a herd', () => {
+    expect(() => expectLiveSampleReady(assess(good(), 0))).not.toThrow();
+    expect(() => expectLiveSampleReady(assess(good(), 1))).toThrow('herd-present');
+  });
+  it.each(['claude', 'codex'] as const)('rejects a sparse %s lane in the shared live precondition', (sparse) => {
+    const retained = (provider: 'claude' | 'codex') => ({
+      count: 400, retained: provider === sparse ? MIN_LANE_SAMPLE - 1 : 256,
+      p50: 100, p95: 100, p99: 100,
+    });
+    const measured = assess(good(), 0, { claude: retained('claude'), codex: retained('codex') });
+    expect(measured.failures).toEqual(['insufficient-sample']);
+    expect(() => expectLiveSampleReady(measured)).toThrow('insufficient-sample');
   });
   it('uses sparse-provider retained waits without weakening the sample floor', () => {
     const waits = { count: 25, retained: 20, p50: 100, p95: 100, p99: 100 };
@@ -114,7 +132,7 @@ describe.skipIf(gateRun || !requested)('LIVE gateway admission latency', () => {
     console.log(JSON.stringify({ kind: 'gateway-live-admission', evidencePlane: 'live',
       processStartedAt: stats.processStartedAt, sampledAt: Date.now(), queueWaitPopulation: 'latest 256 per provider since process start',
       claudeBaselineP50Ms: CLAUDE_BASELINE_P50_MS, claudeTolerance: CLAUDE_TOLERANCE, ...measured }));
-    expect(measured.failures).not.toContain('herd-present');
+    expectLiveSampleReady(measured);
   });
   it('keeps Codex queueWait p50 below 2s', () => {
     expect(measured.codex.measured).toBeGreaterThanOrEqual(MIN_LANE_SAMPLE);
