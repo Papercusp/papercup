@@ -1170,6 +1170,38 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(fork.calls.spawn).toHaveLength(1);
   });
 
+  it('dispatches a Codex-source-only selection through a fresh cited-turn brief when conversion is unavailable', async () => {
+    const { deps, calls } = makeFakes({
+      loadRanks: async () => [{ rank: 1, agent: 'codex', model: 'sol' }],
+      probeBackendAvailable: async () => ({ available: true, detail: 'codex fixture headroom' }),
+    }, { source: { agent: 'codex', role: 'reviewer', binding: null } });
+
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+
+    // This is the clause's falsifier fixture: the only selected expert is a
+    // Codex source. A conversion refusal must still produce an answering
+    // session via the cited-turn fallback, rather than ending with no launch.
+    expect(result).toMatchObject({
+      dispatched: true,
+      operation: 'brief',
+      agent: 'codex',
+      model: 'sol',
+    });
+    expect(result.attempts).toEqual([
+      expect.objectContaining({ agent: 'codex', operation: null, reason: 'source-session-untracked', outcome: 'skipped' }),
+      expect.objectContaining({ agent: 'codex', operation: 'brief', outcome: 'dispatched' }),
+    ]);
+    expect(calls.spawn).toHaveLength(1);
+    const spawn = calls.spawn[0]!;
+    expect(spawn.coordOwnerId).not.toBe(OPTS.sourceOwnerId);
+    expect(spawn.envelope.greetingCmd).toContain('--owner-id=su-answer-1');
+    expect(spawn.envelope.greetingCmd).not.toContain('--resume');
+    expect(spawn.envelope.greetingCmd).not.toContain('--fork');
+    expect(spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('fixture cited turn 1');
+    expect(spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('sess-1#1');
+    expect(spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('NOT your own history');
+  });
+
   it('rejects a real cyclic source once for every conversion rank without launching it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'consult-port-cycle-'));
     const path = join(dir, 'source.jsonl');
