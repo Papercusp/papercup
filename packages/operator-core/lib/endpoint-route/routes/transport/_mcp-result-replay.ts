@@ -132,6 +132,64 @@ function decodeStoredMcpResult(result: unknown, isError: boolean): StoredMcpResu
   };
 }
 
+/**
+ * Adapt a stored replay to a retry that now requests structured MCP output.
+ *
+ * Older receipts may contain only the text payload. Rehydrate only a single,
+ * unambiguous JSON object; result-door envelopes describe retrieval state, not
+ * the tool's output. When the stored body cannot satisfy the requested output
+ * schema, mark it as an MCP error so clients do not reject a malformed success
+ * before the caller can inspect the original receipt.
+ */
+export function normalizeStructuredReplayResult(
+  result: StoredMcpResult,
+  requestedStructured: boolean,
+): StoredMcpResult {
+  if (!requestedStructured || result.structuredContent !== undefined) return result;
+
+  let structuredUnavailableReason = 'stored-result-not-rehydratable';
+  const [onlyContent] = result.content;
+  if (
+    result.content.length === 1 &&
+    onlyContent?.type === 'text' &&
+    typeof onlyContent.text === 'string'
+  ) {
+    try {
+      const decoded: unknown = JSON.parse(onlyContent.text);
+      if (
+        decoded !== null &&
+        typeof decoded === 'object' &&
+        !Array.isArray(decoded) &&
+        (decoded as { schemaVersion?: unknown }).schemaVersion !== 'papercusp.output-envelope/v1'
+      ) {
+        return {
+          ...result,
+          structuredContent: decoded,
+          _meta: { ...(result._meta ?? {}), structured: true },
+        };
+      }
+      if (
+        decoded !== null &&
+        typeof decoded === 'object' &&
+        (decoded as { schemaVersion?: unknown }).schemaVersion === 'papercusp.output-envelope/v1'
+      ) {
+        structuredUnavailableReason = 'result-door-envelope-is-not-tool-data';
+      }
+    } catch {
+      // Compact or other non-JSON content cannot be rehydrated safely.
+    }
+  }
+
+  return {
+    ...result,
+    isError: true,
+    _meta: {
+      ...(result._meta ?? {}),
+      structuredUnavailable: { reason: structuredUnavailableReason },
+    },
+  };
+}
+
 export function isPendingMcpResult(result: StoredMcpResult | null | undefined): boolean {
   return result?._meta?.state === PENDING_MCP_RESULT_STATE;
 }
