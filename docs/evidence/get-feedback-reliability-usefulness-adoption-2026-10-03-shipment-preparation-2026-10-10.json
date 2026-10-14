@@ -5046,10 +5046,32 @@
           {"advSessionId": 43239, "archiveBytes": 511785, "payloadBytes": 40784, "archiveHashMatch": true, "frameHashMatch": true}
         ],
         "declineArguments": "Static TypeScript AST decoding of literal consult:decline arguments in the complete archived native exec calls matches every ledger argument for posted invocation38129814 and invocation38130200. The earlier second-child call differs from38130200 and remains the separately refused38130128; it is not another posted decline. Parent exec call ids do not equal the nested MCP carrier call-id fingerprints; no equality claim is made for those different call layers.",
-        "replyArguments": "OPEN. The archive has the third child's complete frame. The first literal-only decoder omitted its const-body reply; the faithful session_turn_parts part10 stores only2024 characters, ending inside the template with an explicit1692-character truncation marker. StaticCallCount0/allArgumentsMatchfalse in bash-6c5e8b44-2a0.log is an inconclusive reader result, not an observed native/ledger mismatch. Next: decode static const bindings from the complete immutable archive, not the truncated indexed part.",
+        "replyArguments": "VERIFIED against complete immutable archive01a139a4-234d-7ff0-b714-9d576860652d. Static TypeScript AST decoding resolves the const body and shorthand property in the complete3700-byte exec program, with no parse diagnostics or unresolved reply arguments. Its four arguments match every ledger argument for consult:reply38130615 (canonical argument SHA2567e457b29d5b7a58e5e6fc3e7412caa72e0436fc8f8fe1666a61802794cfed77f). Archive511785bytes/SHA547d82dd5bd94ea43b516b37862936571c265a32c08bceddc5c32f78ee40ea1c match. Evidence .papercusp/scratch/bash-e76d7fec-9fe.log and .papercusp/scratch/bash-a57c20e7-2ca.log. The earlier static0/allArgumentsMatchfalse from truncated indexed part10 remains an inconclusive reader result, not a native mismatch.",
+        "replyPhysicalResult20261014": {
+          "evidenceLog": ".papercusp/scratch/bash-a57c20e7-2ca.log",
+          "physicalCallId": "call_61df6301a7aa4b65b07fb92b41262f1e",
+          "physicalCallTimestamp": "2026-10-14T09:01:15.140Z",
+          "programSha256": "6ccf1f8d8165b189af4f56888148cfd24dba9c6a48d4f7f1d5d7a885bf7dc839",
+          "physicalOutputTimestamp": "2026-10-14T09:01:16.935Z",
+          "physicalOutputSha256": "6e21446d967a888a4198cea21543f2cabcba1eb184046f8719ccfaf0cccb7176",
+          "physicalOutputBytes": 848,
+          "decodedReceipt": {
+            "ok": true,
+            "postId": 1180619,
+            "role": "responder",
+            "state": "active",
+            "exchangesUsed": 0,
+            "cascade": {
+              "advanced_to": null,
+              "exhausted": true,
+              "woke": 0
+            }
+          },
+          "scope": "The archived result is paired by physical exec call id and recursively decoded as JSON, rather than inferred from a substring. Parent exec call id and nested MCP call-id fingerprint remain different layers. The receipt hint asserts requester signaling; it does not independently verify event delivery or requester wake."
+        },
         "actorBinding": "Exact workspace ledger rows are harness_slug=*, so the initial extra harness_slug=papercusp filter returned0 and established no absence. Correct JSON nesting is metadata_json.kernel.enforce.serverAudit.identityLaunchRecord; the carrier is metadata_json.requestOrigin.nativeSession. All three posted rows use caller-row selection and bound meta:threadId carriers matching43236/43238/43239. Reply native valueFingerprint independently matches SHA256 of exact01a139a4-234d-7ff0-b714-9d576860652d.",
         "sourceArchiveLimit": "A same-transaction positive-control query passed while the exact source01a13971 was absent from session_archives under the canonical default/codex key. This is a scoped current archive absence, not deletion-cause or whole-host absence evidence. d184's immutable export manifest records a live-jsonl2551575-byte prefix; the earlier2531233-byte originalSourceBoundary is a different observation and must not substitute for that port snapshot.",
-        "scope": "Three retained native frames and two complete decline argument comparisons are verified. Third reply argument comparison, source mutation/ABA/system/filesystem/wake attribution, original warmup/deletion, D029 production effect, full supported matrix, whole executed graph, independent acceptance, R6 and exact R7 shipment remain open. No tests, consult requests, provider/settings changes, or LIVE_GATE_OPS were performed."
+        "scope": "Three retained native frames and all three posted-response argument comparisons are verified; the third reply also has a structured successful physical receipt. Source mutation/ABA/system/filesystem/wake attribution, original warmup/deletion, D029 production effect, full supported matrix, whole executed graph, independent acceptance, R6 and exact R7 shipment remain open. No tests, consult requests, provider/settings changes, or LIVE_GATE_OPS were performed."
       },
       "limits": "No new native request/await/launch, test replay, provider/settings change, or LIVE_GATE_OPS. D029 production effect, whole executed graph, full source/backend matrix, independent acceptance, R6 and exactR7 shipment remain open. Current plan shipReadiness measured acceptance_bar_contract_not_ready."
     },
