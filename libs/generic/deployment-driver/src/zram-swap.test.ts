@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -19,7 +20,7 @@ const SWAPS_HEADER = 'Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n';
 // scratch config tree, a scratch /proc/swaps, a fake generator and fake systemctl/sysctl that log
 // their argv. The fake `systemctl start dev-zram0.swap` appends a zram line to the scratch
 // /proc/swaps, the way the real unit activates the swap. Nothing touches the real host.
-function harness(opts: { startActivates?: boolean } = {}) {
+function harness(opts: { startActivates?: boolean; packagedConfig?: string } = {}) {
   const tmp = mkdtempSync(path.join(tmpdir(), 'zram-swap-'));
   const conf = path.join(tmp, 'etc/systemd/zram-generator.conf');
   const sysctlConf = path.join(tmp, 'etc/sysctl.d/90-papercusp-zram.conf');
@@ -36,6 +37,7 @@ function harness(opts: { startActivates?: boolean } = {}) {
     [
       '#!/bin/sh',
       `echo "systemctl $*" >> '${callLog}'`,
+      `if [ "$1" = stop ] && [ "$2" = '${ZRAM_SWAP_UNIT}' ]; then sed -i '/^\\/dev\\/zram0 /d' '${swaps}'; fi`,
       activate
         ? `if [ "$1" = start ] && [ "$2" = '${ZRAM_SWAP_UNIT}' ] && ! grep -q '^/dev/zram0 ' '${swaps}'; then printf '/dev/zram0                              partition\\t8189948\\t\\t0\\t\\t100\\n' >> '${swaps}'; fi`
         : `[ "$1" = start ] && exit 1`,
@@ -44,6 +46,8 @@ function harness(opts: { startActivates?: boolean } = {}) {
     ].join('\n'),
   );
   writeFileSync(path.join(bin, 'sysctl'), `#!/bin/sh\necho "sysctl $*" >> '${callLog}'\n`);
+  const packagedChecksum = opts.packagedConfig === undefined ? '' : createHash('md5').update(opts.packagedConfig).digest('hex');
+  writeFileSync(path.join(bin, 'dpkg-query'), `#!/bin/sh\nprintf '%s\\n' '${conf} ${packagedChecksum}'\n`, { mode: 0o755 });
   chmodSync(path.join(bin, 'systemctl'), 0o755);
   chmodSync(path.join(bin, 'sysctl'), 0o755);
   const script = path.join(tmp, 'run.sh');
@@ -66,7 +70,7 @@ describe('zramSwapShellLines (WI-6554700010012418)', () => {
   afterEach(() => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
-  const make = (opts?: { startActivates?: boolean }) => {
+  const make = (opts?: { startActivates?: boolean; packagedConfig?: string }) => {
     const h = harness(opts);
     dirs.push(h.tmp);
     return h;
@@ -111,6 +115,42 @@ describe('zramSwapShellLines (WI-6554700010012418)', () => {
     expect(h.statusLines(r.stdout)).toEqual([
       `PAPERCUSP_ZRAM_SWAP status=skipped reason=foreign-generator-config path=${h.conf}`,
     ]);
+  });
+
+  it('adopts the unchanged package default and recreates its already active 4 GiB device', () => {
+    const packagedConfig = '# Ubuntu packaged default\n[zram0]\n';
+    const h = make({ packagedConfig });
+    mkdirSync(path.dirname(h.conf), { recursive: true });
+    writeFileSync(h.conf, packagedConfig);
+    writeFileSync(h.swaps, `${SWAPS_HEADER}/dev/zram0                              partition\t4194300\t\t0\t\t100\n`);
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(readFileSync(h.conf, 'utf8')).toBe([MARKER, ...zramGeneratorConfigLines()].join('\n') + '\n');
+    expect(h.calls()).toEqual([
+      `sysctl -q -p ${h.sysctlConf}`,
+      `systemctl stop ${ZRAM_SWAP_UNIT}`,
+      'systemctl stop systemd-zram-setup@zram0.service',
+      'systemctl daemon-reload',
+      `systemctl start ${ZRAM_SWAP_UNIT}`,
+    ]);
+    expect(h.statusLines(r.stdout)).toEqual(['PAPERCUSP_ZRAM_SWAP status=active device=/dev/zram0 sizeMiB=7997']);
+    expect(h.run().status).toBe(0);
+    expect(h.calls().filter(call => call.startsWith('systemctl stop'))).toHaveLength(2);
+  });
+
+  it('preserves a customer edit to the packaged conffile and its active swap', () => {
+    const h = make({ packagedConfig: '# Ubuntu packaged default\n[zram0]\n' });
+    mkdirSync(path.dirname(h.conf), { recursive: true });
+    const customized = '[zram0]\nzram-size = 2048\n';
+    writeFileSync(h.conf, customized);
+    const swaps = `${SWAPS_HEADER}/dev/zram0                              partition\t2097148\t\t16\t\t5\n`;
+    writeFileSync(h.swaps, swaps);
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(readFileSync(h.conf, 'utf8')).toBe(customized);
+    expect(readFileSync(h.swaps, 'utf8')).toBe(swaps);
+    expect(h.calls()).toEqual([]);
+    expect(existsSync(h.sysctlConf)).toBe(false);
   });
 
   it('leaves a zram swap another tool already activated alone on the first run', () => {

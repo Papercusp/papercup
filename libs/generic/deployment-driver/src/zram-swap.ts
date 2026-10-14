@@ -57,7 +57,8 @@ export const ZRAM_SWAP_FUNCTION = 'install_zram_swap';
  * Bash lines that define `install_zram_swap <generator_conf> <sysctl_conf> <generator_bin> <proc_swaps>`.
  * The caller decides whether and when to invoke it (after installing the generator package).
  *
- * - A generator config WITHOUT the marker is someone else's, and is left alone.
+ * - A generator config WITHOUT the marker is left alone unless its checksum matches dpkg's
+ *   unchanged packaged conffile. Ubuntu installs that default and activates it during apt.
  * - On the first run (no config of ours yet), a zram swap that is already active belongs to some
  *   other tool (zram-tools, a hand setup), and is left alone rather than fought over `/dev/zram0`.
  * - Without the generator binary it changes nothing.
@@ -73,11 +74,18 @@ export function zramSwapShellLines(marker: string): readonly string[] {
   const status = (fields: string) => `echo "${ZRAM_SWAP_STATUS_PREFIX} ${fields}"`;
   return [
     `${ZRAM_SWAP_FUNCTION}() {`,
-    '  local conf="$1" sysctl_conf="$2" generator="$3" proc_swaps="$4" size_kib',
+    '  local conf="$1" sysctl_conf="$2" generator="$3" proc_swaps="$4" size_kib packaged_md5 actual_md5 restart_default=0',
     `  local marker='${marker}'`,
     '  if [[ -e "$conf" ]] && ! grep -qF "$marker" "$conf" 2>/dev/null; then',
-    `    ${status('status=skipped reason=foreign-generator-config path=$conf')}`,
-    '    return 0',
+    // dpkg's recorded conffile checksum distinguishes Ubuntu's freshly installed default from
+    // a customer's config. Do not infer ownership merely from a plausible-looking body.
+    `    packaged_md5="$(dpkg-query -W -f='\${Conffiles}\\n' ${ZRAM_GENERATOR_APT_PACKAGE} 2>/dev/null | awk -v conf="$conf" '$1 == conf { print $2 }' || true)"`,
+    '    actual_md5="$(md5sum -- "$conf" 2>/dev/null | cut -d " " -f 1 || true)"',
+    '    if [[ ! "$packaged_md5" =~ ^[a-f0-9]{32}$ || "$actual_md5" != "$packaged_md5" ]]; then',
+    `      ${status('status=skipped reason=foreign-generator-config path=$conf')}`,
+    '      return 0',
+    '    fi',
+    '    if grep -q "^/dev/zram0[[:space:]]" "$proc_swaps" 2>/dev/null; then restart_default=1; fi',
     '  fi',
     '  if [[ ! -e "$conf" ]] && grep -q "^/dev/zram" "$proc_swaps" 2>/dev/null; then',
     `    ${status('status=skipped reason=foreign-zram-swap-active')}`,
@@ -95,9 +103,14 @@ export function zramSwapShellLines(marker: string): readonly string[] {
     '  fi',
     `  printf '%s\\n' "$marker" ${quoted(zramSysctlLines())} > "$sysctl_conf" || true`,
     '  sysctl -q -p "$sysctl_conf" >/dev/null 2>&1 || true',
-    // The generator runs at every boot; this boot needs one reload + start, which is a no-op once
-    // the unit is active (the bootstrap re-runs on every boot).
-    `  { systemctl daemon-reload && systemctl start ${ZRAM_SWAP_UNIT}; } >/dev/null 2>&1 || true`,
+    // Ubuntu's package post-install may already have activated its 4 GiB/kernel-default device.
+    // Only that proven unchanged packaged default is restarted to apply our settings; an owned
+    // device on ordinary re-runs is merely started, preserving its compressed pages.
+    '  if [[ "$restart_default" -eq 1 ]]; then',
+    `    { systemctl stop ${ZRAM_SWAP_UNIT} && systemctl stop systemd-zram-setup@zram0.service && systemctl daemon-reload && systemctl start ${ZRAM_SWAP_UNIT}; } >/dev/null 2>&1 || true`,
+    '  else',
+    `    { systemctl daemon-reload && systemctl start ${ZRAM_SWAP_UNIT}; } >/dev/null 2>&1 || true`,
+    '  fi',
     `  size_kib="$(awk '$1 == "${ZRAM_SWAP_DEVICE}" { print $3 }' "$proc_swaps" 2>/dev/null || true)"`,
     '  if [[ -n "$size_kib" ]]; then',
     `    ${status(`status=active device=${ZRAM_SWAP_DEVICE} sizeMiB=$(( size_kib / 1024 ))`)}`,
