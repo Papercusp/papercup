@@ -4,7 +4,6 @@ import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { hostThroughPty, metaPathFor, socketPathFor } from '../scripts/psu-pty-host.mjs';
@@ -24,7 +23,7 @@ describe('managed PTY terminal output congestion', () => {
     const startedPath = join(root, 'diagnostic-started');
     const tickPath = join(root, 'tick');
     const ownerId = `su-diagnostic-congestion-${process.pid}-${Date.now()}`;
-    const hostModule = pathToFileURL(join(process.cwd(), 'scripts/psu-pty-host.mjs')).href;
+    const hostModule = new URL('../scripts/psu-pty-host.mjs', import.meta.url).href;
     const childProgram = "const fs=require('fs');process.stdin.setRawMode(true);process.stdin.on('data',d=>{if(d.includes(4))process.exit(0);fs.appendFileSync(process.env.INPUT_PATH,d);});";
     const program = `
       import { writeFileSync } from 'node:fs';
