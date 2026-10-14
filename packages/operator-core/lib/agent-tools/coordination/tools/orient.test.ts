@@ -352,6 +352,8 @@ const readOwnerPresenceMock = vi.hoisted(() =>
   vi.fn(async () => ({ present: false, lastSeenAgoMs: null, activeSessions: 0 })),
 );
 const getFlagMock = vi.hoisted(() => vi.fn(async () => false));
+const readAgentObligationAgendaMock = vi.hoisted(() => vi.fn(async () => ({ agenda: null })));
+const projectAgentTurnStartObligationBriefMock = vi.hoisted(() => vi.fn(() => null));
 const resolvePresenceFleetMock = vi.hoisted(() =>
   vi.fn(async () => ({ fleetSlug: null, fleetRole: null })),
 );
@@ -373,6 +375,11 @@ vi.mock('../../_compound-dispatch', async (importOriginal) => ({
 vi.mock('../../../modes/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../modes/store')>()),
   getModes: getModesMock,
+}));
+vi.mock('../../../agent-obligation-reader', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../agent-obligation-reader')>()),
+  readAgentObligationAgenda: readAgentObligationAgendaMock,
+  projectAgentTurnStartObligationBrief: projectAgentTurnStartObligationBriefMock,
 }));
 vi.mock('../../../power-user-sessions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../power-user-sessions')>()),
@@ -682,6 +689,8 @@ describe('coord:orient args', () => {
       throw new Error(`unexpected sub-call: ${name}`);
     });
     getModesMock.mockResolvedValue(null);
+  readAgentObligationAgendaMock.mockClear();
+  projectAgentTurnStartObligationBriefMock.mockClear();
     readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
     getFlagMock.mockResolvedValue(false);
     resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
@@ -1440,12 +1449,15 @@ describe('coord:orient args', () => {
     expect(portfolioStart).toBeGreaterThan(modesStart);
     expect(obligationsStart).toBeGreaterThan(portfolioStart);
     expect(obligationsStart).toBeLessThan(composeStart);
-    expect(source.slice(obligationsStart, composeStart)).toContain('readAgentObligationAgenda');
-    expect(source.slice(obligationsStart, composeStart)).toContain('projectAgentTurnStartObligationBrief');
+    const obligationsSlice = source.slice(obligationsStart, composeStart);
+    expect(obligationsSlice).toContain('readAgentObligationAgenda');
+    expect(obligationsSlice).toContain('projectAgentTurnStartObligationBrief');
+    expect(obligationsSlice).toMatch(/const goalObligationsPromise =\s*ownerId\s*\?/);
+    expect(source.slice(obligationsStart, composeStart)).toContain('const goalObligationsPromise =\n      ownerId');
+    expect(source.slice(obligationsStart, composeStart)).not.toContain('goalSubject && ownerId');
     expect(source.slice(portfolioStart, composeStart)).toContain('readGoalPortfolioBriefStaged');
     // EI-25191349922959563: the obligation fold (900ms budget) must read the
     // UNCOUNTED snapshot stage, never the counted display read it used to share.
-    const obligationsSlice = source.slice(obligationsStart, composeStart);
     expect(obligationsSlice).toContain('goalPortfolio: async () => (goalPortfolioSnapshotPromise');
     expect(obligationsSlice).not.toContain('await goalPortfolioReadPromise');
     // WI-2140700: the holder's owner-report obligation starts in the same early

@@ -726,11 +726,12 @@ export interface OrientResult {
    *  null means the caller is a GOAL holder but the portfolio read degraded. */
   goalPortfolio?: import('../../../goal-launch-settings').GoalPortfolioBrief | null;
   /** P-007 (shared-agent-obligations-and-briefs): the canonical complete
-   *  obligation agenda for a resolved GOAL holder. The embedded turn-start
+   *  obligation agenda for every attributable session. The embedded turn-start
    *  projection remains bounded, while `primary` and `evaluations` are the
-   *  complete recovery payload promised by its detailRef. Absent for a
-   *  non-GOAL caller; null means the canonical read degraded — or, when
-   *  `obligationsWithheldBy` is present, that an experiment arm withheld it. */
+   *  complete recovery payload promised by its detailRef. A non-GOAL session
+   *  still has owner-directive, waiting-on, fleet-staffing, and plan-context
+   *  obligations; null means the canonical read degraded or, when
+   *  `obligationsWithheldBy` is present, an experiment arm withheld it. */
   obligations?: import('../../../agent-obligation-reader').AgentObligationBrief | null;
   /** R-4 / D-032 / D-047: the goal's 'baseline' or 'brief-only' arm withheld the
    *  agenda. Same contract as the turn-start orientation: recovery through
@@ -1093,9 +1094,9 @@ export async function composeOrient(
    *  injects this closure over that in-flight promise. Undefined means the
    *  caller is not a resolved GOAL holder. */
   goalPortfolioFold?: OrientGoalPortfolioFold,
-  /** P-007: complete obligation-agenda recovery for a GOAL holder. The handler
-   *  starts the canonical reader beside the portfolio read and injects this
-   *  closure so composition remains IO-free and the two waits overlap. */
+  /** P-007: complete obligation-agenda recovery for any attributable session.
+   *  The handler starts the canonical reader beside the other core folds and
+   *  injects this closure so composition remains IO-free and the waits overlap. */
   obligationsFold?: OrientObligationsFold,
   /** Absolute deadline for the composed response, with handler serialization
    *  headroom already reserved. The final declaration leg must not claim a fresh
@@ -3826,28 +3827,46 @@ export default defineTool({
     // original rejection: a fulfilled null means a measured absence of a goal.
     const goalPortfolioPromise = goalPortfolioReadPromise?.catch(() => null);
     const goalObligationsPromise =
-      goalSubject && ownerId
+      ownerId
         ? (async () => {
             try {
               // R-4 / D-047: an experiment arm that withholds the per-turn agenda
               // withholds it here too, or a full orient re-delivers the treatment.
-              const { goalWithholdsTurnStartReminders } = await import('../../../goal-launch-settings');
-              if (await goalWithholdsTurnStartReminders(goalSubject)) return { withheldBy: 'experiment-arm' } as const;
+              // This applies only to a resolved GOAL subject; non-GOAL sessions
+              // must still receive their ordinary obligation agenda.
+              if (goalSubject) {
+                const { goalWithholdsTurnStartReminders } = await import('../../../goal-launch-settings');
+                if (await goalWithholdsTurnStartReminders(goalSubject)) return { withheldBy: 'experiment-arm' } as const;
+              }
               const { readAgentObligationAgenda, projectAgentTurnStartObligationBrief } = await import(
                 '../../../agent-obligation-reader'
               );
               const read = await readAgentObligationAgenda({
                 workspaceId: orientWorkspaceId,
                 ownerId,
-                goalId: goalSubject,
+                // A failed handler mode preflight is not a measured absence of a
+                // goal. Let the canonical reader re-resolve that subject then;
+                // otherwise pass null explicitly and avoid a duplicate lookup.
+                goalId: runtimeModeRows === null ? undefined : goalSubject,
                 // Reuse the already-started canonical portfolio read so orient's
                 // two GOAL core folds describe one snapshot rather than racing
                 // independent reads of the same mutable state. Take its UNCOUNTED
                 // stage: obligations never read queue.claimable (EI-25191349922959563).
-                deps: {
-                  goalPortfolio: async () => (goalPortfolioSnapshotPromise ? await goalPortfolioSnapshotPromise : null),
-                },
+                ...(goalSubject
+                  ? {
+                      deps: {
+                        goalPortfolio: async () => (goalPortfolioSnapshotPromise ? await goalPortfolioSnapshotPromise : null),
+                      },
+                    }
+                  : {}),
               });
+              // When the handler could not resolve modes, the canonical reader
+              // may still discover a GOAL subject. Preserve that subject's
+              // experiment-arm withholding after the authoritative lookup.
+              if (!goalSubject && runtimeModeRows === null && read.goalId) {
+                const { goalWithholdsTurnStartReminders } = await import('../../../goal-launch-settings');
+                if (await goalWithholdsTurnStartReminders(read.goalId)) return { withheldBy: 'experiment-arm' } as const;
+              }
               return projectAgentTurnStartObligationBrief(read.agenda);
             } catch {
               return null;
