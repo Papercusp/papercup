@@ -228,6 +228,10 @@ function fakeSql(opts: {
      *  keepalive beat), against which a codex rollout's mtime is judged. */
     last_active_at?: string | null;
   }>;
+  /** Active adv-session owners used by ended-session signal recovery. */
+  activeSessionOwners?: string[];
+  /** Exercise the fail-open lifecycle-read path. */
+  activeSessionOwnersError?: boolean;
   spawnRecords?: Record<string, { model_spec: string | null; model_tier: string | null }>;
   /** P-003: claim-freshness rows keyed by owner (the work_item_claims⋈carry_notes read). */
   claimFreshness?: Record<
@@ -266,6 +270,11 @@ function fakeSql(opts: {
     if (q.includes('fleet_membership_events')) {
       const label = opts.fleetLabels?.[String(values[0])];
       return Promise.resolve(label ? [{ owner_label: label }] : []);
+    }
+    if (q.includes('harness_shared.adv_sessions') && q.includes('ended_at IS NULL')) {
+      if (opts.activeSessionOwnersError) return Promise.reject(new Error('adv session read failed'));
+      const owners = opts.activeSessionOwners ?? (opts.seeded ?? []).map((row) => row.owner_id);
+      return Promise.resolve(owners.map((owner_id) => ({ owner_id })));
     }
     if (q.includes('compaction_limit IS NULL')) return Promise.resolve(opts.unseeded ?? []);
     if (q.includes('compaction_limit IS NOT NULL')) return Promise.resolve(opts.seeded ?? []);
@@ -354,7 +363,8 @@ describe('original compaction durable episodes', () => {
     const key = (kind: Parameters<typeof compactionConditionKey>[2], subject = '') =>
       compactionConditionKey('workspace', row.owner_id, kind, subject);
     return { deps, open, row, key, openedKeys, resolvedKeys,
-      run: (rows = [row]) => checkCompactionCompliance(fakeSql({ seeded: rows }), deps) };
+      run: (rows = [row], sqlOpts: Parameters<typeof fakeSql>[0] = {}) =>
+        checkCompactionCompliance(fakeSql({ activeSessionOwners: ['su-episode'], ...sqlOpts, seeded: rows }), deps) };
   }
   it('opens before legacy force latches and survives restart, absence and unknown measurements', async () => {
     const h = fixture(); estimateMock.mockResolvedValue(150_000);
@@ -414,6 +424,50 @@ describe('original compaction durable episodes', () => {
     estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(2);
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('condition resolution failed'));
     h.deps.rail!.resolve = resolve; await h.run(); expect(h.open.size).toBe(0);
+  });
+  it('closes current-session signal episodes only after adv-session lifecycle proves the owner ended', async () => {
+    const h = fixture();
+    const endedSessionSignals = [
+      'dark-telemetry', 'over-limit', 'force-unavailable', 'implausible-reading',
+      'frozen-codex-reading', 'default-1m-served-small', 'unsatisfiable-limit',
+    ] as const;
+    const needsFollowUp = [
+      'context-death', 'tool-reference-death', 'compaction-stranding',
+      'dark-presence', 'carry-respawn-loop', 'stale-cutover',
+    ] as const;
+    for (const kind of endedSessionSignals) h.open.set(h.key(kind), Date.now() - 100);
+    for (const kind of needsFollowUp) h.open.set(h.key(kind), Date.now() - 100);
+
+    // A live adv-session blocks cleanup, even when the alarm has not re-fired.
+    await h.run([], { activeSessionOwners: [h.row.owner_id] });
+    expect(h.open.size).toBe(endedSessionSignals.length + needsFollowUp.length);
+    expect(h.resolvedKeys).toEqual([]);
+
+    // Once lifecycle state proves the owner has no active session, only
+    // conditions describing current measurements/signals become obsolete.
+    await h.run([], { activeSessionOwners: [] });
+    expect([...h.open.keys()].sort()).toEqual(needsFollowUp.map(kind => h.key(kind)).sort());
+    expect(h.resolvedKeys.sort()).toEqual(endedSessionSignals.map(kind => h.key(kind)).sort());
+  });
+  it('preserves one-shot episodes when the adv-session lifecycle read fails', async () => {
+    const h = fixture();
+    h.open.set(h.key('over-limit'), Date.now() - 100);
+    h.open.set(h.key('dark-telemetry'), Date.now() - 100);
+    await h.run([], { activeSessionOwnersError: true });
+    expect(h.open.size).toBe(2);
+    expect(h.resolvedKeys).toEqual([]);
+  });
+  it('preserves an episode when the condition reader returns duplicate lifecycle evidence', async () => {
+    const h = fixture();
+    const key = h.key('over-limit');
+    h.open.set(key, Date.now() - 100);
+    h.deps.readOpenConditions = async () => [
+      { conditionKey: key, openedAtMs: Date.now() - 100 },
+      { conditionKey: key, openedAtMs: Date.now() - 100 },
+    ];
+    await h.run([], { activeSessionOwners: [] });
+    expect(h.open.has(key)).toBe(true);
+    expect(h.resolvedKeys).toEqual([]);
   });
   it('only measured same-session rollout recovery clears a frozen episode', async () => {
     const h = fixture(); h.open.set(h.key('frozen-codex-reading'), Date.now() - 100);
@@ -2170,6 +2224,53 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     const p2 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
     expect(p2.bootConfigRecovered).toEqual([{ owner: 'blind', kind: 'dark-telemetry' }]);
     expect(resolveEscalationMock).not.toHaveBeenCalled(); // no open row was listed ⇒ nothing to resolve, guard still cleared
+  });
+
+  it('resolves a one-shot dark-telemetry episode after its adv session ends, but keeps active owners and unknown reads open', async () => {
+    const endedKey = compactionConditionKey('workspace', 'ended-dark', 'dark-telemetry');
+    const endedResolved: string[] = [];
+    const endedDeps: CompactionComplianceDeps = {
+      readOpenConditions: async () => [{ conditionKey: endedKey, openedAtMs: Date.now() - 1_000 }],
+      rail: {
+        resolve: async (event) => {
+          endedResolved.push(event.conditionKey);
+          return true;
+        },
+      },
+    };
+    await checkCompactionCompliance(fakeSql({ activeSessionOwners: [] }), endedDeps);
+    expect(endedResolved).toEqual([endedKey]);
+
+    const activeKey = compactionConditionKey('workspace', 'active-dark', 'dark-telemetry');
+    const activeResolved: string[] = [];
+    const activeDeps: CompactionComplianceDeps = {
+      readOpenConditions: async () => [{ conditionKey: activeKey, openedAtMs: Date.now() - 1_000 }],
+      rail: {
+        resolve: async (event) => {
+          activeResolved.push(event.conditionKey);
+          return true;
+        },
+      },
+    };
+    await checkCompactionCompliance(fakeSql({
+      activeSessionOwners: ['active-dark'],
+      seeded: [{ owner_id: 'active-dark', owner_label: 'su · active-dark', compaction_limit: 300_000,
+        last_active_at: new Date().toISOString() }],
+    }), activeDeps);
+    expect(activeResolved).toEqual([]);
+
+    const unknownResolved: string[] = [];
+    const unknownDeps: CompactionComplianceDeps = {
+      readOpenConditions: async () => [{ conditionKey: endedKey, openedAtMs: Date.now() - 1_000 }],
+      rail: {
+        resolve: async (event) => {
+          unknownResolved.push(event.conditionKey);
+          return true;
+        },
+      },
+    };
+    await checkCompactionCompliance(fakeSql({ activeSessionOwnersError: true }), unknownDeps);
+    expect(unknownResolved).toEqual([]);
   });
 
   it('a context-DEAD session (P-019) is not double-counted as dark telemetry', async () => {

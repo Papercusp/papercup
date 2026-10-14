@@ -111,6 +111,90 @@ async function recoverCompactionEpisodes(episodes: Array<{ conditionKey: string;
   }
 }
 
+type ParsedCompactionCondition = {
+  workspace: string;
+  owner: string;
+  kind: CompactionConditionKind;
+  subject: string;
+};
+
+/** Decode the owner scope carried by a compaction condition key. */
+function parseCompactionConditionKey(conditionKey: string): ParsedCompactionCondition | null {
+  if (!conditionKey.startsWith('alarm:compaction-compliance:')) return null;
+  try {
+    const scope = JSON.parse(decodeURIComponent(conditionKey.slice('alarm:compaction-compliance:'.length)));
+    if (!Array.isArray(scope) || scope.length !== 4 ||
+        typeof scope[0] !== 'string' || typeof scope[1] !== 'string' ||
+        typeof scope[2] !== 'string' || typeof scope[3] !== 'string') return null;
+    return { workspace: scope[0], owner: scope[1], kind: scope[2] as CompactionConditionKind, subject: scope[3] };
+  } catch {
+    return null;
+  }
+}
+
+/** Current-signal conditions are obsolete when their owner has no active
+ * adv-session. Conditions that need an operator or successor action remain
+ * open until their own recovery evidence arrives. */
+const END_RESOLVABLE_SESSION_SIGNAL_KINDS = new Set<CompactionConditionKind>([
+  'dark-telemetry',
+  'over-limit',
+  'force-unavailable',
+  'implausible-reading',
+  'frozen-codex-reading',
+  'default-1m-served-small',
+  'unsatisfiable-limit',
+]);
+
+/**
+ * Resolve one-shot episodes that describe a live session's current signal
+ * after that launched session has ended. Condition-staleness deliberately
+ * does not infer recovery from silence for one-shot conditions. That is right
+ * while the owner is alive, but it strands these episodes when the session
+ * exits: the normal sweep only visits heartbeat-fresh presence rows. Query the
+ * authoritative adv-session lifecycle for owners named by eligible episodes
+ * and resolve only when the read proves there is no unended session. A failed
+ * read is fail-open. Conditions that imply an operator/successor action are
+ * excluded because session end alone does not prove that action happened.
+ */
+async function recoverEndedSessionSignalEpisodes(
+  sql: Sql,
+  episodes: Array<{ conditionKey: string; openedAtMs: number }>,
+  deps: CompactionConditionDeps,
+): Promise<void> {
+  const parsed = episodes
+    .map((episode) => ({ episode, scope: parseCompactionConditionKey(episode.conditionKey) }))
+    .filter((row): row is { episode: { conditionKey: string; openedAtMs: number }; scope: ParsedCompactionCondition } =>
+      row.scope != null && END_RESOLVABLE_SESSION_SIGNAL_KINDS.has(row.scope.kind) &&
+      row.scope.subject === '');
+  if (parsed.length === 0) return;
+  const owners = [...new Set(parsed.map((row) => row.scope.owner))];
+  let activeOwners: Array<{ owner_id: string }>;
+  try {
+    activeOwners = await sql<{ owner_id: string }[]>`
+      SELECT DISTINCT coord_owner_id AS owner_id
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ANY(${owners}::text[])
+         AND ended_at IS NULL
+         AND ended_by IS NULL
+    `;
+  } catch {
+    return;
+  }
+  const active = new Set(activeOwners.map((row) => row.owner_id));
+  const endedEpisodesByOwner = new Map<string, Array<{ conditionKey: string; openedAtMs: number }>>();
+  for (const row of parsed) {
+    if (active.has(row.scope.owner)) continue;
+    const ownerEpisodes = endedEpisodesByOwner.get(row.scope.owner) ?? [];
+    ownerEpisodes.push(row.episode);
+    endedEpisodesByOwner.set(row.scope.owner, ownerEpisodes);
+  }
+  for (const ownerEpisodes of endedEpisodesByOwner.values()) {
+    // Keep recoverCompactionEpisodes' duplicate-key guard intact: duplicate
+    // snapshots make the subject ambiguous, even when lifecycle says ended.
+    await recoverCompactionEpisodes(ownerEpisodes, Date.now(), deps);
+  }
+}
+
 /** How often the watchdog sweeps. Off the hot path, so a relaxed cadence. */
 const DEFAULT_INTERVAL_MS = 2 * 60_000; // 2 min
 /** At/over this fraction of the limit ⇒ the agent should have compacted already —
@@ -2314,6 +2398,17 @@ export async function checkCompactionCompliance(
     presenceGapsHealed: [],
     compactionStrandingAlerts: [],
   };
+  // One-shot session-signal alarms do not re-emit while true, so the
+  // condition-staleness rail cannot use signal absence to close them. Before
+  // scanning live presence rows, close episodes whose adv-session lifecycle is
+  // now definitively ended; active owners and episodes requiring follow-up
+  // action remain untouched.
+  try {
+    const openEpisodes = await (deps.readOpenConditions ?? readOpenCompactionConditions)();
+    await recoverEndedSessionSignalEpisodes(sql, openEpisodes, deps);
+  } catch {
+    // A failed lifecycle read must never turn an unknown owner into recovery.
+  }
   // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the
   // in-process gauge switch the (sync) result-annotator reads. Best-effort — a flag-infra
   // hiccup leaves the previous value untouched (fail to the default-ON gauge).
