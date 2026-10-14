@@ -97,6 +97,26 @@ describe('Instagram provider package (P-028)', () => {
     await expect(drain(fetch, first.cursor)).rejects.toMatchObject({ kind: 'transient', lossRisk: { kind: 'capped-window-overflow', mediaId: 'media-1' } });
   });
 
+  it('reports the same capped-history risk on a full cold-start window', async () => {
+    const fetch: HostFetch = async ({ request }) => new URL(request.url).pathname.endsWith('/media')
+      ? jsonResponse(200, { data: [{ id: 'media-1' }] })
+      : jsonResponse(200, { data: Array.from({ length: 50 }, (_, n) => ({ id: `old-${n}`, text: 'history', timestamp: at(1) })) });
+    await expect(drain(fetch)).rejects.toMatchObject({
+      kind: 'transient', lossRisk: { kind: 'capped-window-overflow', mediaId: 'media-1' },
+    });
+  });
+
+  it('accepts a full warm window that still reaches the stored watermark', async () => {
+    const first = await drain(fake().fetch);
+    const fetch: HostFetch = async ({ request }) => new URL(request.url).pathname.endsWith('/media')
+      ? jsonResponse(200, { data: [{ id: 'media-1' }] })
+      : jsonResponse(200, { data: [
+        { id: 'c1', text: 'old boundary', timestamp: at(1) },
+        ...Array.from({ length: 49 }, (_, n) => ({ id: `new-${n}`, text: 'new', timestamp: at(3) })),
+      ] });
+    expect((await drain(fetch, first.cursor)).records).toHaveLength(49);
+  });
+
   it('keeps timestamp boundary ids, captionless replies and partial-page resume lossless', async () => {
     const first = await drain(fake().fetch);
     const fetch: HostFetch = async ({ request }) => new URL(request.url).pathname.endsWith('/media')
