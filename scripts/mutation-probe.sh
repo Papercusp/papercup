@@ -1687,6 +1687,16 @@ run_guard() {
     rc=$?
     CHILD=""
     guard_elapsed=$(( SECONDS - guard_started ))
+    # The committed-source loader can replace the intentional overlay in a
+    # test-spawned child with HEAD. Its router notice means this leg measured
+    # different bytes, even when a parent module-load control sees the overlay.
+    # Refuse before either exit code can become a falsifiability verdict.
+    if grep -Eq '^TEST_FILE_RESULT[[:space:]].*childSubstituted=[1-9][0-9]*([[:space:]]|$)|^TEST_FILE_CHILD_SUBSTITUTED count=[1-9][0-9]*([[:space:]]|$)' "$output"; then
+      cat "$output"
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=-1 guard_exit=%d child_source_substituted=yes phase=%s\n' \
+        "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase"
+      die "the $label run substituted committed source in a test-spawned child. This leg did not exercise the requested source bytes; neither caught nor survived is established. Keep the committed-source boundary and use a guard that directly exercises the subject."
+    fi
     # 124 is `timeout`'s own "I killed it" status; 137 is what it returns when
     # --kill-after had to escalate to SIGKILL (MEASURED 2026-09-20 — NOT 124, as
     # the coreutils docs read at a glance). 137 is AMBIGUOUS on its own: the

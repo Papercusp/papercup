@@ -2647,6 +2647,51 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
  * mutant also prints no "passed" (`Tests  2 failed (2)`, measured), so reusing
  * this detector on the mutant log would false-flag every real catch.
  */
+describe('mutation-probe.sh — child source substitutions invalidate guard evidence', () => {
+  it.each([
+    ['baseline', 0, 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=1 skippedTests=0'],
+    ['copy-baseline', 0, 'TEST_FILE_CHILD_SUBSTITUTED count=1'],
+    ['mutant', 0, 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=12 skippedTests=0'],
+    ['mutant', 1, 'TEST_FILE_RESULT requested=1 status=failed childSubstituted=1 skippedTests=0'],
+  ])('refuses %s substitution even when its guard exits %s', (phase, exitCode, notice) => {
+    const guard = join(dir, 'substituted-router.sh');
+    writeFileSync(guard, `#!/usr/bin/env bash
+if [ "$PAPERCUSP_MUTATION_PHASE" = "${phase}" ]; then
+  printf '%s\\n' '${notice}'
+  exit ${exitCode}
+fi
+printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=0\\n'
+`);
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code, out).toBe(2);
+    expect(out).toContain('verdict=harness-error');
+    expect(out).toContain(`child_source_substituted=yes phase=${phase}`);
+    expect(out).not.toContain('VERDICT: MUTANT CAUGHT');
+    expect(out).not.toContain('VERDICT: MUTANT SURVIVED');
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('still catches a behavior change with unchanged child source', () => {
+    const guard = join(dir, 'unchanged-router.sh');
+    writeFileSync(guard, `#!/usr/bin/env bash
+printf 'TEST_FILE_RESULT requested=1 childSubstituted=0 skippedTests=0\\n'
+if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then
+  printf 'TEST_FILE_ASSERTION_FAILURE file="fixture.test.ts" name="behavior" message="AssertionError"\\n'
+  exit 1
+fi
+`);
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', `bash ${guard} {}`,
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(out).not.toContain('child_source_substituted=yes');
+    expect(read()).toBe(ORIGINAL);
+  });
+});
+
 describe('mutation-probe.sh — aborted test routers cannot certify a catch', () => {
   it.each([
     'TEST_FILE_ROUTE requested=1 groups=1',
