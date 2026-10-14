@@ -309,7 +309,7 @@
     "sourceEvidencePath": "docs/evidence/green-main-r12-paired-preparation-20261014.json"
   },
   "fullSelectionPreparation": {
-    "status": "writer-checked-no-complete-original-population-yet",
+    "status": "native-maintained-selection-preview-partial-no-operational-acceptance",
     "reuses": ["scripts/affected-tests.mjs", "scripts/lib/related-tests.mjs#staticImportClosure", "libs/test-config/src/verifier-source.ts#VerifierSourceReceipt", "scripts/lib/budgeted-task-scheduler.mjs#readBudgetedTaskComparisonArtifacts"],
     "writerFindings": [
       "The maintained --dry/--dry-run route stops before taskContexts, the original duration history read and the execution boundary. Its status=dry-run tasks field is a task count; it does not enumerate every actual test file or attest runtime transforms.",
@@ -317,7 +317,70 @@
       "staticImportClosure records static source and unresolved edges. Bare imports are excluded by that static mechanism; it cannot replace a dependency receipt or final transformed runtime closure.",
       "The native artifact reader independently pins selection, source census, dependency bytes, runtime closure, every original estimate and all four original cohort/child receipts. Preparation must produce those original artifacts before binding any throughput parameter."
     ],
-    "next": "Resolve the full original gate-file population from the maintained selector and each lane's actual include/exclude/filter semantics; preserve unenumerated residue explicitly. Then pin source and independent dependencies and obtain final-transform runtime closure. Do not substitute a task-only dry plan, static closure or the old 32-file calibration. D020/P006 remains held; no new comparison, native acceptance or amendment review."
+    "nativePreview": {
+      "command": "node scripts/affected-tests.mjs --all --print-selection",
+      "log": "~/.papercusp/scratch/c0523-full-selection-preparation-v2.log",
+      "logSha256": "c60e178be448ce38c7876710e92c72ea18f2307fbe39d7af5eb10116d3d0ddad",
+      "nativeExitCode": 0,
+      "coverage": "partial",
+      "files": 9902,
+      "enumeratedTasks": 104,
+      "unenumeratedTasks": 8,
+      "overlappingFiles": 0,
+      "executed": false,
+      "runtimeClosure": "unmeasured",
+      "operationalAcceptance": false,
+      "scope": "Current local maintained --all selector preview, not a frozen comparison population, runtime receipt or full-gate verdict.",
+      "residue": [
+        "@papercusp/web :: lint:el-tools",
+        "@papercupai/operator-docs :: test",
+        "@papercupai/papercusp-docs :: test",
+        "@bug-drill/fixture :: test",
+        "@papercusp/cli :: test",
+        "@papercusp/desktop :: test",
+        "@papercusp/perf-test-wdio :: test",
+        "@papercusp/cupboard-worker :: test"
+      ]
+    },
+    "selectorExtension": {
+      "reuses": ["scripts/affected-tests.mjs final maintained tasks", "scripts/lib/related-tests.mjs", "scripts/resolve-vitest-config-contracts.mjs native resolveConfig", "Vitest tinyglobby engine/options", "scripts/workspace-test.mjs#workspaceTestInvocation"],
+      "behavior": "Optional --print-selection resolves actual cwd, unit lanes, include/exclude and related-filter lists without collection or test execution. Unsupported commands and source/typecheck/project configs remain named residue. Config-owned template files outside a workspace are accepted only inside the repository; task overlaps prevent complete coverage.",
+      "sourceAtRead": {
+        "head": "d97dfa9d0fb11485b553db3840f44b68a558c170",
+        "files": [
+          {"path": "scripts/affected-tests.mjs", "sha256": "5ff78ad6a0fe5ac69d3aaece385425445c7fb21cef48b4d40a298cdfe81ed1c3", "committedMatch": true},
+          {"path": "scripts/lib/related-tests.mjs", "sha256": "c753b314fc32cc4973bad7dd2e67d2c69c9949db1ca40b320eee98732551453d", "committedMatch": false},
+          {"path": "scripts/resolve-vitest-config-contracts.mjs", "sha256": "9b3098ea621bfa29049cad65defa0d4a666201898d1ca046e94acbd60528239d", "committedMatch": false},
+          {"path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts", "sha256": "0cdd998ea2933174e803aa89f14c204b29776b1644062eb73d687ce0de42a820", "committedMatch": false}
+        ],
+        "limits": "Named local bytes only. Complete import/dependency/final-transform/runtime closure is unproven; automatic settlement is separate."
+      },
+      "verification": {
+        "nativeTestRunId": "0f5c02fc-92ba-402b-bd7f-fdac8f81fd39",
+        "ledgerRunIds": [21244615, 21244616, 21244617],
+        "passed": 88,
+        "failed": 0,
+        "skipped": 0,
+        "testFiles": 3,
+        "testPaths": ["packages/operator-core/lib/__tests__/related-tests-selection.test.ts", "packages/operator-core/lib/test-executor-runnability.test.ts", "packages/operator-core/lib/__tests__/affected-tests-selected-files-line.test.ts"],
+        "positiveNativeControl": "Actual lane cwd/filter/exclude resolution and config-owned outside-workspace files are asserted through the changed native bridge; this does not run the fixture test files.",
+        "typecheckLog": "~/.papercusp/scratch/c0523-selection-preparation-tsc-v3.log",
+        "typecheck": "Scoped one test file, 0 errors, exit0; no full-project claim.",
+        "syntaxAndDiffCheck": "Three changed .mjs syntax checks and named-path diff check pass.",
+        "retainedRedEvidence": "~/.papercusp/scratch/c0523-selection-preparation-tests.log preserves the initial fixture path failure and committed child substitution; tsc.log preserves the initial ES2022 findLast diagnostic. Both were corrected before final native verification."
+      }
+    },
+    "report": {
+      "reportId": "rpt_d56a8f2a-b527-4aa2-951d-77d4ef7ed375",
+      "path": "/reports?sel=rpt_d56a8f2a-b527-4aa2-951d-77d4ef7ed375",
+      "requestKey": "c0523-selection-preparation-20261014-edition1",
+      "sourcePath": "docs/evidence/green-main-selection-preparation-progress-20261014.md",
+      "bodySha256": "b7df05be1962bf250ca2a3c713e94a02f80f2b646752052bd7a4e09f2c365d86",
+      "visibility": "owner",
+      "readbackExact": true,
+      "authorOwnerId": "su-c05233eb-d1be-4e44-b16e-51d9d3532894"
+    },
+    "next": "Resolve the eight actual remaining command/project populations without dropping non-Vitest obligations. Then freeze the NEW complete original selection, pin source and independent dependencies, and obtain final-transform runtime closure. The 9902-file preview is partial and cannot bind throughput parameters. D020/P006 remains held; no cohort, comparison, native acceptance or amendment review."
   },
   "next": "No native command handles remain. Prepare actual original full-gate inputs and runtime closure without launching the D020-held cohort. Wrapper local integration is complete; reuse saved proofs only at matching source hashes. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
 }
