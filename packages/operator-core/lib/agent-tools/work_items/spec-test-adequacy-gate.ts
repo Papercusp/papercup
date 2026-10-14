@@ -506,7 +506,7 @@ function evaluatorUnknownFailureReason(label: string, result: SpecTestAdequacyRe
 export const SPEC_ADEQUACY_ATTESTATION_GUIDANCE =
   'pass a TOP-LEVEL `specAdequacy` argument to work_items:complete — a SIBLING of ' +
   '`completion`, never nested inside it (`completion.specAdequacy` is rejected). ' +
-  '`specAdequacy:{}` derives the persisted subject plan class; an explicit `classRef` must match. Ad-hoc scopes require explicit class attestation. Once evidence is ' +
+  '`specAdequacy:{}` derives the persisted subject plan class; `classRef` alone is sufficient when it matches, while ad-hoc scopes require explicit class attestation. Once evidence is ' +
   'ready — the gate resolves the governing clauses, the bound evidence and every fingerprint ' +
   'dimension itself. Do NOT hand-author fingerprints: `current` and `evidenceRefs` are optional ' +
   'and exist only to NARROW the graded selection or REPLAY a persisted evaluator snapshot. ' +

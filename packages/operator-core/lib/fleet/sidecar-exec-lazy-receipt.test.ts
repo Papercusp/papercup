@@ -247,7 +247,7 @@ describe('execProcess lazy receipt (real child processes)', () => {
 
     expect(begin).toHaveBeenCalledTimes(1);
     expect(result.code).toBe(-1);
-    expect(result.maxBufferExceeded).toBe(stream);
+    expect(result.maxBufferExceeded, JSON.stringify(result)).toBe(stream);
     expect(Buffer.byteLength(stream === 'stdout' ? result.stdout : result.stderr)).toBe(3);
   });
 

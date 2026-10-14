@@ -1643,6 +1643,11 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
 
   it('releases an acquired barrier when the target drain never grants', async () => {
     guardM.mockResolvedValue({ acquired: false, reason: 'drain_timeout', holders: [] } as never);
+    const contention = Object.assign(new Error('workspace lock timed out'), {
+      name: 'WorkspaceContendedError',
+      pgCode: '57014',
+    });
+    gitSyncBarrierReleaseM.mockRejectedValueOnce(contention);
 
     const result = await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' });
     const b = body(result);
@@ -1654,7 +1659,7 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
     });
     expect(result.isError).toBe(true);
     expect(gitSyncBarrierM).toHaveBeenCalledTimes(1);
-    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(2);
     expect(spawnM).not.toHaveBeenCalled();
   });
 
@@ -2818,7 +2823,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
     expect(b.note).toMatch(/STALE bundle built 2026-10-06T18:47:10\.795Z/);
   });
 
-  it('keeps restarted false and records the outcome when systemd accepts the job but no PID transition is observed', async () => {
+  it('releases the git-sync barrier after an accepted restart job returns active without a PID transition', async () => {
     mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
     mockImplementationTyped(guardM, runGuard(fenceOk(22)));
     bgHostRestartReadinessM.mockResolvedValueOnce({
@@ -2843,6 +2848,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
       restarted: false,
       reason: 'bg_host_restart_not_observed',
     });
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
     const request = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
     const outcome = JSON.parse(auditUnsafeM.mock.calls[1]![1][5] as string);
     expect(outcome).toMatchObject({

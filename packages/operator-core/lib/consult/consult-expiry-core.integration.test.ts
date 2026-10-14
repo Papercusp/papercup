@@ -563,7 +563,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
       routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-fork', 'resp-2-fork']),
     });
     const { deps, reachCalls } = makeDeps({ withReach: true });
-    const detectorCalls: Array<ReadonlyArray<{ conversationId: string; answeringOwnerId: string | null; routedAt: string }>> = [];
+    const detectorCalls: Array<ReadonlyArray<{ conversationId: string; requesterId?: string; answeringOwnerId: string | null; routedAt: string }>> = [];
     deps.findSilentResponders = async (rows) => {
       detectorCalls.push(rows);
       return new Set([id]);
@@ -576,6 +576,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(detectorCalls[0]).toContainEqual({
       workspaceId: WS,
       conversationId: id,
+      requesterId: 'req-1',
       answeringOwnerId: 'resp-1-fork',
       routedAt,
     });

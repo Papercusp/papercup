@@ -2520,8 +2520,12 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('re-attaches its ORIGINAL identity su-a1a71');
   });
 
-  it('refuses to resume a sweep-recruited acceptance reviewer before opening a process (EI-25876555362728602)', async () => {
-    resolveResumeTargetMock.mockResolvedValue(dead);
+  it.each([
+    { label: 'retained resume', sourceLive: false, fork: false },
+    { label: 'explicit fork', sourceLive: false, fork: true },
+    { label: 'live-source auto-fork', sourceLive: true, fork: undefined },
+  ])('refuses a recruited acceptance reviewer $label before opening a process', async ({ sourceLive, fork }) => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: sourceLive, endedAt: sourceLive ? null : dead.endedAt });
     // The REAL guard runs against the mocked org PG: no review-target reservation
     // names the reviewer's plan, and its first launch was by the grading sweep,
     // so independence cannot be proved and the launch must refuse.
@@ -2533,7 +2537,8 @@ describe('resume + fork (D-004/D-007)', () => {
         : [];
     });
     try {
-      const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue grading' }, ctx);
+      const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, ...(fork ? { fork: true } : {}),
+        independent: true, brief: 'continue grading' }, ctx);
       expect(isError(res)).toBe(true);
       expect(textOf(res)).toContain('reviewer_relaunch_breaks_independence');
       expect(textOf(res)).toContain('recruited by system:acceptance-grading-sweep');
@@ -2928,6 +2933,119 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--resume=sid-dead --fork');
     expect(textOf(res)).toContain('still LIVE');
     expect(textOf(res)).toContain('FRESH identity');
+  });
+
+  it.each([5, 31])('fails closed for an explicit in-place resume when the source is LIVE (idle %s minutes)', async (idleMinutes) => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+    findLiveHostMock.mockReturnValue({
+      ownerId: 'su-a1a71',
+      pid: 42,
+      sock: '/run/host.sock',
+      bridgeTty: false,
+      launchedBy: 'su-caller',
+      lastActivityAt: Date.now() - idleMinutes * 60_000,
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, fork: false, brief: 'continue in place' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('Explicit `fork:false` is fail-closed');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('resumes a dormant source in place with explicit fork:false (headless=%s)', async (headless) => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    findLiveHostMock.mockReturnValue(null);
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: false, headless, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(false);
+    const chosen = headless ? spawnHeadlessMock : spawnConsoleMock;
+    expect(spawnedCommand(chosen)).toContain('--resume=sid-dead');
+    expect(spawnedCommand(chosen)).not.toContain('--fork');
+    expect(dataOf(res)?.launch).toMatchObject({ mode: 'resume', resumedOwnerId: dead.ownerId });
+  });
+
+  it.each(['held', 'unknown'])('refuses strict in-place recovery with a %s Codex writer before admission', async (reason) => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex' });
+    findLiveHostMock.mockReturnValue(null);
+    codexThreadWriterHolderMock.mockReturnValue({
+      held: reason === 'held', pid: reason === 'held' ? 9876 : null,
+      lockPath: '/tmp/writer.lock', sessionId: 'sid-dead', reason,
+    });
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: false, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it.each([2, 3])('refuses strict recovery when the source becomes LIVE at resolve %s', async (atResolve) => {
+    let reads = 0;
+    resolveResumeTargetMock.mockImplementation(async () =>
+      ++reads >= atResolve ? { ...dead, live: true, endedAt: null } : dead,
+    );
+    findLiveHostMock.mockReturnValue(null);
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: false, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('became LIVE during preparation');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses strict recovery when a host appears after governed admission', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    findLiveHostMock.mockReturnValueOnce(null).mockReturnValueOnce(null)
+      .mockReturnValue({ ownerId: dead.ownerId, pid: 42 });
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: false, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('became LIVE during preparation');
+    expect(spawnGovernedAgentProcessMock).toHaveBeenCalledTimes(1);
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses strict recovery when source custody changes before admission', async () => {
+    resolveResumeTargetMock.mockResolvedValueOnce(dead).mockResolvedValueOnce(dead)
+      .mockResolvedValue({ ...dead, advSessionId: 12 });
+    findLiveHostMock.mockReturnValue(null);
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: false, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('source custody changed');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps strict agent-id recovery on the original transcript at critical pressure', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    findLiveHostMock.mockReturnValue(null);
+    fetchContextPressureMock.mockResolvedValue(new Map([[dead.ownerId, 'critical']]));
+    const res = await launchAgent.handler(
+      { resume: { agentId: dead.ownerId }, fork: false, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--resume=sid-dead');
+    expect(dataOf(res)?.launch).toMatchObject({ mode: 'resume', resumedOwnerId: dead.ownerId });
+    expect(clearContextEstimateMock).not.toHaveBeenCalled();
   });
 
   it('FORKS a Codex source with an active thread writer even when no pty host is registered', async () => {

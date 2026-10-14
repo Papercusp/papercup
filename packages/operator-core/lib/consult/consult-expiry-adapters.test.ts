@@ -252,7 +252,7 @@ describe('consultExpiryFindSilentResponders', () => {
     expect(found).toEqual(new Set(['conv-prior']));
   });
 
-  it.each(['ended', 'parked', 'live'])('recovers a reserved %s answerer with only prior replies while retaining history controls', async (sessionState) => {
+  it.each(['ended', 'parked', 'live'])('recovers a reserved %s answerer with only requester or prior replies while retaining history controls', async (sessionState) => {
     const now = new Date('2026-08-27T06:00:00.000Z');
     const routedAt = new Date(now.getTime() - 31 * 60_000).toISOString();
     const histories = {
@@ -265,10 +265,11 @@ describe('consultExpiryFindSilentResponders', () => {
       partial: { total: 2, posts: [{ author_id: 'su-prior-fork' }] },
       unbounded: { total: 21, posts: [{ author_id: 'su-prior-fork' }] },
       overlap: { total: 1, posts: [{ author_id: 'su-reserved' }] },
+      requesterOverlap: { total: 1, posts: [{ author_id: 'su-reserved' }] },
     };
     const rows = Object.keys(histories).map((conversationId) => ({
       workspaceId: ROW_WS, conversationId, answeringOwnerId: 'su-reserved', routedAt,
-      requesterId: 'su-requester',
+      requesterId: conversationId === 'requesterOverlap' ? 'su-reserved' : 'su-requester',
       priorResponderIds: ['su-prior-source', 'su-prior-fork', ...(conversationId === 'overlap' ? ['su-reserved'] : [])],
     }));
     const found = await consultExpiryFindSilentResponders({
@@ -284,11 +285,11 @@ describe('consultExpiryFindSilentResponders', () => {
     expect(found).toEqual(new Set(['prior', 'requester', 'mixed']));
   });
 
-  it.each(['unknown', 'live', 'parked'])('keeps prior replies from bypassing %s answerer liveness and pickup grace', async (sessionState) => {
+  it.each(['unknown', 'live', 'parked'])('keeps requester replies from bypassing %s answerer liveness and pickup grace', async (sessionState) => {
     const now = new Date('2026-08-27T06:00:00.000Z');
     const getThreadStore = vi.fn(() => ({
       getThreadByParent: async () => ({ thread_id: 'thread' }) as never,
-      listRecentPosts: async () => ({ total: 1, posts: [{ author_id: 'su-prior-fork' }] }),
+      listRecentPosts: async () => ({ total: 1, posts: [{ author_id: 'su-requester' }] }),
     }));
     const found = await consultExpiryFindSilentResponders({
       getPresence: async () => ({ lastActiveAt: null }),
@@ -297,6 +298,7 @@ describe('consultExpiryFindSilentResponders', () => {
       now: () => now,
     })([{
       workspaceId: ROW_WS, conversationId: 'conv-fresh', answeringOwnerId: 'su-reserved',
+      requesterId: 'su-requester',
       routedAt: new Date(now.getTime() - 60_000).toISOString(), priorResponderIds: ['su-prior-fork'],
     }]);
 

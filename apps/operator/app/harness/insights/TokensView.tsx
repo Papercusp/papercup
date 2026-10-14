@@ -27,6 +27,8 @@ import { Coins, RefreshCw, Cpu, UserRound, CalendarDays, Info } from 'lucide-rea
 import { useSyncQuery } from '@papercusp/sync';
 import type { TokensDashboardSnapshot, TokenGroupRow } from '@papercusp/operator-core/lib/harness-insights/card-types';
 import { operatorUi, useOperatorWorkspaceLocation } from '@papercusp/operator-ui/seam';
+import { Table } from '../Table';
+import { Select } from '../Select';
 
 // ─── number formatting (matches SpendCard's idiom) ──────────────────
 function formatUsd(n: number): string {
@@ -230,10 +232,11 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
           to Papercusp’s PostHog at flags.papercuspai.com. No prompts, code, private tasks, logs, account details or host/cloud bills.
           Export is off by default; enable it in Settings → Profile. The period starts after your latest opt-in.
           Revocation stops future delivery. Previously sent events remain under the project’s current unlimited retention.</p>
-        <label>Export period <select aria-label="Export period" value={exportWindow} disabled={exporting}
-          onChange={event => setExportWindow(Number(event.target.value))}>
-          <option value={24 * 60 * 60 * 1000}>Last 24 hours</option><option value={7 * 24 * 60 * 60 * 1000}>Last 7 days</option>
-        </select></label>
+        <label>Export period <Select ariaLabel="Export period" value={String(exportWindow)} disabled={exporting}
+          onChange={value => setExportWindow(Number(value))} options={[
+            { value: String(24 * 60 * 60 * 1000), label: 'Last 24 hours' },
+            { value: String(7 * 24 * 60 * 60 * 1000), label: 'Last 7 days' },
+          ]} /></label>
         <button type="button" disabled={exporting} onClick={() => { void exportDiagnostics(); }}>Send aggregate diagnostics</button>
         {exportStatus && <p role="status">{exportStatus}</p>}
       </section>}
@@ -276,15 +279,17 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
           <section style={CARD} aria-label="Recent local calls">
             <div style={CARD_HEAD}>Recent local calls</div>
             <p style={SUB}>Up to 20 recorded calls in the selected window. Unknown counters remain unknown.</p>
-            <div style={{ overflowX: 'auto' }}><table>
-              <thead><tr><th>Time</th><th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Model cost</th></tr></thead>
-              <tbody>{(snap.recentCalls ?? []).map(call => <tr key={call.id}>
-                <td>{new Date(call.atMs).toLocaleString()}</td><td>{call.model}</td>
-                {[call.inputTokens, call.outputTokens, call.cacheReadTokens, call.cacheCreationTokens].map((value, index) =>
-                  <td key={index}>{value === null ? 'Unknown' : formatTokens(value)}</td>)}
-                <td>{call.costUsd === null ? 'Unknown' : `${formatUsd(call.costUsd)} (${call.costSource === 'provider' ? 'provider reported' : 'estimated'})`}</td>
-              </tr>)}</tbody>
-            </table></div>
+            <div style={{ overflowX: 'auto' }}><Table rows={snap.recentCalls ?? []} getRowKey={call => call.id}
+              ariaLabel="Recent local call usage" columns={[
+                { key: 'time', header: 'Time', render: call => new Date(call.atMs).toLocaleString() },
+                { key: 'model', header: 'Model', render: call => call.model },
+                { key: 'input', header: 'Input', render: call => call.inputTokens === null ? 'Unknown' : formatTokens(call.inputTokens) },
+                { key: 'output', header: 'Output', render: call => call.outputTokens === null ? 'Unknown' : formatTokens(call.outputTokens) },
+                { key: 'cache-read', header: 'Cache read', render: call => call.cacheReadTokens === null ? 'Unknown' : formatTokens(call.cacheReadTokens) },
+                { key: 'cache-write', header: 'Cache write', render: call => call.cacheCreationTokens === null ? 'Unknown' : formatTokens(call.cacheCreationTokens) },
+                { key: 'cost', header: 'Model cost', render: call => call.costUsd === null ? 'Unknown' :
+                  `${formatUsd(call.costUsd)} (${call.costSource === 'provider' ? 'provider reported' : 'estimated'})` },
+              ]} /></div>
           </section>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>

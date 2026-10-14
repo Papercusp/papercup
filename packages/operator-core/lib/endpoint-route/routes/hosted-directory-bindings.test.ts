@@ -89,6 +89,35 @@ describe('hosted directory binding routes', () => {
     expect(set).not.toHaveBeenCalled(); expect(remove).not.toHaveBeenCalled();
   });
 
+  it('reports the exact organization and permission checks that lift a directory-binding refusal', async () => {
+    const route = createHostedDirectoryBindingRoutes({ set: vi.fn() } as unknown as HostedDirectoryBindingManager)[0];
+    const foreign = await route.handler(request('PUT'), context('foreign'));
+    expect(foreign.status).toBe(403);
+    expect(await foreign.json()).toMatchObject({
+      error: {
+        code: 'directory_binding_forbidden',
+        refusal: {
+          observed: { organizationMatches: 'false', membersManage: 'true' },
+          liftsWhen: expect.stringContaining('members:manage'),
+          whoCanMakeItTrue: ['self', 'owner', 'host'],
+        },
+      },
+    });
+
+    const unauthorized = await route.handler(request('PUT'), context('org', ['workspace:view']));
+    expect(unauthorized.status).toBe(403);
+    expect(await unauthorized.json()).toMatchObject({
+      error: {
+        code: 'directory_binding_forbidden',
+        refusal: {
+          observed: { organizationMatches: 'true', membersManage: 'false' },
+          liftsWhen: expect.stringContaining('members:manage'),
+          whoCanMakeItTrue: ['self', 'owner', 'host'],
+        },
+      },
+    });
+  });
+
   it.each([0, 1])('uses path/session tenant binding and excludes email, roles and body user overrides on route %i', async (index) => {
     const set = vi.fn(async (_principal: HostedPrincipal, _input: DirectoryBindingInput) => ({ identityId: 'identity', auditId: 'audit' }));
     const remove = vi.fn(async (_principal: HostedPrincipal, _input: DirectoryBindingInput) => ({ identityId: 'identity', auditId: 'audit' }));

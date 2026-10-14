@@ -2240,7 +2240,12 @@ export default defineTool({
     const releaseGitSyncBarrierOnAbort = async () => {
       if (!gitSyncBarrier?.acquired || restartScheduled || barrierReleaseAttempted) return;
       barrierReleaseAttempted = true;
-      await gitSyncBarrier.release().catch(() => {});
+      // A transient workspace-transaction contention must not strand this
+      // exclusive until its TTL: draining exclusives refuse new git-sync
+      // shared acquires across every harness. Match the queued-acquire cleanup
+      // retry in acquireGitSyncRestartBarrier; non-contention failures still
+      // fall back to the lease expiry without replacing the abort result.
+      await acquireWithContentionRetry(() => gitSyncBarrier!.release()).catch(() => {});
     };
 
     // WI-6554700010010484 (P-031): the barrier and the cgroup preflight both key on
@@ -2712,6 +2717,21 @@ export default defineTool({
             }
             const systemdJobAccepted = restartCommandExitCode === 0 && restartSpawnError === null;
             const bgHostRestarted = bgHostReadiness.ready && systemdJobAccepted;
+            const completedWithoutRestartTransition =
+              systemdJobAccepted &&
+              bgHostReadiness.outcome === 'not-observed' &&
+              !bgHostReadiness.observed &&
+              !bgHostReadiness.pidChanged &&
+              bgHostReadiness.activeState === 'active' &&
+              bgHostReadiness.result === 'success';
+            if (completedWithoutRestartTransition) {
+              // systemctl returned success and the bounded observer found the
+              // service active with no restart transition. There is no pending
+              // handoff left to protect, so release the workspace-wide git-sync
+              // barrier instead of holding it until lease expiry. Keep the lease
+              // when the service is still starting, failed, or unobserved.
+              restartScheduled = false;
+            }
             const outcomeAuditPersisted = await writeRestartAudit(ownerId, {
               ...(restartAuditDetails ?? { target, unit: cfg.unit, viaEnv: enabledByEnv, viaAuthorizeArg: enabledByArg,
                 reason: args.reason ?? null, fenceSeq: fence.seq, phantomCoalesceBroken: phantomCoalesceBroken !== null,

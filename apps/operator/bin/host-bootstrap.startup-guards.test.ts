@@ -141,6 +141,22 @@ describe('host-bootstrap wires every startup guard', () => {
     expect(singletonGuard).toMatch(/startup validation deferred[\s\S]*?return;[\s\S]*?validateDeclaredSingletons\(\)/);
   });
 
+  it('skips declared-singleton validation on request-only hosts while retaining the background-owner check', () => {
+    const singletonGuard = bootSrc.slice(
+      bootSrc.indexOf("'@papercusp/operator-core/lib/startup/validate-declared-singletons'"),
+      bootSrc.indexOf('// [D-007 startup validation]'),
+    );
+    const requestOnlyCheck = singletonGuard.indexOf('if (requestOnlyHost())');
+    const freshInstallCheck = singletonGuard.indexOf('if (await isLikelyFreshInstallGap())');
+    const validation = singletonGuard.indexOf('const r = await validateDeclaredSingletons();');
+    const requestOnlyBranch = singletonGuard.slice(requestOnlyCheck, freshInstallCheck);
+
+    expect(requestOnlyCheck).toBeGreaterThan(-1);
+    expect(requestOnlyBranch).toMatch(/if\s*\(requestOnlyHost\(\)\)\s*\{[\s\S]*?startup validation skipped[\s\S]*?return;[\s\S]*?\}/);
+    expect(freshInstallCheck).toBeGreaterThan(requestOnlyCheck);
+    expect(validation).toBeGreaterThan(freshInstallCheck);
+  });
+
   it('defers bespoke active-seed validation during a fresh packaged install', () => {
     // The same empty-workspace window applies to the always-on seed backstop: before the
     // first project exists, every bespoke seed row is absent by construction. Established

@@ -139,6 +139,54 @@ describe('fillRatingsFromLedger', () => {
     expect(out.ratings['never-run']).toMatchObject({ rating: 'unknown', unknownReason: 'not-exercised' });
     expect(out.unrecorded).toEqual(['never-run']);
   });
+
+  it('rates a failed numeric measurement in its explicit intermediate band before falling back to the worst level', () => {
+    const withBand = {
+      key: 'disk',
+      ratingScale: SCALE,
+      check: {
+        kind: 'instrument',
+        instrumentKey: 'host:df-root-used-pct',
+        expect: { op: 'lte', value: 50 },
+        ratingBands: [{ rating: 'near', expect: { op: 'lte', value: 85 } }],
+      },
+    };
+    const fill = (value: number) => fillRatingsFromLedger({
+      criteria: [withBand],
+      rubricRatingScale: SCALE,
+      callerRatings: {},
+      latest: new Map([['disk:instrument', row('disk:instrument', value, 'fail', { unit: '%' }, 41)]]),
+    });
+
+    const near = fill(62.38);
+    expect(near.ok && near.ratings.disk).toMatchObject({
+      rating: 'near', ratedFrom: 'ledger', ledgerResult: { testRunId: 41, value: 62.38, unit: '%' },
+    });
+    expect(near.ok && near.ratings.disk!.evidence).toContain('→ fail; scorecard rating near');
+
+    const outside = fill(85.01);
+    expect(outside.ok && outside.ratings.disk).toMatchObject({ rating: 'misses' });
+  });
+
+  it('refuses rating bands that name unknown or non-intermediate scale levels', () => {
+    const invalid = {
+      key: 'disk',
+      ratingScale: SCALE,
+      check: {
+        kind: 'instrument',
+        instrumentKey: 'host:df-root-used-pct',
+        expect: { op: 'lte', value: 50 },
+        ratingBands: [{ rating: 'unknown', expect: { op: 'lte', value: 85 } }],
+      },
+    };
+    const out = fillRatingsFromLedger({
+      criteria: [invalid],
+      rubricRatingScale: SCALE,
+      callerRatings: {},
+      latest: new Map([['disk:instrument', row('disk:instrument', 62.38, 'fail', { unit: '%' }, 42)]]),
+    });
+    expect(out).toMatchObject({ ok: false, error: 'ledger_rating_bands_invalid', criterionKeys: ['disk'] });
+  });
 });
 
 describe('probe check unit — a row describes the check only in the declared unit (P-010)', () => {

@@ -3442,6 +3442,79 @@ describe('template_data persistence boundary — the set-template-data door', ()
     );
   });
 
+  async function explicitAmendmentSubject(subject: string) {
+    const seeded = await seedBarContract(subject, { authorMethods: true });
+    const rubric = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const [row] = await db.adminSql<{ content: string; version: number }[]>`SELECT content, version
+      FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId}
+      AND harness_slug='papercusp' AND plan_slug=${subject}`;
+    let content = row!.content;
+    for (const [index, criterion] of rubric.criteria.entries()) {
+      const sections = {
+        intent: { request: `Retain outcome ${index + 1}.`, sourceRefs: ['session_turn:fixture'] },
+        acceptance: { condition: criterion.model, falsifier: criterion.driftMarkers,
+          requiredScope: criterion.requiredScope, evidencePlane: criterion.evidencePlane,
+          requiredTestLayers: criterion.requiredTestLayers },
+        verification: { method: criterion.method, check: criterion.check },
+      };
+      content = content.replace(
+        `**R-${index + 1} — ${index === 0 ? 'First' : 'Second'} outcome.** The ${index === 0 ? 'first' : 'second'} outcome holds.`,
+        `**R-${index + 1} — ${index === 0 ? 'First' : 'Second'} outcome.**\n\`\`\`requirement\n${JSON.stringify(sections)}\n\`\`\``,
+      );
+    }
+    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${content}, content_hash=${hashPlanContent(content)}
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
+    return { ...seeded, rubric, content, subjectRevision: Number(row!.version) };
+  }
+
+  it('EI-25970739425963382: commits a METHOD-only requirement update atomically without changing BAR meaning', async () => {
+    const seeded = await explicitAmendmentSubject('method-render-subject');
+    const method = 'Run the updated exact fixture and retain its result.';
+    const amendment = { rubricId: seeded.rubricSlug, actorId: 'method-author', reason: 'Keep the explicit requirement procedure current.',
+      expectedRubricRevision: seeded.rubric.revision, expectedSubjectPlanRevision: seeded.subjectRevision,
+      criterion: { key: seeded.rubric.criteria[0]!.key, field: 'method' as const, mode: 'replace' as const, text: method } };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({ changedBars: [], approvalRequired: false,
+      requirementsDrift: { rerenderedOnApply: ['R-1'] },
+      revisionMovement: { subject: { from: seeded.subjectRevision, to: seeded.subjectRevision + 1 } } });
+    await expect(rubrics.amendRubric({ ...amendment, faultInjection: 'after-rubric' })).rejects.toThrow();
+    const [unchanged] = await db.adminSql`SELECT content, version FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    expect(unchanged!.content).toBe(seeded.content);
+    expect(Number(unchanged!.version)).toBe(seeded.subjectRevision);
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.rubric.revision);
+    const after = (await rubrics.amendRubric(amendment))!;
+    expect(after.criteria.map((c) => c.barHash)).toEqual(seeded.rubric.criteria.map((c) => c.barHash));
+    expect(after.barContract!.meaningRevision).toBe(seeded.rubric.barContract!.meaningRevision);
+    const [row] = await db.adminSql`SELECT content, version, acceptance_bar_rubric_revision FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const { parseRequirementBars } = await import('./acceptance-bar-seed');
+    const parsed = parseRequirementBars(row!.content);
+    expect(parsed.ok && parsed.bars[0]!.criterion?.method).toBe(method);
+    expect(Number(row!.version)).toBe(seeded.subjectRevision + 1);
+    expect(Number(row!.acceptance_bar_rubric_revision)).toBe(after.revision);
+  });
+
+  it('EI-25970739425963382: renders method edits beside a meaning change while only that meaning changes BAR identity', async () => {
+    const seeded = await explicitAmendmentSubject('mixed-render-subject');
+    const method = 'Run the second current fixture and retain its result.';
+    const criteria = seeded.rubric.criteria.map((criterion, index) => {
+      const { bar: _bar, barHash: _barHash, ...canonical } = criterion;
+      return index === 0 ? { ...canonical, model: 'The first revised outcome holds.' } : { ...canonical, method };
+    });
+    const amendment = { rubricId: seeded.rubricSlug, actorId: 'method-author', reason: 'Change the first outcome and the second procedure.', criteria };
+    const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+    expect(preview).toMatchObject({ changedBars: ['R-1'], requirementsDrift: { rerenderedOnApply: ['R-1', 'R-2'] } });
+    const after = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;
+    expect(after.criteria[0]!.barHash).not.toBe(seeded.rubric.criteria[0]!.barHash);
+    expect(after.criteria[1]!.barHash).toBe(seeded.rubric.criteria[1]!.barHash);
+    const [row] = await db.adminSql`SELECT content FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const { parseRequirementBars } = await import('./acceptance-bar-seed');
+    const parsed = parseRequirementBars(row!.content);
+    expect(parsed.ok && parsed.bars[1]!.criterion?.method).toBe(method);
+  });
+
   it('updates the BAR set pin without churning stable clause revisions on a METHOD edit, then rolls back a late refusal', async () => {
     const seeded = await seedBarContract('method-pin-subject', { authorMethods: true });
     const { workspaceId, subject } = seeded;

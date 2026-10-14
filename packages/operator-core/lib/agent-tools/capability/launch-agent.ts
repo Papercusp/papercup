@@ -28,7 +28,8 @@
  *  2. RESUME vs FORK. An in-place resume re-attaches the ORIGINAL coord identity;
  *     resuming a session whose CLI is still running would open a second CLI against
  *     one transcript (WI-3882), so a LIVE source is auto-forked instead (D-007) —
- *     a fork mints a fresh identity and leaves the original untouched.
+ *     a fork mints a fresh identity and leaves the original untouched. Explicit
+ *     `fork:false` instead requires an in-place resume and refuses a live source.
  */
 import { randomUUID } from 'node:crypto';
 import { SCOPED_INFERENCE_GATEWAY_ENV, snapshotScopedInferenceGateway, type ScopedInferenceGateway } from '@papercusp/orchestrator/codex-gateway-config';
@@ -556,7 +557,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Resume full context with a required non-empty brief. For ordinary in-place continuation, send `{ resume, brief }`. Choose agentId (latest) OR sessionId (exact). Omitted settings use the target/saved fleet profile. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too; overrides may conflict with the saved fleet profile. Use successor for fresh context with retained identity and explicit runtime/carry.',
+          'Resume full context with a required non-empty brief. For ordinary in-place continuation, send `{ resume, brief }`. Add `fork:false` for strict in-place recovery that refuses a live source instead of auto-forking. Choose agentId (latest) OR sessionId (exact). Omitted settings use the target/saved fleet profile. Leave `carry` out because it is rejected for resume/fork. Normally omit `account` and `model` too; overrides may conflict with the saved fleet profile. Use successor for fresh context with retained identity and explicit runtime/carry.',
         ),
       successor: z
         .object({
@@ -584,7 +585,7 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          'Branch off the resumed session instead of continuing it in place: the fork gets a FRESH identity + its own transcript, and the original is untouched. Forced automatically when the source session is still LIVE (a second CLI on one transcript collides — WI-3882).',
+          'Resume routing: omit this for the normal protective behavior (a LIVE source is automatically forked); `true` always branches to a FRESH identity; explicit `false` requires an in-place resume and fails closed if the source is LIVE, rather than silently changing to a fork.',
         ),
       restoreVisible: z
         .boolean()
@@ -1015,7 +1016,9 @@ export default defineTool({
     let successorBrief: string | null = null;
     const successorPreparation: { reconcile?: () => Promise<string | null> } = {};
     let reconcileOriginalRouting: (() => Promise<void>) | null = null;
+    let recheckInPlaceResume: (() => Promise<void>) | null = null;
     let fork = !!args.fork;
+    let sourceStillLive = false;
     const notes: string[] = [];
     if (sourceAction) {
       const source = isSuccessor ? args.successor : args.resume;
@@ -1169,7 +1172,7 @@ export default defineTool({
             'opened. Pass `fork: true` to branch onto a fresh identity, or launch a fresh agent instead.',
         );
       }
-      let sourceStillLive = target.live;
+      sourceStillLive = target.live;
       let codexWriterHeld = false;
       // A wake-pump can reactivate a Codex session without a managed pty-host
       // row being visible to resolveResumeTarget yet. Codex's per-thread flock
@@ -1385,6 +1388,38 @@ export default defineTool({
         }
       }
       if (!isSuccessor) {
+        // Omission permits the normal protective auto-fork. Explicit false
+        // requires the original identity/transcript, so reject a live source
+        // before changing routes or reclaiming a stale headless host.
+        if (args.fork === false) {
+          const refusal = `Cannot resume ${target.resumeId ?? target.sessionId} in place: `;
+          if (sourceStillLive) {
+            return err(refusal + 'the source session is still LIVE. Explicit `fork:false` is fail-closed; omit `fork` to allow the normal protective auto-fork, or retry after the source ends.');
+          }
+          const custody = (current: typeof target) => JSON.stringify([
+            current.ownerId, current.advSessionId, current.sessionId, current.resumeId, current.binding,
+          ]);
+          const sourceCustody = custody(target);
+          recheckInPlaceResume = async () => {
+            const current = await resolveResumeTarget({
+              agentId: target.sessionId ? null : target.ownerId,
+              sessionId: target.sessionId,
+            });
+            if (!current.ok || custody(current) !== sourceCustody) {
+              throw new Error(refusal + 'source custody changed during preparation; no replacement was launched.');
+            }
+            if (current.live || await findLiveHostAsync(target.ownerId!)) {
+              throw new Error(refusal + 'the source session became LIVE during preparation; no replacement was launched.');
+            }
+            const writer = readSourceCodexWriter();
+            if (target.agent === 'codex' && (!writer || writer.held || !['free', 'no-lock-file'].includes(writer.reason))) {
+              throw new Error(refusal + 'the Codex writer is live or unknown; no replacement was launched.');
+            }
+          };
+          try { await recheckInPlaceResume(); } catch (error) {
+            return err(error instanceof Error ? error.message : String(error));
+          }
+        }
         let staleHeadlessRecovery = false;
         if (sourceStillLive && !codexWriterHeld && !fork && !args.restoreVisible && target.ownerId) {
           const host = await findLiveHostAsync(target.ownerId);
@@ -1422,7 +1457,7 @@ export default defineTool({
         // An exact native-session pin is a request to keep that transcript.
         // Pressure may require the CLI to compact, but it is not permission
         // to replace the conversation with a fresh successor (WI-10001085).
-        if (target.ownerId && !(args.resume?.sessionId && !fork && !target.live)) {
+        if (target.ownerId && !((args.resume?.sessionId || args.fork === false) && !fork && !target.live)) {
           try {
             const pressure = (await fetchContextPressure([target.ownerId])).get(target.ownerId);
             if (pressure === 'critical') {
@@ -1717,21 +1752,22 @@ export default defineTool({
     // whole so an over-large batch is refused once here rather than part-way
     // through, leaving half a fleet running against a breached ceiling.
     const retainedOwnerId = isSuccessor || (isResume && !fork) ? resumeOwnerId : null;
-    // EI-25876555362728602: a retaining launch stamps the CALLER as the retained
-    // identity's launcher, a permanent lineage edge. Refuse it before that edge is
-    // written when it would put an acceptance reviewer under its plan's implementer.
-    if (retainedOwnerId && callerOwnerId) {
+    // Forks also carry the reviewer's transcript and get the caller's launch edge.
+    // Screen the source identity for both retaining and forked recovery, before
+    // writing an edge that would put the reviewer under its plan's implementer.
+    const reviewerSourceOwnerId = isSuccessor || isResume ? resumeOwnerId : null;
+    if (reviewerSourceOwnerId && callerOwnerId) {
       const guard = await import('../../acceptance-reviewer-relaunch-guard');
       let conflict: Awaited<ReturnType<typeof guard.findReviewerRelaunchConflict>>;
       try {
         conflict = await guard.findReviewerRelaunchConflict({
           workspaceId,
           launcherOwnerId: callerOwnerId,
-          retainedOwnerId,
+          retainedOwnerId: reviewerSourceOwnerId,
         });
       } catch (e) {
         return err(
-          `reviewer_relaunch_independence_unreadable: could not verify that relaunching ${retainedOwnerId} keeps ` +
+          `reviewer_relaunch_independence_unreadable: could not verify that relaunching ${reviewerSourceOwnerId} keeps ` +
             `acceptance review independent of ${callerOwnerId} (${e instanceof Error ? e.message : String(e)}). ` +
             'Retry once the database is readable (EI-25876555362728602).',
         );
@@ -2277,6 +2313,7 @@ export default defineTool({
         // than being mistaken for a clean launch.
         const requireKickoffProof = kickoffProofRequired[i];
         try {
+          if (recheckInPlaceResume) await recheckInPlaceResume();
           if (reconcileOriginalRouting) await reconcileOriginalRouting();
           return await spawnGovernedAgentProcess(
           {
@@ -2293,6 +2330,7 @@ export default defineTool({
             },
           },
           async (admissionContext) => {
+            if (recheckInPlaceResume) await recheckInPlaceResume();
             if (reconcileOriginalRouting) await reconcileOriginalRouting();
             const governedEnv = {
               ...env,

@@ -75,6 +75,7 @@ import {
 import { acceptanceBarContractGaps } from './acceptance-bar-contract-completeness';
 import { classifyAmendmentAdditivity } from './acceptance-bar-amendment-additivity';
 import {
+  amendedRequirementBarKeys,
   diffAmendedCriteriaAgainstRequirements,
   rerenderAmendedRequirementBlocks,
 } from './acceptance-bar-amendment-requirements-drift';
@@ -4841,6 +4842,19 @@ async function amendAcceptanceBarRubric(
           `acceptance_bar_amendment_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
         );
       }
+      // Rendering follows every represented field, while proof invalidation follows BAR meaning.
+      // A method-only edit needs both plan locks whenever an explicit requirement block changes.
+      const requirementChangedBars = [...new Set([
+        ...changedBars,
+        ...amendedRequirementBarKeys(
+          stored.criteria as unknown as Array<Record<string, unknown>>,
+          guard.data.criteria as Array<Record<string, unknown>>,
+        ),
+      ])];
+      const requirementsRerender = rerenderAmendedRequirementBlocks(subjectRow.content, {
+        nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
+        changedBars: requirementChangedBars,
+      });
       const desiredMappings = parseBarMappings(subjectRow.content, new Set(requirements.bars.map((bar) => bar.barKey)));
       if (!desiredMappings.ok) {
         throw new Error(
@@ -4976,7 +4990,7 @@ async function amendAcceptanceBarRubric(
         }
       }
 
-      if (changedBars.length === 0 && !preview) return {
+      if (changedBars.length === 0 && requirementsRerender.rerendered.length === 0 && !preview) return {
         rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
         subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
         changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
@@ -5112,14 +5126,14 @@ async function amendAcceptanceBarRubric(
             changes,
             revisionMovement: {
               rubric: { from: oldRubricRevision, to: nextRubricRevision },
-              subject: { from: oldSubjectRevision, to: changedBars.length ? nextSubjectRevision : oldSubjectRevision },
+              subject: { from: oldSubjectRevision, to: changedBars.length || requirementsRerender.rerendered.length ? nextSubjectRevision : oldSubjectRevision },
             },
             ...proofPartition,
-            invalidatedScorecardIds: [...snapshot.sourceRevisions.scorecardIds].sort(),
+            invalidatedScorecardIds: changedBars.length ? [...snapshot.sourceRevisions.scorecardIds].sort() : [],
             invalidatedAdequacyCardSubjects: invalidatedAdequacyCardSubjects(
               subjectPlanHint ?? '', snapshot.bars, changedBars, new Set(candidate.bars.map((bar) => bar.barKey)),
             ),
-            authorVerdictBecomesStale: ['accepted', 'rejected'].includes(snapshot.grading.authorVerdict.state),
+            authorVerdictBecomesStale: changedBars.length > 0 && ['accepted', 'rejected'].includes(snapshot.grading.authorVerdict.state),
             reboundWorkItemIds: open.map((row) => row.work_item_id),
             cohortDisposition: {
               cohort: snapshot.plan?.cohort ?? null,
@@ -5132,7 +5146,7 @@ async function amendAcceptanceBarRubric(
             requirementsDrift: diffAmendedCriteriaAgainstRequirements({
               requirementBars: requirements.bars,
               nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
-              changedBars,
+              changedBars: requirementChangedBars,
               removedBars,
             }),
             plannedPaths,
@@ -5141,6 +5155,11 @@ async function amendAcceptanceBarRubric(
                   code: 'bar_snapshot_method_missing',
                   action: `${floorWarning}Fill every mandatory METHOD before vetting or grading.`,
                 }
+              : changedBars.length === 0
+                ? {
+                    code: 'bar_snapshot_method_updated',
+                    action: 'No BAR meaning changed. Review the updated procedure; existing proof, grades and vetting retain their meaning epoch.',
+                  }
               : {
                   code: 'bar_snapshot_proof_stale',
                   // P-002/P-027: name ONLY the proof this amendment invalidates. Unchanged
@@ -5160,10 +5179,6 @@ async function amendAcceptanceBarRubric(
       const decisionId = allocateNextDecisionId(subjectRow.content);
       // WI-10006835: re-render each changed BAR's explicit plan block from the amended criterion
       // in this same transaction, so the plan copy reviewers read cannot lag the canonical rubric.
-      const requirementsRerender = rerenderAmendedRequirementBlocks(subjectRow.content, {
-        nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
-        changedBars,
-      });
       const decisionBody = [
         `Amendment-Id: ${idempotencyKey}`,
         `Request-Hash: ${amendmentRequestHash(input)}`,
@@ -5467,8 +5482,8 @@ async function amendAcceptanceBarRubric(
         reboundContracts,
         invalidated: {
           evidence: Number(evidence[0]?.count ?? 0),
-          scorecards: Number(scorecards[0]?.count ?? 0),
-          vetting: Number(vetting[0]?.count ?? 0),
+          scorecards: changedBars.length ? Number(scorecards[0]?.count ?? 0) : 0,
+          vetting: changedBars.length ? Number(vetting[0]?.count ?? 0) : 0,
         },
         evidenceCarriedForward,
         idempotencyKey,

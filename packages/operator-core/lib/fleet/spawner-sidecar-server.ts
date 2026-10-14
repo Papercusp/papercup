@@ -64,6 +64,7 @@ import {
   PROCESS_EXEC_CALLER_LABELS,
   type ExecParams,
   type ExecResult,
+  type ExecProcessStage,
   type ProcessExecCallerLabel,
 } from './sidecar-exec-process';
 import { listenUnixSocketExclusive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
@@ -106,7 +107,11 @@ interface InvokeOnceParams {
  * process lifecycle (SIGTERM/SIGINT → close). Prints PAPERCUSP_SPAWNER_READY once
  * listening so the parent spawnSpawnerSidecar() handshake completes.
  */
-export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProcess } = {}): net.Server {
+export function runSpawnerSidecarServer(deps: {
+  executeProcess?: typeof execProcess;
+  /** Test seam; production emits stages only after a request outlives five seconds. */
+  slowExecMs?: number;
+} = {}): net.Server {
   // Runtime flag overrides (EI-8867 / WI-3628, corrected WI-6822). `getFlag()` consults the
   // PG override store ONLY in a process that installed it. This is a STANDALONE process (dev:
   // `tsx bin/spawner-sidecar.ts`; packaged: serve.mjs re-exec'd with
@@ -339,12 +344,43 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
         if (callerLabel && SAFE_PROCESS_EXEC_CALLER_LABELS.has(callerLabel)) {
           requestCallerLabels.set(id, callerLabel);
         }
+        // WI-6554700010010703: PID notification alone cannot distinguish a child
+        // stall from admission/settlement IO. Reuse the request's exact RPC identity
+        // and emit bounded static milestones only for slow executions. Fast reads
+        // produce no logs; there is no periodic timer or durable per-read write.
+        const startedAt = performance.now();
+        let stage: ExecProcessStage | 'dispatch' = 'dispatch';
+        let childPid: number | null = null;
+        let slow = false;
+        const stageMs: Partial<Record<ExecProcessStage, number>> = {};
+        const elapsedMs = (): number => Math.max(0, Math.round(performance.now() - startedAt));
+        const report = (event: 'slow' | 'progress' | 'request-settled'): void => {
+          try {
+            console.info('[spawner-process-exec-stage]', {
+              event, serverGeneration, connectionId,
+              clientConnectionId: connection.clientConnectionId,
+              requestId: id, method: 'process:exec', sidecarPid: processExecIdentity.pid,
+              ...(requestCallerLabels.has(id) ? { callerLabel: requestCallerLabels.get(id) } : {}),
+              childPid, stage, elapsedMs: elapsedMs(), stageMs: { ...stageMs },
+            });
+          } catch { /* diagnostics must not interrupt the execution/drain fence */ }
+        };
+        const slowTimer = setTimeout(() => { slow = true; report('slow'); }, deps.slowExecMs ?? 5_000);
+        slowTimer.unref?.();
         try {
           const executionParams = { ...params };
           delete executionParams.callerLabel;
           const execution = (deps.executeProcess ?? execProcess)(executionParams, {
             signal: controller.signal,
-            onPid: (pid) => write(rpcNotification('spawn:pid', { requestId: id, pid })),
+            onStage: (nextStage) => {
+              stage = nextStage;
+              stageMs[nextStage] ??= elapsedMs();
+              if (slow) report('progress');
+            },
+            onPid: (pid) => {
+              childPid = pid;
+              write(rpcNotification('spawn:pid', { requestId: id, pid }));
+            },
             onOutputActivity: () => write(rpcNotification('spawn:outputActivity', { requestId: id })),
             admissionHealth: admissionWedge,
           });
@@ -355,6 +391,8 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
           const err = e as { message?: string };
           write(rpcError(-32603, err.message ?? 'Internal error', id));
         } finally {
+          clearTimeout(slowTimer);
+          if (slow) report('request-settled');
           controllers.delete(controller);
           requests.delete(id);
           requestMethods.delete(id);

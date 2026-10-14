@@ -332,7 +332,9 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     if (result.state === 'not-required') throw new Error('Expected a reviewer attempt');
     expect(result.freshReviewer).toMatchObject({ state: 'blocked', ownerId: 'judge-1' });
     expect(result.next).toContain('Credit balance is too low');
-    expect(result.next).toContain("resume:{agentId:'judge-1'}");
+    expect(result.next).toContain('Containment is unverified');
+    expect(result.next).toContain('Do not resume or fork the reviewer yourself');
+    expect(result.next).not.toContain('capability:launch-agent');
     expect(result.next).toContain('Do not wait for an approval');
     expect(result.next).not.toContain("approvalRef:'thread-post:<that post id>'");
     expect(launchFresh).toHaveBeenCalledTimes(1);
@@ -462,6 +464,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
       // A deduped reviewer is live unless a test says it ended.
       readTaskState: vi.fn(async () => 'running' as const),
       hasReviewerAnswer: vi.fn(async () => false),
+      stopFailedLaunch: vi.fn(async () => 'stop unverified'),
       ...overrides,
     };
   }
@@ -667,6 +670,42 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
       analyzeTranscript: vi.fn(() => transcriptReply('The earlier turn said Credit balance is too low; I am reviewing now.')) });
     expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'observed' });
+    expect(d.stopFailedLaunch).not.toHaveBeenCalled();
+  });
+
+  it('contains a rejected reviewer by exact task, then re-recruits through the same system principal', async () => {
+    let stopped = false;
+    const launch = vi.fn().mockResolvedValueOnce(retainedLaunch()).mockResolvedValueOnce(retainedLaunch(true))
+      .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [{ taskId: 'task-2' }] } } });
+    const d = deps({ launch,
+      analyzeTranscript: vi.fn(() => transcriptReply('Credit balance is too low', true)),
+      stopFailedLaunch: vi.fn(async () => { stopped = true; return 'stopped task task-1'; }),
+      readTaskState: vi.fn(async () => stopped ? 'exited' as const : 'running' as const) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'blocked',
+      recovery: { state: 'stopped', evidence: 'stopped task task-1' } });
+    expect(d.stopFailedLaunch).toHaveBeenCalledWith('task-1', { answeringOwnerId: 'judge-1' });
+    const result = await launchFreshAmendmentReviewer(input, d as never);
+    expect(result).toMatchObject({ state: 'launched', taskId: 'task-2', relaunchedAfter: ['task-1'] });
+    const firstKey = launch.mock.calls[0]![0].idempotencyKey;
+    expect(launch.mock.calls[2]![0].idempotencyKey).toBe(`${firstKey}:after:task-1`);
+    expect(launch.mock.calls.every(([, ctx]) => ctx.ownerId === ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR)).toBe(true);
+  });
+
+  it('keeps containment unverified when the stop returns without terminal task proof', async () => {
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+      analyzeTranscript: vi.fn(() => transcriptReply('Credit balance is too low', true)),
+      stopFailedLaunch: vi.fn(async () => 'stop refused') });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'blocked',
+      recovery: { state: 'unverified', evidence: 'stop refused' } });
+    expect(d.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an independent answer that arrived before rejected-task containment', async () => {
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+      analyzeTranscript: vi.fn(() => transcriptReply('Credit balance is too low', true)),
+      hasReviewerAnswer: vi.fn(async () => true) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'observed' });
+    expect(d.stopFailedLaunch).not.toHaveBeenCalled();
   });
 
   it('reports a synthetic gateway rate-limit reply as a blocked review', async () => {

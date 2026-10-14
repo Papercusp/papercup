@@ -41,12 +41,12 @@ describe('TokensView local diagnostics', () => {
     render(<OperatorWorkspaceLocationProvider location="cloud"><TokensView slug="customer" /></OperatorWorkspaceLocationProvider>);
     expect(apiFetch).not.toHaveBeenCalled();
     expect(screen.getByRole('region', { name: 'Aggregate diagnostic export' }).textContent).toContain('off by default');
-    fireEvent.change(screen.getByRole('combobox', { name: 'Export period' }), { target: { value: String(7 * 86400000) } });
+    expect(screen.getByRole('combobox', { name: 'Export period' }).textContent).toContain('Last 24 hours');
     fireEvent.click(screen.getByRole('button', { name: 'Send aggregate diagnostics' }));
     await screen.findByText('Enable aggregate diagnostic export in Settings → Profile first.');
     const [path, init] = apiFetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(path).toBe('/api/harness/customer/insights/diagnostic-export');
-    expect(JSON.parse(String(init.body))).toEqual({ operation_id: expect.any(String), window_ms: 7 * 86400000 });
+    expect(JSON.parse(String(init.body))).toEqual({ operation_id: expect.any(String), window_ms: 86400000 });
     expect(screen.getByTestId('tokens-stat-cost')).toBeTruthy();
     configureOperatorUi({ apiFetch: (path, init) => fetch(path, init) });
   });

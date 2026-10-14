@@ -42,6 +42,7 @@ import { resolveExpertModelAllowlist, type AllowedExpertModel } from './expert-m
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
 import { analyzeClaudeResumeTranscriptFile } from '../claude-resume-tool-references.mjs';
 import { isTerminalState, type TaskState } from '../task-manager/types';
+import { defaultStopFailedLaunch } from './consult-dispatch';
 
 /** One candidate's verdict from the check-approver screen. */
 export type AmendmentReviewerScreen = (
@@ -332,6 +333,8 @@ export type FreshAmendmentReviewerResult =
       nativeRef: string;
       reason: 'account-walled' | 'first-turn-rejected' | 'reviewer-ended';
       evidence: string;
+      /** A replacement is safe only after the rejected task is confirmed terminal. */
+      recovery?: { state: 'stopped' | 'unverified'; evidence: string };
       /** Dead reviewer tasks (ended with no answer) this call walked past. */
       relaunchedAfter?: string[];
     }
@@ -496,6 +499,7 @@ export async function launchFreshAmendmentReviewer(
     sleepMs?: (ms: number) => Promise<void>;
     readTaskState?: (taskId: string) => Promise<TaskState | null>;
     hasReviewerAnswer?: typeof previewThreadHasLaterPost;
+    stopFailedLaunch?: typeof defaultStopFailedLaunch;
   } = {},
 ): Promise<FreshAmendmentReviewerResult> {
   const previewPostRef = input.previewPostRef.trim();
@@ -639,9 +643,26 @@ export async function launchFreshAmendmentReviewer(
           : (analysis.trailingContextLimitTurns ?? 0) > 0 ? analysis.lastContextLimitEvidence
           : analysis.trailingMissingToolReferenceTurns > 0 ? analysis.lastMissingToolReferenceEvidence : null;
         if (accountWall || evidence) {
+          // Reuse consult's exact-task containment, never let the implementer
+          // resume/fork this reviewer and become its permanent launch ancestor.
+          // A real answer wins a race with containment; unreadable custody fails
+          // closed and cannot authorize another reviewer.
+          let recovery: { state: 'stopped' | 'unverified'; evidence: string };
+          try {
+            if (await hasReviewerAnswer({ workspaceId: input.workspaceId, previewPostRef,
+              ...(ownerId ? { authorId: ownerId } : {}) })) {
+              return { state: 'launched', ...retained, firstReply: 'observed' };
+            }
+            const stopped = await (deps.stopFailedLaunch ?? defaultStopFailedLaunch)(retained.taskId,
+              ownerId ? { answeringOwnerId: ownerId } : undefined);
+            const state = retained.taskId ? await readTaskState(retained.taskId) : null;
+            recovery = { state: state && isTerminalState(state) ? 'stopped' : 'unverified', evidence: stopped };
+          } catch (error) {
+            recovery = { state: 'unverified', evidence: `reviewer containment unreadable: ${String(error)}` };
+          }
           return { state: 'blocked', ...retained, nativeRef,
             reason: accountWall ? 'account-walled' : 'first-turn-rejected',
-            evidence: evidence ?? 'provider billing rejection' };
+            evidence: evidence ?? 'provider billing rejection', recovery };
         }
         return { state: 'launched', ...retained, firstReply: 'observed' };
       }
@@ -790,9 +811,10 @@ export async function openAcceptanceBarAmendmentReview(
       : freshReviewer.state === 'blocked'
         ? `The retained outside-lineage reviewer is blocked (${freshReviewer.reason}): ${freshReviewer.evidence}. ` +
           `Task ${freshReviewer.taskId ?? 'unknown'}, transcript ${freshReviewer.nativeRef}. ` +
-          (freshReviewer.ownerId
-            ? `Recover the same identity with capability:launch-agent { resume:{agentId:'${freshReviewer.ownerId}'}, headless:true, independent:true, account:'auto', brief:'Resume the retained BAR amendment review of ${previewPostRef} on ${freshReviewer.answerOn.workItemId}; post an independent approval or objection.' }. `
-            : 'Resolve the retained task owner before recovery. ') +
+          (freshReviewer.recovery?.state === 'stopped'
+            ? `The rejected task is confirmed terminal (${freshReviewer.recovery.evidence}). Repeat the same rubrics:amend dry run with reviewPreviewPost:'${previewPostRef}' and a permitted reviewerModel with available capacity; the screened system recruiter owns replacement. `
+            : `Containment is unverified (${freshReviewer.recovery?.evidence ?? 'no terminal task proof'}). Resolve the exact rejected task through the review recruiter before repeating this dry run. `) +
+          'Do not resume or fork the reviewer yourself: that records your identity as its launcher and can invalidate independence. ' +
           'No decision was obtained. Do not wait for an approval from this rejected turn, countersign it, or post another preview to duplicate the reviewer.'
         : `No eligible outside-lineage reviewer could be routed, and no fresh reviewer was launched: ${freshReviewer.reason}. The reason and screenedOut say why routing failed.`;
   return { ...routed, previewPostRef, next, freshReviewer };

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { execFile, fork } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loaderIdentity, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
@@ -23,9 +23,39 @@ describe('focused runner startup tracing', () => {
     expect(JSON.stringify(identity)).not.toMatch(/secret|password|private|example/);
   });
 
+  it('leaves ordinary inherited Node children and grandchildren output untouched', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vitest-ordinary-child-'));
+    const ordinary = join(dir, 'ordinary.cjs');
+    const leaf = "process.stdout.write('abc'); process.stderr.write('xyz');";
+    writeFileSync(ordinary, leaf);
+    const branch = `const { spawnSync } = require('node:child_process');
+      const child = spawnSync(process.execPath, ['-e', ${JSON.stringify(leaf)}], { encoding: 'utf8' });
+      process.stdout.write(JSON.stringify({ stdout: child.stdout, stderr: child.stderr, status: child.status }));`;
+    const root = `const { spawnSync } = require('node:child_process');
+      const direct = spawnSync(process.execPath, [${JSON.stringify(ordinary)}], { encoding: 'utf8' });
+      const branch = spawnSync(process.execPath, ['-e', ${JSON.stringify(branch)}], { encoding: 'utf8' });
+      process.stdout.write(JSON.stringify({
+        direct: { stdout: direct.stdout, stderr: direct.stderr, status: direct.status },
+        nested: JSON.parse(branch.stdout), branchStderr: branch.stderr, branchStatus: branch.status,
+      }));`;
+    const env = startupTraceEnv({ ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: undefined });
+    try {
+      const { stdout, stderr } = await promisify(execFile)(process.execPath, ['-e', root], { env, timeout: 10_000 });
+      expect(JSON.parse(stdout)).toEqual({
+        direct: { stdout: 'abc', stderr: 'xyz', status: 0 },
+        nested: { stdout: 'abc', stderr: 'xyz', status: 0 },
+        branchStderr: '', branchStatus: 0,
+      });
+      expect(stderr).toContain('TEST_FILE_STARTUP_TRACE ');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('captures the real preload and fork handshake without an opt-in switch', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'vitest-startup-preload-'));
-    const worker = join(dir, 'vitest-worker.cjs');
+    const worker = join(dir, 'vitest', 'dist', 'workers', 'forks.js');
+    mkdirSync(join(dir, 'vitest', 'dist', 'workers'), { recursive: true });
     const parent = join(dir, 'parent.cjs');
     writeFileSync(worker, `process.on('message', message => {
       if (message.type === 'start') process.send({ type: 'started' });
@@ -46,6 +76,9 @@ describe('focused runner startup tracing', () => {
         'node-loaded', 'worker-forked', 'start-sent', 'started-received',
         'stop-sent', 'stopped-received', 'worker-exit', 'worker-close',
       ]));
+      const workerPid = rows.find(row => row.event === 'worker-forked')?.childPid;
+      expect(rows.filter(row => row.event === 'node-loaded')).toHaveLength(2);
+      expect(rows.some(row => row.event === 'node-loaded' && row.pid === workerPid)).toBe(true);
       expect(rows.find(row => row.event === 'started-received')).toMatchObject({ error: false });
       expect(stderr).not.toContain('never-log');
     } finally {

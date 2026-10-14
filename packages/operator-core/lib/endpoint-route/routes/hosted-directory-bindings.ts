@@ -1,6 +1,7 @@
 /** Organization-scoped administration of immutable WorkOS directory references. */
 import { defineTool } from '@papercusp/agent-mcp';
 import { isHostedPrincipal } from '../../auth/hosted-principal';
+import type { RefusalContract } from '../../capability-envelope/refusal-contract-types';
 import type {
   HostedDirectoryBindingManager, DirectoryBindingInput, DirectoryGroupMappingInput, DirectoryProvisionInput,
 } from '../../auth/hosted/governance';
@@ -16,6 +17,21 @@ export const HOSTED_DIRECTORY_BINDING_ROUTES = [
 ] as const;
 
 const NO_STORE = { 'cache-control': 'no-store' } as const;
+
+function directoryBindingAuthorizationRefusal(
+  organizationMatches: boolean,
+  hasMembersManage: boolean,
+): RefusalContract {
+  return {
+    observed: {
+      organizationMatches: String(organizationMatches),
+      membersManage: String(hasMembersManage),
+    },
+    liftsWhen:
+      'the hosted session is scoped to the organization in the path and its permissions include members:manage',
+    whoCanMakeItTrue: ['self', 'owner', 'host'],
+  };
+}
 
 /** Refusal codes keep their own meaning; anything unrecognised is an outage,
  * never a leak of an internal message. */
@@ -37,7 +53,15 @@ export function createHostedDirectoryBindingRoutes(manager: HostedDirectoryBindi
       if (!principal || !isHostedPrincipal(principal)) return Response.json({ error: { code: 'hosted_principal_required' } }, { status: 401 });
       const organizationId = String(ctx.params.organizationId ?? '');
       if (principal.activeOrganizationId !== organizationId || !principal.permissions.has('members:manage')) {
-        return Response.json({ error: { code: 'directory_binding_forbidden' } }, { status: 403 });
+        return Response.json({
+          error: {
+            code: 'directory_binding_forbidden',
+            refusal: directoryBindingAuthorizationRefusal(
+              principal.activeOrganizationId === organizationId,
+              principal.permissions.has('members:manage'),
+            ),
+          },
+        }, { status: 403 });
       }
       let body: Record<string, unknown>;
       try {

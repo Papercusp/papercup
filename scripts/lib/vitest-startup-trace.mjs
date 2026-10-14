@@ -92,7 +92,18 @@ export function observeForkStartup(child, emit, now = () => performance.now()) {
 
 // No clients, intervals, or extra processes: existing runner shutdown owns the
 // process group. This preload only observes IPC; it never changes the payload.
-if (process.env.PAPERCUSP_TEST_STARTUP_TRACE === '1') {
+function isVitestEntry(value) {
+  const entry = String(value ?? '').replaceAll('\\', '/');
+  return /(?:^|\/)(?:vitest\/(?:vitest\.mjs|dist\/(?:workers\/[^/]+|worker)\.[cm]?js)|\.bin\/vitest)$/.test(entry);
+}
+
+const traceMode = process.env.PAPERCUSP_TEST_STARTUP_TRACE;
+if (traceMode === '1' || (traceMode === 'vitest-descendant'
+    && isVitestEntry(process.argv[1]))) {
+  // startupTraceEnv explicitly selects a root (including generic diagnostic
+  // fixtures). Its descendants retain the preload and all source/admission
+  // guards, but ordinary Node payloads must not receive diagnostic stderr.
+  process.env.PAPERCUSP_TEST_STARTUP_TRACE = 'vitest-descendant';
   let remainingStartup = 24;
   let remainingShutdown = 24;
   const emit = row => {
@@ -106,7 +117,7 @@ if (process.env.PAPERCUSP_TEST_STARTUP_TRACE === '1') {
   const originalFork = childProcess.fork;
   childProcess.fork = function(modulePath, ...args) {
     const child = originalFork.call(this, modulePath, ...args);
-    if (String(modulePath).includes('vitest')) {
+    if (isVitestEntry(modulePath)) {
       emit({ event: 'worker-forked', childPid: child.pid });
       observeForkStartup(child, emit);
     }

@@ -105,7 +105,15 @@ export interface ExecResult {
   stdoutBytes?: number;
 }
 
+/** Static lifecycle markers only: no command, paths, environment or output. */
+export type ExecProcessStage =
+  | 'handoff-open' | 'admission-start' | 'admission-ready' | 'admission-failed'
+  | 'spawn-start' | 'child-spawn' | 'child-close' | 'group-exit-confirmed'
+  | 'settlement-start' | 'settlement-complete' | 'handoff-close' | 'exec-complete';
+
 export interface ExecProcessDeps {
+  /** Observer failures must never change process lifetime or receipt settlement. */
+  onStage?: (stage: ExecProcessStage) => void;
   beginExecution?: (params: ExecParams) => Promise<GovernedExecution>;
   /** Control stays local to the sidecar; AbortSignal is never serialized. */
   signal?: AbortSignal;
@@ -269,6 +277,9 @@ async function beginSidecarProcessExecution(params: ExecParams): Promise<Governe
 }
 
 export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}): Promise<ExecResult> {
+  const reportStage = (stage: ExecProcessStage): void => {
+    try { deps.onStage?.(stage); } catch { /* diagnostics cannot own execution */ }
+  };
   const aborted = (): ExecResult => ({ code: -1, stdout: '', stderr: 'process aborted before spawn' });
   if (deps.signal?.aborted) return aborted();
   // Open the handoff files BEFORE spawning: a bad path must come back as a
@@ -276,6 +287,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
   // error (every caller's contract is degrade-to-local, not fail).
   let stdinHandle: fsp.FileHandle | undefined;
   let stdoutHandle: fsp.FileHandle | undefined;
+  reportStage('handoff-open');
   try {
     if (params.stdinPath) stdinHandle = await fsp.open(params.stdinPath, 'r');
     if (params.stdoutPath) stdoutHandle = await fsp.open(params.stdoutPath, 'w');
@@ -287,7 +299,18 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
 
   // WI-6554700010008488: every admission outcome (eager AND lazy) feeds the
   // owner's wedge breaker, so a pool that can no longer begin is detected.
-  const begin = observeAdmission(deps.beginExecution ?? beginSidecarProcessExecution, deps.admissionHealth);
+  const observedBegin = observeAdmission(deps.beginExecution ?? beginSidecarProcessExecution, deps.admissionHealth);
+  const begin = async (request: ExecParams): Promise<GovernedExecution> => {
+    reportStage('admission-start');
+    try {
+      const receipt = await observedBegin(request);
+      reportStage('admission-ready');
+      return receipt;
+    } catch (error) {
+      reportStage('admission-failed');
+      throw error;
+    }
+  };
   const lazyDelayMs = qualifiesForLazyReceiptProcess(params) ? (deps.lazyReceiptMs ?? SIDECAR_LAZY_RECEIPT_DELAY_MS) : 0;
   let execution: ReceiptHandle;
   try {
@@ -324,6 +347,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         stdoutHandle ? stdoutHandle.fd : 'pipe',
         'pipe',
       ];
+      reportStage('spawn-start');
       const child = spawn(params.command, params.args ?? [], {
         cwd: params.cwd,
         env: {
@@ -512,6 +536,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       }
       child.once('spawn', () => {
         try { if (child.pid) deps.onPid?.(child.pid); } catch { /* observer only */ }
+        reportStage('child-spawn');
       });
       // In fd-handoff mode `child.stdout` is null — git writes to the file itself.
       child.stdout?.on('data', (d: Buffer) => {
@@ -537,14 +562,20 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         }
       });
       child.on('close', async (code, signal) => {
+        reportStage('child-close');
         if (processError) processError.signal = signal;
         if (signal && !maxBufferExceeded) stderr += `${stderr ? '\n' : ''}${params.command} terminated by signal ${signal}`;
         try {
           await waitForCommandExit();
+          reportStage('group-exit-confirmed');
           // Admission settlement can itself wait on IO. Remove kill timers
           // after command exit, before awaiting admission settlement.
           stopGuards();
-          if (!spawnFailed) await execution.finish({ cpuWeight: 1 });
+          if (!spawnFailed) {
+            reportStage('settlement-start');
+            await execution.finish({ cpuWeight: 1 });
+            reportStage('settlement-complete');
+          }
           finish(code ?? -1);
         } catch (settlementError) {
           processError = { code: 'SIDECAR_SETTLEMENT_FAILED', signal, killed: terminating };
@@ -563,6 +594,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
     result = { code: -1, stdout: '', stderr: `spawner sidecar could not spawn process: ${String(e)}${settlementError}` };
   }
 
+  reportStage('handoff-close');
   // Size the output BEFORE closing, so the caller can detect a short read.
   let stdoutBytes: number | undefined;
   if (stdoutHandle) {
@@ -574,5 +606,6 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
   }
   await stdinHandle?.close().catch(() => {});
   await stdoutHandle?.close().catch(() => {});
+  reportStage('exec-complete');
   return stdoutBytes === undefined ? result : { ...result, stdoutBytes };
 }

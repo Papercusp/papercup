@@ -16,6 +16,7 @@ import {
   type GovernancePolicyControlDeps,
 } from './control';
 import { SensitiveActionError } from './sensitive-action';
+import { GovernanceAuthorityError } from './authority';
 import { enforceInheritedPolicy, governedRequestOf } from './enforce';
 import { simulateInheritedPolicy, type GovernedRequest, type PolicyLayer } from './inherited-policy';
 import { GovernancePolicyWriteError, type ChainLoad, type StoredPolicyLayer, type UpsertLayerInput } from './store';
@@ -355,9 +356,21 @@ describe('direct-write gate — sensitive levels and delegated scope (P-006, D-0
     const deps = fakeDeps({ authorize });
     expect(await setGovernancePolicyLayer(ws, 'admin:dept-a', deps)).toMatchObject({ ok: true });
     const moved = await setGovernancePolicyLayer({ ...ws, parentLayerId: 'dept-sales' }, 'admin:dept-a', fakeDeps({ authorize }));
-    expect(moved).toMatchObject({ ok: false, code: 'forbidden' });
+    expect(moved).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+      refusal: {
+        observed: { capability: 'prepare', scope: 'dept-sales', authority: 'not-granted' },
+        liftsWhen: expect.stringContaining('required governance capability'),
+        whoCanMakeItTrue: ['owner', 'host'],
+      },
+    });
     const denied = fakeDeps({ authorize: async () => false });
-    expect(await setGovernancePolicyLayer(ws, 'admin:other', denied)).toMatchObject({ ok: false, code: 'forbidden' });
+    expect(await setGovernancePolicyLayer(ws, 'admin:other', denied)).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+      refusal: { observed: { capability: 'prepare', scope: 'ws-a', authority: 'not-granted' } },
+    });
     expect(denied.upserts).toHaveLength(0);
   });
 
@@ -367,8 +380,32 @@ describe('direct-write gate — sensitive levels and delegated scope (P-006, D-0
     expect(await setGovernancePolicyLayer(org, 'admin:founder', human)).toMatchObject({ ok: true, revision: 'org-new@v1' });
     expect(human.upserts[0]).toMatchObject({ layerId: 'org-new', actor: 'admin:founder' });
     const agent = fakeDeps();
-    expect(await setGovernancePolicyLayer(org, 'su-agent-1', agent)).toMatchObject({ ok: false, code: 'forbidden' });
+    expect(await setGovernancePolicyLayer(org, 'su-agent-1', agent)).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+      refusal: {
+        observed: { actorKind: 'service', operation: 'organization-bootstrap' },
+        liftsWhen: expect.stringContaining('required governance capability'),
+        whoCanMakeItTrue: ['owner', 'host'],
+      },
+    });
     expect(agent.upserts).toHaveLength(0);
+  });
+
+  it('adds a lift contract when a typed authority exception maps dynamically to forbidden', async () => {
+    const denied = new GovernanceAuthorityError('forbidden', 'admin:avi holds no prepare authority over ws-a');
+    const deps = fakeDeps({ upsertLayer: async () => { throw denied; } });
+    const out = await setGovernancePolicyLayer(ws, 'admin:avi', deps);
+    expect(out).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+      refusal: {
+        observed: { authorityFailure: denied.message },
+        liftsWhen: expect.stringContaining('target layer'),
+        whoCanMakeItTrue: ['owner', 'host'],
+      },
+    });
+    expect(deps.upserts).toHaveLength(0);
   });
 });
 
@@ -398,6 +435,22 @@ describe('prepareGovernancePolicyChange — simulate-before-apply is recorded (P
       preparedBy: 'su-agent-1',
     });
     expect(input.simulation).toMatchObject({ affectsWorkspace: true });
+  });
+
+  it('adds a lift contract to dynamically mapped governance authority failures', async () => {
+    const denied = new GovernanceAuthorityError('forbidden', 'admin:avi holds no delegate authority over dept-eng');
+    const out = await prepareGovernancePolicyChange(change, 'admin:avi', fakeDeps({
+      prepareAction: async () => { throw denied; },
+    }));
+    expect(out).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+      refusal: {
+        observed: { authorityFailure: denied.message },
+        liftsWhen: expect.stringContaining('target layer'),
+        whoCanMakeItTrue: ['owner', 'host'],
+      },
+    });
   });
 
   it('refuses a stale edit, a new organization, re-parenting and an unrelated workspace before preparing', async () => {

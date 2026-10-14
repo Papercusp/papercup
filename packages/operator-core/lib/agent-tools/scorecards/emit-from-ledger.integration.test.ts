@@ -151,6 +151,12 @@ beforeAll(async () => {
     criteria: [
       criterion('disk-latest', { kind: 'instrument', instrumentKey: 'host:df-root-used-pct', expect: { op: 'lt', value: 80 } }),
       criterion('cpu-threshold', { kind: 'instrument', instrumentKey: 'host:cgroup-cpu-delta-cores', expect: { op: 'lte', value: 2 } }),
+      criterion('query-cost', {
+        kind: 'instrument',
+        instrumentKey: 'host:df-root-used-pct',
+        expect: { op: 'lte', value: 50 },
+        ratingBands: [{ rating: 'degraded', expect: { op: 'lte', value: 80 } }],
+      }),
       criterion('probe-recorded', { kind: 'probe', probe: sqlProbe(1) }),
       criterion('probe-unrecorded', { kind: 'probe', probe: sqlProbe(1) }),
       criterion('manual-judgement'),
@@ -171,6 +177,9 @@ beforeAll(async () => {
   // Recorded as pass under an older, looser threshold (<= 4); today's rubric says <= 2.
   [ids.cpu] = await recordRubricCheckResults(
     [row('cpu-threshold', 'instrument', 3.5, 'cores', 'pass', '2026-10-13T01:30:00.000Z', { op: 'lte', value: 4 })], scope, sql(),
+  );
+  [ids.queryCost] = await recordRubricCheckResults(
+    [row('query-cost', 'instrument', 62.38, '%', 'fail', '2026-10-13T01:30:00.000Z', { op: 'lte', value: 50 })], scope, sql(),
   );
   [ids.probe] = await recordRubricCheckResults(
     [row('probe-recorded', 'probe', 1, null, 'pass', '2026-10-13T01:30:00.000Z')], scope, sql(),
@@ -230,13 +239,16 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
     const result = await emit({
       ratings: { 'manual-judgement': MANUAL_RATING },
       // The poor cpu result is routed WITHOUT a hand-typed rating.
-      ledgerDispositions: { 'cpu-threshold': { remediation: CPU_REMEDIATION } },
+      ledgerDispositions: {
+        'cpu-threshold': { remediation: CPU_REMEDIATION },
+        'query-cost': { disregard: 'Intermediate fixture band is recorded without a separate remediation.' },
+      },
     });
     expect(result.ok ? 'ok' : result).toBe('ok');
     if (!result.ok) return;
     expect(result).toMatchObject({
       created: true,
-      ledgerFill: { filled: ['disk-latest', 'cpu-threshold', 'probe-recorded'], unrecorded: ['probe-unrecorded'] },
+      ledgerFill: { filled: ['disk-latest', 'cpu-threshold', 'query-cost', 'probe-recorded'], unrecorded: ['probe-unrecorded'] },
     });
     // The ledger-owned probe was rated from its recorded row, never re-run live, and the emit
     // wrote no new ledger row that the rating did not see.
@@ -266,6 +278,16 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
       remediation: CPU_REMEDIATION,
     });
     expect(String(ratings['cpu-threshold']!.evidence)).toMatch(/cpu-threshold:instrument=3\.5 cores → fail/);
+
+    // The recorded status fails the meets threshold, but the scalar remains inside the
+    // explicitly declared intermediate band and must not collapse to the worst rating.
+    expect(ratings['query-cost']).toMatchObject({
+      rating: 'degraded',
+      ratedFrom: 'ledger',
+      ledgerResult: { testRunId: ids.queryCost, value: 62.38, unit: '%' },
+      disregard: 'Intermediate fixture band is recorded without a separate remediation.',
+    });
+    expect(String(ratings['query-cost']!.evidence)).toMatch(/query-cost:instrument=62\.38 % → fail; scorecard rating degraded/);
 
     expect(ratings['probe-recorded']).toMatchObject({
       rating: 'healthy',

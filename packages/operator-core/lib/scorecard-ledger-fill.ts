@@ -44,6 +44,11 @@ export interface LedgerFillCriterion {
   ratingScale?: string[];
 }
 
+export interface LedgerRatingBand {
+  rating: string;
+  expect: { op: 'lt' | 'lte' | 'gt' | 'gte' | 'eq'; value: number };
+}
+
 /** One ledger-backed check of a criterion: its ledger id and how to re-judge a stored value. */
 export interface LedgerCheckBinding {
   id: string;
@@ -52,6 +57,8 @@ export interface LedgerCheckBinding {
   predicate?: ContinuityPredicate;
   /** Instrument: the current threshold, in the instrument's unit. */
   expect?: { op: 'lt' | 'lte' | 'gt' | 'gte' | 'eq'; value: number };
+  /** Ordered intermediate ratings evaluated against the same stored numeric value. */
+  ratingBands?: LedgerRatingBand[];
   /**
    * The unit a row must carry to describe this check: an instrument's registered unit, or the
    * unit a probe check declares (absent when it declares none).
@@ -65,6 +72,23 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
+function ratingBandsOf(check: Record<string, unknown>): LedgerRatingBand[] | undefined {
+  if (!Array.isArray(check.ratingBands)) return undefined;
+  const bands = check.ratingBands.flatMap((value): LedgerRatingBand[] => {
+    const band = record(value);
+    const expect = record(band?.expect);
+    if (
+      typeof band?.rating !== 'string' ||
+      typeof expect?.op !== 'string' ||
+      !['lt', 'lte', 'gt', 'gte', 'eq'].includes(expect.op) ||
+      typeof expect.value !== 'number' ||
+      !Number.isFinite(expect.value)
+    ) return [];
+    return [{ rating: band.rating, expect: { op: expect.op as LedgerRatingBand['expect']['op'], value: expect.value } }];
+  });
+  return bands.length === check.ratingBands.length ? bands : undefined;
+}
+
 /**
  * The ledger checks a criterion executes, or null when it has none (manual, subject-only platform,
  * tests/cargo, or no check). Mirrors which checks P-006 writes rows for.
@@ -72,6 +96,7 @@ function record(value: unknown): Record<string, unknown> | null {
 export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheckBinding[] | null {
   const check = record(criterion.check);
   if (!check) return null;
+  const ratingBands = ratingBandsOf(check);
   if (check.kind === 'probe') {
     const children = Array.isArray(check.all) ? check.all : check.probe !== undefined ? [check.probe] : [];
     if (children.length === 0) return null;
@@ -81,6 +106,7 @@ export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheck
       return {
         id: probeCheckId(criterion.key, index),
         kind: 'probe' as const,
+        ...(ratingBands ? { ratingBands } : {}),
         ...(unit !== undefined ? { unit } : {}),
         ...(expect && typeof expect.op === 'string' && typeof expect.path === 'string'
           ? { predicate: expect as unknown as ContinuityPredicate }
@@ -99,6 +125,7 @@ export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheck
       id: instrumentCheckId(criterion.key),
       kind: 'instrument',
       unit: instrument.evaluator === 'command' ? instrument.unit : instrument.rescore!.unit,
+      ...(ratingBands ? { ratingBands } : {}),
       ...(expect && typeof expect.op === 'string' && typeof expect.value === 'number'
         ? { expect: { op: expect.op as NonNullable<LedgerCheckBinding['expect']>['op'], value: expect.value } }
         : {}),
@@ -136,9 +163,48 @@ export function ledgerRatingLevel(verdict: 'pass' | 'fail', scale: readonly stri
   return verdict === 'pass' ? levels[0]! : levels[levels.length - 1]!;
 }
 
-function describeRow(binding: LedgerCheckBinding, row: LatestRubricCheckResult, verdict: Verdict): string {
+function invalidRatingBands(bindings: readonly LedgerCheckBinding[], scale: readonly string[]): string | null {
+  const levels = scale.filter((level) => level !== 'unknown');
+  for (const binding of bindings) {
+    const bands = binding.ratingBands;
+    if (!bands?.length) continue;
+    const seen = new Set<string>();
+    let previousIndex = 0;
+    for (const band of bands) {
+      const index = levels.indexOf(band.rating);
+      if (index <= 0 || index >= levels.length - 1 || seen.has(band.rating)) {
+        return `rating band '${band.rating}' must name a unique intermediate level in the criterion's best-to-worst rating scale`;
+      }
+      if (index <= previousIndex) {
+        return `rating bands for '${binding.id}' must be listed in the criterion's best-to-worst rating-scale order`;
+      }
+      seen.add(band.rating);
+      previousIndex = index;
+    }
+  }
+  return null;
+}
+
+function rateLedgerRow(
+  binding: LedgerCheckBinding,
+  row: LatestRubricCheckResult,
+  scale: readonly string[],
+): { verdict: Verdict; rating: string } {
+  const verdict = judgeLedgerRow(binding, row);
+  if (verdict === 'error') return { verdict, rating: 'unknown' };
+  if (verdict === 'pass') return { verdict, rating: ledgerRatingLevel('pass', scale) };
+  const value = row.check.value;
+  if (typeof value === 'number') {
+    const matched = binding.ratingBands?.find((band) => meetsExpect(value, band.expect));
+    if (matched) return { verdict, rating: matched.rating };
+  }
+  return { verdict, rating: ledgerRatingLevel('fail', scale) };
+}
+
+function describeRow(binding: LedgerCheckBinding, row: LatestRubricCheckResult, verdict: Verdict, rating?: string): string {
   const unit = row.check.unit ? ` ${row.check.unit}` : '';
-  return `${binding.id}=${JSON.stringify(row.check.value)}${unit} → ${verdict} (test_runs #${row.testRunId}, ${row.finishedAt})`;
+  const rated = rating && rating !== verdict ? `; scorecard rating ${rating}` : '';
+  return `${binding.id}=${JSON.stringify(row.check.value)}${unit} → ${verdict}${rated} (test_runs #${row.testRunId}, ${row.finishedAt})`;
 }
 
 function ledgerResultOf(row: LatestRubricCheckResult): ObservationLedgerResult {
@@ -172,7 +238,7 @@ export type LedgerFillOutcome =
     }
   | {
       ok: false;
-      error: 'ledger_rating_contradicted' | 'manual_rating_missing' | 'ledger_disposition_unowned';
+      error: 'ledger_rating_contradicted' | 'manual_rating_missing' | 'ledger_disposition_unowned' | 'ledger_rating_bands_invalid';
       criterionKeys: string[];
       detail: string;
     };
@@ -219,6 +285,16 @@ export function fillRatingsFromLedger(input: {
       else missingManual.push(criterion.key);
       continue;
     }
+    const ratingScale = scaleOf(criterion, input.rubricRatingScale);
+    const invalidBands = invalidRatingBands(bindings, ratingScale);
+    if (invalidBands) {
+      return {
+        ok: false,
+        error: 'ledger_rating_bands_invalid',
+        criterionKeys: [criterion.key],
+        detail: `fromLedger cannot apply the ratingBands for '${criterion.key}': ${invalidBands}.`,
+      };
+    }
     const rows = bindings.map((binding) => {
       const row = input.latest.get(binding.id);
       // A row recorded under a different unit describes a different instrument binding.
@@ -236,9 +312,13 @@ export function fillRatingsFromLedger(input: {
         nextEvidenceAction: `Run the criterion's check so it records a results-ledger row (${missing.join(', ')}), then re-emit with fromLedger.`,
       };
     } else {
-      const judged = rows.map((r) => ({ ...r, row: r.row!, verdict: judgeLedgerRow(r.binding, r.row!) }));
-      const deciding = judged.find((j) => j.verdict === 'error') ?? judged.find((j) => j.verdict === 'fail') ?? judged[0]!;
-      const evidence = `fromLedger: ${judged.map((j) => describeRow(j.binding, j.row, j.verdict)).join('; ')}`;
+      const judged = rows.map((r) => ({ ...r, row: r.row!, ...rateLedgerRow(r.binding, r.row!, ratingScale) }));
+      const decidingError = judged.find((j) => j.verdict === 'error');
+      const deciding = decidingError ?? judged.reduce((worst, current) => {
+        const levels = ratingScale.filter((level) => level !== 'unknown');
+        return levels.indexOf(current.rating) > levels.indexOf(worst.rating) ? current : worst;
+      });
+      const evidence = `fromLedger: ${judged.map((j) => describeRow(j.binding, j.row, j.verdict, j.rating)).join('; ')}`;
       const provenance = {
         ratedFrom: 'ledger' as const,
         ledgerResult: ledgerResultOf(deciding.row),
@@ -254,7 +334,7 @@ export function fillRatingsFromLedger(input: {
             nextEvidenceAction: `Repair the measurement for ${deciding.binding.id} (its latest ledger row measured nothing) and re-run it.`,
             ...provenance,
           }
-        : { rating: ledgerRatingLevel(deciding.verdict, scaleOf(criterion, input.rubricRatingScale)), evidence, ...provenance };
+        : { rating: deciding.rating, evidence, ...provenance };
       ledgerFilled.push(criterion.key);
     }
     const supplied = caller[criterion.key];
