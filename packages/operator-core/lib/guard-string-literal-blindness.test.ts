@@ -537,11 +537,43 @@ const REVIEWED_READER_CORPUS: Record<string, { sha256: string; reason: string }>
   'check-vite-externalized-warnings.mjs': { sha256: '70fe3293f3b40271c07994c416c7b266cc49a27450f9792d783982f79c0a3d7d', reason: 'Baseline JSON and child build diagnostics; child source loading is distinct from this direct text consumer.' },
 };
 
+// WI12476: these are SOURCE REVIEWS, not successful sandbox executions. A denied
+// import/assertion can stop the inert VM before a real selector runs. Exact bytes
+// pin the reviewed direct text consumers without allowing their effects to run.
+// Scope is test callbacks in the default inert environment (no env overrides).
+// Imports loading implementation code are not themselves direct text consumers.
+const REVIEWED_TEST_READER_CORPUS: Record<string, { sha256: string; status: 'source' | 'non-source'; reason: string }> = {
+  'apps/operator-vite/src/__tests__/dark-flag-route-contract.test.ts': { sha256: '322a839a3d202eb7cd478ab0fba70eba245e7a99b53747ea6eb5571a4919695f', status: 'source', reason: 'listSourceFiles selects non-test .ts/.tsx route files; gatedRoutes reads and strips their bytes.' },
+  'apps/operator-vite/src/__tests__/no-server-leak-in-client-graph.test.ts': { sha256: 'cc75f6b293ce65d632e7d839c84047b13f545eda5ea03cee1d3bfa5b36552f81', status: 'source', reason: 'Reads vite.config.ts and traverses client/workspace JS/TS imports, then inspects each selected source.' },
+  'apps/operator/app/_components/monaco-cdn.test.ts': { sha256: '97a5d44ac35a76868e1c036e76b6a2110a6b942a47730df711ad3616cd336824', status: 'source', reason: 'Async live TypeScript enumeration and fixed live-source-files.ts/Monaco runtime reads; fs/promises is unsupported by the VM.' },
+  'apps/operator/app/_components/porcupine-cdn.test.ts': { sha256: '632e01f0b5fbba4b1c12ec5740075ee32c1e79248fe3bc9ac9aa745173f6e5df', status: 'source', reason: 'Async fixed Porcupine engine TypeScript reads, alongside shell setup and model bytes.' },
+  'apps/operator/app/_components/vditor-cdn.test.ts': { sha256: 'f302eb4a6012012d5fa492b77d1593ce4c648afd501de061dc725e02eccd5652', status: 'source', reason: 'Reads MarkdownEditor.tsx and enumerated live TypeScript constructors, plus fixed JavaScript bundles.' },
+  'apps/operator/lib/chat-actions/ctx-wiring.test.ts': { sha256: '3e260183930b03b2453e8195dccb0d4e165378e214bf3ce4c6b6b7f36f1622ac', status: 'source', reason: 'actionModules reads sibling .ts action files; CTX_SITE reads SessionChatModal.tsx for supplied keys.' },
+  'apps/operator/scripts/__tests__/backup-tier-split.test.ts': { sha256: 'd86d3c6ec7bd334ac6b24335958ecaac01f6b6a15809514fb3d05a1343ae487b', status: 'non-source', reason: 'Default direct reads are two .sh backup scripts. Env override paths and child shell execution are outside this review.' },
+  'packages/operator-core/lib/__tests__/affected-tests-passing-verdict-cache.test.ts': { sha256: 'f4c869ba15625bec7f98c2640c2b882f1190f451c2b200671f51560e5ba903b0', status: 'source', reason: 'Directly reads affected-tests.mjs, green-checkpoint.ts, cache/scheduler/launcher sources and capability TypeScript.' },
+  'packages/operator-core/lib/agent-tools/coordination/dispatch-intervention-reachable.test.ts': { sha256: 'f51d25a475aa5c9f609ed595180790b0eb58cde392f5953bcf474705b5663e34', status: 'source', reason: 'INVOKE_TS is a fixed orchestrator invoke.ts path; describe callback reads it to parse seed lists.' },
+  'packages/operator-core/lib/chat-protocol-nodenext-export-extensions.test.ts': { sha256: 'f60b1c861e7c5e0752aaca5f1112c04ec5e321ab44a9109cd79c76f85d7c528b', status: 'source', reason: 'publishedSourceFiles enumerates chat-protocol/src .ts files and tests read each selected file.' },
+  'packages/operator-core/lib/coord/holder-context.test.ts': { sha256: '7e7cad5f5ec7c295f47a75ffea03af7d5569bba9716529b9cef41e02b8f839fe', status: 'source', reason: 'readRepoFile selects fixed holder-context/lock/tool TypeScript; parity traversal reads selected .ts/.tsx sources.' },
+  'packages/operator-core/lib/desktop-acl-command-sync.test.ts': { sha256: '22ec2dd8eb9ad20680f781a3494ec1af387ed096240688a3b962688997c14582', status: 'non-source', reason: 'Direct consumers are fixed main.rs, build.rs and capabilities/default.json; Rust is outside this JS/TS corpus.' },
+  'packages/operator-core/lib/doc-claims/staging-sync-target-ref.test.ts': { sha256: '2bcc36e9d842fc7c72809edf7e224b3762977280a05c05326e97f6e0105bd05a', status: 'non-source', reason: 'Fixed sync-staging-checkout.sh and CLAUDE.md text consumers, plus inline shell control strings.' },
+  'packages/operator-core/lib/doc-claims/system-closer-identity-registration.test.ts': { sha256: '560618e85f39a71c0a035a41546aa5d2371f83667954b47c8d71731ea567b36f', status: 'source', reason: 'walk traverses registered source roots and readFileSync consumes selected TypeScript terminal-state sites.' },
+  'packages/operator-core/lib/execute-action-dispatch-contract.test.ts': { sha256: '0ce39f4d8085efe61432c14484d2e41019e72318a6e6609d7c50a1fc8959c405', status: 'source', reason: 'Reads execute-action.ts and recursively selected source emitters; duplicate __dirname blocks VM execution, not these selectors.' },
+  'packages/operator-core/lib/harness/improvements/recursion-safety-invariants.test.ts': { sha256: '41747440bacff704c38e819dae21a4bc3693d30909497a661343b5420648ed7e', status: 'source', reason: 'TypeScript source walk reads and strips files to find recordBehaviorChange call sites.' },
+  'packages/operator-core/lib/inference-gateway/egress-pool-resolution.test.ts': { sha256: '44d56a3cccb38072bdf91fd1b4ce1aa1c3f7edbe03db90e42ceba9f233cbde6d', status: 'source', reason: 'readdirSync(DIR) selects gateway .ts files; the guard reads and strips each candidate.' },
+  'packages/operator-core/lib/scheduler/claimability-snapshot-projection-covers-floors.test.ts': { sha256: '8fd085a521e8381112eb791d41e6d2128c0c9a4fafa15d63cfa328489084c0e9', status: 'non-source', reason: 'No direct file reads: stripComments consumes SQL rendered by the real query builder and inline SQL controls.' },
+  'packages/operator-core/lib/search/search-engine-mock-completeness.test.ts': { sha256: '9d242066f01c4812e592fa0f89685be40cd485b7a4a38f3490456f349079b778', status: 'source', reason: 'walkTests selects .test.ts files and scanSource consumes their bytes, alongside fixed binding policy source.' },
+  'packages/operator-core/lib/sync-interest-single-contract.test.ts': { sha256: 'f587b3cbc136355bd6d310cc37792ee13cc842ab127d4dc5979c6cbad95e9bcf', status: 'source', reason: 'SCAN_ROOTS traverses apps/packages/libs, reads selected source files and a fixed probe route.' },
+  'templates/papercusp-ui/checks/theme-tokens.test.ts': { sha256: 'b39ed85da2a53cb8c5fad3a1c909e430640b367e94ac5eba5eb504638f511355', status: 'non-source', reason: 'Default inert environment has no TEMPLATE_CHECKS_CONFIG and skips the suite. Configured paths are unrestricted and explicitly outside this review.' },
+};
+
 beforeAll(() => {
   // Fail at the pre-run boundary, before the expensive inert corpus census.
   // Concurrent edits need a content review, never an automatic hash refresh.
   for (const [file, review] of Object.entries(REVIEWED_READER_CORPUS)) {
     expect(crypto.createHash('sha256').update(readFileSync(join(SCRIPTS_DIR, file), 'utf8')).digest('hex'), file + ': reviewed source drifted; reclassify before the census').toBe(review.sha256);
+  }
+  for (const [file, review] of Object.entries(REVIEWED_TEST_READER_CORPUS)) {
+    expect(crypto.createHash('sha256').update(readFileSync(join(SCRIPTS_DIR, '..', file), 'utf8')).digest('hex'), file + ': reviewed test source drifted; reclassify before the census').toBe(review.sha256);
   }
 });
 
@@ -554,6 +586,20 @@ function reviewedReaderCorpus(entry: string, result: ReturnType<typeof observeRe
     ...result,
     status: result.status === 'source' ? 'source' : 'non-source',
     review: { ...review, scope: 'default CLI direct text consumer' },
+  };
+}
+
+function reviewedTestReaderCorpus(entry: string, result: ReturnType<typeof observeReaderCorpus>, source: string, scope: { testCallbacks: boolean; defaultEnvironment: boolean }) {
+  const review = REVIEWED_TEST_READER_CORPUS[entry];
+  if (!scope.testCallbacks || !scope.defaultEnvironment || !review || crypto.createHash('sha256').update(source).digest('hex') !== review.sha256) {
+    return { ...result, review: undefined };
+  }
+  return {
+    ...result,
+    // Positive executed reads always win. Preserve the original VM receipts:
+    // reviewed status must never fabricate a codeReads entry or suppress denial.
+    status: result.status === 'source' ? 'source' : review.status,
+    review: { ...review, scope: 'test callbacks, default inert environment, direct text consumers', originalStatus: result.status },
   };
 }
 
@@ -700,6 +746,30 @@ describe('reader corpus comes from executed selection, not quoted extensions', (
     expect(reviewedReaderCorpus(entry, unknown, source + '\nreadFileSync("new.ts");').status).toBe('unknown');
     expect(reviewedReaderCorpus(entry, unknown, source, ['--lock', 'new.ts']).status).toBe('unknown');
     expect(reviewedReaderCorpus(entry, { ...unknown, status: 'source', codeReads: ['new.ts'] }, source).status).toBe('source');
+  });
+
+  it('test reviews invalidate on drift and never turn a denied VM into observed reads', () => {
+    const entry = 'apps/operator/app/_components/monaco-cdn.test.ts';
+    const source = readFileSync(join(SCRIPTS_DIR, '..', entry), 'utf8');
+    const unknown = { status: 'unknown', codeReads: [], reads: [], unsupported: ['fs/promises'], asynchronous: false, directoryEntriesVisited: 0 };
+    const scope = { testCallbacks: true, defaultEnvironment: true };
+    const reviewed = reviewedTestReaderCorpus(entry, unknown, source, scope);
+    expect(reviewed.status).toBe('source');
+    expect(reviewed.codeReads).toEqual([]);
+    expect(reviewed.unsupported).toEqual(['fs/promises']);
+    expect(reviewed.review?.originalStatus).toBe('unknown');
+    expect(reviewedTestReaderCorpus(entry, unknown, source + '\n', scope).status).toBe('unknown');
+    expect(reviewedTestReaderCorpus(entry, unknown, source, { ...scope, testCallbacks: false }).status).toBe('unknown');
+  });
+
+  it('non-source reviews cannot hide positive reads or classify a configured template invocation', () => {
+    const entry = 'templates/papercusp-ui/checks/theme-tokens.test.ts';
+    const source = readFileSync(join(SCRIPTS_DIR, '..', entry), 'utf8');
+    const unknown = { status: 'unknown', codeReads: [], reads: [], unsupported: ['skipIf'], asynchronous: false, directoryEntriesVisited: 0 };
+    const scope = { testCallbacks: true, defaultEnvironment: true };
+    expect(reviewedTestReaderCorpus(entry, unknown, source, scope).status).toBe('non-source');
+    expect(reviewedTestReaderCorpus(entry, unknown, source, { ...scope, defaultEnvironment: false }).status).toBe('unknown');
+    expect(reviewedTestReaderCorpus(entry, { ...unknown, status: 'source', codeReads: ['configured.ts'] }, source, scope).status).toBe('source');
   });
 });
 
@@ -969,7 +1039,7 @@ describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-100020
       }
       if (!MIGHT_DEFINE_STRIPPER.test(raw)) continue;
       if (!definesPrivateStripper(stripCommentsAndStrings(raw, rel))) continue;
-      if (!census.has(rel)) census.set(rel, observeReaderCorpus(rel, inventory, undefined, { testCallbacks: true }));
+      if (!census.has(rel)) census.set(rel, reviewedTestReaderCorpus(rel, observeReaderCorpus(rel, inventory, undefined, { testCallbacks: true }), raw, { testCallbacks: true, defaultEnvironment: true }));
       if (census.get(rel)!.status !== 'non-source') found.push(rel);
     }
     return found.sort();
@@ -980,22 +1050,38 @@ describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-100020
    * modules are recorded separately below and cannot silently graduate to this baseline.
    */
   const TEST_BASELINE = new Set([
+    'apps/operator-vite/src/__tests__/dark-flag-route-contract.test.ts',
+    'apps/operator-vite/src/__tests__/no-server-leak-in-client-graph.test.ts',
     'apps/operator-vite/src/lib/operator-core-client-boundary.test.ts',
+    'apps/operator/app/_components/monaco-cdn.test.ts',
+    'apps/operator/app/_components/porcupine-cdn.test.ts',
+    'apps/operator/app/_components/vditor-cdn.test.ts',
     'apps/operator/app/_lints/design-primitives.test.ts',
     'apps/operator/app/_lints/popper-stacking.test.ts',
+    'apps/operator/lib/chat-actions/ctx-wiring.test.ts',
     'apps/operator/scripts/__tests__/watchdog-journald-independence.test.ts',
+    'packages/operator-core/lib/__tests__/affected-tests-passing-verdict-cache.test.ts',
     'packages/operator-core/lib/__tests__/not-checked-non-gating-mirror.test.ts',
     'packages/operator-core/lib/agent-tools/capability/base-dir.test.ts',
+    'packages/operator-core/lib/agent-tools/coordination/dispatch-intervention-reachable.test.ts',
     'packages/operator-core/lib/agent-tools/coordination/partial-jsonb-index-alignment.test.ts',
     'packages/operator-core/lib/agent-tools/tool-tree-root.test.ts',
     'packages/operator-core/lib/agent-tools/work_items/swallowed-work-item-read-guard.test.ts',
     'packages/operator-core/lib/conversation-context-projection-index.test.ts',
+    'packages/operator-core/lib/chat-protocol-nodenext-export-extensions.test.ts',
+    'packages/operator-core/lib/coord/holder-context.test.ts',
     'packages/operator-core/lib/deployment/account-pool-write-path.test.ts',
     'packages/operator-core/lib/doc-claims/identity-recovery-door.test.ts',
+    'packages/operator-core/lib/doc-claims/system-closer-identity-registration.test.ts',
+    'packages/operator-core/lib/execute-action-dispatch-contract.test.ts',
     'packages/operator-core/lib/goal-launch-resolver-coverage.test.ts',
+    'packages/operator-core/lib/harness/improvements/recursion-safety-invariants.test.ts',
+    'packages/operator-core/lib/inference-gateway/egress-pool-resolution.test.ts',
     'packages/operator-core/lib/payload-object-shape-guard.test.ts',
     'packages/operator-core/lib/pg-stat-activity-role-visibility-guard.test.ts',
     'packages/operator-core/lib/release/green-stall-watchdog-presence-columns.test.ts',
+    'packages/operator-core/lib/search/search-engine-mock-completeness.test.ts',
+    'packages/operator-core/lib/sync-interest-single-contract.test.ts',
     'packages/operator-core/lib/sync-resolver/no-embedding-in-list-projection.test.ts',
     'packages/operator-core/lib/sync-resolver/workspace-filter-coverage.test.ts',
     'packages/operator-core/lib/sync/hyperbee/projections/__tests__/lww-guard-registry-lint.test.ts',
@@ -1004,30 +1090,9 @@ describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-100020
     'packages/operator-core/lib/workspace-reg-current-guard.test.ts',
   ]);
 
-  // Unsupported modules are separate from positively measured source-reader debt.
-  const TEST_UNRESOLVED_CORPUS = new Set<string>([
-    'apps/operator-vite/src/__tests__/dark-flag-route-contract.test.ts',
-    'apps/operator-vite/src/__tests__/no-server-leak-in-client-graph.test.ts',
-    'apps/operator/app/_components/monaco-cdn.test.ts',
-    'apps/operator/app/_components/porcupine-cdn.test.ts',
-    'apps/operator/app/_components/vditor-cdn.test.ts',
-    'apps/operator/lib/chat-actions/ctx-wiring.test.ts',
-    'apps/operator/scripts/__tests__/backup-tier-split.test.ts',
-    'packages/operator-core/lib/__tests__/affected-tests-passing-verdict-cache.test.ts',
-    'packages/operator-core/lib/agent-tools/coordination/dispatch-intervention-reachable.test.ts',
-    'packages/operator-core/lib/chat-protocol-nodenext-export-extensions.test.ts',
-    'packages/operator-core/lib/coord/holder-context.test.ts',
-    'packages/operator-core/lib/desktop-acl-command-sync.test.ts',
-    'packages/operator-core/lib/doc-claims/staging-sync-target-ref.test.ts',
-    'packages/operator-core/lib/doc-claims/system-closer-identity-registration.test.ts',
-    'packages/operator-core/lib/execute-action-dispatch-contract.test.ts',
-    'packages/operator-core/lib/harness/improvements/recursion-safety-invariants.test.ts',
-    'packages/operator-core/lib/inference-gateway/egress-pool-resolution.test.ts',
-    'packages/operator-core/lib/scheduler/claimability-snapshot-projection-covers-floors.test.ts',
-    'packages/operator-core/lib/search/search-engine-mock-completeness.test.ts',
-    'packages/operator-core/lib/sync-interest-single-contract.test.ts',
-    'templates/papercusp-ui/checks/theme-tokens.test.ts',
-  ]);
+  // The 21 remaining WI12476 unknowns are exact-byte reviewed above. New unknowns
+  // still fail the no-new-reader test; a review drift fails before the census.
+  const TEST_UNRESOLVED_CORPUS = new Set<string>();
 
   it('no NEW .test.ts tree-scanning guard hand-rolls its own comment stripper', () => {
     const added = measureTestPopulation().filter((f) => !TEST_BASELINE.has(f) && !TEST_UNRESOLVED_CORPUS.has(f));
