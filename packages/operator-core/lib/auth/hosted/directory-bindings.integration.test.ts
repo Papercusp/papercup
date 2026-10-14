@@ -33,7 +33,10 @@ beforeAll(async () => {
     CREATE SCHEMA harness_shared; CREATE TABLE harness_shared.workspace_hosts (workspace_id text NOT NULL, id text NOT NULL, PRIMARY KEY(workspace_id,id));`);
   for (const name of ['902-hosted-session-webhook-receipts.sql', '903-customer-organization-boundary.sql',
     '904-hosted-identity-links.sql', '906-customer-workspace-directory.sql', '907-hosted-governance.sql',
-    '978-hosted-customer-rls.sql', '1005-hosted-service-lifecycle-runtime.sql', '1473-hosted-directory-binding-audit.sql',
+    '978-hosted-customer-rls.sql', '1005-hosted-service-lifecycle-runtime.sql',
+    // 1188 owns the hosted_owner SELECT/INSERT policies on organization_memberships
+    // that 1496's SECURITY DEFINER provision_directory_membership relies on.
+    '1188-hosted-self-signup.sql', '1473-hosted-directory-binding-audit.sql',
     '1496-hosted-directory-group-mappings.sql']) {
     const armed = path.join(SQL_DIR, name);
     await sql.unsafe(readFileSync(existsSync(armed) ? armed : `${armed}.DRAFT`, 'utf8'));
@@ -174,16 +177,23 @@ describe('directory group mappings and delegated provisioning (WI-10007899 / P-0
     sql`INSERT INTO papercusp_auth.directory_user_observations(external_organization_id,directory_id,directory_user_id,state,groups)
       VALUES ('workos-org',${DIR},${directoryUserId},${state},${groups}::text[])
       ON CONFLICT (external_organization_id,directory_id,directory_user_id) DO UPDATE SET state = EXCLUDED.state, groups = EXCLUDED.groups`;
-  const setActorRole = (role: string) => sql`UPDATE papercusp_auth.organization_memberships SET role = ${role}
-    WHERE organization_id = ${organizationId}::uuid AND user_id = ${actorId}::uuid`;
+  // A separate seeded owner: the canonical 978 trigger forbids changing local
+  // role authority in place, so the owner is inserted rather than promoted.
+  let ownerId: string;
+  const owner = () => createHostedPrincipal({ workspaceId: 'control', userId: ownerId,
+    activeOrganizationId: organizationId, sessionId: 'owner-session', sessionVersion: 1, permissions: ['members:manage'] });
   const membershipOf = async (userId: string) => (await sql<{ id: string; role: string; status: string }[]>`
     SELECT id::text, role, status FROM papercusp_auth.organization_memberships
      WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid`)[0];
   const auditCount = async () => (await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM papercusp_auth.organization_audit_events`)[0].n;
 
   beforeEach(async () => {
-    const [row] = await sql<{ id: string }[]>`INSERT INTO papercusp_auth.hosted_users(primary_email) VALUES ('new@example.test') RETURNING id`;
+    const [row, ownerRow] = await sql<{ id: string }[]>`INSERT INTO papercusp_auth.hosted_users(primary_email)
+      VALUES ('new@example.test'),('owner@example.test') RETURNING id`;
     newUserId = row.id;
+    ownerId = ownerRow.id;
+    await sql`INSERT INTO papercusp_auth.organization_memberships(organization_id,user_id,role,status,created_via)
+      VALUES (${organizationId}::uuid,${ownerId}::uuid,'owner','active','member_management')`;
   });
 
   it('sets, changes and removes a mapping with append-only audit and no membership side effect', async () => {
@@ -202,8 +212,7 @@ describe('directory group mappings and delegated provisioning (WI-10007899 / P-0
 
   it('only an owner may approve an admin mapping', async () => {
     await expect(manager.setGroupMapping(principal(), mapping('admins', 'admin'))).rejects.toThrow('directory_group_mapping_forbidden_role');
-    await setActorRole('owner');
-    await expect(manager.setGroupMapping(principal(), mapping('admins', 'admin'))).resolves.toMatchObject({ role: 'admin' });
+    await expect(manager.setGroupMapping(owner(), mapping('admins', 'admin'))).resolves.toMatchObject({ role: 'admin' });
   });
 
   it('provisions an observed active user with the highest-precedence mapped role', async () => {
@@ -216,14 +225,11 @@ describe('directory group mappings and delegated provisioning (WI-10007899 / P-0
   });
 
   it('an admin actor cannot provision an admin grant; an owner can', async () => {
-    await setActorRole('owner');
-    await manager.setGroupMapping(principal(), mapping('admins', 'admin'));
-    await setActorRole('admin');
+    await manager.setGroupMapping(owner(), mapping('admins', 'admin'));
     await observe(['admins']);
     await expect(manager.provisionFromDirectory(principal(), provision())).rejects.toThrow('directory_provision_forbidden_role');
     expect(await membershipOf(newUserId)).toBeUndefined();
-    await setActorRole('owner');
-    await expect(manager.provisionFromDirectory(principal(), provision())).resolves.toMatchObject({ role: 'admin' });
+    await expect(manager.provisionFromDirectory(owner(), provision())).resolves.toMatchObject({ role: 'admin' });
   });
 
   it('refuses existing members, unobserved, inactive and unmapped directory users', async () => {
@@ -252,14 +258,13 @@ describe('directory group mappings and delegated provisioning (WI-10007899 / P-0
   });
 
   it('a downgrade revokes a now-excessive grant while an upgrade keeps it', async () => {
-    await setActorRole('owner');
-    await manager.setGroupMapping(principal(), mapping('eng', 'member'));
+    await manager.setGroupMapping(owner(), mapping('eng', 'member'));
     await observe(['eng']);
-    const { membershipId } = await manager.provisionFromDirectory(principal(), provision());
-    const upgraded = await manager.setGroupMapping(principal(), mapping('eng', 'admin'));
+    const { membershipId } = await manager.provisionFromDirectory(owner(), provision());
+    const upgraded = await manager.setGroupMapping(owner(), mapping('eng', 'admin'));
     expect(upgraded.revokedMembershipIds).toEqual([]);
     expect(await membershipOf(newUserId)).toEqual({ id: membershipId, role: 'member', status: 'active' });
-    const downgraded = await manager.setGroupMapping(principal(), mapping('eng', 'billing'));
+    const downgraded = await manager.setGroupMapping(owner(), mapping('eng', 'billing'));
     expect(downgraded.revokedMembershipIds).toEqual([membershipId]);
     expect((await membershipOf(newUserId))?.status).toBe('revoked');
   });

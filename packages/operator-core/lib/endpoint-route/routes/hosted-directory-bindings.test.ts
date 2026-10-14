@@ -118,7 +118,7 @@ describe('hosted directory binding routes', () => {
 
   it('binds group mappings to the path organization and refuses body authority overrides', async () => {
     const setGroupMapping = vi.fn(async () => ({ mappingId: 'm', status: 'active', revokedMembershipIds: [] }));
-    const removeGroupMapping = vi.fn(async () => ({ mappingId: 'm', status: 'removed', revokedMembershipIds: ['x'] }));
+    const removeGroupMapping = vi.fn(async (_principal: unknown, _input: unknown) => ({ mappingId: 'm', status: 'removed', revokedMembershipIds: ['x'] }));
     const put = routeAt({ setGroupMapping } as never, 'PUT', '/directory-group-mappings');
     const del = routeAt({ removeGroupMapping } as never, 'DELETE', '/directory-group-mappings');
     const mapping = { directoryId: 'dir', groupId: 'group', role: 'member', purpose: 'Approve engineering' };
@@ -148,7 +148,7 @@ describe('hosted directory binding routes', () => {
   });
 
   it('provisions only the named directory user and maps refusals to stable codes', async () => {
-    const provisionFromDirectory = vi.fn(async () => ({ membershipId: 'mem', role: 'member', mappedGroupIds: ['g'] }));
+    const provisionFromDirectory = vi.fn(async (_principal: unknown, _input: unknown) => ({ membershipId: 'mem', role: 'member', mappedGroupIds: ['g'] }));
     const post = routeAt({ provisionFromDirectory } as never, 'POST', '/members/directory-provision');
     const input = { userId: 'u', directoryId: 'dir', directoryUserId: 'du', purpose: 'Onboard' };
     const response = await post.handler(mappingRequest('POST', input), context());
