@@ -1982,6 +1982,51 @@
       "runtimeClosure": "unmeasured"
     }
   },
+  "originalAstroExecutionPreparation": {
+    "status": "astro-diagnostics-passed-source-census-matched-no-operational-acceptance",
+    "evidenceFile": "docs/evidence/green-main-astro-native-receipts-20261014.json",
+    "commands": [
+      {
+        "task": "@papercupai/operator-docs :: test",
+        "step": null,
+        "originalCommand": [
+          "astro",
+          "check"
+        ],
+        "diagnostics": {
+          "filesChecked": 5,
+          "errors": 0,
+          "warnings": 0,
+          "hints": 23,
+          "nativeCommandExitCode": 0
+        },
+        "inputCount": 14,
+        "beforeAfterInputsIdentical": true,
+        "inputHashesMatchCurrent": true
+      },
+      {
+        "task": "@papercupai/papercusp-docs :: test",
+        "step": 0,
+        "originalCommand": [
+          "astro",
+          "check"
+        ],
+        "diagnostics": {
+          "filesChecked": 9,
+          "errors": 0,
+          "warnings": 0,
+          "hints": 0,
+          "nativeCommandExitCode": 0
+        },
+        "inputCount": 18,
+        "beforeAfterInputsIdentical": true,
+        "inputHashesMatchCurrent": true
+      }
+    ],
+    "scope": "Original Astro diagnostic steps only; public-docs Vitest step, full ordered-chain qualification, installed dependency/import and final transformed runtime closure remain open.",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
   "postFixVoiceExecutionPreparation": {
     "schemaVersion": 1,
     "recordedAt": "2026-10-14T16:19:47.793Z",
