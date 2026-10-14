@@ -8,7 +8,9 @@ import { describe, expect, it } from 'vitest';
 import { resolveAgentWorkspaceRoot } from '../agent-tools/capability/base-dir';
 import { executeOperationalRun } from '../agent-tools/testing/record-run';
 import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
-import { findCanonicalClaudeLiveJsonl, findCanonicalNativeLiveJsonl, readStableLiveJsonl } from './source';
+import { pgSessionArchiveStore } from '../session-archive';
+import { findCanonicalClaudeLiveJsonl, findCanonicalNativeLiveJsonl, readCanonicalClaudeArchive,
+  readCanonicalNativeArchive, readStableLiveJsonl } from './source';
 import { adaptNativeSessionJsonl } from './native-adapter';
 import { SESSION_PORT_SUPPORTED_PAIRS, type SessionBackend } from './types';
 
@@ -40,14 +42,20 @@ function rows(sql: string, origin: string) {
     allowUnscoped: false, allowUnboundedJsonSearch: false }, origin).rows as Array<Record<string, any>>;
 }
 
-async function native(session: Session) {
+async function native(session: Session, archivedSource = false) {
   const id = session.agent === 'omp' ? session.omp_thread_id ?? session.session_id : session.session_id;
   if (!id) return undefined;
-  const path = session.agent === 'claude'
-    ? await findCanonicalClaudeLiveJsonl(sessionClaudeConfigDir(session.coord_owner_id), id)
-    : await findCanonicalNativeLiveJsonl(join(session.agent === 'codex'
-      ? codexHomeForSessionKey(Number(session.id)) : ompAgentHomeForSessionKey(Number(session.id)), 'sessions'), session.agent, id);
-  const snapshot = await readStableLiveJsonl(path);
+  const path = await (session.agent === 'claude'
+    ? findCanonicalClaudeLiveJsonl(sessionClaudeConfigDir(session.coord_owner_id), id)
+    : findCanonicalNativeLiveJsonl(join(session.agent === 'codex'
+      ? codexHomeForSessionKey(Number(session.id)) : ompAgentHomeForSessionKey(Number(session.id)), 'sessions'), session.agent, id))
+    .catch(error => { if (!archivedSource) throw error; return null; });
+  // Ended fixtures are archived and removed from disk by the normal lifecycle.
+  // Read their exact native archive with the production manifest/hash guards.
+  // A fresh cross-backend target must still prove its physical live transcript.
+  const snapshot = path ? await readStableLiveJsonl(path) : session.agent === 'claude'
+    ? await readCanonicalClaudeArchive({ sessionId: id }, pgSessionArchiveStore())
+    : await readCanonicalNativeArchive({ backend: session.agent, sessionId: id }, pgSessionArchiveStore());
   const text = adaptNativeSessionJsonl(session.agent, snapshot.bytes.toString('utf8'), id)
     .turns.flatMap(turn => turn.blocks.flatMap(block => 'text' in block ? [String(block.text)] : [])).join('\n');
   return { id, path, sha256: snapshot.sha256, text };
@@ -72,7 +80,7 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     expect(new Set(sessions.map(session => session.agent))).toEqual(new Set(['claude', 'codex', 'omp']));
     for (const source of sessions) {
       expect(source.ended_at, `Source ${source.id} must be an ended plan fixture`).toBeTruthy();
-      const snapshot = await native(source);
+      const snapshot = await native(source, true);
       expect(snapshot?.text).toContain('MATRIX-SRC');
     }
     // Fresh managed hosts below use the canonical launcher, whose bytes must
@@ -118,8 +126,9 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
             await expect.poll(() => {
               const candidates = rows(`SELECT id, agent, coord_owner_id, session_id, omp_thread_id, ended_at,
                 port_id FROM harness_shared.adv_sessions WHERE workspace_id = ${literal(workspace)}
-                AND label = ${literal(`cbp-final-${source.agent}-${target ?? 'same'}`)}
-                AND started_at >= ${literal(startedAt)}::timestamptz ORDER BY id DESC LIMIT 1`, origin);
+                AND ${target ? `label = ${literal(`cbp-final-${source.agent}-${target}`)}
+                  AND started_at >= ${literal(startedAt)}::timestamptz` : `id = ${Number(source.id)} AND ended_at IS NULL`}
+                ORDER BY id DESC LIMIT 1`, origin);
               if (!candidates[0]) return false;
               resumed = candidates[0] as Session;
               if (resumed.agent !== (target ?? source.agent)) return false;
