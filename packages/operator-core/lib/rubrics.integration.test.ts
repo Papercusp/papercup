@@ -2920,7 +2920,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
         const criterion = rubricAfter.criteria.find((entry) => entry.barKey === before.sourceBar!.barKey)!;
         expect(after.behavior).toBe(criterion.model);
         expect(after.falsifier).toEqual({ observation: criterion.driftMarkers });
-        expect(after.requiredTestLayers).toEqual(['integration', 'unit']);
+        // WI-6554700010009658 replaces parent layers on every projection while
+        // retaining the atomic clause's authored extras. A meaning change drops
+        // its reviewed behavior/falsifier refinement, but not that extra e2e proof.
+        expect(after.requiredTestLayers).toEqual(['e2e', 'integration', 'unit']);
         expect(after.behaviorClass).not.toBe('lifecycle');
         if (change === 'plane') expect(after.requiredEvidence).toContain('live');
       }
