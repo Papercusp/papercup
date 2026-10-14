@@ -42,7 +42,9 @@
  * deletes expired messages and erases tombstoned bodies, skipping anything under an
  * active hold. The database enforces holds independently (trigger
  * chat_messages_enforce_legal_hold), so no path — including deleting the data source —
- * can destroy held content.
+ * can destroy held content. `purgeExpiredDocuments` applies the same policy to the source's
+ * other documents (P-017c), skipping documents under a hold (migration 1502's
+ * document_under_hold, also enforced by trigger documents_enforce_legal_hold).
  *
  * Run each call inside the caller's transaction when its writes must commit together.
  *
@@ -906,6 +908,51 @@ export async function purgeExpiredChatMessages(
   return { expired: expired.length, tombstonesErased: erased.length, revisionsDropped: dropped.length };
 }
 
+/**
+ * Document retention (P-017c): the single writer that expires connector documents. Deletes the
+ * documents of every source whose retention_policy.maxAgeDays is a number and that are older
+ * than that window. A document's age is its source time (occurred_at) when the source gave one,
+ * else the time it was imported (imported_at).
+ *
+ * Two kinds of document are never deleted here:
+ *   - a document under an active legal hold. The hold test is migration 1502's
+ *     harness_shared.document_under_hold (whole source, or the document's channelId /
+ *     permission-list container), the same predicate the documents_enforce_legal_hold trigger
+ *     enforces, so this purge never trips the trigger. Held documents are counted instead.
+ *   - a chat-derived kind (harness_shared.document_is_chat_derived). Those rows are rendered
+ *     from chat_messages: purgeExpiredChatMessages expires the messages and the rollup removes
+ *     the rendered row.
+ */
+export async function purgeExpiredDocuments(
+  sql: Sql,
+  workspaceId: string,
+  opts: { dataSourceId?: string; now?: Date } = {},
+): Promise<{ documentsExpired: number; documentsHeldKept: number }> {
+  const now = opts.now ?? new Date();
+  const sourceFilter = opts.dataSourceId ? sql`AND d.source_id = ${opts.dataSourceId}::uuid` : sql``;
+  const [row] = await sql<Array<{ purged: number; held_kept: number }>>`
+    WITH expired AS (
+      SELECT d.id,
+             harness_shared.document_under_hold(
+               d.workspace_id, d.source_id, d.kind, d.metadata, d.permission_list_id) AS held
+        FROM harness_shared.documents d
+        JOIN harness_shared.data_sources s ON s.workspace_id = d.workspace_id AND s.id = d.source_id
+       WHERE d.workspace_id = ${workspaceId} ${sourceFilter}
+         AND jsonb_typeof(s.retention_policy -> 'maxAgeDays') = 'number'
+         AND NOT harness_shared.document_is_chat_derived(d.kind)
+         AND COALESCE(d.occurred_at, d.imported_at)
+             < ${now}::timestamptz - make_interval(days => (s.retention_policy ->> 'maxAgeDays')::int)
+    ), purged AS (
+      DELETE FROM harness_shared.documents d
+       USING expired e
+       WHERE d.id = e.id AND NOT e.held
+      RETURNING 1
+    )
+    SELECT (SELECT count(*) FROM purged)::int AS purged,
+           (SELECT count(*) FROM expired WHERE held)::int AS held_kept`;
+  return { documentsExpired: row?.purged ?? 0, documentsHeldKept: row?.held_kept ?? 0 };
+}
+
 /** The connector record fields a chat message is read from (CanonicalExternalEvent's shape). */
 export interface ChatMessageRecord {
   externalId: string;
@@ -1005,12 +1052,17 @@ export interface ChatRollupPassResult extends ChatRollupResult {
   expired: number;
   tombstonesErased: number;
   revisionsDropped: number;
+  /** Documents deleted by purgeExpiredDocuments (P-017c). */
+  documentsExpired: number;
+  /** Expired documents kept because a legal hold covers them. */
+  documentsHeldKept: number;
   legacyMigrated: number;
   batches: number;
 }
 
 /**
- * One driver pass (D-016): retention first (its deletes re-queue buckets), then the legacy
+ * One driver pass (D-016): retention first (chat messages, whose deletes re-queue buckets,
+ * then the source's other documents, P-017c), then the legacy
  * cut-over, then up to `maxBatches` rollup batches. Each step commits in its own transaction.
  * A bucket that fails to render is re-queued after the retry delay and reported in `failures`
  * while the rest of its batch commits; any other failure rolls back its step and propagates.
@@ -1028,9 +1080,11 @@ export async function runChatRollupPass(
   const tx = <T>(fn: (inner: Sql) => Promise<T>): Promise<T> =>
     sql.begin((inner) => fn(inner as unknown as Sql)) as Promise<T>;
   const purged = await tx((inner) => purgeExpiredChatMessages(inner, workspaceId, { now: opts.now }));
+  const documentRetention = await tx((inner) => purgeExpiredDocuments(inner, workspaceId, { now: opts.now }));
   const legacy = await tx((inner) => migrateLegacyChatMessageDocuments(inner, workspaceId, { limit: batchSize }));
   const result: ChatRollupPassResult = {
     ...purged,
+    ...documentRetention,
     legacyMigrated: legacy.migrated,
     batches: 0,
     buckets: 0,
