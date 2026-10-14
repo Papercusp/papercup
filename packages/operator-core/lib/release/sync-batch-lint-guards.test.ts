@@ -10,6 +10,7 @@ import type { RedFinding, SyncBatch } from './sync-batch-delta-check';
 import {
   classifyGuardRun,
   diffGuardViolations,
+  guardExcerpt,
   parseGuardOffenders,
   runSyncLintGuardTick,
   SYNC_LINT_GUARD_SCRIPTS,
@@ -81,6 +82,27 @@ describe('parseGuardOffenders', () => {
     ].join('\n');
 
     expect(parseGuardOffenders(out, ROOT)).toEqual(['apps/operator/app/settings/storage/page.tsx']);
+  });
+
+  it('routes design lint to the files listed in its assertion message, not the lint test or loader', () => {
+    const message = 'Error: Native <table> found in unapproved files:\n' +
+      '  operator/app/settings/storage/page.tsx\n  operator-vite/src/example.tsx\n\n' +
+      'Use the shared primitive.\n    at warnOrFail (/repo/root/apps/operator/app/_lints/design-primitives.test.ts:699:9)';
+    const assertion = `TEST_FILE_ASSERTION_FAILURE file="${ROOT}/apps/operator/app/_lints/design-primitives.test.ts" name="blocks native tables" message=${JSON.stringify(message)}`;
+    const output = 'COMMITTED_SOURCE substituted scripts/npm-install-safe.mjs: working tree differs\n' +
+      'COMMITTED_SOURCE substituted apps/operator/app/settings/storage/page.tsx: working tree differs\n' + assertion;
+    expect(parseGuardOffenders(output, ROOT, 'lint:design-primitives')).toEqual([
+      'apps/operator/app/settings/storage/page.tsx',
+      'apps/operator-vite/src/example.tsx',
+    ]);
+    expect(guardExcerpt(output, 'apps/operator/app/settings/storage/page.tsx')[0]).toBe(assertion);
+  });
+
+  it('does not blame the design lint test when its offender list is unavailable or malformed', () => {
+    const head = `TEST_FILE_ASSERTION_FAILURE file="${ROOT}/apps/operator/app/_lints/design-primitives.test.ts" name="blocks native tables"`;
+    for (const message of ['message="unexpected assertion"', 'message="bad JSON', 'message="Error: Native <table> found in unapproved files:\\n  ../outside.tsx\\n\\nHint"']) {
+      expect(parseGuardOffenders(`${head} ${message}`, ROOT, 'lint:design-primitives')).toEqual([]);
+    }
   });
 });
 
@@ -217,6 +239,29 @@ describe('runSyncLintGuardTick', () => {
     expect(f.filed).toHaveLength(1);
     expect(f.filed[0]!.assignee).toBeNull();
     expect(r.filed[0]).toMatchObject({ authorSource: 'trailer', assignee: null });
+  });
+
+  it('routes the real design-lint record to the UI editor and retains assertion evidence', async () => {
+    const path = 'apps/operator/app/settings/storage/page.tsx';
+    const message = 'Error: Native <table> found in unapproved files:\n  operator/app/settings/storage/page.tsx\n\nUse the shared primitive.';
+    const assertion = `TEST_FILE_ASSERTION_FAILURE file="${ROOT}/apps/operator/app/_lints/design-primitives.test.ts" name="blocks new native tables" message=${JSON.stringify(message)}`;
+    const f = fake({
+      head: 'h2', prior: allPass('h1'),
+      runs: { 'lint:design-primitives': { exitCode: 1, output: `COMMITTED_SOURCE substituted scripts/npm-install-safe.mjs: working tree differs\n${assertion}` } },
+      editors: [
+        { file: path, agent: 'su-ui-editor', tsMs: 950_000 },
+        { file: 'scripts/npm-install-safe.mjs', agent: 'su-wrapper-editor', tsMs: 950_000 },
+      ],
+    });
+    await runSyncLintGuardTick(f.deps);
+    expect(f.filed).toHaveLength(1);
+    expect(f.filed[0]).toMatchObject({
+      conditionKey: `sync-delta-guard:lint:design-primitives:${path}`,
+      assignee: 'su-ui-editor', authorSource: 'edit-ledger:failing-file',
+    });
+    expect(f.filed[0].body).toContain('TEST_FILE_ASSERTION_FAILURE');
+    expect(f.filed[0].body).not.toContain('COMMITTED_SOURCE');
+    expect(f.state.value?.guards['lint:design-primitives']?.offenders).toEqual([path]);
   });
 
   it.each([undefined, 'wake not queued'])('reports the adopted holder even when notification is %s', async notificationError => {

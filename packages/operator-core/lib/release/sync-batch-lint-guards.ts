@@ -146,6 +146,24 @@ const PATH_TOKEN_RE = /(?:^|[\s'"`(,=])((?:\/[^\s'"`()]+?)|(?:[A-Za-z0-9_@.+\-[\
 
 /** Structured paths emitted by scripts/test-files.mjs for measured assertion failures. */
 const TEST_FILE_ASSERTION_FAILURE_FILE_RE = /^TEST_FILE_ASSERTION_FAILURE file=("(?:\\.|[^"\\])*")(?:\s|$)/;
+const TEST_FILE_ASSERTION_FAILURE_MESSAGE_RE = /\smessage=("(?:\\.|[^"\\])*")(?:\s|$)/;
+
+/** Design lint's writer lists source paths relative to apps/, while file= names its test. */
+function designLintMessageOffenders(line: string): string[] {
+  const match = TEST_FILE_ASSERTION_FAILURE_MESSAGE_RE.exec(line);
+  if (!match) return [];
+  try {
+    const message: unknown = JSON.parse(match[1]);
+    if (typeof message !== 'string') return [];
+    const list = /found in unapproved files:\r?\n([\s\S]*?)(?:\r?\n\r?\n|$)/.exec(message)?.[1];
+    if (!list) return [];
+    return list.split(/\r?\n/).map((p) => p.trim())
+      .filter((p) => /^(?:operator|operator-vite)\/[A-Za-z0-9_@.+\-[\]/]+\.[A-Za-z0-9]{1,8}$/.test(p) && !p.split('/').includes('..'))
+      .map((p) => `apps/${p}`);
+  } catch {
+    return [];
+  }
+}
 
 function normalizeGuardOffenderPath(path: string, root: string): string | null {
   let p = path;
@@ -167,12 +185,13 @@ function normalizeGuardOffenderPath(path: string, root: string): string | null {
 
 /**
  * The repo-relative paths a guard's failure evidence names, de-duplicated in first-seen order.
- * When the test-file runner emits structured assertion records, use only those file fields;
+ * Design lint's explicit message list names its source offenders; file= names the lint itself.
+ * For other guards, when the test-file runner emits structured assertion records, use file=;
  * other output can contain unrelated source paths from loader and runner instrumentation.
  * Otherwise, preserve the path-token parser used by the other lint guards. Absolute paths under
  * `repoRoot` are made relative; any other absolute path, a `node_modules` path and a URL are dropped.
  */
-export function parseGuardOffenders(output: string, repoRoot: string): string[] {
+export function parseGuardOffenders(output: string, repoRoot: string, script?: SyncLintGuardScript): string[] {
   const root = repoRoot.endsWith('/') ? repoRoot : `${repoRoot}/`;
   const seen = new Set<string>();
   const out: string[] = [];
@@ -182,6 +201,10 @@ export function parseGuardOffenders(output: string, repoRoot: string): string[] 
   const candidates: string[] = [];
   if (assertionFailureLines.length > 0) {
     for (const line of assertionFailureLines) {
+      if (script === 'lint:design-primitives') {
+        candidates.push(...designLintMessageOffenders(line));
+        continue;
+      }
       const match = TEST_FILE_ASSERTION_FAILURE_FILE_RE.exec(line);
       if (!match) continue;
       try {
@@ -239,6 +262,10 @@ export function conditionKeyForGuardViolation(v: NewViolation): string {
 /** The output lines about `path` (or the head of the output when there is no path). */
 export function guardExcerpt(output: string, path: string | null): string[] {
   const lines = output.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim().length > 0);
+  const assertions = lines.filter((line) => line.startsWith('TEST_FILE_ASSERTION_FAILURE file='));
+  const relevant = assertions.filter((line) => !path || line.includes(path) ||
+    (path.startsWith('apps/') && line.includes(path.slice('apps/'.length))));
+  if (relevant.length > 0) return relevant.slice(0, EXCERPT_LINES);
   if (path) {
     const idx = lines.findIndex((l) => l.includes(path));
     if (idx >= 0) return lines.slice(idx, idx + 4);
@@ -390,7 +417,7 @@ export async function runSyncLintGuardTick(
       run = { exitCode: null, output: e instanceof Error ? e.message : String(e) };
     }
     const verdict = classifyGuardRun(run);
-    const offenders = verdict === 'fail' ? parseGuardOffenders(run.output, deps.repoRoot) : [];
+    const offenders = verdict === 'fail' ? parseGuardOffenders(run.output, deps.repoRoot, script) : [];
     return { script, run, verdict, offenders };
   });
 

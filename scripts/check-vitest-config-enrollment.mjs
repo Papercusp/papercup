@@ -23,6 +23,7 @@
  *    `searchForWorkspaceRoot`, never a hand list.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isInForeignHive } from './lib/foreign-hive-submodules.mjs';
@@ -71,6 +72,9 @@ export const PLAIN_CONFIG_EXEMPTIONS = new Set([
   // node:test package (`node --test src/**/*.node-test.ts`); its vitest config is `include: []`
   // and runs nothing, so it has no pass proofs to record.
   'libs/papercusp/packages/cli/vitest.config.ts',
+  // Standalone Papercusp submodule (github.com/Papercusp/plan-parser): it owns its
+  // Vitest config and cannot import this superproject's private test-config package.
+  'libs/generic/plan-parser/vitest.config.ts',
 ]);
 
 function normalizePath(filePath) {
@@ -258,7 +262,7 @@ export async function main(root = ROOT) {
 // No top-level await here: this module is IMPORTED on the gate's hot path (executed-source-map.mjs,
 // test-config/vitest-config.ts), and a loader that transforms it to CJS rejects top-level await at
 // transform time — that took the green-checkpoint down before any suite ran (WI-10003808).
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   main().then(
     (code) => {
       process.exitCode = code;
