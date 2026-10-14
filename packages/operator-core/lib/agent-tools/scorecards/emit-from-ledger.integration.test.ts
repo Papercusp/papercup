@@ -21,6 +21,8 @@
  *                      42 % (pass) — only the latest counts, so it rates the best level;
  *   - cpu-threshold    instrument, threshold <= 2 cores: one row of 3.5 cores RECORDED as pass
  *                      (under an older, looser threshold) — today's threshold rates it the worst level;
+ *   - query-cost       sql probe, threshold <= 50 ms and band <= 80 ms: one row at 62.38 ms rates
+ *                      the intermediate level from its numeric ledger value;
  *   - probe-recorded   sql probe, rowCount eq 1: one row observing 1 → best level, not re-run;
  *   - probe-unrecorded sql probe with no ledger row → unknown (not-exercised), not asked;
  *   - manual-judgement no check → never auto-rated; the emit asks for it by key.
@@ -152,9 +154,14 @@ beforeAll(async () => {
       criterion('disk-latest', { kind: 'instrument', instrumentKey: 'host:df-root-used-pct', expect: { op: 'lt', value: 80 } }),
       criterion('cpu-threshold', { kind: 'instrument', instrumentKey: 'host:cgroup-cpu-delta-cores', expect: { op: 'lte', value: 2 } }),
       criterion('query-cost', {
-        kind: 'instrument',
-        instrumentKey: 'host:df-root-used-pct',
-        expect: { op: 'lte', value: 50 },
+        kind: 'probe',
+        probe: {
+          kind: 'sql',
+          sql: 'SELECT 1 AS mean_ms',
+          schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL),
+          expect: { path: '$.rows[0].mean_ms', op: 'lte', value: 50 },
+        },
+        unit: 'ms',
         ratingBands: [{ rating: 'degraded', expect: { op: 'lte', value: 80 } }],
       }),
       criterion('probe-recorded', { kind: 'probe', probe: sqlProbe(1) }),
@@ -179,7 +186,7 @@ beforeAll(async () => {
     [row('cpu-threshold', 'instrument', 3.5, 'cores', 'pass', '2026-10-13T01:30:00.000Z', { op: 'lte', value: 4 })], scope, sql(),
   );
   [ids.queryCost] = await recordRubricCheckResults(
-    [row('query-cost', 'instrument', 62.38, '%', 'fail', '2026-10-13T01:30:00.000Z', { op: 'lte', value: 50 })], scope, sql(),
+    [row('query-cost', 'probe', 62.38, 'ms', 'fail', '2026-10-13T01:30:00.000Z', { op: 'lte', value: 50 })], scope, sql(),
   );
   [ids.probe] = await recordRubricCheckResults(
     [row('probe-recorded', 'probe', 1, null, 'pass', '2026-10-13T01:30:00.000Z')], scope, sql(),
@@ -242,6 +249,14 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
       ledgerDispositions: {
         'cpu-threshold': { remediation: CPU_REMEDIATION },
         'query-cost': { disregard: 'Intermediate fixture band is recorded without a separate remediation.' },
+      },
+      instrumentSnapshots: {
+        'host:df-root-used-pct': {
+          verdict: 'pass',
+          measuredAt: '2026-10-13T01:30:00.000Z',
+          value: 42,
+          provenance: 'self-reported',
+        },
       },
     });
     expect(result.ok ? 'ok' : result).toBe('ok');

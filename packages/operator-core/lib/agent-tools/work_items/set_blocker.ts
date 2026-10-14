@@ -57,7 +57,8 @@ const BLOCKER_CAPABILITY = z.enum(EXTERNAL_BLOCKER_CAPABILITIES);
 type BlockerKindInput = z.infer<typeof BLOCKER_KIND>;
 type BlockerCapabilityInput = z.infer<typeof BLOCKER_CAPABILITY>;
 const SET_BLOCKER_CALL_CONSTRAINT =
-  "For a single-item call that sets a blocker, pass id, kind, and ref; ref is required even though it is optional in the structural schema. For items:[...], each entry that sets a blocker also requires kind and ref. A clear-only call may omit ref when one active blocker can be resolved; migrateWorkItemRefs:true takes only id. When setting a strict human owner-capability blocker (capability: credential, physical-device, external-service-action, or product-decision), provide a nonblank defaultIfUnanswered. For items:[...], this applies to each entry. A reassertion may omit it only when that work-item already has an active human blocker with the same ref and a nonblank defaultIfUnanswered. Clear-only calls and non-human blockers do not require it. The legacy kind shorthands credential, physical-device, external-service-action, and product-decision are treated as human capabilities.";
+  "For a single-item call that sets a blocker, pass id, kind, and ref; ref is required even though it is optional in the structural schema. For items:[...], each entry that sets a blocker also requires kind and ref. A clear-only call may omit ref when one active blocker can be resolved; migrateWorkItemRefs:true takes only id. When setting a strict human owner-capability blocker (capability: credential, physical-device, external-service-action, or product-decision), provide a nonblank defaultIfUnanswered. For items:[...], this applies to each entry. A reassertion may omit it only when that work-item already has an active human blocker with the same ref and a nonblank defaultIfUnanswered. Clear-only calls and non-human blockers do not require it. The legacy kind shorthands credential, physical-device, external-service-action, and product-decision are treated as human capabilities." +
+  " For a non-final item blocked on main/:3070/green-checkpoint, put in summary or evidence the literal phrase 'deployed-only', what staging/current-build cannot exercise, and a concrete reason introduced with because/due to/since; otherwise the guard refuses the blocker and source work continues on staging/current-build.";
 type BlockerInput = {
   id: string;
   kind?: BlockerKindInput;
@@ -113,8 +114,12 @@ const fields = {
   kind: BLOCKER_KIND.optional(),
   capability: BLOCKER_CAPABILITY.optional(),
   ref: z.string().min(1).max(300).optional(),
-  summary: z.string().max(1000).optional(),
-  evidence: z.string().max(4000).optional(),
+  summary: z.string().max(1000).optional().describe(
+    "Blocker rationale. For a non-final deployed-only exception, include here or in evidence the literal phrase 'deployed-only', what staging/current-build cannot exercise, and a concrete reason (because/due to/since).",
+  ),
+  evidence: z.string().max(4000).optional().describe(
+    "Supporting evidence. The non-final deployed-only exception checks summary and evidence for the literal phrase 'deployed-only', the staging/current-build limitation, and a concrete reason (because/due to/since).",
+  ),
   nextVerb: z.string().max(300).optional(),
   recheckAt: z.string().datetime({ offset: true }).optional()
     .describe('Next condition re-check. Omit to use the existing hold registry cadence; this does not authorize clearing on expiry.'),
@@ -338,7 +343,7 @@ export default defineTool({
   name: 'work_items:set_blocker',
   profile: 'engineer',
   description:
-    "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Capability shorthands (kind:'credential') normalize to kind:'human', capability:'credential'. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history.",
+    "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Capability shorthands (kind:'credential') normalize to kind:'human', capability:'credential'. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history. For non-final work, use staging/current-build. A genuine deployed-only blocker needs summary or evidence naming the literal phrase 'deployed-only', what staging/current-build cannot exercise, and a concrete reason.",
   guidance: {
     // P-011: response documentation lives here, not in `description` — `returns` is not
     // counted against the 1500-char prompt-weight budget and is demand-loaded via
@@ -347,7 +352,7 @@ export default defineTool({
       'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), and lifecycle. Clearing the LAST blocker returns a feature blocked→todo, or drops the issue-family claim hold. Internal work-item dependencies are not represented here — those stay in work_items:link{rel:\'blocks\'} and plan blocked-by. Omitted legacy rows infer live-dependency; human rows infer product-decision.',
     when: "Work cannot proceed until a named event fires, a gate changes, runtime/external state is ready, or a human capability is available. A reversible judgment call is a park: kind:'product-decision' + defaultIfUnanswered + decideBy opens a peer review that proceeds on silence. Use a stable ref; name nextVerb when one exists.",
     notWhen:
-      "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source). A vague concern with no actual stop condition is a comment, not a blocker. Do not block ordinary implementation on main/:3070/green-checkpoint — staging/current-build is the acceptance plane; only final shipment or a named deployed-only property waits on the release plane.",
+      "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source). A vague concern with no actual stop condition is a comment, not a blocker. Do not block ordinary implementation on main/:3070/green-checkpoint — staging/current-build is the acceptance plane; only final shipment or a named deployed-only property waits on the release plane. For a non-final deployed-only exception, summary or evidence must state what staging/current-build cannot exercise and give a concrete reason (because/due to/since).",
     chaining:
       'work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call may omit ref when the item has one matching active blocker; pass ref (and kind when reused) if the request is ambiguous.',
   },
@@ -365,8 +370,8 @@ export default defineTool({
       kind: BLOCKER_KIND.optional(),
       capability: BLOCKER_CAPABILITY.optional(),
       ref: z.string().min(1).max(300).optional(),
-      summary: z.string().max(1000).optional(),
-      evidence: z.string().max(4000).optional(),
+      summary: fields.summary,
+      evidence: fields.evidence,
       nextVerb: z.string().max(300).optional(),
       recheckAt: fields.recheckAt,
       defaultIfUnanswered: z.string().max(500).optional(),
