@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { describe, expect, it } from 'vitest';
+import { resolveAgentWorkspaceRoot } from '../agent-tools/capability/base-dir';
 import { executeOperationalRun } from '../agent-tools/testing/record-run';
 import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
 import { findCanonicalClaudeLiveJsonl, findCanonicalNativeLiveJsonl, readStableLiveJsonl } from './source';
@@ -57,6 +58,8 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     const profile = JSON.parse(readFileSync(resolve(root, profilePath!), 'utf8'));
     expect(profile.origin).toBe('http://127.0.0.1:3170');
     const origin = profile.origin as string;
+    const recordContext = { workspaceId: workspace, harnessSlug: 'papercusp', projectDir: root };
+    expect(resolveAgentWorkspaceRoot(recordContext), 'Recorder must measure this committed test tree').toBe(root);
     const owner = call('coord:whoami', {}, origin).ownerId as string;
     expect(owner).toBe(process.env.PAPERCUSP_SID);
     const ids = profile.resumeMatrix.sourceAdvSessionIds as number[];
@@ -160,7 +163,7 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
             evidence: JSON.stringify(observation).slice(0, 2000),
           })) };
       },
-    }, { workspaceId: workspace, harnessSlug: 'papercusp', repoPath: root, callerId: owner });
+    }, recordContext);
     console.info('CBP_FINAL_RESUME_RUN', JSON.stringify(measured));
     expect(measured).toMatchObject({ ok: true, status: 'pass', runtimeEnvironmentMeasured: true });
   }, 3_600_000);

@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { resolveAgentWorkspaceRoot } from '../agent-tools/capability/base-dir';
 import { executeOperationalRun, parseOperationalEvidenceArtifact, type OperationalEvidenceArtifact } from '../agent-tools/testing/record-run';
 import { updateExternalBlockerHistory } from '../external-blockers';
 import { DECISION_REVIEW_CASCADE_FLAVOR } from './decision-review';
@@ -50,6 +51,8 @@ describe.skipIf(!profilePath)('consult-backed parking on the loaded staging oper
     expect(profile.origin).toBe('http://127.0.0.1:3170');
     expect(profile.runtimeUnits).toContain('hono-host:3170');
     const origin = profile.origin as string;
+    const recordContext = { workspaceId: workspace, harnessSlug: 'papercusp', projectDir: root };
+    expect(resolveAgentWorkspaceRoot(recordContext), 'Recorder must measure this committed test tree').toBe(root);
     // Validate the recorder contract before creating any live fixture. The same
     // typed builder produces the final evidence, so a malformed success result
     // fails here rather than after the two production flows have executed.
@@ -148,8 +151,7 @@ describe.skipIf(!profilePath)('consult-backed parking on the loaded staging oper
         return { exitCode: 0, summary: 'Both private park flows resolved through staging and fired the executing session verdict await',
           assertions: observations.map(o => flowAssertion(String(o.flow), JSON.stringify(o).slice(0, 2000))) };
       },
-    }, { workspaceId: workspace, harnessSlug: 'papercusp',
-      repoPath: root, callerId: owner });
+    }, recordContext);
     console.info('CBP_LIVE_PARK_RUN', JSON.stringify(measured));
     expect(measured).toMatchObject({ ok: true, status: 'pass', runtimeEnvironmentMeasured: true });
   }, 900_000);
