@@ -1030,6 +1030,8 @@ import './coordination/session-reaper-config';
 import './pot/control-policy';
 import './pot/work-scope';
 import './pot/work-scope-status';
+// papercusp-enterprise-readiness-roadmap-2026-10-09 P-005 — inherited org/department/workspace policy:
+import './governance/policy';
 // live-configurability-audit-2026-06-20 P-016 — green-checkpoint / release thresholds:
 import './release/checkpoint-config';
 // EI-21433366079878122 — guarded inspection/exact-CAS retirement of the persisted repair queue:

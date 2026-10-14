@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   evaluateInheritedPolicy,
   isActiveException,
+  matchPolicyPattern,
   simulateInheritedPolicy,
   type PolicyLayer,
 } from './inherited-policy';
@@ -114,6 +115,30 @@ describe('evaluateInheritedPolicy — inherited org/department/workspace policy 
     expect(v.allow).toBe(false);
     if (v.allow) return;
     expect(v.decidedBy.level).toBe('department');
+  });
+});
+
+describe('matchPolicyPattern — host-suffix and prefix patterns', () => {
+  it('a leading-* pattern matches a subdomain suffix, never the bare apex or a look-alike', () => {
+    expect(matchPolicyPattern('*.acme.example', 'docs.acme.example')).toBe(true);
+    expect(matchPolicyPattern('*.acme.example', 'a.b.acme.example')).toBe(true);
+    expect(matchPolicyPattern('*.acme.example', 'acme.example')).toBe(false);
+    expect(matchPolicyPattern('*.acme.example', 'evilacme.example')).toBe(false);
+    expect(matchPolicyPattern('*.acme.example', '')).toBe(false);
+  });
+
+  it('trailing-* prefix, exact and match-all patterns keep their shared semantics', () => {
+    expect(matchPolicyPattern('release:*', 'release:deploy')).toBe(true);
+    expect(matchPolicyPattern('release:*', 'coord:send')).toBe(false);
+    expect(matchPolicyPattern('coord:send', 'coord:send')).toBe(true);
+    expect(matchPolicyPattern('coord:send', 'coord:sendx')).toBe(false);
+    expect(matchPolicyPattern('*', 'anything')).toBe(true);
+  });
+
+  it('an egress host-suffix allow-list governs through the evaluator', () => {
+    const chain = [org({ egress: { allow: ['*.acme.example'] } })];
+    expect(evaluateInheritedPolicy(chain, { egress: ['api.acme.example'] }, NOW).allow).toBe(true);
+    expect(evaluateInheritedPolicy(chain, { egress: ['api.other.example'] }, NOW).allow).toBe(false);
   });
 });
 
