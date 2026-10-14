@@ -54,8 +54,10 @@ import {
 // inside a test calls process.exit in the vitest worker, which vitest reports as
 // an unhandled error that fails the whole file even when every assertion passed.
 // Default it to a no-op for the file; a test that passes its own onExit still wins.
+// Fixture owners have no live session to notify. Keep the detached compaction
+// bridge inside the fixture; completion-order tests supply their own emit spy.
 const hostThroughPty: typeof hostThroughPtyProduction = (o) =>
-  hostThroughPtyProduction({ onExit: () => undefined, ...o });
+  hostThroughPtyProduction({ onExit: () => undefined, emitCompacted: () => null, ...o });
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
 // pty-force, reused by e8630's turn:interrupt tool). Importing the published
 // subpath keeps this an integration test of the actual chain, not a re-impl.
