@@ -1668,6 +1668,26 @@ test("verifyNpmCacheExclusive reports verify's own failure instead of treating i
   );
 });
 
+test("install reader preserves real child signals and ordinary exit codes", async () => {
+  for (const [program, expected, signal] of [
+    ["process.kill(process.pid, 'SIGTERM')", 143, 'SIGTERM'],
+    ["process.kill(process.pid, 'SIGKILL')", 137, 'SIGKILL'],
+    ["process.exit(7)", 7, null],
+    ["process.exit(0)", 0, null],
+  ]) {
+    const events = [];
+    const result = await runCommandUnderInstallMutex({
+      commandArgs: [process.execPath, '-e', program],
+      acquireReadMutex: async (_name, run) => run(),
+      env: {},
+      log: (line) => events.push(line),
+    });
+    assert.equal(result, expected);
+    if (signal) assert.match(events.join('\n'), new RegExp(`signal=${signal} exitCode=${expected}`));
+    else assert.equal(events.length, 0);
+  }
+});
+
 test("test:file reader-lock acquisition failure is NOT MEASURED before the child starts", async () => {
   const events = [];
   let childStarted = false;

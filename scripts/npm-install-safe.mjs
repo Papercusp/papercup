@@ -70,7 +70,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
@@ -1709,7 +1709,7 @@ export function installLockWaitReporter({ lock, describe, log, budgetMs }) {
  *   commandArgs?: string[],
  *   runCommand?: (command: string, args: string[], options: {
  *     cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv,
- *   }) => { status?: number | null, error?: Error },
+ *   }) => { status?: number | null, signal?: NodeJS.Signals | null, error?: Error },
  *   acquireReadMutex?: typeof withFsMutexRead,
  *   log?: (line: string) => void,
  *   env?: NodeJS.ProcessEnv,
@@ -1755,6 +1755,15 @@ export async function runCommandUnderInstallMutex({
       env: childEnv,
     });
     if (result.error) throw result.error;
+    if (result.signal) {
+      // spawnSync reports a signal with status:null. Keep the shell status
+      // and diagnostic so bundle callers can distinguish a killed compiler
+      // from a normal compilation failure, including after candidate cleanup.
+      const signalNumber = osConstants.signals[result.signal];
+      const status = signalNumber ? 128 + signalNumber : 1;
+      log(`NPM_INSTALL_SAFE reader terminated signal=${result.signal} exitCode=${status}`);
+      return status;
+    }
     return result.status ?? 1;
   };
 

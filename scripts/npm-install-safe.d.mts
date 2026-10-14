@@ -300,7 +300,7 @@ export function installLockWaitReporter({ lock, describe, log, budgetMs }: {
  *   commandArgs?: string[],
  *   runCommand?: (command: string, args: string[], options: {
  *     cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv,
- *   }) => { status?: number | null, error?: Error },
+ *   }) => { status?: number | null, signal?: NodeJS.Signals | null, error?: Error },
  *   acquireReadMutex?: typeof withFsMutexRead,
  *   log?: (line: string) => void,
  *   env?: NodeJS.ProcessEnv,
@@ -316,6 +316,7 @@ export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand,
         env: NodeJS.ProcessEnv;
     }) => {
         status?: number | null;
+        signal?: NodeJS.Signals | null;
         error?: Error;
     };
     acquireReadMutex?: typeof withFsMutexRead;
