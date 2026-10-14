@@ -126,6 +126,30 @@ describe('pilot processing map', () => {
     }
   });
 
+  // P-016a (WI-6554700010011918): every path answers the processing-location question. An
+  // `enforced` path names seats it really cites and a canary that carries its marker; a selected
+  // path may not be `not-assessed`; and at least one selected path enforces provider + region.
+  it('declares processing restrictions on every path, pinned to real seats and canaries', () => {
+    const marker = (id: string) => `processing-restriction-canary:${id}`;
+    for (const p of PILOT_PROCESSING_MAP) {
+      const r = p.restrictions;
+      expect(r, `${p.id} has no restrictions`).toBeTruthy();
+      if (r.kind === 'enforced') {
+        expect(p.status, `${p.id}: only a selected path can enforce`).toBe('selected');
+        expect(r.categories, `${p.id}`).toEqual(expect.arrayContaining(['providers', 'regions']));
+        const cited = new Set(p.enforcement.map((e) => e.exportedSymbol));
+        for (const seat of r.seats) expect(cited.has(seat), `${p.id}: seat ${seat} is not an enforcement point`).toBe(true);
+        expect(r.seats.length, `${p.id}`).toBeGreaterThan(0);
+        const canaries = (p.canaryJourney ?? []).filter((rel) => source(rel).includes(marker(p.id)));
+        expect(canaries, `${p.id}: no canary carries ${marker(p.id)}`).not.toHaveLength(0);
+      } else {
+        expect(r.reason.trim().length, `${p.id}: empty reason`).toBeGreaterThan(20);
+        if (r.kind === 'not-assessed') expect(p.status, `${p.id}: a selected path must be assessed`).not.toBe('selected');
+      }
+    }
+    expect(PILOT_PROCESSING_MAP.some((p) => p.status === 'selected' && p.restrictions.kind === 'enforced')).toBe(true);
+  });
+
   it('gives every pending path an owning work-item', () => {
     for (const p of PILOT_PROCESSING_MAP.filter((x) => x.status === 'pending')) {
       expect(p.ownerRef, p.id).toMatch(/^(WI|EI)-\d+$/);

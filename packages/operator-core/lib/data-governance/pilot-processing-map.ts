@@ -34,6 +34,11 @@ import {
   qualifiedName,
   type RetentionClass,
 } from '../auth/hosted/customer-data-map';
+import type { GovernedCategory } from '../governance-policy/inherited-policy';
+
+/** Where organization content reaches a model provider: the one path whose seats judge the route. */
+const VIA_MODEL_INFERENCE =
+  'Its content reaches a model provider only through the model-inference path (turn-start injection or a tool result the session reads), whose launch, injection and dispatch seats judge provider and region.';
 
 /** Rows of the pilot contract's processing table, verbatim. The test checks them against the doc. */
 export const PILOT_CONTRACT_ROWS = [
@@ -62,6 +67,24 @@ export interface EnforcementPoint {
   /** What this seat does for the path. */
   readonly role: string;
 }
+
+/**
+ * P-016a (WI-6554700010011918): the processing-location restrictions (model, provider, region) a
+ * path enforces. REQUIRED on every path, so a new path cannot omit the question.
+ *  - `enforced`: the named seats (exported symbols of this path's enforcement points) judge the
+ *    categories, and a canary journey carries `processing-restriction-canary:<path id>`.
+ *  - `no-model-processing`: no model provider processes this path's content on this path; the
+ *    reason names where it does reach a model (if anywhere).
+ *  - `not-assessed`: only on a path that is not selected for the pilot.
+ */
+export type ProcessingRestrictions =
+  | {
+      readonly kind: 'enforced';
+      readonly categories: readonly GovernedCategory[];
+      readonly seats: readonly string[];
+    }
+  | { readonly kind: 'no-model-processing'; readonly reason: string }
+  | { readonly kind: 'not-assessed'; readonly reason: string };
 
 /** Retention of a pilot-only store, in the same vocabulary as the hosted customer-data map where it applies. */
 export type PilotRetention = RetentionClass | 'source-mirrored' | 'legal-hold-aware-ttl';
@@ -93,6 +116,8 @@ export interface PilotDataPath {
    * not selected for the pilot.
    */
   readonly canaryJourney: readonly string[] | null;
+  /** Processing-location restrictions this path enforces (P-016a). */
+  readonly restrictions: ProcessingRestrictions;
   /** Never empty. `['none']` is the explicit "nothing unknown". */
   readonly unknowns: readonly string[];
 }
@@ -102,6 +127,7 @@ const DS = 'packages/operator-core/lib/data-sources';
 export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   {
     id: 'source-read-and-copy',
+    restrictions: { kind: 'no-model-processing', reason: `Connector reads and stored copies stay in the operator database. ${VIA_MODEL_INFERENCE}` },
     label: 'Connector read and stored copy of organization source content',
     contractRows: ['Source read and stored copy'],
     status: 'selected',
@@ -141,6 +167,7 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'search-and-retrieval',
+    restrictions: { kind: 'no-model-processing', reason: `Search returns ACL-filtered rows to the calling session; federated providers receive the query, not model processing. ${VIA_MODEL_INFERENCE}` },
     label: 'Organization search, federated live search and the granted-sources turn block',
     contractRows: ['Search and embeddings'],
     status: 'selected',
@@ -171,6 +198,11 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'model-inference',
+    restrictions: {
+      kind: 'enforced',
+      categories: ['models', 'providers', 'regions', 'egress'],
+      seats: ['judgeLaunchGovernance', 'judgeInjectionLegs', 'enforceInheritedPolicy'],
+    },
     label: 'Organization content reaching the model provider, and tool-dispatch model and egress governance',
     contractRows: ['Model inference'],
     status: 'selected',
@@ -190,14 +222,16 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
     canaryJourney: [
       'packages/operator-core/lib/governance-policy/session-governance.test.ts',
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts',
+      'packages/operator-core/lib/governance-policy/processing-route.test.ts',
     ],
     unknowns: [
-      'Provider region and provider-side retention are not recorded; the policy can only name the provider API host (egress), not a region.',
+      'Provider-side retention is not recorded. A global endpoint (api.anthropic.com, api.openai.com) does not prove where it processes, so its region is judged as unresolved-region: residency needs a regions allow list, and no launch backend reaches a region-pinned route yet (P-016 private-route decision).',
       'A session started outside the launch tools (a human running psu from a terminal) is not judged at launch. Turn-start injection judges each leg against the session backend/model read from its newest launch record (adv_sessions); a session with no launch record is judged by dataUse only.',
     ],
   },
   {
     id: 'personal-vault-disclosure',
+    restrictions: { kind: 'not-assessed', reason: 'Outside the assumed pilot profile.' },
     label: 'Reader-set disclosure of personal-vault documents',
     contractRows: ['Model inference'],
     status: 'outside-profile',
@@ -218,6 +252,7 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'workflow-output-and-audit',
+    restrictions: { kind: 'no-model-processing', reason: `Outputs and audit rows are written to the operator database; the model calls that produced them were judged on the model-inference path. ${VIA_MODEL_INFERENCE}` },
     label: 'Workflow output, organization audit events, operator audit and model-call ledger',
     contractRows: ['Workflow output and audit'],
     status: 'selected',
@@ -245,6 +280,7 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'logs-and-telemetry',
+    restrictions: { kind: 'not-assessed', reason: 'Path status is unknown; where telemetry is processed is part of the customer-key and private-route decision (P-016).' },
     label: 'Service logs and telemetry that may carry pilot content',
     contractRows: ['Logs and telemetry'],
     status: 'unknown',
@@ -267,6 +303,7 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'backups-and-restores',
+    restrictions: { kind: 'not-assessed', reason: 'Path status is unknown; backup location and keys are part of the customer-key lifecycle decision (P-016).' },
     label: 'Database backups and restore of pilot stores',
     contractRows: ['Backups and restores'],
     status: 'unknown',
@@ -288,6 +325,7 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'organization-export-and-deletion',
+    restrictions: { kind: 'no-model-processing', reason: 'Export and deletion read and write the operator database and receipts; no model processes the exported content on this path.' },
     label: 'Organization-scoped export and deletion over the declared store population',
     contractRows: ['Source read and stored copy', 'Backups and restores'],
     status: 'selected',
