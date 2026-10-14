@@ -16,6 +16,7 @@ import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { execPath } from 'node:process';
 import { spawn } from 'node:child_process';
+import { promises as fsPromises } from 'node:fs';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import {
   hostThroughPty as hostThroughPtyProduction,
@@ -149,6 +150,50 @@ const FLATTENED_CODEX_READY_FOOTER =
   '› Ask Codex to do anythingReady · GPT-5.6-Sol high · Context 100% left';
 const FLATTENED_CODEX_STARTING_FOOTER =
   '› Ask Codex to do anythingStarting · GPT-5.6-Sol high · Context 100% left';
+
+it('keeps owner input and real PTY output responsive while discovery rename is stalled', async () => {
+  const ownerId = `su-slow-discovery-${process.pid}-${Date.now()}`;
+  const metaPath = metaPathFor(ownerId);
+  const originalRename = fsPromises.rename;
+  let release!: () => void;
+  const stalled = new Promise<void>((resolve) => { release = resolve; });
+  let renameEntered = false;
+  const rename = vi.spyOn(fsPromises, 'rename').mockImplementation(async (from, to) => {
+    if (String(to) === metaPath) { renameEntered = true; await stalled; }
+    return originalRename(from, to);
+  });
+  const { captured, io } = fakeIo();
+  const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
+  const signals = new EventEmitter();
+  let ended = false;
+  const done = hostThroughPty({
+    command: execPath,
+    args: ['-e', "process.stdin.setRawMode(true);process.stdin.on('data',d=>{if(d.toString().includes('QUIT'))process.exit(0);process.stdout.write('ECHO:'+d.toString()+'\\n');});process.stdout.write('SLOW_FS_READY\\n');"],
+    cwd: process.cwd(), env: hermeticEnv({ PAPERCUSP_SID: ownerId }), ownerId,
+    io: { ...io, stdin }, bridgeTty: false, signalSource: signals, activityPersistMs: 25,
+  }).then((code) => { ended = true; return code; });
+  try {
+    await vi.waitFor(() => {
+      expect(renameEntered).toBe(true);
+      expect(captured()).toContain('SLOW_FS_READY');
+    }, { timeout: 5000 });
+    stdin.emit('data', Buffer.from('owner-input'));
+    await vi.waitFor(() => expect(captured()).toContain('ECHO:owner-input'), { timeout: 3000 });
+    expect(existsSync(metaPath)).toBe(false);
+    stdin.emit('data', Buffer.from('QUIT'));
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(ended).toBe(false);
+    release();
+    expect(await done).toBe(0);
+    expect(existsSync(metaPath)).toBe(false);
+    expect(existsSync(socketPathFor(ownerId))).toBe(false);
+  } finally {
+    release();
+    if (!ended) signals.emit('SIGTERM');
+    await done;
+    rename.mockRestore();
+  }
+}, 15_000);
 
 it('binds, discovers, injects and cleans a byte-bounded control socket for a long owner', async () => {
   const ownerId = (`su-byte-bound-${process.pid}-${Date.now()}-` + 'x'.repeat(200)).slice(0, 200);
@@ -4559,6 +4604,7 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
   // staging restart. The heal under test runs with its REAL default (no injection),
   // so the refusal is recognised from a genuine refused socket.
   const childCode =
+    "if(process.env.PINHEAL_CHILD_LOG)require('fs').appendFileSync(process.env.PINHEAL_CHILD_LOG,JSON.stringify({phase:'boot',pid:process.pid,url:process.env.PAPERCUSP_OPERATOR_URL,at:Date.now()})+'\\n');" +
     "process.stdout.write('BOOT:'+process.env.PAPERCUSP_OPERATOR_URL+'\\n');" +
     "process.stdin.setEncoding('utf8');let b='';" +
     "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
@@ -4647,12 +4693,16 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
       const ownerId = `su-pinheal-itest-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const { captured, io } = fakeIo();
+      const childLog = join(PSU_PTY_DIR, `${ownerId}.child.jsonl`);
+      const signalSource = new EventEmitter();
+      const spawnEvidence: Array<{ pid: number; at: number; data: string; exit: unknown }> = [];
       const env: NodeJS.ProcessEnv = {
         ...hermeticEnv(),
         PAPERCUSP_SID: ownerId,
         TERM: 'xterm-256color',
         PAPERCUSP_OPERATOR_URL: `http://localhost:${deadPort}`,
         PAPERCUSP_MCP_PROXY_PORT: String(proxyPort),
+        PINHEAL_CHILD_LOG: childLog,
       };
       delete env.PAPERCUSP_PSU_REEXEC;
       delete env.PAPERCUSP_PSU_REEXEC_PPID;
@@ -4670,6 +4720,15 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
         ownerId,
         io,
         bridgeTty: false,
+        signalSource,
+        spawnPty: (file, args, options, realSpawn) => {
+          const spawned = realSpawn(file, args, options);
+          const evidence = { pid: spawned.pid, at: Date.now(), data: '', exit: null as unknown };
+          spawnEvidence.push(evidence);
+          spawned.onData((data: string) => { evidence.data = `${evidence.data}${data}`.slice(-4096); });
+          spawned.onExit((event: unknown) => { evidence.exit = event; });
+          return spawned;
+        },
         hostCodeStalenessFn: () => ({ stale: false }),
         mintRecycleArgs: (a: string[]) => ({ args: a, nativeId: null }),
         onExit: () => {},
@@ -4718,7 +4777,21 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
 
         await rawInject(sock, 'QUIT\n');
         await done;
+      } catch (error) {
+        // Preserve the distinction between a child that never reached JS, a
+        // child that wrote bytes before the host bridge, and a host that ended.
+        // The phase ledger is fixture-owned and contains no inherited secrets.
+        console.error('[pin-heal child evidence]', JSON.stringify({
+          ownerId, managed, gracefulSignalResistant, spawnEvidence,
+          childLog: existsSync(childLog) ? readFileSync(childLog, 'utf8') : 'not-written',
+          captured: captured().slice(-4096),
+        }));
+        throw error;
       } finally {
+        // A failed assertion must not leave a host's global signal listeners,
+        // child, socket, or timers active during the next parameterized case.
+        signalSource.emit('SIGTERM');
+        await done;
         await new Promise<void>((r) => proxy.close(() => r()));
       }
     },
@@ -5451,11 +5524,15 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
       const ownerId = `su-orphan-ppid-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
+      const childLog = join(PSU_PTY_DIR, `${ownerId}.child.jsonl`);
+      const signalSource = new EventEmitter();
+      const spawnEvidence: Array<{ pid: number; data: string; exit: unknown }> = [];
       let captured = '';
       const stdout = { columns: 80, rows: 24, write: (d: Buffer | string) => { captured += d.toString(); }, on() {}, off() {} };
       const stdin = Object.assign(new EventEmitter(), { isTTY: true, resume() {}, pause() {}, setRawMode() {} });
 
       const childCode =
+        "require('node:fs').writeFileSync(process.env.ORPHAN_CHILD_LOG,JSON.stringify({phase:'js-start',pid:process.pid})+'\\n');" +
         "process.stdout.write('BOOT:'+process.pid+'\\n');" +
         'process.stdin.on(\'data\',()=>{});' +
         'setTimeout(()=>process.exit(0),20000);';
@@ -5468,35 +5545,46 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PAPERCUSP_PSU_PTY_ORPHAN_POLL_MS: '100' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', PAPERCUSP_PSU_PTY_ORPHAN_POLL_MS: '100', ORPHAN_CHILD_LOG: childLog },
         ownerId,
         io: { stdin, stdout },
         bridgeTty: true,
+        signalSource,
+        spawnPty: (file, args, options, realSpawn) => {
+          const spawned = realSpawn(file, args, options);
+          const evidence = { pid: spawned.pid, data: '', exit: null as unknown };
+          spawnEvidence.push(evidence);
+          spawned.onData((data: string) => { evidence.data = `${evidence.data}${data}`.slice(-4096); });
+          spawned.onExit((event: unknown) => { evidence.exit = event; });
+          return spawned;
+        },
         parentPidFn: () => fakeParent,
         onExit: (c: number) => { exitCode = c; },
       });
 
-      // Poll for BOOT rather than a fixed sleep — fork/pty-startup latency
-      // varies under load; a fixed 500ms sleep flakes on a busy box (the
-      // 2026-07-26 red-test watchdog catch, EI-18679045634730262: this file's
-      // other tests already use this poll instead of a fixed sleep for the
-      // same reason).
-      const bootDeadline = Date.now() + 5_000;
-      while (Date.now() < bootDeadline && !captured.includes('BOOT:')) {
-        await sleep(20);
+      try {
+        await vi.waitFor(() => expect(captured).toContain('BOOT:'), { timeout: 5_000 });
+        expect(existsSync(sock)).toBe(true);
+
+        // The launching shell exits → we get reparented to init. The watchdog's
+        // next poll must observe ppid===1 and tear the orphaned host down.
+        fakeParent = 1;
+        const code = await done;
+        expect(code).toBe(0);
+        expect(exitCode).toBe(0);
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      } catch (error) {
+        console.error('[orphan child evidence]', JSON.stringify({
+          ownerId, spawnEvidence, captured,
+          childLog: existsSync(childLog) ? readFileSync(childLog, 'utf8') : 'not-written',
+          events: existsSync(eventLogPathForOwner(ownerId)) ? readFileSync(eventLogPathForOwner(ownerId), 'utf8') : 'not-written',
+        }));
+        throw error;
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
       }
-      expect(existsSync(sock)).toBe(true);
-      expect(captured).toContain('BOOT:');
-
-      // The launching shell exits → we get reparented to init. The watchdog's next
-      // poll (≤100ms) must observe ppid===1 and tear the orphaned host down.
-      fakeParent = 1;
-
-      const code = await done;
-      expect(code).toBe(0);
-      expect(exitCode).toBe(0);
-      expect(existsSync(sock)).toBe(false);
-      expect(existsSync(meta)).toBe(false);
     },
     20_000,
   );
@@ -5510,11 +5598,13 @@ describe('WI-3455 — discovery key ownership + self-heal (the su-a8f52 strandin
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
       const { captured, io } = fakeIo();
+      const signalSource = new EventEmitter();
 
       const childCode =
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        "process.stdout.write('READY\\n');" +
         'setTimeout(()=>process.exit(0),15000);';
 
       const done = hostThroughPty({
@@ -5526,37 +5616,48 @@ describe('WI-3455 — discovery key ownership + self-heal (the su-a8f52 strandin
         io,
         bridgeTty: false,
         activityPersistMs: 150,
+        signalSource,
         onExit: () => {},
       });
 
-      await sleep(400);
-      expect(existsSync(sock)).toBe(true);
-      expect(existsSync(meta)).toBe(true);
+      try {
+        // Socket existence proves the host is listening, not that the child has
+        // installed its stdin handler. Observe both before deleting discovery.
+        await vi.waitFor(() => {
+          expect(captured()).toContain('READY');
+          expect(existsSync(sock)).toBe(true);
+          expect(existsSync(meta)).toBe(true);
+        }, { timeout: 5_000 });
 
-      // Simulate the trample: a duplicate host / janitor race deletes BOTH.
-      unlinkSync(meta);
-      unlinkSync(sock);
-      expect(existsSync(meta)).toBe(false);
-      expect(existsSync(sock)).toBe(false);
+        // Simulate the trample: a duplicate host / janitor race deletes BOTH.
+        unlinkSync(meta);
+        unlinkSync(sock);
+        expect(existsSync(meta)).toBe(false);
+        expect(existsSync(sock)).toBe(false);
 
-      // Within a few ticks the live host re-asserts its key…
-      await sleep(800);
-      expect(existsSync(meta)).toBe(true);
-      expect(existsSync(sock)).toBe(true);
-      const healed = JSON.parse(readFileSync(meta, 'utf8'));
-      expect(healed.ownerId).toBe(ownerId);
-      expect(healed.pid).toBe(process.pid);
+        // Wait for the existing activity tick's observable repair.
+        await vi.waitFor(() => {
+          expect(existsSync(meta)).toBe(true);
+          expect(existsSync(sock)).toBe(true);
+          const healed = JSON.parse(readFileSync(meta, 'utf8'));
+          expect(healed.ownerId).toBe(ownerId);
+          expect(healed.pid).toBe(process.pid);
+        }, { timeout: 5_000 });
 
-      // …and the re-bound socket actually accepts injection again.
-      await rawInject(sock, 'post-heal\n');
-      await sleep(500);
-      expect(captured()).toContain('ECHO:post-heal');
+        // Kernel terminal echo is insufficient: the child's response proves the
+        // re-bound socket reaches the running child after discovery repair.
+        await rawInject(sock, 'post-heal\n');
+        await vi.waitFor(() => expect(captured()).toContain('ECHO:post-heal'), { timeout: 5_000 });
 
-      await rawInject(sock, 'QUIT\n');
-      const code = await done;
-      expect(code).toBe(0);
-      expect(existsSync(sock)).toBe(false);
-      expect(existsSync(meta)).toBe(false);
+        await rawInject(sock, 'QUIT\n');
+        const code = await done;
+        expect(code).toBe(0);
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+      }
     },
     20_000,
   );
