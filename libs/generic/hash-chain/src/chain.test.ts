@@ -75,6 +75,16 @@ describe('verifyChain startAfter (segment verification)', () => {
     const verdict = verifyChain(STREAM, segment, { startAfter: { seq: -1, entryHash: 'x' } });
     expect(verdict.ok === false && verdict.firstBreak.reason).toBe('malformed');
   });
+
+  it('accepts an EMPTY segment whose expected head is the start head (nothing new to deliver)', () => {
+    const verdict = verifyChain(STREAM, [], { startAfter: head, expectedHead: head });
+    expect(verdict).toMatchObject({ ok: true, length: 0 });
+  });
+
+  it('refuses an empty segment claiming a head beyond its start (a dropped batch)', () => {
+    const verdict = verifyChain(STREAM, [], { startAfter: head, expectedHead: full[3]!.link });
+    expect(verdict.ok === false && verdict.firstBreak.reason).toBe('head-mismatch');
+  });
 });
 
 describe('verifyChain', () => {

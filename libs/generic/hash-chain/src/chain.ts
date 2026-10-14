@@ -224,8 +224,10 @@ export function verifyChain(
 
   const expected = options.expectedHead;
   if (expected) {
-    if (!previous || previous.seq !== expected.seq || previous.entryHash !== expected.entryHash) {
-      const found = previous ? `seq ${previous.seq} ${previous.entryHash}` : 'an empty chain';
+    // An empty segment ends where it started: at `startAfter`, which then must BE the expected head.
+    const end: ChainHead | null = previous ?? start;
+    if (!end || end.seq !== expected.seq || end.entryHash !== expected.entryHash) {
+      const found = end ? `seq ${end.seq} ${end.entryHash}` : 'an empty chain';
       return fail(
         records.length,
         previous ? previous.seq : null,
