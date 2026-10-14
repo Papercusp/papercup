@@ -463,6 +463,10 @@ describe('restore under a legal hold (P-017d)', () => {
     const { hold } = await placeOrganizationLegalHold(org.adminSql, {
       scope, actor: admin, workspaceId: WS, dataSourceId: slackId, channelId: CH, reason: 'matter 40',
     });
+    // The backup point: 1.1 as the backup holds it. Text forms keep microseconds and JSON exact.
+    const [atBackup] = await org.adminSql<{ body: string; edited_at: string | null; held_revisions: string }[]>`
+      SELECT body, edited_at::text AS edited_at, held_revisions::text AS held_revisions
+        FROM harness_shared.chat_messages WHERE workspace_id = ${WS} AND channel_id = ${CH} AND provider_message_id = '1.1'`;
     // After the backup point, while held: message 1.1 is edited (allowed under a hold) and 1.3 arrives.
     await upsertChatMessages(org.adminSql, WS, slackId, [{ ...msg(CH, '1.1'), body: 'edited after backup' }, msg(CH, '1.3')]);
     const before = await exportLegalHoldContent(org.adminSql, { scope, actor: admin, holdId: hold.holdId, purpose: 'pre-restore 40' });
@@ -478,10 +482,11 @@ describe('restore under a legal hold (P-017d)', () => {
       pre = postgres(Object.assign(new URL(org.adminDsn), { pathname: `/${preDb}` }).toString(), { max: 1, onnotice: () => {} });
 
       // The restored database is at the backup point. The restore runs no row triggers (replica mode
-      // reproduces that): 1.1 has its backup-point body and 1.3 is gone.
+      // reproduces that): 1.1 is back to its backup-point row and 1.3 is gone.
       await org.adminSql.begin(async (tx) => {
         await tx`SET LOCAL session_replication_role = replica`;
-        await tx`UPDATE harness_shared.chat_messages SET body = 'message 1.1'
+        await tx`UPDATE harness_shared.chat_messages SET body = ${atBackup!.body}, edited_at = ${atBackup!.edited_at}::timestamptz,
+                         held_revisions = ${atBackup!.held_revisions}::jsonb
                   WHERE workspace_id = ${WS} AND channel_id = ${CH} AND provider_message_id = '1.1'`;
         await tx`DELETE FROM harness_shared.chat_messages WHERE workspace_id = ${WS} AND channel_id = ${CH} AND provider_message_id = '1.3'`;
       });
