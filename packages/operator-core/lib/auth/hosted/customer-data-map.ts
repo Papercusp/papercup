@@ -201,6 +201,18 @@ export const HOSTED_CUSTOMER_DATA_TABLES: readonly CustomerDataTable[] = [
     pii: 'entity_key',
     operational: 'provider occurred_at event_version event_id updated_at',
   }),
+  table('papercusp_auth', 'directory_group_role_mappings', {
+    purpose: 'Customer-administrator approvals that members of a directory group may be provisioned with a role (P-004).',
+    systemOfRecord: 'papercusp', retention: 'account', organizationLink: ORG,
+    operational: 'id organization_id directory_id group_id role status approved_by_user_id approved_at removed_by_user_id removed_at created_at updated_at',
+  }),
+  table('papercusp_auth', 'directory_user_observations', {
+    purpose: 'Ingested WorkOS Directory Sync user state and group membership; facts only, never authority (P-004).',
+    systemOfRecord: 'workos-mirror', retention: 'account',
+    organizationLink: { via: 'join', column: 'external_organization_id', target: 'papercusp_auth.organizations.external_organization_id' },
+    pii: 'directory_user_id groups',
+    operational: 'external_organization_id directory_id state first_observed_at updated_at',
+  }),
   table('papercusp_auth', 'webhook_event_receipts', {
     purpose: 'Verified inbound identity-provider webhook ledger and processing state.',
     systemOfRecord: 'workos-mirror', retention: 'provider-ledger',
@@ -294,6 +306,28 @@ export const HOSTED_CUSTOMER_DATA_TABLES: readonly CustomerDataTable[] = [
     systemOfRecord: 'papercusp', retention: 'billing-record', organizationLink: ORG,
     billing: 'budget_key maximum_cost_micros provider_limit_ref cost_source cost_micros provider_final',
     operational: 'control_workspace_id organization_id customer_workspace_id reservation_id event_id revision month request_hash policy_id policy_revision observed_at_ms evidence_ref received_at',
+  }),
+  // Migration 1495 (enterprise readiness P-009, WI-10007904). recorded_by and the free-text
+  // *_unknown_reason columns are classed pii because they are free-form actor/explanation text.
+  table('papercusp_auth', 'hosted_budget_allocations', {
+    purpose: 'Organization, department and project budget allocation revisions per month and cost class.',
+    systemOfRecord: 'papercusp', retention: 'billing-record', organizationLink: ORG,
+    pii: 'recorded_by',
+    billing: 'level cost_class cap_micros max_unreconciled_micros',
+    operational: 'control_workspace_id organization_id allocation_id revision parent_allocation_id month request_hash evidence_ref received_at',
+  }),
+  table('papercusp_auth', 'hosted_budget_allocation_holds', {
+    purpose: 'Budget holds charged against an allocation, one immutable revision per observation.',
+    systemOfRecord: 'papercusp', retention: 'billing-record', organizationLink: ORG,
+    billing: 'cost_class maximum_cost_micros cost_source cost_micros provider_final',
+    operational: 'control_workspace_id organization_id reservation_id revision allocation_id month request_hash observed_at_ms evidence_ref received_at',
+  }),
+  table('papercusp_auth', 'hosted_outcome_cost_records', {
+    purpose: 'Pilot outcome cost records: result cost, review effort and rework per workflow outcome.',
+    systemOfRecord: 'papercusp', retention: 'billing-record', organizationLink: ORG,
+    pii: 'recorded_by result_unknown_reason result_cost_unknown_reason review_effort_unknown_reason rework_unknown_reason',
+    billing: 'result_cost_micros',
+    operational: 'control_workspace_id organization_id outcome_id revision allocation_id workflow_ref evidence_class result_state reservation_ids review_effort_seconds rework_count observed_at_ms evidence_ref received_at',
   }),
   table('papercusp_auth', 'hosted_app_relay_usage', {
     purpose: 'Monthly app-relay traffic counters per customer workspace.',
