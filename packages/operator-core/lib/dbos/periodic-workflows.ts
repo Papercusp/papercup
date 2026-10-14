@@ -72,7 +72,7 @@ import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
-import { DISK_RECLAIM_CRONTAB, DISK_RECLAIM_STEP } from '../storage/disk-reclaim';
+import { DISK_RECLAIM_CRONTAB, DISK_RECLAIM_STEP, drainScheduledDiskReclaim, type DiskReclaimReceipt } from '../storage/disk-reclaim';
 import {
   defaultEvidenceRoot,
   formatForeignPruneLine,
@@ -1365,10 +1365,14 @@ const diskConsumerCensusWorkflow = idempotentRegisterWorkflow('diskConsumerCensu
 DBOS.registerScheduled(diskConsumerCensusWorkflow, { name: 'diskConsumerCensus', crontab: '0 35 */6 * * *' });
 
 // Hourly retention, independent of free space (disk-headroom P-004 / D-005).
-// Returning the complete report from this step stores its receipt in Postgres,
-// including partial/error runs; a SUCCESS workflow alone is never the oracle.
+// Each bounded pass has its own Postgres checkpoint and fresh safety evidence.
+// A SUCCESS workflow alone is never the oracle; read the individual receipts.
 async function diskRetentionReclaimTick(): Promise<void> {
-  await DBOS.runStep(async () => {
+  const result = await drainScheduledDiskReclaim(async (_batch, notAfterMs) => DBOS.runStep(async () => {
+    // Check inside the step, including after recovery of earlier checkpoints.
+    // Never cancel an in-flight safety check or removal to enforce this bound.
+    if (notAfterMs !== undefined && Date.now() >= notAfterMs) return null;
+    const startedAt = new Date().toISOString();
     const { runScheduledDiskReclaim } = await import('../storage/disk-reclaim');
     try {
       const receipt = await runScheduledDiskReclaim();
@@ -1377,9 +1381,12 @@ async function diskRetentionReclaimTick(): Promise<void> {
     } catch (err) {
       const error = (err as Error).message;
       console.warn(`[disk-retention] refused: ${error}`);
-      return { schemaVersion: 1, complete: false, policyExhausted: null, errors: [error], finishedAt: new Date().toISOString() };
+      return { schemaVersion: 1, id: crypto.randomUUID(), startedAt, dryRun: false,
+        complete: false, policyExhausted: null, devices: [], entries: [], delegates: [],
+        errors: [error], finishedAt: new Date().toISOString() } satisfies DiskReclaimReceipt;
     }
-  }, { name: DISK_RECLAIM_STEP });
+  }, { name: DISK_RECLAIM_STEP }));
+  console.log(`[disk-retention] ${result.batches} batch(es), stop=${result.stop}, receipt=${result.lastReceiptId ?? 'none'}`);
 }
 const diskRetentionReclaimWorkflow = idempotentRegisterWorkflow('diskRetentionReclaim', () =>
   DBOS.registerWorkflow(diskRetentionReclaimTick, { name: 'diskRetentionReclaim', maxRecoveryAttempts: 5 }),
@@ -2104,7 +2111,10 @@ async function sessionSearchIndexBuildTick(): Promise<void> {
     async () => {
       if (shouldShedHeavyTick('session-search-index-build')) return;
       try {
-        const { runSessionSearchIndexBuildOnce } = await import('../session-search-index-build');
+        const {
+          runSessionSearchIndexBuildOnce,
+          sessionSearchIndexBuildFailureDetails,
+        } = await import('../session-search-index-build');
         const { sql } = getOrgPg();
         const r = await runSessionSearchIndexBuildOnce(sql);
         if (r.skipped) {
@@ -2114,7 +2124,8 @@ async function sessionSearchIndexBuildTick(): Promise<void> {
         const built = r.indexes.filter((x) => x.action === 'built').length;
         const failed =
           r.indexes.filter((x) => x.action === 'failed').length +
-          r.vocab.filter((x) => x.action === 'failed').length;
+          r.vocab.filter((x) => x.action === 'failed').length +
+          r.invalidDropFailures.length;
         const vocabBuilt = r.vocab.filter((x) => x.action === 'full' || x.action === 'incremental');
         if (built > 0 || vocabBuilt.length > 0 || r.invalidDropped.length > 0 || failed > 0) {
           console.log(
@@ -2123,6 +2134,9 @@ async function sessionSearchIndexBuildTick(): Promise<void> {
               `${failed > 0 ? `, ${failed} failed` : ''}` +
               `${r.truncated ? ' (truncated by budget)' : ''}`,
           );
+        }
+        for (const detail of sessionSearchIndexBuildFailureDetails(r)) {
+          console.warn(`[session-search-index-build] ${detail}`);
         }
       } catch (err) {
         console.warn(`[session-search-index-build] run skipped (non-fatal): ${(err as Error).message}`);
