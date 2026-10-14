@@ -248,8 +248,13 @@ describe('pc-heavy PSI freeze accounting persists frozen wall-clock time (EI-219
       expect(fields[19]).toBe(readRecordField(recordFilePath(), 'start_ticks'));
       const monitorPid = fields[1];
       const monitorArgs = readFileSync(`/proc/${monitorPid}/cmdline`, 'utf8').split('\0');
-      expect(monitorArgs).toContain('--pc-heavy-internal-preempt-run');
-      expect(monitorArgs).toContain(PC_HEAVY);
+      expect(monitorArgs.slice(2, 5)).toEqual([
+        '--pc-heavy-internal-preempt-run', String(admission.child.pid),
+        join(dir, 'exclusive-materialization.intent'),
+      ]);
+      // The public wrapper runs a private self-snapshot to survive concurrent
+      // edits; verify its source rather than assuming the canonical argv path.
+      expect(readFileSync(monitorArgs[1], 'utf8')).toBe(readFileSync(PC_HEAVY, 'utf8'));
       process.kill(Number(monitorPid), 'SIGTERM');
       expect((await admission.result).code).toBe(143);
       expect(existsSync(recordFilePath())).toBe(false);

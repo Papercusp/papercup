@@ -14,16 +14,23 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import {
   addGovernancePolicyException,
+  applyGovernancePolicyChange,
   explainGovernancePolicy,
   getGovernancePolicyState,
   governancePolicyAddExceptionSchema,
+  governancePolicyApplySchema,
+  governancePolicyAuthoritySchema,
   governancePolicyExplainSchema,
   governancePolicyGetSchema,
+  governancePolicyPrepareSchema,
   governancePolicySetSchema,
   governancePolicySimulateSchema,
   parseGovernedRequest,
+  prepareGovernancePolicyChange,
+  readGovernanceAuthority,
   setGovernancePolicyLayer,
   simulateGovernancePolicy,
+  type PrepareChangeRequest,
   type ProposedLayer,
   type SetLayerRequest,
 } from '../../governance-policy/control';
@@ -66,7 +73,8 @@ export default defineTool({
     'Inherited organization > department > workspace policy over models, tools, plugins, egress, dataUse and actions. ' +
     'get = chain + layers + version history; explain = the verdict the enforcement seat would reach for a request, and which layer decided; ' +
     'simulate = before/after verdicts for a proposed layer (writes nothing); set = write a layer version (actor + reason); ' +
-    'add-exception = append an expiring exception. A lower layer can never widen an ancestor.',
+    'add-exception = append an expiring exception. A lower layer can never widen an ancestor. ' +
+    'Org/department changes are sensitive: prepare (simulates), a distinct human admin approves in the admin pane, then apply (once, 15 min); authority = delegations + open requests.',
   capability: 'operator:write',
   guidance: {
     when: 'An action was refused with org_policy:* and you need to know which layer refused it and why (explain), or an admin must change or except a policy.',
@@ -82,8 +90,34 @@ export default defineTool({
     governancePolicySimulateSchema.extend({ op: z.literal('simulate') }),
     governancePolicySetSchema.extend({ op: z.literal('set') }),
     governancePolicyAddExceptionSchema.extend({ op: z.literal('add-exception') }),
+    governancePolicyPrepareSchema.extend({ op: z.literal('prepare') }),
+    governancePolicyApplySchema.extend({ op: z.literal('apply') }),
+    governancePolicyAuthoritySchema.extend({ op: z.literal('authority') }),
   ]),
   async handler(args, ctx) {
+    if (args.op === 'authority') {
+      const { op: _op, ...req } = args;
+      return json(await readGovernanceAuthority({ ...req, workspaceId: req.workspaceId ?? ctx.workspaceId }));
+    }
+    // An agent is a SERVICE identity (P-006, D-015): it may prepare and apply a sensitive change,
+    // but approving one is a human administrator's act in the admin pane, so there is no decide op.
+    if (args.op === 'prepare' || args.op === 'apply') {
+      if (!isOperatorConfigWriteRole(ctx.role)) {
+        throw new Error(`governance:policy ${args.op} requires operator, architect, or mug role`);
+      }
+      const actor = writeActor(ctx);
+      if (args.op === 'prepare') {
+        const { op: _op, requests, ...req } = args;
+        return json(
+          await prepareGovernancePolicyChange(
+            { ...(req as Omit<PrepareChangeRequest, 'requests'>), requests: requests?.map(requireRequest) },
+            actor,
+          ),
+        );
+      }
+      const { op: _op, ...req } = args;
+      return json(await applyGovernancePolicyChange(req, actor));
+    }
     if (args.op === 'set' || args.op === 'add-exception') {
       if (!isOperatorConfigWriteRole(ctx.role)) {
         throw new Error(`governance:policy ${args.op} requires operator, architect, or mug role`);

@@ -1842,6 +1842,7 @@ export async function main(argv = process.argv.slice(2)) {
   };
   const lockName = repoLockName(repoRoot);
   const installPlan = manifestOnlyInstallPlan(npmArgs, npmEnv);
+  const packageLockOnly = isPackageLockOnlyInstall(npmArgs, npmEnv);
 
   if (installPlan.eligible) {
     // The resolve runs outside the repo mutex, so a peer can change the manifests under it, and
@@ -1936,7 +1937,7 @@ export async function main(argv = process.argv.slice(2)) {
           // A FAILED npm run reports its own error — never mask it with a dep verdict.
           if (status !== 0) return status;
           const verdict =
-            process.env.PAPERCUSP_SKIP_DEP_VERIFY === "1"
+            packageLockOnly || process.env.PAPERCUSP_SKIP_DEP_VERIFY === "1"
               ? 0
               : await verifyDepsExtracted({ repoRoot, npmArgs, env: npmEnv });
           // After verification, because its bounded repair re-runs a scoped install.
@@ -1974,6 +1975,9 @@ export async function main(argv = process.argv.slice(2)) {
     },
   );
   if (installStatus !== 0) return installStatus;
+  // A fallback can still be metadata-only (for example a local tarball).
+  // Its new lock describes future installs, not the unchanged node_modules.
+  if (packageLockOnly) return 0;
   return publishDependencyGeneration({ repoRoot });
 }
 

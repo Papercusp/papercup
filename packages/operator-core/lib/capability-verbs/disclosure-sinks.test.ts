@@ -31,6 +31,18 @@ vi.mock('./resolve', async (importActual) => ({
   resolveOutboundContext: resolve.resolveOutboundContext,
 }));
 
+// social:post withholds its outbound call until the owner ratifies publishing
+// (papercusp-social-auto-publish, default OFF). The ledger check runs either
+// way; ratify it here so the delivery control below can observe the package.
+vi.mock('@papercusp/flags/server', async (importActual) => {
+  const actual = await importActual<typeof import('@papercusp/flags/server')>();
+  return {
+    ...actual,
+    getFlag: async (...args: Parameters<typeof actual.getFlag>) =>
+      args[0] === 'papercusp-social-auto-publish' ? true : actual.getFlag(...args),
+  };
+});
+
 // Mail and calendar select their source through provider dispatch (P-007),
 // which lists the owner's connected sources. One first-party Gmail and one
 // Google Calendar source, so each verb resolves exactly one target.
@@ -147,10 +159,17 @@ async function providers() {
   // (cupboard-distributable-integrations-2026-10-10 P-008): here a Slack one.
   const slack: ProviderDescriptor = { id: 'slack', contractVersion: 1, datatypes: ['chat-message'], capabilities: ['chat.channels', 'chat.reply'], egressHosts: ['slack.com'] };
   await registry.register({ pluginName: 'slack', descriptor: slack, adapter: recorder(slack, async ({ args }) => seams.chatReply(args)) });
+  // Social writes go through the installed package for the post's platform
+  // (provider-adapters-to-packages-2026-10-11 P-002): one per platform here.
+  const socialWrite = vi.fn(async (_args: Args) => ({ externalId: 'p1' }));
+  for (const platform of ['mastodon', 'reddit']) {
+    const social: ProviderDescriptor = { id: platform, contractVersion: 1, datatypes: ['social-post'], capabilities: ['social.post', 'social.reply'], egressHosts: [`${platform}.example.test`] };
+    await registry.register({ pluginName: platform, descriptor: social, adapter: recorder(social, async ({ args }) => socialWrite(args)) });
+  }
   const noHttp: HostFetch = async () => {
     throw new Error('provider recorders perform no HTTP');
   };
-  return { ...seams, registry, hostFetchFor: () => noHttp };
+  return { ...seams, socialWrite, registry, hostFetchFor: () => noHttp };
 }
 type Providers = Awaited<ReturnType<typeof providers>>;
 
@@ -247,24 +266,19 @@ const CASES: SinkCase[] = [
     recipients: null,
     sink: 'mastodon:reply',
     document: doc('mastodon', 'social-post', ['@someone'], { statusId: '109999', instanceHost: 'mastodon.social', visibility: 'public' }),
-    run: () => replyToCanonicalSocialPost(sql, { workspaceId: WORKSPACE, userId: USER, ref: 'mastodon:109999', text: 'reply', agentOwnerId: AGENT }),
-    // Social adapters take no injected deps: the outbound credential lookup is
-    // the seam every adapter call sits behind.
-    delivery: () => [resolve.resolveOutboundContext],
+    run: (p) => replyToCanonicalSocialPost(sql, { workspaceId: WORKSPACE, userId: USER, ref: 'mastodon:109999', text: 'reply', agentOwnerId: AGENT }, p as never),
+    delivery: (p) => [p.socialWrite],
   },
   {
     verb: 'social:post',
     recipients: null,
     sink: 'reddit:r/rust',
-    run: () => postToCanonicalSocialDestination(sql, {
+    run: (p) => postToCanonicalSocialDestination(sql, {
       workspaceId: WORKSPACE, userId: USER, destination: 'reddit:r/rust', text: 'post', provenance: OWNER, agentOwnerId: AGENT,
-    } as never),
-    delivery: () => [resolve.resolveOutboundContext],
+    } as never, p as never),
+    delivery: (p) => [p.socialWrite],
   },
 ];
-
-/** Stops a social verb at the credential seam, so no real adapter is ever invoked. */
-const REACHED_CREDENTIALS = new Error('reached_outbound_credentials');
 
 async function arrange(c: SinkCase): Promise<Providers> {
   resolve.resolveCanonicalDocument.mockReset().mockImplementation(async () => {
@@ -272,9 +286,14 @@ async function arrange(c: SinkCase): Promise<Providers> {
     return c.document;
   });
   resolve.resolveOutboundContext.mockReset();
-  sources.listOwnedExternalTriggerSources.mockReset().mockResolvedValue([sourceRow('s1', 'gmail'), sourceRow('s2', 'gcal'), sourceRow('s3', 'slack')]);
-  if (c.verb.startsWith('social:')) resolve.resolveOutboundContext.mockRejectedValue(REACHED_CREDENTIALS);
-  else resolve.resolveOutboundContext.mockResolvedValue(outboundContext());
+  sources.listOwnedExternalTriggerSources.mockReset().mockResolvedValue([
+    sourceRow('s1', 'gmail'),
+    sourceRow('s2', 'gcal'),
+    sourceRow('s3', 'slack'),
+    sourceRow('s4', 'mastodon'),
+    sourceRow('s5', 'reddit'),
+  ]);
+  resolve.resolveOutboundContext.mockResolvedValue(outboundContext());
   return providers();
 }
 
@@ -296,9 +315,7 @@ describe('every outbound capability verb asks the disclosure ledger before deliv
     it('passes the ledger the audience it is about to reach', async () => {
       ledger.assertDisclosurePermits.mockResolvedValue(undefined);
       const p = await arrange(c);
-      await c.run(p).catch((error: unknown) => {
-        if (error !== REACHED_CREDENTIALS) throw error;
-      });
+      await c.run(p);
 
       expect(ledger.assertDisclosurePermits).toHaveBeenCalledTimes(1);
       const [, args] = ledger.assertDisclosurePermits.mock.calls[0] as [unknown, { agentOwnerId: string | null; recipients: string[] | null; sink: string }];

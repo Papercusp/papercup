@@ -339,6 +339,36 @@ test("reify and repair still publish and propagate generation failure", {
   } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
+test("lock-only fallback does not verify or publish the unchanged installed tree", {
+  skip: process.platform === "win32",
+}, () => {
+  for (const viaConfig of [false, true]) {
+    const fixture = createManifestResolutionFixture({ expectFallback: true, publisherStatus: 77 });
+    fixture.args[3] = "fixture-pkg@file:../fixture-pkg";
+    delete fixture.env.PAPERCUSP_SKIP_DEP_VERIFY;
+    const manifestPath = join(fixture.repoRoot, 'packages', 'operator-core', 'package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest.dependencies = { 'fixture-pkg': '1.2.3' };
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const lockPath = join(fixture.repoRoot, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lock.packages['packages/operator-core'].dependencies = manifest.dependencies;
+    lock.packages['node_modules/fixture-pkg'] = { version: '1.2.3', resolved: 'https://registry.npmjs.org/fixture-pkg/-/fixture-pkg-1.2.3.tgz' };
+    writeFileSync(lockPath, JSON.stringify(lock));
+    if (viaConfig) fixture.env.npm_config_package_lock_only = 'true';
+    else fixture.args.push('--package-lock-only');
+    try {
+      const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+        encoding: 'utf8', timeout: 15_000, env: fixture.env,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr + result.stdout);
+      assert.deepEqual(readFileSync(fixture.tracePath, 'utf8').trim().split('\n'), ['cache-verify', 'fallback']);
+      assert.equal(existsSync(join(fixture.repoRoot, 'node_modules')), false);
+    } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
+  }
+});
+
 test("test:affected preflight refuses stale workspace lock metadata before launching tests", async () => {
   const fixture = createManifestResolutionFixture();
   const manifestPath = join(fixture.repoRoot, "packages", "operator-core", "package.json");

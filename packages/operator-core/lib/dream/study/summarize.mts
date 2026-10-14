@@ -4,6 +4,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getOrgPg } from "@papercusp/db-org";
 import { capabilityHash } from "../../dream/capability-contracts.ts";
+import { dreamEvaluationProtocolHash, summarizeDreamGraphComparison } from '../dream-evaluation.ts';
+import { mapDreamRun } from '../dream-run-store.ts';
+import { computeDreamMetrics } from '../dream-metrics.ts';
+import { coerceJsonArray } from '../../experiment/ledger.ts';
 import {
   dreamCapabilityRun,
   dreamRunAssessments,
@@ -23,6 +27,11 @@ const blocks = await Promise.all(
   ),
 );
 validateStudyBlocks(blocks);
+const comparisonFile = process.argv.find(arg => arg.startsWith('--comparison='))?.slice('--comparison='.length);
+if (comparisonFile) {
+  await summarizeGraphComparison(comparisonFile);
+  process.exit(0);
+}
 const pins = blocks.map((b) => b.pin);
 const independentReview = JSON.parse(
   await readFile(resolve(here, "calibration-review-2026-09-14.json"), "utf8"),
@@ -491,3 +500,108 @@ try {
   await sql.end();
 }
 process.exit(0);
+
+/** Same production ledger and accounting as the original study; a separate
+ * output edition preserves the original pilot's artifacts and source pins. */
+async function summarizeGraphComparison(file: string) {
+  const comparison = JSON.parse(await readFile(resolve(here, file), 'utf8'));
+  validateStudyBlocks([...blocks, comparison]);
+  if (dreamEvaluationProtocolHash(comparison.protocol) !== comparison.pin)
+    throw new Error('Changed graph comparison pin');
+  const blind = JSON.parse(await readFile(resolve(here, 'native-graph-calibration-blind-v2.json'), 'utf8'));
+  const key = JSON.parse(await readFile(resolve(here, 'native-graph-calibration-key-v2.json'), 'utf8'));
+  const review = JSON.parse(await readFile(resolve(here, 'native-graph-calibration-review-2026-10-14.json'), 'utf8'));
+  const unblindedFile = process.argv.find(arg => arg.startsWith('--unblinded='))?.slice('--unblinded='.length);
+  const unblinded = unblindedFile ? JSON.parse(await readFile(resolve(here, unblindedFile), 'utf8')) : null;
+  const blindHash = capabilityHash(JSON.stringify(blind));
+  const caseIds = blind.cases.map((entry: { caseId: string }) => entry.caseId).sort();
+  if (key.blindHash !== blindHash || review.blindHash !== blindHash ||
+      JSON.stringify(review.cases.map((entry: { caseId: string }) => entry.caseId).sort()) !== JSON.stringify(caseIds) ||
+      (unblinded && (unblinded.blindHash !== blindHash || unblinded.blindPostId !== review.posts[0].id ||
+        JSON.stringify(unblinded.cases.map((entry: { caseId: string }) => entry.caseId).sort()) !== JSON.stringify(caseIds))))
+    throw new Error('Graph independent review does not cover the exact frozen cases');
+  const { sql } = getOrgPg();
+  try {
+    const rows = await sql`SELECT * FROM harness_shared.dream_runs
+      WHERE workspace_id = ${workspaceId} AND pot_slug = 'papercusp'
+        AND outcome->'capabilityRun'->'evaluation'->>'protocolPin' = ${comparison.pin}
+      ORDER BY started_at, run_id`;
+    const stored = rows.map(mapDreamRun);
+    const batteryIds = [...new Set(stored.flatMap(row => dreamRunAssessments(row).flatMap(a => a.experimentBatteryIds)))];
+    const experimentRows = batteryIds.length ? await sql`SELECT * FROM harness_shared.experiment_runs
+      WHERE workspace_id = ${workspaceId} AND battery_id = ANY(${batteryIds}::text[])` : [];
+    const metrics = computeDreamMetrics(stored.map(run => ({ run, routed: null,
+      experiments: experimentRows.filter(row => dreamRunAssessments(run).some(a => a.experimentBatteryIds.includes(row.battery_id)))
+        .map(row => ({ batteryId: row.battery_id, testId: row.test_id, tier: row.tier,
+          winner: row.winner, baselineId: row.baseline_id, arms: coerceJsonArray(row.arms),
+          totalCostUsd: Number(row.total_cost_usd), budgetExhausted: row.budget_exhausted,
+          decision: row.decision, createdAt: new Date(row.created_at).toISOString() })) })),
+      { workspaceId, potSlug: 'papercusp', since: stored.map(row => row.startedAt).sort()[0] ?? new Date().toISOString(),
+        until: new Date().toISOString() });
+    const dreams = stored.map(row => {
+      if (!row.completedAt || row.status === 'running') throw new Error('Graph comparison is still running');
+      const run = dreamCapabilityRun(row)!;
+      const evaluation = run.evaluation!;
+      if (evaluation.protocolPin !== comparison.pin || evaluation.arm !== 'structured-pair' ||
+          !evaluation.graphTreatment || evaluation.matchedPairIndex === undefined)
+        throw new Error('Unregistered graph trial identity');
+      const selected = run.sampling?.status === 'selected' ? run.sampling.selection : null;
+      const calls = run.calls.map(call => {
+        const zeroPriced = call.status === 'settled' && !call.model.startsWith('local:') &&
+          call.usage?.costUsd === 0 && call.usage.inputTokens + call.usage.outputTokens > 0;
+        return { ...call, accountedUsd: zeroPriced ? call.reservedUsd : call.usage?.costUsd ?? call.reservedUsd,
+          unknownCost: call.status !== 'settled' || zeroPriced };
+      });
+      const accountedUsd = calls.reduce((sum, call) => sum + call.accountedUsd, 0);
+      const zeroPriceReserve = calls.filter(call => call.status === 'settled' && call.unknownCost)
+        .reduce((sum, call) => sum + call.reservedUsd, 0);
+      if (Math.abs(accountedUsd - row.costUsd - zeroPriceReserve) > 1e-8)
+        throw new Error('Graph trial call/row accounting mismatch: ' + row.runId);
+      const candidate = row.outcome?.insight && (row.outcome.insight as { capability?: unknown }).capability;
+      const caseEntry = key.selected.find((entry: { runId: string }) => entry.runId === row.runId);
+      if (!!candidate !== !!caseEntry) throw new Error('Graph calibration candidate census mismatch');
+      return { runId: row.runId, treatment: evaluation.graphTreatment, pairIndex: evaluation.matchedPairIndex,
+        sourceSnapshot: run.sampling?.log.snapshotFingerprint ?? null, inputHash: evaluation.inputHash ?? null,
+        unitIds: selected ? [selected.a.packet.unit.id, selected.b.packet.unit.id] : [],
+        candidateCaseId: caseEntry?.caseId ?? null, status: row.status,
+        productionVerdict: row.review?.verdict ?? null, productionReason: row.review?.reason ?? null,
+        productionNote: row.review?.note ?? row.error, accountedUsd,
+        unknownCostCalls: calls.filter(call => call.unknownCost).length,
+        phaseUsd: Object.fromEntries([...new Set(calls.map(call => call.phase))]
+          .map(phase => [phase, calls.filter(call => call.phase === phase).reduce((sum, call) => sum + call.accountedUsd, 0)])),
+        calls, assessments: dreamRunAssessments(row) };
+    });
+    const independent = { ref: unblindedFile ?? 'native-graph-calibration-review-2026-10-14.json',
+      labels: review.cases.map((label: { caseId: string; verdict: 'accept' | 'reject' | 'unverified'; family: string }) => ({
+        ...label, novelty: unblinded?.cases.find((entry: { caseId: string }) => entry.caseId === label.caseId)?.novelty ?? 'unknown',
+        qualified: unblinded?.cases.find((entry: { caseId: string }) => entry.caseId === label.caseId)?.qualified ?? null,
+      })) };
+    const summary = summarizeDreamGraphComparison({ protocol: comparison.protocol, attempts: dreams, independent });
+    const output = { measuredAt: new Date().toISOString(), protocolPin: comparison.pin, blindHash,
+      ...summary, dreams, independentReview: review, unblindedReview: unblinded,
+      recordedLinkedExperiments: metrics.experiments,
+      verifiedBeneficialExperiments: metrics.experiments.executed === 0 ? 0 : null,
+      downstreamTrialsExecuted: metrics.experiments.executed,
+      downstreamDisposition: unblinded && unblinded.cases.every((entry: { qualified: boolean | null }) => entry.qualified === false)
+        ? 'not-applicable-no-qualified-candidates' : 'qualification-incomplete',
+      decision: { route: 'narrow', basis: 'Retain bounded source/graph evidence and controls; no automatic graph preference or expanded study spend is justified.' },
+      limitations: ['Exploratory four-trial cohort; no treatment effect estimate.',
+        'Two graph attempts failed before candidate generation. Later source checks do not explain those historical failures.',
+        'Equal attempt and spend caps do not imply equal realized usage or successful generation.',
+        'Provider ledger dollars exclude unpriced local compute and engineer/reviewer time; external independent-review inference cost is separate.',
+        'Independent AI review is not human validation or held-out confirmation.',
+        'Downstream counts cover experiment batteries explicitly linked by stored Dream assessments; unlinked work is not measured.',
+        'No executed benefit is inferred from a candidate, an acceptance label, or a planned experiment.'] };
+    const lines = ['# Native graph Dream comparison', '', '**Inconclusive.** ' + output.decision.basis, '',
+      '| Treatment | Attempts | Candidates | Provider/accounted USD | Qualified families |',
+      '|---|---:|---:|---:|---:|', ...summary.treatments.map(row =>
+        `| ${row.treatment} | ${row.attempts} | ${row.candidateCount} | ${row.accountedUsd.toFixed(6)} | ${row.qualifiedFamilies ?? 'unknown'} |`),
+      '', `Protocol: ${comparison.pin}. Blind packet: ${blindHash}.`, '',
+      `Downstream: ${output.downstreamDisposition}; executed trials ${output.downstreamTrialsExecuted}.`, '',
+      ...output.limitations.map(line => '- ' + line), '',
+      'The companion native-graph-evidence-summary.json retains exact run/call identities, technical failures, frozen review and cost reservations.', ''];
+    await writeFile(resolve(here, 'native-graph-evidence-summary.json'), JSON.stringify(output, null, 2) + '\n');
+    await writeFile(resolve(here, 'native-graph-evidence-summary.md'), lines.join('\n'));
+    console.log(JSON.stringify({ ...summary, downstreamDisposition: output.downstreamDisposition }));
+  } finally { await sql.end({ timeout: 5 }); }
+}

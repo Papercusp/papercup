@@ -48,6 +48,7 @@ const {
   withOptionalMemoryAdmissionMock,
   buildTurnStartOrientationBlockMock,
   readSuLaunchSpecByOwnerMock,
+  readAdvSessionLaunchRecordByOwnerMock,
   evaluateTurnStartPackageSinkMock,
   packageSinkReceiptMock,
 } = vi.hoisted(() => ({
@@ -67,6 +68,7 @@ const {
   withOptionalMemoryAdmissionMock: vi.fn(),
   buildTurnStartOrientationBlockMock: vi.fn(),
   readSuLaunchSpecByOwnerMock: vi.fn(),
+  readAdvSessionLaunchRecordByOwnerMock: vi.fn(),
   evaluateTurnStartPackageSinkMock: vi.fn(),
   packageSinkReceiptMock: vi.fn(),
 }));
@@ -96,6 +98,7 @@ vi.mock('../../../stack-binding-channel', () => ({
 vi.mock('../../../adv-sessions', async (orig) => ({
   ...(await orig<typeof import('../../../adv-sessions')>()),
   readSuLaunchSpecByOwner: readSuLaunchSpecByOwnerMock,
+  readAdvSessionLaunchRecordByOwner: readAdvSessionLaunchRecordByOwnerMock,
 }));
 vi.mock('../../../memory/detect-harness-slug', () => ({
   detectHarnessSlugSync: detectHarnessSlugSyncMock,
@@ -194,6 +197,7 @@ beforeEach(() => {
     );
   buildTurnStartOrientationBlockMock.mockReset().mockResolvedValue({ block: '', deliveryToken: null });
   readSuLaunchSpecByOwnerMock.mockReset().mockResolvedValue(null);
+  readAdvSessionLaunchRecordByOwnerMock.mockReset().mockResolvedValue(null);
   evaluateTurnStartPackageSinkMock.mockReset().mockResolvedValue({ result: null, classes: [] });
   packageSinkReceiptMock.mockReset().mockReturnValue(null);
 });
@@ -505,7 +509,39 @@ describe('granted-sources leg (Personal Vault + subscribed sources + pot)', () =
       userId: 'u-1',
       workspaceId: 'ws-test',
       query: 'prepare me for the Acme review',
+      // No launch record for this owner: the session is unknown, judged by dataUse only.
+      session: null,
     });
+  });
+
+  // enterprise-readiness P-007 (WI-6554700010011738): the leg is judged against the
+  // RECEIVING session's provider, resolved from its newest launch record.
+  it('passes the receiving session backend/model from its launch record', async () => {
+    buildGrantedSourcesContextBlockMock.mockResolvedValue('VAULT-BLOCK');
+    readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({
+      workspaceId: 'ws-test',
+      agent: 'codex',
+      launchSpec: { agent: 'codex', model: 'gpt-5.5:high' },
+      launchArgv: null,
+    });
+
+    await post({ owner: 'su-codex-1', prompt: 'summarize the org policy', workspace: 'ws-test' });
+
+    expect(readAdvSessionLaunchRecordByOwnerMock).toHaveBeenCalledWith('su-codex-1');
+    expect(buildGrantedSourcesContextBlockMock.mock.calls[0]![0]).toMatchObject({
+      ownerId: 'su-codex-1',
+      session: { agent: 'codex', model: 'gpt-5.5:high' },
+    });
+  });
+
+  it('an unreadable launch record leaves the session unknown instead of failing the leg', async () => {
+    buildGrantedSourcesContextBlockMock.mockResolvedValue('VAULT-BLOCK');
+    readAdvSessionLaunchRecordByOwnerMock.mockRejectedValue(new Error('adv_sessions unreachable'));
+
+    const out = await post({ owner: 'su-x', prompt: 'prepare me for the Acme review', workspace: 'ws-test' });
+
+    expect(out.text).toBe('MEM-BLOCK\n\nVAULT-BLOCK');
+    expect(buildGrantedSourcesContextBlockMock.mock.calls[0]![0]).toMatchObject({ session: null });
   });
 
   it('injects nothing when authorization refuses the caller', async () => {

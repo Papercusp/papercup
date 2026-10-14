@@ -82,6 +82,9 @@ process.once('message', async message => {
     let runId: string | undefined;
     const run = recordIsolatedIntegrationProof({
       root, filePath: 'packages/operator-core/lib/isolated-integration-proof.test.ts', sourcePaths: [],
+      prepare: evidenceDir => {
+        writeFileSync(join(evidenceDir, 'operator-api-build-result.json'), JSON.stringify({ status: 0, pid: 123 }));
+      },
       execute: async (observe, evidenceDir) => {
         runId = JSON.parse(readFileSync(join(evidenceDir, '../prepare/source.json'), 'utf8')).runId;
         child = fork(supervisorPath, [], { cwd: root, execArgv: [],
@@ -101,7 +104,8 @@ process.once('message', async message => {
     if (fails) expect(result.phases.find((p: { phase: string }) => p.phase === 'execute').detail)
       .toContain('original journey assertion');
     const artifacts = new Map<string, string>();
-    for (const path of ['phases/execute/worker-result.json', 'phases/execute/lifecycle-observation.json'])
+    for (const path of ['phases/prepare/operator-api-build-result.json',
+      'phases/execute/worker-result.json', 'phases/execute/lifecycle-observation.json'])
       artifacts.set(path, readFileSync(join(evidenceRoot, runId!, path), 'utf8'));
     const lifecyclePath = 'phases/execute/lifecycle.json';
     if (valid) {

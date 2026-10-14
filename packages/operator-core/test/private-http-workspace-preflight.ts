@@ -1,6 +1,6 @@
 /** Registry preflight shared by standalone private HTTP workers and their cheap guard. */
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
@@ -602,10 +602,15 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
   try {
     // The shell starts compiler, checker and guard descendants. Killing just
     // the shell on timeout lets them keep changing the failed run's evidence.
+    // Node's synchronous spawn supports detached process groups; the pinned
+    // typings expose that option only on SpawnOptions.
+    const buildOptions: SpawnSyncOptions & Pick<SpawnOptions, 'detached'> = {
+      cwd: root, env: process.env, stdio: ['ignore', log, log], detached: true,
+      timeout: builder?.timeoutMs ?? 240_000, killSignal: 'SIGKILL',
+    };
     const result = spawnSync(builder?.command ?? 'bash',
       builder?.args ?? [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path],
-      { cwd: root, env: process.env, stdio: ['ignore', log, log], detached: true,
-        timeout: builder?.timeoutMs ?? 240_000, killSignal: 'SIGKILL' });
+      buildOptions);
     receipt = { ...receipt, pid: result.pid, status: result.status, signal: result.signal,
       error: result.error && { code: (result.error as NodeJS.ErrnoException).code, message: result.error.message } };
     if (result.error || result.status !== 0) {

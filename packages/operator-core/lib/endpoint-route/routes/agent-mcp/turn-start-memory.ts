@@ -34,6 +34,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { randomUUID } from 'node:crypto';
 import type { ActivationRevision } from '../../../session-activation';
+import type { LaunchGovernanceTarget } from '../../../governance-policy/session-governance';
 
 // Reuse the hook's emission ledger and the existing two-phase cursor store.
 // This surface is separate from orientation: CTRL may be the only emitted block.
@@ -459,6 +460,28 @@ const turnStartMemory = defineTool({
       })();
 
       /**
+       * enterprise-readiness P-007 (WI-6554700010011738): the RECEIVING session's
+       * backend/model, read from its newest launch record, so the granted-sources
+       * leg judges the session provider (models/egress) as well as dataUse.
+       * Started here, concurrently with recall, so it adds no serial latency under
+       * the hook's 2.5s wall. Unknown (no launch record, store unavailable) ⇒ null
+       * ⇒ that leg is judged by dataUse only; the launch tools already refuse a
+       * forbidden provider before a session exists.
+       */
+      const sessionTargetPromise = (async (): Promise<LaunchGovernanceTarget | null> => {
+        if (body.memoryEnabled === false) return null;
+        try {
+          const [{ readAdvSessionLaunchRecordByOwner }, { launchTargetFromRecord }] = await Promise.all([
+            import('../../../adv-sessions'),
+            import('../../../governance-policy/session-governance'),
+          ]);
+          return launchTargetFromRecord(await readAdvSessionLaunchRecordByOwner(owner));
+        } catch {
+          return null;
+        }
+      })();
+
+      /**
        * Resolve the human principal and chrome-free query once for both recall
        * legs. Personal Vault remains a separate authorization/search/output
        * path; sharing these two server-owned inputs does not add it to general
@@ -619,9 +642,10 @@ const turnStartMemory = defineTool({
           // enterprise-data-sources P-017 / R-11: the generalized granted-sources
           // leg — Personal Vault (same authorization) plus documents from sources
           // this agent's pot/plan subscribes to, all fenced as untrusted data.
-          const [{ buildGrantedSourcesContextBlock }, recallInput] = await Promise.all([
+          const [{ buildGrantedSourcesContextBlock }, recallInput, session] = await Promise.all([
             import('../../../data-sources/granted-sources-injection'),
             recallInputPromise,
+            sessionTargetPromise,
           ]);
           if (!recallInput?.userId) return '';
           return (
@@ -630,6 +654,7 @@ const turnStartMemory = defineTool({
               userId: recallInput.userId,
               workspaceId,
               query: recallInput.queryText,
+              session,
             })) ?? ''
           );
         } catch {

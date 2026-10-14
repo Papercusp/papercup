@@ -543,7 +543,8 @@ export async function recordIsolatedIntegrationProof(options: {
 
 /** Common small diagnostics emitted by the maintained private worker/browser boundary. */
 export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[] {
-  return ['phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-inputs.json',
+  return ['phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-build-result.json',
+    'phases/prepare/operator-api-inputs.json',
     'phases/prepare/verifier-source.json', 'phases/execute/worker-result.json',
     'phases/execute/lifecycle-observation.json',
     'phases/execute/worker-progress.ndjson',

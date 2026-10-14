@@ -53,6 +53,12 @@ async function main() {
   assert.deepEqual(scope, { workspaceId: workspace, harnessSlug: workspace });
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
   const { sql } = getOrgPg();
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-setup') {
+    await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
+    console.log('CURRENT_SU_NATIVE_SETUP_RECEIPT ' + JSON.stringify({ workspace,
+      accountId: 'private-current-su', provider: 'codex', providerForwarding: false }));
+    return;
+  }
   if (['committed-reader-setup', 'committed-reader-setup-exception'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '')) {
     const receipt = await (await import('./committed-reader-http-scenario')).measureCommittedReaderSetup({
       workspace, harness, evidenceDir,
@@ -65,8 +71,11 @@ async function main() {
   const sourcePath = 'packages/operator-core/lib/agent-tools/plans/staging-first-activation-guard.ts';
   const sourceSha256 = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
   const isCommittedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader';
-  const prepared = isCommittedReader ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
-  assert.ok(!isCommittedReader || prepared, 'Committed reader requires an independently prepared pinned API');
+  const isBlueprintRoute = e.STAGING_FIRST_HTTP_SCENARIO === 'blueprint-account-route';
+  const prepared = isCommittedReader || isBlueprintRoute
+    ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
+  assert.ok(!(isCommittedReader || isBlueprintRoute) || prepared,
+    'Selected request scenario requires its prepared pinned API');
   const bundle = prepared ?? join(evidenceDir, 'hono-host.mjs');
   if (!prepared) {
     console.log('STAGING_FIRST_HTTP_PHASE bundle-start');
@@ -110,6 +119,8 @@ async function main() {
     ? await (await import('./blueprint-account-route-http-scenario')).prepareBlueprintAccountRouteScenario({ workspace, evidenceDir })
     : undefined;
   disposeScenario = blueprintRoute?.dispose ?? committedReader?.dispose;
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native')
+    await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
   // Preparation changes socket/tmp settings; compare the final host environment
   // again. A refused pin still follows the same finally/dispose path.
   if (qualifySource) qualifySource();
@@ -117,6 +128,9 @@ async function main() {
   // Apply the mount boundary to the whole operator/invoke/native lineage.
   const privateRoot = dirname(e.HOME!);
   const hostEnv = privateBundleRuntimeEnv(e);
+  // Use the maintained installed shim's explicit launcher override; its
+  // default release checkout cannot certify this current-build candidate.
+  hostEnv.PAPERCUSP_PSU_LAUNCHER = join(root, 'apps/operator/scripts/psu-launcher.mjs');
   host = blueprintRoute
     ? spawn('bwrap', ['--die-with-parent', '--ro-bind', '/', '/', '--bind', privateRoot, privateRoot,
       '--bind', evidenceDir, evidenceDir, '--dev', '/dev', '--proc', '/proc', '--', process.execPath, bundle],
@@ -129,7 +143,7 @@ async function main() {
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
   if (blueprintRoute) {
-    const receipt = await blueprintRoute.execute();
+    const receipt = await blueprintRoute.execute(stopHost);
     await stopHost();
     await blueprintRoute.dispose();
     disposeScenario = undefined;

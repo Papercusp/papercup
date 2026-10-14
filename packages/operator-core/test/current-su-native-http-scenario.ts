@@ -8,7 +8,9 @@ import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import type { PapercuspUnifiedToolContext } from '../lib/agent-tools/_tool-context';
-import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGatewayController } from '../lib/external-bench/current-su';
+import { currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, currentBenchAssignmentId, currentBenchGatewayController } from '../lib/external-bench/current-su';
+import { liveBenchHarnessOps } from '../lib/external-bench/bench-harness-live';
+import { retainIsolatedWorkerProgress } from './isolated-integration-proof';
 import { startFrontierSweLaunchAdapter } from '../lib/external-bench/frontier-swe-launch-adapter';
 import { startCodexHookBridge, type CodexHookBridge } from '../lib/external-bench/codex-hook-bridge';
 import { startBenchEgress, sweepBenchEgress } from '../lib/external-bench/bench-egress';
@@ -17,6 +19,25 @@ import { currentProtocolFixture } from '../lib/external-bench/reproducibility/_p
 import { preregister } from '../lib/external-bench/reproducibility/prereg';
 import { getModes } from '../lib/modes/store';
 import { readSessionConfinement } from '../lib/capability-envelope/session-confinement-store';
+import { emptyPool, registerAccount } from '../lib/deployment/account-pool';
+import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-pool-store';
+
+/** Seed only the disposable private pool before its operator boots. The
+ * credential is deliberately invalid; inference still terminates at the local
+ * refusal listener and authenticateProvider below can never forward it. */
+export async function prepareCurrentSuNativeScenario(workspace: string) {
+  assert.match(workspace, /^test-runtime-/);
+  assert.equal(process.env.PAPERCUSP_WORKSPACE_ID, workspace);
+  const home = join(process.env.HOME!, '.private-current-su-codex');
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt',
+    tokens: { access_token: randomUUID(), account_id: 'private-current-su' } }), { mode: 0o600 });
+  const account = { id: 'private-current-su', provider: 'codex' as const, credentialRef: `codex-cli:${home}` };
+  await updateAccountPool(() => registerAccount(emptyPool(), account, Date.now()), workspace);
+  const pool = await loadAccountPool(workspace);
+  assert.deepEqual(pool.accounts.map(row => ({ id: row.id, provider: row.provider, credentialRef: row.credentialRef })), [account]);
+  process.env.PAPERCUSP_MCP_PROXY = '0';
+}
 
 export async function measureCurrentSuNativeScenario(input: { workspace: string; base: string; evidenceDir: string }) {
   const { workspace, base, evidenceDir } = input;
@@ -46,10 +67,13 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     input: `blob\nmark :1\ndata ${Buffer.byteLength(protocolBytes)}\n${protocolBytes}\ncommit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1577836800 +0000\ndata 6\nfrozen\nM 100644 :1 ${frozen.filePath}\n\ndone\n` });
   const bodies: Array<Record<string, unknown>> = [];
   const requests: Array<{ method?: string; path?: string; at: string }> = [];
+  const progress = (stage: string, evidence: Record<string, unknown> = {}) =>
+    retainIsolatedWorkerProgress(evidenceDir, stage, evidence);
   let observedAuto = false;
   // This service has no provider credential, response generator or forwarding path.
   const listener = createServer(async (req, res) => {
     requests.push({ method: req.method, path: req.url, at: new Date().toISOString() });
+    progress('model-transport-request', { request: requests.at(-1), modelRequests: bodies.length });
     const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
     if (req.url?.endsWith('/responses')) {
       bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
@@ -73,7 +97,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   } } as never));
   const ctx = { workspaceId: workspace, isSuperuser: true, uiClientId: `su-private-native-${randomUUID()}`,
     principal: { slug: 'system:superuser' } } as PapercuspUnifiedToolContext;
-  const phase = (name: string) => console.log('CURRENT_SU_NATIVE_PHASE ' + name);
+  const phase = (name: string) => { progress(name); console.log('CURRENT_SU_NATIVE_PHASE ' + name); };
   let adapter: Awaited<ReturnType<typeof startFrontierSweLaunchAdapter>> | undefined;
   let bridge: CodexHookBridge | undefined;
   let handle: FrontierSweEnvHandle | undefined;
@@ -82,7 +106,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     adapter = await startFrontierSweLaunchAdapter({ runId: config.runId, context: ctx, mcpOrigin: base,
       hookRecordDir: join(evidenceDir, 'private-hook-records'),
       seam: { version: 'private-lifecycle', extraRunArgs: ['--workdir', '/app'] },
-      startAssignment: async () => ({
+      startAssignment: async () => { phase('assignment-start'); return {
         options: { workspaceId: workspace, runId: config.runId, armId: 'papercusp', seed: 1,
           agent: 'codex', model: 'gpt-6-luna', effort: 'max', account: 'auto', pollIntervalMs: 100,
           driveTimeoutMs: 180000, preregistration: { config, preregHash: frozen.preregHash, repoRoot } },
@@ -91,15 +115,37 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
         checkout: { dir: checkout, repo: 'fixture/private', baseCommit: 'fixture', cleanup: async () => {} },
         generationBudget: config.arms[0].generationBudget, readModelCalls: async () => bodies.length,
         stop: async () => { await hosted.stop(); },
-      }),
+      }; },
     }, {
-      startBridge: async options => { bridge = await startCodexHookBridge(options); return bridge; },
-      startEgress: startBenchEgress, sweep: sweepBenchEgress, createDriver: createCurrentSuBenchHarness,
+      startBridge: async options => { phase('bridge-start'); bridge = await startCodexHookBridge(options); phase('bridge-ready'); return bridge; },
+      startEgress: async options => { phase('egress-start'); const egress = await startBenchEgress(options); phase('egress-ready'); return egress; },
+      sweep: sweepBenchEgress,
+      createDriver: (options, context, observations) => {
+        phase('driver-start');
+        const ports = liveCurrentSuBenchPorts(context, observations, options);
+        return currentSuBenchHarnessDriver(liveBenchHarnessOps(options), { ...ports,
+          launch: async args => {
+            phase('launch-start');
+            try { const receipt = await ports.launch(args); progress('launch-returned', { receipt }); return receipt; }
+            catch (error) { progress('launch-failed', { error: String(error) }); throw error; }
+          },
+          getTask: async id => {
+            const task = await ports.getTask(id);
+            progress('task-observed', { task: task && { taskId: task.taskId, workspaceId: task.workspaceId,
+              sessionId: task.sessionId, state: task.state, exitCode: task.exitCode,
+              ownerId: task.detail.coordOwnerId, label: task.detail.label, nativeStreamError: task.detail.nativeStreamError } });
+            return task;
+          },
+          readIdentity: async task => { const identity = await ports.readIdentity(task); progress('identity-observed', { taskId: task.taskId, measured: !!identity }); return identity; },
+        }, options);
+      },
     });
     const task = { benchmark: 'frontier-swe' as const, instanceId: 't1',
       problemStatement: 'Report the private lifecycle task status.',
       graderMeta: { dockerImage: 'alpine', gpus: 0, networkMode: 'no-network' } };
+    phase('clone-start');
     handle = await adapter.seam.clone(task);
+    phase('clone-ready');
     phase('native-start');
     const output = await adapter.runAgent({ task, handle, role: 'worker', arm: 'papercusp', teamKey: 'private-native',
       topic: '', directive: '', forbidTools: [], attemptBudget: { maxCostUsd: 3, maxTokens: 100000, maxWallMs: 180000 } });

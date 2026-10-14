@@ -4,6 +4,7 @@ import { fork } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { mkdir, rm, symlink } from 'node:fs/promises';
 import { expect, it } from 'vitest';
+import type {} from '../../test/current-su-native-http-scenario';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 
@@ -14,6 +15,7 @@ it('launches autonomous current-su through the native container adapter without 
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/external-bench/current-su-native.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
+      'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/test/current-su-native-http-scenario.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/lib/external-bench/current-su.ts',

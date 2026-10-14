@@ -1,15 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   addGovernancePolicyException,
+  applyGovernancePolicyChange,
+  chainRevision,
+  decideGovernancePolicyChange,
   explainFromLoad,
   getGovernancePolicyState,
+  GOVERNANCE_POLICY_CHANGE_ACTION,
   GOVERNANCE_POLICY_SYNC_QUERY,
   MAX_LAYERS_WITH_HISTORY,
   parseGovernedRequest,
+  prepareGovernancePolicyChange,
   setGovernancePolicyLayer,
   simulateGovernancePolicy,
   type GovernancePolicyControlDeps,
 } from './control';
+import { SensitiveActionError } from './sensitive-action';
 import { enforceInheritedPolicy, governedRequestOf } from './enforce';
 import { simulateInheritedPolicy, type GovernedRequest, type PolicyLayer } from './inherited-policy';
 import { GovernancePolicyWriteError, type ChainLoad, type StoredPolicyLayer, type UpsertLayerInput } from './store';
@@ -64,6 +70,25 @@ function fakeDeps(over: Partial<GovernancePolicyControlDeps> = {}): GovernancePo
     invalidateCache: vi.fn(),
     notify: vi.fn(async () => undefined),
     now: () => NOW,
+    // P-006: authority and the sensitive-action store. The default actor is authorized; tests that
+    // exercise the gate override `authorize`. The action store is unused unless a test fakes it.
+    authorize: vi.fn(async () => true),
+    createOrganization: async (input) => {
+      upserts.push(input);
+      return layer(input.layerId, input.level, input.parentLayerId, input.rules, {
+        exceptions: input.exceptions ?? [],
+        updatedBy: input.actor,
+      });
+    },
+    prepareAction: vi.fn(async () => {
+      throw new Error('prepareAction not faked');
+    }),
+    decideAction: vi.fn(async () => {
+      throw new Error('decideAction not faked');
+    }),
+    executeAction: vi.fn(async () => {
+      throw new Error('executeAction not faked');
+    }),
     ...over,
   };
 }
@@ -252,9 +277,16 @@ describe('addGovernancePolicyException — expiring exceptions', () => {
 
   it('appends to the stored layer as a new version, pinned to the version it read', async () => {
     const deps = fakeDeps();
+    const out = await addGovernancePolicyException({ layerId: 'ws-a', exception, reason: 'incident 42' }, 'admin:avi', deps);
+    expect(out).toMatchObject({ ok: true, revision: 'ws-a@v2' });
+    expect(deps.upserts[0]).toMatchObject({ layerId: 'ws-a', expectedVersion: 1, exceptions: [exception], rules: WS.rules });
+  });
+
+  it('an exception on an organization layer is a sensitive change: approval-required, nothing written (P-006)', async () => {
+    const deps = fakeDeps();
     const out = await addGovernancePolicyException({ layerId: 'org', exception, reason: 'incident 42' }, 'admin:avi', deps);
-    expect(out).toMatchObject({ ok: true, revision: 'org@v2' });
-    expect(deps.upserts[0]).toMatchObject({ layerId: 'org', expectedVersion: 1, exceptions: [exception], rules: ORG.rules });
+    expect(out).toMatchObject({ ok: false, code: 'approval-required' });
+    expect(deps.upserts).toHaveLength(0);
   });
 
   it('refuses a stale expectedVersion and an unknown layer', async () => {
@@ -300,5 +332,103 @@ describe('getGovernancePolicyState', () => {
   it('reports an ungoverned workspace as load none with an empty chain', async () => {
     const state = await getGovernancePolicyState('ws-z', {}, fakeDeps({ loadChain: async () => ({ status: 'none' }) }));
     expect(state).toMatchObject({ load: 'none', chain: [], revision: null, reason: null });
+  });
+});
+
+describe('direct-write gate — sensitive levels and delegated scope (P-006, D-015)', () => {
+  const ws = { layerId: 'ws-a', level: 'workspace' as const, scopeRef: 'ws-a', parentLayerId: 'dept-eng', rules: {}, reason: 'r' };
+
+  it('an organization or department change returns approval-required and writes nothing', async () => {
+    for (const req of [
+      { layerId: 'org', level: 'organization' as const, scopeRef: 'acme', parentLayerId: null, rules: {}, reason: 'r' },
+      { layerId: 'dept-eng', level: 'department' as const, scopeRef: 'eng', parentLayerId: 'org', rules: {}, reason: 'r' },
+      { layerId: 'dept-new', level: 'department' as const, scopeRef: 'new', parentLayerId: 'org', rules: {}, reason: 'r' },
+    ]) {
+      const deps = fakeDeps();
+      expect(await setGovernancePolicyLayer(req, 'admin:avi', deps)).toMatchObject({ ok: false, code: 'approval-required' });
+      expect(deps.upserts).toHaveLength(0);
+    }
+  });
+
+  it('a workspace write needs prepare authority over the layer and any new parent', async () => {
+    const authorize = vi.fn(async (_p: string, layerId: string) => layerId === 'ws-a');
+    const deps = fakeDeps({ authorize });
+    expect(await setGovernancePolicyLayer(ws, 'admin:dept-a', deps)).toMatchObject({ ok: true });
+    const moved = await setGovernancePolicyLayer({ ...ws, parentLayerId: 'dept-sales' }, 'admin:dept-a', fakeDeps({ authorize }));
+    expect(moved).toMatchObject({ ok: false, code: 'forbidden' });
+    const denied = fakeDeps({ authorize: async () => false });
+    expect(await setGovernancePolicyLayer(ws, 'admin:other', denied)).toMatchObject({ ok: false, code: 'forbidden' });
+    expect(denied.upserts).toHaveLength(0);
+  });
+
+  it('a brand-new organization is bootstrapped only by a human principal', async () => {
+    const org = { layerId: 'org-new', level: 'organization' as const, scopeRef: 'new', parentLayerId: null, rules: {}, reason: 'r' };
+    const human = fakeDeps();
+    expect(await setGovernancePolicyLayer(org, 'admin:founder', human)).toMatchObject({ ok: true, revision: 'org-new@v1' });
+    expect(human.upserts[0]).toMatchObject({ layerId: 'org-new', actor: 'admin:founder' });
+    const agent = fakeDeps();
+    expect(await setGovernancePolicyLayer(org, 'su-agent-1', agent)).toMatchObject({ ok: false, code: 'forbidden' });
+    expect(agent.upserts).toHaveLength(0);
+  });
+});
+
+describe('prepareGovernancePolicyChange — simulate-before-apply is recorded (P-006)', () => {
+  const change = {
+    layerId: 'dept-eng',
+    level: 'department' as const,
+    scopeRef: 'eng',
+    parentLayerId: 'org',
+    rules: { tools: { deny: ['processes:kill'] } },
+    workspaceId: 'ws-a',
+    reason: 'lock process control',
+  };
+
+  it('records the simulated chain revision, the base version and the authority layer', async () => {
+    const prepareAction = vi.fn(async (input: Parameters<GovernancePolicyControlDeps['prepareAction']>[0]) => ({ requestId: 'r1', ...input }) as never);
+    const out = await prepareGovernancePolicyChange(change, 'su-agent-1', fakeDeps({ prepareAction }));
+    expect(out).toMatchObject({ ok: true });
+    expect(prepareAction).toHaveBeenCalledTimes(1);
+    const input = prepareAction.mock.calls[0]![0];
+    expect(input).toMatchObject({
+      actionKind: GOVERNANCE_POLICY_CHANGE_ACTION,
+      targetLayerId: 'dept-eng',
+      authorityLayerId: 'dept-eng',
+      baseVersion: 1,
+      chainRevision: chainRevision([ORG, DEPT, WS]),
+      preparedBy: 'su-agent-1',
+    });
+    expect(input.simulation).toMatchObject({ affectsWorkspace: true });
+  });
+
+  it('refuses a stale edit, a new organization, re-parenting and an unrelated workspace before preparing', async () => {
+    const prepareAction = vi.fn();
+    const deps = () => fakeDeps({ prepareAction });
+    expect(await prepareGovernancePolicyChange({ ...change, expectedVersion: 4 }, 'su-agent-1', deps())).toMatchObject({ code: 'conflict' });
+    expect(
+      await prepareGovernancePolicyChange({ ...change, layerId: 'org-x', level: 'organization', parentLayerId: null }, 'admin:a', deps()),
+    ).toMatchObject({ code: 'invalid' });
+    expect(await prepareGovernancePolicyChange({ ...change, parentLayerId: 'dept-other' }, 'su-agent-1', deps())).toMatchObject({
+      code: 'invalid',
+    });
+    const unrelated = fakeDeps({ prepareAction, loadChain: async () => ({ status: 'none' }) });
+    expect(await prepareGovernancePolicyChange(change, 'su-agent-1', unrelated)).toMatchObject({ code: 'invalid' });
+    expect(prepareAction).not.toHaveBeenCalled();
+  });
+
+  it('maps sensitive-action refusals to their codes on decide and apply', async () => {
+    const decideAction = vi.fn(async () => {
+      throw new SensitiveActionError('self-approval', 'admin:a prepared request r1');
+    });
+    expect(await decideGovernancePolicyChange({ requestId: 'r1', decision: 'approve', reason: 'ok' }, 'admin:a', fakeDeps({ decideAction }))).toEqual({
+      ok: false,
+      code: 'self-approval',
+      error: 'admin:a prepared request r1',
+    });
+    const executeAction = vi.fn(async () => {
+      throw new SensitiveActionError('replayed', 'request r1 was already executed');
+    }) as unknown as GovernancePolicyControlDeps['executeAction'];
+    const deps = fakeDeps({ executeAction });
+    expect(await applyGovernancePolicyChange({ requestId: 'r1' }, 'su-agent-1', deps)).toMatchObject({ ok: false, code: 'replayed' });
+    expect(deps.invalidateCache).not.toHaveBeenCalled();
   });
 });

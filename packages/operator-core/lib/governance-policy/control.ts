@@ -42,12 +42,38 @@ import {
   loadLayer,
   MAX_CHAIN_DEPTH,
   upsertLayer,
+  upsertLayerInTx,
   validateLayerInput,
   type ChainLoad,
   type PolicyLayerVersion,
   type StoredPolicyLayer,
   type UpsertLayerInput,
 } from './store';
+import type { Sql } from 'postgres';
+import {
+  authorize as authorizeGovernance,
+  createOrganizationLayer,
+  grantDelegation,
+  GovernanceAuthorityError,
+  listDelegations,
+  principalKindOf,
+  revokeDelegation,
+  type GovernanceAuthorityErrorCode,
+  type GovernanceCapability,
+  type GovernanceDelegation,
+} from './authority';
+import {
+  decideSensitiveAction,
+  executeSensitiveAction,
+  listSensitiveActions,
+  prepareSensitiveAction,
+  SensitiveActionError,
+  type DecideSensitiveActionInput,
+  type ExecuteSensitiveActionInput,
+  type PrepareSensitiveActionInput,
+  type SensitiveActionErrorCode,
+  type SensitiveActionRequest,
+} from './sensitive-action';
 
 /** The admin pane's sync query. Every successful write invalidates it. */
 export const GOVERNANCE_POLICY_SYNC_QUERY = 'governancePolicy.state';
@@ -119,6 +145,16 @@ export interface GovernancePolicyControlDeps {
   /** Tell open panes to re-read. Best-effort: a failed notify never fails a committed write. */
   notify: (queryName: string) => Promise<void>;
   now: () => Date;
+  /** Does `principal` hold `capability` over `layerId`? (authority.ts, P-006 / D-015) */
+  authorize: (principal: string, layerId: string, capability: GovernanceCapability) => Promise<boolean>;
+  /** Create a brand-new organization layer and its creator's bootstrap delegation, atomically. */
+  createOrganization: (input: UpsertLayerInput) => Promise<StoredPolicyLayer>;
+  prepareAction: (input: PrepareSensitiveActionInput) => Promise<SensitiveActionRequest>;
+  decideAction: (input: DecideSensitiveActionInput) => Promise<SensitiveActionRequest>;
+  executeAction: <T>(
+    input: ExecuteSensitiveActionInput,
+    run: (tx: Sql, request: SensitiveActionRequest) => Promise<T>,
+  ) => Promise<{ request: SensitiveActionRequest; result: T }>;
 }
 
 const defaultDeps: GovernancePolicyControlDeps = {
@@ -135,6 +171,11 @@ const defaultDeps: GovernancePolicyControlDeps = {
     await notifySyncInvalidate(queryName);
   },
   now: () => new Date(),
+  authorize: (principal, layerId, capability) => authorizeGovernance(principal, layerId, capability),
+  createOrganization: async (input) => (await createOrganizationLayer(input)).layer,
+  prepareAction: (input) => prepareSensitiveAction(input),
+  decideAction: (input) => decideSensitiveAction(input),
+  executeAction: (input, run) => executeSensitiveAction(input, run),
 };
 
 function resolveDeps(deps?: Partial<GovernancePolicyControlDeps>): GovernancePolicyControlDeps {
@@ -416,7 +457,15 @@ export async function simulateGovernancePolicy(
 
 // ── set / add-exception ─────────────────────────────────────────────────────────────────────
 
-export type GovernancePolicyWriteCode = 'invalid' | 'conflict' | 'parent' | 'unavailable';
+export type GovernancePolicyWriteCode =
+  | 'invalid'
+  | 'conflict'
+  | 'parent'
+  | 'unavailable'
+  /** An organization/department change is a sensitive action: prepare, approve, apply (P-006). */
+  | 'approval-required'
+  /** The actor holds no authority over that scope (P-006 delegated administration). */
+  | 'forbidden';
 
 export type GovernancePolicyWriteResult =
   | { ok: true; layer: StoredPolicyLayer; revision: string }
@@ -450,8 +499,11 @@ export async function setGovernancePolicyLayer(
   if (invalid) return { ok: false, code: 'invalid', error: invalid };
   let layer: StoredPolicyLayer;
   try {
-    layer = await d.upsertLayer(input);
+    const gate = await directWriteGate(req, actor, d);
+    if (gate !== 'write' && gate !== 'bootstrap') return gate;
+    layer = gate === 'bootstrap' ? await d.createOrganization(input) : await d.upsertLayer(input);
   } catch (err) {
+    if (err instanceof GovernanceAuthorityError) return { ok: false, code: authorityCode(err.code), error: err.message };
     if (err instanceof GovernancePolicyWriteError) return { ok: false, code: err.code, error: err.message };
     return { ok: false, code: 'unavailable', error: err instanceof Error ? err.message : String(err) };
   }
@@ -496,4 +548,291 @@ export async function addGovernancePolicyException(
     actor,
     d,
   );
+}
+
+// ── P-006 (D-015): sensitive policy changes and delegated authority ─────────────
+
+/** The sensitive action kind for an organization/department governance policy change. */
+export const GOVERNANCE_POLICY_CHANGE_ACTION = 'governance-policy:set-layer';
+
+const SENSITIVE_LEVELS: readonly PolicyLevel[] = ['organization', 'department'];
+
+function authorityCode(code: GovernanceAuthorityErrorCode): GovernancePolicyWriteCode {
+  return code === 'not-found' ? 'invalid' : code;
+}
+
+/**
+ * Who may write `req` directly. An organization or department layer change is a sensitive action
+ * (prepare, distinct approval, apply), except the bootstrap creation of a brand-new organization by
+ * a human. A workspace layer needs `prepare` over its existing layer (or, when new, its parent) and
+ * over any new parent, so a department administrator writes only inside its delegated subtree.
+ */
+async function directWriteGate(
+  req: SetLayerRequest,
+  actor: string,
+  d: GovernancePolicyControlDeps,
+): Promise<'write' | 'bootstrap' | GovernancePolicyWriteResult> {
+  const existing = await d.loadLayer(req.layerId);
+  if (req.level === 'organization' && !existing) {
+    if (principalKindOf(actor) !== 'human') {
+      return { ok: false, code: 'forbidden', error: `${actor} is a service identity; only a human administrator can create an organization` };
+    }
+    return 'bootstrap';
+  }
+  if (SENSITIVE_LEVELS.includes(req.level) || (existing && SENSITIVE_LEVELS.includes(existing.level))) {
+    return {
+      ok: false,
+      code: 'approval-required',
+      error:
+        `changing ${req.level} layer ${req.layerId} is a sensitive action: prepare it (op=prepare, which simulates it), ` +
+        'have a distinct authorized administrator approve it (op=decide), then apply it (op=apply)',
+    };
+  }
+  const scopes = new Set<string>();
+  if (existing) scopes.add(existing.layerId);
+  if (req.parentLayerId && req.parentLayerId !== existing?.parentLayerId) scopes.add(req.parentLayerId);
+  for (const scope of scopes) {
+    if (!(await d.authorize(actor, scope, 'prepare'))) {
+      return {
+        ok: false,
+        code: 'forbidden',
+        error: `${actor} holds no prepare authority over ${scope}; an administrator writes only within its delegated scope`,
+      };
+    }
+  }
+  return 'write';
+}
+
+export const governancePolicyPrepareSchema = z.object({
+  ...layerShape,
+  /** The workspace the server simulates the change against (it must sit under the layer). */
+  workspaceId: z.string().min(1),
+  reason: z.string().min(1),
+  expectedVersion: z.number().int().min(0).optional(),
+  requests: z.array(requestSchema).max(50).optional(),
+  requiredApprovals: z.number().int().min(1).max(5).optional(),
+});
+export const governancePolicyDecideSchema = z.object({
+  requestId: z.string().min(1),
+  decision: z.enum(['approve', 'deny']),
+  reason: z.string().min(1),
+});
+export const governancePolicyApplySchema = z.object({
+  requestId: z.string().min(1),
+  expectedPayloadHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+});
+export const governancePolicyDelegateSchema = z.object({
+  principal: z.string().min(1),
+  layerId: z.string().min(1),
+  capabilities: z.array(z.enum(['prepare', 'approve', 'delegate'])).min(1),
+  reason: z.string().min(1),
+  expiresAt: z.string().min(1),
+});
+export const governancePolicyRevokeDelegationSchema = z.object({
+  delegationId: z.string().min(1),
+  reason: z.string().min(1),
+});
+export const governancePolicyAuthoritySchema = z.object({
+  workspaceId: z.string().min(1).optional(),
+  layerIds: z.array(z.string().min(1)).max(50).optional(),
+  status: z.enum(['open', 'all']).optional(),
+});
+
+export interface PrepareChangeRequest extends SetLayerRequest {
+  workspaceId: string;
+  requests?: GovernedRequest[];
+  requiredApprovals?: number;
+}
+
+export type GovernancePolicyChangeCode = GovernancePolicyWriteCode | SensitiveActionErrorCode;
+export type GovernancePolicyFailure = { ok: false; code: GovernancePolicyChangeCode; error: string };
+export type GovernancePolicyChangeResult = { ok: true; request: SensitiveActionRequest } | GovernancePolicyFailure;
+export type GovernancePolicyApplyResult =
+  | { ok: true; request: SensitiveActionRequest; layer: { layerId: string; version: number }; revision: string }
+  | GovernancePolicyFailure;
+export type GovernanceDelegationResult = { ok: true; delegation: GovernanceDelegation } | GovernancePolicyFailure;
+
+function changeFailure(err: unknown): GovernancePolicyFailure {
+  if (err instanceof SensitiveActionError) return { ok: false, code: err.code, error: err.message };
+  if (err instanceof GovernanceAuthorityError) return { ok: false, code: authorityCode(err.code), error: err.message };
+  if (err instanceof GovernancePolicyWriteError) return { ok: false, code: err.code, error: err.message };
+  return { ok: false, code: 'unavailable', error: err instanceof Error ? err.message : String(err) };
+}
+
+/**
+ * Prepare an organization/department change: validate, refuse a stale edit, SIMULATE it on the
+ * server against `workspaceId`, and record the request with the simulated chain revision and the
+ * target's base version. Apply later refuses if either has moved (enforced simulate-before-apply).
+ */
+export async function prepareGovernancePolicyChange(
+  req: PrepareChangeRequest,
+  actor: string,
+  deps?: Partial<GovernancePolicyControlDeps>,
+): Promise<GovernancePolicyChangeResult> {
+  const d = resolveDeps(deps);
+  const proposed: ProposedLayer = {
+    layerId: req.layerId,
+    level: req.level,
+    scopeRef: req.scopeRef,
+    parentLayerId: req.parentLayerId,
+    rules: req.rules,
+    exceptions: req.exceptions ?? [],
+  };
+  const invalid = validateLayerInput({ ...proposed, actor, reason: req.reason, expectedVersion: req.expectedVersion });
+  if (invalid) return { ok: false, code: 'invalid', error: invalid };
+  try {
+    const existing = await d.loadLayer(req.layerId);
+    const baseVersion = existing?.version ?? 0;
+    if (req.expectedVersion !== undefined && req.expectedVersion !== baseVersion) {
+      return { ok: false, code: 'conflict', error: `layer ${req.layerId} is at v${baseVersion}, not the v${req.expectedVersion} you edited; reload and retry` };
+    }
+    if (!existing && req.level === 'organization') {
+      return { ok: false, code: 'invalid', error: 'a new organization layer is created directly by its human administrator (op=set), not prepared' };
+    }
+    if (existing && existing.parentLayerId !== req.parentLayerId) {
+      return { ok: false, code: 'invalid', error: `re-parenting ${req.layerId} is not supported; create a new layer under the new parent` };
+    }
+    const simulation = await simulateGovernancePolicy(req.workspaceId, proposed, req.requests ?? [], d);
+    if (simulation.validation) return { ok: false, code: 'invalid', error: simulation.validation };
+    if (existing && !simulation.affectsWorkspace) {
+      return { ok: false, code: 'invalid', error: `workspace ${req.workspaceId} is not governed by ${req.layerId}; simulate against a workspace beneath it` };
+    }
+    const load = await d.loadChain(req.workspaceId);
+    const request = await d.prepareAction({
+      workspaceId: req.workspaceId,
+      actionKind: GOVERNANCE_POLICY_CHANGE_ACTION,
+      targetLayerId: req.layerId,
+      authorityLayerId: existing ? existing.layerId : (req.parentLayerId as string),
+      payload: { ...proposed, reason: req.reason },
+      chainRevision: chainRevision(load.status === 'none' ? [] : load.chain),
+      baseVersion,
+      simulation,
+      preparedBy: actor,
+      reason: req.reason,
+      requiredApprovals: req.requiredApprovals,
+      now: d.now(),
+    });
+    await d.notify(GOVERNANCE_POLICY_SYNC_QUERY).catch(() => undefined);
+    return { ok: true, request };
+  } catch (err) {
+    return changeFailure(err);
+  }
+}
+
+/** Approve or deny a prepared change. The decider must be a distinct human with approve authority. */
+export async function decideGovernancePolicyChange(
+  req: { requestId: string; decision: 'approve' | 'deny'; reason: string },
+  actor: string,
+  deps?: Partial<GovernancePolicyControlDeps>,
+): Promise<GovernancePolicyChangeResult> {
+  const d = resolveDeps(deps);
+  try {
+    const request = await d.decideAction({ requestId: req.requestId, approver: actor, decision: req.decision, reason: req.reason, now: d.now() });
+    await d.notify(GOVERNANCE_POLICY_SYNC_QUERY).catch(() => undefined);
+    return { ok: true, request };
+  } catch (err) {
+    return changeFailure(err);
+  }
+}
+
+/** Apply an approved change exactly once, inside its execution window. */
+export async function applyGovernancePolicyChange(
+  req: { requestId: string; expectedPayloadHash?: string },
+  actor: string,
+  deps?: Partial<GovernancePolicyControlDeps>,
+): Promise<GovernancePolicyApplyResult> {
+  const d = resolveDeps(deps);
+  try {
+    const { request, result } = await d.executeAction(
+      { requestId: req.requestId, executor: actor, expectedPayloadHash: req.expectedPayloadHash, now: d.now() },
+      (tx, prepared) => applyPreparedLayer(tx, prepared, actor),
+    );
+    d.invalidateCache();
+    await d.notify(GOVERNANCE_POLICY_SYNC_QUERY).catch(() => undefined);
+    return { ok: true, request, layer: { layerId: result.layerId, version: result.version }, revision: result.revision };
+  } catch (err) {
+    return changeFailure(err);
+  }
+}
+
+/** The effect of an approved governance change, inside the execution transaction. */
+async function applyPreparedLayer(
+  tx: Sql,
+  request: SensitiveActionRequest,
+  actor: string,
+): Promise<{ layerId: string; version: number; revision: string }> {
+  if (request.actionKind !== GOVERNANCE_POLICY_CHANGE_ACTION) {
+    throw new SensitiveActionError('invalid', `request ${request.requestId} is a ${request.actionKind}, not a governance policy change`);
+  }
+  const payload = request.payload as ProposedLayer & { reason: string };
+  const current = await loadLayer(payload.layerId, tx);
+  const currentVersion = current?.version ?? 0;
+  if (currentVersion !== request.baseVersion) {
+    throw new SensitiveActionError(
+      'stale',
+      `layer ${payload.layerId} moved from v${request.baseVersion} to v${currentVersion} after the simulation; simulate and prepare again`,
+    );
+  }
+  const load = await loadChainForWorkspace(request.workspaceId, tx);
+  if (chainRevision(load.status === 'none' ? [] : load.chain) !== request.chainRevision) {
+    throw new SensitiveActionError('stale', `the policy chain for ${request.workspaceId} changed after the simulation; simulate and prepare again`);
+  }
+  const approvers = request.approvals.filter((a) => a.decision === 'approve').map((a) => a.approver);
+  const layer = await upsertLayerInTx(tx, {
+    layerId: payload.layerId,
+    level: payload.level,
+    scopeRef: payload.scopeRef,
+    parentLayerId: payload.parentLayerId,
+    rules: payload.rules,
+    exceptions: payload.exceptions ?? [],
+    actor: request.preparedBy,
+    reason: `${request.reason} [sensitive action ${request.requestId}; approved by ${approvers.join(', ')}; applied by ${actor}]`,
+    expectedVersion: request.baseVersion,
+  });
+  return { layerId: layer.layerId, version: layer.version, revision: `${layer.layerId}@v${layer.version}` };
+}
+
+/** Grant delegated authority over a layer subtree (the actor must hold delegate there). */
+export async function delegateGovernanceAuthority(
+  req: { principal: string; layerId: string; capabilities: string[]; reason: string; expiresAt: string },
+  actor: string,
+  deps?: Partial<GovernancePolicyControlDeps>,
+): Promise<GovernanceDelegationResult> {
+  const d = resolveDeps(deps);
+  try {
+    const delegation = await grantDelegation({ grantor: actor, ...req, now: d.now() });
+    await d.notify(GOVERNANCE_POLICY_SYNC_QUERY).catch(() => undefined);
+    return { ok: true, delegation };
+  } catch (err) {
+    return changeFailure(err);
+  }
+}
+
+/** Revoke a delegation (its holder, or anyone with delegate over its layer). */
+export async function revokeGovernanceAuthority(
+  req: { delegationId: string; reason: string },
+  actor: string,
+  deps?: Partial<GovernancePolicyControlDeps>,
+): Promise<GovernanceDelegationResult> {
+  const d = resolveDeps(deps);
+  try {
+    const delegation = await revokeDelegation({ delegationId: req.delegationId, revoker: actor, reason: req.reason, now: d.now() });
+    await d.notify(GOVERNANCE_POLICY_SYNC_QUERY).catch(() => undefined);
+    return { ok: true, delegation };
+  } catch (err) {
+    return changeFailure(err);
+  }
+}
+
+/** Delegations and sensitive change requests, for the admin pane and the tool's read op. */
+export async function readGovernanceAuthority(req: {
+  workspaceId?: string;
+  layerIds?: string[];
+  status?: 'open' | 'all';
+}): Promise<{ delegations: GovernanceDelegation[]; requests: SensitiveActionRequest[] }> {
+  const [delegations, requests] = await Promise.all([
+    listDelegations({ layerIds: req.layerIds }),
+    listSensitiveActions({ workspaceId: req.workspaceId, actionKind: GOVERNANCE_POLICY_CHANGE_ACTION, status: req.status ?? 'open' }),
+  ]);
+  return { delegations, requests };
 }
