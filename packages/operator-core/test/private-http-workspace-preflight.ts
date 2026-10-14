@@ -625,6 +625,25 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
     }
   } finally {
     closeSync(log);
+    const stepPath = `${path}.build-steps.jsonl`;
+    if (existsSync(stepPath)) {
+      // A timeout may interrupt the final append. Keep the original journal,
+      // record that incomplete tail, and retain the last complete step.
+      const lines = readFileSync(stepPath, 'utf8').trim().split('\n');
+      const steps: Array<{ at: number; pid: number; step: string; event: string; status?: number }> = [];
+      const unreadableRows: number[] = [];
+      for (const [index, line] of lines.entries()) {
+        try { steps.push(JSON.parse(line)); } catch { unreadableRows.push(index + 1); }
+      }
+      const last = steps.at(-1);
+      receipt.steps = { path: stepPath, count: steps.length, unreadableRows,
+        last: last ?? null, active: last?.event === 'start' ? last.step : null,
+        durationsMs: steps.flatMap((step, index) => {
+          const next = steps[index + 1];
+          return step.event === 'start' && next?.event === 'end' && step.pid === next.pid && step.step === next.step
+            ? [{ step: step.step, elapsedMs: Math.round((next.at - step.at) * 1000), status: next.status }] : [];
+        }) };
+    }
     writeFileSync(join(evidenceDir, 'operator-api-build-result.json'), JSON.stringify({ ...receipt,
       endedAt: new Date().toISOString(), elapsedMs: Date.now() - started }));
   }
