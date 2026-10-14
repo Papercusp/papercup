@@ -827,6 +827,8 @@ export interface ScorecardInstrumentContractEvaluation {
    * negative claim over a computed pass: a grader may fail on what the ledger cannot see.
    */
   positiveClaimContradictions: string[];
+  /** Bound instrument keys whose positive rating has no supplied or resolved snapshot. */
+  positiveClaimsWithoutSnapshots: string[];
 }
 
 function expectedInstrumentVerdict(rating: string): ScorecardInstrumentSnapshot['verdict'] | null {
@@ -1027,6 +1029,7 @@ export function evaluateScorecardInstrumentContract(input: {
   );
   const missingSnapshots = [...required].filter((key) => !snapshots[key]);
   const extraSnapshots = Object.keys(snapshots).filter((key) => !required.has(key));
+  const positiveClaimsWithoutSnapshots: string[] = [];
   const staleSnapshots: string[] = [];
   const windowMismatches: string[] = [];
   const verdictMismatches: string[] = [];
@@ -1037,8 +1040,12 @@ export function evaluateScorecardInstrumentContract(input: {
   for (const criterion of input.rubric.criteria) {
     const instrumentKey = contract.bindings[criterion.key];
     if (!instrumentKey || instrumentKey === 'none') continue;
+    const expected = expectedInstrumentVerdict(input.ratings[criterion.key]?.rating ?? '');
     const snapshot = snapshots[instrumentKey];
-    if (!snapshot) continue;
+    if (!snapshot) {
+      if (expected === 'pass') positiveClaimsWithoutSnapshots.push(instrumentKey);
+      continue;
+    }
     // EI-20270994401737114 — record the epistemic class BEFORE the freshness/window
     // `continue`s below. A stale or window-mismatched snapshot is still self-reported,
     // and that is exactly when a reader most needs to know the number came from the
@@ -1071,7 +1078,6 @@ export function evaluateScorecardInstrumentContract(input: {
         windowMismatches.push(instrumentKey);
       }
     }
-    const expected = expectedInstrumentVerdict(input.ratings[criterion.key]?.rating ?? '');
     const observed = scorecardCriterionInstrumentVerdict(instrumentKey, criterion.key, snapshot);
     // WI-10005422: an instrument that could not decide ('unknown') cannot CONTRADICT a
     // negative claim. A rubric may fail a criterion on grounds the instrument cannot see
@@ -1115,6 +1121,7 @@ export function evaluateScorecardInstrumentContract(input: {
     windowMismatches: [...new Set(windowMismatches)],
     verdictMismatches: [...new Set(verdictMismatches)],
     positiveClaimContradictions: [...new Set(positiveClaimContradictions)],
+    positiveClaimsWithoutSnapshots: [...new Set(positiveClaimsWithoutSnapshots)],
     selfReportedInstruments: [...new Set(selfReportedInstruments)],
   };
 }
