@@ -296,6 +296,7 @@ describe('managed-pty integration evidence isolation', () => {
   it.each([
     { phase: 'native binding', reason: 'successor-native-id-missing', label: 'respawn binding', fallbackMs: 50 },
     { phase: 'backend frame', reason: 'codex-backend-frame-not-observed', label: 'launch kickoff', fallbackMs: 50 },
+    { phase: 'delayed backend banner', reason: 'codex-backend-frame-not-observed', label: 'launch kickoff', fallbackMs: 50 },
     // The overall kickoff budget can expire before the frame timer, whose
     // clock starts only when the child paints its banner. Neither allows input.
     { phase: 'backend frame after kickoff deadline', reason: 'codex-backend-frame-not-observed', label: 'launch kickoff', fallbackMs: 500 },
@@ -307,11 +308,9 @@ describe('managed-pty integration evidence isolation', () => {
     mkdirSync(join(codexHome, 'log'), { recursive: true });
     writeFileSync(join(codexHome, 'log', 'codex-tui.log'), 'isolated startup phase did not assign a native id\n');
     const gatedKickoff = phase === 'backend frame after kickoff deadline';
-    let confirmNativeReady: (() => void) | undefined;
-    const onRespawn = vi.fn((_id: string, options: { onConfirmed: () => void }) => {
-      confirmNativeReady = options.onConfirmed;
-      return false;
-    });
+    // Native registration is not this case's failure. Confirm it immediately
+    // so a slow child boot cannot spend its separate binding deadline first.
+    const onRespawn = vi.fn(async () => true);
     const { captured, io } = fakeIo();
     const signalSource = new EventEmitter();
     const initialOutput = phase === 'native binding'
@@ -319,11 +318,12 @@ describe('managed-pty integration evidence isolation', () => {
       : '\x1b[6n│ >_ OpenAI Codex (v0.156.1) │\n│ model: loading /model to change │\n› Ask Codex to do anything\n';
     const done = hostThroughPty({
       command: execPath,
-      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write(process.env.INITIAL_OUTPUT);process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));"],
+      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));setTimeout(()=>process.stdout.write(process.env.INITIAL_OUTPUT),Number(process.env.INITIAL_OUTPUT_DELAY_MS));"],
       cwd: root,
       env: {
         ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome,
         INPUT_FILE: inputFile, INITIAL_OUTPUT: initialOutput,
+        INITIAL_OUTPUT_DELAY_MS: phase === 'delayed backend banner' ? '1500' : '0',
         PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '500',
         PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: String(fallbackMs),
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10',
@@ -335,16 +335,6 @@ describe('managed-pty integration evidence isolation', () => {
       onRespawn, signalSource, onExit: () => undefined,
     });
     try {
-      if (gatedKickoff) {
-        // Establish this case's banner precondition before starting its small
-        // kickoff budget, independently of real child boot/scheduling latency.
-        await vi.waitFor(() => {
-          expect(onRespawn).toHaveBeenCalledOnce();
-          expect(captured()).toContain('OpenAI Codex');
-        });
-        expect(existsSync(inputFile)).toBe(false);
-        confirmNativeReady!();
-      }
       await vi.waitFor(() => {
         const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
           .trim().split('\n').map(line => JSON.parse(line));
@@ -360,7 +350,7 @@ describe('managed-pty integration evidence isolation', () => {
         if (process.platform === 'linux') {
           expect(snapshot.procs).toContainEqual(expect.objectContaining({ pid: snapshot.rootPid }));
         }
-      }, { timeout: 1000 });
+      }, { timeout: 3000 });
       expect(existsSync(inputFile) ? readFileSync(inputFile, 'utf8') : '').toBe('');
       if (gatedKickoff) expect(onRespawn).toHaveBeenCalledOnce();
       else expect(onRespawn).not.toHaveBeenCalled();
@@ -370,6 +360,44 @@ describe('managed-pty integration evidence isolation', () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 5000);
+
+  it('does not attempt a marked kickoff after the host ends before its first backend frame', async () => {
+    const ownerId = `su-ended-kickoff-${process.pid}-${Math.floor(performance.now())}`;
+    const signalSource = new EventEmitter();
+    const writeAttempts: string[] = [];
+    const { io } = fakeIo();
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "process.stdin.on('data',()=>{});setTimeout(()=>process.stdout.write('› Ask Codex\\n'),1500);"],
+      cwd: '/tmp',
+      env: {
+        ...hermeticEnv(), PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '200',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+      },
+      ownerId, io, bridgeTty: false, signalSource,
+      kickoff: '⟦turn-origin:fleet-kickoff nonce:abcdef0123456789⟧\nMUST_REMAIN_UNSUBMITTED',
+      spawnPty: (file, args, options, realSpawn) => {
+        const child = realSpawn(file, args, options);
+        const write = child.write.bind(child);
+        child.write = (data: string) => { writeAttempts.push(data); write(data); };
+        return child;
+      },
+    });
+    try {
+      signalSource.emit('SIGTERM');
+      await done;
+      // Cross the kickoff's own deadline after observing completed teardown.
+      // Any surviving fallback task must cancel rather than write to the child.
+      await sleep(250);
+      expect(writeAttempts).toEqual([]);
+      expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+        .not.toContain('"kind":"startup-turn-written"');
+    } finally {
+      signalSource.emit('SIGTERM');
+      await done;
+    }
+  });
 
   it('excludes caller launch state and native homes while preserving explicit fixture inputs', () => {
     const source = {
@@ -2998,6 +3026,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       const meta = metaPathFor(ownerId);
       const eventLog = eventLogPathForOwner(ownerId);
       const { captured, io } = fakeIo();
+      const signalSource = new EventEmitter();
       const childCode =
         "process.stdout.write('BOOT:'+process.pid+'\\n❯\\n');" +
         "process.stdin.setEncoding('utf8');let b='',mcpDialogs=0;" +
@@ -3025,13 +3054,13 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         ownerId,
         io,
         bridgeTty: false,
+        signalSource,
         mintCarryRespawnArgs: (args: string[]) => ({ args: args.slice(0, -1).concat('RECYCLED'), nativeId: null }),
         onExit: (code: number) => { exitCode = code; },
       });
 
       try {
-        await sleep(600);
-        expect(captured()).toContain('BOOT:');
+        await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 5_000 });
         await envelopeInject(sock, {
           mode: 'carry-respawn',
           data: 'CARRY_MUST_NOT_BE_WRITTEN',
@@ -3060,9 +3089,13 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
           reason: 'carry-mcp-unavailable',
         }));
         expect(events.some((event) => event.kind === 'respawn-carry-delivered')).toBe(false);
-        expect(JSON.parse(readFileSync(meta, 'utf8')).carryDropCount).toBe(1);
+        // Lifecycle emission precedes serialized async discovery publication.
+        // Observe the persisted transition before asserting its counter.
+        await vi.waitFor(() => {
+          expect(JSON.parse(readFileSync(meta, 'utf8')).carryDropCount).toBe(1);
+        }, { timeout: 5_000 });
       } finally {
-        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        signalSource.emit('SIGTERM');
         await done;
         if (existsSync(eventLog)) unlinkSync(eventLog);
       }
