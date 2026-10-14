@@ -3155,6 +3155,28 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   } as QueryEntry<unknown>,
 
+  // governancePolicy.state — the /admin/governance-policy pane's read (plan
+  // papercusp-enterprise-readiness-roadmap-2026-10-09 P-005, WI-6554700010011434). ONE row: the
+  // workspace's inherited org→department→workspace chain, every stored layer and per-layer
+  // version history, from the SAME governance-policy/control.ts the governance:policy tool uses.
+  // Pushed by control.ts#setGovernancePolicyLayer after each committed write (the sole writer);
+  // see the PUSH_EXEMPT entries in resolver-backing-table-coverage.test.ts.
+  'governancePolicy.state': {
+    argsSchema: z
+      .object({
+        workspaceId: z.string().min(1).optional(),
+        versionLimit: z.number().int().min(1).max(100).optional(),
+      })
+      .optional(),
+    backingTables: ['harness_shared.governance_policy_layers', 'harness_shared.governance_policy_layer_versions'],
+    resolve: async (args) => {
+      const { getGovernancePolicyState } = await import('../governance-policy/control');
+      const { activeWorkspaceId } = await import('../workspace-registry');
+      const a = (args ?? {}) as { workspaceId?: string; versionLimit?: number };
+      return [await getGovernancePolicyState(a.workspaceId ?? activeWorkspaceId(), { versionLimit: a.versionLimit })];
+    },
+  } as QueryEntry<unknown>,
+
   // workItems.detail — the single-item ON-DEMAND detail read (P-006). The Detail
   // pane fetches ONE enriched row (with the full `summary` + payload/completion
   // blobs the list strips) when a WI is selected, instead of the whole harness
