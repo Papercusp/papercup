@@ -119,6 +119,14 @@ describe('POST /api/admin/deploy-accounts/register — egress + invalidation (su
     expect(h.writeFile).toHaveBeenCalledWith(expect.any(String), 'sk-ant-api03-firstsecond', { mode: 0o600 });
   });
 
+  it('accepts user-scoped Anthropic API keys as API credentials', async () => {
+    const key = ['sk', 'ant', 'usr', 'test-user-scoped-key'].join('-');
+    const { status } = await post({ accountId: 'user-api', credentialType: 'api-key', value: key });
+    expect(status).toBe(200);
+    expect(lastRegisterInput()?.credentialRef).toMatch(/^apikey:file:/);
+    expect(h.writeFile).toHaveBeenCalledWith(expect.any(String), key, { mode: 0o600 });
+  });
+
   it.each([OAT, '{"claudeAiOauth":{"accessToken":"oauth"}}', 'not-an-api-key'])('refuses a non-Console credential in API-key mode', async value => {
     const { status, body } = await post({ accountId: 'wrong-kind', credentialType: 'api-key', value });
     expect(status).toBe(400);

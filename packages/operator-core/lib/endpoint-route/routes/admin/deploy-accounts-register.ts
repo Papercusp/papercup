@@ -2,7 +2,7 @@
  * POST /api/admin/deploy-accounts/register — register a Claude or Codex gateway credential.
  *
  * Body: { accountId, label?, provider?, credentialType?, value }
- *   credentialType = 'api-key' for an Anthropic Console key (sk-ant-api…); registered with
+ *   credentialType = 'api-key' for an Anthropic Console key (sk-ant-api… or sk-ant-usr…); registered with
  *                    the existing apikey:file: resolver and metered overflow policy.
  *   value = either a `claude setup-token` long-lived token (`sk-ant-oat…`) → written raw and
  *           registered as `credentialRef: token:<path>`, OR a `.credentials.json` bundle (JSON with
@@ -98,8 +98,8 @@ export default defineTool({
       // of it reconstructs the intended token. Bundles (JSON) are left untouched.
       const tokenValue = value.replace(/\s+/g, '');
       if (isApiKey) {
-        if (!/^sk-ant-api[A-Za-z0-9_-]+$/.test(tokenValue)) {
-          return Response.json({ ok: false, error: 'value must be an Anthropic Console API key (sk-ant-api…). For a Max subscription, use browser login or a setup-token instead.' }, { status: 400 });
+        if (!/^sk-ant-(?:api|usr)[A-Za-z0-9_-]+$/.test(tokenValue)) {
+          return Response.json({ ok: false, error: 'value must be an Anthropic Console API key (sk-ant-api… or sk-ant-usr…). For a Max subscription, use browser login or a setup-token instead.' }, { status: 400 });
         }
         const credPath = papercuspPath('deploy-credentials', `${accountId}.anthropic-api-key`);
         await mkdir(dirname(credPath), { recursive: true, mode: 0o700 });
