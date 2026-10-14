@@ -233,7 +233,82 @@ describe('deriveCandidateProvenance', () => {
   });
 });
 
+// WI-6554700010012218: the D-224 candidate nominated a seedless Mac Server and nothing in
+// the binding could see it until P-521 J8 failed offline-restore by construction.
+describe('server-seed check', () => {
+  const SEED = h('seed-manifest');
+  const present = { status: 'present', profile: 'dogfood', manifestSha256: SEED, reason: null };
+  const seedCheck = (over: Record<string, Partial<LegBuildProvenance>>) => {
+    const p = deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs(over), ledger: ledger() });
+    return { p, c: p.provenance.checks.find((c) => c.id === 'server-seed')! };
+  };
+
+  it('passes when every Server leg carries the same present seed, and the leg summary shows it', () => {
+    const { p, c } = seedCheck({ linux: { seed: present }, mac: { seed: present } });
+    expect(c.status).toBe('pass');
+    expect(c.detail).toContain(`manifest ${SEED}`);
+    expect(p.provenance.legs.find((l) => l.leg === 'mac')?.seed).toEqual(present);
+  });
+
+  it('FAILS the D-224 shape: a Server_<version> installer whose guard recorded no seed (absent-unaudited)', () => {
+    // LINUX's only Server artifact is `Papercusp Server_0.0.25_amd64.deb`: this also pins
+    // the artifact match against `\bserver\b`, which `_` defeats.
+    const { p, c } = seedCheck({ linux: { seed: { ...present, status: 'absent-unaudited', manifestSha256: null } }, mac: { seed: present } });
+    expect(c.status).toBe('fail');
+    expect(c.detail).toMatch(/leg linux ships a Server with seed=absent-unaudited/);
+    expect(p.provenance.ok).toBe(false);
+  });
+
+  it.each([
+    ['refused', /seed=refused/],
+    ['not-applicable', /seed=not-applicable/],
+    ['bogus', /'bogus' is not a release-seed-guard verdict/],
+  ])('fails a Server leg whose receipt is %s', (status, re) => {
+    const { c } = seedCheck({ linux: { seed: present }, mac: { seed: { ...present, status } } });
+    expect(c.status).toBe('fail');
+    expect(c.detail).toMatch(re);
+  });
+
+  it('warns (never passes) on an explicit seedless allowance, a missing receipt, or diverging seeds', () => {
+    const allowed = seedCheck({ linux: { seed: present }, mac: { seed: { ...present, status: 'absent-allowed', manifestSha256: null, reason: 'D-999 VM build' } } }).c;
+    expect(allowed.status).toBe('warn');
+    expect(allowed.detail).toContain('D-999 VM build');
+
+    const predates = seedCheck({ linux: { seed: present } }).c; // mac fixture has no seed key
+    expect(predates.status).toBe('warn');
+    expect(predates.detail).toMatch(/leg mac records no seed receipt \(emitter predates the field\)/);
+
+    const noGuard = seedCheck({ linux: { seed: present }, mac: { seed: null } }).c;
+    expect(noGuard.detail).toMatch(/no guard ran/);
+
+    const diverging = seedCheck({ linux: { seed: present }, mac: { seed: { ...present, manifestSha256: h('other-seed') } } }).c;
+    expect(diverging.status).toBe('warn');
+    expect(diverging.detail).toMatch(/different seed manifests/);
+  });
+
+  it('passes a vm-release Server excluded by profile, and ignores GUI-only legs', () => {
+    const excluded = seedCheck({ linux: { seed: present }, mac: { seed: { ...present, status: 'excluded-by-profile', profile: 'vm-release', manifestSha256: null } } }).c;
+    expect(excluded.status).toBe('pass');
+
+    const guiOnly = deriveCandidateProvenance({
+      version: '0.0.25',
+      channel: 'alpha',
+      legs: [{ leg: 'linux', path: '/x/l/build-provenance.json', record: leg([['deb/Papercusp GUI_0.0.25_amd64.deb', h('gui-deb')]]) }],
+    });
+    expect(guiOnly.provenance.checks.find((c) => c.id === 'server-seed')).toMatchObject({ status: 'pass', detail: 'no leg ships a Server artifact' });
+  });
+});
+
 describe('parseLegBuildProvenance', () => {
+  it('keeps the seed receipt\'s missing / null / object distinction', () => {
+    const base = leg(LINUX);
+    expect('seed' in parseLegBuildProvenance(base, 'missing')).toBe(false);
+    expect(parseLegBuildProvenance({ ...base, seed: null }, 'null').seed).toBeNull();
+    expect(parseLegBuildProvenance({ ...base, seed: { status: 'present', profile: 'public', manifestSha256: h('m'), reason: null } }, 'obj').seed)
+      .toEqual({ status: 'present', profile: 'public', manifestSha256: h('m'), reason: null });
+    expect(parseLegBuildProvenance({ ...base, seed: { profile: 'public' } }, 'nostatus').seed?.status).toBe('malformed');
+  });
+
   it('accepts an emitter record and rejects malformed ones', () => {
     expect(parseLegBuildProvenance(leg(LINUX), 'ok').artifacts).toHaveLength(2);
     expect(() => parseLegBuildProvenance({ ...leg(LINUX), artifacts: [] }, 'empty')).toThrow(/non-empty array/);

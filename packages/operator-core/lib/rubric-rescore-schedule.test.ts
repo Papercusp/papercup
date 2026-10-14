@@ -133,6 +133,18 @@ beforeEach(() => {
 });
 
 describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
+  it('includes scheduled platform checks, passes canonical workspace scope, and emits their regression', async () => {
+    const criterion: CheckedCriterion = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use' } };
+    const prior = { ...row('r-31', 1, 1), check: { id: 'r-31:instrument', rubricRef: RUBRIC,
+      criterionKey: 'r-31', kind: 'instrument' as const, value: 1, unit: 'count' } };
+    const failed = { ...prior, testRunId: 2, status: 'fail' as const, check: { ...prior.check, value: 0 } };
+    const { deps, emit } = depsFor([criterion], [prior], [failed]);
+    await rescoreRubric({ rubricRef: RUBRIC, workspaceId: 'untrusted-fallback', harnessSlug: 'papercusp' }, deps);
+    expect(deps.runInstruments).toHaveBeenCalledWith({ rubricRef: RUBRIC, criteria: [criterion], workspaceId: 'ws-test' });
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ payload: {
+      rubricRef: RUBRIC, criterionKey: 'r-31', before: 'pass', after: 'fail', testRunId: 2,
+    } }));
+  });
   it('the alert key is the catalogued family the standing watch subscribes to', () => {
     expect(rubricCriterionRegressedKey(RUBRIC)).toBe(WATCH_PATTERN);
     const entry = catalogEntry('rubric-criterion-regressed');

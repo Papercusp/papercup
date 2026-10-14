@@ -27,6 +27,7 @@
 import {
   describeUnreadableFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueueRead,
+  type FrozenCandidateRepairQueue,
   type FrozenRepairLatency,
   type FrozenRepairLatencySource,
   type FrozenRepairLatencyStampKey,
@@ -82,6 +83,13 @@ export interface FrozenRepairProgress {
   phase: FrozenRepairLatencySource['phase'];
   /** Preserve ordinal gaps: a capped queue must not become a complete history. */
   rounds: Array<{ round: number; head: string; atMs: number }>;
+  /** Original admission chain; absent on legacy observations, never backfilled. */
+  admissionHistory?: {
+    version: 1;
+    repairHead: string;
+    admissions: Array<{ atMs: number; fromRepairHead: string; toRepairHead: string;
+      provenance?: 'reconciled-from-ref' }>;
+  };
 }
 
 /** The shape merged into `gate_health` (a SHALLOW merge — never a replace). */
@@ -202,7 +210,8 @@ export interface TickFreezeObservation {
   /** FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT as the run actually read it. */
   flagEnabled: boolean;
   /** The frozen repair queue the tick ended holding, when there was one. */
-  repairQueue?: ({ candidate?: string | null } & Partial<FrozenRepairLatencySource>) | null;
+  repairQueue?: ({ candidate?: string | null } & Partial<FrozenRepairLatencySource> &
+    Partial<Pick<FrozenCandidateRepairQueue, 'repairHead' | 'admissions'>>) | null;
   /** P-025: typed queue-read health. `unreadable` outranks any absence-shaped fallback. */
   repairQueueRead?: FrozenCandidateRepairQueueRead;
   /** The run's own one-line summary — the honest reason when no branch recorded a richer one. */
@@ -296,6 +305,13 @@ export function deriveTickFreezeDisposition(
     ...(Array.isArray(queue.convergenceRounds) ? { repairProgress: {
       phase: queue.phase as FrozenRepairLatencySource['phase'],
       rounds: queue.convergenceRounds.map(({ round, head, atMs }) => ({ round, head, atMs })),
+      ...(typeof queue.repairHead === 'string' && Array.isArray(queue.admissions) ? {
+        admissionHistory: { version: 1 as const, repairHead: queue.repairHead,
+          admissions: queue.admissions.map(({ atMs, fromRepairHead, toRepairHead, provenance }) => ({
+            atMs, fromRepairHead, toRepairHead, ...(provenance ? { provenance } : {}),
+          })),
+        },
+      } : {}),
     } } : {}),
   };
 }

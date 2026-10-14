@@ -2981,9 +2981,9 @@ test('[529 overload] EI-21921571654476580: a persistent 529 with no rescue possi
 }, 15_000);
 
 test('[529 overload] EI-21921571654476580: the OTHER exhaustion exit — the ladder intercepts, retries, and STILL cannot rescue it — also overrides x-should-retry', async () => {
-  // Same override, the OTHER code path: absorb is ON (default) so the ladder DOES intercept the
+  // Same override, the OTHER code path: absorb is ON so the ladder DOES intercept the
   // first 529 and retry the same account — but the upstream is PERSISTENTLY 529, so every retry is
-  // rescued by nothing, and the tiny internalRetryDeadlineMs bounds it to a fast, deterministic
+  // rescued by nothing, and an explicit short OUTER absorb budget bounds it to a deterministic
   // "nothing rescued it" fallback (the same branch the pre-existing "PERSISTENT 529 is BOUNDED"
   // test exercises for TIMING; this asserts the HEADER behavior on that exact branch).
   await boot(
@@ -2991,7 +2991,7 @@ test('[529 overload] EI-21921571654476580: the OTHER exhaustion exit — the lad
       res.writeHead(529, { 'content-type': 'application/json', 'x-should-retry': 'true' });
       res.end(JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }));
     },
-    { internalRetryDeadlineMs: 200 },
+    { internalRetryDeadlineMs: 200, requestAbsorbMs: 1500 },
   );
   const res = await post({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'x' }] });
   // The tiny deadline can settle this as a forwarded 529 OR an abort — assert the header override
@@ -3931,7 +3931,8 @@ test('[B-GW-1 AIMD] an UN-ROUTABLE pool-wide CONGESTION 429 (no healthy account)
     },
     // A transient 429 is retried internally (backoff) before the gateway gives up; bound that budget so the
     // un-routable outcome is reached well inside the test timeout.
-    { pool, concurrency: 16, aimd: { floor: 3, decreaseThreshold: 1 }, internalRetryDeadlineMs: 2000 },
+    { pool, concurrency: 16, aimd: { floor: 3, decreaseThreshold: 1 }, internalRetryDeadlineMs: 2000,
+      requestAbsorbMs: 0 }, // This case measures the terminal congestion outcome, after outer recovery.
   );
   const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   const status = r.status;
@@ -5828,6 +5829,7 @@ test('[P-008] /admin/owner-report returns the per-owner outcome ledger', async (
   await r.text();
   const rep = (await (await ask('/admin/owner-report?owner=su-ledger-test')).json()) as {
     ok: boolean;
+    process: { pid: number; identity: string; instanceId: string };
     ledger: { requests: number; ok: number; lastAccount: string | null; lastRequestAt: number; lastAt: number } | null;
     routingQuality: {
       picks: number;
@@ -5855,6 +5857,10 @@ test('[P-008] /admin/owner-report returns the per-owner outcome ledger', async (
     };
   };
   assert.equal(rep.ok, true);
+  assert.equal(rep.process.pid, process.pid);
+  assert.match(rep.process.instanceId, /^[0-9a-f-]{36}$/);
+  const repeated = await (await ask('/admin/owner-report?owner=su-ledger-test')).json() as typeof rep;
+  assert.equal(repeated.process.instanceId, rep.process.instanceId, 'request identities share the same gateway incarnation');
   assert.ok(rep.ledger, 'the owner has a ledger entry');
   assert.ok(rep.ledger!.requests >= 1, 'request counted');
   assert.ok(rep.ledger!.ok >= 1, 'ok outcome counted');

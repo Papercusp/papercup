@@ -20,6 +20,15 @@ import {
   BWRAP_USERNS_PROBE_ARGS,
   bwrapUsernsGrantShellLines,
 } from './bwrap-userns-grant';
+import {
+  ZRAM_GENERATOR_APT_PACKAGE,
+  ZRAM_GENERATOR_BIN,
+  ZRAM_GENERATOR_CONFIG,
+  ZRAM_SWAP_FUNCTION,
+  ZRAM_SWAP_STATUS_PREFIX,
+  ZRAM_SYSCTL_CONFIG,
+  zramSwapShellLines,
+} from './zram-swap';
 
 /**
  * Provider-neutral bootstrap contract for a durable Papercusp workspace host.
@@ -2760,6 +2769,17 @@ export function buildWorkspaceHostBootstrap(
             '# Managed by the papercusp workspace-host bootstrap (WI-10004636).',
           ),
           `${BWRAP_USERNS_GRANT_FUNCTION} ${APPARMOR_PROFILE_DIR} ${APPARMOR_RESTRICT_UNPRIVILEGED_USERNS_SYSCTL} ${BWRAP_BIN}`,
+          // WI-6554700010012418 (owner directive #1879): compressed-RAM swap as a cushion against
+          // memory spikes. Best-effort and outside the apt contract above on purpose: a host that
+          // cannot fetch the generator still boots, and the status line says why (zram-swap.ts).
+          ...zramSwapShellLines(
+            '# Managed by the papercusp workspace-host bootstrap (WI-6554700010012418).',
+          ),
+          `if retry 3 apt_install -y --no-install-recommends ${ZRAM_GENERATOR_APT_PACKAGE} >/dev/null; then`,
+          `  ${ZRAM_SWAP_FUNCTION} ${ZRAM_GENERATOR_CONFIG} ${ZRAM_SYSCTL_CONFIG} ${ZRAM_GENERATOR_BIN} /proc/swaps`,
+          'else',
+          `  echo "${ZRAM_SWAP_STATUS_PREFIX} status=absent reason=package-install-failed package=${ZRAM_GENERATOR_APT_PACKAGE}"`,
+          'fi',
         ]
       : []),
     // A recreated image may allocate different numeric IDs to the same named accounts. `/home`

@@ -13,6 +13,7 @@ import {
   buildSiemBatch,
   siemArgsDigest,
   siemClassificationProblems,
+  siemCodeValue,
   siemCursorUid,
   siemPseudonym,
   siemStreamId,
@@ -155,6 +156,12 @@ describe('codeValue and receipt detection', () => {
     expect(codeValue(5)).toBe('5');
     expect(codeValue(null)).toBeNull();
     expect(codeValue(FREE_TEXT_PURPOSE)).toBe(SIEM_WITHHELD_FREE_TEXT);
+    // D-018 item 4: target_id is emit-code, and an organization target is a uuid.
+    expect(codeValue(ORG)).toBe(ORG);
+  });
+
+  it('shares the tool-invocation stream emit-code predicate (WI-6554700010012363)', () => {
+    expect(codeValue).toBe(siemCodeValue);
   });
 
   it('trusts the declared projection only for a receipt action carrying the current receipt version', () => {

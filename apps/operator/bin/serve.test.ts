@@ -89,6 +89,41 @@ describe("vm-release boot ordering (D-043 / P-050)", () => {
   });
 });
 
+describe("embedded PG host credential continuity (EI-25943879774522083)", () => {
+  const credentialsFile = () => join(pcDir(), "embedded-pg-credentials.json");
+
+  afterEach(() => rmSync(credentialsFile(), { force: true }));
+
+  it("keeps an unkeyed developer cluster on the existing default path", () => {
+    expect(serve.embeddedPgCredentialsFile({})).toBeUndefined();
+  });
+
+  it("selects generated credentials for a first explicit opt-in", () => {
+    expect(serve.embeddedPgCredentialsFile({ PAPERCUSP_PG_HOST_CREDENTIALS: "1" }))
+      .toBe(credentialsFile());
+  });
+
+  it("selects generated credentials on the first vm-release boot", () => {
+    expect(serve.embeddedPgCredentialsFile({ PAPERCUSP_DISTRIBUTION_PROFILE: "vm-release" }))
+      .toBe(credentialsFile());
+  });
+
+  it("reuses stored credentials after the opt-in flag is absent on restart", () => {
+    mkdirSync(pcDir(), { recursive: true });
+    // Selection must be sticky; the embedded server separately validates the
+    // stored secrets and refuses corrupt files instead of regenerating them.
+    writeFileSync(credentialsFile(), "{}");
+    expect(serve.embeddedPgCredentialsFile({})).toBe(credentialsFile());
+  });
+
+  it("cannot fall back to public defaults by unsetting the flag on a keyed cluster", () => {
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(credentialsFile(), "{}");
+    expect(serve.embeddedPgCredentialsFile({ PAPERCUSP_PG_HOST_CREDENTIALS: "0" }))
+      .toBe(credentialsFile());
+  });
+});
+
 describe("bind host (open-source-release P-010)", () => {
   it("never reads the generic HOSTNAME var for the listen address", () => {
     expect(serveSrc).not.toMatch(/process\.env\.HOSTNAME/);

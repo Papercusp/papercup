@@ -101,6 +101,9 @@ describe('native operational execution witnesses', () => {
     expect(await executeOperationalRun(f.definition, f.ctx, f.deps)).toMatchObject({ ok: true, status: 'fail', runtimeEnvironmentMeasured: false });
     const execution = f.deps.persist.mock.calls[0][0].rows[0].execution;
     expect(execution).toMatchObject({ passed: 0, failed: 1, failedCaseTitles: ['native-check-exception'] });
+    const output = f.deps.persist.mock.calls[0][0].rows[0].outputTail;
+    expect(output).toContain('native-check-exception');
+    expect(output).toContain('native assertion failed');
     expect(execution).not.toHaveProperty('runtimeEnvironmentBefore');
     expect(execution).not.toHaveProperty('runtimeEnvironmentAfter');
   });

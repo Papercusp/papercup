@@ -3,7 +3,8 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { GATE_INVARIANT_NAMES, readGateInvariantWindow, evaluateGateInvariantWindow,
   GATE_INVARIANT_ACCEPTANCE_WINDOW_MS, GATE_INVARIANT_HEARTBEAT_MS, GATE_INVARIANT_LEASE_MS,
   recordGateLiveInvariants, evaluateGateInvariantAlarmWindow, type GateInvariantResult } from './gate-live-invariants';
-import { readGreenMainRecoveryWindow, evaluateGreenMainRecoveryWindow, readGreenMainRepairRoundWindow, evaluateGreenMainRepairRoundWindow } from './green-main-slo';
+import { readGreenMainRecoveryWindow, evaluateGreenMainRecoveryWindow, readGreenMainRepairRoundWindow, evaluateGreenMainRepairRoundWindow, evaluateGreenMainAdmissionWindow } from './green-main-slo';
+import { buildGateRepairLatencyLedgerRow, deriveTickFreezeDisposition } from './freeze-disposition';
 
 describe('historical invariant acceptance (real PG)', () => {
   let db: FreshPgDb;
@@ -129,6 +130,42 @@ describe('historical invariant acceptance (real PG)', () => {
     expect(capped).toMatchObject({ status: 'capped', total: 2 });
     expect(evaluateGreenMainRepairRoundWindow(capped, window.windowEndMs).assertions.every(a => a.passed)).toBe(false);
     expect(await readGreenMainRepairRoundWindow(db.sql, { ...scope, workspaceId: '' }, window)).toMatchObject({ status: 'invalid' });
+  });
+
+  it('retains the original admission population and pending work beyond queue retirement (real PG)', async () => {
+    const end = start + 60 * 60_000;
+    const heads = ['a', 'b', 'c', 'd', 'e', 'f'].map(c => c.repeat(40));
+    const queue = { candidate: heads[0]!, repairHead: heads[5]!, openedAtMs: start, phase: 'awaiting-fixer' as const,
+      convergenceRounds: heads.map((head, i) => ({ head, round: i + 1, atMs: start + i * 10 * 60_000, failingCount: 1 })),
+      admissions: heads.slice(1).map((head, i) => ({ fromRepairHead: heads[i]!, toRepairHead: head,
+        atMs: start + i * 10 * 60_000 + 60_000, actor: 'original-agent', source: { ref: 'staging', sha: head },
+        paths: ['original.ts'], unchanged: [], blobs: { 'original.ts': 'original-blob' } })),
+    };
+    const add = async (row: NonNullable<ReturnType<typeof buildGateRepairLatencyLedgerRow>>, workspace = scope.workspaceId) => {
+      const ids = await db.sql`INSERT INTO harness_shared.pipeline_events
+        (workspace_id, install_slug, kind, status, detail, created_at)
+        VALUES (${workspace}, ${scope.installSlug}, 'green_checkpoint_repair_latency', ${row.status},
+          ${JSON.stringify(row.detail)}::text::jsonb, ${new Date(end)}) RETURNING id::text`;
+      return ids[0]!.id as string;
+    };
+    const disposition = deriveTickFreezeDisposition({ flagEnabled: true, repairQueue: queue, nowMs: end });
+    const snapshot = buildGateRepairLatencyLedgerRow(disposition, end)!;
+    const expected = await add(snapshot);
+    await add(snapshot, 'foreign');
+    const w = { windowStartMs: start, windowEndMs: end };
+    const history = await readGreenMainRepairRoundWindow(db.sql, scope, w);
+    expect(history.rows.map(row => row.id)).toEqual([expected]);
+    expect(evaluateGreenMainAdmissionWindow(history, end).assertions.every(a => a.passed)).toBe(true);
+    await db.sql`DELETE FROM harness_shared.pipeline_events`;
+    queue.convergenceRounds = queue.convergenceRounds.slice(0, 1);
+    const pending = deriveTickFreezeDisposition({ flagEnabled: true, repairQueue: queue, nowMs: end });
+    await add(buildGateRepairLatencyLedgerRow({ ...pending, state: 'retired' }, end)!);
+    const retired = await readGreenMainRepairRoundWindow(db.sql, scope, w);
+    const evaluation = evaluateGreenMainAdmissionWindow(retired, end);
+    expect(evaluation.admissions).toHaveLength(5);
+    expect(evaluation.admissions.every(a => a.pending)).toBe(true);
+    expect(evaluation.assertions.find(a => a.id === 'admission-rounds-at-most-45min')!.passed).toBe(false);
+    expect(evaluation.assertions.find(a => a.id === 'all-admission-rounds-have-verdicts')!.passed).toBe(false);
   });
 
   it('keeps absence and read failure distinct and refuses an invalid scope before querying', async () => {

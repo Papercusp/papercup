@@ -180,6 +180,11 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
         summary: filing.summary,
         payload: { specConformance },
       });
+      if (!res.id) {
+        // ConditionUpsertResult.id is typed nullable for the race-loss shape; an alarm
+        // nobody can address must fail the run loudly, never read as filed.
+        throw new Error(`spec-conformance: drift alarm for ${filing.conditionKey} returned no work-item id`);
+      }
       if (!res.created) {
         // An adopted incumbent keeps its original payload; refresh what this run measured.
         await sql()`

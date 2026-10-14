@@ -489,15 +489,20 @@ export interface ConsultRouteDeps {
   now?: () => Date;
 }
 
-/** Path-ish tokens ("code in question", D-002 authorship signal): anything
- * with a slash that looks like a repo path. Capped so the SQL stays bounded. */
+/** Infer source paths from filename shape or explicit path notation. An
+ * unmarked prose pair such as before/after cannot identify repository code.
+ * Extensionless paths remain usable when quoted, rooted or directory-marked.
+ * Capped so the SQL stays bounded. */
 export function extractPathTokens(question: string, cap = 4): string[] {
-  const matches = question.match(/(?:[\w@.-]+\/)+[\w.-]+/g) ?? [];
   const seen = new Set<string>();
-  for (const m of matches) {
+  for (const match of question.matchAll(/(?:\.{1,2}\/|\/)?(?:[\w@.-]+\/)+[\w.-]+\/?/g)) {
+    const m = match[0];
     // Trim trailing punctuation a sentence contributes ("...in foo/bar.ts.")
     const t = m.replace(/[.,;:!?)]+$/, '');
-    if (t.includes('/') && t.length >= 3) seen.add(t);
+    const quoted = question[match.index - 1] === '`' && question[match.index + m.length] === '`';
+    const marked = quoted || t.startsWith('/') || /^\.{1,2}\//.test(t) || t.endsWith('/');
+    const filename = /(?:^|\/)[^/]*\.[a-z0-9_-]+$/i.test(t);
+    if (t.length >= 3 && (marked || filename)) seen.add(t);
     if (seen.size >= cap) break;
   }
   return [...seen];
@@ -553,8 +558,10 @@ function subjectEvidenceAction(toolDescription?: string | null): string | null {
   return action ? action.slice(0, 1_500) : null;
 }
 
+const TOOL_SUBJECT_PATTERN = /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/i;
+
 export function subjectEvidenceQuery(subject: string, toolDescription?: string | null): string | null {
-  if (!subject.includes(':')) return subject;
+  if (!TOOL_SUBJECT_PATTERN.test(subject)) return subject;
   const action = subjectEvidenceAction(toolDescription);
   return action ? `${subject}\n${action}` : null;
 }
@@ -600,7 +607,7 @@ export async function scoreSubjectEvidence(subject: string, texts: string[], dea
     }).catch(error => { subjectScorer = null; throw error; });
   }
   const scorer = deps.scorer ?? await subjectScorer!;
-  if (!subject.includes(':')) return scorer(query, texts, { deadline });
+  if (!TOOL_SUBJECT_PATTERN.test(subject)) return scorer(query, texts, { deadline });
   // At most 24 passages × (target + 3 contrasts), all on the same 4s deadline.
   // Reverse retrieval asks which contract explains THIS passage, avoiding the
   // procedural vocabulary that made broad tool descriptions false friends.
@@ -943,7 +950,10 @@ async function routeConsultCore(
   const subjectRef = params.subjectRef?.trim() || null;
   const subjectPattern = subjectRef ? exactSubjectMentionPattern(subjectRef) : null;
   const inferredSubject = expertiseSubject(params.question);
-  const subjectRefs = [...new Set((params.subjectRefs !== undefined ? params.subjectRefs : inferredSubject ? [inferredSubject] : [])
+  // Natural questions still require problem-specific evidence. Reducing one to
+  // generic procedural words, or skipping validation when no code is named,
+  // lets unrelated continuation history borrow semantic qualification.
+  const subjectRefs = [...new Set((params.subjectRefs !== undefined ? params.subjectRefs : [inferredSubject ?? params.question])
     .map(ref => ref.trim()).filter(Boolean))];
   const unresolvedSubjectRefs = [...new Set((params.unresolvedSubjectRefs ?? []).map(ref => ref.trim()).filter(Boolean))];
 

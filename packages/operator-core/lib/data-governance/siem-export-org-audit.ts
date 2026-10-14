@@ -27,13 +27,13 @@ import { ORGANIZATION_DATA_RECEIPT_VERSION, RECEIPT_ACTIONS } from './organizati
 import {
   SIEM_MAX_PAGE,
   SIEM_ORG_AUDIT_STREAM_PREFIX,
-  SIEM_WITHHELD_FREE_TEXT,
   SiemExportAccessError,
   buildSiemBatch,
   scrubCredentialValues,
   settleHorizon,
   siemArgsDigest,
   siemAssertKey,
+  siemCodeValue,
   siemPseudonym,
   siemScalar,
   type SiemBatch,
@@ -108,15 +108,11 @@ export function decodeOrgAuditCursor(cursor: string): OrgAuditCursor | null {
 const RECEIPT_ACTION_SET = new Set(Object.values(RECEIPT_ACTIONS));
 
 /**
- * emit-code for this stream: identifier-shaped values (uuids, store names, migration file names,
- * build shas) pass; anything with spaces or other free-text characters is withheld. Wider than the
- * tool-invocation stream's rule, which requires a leading letter and so would withhold every uuid.
+ * emit-code for this stream IS the tool-invocation stream's rule (siem-export.ts SIEM_CODE_SHAPED,
+ * WI-6554700010012363): one export format, one redaction shape. Uuids, store names, migration file
+ * names and build shas pass; anything with spaces or other free-text characters is withheld.
  */
-const IDENT_SHAPED = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
-export function codeValue(value: unknown): string | null {
-  const v = siemScalar(value);
-  return v === null ? null : IDENT_SHAPED.test(String(v)) ? String(v) : SIEM_WITHHELD_FREE_TEXT;
-}
+export const codeValue = siemCodeValue;
 
 function isoTime(value: unknown): string | null {
   if (value instanceof Date) return value.toISOString();

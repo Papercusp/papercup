@@ -262,6 +262,18 @@ describe('summarizeFreezeAndConverge', () => {
 });
 
 describe('buildGateRepairLatencyLedgerRow — R-7 durable latency ledger (EI-23420599799124840)', () => {
+  it('retains original admissions and pending head after retirement without mutable aliases', () => {
+    const admission = { atMs: T0 + 60_000, fromRepairHead: 'a', toRepairHead: 'b',
+      actor: 'agent', source: { ref: 'staging', sha: 'b' }, paths: ['p.ts'], unchanged: [], blobs: { 'p.ts': 'blob' } };
+    const disposition = deriveTickFreezeDisposition({ flagEnabled: true, nowMs: T0 + 120_000,
+      repairQueue: { candidate: 'a', repairHead: 'b', phase: 'ready-to-verify', openedAtMs: T0,
+        convergenceRounds: [{ round: 1, head: 'a', atMs: T0, failingCount: 1 }], admissions: [admission] } });
+    const row = buildGateRepairLatencyLedgerRow({ ...disposition, state: 'retired' }, T0 + 120_000)!;
+    admission.atMs++;
+    expect(row.detail.repairProgress!.admissionHistory).toEqual({ version: 1, repairHead: 'b',
+      admissions: [{ atMs: T0 + 60_000, fromRepairHead: 'a', toRepairHead: 'b' }] });
+    expect(row.status).toBe('retired');
+  });
   it('preserves original round ordinals and clocks beyond the mutable queue lifetime', () => {
     const rounds = [{ round: 1, head: 'a'.repeat(40), atMs: T0, failingCount: 4 },
       { round: 3, head: 'b'.repeat(40), atMs: T0 + 60_000, failingCount: 2 }];

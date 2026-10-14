@@ -19,7 +19,10 @@
  * dev:pg_query's result shape; only the tool's data is canned (rubric-probe-sql.test.ts pins
  * the real dev:pg_query guard itself).
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import * as nativeAdoption from './code-intelligence/native-adoption';
+import { rescoreRubric } from './harness/routines/rubric-rescore-action';
+import { fillRatingsFromLedger } from './scorecard-ledger-fill';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { createOrgTestDb } from '../test/_org-test-db';
@@ -88,6 +91,55 @@ const reading = (key: string, unit: InstrumentReading['unit'], value: number | n
 });
 
 describe('R-6 — every executed probe or instrument check writes one row to the results ledger', () => {
+  it('scheduled adoption measures the real activity ledger, records regression, and grades from the stored result', async () => {
+    const rubricRef = 'acceptance-scheduled-native-fixture';
+    const at = '2026-10-13T04:00:00.000Z';
+    const criteria = [{ key: 'r-31', check: { kind: 'instrument', instrumentKey: nativeAdoption.NATIVE_ADOPTION_INSTRUMENT_KEYS.goodUse } }];
+    await db.adminSql`
+      INSERT INTO harness_shared.agent_activity (workspace_id, owner_id, kind, tool_name, phase, detail, created_at)
+      SELECT ${WS}, 'fixture-' || n, 'tool', 'Bash', 'post',
+        jsonb_build_object('command', ${"rg -n 'export function alpha' src"}::text), '2026-10-12T04:00:00Z'::timestamptz
+      FROM generate_series(1, 500) AS n
+    `;
+    await recordRubricCheckResults([{
+      check: { id: 'r-31:instrument', rubricRef, criterionKey: 'r-31', kind: 'instrument', value: 1, unit: 'count' },
+      verdict: 'pass', measuredAt: '2026-10-13T03:00:00.000Z', durationMs: 0,
+    }], SCOPE, sql());
+    const measureFromDb = nativeAdoption.measureNativeAdoptionWindow;
+    const measure = vi.spyOn(nativeAdoption, 'measureNativeAdoptionWindow')
+      .mockImplementation(window => measureFromDb(window, db.adminSql));
+    const emit = vi.fn(async () => undefined);
+    const deps = {
+      getRubric: async () => ({ rubricId: rubricRef, workspaceId: WS, criteria }),
+      readLatest: (input: Parameters<typeof readLatestRubricCheckResults>[0]) => readLatestRubricCheckResults(input, sql()),
+      record: (results: ReadonlyArray<RubricCheckResult>, scope: Parameters<typeof recordRubricCheckResults>[1]) =>
+        recordRubricCheckResults(results, scope, sql()),
+      runInstruments: (input: Parameters<typeof runInstrumentChecks>[0]) => runInstrumentChecks({ ...input, now: () => Date.parse(at) }),
+      emit,
+    };
+    try {
+      const outcome = await rescoreRubric({ rubricRef, workspaceId: OTHER_WS, harnessSlug: 'papercusp' }, deps);
+      expect(measure).toHaveBeenCalledWith({ workspaceId: WS, windowStart: '2026-10-10T04:00:00.000Z', windowEnd: at });
+      expect(outcome.executed).toBe(1);
+      expect(outcome.crossings).toEqual([{ rubricRef, criterionKey: 'r-31', before: 'pass', after: 'fail', testRunId: outcome.testRunIds[0] }]);
+      expect(emit).toHaveBeenCalledTimes(1);
+      const rows = await rowsById(outcome.testRunIds);
+      expect(rows[0]).toMatchObject({ framework: 'rubric-check', status: 'fail', workspace_id: WS });
+      expect(rows[0]?.output_tail).toContain('500 lookups');
+      const latest = await readLatestRubricCheckResults({ rubricRef, workspaceId: WS }, sql());
+      const grade = fillRatingsFromLedger({ criteria, callerRatings: undefined, latest, rubricRatingScale: ['meets', 'misses'] });
+      expect(grade).toMatchObject({ ok: true, ledgerFilled: ['r-31'], ratings: { 'r-31': { rating: 'misses' } } });
+      expect(await readLatestRubricCheckResults({ rubricRef, workspaceId: OTHER_WS }, sql())).toEqual(new Map());
+
+      await db.adminSql`DELETE FROM harness_shared.agent_activity WHERE workspace_id = ${WS}`;
+      emit.mockClear();
+      const empty = await rescoreRubric({ rubricRef, workspaceId: WS, harnessSlug: 'papercusp' }, deps);
+      expect(empty.crossings).toEqual([]);
+      expect(emit).not.toHaveBeenCalled();
+      expect((await rowsById(empty.testRunIds))[0]?.status).toBe('error');
+    } finally { measure.mockRestore(); }
+  });
+
   it('records one row per executed probe (grouped checks per child) beside a vitest file row, with id, value and unit', async () => {
     const [vitestRow] = (await db.adminSql`
       INSERT INTO harness_shared.test_runs (file_path, framework, status, workspace_id)

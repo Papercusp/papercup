@@ -1270,7 +1270,8 @@ export const LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES = 3;
  *
  * Missing or contradictory timestamps fail quiet. A recent presence beat also
  * suppresses the signal because a live owner may simply be in a legitimately
- * long first turn; the stalled-loop actor can use its reachability evidence for
+ * long first turn — but only until a post-arm prompt older than the floor proves
+ * that turn ended (WI-6554700010012442); the stalled-loop actor can use its reachability evidence for
  * any stronger action. This function only contributes to the read-only
  * `loop:status` stalled verdict.
  */
@@ -1282,6 +1283,10 @@ export function computeLoopFireStarvation(input: {
   armedAtMs: number | null;
   lastFiredAtMs: number | null;
   lastActiveAtMs?: number | null;
+  /** Earliest owner prompt (session_turns speaker='user') after `armedAtMs`. Its
+   *  existence proves the arming turn ended, which lifts the presence suppression
+   *  once it is older than the floor (WI-6554700010012442). */
+  firstPromptAfterArmAtMs?: number | null;
   /** Required for the unparked scheduler-wedge shape; parked loops use the infinity sentinel. */
   nextFireAtMs?: number | null;
   intervalSec: number | null;
@@ -1311,12 +1316,23 @@ export function computeLoopFireStarvation(input: {
     if (!Number.isFinite(input.lastFiredAtMs) || input.lastFiredAtMs >= armedAtMs) return false;
   }
 
+  const floorMs = turnsStalledFloorMs(input.intervalSec);
   const lastActiveAtMs = input.lastActiveAtMs;
   const activeRecently =
     lastActiveAtMs != null &&
     Number.isFinite(lastActiveAtMs) &&
-    nowMs - lastActiveAtMs < turnsStalledFloorMs(input.intervalSec);
-  if (activeRecently) return false;
+    nowMs - lastActiveAtMs < floorMs;
+  // WI-6554700010012442: a fresh presence beat only excuses zero fires while the
+  // arming turn may still be running. A prompt after the arm proves that turn ended,
+  // so once that prompt is older than the floor, other wakes (inbox, fleet awaits)
+  // keeping presence fresh no longer explain a loop that never fired.
+  const firstPromptAfterArmAtMs = input.firstPromptAfterArmAtMs;
+  const armingTurnEndedPastFloor =
+    firstPromptAfterArmAtMs != null &&
+    Number.isFinite(firstPromptAfterArmAtMs) &&
+    firstPromptAfterArmAtMs > armedAtMs &&
+    nowMs - firstPromptAfterArmAtMs >= floorMs;
+  if (activeRecently && !armingTurnEndedPastFloor) return false;
 
   // Parked loops carry no concrete nextFireAt by design: their current fire is
   // already in flight, so the no-post-arm-fire evidence is sufficient. An
@@ -2014,6 +2030,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     armedAtMs,
     lastFiredAtMs: lastFiredMs,
     lastActiveAtMs: presenceMs,
+    firstPromptAfterArmAtMs: r.first_prompt_after_arm_at ? new Date(r.first_prompt_after_arm_at).getTime() : null,
     nextFireAtMs: nextFireAtIso == null ? null : Date.parse(nextFireAtIso),
     intervalSec,
   });
@@ -2267,6 +2284,18 @@ export async function getLoopStatuses(
                      (r.metadata->>'armed_at')::timestamptz,
                      '-infinity'::timestamptz
                    ))                                                    AS last_loop_turn_at,
+           -- WI-6554700010012442: the earliest prompt after the arm proves the arming turn
+           -- ended, which lifts fire-starvation's presence suppression past the floor.
+           -- A NULL armed_at compares against +infinity, so it yields NULL (no evidence).
+           -- Uses session_turns_owner_ts_idx like last_loop_turn_at above.
+           (SELECT min(fp.ts)
+              FROM harness_shared.session_turns fp
+             WHERE fp.owner = r.target_owner_id
+               AND fp.speaker = 'user'
+               AND fp.ts > COALESCE(
+                     (r.metadata->>'armed_at')::timestamptz,
+                     'infinity'::timestamptz
+                   ))                                                    AS first_prompt_after_arm_at,
            -- EI-25552514553135466: turnsStalled needs the current arm's loop-turn clock
            -- above, but suppressed-wake recovery needs proof tied to the dispatched wake.
            -- Re-arming after a genuine loop-origin turn otherwise hides that completion and

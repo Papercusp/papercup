@@ -33,6 +33,13 @@ const criteria = [
 const manual = { rating: 'meets', evidence: 'read by hand' };
 
 describe('ledgerCheckBindings — which criteria the ledger owns', () => {
+  it('owns opt-in scheduled native adoption checks and fills their actual ledger verdicts', () => {
+    const native = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use' } };
+    const binding = ledgerCheckBindings(native)![0]!;
+    expect(binding).toEqual({ id: 'r-31:instrument', kind: 'instrument', unit: 'count' });
+    expect(judgeLedgerRow(binding, row('r-31:instrument', 0, 'fail', { unit: 'count' }))).toBe('fail');
+    expect(judgeLedgerRow(binding, row('r-31:instrument', null, 'error', { unit: 'count' }))).toBe('error');
+  });
   it('owns probes (one id per child) and command instruments; never manual, platform-computed or tests checks', () => {
     expect(ledgerCheckBindings(criteria[0]!)?.map((b) => [b.id, b.unit, b.expect])).toEqual([['disk:instrument', '%', { op: 'lt', value: 80 }]]);
     expect(ledgerCheckBindings(criteria[1]!)?.map((b) => b.id)).toEqual(['rows:0', 'rows:1']);

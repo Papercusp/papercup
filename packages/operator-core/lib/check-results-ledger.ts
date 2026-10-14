@@ -36,6 +36,7 @@ import {
   isManualInstrumentKey,
   runInstrument,
   type InstrumentReading,
+  type PlatformInstrument,
 } from './rubric-instrument-registry';
 
 export { RUBRIC_CHECK_FRAMEWORK };
@@ -200,24 +201,56 @@ interface InstrumentCheckedCriterion {
 }
 
 /**
- * Execute every COMMAND instrument check in a rubric. Manual ('none') bindings and
- * platform-computed instruments are skipped: the first measures nothing, and the second is
- * resolved in-process by scorecards:emit rather than run here.
+ * Execute command checks and opt-in scheduled platform checks. Subject-only platform
+ * instruments stay with scorecards:emit; a scheduled resolver requires canonical workspace scope.
  */
 export async function runInstrumentChecks(input: {
   rubricRef: string;
   criteria: ReadonlyArray<InstrumentCheckedCriterion>;
   run?: (key: string) => Promise<InstrumentReading>;
   now?: () => number;
+  workspaceId?: string | null;
+  resolvePlatform?: NonNullable<PlatformInstrument['rescore']>['resolve'];
 }): Promise<RubricCheckResult[]> {
   const run = input.run ?? ((key: string) => runInstrument(key));
   const now = input.now ?? Date.now;
   const out: RubricCheckResult[] = [];
+  const windowEndMs = now();
   for (const criterion of input.criteria) {
     const check = criterion.check;
     if (check?.kind !== 'instrument' || !check.instrumentKey || isManualInstrumentKey(check.instrumentKey)) continue;
     const instrument = getRegisteredInstrument(check.instrumentKey);
-    if (!instrument || instrument.evaluator !== 'command') continue;
+    if (!instrument) continue;
+    if (instrument.evaluator === 'platform' && instrument.rescore) {
+      const started = now();
+      const measuredAt = new Date(windowEndMs).toISOString();
+      const window = {
+        workspaceId: input.workspaceId ?? '',
+        windowStart: new Date(windowEndMs - instrument.rescore.windowMs).toISOString(),
+        windowEnd: measuredAt,
+      };
+      let verdict: RubricCheckVerdict = 'error';
+      let detail = 'A canonical workspace is required for a scheduled platform instrument.';
+      let value: number | null = null;
+      if (window.workspaceId.trim()) {
+        try {
+          const result = await (input.resolvePlatform ?? instrument.rescore.resolve)(window);
+          verdict = result.verdict === 'unknown' ? 'error' : result.verdict;
+          value = verdict === 'error' ? null : verdict === 'pass' ? 1 : 0;
+          detail = result.detail;
+        } catch (error) {
+          detail = `Scheduled instrument unavailable: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+      out.push({
+        check: { id: instrumentCheckId(criterion.key), rubricRef: input.rubricRef,
+          criterionKey: criterion.key, kind: 'instrument', value, unit: instrument.rescore.unit,
+          ...(check.expect ? { expect: check.expect } : {}) },
+        verdict, measuredAt, durationMs: Math.max(0, now() - started), detail,
+      });
+      continue;
+    }
+    if (instrument.evaluator !== 'command') continue;
     const started = now();
     let reading: InstrumentReading;
     try {

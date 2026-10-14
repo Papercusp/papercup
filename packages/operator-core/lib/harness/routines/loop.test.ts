@@ -284,6 +284,48 @@ describe('computeLoopFireStarvation (EI-21301493615546911 — no post-arm fire)'
     expect(computeLoopFireStarvation({ ...base, lastActiveAtMs: NOW - 1_000 })).toBe(false);
   });
 
+  describe('WI-6554700010012442 — presence must not mask a loop whose arming turn already ended', () => {
+    // Observed 2026-10-14 (su-1055507e): parked ~66 min, firesSinceArm 0 vs expected 52,
+    // while inbox wakes and fleet awaits kept the presence beat fresh. A fresh beat can
+    // only excuse zero fires while the arming turn is still running. A later prompt proves
+    // that turn ended, so after the floor the loop should have fired.
+    const observed = {
+      ...base,
+      armedAtMs: NOW - 66 * 60_000,
+      lastFiredAtMs: null,
+      expectedFiresSinceArm: 52,
+      lastActiveAtMs: NOW - 5_000,
+    };
+
+    it('flags a parked never-fired loop with fresh presence once a post-arm prompt is past the floor', () => {
+      expect(
+        computeLoopFireStarvation({ ...observed, firstPromptAfterArmAtMs: NOW - 60 * 60_000 }),
+      ).toBe(true);
+    });
+
+    it('stays quiet while the first post-arm prompt is younger than the floor', () => {
+      expect(
+        computeLoopFireStarvation({ ...observed, firstPromptAfterArmAtMs: NOW - 2 * 60_000 }),
+      ).toBe(false);
+    });
+
+    it('stays quiet with fresh presence and no post-arm prompt (the arming turn may still be running)', () => {
+      expect(computeLoopFireStarvation({ ...observed, firstPromptAfterArmAtMs: null })).toBe(false);
+      expect(computeLoopFireStarvation(observed)).toBe(false);
+    });
+
+    it('ignores a prompt timestamp at or before the arm', () => {
+      expect(computeLoopFireStarvation({ ...observed, firstPromptAfterArmAtMs: observed.armedAtMs })).toBe(false);
+      expect(computeLoopFireStarvation({ ...observed, firstPromptAfterArmAtMs: Number.NaN })).toBe(false);
+    });
+
+    it('still requires an overdue concrete next fire for an unparked loop', () => {
+      const settled = { ...observed, parked: false, firstPromptAfterArmAtMs: NOW - 60 * 60_000 };
+      expect(computeLoopFireStarvation({ ...settled, nextFireAtMs: NOW + 1_000 })).toBe(false);
+      expect(computeLoopFireStarvation({ ...settled, nextFireAtMs: NOW - 1_000 })).toBe(true);
+    });
+  });
+
   it('allows a never-fired loop with no fire timestamp to be diagnosed once the floor is crossed', () => {
     expect(computeLoopFireStarvation({ ...base, lastFiredAtMs: null })).toBe(true);
   });

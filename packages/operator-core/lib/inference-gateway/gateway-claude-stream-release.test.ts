@@ -19,7 +19,7 @@ import { createInferenceGateway } from './gateway';
 import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
 import { _resetDbHealth } from './db-health';
 
-type Reply = (req: http.IncomingMessage, res: http.ServerResponse) => void;
+type Reply = (req: http.IncomingMessage, res: http.ServerResponse, body: string) => void;
 
 let upstream: http.Server | undefined;
 let gw: ReturnType<typeof createInferenceGateway> | undefined;
@@ -35,8 +35,9 @@ afterEach(async () => {
 
 async function boot(reply: Reply): Promise<void> {
   upstream = http.createServer((req, res) => {
-    req.on('data', () => {});
-    req.on('end', () => reply(req, res));
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => reply(req, res, Buffer.concat(chunks).toString('utf8')));
   });
   await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', () => resolve()));
   const { port: upstreamPort } = upstream.address() as { port: number };
@@ -64,6 +65,34 @@ const claudeAdmission = async () =>
   ((await (await ask('/stats')).json()) as { admission: { running: number; queued: number } }).admission;
 
 describe('proxy (claude lane) — a streaming response does not hold the lane admission slot (R-3)', () => {
+  it('holds the claude slot through the upload until the upstream sends its first response byte', async () => {
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => { answer = resolve; });
+    let bodyArrived!: (body: string) => void;
+    const arrived = new Promise<string>((resolve) => { bodyArrived = resolve; });
+    await boot((_req, res, body) => {
+      bodyArrived(body);
+      void answered.then(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    });
+    const payload = 'x'.repeat(256 * 1024);
+    const pending = postMessages({ model: 'claude-opus-4', max_tokens: 4,
+      messages: [{ role: 'user', content: payload }] });
+    try {
+      expect((await arrived).length).toBeGreaterThan(payload.length);
+      expect(await claudeAdmission(), 'upload complete, no upstream response byte: slot still held')
+        .toMatchObject({ running: 1, queued: 0 });
+    } finally {
+      answer();
+    }
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true });
+    expect(await claudeAdmission()).toMatchObject({ running: 0, queued: 0 });
+  });
+
   it('frees the claude lane slot while the stream is open, admits a second request, then relays the rest', async () => {
     let releaseFirst!: () => void;
     const firstHeld = new Promise<void>((resolve) => {

@@ -6,9 +6,42 @@
  * baseline-vs-ledger comparison without a unit for every SQL-probe criterion.
  */
 import { describe, expect, it } from 'vitest';
-import { probeCheckResults, probeCheckUnit } from './check-results-ledger';
+import { probeCheckResults, probeCheckUnit, runInstrumentChecks } from './check-results-ledger';
 
 const AT = '2026-10-13T04:00:00.000Z';
+const adoption = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use' } };
+
+describe('scheduled platform instrument results', () => {
+  it('measures the exact completed trailing window in the rubric workspace and records failure', async () => {
+    const windows: unknown[] = [];
+    const [result] = await runInstrumentChecks({ rubricRef: 'native', criteria: [adoption],
+      workspaceId: 'ws-native', now: () => Date.parse(AT),
+      resolvePlatform: async window => { windows.push(window); return { verdict: 'fail', detail: 'below frozen target' }; },
+    });
+    expect(windows).toEqual([{ workspaceId: 'ws-native', windowStart: '2026-10-10T04:00:00.000Z', windowEnd: AT }]);
+    expect(result).toMatchObject({ verdict: 'fail', measuredAt: AT, detail: 'below frozen target',
+      check: { id: 'r-31:instrument', value: 0, unit: 'count' } });
+  });
+
+  it('records no population and resolver errors as unmeasured, and never queries without workspace scope', async () => {
+    for (const resolvePlatform of [
+      async () => ({ verdict: 'unknown' as const, detail: 'insufficient sample' }),
+      async (): Promise<never> => { throw new Error('ledger unavailable'); },
+    ]) {
+      const [result] = await runInstrumentChecks({ rubricRef: 'native', criteria: [adoption],
+        workspaceId: 'ws-native', now: () => Date.parse(AT), resolvePlatform });
+      expect(result).toMatchObject({ verdict: 'error', check: { value: null } });
+    }
+    let called = false;
+    const [missingScope] = await runInstrumentChecks({ rubricRef: 'native', criteria: [adoption],
+      now: () => Date.parse(AT), resolvePlatform: async () => { called = true; return { verdict: 'pass', detail: 'unsafe' }; } });
+    expect(called).toBe(false);
+    expect(missingScope).toMatchObject({ verdict: 'error', check: { value: null } });
+    expect(await runInstrumentChecks({ rubricRef: 'native', criteria: [
+      { key: 'subject-only', check: { kind: 'instrument', instrumentKey: 'woe.goal-mode-base-scorecard' } },
+    ] })).toEqual([]);
+  });
+});
 const single = (observed: number, verdict: 'pass' | 'fail' = 'pass') => ({
   kind: 'probe',
   probe: { kind: 'sql' },

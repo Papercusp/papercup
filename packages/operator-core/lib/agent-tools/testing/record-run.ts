@@ -566,7 +566,7 @@ export async function executeOperationalRun(
     rows: [{ filePath: path.split(sep).join('/'), framework: artifact.framework,
       status: derivedVerdict(artifact), startedAt, finishedAt,
       durationMs: finishedAt.getTime() - startedAt.getTime(),
-      outputTail: artifact.summary, execution }],
+      outputTail: operationalOutputTail(artifact), execution }],
   });
   if (persisted.written !== 1 || persisted.ids.length !== 1) {
     return { ok: false, error: 'ledger_write_failed' as const, runGroupId };
@@ -575,16 +575,22 @@ export async function executeOperationalRun(
     runtimeEnvironmentMeasured: Boolean(stableRecordedRuntimeEnvironment(runtimeEnvironmentBefore, runtimeEnvironmentAfter)) };
 }
 
-function outputTail(evidence: CommittedOperationalEvidence): string {
-  const passed = evidence.artifact.assertions.filter((assertion) => assertion.passed).length;
+function operationalOutputTail(artifact: OperationalEvidenceArtifact, sha256?: string): string {
+  const passed = artifact.assertions.filter((assertion) => assertion.passed).length;
   return [
-    evidence.artifact.summary,
-    `artifact_sha256=${evidence.sha256}`,
-    `exit_code=${evidence.artifact.exitCode}`,
-    `assertions=${passed}/${evidence.artifact.assertions.length}`,
+    artifact.summary,
+    ...(sha256 ? [`artifact_sha256=${sha256}`] : []),
+    `exit_code=${artifact.exitCode}`,
+    `assertions=${passed}/${artifact.assertions.length}`,
+    ...artifact.assertions.filter((assertion) => !assertion.passed)
+      .map((assertion) => `${assertion.id}: ${assertion.evidence}`),
   ]
     .join('\n')
     .slice(-4000);
+}
+
+function outputTail(evidence: CommittedOperationalEvidence): string {
+  return operationalOutputTail(evidence.artifact, evidence.sha256);
 }
 
 export async function recordOperationalRun(

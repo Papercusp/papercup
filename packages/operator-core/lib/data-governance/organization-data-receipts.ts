@@ -40,7 +40,7 @@ import {
   type GovernanceJson,
   type OrganizationAuditEventInput,
 } from '../auth/hosted/governance';
-import { customerDataTable } from '../auth/hosted/customer-data-map';
+import { CUSTOMER_DATA_CLASSES, customerDataTable } from '../auth/hosted/customer-data-map';
 import type { HostedPermission, HostedPrincipal } from '../auth/hosted-principal';
 import { getBuildInfo } from '../build-info';
 import { revokeProviderIdentityMapping } from '../data-sources/documents-corpus';
@@ -48,12 +48,28 @@ import { pilotStorePopulation, type PilotRetention, type PopulationEntry } from 
 
 export const ORGANIZATION_DATA_RECEIPT_VERSION = 'organization-data-receipt-v1';
 
-export type DataOperation = 'export' | 'deletion' | 'restore';
+/**
+ * Store operations act on the declared population. Key operations (P-016b, D-020 item 6) act on the
+ * organization's envelope keys (data-governance/organization-keys.ts): they touch no store rows,
+ * carry `stores: []` and a `keyLifecycle` block instead.
+ */
+export const KEY_OPERATIONS = ['key-provisioning', 'key-rotation', 'key-revocation', 'key-recovery', 'key-shred'] as const;
+export type KeyOperation = (typeof KEY_OPERATIONS)[number];
+export type DataOperation = 'export' | 'deletion' | 'restore' | KeyOperation;
+
+export function isKeyOperation(operation: DataOperation): operation is KeyOperation {
+  return (KEY_OPERATIONS as readonly string[]).includes(operation);
+}
 
 export const RECEIPT_ACTIONS: Readonly<Record<DataOperation, string>> = {
   export: 'organization.data.export',
   deletion: 'organization.data.deletion',
   restore: 'organization.data.restore',
+  'key-provisioning': 'organization.keys.provisioning',
+  'key-rotation': 'organization.keys.rotation',
+  'key-revocation': 'organization.keys.revocation',
+  'key-recovery': 'organization.keys.recovery',
+  'key-shred': 'organization.keys.shred',
 };
 
 /** Permission a customer user needs for each operation (owner/admin hold both; member/billing neither). */
@@ -61,7 +77,29 @@ export const OPERATION_PERMISSION: Readonly<Record<DataOperation, HostedPermissi
   export: 'members:manage',
   deletion: 'workspace:destroy',
   restore: 'workspace:destroy',
+  'key-provisioning': 'workspace:destroy',
+  'key-rotation': 'workspace:destroy',
+  'key-revocation': 'workspace:destroy',
+  'key-recovery': 'workspace:destroy',
+  'key-shred': 'workspace:destroy',
 };
+
+/** What a key operation did. Never carries key material: references, versions and states only. */
+export interface KeyLifecycleRecord {
+  readonly event: 'provisioned' | 'kek-rotated' | 'dek-rotated' | 'revoked' | 'recovered' | 'shredded';
+  readonly kekProvider: string;
+  readonly kekRef: string;
+  readonly kekGeneration: number;
+  readonly activeDekVersion: number;
+  /** DEK versions the operation re-wrapped, created, or shredded. */
+  readonly dekVersions: readonly number[];
+  /** Custody state after the operation. */
+  readonly custodyState: 'enabled' | 'revoked' | 'shredded';
+  /** For a KEK rotation: the KEK it replaced. */
+  readonly previousKekRef?: string;
+  /** What the KMS reported about the KEK when the operation ran. */
+  readonly kmsState?: string;
+}
 
 export type Executor = 'pilot-data-plane' | 'hosted-control-plane';
 
@@ -201,7 +239,9 @@ function treatmentFor(entry: PopulationEntry): StoreTreatment {
           : { kind: 'unattributable', note: link.note };
   // The map's `secret` class, plus any column whose name is access-shaped (e.g. a credential reference
   // the map classes as operational): the same fail-closed rule pilot stores get.
-  const mapped = [...hosted.columns.pii, ...hosted.columns.billing, ...hosted.columns.operational];
+  // Every class except `secret`, enumerated from the vocabulary so a new class can never fall
+  // out of export silently (P-016a added `customer-content`).
+  const mapped = CUSTOMER_DATA_CLASSES.filter((cls) => cls !== 'secret').flatMap((cls) => hosted.columns[cls]);
   const excludedColumns = [...hosted.columns.secret, ...mapped.filter((c) => ACCESS_SHAPED_COLUMN.test(c))];
   return {
     store: entry.qualified,
@@ -313,6 +353,8 @@ export interface OrganizationDataReceipt {
   readonly stores: readonly StoreReceipt[];
   readonly holdConflicts?: readonly HoldConflict[];
   readonly revocations?: readonly RevocationCheck[];
+  /** Required on, and only on, a key operation. */
+  readonly keyLifecycle?: KeyLifecycleRecord;
   readonly limitations: readonly string[];
   /** Latest applied migration seen by the executor, when it could be read. */
   readonly schemaVersion: string | null;
@@ -358,6 +400,14 @@ export function receiptMetadata(receipt: OrganizationDataReceipt, codeVersion: s
       mappingsRevoked: r.mappingsRevoked, readableDocuments: r.readableDocuments, denied: r.denied,
     }));
   }
+  if (receipt.keyLifecycle) {
+    const k = receipt.keyLifecycle;
+    meta.keyLifecycle = {
+      event: k.event, kekProvider: k.kekProvider, kekRef: k.kekRef, kekGeneration: k.kekGeneration,
+      activeDekVersion: k.activeDekVersion, dekVersions: [...k.dekVersions], custodyState: k.custodyState,
+      previousKekRef: k.previousKekRef ?? null, kmsState: k.kmsState ?? null,
+    };
+  }
   return meta;
 }
 
@@ -372,12 +422,19 @@ export async function writeOrganizationDataReceipt(
 ): Promise<string> {
   const scope = validateScope(receipt.scope);
   const auth = authorizeDataOperation(receipt.operation, scope.organizationId, actor);
-  const declared = new Set(planOrganizationDataOperation().map((t) => t.store));
-  const covered = new Set(receipt.stores.map((s) => s.store));
-  const missing = [...declared].filter((s) => !covered.has(s));
-  const extra = [...covered].filter((s) => !declared.has(s));
-  if (missing.length || extra.length) {
-    throw new Error(`organization-data-receipts: receipt does not cover the declared population (missing ${missing.join(', ') || 'none'}; undeclared ${extra.join(', ') || 'none'})`);
+  if (isKeyOperation(receipt.operation)) {
+    // A key operation touches no store rows. It must say what it did to the keys instead.
+    if (!receipt.keyLifecycle) throw new Error(`organization-data-receipts: ${receipt.operation} receipt requires keyLifecycle`);
+    if (receipt.stores.length) throw new Error(`organization-data-receipts: ${receipt.operation} receipt must not list stores`);
+  } else {
+    if (receipt.keyLifecycle) throw new Error(`organization-data-receipts: ${receipt.operation} receipt must not carry keyLifecycle`);
+    const declared = new Set(planOrganizationDataOperation().map((t) => t.store));
+    const covered = new Set(receipt.stores.map((s) => s.store));
+    const missing = [...declared].filter((s) => !covered.has(s));
+    const extra = [...covered].filter((s) => !declared.has(s));
+    if (missing.length || extra.length) {
+      throw new Error(`organization-data-receipts: receipt does not cover the declared population (missing ${missing.join(', ') || 'none'}; undeclared ${extra.join(', ') || 'none'})`);
+    }
   }
   if (receipt.operation === 'export') {
     for (const s of receipt.stores) {

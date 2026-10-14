@@ -5,7 +5,8 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as nativeAdoption from './code-intelligence/native-adoption';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
@@ -115,9 +116,34 @@ describe('the registry seed set', () => {
       GATE_REUSE_AUDIT_INSTRUMENT_KEY,
       ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS),
       ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
+      ...Object.values(nativeAdoption.NATIVE_ADOPTION_INSTRUMENT_KEYS),
     ];
     expect(platformComputedInstrumentKeys().sort()).toEqual([...expected].sort());
     for (const key of expected) expect(instrumentRegistry().get(key)?.evaluator, key).toBe('platform');
+  });
+
+  it('only adoption instruments opt into scheduled windows and use the real adoption rater', async () => {
+    const window = { workspaceId: 'ws-native', windowStart: '2026-10-10T04:00:00.000Z', windowEnd: '2026-10-13T04:00:00.000Z' };
+    const metrics = nativeAdoption.summarizeNativeAdoption({ window, invocations: [], shellCommands: [] });
+    const measure = vi.spyOn(nativeAdoption, 'measureNativeAdoptionWindow').mockResolvedValue(metrics);
+    try {
+      for (const key of platformComputedInstrumentKeys()) {
+        const instrument = getRegisteredInstrument(key);
+        expect(instrument?.evaluator).toBe('platform');
+        if (instrument?.evaluator !== 'platform') throw new Error('expected platform instrument');
+        const criterion = nativeAdoption.nativeAdoptionCriterionForInstrument(key);
+        if (!criterion) {
+          expect(instrument.rescore).toBeUndefined();
+          continue;
+        }
+        expect(instrument.rescore?.windowMs).toBe(72 * 60 * 60_000);
+        expect(await instrument.rescore!.resolve(window)).toMatchObject({
+          verdict: nativeAdoption.rateNativeAdoption(metrics)[criterion].verdict,
+        });
+      }
+      expect(measure).toHaveBeenCalledTimes(2);
+      expect(measure).toHaveBeenCalledWith(window);
+    } finally { measure.mockRestore(); }
   });
 
   it("never registers the manual key, and treats 'none' case-insensitively as manual", () => {

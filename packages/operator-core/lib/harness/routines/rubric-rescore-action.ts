@@ -12,7 +12,7 @@
  *   1. BEFORE — the verdict of every executable criterion from its latest ledger rows, judged by
  *      the same P-007 rules scorecards:emit { fromLedger } uses (ledgerCheckBindings +
  *      judgeLedgerRow against the criterion's CURRENT threshold; error > fail > pass).
- *   2. RUN — every registered COMMAND instrument check (P-005) and every typed probe check
+ *   2. RUN — every command/opt-in platform instrument check and every typed probe check
  *      (P-004/P-006), each executed result written as one results-ledger row (P-006).
  *   3. AFTER — the same verdicts re-read from the ledger.
  *   4. For every criterion that moved pass → fail, emit `rubric:criterion-regressed:<rubricRef>`
@@ -144,7 +144,7 @@ export async function rescoreRubric(
   const before = new Map(executable.map((c) => [c.key, criterionLedgerVerdict(c, latestBefore)] as const));
 
   const results: RubricCheckResult[] = [
-    ...(await (deps.runInstruments ?? runInstrumentChecks)({ rubricRef, criteria: executable })),
+    ...(await (deps.runInstruments ?? runInstrumentChecks)({ rubricRef, criteria: executable, workspaceId })),
   ];
   const probeErrors: string[] = [];
   const probeCriteria = executable.filter((c) => (c.check as { kind?: string } | undefined)?.kind === 'probe');

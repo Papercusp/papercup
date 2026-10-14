@@ -38,6 +38,7 @@ import type { GateNonVerdictReasons } from './gate-fire-ledger';
 import { classifyGateOutcomeStatus, isGateFireId, VERDICT_BEARING_STATUSES } from './gate-fire-ledger';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 import type { Sql } from 'postgres';
+import type { FrozenRepairProgress } from './freeze-disposition';
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -150,6 +151,142 @@ export function evaluateGreenMainRepairRoundWindow(history: PipelineEventWindowR
     { id: 'nonempty-completed-repair-rounds', passed: admissible, evidence: `intervals=${intervals.length}` },
     { id: 'completed-repair-rounds-at-most-45min', passed: admissible && intervals.every(round => round.durationMs <= 45 * 60_000), evidence: `max=${intervals.length ? Math.max(...intervals.map(round => round.durationMs)) : 'unknown'}ms` },
   ] };
+}
+
+/**
+ * Admission-to-verdict clocks, distinct from the panel's consecutive-red gaps.
+ * Pending work stays in the population; retirement never manufactures a verdict.
+ * An open queue needs an original observation at the window end, with no grace tick.
+ */
+export function evaluateGreenMainAdmissionWindow(history: PipelineEventWindowRead, observedAtMs = Date.now()) {
+  const roundEvaluation = evaluateGreenMainRepairRoundWindow(history, observedAtMs);
+  const bounded = roundEvaluation.assertions[0]!.passed;
+  const complete = roundEvaluation.assertions[1]!.passed;
+  let original = roundEvaluation.assertions[2]!.passed;
+  const cycles = new Map<string, { candidate: string; openedAtMs: number;
+    admissions: Map<string, { atMs: number; fromRepairHead: string; toRepairHead: string }>;
+    verdicts: Map<string, { head: string; atMs: number; ordinal: number }>;
+    latest: { observedAtMs: number; terminal: boolean; retired: boolean; heads: string[] };
+  }>();
+  const rows = [...history.rows].sort((a, b) => a.createdAtMs - b.createdAtMs);
+  for (const row of rows) {
+    const progress = row.detail?.repairProgress as FrozenRepairProgress | undefined;
+    const chain = progress?.admissionHistory;
+    const openedAtMs = (row.detail?.repairLatency as { stamps?: { openedAtMs?: number } } | undefined)?.stamps?.openedAtMs;
+    const candidate = row.detail?.candidate;
+    const at = row.detail?.observedAtMs;
+    if (!chain || chain.version !== 1 || typeof chain.repairHead !== 'string' || !chain.repairHead.trim() ||
+        !Array.isArray(chain.admissions) || !Array.isArray(progress?.rounds) ||
+        typeof candidate !== 'string' || !candidate.trim() || !Number.isSafeInteger(openedAtMs) ||
+        !Number.isSafeInteger(at)) { original = false; continue; }
+    const key = JSON.stringify([candidate, openedAtMs]);
+    const heads = [candidate];
+    let priorAt = openedAtMs as number;
+    let chainValid = true;
+    for (const admission of chain.admissions) {
+      if (!admission || !Number.isSafeInteger(admission.atMs) || admission.atMs < priorAt || admission.atMs > (at as number) ||
+          admission.fromRepairHead !== heads[heads.length - 1] ||
+          typeof admission.toRepairHead !== 'string' || !admission.toRepairHead.trim() ||
+          heads.includes(admission.toRepairHead) || admission.provenance !== undefined) { chainValid = false; break; }
+      priorAt = admission.atMs;
+      heads.push(admission.toRepairHead);
+    }
+    if (!chainValid || heads[heads.length - 1] !== chain.repairHead) { original = false; continue; }
+    const terminal = row.status === 'retired' || progress.phase === 'ready-to-promote';
+    const cycle = cycles.get(key) ?? { candidate, openedAtMs: openedAtMs as number,
+      admissions: new Map(), verdicts: new Map(),
+      latest: { observedAtMs: at as number, terminal, retired: row.status === 'retired', heads },
+    };
+    if ((at as number) < cycle.latest.observedAtMs ||
+        (cycle.latest.terminal && !terminal) || cycle.latest.heads.some((head, i) => heads[i] !== head)) original = false;
+    for (const admission of chain.admissions) {
+      const prior = cycle.admissions.get(admission.toRepairHead);
+      if (prior && (prior.atMs !== admission.atMs || prior.fromRepairHead !== admission.fromRepairHead)) original = false;
+      cycle.admissions.set(admission.toRepairHead, admission);
+    }
+    for (const verdict of progress.rounds) {
+      if (!verdict || !Number.isSafeInteger(verdict.atMs) || !Number.isSafeInteger(verdict.round) ||
+          typeof verdict.head !== 'string') { original = false; continue; }
+      if (!heads.includes(verdict.head) ||
+          verdict.atMs < (chain.admissions.find(a => a.toRepairHead === verdict.head)?.atMs ?? (openedAtMs as number))) original = false;
+      cycle.verdicts.set(JSON.stringify([verdict.head, verdict.atMs]), { head: verdict.head, atMs: verdict.atMs, ordinal: verdict.round });
+    }
+    if (progress.phase === 'ready-to-promote') {
+      const verdictAt = (row.detail.repairLatency as { stamps?: { lastVerdictAtMs?: unknown } })?.stamps?.lastVerdictAtMs;
+      if (!Number.isSafeInteger(verdictAt) || (verdictAt as number) < priorAt || (verdictAt as number) > (at as number)) original = false;
+      else cycle.verdicts.set(JSON.stringify([chain.repairHead, verdictAt]), { head: chain.repairHead, atMs: verdictAt as number,
+        ordinal: Math.max(0, ...progress.rounds.filter(r => r && Number.isSafeInteger(r.round)).map(r => r.round)) + 1 });
+    }
+    cycle.latest = { observedAtMs: at as number, terminal, retired: row.status === 'retired', heads };
+    cycles.set(key, cycle);
+  }
+  const admissions: Array<{ cycle: string; head: string; admittedAtMs: number;
+    verdictHead: string | null; verdictRound: number | null; verdictAtMs: number | null; durationMs: number; pending: boolean }> = [];
+  let endCovered = cycles.size > 0;
+  for (const [key, cycle] of cycles) {
+    if (!cycle.latest.terminal && cycle.latest.observedAtMs < history.windowEndMs) endCovered = false;
+    if (cycle.latest.retired && cycle.latest.observedAtMs < history.windowStartMs) continue;
+    for (const admission of cycle.admissions.values()) {
+      const index = cycle.latest.heads.indexOf(admission.toRepairHead);
+      const verdict = [...cycle.verdicts.values()].filter(v => v.atMs >= admission.atMs &&
+        cycle.latest.heads.indexOf(v.head) >= index).sort((a, b) => a.atMs - b.atMs)[0];
+      if (verdict && verdict.atMs < history.windowStartMs) continue;
+      admissions.push({ cycle: key, head: admission.toRepairHead, admittedAtMs: admission.atMs,
+        verdictHead: verdict?.head ?? null, verdictRound: verdict?.ordinal ?? null, verdictAtMs: verdict?.atMs ?? null, pending: !verdict,
+        durationMs: (verdict?.atMs ?? (cycle.latest.retired ? cycle.latest.observedAtMs : history.windowEndMs)) - admission.atMs });
+    }
+  }
+  const admissible = bounded && complete && original && endCovered && admissions.length > 0;
+  // Several admissions before one verdict constitute ONE round. Counting each
+  // admission would let one tested batch satisfy the five-consecutive-round bar.
+  const completedRounds = new Map<string, { cycle: string; ordinal: number; durationMs: number }>();
+  for (const admission of admissions.filter(a => !a.pending)) {
+    const key = JSON.stringify([admission.cycle, admission.verdictHead, admission.verdictAtMs]);
+    const prior = completedRounds.get(key);
+    completedRounds.set(key, { cycle: admission.cycle, ordinal: admission.verdictRound!,
+      durationMs: Math.max(prior?.durationMs ?? 0, admission.durationMs) });
+  }
+  const fiveConsecutive = [...cycles.keys()].some(key => {
+    const ordinals = [...completedRounds.values()].filter(r => r.cycle === key).map(r => r.ordinal).sort((a, b) => a - b);
+    let streak = 0;
+    return ordinals.some((ordinal, i) => {
+      streak = i > 0 && ordinal === ordinals[i - 1]! + 1 ? streak + 1 : 1;
+      return streak >= 5;
+    });
+  });
+  const durations = [...completedRounds.values()].map(round => round.durationMs).sort((a, b) => a - b);
+  const medianMs = durations.length ? (durations[Math.floor((durations.length - 1) / 2)]! + durations[Math.floor(durations.length / 2)]!) / 2 : null;
+  return { admissions, completedRounds: [...completedRounds.values()], medianMs, eventIds: history.rows.map(row => row.id), assertions: [
+    { id: 'bounded-admission-window', passed: bounded, evidence: `start=${history.windowStartMs}; end=${history.windowEndMs}` },
+    { id: 'complete-admission-snapshot-population', passed: complete, evidence: `read=${history.status}; rows=${history.rows.length}; total=${history.total}` },
+    { id: 'original-complete-admission-chains', passed: complete && original, evidence: 'Exact original head chain and clocks; legacy, reconstructed, trimmed and conflicting history fails.' },
+    { id: 'admission-lifetimes-cover-window-end', passed: endCovered, evidence: 'Each queue has an original terminal or end observation; retirement does not imply a verdict.' },
+    { id: 'nonempty-admission-round-population', passed: admissible, evidence: `admissions=${admissions.length}` },
+    { id: 'admission-rounds-at-most-45min', passed: admissible && admissions.every(a => a.durationMs <= 45 * 60_000), evidence: `pending=${admissions.filter(a => a.pending).length}` },
+    { id: 'all-admission-rounds-have-verdicts', passed: admissible && admissions.every(a => !a.pending), evidence: 'Unfinished or retired work remains explicit.' },
+    { id: 'at-least-five-consecutive-admission-rounds', passed: admissible && fiveConsecutive, evidence: 'Five distinct, consecutive completed verdict ordinals in one unbroken queue chain.' },
+    { id: 'admission-round-median-at-most-45min', passed: admissible && medianMs !== null && medianMs <= 45 * 60_000, evidence: `median=${medianMs ?? 'unknown'}ms` },
+  ] };
+}
+
+export async function executeGreenMainAdmissionWindow(sql: Sql, args: {
+  workspaceId: string; harnessSlug: string; projectDir: string; installSlug: string;
+  runtimeUnits: string[]; windowStartMs: number; windowEndMs: number;
+}) {
+  const { createHash } = await import('node:crypto');
+  const { executeOperationalRun } = await import('../agent-tools/testing/record-run');
+  return executeOperationalRun({ filePath: 'packages/operator-core/lib/release/green-main-slo.ts',
+    name: 'Original admission-to-verdict and pending-round history', framework: 'operational',
+    command: ['executeGreenMainAdmissionWindow', args.workspaceId, args.installSlug, String(args.windowStartMs), String(args.windowEndMs)],
+    runtimeUnits: args.runtimeUnits, run: async () => {
+      const history = await readGreenMainRepairRoundWindow(sql, args, args);
+      const evaluation = evaluateGreenMainAdmissionWindow(history);
+      return { exitCode: evaluation.assertions.every(a => a.passed) ? 0 : 1, assertions: evaluation.assertions,
+        summary: `Original admission population: ${evaluation.admissions.length}; window=${args.windowStartMs}..${args.windowEndMs}; ` +
+          `original_population_sha256=${createHash('sha256').update(JSON.stringify(history)).digest('hex')}. ` +
+          'No current-gate operation, idle-actuator, alarm-delivery, seven-day or shipment claim.' };
+    },
+  }, args);
 }
 
 export async function executeGreenMainRepairRoundWindow(sql: Sql, args: {

@@ -1047,7 +1047,7 @@ export default defineTool({
           .strict()
           .optional()
           .describe(
-            `structured fields for a lane:observation record. ${OBSERVATION_EVIDENCE_RULE} The IDENTIFYING "what" is the title (see its rule — an observation is found again only by its title) and the whole narrative "why" is the body, which is unbounded free prose and the right home for the story. Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.`,
+            `structured fields for a lane:observation record. ${OBSERVATION_EVIDENCE_RULE} The observation object accepts structured fields only; observation.body is not a valid field, and prose belongs in the top-level body. The IDENTIFYING "what" is the title (see its rule — an observation is found again only by its title) and the whole narrative "why" is the body, which is unbounded free prose and the right home for the story. Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.`,
           ),
         // ── IDEATE-pass provenance (su-ideate-learning-substrate-2026-07-10 P-002 / D-004:
         // the ONE schema bump — the full shape is declared here so the tool contract never

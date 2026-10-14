@@ -1,9 +1,107 @@
 import { describe, expect, it } from 'vitest';
-import { computeGreenMainSlo, evaluateGreenMainRecoveryWindow, evaluateGreenMainRepairRoundWindow, GREEN_MAIN_SLO_DEFAULTS, type GreenMainSloQueue } from './green-main-slo';
+import { computeGreenMainSlo, evaluateGreenMainRecoveryWindow, evaluateGreenMainRepairRoundWindow, evaluateGreenMainAdmissionWindow, GREEN_MAIN_SLO_DEFAULTS, type GreenMainSloQueue } from './green-main-slo';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
+import type { FrozenRepairProgress } from './freeze-disposition';
 
 const H = 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 13, 12, 0, 0);
+
+describe('original admission and unfinished-round lifetimes', () => {
+  const start = NOW - H;
+  const history = (): PipelineEventWindowRead => {
+    const heads = ['a', 'b', 'c', 'd', 'e', 'f'].map(c => c.repeat(40));
+    return { status: 'complete', total: 1, windowStartMs: start, windowEndMs: NOW, reason: null,
+      rows: [{ id: '1', kind: 'green_checkpoint_repair_latency', status: 'converging', createdAtMs: NOW,
+        detail: { candidate: heads[0], observedAtMs: NOW,
+          repairLatency: { stamps: { openedAtMs: start } },
+          repairProgress: { phase: 'awaiting-fixer', rounds: heads.map((head, i) => ({ round: i + 1, head, atMs: start + i * 10 * 60_000 })),
+            admissionHistory: { version: 1, repairHead: heads[5],
+              admissions: heads.slice(1).map((head, i) => ({ fromRepairHead: heads[i], toRepairHead: head,
+                atMs: start + i * 10 * 60_000 + 60_000 })) } },
+        } }],
+    };
+  };
+  const progress = (h: PipelineEventWindowRead) => h.rows[0]!.detail.repairProgress as FrozenRepairProgress;
+  const result = (h: PipelineEventWindowRead) => evaluateGreenMainAdmissionWindow(h, NOW);
+  const assertion = (h: PipelineEventWindowRead, id: string) => result(h).assertions.find(a => a.id === id)!.passed;
+  it('measures five distinct original admission-to-verdict rounds', () => {
+    const r = result(history());
+    expect(r.assertions.every(a => a.passed)).toBe(true);
+    expect(r.admissions).toHaveLength(5);
+    expect(r.completedRounds).toHaveLength(5);
+    expect(r.medianMs).toBe(9 * 60_000);
+  });
+  it('keeps pending work and tests its age at the window end', () => {
+    const h = history(), p = progress(h);
+    p.rounds = p.rounds.slice(0, 1);
+    const r = result(h);
+    expect(r.admissions).toHaveLength(5);
+    expect(r.admissions.every(a => a.pending)).toBe(true);
+    expect(assertion(h, 'admission-rounds-at-most-45min')).toBe(false);
+    expect(assertion(h, 'all-admission-rounds-have-verdicts')).toBe(false);
+  });
+  it('does not turn a retired pending queue into completed work', () => {
+    const h = history(); progress(h).rounds = progress(h).rounds.slice(0, 1); h.rows[0]!.status = 'retired';
+    expect(result(h).admissions.every(a => a.pending)).toBe(true);
+    expect(assertion(h, 'all-admission-rounds-have-verdicts')).toBe(false);
+  });
+  it('counts a batch of five admissions sharing one descendant verdict as one round', () => {
+    const h = history(), p = progress(h);
+    p.rounds = [p.rounds[0]!, { ...p.rounds[5]!, round: 2 }];
+    expect(result(h).completedRounds).toHaveLength(1);
+    expect(assertion(h, 'at-least-five-consecutive-admission-rounds')).toBe(false);
+    expect(result(h).medianMs).toBe(49 * 60_000);
+  });
+  it('uses a terminal green clock at the exact admitted head', () => {
+    const h = history(), p = progress(h);
+    p.phase = 'ready-to-promote'; p.rounds.pop();
+    h.rows[0]!.detail.repairLatency = { stamps: { openedAtMs: start, lastVerdictAtMs: start + 50 * 60_000 } };
+    expect(result(h).assertions.every(a => a.passed)).toBe(true);
+    delete (h.rows[0]!.detail.repairLatency as { stamps: { lastVerdictAtMs?: number } }).stamps.lastVerdictAtMs;
+    expect(assertion(h, 'original-complete-admission-chains')).toBe(false);
+  });
+  it('deduplicates overlapping original snapshots', () => {
+    const h = history(); h.rows.push({ ...structuredClone(h.rows[0]!), id: '2' }); h.total = 2;
+    expect(result(h).assertions.every(a => a.passed)).toBe(true);
+    expect(result(h).completedRounds).toHaveLength(5);
+  });
+  it('enforces the exact 45-minute limit without an extra tick', () => {
+    const h = history(), p = progress(h), chain = p.admissionHistory!;
+    chain.admissions = chain.admissions.slice(0, 1); chain.repairHead = chain.admissions[0]!.toRepairHead;
+    p.rounds = p.rounds.slice(0, 2); p.rounds[1]!.atMs = start + 46 * 60_000;
+    expect(assertion(h, 'admission-rounds-at-most-45min')).toBe(true);
+    p.rounds[1]!.atMs++;
+    expect(assertion(h, 'admission-rounds-at-most-45min')).toBe(false);
+  });
+  it('fails closed rather than throwing on a malformed original round', () => {
+    const h = history(); Object.assign(progress(h).rounds, { 0: null });
+    expect(result(h).assertions.every(a => a.passed)).toBe(false);
+  });
+  it.each(['legacy', 'trimmed-prefix', 'broken-chain', 'wrong-current-head', 'reconstructed',
+    'clock-conflict', 'future-admission', 'stale-open-end', 'unknown-version', 'duplicate-head', 'older-verdict'])(
+    'rejects %s evidence instead of a healthy retained subset', defect => {
+      const h = history(), p = progress(h), chain = p.admissionHistory!;
+      if (defect === 'legacy') delete p.admissionHistory;
+      if (defect === 'trimmed-prefix') chain.admissions.shift();
+      if (defect === 'broken-chain') chain.admissions[2]!.fromRepairHead = 'wrong';
+      if (defect === 'wrong-current-head') chain.repairHead = 'wrong';
+      if (defect === 'reconstructed') chain.admissions[0]!.provenance = 'reconciled-from-ref';
+      if (defect === 'clock-conflict') {
+        h.rows.push({ ...structuredClone(h.rows[0]!), id: '2' }); h.total = 2;
+        (h.rows[1]!.detail.repairProgress as FrozenRepairProgress).admissionHistory!.admissions[0]!.atMs++;
+      }
+      if (defect === 'future-admission') chain.admissions[4]!.atMs = NOW + 1;
+      if (defect === 'stale-open-end') h.rows[0]!.detail.observedAtMs = NOW - 1;
+      if (defect === 'unknown-version') Object.assign(chain, { version: 2 });
+      if (defect === 'duplicate-head') chain.admissions[1]!.toRepairHead = chain.admissions[0]!.toRepairHead;
+      if (defect === 'older-verdict') chain.admissions[4]!.atMs = start + 51 * 60_000;
+      expect(result(h).assertions.every(a => a.passed)).toBe(false);
+    });
+  it('keeps a missing/capped population and future window unqualified', () => {
+    for (const h of [{ ...history(), status: 'capped' as const }, { ...history(), total: 2 },
+      { ...history(), windowEndMs: NOW + 1 }]) expect(result(h).assertions.every(a => a.passed)).toBe(false);
+  });
+});
 
 describe('original completed repair-round history', () => {
   const start = NOW - H;

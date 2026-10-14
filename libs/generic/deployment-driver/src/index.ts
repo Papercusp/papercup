@@ -708,3 +708,16 @@ export {
   bwrapUsernsAppArmorProfileLines,
   bwrapUsernsGrantShellLines,
 } from "./bwrap-userns-grant";
+export {
+  ZRAM_GENERATOR_APT_PACKAGE,
+  ZRAM_GENERATOR_BIN,
+  ZRAM_GENERATOR_CONFIG,
+  ZRAM_SWAP_DEVICE,
+  ZRAM_SWAP_FUNCTION,
+  ZRAM_SWAP_STATUS_PREFIX,
+  ZRAM_SWAP_UNIT,
+  ZRAM_SYSCTL_CONFIG,
+  zramGeneratorConfigLines,
+  zramSwapShellLines,
+  zramSysctlLines,
+} from "./zram-swap";

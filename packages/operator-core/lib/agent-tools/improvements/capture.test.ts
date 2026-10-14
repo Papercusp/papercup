@@ -1984,13 +1984,22 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(JSON.stringify(r.success ? [] : r.error!.issues)).toContain('bogusNewField');
   });
 
-  it('routes free-text evidence to body and rejects observation.evidence (EI-21310187819463956)', () => {
+  it('routes free-text observations to top-level body and rejects nested prose fields (EI-21310187819463956)', () => {
     const json = z.toJSONSchema(captureTool.args as never) as {
       properties?: { observation?: { description?: string } };
     };
     expect(json.properties?.observation?.description).toMatch(/top-level body/i);
+    expect(json.properties?.observation?.description).toMatch(/observation\.body is not a valid field/i);
     expect(json.properties?.observation?.description).toMatch(/observation\.evidence is not a valid field/i);
     expect(json.properties?.observation?.description).toMatch(/observation\.ratings\[criterion\]\.evidence/i);
+
+    const misplacedBody = argsSchema.safeParse({
+      title: 'free-text observation body routing',
+      lane: 'observation',
+      observation: { kind: 'friction', body: 'narrative evidence' },
+    });
+    expect(misplacedBody.success).toBe(false);
+    expect(JSON.stringify(misplacedBody.success ? [] : misplacedBody.error!.issues)).toContain('body');
 
     const misplaced = argsSchema.safeParse({
       title: 'free-text observation evidence routing',

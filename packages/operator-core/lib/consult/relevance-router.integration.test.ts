@@ -404,6 +404,35 @@ describe('bounded subject evidence against real transcript SQL', () => {
     expect(result.snapshot.subjectValidation?.unmeasured).toBe(0);
   });
 
+  it('validates the complete natural lease question instead of generic before/after history', async () => {
+    const leaseQuestion = 'For native isolated session-port consults, what evidence distinguishes child mutation of source plan leases from legitimate source renewal, system cleanup, and mutate-then-revert? I need a concrete actor-correlated before/after audit that preserves the original native receipt when timeout cleanup runs.';
+    await passage('subject-generic-history', 'Verified continuation identity and AUTO state before/after recovering the storage scanner.', 0);
+    await passage('subject-lease-actor', 'A claim ledger recorded the source lease writer and actor on each renewal, child mutation, revert and timeout-cleanup transition; retain the original native receipt.', 0.1);
+    const subjects: string[] = [];
+    const result = await routeConsult({ ...baseParams, question: leaseQuestion }, deps(0, {
+      scoreSubjectEvidence: async (subject, texts) => {
+        subjects.push(subject);
+        // A broad procedural token explains both passages. The actual question
+        // requires lease/actor evidence; vector geometry cannot supply it.
+        return texts.map(text => subject === leaseQuestion ? text.includes('claim ledger') ? 0.9 : 0.1 : 0.8);
+      },
+    }));
+    expect(subjects).toEqual([leaseQuestion]);
+    expect(result.qualified.map(c => c.ownerId)).toEqual(['subject-lease-actor']);
+    const generic = result.snapshot.candidates.find(c => c.ownerId === 'subject-generic-history')!;
+    expect(generic.signals.similarity).toBe(1);
+    expect(generic.subjectEvidenceCoverage).toMatchObject({ status: 'mismatch', required: [leaseQuestion] });
+    expect(snapshotCandidateQualifies(result.snapshot, generic)).toBe(false);
+    // Explicit caller anchors still take precedence over this fallback.
+    const explicit = await routeConsult({ ...baseParams, question: leaseQuestion, subjectRefs: ['src/lease.ts'] }, deps(0, {
+      scoreSubjectEvidence: async (subject, texts) => {
+        expect(subject).toBe('src/lease.ts');
+        return texts.map(() => 0.9);
+      },
+    }));
+    expect(explicit.snapshot.subjectRefs).toEqual(['src/lease.ts']);
+  });
+
   it('leaves an overlapping-contract expert unmeasured while admitting a distinct absolute-floor win', async () => {
     await passage('subject-tied', 'equal release gate checkpoint', 0);
     await passage('subject-floor', 'distinct release gate checkpoint', 0.1);

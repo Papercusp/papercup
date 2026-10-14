@@ -24,6 +24,7 @@ import {
   relevanceOf,
   freshnessOf,
   expertiseSubject,
+  extractPathTokens,
   subjectEvidenceQuery,
   contrastedSubjectScore,
   subjectContrasts,
@@ -69,6 +70,25 @@ const ids = (s: SelectedResponder[]) => s.map((x) => x.candidate.ownerId);
 const vias = (s: SelectedResponder[]) => s.map((x) => x.via);
 
 describe('problem-specific expertise qualification', () => {
+  it('does not mistake prose slash pairs for a repository subject', () => {
+    const question = 'Distinguish child/source lease actors with a before/after audit and CPU/q8 scoring.';
+    expect(extractPathTokens(question)).toEqual([]);
+    expect(expertiseSubject(question)).toBeNull();
+    expect(extractPathTokens('Compare before/after in packages/core/lease.ts and `src/leases`.'))
+      .toEqual(['packages/core/lease.ts', 'src/leases']);
+    expect(extractPathTokens('Inspect ./src/leases, /var/log/leases and src/leases/.'))
+      .toEqual(['./src/leases', '/var/log/leases', 'src/leases/']);
+  });
+
+  it('scores a natural question with punctuation without requiring a named tool contract', async () => {
+    const question = 'Which lease writer caused the before/after change? Note: preserve the native cleanup receipt.';
+    const scorer = vi.fn(async () => [0.9, 0.1]);
+    expect(subjectEvidenceQuery(question)).toBe(question);
+    expect(await scoreSubjectEvidence(question, ['lease actor audit', 'generic continuation'],
+      Date.now() + 4000, { scorer, contracts: [] })).toEqual([0.9, 0.1]);
+    expect(scorer).toHaveBeenCalledWith(question, ['lease actor audit', 'generic continuation'], expect.any(Object));
+  });
+
   it('nominates competing primary actions without matching their operational boilerplate', () => {
     const contracts = [
       { name: 'db:migrate', description: 'Apply a SQL migration.' },

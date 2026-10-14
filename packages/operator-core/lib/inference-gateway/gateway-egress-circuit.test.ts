@@ -61,12 +61,39 @@ function egressFetch(deadIds: Set<string>, onCall?: (id: string) => void): typeo
 
 const MSG = { model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] };
 
+/**
+ * The absorb tests' slot-hold deadline: short enough that the scripted 429/529s exhaust it and hand the
+ * caller to the absorb rung, long enough that attempt 1 is dispatched at all. It must be positive: since
+ * WI-6554700010011504 a deadline already spent before an attempt is a SHED with no upstream call, so a
+ * 0 here would test "no attempt can start" instead of the absorb (WI-6554700010012381).
+ */
+const SHORT_RETRY_DEADLINE_MS = 50;
+
 const post = (extraHeaders: Record<string, string> = {}) =>
   fetch(`http://127.0.0.1:${port}/v1/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...extraHeaders },
     body: JSON.stringify(MSG),
   });
+
+test('a zero retry budget sheds without dispatching or re-acquiring even when absorb is enabled', async () => {
+  let calls = 0;
+  const { governorFor, counts } = perAccountGovernors();
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('A')]),
+    fetchImpl: (async () => { calls++; return new Response('{}'); }) as typeof fetch,
+    governorFor,
+    selfHeal: { enabled: false },
+    internalRetryDeadlineMs: 0,
+    requestAbsorbMs: 8000,
+  });
+  port = await gw.listen(0);
+  const res = await post();
+  assert.equal(res.status, 429);
+  assert.equal(res.headers.get('x-should-retry'), 'false');
+  assert.equal(calls, 0, 'no attempt can start with a zero budget');
+  assert.equal(counts.acquires, 1, 'refreshing a zero budget cannot make progress and must not loop');
+});
 
 test('a dead/hanging egress proxy on one account FAILS OVER to a healthy account → 200, never a 502 wedge', async () => {
   const calls: string[] = [];
@@ -218,7 +245,10 @@ test('EXTENDED ABSORB (requestAbsorbMs) — RELEASES the slot, WAITS OUT a still
     governorFor,
     selfHeal: { enabled: false },
     maxQueueWaitMs: 50,
-    internalRetryDeadlineMs: 0, // hit the slot-hold deadline IMMEDIATELY so each 429 triggers the absorb path
+    // A SHORT slot-hold deadline, so the 429s exhaust it and reach the absorb path. Not 0: since
+    // WI-6554700010011504 a spent budget sheds BEFORE attempt 1 (no upstream call at all), so 0 now
+    // means "no attempt can ever start" rather than "absorb on the first 429" (WI-6554700010012381).
+    internalRetryDeadlineMs: SHORT_RETRY_DEADLINE_MS,
     requestAbsorbMs: ABSORB_MS, // ENABLE extended absorption (off by default)
   });
   port = await gw.listen(0);
@@ -226,7 +256,8 @@ test('EXTENDED ABSORB (requestAbsorbMs) — RELEASES the slot, WAITS OUT a still
   const res = await post();
   const elapsedMs = Date.now() - startedMs;
 
-  assert.equal(res.status, 200, 'absorb-retry held the caller through the transient 429s + returned the eventual 200 — never a shed 429');
+  assert.equal(res.status, 200,
+    `absorb-retry held the caller through the transient 429s (calls=${calls}, elapsed=${elapsedMs}, acquires=${counts.acquires}, releases=${counts.releases}, response=${res.status === 200 ? 'ok' : await res.text()})`);
   assert.ok(calls >= 3, `it kept re-acquiring + retrying through the 429s until the 200 (calls=${calls})`);
 
   // THE ASSERTIONS THE OLD FRESH-GOVERNOR VERSION COULD NOT MAKE:
@@ -275,7 +306,7 @@ test('EXTENDED ABSORB — a FRESH-per-call governor factory cannot hold a penalt
     },
     selfHeal: { enabled: false },
     maxQueueWaitMs: 50,
-    internalRetryDeadlineMs: 0,
+    internalRetryDeadlineMs: SHORT_RETRY_DEADLINE_MS,
     requestAbsorbMs: 8000,
   });
   port = await gw.listen(0);
@@ -323,7 +354,7 @@ test('EXTENDED ABSORB — also holds the caller through a 529 SERVER-OVERLOAD (n
     governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
     selfHeal: { enabled: false },
     maxQueueWaitMs: 50,
-    internalRetryDeadlineMs: 0, // hit the deadline immediately → each 529 reaches the forward-absorb
+    internalRetryDeadlineMs: SHORT_RETRY_DEADLINE_MS, // exhausted by the 529s → each reaches the forward-absorb
     requestAbsorbMs: 8000, // > 2 × OVERLOAD_529_BACKOFF (1s) so the absorb out-waits the overload
   });
   port = await gw.listen(0);
@@ -400,7 +431,7 @@ test('INTERACTIVE fail-fast — a human-labeled caller caps its absorb + sheds f
       governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
       selfHeal: { enabled: false },
       maxQueueWaitMs: 50,
-      internalRetryDeadlineMs: 0, // hit the slot-hold deadline immediately → each 529 reaches the absorb
+      internalRetryDeadlineMs: SHORT_RETRY_DEADLINE_MS, // exhausted by the 529s → each reaches the absorb
       requestAbsorbMs: 3500, // autonomous hold budget (> several OVERLOAD_529_BACKOFF of 1s)
       interactiveAbsorbMs: 20, // human cap: shed almost immediately
     });

@@ -4,8 +4,8 @@
  * `scorecards:emit { fromLedger: true }` rates every EXECUTABLE criterion from its latest
  * results-ledger row and asks the grader only about the rest. "Executable" means the criterion
  * carries a check that writes ledger rows (P-006): a typed probe check, or an instrument check
- * bound to a command evaluator in the instrument registry (P-005). Manual (`none`),
- * platform-computed and test/cargo checks are not ledger-backed here, so they stay with the grader.
+ * bound to a command or opt-in scheduled platform evaluator in the registry. Manual (`none`),
+ * subject-only platform and test/cargo checks are not ledger-backed here.
  *
  * Rules (each pinned by scorecard-ledger-fill.test.ts and emit-from-ledger.integration.test.ts):
  *   - only the LATEST row per check counts (readLatestRubricCheckResults orders by finished_at);
@@ -66,7 +66,7 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * The ledger checks a criterion executes, or null when it has none (manual, platform-computed,
+ * The ledger checks a criterion executes, or null when it has none (manual, subject-only platform,
  * tests/cargo, or no check). Mirrors which checks P-006 writes rows for.
  */
 export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheckBinding[] | null {
@@ -92,12 +92,13 @@ export function ledgerCheckBindings(criterion: LedgerFillCriterion): LedgerCheck
     const key = typeof check.instrumentKey === 'string' ? check.instrumentKey : null;
     if (!key || isManualInstrumentKey(key)) return null;
     const instrument = getRegisteredInstrument(key);
-    if (!instrument || instrument.evaluator !== 'command') return null;
+    if (!instrument || (instrument.evaluator !== 'command' &&
+        !(instrument.evaluator === 'platform' && instrument.rescore))) return null;
     const expect = record(check.expect);
     return [{
       id: instrumentCheckId(criterion.key),
       kind: 'instrument',
-      unit: instrument.unit,
+      unit: instrument.evaluator === 'command' ? instrument.unit : instrument.rescore!.unit,
       ...(expect && typeof expect.op === 'string' && typeof expect.value === 'number'
         ? { expect: { op: expect.op as NonNullable<LedgerCheckBinding['expect']>['op'], value: expect.value } }
         : {}),

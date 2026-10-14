@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BWRAP_USERNS_GRANT_FUNCTION } from './bwrap-userns-grant';
+import { ZRAM_GENERATOR_APT_PACKAGE, ZRAM_SWAP_FUNCTION } from './zram-swap';
 import {
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
@@ -3192,6 +3193,59 @@ describe('hosted connector enrollment conduit (D-403)', () => {
       expect(result.stderr).toContain('HTTP 401');
       expect(existsSync(envFile)).toBe(false);
       expect(existsSync(join(dir, 'systemctl.args'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// WI-6554700010012418 (owner directive #1879): compressed-RAM swap on the Ubuntu cloud desktops.
+// The function's behaviour is tested in zram-swap.test.ts; these pin where, for which model, and
+// how failure-tolerant it renders.
+describe('zram swap (WI-6554700010012418)', () => {
+  const render = (hostModel: (typeof WORKSPACE_HOST_MODELS)[number]) =>
+    buildWorkspaceHostBootstrap(hostModel === 'bootc-image' ? bootcInput() : input());
+  const zramCall = `  ${ZRAM_SWAP_FUNCTION} /etc/systemd/zram-generator.conf /etc/sysctl.d/90-papercusp-zram.conf /usr/lib/systemd/system-generators/zram-generator /proc/swaps`;
+  const zramInstall = `if retry 3 apt_install -y --no-install-recommends ${ZRAM_GENERATOR_APT_PACKAGE} >/dev/null; then`;
+
+  it('installs the generator and configures zram on Ubuntu, after the runtime packages', () => {
+    const ubuntu = render('ubuntu-release-bundle');
+    const runtime = ubuntu.indexOf('retry 5 apt_install -y --no-install-recommends ');
+    const install = ubuntu.indexOf(zramInstall);
+    const call = ubuntu.indexOf(`\n${zramCall}\n`);
+    expect(runtime).toBeGreaterThan(-1);
+    expect(install).toBeGreaterThan(runtime);
+    expect(call).toBeGreaterThan(install);
+    // The function is defined before the call that uses it.
+    expect(ubuntu.indexOf(`\n${ZRAM_SWAP_FUNCTION}() {\n`)).toBeGreaterThan(-1);
+    expect(ubuntu.indexOf(`\n${ZRAM_SWAP_FUNCTION}() {\n`)).toBeLessThan(call);
+  });
+
+  it('never dies on zram: a failed package fetch reports and the bootstrap continues', () => {
+    const ubuntu = render('ubuntu-release-bundle');
+    const block = ubuntu.slice(ubuntu.indexOf(zramInstall), ubuntu.indexOf('\nfi\n', ubuntu.indexOf(zramInstall)) + 4);
+    expect(block).toContain('PAPERCUSP_ZRAM_SWAP status=absent reason=package-install-failed');
+    expect(block).not.toContain('die ');
+  });
+
+  it('stays out of the required apt contract, which dies on a failed fetch', () => {
+    expect(WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES).not.toContain(ZRAM_GENERATOR_APT_PACKAGE);
+  });
+
+  it('does not render on the bootc image (no apt there)', () => {
+    const bootc = render('bootc-image');
+    expect(bootc).not.toContain(ZRAM_SWAP_FUNCTION);
+    expect(bootc).not.toContain(ZRAM_GENERATOR_APT_PACKAGE);
+  });
+
+  it('renders a script bash can parse', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zram-bootstrap-'));
+    try {
+      const file = join(dir, 'bootstrap.sh');
+      writeFileSync(file, render('ubuntu-release-bundle'));
+      const parsed = spawnSync('bash', ['-n', file], { encoding: 'utf8' });
+      expect(parsed.stderr).toBe('');
+      expect(parsed.status).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

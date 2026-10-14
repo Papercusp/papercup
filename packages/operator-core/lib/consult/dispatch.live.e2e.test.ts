@@ -66,7 +66,14 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
           const id = consult.conversation_id as string;
           expect(id, JSON.stringify(consult)).toBeTruthy();
           try {
-            const read = call('conversations:get', { id }, profile.origin).results[0];
+            // Acceptance is asynchronous: wait for both the durable routing
+            // result and its dispatch walk before inspecting or closing it.
+            let read!: ReturnType<typeof call>;
+            await expect.poll(() => {
+              read = call('conversations:get', { id }, profile.origin).results[0];
+              return read.ok && read.consult?.result?.verdict === 'routed'
+                && read.consult.dispatch?.recent?.some((walk: { dispatched: boolean }) => walk.dispatched);
+            }, { timeout: 240_000, interval: 5000 }).toBe(true);
             expect(read.ok).toBe(true);
             const walks = read.consult.dispatch.recent as Array<{ attempts: Array<{
               rank: number; outcome: string; operation: string | null; reason?: string }>; dispatched: boolean }>;
@@ -77,7 +84,8 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
               expect(attempt.rank).toBeGreaterThan(0);
               if (attempt.outcome !== 'dispatched') expect(attempt.reason).toBeTruthy();
             }
-            const dispatch = consult.dispatch;
+            const routed = read.consult.result;
+            const dispatch = routed.dispatch;
             observations.push({ conversationId: id, operation: dispatch?.operation,
               attempts: walk!.attempts.map(({ rank, operation, outcome, reason }) => ({ rank, operation, outcome, reason })) });
             if (dispatch?.operation !== 'brief') continue;
@@ -91,7 +99,7 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
               ORDER BY id DESC LIMIT 1`, profile.origin);
             expect(source).toHaveLength(1);
             expect(source[0]!.role, 'organic routing must reach an expert session that cannot be forked').toBeTypeOf('string');
-            const refs = consult.responder.evidence as Array<{ session_id: string; turn_idx: number }>;
+            const refs = routed.responder.evidence as Array<{ session_id: string; turn_idx: number }>;
             expect(refs.length).toBeGreaterThan(0);
             const excerpts = refs.flatMap(ref => rows(`SELECT substring(text FROM 1 FOR 1000) AS text
               FROM harness_shared.session_turns WHERE workspace_id IN ('papercusp-workspace', 'default')
@@ -110,6 +118,10 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
             }, { timeout: 120_000, interval: 5000 }).toBe(true);
             proof = { conversationId: id, sourceOwner, answeringOwner, nativeSession: String(native[0]!.session_id) };
             break;
+          } catch (error) {
+            console.error('CBP_LIVE_DISPATCH_EXCEPTION', id,
+              error instanceof Error ? error.stack : String(error));
+            throw error;
           } finally {
             call('consult:close', { conversation_id: id, outcome: 'cant_help',
               reason: 'Owned acceptance fixture captured its dispatch; stop the review cascade.' }, profile.origin);

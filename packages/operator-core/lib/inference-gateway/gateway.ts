@@ -2893,6 +2893,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  came from one serviceable account or from the MIN floor. */
   let serviceableAccountsFn: () => number | null = () => null;
   let lastServiceableAccounts: number | null = null;
+  /** Live healthy-account count per provider lane: the floor a contraction respects
+   *  (plan gateway-admission-congestion-only-2026-10-13#P-002, WI-6554700010012367).
+   *  Wired below once both pools' serviceability readers exist; null = unknown. */
+  let laneHealthyAccountsFn: (lane: ProviderLaneId) => number | null = () => null;
 
   // ────────────────────────────────────────────────────────────────────────────
   // P-010: ONE capless admission lifecycle for every provider lane.
@@ -2920,6 +2924,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     contractionFraction: deps.aimd?.decreaseFactor,
     contractionThreshold: deps.aimd?.decreaseThreshold ?? DEFAULT_AIMD_DECREASE_THRESHOLD,
     healthySamplesPerIncrease: deps.aimd?.increaseEvery ?? DEFAULT_AIMD_INCREASE_EVERY,
+    healthyAccountsFor: (lane) => laneHealthyAccountsFn(lane),
     log,
   });
 
@@ -4009,6 +4014,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
       egressPool,
       token: async () => '',
     }));
+  // P-002 floor: a contraction never takes a lane below its count of healthy accounts.
+  // The same serviceability readers `/stats` publishes, so the floor and the reported
+  // healthy count cannot disagree.
+  laneHealthyAccountsFn = (lane) => {
+    if (lane === 'claude') return serviceableHealthyCount();
+    const at = Date.now();
+    return (
+      codexServiceableCount(deps.codexPool, at) +
+      codexServiceableCount(codexCliPool, at, codexCliPool ? [] : codexCliHealthEntries())
+    );
+  };
   /** The codex POOL's recovery horizon for ONE 429 decision (0 = a sibling can serve now; epoch ms = the
    *  earliest known return; Infinity = every account is out with no known reset) — the pool's
    *  `earliestAvailableAt` under the shared health key + the store's hint horizon, with the account that
@@ -7647,10 +7663,50 @@ export function createInferenceGateway(deps: GatewayDeps) {
           resolvePending(null);
           attemptsUsed += attemptsThisPass;
 
+          const failure =
+            error instanceof GatewayRequestKernelError
+              ? error
+              : new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
+                  code: 'gateway-error',
+                  outcome: 'gateway-error',
+                  status: 500,
+                  cause: error,
+                });
+
           // Read-and-clear through the helper (see its declaration): going through a
           // call is what keeps control-flow analysis from having narrowed this to
           // `null` at the pass reset, which would make every field access below TS2339.
-          const taken = takeIntercept();
+          let taken = takeIntercept();
+          // A retry's pacing can spend the slot-hold budget AFTER route selection.
+          // The kernel then sheds before dispatch, bypassing downstream.start and
+          // its outer recovery ladder. Give that shed the same absorb decision and
+          // release/re-acquire path as a relayed throttle. A zero slot budget can
+          // never dispatch, so refreshing it would only spin until absorb expires.
+          if (!taken && failure.code === 'retry-budget-exhausted' && internalRetryDeadlineMs > 0 &&
+              !reqAbort.signal.aborted) {
+            const status = failure.status === 529 ? 529 : 429;
+            const decision = decideThrottleRecovery({
+              status,
+              retryIntent: true,
+              lastExhaustResetAt,
+              state: { transientWaitedMs, retryDeadlineAt, absorbDeadlineAt, headersSent: res.headersSent },
+              budgets: {
+                waitCapMs: ALL_THROTTLED_RECOVERY_WAIT_CAP_MS,
+                transientTotalWaitBudgetMs: TRANSIENT_TOTAL_WAIT_BUDGET_MS,
+                overloadBackoffMs: OVERLOAD_529_BACKOFF_MS,
+              },
+            });
+            if (decision.action === 'absorb') {
+              taken = {
+                action: 'absorb', status, accountId: active.accountId,
+                outHeaders: { 'content-type': 'application/json' },
+                peeked: JSON.stringify({ type: 'error', gateway: true, error: {
+                  type: status === 529 ? 'overloaded_error' : 'rate_limit_error', message: failure.message,
+                } }),
+                transient: decision.transient, waitMs: 0, backoffMs: decision.backoffMs,
+              };
+            }
+          }
           if (taken) {
             if (taken.action === 'effort-clamp') {
               // WI-10005833: at most once per request. `effortClampFor` already proved the rewrite
@@ -7880,15 +7936,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
 
           endCacheProbe();
-          const failure =
-            error instanceof GatewayRequestKernelError
-              ? error
-              : new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
-                  code: 'gateway-error',
-                  outcome: 'gateway-error',
-                  status: 500,
-                  cause: error,
-                });
 
           if (failure.code === 'request-ceiling') {
             log(
@@ -11039,7 +11086,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           ok: true,
           now: Date.now(),
           owner,
-          process: { pid: process.pid, identity: readProcessIdentity(process.pid), startedAt: processStartedAt },
+          process: { pid: process.pid, identity: readProcessIdentity(process.pid), startedAt: processStartedAt,
+            instanceId: gatewayProcessInstanceId },
           ledger: e,
           lastRoute: route,
           pin,

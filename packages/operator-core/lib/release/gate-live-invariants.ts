@@ -557,7 +557,7 @@ export function evaluateGateInvariantAlarmWindow(history: PipelineEventWindowRea
         (evaluatedAtMs as number) > row.createdAtMs || !Array.isArray(results) ||
         results.length !== GATE_INVARIANT_NAMES.length ||
         !GATE_INVARIANT_NAMES.every(name => results.filter(result => result?.name === name).length === 1) ||
-        results.some(result => !['pass', 'breach', 'unknown'].includes(result.status)) ||
+        results.some(result => !result || !['pass', 'breach', 'unknown'].includes(result.status)) ||
         row.status !== overallGateInvariantStatus(results) || original?.version !== 1 ||
         !Array.isArray(original.entries)) { qualified = false; continue; }
     const breached = results.filter(result => result.status === 'breach').map(result => result.name);
@@ -946,7 +946,10 @@ export async function checkGateLiveInvariants(
       installSlug,
       nowMs,
       results,
-      alarmTickMs: measuredTickMs(snapshot, thresholds),
+      // The live evaluator can use its documented default, but historical
+      // acceptance cannot present that fallback as an observed cadence.
+      alarmTickMs: snapshot.fireIntervalsMs.filter(interval => Number.isFinite(interval) && interval > 0).length >= 2
+        ? measuredTickMs(snapshot, thresholds) : undefined,
       clockMs: opts.nowMs ?? Date.now,
       appendEvent: (status, detail, transactionSql) =>
         appendPipelineEvent({ workspaceId, installSlug, kind: 'gate_invariants', status, detail }, transactionSql, { required: true }),
