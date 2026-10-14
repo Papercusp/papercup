@@ -775,7 +775,7 @@ const invoke = defineTool({
         const { recordSpawnAccountRoute } = await import('../../../fleet/spawn-tree');
         const spec = routeBackendModel.model;
         const model = bareModelId(routeBackend === 'codex' ? resolveCodexModel(spec) : spec);
-        const effort = bareModelId(spec) === spec ? null : spec.slice(spec.lastIndexOf(':') + 1);
+        const effort = routeBackendModel.effort;
         const requestedSpec = spawnModelPin || spec;
         await recordSpawnAccountRoute(getOrgPg().sql, spawnRecordId, {
           ownerId: childOwnerId, accountRoute: account,

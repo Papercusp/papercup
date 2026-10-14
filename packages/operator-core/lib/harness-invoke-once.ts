@@ -21,7 +21,7 @@ import { invokeOnceBin, tsxBin } from './harness-paths';
 import { augmentedSpawnPath, resolveBin } from './plugin-spawn-impl';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { roleModelDefault } from '@papercusp/orchestrator/role-models';
-import { DEFAULT_BACKEND_CMDS, normalizeModelSpec, type AgentBackend } from './agent-config-constants';
+import { DEFAULT_BACKEND_CMDS, normalizeModelSpec, splitModelSpec, type AgentBackend } from './agent-config-constants';
 import { codexContextConfigArgs, normalizeClaudeModelEffortSpec, normalizeCodexCliModel, resolveCodexModel } from './model-context-budget.mjs';
 import type { TurnBackend } from '@papercusp/papercusp-shared/agent';
 
@@ -187,15 +187,27 @@ export function resolveSpawnBackendModel(
   role: string,
   overrideSpec?: string,
   overrideBackend?: string,
-): { backend: TurnBackend; model: string } {
+): { backend: TurnBackend; model: string; effort: string | null } {
   // Backend inference keys off the EFFECTIVE spec (override > env map > committed
   // default), not just the per-spawn channel — a Codex-only committed default
   // (kettle post-P-020) must bucket against OpenAI, not Anthropic (WI-4640).
   const cmd = resolveRoleSpawnCommand(role, overrideSpec, overrideBackend);
   const bin = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   const backend: TurnBackend = /codex/.test(bin) ? 'codex' : /claude/.test(bin) ? 'claude-code' : 'omp';
-  const m = /(?:--model(?:=|\s+)|\s-m\s+)(\S+)/.exec(cmd);
-  return { backend, model: m?.[1] ?? '' };
+  const m = /(?:--model(?:=|\s+)|\s-m\s+)(?:"([^"]*)"|'([^']*)'|(\S+))/.exec(cmd);
+  const model = m?.[1] ?? m?.[2] ?? m?.[3] ?? '';
+  // applyRoleModel moves effort out of the model on Codex/Claude. Read the
+  // resolved command, including normalization, rather than the requested spec.
+  const effortFlag = backend === 'codex'
+    ? /(?:^|\s)(?:-c|--config)(?:=|\s+)model_reasoning_effort=(?:"([^"]*)"|'([^']*)'|(\S+))/g
+    : backend === 'claude-code'
+      ? /(?:^|\s)--effort(?:=|\s+)(?:"([^"]*)"|'([^']*)'|(\S+))/g
+      : null;
+  const matches = effortFlag ? [...cmd.matchAll(effortFlag)] : [];
+  const last = matches.at(-1);
+  const effort = last?.[1] ?? last?.[2] ?? last?.[3]
+    ?? (backend === 'omp' ? splitModelSpec(model).effort : null);
+  return { backend, model, effort };
 }
 
 /** The EFFECTIVE model spec a spawn of `role` will run — the same precedence
