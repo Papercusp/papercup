@@ -27,6 +27,19 @@ function fixture() {
 }
 
 describe('hosted monitoring ingress', () => {
+  it('requires administrator authority for diagnostic export grants but allows personal revocation and analytics', async () => {
+    const f = fixture();
+    const input = { disclosure_version: DEFAULT_CLOUD_TELEMETRY_CONSENT.disclosure_version, diagnostics: true };
+    const member = createHostedPrincipal({ ...principal, permissions: ['workspace:view', 'workspace:operate'] });
+    const admin = createHostedPrincipal({ ...principal, permissions: ['workspace:view', 'workspace:operate', 'members:manage'] });
+    const denied = await f.post(request(input), context(member));
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ error: 'diagnostic_export_admin_required' });
+    expect(f.runTenant).not.toHaveBeenCalled(); expect(h.write).not.toHaveBeenCalled();
+    expect((await f.post(request(input), context(admin))).status).toBe(200);
+    expect((await f.post(request({ ...input, diagnostics: false }), context(member))).status).toBe(200);
+    expect((await f.post(request({ disclosure_version: input.disclosure_version, analytics: true }), context(member))).status).toBe(200);
+  });
   it('uses authenticated account scope before workspace selection and never trusts request identities', async () => {
     const f = fixture();
     const get = await f.get(new Request(origin + '/api' + HOSTED_BROWSER_MONITORING_PATH), context());

@@ -94,4 +94,17 @@ describe('browser telemetry host consent boundary', () => {
     await screen.findByRole('alert');
     expect((screen.getByRole('checkbox', { name: 'Share portal analytics' }) as HTMLInputElement).disabled).toBe(true);
   });
+
+  it('explains an administrator grant refusal and keeps the saved diagnostic choice disabled', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url, options?: RequestInit) => options?.method === 'POST'
+      ? new Response(JSON.stringify({ error: 'diagnostic_export_admin_required' }), { status: 403 })
+      : new Response(JSON.stringify({ consent: DEFAULT_CLOUD_TELEMETRY_CONSENT }), { status: 200 })));
+    render(<OperatorWorkspaceLocationProvider location="cloud"><CloudMonitoringPreferences /></OperatorWorkspaceLocationProvider>);
+    const diagnostics = screen.getByRole('checkbox', { name: 'Allow aggregate diagnostic export' }) as HTMLInputElement;
+    await waitFor(() => expect(diagnostics.disabled).toBe(false));
+    fireEvent.click(diagnostics);
+    expect((await screen.findByRole('alert')).textContent).toContain('owner or administrator');
+    expect(diagnostics.checked).toBe(false);
+    expect(diagnostics.disabled).toBe(false);
+  });
 });

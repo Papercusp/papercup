@@ -299,7 +299,8 @@ export async function exportCustomerUsageDiagnostics(input: unknown, opts: {
   try {
     const current = await opts.authorize();
     const valid = (principal: HostedPrincipal) => isHostedPrincipal(principal) &&
-      principal.permissions.has('workspace:operate') && principal.selectedWorkspaceId === opts.workspaceId &&
+      principal.permissions.has('workspace:operate') && principal.permissions.has('members:manage') &&
+      principal.selectedWorkspaceId === opts.workspaceId &&
       principal.activeOrganizationId === opts.organizationId && principal.workspaceId === opts.controlPlaneWorkspaceId;
     if (!current.ok || !valid(current.principal)) return { delivered: false, code: 'unverified_principal' };
     const consent = cloudTelemetryConsentSchema.safeParse(current.monitoringConsent);

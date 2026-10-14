@@ -187,7 +187,7 @@ describe('customer-local aggregate export', () => {
   const epoch = new Date(end - 1000).toISOString();
   const principal = createHostedPrincipal({ workspaceId: 'control', selectedWorkspaceId: 'ws-1',
     userId: 'user-1', activeOrganizationId: 'org-1', sessionId: 'session-1', sessionVersion: 1,
-    permissions: ['workspace:operate'] });
+    permissions: ['workspace:operate', 'members:manage'] });
   const consent: CloudTelemetryConsent = { ...DEFAULT_CLOUD_TELEMETRY_CONSENT, diagnostics: { enabled: true, since: epoch } };
   const input = { operation_id: '00000000-0000-4000-8000-000000000001', window_ms: 86400000 };
   function setup() {
@@ -208,13 +208,16 @@ describe('customer-local aggregate export', () => {
       properties: expect.objectContaining({ period_start: epoch, period_end: new Date(end).toISOString(), source: 'customer-runtime' }) }));
     for (const query of f.queries) expect(query).toContain('ts >= $3 AND ts <= $4');
   });
-  it.each(['revoked', 'reconsented', 'session', 'tenant', 'permission', 'unavailable'])(
+  it.each(['revoked', 'reconsented', 'session', 'tenant', 'permission', 'administrator-demotion', 'unavailable'])(
     'refuses %s changes at the final boundary', async kind => {
       const f = setup();
       f.authorize.mockResolvedValueOnce({ ok: true, principal, monitoringConsent: consent });
       f.authorize.mockResolvedValue({ ok: true, principal: kind === 'session' ? createHostedPrincipal({ ...principal, sessionVersion: 2 }) :
         kind === 'tenant' ? createHostedPrincipal({ ...principal, activeOrganizationId: 'other' }) :
         kind === 'permission' ? createHostedPrincipal({ ...principal, permissions: ['workspace:view'] }) : principal,
+        ...(kind === 'administrator-demotion' ? {
+          principal: createHostedPrincipal({ ...principal, permissions: ['workspace:view', 'workspace:operate'] }),
+        } : {}),
         monitoringConsent: kind === 'revoked' ? DEFAULT_CLOUD_TELEMETRY_CONSENT :
           kind === 'reconsented' ? { ...consent, diagnostics: { enabled: true, since: new Date(end - 500).toISOString() } } :
           kind === 'unavailable' ? null as never : consent });

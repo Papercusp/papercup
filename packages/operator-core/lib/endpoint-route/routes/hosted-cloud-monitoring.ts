@@ -46,6 +46,9 @@ export function createHostedCloudMonitoringRoutes({ origin, controlPlaneWorkspac
         if (operation === 'POST') {
           const parsed = cloudTelemetryConsentUpdateSchema.safeParse(input);
           if (!parsed.success) return jsonError('invalid_monitoring_choice', 400);
+          if (parsed.data.diagnostics === true && !principal.permissions.has('members:manage')) {
+            return jsonError('diagnostic_export_admin_required', 403);
+          }
           const consent = await runTenant(account, tx => writeCloudTelemetryConsent(tx, principal, parsed.data));
           return Response.json({ consent }, { headers: { 'cache-control': 'no-store' } });
         }

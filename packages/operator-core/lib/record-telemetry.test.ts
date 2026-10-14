@@ -85,13 +85,21 @@ describe('recordTelemetryReport', () => {
 describe('cloud final-delivery privacy boundary', () => {
   const event = { event: 'cloud_portal_session', operation_id: '00000000-0000-4000-8000-000000000001', properties: { action: 'signed_in' } };
   const principal = createHostedPrincipal({ workspaceId: 'control', userId: 'user-a', activeOrganizationId: 'tenant-a',
-    selectedWorkspaceId: 'customer-a', sessionId: 'session-a', sessionVersion: 1, permissions: ['workspace:view'] });
+    selectedWorkspaceId: 'customer-a', sessionId: 'session-a', sessionVersion: 1, permissions: ['workspace:view', 'members:manage'] });
   const context: CloudTelemetryContext = { principal, environment: 'staging', release: 'abcdef1234567', origin: 'portal', hostingMode: 'byoc', observedAt: '2026-10-13T13:00:00Z' };
   const consent = { ...DEFAULT_CLOUD_TELEMETRY_CONSENT, analytics: { enabled: true, since: '2026-10-13T12:00:00Z' } };
   const aggregate = { event: 'cloud_diagnostic_aggregate', operation_id: event.operation_id,
     properties: { period_start: '2026-10-13T12:00:00Z', period_end: '2026-10-13T13:00:00Z', calls: 1,
       input_tokens: 12, output_tokens: 3, cache_read_tokens: 0, cache_creation_tokens: 0,
       provider_cost_usd: null, estimated_cost_usd: 0.01, unpriced_calls: 0 } };
+
+  it('refuses diagnostic aggregates from a non-administrator even with a previously enabled consent', () => {
+    const current = { ...consent, diagnostics: { enabled: true, since: '2026-10-13T12:00:00Z' } };
+    const member = createHostedPrincipal({ ...principal, permissions: ['workspace:view', 'workspace:operate'] });
+    expect(prepareCloudTelemetryDelivery(aggregate, { ...context, origin: 'customer-runtime' }, current).ok).toBe(true);
+    expect(prepareCloudTelemetryDelivery(aggregate, { ...context, origin: 'customer-runtime', principal: member }, current))
+      .toEqual({ ok: false, code: 'unverified_principal' });
+  });
 
   it('witnesses only newly committed public explanation reviews and never backfills or exports tutorial scope', () => {
     const previous: AccountTutorialProgressRecord = { scope: { tenantId: 'tenant-a', userId: 'user-a' }, version: 3,

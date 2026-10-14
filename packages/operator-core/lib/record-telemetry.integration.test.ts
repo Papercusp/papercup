@@ -60,7 +60,7 @@ describe('redacted render crash persistence (real PG)', () => {
   it('uses persisted current tenant consent and keeps hostile/default/revoked exports out of the sink', async () => {
     const organizationA = randomUUID(), organizationB = randomUUID(), userA = randomUUID(), userB = randomUUID();
     const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: organizationA,
-      userId: userA, selectedWorkspaceId: 'customer-a', sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:view'] });
+      userId: userA, selectedWorkspaceId: 'customer-a', sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:view', 'members:manage'] });
     const scoped = async <T>(organization: string, user: string, fn: (tx: Sql) => Promise<T>) =>
       await db.adminSql.begin(async transaction => {
         const tx = transaction as unknown as Sql;
@@ -108,7 +108,7 @@ describe('redacted render crash persistence (real PG)', () => {
   it('persists only authenticated consent choices, preserves preferences and rotates revoked epochs', async () => {
     const organization = randomUUID(), user = randomUUID();
     const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: organization,
-      userId: user, sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:view'] });
+      userId: user, sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:view', 'members:manage'] });
     const scoped = async <T>(fn: (tx: Sql) => Promise<T>, scope = organization) =>
       await db.adminSql.begin(async transaction => {
         const tx = transaction as unknown as Sql;
@@ -170,7 +170,7 @@ describe('redacted render crash persistence (real PG)', () => {
     expect(probe.results, 'query permission preflight').toEqual([[1]]);
     const organization = randomUUID(), user = randomUUID();
     const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: organization,
-      userId: user, selectedWorkspaceId: randomUUID(), sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:view'] });
+      userId: user, selectedWorkspaceId: randomUUID(), sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:view', 'members:manage'] });
     const scoped = async <T>(fn: (tx: Sql) => Promise<T>) => await db.adminSql.begin(async transaction => {
       const tx = transaction as unknown as Sql;
       await tx.unsafe('SET LOCAL ROLE hosted_app');
@@ -197,7 +197,7 @@ describe('redacted render crash persistence (real PG)', () => {
     });
     expect(await deliverCloudPosthog(positive, context, readConsent)).toEqual({ delivered: true });
     const secondPrincipal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: organization,
-      userId: user, selectedWorkspaceId: principal.selectedWorkspaceId, sessionId: randomUUID(), sessionVersion: 2, permissions: ['workspace:view'] });
+      userId: user, selectedWorkspaceId: principal.selectedWorkspaceId, sessionId: randomUUID(), sessionVersion: 2, permissions: ['workspace:view', 'members:manage'] });
     expect(await deliverCloudPosthog(secondSessionPositive, { ...context, principal: secondPrincipal }, readConsent)).toEqual({ delivered: true });
     expect(await deliverCloudPosthog({ ...hostile, properties: { ...hostile.properties, prompt: 'synthetic-forbidden-field' } }, context, readConsent))
       .toMatchObject({ delivered: false, code: 'invalid_cloud_event' });
@@ -244,7 +244,7 @@ describe('redacted render crash persistence (real PG)', () => {
     expect(project).toBeDefined();
     const organization = randomUUID(), user = randomUUID();
     const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: organization,
-      userId: user, selectedWorkspaceId: randomUUID(), sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:view'] });
+      userId: user, selectedWorkspaceId: randomUUID(), sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:view', 'members:manage'] });
     const scoped = async <T>(fn: (tx: Sql) => Promise<T>) => await db.adminSql.begin(async transaction => {
       const tx = transaction as unknown as Sql;
       await tx.unsafe('SET LOCAL ROLE hosted_app');

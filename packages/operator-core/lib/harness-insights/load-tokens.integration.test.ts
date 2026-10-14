@@ -90,7 +90,7 @@ async function exportFixture() {
   const exportHarness = 'customer-runtime';
   const userId = randomUUID(), organizationId = randomUUID(), selectedWorkspaceId = exportWorkspace;
   const principal = createHostedPrincipal({ workspaceId: 'control-plane', userId, activeOrganizationId: organizationId,
-    selectedWorkspaceId, sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:operate'] });
+    selectedWorkspaceId, sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:operate', 'members:manage'] });
   const scoped = async <T>(fn: (tx: Sql) => Promise<T>): Promise<T> => await db.adminSql.begin(async transaction => {
     const tx = transaction as unknown as Sql;
     await tx.unsafe('SET LOCAL ROLE hosted_app');
@@ -128,8 +128,24 @@ async function exportFixture() {
   };
   const local = () => loadHarnessTokens({ workspace_id: exportWorkspace, harness_slug: exportHarness,
     windowMs: 60000, runQuery: opts.runQuery });
-  return { opts, input, choice, seed, local, sent, principal, authorizations: () => authorizations };
+  return { opts, input, choice, seed, local, sent, principal, scoped, authorizations: () => authorizations };
 }
+
+it('refuses non-administrator diagnostic grants before preference writes and preserves revocation authority', async () => {
+  const f = await exportFixture();
+  const member = createHostedPrincipal({ ...f.principal, permissions: ['workspace:view', 'workspace:operate'] });
+  const input = { disclosure_version: DEFAULT_CLOUD_TELEMETRY_CONSENT.disclosure_version, diagnostics: true };
+  await expect(f.scoped(tx => writeCloudTelemetryConsent(tx, member, input)))
+    .rejects.toThrow('diagnostic_export_admin_required');
+  expect((await f.scoped(tx => readCloudTelemetryConsent(tx, f.principal))).diagnostics.enabled).toBe(false);
+  const grant = await f.choice(true);
+  expect(grant).toMatchObject({ disclosure_version: input.disclosure_version, diagnostics: { enabled: true, since: expect.any(String) } });
+  const foreign = createHostedPrincipal({ ...f.principal, activeOrganizationId: randomUUID() });
+  await expect(f.scoped(tx => writeCloudTelemetryConsent(tx, foreign, input))).rejects.toThrow('cloud_telemetry_scope_mismatch');
+  await f.scoped(tx => writeCloudTelemetryConsent(tx, member, { ...input, diagnostics: false }));
+  expect((await f.scoped(tx => readCloudTelemetryConsent(tx, f.principal))).diagnostics).toEqual({ enabled: false, since: null });
+  expect(f.sent).toEqual([]);
+});
 
 it('exports only a complete selected-runtime window, rechecks revocation, and keeps local reads available', async () => {
   const f = await exportFixture();

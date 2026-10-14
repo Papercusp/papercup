@@ -111,8 +111,14 @@ function HostedMonitoringPreferences() {
       const response = await fetch('/api/hosted/browser/monitoring', { method: 'POST', credentials: 'include',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ disclosure_version: CLOUD_MONITORING_DISCLOSURE_VERSION, [category]: enabled }) });
-      if (!response.ok) throw new Error('unavailable');
       const data = await response.json();
+      if (!response.ok) {
+        if (response.status === 403 && data.error === 'diagnostic_export_admin_required') {
+          setError('An organization owner or administrator must enable diagnostic export. Your last saved choice still applies.');
+          return;
+        }
+        throw new Error('unavailable');
+      }
       setConsent(cloudTelemetryConsentSchema.parse(data.consent));
     } catch { setError('The choice could not be saved. Your last saved choice still applies.'); }
     finally { setSaving(false); }
@@ -127,6 +133,7 @@ function HostedMonitoringPreferences() {
     <label><input type="checkbox" checked={consent?.diagnostics.enabled ?? false} disabled={!consent || saving}
       onChange={event => { void update('diagnostics', event.target.checked); }} /> Allow aggregate diagnostic export</label>
     <p>Only counts of calls, input/output/cache tokens, and reported or estimated model cost for a selected time window.
+      An organization owner or administrator must enable this choice. You can turn off your own choice.
       Customer prompts, code, documents, terminal output, private tasks and logs, provider account details, host metrics and cloud bills stay local.</p>
     <p>Destination: Papercusp’s PostHog at flags.papercuspai.com, for product reliability and adoption.
       Its current project has no enforced event-deletion limit. Turning a choice off stops future delivery; it does not delete previously delivered events.

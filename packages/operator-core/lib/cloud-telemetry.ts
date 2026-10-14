@@ -31,6 +31,11 @@ async function assertCloudTelemetryScope(tx: Sql, principal: HostedPrincipal): P
 export async function writeCloudTelemetryConsent(tx: Sql, principal: HostedPrincipal, input: unknown): Promise<CloudTelemetryConsent> {
   const update = cloudTelemetryConsentUpdateSchema.parse(input);
   await assertCloudTelemetryScope(tx, principal);
+  // Existing hosted authority maps members:manage only to owner/admin.
+  // Personal analytics and revocation remain available to other members.
+  if (update.diagnostics === true && !principal.permissions.has('members:manage')) {
+    throw new Error('diagnostic_export_admin_required');
+  }
   await tx`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['cloud-monitoring', principal.activeOrganizationId, principal.userId])}, 0))`;
   const current = await readCloudTelemetryConsent(tx, principal);
   const now = new Date().toISOString();
@@ -135,7 +140,8 @@ export function prepareCloudTelemetryDelivery(input: unknown, context: CloudTele
   const event = parsed.data;
   const aggregate = event.event === 'cloud_diagnostic_aggregate';
   if (context.origin === 'customer-runtime' && !aggregate) return { ok: false, code: 'customer_data_local' };
-  if (aggregate && !context.principal.selectedWorkspaceId) return { ok: false, code: 'unverified_principal' };
+  if (aggregate && (!context.principal.selectedWorkspaceId ||
+    !context.principal.permissions.has('members:manage'))) return { ok: false, code: 'unverified_principal' };
   // Browser assertions cannot establish confirmed provisioning or private task outcomes.
   if (event.event === 'cloud_workspace_provisioning' && context.origin !== 'control-plane') return { ok: false, code: 'unwitnessed_outcome' };
   if (event.event === 'product_tutorial' && event.properties.action === 'explanation_reviewed' &&
