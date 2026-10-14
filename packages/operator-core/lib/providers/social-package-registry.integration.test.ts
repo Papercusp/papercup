@@ -13,8 +13,7 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const ROOT = join(tmpdir(), `social-package-install-${process.pid}-${Date.now()}`);
 afterAll(async () => { await fs.rm(ROOT, { recursive: true, force: true }); });
 
-// Later social packages extend this population as their implementation lands.
-const PACKAGES = ['facebook-pages'];
+const PACKAGES = ['facebook-pages', 'instagram'];
 describe('installed social packages use the generic Integrations model', () => {
   it.each(PACKAGES)('%s loads from the install path with declared setup and capabilities', async (id) => {
     const projectDir = join(ROOT, id);
@@ -36,14 +35,18 @@ describe('installed social packages use the generic Integrations model', () => {
       ref: 'facebook', configured: false, clientId: null, hasClientSecret: false,
       redirectUri: 'https://operator.example/api/oauth/callback', savedAt: null,
     });
-    expect(model).toMatchObject({ id, displayName: 'Facebook Pages', tracksTickets: false, requiredConfig: ['pageId'], capabilities: ['social.post', 'social.reply', 'social.delete'] });
+    expect(model).toMatchObject({ id, tracksTickets: false, capabilities: ['social.post', 'social.reply', 'social.delete'] });
+    expect(model.displayName).toBe(id === 'facebook-pages' ? 'Facebook Pages' : 'Instagram');
+    expect(model.requiredConfig).toEqual([id === 'facebook-pages' ? 'pageId' : 'igUserId']);
     expect(new URL(model.connectHref!, 'https://operator.example').searchParams.get('plugin')).toContain(id);
     expect(model.appRegistration?.createUrl).toBe('https://developers.facebook.com/apps/');
     expect(model.oauthClient).toMatchObject({ configured: false, secretRequired: true });
     expect(registry.forDatatype('social-post', 'social.post').map((e) => e.descriptor.id)).toEqual([id]);
-    const triggerPack = JSON.parse(await fs.readFile(join(REPO, 'libs/papercusp/plugins/social-facebook-pages/papercusp.json'), 'utf8'));
-    expect(triggerPack.triggerPack.bindings.map((b: { source: { sourceKind: string }; eventPattern: string }) => [b.source.sourceKind, b.eventPattern])).toEqual([
-      [id, `ext:${id}:post`], [id, `ext:${id}:comment`], [id, `ext:${id}:reply`],
-    ]);
+    if (id === 'facebook-pages') {
+      const triggerPack = JSON.parse(await fs.readFile(join(REPO, 'libs/papercusp/plugins/social-facebook-pages/papercusp.json'), 'utf8'));
+      expect(triggerPack.triggerPack.bindings.map((b: { source: { sourceKind: string }; eventPattern: string }) => [b.source.sourceKind, b.eventPattern])).toEqual([
+        [id, `ext:${id}:post`], [id, `ext:${id}:comment`], [id, `ext:${id}:reply`],
+      ]);
+    }
   });
 });
