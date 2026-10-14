@@ -450,7 +450,12 @@ describe('WI-6554700010009434 — durable bulk wake pacing', () => {
     expect(schedules.filter((p) => p.notBeforeMs <= now + 60_000).length).toBeLessThanOrEqual(15);
     expect(schedules.at(-1)!.notBeforeMs - now).toBeGreaterThan(60_000);
     expect(r.pickup).toHaveLength(5);
-    expect(sqlMock.mock.calls.at(-1)?.[1]).toEqual(many.slice(0, 5));
+    // A large fan also records bounded-timeout telemetry through the same PG
+    // handle. Assert the required-wake table, not the last unrelated write.
+    const ledgerWrites = sqlMock.mock.calls.filter(([parts]) => Array.isArray(parts) && parts.join('').includes('event_wake_attempts'));
+    expect(ledgerWrites).toEqual([
+      [expect.anything(), 'ws-1', many.slice(0, 5), many.slice(0, 5).map((id) => `coord:inbox-wake:${id}`), Array(5).fill('queued')],
+    ]);
   });
 
   it.each(['loop:rt_loop', ESCALATION_SLA_REROUTE_WAKE_SOURCE, 'system:delivery-ladder'])('keeps urgent %s wakes immediate', async (source) => {

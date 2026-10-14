@@ -108,4 +108,17 @@ describe('bulk wakes persist and pace across operator restarts (real PG)', () =>
     expect(due.map((d) => d.subscriberId).sort()).toEqual(['directed', 'loop:rt-loop', 'owner-directed']);
     expect(due.every((d) => pacing.readWakeFanoutPacing(d.payload) === null)).toBe(true);
   });
+
+  it('an urgent message and loop wake outrank an overdue bulk queue even in a one-row pump batch', async () => {
+    const sql = h.sql as postgres.Sql;
+    const bulk = await Promise.all(Array.from({ length: 30 }, (_, i) => store.registerAwait({ subscriberId: `overdue-${i}`, eventKey: `overdue:${i}` })));
+    await store.insertDeliveries({ awaits: bulk, pacingWorkspaceId: h.ws });
+    await sql`UPDATE harness_shared.event_wake_deliveries SET next_attempt_at = now() - interval '1 hour'`;
+    const urgent = await store.registerAwait({ subscriberId: 'urgent', eventKey: 'urgent-message' });
+    const loop = await store.registerAwait({ subscriberId: 'loop', eventKey: 'loop-self-wake' });
+    await store.insertDeliveries({ awaits: [urgent], urgent: true });
+    await store.insertDeliveries({ awaits: [loop], source: 'loop:rt-pacing' });
+    expect((await store.claimDueDeliveries({ limit: 1 }))[0].subscriberId).toBe('urgent');
+    expect((await store.claimDueDeliveries({ limit: 1 }))[0].subscriberId).toBe('loop');
+  });
 });

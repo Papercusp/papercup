@@ -2436,6 +2436,8 @@ export async function claimDueDeliveries(input: { limit?: number }): Promise<Del
        -- (mostly subscribers that cannot be injected right now), whose older
        -- next_attempt_at would otherwise put it last (WI-10008205).
        ORDER BY CASE
+                  WHEN d.urgent THEN -2
+                  WHEN COALESCE(d.source LIKE 'loop:%', false) THEN -1
                   WHEN r.aged_loop_retry AND r.loop_retry_rank <= ${loopRetryReserveSlots} THEN 0
                   WHEN r.aged_nonloop_retry AND r.nonloop_retry_rank <= ${retryReserveSlots} THEN 1
                   WHEN d.attempts = 0 AND d.last_error IS NULL THEN 2

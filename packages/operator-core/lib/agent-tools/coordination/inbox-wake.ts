@@ -65,12 +65,8 @@ export function ownerFromInboxWakeKey(key: string): string | null {
  *  so the no-wake report and the wake fan skip exactly the same addressees. */
 export const NON_WAKEABLE = new Set(['*', 'human', '']);
 
-/** P-022 (cross-machine-coord-parity, fan-out governance): the MAX concrete
- *  agents ONE send's wake fan will re-invoke. Beyond it, the overflow is
- *  INJECTED (durable, seen next turn) but NOT woken — a `@fleet:`/`@topic:` that
- *  expands to thousands (256×10 = 2560 agents) must not turn one message into
- *  thousands of billable turns. A legitimate directed set is far under this;
- *  env-tunable. */
+/** Legacy exported threshold retained for compatibility. Bulk wakes now use
+ * WAKE_FANOUT_BURST and durable reservations, so overflow is delivered later. */
 export const MAX_WAKE_FANOUT = Number(process.env.PAPERCUSP_MAX_WAKE_FANOUT) || 64;
 
 /**
@@ -232,8 +228,7 @@ export interface WakeRecipientsResult {
    *  loud "directive STAGED, not delivered for <who>" warning instead of a quiet
    *  `staged:1` that reads like success. `staged === stagedTargets.length`. */
   stagedTargets: string[];
-  /** P-022: recipients BEYOND MAX_WAKE_FANOUT — injected (durable) but not woken.
-   *  Non-empty only on an oversized audience fan (the cost-DoS shape). */
+  /** Legacy cap result; now empty because bulk overflow is durably deferred. */
   fanoutCapped: string[];
   /** Recipients whose wake chain exceeded the local deadline. Their durable inbox message
    *  exists, but the wake may still complete late; never classify these as absent/missed. */
