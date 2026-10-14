@@ -259,9 +259,18 @@ export function validateLayerInput(input: UpsertLayerInput): string | null {
 export async function upsertLayer(input: UpsertLayerInput, sql?: Sql): Promise<StoredPolicyLayer> {
   const problem = validateLayerInput(input);
   if (problem) throw new GovernancePolicyWriteError('invalid', problem);
+  return (await sqlOf(sql).begin((tx) => upsertLayerInTx(tx as unknown as Sql, input))) as StoredPolicyLayer;
+}
+
+/**
+ * The upsert body inside the CALLER's transaction, so a sensitive action (P-006, D-015) commits
+ * the layer write and its one-time execution mark atomically. Validates again: it is a public seam.
+ */
+export async function upsertLayerInTx(tx: Sql, input: UpsertLayerInput): Promise<StoredPolicyLayer> {
+  const problem = validateLayerInput(input);
+  if (problem) throw new GovernancePolicyWriteError('invalid', problem);
   const exceptions = input.exceptions ?? [];
-  const db = sqlOf(sql);
-  const written = await db.begin(async (tx) => {
+  {
     const current = await tx<Array<{ version: number }>>`
       SELECT version FROM harness_shared.governance_policy_layers WHERE layer_id = ${input.layerId} FOR UPDATE
     `;
@@ -320,7 +329,6 @@ export async function upsertLayer(input: UpsertLayerInput, sql?: Sql): Promise<S
       VALUES (${input.layerId}, ${version}, ${input.level}, ${input.scopeRef}, ${input.parentLayerId},
               ${JSON.stringify(input.rules)}::text::jsonb, ${JSON.stringify(exceptions)}::text::jsonb, ${contentHash}, ${input.actor}, ${input.reason})
     `;
-    return rows[0];
-  });
-  return layerOf(written as RawLayerRow);
+    return layerOf(rows[0] as RawLayerRow);
+  }
 }
