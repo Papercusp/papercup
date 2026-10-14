@@ -2516,5 +2516,57 @@
     "runtimeClosure": "unmeasured",
     "operationalAcceptance": false
   },
-  "next": "Saved desktop, fixture, both Astro and voice native formats now qualify through the existing command-preparation reader with223 maintained tests and scopedTSCexit0. Reuse their saved original commands. Next extend the existing reader to retain and qualify the original ordered-chain occurrence population with native per-step execution evidence, then complete source/dependency/final-transform closure. Partial selection remains partial; no full-chain or cohort acceptance is implied. Do not launch the D020/P006-held cohort. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
+  "nativeOrderedChainPreparation": {
+    "evidence": "docs/evidence/green-main-ordered-chain-preparation-20261014.json",
+    "status": "maintained-reader-guards-pass-original-chains-missing",
+    "maintainedTestsPassed": 264,
+    "testsSkipped": 0,
+    "childSubstituted": 0,
+    "nativeTestExitCode": 0,
+    "typecheck": "terminal native exit0; both named files clean across scripts/operator-core legs",
+    "savedOriginalCommandsRequalified": 5,
+    "originalCommandsRerun": 0,
+    "originalOrderedChainsQualified": 0,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false
+  },
+  "nativeEvaluatorInputPreparation": {
+    "status": "prospective-maintained-guards-pass-current-local-commit-pending",
+    "reused": ["executed-inputs-capture Recorder and per-file transport", "existing PC_EXECUTED_SOURCE_MAP_OUT diagnostics", "Vitest worker moduleRunner.evaluator.runInlinedModule", "maintained real armed-worker fixture"],
+    "behavior": "When the existing OUT channel is requested, capture the exact code argument before the worker evaluator call, preserve every invocation/version, and retain content-addressed code sidecars next to the OUT artifact. Repeated files are independently read and hashed; overwritten files or redirected artifacts remain explicit gaps. Delegate the original receiver, arguments, return object and thrown error unchanged. The ordinary persisted reuse-row contract excludes this diagnostic field.",
+    "scope": "Vitest inlined evaluator inputs only. This is prospective fixture proof, not reconstructed historical execution or complete runtime closure.",
+    "limits": ["pre-setup evaluations unobserved", "external evaluations unobserved", "generated evaluator wrapper unobserved", "non-module runtime inputs outside evaluator", "other runners and original ordered-chain receipts remain unmeasured"],
+    "sourceAtRead": {
+      "parentHead": "e0e17ba93618c0331da89cd145fe9eff69d40771",
+      "testConfigHead": "258f38719a64de9d46fca64780f612c486e05aae",
+      "committed": false,
+      "sourcePins": [
+        { "path": "libs/test-config/src/executed-inputs-capture.ts", "sha256": "dad32a54e93cbb75496a2b74d2f973e86be3a362b76cd71d15c5b36f1850361d" },
+        { "path": "libs/test-config/src/executed-inputs-capture-setup.ts", "sha256": "f6ead51b45d50e4a586520f87b68be06a6f95bc3473963f869e71a9f7e345233" },
+        { "path": "libs/test-config/src/executed-inputs-capture.test.ts", "sha256": "3e9723d692f71889e5c4c8ae631702b65a40962821112eb9114208efaeac3efb" },
+        { "path": "libs/test-config/src/executed-inputs-capture-armed-run.test.ts", "sha256": "308f6a30a1e80d5d6ca7e02b10d0b86455d8f39a0a0c0621a284e552bfafbb56" },
+        { "path": "libs/test-config/src/executed-source-map-reporter.ts", "sha256": "b02afb8d0de245bf3eee26e7a5bcfb30820373b72c740cd2e68a073a87fbbd4a" }
+      ]
+    },
+    "maintainedTests": {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- libs/test-config/src/executed-inputs-capture.test.ts libs/test-config/src/executed-inputs-capture-armed-run.test.ts libs/test-config/src/executed-source-map-reporter.test.ts",
+      "log": "~/.papercusp/scratch/c0523-evaluator-inputs-tests-v2.log",
+      "logSha256": "ad41983509f328522c6ca07aa25fb489ce4158d09ff1a1a6a5ce759d860578d9",
+      "nativeExitCode": 0,
+      "testsPassed": 63,
+      "requested": 3, "executed": 3, "matched": 3, "childSubstituted": 0,
+      "skippedTests": 1,
+      "skip": "Pre-existing conditional test: the installed capture never calls a replaced process.cwd. It did not run in this armed parent; no evidence is claimed for that assertion.",
+      "provenance": "stamped-current-local; two of three named test paths dirty; pre/post parent head e0e17ba936",
+      "realWorkerControl": "Actual worker evaluator input for the body-imported route differs from current TS disk and resolves to retained bytes with the exact recorded SHA-256 and length. The deliberately broken setup control still fails. Unit controls retain two code versions and thrown/return identity, and refuse changed or symlinked artifacts without overwriting them.",
+      "previousLog": "~/.papercusp/scratch/c0523-evaluator-inputs-tests-v1.log"
+    },
+    "typecheck": { "command": "npm run typecheck --workspace libs/test-config", "nativeExitCode": 0, "scope": "owning test-config workspace", "log": "~/.papercusp/scratch/c0523-evaluator-inputs-tsc-v2.log", "logSha256": "e9296e0b5f210d8ac8b12c783d300d2a7a746098c4a8bf7ddcf657b3fcb2fa94" },
+    "diffWhitespaceCheck": "passed",
+    "originalCommandsRerun": 0,
+    "runtimeClosure": "partial-prospective-evaluator-observation",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "next": "Dependency-census five pins are committed and its generation-1 readiness event fired; see green-main-materialized-dependencies-preparation-20261014.json. The existing worker OUT transport now retains prospective exact evaluator-input code, with 63 maintained passes, one explicit pre-existing skip and a clean owning-workspace typecheck. Settle its five current-local source pins through background git-sync; do not repeat tests without drift. Complete missing pre-setup/external/generated-wrapper and other-runner closure, and extend the existing native execution boundary to produce actual original chain parent/per-step receipts. Public-docs Astro->Vitest, fixture pretest->Vitest and desktop eight-step originals remain missing. Partial selection remains partial. Preserve D020/P006 hold, all six forms and complete outside-lineage review. Full plan remains unshipped."
 }
