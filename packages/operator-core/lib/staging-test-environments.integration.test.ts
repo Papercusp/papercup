@@ -1,5 +1,5 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -10,6 +10,69 @@ import { resolveFsMutexLockRoot } from '../../../scripts/lib/fs-mutex.mjs';
 const root = resolve(__dirname, '../../..');
 
 describe('current-build execution route contract', () => {
+  it('reaps a real detached private task scope when the supervisor is cancelled without an agent', async () => {
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'private-scope-cancel-'));
+    const pidPath = join(evidenceDir, 'payload.pid');
+    const probe = `
+      import assert from 'node:assert/strict';
+      import { existsSync, readFileSync } from 'node:fs';
+      import { managedSpawn } from './packages/operator-core/lib/task-manager/managed-spawn.ts';
+      import { getTask } from './packages/operator-core/lib/task-manager/store.ts';
+      const pidPath = process.env.PRIVATE_SCOPE_PID_PATH;
+      const task = await managedSpawn(process.execPath, ['-e',
+        'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)', pidPath],
+        { class: 'desktop', title: 'private cancellation guard', argv: [], launchedBy: 'test-private-scope' },
+        { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID, requireRegistration: true, confine: true,
+          spawnOptions: { detached: true, stdio: 'ignore', env: process.env } });
+      assert.equal(task.confined, true);
+      const deadline = Date.now() + 15000;
+      while (!existsSync(pidPath) && Date.now() < deadline) await new Promise(done => setTimeout(done, 50));
+      assert.ok(existsSync(pidPath), 'private scope payload never started');
+      const row = await getTask(task.taskId);
+      assert.ok(row?.cgroupPath);
+      console.log('PRIVATE_SCOPE_READY ' + JSON.stringify({ taskId: task.taskId,
+        cgroupPath: row.cgroupPath, payloadPid: Number(readFileSync(pidPath, 'utf8')) }));
+      setInterval(() => {}, 1000);
+    `;
+    const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime=operator-api', '--managed-tasks', '--', process.execPath,
+      '--import', 'tsx', '--input-type=module', '-e', probe], {
+      cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PRIVATE_SCOPE_PID_PATH: pidPath },
+    });
+    let output = '';
+    let ready!: (receipt: { taskId: string; cgroupPath: string; payloadPid: number }) => void;
+    const receipt = new Promise<{ taskId: string; cgroupPath: string; payloadPid: number }>(done => { ready = done; });
+    child.stdout.on('data', chunk => {
+      output += String(chunk);
+      const line = output.split('\n').find(row => row.startsWith('PRIVATE_SCOPE_READY '));
+      if (line) ready(JSON.parse(line.slice('PRIVATE_SCOPE_READY '.length)));
+    });
+    child.stderr.on('data', chunk => { output += String(chunk); });
+    const closed = new Promise<{ code: number | null; signal: string | null }>((done, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, signal) => done({ code, signal }));
+    });
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const task = await Promise.race([receipt, closed.then(() => { throw new Error(output.slice(-4000)); }),
+        new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('private scope startup deadline: ' + output.slice(-4000))), 150000); })]);
+      clearTimeout(deadline);
+      child.kill('SIGTERM');
+      const result = await closed;
+      expect(result, output.slice(-4000)).toEqual({ code: null, signal: 'SIGTERM' });
+      expect(output).toContain('PRIVATE_MANAGED_TASK_CLEANUP ');
+      expect(output).toContain('"reaped":1');
+      expect(existsSync('/proc/' + task.payloadPid)).toBe(false);
+      const { absCgroupDir, walkCgroupTree } = await import('./task-manager/cgroup-read');
+      expect(walkCgroupTree(absCgroupDir(task.cgroupPath))).toEqual([]);
+    } finally {
+      clearTimeout(deadline);
+      if (child.exitCode === null && child.signalCode === null) { child.kill('SIGTERM'); await closed; }
+      rmSync(evidenceDir, { recursive: true, force: true });
+    }
+  }, 220000);
+
   it('prepares only a dummy Codex account in the native fixture private pool', () => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-setup-'));
     try {
