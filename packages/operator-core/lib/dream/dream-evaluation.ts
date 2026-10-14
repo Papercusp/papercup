@@ -404,6 +404,9 @@ export function summarizeDreamGraphComparison(input: {
   const labels = new Map(input.independent?.labels.map(label => [label.caseId, label]) ?? []);
   if (input.independent && (!input.independent.ref.trim() || labels.size !== input.independent.labels.length ||
       [...labels.values()].some(label => !candidates.has(label.caseId) || !label.family.trim() ||
+        !['accept', 'reject', 'unverified'].includes(label.verdict) ||
+        !['duplicate', 'refinement', 'unknown', 'scoped-novel'].includes(label.novelty) ||
+        (label.qualified !== null && typeof label.qualified !== 'boolean') ||
         (label.qualified === true && (label.verdict !== 'accept' || label.novelty !== 'scoped-novel')))))
     throw new Error('Invalid independent graph assessment');
   const treatments = ablation.treatments.map(treatment => {
@@ -415,6 +418,7 @@ export function summarizeDreamGraphComparison(input: {
       ? new Set(assessed.filter(label => label.qualified).map(label => label.family)).size : null;
     const duplicates = assessed.filter(label => label.novelty === 'duplicate').length;
     const refinements = assessed.filter(label => label.novelty === 'refinement').length;
+    const noveltyComplete = complete && assessed.every(label => label.novelty !== 'unknown');
     const accountedUsd = rows.reduce((sum, row) => sum + row.accountedUsd, 0);
     return { treatment, attempts: rows.length, plannedAttempts: ablation.attemptsPerTreatment,
       spendCapUsd: ablation.usdPerTreatment, accountedUsd, withinSpendCap: accountedUsd <= ablation.usdPerTreatment,
@@ -422,8 +426,8 @@ export function summarizeDreamGraphComparison(input: {
       independentLabels: assessed.length, missingLabels: cases.length - assessed.length,
       duplicateCandidates: duplicates, refinementCandidates: refinements,
       noveltyUnknownCandidates: assessed.filter(label => label.novelty === 'unknown').length,
-      duplicateRate: complete && cases.length ? duplicates / cases.length : null,
-      refinementRate: complete && cases.length ? refinements / cases.length : null,
+      duplicateRate: noveltyComplete && cases.length ? duplicates / cases.length : null,
+      refinementRate: noveltyComplete && cases.length ? refinements / cases.length : null,
       qualifiedFamilies: qualified,
       unknownCostCalls: rows.reduce((sum, row) => sum + row.unknownCostCalls, 0) };
   });

@@ -115,6 +115,10 @@ describe('frozen Dream evaluation protocol — P017', () => {
     const assessed = summarizeDreamGraphComparison({ protocol, attempts, independent });
     expect(assessed.treatments[1]).toMatchObject({ qualifiedFamilies: 0, refinementRate: 1, accountedUsd: 0.8 });
     expect(assessed.treatments[0]!.duplicateRate).toBeNull();
+    const unknownNovelty = summarizeDreamGraphComparison({ protocol, attempts, independent: {
+      ...independent, labels: independent.labels.map(label => ({ ...label, novelty: 'unknown', qualified: null })) } });
+    expect(unknownNovelty.treatments[1]).toMatchObject({ duplicateRate: null, refinementRate: null,
+      noveltyUnknownCandidates: 2, qualifiedFamilies: null });
     expect(assessed.matchedPairs.every(pair => pair.sameUnits)).toBe(true);
     expect(() => summarizeDreamGraphComparison({ protocol, attempts: [...attempts, attempts[0]!], independent })).toThrow('identity');
     expect(() => summarizeDreamGraphComparison({ protocol, attempts, independent: { ref: 'bad',
