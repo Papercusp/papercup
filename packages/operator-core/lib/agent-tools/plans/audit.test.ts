@@ -297,6 +297,24 @@ const barPlanCompleteWithDesign = barPlanWithDesign.replace(
   }) + '\n```',
 );
 
+// spec-conformance-loop-2026-10-14 R-1 / D-003: the activation gate refuses every
+// plan whose requirement compiles to no executable check, BAR epoch or not. The prose
+// fixtures above exercise the BAR map, not conformance, so this variant gives R-1 a
+// runnable `violatedWhen` falsifier (outside the requirement block, so the BAR hash is
+// unchanged) and leaves the BAR behaviour under test exactly as it was.
+const withR1Conformance = (planContent: string) => `${planContent}
+## Conformance
+
+\`\`\`conformance
+${JSON.stringify({ requirements: { 'R-1': { violatedWhen: [{
+    id: 'second-bar-authority',
+    failureMode: 'A second criterion claims the same BAR.',
+    stage: 'implementation',
+    check: { kind: 'tests', files: ['packages/operator-core/lib/agent-tools/plans/audit.test.ts'] },
+  }] } } })}
+\`\`\`
+`;
+
 const COMPLETE_CONVERSATION_OBLIGATION_IDS = [
   'M-001', // requirement
   'M-002', // scope boundary
@@ -1180,12 +1198,47 @@ describe('plans:audit phase:activation', () => {
     // (plan-audits.ts:2182, closing 2319), so a plan outside the contract correctly
     // carries no map. Measured 2026-09-20: 1916 of 2044 plans have a NULL epoch, so
     // checking unconditionally would false-refuse ~94% of activation previews.
-    resolvePlanContent(barPlanWithoutDesign);
+    resolvePlanContent(withR1Conformance(barPlanWithoutDesign));
     mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: null }]);
 
     const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
 
     expect(result).toMatchObject({ ok: true, phase: 'activation', dryRun: true, preview: true });
+  });
+
+  it('refuses a NULL-epoch preview whose requirement compiles to no executable check (spec-conformance R-1, D-003)', async () => {
+    // D-003: no legacy-cohort exemption — a plan outside the BAR contract is still
+    // refused when a requirement has no runnable done-when check, falsifier, or
+    // approved unenforced declaration. Pair with the passing test above: the only
+    // difference is the ## Conformance falsifier.
+    resolvePlanContent(barPlanWithoutDesign);
+    mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: null }]);
+
+    const result = ((await tool.handler({ ...activationArgs(), dryRun: true } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      dryRun: true,
+      preview: true,
+      error: 'conformance_requirement_unenforced',
+      problems: [expect.objectContaining({ code: 'conformance_requirement_unenforced', barKey: 'R-1' })],
+    });
+    expect(result.message).toContain('Unenforced requirement(s): R-1');
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
+  });
+
+  it('refuses the recording write for an unenforced requirement and records nothing (spec-conformance R-1)', async () => {
+    resolvePlanContent(barPlanWithoutDesign);
+    mockOrgSql.mockResolvedValue([{ acceptance_bar_epoch: null }]);
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: false, phase: 'activation', error: 'conformance_requirement_unenforced' });
+    expect(result).not.toHaveProperty('dryRun');
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+    expect(mockEmitPlanEvent).not.toHaveBeenCalled();
   });
 
   it('passes the preview for a contract plan that DOES carry a Bar-to-work map', async () => {
@@ -1249,7 +1302,7 @@ describe('plans:audit phase:activation', () => {
   });
 
   it('delegates seeded-plan completeness to the same transactional decision as the writer', async () => {
-    resolvePlanContent(barPlanWithDesign);
+    resolvePlanContent(withR1Conformance(barPlanWithDesign));
     mockOrgSql
       .mockResolvedValueOnce([{ acceptance_bar_epoch: '1', acceptance_bar_cohort: 'post-epoch',
         acceptance_bar_rubric_slug: 'acceptance-plan-a' }])
