@@ -154,6 +154,7 @@ describe('native CLI fixture runtime and deadline guards', () => {
   });
   it.each([false, true])('preserves early and late phase clocks after output truncation (deadline %s)', async timedOut => {
     const script = `
+      process.stdout.write('fixture-bootstrap-diagnostics\\n');
       process.stdout.write('NATIVE_INCIDENT_API_STAGE=private-pg-start\\n');
       process.stdout.write('x'.repeat(60_000) + '\\n');
       setTimeout(() => {
@@ -183,7 +184,10 @@ describe('native CLI fixture runtime and deadline guards', () => {
       'NATIVE_INCIDENT_API_STAGE=private-pg-start', 'NATIVE_INCIDENT_API_STAGE=cli-start:work_items:claim',
     ]);
     expect(timing.phases[1].elapsedMs).toBeGreaterThan(timing.phases[0].elapsedMs);
-    expect(output).toContain('startup:\nNATIVE_INCIDENT_API_STAGE=private-pg-start');
+    // Loaders may emit diagnostics before the first fixture stage. Require the
+    // stage in the retained startup section, without assuming it is byte zero.
+    const startup = output.split('\nstartup:\n')[1]?.split('\ntail:\n')[0];
+    expect(startup).toContain('fixture-bootstrap-diagnostics\nNATIVE_INCIDENT_API_STAGE=private-pg-start\n');
     expect(output.length).toBeLessThan(40_000);
     expect(clocks.every((clock, index) => clock.elapsedMs >= (clocks[index - 1]?.elapsedMs ?? 0)
       && clock.remainingMs <= (clocks[index - 1]?.remainingMs ?? 750))).toBe(true);
