@@ -158,14 +158,22 @@ export function sandboxEnvironment({ appUrl, databasePassword, secret, encryptio
 export async function dockerAllocation(args, environment = {}, {
   spawnChild = spawn, pendingAfterMs = 30_000,
   onPending = () => console.error('[documenso-sandbox] Docker ' + args[0] + ' request still pending; waiting for its outcome before cleanup'),
+  onProgress = receipt => console.error('[documenso-sandbox-docker] ' + JSON.stringify(receipt)),
 } = {}) {
-  const child = spawnChild('docker', args, { env: { ...process.env, ...environment }, stdio: ['ignore', 'pipe', 'pipe'] });
-  let stdout = '', stderr = '';
-  child.stdout.on('data', data => { stdout = (stdout + data).slice(-2_000_000); });
-  child.stderr.on('data', data => { stderr = (stderr + data).slice(-2000); });
-  const warning = setTimeout(onPending, pendingAfterMs);
+  const startedAt = Date.now();
+  // Never log argv, output or environment: those can contain credentials.
+  const resource = args.find(arg => /^daohr-documenso-[a-f0-9-]{12}(?:-(?:pg|mail|app|reaper))?$/.test(arg));
+  const progress = status => onProgress({ operation: args[0], ...(resource ? { resource } : {}),
+    status, at: new Date().toISOString(), elapsedMs: Date.now() - startedAt });
+  progress('started');
+  let warning;
   try {
-    return await new Promise((done, reject) => {
+    const child = spawnChild('docker', args, { env: { ...process.env, ...environment }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', data => { stdout = (stdout + data).slice(-2_000_000); });
+    child.stderr.on('data', data => { stderr = (stderr + data).slice(-2000); });
+    warning = setTimeout(() => { progress('pending'); onPending(); }, pendingAfterMs);
+    const result = await new Promise((done, reject) => {
       child.once('error', reject);
       child.once('close', (code, signal) => {
         if (code === 0) return done(stdout.trim());
@@ -176,6 +184,11 @@ export async function dockerAllocation(args, environment = {}, {
           (signal ?? code) + (stderr ? ': ' + stderr : '')));
       });
     });
+    progress('completed');
+    return result;
+  } catch (error) {
+    progress('failed');
+    throw error;
   } finally { clearTimeout(warning); }
 }
 
@@ -291,6 +304,18 @@ export async function runSandbox({ image, command }) {
   const containers = [];
   let directory, reaper, reaperFailure, networkCreated = false, child, stopped = false, killTimer;
   const secret = () => randomBytes(32).toString('hex');
+  async function runPhase(phase, operation) {
+    const startedAt = Date.now();
+    const report = status => console.error('[documenso-sandbox-phase] ' + JSON.stringify({
+      network, phase, status, at: new Date().toISOString(), elapsedMs: Date.now() - startedAt,
+    }));
+    report('started');
+    try {
+      const result = await operation();
+      report('completed');
+      return result;
+    } catch (error) { report('failed'); throw error; }
+  }
   function docker(args, environment = {}) {
     const result = spawnSync('docker', args, { encoding: 'utf8', timeout: 30_000,
       env: { ...process.env, ...environment }, maxBuffer: 2_000_000 });
@@ -330,11 +355,11 @@ export async function runSandbox({ image, command }) {
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
   try {
     // Image preparation must finish before any external resource allocation.
-    if (!await prepareSandboxImages(image, { inspect: ref => docker(['image', 'inspect', ref]),
-      isStopped: () => stopped })) return 130;
+    if (!await runPhase('images', () => prepareSandboxImages(image, { inspect: ref => docker(['image', 'inspect', ref]),
+      isStopped: () => stopped }))) return 130;
     const openssl = spawnSync('openssl', ['version'], { stdio: 'ignore', timeout: 5000 });
     if (openssl.status !== 0) throw new Error('openssl is required for the sandbox signing certificate');
-    reaper = await startSandboxReaper(network, docker, error => { reaperFailure = error; stop(); });
+    reaper = await runPhase('reaper', () => startSandboxReaper(network, docker, error => { reaperFailure = error; stop(); }));
     if (stopped) return 130;
     directory = mkdtempSync(join(tmpdir(), 'daohr-documenso-'));
     chmodSync(directory, 0o700);
@@ -365,7 +390,8 @@ export async function runSandbox({ image, command }) {
     if (stopped) return 130;
     const mailUrl = 'http://127.0.0.1:' + loopbackPort(docker(['port', mail, '1080/tcp']));
     const diagnosticRun = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 });
-    await waitForSandboxPostgres(database, { run: diagnosticRun, secrets: [databasePassword], isStopped: () => stopped });
+    await runPhase('database-ready', () => waitForSandboxPostgres(database,
+      { run: diagnosticRun, secrets: [databasePassword], isStopped: () => stopped }));
     if (stopped) return 130;
     // Select a free port without starting an unconfigured provider. Docker's
     // bind remains authoritative: a competing bind makes start fail and cleanup
@@ -383,17 +409,19 @@ export async function runSandbox({ image, command }) {
     await start(app, ['-p', '127.0.0.1:' + port + ':3000', '--mount',
       'type=bind,src=' + join(directory, 'cert.p12') + ',dst=/opt/documenso/cert.p12,readonly',
       ...Object.keys(environment).flatMap(key => ['-e', key]), image], environment);
-    const deadline = Date.now() + 180_000;
-    for (;;) {
-      if (stopped) return 130;
-      try {
-        const response = await fetch(appUrl + '/signin', { signal: AbortSignal.timeout(5000), redirect: 'manual' });
-        if (response.status >= 200 && response.status < 400) break;
-      } catch { /* boot/migration still in progress; bounded below */ }
-      if (Date.now() >= deadline) throw new Error('Documenso sandbox did not become ready within 180s: ' +
-        sandboxFailureDiagnostic(app, diagnosticRun, Object.values(environment)));
-      await new Promise(done => setTimeout(done, 1000));
-    }
+    await runPhase('provider-ready', async () => {
+      const deadline = Date.now() + 180_000;
+      for (;;) {
+        if (stopped) return 130;
+        try {
+          const response = await fetch(appUrl + '/signin', { signal: AbortSignal.timeout(5000), redirect: 'manual' });
+          if (response.status >= 200 && response.status < 400) break;
+        } catch { /* boot/migration still in progress; bounded below */ }
+        if (Date.now() >= deadline) throw new Error('Documenso sandbox did not become ready within 180s: ' +
+          sandboxFailureDiagnostic(app, diagnosticRun, Object.values(environment)));
+        await new Promise(done => setTimeout(done, 1000));
+      }
+    });
     const runtime = { kind: 'documenso-sandbox', image, appUrl, mailUrl, container: app,
       network, isolatedDatabase: true, externalMail: false, testCertificate: true };
     console.error('[documenso-sandbox] ' + JSON.stringify(runtime));
@@ -409,7 +437,7 @@ export async function runSandbox({ image, command }) {
   } finally {
     clearTimeout(killTimer);
     process.off('SIGINT', stop); process.off('SIGTERM', stop);
-    try { await cleanup(); }
+    try { await runPhase('cleanup', cleanup); }
     finally { reaper?.close(); }
   }
 }
