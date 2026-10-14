@@ -182,29 +182,31 @@ vi.mock('../../harness/merge-resolver-cleanup', () => ({
     cleanupMergeResolverAfterFailure(...a),
 }));
 
-// fs: existsSync→false so the actions-dispatch path short-circuits; readFileSync
-// throws so the SU-bearer read falls back to undefined; writes are no-ops.
+// Mock only the fake product paths. Node's lazy CJS/TS imports need real reads,
+// stat and realpath together; a blanket mock breaks module loading first.
 vi.mock('node:fs', async (orig) => {
   const actual = await orig<typeof import('node:fs')>();
+  const fixturePath = (p: unknown) => /^\/(?:proj|fake)(?:\/|$)/.test(String(p));
   return {
     ...actual,
     // The frozen-repair cwd validator reads a linked worktree's .git pointer.
     // Keep every unrelated path absent so the existing action-log/token branches
     // retain their prior behavior.
-    existsSync: vi.fn((p: unknown) => String(p).endsWith('/.git')),
-    readdirSync: vi.fn(() => []),
-    readFileSync: vi.fn((p: unknown) => {
+    existsSync: vi.fn((p: unknown) => fixturePath(p) ? String(p).endsWith('/.git') : Reflect.apply(actual.existsSync, null, [p])),
+    readdirSync: vi.fn((p: unknown, ...args: unknown[]) => fixturePath(p) ? [] : Reflect.apply(actual.readdirSync, null, [p, ...args])),
+    readFileSync: vi.fn((p: unknown, ...args: unknown[]) => {
+      if (!fixturePath(p)) return Reflect.apply(actual.readFileSync, null, [p, ...args]);
       if (String(p).endsWith('/.git')) {
         return 'gitdir: /proj/.git/worktrees/repair-1\n';
       }
       throw new Error(`no file (mocked): ${String(p)}`);
     }),
-    realpathSync: vi.fn((p: unknown) => String(p)),
-    statSync: vi.fn((p: unknown) => ({
+    realpathSync: vi.fn((p: unknown, ...args: unknown[]) => fixturePath(p) ? String(p) : Reflect.apply(actual.realpathSync, null, [p, ...args])),
+    statSync: vi.fn((p: unknown, ...args: unknown[]) => fixturePath(p) ? ({
       mtimeMs: 0,
       isDirectory: () => !String(p).endsWith('/.git'),
       isFile: () => String(p).endsWith('/.git'),
-    })),
+    }) : Reflect.apply(actual.statSync, null, [p, ...args])),
     writeFileSync: vi.fn(),
     mkdirSync: vi.fn(),
     rmSync: vi.fn(),
