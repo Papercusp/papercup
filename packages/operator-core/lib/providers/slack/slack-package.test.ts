@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   PROVIDER_INGRESS_NORMALIZE_CAPABILITY,
   PROVIDER_SEARCH_LIVE_CAPABILITY,
@@ -702,7 +702,8 @@ describe('syncPage (organization history and channel readership, D-026)', () => 
       ],
     });
     expect(page.hasMore).toBe(true);
-    expect(cursorState(page)).toEqual({ queue: ['C1', 'G4'], seen: ['C1', 'G4'] });
+    // deepAt starts the whole-history re-walk clock (WI-6554700010012486).
+    expect(cursorState(page)).toEqual({ queue: ['C1', 'G4'], seen: ['C1', 'G4'], deepAt: expect.any(String) });
     // Non-member and archived channels are never read.
     expect(slack.seen.filter((call) => call.startsWith('conversations.members'))).toHaveLength(3);
     expect(slack.seen.some((call) => /channel=C2|channel=C3/.test(call))).toBe(false);
@@ -754,7 +755,8 @@ describe('syncPage (organization history and channel readership, D-026)', () => 
     expect(edited.version).toBe('history:C1:1712345400.000100:1712345450.000000');
     expect(root.version).toBe('history:C1:1712345678.000200:1712345678.000200');
     expect(first.hasMore).toBe(true);
-    expect(cursorState(first)).toEqual({ queue: ['C1', 'G4'], seen: ['C1', 'G4'], page: 'h2' });
+    // Every page of the channel's read stops at the same `latest`, fixed on its first page.
+    expect(cursorState(first)).toMatchObject({ queue: ['C1', 'G4'], seen: ['C1', 'G4'], page: 'h2', latest: expect.stringMatching(/^\d{10}\.\d{6}$/) });
 
     const second = await provider.syncPage({ ...ORG, cursor: first.nextCursor }, slack.fetchSlack);
     expect(second.records.map((r: { nativeId: string }) => r.nativeId)).toEqual(['C1:1712340000.000100']);
@@ -805,17 +807,20 @@ describe('syncPage (organization history and channel readership, D-026)', () => 
     // G4 is gone from the snapshot, so its readers are removed (the host empties lists a full snapshot no longer names).
     expect(page.membership.containers.map((c: { ref: string }) => c.ref)).toEqual(['C1', 'C5']);
     expect(page.hasMore).toBe(true);
-    expect(cursorState(page)).toEqual({ queue: ['C5'], seen: ['C1', 'C5'] });
+    // C1 was backfilled before, so this round also rescans its recent window (WI-6554700010012278).
+    expect(cursorState(page)).toMatchObject({ queue: ['C5'], seen: ['C1', 'C5'], rescan: 'C1', rotate: 'C1' });
 
     const settled = await provider.syncPage({ ...ORG, mode: 'incremental', cursor: JSON.stringify({ queue: [], seen: ['C1', 'C5'] }) }, slack.fetchSlack);
-    expect(settled.hasMore).toBe(false);
-    expect(cursorState(settled)).toEqual({ queue: [], seen: ['C1', 'C5'] });
+    // Nothing new to backfill: the round only rescans the recent window of one known channel.
+    expect(settled.hasMore).toBe(true);
+    expect(cursorState(settled)).toMatchObject({ queue: [], seen: ['C1', 'C5'], rescan: 'C1', rotate: 'C1' });
   });
 
   it('starts over from membership on a cursor it cannot read', async () => {
     const slack = fakeWorkspace({ list: [{ channels: [] }] });
     const page = await provider.syncPage({ ...ORG, cursor: 'not-json' }, slack.fetchSlack);
-    expect(page).toEqual({ records: [], membership: { members: [], containers: [] }, nextCursor: JSON.stringify({ queue: [], seen: [] }), hasMore: false });
+    expect(page).toEqual({ records: [], membership: { members: [], containers: [] }, nextCursor: expect.any(String), hasMore: false });
+    expect(cursorState(page)).toEqual({ queue: [], seen: [], deepAt: expect.any(String) });
   });
 
   it('raises Slack rate limits and auth refusals as the signals the host interprets', async () => {
@@ -827,6 +832,106 @@ describe('syncPage (organization history and channel readership, D-026)', () => 
     const auth = await provider.syncPage({ ...ORG, cursor: JSON.stringify({ queue: ['C1'], seen: ['C1'] }) }, revoked.fetchSlack)
       .catch((error: unknown) => error);
     expect(classifyProviderSyncError(auth)).toMatchObject({ kind: 'auth' });
+  });
+});
+
+describe('syncPage coverage: what each history page read completely (WI-6554700010012278)', () => {
+  // 2024-04-06T00:00:00Z. Every page of one read stops at this ts, however long the read takes.
+  const NOW_MS = Date.UTC(2024, 3, 6);
+  const LATEST = '1712361600.000000';
+  const BEFORE_LATEST = '2024-04-05T23:59:59.999Z';
+  const ROOT = { ts: '1712345678.000200', user: 'U1', text: 'The export 500s', thread_ts: '1712345678.000200', reply_count: 1 };
+
+  it('backfill pages cover their own slice of the channel and each re-read thread, down to the channel start', async () => {
+    const slack = fakeWorkspace({
+      history: {
+        C1: { messages: [{ ts: '1712345700.000300', user: 'U1', text: 'newest' }, ROOT], response_metadata: { next_cursor: 'h2' } },
+        'C1:h2': { messages: [
+          { ts: '1712345650.000000', subtype: 'channel_join', user: 'U3', text: '<@U3> has joined the channel' },
+          { ts: '1712345600.000500', user: 'U1', text: 'oldest' },
+        ] },
+      },
+      replies: { 'C1:1712345678.000200': { messages: [ROOT, { ts: '1712345690.000100', thread_ts: ROOT.ts, user: 'U2', text: 'On it' }] } },
+    });
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
+    try {
+      const first = await provider.syncPage({ ...ORG, cursor: JSON.stringify({ queue: ['C1'], seen: ['C1'] }) }, slack.fetchSlack);
+      expect(first.coverage).toEqual([
+        // Messages outside threads above the page's oldest one; the millisecond holding it is left out.
+        { datatype: 'chat-message', containerRef: 'C1', from: '2024-04-05T19:34:38.001Z', to: BEFORE_LATEST,
+          nativeIds: ['C1:1712345700.000300', 'C1:1712345678.000200'] },
+        { datatype: 'chat-message', containerRef: 'C1', threadRef: ROOT.ts, to: BEFORE_LATEST,
+          nativeIds: ['C1:1712345678.000200', 'C1:1712345690.000100'] },
+      ]);
+      expect(cursorState(first)).toEqual({ queue: ['C1'], seen: ['C1'], page: 'h2', latest: LATEST, upper: ROOT.ts });
+
+      clock.mockReturnValue(NOW_MS + 60_000);
+      const second = await provider.syncPage({ ...ORG, cursor: first.nextCursor }, slack.fetchSlack);
+      // The last page reaches the channel's start, and names the join it keeps no record of: it is live.
+      expect(second.coverage).toEqual([
+        { datatype: 'chat-message', containerRef: 'C1', to: '2024-04-05T19:34:37.999Z', nativeIds: ['C1:1712345650.000000', 'C1:1712345600.000500'] },
+      ]);
+      expect(second.records.map((r: { nativeId: string }) => r.nativeId)).toEqual(['C1:1712345600.000500']);
+      expect(second.hasMore).toBe(false);
+      expect(cursorState(second)).toEqual({ queue: [], seen: ['C1'] });
+      expect(slack.seen).toEqual([
+        `conversations.history?channel=C1&limit=200&latest=${LATEST}`,
+        `conversations.replies?channel=C1&ts=${ROOT.ts}&limit=200&latest=${LATEST}`,
+        `conversations.history?channel=C1&limit=200&cursor=h2&latest=${LATEST}`,
+      ]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('each round rescans the last week of one backfilled channel in turn; a message gone from history is missing from its window', async () => {
+    const slack = fakeWorkspace({
+      list: [{ channels: [{ id: 'C1', name: 'general', is_member: true }, { id: 'C5', name: 'new', is_member: true }] }],
+      members: { C1: { members: ['U1'] }, C5: { members: ['U2'] } },
+      // B (1712345710.000400) was deleted while the daemon was offline, so history returns only A.
+      history: { C1: { messages: [{ ts: '1712345700.000300', user: 'U1', text: 'A' }] } },
+    });
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
+    try {
+      const round = await provider.syncPage({ ...ORG, mode: 'incremental', cursor: JSON.stringify({ queue: [], seen: ['C1', 'C5'] }) }, slack.fetchSlack);
+      expect(round.hasMore).toBe(true);
+      expect(cursorState(round)).toEqual({ queue: [], seen: ['C1', 'C5'], rescan: 'C1', oldest: '1711756800.000000', rotate: 'C1', deepAt: String(NOW_MS) });
+
+      const rescan = await provider.syncPage({ ...ORG, mode: 'incremental', cursor: round.nextCursor }, slack.fetchSlack);
+      expect(slack.seen.at(-1)).toBe(`conversations.history?channel=C1&limit=200&oldest=1711756800.000000&latest=${LATEST}`);
+      expect(rescan.coverage).toEqual([
+        { datatype: 'chat-message', containerRef: 'C1', from: '2024-03-30T00:00:00.001Z', to: BEFORE_LATEST, nativeIds: ['C1:1712345700.000300'] },
+      ]);
+      expect(rescan.hasMore).toBe(false);
+      expect(cursorState(rescan)).toEqual({ queue: [], seen: ['C1', 'C5'], rotate: 'C1', deepAt: String(NOW_MS) });
+
+      const next = await provider.syncPage({ ...ORG, mode: 'incremental', cursor: rescan.nextCursor }, slack.fetchSlack);
+      expect(cursorState(next)).toMatchObject({ rescan: 'C5', rotate: 'C5' });
+      const wrapped = await provider.syncPage({ ...ORG, mode: 'incremental', cursor: JSON.stringify({ queue: [], seen: ['C1', 'C5'], rotate: 'C5' }) }, slack.fetchSlack);
+      expect(cursorState(wrapped)).toMatchObject({ rescan: 'C1', rotate: 'C1' });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('a deleted root that still has replies is left out of both live sets, and its replies stay live', async () => {
+    const tombstone = { ts: ROOT.ts, thread_ts: ROOT.ts, subtype: 'tombstone', reply_count: 1, text: 'This message was deleted.' };
+    const reply = { ts: '1712345690.000100', thread_ts: ROOT.ts, user: 'U2', text: 'On it' };
+    const slack = fakeWorkspace({
+      history: { C1: { messages: [tombstone] } },
+      replies: { 'C1:1712345678.000200': { messages: [tombstone, reply] } },
+    });
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(NOW_MS);
+    try {
+      const page = await provider.syncPage({ ...ORG, cursor: JSON.stringify({ queue: ['C1'], seen: ['C1'] }) }, slack.fetchSlack);
+      expect(page.coverage).toEqual([
+        { datatype: 'chat-message', containerRef: 'C1', to: BEFORE_LATEST, nativeIds: [] },
+        { datatype: 'chat-message', containerRef: 'C1', threadRef: ROOT.ts, to: BEFORE_LATEST, nativeIds: ['C1:1712345690.000100'] },
+      ]);
+      expect(page.records).toMatchObject([{ nativeId: 'C1:1712345678.000200', deleted: true }, { nativeId: 'C1:1712345690.000100' }]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
 
@@ -941,9 +1046,10 @@ describe('daemon.mjs (JSON-RPC over stdio)', () => {
       expect(orgPage.result).toEqual({
         records: [],
         membership: { members: [], containers: [] },
-        nextCursor: JSON.stringify({ queue: [], seen: [] }),
+        nextCursor: expect.any(String),
         hasMore: false,
       });
+      expect(JSON.parse((orgPage.result as { nextCursor: string }).nextCursor)).toEqual({ queue: [], seen: [], deepAt: expect.any(String) });
       expect(hostFetches).toHaveLength(3);
       expect(hostFetches[2]).toMatchObject({ callToken: 'call-127', source: 'src-org' });
       expect(hostFetches[2].request.url).toMatch(/^https:\/\/slack\.com\/api\/conversations\.list\?/);
