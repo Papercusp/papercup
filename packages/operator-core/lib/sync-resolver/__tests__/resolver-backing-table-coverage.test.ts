@@ -80,6 +80,17 @@ const PUSH_EXEMPT: Record<string, string> = {
   'consult.expertRouting :: harness_shared.operator_consult_expert_routing':
     'the sole write route pushes consult.expertRouting after commit; bridge this table if another writer appears or the route stops pushing.',
 
+  // P-005 inherited governance policy (WI-6554700010011434). Every write to these two tables is
+  // ONE store.upsertLayer transaction, reached only through governance-policy/control.ts
+  // #setGovernancePolicyLayer (the governance:policy tool and the /api/governance-policy/* routes
+  // both call it), which pushes governancePolicy.state after commit (control.test.ts pins the push).
+  // RE-ARM: bridge both tables (emit_change_notify trigger + TABLE_TO_QUERY_NAMES entry) if any
+  // writer calls upsertLayer directly or control.ts stops pushing.
+  'governancePolicy.state :: harness_shared.governance_policy_layers':
+    'governance-policy/control.ts is the sole writer and pushes governancePolicy.state after each committed upsertLayer; bridge the table if a direct upsertLayer writer appears or that push is removed.',
+  'governancePolicy.state :: harness_shared.governance_policy_layer_versions':
+    'version rows are written only inside the same upsertLayer transaction, reached only via control.ts, which pushes governancePolicy.state after commit; bridge the table if that changes.',
+
   // P-030 foreign conversation projection: these are deliberately NOT given
   // another per-row invalidation producer. session_turns/tool_invocations are
   // the two hottest append ledgers, while plan_item_claims is renewed on every

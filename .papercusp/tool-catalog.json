@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 963,
+  "count": 964,
   "tools": [
     {
       "name": "ablation:report",
@@ -14721,6 +14721,37 @@
         "when": "Recording a verified child-fleet spend snapshot against a goal's declared ceiling, revising its statement, kill criterion, or budget window, or CLOSING it (achieved / killed). A spend snapshot is accepted only when it exactly matches the measured goals:pots rollup.",
         "notWhen": "For per-pot progress or measured spend use goals:pots { goalId } and the pot/plan/work-item beneath the goal — this row carries the goal-level state only. Do not invent interactive-session cost. To read current state first, goals:get { id, detail:\"full\" }.",
         "chaining": "goals:get → goals:pots → goals:update only when writing a verified measured snapshot. Pausing/killing winds the projects down FOR you (placement gate + loop disarm); a degraded spend result means no snapshot was written and the tripwire remains unmeasured — chase it with goals:pots, then fleet:assignments / loop:status on the reported projects."
+      }
+    },
+    {
+      "name": "governance:policy",
+      "http": {
+        "path": "/api/agent-tools/governance/policy",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Inherited organization > department > workspace policy over models, tools, plugins, egress, dataUse and actions. get = chain + layers + version history; explain = the verdict the enforcement seat would reach for a request, and which layer decided; simulate = before/after verdicts for a proposed layer (writes nothing); set = write a layer version (actor + reason); add-exception = append an expiring exception. A lower layer can never widen an ancestor.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "An action was refused with org_policy:* and you need to know which layer refused it and why (explain), or an admin must change or except a policy.",
+        "notWhen": "Work-scope (which repos/paths a session may touch) is work-scope:*, not this.",
+        "chaining": "simulate a proposed layer before set; pass expectedVersion from get to avoid overwriting a concurrent edit."
       }
     },
     {
