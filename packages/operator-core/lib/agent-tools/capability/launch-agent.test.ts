@@ -632,10 +632,12 @@ describe('internal launch context provenance', () => {
   it('threads the private controller route only through a fresh supported host context', async () => {
     const gateway = { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) };
     const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway,
-      [INTERNAL_SCOPED_SESSION_CONFINEMENT]: scopedCeiling } as never;
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]: scopedCeiling,
+      [INTERNAL_BACKEND_BIN_OVERRIDE]: { codex: '/tmp/private-current-container/codex' } } as never;
     const res = await launchAgent.handler({ brief: 'Private native task', harness: 'papercusp', agent: 'codex', headless: true }, privateCtx);
     expect(isError(res)).toBe(false);
     expect(JSON.parse(spawnedEnv(spawnHeadlessMock).PAPERCUSP_SCOPED_INFERENCE_GATEWAY)).toEqual(gateway);
+    expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_BACKEND_BIN_CODEX).toBe('/tmp/private-current-container/codex');
     expect(spawnedCommand(spawnHeadlessMock)).not.toContain(gateway.token);
     expect(declareConfinementMock).toHaveBeenCalledWith({ ownerId: expect.stringMatching(/^su-/),
       workspaceId: 'ws-test', confinement: scopedCeiling });
