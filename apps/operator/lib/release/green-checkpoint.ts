@@ -10997,12 +10997,17 @@ async function tryLongestGreenPrefix(
   const confirmWouldOverrun = (): boolean =>
     Date.now() + nextConfirmEstimateMs() > budget.deadlineMs;
   /** Run one confirm suite, charging its measured cost to the budget. */
-  const runConfirm = async (): Promise<
+  const runConfirm = async (
+    confirmedRef: string,
+  ): Promise<
     Awaited<ReturnType<CheckpointDeps["runGreen"]>>
   > => {
     const startedAt = Date.now();
     try {
-      return await deps.runGreen(cfg.checkpointRoot, lastReady);
+      return await deps.runGreen(cfg.checkpointRoot, lastReady, {
+        candidate: confirmedRef,
+        headAtStart: confirmedRef,
+      });
     } finally {
       // Charge in a `finally` so a THROWN confirm still costs its wall-clock. Otherwise a
       // failing confirm would look free and the next estimate would shrink toward zero —
@@ -11041,7 +11046,7 @@ async function tryLongestGreenPrefix(
   }
   let confirm: ConfirmResult | null = initialPrefixUnbuildable
     ? null
-    : await runConfirm();
+    : await runConfirm(prefixTip);
   if (!confirm?.green) {
     // WI-38298: the cheap locator is deliberately conservative, but its first candidate
     // can still be red because an unrelated failure predates the candidate's repair. Do
@@ -11081,7 +11086,7 @@ async function tryLongestGreenPrefix(
         );
         return false;
       }
-      const laterConfirm = await runConfirm();
+      const laterConfirm = await runConfirm(sha);
       if (laterConfirm.green) {
         recoveryPrefix = sha;
         confirm = laterConfirm;
