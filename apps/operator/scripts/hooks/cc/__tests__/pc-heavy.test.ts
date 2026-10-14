@@ -569,12 +569,10 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     const fakeBin = join(dir, 'slow-fuser-bin');
     mkdirSync(fakeBin);
     const fuserInvoked = join(dir, 'fuser-invoked');
-    // The elapsed bound only has to separate "never waited on the stalled fuser" from "waited
-    // FUSER_STALL_SEC for it"; 5s was beaten by bash startup alone under green-checkpoint load
-    // (WI-6554700010008342). The never-invoked marker below is the primary proof.
+    // The marker proves the fallback was never invoked. An elapsed-time bound
+    // also charges unrelated bash startup to this behavior and can fail even
+    // when direct kernel holder lookup succeeds (WI-6554700010008342).
     const FUSER_STALL_SEC = 60;
-    const NO_STALL_BUDGET_MS = 30_000;
-    expect(NO_STALL_BUDGET_MS).toBeLessThan(FUSER_STALL_SEC * 1_000);
     writeFileSync(
       join(fakeBin, 'fuser'),
       `#!/usr/bin/env bash\ntouch ${JSON.stringify(fuserInvoked)}\nsleep ${FUSER_STALL_SEC}\n`,
@@ -588,7 +586,6 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     let barrier: ReturnType<typeof spawn> | undefined;
     try {
       await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the pre-existing heavy holder');
-      const startedAt = Date.now();
       barrier = spawn(
         'bash',
         [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'echo should-not-run'],
@@ -598,7 +595,6 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       const barrierExit = new Promise<number>((res) => barrier?.on('exit', (c) => res(c ?? -1)));
 
       expect(await barrierExit).toBe(75);
-      expect(Date.now() - startedAt).toBeLessThan(NO_STALL_BUDGET_MS);
       expect(barrierErr.text()).toContain(`pid ${holder.pid}`);
       expect(barrierErr.text()).not.toContain('holder could not be identified');
       expect(existsSync(fuserInvoked)).toBe(false);
