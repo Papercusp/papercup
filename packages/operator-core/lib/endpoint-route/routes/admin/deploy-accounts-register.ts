@@ -64,7 +64,7 @@ export default defineTool({
   async handler(req) {
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;
-    let body: { accountId?: string; label?: string; provider?: 'claude' | 'codex'; credentialType?: 'subscription' | 'api-key'; value?: string; egress?: { proxyUrl?: string; localAddress?: string } };
+    let body: { accountId?: string; label?: string; provider?: 'claude' | 'codex'; credentialType?: 'subscription' | 'api-key'; value?: string; anthropicWorkspaceId?: string; egress?: { proxyUrl?: string; localAddress?: string } };
     try {
       body = await req.json();
     } catch {
@@ -73,6 +73,7 @@ export default defineTool({
     const accountId = body?.accountId?.trim();
     const provider = body?.provider === 'codex' ? 'codex' : 'claude';
     const isApiKey = body?.credentialType === 'api-key';
+    const anthropicWorkspaceId = typeof body?.anthropicWorkspaceId === 'string' ? body.anthropicWorkspaceId.trim() : '';
     const value = body?.value?.trim();
     // Optional per-account egress (per-account IP routing) — only kept if a field is set.
     const proxyUrl = body?.egress?.proxyUrl?.trim();
@@ -87,6 +88,9 @@ export default defineTool({
     if (isApiKey && provider !== 'claude') {
       return Response.json({ ok: false, error: 'Anthropic API keys require the Claude provider' }, { status: 400 });
     }
+    if (body.anthropicWorkspaceId !== undefined && (typeof body.anthropicWorkspaceId !== 'string' || !isApiKey || (anthropicWorkspaceId && !/^wrkspc_[A-Za-z0-9_-]+$/.test(anthropicWorkspaceId)))) {
+      return Response.json({ ok: false, error: 'anthropicWorkspaceId must be a wrkspc_… id for an Anthropic API-key account' }, { status: 400 });
+    }
     if (!value) return Response.json({ ok: false, error: provider === 'codex' ? 'value required (a bearer token or env:NAME reference)' : 'value required (a sk-ant-oat… token or a .credentials.json bundle)' }, { status: 400 });
 
     try {
@@ -100,6 +104,9 @@ export default defineTool({
       if (isApiKey) {
         if (!/^sk-ant-(?:api|usr)[A-Za-z0-9_-]+$/.test(tokenValue)) {
           return Response.json({ ok: false, error: 'value must be an Anthropic Console API key (sk-ant-api… or sk-ant-usr…). For a Max subscription, use browser login or a setup-token instead.' }, { status: 400 });
+        }
+        if (tokenValue.startsWith('sk-ant-usr-') && !anthropicWorkspaceId) {
+          return Response.json({ ok: false, error: 'User-scoped Anthropic API keys require an Anthropic workspace ID (wrkspc_…). Find it in the Anthropic Console workspace settings.' }, { status: 400 });
         }
         const credPath = papercuspPath('deploy-credentials', `${accountId}.anthropic-api-key`);
         await mkdir(dirname(credPath), { recursive: true, mode: 0o700 });
@@ -150,7 +157,7 @@ export default defineTool({
         credentialRef = `token:${credPath}`;
       }
       await updateAccountPool((p) =>
-        registerAccount(p, { id: accountId, provider, credentialRef, label: body.label?.trim() || undefined, egress }, Date.now()),
+        registerAccount(p, { id: accountId, provider, credentialRef, label: body.label?.trim() || undefined, egress, ...(isApiKey ? { anthropicWorkspaceId: anthropicWorkspaceId || null } : {}) }, Date.now()),
       );
       const account = (await accountStatus()).find((a) => a.id === accountId) ?? null;
       // Live UI reflection — the Accounts tab reads the accounts.pool sync query.

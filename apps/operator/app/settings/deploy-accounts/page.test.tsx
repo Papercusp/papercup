@@ -136,6 +136,19 @@ describe('Deploy accounts — browser login completion', () => {
 });
 
 describe('Inference — Anthropic API-key accounts', () => {
+  it('submits the Anthropic workspace ID with a user-scoped key', async () => {
+    H.query = { add: true, id: 'user-api' };
+    stubFetch();
+    render(<DeployAccountsPage />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Anthropic API key' }));
+    fireEvent.change(screen.getByLabelText('3 · Anthropic API key'), { target: { value: ['sk', 'ant', 'usr', 'fixture'].join('-') } });
+    fireEvent.change(screen.getByLabelText(/Anthropic workspace ID/), { target: { value: 'wrkspc_selected' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Link account' }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith('/register'))).toBe(true));
+    const call = vi.mocked(fetch).mock.calls.find(([url]) => String(url).endsWith('/register'))!;
+    expect(JSON.parse(String(call[1]?.body))).toMatchObject({ credentialType: 'api-key', anthropicWorkspaceId: 'wrkspc_selected' });
+  });
+
   it('offers a private API-key entry beside subscription login and posts the explicit credential type', async () => {
     H.query = { add: true, id: 'console-api' };
     stubFetch();

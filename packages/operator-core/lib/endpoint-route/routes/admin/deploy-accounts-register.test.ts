@@ -121,10 +121,21 @@ describe('POST /api/admin/deploy-accounts/register — egress + invalidation (su
 
   it('accepts user-scoped Anthropic API keys as API credentials', async () => {
     const key = ['sk', 'ant', 'usr', 'test-user-scoped-key'].join('-');
-    const { status } = await post({ accountId: 'user-api', credentialType: 'api-key', value: key });
+    const { status } = await post({ accountId: 'user-api', credentialType: 'api-key', value: key, anthropicWorkspaceId: 'wrkspc_user' });
     expect(status).toBe(200);
     expect(lastRegisterInput()?.credentialRef).toMatch(/^apikey:file:/);
     expect(h.writeFile).toHaveBeenCalledWith(expect.any(String), key, { mode: 0o600 });
+    expect(lastRegisterInput()).toMatchObject({ anthropicWorkspaceId: 'wrkspc_user' });
+  });
+
+  it('refuses a user-scoped key without a workspace, and malformed workspace IDs, before storing a secret', async () => {
+    const key = ['sk', 'ant', 'usr', 'test-user-scoped-key'].join('-');
+    const missing = await post({ accountId: 'missing-workspace', credentialType: 'api-key', value: key });
+    expect(missing.status).toBe(400);
+    expect(missing.body?.error).toMatch(/require an Anthropic workspace ID/);
+    const invalid = await post({ accountId: 'invalid-workspace', credentialType: 'api-key', value: key, anthropicWorkspaceId: 'not-a-workspace' });
+    expect(invalid.status).toBe(400);
+    expect(h.writeFile).not.toHaveBeenCalled();
   });
 
   it.each([OAT, '{"claudeAiOauth":{"accessToken":"oauth"}}', 'not-an-api-key'])('refuses a non-Console credential in API-key mode', async value => {
