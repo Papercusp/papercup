@@ -38,8 +38,11 @@
  *
  * WHY BOTH SIGNALS, AND WHY NO "RESULT LINE" SUPPRESSOR. The in-flight vocabulary
  * IS the writer's own statement that the result is unread — "still running",
- * "NOT yet diagnosed", "awaiting result". Adding a fuzzy result-detector on top
- * would buy nothing and could suppress a true positive, which is the worse failure
+ * "NOT yet diagnosed", "awaiting result". The standalone phrase "in-flight" is
+ * more ambiguous, so it only counts when attached to a run-like subject ("test run
+ * is in-flight"). This avoids treating unrelated compounds such as "in-flight
+ * store rebinding" as an unread run. Adding a fuzzy result-detector on top would
+ * buy nothing and could suppress a true positive, which is the worse failure
  * direction: an advisory that silently does not fire is indistinguishable from one
  * that had nothing to say.
  *
@@ -58,6 +61,11 @@
  */
 const IN_FLIGHT_RE =
   /\b(?:launched|in[-\s]flight|still running|not yet diagnosed|not yet read|awaiting (?:the )?results?|pending results?|results? (?:are )?pending)\b/gi;
+
+const RUN_SUBJECT_BEFORE_IN_FLIGHT_RE =
+  /\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b(?:\W+\w+){0,4}\W*$/i;
+const RUN_SUBJECT_AFTER_IN_FLIGHT_RE =
+  /^\W*(?:(?:is|are|was|were|remains?|still|currently|actively)\W+){0,2}\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b/i;
 
 /**
  * A reference to a run whose output lives somewhere OTHER than this note — the
@@ -103,10 +111,16 @@ export interface UnreadRunAdvisory {
   signals: UnreadRunSignals;
 }
 
-function collect(text: string, re: RegExp, lower: boolean): string[] {
+function collect(
+  text: string,
+  re: RegExp,
+  lower: boolean,
+  includeMatch?: (match: RegExpExecArray) => boolean,
+): string[] {
   const seen = new Set<string>();
   // A `g` regex carries lastIndex across calls; matchAll consumes a fresh clone.
   for (const m of text.matchAll(new RegExp(re.source, re.flags))) {
+    if (includeMatch && !includeMatch(m)) continue;
     // A path is greedy to a whitespace boundary, so it absorbs the sentence
     // punctuation that follows it — `/tmp/run.log.` rather than `/tmp/run.log`.
     // Echoing that back reads like a different (nonexistent) file, so trim it.
@@ -117,6 +131,28 @@ function collect(text: string, re: RegExp, lower: boolean): string[] {
     if (seen.size >= MAX_SIGNALS) break;
   }
   return [...seen];
+}
+
+function isRunScopedInFlight(text: string, index: number, length: number): boolean {
+  const previousBoundary = Math.max(
+    text.lastIndexOf('\n', index - 1),
+    text.lastIndexOf('.', index - 1),
+    text.lastIndexOf(';', index - 1),
+    text.lastIndexOf('!', index - 1),
+    text.lastIndexOf('?', index - 1),
+  );
+  const start = previousBoundary + 1;
+  const nextBoundaries = [
+    text.indexOf('\n', index + length),
+    text.indexOf('.', index + length),
+    text.indexOf(';', index + length),
+    text.indexOf('!', index + length),
+    text.indexOf('?', index + length),
+  ].filter((boundary) => boundary >= 0);
+  const end = nextBoundaries.length > 0 ? Math.min(...nextBoundaries) : text.length;
+  const before = text.slice(Math.max(start, index - 80), index);
+  const after = text.slice(index + length, Math.min(end, index + length + 80));
+  return RUN_SUBJECT_BEFORE_IN_FLIGHT_RE.test(before) || RUN_SUBJECT_AFTER_IN_FLIGHT_RE.test(after);
 }
 
 /**
@@ -140,7 +176,11 @@ export function describeUnreadRun(
   const text = (body ?? '').trim();
   if (!text) return null;
 
-  const inFlight = collect(withoutHistoricalQuotations(text), IN_FLIGHT_RE, true);
+  const inFlightText = withoutHistoricalQuotations(text);
+  const inFlight = collect(inFlightText, IN_FLIGHT_RE, true, (match) => {
+    if (!/^in[-\s]flight$/i.test(match[0])) return true;
+    return isRunScopedInFlight(inFlightText, match.index, match[0].length);
+  });
   if (inFlight.length === 0) return null;
   const runRefs = collect(text, RUN_REF_RE, false);
   if (runRefs.length === 0) return null;

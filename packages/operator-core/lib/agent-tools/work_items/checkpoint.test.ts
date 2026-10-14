@@ -5450,6 +5450,36 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
     expect(await one({ id: 'WI-UNREAD-CLEAN', checkpoint: body })).not.toHaveProperty('unreadRunLint');
   });
 
+  it('ignores an unrelated in-flight compound even when the checkpoint also names a log', async () => {
+    const body = [
+      'Next: restore the in-flight store rebinding after refreshing the type definitions.',
+      'Earlier typecheck output: /tmp/operation-api-types.log.',
+    ].join('\n');
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-UNRELATED-COMPOUND', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-UNRELATED-COMPOUND', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty('unreadRunLint');
+  });
+
+  it('still recognizes a run-specific in-flight phrase', async () => {
+    const body = 'The typecheck run is still in-flight; output: /tmp/typecheck.log.';
+    getWorkItem.mockResolvedValue({ id: 'WI-UNREAD-IN-FLIGHT', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: body, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(body);
+
+    const result = await one({ id: 'WI-UNREAD-IN-FLIGHT', checkpoint: body });
+
+    expect(result.ok).toBe(true);
+    expect(result.unreadRunLint).toMatchObject({
+      flagged: true,
+      signals: { inFlight: ['in-flight'], runRefs: ['/tmp/typecheck.log'] },
+    });
+  });
+
   it('suppresses once ANY check row was stored — the writer has already found the affordance', async () => {
     const check = { claim: 'the affected suite is green', recheck: 'read /tmp/affected-9182.log' };
     const stored = withCarryNoteChecks(unread, [check]);
