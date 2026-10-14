@@ -338,7 +338,7 @@ export interface RetentionTreeCensus {
  * The result is planning evidence only; callers must remeasure before deletion.
  */
 export async function inspectRetentionTrees(root: string, opts: {
-  retainAfterMs: number; excludedPaths?: readonly string[]; paths?: readonly string[]; timeoutMs?: number; spawn?: CensusSpawn;
+  retainAfterMs: number; excludedPaths?: readonly string[]; paths?: readonly string[]; timeoutMs?: number; progressTimeoutMs?: number; spawn?: CensusSpawn;
 }): Promise<RetentionTreeCensus> {
   root = resolve(root);
   const result: RetentionTreeCensus = { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0 };
@@ -353,7 +353,9 @@ export async function inspectRetentionTrees(root: string, opts: {
   const foreignOwner = uid === undefined ? [] : ['!', '-uid', String(uid)];
   const format = '%y\\0%D\\0%i\\0%T@\\0%C@\\0%b\\0%U\\0%p\\0';
   const recent = ['(', '-newermt', `@${opts.retainAfterMs / 1000}`, '-o', '-newerct', `@${opts.retainAfterMs / 1000}`, ')'];
-  const args = [...(opts.paths ?? [root]), '-xdev', '-mindepth', opts.paths ? '0' : '1', '(', ...prune, ...(prune.length ? ['-o'] : []),
+  // A concurrent unlink after find read the containing directory is an absent
+  // candidate, not unknown eligibility. GNU find still fails on other IO errors.
+  const args = [...(opts.paths ?? [root]), '-ignore_readdir_race', '-xdev', '-mindepth', opts.paths ? '0' : '1', '(', ...prune, ...(prune.length ? ['-o'] : []),
     ...foreignOwner, ...(foreignOwner.length ? ['-o'] : []), ...recent,
     ')', '-printf', format, '-prune', '-o', '-printf', format];
   const [command, argv] = censusCommand('find', args, { ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
@@ -361,6 +363,11 @@ export async function inspectRetentionTrees(root: string, opts: {
     const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; reason?: string }>();
     let pending = '', fields: string[] = [], stderr = '', malformed = false, timedOut = false, settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let child: ReturnType<CensusSpawn>;
+    const armProgressDeadline = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.progressTimeoutMs ?? 60_000);
+    };
     const take = (row: string[]) => {
       const [type, dev, ino, mtime, ctime, blocks, owner, path] = row;
       if (!path?.startsWith(root + '/') || !/^[fdlbcsp]$/.test(type!) ||
@@ -397,14 +404,19 @@ export async function inspectRetentionTrees(root: string, opts: {
       if (error) { result.error = error; result.entries = []; }
       done(result);
     };
-    let child: ReturnType<CensusSpawn>;
     try { child = (opts.spawn ?? defaultCensusSpawn)(command, argv); }
     catch (error) { finish(`find failed: ${String(error)}`); return; }
-    timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.timeoutMs ?? 60_000);
+    // Explicit caller deadlines stay absolute. Production's liveness bound is
+    // lack of valid metadata progress, so a large ADVANCING walk can complete.
+    if (opts.timeoutMs !== undefined) timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.timeoutMs);
+    else armProgressDeadline();
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
+      const before = result.inspectedNodes;
       const records = (pending + chunk).split('\0'); pending = records.pop() ?? '';
       for (const value of records) { fields.push(value); if (fields.length === 8) { take(fields); fields = []; } }
+      // Noise, partial records and malformed data cannot keep a wedged scan alive.
+      if (opts.timeoutMs === undefined && !malformed && result.inspectedNodes > before) armProgressDeadline();
     });
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });

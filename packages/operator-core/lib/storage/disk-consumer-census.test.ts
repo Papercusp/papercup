@@ -22,6 +22,29 @@ vi.mock('node:http', async (importOriginal) => ({
 const isRoot = process.getuid?.() === 0;
 
 describe('streaming retention census evidence', () => {
+  it('lets a large advancing native census finish and tolerates concurrent readdir disappearance only', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-progress-'));
+    const info = await fsp.lstat(root);
+    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    let started!: () => void; const launched = new Promise<void>((resolve) => { started = resolve; });
+    const spawn = ((_command: string, args: string[]) => {
+      expect(args).toContain('-ignore_readdir_race'); started(); return child;
+    }) as unknown as CensusSpawn;
+    vi.useFakeTimers();
+    try {
+      const census = inspectRetentionTrees(root, { retainAfterMs: Date.now(), progressTimeoutMs: 25, spawn });
+      await launched;
+      const record = (name: string) => ['f', String(info.dev), '1', '1.0', '1.0', '1', String(process.getuid?.() ?? 0), join(root, name), ''].join('\0');
+      child.stdout.write(record('first')); await vi.advanceTimersByTimeAsync(20);
+      child.stdout.write(record('second')); await vi.advanceTimersByTimeAsync(20);
+      child.stdout.write(record('third')); await vi.advanceTimersByTimeAsync(20);
+      child.emit('close', 0);
+      const result = await census;
+      expect(result.error).toBeUndefined(); expect(result.entries).toHaveLength(3);
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('refuses truncated and malformed metadata instead of selecting a partial tree', async () => {
     const root = mkdtempSync(join(tmpdir(), 'retention-metadata-'));
     const spawn = ((_command: string, _args: string[]) => {
