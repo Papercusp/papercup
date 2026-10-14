@@ -293,6 +293,8 @@ export function planOrganizationDataOperation(
 
 export interface OrganizationDataScope {
   readonly organizationId: string;
+  /** Export only this person's records within the organization when present. */
+  readonly userId?: string;
   /** Pilot data-plane workspaces the organization owns. Declared by the caller and recorded in the receipt. */
   readonly workspaceIds: readonly string[];
 }
@@ -312,13 +314,14 @@ export function authorizeDataOperation(
   operation: DataOperation,
   organizationId: string,
   actor: ReceiptActor,
+  userId?: string,
 ): { actorKind: OrganizationAuditEventInput['actorKind']; actorId: string } {
   if (actor.kind === 'customer_user') {
     const p = actor.principal;
     if (p.activeOrganizationId !== organizationId) {
       throw new Error('organization-data-receipts: actor is not acting in this organization');
     }
-    const needed = OPERATION_PERMISSION[operation];
+    const needed = operation === 'export' && userId === p.userId ? 'workspace:view' : OPERATION_PERMISSION[operation];
     if (!p.permissions.has(needed)) {
       throw new Error(`organization-data-receipts: ${operation} requires ${needed}`);
     }
@@ -330,7 +333,8 @@ export function authorizeDataOperation(
 export function validateScope(scope: OrganizationDataScope, allowEmptyWorkspaces = false): OrganizationDataScope {
   const workspaceIds = [...new Set(scope.workspaceIds.map((w) => nonEmpty(w, 'workspaceId')))];
   if (!workspaceIds.length && !allowEmptyWorkspaces) throw new Error('organization-data-receipts: at least one workspaceId is required');
-  return { organizationId: nonEmpty(scope.organizationId, 'organizationId'), workspaceIds };
+  return { organizationId: nonEmpty(scope.organizationId, 'organizationId'), workspaceIds,
+    ...(scope.userId === undefined ? {} : { userId: nonEmpty(scope.userId, 'userId') }) };
 }
 
 // ── The receipt and its single writer ─────────────────────────────────────────
@@ -445,6 +449,7 @@ export function receiptMetadata(receipt: OrganizationDataReceipt, codeVersion: s
     schemaVersion: receipt.schemaVersion,
   };
   if (receipt.executor) meta.executor = receipt.executor;
+  if (receipt.scope.userId) meta.userId = receipt.scope.userId;
   if (receipt.holdConflicts) {
     meta.holdConflicts = receipt.holdConflicts.map((h) => ({
       holdId: h.holdId, workspaceId: h.workspaceId, dataSourceId: h.dataSourceId, channelId: h.channelId,
@@ -489,7 +494,7 @@ export async function writeOrganizationDataReceipt(
   transaction?: Sql,
 ): Promise<string> {
   const scope = validateScope(receipt.scope, receipt.executor === 'hosted-control-plane');
-  const auth = authorizeDataOperation(receipt.operation, scope.organizationId, actor);
+  const auth = authorizeDataOperation(receipt.operation, scope.organizationId, actor, scope.userId);
   if (isKeyOperation(receipt.operation)) {
     // A key operation touches no store rows. It must say what it did to the keys instead.
     if (!receipt.keyLifecycle) throw new Error(`organization-data-receipts: ${receipt.operation} receipt requires keyLifecycle`);
@@ -538,18 +543,22 @@ function quoted(store: string): string {
 async function liveColumns(sql: Sql, store: string): Promise<string[]> {
   const [schema, table] = store.split('.');
   const rows = await sql<{ column_name: string }[]>`
-    SELECT column_name FROM information_schema.columns
-     WHERE table_schema = ${schema!} AND table_name = ${table!} ORDER BY ordinal_position`;
+    SELECT a.attname AS column_name FROM pg_catalog.pg_attribute a
+      JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = ${schema!} AND c.relname = ${table!}
+       AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum`;
   return rows.map((r) => r.column_name);
 }
 
 async function readSchemaVersion(sql: Sql): Promise<string | null> {
-  try {
-    const rows = await sql<{ v: string | null }[]>`SELECT max(filename) AS v FROM harness_shared.schema_migrations`;
-    return rows[0]?.v ?? null;
-  } catch {
-    return null;
-  }
+  // A permission error aborts a Postgres transaction even if JS catches it.
+  // Schema provenance is optional; inspect access before issuing the query.
+  const [access] = await sql<{ readable: boolean | null }[]>`
+    SELECT has_table_privilege(to_regclass('harness_shared.schema_migrations'), 'SELECT') AS readable`;
+  if (!access?.readable) return null;
+  const rows = await sql<{ v: string | null }[]>`SELECT max(filename) AS v FROM harness_shared.schema_migrations`;
+  return rows[0]?.v ?? null;
 }
 
 function deferred(t: StoreTreatment, operation: DataOperation): StoreReceipt {
@@ -568,6 +577,13 @@ export interface OrganizationDataExport {
   readonly receiptId: string;
   readonly stores: readonly { readonly store: string; readonly columns: readonly string[]; readonly rows: readonly Record<string, unknown>[] }[];
 }
+
+/** Fixed bridge population from migration 1509; never arbitrary SQL or a role grant. */
+export const HOSTED_EXPORT_BRIDGED_STORES: readonly string[] = [
+  'harness_shared.customer_workspaces', 'papercusp_auth.organization_audit_events',
+  'papercusp_auth.legal_acceptances', 'papercusp_auth.support_access_grants',
+  'papercusp_auth.hosted_user_preferences',
+];
 
 /** Follow the code-owned attribution map, including the sealed-session join.
  * Both UUID and text organization/user columns exist in the hosted schema.
@@ -596,6 +612,30 @@ function hostedOrganizationPredicate(store: string, alias = 't', seen = new Set<
       AND (${hostedOrganizationPredicate(target, nextAlias, new Set([...seen, store]))}))`;
 }
 
+/** Incidental creator/approver ids do not make an organization's record personal. */
+function hostedUserPredicate(store: string, alias = 't', seen = new Set<string>()): string | null {
+  const table = customerDataTable(store);
+  if (!table || seen.has(store)) throw new Error(`organization-data-receipts: invalid user attribution for ${store}`);
+  const link = table.organizationLink;
+  const userColumn = link.via === 'user' ? link.column
+    : Object.values(table.columns).flat().includes('user_id') ? 'user_id' : null;
+  if (userColumn) {
+    if (!IDENT.test(userColumn)) throw new Error('organization-data-receipts: unsafe user column');
+    return `${alias}."${userColumn}"::text = $2::text`;
+  }
+  if (link.via !== 'join') return null;
+  const [schema, targetTable, targetColumn] = link.target.split('.');
+  const target = `${schema}.${targetTable}`;
+  const parent = `${alias}_user_parent`;
+  const predicate = hostedUserPredicate(target, parent, new Set([...seen, store]));
+  if (!predicate) return null;
+  if (!IDENT.test(link.column) || !targetColumn || !IDENT.test(targetColumn)) {
+    throw new Error('organization-data-receipts: unsafe user join');
+  }
+  return `EXISTS (SELECT 1 FROM ${quoted(target)} ${parent} WHERE
+    ${parent}."${targetColumn}"::text = ${alias}."${link.column}"::text AND (${predicate}))`;
+}
+
 /**
  * Export stores for one executor without secret-class columns and write the shared receipt
  * atomically. The default remains the pilot data plane. P-010's hosted executor derives
@@ -603,23 +643,35 @@ function hostedOrganizationPredicate(store: string, alias = 't', seen = new Set<
  */
 export async function exportOrganizationData(
   sql: Sql,
-  input: { scope: OrganizationDataScope; actor: ReceiptActor; purpose: string; executor?: Executor },
+  input: { scope: OrganizationDataScope; actor: ReceiptActor; purpose: string; executor?: Executor; hostedReadBridge?: boolean },
   transaction?: Sql,
 ): Promise<OrganizationDataExport> {
   const executor = input.executor ?? 'pilot-data-plane';
   const requestedScope = validateScope(input.scope, executor === 'hosted-control-plane');
-  authorizeDataOperation('export', requestedScope.organizationId, input.actor);
+  authorizeDataOperation('export', requestedScope.organizationId, input.actor, requestedScope.userId);
+  if (requestedScope.userId && executor !== 'hosted-control-plane') {
+    throw new Error('organization-data-receipts: user export requires the hosted executor');
+  }
   const execute = async (t: Sql): Promise<OrganizationDataExport> => {
     const owned = executor === 'hosted-control-plane'
-      ? await t<{ id: string }[]>`SELECT id::text AS id FROM harness_shared.customer_workspaces
-          WHERE organization_id::text = ${requestedScope.organizationId} ORDER BY id`
+      ? input.hostedReadBridge
+        ? await t<{ id: string }[]>`SELECT data->>'id' AS id FROM
+            papercusp_auth.read_hosted_customer_export_rows('harness_shared.customer_workspaces', ${requestedScope.organizationId}) ORDER BY id`
+        : await t<{ id: string }[]>`SELECT id::text AS id FROM harness_shared.customer_workspaces
+            WHERE organization_id::text = ${requestedScope.organizationId} ORDER BY id`
       : null;
-    const scope = owned ? { organizationId: requestedScope.organizationId, workspaceIds: owned.map((w) => w.id) } : requestedScope;
+    const scope = owned ? { ...requestedScope, workspaceIds: owned.map((w) => w.id) } : requestedScope;
     const stores: OrganizationDataExport['stores'][number][] = [];
     const receipts: StoreReceipt[] = [];
     for (const treatment of planOrganizationDataOperation()) {
       if (treatment.executor !== executor || treatment.attribution.kind === 'unattributable') {
         receipts.push(deferred(treatment, 'export'));
+        continue;
+      }
+      const userPredicate = scope.userId ? hostedUserPredicate(treatment.store) : null;
+      if (scope.userId && !userPredicate) {
+        receipts.push({ ...deferred(treatment, 'export'), outcome: 'not-attributable',
+          reason: 'Organization-level record; not attributable to the requested user.' });
         continue;
       }
       const live = await liveColumns(t, treatment.store);
@@ -632,11 +684,20 @@ export async function exportOrganizationData(
       const excluded = live.filter((c) => treatment.excludedColumns.includes(c) || ACCESS_SHAPED_COLUMN.test(c));
       const columns = live.filter((c) => !excluded.includes(c));
       if (!columns.length) throw new Error(`organization-data-receipts: ${treatment.store} has no exportable columns`);
-      const rows = await t.unsafe<Record<string, unknown>[]>(
-        `SELECT ${columns.map((c) => `t."${c}"`).join(', ')} FROM ${quoted(treatment.store)} t WHERE ${
-          executor === 'hosted-control-plane' ? hostedOrganizationPredicate(treatment.store) : 't.workspace_id = ANY($1::text[])'}`,
-        executor === 'hosted-control-plane' ? [scope.organizationId] : [scope.workspaceIds as string[]],
-      );
+      const bridged = input.hostedReadBridge && HOSTED_EXPORT_BRIDGED_STORES.includes(treatment.store);
+      const rows = bridged
+        ? (await t<{ data: Record<string, unknown> }[]>`SELECT data FROM
+            papercusp_auth.read_hosted_customer_export_rows(${treatment.store}, ${scope.organizationId})`)
+            .filter(({ data }) => !scope.userId || data.user_id === scope.userId)
+            .map(({ data }) => Object.fromEntries(columns.map(c => [c, data[c]])))
+        : await t.unsafe<Record<string, unknown>[]>(
+            `SELECT ${columns.map((c) => `t."${c}"`).join(', ')} FROM ${quoted(treatment.store)} t WHERE ${
+              executor === 'hosted-control-plane'
+                ? `${hostedOrganizationPredicate(treatment.store)}${userPredicate ? ` AND (${userPredicate})` : ''}`
+                : 't.workspace_id = ANY($1::text[])'}`,
+            executor === 'hosted-control-plane'
+              ? [scope.organizationId, ...(scope.userId ? [scope.userId] : [])] : [scope.workspaceIds as string[]],
+          );
       stores.push({ store: treatment.store, columns, rows: [...rows] });
       receipts.push({
         store: treatment.store, executor: treatment.executor, retention: treatment.retention, outcome: 'exported',
