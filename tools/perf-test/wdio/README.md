@@ -87,6 +87,17 @@ A private fixture home must contain the credential of its selected API; keep
 that injected credential outside the repository. A missing scoped credential
 does not fall back to a different operator's credential.
 
+When WDIO is an assertion inside `VERIFY_TAURI_ISOLATED_DB=1
+scripts/verify-tauri-headless.sh -- ...`, pin `VERIFY_TAURI_SOURCE_REF` to a full
+commit and supply the verifier's tested source inputs. Build the release GUI
+from that frozen source and set `TAURI_APP_PATH` to its complete packaged tree.
+Its packaged SPA must contain the exact bytes in `VERIFY_TAURI_SPA_DIST`.
+The runner uses the verifier's private origin, display, workspace and profile;
+before starting the driver it checks the source receipt, binary provenance,
+SPA content and `/api/health` build identity. It repeats those checks before
+publishing and refuses a changed build. A named `PAPERCUSP_PERF_RUN_ID` remains
+required for the private IPC lifetime and receipt checks.
+
 ## Architecture vs the in-process `/tests` page
 
 | | Where it runs | Speed | Catches |

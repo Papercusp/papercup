@@ -20,6 +20,9 @@ import path from "node:path";
 import {
   assertPrivateIpcFixture,
   assertPrivateIpcFixtureUnchanged,
+  assertVerifierBuildFixture,
+  assertVerifierBuildFixtureUnchanged,
+  bindVerifierEnvironment,
   desktopPerfRunPayload,
   hasRunOutcomeMeasure,
   operatorBaseUrl,
@@ -31,6 +34,7 @@ import {
   recordHostPressure,
   resetMeasures,
   type PrivateIpcFixture,
+  type VerifierBuildFixture,
 } from "./perf-report";
 import { SPEC_TIMEOUT_MS } from "./app-mount";
 import { startNativeProcessProbe, stopNativeProcessProbe } from './native-process-probe';
@@ -426,6 +430,7 @@ function isDebugBinary(): boolean {
 }
 
 let initialPrivateIpcFixture: PrivateIpcFixture | null = null;
+let initialVerifierBuildFixture: VerifierBuildFixture | null = null;
 
 async function publishMeasures(): Promise<void> {
   const measures = readMeasures();
@@ -471,6 +476,9 @@ async function publishMeasures(): Promise<void> {
   if (process.env.PAPERCUSP_PERF_RUN_ID?.trim()) {
     try {
       assertPrivateIpcFixtureUnchanged(initialPrivateIpcFixture);
+      assertVerifierBuildFixtureUnchanged(initialVerifierBuildFixture,
+        await assertVerifierBuildFixture(TAURI_APP_PATH,
+          path.join(installedAppTree.inspectInstalledApp(TAURI_APP_PATH).sidecarDir, 'spa')));
     } catch (error) {
       resetMeasures();
       throw new Error(
@@ -610,9 +618,16 @@ export const config: WebdriverIO.Config = {
     console.log(`[perf-report] measure collection ${collectionPath}`);
     resetMeasures();
     initialPrivateIpcFixture = null;
+    initialVerifierBuildFixture = null;
+    bindVerifierEnvironment();
     assertNativeWebDriverAvailable();
     assertInstallationComplete();
     initialPrivateIpcFixture = assertPrivateIpcFixture();
+    initialVerifierBuildFixture = await assertVerifierBuildFixture(TAURI_APP_PATH,
+      path.join(installedAppTree.inspectInstalledApp(TAURI_APP_PATH).sidecarDir, 'spa'));
+    if (initialVerifierBuildFixture) {
+      console.log('[perf-report] verified native build:', JSON.stringify(initialVerifierBuildFixture));
+    }
     // A named acceptance run requires a receipt. Reject a missing scoped key
     // before booting the native app or measuring an unpublishable sample.
     if (process.env.PAPERCUSP_PERF_RUN_ID?.trim()) readPublisherToken();

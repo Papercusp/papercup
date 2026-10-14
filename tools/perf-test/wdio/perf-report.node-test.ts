@@ -13,7 +13,7 @@ import { captureOwnedNativeStacks, collectOwnedWebKitSample, NativeSampleBuffer,
   parseNativeStackDelayMs, parseSchedstat, schedstatDelta, startNativeProcessProbe,
   stopNativeProcessProbe } from './native-process-probe';
 
-import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
+import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, assertVerifierBuildFixture, assertVerifierBuildFixtureUnchanged, bindVerifierEnvironment, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
 import {
   installPopupLayoutProbe,
   installPopupReactProbe,
@@ -26,6 +26,86 @@ import {
 } from "./app-mount";
 import { classifyAttemptTimeout } from "../../../libs/generic/gui-readiness/src/interaction-measure";
 import { beginInteraction, endInteraction, markInteractionPhase } from "../../../apps/operator/app/_components/perf/perf-marks";
+
+function verifierBuildFixture() {
+  const root = mkdtempSync(path.join(tmpdir(), 'native-build-fixture-'));
+  const sourceCommit = 'a'.repeat(40);
+  const app = path.join(root, 'release', 'app');
+  const spa = path.join(root, 'packaged-spa');
+  const frozen = path.join(root, 'frozen-spa');
+  mkdirSync(path.dirname(app));
+  for (const dir of [spa, frozen]) {
+    mkdirSync(path.join(dir, 'assets'), { recursive: true });
+    writeFileSync(path.join(dir, 'index.html'), '<script src="assets/app.js"></script>');
+    writeFileSync(path.join(dir, 'assets/app.js'), 'window.mounted=true;');
+  }
+  writeFileSync(app, 'release binary');
+  writeFileSync(path.join(root, 'release', BUILD_IDENTITY_FILE), JSON.stringify({ buildSha: sourceCommit }));
+  const receipt = path.join(root, 'source.json');
+  writeFileSync(receipt, JSON.stringify({ sourceCommit }));
+  const env: NodeJS.ProcessEnv = { VERIFY_TAURI_PID: '123', VERIFY_TAURI_ISOLATED_DB: '1',
+    PAPERCUSP_VERIFY_TAURI_ISOLATED: '1', PAPERCUSP_HOME: path.join(root, 'home'),
+    PAPERCUSP_WORKSPACE: 'private-native', VERIFY_TAURI_SOURCE_RECEIPT: receipt,
+    VERIFY_TAURI_SOURCE_REF: sourceCommit, VERIFY_TAURI_SPA_DIST: frozen,
+    VERIFY_TAURI_DEV_URL: 'http://127.0.0.1:32123', VERIFY_TAURI_PORT: '32123', VERIFY_TAURI_DISPLAY: ':97',
+    PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070', PAPERCUSP_PERF_WORKSPACE_ID: 'ambient',
+    PAPERCUSP_PERF_RUN_ID: 'matching-native-build' };
+  const health = { sha: sourceCommit.slice(0, 10) };
+  const urls: string[] = [];
+  const fetchHealth = (async (url: string | URL | Request) => {
+    urls.push(String(url));
+    return Response.json(health);
+  }) as typeof fetch;
+  return { root, app, spa, frozen, receipt, sourceCommit, env, health, urls, fetchHealth,
+    clean: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+test('verifier-linked packaged run binds its private origin/profile and verifies matching build bytes', async () => {
+  const f = verifierBuildFixture();
+  try {
+    const result = await assertVerifierBuildFixture(f.app, f.spa, f.env, f.fetchHealth);
+    assert.equal(result?.sourceCommit, f.sourceCommit);
+    assert.deepEqual(f.urls, ['http://127.0.0.1:32123/api/health']);
+    assert.equal(f.env.PAPERCUSP_PERF_WORKSPACE_ID, 'private-native');
+    assert.equal(f.env.PAPERCUSP_DEV_API_TARGET, '32123');
+    assert.equal(f.env.DISPLAY, ':97');
+    assert(f.env.XDG_DATA_HOME!.startsWith(f.env.PAPERCUSP_HOME!));
+    assertVerifierBuildFixtureUnchanged(result, await assertVerifierBuildFixture(f.app, f.spa, f.env, f.fetchHealth));
+    writeFileSync(f.app, 'different release binary');
+    const changed = await assertVerifierBuildFixture(f.app, f.spa, f.env, f.fetchHealth);
+    assert.throws(() => assertVerifierBuildFixtureUnchanged(result, changed), /changed/);
+  } finally { f.clean(); }
+});
+
+test('verifier-linked run rejects missing isolation, foreign origin and owner display before probing', () => {
+  const f = verifierBuildFixture();
+  try {
+    assert.equal(bindVerifierEnvironment({}), false);
+    for (const override of [{ VERIFY_TAURI_ISOLATED_DB: '0' }, { VERIFY_TAURI_SOURCE_RECEIPT: '' }, { PAPERCUSP_PERF_RUN_ID: '' },
+      { VERIFY_TAURI_DEV_URL: 'http://example.com:32123' }, { VERIFY_TAURI_PORT: '3070' },
+      { VERIFY_TAURI_DISPLAY: ':0' }, { VERIFY_TAURI_DISPLAY: ':1' }]) {
+      assert.throws(() => bindVerifierEnvironment({ ...f.env, ...override }));
+    }
+    assert.deepEqual(f.urls, []);
+  } finally { f.clean(); }
+});
+
+test('packaged native run refuses stale shell, source receipt, SPA and API rather than measuring a mixture', async () => {
+  for (const change of ['binary', 'dirty', 'receipt', 'spa', 'api', 'stale-api', 'symlink']) {
+    const f = verifierBuildFixture();
+    try {
+      if (change === 'binary') writeFileSync(path.join(path.dirname(f.app), BUILD_IDENTITY_FILE), JSON.stringify({ buildSha: 'b'.repeat(40) }));
+      if (change === 'dirty') writeFileSync(path.join(path.dirname(f.app), BUILD_IDENTITY_FILE), JSON.stringify({ buildSha: f.sourceCommit, dirty: true }));
+      if (change === 'receipt') writeFileSync(f.receipt, JSON.stringify({ sourceCommit: 'b'.repeat(40) }));
+      if (change === 'spa') writeFileSync(path.join(f.spa, 'assets/app.js'), 'stale SPA');
+      if (change === 'api') f.health.sha = 'b'.repeat(10);
+      if (change === 'stale-api') Object.assign(f.health, { bundleStale: { reason: 'failed rebuild' } });
+      if (change === 'symlink') symlinkSync(path.join(f.frozen, 'assets/app.js'), path.join(f.spa, 'linked.js'));
+      await assert.rejects(assertVerifierBuildFixture(f.app, f.spa, f.env, f.fetchHealth));
+      if (!['api', 'stale-api'].includes(change)) assert.deepEqual(f.urls, []);
+    } finally { f.clean(); }
+  }
+});
 
 // Exercise the real writer in overlapping launchers and their forked workers.
 // Copy only this dependency-free module so the pre-fix shared-file reset cannot
