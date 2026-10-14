@@ -1379,6 +1379,7 @@ lock_arguments = {
 }
 if len(repo_domains) == 1:
     lock_arguments['coordination_domain'] = next(iter(repo_domains))
+legacy_lock_arguments = dict(lock_arguments)
 
 operation_path = (_batch_path('.operation.json') if batch_info else
                   os.path.join(cache_dir, tool_use_id + '.operation.json'))
@@ -1432,11 +1433,34 @@ def _make_request(arguments):
 
 
 req = _make_request(lock_arguments)
-req_without_coordination_domain = None
-if 'coordination_domain' in lock_arguments and 'hook_operation' not in lock_arguments:
-    fallback_arguments = dict(lock_arguments)
+req_legacy_lock = _make_request(legacy_lock_arguments)
+req_legacy_without_coordination_domain = None
+if 'coordination_domain' in legacy_lock_arguments:
+    fallback_arguments = dict(legacy_lock_arguments)
     del fallback_arguments['coordination_domain']
-    req_without_coordination_domain = _make_request(fallback_arguments)
+    req_legacy_without_coordination_domain = _make_request(fallback_arguments)
+req_without_coordination_domain = (
+    req_legacy_without_coordination_domain if 'hook_operation' not in lock_arguments else None
+)
+
+
+def _operation_protocol_rejection(value):
+    """Recognize only an explicit argument-validation refusal of hook_operation.
+
+    Some operator deployments advertise the native edit-operation schema before
+    every serving replica accepts it. Only a rejection that names this field
+    and an invalid/unrecognized-key condition is safe to retry through the
+    legacy lock call; other errors remain on the normal refusal path.
+    """
+    try:
+        text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    except Exception:
+        text = str(value)
+    if 'hook_operation' not in text:
+        return None
+    if not re.search(r'invalid[_ -]?args|unrecognized key|unknown key|unexpected key', text, re.I):
+        return None
+    return text[:300]
 
 
 def _coordination_domain_rejection(value):
@@ -1694,6 +1718,12 @@ def _locks_acquire_once(request):
 
     inner, rpc_error, phase = parse_mcp_response(raw_resp)
     if rpc_error is not None:
+        operation_error = _operation_protocol_rejection(rpc_error)
+        if operation_error:
+            return {
+                '_hook_operation_unsupported': True,
+                '_detail': operation_error,
+            }
         compatibility_error = _coordination_domain_rejection(rpc_error)
         if compatibility_error:
             return {
@@ -1734,6 +1764,12 @@ def _locks_acquire_once(request):
                 '_detail': detail,
             }
         allow()
+    operation_error = _operation_protocol_rejection(inner)
+    if operation_error:
+        return {
+            '_hook_operation_unsupported': True,
+            '_detail': operation_error,
+        }
     compatibility_error = _coordination_domain_rejection(inner)
     if compatibility_error:
         return {
@@ -2049,6 +2085,43 @@ if operation_record is not None and inner.get('reason') == 'operation_authority_
     request = _make_request(lock_operation_arguments(operation_record))
     inner = _locks_acquire_once(request)
     _batch_allow_fail_open(inner)
+if inner.get('_hook_operation_unsupported'):
+    detail = inner.get('_detail', 'hook_operation rejected')
+    operation = operation_record.get('operation') if isinstance(operation_record, dict) else None
+    if not isinstance(operation, dict) or operation.get('authority'):
+        if operation_record is not None:
+            forget_origin_operation_protocol(cache_dir, operator_url)
+        _batch_deny(
+            'locks: running operator rejected the native operation scope after authority was prepared; '
+            'no legacy acquire retry is safe.',
+            settle=False)
+    # The operator's explicit invalid-key response proves this unpinned
+    # operation was never admitted. Remove its retry record before taking the
+    # legacy path, so PostToolUse cannot mistake it for an active operation.
+    try:
+        if operation_path:
+            os.remove(operation_path)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        mark_error('operation-compatibility-cleanup', exc)
+        _batch_deny('locks: could not retire the unadmitted native operation; no legacy acquire retry is safe.',
+                    settle=False)
+    operation_record = None
+    operation_path = None
+    forget_origin_operation_protocol(cache_dir, operator_url)
+    compatibility_advisory = (
+        'locks:acquire compatibility fallback: the running operator rejected '
+        'hook_operation despite advertising the native edit protocol. Retried '
+        'with the legacy acquire and retained file-lock enforcement; native '
+        'operation fencing is unavailable until the advertised schema and '
+        'running operator agree.'
+    )
+    mark_error('compatibility', detail)
+    request = req_legacy_lock
+    req_without_coordination_domain = req_legacy_without_coordination_domain
+    inner = _locks_acquire_once(request)
+    _batch_allow_fail_open(inner)
 if operation_record is not None and inner.get('ok') is True and (not operation_record['operation'].get('authority')
         or inner.get('operation_id') != operation_record['operation']['id']):
     _batch_deny('locks: running operator did not confirm the native operation protocol; no legacy acquire retry is safe.')
@@ -2071,12 +2144,15 @@ if inner.get('_hook_compatibility_error'):
     # The tree hook can update before the operator process reaches main. Keep
     # the edit protected by retrying the same acquire against the older
     # argument contract, and surface the skew as a non-blocking advisory.
-    compatibility_advisory = (
+    coordination_domain_advisory = (
         'locks:acquire compatibility fallback: the running operator rejected '
         'the coordination_domain argument (likely hook/operator version skew). '
         'Retried without that field and retained file-lock enforcement; '
         'domain isolation is unavailable until the operator deploy catches up.'
     )
+    compatibility_advisory = (
+        (compatibility_advisory + '\n') if compatibility_advisory else ''
+    ) + coordination_domain_advisory
     mark_error('compatibility', inner.get('_detail', 'coordination_domain rejected'))
     request = req_without_coordination_domain
     inner = _locks_acquire_once(request)
