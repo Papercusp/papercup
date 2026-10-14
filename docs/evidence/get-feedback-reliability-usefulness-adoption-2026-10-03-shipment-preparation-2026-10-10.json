@@ -5071,9 +5071,44 @@
         },
         "actorBinding": "Exact workspace ledger rows are harness_slug=*, so the initial extra harness_slug=papercusp filter returned0 and established no absence. Correct JSON nesting is metadata_json.kernel.enforce.serverAudit.identityLaunchRecord; the carrier is metadata_json.requestOrigin.nativeSession. All three posted rows use caller-row selection and bound meta:threadId carriers matching43236/43238/43239. Reply native valueFingerprint independently matches SHA256 of exact01a139a4-234d-7ff0-b714-9d576860652d.",
         "sourceArchiveLimit": "A same-transaction positive-control query passed while the exact source01a13971 was absent from session_archives under the canonical default/codex key. This is a scoped current archive absence, not deletion-cause or whole-host absence evidence. d184's immutable export manifest records a live-jsonl2551575-byte prefix; the earlier2531233-byte originalSourceBoundary is a different observation and must not substitute for that port snapshot.",
+        "sourceCustodyFollowup20261014": {
+          "request": "coord-send-acca2214ef5b63eeac75838a36d0c8dedd086854a13f5aee65403c7859d1570e",
+          "reply": "coord-send-af253619244471d1c5d0b5be0a97c58dcaa196f5b83ad6c75b26c8a805f6bbe2",
+          "sourceOwner": "su-6c29fd94-ae38-453e-86e6-e81f44a698c5",
+          "observation": "The source owner replied that no additional archive path is available in that session and explicitly could not determine whether an external archive retains the exact historical prefix. Real reply verifies pickup of the request; the earlier woken1 alone did not.",
+          "writerRead": "Current session-archive-hook resolves the current adv-row native id; the disk reconciler separately enumerates each rollout id and archives before deletion, with protected-identity/ownership/quiet guards. Current role-codex-home freshCodexHome preserves sessions and archived_sessions while rebuilding generated state. These current writers do not attribute the historical missing pathname to a deletion actor or establish the code loaded when it became missing.",
+          "scope": "Historical custody remains unresolved. The source boundary's recorded pathname and current adv/native identity are distinct observations; neither is an all-host absence or deletion-cause proof."
+        },
+        "nativePhysicalCallCensus20261014": {
+          "evidenceLogs": [
+            ".papercusp/scratch/bash-8255c145-b73.log",
+            ".papercusp/scratch/bash-592088cf-006.log",
+            ".papercusp/scratch/bash-eb53c1eb-54f.log"
+          ],
+          "physicalProgramsByAdvSession": {
+            "43236": 6,
+            "43238": 4,
+            "43239": 4
+          },
+          "method": "Every response_item custom/function tool call in each SHA-verified immutable native archive was parsed as TypeScript AST without executing it. All14 programs parse without diagnostics; the observed tool interfaces are tools_find and tools_invoke, with static nested conversation reads, session reads, consult declines and the reply. Two programs only enumerate tool metadata. The complete AST call-expression inventory contains no computed callee, tool alias or shell interface; first-child loops repeat syntactic call sites.",
+          "ledgerReconciliation": "The bounded exact-owner dispatch census still has49 rows, including tools:invoke wrappers, activity:report and journal:record-turn. A syntactic call site can run more than once, and telemetry need not be a native tool program. Neither49 dispatch rows nor14 physical programs is a census of source/system side effects.",
+          "scope": "This narrows directly observed child tool-program surfaces. It does not establish absence of indirect/system/filesystem effects, source lease mutation or ABA, or actual requester wake; those acceptance obligations remain open."
+        },
         "scope": "Three retained native frames and all three posted-response argument comparisons are verified; the third reply also has a structured successful physical receipt. Source mutation/ABA/system/filesystem/wake attribution, original warmup/deletion, D029 production effect, full supported matrix, whole executed graph, independent acceptance, R6 and exact R7 shipment remain open. No tests, consult requests, provider/settings changes, or LIVE_GATE_OPS were performed."
       },
       "limits": "No new native request/await/launch, test replay, provider/settings change, or LIVE_GATE_OPS. D029 production effect, whole executed graph, full source/backend matrix, independent acceptance, R6 and exactR7 shipment remain open. Current plan shipReadiness measured acceptance_bar_contract_not_ready."
+    },
+    "cliEntryPrerequisiteRegression20261014": {
+      "workItem": "EI-25961300277568785",
+      "canonicalSourceItem": "WI-6554700010012863",
+      "testPath": "packages/operator-core/lib/util/cli-entry-scripts.test.ts",
+      "testSha256": "0dc8e82c474cd9af3b1c45fda9739bd838454c87dbe7ce49c2601d0624db4b3d",
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test -w @papercusp/operator-core -- lib/util/cli-entry-scripts.test.ts lib/util/cli-entry.test.ts lib/release/gate-hot-path-cjs-loadable.test.ts",
+      "receipt": {"execSession": 43267, "finalChunk": "235dcf", "exitCode": 0, "passed": 18, "failed": 0, "skipped": 0, "newScriptCases": 10, "scriptTestRun": 21244827, "ledgerSource": "local", "worktreeDirty": true, "ledgerCommit": "08f293551f92a1c0f6f5d95f073957309bb4b697"},
+      "mechanism": "Both actual scripts are built and executed in temporary fixtures. With the bundled define, maintained isCliEntry suppresses each library main; importing separately is also inert. Normal and symlink standalone entry preserve child/enrollment failure exit status. Restoring the exact original raw entry comparison in each fixture makes its main execute in the bundle, distinguishing entry-guard collapse from an esbuild compilation failure. Child spawn alone is replaced to prevent nested Vitest execution; enrollment has a declared failing workspace with package metadata.",
+      "intermediateFailures": "21244813 failed at the fixture's unsupported buildSync plugin before behavior was measured; switched to awaited build. 21244815 found missing fixture workspace package metadata; added that precondition. Intermediate failures are retained and are not production-guard failure evidence. Corrected eight-case run21244817 passed before adding the final original-guard counterexamples.",
+      "coordination": {"sourceOwner": "su-1055507e-a61f-4652-9a68-11c7952a64a6", "sourceQuestion": "coord-send-31a5829d235ce581ae62a1a7b6d7ba2d13bca21027c691f6b96f182beb55151e", "proofHandoff": "coord-send-32602cf1a2274e1305a234b227c4fadc0f875d76bde2cd7d25b392edc90460de", "runtimeOwner": "su-212d9806-6115-4ef6-9f90-55d0da7211ea", "runtimeReadyQuestion": "coord-send-ade59e147ac1a052e3fad9bdaf3e80bd680c76721913cf47e0e11a765016cfa0"},
+      "sourceLimit": "At measured read both production scripts had isCliEntry edits from another lane; this session edited neither guard nor the shrink-only baseline. A source-owner reply and containing runtime proof remain pending. Local dirty scoped regression proof is not committed-source qualification, native acceptance, a whole executed graph, or shipment. No LIVE_GATE_OPS reentry."
     },
     "remaining": "EI259448 D029 source candidate qualifies in clean committed CPU21244560, startup21244562 and router21244563; EI259558 startup logging completion is DONE/COMMITTED. Original native424 has scoped typed child/caller-row/native-carrier evidence above, but actor/ABA/system/filesystem/wake/retention acceptance remains open. Original warmup/deletion, whole graph/independent/full source-backend matrix/R6 and exactR7 shipment remain open. Earlier DB-target stderr severity is source-complete under EI259485 with committed scoped6pass. All prior receipts and original538eeb7/960d986 remain immutable. No HEAD/maps-only replay."
   },
