@@ -487,7 +487,7 @@ export interface LiveHealthFragment {
   readonly signals: Partial<Record<LiveHealthSignalKey, LiveHealthReading>>;
 }
 
-function isLiveHealthStorage(value: unknown): value is LiveHealthStorageSample {
+export function isLiveHealthStorage(value: unknown): value is LiveHealthStorageSample {
   if (!isRecord(value) || !finite(value.startedAtMs) || !finite(value.collectedAtMs) || value.collectedAtMs < value.startedAtMs ||
     !isRecord(value.policy) || !Array.isArray(value.snapshots) || value.snapshots.length === 0) return false;
   for (const key of ['freePctMin', 'freeBytesMin', 'freeInodesPctMin', 'criticalFreePctMin', 'criticalFreeBytesMin', 'criticalFreeBytesCap']) {
@@ -662,7 +662,7 @@ function finite(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function isLiveHealthWriter(value: unknown): value is LiveHealthWriter {
+export function isLiveHealthWriter(value: unknown): value is LiveHealthWriter {
   if (!isRecord(value)) return false;
   return (
     typeof value.id === 'string' &&
