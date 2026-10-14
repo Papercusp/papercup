@@ -930,6 +930,59 @@ describe("dependency snapshot root follows the selected maintained mode", () => 
     chooserStart,
   );
 
+  it.each([false, true])('qualifies a real Git checkout on a distinct temporary device (separate donor=%s)', separateDonor => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-real-checkout-root-'));
+    const sourceRepo = resolve(fixture, 'source');
+    const donor = separateDonor ? resolve(fixture, 'donor') : sourceRepo;
+    const preferred = resolve(fixture, 'preferred');
+    mkdirSync(sourceRepo); mkdirSync(donor, { recursive: true }); mkdirSync(preferred);
+    writeFileSync(resolve(sourceRepo, '.gitignore'), '.papercusp/\n');
+    writeFileSync(resolve(sourceRepo, 'source.txt'), 'committed source\n');
+    const git = (args: string[]) => {
+      const result = spawnSync('git', ['-C', sourceRepo, ...args], { encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    try {
+      git(['init', '-q']); git(['add', '.gitignore', 'source.txt']);
+      git(['-c', 'user.name=Verifier fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture']);
+      const ref = git(['rev-parse', 'HEAD']);
+      const committed = src.slice(src.indexOf('snapshot_committed_operator_source() {'), operatorSnapshotCallIdx);
+      // Use the real guarded checkout API at the exporter boundary. Only source
+      // measurement and dependency preparation are replaced for this tiny repo.
+      const cloneProgram = 'const { createScratchClone } = await import(process.env.TEST_CLONE_MODULE); await createScratchClone({ source: process.env.TEST_SOURCE, ref: process.env.TEST_REF, destination: process.argv[1] });';
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail; REPO_DIR="$TEST_DONOR"; WORK="$TEST_ROOT"',
+        'VERIFY_TAURI_SOURCE_REPO_DIR="$TEST_SOURCE"; VERIFY_TAURI_SOURCE_REF="$TEST_REF"',
+        'VERIFY_TAURI_SOURCE_INPUTS=source.txt',
+        'stat() { if [ "$4" = "$TMPDIR" ]; then echo 2; else echo 1; fi; }',
+        src.slice(chooserStart, chooserEnd),
+        'OPERATOR_SNAPSHOT_PARENT="$(select_verifier_snapshot_root)"',
+        'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
+        'snapshot_verifier_pinned_deps() { :; }',
+        'node() { shift; case "$1" in',
+        '  verifier-measure) echo 4096 ;;',
+        '  verifier-prepare) while [ "$#" -gt 0 ]; do if [ "$1" = --out ]; then shift; dest="$1"; fi; shift; done;',
+        '    "$TEST_NODE" --experimental-strip-types --input-type=module -e "$TEST_CLONE_PROGRAM" "$dest" ;;',
+        '  *) : ;; esac; }',
+        committed,
+        'snapshot_committed_operator_source',
+        'git -C "$OPERATOR_SOURCE_ROOT" rev-parse HEAD',
+        'cat "$OPERATOR_SOURCE_ROOT/source.txt"',
+        'printf "bulk:%s\\n" "$TMPDIR"',
+      ].join('\n')], { encoding: 'utf8', timeout: 15_000, env: {
+        ...process.env, TMPDIR: preferred, TEST_SOURCE: sourceRepo, TEST_DONOR: donor,
+        TEST_ROOT: fixture, TEST_REF: ref, TEST_NODE: process.execPath,
+        TEST_CLONE_PROGRAM: cloneProgram,
+        TEST_CLONE_MODULE: resolve(__dirname, '../../../packages/operator-core/lib/scratch-git-clone.ts'),
+      } });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain(ref);
+      expect(result.stdout).toContain('committed source\n');
+      expect(result.stdout).toContain(`bulk:${preferred}\n`);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
   function chooseRoot(crossDevice: boolean, fallbackCrossDevice = false, mode = "hardlink") {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-work-root-"));
     const donor = resolve(fixture, "donor");
@@ -982,7 +1035,7 @@ describe("dependency snapshot root follows the selected maintained mode", () => 
   it("uses excluded repository-local scratch when /tmp is on another filesystem", () => {
     const result = chooseRoot(true);
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe(resolve(result.donor, ".papercusp/tmp"));
+    expect(result.stdout.trim()).toBe(resolve(result.donor, ".papercusp/scratch"));
   });
 
   it("refuses a fallback that is also mounted on a different filesystem", () => {

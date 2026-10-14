@@ -1186,7 +1186,7 @@ select_verifier_snapshot_root() {
   donor_device="$(stat -c %d -- "$REPO_DIR")" || return 1
   work_device="$(stat -c %d -- "$work_root")" || return 1
   if [ "$donor_device" != "$work_device" ]; then
-    work_root="$REPO_DIR/.papercusp/tmp"
+    work_root="$REPO_DIR/.papercusp/scratch"
     mkdir -p -- "$work_root" || return 1
     work_device="$(stat -c %d -- "$work_root")" || return 1
   fi
@@ -1634,7 +1634,10 @@ snapshot_committed_operator_source() {
   # objects. An archive receipt alone cannot qualify that execution boundary.
   # Ask the maintained exporter for its verified checkout before dependencies
   # or costly bundling; keep the fence fail-closed rather than skipping it.
-  node "$source_repo/scripts/source-preview.mjs" verifier-prepare \
+  # The guarded checkout uses Node's temporary-root contract. Keep that child
+  # on the selected donor device too, including when the tested source came
+  # from another filesystem. Bulk/profile/database TMPDIR stays unchanged.
+  TMPDIR="$OPERATOR_SNAPSHOT_PARENT" node "$source_repo/scripts/source-preview.mjs" verifier-prepare \
     --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" --out "$snapshot_root" --git-checkout \
     "${input_args[@]}" --receipt "$receipt" || return 1
   # Caller receipt is outside the archive; verify before loading any exported helper.
