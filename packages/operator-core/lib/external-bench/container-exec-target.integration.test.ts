@@ -28,7 +28,7 @@ let root: string;
 
 function startContainer(extra: string[] = []): string {
   const id = execFileSync('docker', ['run', '-d', '--network', 'none', ...extra, 'alpine', 'sleep', '300'], {
-    encoding: 'utf8',
+    encoding: 'utf8', timeout: 30_000,
   }).trim();
   containers.push(id);
   return id;
@@ -36,11 +36,15 @@ function startContainer(extra: string[] = []): string {
 
 beforeAll(() => {
   root = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'cexec-int-'));
-  execFileSync('docker', ['image', 'inspect', 'alpine'], { stdio: 'ignore' });
+  execFileSync('docker', ['image', 'inspect', 'alpine'], { stdio: 'ignore', timeout: 30_000 });
 });
 
 afterAll(() => {
-  if (containers.length) spawnSync('docker', ['rm', '-f', ...containers], { stdio: 'ignore' });
+  if (containers.length) {
+    const removed = spawnSync('docker', ['rm', '-f', ...containers], { encoding: 'utf8', timeout: 30_000 });
+    expect(removed.error, removed.stderr).toBeUndefined();
+    expect(removed.status, removed.stderr).toBe(0);
+  }
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -84,9 +88,12 @@ describe('container exec target against a live container', () => {
     const r = spawnSync(
       launch!.bin,
       ['-c', 'pwd; hostname; printf "%s|%s\\n" "$CODEX_HOME" "${UNRELATED_SECRET:-unset}"'],
-      { env, encoding: 'utf8' },
+      // This command consumes no stdin. Bound the synchronous subprocess so
+      // a stuck Docker invocation cannot outlive Vitest's async watchdog.
+      { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 },
     );
-    expect(r.status).toBe(0);
+    expect(r.error, r.stderr).toBeUndefined();
+    expect(r.status, r.stderr).toBe(0);
     expect(r.stdout.trim().split('\n')).toEqual(['/tmp', cid.slice(0, 12), '/codex-home-from-host|unset']);
   });
 
@@ -106,8 +113,10 @@ describe('container exec target against a live container', () => {
     );
     const script = 'cat "$CODEX_HOME/config.toml"; ls "$(dirname "$CODEX_HOME")"; echo from-container > "$CODEX_HOME/rollout.jsonl"';
     const r = spawnSync(wrapperPath, ['-c', script], {
-      env: { PATH: process.env.PATH ?? '', CODEX_HOME: join(homes, 'session-7') }, encoding: 'utf8' });
-    expect(r.status).toBe(0);
+      env: { PATH: process.env.PATH ?? '', CODEX_HOME: join(homes, 'session-7') },
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
+    expect(r.error, r.stderr).toBeUndefined();
+    expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('model = "frozen"');
     // Only this session is visible inside the container; session-8 and its token stay on the host.
     expect(r.stdout.split('\n').filter(l => l.startsWith('session-'))).toEqual(['session-7']);
@@ -121,7 +130,9 @@ describe('container exec target against a live container', () => {
       { kind: 'docker-exec', containerId: cid, workdir: '/', binPath: '/bin/sh' },
       { dir: mkdtempSync(join(root, 'x-')) },
     );
-    const r = spawnSync(wrapperPath, ['-c', 'exit 5'], { env: { PATH: process.env.PATH ?? '' } });
+    const r = spawnSync(wrapperPath, ['-c', 'exit 5'], {
+      env: { PATH: process.env.PATH ?? '' }, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
+    expect(r.error, r.stderr?.toString()).toBeUndefined();
     expect(r.status).toBe(5);
   });
 
@@ -132,8 +143,10 @@ describe('container exec target against a live container', () => {
       { kind: 'docker-exec', containerId: cid, workdir: '/', binPath: CONTAINER_CODEX_BIN_PATH },
       { dir: mkdtempSync(join(root, 'c-')) },
     );
-    const r = spawnSync(wrapperPath, ['--version'], { env: { PATH: process.env.PATH ?? '' }, encoding: 'utf8' });
-    expect(r.status).toBe(0);
+    const r = spawnSync(wrapperPath, ['--version'], {
+      env: { PATH: process.env.PATH ?? '' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
+    expect(r.error, r.stderr).toBeUndefined();
+    expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/codex-cli \d+\.\d+\.\d+/);
   });
 });

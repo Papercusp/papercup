@@ -117,6 +117,22 @@ async function stopChild(child: ChildProcess | undefined) {
   clearTimeout(kill);
 }
 
+/** Expire only an unused token in this request-only fixture's private database. */
+export async function expireFixturePair(pairToken: string, workspaceId: string, env = process.env) {
+  const identity = fixtureIdentity(env);
+  assert.equal(workspaceId, identity.workspaceId, 'Pair token must belong to this fixture');
+  assert(pairToken.length > 0, 'Pair token is required');
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const expiresAt = Date.now() - 1000;
+  const rows = await sql`UPDATE harness_shared.mobile_pair_tokens SET expires_at_ms = ${expiresAt}
+    WHERE pair_token = ${pairToken} AND workspace_id = ${workspaceId} AND consumed = false
+    RETURNING expires_at_ms`;
+  assert.equal(rows.length, 1, 'Exactly one unused owned pairing token must expire');
+  assert.equal(Number(rows[0]!.expires_at_ms), expiresAt);
+  return expiresAt;
+}
+
 export async function runNativeDeviceFixture(evidencePath: string, certPath: string, seconds = 1800) {
   const identity = fixtureIdentity(process.env); // All preconditions precede any external write.
   assert(Number.isInteger(seconds) && seconds >= 30 && seconds <= 3600, 'Bounded lifetime required');
@@ -214,6 +230,25 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
     assert(qrPayload.workspaceId === identity.workspaceId && qrPayload.server === receipt.publicBase,
       'Fresh QR must advertise the exact public endpoint');
     writeFileSync(resolve(evidence, 'pair-payload.json'), JSON.stringify(qrPayload), { mode: 0o600, flag: 'wx' });
+    const expiryMint = await fetch(identity.base + '/api/device/desktop/mint-pair-token', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: identity.workspaceId }), signal: AbortSignal.timeout(15000),
+    });
+    assert.equal(expiryMint.status, 200, 'Private expiry pairing mint failed');
+    const expiredPayload = (await expiryMint.json()).qrPayload;
+    assert(expiredPayload?.workspaceId === identity.workspaceId && expiredPayload.server === receipt.publicBase &&
+      typeof expiredPayload.pairToken === 'string' && expiredPayload.pairToken !== qrPayload.pairToken,
+      'Expiry probe must use a separate owned token');
+    const expiresAt = await expireFixturePair(expiredPayload.pairToken, identity.workspaceId);
+    const refusal = await fetch(String(receipt.publicBase) + '/api/device/pair', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pairToken: expiredPayload.pairToken }), signal: AbortSignal.timeout(15000),
+    });
+    assert.equal(refusal.status, 401, 'Real public backend must refuse the expired pairing token');
+    await refusal.arrayBuffer();
+    writeFileSync(resolve(evidence, 'expired-pair-payload.json'), JSON.stringify(expiredPayload),
+      { mode: 0o600, flag: 'wx' });
+    receipt.pairExpiry = { expiresAt, refusalStatus: refusal.status, separateFreshControl: true };
     receipt.ready = true; receipt.readyAt = new Date().toISOString(); save();
     console.log('NATIVE_HTTPS_FIXTURE_READY=' + JSON.stringify({ receipt: resolve(evidence, 'runtime.json'),
       publicBase: receipt.publicBase, workspaceId: identity.workspaceId }));
@@ -236,7 +271,9 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       if (removal) await cleanupFixtureTunnel(api, removal);
       receipt.cloudCleanupVerified = true;
     } catch (error) { receipt.cleanupError = error instanceof Error ? error.message : String(error); process.exitCode = 1; }
-    const input = resolve(evidence, 'pair-payload.json'); if (existsSync(input)) unlinkSync(input);
+    for (const name of ['pair-payload.json', 'expired-pair-payload.json']) {
+      const input = resolve(evidence, name); if (existsSync(input)) unlinkSync(input);
+    }
     for (const fd of logs) closeSync(fd);
     receipt.cleanupVerified = receipt.processCleanupVerified === true && receipt.cloudCleanupVerified === true;
     receipt.finishedAt = new Date().toISOString(); save();

@@ -93,6 +93,30 @@ describe('current-build execution route contract', () => {
     } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
   }, 200_000);
 
+  it.each([false, true])('retires private native query and LISTEN pools after the fixture (failure=%s)', failure => {
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-pool-cleanup-'));
+    try {
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+        '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
+        join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')], {
+        cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
+        env: { ...process.env, STAGING_FIRST_HTTP_SCENARIO: 'current-su-native-pool-cleanup' + (failure ? '-failure' : ''),
+          STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir },
+      });
+      expect(result.error, result.stderr.slice(-2000)).toBeUndefined();
+      expect(result.signal).toBeNull();
+      expect(result.status, result.stdout.slice(-2000) + result.stderr.slice(-2000)).toBe(failure ? 1 : 0);
+      expect(result.stdout).toContain('CURRENT_SU_NATIVE_POOL_READY ');
+      if (failure) expect(result.stderr).toContain('Private native pool cleanup exception control');
+      const progress = readFileSync(join(evidenceDir, 'worker-progress.ndjson'), 'utf8')
+        .trim().split('\n').map(line => JSON.parse(line));
+      expect(progress.map(row => row.stage)).toEqual([
+        'fixture-cleanup-start', 'fixture-host-stopped', 'fixture-pools-closed',
+      ]);
+      expect(progress.at(-1)).toMatchObject({ exitCode: failure ? 1 : 0 });
+    } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
+  }, 200_000);
+
   it.each(['--isolated-runtime', '--isolated-runtime=operator-api'])(
     'pins the allocator before native host loading (%s)', mode => {
       const probe = `

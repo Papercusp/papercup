@@ -639,3 +639,32 @@ describe('locks:list — bounded registry browse via q/limit (EI-201972284494436
     });
   });
 });
+
+describe('locks:list — transient PostgreSQL connection retry', () => {
+  type RegistryRow = Awaited<ReturnType<typeof listResources>>[number];
+
+  it('retries CONNECT_TIMEOUT on the exact resource read and returns the measured holder result', async () => {
+    const resource = 'git-sync:papercusp';
+    const row: RegistryRow = {
+      resource,
+      description: '',
+      rule_text: 'rule text',
+      enforcement: 'advisory',
+      match_patterns: [],
+      max_holders: null,
+    };
+    const connectTimeout = Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), {
+      code: 'CONNECT_TIMEOUT' as const,
+    });
+
+    getResourceM.mockRejectedValueOnce(connectTimeout).mockResolvedValueOnce(row);
+    liveDomainsM.mockResolvedValue(['ws-scoped-domain']);
+    queueM.mockResolvedValue({ holders: [], draining: false });
+
+    const result = await call({ resource });
+
+    expect(getResourceM).toHaveBeenCalledTimes(2);
+    expect(result.data.resources).toMatchObject([{ resource, holders: [], held: false }]);
+    expect(result.data.ok).toBe(true);
+  });
+});

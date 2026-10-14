@@ -34,6 +34,7 @@ import {
 } from './consult-expiry-adapters';
 import { requesterAlertForRow, reviewConsultKind, type DueConsultRow } from './consult-expiry-core';
 import { currentRequestWorkspaceId, runWithWorkspace } from '../workspace-als';
+import type { TaskRow } from '../task-manager/types';
 
 /** A row workspace that could not be mistaken for an ambient/default one. */
 const ROW_WS = 'ws-row-7f3a';
@@ -202,6 +203,69 @@ describe('consultExpiryDispatch', () => {
 });
 
 describe('consultExpiryFindSilentResponders', () => {
+  it('recovers a missing reserved answerer only from exact terminal consult-task evidence, retaining live-task and post guards', async () => {
+    const now = new Date('2026-08-27T06:00:00.000Z');
+    const task = (conversationId: string, overrides: Partial<TaskRow> = {}) => ({
+      workspaceId: ROW_WS, class: 'agent-session', state: 'ended_unobserved',
+      // A requester follow-up refreshed routedAt AFTER the failed launch ended.
+      endedAt: '2026-08-27T05:50:00.000Z',
+      detail: { consultAnswer: { conversationId, sourceOwnerId: 'su-source', answeringOwnerId: 'su-reserved' } },
+      ...overrides,
+    });
+    const cases = {
+      exact: [task('exact')],
+      exited: [task('exited', { state: 'exited' })],
+      killed: [task('killed', { state: 'killed' })],
+      absent: [],
+      conversation: [task('other-conversation')],
+      workspace: [task('workspace', { workspaceId: 'another-workspace' })],
+      source: [task('source', { detail: { consultAnswer: { conversationId: 'source', sourceOwnerId: 'other-source', answeringOwnerId: 'su-reserved' } } })],
+      answerer: [task('answerer', { detail: { consultAnswer: { conversationId: 'answerer', sourceOwnerId: 'su-source', answeringOwnerId: 'other-answerer' } } })],
+      untagged: [task('untagged', { detail: { coordOwnerId: 'su-reserved' } })],
+      taskClass: [task('taskClass', { class: 'bash-job' })],
+      running: [task('running', { state: 'running' })],
+      noEnd: [task('noEnd', { endedAt: null })],
+      futureEnd: [task('futureEnd', { endedAt: '2026-08-27T06:01:00.000Z' })],
+      liveSibling: [task('liveSibling'), task('liveSibling', { state: 'running', endedAt: null })],
+      posted: [task('posted')],
+      unknownAuthor: [task('unknownAuthor')],
+      liveOracle: [task('liveOracle')],
+      noSource: [task('noSource')],
+    };
+    const lookup = vi.fn(async (workspaceId: string, answeringOwnerId: string) => {
+      expect(workspaceId).toBe(ROW_WS);
+      expect(answeringOwnerId).toBe('su-reserved');
+      return Object.values(cases).flat() as TaskRow[];
+    });
+    const found = await consultExpiryFindSilentResponders({
+      getPresence: async () => null,
+      resolveSessionStates: async () => new Map(),
+      listAnsweringTasks: lookup,
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: parent.ref }) as never,
+        listRecentPosts: async (id) => ({ total: 1, posts: [{ author_id: id === 'posted' ? 'su-reserved' : id === 'unknownAuthor' ? 'unknown' : 'su-requester' }] }),
+      }),
+      now: () => now,
+    })(Object.keys(cases).filter((id) => id !== 'liveOracle').map((conversationId) => ({
+      workspaceId: ROW_WS, conversationId, answeringOwnerId: 'su-reserved',
+      ...(conversationId === 'noSource' ? {} : { sourceOwnerId: 'su-source' }),
+      requesterId: 'su-requester', routedAt: '2026-08-27T05:59:00.000Z',
+    })));
+    expect(found).toEqual(new Set(['exact', 'exited', 'killed']));
+    expect(lookup).toHaveBeenCalledTimes(1);
+
+    const liveLookup = vi.fn(async () => cases.liveOracle as TaskRow[]);
+    const live = await consultExpiryFindSilentResponders({
+      getPresence: async () => null,
+      resolveSessionStates: async () => new Map([['su-reserved', { sessionState: 'live' }]]),
+      listAnsweringTasks: liveLookup,
+      getThreadStore: () => { throw new Error('live answerer within pickup grace must be retained'); },
+      now: () => now,
+    })([{ workspaceId: ROW_WS, conversationId: 'liveOracle', sourceOwnerId: 'su-source', answeringOwnerId: 'su-reserved', routedAt: '2026-08-27T05:59:00.000Z' }]);
+    expect(live.size).toBe(0);
+    expect(liveLookup).not.toHaveBeenCalled();
+  });
+
   it('uses an empty thread and pickup grace for an unstamped dispatch without reading source liveness', async () => {
     const now = new Date('2026-08-27T06:00:00.000Z');
     const staleRoute = new Date(now.getTime() - 30 * 60_000).toISOString();

@@ -1,6 +1,6 @@
 import { createServer, request } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
-import { cleanupFixtureTunnel, fixtureFailure, fixtureIdentity, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns } from './native-device-fixture';
+import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns } from './native-device-fixture';
 import type { CloudflareApi } from './own-tunnel/cloudflare-api';
 
 const privateEnv = {
@@ -12,6 +12,14 @@ const privateEnv = {
 };
 
 describe('disposable native HTTPS fixture admission', () => {
+  it('refuses non-fixture expiry and cross-workspace tokens before database access', async () => {
+    await expect(expireFixturePair('private-token', 'papercusp-workspace', privateEnv))
+      .rejects.toThrow('must belong to this fixture');
+    await expect(expireFixturePair('private-token', privateEnv.PAPERCUSP_WORKSPACE_ID,
+      { ...privateEnv, PAPERCUSP_BACKGROUND_WORKERS: '1' })).rejects.toThrow('must be disabled');
+    await expect(expireFixturePair('', privateEnv.PAPERCUSP_WORKSPACE_ID, privateEnv))
+      .rejects.toThrow('Pair token is required');
+  });
   it('refuses inactive or incorrectly delegated zones before provisioning', async () => {
     const zone = { id: 'z', name: 'example.org', status: 'active', paused: false,
       name_servers: ['first.ns.example', 'second.ns.example'] };

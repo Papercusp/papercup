@@ -23,6 +23,7 @@ import {
 } from './claude-kernel-adapter';
 import {
   CLAUDE_CONTEXT_1M_BETA,
+  CLAUDE_CODE_BETA,
   CLAUDE_OAUTH_BETA,
   claudeAttemptHeaders,
   claudeAuthModeForRef,
@@ -206,6 +207,28 @@ describe('P-006 — Claude credential shape per attempt', () => {
       },
     });
     expect(betas(sent[0]!)).toEqual([CLAUDE_CONTEXT_1M_BETA, OTHER_BETA]);
+  });
+
+  it('R-10b: an API-key fallback strips Claude Code framing, which Anthropic rejects as a credit error', async () => {
+    const { sent } = await runAttempts({
+      initial: apiKeyAccount(),
+      baseHeaders: {
+        'content-type': 'application/json',
+        'anthropic-beta': `${CLAUDE_CODE_BETA},${CLAUDE_CONTEXT_1M_BETA}`,
+      },
+    });
+    expect(betas(sent[0]!)).toEqual([CLAUDE_CONTEXT_1M_BETA]);
+  });
+
+  it('R-10c: an API-key fallback strips the Claude CLI user-agent, which Anthropic treats as subscription traffic', async () => {
+    const { sent } = await runAttempts({
+      initial: apiKeyAccount(),
+      baseHeaders: {
+        'content-type': 'application/json',
+        'user-agent': 'claude-cli/2.1.119 (external, cli)',
+      },
+    });
+    expect(Object.keys(lower(sent[0]!))).not.toContain('user-agent');
   });
 
   it('R-10 (edge): an api-key attempt whose only client beta was the oauth flag sends no anthropic-beta header', async () => {

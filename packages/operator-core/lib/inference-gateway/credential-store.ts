@@ -31,6 +31,8 @@ import {
 
 /** The OAuth beta flag a subscription (non-API-key) request must carry. */
 export const CLAUDE_OAUTH_BETA = 'oauth-2025-04-20';
+/** Claude Code framing is subscription-only; Console API-key requests must omit it. */
+export const CLAUDE_CODE_BETA = 'claude-code-20250219';
 /** The Anthropic beta that enables the 1M context window for marked models. */
 export const CLAUDE_CONTEXT_1M_BETA = 'context-1m-2025-08-07';
 /** Refresh this far before the access token's expiry (mirrors getOAuthToken's window). */
@@ -763,6 +765,9 @@ export function claudeAttemptHeaders(
   for (const [k, v] of Object.entries(base)) {
     const lk = k.toLowerCase();
     if (lk === 'authorization' || lk === 'x-api-key' || lk === 'anthropic-workspace-id') continue;
+    // Anthropic treats the Claude CLI user-agent as subscription traffic. Forwarding it on a
+    // Console API-key fallback produces a misleading HTTP400 credit-balance error.
+    if (lk === 'user-agent' && /^claude-cli\//i.test(v)) continue;
     if (lk === 'anthropic-beta') {
       beta = beta ? `${beta},${v}` : v;
       continue;
@@ -772,6 +777,7 @@ export function claudeAttemptHeaders(
   const flags = betaFlags(beta);
   if (authMode === 'api-key') {
     flags.delete(CLAUDE_OAUTH_BETA);
+    flags.delete(CLAUDE_CODE_BETA);
     out['x-api-key'] = token;
     if (anthropicWorkspaceId) out['anthropic-workspace-id'] = anthropicWorkspaceId;
   } else {

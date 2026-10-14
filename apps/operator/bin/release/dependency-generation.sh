@@ -65,7 +65,7 @@ dependency_generation_write_root_record() (
 )
 
 dependency_generation_resolve_root() {
-  local integration_root="$1" explicit="${2:-}" record recorded='' configured
+  local integration_root="$1" explicit="${2:-}" read_only="${3:-0}" record recorded='' configured
   if [ -n "$explicit" ]; then
     printf '%s\n' "$explicit"
     return 0
@@ -80,7 +80,7 @@ dependency_generation_resolve_root() {
   esac
   configured="${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}"
   if [ -n "$configured" ]; then
-    if [ "$recorded" != "$configured" ]; then
+    if [ "$recorded" != "$configured" ] && [ "$read_only" != '1' ]; then
       [ -z "$recorded" ] || dependency_generation_log \
         "generation root record $record named $recorded; PAPERCUSP_DEPENDENCY_GENERATION_ROOT=$configured replaces it"
       dependency_generation_write_root_record "$integration_root" "$configured" \
@@ -2335,9 +2335,14 @@ dependency_generation_record_tree_bytes() {
 # whose recorded size to use; an unknown size checks only reserve + margin.
 # A caller copying an ordinary donor may supply its measured size as argument 3.
 dependency_generation_check_headroom() {
-  local size_ref="$1" dest="$2" measured_need="${3:-}" dir pct margin need size_note total reserve required avail base
+  local size_ref="$1" dest="$2" measured_need="${3:-}" dir parent pct margin need size_note total reserve required avail base
   local cap reserve_scope
   dir="$(dirname "$dest")"
+  while [ ! -d "$dir" ]; do
+    parent="$(dirname "$dir")"
+    [ "$parent" != "$dir" ] || break
+    dir="$parent"
+  done
   pct="${DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT:-2}"
   case "$pct" in ''|*[!0-9]*) pct=2 ;; esac
   margin="${DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES:-10737418240}"
@@ -3733,8 +3738,8 @@ dependency_generation_main() {
   # filesystem is the one the percentage headroom reserve protects.
   dependency_generation_record_reserve_fs "$integration_root"
   # WI-10007424 (green-main-cycle-time P-003): the gate's up-front preflight asks
-  # THIS script whether a dependency copy beside the integration root could start
-  # now, so a run refuses before setup with the same typed exit 77 instead of
+  # THIS script whether a dependency copy in the resolved generation store could
+  # start now, so a run refuses before setup with the same typed exit 77 instead of
   # failing mid-materialization. It applies the copy path's own reserve + margin
   # (size unknown: no tree is named), reaps nothing, and never creates a store.
   # P-022: it first probes the host copy lock (exit 76 only for a wedged holder;
@@ -3746,9 +3751,13 @@ dependency_generation_main() {
       dependency_generation_log '--check-headroom cannot be combined with another mode or --workspace-dir'
       return 2
     }
+    # Resolve the same destination as an ensure-ref run, without writing a
+    # changed environment override back to the integration root record. This is
+    # a pure measurement and must stay safe before setup creates the store.
+    generation_root="$(dependency_generation_resolve_root "$integration_root" "$generation_root" 1)" || return $?
     dependency_generation_probe_copy_lock || return $?
     DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 \
-      dependency_generation_check_headroom '' "$integration_root/.dependency-generation-headroom-check"
+      dependency_generation_check_headroom '' "$generation_root/.dependency-generation-headroom-check"
     return $?
   fi
   # Preserve an explicit CLI root, then honor the service-level override, then

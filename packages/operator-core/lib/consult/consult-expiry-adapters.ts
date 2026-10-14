@@ -43,7 +43,7 @@ import { DEAD_RESPONDER_STATES, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-co
 import type { ThreadableStore } from '@papercusp/coordination/capabilities';
 import { runWithWorkspace } from '../workspace-als';
 import { consultAnswerFacts } from '../task-manager/reaper';
-import type { TaskRow } from '../task-manager/types';
+import { isTerminalState, type TaskRow } from '../task-manager/types';
 
 /** The ownerId this sweep acts under. Exported so a test asserts the real constant
  *  rather than re-typing the string it is checking against. */
@@ -92,6 +92,10 @@ export interface SilentResponderDetectorDeps {
     opts: { hydratePerId: true },
   ) => Promise<ReadonlyMap<string, { sessionState?: string | null }>>;
   getThreadStore: (workspaceId: string) => SilentResponderThreadStore;
+  /** Exact-owner task history, including live rows that veto stale terminal proof. */
+  listAnsweringTasks?: (workspaceId: string, answeringOwnerId: string) => Promise<
+    readonly Pick<TaskRow, 'workspaceId' | 'class' | 'state' | 'endedAt' | 'detail'>[]
+  >;
   /** Injectable clock for the bounded live-busy pickup window. */
   now?: () => Date;
 }
@@ -196,8 +200,8 @@ export function consultExpiryDispatch(
 }
 
 /** Detect post-routing no-pickup failures that otherwise wait for the full
- * expiry window. Three observations are safe enough to advance as an implicit
- * decline when the consult thread is still empty:
+ * expiry window. These observations can advance as an implicit decline when
+ * the consult thread contains no post by the current answerer:
  *
  *  - the answering session became active after routing and re-parked; or
  *  - the answering session is still live or parked after one hard-blocked expiry window.
@@ -208,6 +212,8 @@ export function consultExpiryDispatch(
  *    pointless because the queued wake can no longer be consumed; or
  *  - dispatch never stamped an answering identity after the bounded pickup
  *    window. The source expert's liveness says nothing about this case.
+ *  - a reserved answerer has no oracle signal, but its exact consult-tagged
+ *    launch task has terminalized with no matching live task.
  *
  * Reusing HARD_BLOCKED_EXPIRY_MS gives a live responder the same bounded pickup
  * opportunity a blocking requester already accepts, while still cutting the
@@ -232,6 +238,31 @@ export function consultExpiryFindSilentResponders(
         ])
       : [[], new Map<string, { sessionState?: string | null }>()] as const;
     const presenceByOwner = new Map(presenceEntries);
+    const tasksByOwner = new Map<string, ReturnType<NonNullable<SilentResponderDetectorDeps['listAnsweringTasks']>>>();
+    const endedLaunch = async (row: SilentResponderCandidate): Promise<boolean> => {
+      if (!deps.listAnsweringTasks || !row.answeringOwnerId || !row.sourceOwnerId) return false;
+      const key = JSON.stringify([row.workspaceId, row.answeringOwnerId]);
+      let pending = tasksByOwner.get(key);
+      if (!pending) {
+        pending = deps.listAnsweringTasks(row.workspaceId, row.answeringOwnerId);
+        tasksByOwner.set(key, pending);
+      }
+      const tasks = (await pending).filter((task) => {
+        if (task.workspaceId !== row.workspaceId || task.class !== 'agent-session') return false;
+        const facts = consultAnswerFacts(task);
+        return facts?.conversationId === row.conversationId &&
+          facts.sourceOwnerId === row.sourceOwnerId &&
+          facts.answeringOwnerId === row.answeringOwnerId;
+      });
+      // Missing oracle signal is not death. Only an exact tagged task's durable
+      // terminal receipt proves a failed launch. A matching live/restarted task
+      // vetoes the old receipt. Requester posts can refresh updated_at AFTER
+      // launch failure, so comparing endedAt with routedAt would strand it again.
+      return tasks.length > 0 && tasks.every((task) => {
+        const endedMs = task.endedAt == null ? Number.NaN : Date.parse(task.endedAt);
+        return isTerminalState(task.state) && Number.isFinite(endedMs) && endedMs <= checkedAtMs;
+      });
+    };
     const stores = new Map<string, SilentResponderThreadStore>();
     const getStore = (workspaceId: string) => {
       let store = stores.get(workspaceId);
@@ -263,7 +294,8 @@ export function consultExpiryFindSilentResponders(
             (sessionState === 'live' || sessionState === 'parked') &&
             Number.isFinite(checkedAtMs) &&
             checkedAtMs - routedMs >= HARD_BLOCKED_EXPIRY_MS;
-          if (!terminalAfterRoute && !reparkedAfterRoute && !inactivePastPickupWindow) return;
+          const terminalLaunch = sessionState == null && await endedLaunch(row);
+          if (!terminalAfterRoute && !reparkedAfterRoute && !inactivePastPickupWindow && !terminalLaunch) return;
         }
 
         const store = getStore(row.workspaceId);

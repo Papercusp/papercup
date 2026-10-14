@@ -31,6 +31,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { withPgRetry } from '../../pg-transient-retry';
 import { readIdentity } from './identity';
 import { hostGlobalLockDomain, workspaceScopedLockDomain } from './coordination-domain';
 import {
@@ -192,10 +193,15 @@ export default defineTool({
   async handler(args, ctx) {
     const { ownerId: callerOwnerId, coordinationDomain: callerDomain } = readIdentity(ctx);
     const pool = getTxPool();
+    const resource = args.resource;
 
-    const considered = args.resource
-      ? [await getResource(pool, args.resource)].filter((r): r is ResourceRegistryRow => r !== null)
-      : await listResources(pool);
+    // The registry/holder path is read-only. A postgres-js CONNECT_TIMEOUT is
+    // raised before its queued SELECT reaches PostgreSQL, so replaying this
+    // bounded read is safe and absorbs a transient pool reconnect blip.
+    const considered = resource
+      ? [await withPgRetry(() => getResource(pool, resource), { label: 'locks:list:get-resource' })]
+          .filter((r): r is ResourceRegistryRow => r !== null)
+      : await withPgRetry(() => listResources(pool), { label: 'locks:list:list-resources' });
 
     // EI-20197228449443651: `q`/`limit` narrow the REGISTRY view only, and
     // `holders[]` is deliberately left un-narrowed by both. Every prior fix in
@@ -206,13 +212,13 @@ export default defineTool({
     // reads as permission to write on a resource a peer holds, on rows whose
     // enforcement is merely `advisory`. A browse filter must never be able to
     // manufacture that false empty, so it cannot touch the holder plane.
-    const qIgnoredResourceScoped = Boolean(args.resource && args.q);
-    const needle = args.resource ? undefined : args.q?.toLowerCase();
+    const qIgnoredResourceScoped = Boolean(resource && args.q);
+    const needle = resource ? undefined : args.q?.toLowerCase();
     const matched =
       needle === undefined
         ? considered
         : considered.filter((r) => r.resource.toLowerCase().includes(needle));
-    const limit = args.resource ? undefined : args.limit;
+    const limit = resource ? undefined : args.limit;
     const registry = limit === undefined ? matched : matched.slice(0, limit);
 
     // EI-18674647773291145 Defect 2 / WI-5960: a special-domain resource (a
@@ -252,13 +258,19 @@ export default defineTool({
     // exclusive. Union in every domain that actually holds a live lease.
     const hgDomain = hostGlobalLockDomain();
     const wsDomain = workspaceScopedLockDomain();
-    const liveDomains = await listLiveResourceDomains(pool, args.resource);
+    const liveDomains = await withPgRetry(
+      () => listLiveResourceDomains(pool, resource),
+      { label: 'locks:list:live-domains' },
+    );
     const domains = [...new Set([callerDomain, hgDomain, wsDomain, ...liveDomains])];
 
     const queues = await Promise.all(
       domains.map(async (coordinationDomain) => ({
         coordinationDomain,
-        queue: await readResourceQueue(pool, { coordinationDomain, resource: args.resource }),
+        queue: await withPgRetry(
+          () => readResourceQueue(pool, { coordinationDomain, resource }),
+          { label: 'locks:list:resource-queue' },
+        ),
       })),
     );
     // Stamp the domain each row came from: merging several domains makes an

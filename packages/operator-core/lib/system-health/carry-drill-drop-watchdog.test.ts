@@ -28,6 +28,7 @@ vi.mock('../severe-event-broadcast', () => ({
 }));
 vi.mock('../agent-tools/coordination/tools/conditions', () => ({
   computeConditionStates: () => [], readConditionEnvelopes: async () => [],
+  readLatestConditionEnvelope: async () => null,
 }));
 
 const T0 = Date.parse('2026-07-15T12:00:00.000Z');

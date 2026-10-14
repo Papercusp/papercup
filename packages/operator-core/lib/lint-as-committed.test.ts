@@ -1663,7 +1663,11 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
         writeFileSync(join(pkg, 'index.cjs'), `module.exports = '${value}';`);
       }
       execFileSync('git', ['init', '--quiet', source]);
-      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'fixture'], { cwd: source });
+      // The child below inherits committed-source-loader from `test:file`, so
+      // the frozen fixture must contain real committed bytes like a production
+      // retained work root.
+      execFileSync('git', ['add', '--', 'packages/core/package.json', 'packages/core/index.cjs'], { cwd: source });
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture source'], { cwd: source });
       const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
       writeFileSync(join(source, OWNER_MARKER), JSON.stringify({ sha, keep: true }));
       const installed = join(shared, 'node_modules/@fixture/core');

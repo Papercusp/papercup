@@ -4635,6 +4635,78 @@ describe('WI-10007424: --check-headroom is the copy path\'s own reserve, measure
     mkdirSync(integration);
     return integration;
   };
+  const statProbe = (parent: string) => {
+    const bin = join(parent, 'fake-bin');
+    const capture = join(parent, 'stat-paths');
+    mkdirSync(bin);
+    const fakeStat = join(bin, 'stat');
+    writeFileSync(fakeStat, [
+      '#!/usr/bin/env bash',
+      'printf \'%s\\n\' "$4" >> "$STAT_CAPTURE"',
+      'case "$3" in',
+      '  \'%b %S\') printf \'8000 1073741824\\n\' ;;',
+      '  \'%a %S\') printf \'60 1073741824\\n\' ;;',
+      '  *) exit 2 ;;',
+      'esac',
+    ].join('\n'));
+    chmodSync(fakeStat, 0o755);
+    return { capture, env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STAT_CAPTURE: capture } };
+  };
+
+  it('measures the configured generation store through its existing ancestor without creating or recording it', () => {
+    const integration = freshIntegration();
+    const parent = dirname(integration);
+    const generationParent = join(parent, 'generation-store');
+    mkdirSync(generationParent);
+    const generationRoot = join(generationParent, 'new-generations');
+    const probe = statProbe(parent);
+    const result = runCheck(integration, {
+      ...probe.env,
+      PAPERCUSP_DEPENDENCY_GENERATION_ROOT: generationRoot,
+      DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '0',
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '',
+      DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '',
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain(
+      `reserve=21474836480 reserve_scope=other-fs margin=10737418240 required=32212254720 size=unknown path=${generationRoot}/.dependency-generation-headroom-check`,
+    );
+    expect(readFileSync(probe.capture, 'utf8').trim().split('\n')).toEqual([
+      generationParent,
+      generationParent,
+    ]);
+    expect(existsSync(generationRoot)).toBe(false);
+    expect(existsSync(join(integration, '.papercusp/dependency-generation-root'))).toBe(false);
+    expect(readdirSync(integration)).toEqual([]);
+  });
+
+  it('follows a recorded generation store when the gate process has no environment override', () => {
+    const integration = freshIntegration();
+    const parent = dirname(integration);
+    const generationRoot = join(parent, 'recorded-generations');
+    mkdirSync(generationRoot);
+    const record = join(integration, '.papercusp/dependency-generation-root');
+    mkdirSync(dirname(record), { recursive: true });
+    writeFileSync(record, `${generationRoot}\n`);
+    const probe = statProbe(parent);
+    const result = runCheck(integration, {
+      ...probe.env,
+      PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '',
+      DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '0',
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '',
+      DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '',
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain(`path=${generationRoot}/.dependency-generation-headroom-check`);
+    expect(readFileSync(probe.capture, 'utf8').trim().split('\n')).toEqual([
+      generationRoot,
+      generationRoot,
+    ]);
+    expect(readFileSync(record, 'utf8')).toBe(`${generationRoot}\n`);
+    expect(readdirSync(generationRoot)).toEqual([]);
+  });
 
   it('refuses with exit 77 in the band the gate alarm used to admit (above 2%, below 2% + margin)', () => {
     const integration = freshIntegration();

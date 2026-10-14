@@ -26,6 +26,7 @@ import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/ev
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { currentRequestWorkspaceId } from '../workspace-als';
 import { sendMessage } from '../agent-tools/coordination/messages';
+import type { TaskRow } from '../task-manager/types';
 
 // Execute the REAL message writer + REAL PG replay backend, but never resolve
 // synthetic requester ids against the live agent roster or use the live DB.
@@ -577,6 +578,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
       workspaceId: WS,
       conversationId: id,
       requesterId: 'req-1',
+      sourceOwnerId: 'resp-1',
       answeringOwnerId: 'resp-1-fork',
       routedAt,
     });
@@ -685,6 +687,54 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
       expect.objectContaining({ responder: 'resp-2', conversationId: id }),
     ]);
   });
+
+  it.each(['terminal', 'missing', 'live-task', 'answerer-post'] as const)(
+    'recovers a ghost reserved launch through the existing cascade with requester follow-ups (%s)',
+    async (evidence) => {
+      const id = await seedConsult({
+        expiresAt: FUTURE,
+        updatedAt: new Date(NOW.getTime() - 60_000).toISOString(),
+        routing: menuSnapshot(['resp-1', 'resp-2'], ['reserved-fork']),
+      });
+      const { deps, reachCalls } = makeDeps({ withReach: true });
+      const task = {
+        workspaceId: WS, class: 'agent-session',
+        state: evidence === 'live-task' ? 'running' : 'ended_unobserved',
+        endedAt: evidence === 'live-task' ? null : new Date(NOW.getTime() - 10 * 60_000).toISOString(),
+        detail: { consultAnswer: { conversationId: id, sourceOwnerId: 'resp-1', answeringOwnerId: 'reserved-fork' } },
+      } as TaskRow;
+      const detector = consultExpiryFindSilentResponders({
+        getPresence: async () => null,
+        resolveSessionStates: async () => new Map(),
+        listAnsweringTasks: async (workspaceId, owner) => {
+          expect(workspaceId).toBe(WS);
+          expect(owner).toBe('reserved-fork');
+          return evidence === 'missing' ? [] : [task];
+        },
+        getThreadStore: () => ({
+          getThreadByParent: async () => ({ thread_id: id }) as never,
+          listRecentPosts: async () => ({ total: 2, posts: [
+            { author_id: 'req-1' },
+            { author_id: evidence === 'answerer-post' ? 'reserved-fork' : 'req-1' },
+          ] }),
+        }),
+        now: () => NOW,
+      });
+      deps.findSilentResponders = (rows) => detector(rows.filter((row) => row.conversationId === id));
+      await sweepExpiredConsults(deps);
+      const row = await cascadeRow(id);
+      if (evidence === 'terminal') {
+        expect(row).toMatchObject({ state: 'awaiting_responder', closed_at: null, responder_id: 'resp-2', cascade_cursor: 1 });
+        expect(row.cascade_digest).toMatchObject([{ ownerId: 'resp-1', kind: 'dispatch_failed' }]);
+        expect(reachCalls.filter((call) => call.conversationId === id)).toEqual([
+          expect.objectContaining({ responder: 'resp-2', conversationId: id }),
+        ]);
+      } else {
+        expect(row).toMatchObject({ state: 'awaiting_responder', responder_id: 'resp-1', cascade_cursor: 0, cascade_digest: [] });
+        expect(reachCalls.filter((call) => call.conversationId === id)).toEqual([]);
+      }
+    },
+  );
 
   it('does not treat a parked knowledge source as silent while its forked answerer is live', async () => {
     const routedAt = new Date(NOW.getTime() - 60_000).toISOString();

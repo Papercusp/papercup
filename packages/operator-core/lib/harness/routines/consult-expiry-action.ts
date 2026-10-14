@@ -39,7 +39,7 @@ registerSystemAction('consult-expiry-sweep', async () => {
     },
     { makeConsultReachDispatcher },
     { upsertConditionWorkItem },
-    { listLiveTasks },
+    { listLiveTasks, listTasks },
     { killTask },
   ] = await Promise.all([
     import('@papercusp/db-org'),
@@ -94,6 +94,16 @@ registerSystemAction('consult-expiry-sweep', async () => {
       },
     }),
     findSilentResponders: consultExpiryFindSilentResponders({
+      listAnsweringTasks: async (workspaceId, answeringOwnerId) => {
+        const filter = { workspaceId, coordOwnerId: answeringOwnerId, classes: ['agent-session'], limit: 20 };
+        // Read live rows separately so a capped terminal-history window cannot
+        // hide a live sibling of an older failed launch.
+        const [history, live] = await Promise.all([
+          listTasks({ ...filter, includeEnded: true }),
+          listTasks(filter),
+        ]);
+        return [...new Map([...history, ...live].map((task) => [task.taskId, task])).values()];
+      },
       getPresence: async (ownerId) => {
         const { getPresence } = await import('../../agent-tools/coordination/presence');
         return getPresence(ownerId);

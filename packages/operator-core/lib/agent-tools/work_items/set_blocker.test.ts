@@ -160,9 +160,10 @@ describe('work_items:set_blocker', () => {
     expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
-  it('publishes the conditional defaultIfUnanswered requirement for strict human asks', () => {
+  it('publishes conditional blocker requirements in the call constraint and field schema', () => {
     const json = z.toJSONSchema(tool.args as never) as {
       'x-papercusp-call-constraint'?: string;
+      properties?: Record<string, { description?: string }>;
       required?: string[];
     };
     const constraint = json['x-papercusp-call-constraint'] ?? '';
@@ -172,6 +173,16 @@ describe('work_items:set_blocker', () => {
     expect(constraint).toContain('For items:[...], this applies to each entry');
     expect(constraint).toContain('active human blocker with the same ref');
     expect(constraint).toContain('Clear-only calls and non-human blockers do not require it');
+    expect(constraint).toContain('non-final item blocked on main/:3070/green-checkpoint');
+    expect(constraint).toContain("literal phrase 'deployed-only'");
+    expect(constraint).toContain('what staging/current-build cannot exercise');
+    expect(constraint).toContain('concrete reason introduced with because/due to/since');
+    for (const field of ['summary', 'evidence']) {
+      const description = json.properties?.[field]?.description ?? '';
+      expect(description).toContain("'deployed-only'");
+      expect(description).toContain('staging/current-build');
+      expect(description).toContain('concrete reason');
+    }
     // The omission exception depends on persisted state, so this remains optional
     // in the static args schema while discovery publishes the conditional contract.
     expect(json.required ?? []).not.toContain('defaultIfUnanswered');

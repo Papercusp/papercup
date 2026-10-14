@@ -299,10 +299,10 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
     expect(ratings['query-cost']).toMatchObject({
       rating: 'degraded',
       ratedFrom: 'ledger',
-      ledgerResult: { testRunId: ids.queryCost, value: 62.38, unit: '%' },
+      ledgerResult: { testRunId: ids.queryCost, value: 62.38, unit: 'ms' },
       disregard: 'Intermediate fixture band is recorded without a separate remediation.',
     });
-    expect(String(ratings['query-cost']!.evidence)).toMatch(/query-cost:instrument=62\.38 % → fail; scorecard rating degraded/);
+    expect(String(ratings['query-cost']!.evidence)).toMatch(/query-cost:0=62\.38 ms → fail; scorecard rating degraded/);
 
     expect(ratings['probe-recorded']).toMatchObject({
       rating: 'healthy',

@@ -4,11 +4,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, getOrgPgApp, getOrgPgListener, _resetForTests } from '@papercusp/db-org';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
+import { retainIsolatedWorkerProgress } from './isolated-integration-proof';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -45,6 +46,16 @@ async function main() {
   assert.deepEqual(scope, { workspaceId: workspace, harnessSlug: workspace });
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
   const { sql } = getOrgPg();
+  if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-pool-cleanup')) {
+    // Native launch readers use pools besides the org query client. Exercise
+    // the idle LISTEN connection too: ending only sql cannot release it.
+    await getOrgPgApp().sql`SELECT 1`;
+    await getOrgPgListener().sql.listen('private_native_cleanup', () => {});
+    console.log('CURRENT_SU_NATIVE_POOL_READY ' + JSON.stringify({ workspace }));
+    if (e.STAGING_FIRST_HTTP_SCENARIO.endsWith('-failure'))
+      throw new Error('Private native pool cleanup exception control');
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-setup') {
     await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
     console.log('CURRENT_SU_NATIVE_SETUP_RECEIPT ' + JSON.stringify({ workspace,
@@ -279,7 +290,18 @@ catch (error) {
     stack: assertion.stack, actual: assertion.actual, expected: assertion.expected }));
   process.exitCode = 1;
 } finally {
-  await stopHost(disposeScenario);
-  disposeScenario = undefined;
-  await getOrgPg().sql.end({ timeout: 1 });
+  const evidenceDir = process.env.STAGING_FIRST_HTTP_EVIDENCE_DIR!;
+  retainIsolatedWorkerProgress(evidenceDir, 'fixture-cleanup-start');
+  try {
+    await stopHost(disposeScenario);
+    disposeScenario = undefined;
+    retainIsolatedWorkerProgress(evidenceDir, 'fixture-host-stopped');
+  } finally {
+    // This process owns a disposable database. Reuse the maintained reset to
+    // retire org, app, harness and LISTEN pools, including on assertion failure.
+    await _resetForTests();
+    retainIsolatedWorkerProgress(evidenceDir, 'fixture-pools-closed', {
+      activeResources: process.getActiveResourcesInfo(), exitCode: process.exitCode ?? 0,
+    });
+  }
 }

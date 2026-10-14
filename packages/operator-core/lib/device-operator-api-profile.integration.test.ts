@@ -181,8 +181,11 @@ describe('disposable operator-api device lifecycle', () => {
         assert.equal(pending.qrPayload?.workspaceId, id);
         assert.equal(typeof pending.qrPayload?.pairToken, 'string');
         assert(pending.qrPayload.pairToken.length > 0);
-        await sql\`UPDATE harness_shared.mobile_pair_tokens SET expires_at_ms = \${Date.now() - 1000}
-          WHERE pair_token = \${pending.qrPayload.pairToken}\`;
+        const { expireFixturePair } = await import('./packages/operator-core/lib/native-device-fixture.ts');
+        await assert.rejects(expireFixturePair(pending.qrPayload.pairToken, other), /must belong to this fixture/);
+        const expiresAt = await expireFixturePair(pending.qrPayload.pairToken, id);
+        assert(expiresAt < Date.now());
+        await assert.rejects(expireFixturePair('missing-owned-token', id), /Exactly one unused owned/);
         await request('expired-pair-token-refused', '/device/pair', 401,
           { method: 'POST', body: { pairToken: pending.qrPayload.pairToken } });
         const foreignId = randomUUID();
