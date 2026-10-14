@@ -183,6 +183,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
+    messagePattern: 'events:status.*evidence-only judge may inspect its own awaits only.*exact-key inspection and fleet-meter access are unavailable',
+    why: 'events:status deliberately refuses exact-key and fleet-wide meter reads for an evidence-only judge; dispatch surfaces this authorization refusal through handler_error, so it must not enter the structural auto-fix lane',
+  },
+  {
+    class: 'caller',
     messagePattern: '(^|[^A-Za-z0-9_])git_command_interrupted([^A-Za-z0-9_]|$)',
     why: 'capability:git-evidence returns this reason when its request AbortSignal cancels a Git command; this is expected request/session control flow, not a structural tool defect',
   },
@@ -751,7 +756,20 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
   const knownExternal = matchKnownExternalToolFailure(input);
   const legacyAttested =
     input.reproduced === true || input.clearServerMismatch === true || input.hardInternal === true;
-  const structuredAttested = input.directEvidence !== undefined;
+  // code:run owns `structured_result_shape`: its tracked result Proxy emits
+  // this caller diagnostic when a script reads MCP `content`/`text` from the
+  // nested tool's typed root. Expected/actual prose cannot turn that concrete
+  // wrong-shape read into evidence of a server mismatch. The message fallback
+  // matters when a reporter omits errorCode; require the already-classified
+  // caller result so secondary mentions cannot mask a different primary error.
+  const structuredResultShapeCallerDiagnostic =
+    input.errorCode?.trim() === 'structured_result_shape' ||
+    (!input.errorCode?.trim() && (
+      input.status?.trim() === 'structured_result_shape' ||
+      (klass === 'caller' && /structured_result_shape.*typed root/.test(input.message))
+    ));
+  // Keep other caller-class overrides available for genuine contract defects.
+  const structuredAttested = input.directEvidence !== undefined && !structuredResultShapeCallerDiagnostic;
   const attested = structuredAttested || (legacyAttested && klass !== 'caller');
   const deferredWrapperUnavailable = [input.errorCode, input.status]
     .some((value) => [

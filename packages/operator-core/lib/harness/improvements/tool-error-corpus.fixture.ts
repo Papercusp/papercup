@@ -23,6 +23,8 @@
  * `loop_pressure_critical` response captured in EI-24856174754316507.
  * The claim-spec self-selector row was added 2026-10-07 from EI-25300889812728741;
  * it is an expected caller refusal and must not enter the structural bug lane.
+ * The events:status judge-permission row was added 2026-10-14 from
+ * EI-25889576691911568; its deliberate role refusal surfaces as handler_error.
  * The caller-authored pg_query undefined-column row was added 2026-10-08 from
  * EI-25389944836048866; tools:invoke preserves the 42703 payload for correction.
  * The explicit capability:bash cwd refusal was added 2026-10-09 from
@@ -183,6 +185,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'cupId must be a concrete session/owner ID, not the literal "self". To read your own claim spec, use { cupId: \'su-owner-id\' } for this session.',
     expectedClass: 'caller',
     note: 'scheduler:get_claim_spec intentionally rejects the `self` alias and tells the caller to use a concrete owner id; do not file this expected selector refusal as a structural tool bug (EI-25300889812728741)',
+  },
+  {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: 'events:status — the evidence-only judge may inspect its own awaits only; exact-key inspection and fleet-meter access are unavailable.',
+    expectedClass: 'caller',
+    note: 'events:status intentionally rejects exact-key and fleet-wide meter reads for an evidence-only judge; this permission refusal must not enter the structural repair lane (EI-25889576691911568)',
   },
   {
     n: 1, errorCode: 'handler_error', status: 'error',

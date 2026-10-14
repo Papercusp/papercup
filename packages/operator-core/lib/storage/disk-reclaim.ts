@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ChildProcess } from 'node:child_process';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { openWriterPidsMany, type OpenWriterScan } from '../native-bg-task-ledger';
 import { readRegistry } from '../workspace-registry';
@@ -203,6 +204,127 @@ async function scanPrivilegedRetentionHolders(paths: readonly string[], control:
     return { complete: parsed.complete && byPath.get(control)?.includes(String(process.pid)) === true, byPath,
       ...(diagnostics ? { diagnostics } : {}) };
   } catch { return incompleteHolders('privileged holder JSON could not be decoded'); }
+}
+
+/** One enrolled, read-only worker per pass. Only its programs are reused:
+ * every request creates fresh full FD/cwd iterators. Bulk census and unsupported
+ * candidates retain the existing full proc scanner; no absence is cached.
+ */
+export function createRetentionHolderScanner(deps: {
+  fallback?: typeof scanRetentionHolders;
+} = {}) {
+  let child: ChildProcess | undefined, starting: Promise<ChildProcess> | undefined;
+  let ended = false, closed = false, buffer = '', stderr = '';
+  let pending: { resolve: (line: string) => void; reject: (error: Error) => void } | undefined;
+  let serial = Promise.resolve();
+  const fail = (reason: string) => {
+    ended = true;
+    const request = pending; pending = undefined;
+    request?.reject(new Error(reason));
+    child?.stdin?.end();
+  };
+  const start = () => starting ??= new Promise<ChildProcess>((resolveChild, rejectChild) => {
+    const timer = setTimeout(() => { fail('holder worker startup deadline'); rejectChild(new Error('holder worker startup deadline')); }, RETENTION_HOLDER_SCAN_MS);
+    const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const worker = join(repoRoot, 'packages/operator-core/lib/storage/disk-reclaim-holder-worker.py');
+    void import('../task-manager/managed-spawn').then(({ managedSpawn }) => managedSpawn('/usr/bin/sudo', ['-n', '/usr/bin/python3', worker], {
+      class: 'other', title: 'scheduled disk retention holder scanner',
+      argv: ['/usr/bin/sudo', '-n', '/usr/bin/python3', worker], launchedBy: 'system:disk-retention',
+      planSlug: 'disk-headroom-standing-reclaim-2026-10-12', runtimeMaxSec: 1800,
+      detail: { subsystem: 'storage', operation: 'retention-holder-scan' },
+    }, {
+      requireRegistration: true,
+      spawnOptions: { cwd: repoRoot, stdio: ['pipe', 'pipe', 'pipe'] },
+      onSpawn: (spawned) => {
+        clearTimeout(timer);
+        child = spawned;
+        spawned.once('error', (error) => fail(message(error)));
+        spawned.once('close', () => fail('holder worker closed'));
+        spawned.stdin?.on('error', (error) => fail(message(error)));
+        spawned.stderr?.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4000); });
+        spawned.stdout?.setEncoding('utf8');
+        spawned.stdout?.on('data', (chunk: string) => {
+          buffer += chunk;
+          if (buffer.length > 1024 * 1024) { fail('holder response overflow'); spawned.kill('SIGKILL'); return; }
+          const newline = buffer.indexOf('\n');
+          if (newline < 0) return;
+          const request = pending; pending = undefined;
+          const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+          if (!request || buffer.length) { request?.reject(new Error('unsolicited holder response')); fail('unsolicited holder response'); return; }
+          request.resolve(line);
+        });
+        if (!spawned.stdin || !spawned.stdout || !spawned.stderr || closed || ended) {
+          fail('holder worker pipes unavailable'); spawned.kill('SIGKILL'); rejectChild(new Error('holder worker unavailable')); return;
+        }
+        resolveChild(spawned);
+      },
+    })).catch((error) => { clearTimeout(timer); fail(message(error)); rejectChild(error); });
+  });
+  const kernel = async (paths: readonly string[], control: string): Promise<OpenWriterScan> => {
+    if (ended || closed || paths.length === 0 || paths.length > 16) return incompleteHolders('kernel holder route unavailable');
+    // Bind aliases may name the same physical candidate. Never run a sequence
+    // of kernel scans for a bulk census or treat its earlier scans as fresh.
+    const identities = await Promise.all(paths.map((path) => lstat(path)));
+    const identity = identities[0]!;
+    if (!identities.every((s) => (s.isFile() || s.isDirectory()) && s.dev === identity.dev && s.ino === identity.ino)) {
+      return incompleteHolders('bulk holder census requires proc scanner');
+    }
+    const spawned = await start();
+    if (ended || closed) return incompleteHolders('kernel holder worker ended');
+    const line = await new Promise<string>((resolveLine, rejectLine) => {
+      const timer = setTimeout(() => { fail('kernel holder request deadline'); spawned.kill('SIGKILL'); }, RETENTION_HOLDER_SCAN_MS);
+      pending = {
+        resolve: (value) => { clearTimeout(timer); resolveLine(value); },
+        reject: (error) => { clearTimeout(timer); rejectLine(error); },
+      };
+      spawned.stdin!.write(JSON.stringify({ path: paths[0], caller: process.pid, control }) + '\n');
+    });
+    const result = JSON.parse(line), d = result?.diagnostics;
+    if (result?.complete !== true || !d || d.fdEnd !== 1 || d.cwdEnd !== 1 || d.readFailures !== 0 ||
+        d.identityStable !== true || ![d.callerSeen, d.descriptorsScanned, d.processesScanned].every((n) => Number.isSafeInteger(n) && n > 0) ||
+        !Number.isFinite(d.elapsedMs) || d.elapsedMs < 0 || !Array.isArray(result.byPath)) {
+      return incompleteHolders('kernel holder evidence incomplete', { stderr });
+    }
+    if (result.byPath.length > 1 || result.byPath.some((row: unknown) => !Array.isArray(row) || row.length !== 2 ||
+        row[0] !== paths[0] || !Array.isArray(row[1]) || !row[1].every((pid: unknown) => typeof pid === 'string' && /^[1-9]\d*$/.test(pid)))) {
+      return incompleteHolders('invalid kernel holder identities');
+    }
+    const after = await Promise.all(paths.map((path) => lstat(path)));
+    if (!after.every((s, i) => s.dev === identities[i]!.dev && s.ino === identities[i]!.ino && s.mode === identities[i]!.mode)) {
+      return incompleteHolders('kernel holder alias identity changed');
+    }
+    const pids: string[] = result.byPath[0]?.[1] ?? [];
+    return { complete: true, byPath: new Map([[control, [String(process.pid)]], ...paths.filter(() => pids.length).map((path): [string, string[]] => [path, pids])]),
+      diagnostics: { elapsedMs: d.elapsedMs, readFailures: 0, descriptorsScanned: d.descriptorsScanned, processesScanned: d.processesScanned } };
+  };
+  const scan = (paths: readonly string[]): Promise<OpenWriterScan> => {
+    const run = serial.then(async () => {
+      if (closed) return incompleteHolders('retention holder scanner closed');
+      return scanRetentionHolders(paths, { uid: () => 1, privileged: async (wanted, control) => {
+        const candidates = wanted.filter((path) => path !== control);
+        let result: OpenWriterScan;
+        try { result = await kernel(candidates, control); }
+        catch (error) { fail(message(error)); result = incompleteHolders(message(error)); }
+        if (result.complete) return result;
+        const fallback = await (deps.fallback ?? scanRetentionHolders)(paths);
+        if (!fallback.complete) fallback.diagnostics = { ...fallback.diagnostics,
+          reason: [result.diagnostics?.reason, fallback.diagnostics?.reason].filter(Boolean).join('; ') };
+        return fallback;
+      } });
+    });
+    serial = run.then(() => {}, () => {});
+    return run;
+  };
+  const close = async () => {
+    closed = true; fail('retention holder scanner closed');
+    const spawned = child;
+    if (!spawned || spawned.exitCode !== null || spawned.signalCode !== null) return;
+    await new Promise<void>((resolveClosed) => {
+      const timer = setTimeout(() => { spawned.kill('SIGKILL'); resolveClosed(); }, 1000);
+      spawned.once('close', () => { clearTimeout(timer); resolveClosed(); });
+    });
+  };
+  return { scan, close };
 }
 
 /** Select by each root's keep rule. Oldest first; do not depend on available bytes (D-005). */
@@ -661,8 +783,9 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   ];
   let runId = '';
   const { inspectRetentionTrees } = await import('./disk-consumer-census');
-  return runDiskReclaimOnce({ ...options, delegates, protectedPaths, inspectTrees: inspectRetentionTrees, record: async (phase, detail) => {
+  const holders = createRetentionHolderScanner();
+  try { return await runDiskReclaimOnce({ ...options, delegates, protectedPaths, inspectTrees: inspectRetentionTrees, scanHolders: holders.scan, record: async (phase, detail) => {
     if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;
     await writeReclaimAudit(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(), runId, phase, detail);
-  } });
+  } }); } finally { await holders.close(); }
 }

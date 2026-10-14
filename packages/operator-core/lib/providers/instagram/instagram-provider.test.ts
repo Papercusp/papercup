@@ -11,23 +11,24 @@ import {
 } from '@papercusp/plugin-sdk';
 
 const adapter = createRequire(import.meta.url)('../../../../../libs/papercusp/plugins/instagram/index.cjs').providerAdapter as ProviderAdapter;
-const API = 'https://graph.facebook.com/v23.0';
+const API = 'https://graph.facebook.com/v26.0';
 const config = { igUserId: '17841400000000000', watchWindow: 2, maxMediaPages: 2 };
 const at = (n: number) => `2026-10-0${n}T00:00:00+0000`;
 
 function fake() {
   return recordedHostFetch([
-    { method: 'GET', url: (u) => u.pathname === '/v23.0/17841400000000000/media', response: jsonResponse(200, { data: [{ id: 'media-1' }, { id: 'media-2' }] }) },
-    { url: (u) => u.pathname === '/v23.0/media-1/comments', response: jsonResponse(200, { data: [
+    { method: 'GET', url: (u) => u.pathname === '/v26.0/17841400000000000/media', response: jsonResponse(200, { data: [{ id: 'media-1' }, { id: 'media-2' }] }) },
+    { url: (u) => u.pathname === '/v26.0/media-1/comments', response: jsonResponse(200, { data: [
       { id: 'c1', timestamp: at(1), text: 'hello', username: 'avi', like_count: 3 },
       { id: 'c2', timestamp: at(2), text: 'reply', username: 'sam', parent_id: 'c1' },
     ] }) },
-    { url: (u) => u.pathname === '/v23.0/media-2/comments', response: jsonResponse(200, { data: [] }) },
-    { method: 'POST', url: (u) => u.pathname === '/v23.0/c1/replies', response: jsonResponse(200, { id: 'reply-1' }) },
-    { method: 'POST', url: (u) => u.pathname === '/v23.0/17841400000000000/media', response: jsonResponse(200, { id: 'container-1' }) },
-    { url: (u) => u.pathname === '/v23.0/container-1', response: jsonResponse(200, { status_code: 'FINISHED' }) },
-    { method: 'POST', url: (u) => u.pathname === '/v23.0/17841400000000000/media_publish', response: jsonResponse(200, { id: 'media-new' }) },
-    { method: 'GET', url: (u) => u.pathname === '/v23.0/c1', response: jsonResponse(200, { id: 'c1', text: 'hello', media: { id: 'media-1' } }) },
+    { url: (u) => u.pathname === '/v26.0/media-2/comments', response: jsonResponse(200, { data: [] }) },
+    { method: 'POST', url: (u) => u.pathname === '/v26.0/c1/replies', response: jsonResponse(200, { id: 'reply-1' }) },
+    { method: 'POST', url: (u) => u.pathname === '/v26.0/17841400000000000/media', response: jsonResponse(200, { id: 'container-1' }) },
+    { url: (u) => u.pathname === '/v26.0/container-1', response: jsonResponse(200, { status_code: 'FINISHED' }) },
+    { method: 'POST', url: (u) => u.pathname === '/v26.0/17841400000000000/media_publish', response: jsonResponse(200, { id: 'media-new' }) },
+    { method: 'GET', url: (u) => u.pathname === '/v26.0/c1', response: jsonResponse(200, { id: 'c1', text: 'hello', media: { id: 'media-1' } }) },
+    { method: 'GET', url: (u) => u.pathname === '/v26.0/media-1', response: jsonResponse(200, { id: 'media-1', media_type: 'IMAGE', owner: { id: config.igUserId } }) },
     { method: 'DELETE', url: `${API}/c1`, response: jsonResponse(200, { success: true }) },
   ]);
 }
@@ -161,7 +162,7 @@ describe('Instagram provider package (P-028)', () => {
     vi.useFakeTimers();
     try {
       const world = fake(); let probes = 0;
-      const fetch: HostFetch = async (input) => new URL(input.request.url).pathname === '/v23.0/container-1'
+      const fetch: HostFetch = async (input) => new URL(input.request.url).pathname === '/v26.0/container-1'
         ? jsonResponse(200, { status_code: ++probes === 1 ? 'IN_PROGRESS' : 'FINISHED' })
         : world.fetch(input);
       const pending = adapter.invoke({ source: 's', config, capability: 'social.post', args: { destination: config.igUserId, text: 'caption', media: [{ type: 'image', url: 'https://cdn.example/a.jpg' }] } }, { fetch });
@@ -189,8 +190,56 @@ describe('Instagram provider package (P-028)', () => {
   });
 
   it('refuses deletion when the supplied id is not confirmed as a comment', async () => {
+    for (const body of [false, {}, { id: 'media-1' }, { id: 'different', media: { id: 'media-1' } }]) {
+      const calls: string[] = [];
+      await expect(adapter.invoke({ source: 's', config, capability: 'social.delete', args: { externalId: 'media-1' } }, { fetch: async ({ request }) => { calls.push(request.method!); return jsonResponse(200, body); } })).rejects.toThrow('delete_requires_comment_object');
+      expect(calls).toEqual(['GET']);
+    }
+  });
+
+  it('deletes owned media only after the API identifies the object and its account', async () => {
     const calls: string[] = [];
-    await expect(adapter.invoke({ source: 's', config, capability: 'social.delete', args: { externalId: 'media-1' } }, { fetch: async ({ request }) => { calls.push(request.method!); return jsonResponse(200, { id: 'media-1' }); } })).rejects.toThrow('delete_requires_comment_object');
-    expect(calls).toEqual(['GET']);
+    const fetch: HostFetch = async ({ request }) => {
+      const url = new URL(request.url); calls.push(`${request.method}:${url.searchParams.get('fields') || ''}`);
+      if (request.method === 'DELETE') return jsonResponse(200, { success: true });
+      if (url.searchParams.get('fields') === 'id,media') return jsonResponse(400, { error: { code: 100, message: 'Tried accessing nonexisting field (media) on node type (IGMedia)' } });
+      return jsonResponse(200, { id: 'media-1', media_type: 'IMAGE', owner: { id: config.igUserId } });
+    };
+    expect(await adapter.invoke({ source: 's', config, capability: 'social.delete', args: { externalId: 'media-1' } }, { fetch })).toEqual({ deleted: true });
+    expect(calls).toEqual(['GET:id,media', 'GET:id,media_type,owner', 'DELETE:']);
+  });
+
+  it('checks comment media ownership and refuses another account before deleting', async () => {
+    for (const externalId of ['c1', 'media-1']) {
+      const methods: string[] = [];
+      const fetch: HostFetch = async ({ request }) => {
+        methods.push(request.method!);
+        const url = new URL(request.url);
+        if (url.searchParams.get('fields') === 'id,media') return externalId === 'c1'
+          ? jsonResponse(200, { id: 'c1', media: { id: 'media-1' } })
+          : jsonResponse(400, { error: { code: 100, message: 'Tried accessing nonexisting field (media) on node type (IGMedia)' } });
+        return jsonResponse(200, { id: 'media-1', media_type: 'VIDEO', owner: { id: 'another-account' } });
+      };
+      await expect(adapter.invoke({ source: 's', config, capability: 'social.delete', args: { externalId } }, { fetch })).rejects.toThrow('delete_media_not_owned');
+      expect(methods).toEqual(['GET', 'GET']);
+    }
+    const world = fake();
+    expect(await adapter.invoke({ source: 's', config, capability: 'social.delete', args: { externalId: 'c1' } }, world)).toEqual({ deleted: true });
+    expect(world.calls.map((call) => call.request.method)).toEqual(['GET', 'GET', 'DELETE']);
+  });
+
+  it('never treats auth, throttling, missing objects or transient faults as a different deletion type', async () => {
+    for (const [status, code, message, kind] of [
+      [403, 200, 'Permission denied', 'auth'],
+      [429, 4, 'Throttled', 'rate-limited'],
+      [400, 100, 'Unsupported get request: object does not exist or cannot be loaded', 'transient'],
+      [503, 2, 'Temporary failure', 'transient'],
+    ] as const) {
+      let calls = 0;
+      await expect(adapter.invoke({ source: 's', config, capability: 'social.delete', args: { externalId: 'media-1' } }, {
+        fetch: async () => { calls++; return jsonResponse(status, { error: { code, message } }); },
+      })).rejects.toMatchObject({ kind });
+      expect(calls).toBe(1);
+    }
   });
 });

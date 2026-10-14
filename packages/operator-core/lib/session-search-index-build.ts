@@ -127,6 +127,43 @@ export const SESSION_SEARCH_INDEXES = [
   },
 ] as const satisfies readonly SessionSearchIndexSpec[];
 
+/**
+ * The issue-list literal q path shares this already-guarded online builder. These
+ * expressions intentionally mirror issueMatchWhereSql: changing either side alone
+ * would leave populated workspaces doing a substring scan.
+ */
+export const ISSUE_Q_SEARCH_INDEXES = [
+  {
+    name: 'work_items_title_substring_trgm_idx',
+    table: 'harness_shared.work_items',
+    definition: "USING gin ((COALESCE(title, '')) gin_trgm_ops)",
+    stage: 'corpus',
+  },
+  {
+    name: 'work_items_summary_substring_trgm_idx',
+    table: 'harness_shared.work_items',
+    definition: "USING gin ((COALESCE(summary, '')) gin_trgm_ops)",
+    stage: 'corpus',
+  },
+  {
+    name: 'work_item_occurrences_reported_title_trgm_idx',
+    table: 'harness_shared.work_item_occurrences',
+    definition: 'USING gin (reported_title gin_trgm_ops)',
+    stage: 'corpus',
+  },
+  {
+    name: 'work_item_occurrences_evidence_body_trgm_idx',
+    table: 'harness_shared.work_item_occurrences',
+    definition: "USING gin ((COALESCE(evidence ->> 'body', '')) gin_trgm_ops)",
+    stage: 'corpus',
+  },
+] as const satisfies readonly SessionSearchIndexSpec[];
+
+const ONLINE_SEARCH_INDEXES: readonly SessionSearchIndexSpec[] = [
+  ...SESSION_SEARCH_INDEXES,
+  ...ISSUE_Q_SEARCH_INDEXES,
+];
+
 export type SessionSearchIndexName = (typeof SESSION_SEARCH_INDEXES)[number]['name'];
 
 export function createIndexConcurrentlySql(spec: SessionSearchIndexSpec): string {
@@ -313,7 +350,15 @@ const DEFAULTS = {
 
 export interface IndexBuildEntry {
   name: string;
-  action: 'built' | 'present' | 'would-build' | 'failed' | 'deferred-budget' | 'deferred-table-missing' | 'in-flight';
+  action:
+    | 'built'
+    | 'present'
+    | 'would-build'
+    | 'failed'
+    | 'deferred-budget'
+    | 'deferred-low-disk'
+    | 'deferred-table-missing'
+    | 'in-flight';
   elapsedMs: number;
   /** Windows backfill only: turns written to session_turn_windows this pass. */
   turns?: number;
@@ -407,24 +452,30 @@ export async function runSessionSearchIndexBuildOnce(
   }
 
   // --- Guard 2: a concurrent GIN build needs room for the index and its WAL. ---
+  // Check once before work and again before each GIN build: a pass may build several
+  // large indexes, and the first build can consume the headroom the next one needs.
   // A probe failure is non-fatal: we would rather build than skip on an unreadable stat.
-  try {
-    const [{ data_directory: dataDir } = { data_directory: '' }] = await sql<
-      Array<{ data_directory: string }>
-    >`SELECT setting AS data_directory FROM pg_settings WHERE name = 'data_directory'`;
-    if (dataDir) {
-      const { statfs } = await import('node:fs/promises');
-      const st = await statfs(dataDir);
-      if (Number(st.bavail) * Number(st.bsize) < o.minFreeDiskBytes) {
-        result.skipped = 'low-disk';
-        return result;
+  const hasIndexBuildHeadroom = async (): Promise<boolean> => {
+    try {
+      const [{ data_directory: dataDir } = { data_directory: '' }] = await sql<
+        Array<{ data_directory: string }>
+      >`SELECT setting AS data_directory FROM pg_settings WHERE name = 'data_directory'`;
+      if (dataDir) {
+        const { statfs } = await import('node:fs/promises');
+        const st = await statfs(dataDir);
+        return Number(st.bavail) * Number(st.bsize) >= o.minFreeDiskBytes;
       }
+    } catch {
+      // unreadable data_directory / statfs unsupported — fall through and build.
     }
-  } catch {
-    // unreadable data_directory / statfs unsupported — fall through and build.
+    return true;
+  };
+  if (!(await hasIndexBuildHeadroom())) {
+    result.skipped = 'low-disk';
+    return result;
   }
 
-  const names = SESSION_SEARCH_INDEXES.map((i) => i.name) as string[];
+  const names = ONLINE_SEARCH_INDEXES.map((i) => i.name) as string[];
 
   // --- Drop invalid leftovers that have NO live build behind them. An in-flight concurrent build
   // also shows indisvalid=false, so exclude indexes that pg_stat_progress_create_index reports. ---
@@ -454,7 +505,7 @@ export async function runSessionSearchIndexBuildOnce(
   }
 
   const ensureIndexes = async (stage: SessionSearchIndexStage): Promise<void> => {
-    for (const spec of SESSION_SEARCH_INDEXES.filter((i) => i.stage === stage)) {
+    for (const spec of ONLINE_SEARCH_INDEXES.filter((i) => i.stage === stage)) {
       const [table] = await sql<Array<{ present: boolean }>>`
         SELECT to_regclass(${spec.table}) IS NOT NULL AS present
       `;
@@ -483,6 +534,11 @@ export async function runSessionSearchIndexBuildOnce(
         result.indexes.push({ name: spec.name, action: 'would-build', elapsedMs: 0 });
         continue;
       }
+      if (spec.definition.startsWith('USING gin') && !(await hasIndexBuildHeadroom())) {
+        result.skipped = 'low-disk';
+        result.indexes.push({ name: spec.name, action: 'deferred-low-disk', elapsedMs: 0 });
+        return;
+      }
       try {
         // CONCURRENTLY cannot run inside a transaction block — sql.unsafe() on the pooled
         // connection issues it autocommit, which is what we want.
@@ -500,7 +556,9 @@ export async function runSessionSearchIndexBuildOnce(
   };
 
   await ensureIndexes('corpus');
+  if (result.skipped === 'low-disk') return result;
   await refreshWindows(sql, o, result, overBudget, () => ensureIndexes('windows'));
+  if (result.skipped === 'low-disk') return result;
   await refreshVocabularies(sql, o, result, overBudget);
   await ensureIndexes('vocab');
   return result;

@@ -41,7 +41,7 @@ import { closeTask } from '../task-manager/store';
 import { taskTerminalEventKey } from '../task-manager/task-terminal-events';
 import type { CodeIntelAnswer } from './contracts';
 import { nativeLanguageControls } from './fair-comparison-corpus';
-import { materializeFrozenRepositoryTask, validateFrozenInputs, verifyFrozenSource,
+import { materializeFrozenRepositoryTask, measureFairToolPayload, prepareFrozenControl, validateFrozenInputs, verifyFrozenSource,
   type FrozenFairInputs } from './fair-comparison-cli';
 import { shutdownAllLspClients } from './lsp-adapter';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
@@ -175,17 +175,60 @@ describe('native P026 frozen repository-task replay', () => {
           coverage = 'unsupported';
         }
       }
+      const wallMs = performance.now() - started;
+      const tokenWitness = await measureFairToolPayload(request, response);
       console.log('NATIVE_REPOSITORY_TASK=' + JSON.stringify({ caseId: kase.id,
         question: kase, preregHash: frozen.preregistration.hash, sourceWitness,
         tool, request, response, sites, expectedSites, coverage,
-        wallMs: performance.now() - started, rawResponseBytes: Buffer.byteLength(JSON.stringify(response)),
+        wallMs, rawResponseBytes: Buffer.byteLength(JSON.stringify(response)),
         // This suite is a shared process and this replay materializes the pinned
         // file only. Never infer frozen project configuration or fresh-task costs.
         configurationWitness: { status: 'not-measured', reason: 'pinned-project-configuration-not-materialized' },
-        resultTokens: null, processCosts: { status: 'not-measured', reason: 'shared-test-process-not-fresh-task' },
+        resultTokens: tokenWitness.responseTokens, tokenWitness,
+        processCosts: { status: 'not-measured', reason: 'shared-test-process-not-fresh-task' },
         authoredControlOnly: false, backendVerdict: 'unqualified' }));
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 60_000);
+});
+
+describe('native P026 frozen configuration invalidation', () => {
+  it('refuses a removed project config after a keyed answer, then recovers on the original bytes', async () => {
+    const configured = frozen.cases.find(kase => kase.id === 'native-typescript-symbol-search-positive-configured-current')!;
+    const unconfigured = frozen.cases.find(kase => kase.id === 'native-typescript-callers-positive-unconfigured-current')!;
+    const expected = repositoryKeys.get(configured.id)!.sites;
+    const root = mkdtempSync(join(tmpdir(), 'native-frozen-config-'));
+    const path = configured.anchorFile!;
+    const request = lspQuery.args.parse({ op: 'workspace_symbols', rootPath: root,
+      file: path, language: 'typescript', name: configured.subject, limit: 20 });
+    const query = async () => (await lspQuery.handler(request,
+      { projectDir: root, workspaceId } as never) as { data: CodeIntelAnswer }).data;
+    const sites = (answer: CodeIntelAnswer) => answer.sites.map(site => `${site.path}:${site.line1}`).sort();
+    try {
+      const original = await prepareFrozenControl(root, configured, frozen);
+      const before = await query();
+      expect(before.error, JSON.stringify(before)).toBeNull();
+      expect(sites(before)).toEqual([...expected].sort());
+      const removed = await prepareFrozenControl(root, unconfigured, frozen);
+      expect(removed?.currentSourceHash).toBe(original?.currentSourceHash);
+      expect(removed?.configurationFiles.map(file => file.hash)).toEqual([null]);
+      const refusal = await query();
+      expect(refusal.error).toMatch(/no tsconfig.json or jsconfig.json/);
+      expect(refusal.freshness.health).not.toBe('healthy');
+      expect(sites(refusal)).toEqual([]);
+      const restored = await prepareFrozenControl(root, configured, frozen);
+      expect(restored).toEqual(original);
+      const after = await query();
+      expect(after.error, JSON.stringify(after)).toBeNull();
+      expect(sites(after)).toEqual([...expected].sort());
+      console.log('NATIVE_CONFIGURATION_INVALIDATION=' + JSON.stringify({
+        preregHash: frozen.preregistration.hash, caseIds: [configured.id, unconfigured.id],
+        tool: 'lsp:query', request, original, removed, restored, before, refusal, after,
+        tokenWitnesses: await Promise.all([before, refusal, after].map(answer => measureFairToolPayload(request, answer))),
+        authoredControlOnly: true, scope: 'typescript-workspace-symbols-config-admission',
+        processCosts: { status: 'not-measured', reason: 'shared-test-process-not-fresh-task' },
+        backendVerdict: 'unqualified' }));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 120_000);
 });
 
 describe('native P026 multilingual authored graph acceptance', () => {

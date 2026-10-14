@@ -357,6 +357,21 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
   });
 
+  it('classifies the intentional events:status judge restriction as caller control flow', () => {
+    const message =
+      'events:status — the evidence-only judge may inspect its own awaits only; exact-key inspection and fleet-meter access are unavailable.';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(classifyToolError(null, 'error', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'events:status',
+      errorCode: 'handler_error',
+      status: 'error',
+      message,
+    })).toMatchObject({ class: 'caller', direct: false });
+    // Genuine handler failures must remain eligible for structural repair.
+    expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
+  });
+
   it('classifies stale acceptance BAR amendment revision conflicts as caller state, not structural failure', () => {
     const message =
       "acceptance_bar_amendment_revision_conflict: subject plan 'verification-system-improvements-2026-10-10' expected 118, live 119";
@@ -1008,6 +1023,46 @@ describe('normalizeSuspectedToolFailure — correlated probation identity (P-013
     });
     expect(normalized.class).toBe('caller');
     expect(normalized.direct).toBe(true);
+  });
+
+  it('keeps code:run typed-root envelope reads in caller probation despite direct evidence', () => {
+    const normalized = normalizeSuspectedToolFailure({
+      toolName: 'code:run → fleet:assignments',
+      errorCode: 'structured_result_shape',
+      status: 'error',
+      message:
+        'A code:run batch failed before returning its summary: fleet:assignments returned a typed structured root, ' +
+        'but the code-run path expected an MCP content/text envelope and reported `Use direct typed fields`.',
+      directEvidence: {
+        kind: 'server-contract-mismatch',
+        expected: 'A code:run script can inspect the typed structured result returned by fleet:assignments.',
+        actual: 'code:run returned structured_result_shape after a content/text envelope read.',
+      },
+    });
+
+    expect(normalized.class).toBe('caller');
+    expect(normalized.direct).toBe(false);
+  });
+
+  it('keeps the code:run typed-root caller diagnostic in probation when errorCode is omitted', () => {
+    const message =
+      'Code-run script treated nested fleet:assignments typed output as an MCP content/text envelope and failed with ' +
+      'structured_result_shape; the nested result was a typed root.';
+    expect(classifyToolError(null, 'error', message)).toBe('caller');
+
+    const normalized = normalizeSuspectedToolFailure({
+      toolName: 'code:run → fleet:assignments',
+      status: 'error',
+      message,
+      directEvidence: {
+        kind: 'server-contract-mismatch',
+        expected: 'code:run exposes the nested fleet:assignments typed result directly',
+        actual: 'the script tried to read an MCP content/text envelope from the typed root',
+      },
+    });
+
+    expect(normalized.class).toBe('caller');
+    expect(normalized.direct).toBe(false);
   });
 
   it('routes code:run compile_error to caller while retaining explicit defect evidence override', () => {

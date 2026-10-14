@@ -39,9 +39,26 @@ describe('Guide uses the existing PostHog consent boundary', () => {
       analytics.update(createTutorialState(scope));
       recordTutorialHelpRequest('connection', 'ready');
       await act(async () => { await Promise.resolve(); });
-      expect(fetch).not.toHaveBeenCalled();
+      const requests = vi.mocked(fetch).mock.calls;
+      expect(requests).toHaveLength(3);
+      const payloads = requests.map(([url, init]) => {
+        expect(url).toBe('/api/hosted/browser/monitoring/event');
+        expect(init).toMatchObject({ method: 'POST', credentials: 'include', keepalive: true });
+        const payload = JSON.parse(String(init?.body));
+        expect(Object.keys(payload).sort()).toEqual(['event', 'operation_id', 'properties']);
+        expect(payload.event).toBe('cloud_tutorial');
+        expect(payload.operation_id).toMatch(/^[a-f0-9-]{36}$/);
+        expect(payload.properties).toMatchObject({ lesson_id: 'first-cloud-agent', lesson_version: 1 });
+        expect(Object.keys(payload.properties).every(key =>
+          ['lesson_id', 'lesson_version', 'action', 'step', 'status'].includes(key))).toBe(true);
+        for (const privateId of Object.values(scope)) expect(JSON.stringify(payload)).not.toContain(privateId);
+        return payload;
+      });
+      expect(payloads.map(payload => payload.properties.action)).toEqual(['start', 'step_displayed', 'help_requested']);
       expect(sdk.init).not.toHaveBeenCalled();
       expect(sdk.capture).not.toHaveBeenCalled();
+      expect(sdk.identify).not.toHaveBeenCalled();
+      expect(sdk.startSessionRecording).not.toHaveBeenCalled();
 
       // The same default sink must still check consent for a desktop host.
       delete window.__PAPERCUSP_HOSTED_BROWSER__;

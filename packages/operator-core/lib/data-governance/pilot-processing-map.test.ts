@@ -104,6 +104,25 @@ describe('pilot processing map', () => {
     expect(unpinned).toEqual([]);
   });
 
+  it('declares one retention treatment for each persisted store across its processing paths', () => {
+    const treatments = new Map<string, Set<string>>();
+    for (const p of PILOT_PROCESSING_MAP.filter((p) => p.status !== 'outside-profile')) {
+      for (const store of p.stores) {
+        const declared = treatments.get(store.qualified) ?? new Set<string>();
+        declared.add(store.retention);
+        treatments.set(store.qualified, declared);
+      }
+    }
+    const conflicting = [...treatments]
+      .filter(([, declared]) => declared.size !== 1)
+      .map(([qualified, declared]) => ({ qualified, retention: [...declared].sort() }));
+    expect(conflicting).toEqual([]);
+    for (const store of pilotStorePopulation()) {
+      const declared = treatments.get(store.qualified);
+      if (declared) expect(declared.has(store.retention), store.qualified).toBe(true);
+    }
+  });
+
   it('makes unknowns explicit: never empty, and "none" only on a selected path', () => {
     for (const p of PILOT_PROCESSING_MAP) {
       expect(p.unknowns.length, `${p.id} unknowns`).toBeGreaterThan(0);

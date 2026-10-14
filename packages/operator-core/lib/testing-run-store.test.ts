@@ -1629,6 +1629,138 @@ describe('durable detached snapshot lifecycle', () => {
     }
   });
 
+  it.each([
+    { name: 'missing manifest', reason: 'requested-files-unavailable', requestedFiles: undefined,
+      ledger: 'measured', rowCount: null, ledgerStatus: null },
+    { name: 'unreadable ledger', reason: 'ledger-read-unavailable', requestedFiles: ['lib/first.test.ts'],
+      ledger: 'unavailable', rowCount: null, ledgerStatus: null },
+    { name: 'empty ledger', reason: 'ledger-empty', requestedFiles: ['lib/first.test.ts'],
+      ledger: 'empty', rowCount: 0, ledgerStatus: null },
+    { name: 'nonterminal ledger', reason: 'ledger-verdict-unavailable', requestedFiles: ['lib/first.test.ts'],
+      ledger: 'nonterminal', rowCount: 1, ledgerStatus: null },
+    { name: 'failed ledger', reason: 'ledger-not-passed', requestedFiles: ['lib/first.test.ts'],
+      ledger: 'failed', rowCount: 1, ledgerStatus: 'fail' },
+    { name: 'wrong file', reason: 'exact-file-coverage-unverified', requestedFiles: ['lib/first.test.ts'],
+      ledger: 'wrong-file', rowCount: 1, ledgerStatus: 'pass' },
+    { name: 'missing assertions', reason: 'exact-file-coverage-unverified', requestedFiles: ['lib/first.test.ts'],
+      ledger: 'unmeasured', rowCount: 1, ledgerStatus: 'pass' },
+    { name: 'duplicate request', reason: 'exact-file-coverage-unverified',
+      requestedFiles: ['lib/first.test.ts', 'lib/first.test.ts'],
+      ledger: 'measured', rowCount: 1, ledgerStatus: 'pass' },
+  ] as const)('diagnoses the withheld coverage prerequisite: $name', async (scenario) => {
+    const runId = `coverage-diagnostic-${scenario.name.replaceAll(' ', '-')}`;
+    const filePath = scenario.ledger === 'wrong-file' ? 'lib/other.test.ts' : 'lib/first.test.ts';
+    const ledgerRows = scenario.ledger === 'empty' ? [] : [{
+      file_path: filePath,
+      status: scenario.ledger === 'failed' ? 'fail' : scenario.ledger === 'nonterminal' ? 'running' : 'pass',
+      finished_at: scenario.ledger === 'nonterminal' ? null : new Date(1_700_000_001_000),
+      output_tail: null,
+      execution_details: scenario.ledger === 'unmeasured' ? null : measuredPass(filePath, runId),
+    }];
+    const durableRow: Record<string, unknown> = {
+      run_id: runId, task_id: 'task-coverage-diagnostic', kind: 'vitest', label: 'coverage diagnostic',
+      file_path: null, command: ['node', 'scripts/test-files.mjs'], status: 'pass', exit_code: 0,
+      started_at: new Date(1_700_000_000_000), finished_at: new Date(1_700_000_010_000),
+      output: 'x'.repeat(16 * 1024), truncated: false,
+      task_detail: { requestedFiles: scenario.requestedFiles },
+    };
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return [{ ...durableRow }];
+      if (statement.includes('FROM harness_shared.test_runs')) {
+        if (scenario.ledger === 'unavailable') throw new Error('database unavailable');
+        return ledgerRows;
+      }
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        Object.assign(durableRow, { status: values[0], output: values[3], truncated: values[4] });
+        return [{ run_id: runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const withheld = await store.getRunAsync(runId, sql);
+
+    expect(withheld).toMatchObject({ status: 'error', exitCode: 0, truncated: true });
+    const diagnostic = withheld!.output.split('\n').find(line => line.startsWith('[coverage-gate:verification] '));
+    expect(JSON.parse(diagnostic!.slice('[coverage-gate:verification] '.length))).toEqual({
+      reason: scenario.reason,
+      requestedFileCount: scenario.requestedFiles?.length ?? null,
+      ledgerRowCount: scenario.rowCount,
+      ledgerStatus: scenario.ledgerStatus,
+    });
+    expect(withheld!.output.length).toBeLessThanOrEqual(16 * 1024);
+    expect(withheld!.output.match(/Vitest PASS withheld/g)).toHaveLength(1);
+    const repeated = await store.getRunAsync(runId, sql);
+    expect(repeated?.output).toBe(withheld?.output);
+    expect(updates).toHaveLength(1);
+  });
+
+  it('diagnoses unavailable coverage storage for a local terminal PASS', async () => {
+    const previousOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+    delete process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+    try {
+      const snapshot = store.startRun(req({ requestedFiles: ['lib/first.test.ts'] }));
+      lastChild._emitClose(0);
+
+      const withheld = await store.getRunAsync(snapshot.runId);
+
+      expect(withheld).toMatchObject({ status: 'error', exitCode: 0 });
+      expect(withheld?.output).toContain('"reason":"snapshot-store-unavailable"');
+      expect(withheld?.output).toContain('"ledgerRowCount":null');
+      expect((await store.getRunAsync(snapshot.runId))?.output).toBe(withheld?.output);
+    } finally {
+      if (previousOptIn === undefined) delete process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+      else process.env.PAPERCUSP_TEST_RUNS_PERSIST = previousOptIn;
+    }
+  });
+
+  it('upgrades legacy coverage warnings, refreshes the reason, and clears diagnostics on recovery', async () => {
+    const runId = 'legacy-coverage-diagnostic';
+    const filePath = 'lib/first.test.ts';
+    const durableRow: Record<string, unknown> = {
+      run_id: runId, task_id: 'task-legacy-coverage', kind: 'vitest', label: 'legacy coverage',
+      file_path: null, command: ['node', 'scripts/test-files.mjs'], status: 'error', exit_code: 0,
+      started_at: new Date(1_700_000_000_000), finished_at: new Date(1_700_000_010_000),
+      output: '\n[coverage-gate] Vitest PASS withheld: the latest per-file ledger rows do not prove that every requested file passed.\n',
+      truncated: false, task_detail: { requestedFiles: [filePath] },
+    };
+    let ledgerRows: Array<Record<string, unknown>> = [];
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return [{ ...durableRow }];
+      if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        Object.assign(durableRow, { status: values[0], exit_code: values[1], finished_at: values[2],
+          output: values[3], truncated: values[4] });
+        return [{ run_id: runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const upgraded = await store.getRunAsync(runId, sql);
+    expect(upgraded?.output).toContain('"reason":"ledger-empty"');
+    expect(upgraded?.output.match(/Vitest PASS withheld/g)).toHaveLength(1);
+    ledgerRows = [{ file_path: filePath, status: 'pass', finished_at: new Date(1_700_000_011_000),
+      output_tail: null, execution_details: null }];
+    const refreshed = await store.getRunAsync(runId, sql);
+    expect(refreshed?.output).toContain('"reason":"exact-file-coverage-unverified"');
+    expect(refreshed?.output).not.toContain('"reason":"ledger-empty"');
+    expect(refreshed?.output.match(/\[coverage-gate:verification\]/g)).toHaveLength(1);
+    expect((await store.getRunAsync(runId, sql))?.output).toBe(refreshed?.output);
+    expect(updates).toHaveLength(2);
+
+    ledgerRows[0]!.execution_details = measuredPass(filePath, runId);
+    const recovered = await store.getRunAsync(runId, sql);
+    expect(recovered).toMatchObject({ status: 'pass', exitCode: 0 });
+    expect(recovered?.output).not.toContain('[coverage-gate');
+    expect(recovered?.output).toContain('recovered pass from exact requested-file ledger rows');
+    expect(updates.map(([status]) => status)).toEqual(['error', 'error', 'pass']);
+  });
+
   it('withholds a terminal PASS when requested per-file ledger rows include failures', async () => {
     const runId = 'terminal-pass-with-failed-ledger';
     const requestedFiles = ['lib/first.test.ts', 'lib/second.test.ts', 'lib/third.test.ts'];

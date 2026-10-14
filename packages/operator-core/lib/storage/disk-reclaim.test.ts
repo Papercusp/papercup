@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { compilePolicy, type RetentionClass } from './retention-policy';
-import { nativeRetentionCommand, physicalRetentionRoots, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type RetentionEntry } from './disk-reclaim';
+import { createRetentionHolderScanner, nativeRetentionCommand, physicalRetentionRoots, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type RetentionEntry } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -176,6 +177,82 @@ describe('retention holder evidence', () => {
     const input = Buffer.concat(chunks).toString('utf8');
     expect(Buffer.byteLength(input)).toBeGreaterThan(128 * 1024);
     expect(JSON.parse(input)).toEqual([...paths, process.cwd()]);
+  });
+});
+
+describe('per-pass kernel holder transport', () => {
+  const target = fileURLToPath(import.meta.url);
+  const evidence = (path: string, pids: string[] = [], patch = {}) => ({ complete: true,
+    byPath: pids.length ? [[path, pids]] : [], diagnostics: { fdEnd: 1, cwdEnd: 1, readFailures: 0,
+      identityStable: true, callerSeen: 1, descriptorsScanned: 50, processesScanned: 10, elapsedMs: 2, ...patch } });
+  const fixture = (respond: (request: { path: string; caller: number; control: string }, child: ChildProcess) => void) => {
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      exitCode: null as number | null, signalCode: null, kill: vi.fn() });
+    child.kill.mockImplementation(() => { child.exitCode = 1; child.emit('close', 1, 'SIGKILL'); return true; });
+    child.stdin.on('data', (data: Buffer) => respond(JSON.parse(data.toString()), child as unknown as ChildProcess));
+    child.stdin.once('finish', () => { child.exitCode = 0; child.emit('close', 0, null); });
+    delegateSpawn.mockImplementationOnce(async (_command, _args, spec, options) => {
+      expect(spec.detail.operation).toBe('retention-holder-scan');
+      expect(options.requireRegistration).toBe(true);
+      options.onSpawn(child as unknown as ChildProcess, 'persistent-holder-task');
+      return { child, taskId: 'persistent-holder-task' };
+    });
+    return child;
+  };
+  afterEach(() => { vi.useRealTimers(); delegateSpawn.mockReset(); });
+
+  it('serializes requests through one child and never reuses absence across open/close changes', async () => {
+    const requests: unknown[] = [];
+    const child = fixture((request, spawned) => {
+      requests.push(request);
+      spawned.stdout!.emit('data', JSON.stringify(evidence(request.path, requests.length === 2 ? ['123'] : [])) + '\n');
+    });
+    const fallback = vi.fn(); const scanner = createRetentionHolderScanner({ fallback });
+    try {
+      const results = await Promise.all([scanner.scan([target]), scanner.scan([target]), scanner.scan([target])]);
+      expect(results.every((result) => result.complete)).toBe(true);
+      expect(results.map((result) => result.byPath.get(target))).toEqual([undefined, ['123'], undefined]);
+      expect(requests).toEqual(Array(3).fill({ path: target, caller: process.pid, control: process.cwd() }));
+      expect(delegateSpawn).toHaveBeenCalledTimes(1); expect(fallback).not.toHaveBeenCalled();
+    } finally { await scanner.close(); }
+    expect(child.stdin.writableEnded).toBe(true);
+    expect((await scanner.scan([target])).complete).toBe(false);
+  });
+
+  it.each([{ fdEnd: 0 }, { cwdEnd: 0 }, { callerSeen: 0 }, { readFailures: 1 }, { identityStable: false }])(
+    'falls back to a new full proc scan when kernel evidence is incomplete (%j)', async (patch) => {
+      fixture((request, child) => child.stdout!.emit('data', JSON.stringify(evidence(request.path, [], patch)) + '\n'));
+      const fallback = vi.fn(async () => ({ complete: false, byPath: new Map<string, string[]>(), diagnostics: { reason: 'proc denied' } }));
+      const scanner = createRetentionHolderScanner({ fallback });
+      try {
+        const result = await scanner.scan([target]); expect(result.complete).toBe(false);
+        expect(result.diagnostics?.reason).toContain('proc denied'); expect(fallback).toHaveBeenCalledWith([target]);
+      } finally { await scanner.close(); }
+    },
+  );
+
+  it('fails closed on a lost child and accepts only the fallback caller-controlled result', async () => {
+    fixture((_request, child) => child.emit('close', 1, null));
+    const fallback = vi.fn(async () => ({ complete: true, byPath: new Map([[target, ['456']], [process.cwd(), [String(process.pid)]]]) }));
+    const scanner = createRetentionHolderScanner({ fallback });
+    try {
+      expect((await scanner.scan([target])).byPath.get(target)).toEqual(['456']);
+      await scanner.scan([target]); expect(delegateSpawn).toHaveBeenCalledTimes(1); expect(fallback).toHaveBeenCalledTimes(2);
+    } finally { await scanner.close(); }
+  });
+
+  it('bounds a silent worker request, then uses the full fresh fallback', async () => {
+    let wrote!: () => void; const written = new Promise<void>((resolve) => { wrote = resolve; });
+    const child = fixture(() => wrote());
+    const fallback = vi.fn(async () => ({ complete: false, byPath: new Map<string, string[]>() }));
+    vi.useFakeTimers();
+    const scanner = createRetentionHolderScanner({ fallback });
+    try {
+      const response = scanner.scan([target]); await written;
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect((await response).complete).toBe(false); expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(fallback).toHaveBeenCalledTimes(1);
+    } finally { await scanner.close(); }
   });
 });
 

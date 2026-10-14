@@ -7,7 +7,7 @@
  *   plan     print every mutation `up` would make, change nothing
  *   up       idempotently create the project, network, private services access,
  *            secrets, Cloud SQL instance, databases, per-database owner roles and the
- *            hosted roles (harness_admin, harness_app, harness_zero), then verify.
+ *            hosted roles (harness_admin, harness_app, harness_zero, harness_ops), then verify.
  *            Safe to re-run: existing resources are left alone.
  *   verify   check the live instance against the spec (drift = non-zero exit).
  *            `verify --logins` also proves each owner and hosted role can log in to its
@@ -28,11 +28,13 @@
 import { execFile } from 'node:child_process';
 import { stripVTControlCharacters } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { assertPinnedGcpSecretReference } from '@papercusp/operator-core/lib/inference-gateway/egress-providers/secret-ref';
 import {
   assertIdent,
   assertScramVerifier,
   HOSTED_DATABASE,
   HOSTED_ROLES,
+  HOSTED_OPS_ROLE,
   hostedPasswordSecret,
   hostedUrlSecret,
   productionRoleSql,
@@ -589,19 +591,22 @@ async function ensureOwnerRoles(ctx: Ctx, rootPassword: string): Promise<void> {
 
 /**
  * D-010: the hosted control plane's migration role (harness_admin), runtime role (harness_app)
- * and the NOLOGIN harness_zero the migrations name, plus the extensions harness_admin cannot
- * create itself. The two URL secrets are what P-007 delivers as the D-009 env vars.
+ * and the NOLOGIN harness_zero the migrations name, plus P-013's dedicated audited reader
+ * and the extensions harness_admin cannot create itself. The ops URL stays a separate
+ * pinned reference; its accessor IAM and session admission are not granted here.
  */
 async function ensureHostedRoles(ctx: Ctx): Promise<void> {
   const { admin, app, zero } = HOSTED_ROLES;
   const adminPassword = await ensureSecret(ctx, hostedPasswordSecret(admin), () => generatePassword());
   const appPassword = await ensureSecret(ctx, hostedPasswordSecret(app), () => generatePassword());
+  const opsPassword = await ensureSecret(ctx, hostedPasswordSecret(HOSTED_OPS_ROLE), () => generatePassword());
   const sql = productionRoleSql({
     adminVerifier: scramSha256Verifier(adminPassword),
     appVerifier: scramSha256Verifier(appPassword),
+    opsVerifier: scramSha256Verifier(opsPassword),
   });
   ctx.mutations.push(
-    `execute-sql as postgres: create/alter roles ${admin}, ${app}, ${zero}; privileges and extensions on ${HOSTED_DATABASE}`,
+    `execute-sql as postgres: create/alter roles ${admin}, ${app}, ${zero}, ${HOSTED_OPS_ROLE}; privileges and extensions on ${HOSTED_DATABASE}`,
   );
   if (!ctx.dryRun) {
     for (const [database, text] of [
@@ -615,6 +620,7 @@ async function ensureHostedRoles(ctx: Ctx): Promise<void> {
   }
   await ensureUrlSecret(ctx, hostedUrlSecret(admin), admin, HOSTED_DATABASE, adminPassword);
   await ensureUrlSecret(ctx, hostedUrlSecret(app), app, HOSTED_DATABASE, appPassword);
+  await ensureUrlSecret(ctx, hostedUrlSecret(HOSTED_OPS_ROLE), HOSTED_OPS_ROLE, HOSTED_DATABASE, opsPassword);
 }
 
 async function ensureUrlSecret(ctx: Ctx, secret: string, role: string, db: string, password: string): Promise<void> {
@@ -634,6 +640,28 @@ export interface VerifyReport {
   missingDatabases: string[];
   missingSecrets: string[];
   loginFailures: string[];
+  /** Canonical pinned reference only. No URL value or IAM grant is returned. */
+  opsUrlReference: string | null;
+  secretReferenceFailures: string[];
+}
+
+/** Read metadata, never the URL value, to pin P-013's dedicated connection secret. */
+export async function readHostedOpsUrlReference(ctx: Ctx): Promise<string> {
+  const project = await describe(ctx, ['projects', 'describe', ctx.spec.project]);
+  const projectNumber = String(project?.projectNumber ?? '');
+  if (project?.projectId !== ctx.spec.project || !/^[1-9][0-9]*$/.test(projectNumber)) {
+    throw new Error('hosted_ops_secret_project_identity_invalid');
+  }
+  const version = await describe(ctx, ['secrets', 'versions', 'describe', 'latest',
+    `--secret=${hostedUrlSecret(HOSTED_OPS_ROLE)}`, `--location=${ctx.spec.region}`, ...proj(ctx)]);
+  const resource = `projects/${projectNumber}/locations/${ctx.spec.region}/secrets/${hostedUrlSecret(HOSTED_OPS_ROLE)}/versions/`;
+  const name = String(version?.name ?? '');
+  if (version?.state !== 'ENABLED' || !name.startsWith(resource) || !/^[1-9][0-9]*$/.test(name.slice(resource.length))) {
+    throw new Error('hosted_ops_secret_version_identity_invalid');
+  }
+  const reference = `${['gcp', 'secret'].join('-')}:${name}`;
+  assertPinnedGcpSecretReference(reference);
+  return reference;
 }
 
 /**
@@ -644,7 +672,7 @@ export interface VerifyReport {
 export async function verify(ctx: Ctx, opts: { logins: boolean }): Promise<VerifyReport> {
   const { spec } = ctx;
   const describeInstance = () => describe(ctx, ['sql', 'instances', 'describe', spec.instance, ...proj(ctx)]);
-  const report: VerifyReport = { instanceDrift: [], missingDatabases: [], missingSecrets: [], loginFailures: [] };
+  const report: VerifyReport = { instanceDrift: [], missingDatabases: [], missingSecrets: [], loginFailures: [], opsUrlReference: null, secretReferenceFailures: [] };
   if (!(await describeInstance())) {
     report.instanceDrift = ['instance does not exist'];
     return report;
@@ -660,10 +688,14 @@ export async function verify(ctx: Ctx, opts: { logins: boolean }): Promise<Verif
   const secrets = [
     ROOT_SECRET,
     ...spec.databases.flatMap((d) => [ownerPasswordSecret(d), urlSecret(d)]),
-    ...[HOSTED_ROLES.admin, HOSTED_ROLES.app].flatMap((r) => [hostedPasswordSecret(r), hostedUrlSecret(r)]),
+    ...[HOSTED_ROLES.admin, HOSTED_ROLES.app, HOSTED_OPS_ROLE].flatMap((r) => [hostedPasswordSecret(r), hostedUrlSecret(r)]),
   ];
   for (const s of secrets) {
     if (!(await describe(ctx, ['secrets', 'describe', s, `--location=${spec.region}`, ...proj(ctx)]))) report.missingSecrets.push(s);
+  }
+  if (!report.missingSecrets.includes(hostedUrlSecret(HOSTED_OPS_ROLE))) {
+    try { report.opsUrlReference = await readHostedOpsUrlReference(ctx); }
+    catch { report.secretReferenceFailures.push('harness_ops URL requires an enabled canonical pinned Secret Manager version'); }
   }
   return report;
 }
@@ -678,10 +710,27 @@ export interface LoginProbe {
   bypassrls?: unknown;
   cloudsqlsuperuser?: unknown;
   selfgrant?: unknown;
+  createdb?: unknown;
+  memberships?: unknown;
+  databaseWrite?: unknown;
+  directDataAccess?: unknown;
+  unauditedFunctions?: unknown;
+  readOnly?: unknown;
+  transactionTimeout?: unknown;
+  connectionLimit?: unknown;
 }
 
+// Only the two verified extension-owned statistics views are exempt from the
+// customer-data ACL check. The real-PG suite proves their SQL text privacy.
 export const LOGIN_PROBE_SQL =
-  "SELECT json_build_object('user', current_user, 'db', current_database(), 'super', r.rolsuper, 'createrole', r.rolcreaterole, 'replication', r.rolreplication, 'bypassrls', r.rolbypassrls, 'cloudsqlsuperuser', pg_has_role(current_user, 'cloudsqlsuperuser', 'MEMBER'), 'selfgrant', current_setting('createrole_self_grant'))::text AS j FROM pg_roles r WHERE r.rolname = current_user";
+  `SELECT json_build_object('user', current_user, 'db', current_database(), 'super', r.rolsuper, 'createrole', r.rolcreaterole, 'replication', r.rolreplication, 'bypassrls', r.rolbypassrls, 'cloudsqlsuperuser', pg_has_role(current_user, 'cloudsqlsuperuser', 'MEMBER'), 'selfgrant', current_setting('createrole_self_grant'),
+    'createdb', r.rolcreatedb, 'memberships', EXISTS (SELECT 1 FROM pg_auth_members WHERE member = r.oid),
+    'databaseWrite', has_database_privilege(current_user, current_database(), 'CREATE') OR has_database_privilege(current_user, current_database(), 'TEMPORARY'),
+    'directDataAccess', EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND c.relkind IN ('r','p','v','m','f')
+      AND NOT (c.relkind = 'v' AND c.relname IN ('pg_stat_statements', 'pg_stat_statements_info') AND EXISTS (SELECT 1 FROM pg_depend d JOIN pg_extension e ON e.oid = d.refobjid WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e' AND e.extname = 'pg_stat_statements'))
+      AND (has_table_privilege(current_user, c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user, c.oid, 'SELECT,INSERT,UPDATE,REFERENCES'))),
+    'unauditedFunctions', EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE p.prosecdef AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND NOT (n.nspname = 'papercusp_auth' AND p.proname = 'read_hosted_customer_export_rows_audited' AND oidvectortypes(p.proargtypes) = 'text, text, uuid, text, uuid') AND has_function_privilege(current_user, p.oid, 'EXECUTE')),
+    'readOnly', current_setting('default_transaction_read_only'), 'transactionTimeout', current_setting('transaction_timeout'), 'connectionLimit', r.rolconnlimit)::text AS j FROM pg_roles r WHERE r.rolname = current_user`;
 
 /**
  * Judge one login probe. The attributes upsertRoleSql cannot reset on an existing role
@@ -699,6 +748,11 @@ export function judgeLogin(cell: LoginProbe, want: { role: string; db: string; c
   if (want.createRole && cell.selfgrant !== 'set, inherit') {
     failures.push(`${want.role} has createrole_self_grant=${JSON.stringify(cell.selfgrant)}, want "set, inherit"`);
   }
+  if (want.role === HOSTED_OPS_ROLE && (cell.createdb !== false || cell.memberships !== false || cell.databaseWrite !== false ||
+      cell.directDataAccess !== false || cell.unauditedFunctions !== false || cell.readOnly !== 'on' ||
+      cell.transactionTimeout !== '15min' || cell.connectionLimit !== 2)) {
+    failures.push(`${want.role} is not restricted to audited read-only access: ${seen}`);
+  }
   return failures;
 }
 
@@ -709,6 +763,7 @@ export function loginTargets(spec: CloudSqlProdSpec): Array<{ role: string; from
     ...spec.databases.map((db) => ({ role: ownerRole(db), from: ownerPasswordSecret(db), db, createRole: false })),
     hosted(HOSTED_ROLES.admin, true),
     hosted(HOSTED_ROLES.app, false),
+    hosted(HOSTED_OPS_ROLE, false),
   ];
 }
 
@@ -724,8 +779,7 @@ async function verifyLogins(ctx: Ctx): Promise<string[]> {
       continue;
     }
     failures.push(...judgeLogin(cell, { role, db, createRole }));
-    const other = spec.databases.find((d) => d !== db);
-    if (other) {
+    for (const other of spec.databases.filter((d) => d !== db)) {
       const x = await executeSql(ctx, role, from, other, 'SELECT 1');
       if (x.code === 0 && !/permission denied|not permitted|denied/i.test(x.stdout + x.stderr)) {
         failures.push(`${role} could connect to ${other} (CONNECT not restricted)`);
@@ -741,6 +795,7 @@ function reportFailures(r: VerifyReport): string[] {
     ...r.missingDatabases.map((d) => `missing database: ${d}`),
     ...r.missingSecrets.map((s) => `missing secret: ${s}`),
     ...r.loginFailures.map((l) => `login: ${l}`),
+    ...r.secretReferenceFailures.map((s) => `secret reference: ${s}`),
   ];
 }
 

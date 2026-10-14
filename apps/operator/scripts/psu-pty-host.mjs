@@ -11295,6 +11295,28 @@ export function hostThroughPty(o) {
       });
       return true;
     };
+    // Model setup can repaint Starting after a Ready frame, including after
+    // the short marker has echoed. Keep that staged prefix and wait under the
+    // existing child/deadline gates instead of dropping or pasting it again.
+    const waitForCodexStartupAtWrite = async (phase) => {
+      if (!requireInitialOutput || !codexStartupExplicitlyStarting()) return null;
+      appendHostEvent(ownerId, 'kickoff-waiting-for-codex-startup', {
+        label, phase, elapsedMs: Math.max(0, Date.now() - injectStartedAt),
+        remainingMs: Math.max(0, deadline - Date.now()),
+      });
+      while (
+        codexStartupExplicitlyStarting() &&
+        child === injectChild && !hostCleanedUp && !shuttingDown &&
+        !freshChildWasInterrupted() && !codexStartingStuck() &&
+        (Date.now() < deadline || holdForCodexStartingFooter())
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
+      }
+      if (child !== injectChild) return 'superseded';
+      if (hostCleanedUp || shuttingDown) return 'host-ended';
+      if (freshChildWasInterrupted()) return 'fresh-child-owner-input';
+      return codexStartupExplicitlyStarting() ? 'codex-startup-still-starting' : null;
+    };
     try {
       // A scripted resume/port begins this task before wireChildData() is
       // reached later in host setup. Yield until the listener has observed at
@@ -11546,8 +11568,12 @@ export function hostThroughPty(o) {
             dropReason = 'codex-backend-frame-not-observed';
             break;
           }
-          if (requireInitialOutput && codexStartupExplicitlyStarting()) {
-            dropReason = 'codex-startup-still-starting';
+          const startupWaitAtWrite = await waitForCodexStartupAtWrite('first-byte');
+          if (startupWaitAtWrite) {
+            if (startupWaitAtWrite !== 'codex-startup-still-starting') {
+              return { delivered: false, reason: startupWaitAtWrite, attempts };
+            }
+            dropReason = startupWaitAtWrite;
             break;
           }
           // The text is the first step; later steps are delayed submit CRs, so
@@ -11588,8 +11614,12 @@ export function hostThroughPty(o) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
             if (hostCleanedUp || shuttingDown) return { delivered: false, reason: 'host-ended', attempts };
-            if (requireInitialOutput && codexStartupExplicitlyStarting()) {
-              markerEchoFailureReason = 'codex-startup-still-starting';
+            const startupWaitAtStep = await waitForCodexStartupAtWrite(`step-${stepIndex}`);
+            if (startupWaitAtStep) {
+              if (startupWaitAtStep !== 'codex-startup-still-starting') {
+                return { delivered: false, reason: startupWaitAtStep, attempts };
+              }
+              markerEchoFailureReason = startupWaitAtStep;
               break;
             }
             const chunks = ptyWriteChunks(step.data);
@@ -11837,6 +11867,7 @@ export function hostThroughPty(o) {
       reason: dropReason,
       attempts,
       budgetMs,
+      elapsedMs: Math.max(0, Date.now() - injectStartedAt),
       ...(earlyStuck ? { earlyStuck: true } : {}),
     });
     if (!earlyStuck) writeStartupTurnDroppedLine({ label, dropReason, budgetMs, attempts });

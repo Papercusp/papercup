@@ -34,6 +34,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from './workspace-registry';
 import { agendaClearedExclusionSql } from './owner-directive-agenda';
+import { hasOnlyUrlReferences, URL_ONLY_DISPOSITION_ERROR } from './spec-conformance/disposition-evidence';
 import {
   alsoSentToNote,
   directiveDisplayText,
@@ -588,12 +589,16 @@ export async function countOpenOwnerDirectives(
 
 export type DispositionOwnerDirectiveResult =
   | { ok: true; row: OwnerDirectiveRow }
-  | { ok: false; error: 'not_found' | 'already_dispositioned'; row?: OwnerDirectiveRow };
+  | { ok: false; error: 'not_found' | 'already_dispositioned' | 'url_only_done_note'; row?: OwnerDirectiveRow };
 
 export async function dispositionOwnerDirective(
   input: { id: number; status: OwnerDirectiveDisposition; note: string; dispositionedBy: string },
   sql?: Sql,
 ): Promise<DispositionOwnerDirectiveResult> {
+  // Guard the canonical writer so alternate callers cannot bypass orders:disposition.
+  if (input.status === 'done' && hasOnlyUrlReferences(input.note)) {
+    return { ok: false, error: URL_ONLY_DISPOSITION_ERROR };
+  }
   const s = db(sql);
   const rows = await s<RawRow[]>`
     UPDATE harness_shared.owner_directives

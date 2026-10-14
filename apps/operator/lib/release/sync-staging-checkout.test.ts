@@ -336,7 +336,18 @@ describe('sync-staging-checkout.sh migration restart preflight (EI-2418043703889
           stuckCheck.endsWith('/lint-migrations.mjs') ? [stuckCheck]
             : ['scripts/lint-migrations.mjs', stuckCheck],
         );
-        expect(existsSync(`/proc/${readFileSync(pidFile, 'utf8')}`)).toBe(false);
+        const childPid = readFileSync(pidFile, 'utf8');
+        let childState = 'gone';
+        try {
+          const stat = readFileSync(`/proc/${childPid}/stat`, 'utf8');
+          childState = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0];
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+        // SIGKILL can leave a dead child awaiting its ancestor's reap. A /proc
+        // entry alone does not mean the timed-out check can still execute.
+        process.stdout.write(`[staging-preflight] child ${childPid} termination state=${childState}\n`);
+        expect(['gone', 'Z', 'X'], `surviving check ${childPid}: ${childState}`).toContain(childState);
       } finally { rmSync(root, { recursive: true, force: true }); }
     }, 15_000,
   );

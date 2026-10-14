@@ -16,8 +16,8 @@ import postgres, { type Sql } from 'postgres';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
-import { ownerRoleSql } from './provision-cloud-sql';
-import { HOSTED_DATABASE, HOSTED_ROLES, productionRoleSql } from './role-sql';
+import { judgeLogin, LOGIN_PROBE_SQL, ownerRoleSql } from './provision-cloud-sql';
+import { HOSTED_DATABASE, HOSTED_ROLES, HOSTED_OPS_ROLE, productionOpsRoleSql, productionRoleSql } from './role-sql';
 import { generatePassword, scramSha256Verifier } from './scram';
 
 const SQL_DIR = fileURLToPath(new URL('../../libs/papercusp/libs/db/sql/', import.meta.url));
@@ -88,6 +88,85 @@ afterAll(async () => {
 });
 
 describe('production role bootstrap as a non-superuser (D-010)', () => {
+  it('P013 ops bootstrap converges without memberships, writes or cross-database access', async () => {
+    await bootstrap();
+    const cloud = connect(CLOUD_POSTGRES, 'postgres');
+    const sql = productionOpsRoleSql(verifier());
+    await cloud.unsafe(sql);
+    await cloud.unsafe(sql);
+    const ops = connect(HOSTED_OPS_ROLE, HOSTED_DATABASE);
+    const [probe] = await ops.unsafe<Array<{ j: string }>>(LOGIN_PROBE_SQL);
+    const readableRelations = await ops`
+      SELECT n.nspname, c.relname, e.extname FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      LEFT JOIN pg_depend d ON d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'
+      LEFT JOIN pg_extension e ON e.oid = d.refobjid
+      WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+        AND c.relkind IN ('r','p','v','m','f')
+        AND has_table_privilege(current_user, c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')`;
+    expect(judgeLogin(JSON.parse(probe!.j), { role: HOSTED_OPS_ROLE, db: HOSTED_DATABASE, createRole: false }),
+      JSON.stringify({ probe: JSON.parse(probe!.j), readableRelations })).toEqual([]);
+    await expect(ops.unsafe('CREATE TEMP TABLE ops_probe (x int)')).rejects.toThrow(/read-only|permission denied/);
+    await expect(ops.unsafe('CREATE TABLE public.ops_probe (x int)')).rejects.toThrow(/read-only|permission denied/);
+    await expect(connect(HOSTED_OPS_ROLE, 'portal')`SELECT 1`).rejects.toThrow(/permission denied for database/);
+    // The extension grants its two statistics views to PUBLIC, but filters
+    // other roles' SQL text unless pg_read_all_stats/superuser is held.
+    const root = connect('postgres', HOSTED_DATABASE);
+    await root.unsafe('SELECT 1 AS p013_stats_privacy_probe');
+    const [control] = await root<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM public.pg_stat_statements
+       WHERE userid <> (SELECT oid FROM pg_roles WHERE rolname = 'harness_ops')`;
+    expect(control!.n).toBeGreaterThan(0);
+    const visibleQueries = await ops<Array<{ query: string | null }>>`
+      SELECT query FROM public.pg_stat_statements
+       WHERE userid <> (SELECT oid FROM pg_roles WHERE rolname = current_user)`;
+    expect(visibleQueries.length).toBeGreaterThan(0);
+    expect(visibleQueries.every(row => row.query === null || row.query === '<insufficient privilege>')).toBe(true);
+  });
+
+  it('P013 ops bootstrap refuses inherited privilege drift before changing the role', async () => {
+    await bootstrap();
+    await connect(CLOUD_POSTGRES, 'postgres').unsafe(productionOpsRoleSql(verifier()));
+    const root = connect('postgres', 'postgres');
+    await root.unsafe('GRANT cloudsqlsuperuser TO harness_ops');
+    try {
+      await expect(connect(CLOUD_POSTGRES, 'postgres').unsafe(productionOpsRoleSql(verifier()))).rejects.toThrow(/hold no role memberships/);
+    } finally {
+      await root.unsafe('REVOKE cloudsqlsuperuser FROM harness_ops');
+    }
+  });
+
+  it('P013 ops probe detects direct table access and unaudited SECURITY DEFINER access', async () => {
+    await bootstrap();
+    await connect(CLOUD_POSTGRES, 'postgres').unsafe(productionOpsRoleSql(verifier()));
+    const root = connect('postgres', HOSTED_DATABASE);
+    await root.unsafe('CREATE TABLE public.ops_acl_probe (marker text)');
+    await root.unsafe('GRANT SELECT ON public.ops_acl_probe TO harness_ops');
+    const ops = connect(HOSTED_OPS_ROLE, HOSTED_DATABASE);
+    const observe = async () => {
+      const [probe] = await ops.unsafe<Array<{ j: string }>>(LOGIN_PROBE_SQL);
+      return JSON.parse(probe!.j);
+    };
+    try {
+      const tableAccess = await observe();
+      expect(tableAccess.directDataAccess).toBe(true);
+      expect(judgeLogin(tableAccess, { role: HOSTED_OPS_ROLE, db: HOSTED_DATABASE, createRole: false })).toEqual([expect.stringContaining('not restricted')]);
+      await root.unsafe('REVOKE SELECT ON public.ops_acl_probe FROM harness_ops');
+      await root.unsafe('GRANT SELECT (marker) ON public.ops_acl_probe TO harness_ops');
+      const columnAccess = await observe();
+      expect(columnAccess.directDataAccess).toBe(true);
+      expect(judgeLogin(columnAccess, { role: HOSTED_OPS_ROLE, db: HOSTED_DATABASE, createRole: false })).toEqual([expect.stringContaining('not restricted')]);
+      await root.unsafe('REVOKE SELECT (marker) ON public.ops_acl_probe FROM harness_ops');
+      await root.unsafe('CREATE FUNCTION public.ops_unaudited_probe() RETURNS int LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$');
+      const definerAccess = await observe();
+      expect(definerAccess.directDataAccess).toBe(false);
+      expect(definerAccess.unauditedFunctions).toBe(true);
+      expect(judgeLogin(definerAccess, { role: HOSTED_OPS_ROLE, db: HOSTED_DATABASE, createRole: false })).toEqual([expect.stringContaining('not restricted')]);
+    } finally {
+      await root.unsafe('DROP FUNCTION IF EXISTS public.ops_unaudited_probe()');
+      await root.unsafe('DROP TABLE public.ops_acl_probe');
+    }
+  });
   it('runs twice: the second run takes every ALTER branch and still succeeds', async () => {
     await bootstrap();
     await bootstrap();

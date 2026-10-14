@@ -122,6 +122,27 @@ export async function materializeFrozenRepositoryTask(tree: string, kase: FairCa
   return { path: pin.path, contentHash, sourceCommit: pin.commit, taskRef: kase.taskRef };
 }
 
+let fairToolTokenizer: import('js-tiktoken').Tiktoken | undefined;
+
+/** Exact JSON tool-payload footprint, separate from provider-billed LLM usage
+ * and from the protocol's existing bytes/4 estimate. Hashes bind the count to
+ * the preserved raw request/response, including refusals and non-ASCII text.
+ */
+export async function measureFairToolPayload(request: unknown, response: unknown) {
+  const requestJson = JSON.stringify(request), responseJson = JSON.stringify(response);
+  if (requestJson === undefined || responseJson === undefined)
+    throw new Error('tool payload must have a JSON representation');
+  const { getEncoding } = await import('js-tiktoken');
+  const tokenizer = fairToolTokenizer ??= getEncoding('o200k_base');
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+  return { serialization: 'JSON.stringify' as const, encoding: 'o200k_base' as const,
+    requestTokens: tokenizer.encode(requestJson).length,
+    responseTokens: tokenizer.encode(responseJson).length,
+    requestBytes: Buffer.byteLength(requestJson), responseBytes: Buffer.byteLength(responseJson),
+    requestHash: hash(requestJson), responseHash: hash(responseJson),
+    scope: 'raw-tool-payload-only' as const };
+}
+
 /** Restore before each question; mutations cannot leak into a later control. */
 export async function prepareFrozenControl(tree: string, kase: FairCase, inputs: FrozenFairInputs) {
   const frozen = inputs.cases.find(candidate => candidate.id === kase.id);

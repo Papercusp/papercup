@@ -2171,6 +2171,12 @@ export function timeoutForTool(toolName, callArgs) {
   const effectiveArgs = toolName === 'tools:invoke' && callArgs?.args && typeof callArgs.args === 'object'
     ? callArgs.args
     : callArgs;
+  // This bounded audit inspects fresh upstream Git/PR evidence. Its server read
+  // budget can exceed the ordinary list cutoff; preserve the foreground budget
+  // for this operation on both direct and deferred routes.
+  if (effectiveToolName === 'work_items:list' && effectiveArgs?.prDeliveryAudit) {
+    return PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+  }
   // EI-25376635449301072: an unconfirmed release:cut reclaim is a read-only
   // preview. A measured preview took 46.7s on the server, so ptool's flat 30s
   // deadline discarded a valid result before the bounded MCP request finished.

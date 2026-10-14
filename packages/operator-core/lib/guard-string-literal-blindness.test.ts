@@ -564,6 +564,30 @@ const REVIEWED_TEST_READER_CORPUS: Record<string, { sha256: string; status: 'sou
   'packages/operator-core/lib/search/search-engine-mock-completeness.test.ts': { sha256: '9d242066f01c4812e592fa0f89685be40cd485b7a4a38f3490456f349079b778', status: 'source', reason: 'walkTests selects .test.ts files and scanSource consumes their bytes, alongside fixed binding policy source.' },
   'packages/operator-core/lib/sync-interest-single-contract.test.ts': { sha256: 'f587b3cbc136355bd6d310cc37792ee13cc842ab127d4dc5979c6cbad95e9bcf', status: 'source', reason: 'SCAN_ROOTS traverses apps/packages/libs, reads selected source files and a fixed probe route.' },
   'templates/papercusp-ui/checks/theme-tokens.test.ts': { sha256: 'b39ed85da2a53cb8c5fad3a1c909e430640b367e94ac5eba5eb504638f511355', status: 'non-source', reason: 'Default inert environment has no TEMPLATE_CHECKS_CONFIG and skips the suite. Configured paths are unrestricted and explicitly outside this review.' },
+  // Positive executed-selector receipts from the last full census. Pin their exact
+  // bytes so known baseline readers are not re-executed in the VM on every test run.
+  'apps/operator-vite/src/lib/operator-core-client-boundary.test.ts': { sha256: 'ee2ad96fc5695c051cb545dee0028f8e4eea19fe93b59d012f2265e3eaaae3c1', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'apps/operator/app/_lints/design-primitives.test.ts': { sha256: '977074d3f6c22715256fd7f1f5e390d73a26d9ec57bdf948f59a64204c7bde2a', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'apps/operator/app/_lints/popper-stacking.test.ts': { sha256: '2d8e59806ea952917efbcc354366f3b4f37d97e42c418958487a7e876af01285', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'apps/operator/scripts/__tests__/watchdog-journald-independence.test.ts': { sha256: '50501eb8844fff98aee2073201de942232509f9d1e62f597b9717df7dd0f0ee6', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/__tests__/not-checked-non-gating-mirror.test.ts': { sha256: '2efce506875ee71b0c09e4ce400c9e3cad4a7e8212c14db3afb0744a14ef5aba', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/agent-tools/capability/base-dir.test.ts': { sha256: 'e1b2cd8b13a6282958927b2ef1397d425eae1f0f028df2a5c7f5a62d89ca467c', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/agent-tools/coordination/partial-jsonb-index-alignment.test.ts': { sha256: 'c8e1d7758a34a5f391ce2e184ba1f724a7a595653bbe8f5cae3ba1f2a325a09e', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/agent-tools/tool-tree-root.test.ts': { sha256: '7b848a0480b806abd402098d7f5ddb732ad3a19e0ceb965c20c577c7aa2a48e4', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/agent-tools/work_items/swallowed-work-item-read-guard.test.ts': { sha256: '157038cf8552068f221201e0a2d51e0df8af979fc4437d284b7dd4b516ed2250', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/conversation-context-projection-index.test.ts': { sha256: '9860317bacaeb6083f96448f8362cde6953246b3866f6b4972fdf77913bfb6a4', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/deployment/account-pool-write-path.test.ts': { sha256: '118b68a2bda22174250c5a9edaf786f84e374741c653a820caf47fbe15822267', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/doc-claims/identity-recovery-door.test.ts': { sha256: 'd83b35245bbec7abbb3512acd3c20aebd36ff34822ee7ca0198a6904d70e1623', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/goal-launch-resolver-coverage.test.ts': { sha256: 'a91c0b215fd6f6ee82ee06418fdab9f30ded3a75ea46a79c5cf7524ea22ba327', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/payload-object-shape-guard.test.ts': { sha256: '40a4898d106131adc42840dac049f62f84349eab05cc42c0f00dd699baf06e84', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/pg-stat-activity-role-visibility-guard.test.ts': { sha256: '022f1f6f4176665b0c0121d0556cc14529c69a8470de3ce2a84529f85b09d369', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/release/green-stall-watchdog-presence-columns.test.ts': { sha256: '787c5dab23c071892d4b72596ff0b0982d1d427d0e5ec24ecd6b656b13561cb4', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/sync-resolver/no-embedding-in-list-projection.test.ts': { sha256: 'a0c976cec9fbc6ad90d89270b33d98b1a792f6b3f174ba3119704f51b07800a7', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/sync-resolver/workspace-filter-coverage.test.ts': { sha256: '06058af28c780af53ef71767c0c3af2899c2745ff0c61ab031f318ac6ed1591b', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/sync/hyperbee/projections/__tests__/lww-guard-registry-lint.test.ts': { sha256: '8157b5e45793dfedd5dffb46a74de615a8f7dfb55781284342f38e611d04ab62', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/work-item-born-claimable.test.ts': { sha256: 'acf79adb2e6bdefe908f2ac9558ee38ed597e34410df305c5077021d5e6020d5', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/work-item-claim-freshness.kind-gate.test.ts': { sha256: 'f7883be5d412353dc77dac53a20211f70005c2dd83207eb0295ef06373dba9ac', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/workspace-reg-current-guard.test.ts': { sha256: 'b5e0354d403a97f7f354dd03e819ac68a3b629308df32260bf1f8bdba40ed82f', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
 };
 
 beforeAll(() => {
@@ -601,6 +625,32 @@ function reviewedTestReaderCorpus(entry: string, result: ReturnType<typeof obser
     status: result.status === 'source' ? 'source' : review.status,
     review: { ...review, scope: 'test callbacks, default inert environment, direct text consumers', originalStatus: result.status },
   };
+}
+
+function observeReviewedTestReaderCorpus(
+  entry: string,
+  source: string,
+  scope: { testCallbacks: boolean; defaultEnvironment: boolean },
+  observe: () => ReturnType<typeof observeReaderCorpus>,
+) {
+  const review = REVIEWED_TEST_READER_CORPUS[entry];
+  const exactSourceReview =
+    scope.testCallbacks &&
+    scope.defaultEnvironment &&
+    review?.status === 'source' &&
+    crypto.createHash('sha256').update(source).digest('hex') === review.sha256;
+  if (exactSourceReview) {
+    // The exact-byte review is already positive source evidence. Re-executing the whole
+    // test module in the inert VM adds no coverage and made this census exceed Vitest's
+    // 60s timeout as the tracked test population grew (EI-25889569648954031).
+    return reviewedTestReaderCorpus(
+      entry,
+      { status: 'source', codeReads: [], reads: [], unsupported: [], asynchronous: false, directoryEntriesVisited: 0 },
+      source,
+      scope,
+    );
+  }
+  return reviewedTestReaderCorpus(entry, observe(), source, scope);
 }
 
 // Keep assertion evidence bounded even when a recursive reader selects the tree.
@@ -770,6 +820,27 @@ describe('reader corpus comes from executed selection, not quoted extensions', (
     expect(reviewedTestReaderCorpus(entry, unknown, source, scope).status).toBe('non-source');
     expect(reviewedTestReaderCorpus(entry, unknown, source, { ...scope, defaultEnvironment: false }).status).toBe('unknown');
     expect(reviewedTestReaderCorpus(entry, { ...unknown, status: 'source', codeReads: ['configured.ts'] }, source, scope).status).toBe('source');
+  });
+
+  it('uses exact-byte positive test reviews without re-executing the reviewed module', () => {
+    const entry = 'apps/operator-vite/src/__tests__/dark-flag-route-contract.test.ts';
+    const source = readFileSync(join(SCRIPTS_DIR, '..', entry), 'utf8');
+    const scope = { testCallbacks: true, defaultEnvironment: true };
+    let observations = 0;
+    const reviewed = observeReviewedTestReaderCorpus(entry, source, scope, () => {
+      observations += 1;
+      throw new Error('exact-byte source review should not re-run the census VM');
+    });
+    expect(observations).toBe(0);
+    expect(reviewed.status).toBe('source');
+    expect(reviewed.review?.originalStatus).toBe('source');
+
+    const changed = observeReviewedTestReaderCorpus(entry, source + '\n', scope, () => {
+      observations += 1;
+      return { status: 'unknown', codeReads: [], reads: [], unsupported: [], asynchronous: false, directoryEntriesVisited: 0 };
+    });
+    expect(observations).toBe(1);
+    expect(changed.status).toBe('unknown');
   });
 });
 
@@ -1039,7 +1110,7 @@ describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-100020
       }
       if (!MIGHT_DEFINE_STRIPPER.test(raw)) continue;
       if (!definesPrivateStripper(stripCommentsAndStrings(raw, rel))) continue;
-      if (!census.has(rel)) census.set(rel, reviewedTestReaderCorpus(rel, observeReaderCorpus(rel, inventory, undefined, { testCallbacks: true }), raw, { testCallbacks: true, defaultEnvironment: true }));
+      if (!census.has(rel)) census.set(rel, observeReviewedTestReaderCorpus(rel, raw, { testCallbacks: true, defaultEnvironment: true }, () => observeReaderCorpus(rel, inventory, undefined, { testCallbacks: true })));
       if (census.get(rel)!.status !== 'non-source') found.push(rel);
     }
     return found.sort();
@@ -1090,8 +1161,8 @@ describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-100020
     'packages/operator-core/lib/workspace-reg-current-guard.test.ts',
   ]);
 
-  // The 21 remaining WI12476 unknowns are exact-byte reviewed above. New unknowns
-  // still fail the no-new-reader test; a review drift fails before the census.
+  // Every current baseline entry has exact-byte positive source evidence. New
+  // candidates still run through the inert VM; a review drift fails before the census.
   const TEST_UNRESOLVED_CORPUS = new Set<string>();
 
   it('no NEW .test.ts tree-scanning guard hand-rolls its own comment stripper', () => {

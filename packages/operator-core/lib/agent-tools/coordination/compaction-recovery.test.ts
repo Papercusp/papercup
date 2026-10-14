@@ -18,6 +18,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ControlAnchor } from './control-anchor';
 
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+  listAllProjectedTools: () => [{
+    expose: { mcp: { name: 'state:read' } },
+    inputSchema: { type: 'object', properties: { cell: { type: 'string' } }, additionalProperties: false },
+    capabilities: [],
+    effect: 'read',
+  }],
+  projectedToolRegistryRevision: () => 'compaction-recovery-read-only-test-registry',
+}));
+
 vi.mock('../../search/self-session', () => ({
   resolveSelfSession: vi.fn(async () => null),
 }));
@@ -380,6 +391,41 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
 // probes the successor inherits, instead of only handing it their text.
 describe('automatic compaction recovery — carried probes run at recovery', () => {
   const BLOCK = '🧪 CARRIED PROBES re-run at delivery — 0 hold · 1 changed · 0 could not run:\n  ✗ CHANGED — gate is green [WI-1 #g]: observed "red"';
+
+  it('renders a changed carried probe at compaction recovery', async () => {
+    const [{ buildAutomaticCompactionRecovery }, { carriedProbeBlockForDelivery }, { renderCarryNote }, { continuityProbeRevision }] =
+      await Promise.all([
+        import('./compaction-recovery'),
+        import('../../carry-probe-eval'),
+        import('../../carry-note'),
+        import('../../continuity-probes'),
+      ]);
+    const actual = await vi.importActual<typeof import('../../carry-probe-eval')>('../../carry-probe-eval');
+    const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: JSON.stringify({ value: 'red' }) }] }));
+    vi.mocked(carriedProbeBlockForDelivery).mockImplementationOnce((sources, deps) =>
+      actual.carriedProbeBlockForDelivery(sources, { ...deps, dispatchTool }),
+    );
+    const checkpoint = renderCarryNote({ checks: [{
+      id: 'changed-probe',
+      claim: 'the carried value is green',
+      recheck: 'state:read',
+      probe: {
+        kind: 'tool', tool: 'state:read', args: { cell: 'test.carriedValue' },
+        schemaRevision: continuityProbeRevision('state:read')!,
+        expect: { path: '$.value', op: 'eq', value: 'green' },
+      },
+    }] });
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      sessionHarness: 'h',
+      heldItems: [{ id: 'WI-1', harness: 'h', checkpoint } as never],
+      carriedRefChangesFn: async () => null,
+    });
+    expect(delivery.recovery.carriedProbes).toContain(
+      '✗ CHANGED — the carried value is green [WI-1 #changed-probe]: observed "red"',
+    );
+    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith('state:read', { cell: 'test.carriedValue' });
+    expect(delivery.recovery.carriedProbes).not.toContain('COULD NOT RUN');
+  });
 
   it('attaches the probe block to the recovery and passes the already-read held items through', async () => {
     const { buildAutomaticCompactionRecovery } = await import('./compaction-recovery');

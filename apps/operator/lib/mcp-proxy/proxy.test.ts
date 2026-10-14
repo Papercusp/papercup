@@ -663,6 +663,42 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     [
       "direct",
       {
+        name: "scheduler:get_claim_spec",
+        arguments: { fleet: "nonp2p-bug-drain-luna-max-0930" },
+      },
+    ],
+    [
+      "tools:invoke wrapper",
+      {
+        name: "tools:invoke",
+        arguments: {
+          name: "scheduler:get_claim_spec",
+          args: { fleet: "nonp2p-bug-drain-luna-max-0930" },
+        },
+      },
+    ],
+  ])("scheduler:get_claim_spec %s is replay-safe", (_label, params) => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params,
+      }),
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("readonly");
+    expect(r.body).toBe(body);
+    expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+    expect(postConnectRetryable(r.klass, 0, 2, 1, 90_000)).toBe(true);
+  });
+  it.each([
+    [
+      "direct",
+      {
         name: "capability:bash",
         arguments: { command: "rg -n -F needle packages/operator-core/lib" },
       },

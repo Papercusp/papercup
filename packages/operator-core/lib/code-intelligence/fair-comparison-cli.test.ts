@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { buildArm, FAIR_ARM_IDS, indexFileCensus, loadFairInputs, materializeFrozenControls,
-  materializeFrozenRepositoryTask, prepareFrozenControl, validateFrozenInputs, verifyFrozenSource,
+  materializeFrozenRepositoryTask, measureFairToolPayload, prepareFrozenControl, validateFrozenInputs, verifyFrozenSource,
   workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
 
 // Transitive users can mock only their own subprocess seam. Importing the CLI's
@@ -189,5 +189,32 @@ describe('saved native protocol inputs and worker controls', () => {
       await expect(prepareFrozenControl(tree, { ...kase, subject: 'changed' }, frozen)).rejects.toThrow(/differs from frozen/);
       expect(readFileSync(join(tree, path), 'utf8')).toBe(source);
     } finally { rmSync(tree, { recursive: true, force: true }); }
+  });
+});
+
+describe('raw native tool token witnesses', () => {
+  it('binds exact tokenizer counts to preserved Unicode requests and refusal responses', async () => {
+    const request = { name: '日本語 🦀', limit: 20 };
+    const response = { error: 'unsupported language', sites: [] };
+    const witness = await measureFairToolPayload(request, response);
+    const { getEncoding } = await import('js-tiktoken');
+    const encoder = getEncoding('o200k_base');
+    expect(witness).toMatchObject({ encoding: 'o200k_base', scope: 'raw-tool-payload-only',
+      requestTokens: encoder.encode(JSON.stringify(request)).length,
+      responseTokens: encoder.encode(JSON.stringify(response)).length,
+      requestBytes: Buffer.byteLength(JSON.stringify(request)),
+      responseBytes: Buffer.byteLength(JSON.stringify(response)) });
+    expect(witness.requestTokens).not.toBe(witness.requestBytes / 4);
+    expect(witness.requestHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(witness.responseHash).toMatch(/^[a-f0-9]{64}$/);
+    const changed = await measureFairToolPayload(request, { error: null, sites: [] });
+    expect(changed.requestHash).toBe(witness.requestHash);
+    expect(changed.responseHash).not.toBe(witness.responseHash);
+    expect(changed.responseTokens).not.toBe(witness.responseTokens);
+  });
+
+  it('refuses absent JSON bytes instead of manufacturing a zero-token measurement', async () => {
+    await expect(measureFairToolPayload(undefined, {})).rejects.toThrow(/JSON representation/);
+    await expect(measureFairToolPayload({}, undefined)).rejects.toThrow(/JSON representation/);
   });
 });

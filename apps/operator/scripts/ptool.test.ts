@@ -842,6 +842,17 @@ describe('ptool call deadlines', () => {
       .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
+  it('preserves the foreground budget for PR-delivery audits on direct and deferred routes', () => {
+    const args = { harness: 'papercusp', prDeliveryAudit: { ruleIds: ['f402c8d4-8a82-473f-be0f-73f45597e8f3'] } };
+    expect(timeoutForTool('work_items:list', args)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'work_items:list', args }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS).toBeGreaterThan(55_000);
+    expect(timeoutForTool('work_items:list', { harness: 'papercusp' })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'work_items:list', args: { harness: 'papercusp' } }))
+      .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
   it('keeps the client alive for unconfirmed release-cut reclaim previews only', () => {
     const preview = { op: 'reclaim', confirm: false };
     expect(timeoutForTool('release:cut', preview)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);

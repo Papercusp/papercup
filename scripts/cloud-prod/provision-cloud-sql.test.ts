@@ -27,6 +27,7 @@ import {
   judgeTlsProbe,
   privateIp,
   probeTls,
+  readHostedOpsUrlReference,
   secretManagerEndpoint,
   stderrHead,
   TLS_PROBE_DONE,
@@ -179,6 +180,19 @@ suite('judgeLogin', () => {
   it('flags a probe that ran as someone else or in another database', () => {
     expect(judgeLogin(clean('postgres', 'portal', false), owner)[0]).toMatch(/unexpected identity/);
   });
+  const ops = { role: 'harness_ops', db: 'papercusp_hosted', createRole: false };
+  const cleanOps = () => ({ ...clean('harness_ops', 'papercusp_hosted', false), createdb: false, memberships: false,
+    databaseWrite: false, directDataAccess: false, unauditedFunctions: false, readOnly: 'on', transactionTimeout: '15min', connectionLimit: 2 });
+  it('requires measured read-only ops privileges rather than accepting absent probe fields', () => {
+    expect(judgeLogin(cleanOps(), ops)).toEqual([]);
+    expect(judgeLogin(clean('harness_ops', 'papercusp_hosted', false), ops)).toEqual([expect.stringContaining('not restricted')]);
+  });
+  it.each(['createdb', 'memberships', 'databaseWrite', 'directDataAccess', 'unauditedFunctions'])('rejects ops %s privilege drift', (field) => {
+    expect(judgeLogin({ ...cleanOps(), [field]: true }, ops)).toEqual([expect.stringContaining('not restricted')]);
+  });
+  it.each([['readOnly', 'off'], ['transactionTimeout', '0'], ['connectionLimit', -1]])('rejects ops %s limit drift', (field, value) => {
+    expect(judgeLogin({ ...cleanOps(), [field]: value }, ops)).toEqual([expect.stringContaining('not restricted')]);
+  });
   it('probes every owner and both hosted login roles, each with its own password secret', () => {
     expect(loginTargets(PROD_SPEC).map((t) => `${t.role}@${t.db}:${t.from}:${t.createRole}`)).toEqual([
       'papercusp_hosted_owner@papercusp_hosted:cloudsql-papercusp-hosted-owner-password:false',
@@ -186,6 +200,7 @@ suite('judgeLogin', () => {
       'dbos_system_owner@dbos_system:cloudsql-dbos-system-owner-password:false',
       'harness_admin@papercusp_hosted:cloudsql-harness-admin-password:true',
       'harness_app@papercusp_hosted:cloudsql-harness-app-password:false',
+      'harness_ops@papercusp_hosted:cloudsql-harness-ops-password:false',
     ]);
   });
 });
@@ -284,9 +299,11 @@ suite('up --dry-run (plan)', () => {
       'secrets create cloudsql-portal-url',
       'secrets create cloudsql-harness-admin-password',
       'secrets create cloudsql-harness-app-password',
+      'secrets create cloudsql-harness-ops-password',
       'execute-sql as postgres: create/alter roles harness_admin, harness_app, harness_zero',
       'secrets create cloudsql-harness-admin-url',
       'secrets create cloudsql-harness-app-url',
+      'secrets create cloudsql-harness-ops-url',
     ]) {
       expect(plan).toContain(step);
     }
@@ -295,6 +312,31 @@ suite('up --dry-run (plan)', () => {
     // Dry-run issued only reads.
     expect(calls.every((c) => /describe|list|--help/.test(c.args.join(' ')))).toBe(true);
     expect(calls.some((c) => c.input !== undefined)).toBe(false);
+  });
+});
+
+suite('P013 pinned ops URL reference', () => {
+  const resource = 'projects/123456/locations/us-central1/secrets/cloudsql-harness-ops-url/versions/7';
+  const quiet = { log: () => {}, sleep: async () => {} };
+  it('returns a pinned canonical reference using metadata reads only', async () => {
+    const { gcloud, calls } = fakeGcloud((args) => args[0] === 'projects'
+      ? ok(JSON.stringify({ projectId: PROD_SPEC.project, projectNumber: '123456' }))
+      : ok(JSON.stringify({ name: resource, state: 'ENABLED' })));
+    expect(await readHostedOpsUrlReference(makeCtx({ gcloud, ...quiet }))).toBe(`${['gcp', 'secret'].join('-')}:${resource}`);
+    expect(calls.every(c => c.args.includes('describe') && !c.args.includes('access') && c.input === undefined)).toBe(true);
+    expect(calls[1]?.env?.CLOUDSDK_API_ENDPOINT_OVERRIDES_SECRETMANAGER).toBe('https://secretmanager.us-central1.rep.googleapis.com/');
+  });
+  it.each([
+    [resource, 'DISABLED'],
+    [resource.replace('/7', '/latest'), 'ENABLED'],
+    [resource.replace('123456', 'papercusp-cloud-prod'), 'ENABLED'],
+    [resource.replace('us-central1', 'europe-west1'), 'ENABLED'],
+    [resource.replace('harness-ops', 'harness-admin'), 'ENABLED'],
+  ])('refuses disabled, floating or wrong-resource metadata: %s %s', async (name, state) => {
+    const { gcloud } = fakeGcloud((args) => args[0] === 'projects'
+      ? ok(JSON.stringify({ projectId: PROD_SPEC.project, projectNumber: '123456' }))
+      : ok(JSON.stringify({ name, state })));
+    await expect(readHostedOpsUrlReference(makeCtx({ gcloud, ...quiet }))).rejects.toThrow('hosted_ops_secret_version_identity_invalid');
   });
 });
 
@@ -328,6 +370,32 @@ suite('regional Secret Manager endpoint', () => {
 });
 
 suite('verify owns the Data API window', () => {
+  it('detects ops access to the second other database even when the first refuses it', async () => {
+    const { gcloud, calls } = fakeGcloud((args) => {
+      if (args[0] === 'projects') return ok(JSON.stringify({ projectId: PROD_SPEC.project, projectNumber: '123456' }));
+      if (args[0] === 'secrets' && args.includes('versions')) return ok(JSON.stringify({
+        name: 'projects/123456/locations/us-central1/secrets/cloudsql-harness-ops-url/versions/1', state: 'ENABLED',
+      }));
+      if (args.includes('execute-sql')) {
+        const user = args.find(a => a.startsWith('--user='))!.slice(7);
+        const db = args.find(a => a.startsWith('--database='))!.slice(11);
+        if (args.includes('--sql=SELECT 1')) return user === 'harness_ops' && db === 'dbos_system' ? ok() : err('permission denied');
+        const probe = { user, db, super: false, createrole: user === 'harness_admin', replication: false,
+          bypassrls: false, cloudsqlsuperuser: false, selfgrant: user === 'harness_admin' ? 'set, inherit' : '',
+          createdb: false, memberships: false, databaseWrite: false, directDataAccess: false,
+          unauditedFunctions: false, readOnly: 'on', transactionTimeout: '15min', connectionLimit: 2 };
+        return ok(JSON.stringify({ j: JSON.stringify(probe) }));
+      }
+      if (args.includes('instances') && args.includes('describe')) return ok(JSON.stringify(conformingInstance()));
+      if (args.includes('databases') && args.includes('list')) return ok(JSON.stringify(PROD_SPEC.databases.map(name => ({ name }))));
+      return ok();
+    });
+    const report = await verify(makeCtx({ gcloud, log: () => {}, sleep: async () => {} }), { logins: true });
+    expect(report.loginFailures).toEqual(['harness_ops could connect to dbos_system (CONNECT not restricted)']);
+    expect(calls.filter(c => c.args.includes('--user=harness_ops') && c.args.includes('--sql=SELECT 1'))
+      .map(c => c.args.find(a => a.startsWith('--database=')))).toEqual(['--database=portal', '--database=dbos_system']);
+  });
+
   // The third live `up` (2026-10-14) reported "Data API disallowed at rest" on a conforming
   // instance: it described the instance for drift while the login checks held the API open.
   it('checks drift only after the window closes, so a conforming instance passes with logins on', async () => {

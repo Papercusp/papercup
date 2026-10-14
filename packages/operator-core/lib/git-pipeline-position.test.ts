@@ -165,6 +165,8 @@ function fakeGit(opts: {
   dirty?: boolean;
   /** P-006: raw porcelain for the TREE-WIDE status (the sweep's blast radius). */
   dirtyTree?: string;
+  /** Constrain dirty status to one repo for nested-submodule regressions. */
+  dirtyRepo?: string;
   pathCommit?: string | null;
   subject?: string;
   /** ref → set of shas that ref's history contains (ancestor-or-equal). */
@@ -244,6 +246,7 @@ function fakeGit(opts: {
     // case at all, which is the only case P-006 exists for.
     if (args[0] === 'status') {
       if (!opts.dirty) return '';
+      if (opts.dirtyRepo && _repo !== opts.dirtyRepo) return '';
       return args.includes('--') ? 'M somefile' : (opts.dirtyTree ?? 'M somefile');
     }
     // The gitlink read that IS the ground truth across the boundary.
@@ -2247,6 +2250,26 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.positions.inMain).toBe(false); // not tracked for submodule paths
     expect(res.summary).toContain('submodule libs/papercusp');
     expect(res.notes.join(' ')).toMatch(/submodule/i);
+  });
+
+  it('reads dirty file status from the nested submodule repo', async () => {
+    const git = fakeGit({
+      submodules: ['libs/papercusp'],
+      pathCommit: 'a1234567890',
+      submoduleStagingPin: { pinnedSha: 'a1234567890', path: 'libs/papercusp' },
+      dirty: true,
+      dirtyRepo: '/repo/libs/papercusp',
+      dirtyTree: ' M libs/db/src/raw-serializers.ts',
+      contains: { HEAD: ['a1234567890'] },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'libs/papercusp/libs/db/src/raw-serializers.ts' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+
+    expect(res.submodule).toBe('libs/papercusp');
+    expect(res.dirtyUncommitted).toBe(true);
+    expect(res.sweepExposure.dirtyPathCount).toBe(1);
   });
 
   it('does not treat nested origin/HEAD as staging evidence when the superproject gitlink is behind', async () => {

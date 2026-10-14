@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 const fixture = vi.hoisted(() => ({
   allowed: true,
+  grants: null as Record<string, boolean> | null,
   authorityError: false,
   roster: {} as Record<string, unknown>,
   sql: vi.fn(),
@@ -24,11 +25,15 @@ vi.mock('@papercusp/db-org', async original => ({
 }));
 vi.mock('../../../owner-sessions/roster', () => ({ readSessionRosterSnapshot: vi.fn(async () => fixture.roster) }));
 vi.mock('../../../device-store', () => ({
-  deviceAgentSessionsAllowed: vi.fn(async () => {
+  deviceAgentSessionsAllowed: vi.fn(async (deviceId: string) => {
     if (fixture.authorityError) throw new Error('authority DB down');
-    return fixture.allowed;
+    return fixture.grants ? fixture.grants[deviceId] === true : fixture.allowed;
   }),
-  setDeviceAgentSessionsEnabled: vi.fn(async (_device, _workspace, enabled) => { fixture.allowed = enabled; return true; }),
+  setDeviceAgentSessionsEnabled: vi.fn(async (deviceId, _workspace, enabled) => {
+    if (fixture.grants) fixture.grants[deviceId] = enabled;
+    else fixture.allowed = enabled;
+    return true;
+  }),
 }));
 vi.mock('../../../claude-sessions', () => ({
   resolveInteractiveTranscript: vi.fn(async () => { if (fixture.resolveError) throw fixture.resolveError; return fixture.path; }), SESSION_THINKING_ACTIVE_MS: 5000,
@@ -102,8 +107,14 @@ async function openLiveStream() {
   fixture.path = join(directory, 'rollout.jsonl');
   writeFileSync(fixture.path, JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'seed' } }) + '\n');
   fixture.roster = { active: [entry({ nativeSession: { backend: 'codex', rolloutId: 'rollout' }, advSessionId: 123 })], starting: [], pending: [], ended: [] };
+  return openCurrentRosterStream('phone-a', OWNER);
+}
+
+async function openCurrentRosterStream(deviceId: string, owner: string) {
   const controller = new AbortController(); controllers.push(controller);
-  const response = await handler(new Request(`http://localhost/api/device/sessions/${OWNER}/transcript?stream=1`, { signal: controller.signal }), context);
+  const response = await handler(new Request(`http://localhost/api/device/sessions/${owner}/transcript?stream=1`, { signal: controller.signal }), {
+    ...context, principal: { ...context.principal, slug: deviceId }, params: { owner },
+  });
   expect(response.headers.get('content-type')).toBe('text/event-stream');
   const reader = response.body!.getReader();
   await readUntil(reader, 'event: thinking');
@@ -112,6 +123,7 @@ async function openLiveStream() {
 
 beforeEach(() => {
   fixture.allowed = true;
+  fixture.grants = null;
   fixture.authorityError = false;
   fixture.roster = { active: [entry()], starting: [], pending: [], ended: [] };
   fixture.path = null;
@@ -231,6 +243,38 @@ describe('R-5/R-11/R-25/R-32 — live stream', () => {
     expect(await readUntil(reader, 'access_revoked')).toContain('access_revoked');
     expect(fixture.stop).toHaveBeenCalled();
     expect((await reader.read()).done).toBe(true);
+  });
+
+  it('revokes every open session stream for one device while another device keeps following', async () => {
+    fixture.grants = { 'phone-a': true, 'phone-b': true };
+    fixture.path = join(directory, 'multi-session-rollout.jsonl');
+    writeFileSync(fixture.path, JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'seed' } }) + '\n');
+    const secondOwner = 'su-second-target';
+    fixture.roster = { active: [OWNER, secondOwner].map((ownerId, index) => entry({
+      ownerId, nativeSession: { backend: 'codex', rolloutId: `rollout-${index}` }, advSessionId: 123 + index,
+    })), starting: [], pending: [], ended: [] };
+    const first = await openCurrentRosterStream('phone-a', OWNER);
+    const second = await openCurrentRosterStream('phone-a', secondOwner);
+    const control = await openCurrentRosterStream('phone-b', OWNER);
+    expect(fixture.ticks).toHaveLength(3);
+    appendFileSync(fixture.path, JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'before-multi-revoke' } }) + '\n');
+    for (const tick of fixture.ticks) tick();
+    for (const reader of [first, second, control]) {
+      expect(await readUntil(reader, 'before-multi-revoke')).toContain('before-multi-revoke');
+    }
+    await changeDeviceSessionGrant('phone-a', WS, false);
+    for (const reader of [first, second]) {
+      expect(await readUntil(reader, 'access_revoked')).toContain('access_revoked');
+      expect((await reader.read()).done).toBe(true);
+    }
+    expect(fixture.stop).toHaveBeenCalledTimes(2);
+    appendFileSync(fixture.path, JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'after-multi-revoke' } }) + '\n');
+    fixture.ticks[2]!();
+    const continued = await readUntil(control, 'after-multi-revoke');
+    expect(continued).toContain('after-multi-revoke');
+    expect(continued).not.toContain('access_revoked');
+    for (const reader of [first, second]) expect((await reader.read()).done).toBe(true);
+    expect(fixture.stop).toHaveBeenCalledTimes(2);
   });
 
   it('sanitizes setup errors before sending them across the device stream', async () => {

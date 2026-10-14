@@ -1,6 +1,8 @@
 /** Exercise the real mount/auth stack and HS256 verifier on every session door. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
 import { Hono } from 'hono';
 const f = vi.hoisted(() => ({ grant: false, revoked: false, roster: vi.fn(), history: vi.fn(), audit: vi.fn(), send: vi.fn(), end: vi.fn() }));
 vi.mock('@papercusp/agent-mcp', async original => ({ ...(await original<typeof import('@papercusp/agent-mcp')>()), defineTool: (d: unknown) => d }));
@@ -53,6 +55,66 @@ const DOORS = [
   ['POST', '/device/sessions/su-target/end'],
   ['GET', '/device/rest-query?name=deviceSessions.list&args=%7B%7D'],
 ] as const;
+
+it('auth matrix covers exactly the registered session routes, stream mode and deviceSessions queries (R-4)', () => {
+  // Read the actual registration barrel, not a second maintained module list.
+  // Parse source without importing the other endpoint families or booting them.
+  const registryUrl = new URL('../index.ts', import.meta.url);
+  const parse = (url: URL) => ts.createSourceFile(url.pathname, readFileSync(url, 'utf8'),
+    ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const registry = parse(registryUrl);
+  const registered = new Set<string>();
+  const visitRegistration = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'flatten') {
+      let input = node.arguments[0];
+      while (input && ts.isAsExpression(input)) input = input.expression;
+      if (input && ts.isIdentifier(input)) registered.add(input.text);
+    }
+    ts.forEachChild(node, visitRegistration);
+  };
+  visitRegistration(registry);
+  const inventory = new Set<string>();
+  let sessionRoutes = 0;
+  const propertyText = (object: ts.ObjectLiteralExpression, key: string) => {
+    const property = object.properties.find(node => ts.isPropertyAssignment(node)
+      && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && node.name.text === key);
+    return property && ts.isPropertyAssignment(property) && ts.isStringLiteralLike(property.initializer)
+      ? property.initializer.text : null;
+  };
+  for (const statement of registry.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)
+      || !statement.moduleSpecifier.text.startsWith('./device/')) continue;
+    const name = statement.importClause?.name?.text;
+    if (!name || !registered.has(name)) continue;
+    const source = parse(new URL(`${statement.moduleSpecifier.text}.ts`, registryUrl));
+    const visitRoute = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'defineTool'
+        && node.arguments[0] && ts.isObjectLiteralExpression(node.arguments[0])) {
+        const path = propertyText(node.arguments[0], 'path');
+        const method = propertyText(node.arguments[0], 'method');
+        if (path?.match(/^\/device\/sessions(?:\/|$)/)) {
+          expect(method, `session route ${path} must declare its auth-matrix method`).not.toBeNull();
+          const concrete = path.replace(':owner', 'su-target');
+          inventory.add(`${method} ${concrete}`);
+          sessionRoutes++;
+          if (method === 'GET' && path.endsWith('/transcript')) inventory.add(`GET ${concrete}?stream=1`);
+        }
+      }
+      if (ts.isCaseClause(node) && ts.isStringLiteralLike(node.expression)
+        && node.expression.text.startsWith('deviceSessions.')) {
+        inventory.add(`GET /device/rest-query?name=${node.expression.text}&args=%7B%7D`);
+      }
+      ts.forEachChild(node, visitRoute);
+    };
+    visitRoute(source);
+  }
+  expect(sessionRoutes).toBeGreaterThan(0);
+  expect(inventory.has('GET /device/rest-query?name=deviceSessions.list&args=%7B%7D')).toBe(true);
+  const matrix = DOORS.map(([method, path]) => `${method} ${path}`);
+  expect(new Set(matrix).size, 'duplicate doors do not replace missing inventory entries').toBe(matrix.length);
+  expect(matrix.slice().sort()).toEqual([...inventory].sort());
+});
+
 let app: Hono;
 let token: string;
 beforeEach(() => {

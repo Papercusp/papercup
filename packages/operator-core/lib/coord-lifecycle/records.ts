@@ -838,6 +838,9 @@ export type PersistedCompletionEvidence = CompletionVerificationEvidence & {
   whatLanded?: string[];
   deferred?: string[];
   coordNotes?: string;
+  /** Requirement declarations retained on the existing completion evidence. */
+  discharges?: string[];
+  contributesTo?: string[];
   /**
    * WI-41769 — the arm-B self-review verdict, SERVER-computed rather than caller-supplied.
    *
@@ -1118,6 +1121,9 @@ export const CompletionRecordSchema = z.object({
   title: z.string().optional(),
   /** One-line "what happened" — the headline (e.g. "all 5 phases/8 decisions, 67 green tests"). */
   summary: z.string().min(1),
+  /** Requirements this close completes, or only advances, within its linked plan. */
+  discharges: z.array(z.string().regex(/^R-\d+$/)).max(200).optional(),
+  contributesTo: z.array(z.string().regex(/^R-\d+$/)).max(200).optional(),
   /** Freeform status verb: 'done' | 'built+tested' | 'landed' | 'shipped'. Default 'done'. */
   status: z.string().min(1).default('done'),
   /** What landed — files / modules each with a one-line description. */

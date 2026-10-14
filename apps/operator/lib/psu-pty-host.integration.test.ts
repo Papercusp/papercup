@@ -577,6 +577,66 @@ describe('plain launch kickoff turn-start proof', () => {
     }
   }, 7000);
 
+  it.each([true, false])('keeps a staged Codex marker through a Starting repaint (recovers=%s)', async (recovers) => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-codex-staged-starting-'));
+    const nativeFile = join(root, 'codex-home', 'sessions', 'rollout.jsonl');
+    const proofPath = join(root, 'proof.json');
+    const ownerId = `su-staged-starting-${process.pid}-${Math.floor(performance.now())}`;
+    const marker = '⟦turn-origin:session-port nonce:0123456789abcdef⟧';
+    const kickoff = `${marker}\nSTAGED-STARTING-PAYLOAD`;
+    const { captured, io } = fakeIo();
+    const signals = new EventEmitter();
+    writeFileSync(proofPath, '', { mode: 0o600 });
+    const childCode = [
+      "const fs=require('fs'),path=require('path');",
+      "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+      "let input='',echoed=false,starting=false,submitted=false;",
+      "process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "process.stdin.on('data',d=>{if(starting){process.stdout.write('UNSAFE_WRITE_WHILE_STARTING\\n');return;}input+=d;",
+      "if(!echoed&&input.includes('⟧')){echoed=true;starting=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\nStarting · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "if(process.env.RECOVERS==='1')setTimeout(()=>{starting=false;process.stdout.write('Ready · GPT-6.1-Sol xhigh · Context 100% left\\n');},300);return;}",
+      "if(!submitted&&input.includes('STAGED-STARTING-PAYLOAD')&&d.includes('\\r')){submitted=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const at=new Date().toISOString();const rows=[{type:'response_item',timestamp:at,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:at,payload:{type:'task_started',turn_id:'staged-1'}},{type:'event_msg',timestamp:at,payload:{type:'task_complete',turn_id:'staged-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));process.stdout.write('SUBMITTED_ONCE\\n');}});",
+    ].join('');
+    const startedAt = Date.now();
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root,
+      env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+        CODEX_HOME: join(root, 'codex-home'), NATIVE_FILE: nativeFile, RECOVERS: recovers ? '1' : '0',
+        [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: 'd'.repeat(48),
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '25', PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50', PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2', PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '2000',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000', PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES: '0',
+        PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '100',
+        TERM: 'xterm-256color' },
+      ownerId, io, bridgeTty: false, signalSource: signals, kickoff,
+      nativePersistenceTimeoutMs: 2000,
+    });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('COMPOSER_ECHO:'), { timeout: 3000 });
+      await vi.waitFor(() => expect(readFileSync(proofPath, 'utf8'), captured()).not.toBe(''), { timeout: 6000 });
+      const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(captured()).not.toContain('UNSAFE_WRITE_WHILE_STARTING');
+      if (recovers) {
+        expect(proof, JSON.stringify(events)).toMatchObject({ persisted: true, reason: null });
+        const text = JSON.parse(readFileSync(nativeFile, 'utf8').trim().split('\n')[0]).payload.content[0].text;
+        expect(text.split(marker)).toHaveLength(2);
+        expect(text.split('STAGED-STARTING-PAYLOAD')).toHaveLength(2);
+        expect(events.some(row => row.kind === 'startup-turn-dropped')).toBe(false);
+      } else {
+        expect(proof).toMatchObject({ persisted: false, reason: 'kickoff-not-submitted:codex-startup-still-starting' });
+        expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1900);
+        expect(existsSync(nativeFile)).toBe(false);
+        expect(captured()).not.toContain('SUBMITTED_ONCE');
+      }
+    } finally {
+      signals.emit('SIGTERM');
+      await done;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it('passes the Codex model offer by keeping the configured model before seeding the first turn', async () => {
     const root = mkdtempSync(join(tmpdir(), 'psu-codex-model-choice-'));
     const codexHome = join(root, 'codex-home');

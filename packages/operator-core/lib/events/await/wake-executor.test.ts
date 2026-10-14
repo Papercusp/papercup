@@ -2994,6 +2994,23 @@ describe('executeWake — the liveness ladder', () => {
     expect(sendCoordMessage).not.toHaveBeenCalled();
   });
 
+  it('parks behind an already-running headless resume without authorizing inbox fallback', async () => {
+    const isHeadlessResumeTurn = vi.fn(() => true);
+    const d = deps({ isHeadlessResumeTurn: isHeadlessResumeTurn as never });
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), pid: 9999 }),
+      d,
+    );
+
+    expect(out).toEqual({
+      kind: 'park',
+      reason: 'headless resume turn pid 9999 is still running for this session; parked until it exits',
+      hostCommitPending: true,
+    });
+    expect(isHeadlessResumeTurn).toHaveBeenCalledWith(9999, '11111111-2222-3333-4444-555555555555');
+    expect(d.sendCoordMessage).not.toHaveBeenCalled();
+  });
+
   it('delivers a cross-harness work-item completion wake instead of treating its harness as loop lineage', async () => {
     const write = vi.fn(() => true);
     const getLoopStatusFn = vi.fn(async () => ({

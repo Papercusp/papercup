@@ -19,7 +19,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createHostedPrincipal } from '../auth/hosted-principal';
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
-import { exportHostedOrganizationData, exportHostedUserData } from './hosted-customer-data';
+import { admitHostedCustomerDeletion, exportHostedOrganizationData, exportHostedUserData } from './hosted-customer-data';
 import { createPersonalGrant, purgePersonalSource, upsertPersonalDocuments } from '../personal-vault/store';
 import {
   CHAT_DERIVED_DOCUMENT_KINDS,
@@ -372,6 +372,48 @@ describe('organization data receipts (P-007c)', () => {
     const receipts = await org.adminSql`SELECT id FROM papercusp_auth.organization_audit_events
       WHERE organization_id = ${organizationId}::uuid AND action = 'organization.data.export'`;
     expect(receipts).toHaveLength(1);
+  });
+
+  it('admits deletion with the real hosted role while preserving the policy, confirmation and global owner gates (P-010)', async () => {
+    const organizationId = randomUUID(), otherOrganizationId = randomUUID(), userId = randomUUID();
+    for (const id of [organizationId, otherOrganizationId]) {
+      await org.adminSql`INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name, status)
+        VALUES (${id}::uuid, ${`deletion-${id}`}, 'Deletion admission', 'active')`;
+    }
+    await org.adminSql`INSERT INTO papercusp_auth.hosted_users (id, primary_email, status)
+      VALUES (${userId}::uuid, 'deletion-admission@example.test', 'active')`;
+    for (const id of [organizationId, otherOrganizationId]) {
+      await org.adminSql`INSERT INTO papercusp_auth.organization_memberships (organization_id, user_id, role, created_via)
+        VALUES (${id}::uuid, ${userId}::uuid, 'owner', 'organization_bootstrap')`;
+    }
+    const authority = await new PostgresHostedMembershipAuthority(org.adminSql as never).resolveActive({ userId, organizationId });
+    const session = await new HostedSessionStore(org.adminSql as never).create({ userId, organizationId,
+      permissionVersion: authority!.permissionVersion, upstreamProvider: 'workos', upstreamSessionId: `deletion-${userId}`,
+      expiresAt: new Date(Date.now() + 3600000) });
+    const principal = createHostedPrincipal({ workspaceId: 'control', userId, activeOrganizationId: organizationId,
+      sessionId: session.id, sessionVersion: session.permissionVersion, permissions: authority!.permissions });
+    const policy = { approvalRef: 'scratch-policy-decision', stripe: 'delete' as const, consent: 'retain' as const };
+    const run = (kind: 'organization' | 'user', confirmation: string, approved = true) => org.appSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'hosted-control-plane-service', true)`;
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      return admitHostedCustomerDeletion(tx as never, principal, { kind, confirmation }, async () => approved ? policy : null);
+    });
+    await expect(run('organization', 'DELETE ORGANIZATION', false)).rejects.toThrow('retention_policy_pending');
+    await expect(run('organization', 'yes')).rejects.toThrow('confirmation_required');
+    await expect(run('user', 'DELETE MY ACCOUNT')).rejects.toThrow('transfer_organization_ownership_required');
+    expect(await org.adminSql`SELECT id FROM papercusp_auth.organization_audit_events
+      WHERE organization_id=${organizationId}::uuid AND action='organization.data.deletion.requested'`).toHaveLength(0);
+    const request = await run('organization', 'DELETE ORGANIZATION');
+    expect(request.organizationId).toBe(organizationId);
+    expect(request.requestedBy).toBe(userId);
+    expect(request.target).toEqual({ kind: 'organization' });
+    const [audit] = await org.adminSql`SELECT actor_id, target_id, metadata FROM papercusp_auth.organization_audit_events
+      WHERE organization_id=${organizationId}::uuid AND action='organization.data.deletion.requested'`;
+    expect(audit).toMatchObject({ actor_id: userId, target_id: organizationId,
+      metadata: { operationId: request.operationId, kind: 'organization', policy } });
+    await new HostedSessionStore(org.adminSql as never).revoke(session.id);
+    await expect(run('organization', 'DELETE ORGANIZATION')).rejects.toThrow('customer_data_forbidden');
+    expect((await org.adminSql`SELECT status FROM papercusp_auth.organizations WHERE id=${organizationId}::uuid`)[0].status).toBe('active');
   });
 
   it('exports a member’s own user records and joined sealed-session metadata without other users or organization-level records (P-010)', async () => {
