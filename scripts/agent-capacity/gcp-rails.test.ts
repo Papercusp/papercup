@@ -106,6 +106,21 @@ describe('buildCreateArgs', () => {
 });
 
 describe('pricing', () => {
+  it('prices the verified Z3 shape including its fixed 3000 GiB Titanium SSD', () => {
+    expect(parseMachineType('z3-highmem-8-highlssd')).toEqual({ family: 'z3', vcpus: 8, ramGb: 64 });
+    const bootMonth = 50 * 0.08 + 300 * 0.005 + 14 * 0.04;
+    const expected = 8 * 0.0496531 + 64 * 0.0066553 + (3000 * 0.08 + bootMonth) / 730;
+    expect(hourlyPriceUsd('z3-highmem-8-highlssd')).toBeCloseTo(expected, 8);
+    const args = buildCreateArgs({ runId: 'titanium-50', name: 'cap-titanium-50', machineType: 'z3-highmem-8-highlssd', maxHours: 6 });
+    expect(flagValue(args, 'boot-disk-type')).toBe('hyperdisk-balanced');
+    expect(flagValue(args, 'maintenance-policy')).toBe('MIGRATE');
+    expect(flagValue(args, 'max-run-duration')).toBe('360m');
+    expect(args.some(arg => arg.startsWith('--local-ssd'))).toBe(false);
+    expect(() => hourlyPriceUsd('z3-highmem-8-highlssd', 50, { spot: true })).toThrow(/no measured spot price/);
+    expect(() => parseMachineType('z3-highmem-16-highlssd')).toThrow(/unpriced/);
+    expect(() => buildCreateArgs({ runId: 'titanium-50', name: 'cap-titanium-50', machineType: 'z3-highmem-8-highlssd', maxHours: 6, extraDisks: [{ type: 'pd-ssd', gb: 64, deviceName: 'swap' }] })).toThrow(/not priced/);
+  });
+
   it('derives shapes for predefined and custom machine types', () => {
     expect(parseMachineType('e2-standard-4')).toEqual({ family: 'e2', vcpus: 4, ramGb: 16 });
     expect(parseMachineType('e2-highmem-8')).toEqual({ family: 'e2', vcpus: 8, ramGb: 64 });
