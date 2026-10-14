@@ -183,6 +183,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
+    messagePattern: '(^|[^A-Za-z0-9_])git_command_interrupted([^A-Za-z0-9_]|$)',
+    why: 'capability:git-evidence returns this reason when its request AbortSignal cancels a Git command; this is expected request/session control flow, not a structural tool defect',
+  },
+  {
+    class: 'caller',
     errorCodes: [
       'invalid_args', 'invalid_input', 'role_not_allowed', 'missing_capability',
       'compile_error',

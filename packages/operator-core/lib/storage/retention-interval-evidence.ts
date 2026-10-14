@@ -78,6 +78,78 @@ export interface RetentionIntervalAssessment {
   scope: string[];
 }
 
+const soakRequirementsSchema = z.object({
+  host: z.string().min(1), artifactRef: z.string().min(1),
+  shippedAt: z.string().datetime({ offset: true }), startAt: z.string().datetime({ offset: true }),
+  measuredAt: z.string().datetime({ offset: true }),
+  maxSampleGapMs: bytes.positive(), maxAlarmGapMs: bytes.positive().max(6 * 3_600_000),
+}).refine((x) => Date.parse(x.startAt) >= Date.parse(x.shippedAt), 'The soak must start after shipment.');
+const soakRecordsSchema = z.object({
+  censuses: z.array(z.object({
+    id: z.string().min(1), host: z.string().min(1), path: z.enum(['/', '/mnt/data']),
+    at: z.string().datetime({ offset: true }), availableBytes: bytes, complete: z.boolean(),
+  })).max(20_000),
+  alarms: z.array(z.object({
+    id: z.string().min(1), host: z.string().min(1), at: z.string().datetime({ offset: true }),
+    consumers: z.record(z.string(), z.array(z.string().trim().min(1))),
+  })).max(20_000),
+});
+
+/** Assess existing census/alarm ledger rows; never substitute a fixture for a shipped 72h window. */
+export function assessDiskHeadroomSoak(input: unknown, requirements: unknown) {
+  const checks: RetentionEvidenceCheck[] = [];
+  const add = (id: string, status: RetentionEvidenceCheck['status'], detail: string) => checks.push({ id, status, detail });
+  const finish = () => ({
+    schemaVersion: 1 as const, kind: 'disk-headroom-soak-assessment' as const,
+    soakStatus: checks.some((x) => x.status === 'fail') ? 'fail' as const :
+      checks.some((x) => x.status === 'unknown') ? 'unknown' as const : 'pass' as const,
+    checks,
+    coverage: {
+      population: checks.map((x) => x.id), checked: checks.filter((x) => x.status !== 'unknown').map((x) => x.id),
+      notChecked: checks.filter((x) => x.status === 'unknown').map((x) => x.id), notApplicable: [] as string[],
+      residue: checks.filter((x) => x.status !== 'pass').map((x) => `${x.id}: ${x.detail}`),
+    },
+    scope: 'Discrete census rows and named alarms only. Shipment identity and ledger query completeness must be verified by the caller; capacity between samples remains unmeasured.',
+  });
+  const required = soakRequirementsSchema.safeParse(requirements), parsed = soakRecordsSchema.safeParse(input);
+  if (!required.success || !parsed.success) {
+    add('record-shape', 'unknown', 'Require an explicit shipped artifact, post-shipment window, census rows and alarm rows.');
+    return finish();
+  }
+  const { censuses, alarms } = parsed.data;
+  const start = Date.parse(required.data.startAt), end = start + 72 * 3_600_000;
+  const shipped = Date.parse(required.data.shippedAt), measured = Date.parse(required.data.measuredAt);
+  add('elapsed-72h', measured >= end ? 'pass' : 'unknown', 'The observation clock must reach the full post-shipment 72-hour boundary.');
+  if ([...censuses, ...alarms].some((x) => x.host !== required.data.host || Date.parse(x.at) > measured)) {
+    add('record-scope', 'unknown', 'A foreign-host or future row cannot certify this host/window.');
+    return finish();
+  }
+  for (const path of ['/', '/mnt/data'] as const) {
+    const rows = censuses.filter((x) => x.path === path && Date.parse(x.at) >= shipped);
+    const ordered = rows.every((x, i) => i === 0 || Date.parse(x.at) > Date.parse(rows[i - 1]!.at));
+    const ids = new Set(rows.map((x) => x.id));
+    add(`sample-order:${path}`, ordered && ids.size === rows.length ? 'pass' : 'fail', 'Preserve strictly increasing, unique native samples; do not sort away gaps or duplicate records.');
+    if (!ordered || ids.size !== rows.length) continue;
+    const before = rows.findLastIndex((x) => Date.parse(x.at) <= start);
+    const after = rows.findIndex((x) => Date.parse(x.at) >= end);
+    add(`window-coverage:${path}`, before >= 0 && after >= 0 ? 'pass' : 'unknown', 'Each device needs post-shipment samples bracketing both soak boundaries.');
+    const window = rows.slice(Math.max(0, before), after < 0 ? undefined : after + 1);
+    const gaps = window.slice(1).map((x, i) => Date.parse(x.at) - Date.parse(window[i]!.at));
+    add(`sample-gap:${path}`, gaps.length === 0 ? 'unknown' : Math.max(...gaps) <= required.data.maxSampleGapMs ? 'pass' : 'fail', 'Bound every observed gap by the evaluator cadence, including boundary-adjacent samples.');
+    add(`complete-census:${path}`, window.length > 0 && window.every((x) => x.complete) ? 'pass' : 'unknown', 'Missing or incomplete census evidence stays unknown.');
+    for (const row of window.filter((x) => Date.parse(x.at) >= start && Date.parse(x.at) <= end && x.availableBytes < 100 * 1024 ** 3)) {
+      const at = Date.parse(row.at);
+      const matching = alarms.some((alarm) => Date.parse(alarm.at) >= start && Date.parse(alarm.at) <= end &&
+        Math.abs(Date.parse(alarm.at) - at) <= required.data.maxAlarmGapMs && (alarm.consumers[path]?.length ?? 0) > 0);
+      add(`dip:${path}:${row.id}`, matching ? 'pass' : 'fail', 'Every measured dip below 100 GiB requires a nearby alarm naming this device\'s consumers.');
+    }
+  }
+  for (const alarm of alarms.filter((x) => Date.parse(x.at) >= start && Date.parse(x.at) <= end)) {
+    add(`named-alarm:${alarm.id}`, ['/', '/mnt/data'].every((path) => (alarm.consumers[path]?.length ?? 0) > 0) ? 'pass' : 'fail', 'Every alarm in the window must name consumers on both devices.');
+  }
+  return finish();
+}
+
 const REQUIRED_PATHS = ['/', '/mnt/data', '/tmp/pcv'] as const;
 const EXTERNAL_CHECKS = new Set(['inode-headroom', 'final-candidate-demand']);
 

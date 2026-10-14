@@ -34,6 +34,7 @@ import { resolveLearningPotSlug } from '../../learning/pot-scope';
 import {
   deriveRecipeAuthority,
   recipeAuthorityContextFromDescriptor,
+  type RecipeAuthorityContext,
 } from '../../recipe-authority';
 import type { EmbedderMode } from '@papercusp/memory';
 import type { ProseProfileSelection } from '../../search/prose-vector-dims';
@@ -194,6 +195,14 @@ export interface CaptureRecipeInput {
   allowed?: ReadonlySet<string>;
   /** P-013 trace for the same execution; stored on the recipe-run row. */
   executionTrace?: NormalizedExecutionTrace | null;
+  /**
+   * Server-derived authority for the caller's current lane. Similar-recipe
+   * recommendations must be runnable by this caller, so this context takes
+   * precedence over the captured script's own entity refs. The latter can
+   * describe a target the script reads, but do not prove the caller still
+   * holds that plan/item/resource when code:run is invoked.
+   */
+  recommendationContext?: RecipeAuthorityContext;
 }
 
 export interface CaptureRecipeResult {
@@ -329,10 +338,12 @@ export async function captureRecipe(
           embeddingProfile: embedded?.profile ?? null,
           excludeId: exactRecipe?.id ?? id,
           limit: 5,
-          recommendationContext: recipeAuthorityContextFromDescriptor(sourceAuthority, {
-            workspace: input.workspaceId,
-            harness: input.harness,
-          }),
+          recommendationContext:
+            input.recommendationContext ??
+            recipeAuthorityContextFromDescriptor(sourceAuthority, {
+              workspace: input.workspaceId,
+              harness: input.harness,
+            }),
         },
         { log },
       );

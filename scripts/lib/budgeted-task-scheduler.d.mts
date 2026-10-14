@@ -82,7 +82,7 @@ export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
       kind: "command-check" | "npm-lifecycle"; check?: string; script?: string; command: string;
       inputs: Array<{ path: string; sha256: string }>; fileOccurrences: unknown[];
       receipt: { ref: string; sha256: string }; childWallMs: number; scriptsExecuted: number;
-      scriptOrder: string[] }>;
+      scriptOrder: string[]; diagnostics?: { filesChecked: number; errors: number; warnings: number; hints: number } }>;
     originalArtifactsResolved: true; currentDeclaredInputsMatched: true;
     orderedChainQualified: false; runtimeClosure: "unmeasured";
     operationalAcceptance: false; populationSha256: string }>;

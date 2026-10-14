@@ -457,6 +457,21 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', message)).toBe('structural');
   });
 
+  it('classifies capability:git-evidence cancellation as caller control flow, not a structural tool defect', () => {
+    const interrupted =
+      'git_command_interrupted: git ls-tree -z 26dba0b0757c551cd1590b6abec54a9e94ebe6da -- ' +
+      'packages/operator-ui/src/onboarding/product-tutorial.test.tsx was aborted before returning a result';
+    expect(classifyToolError('handler_error', 'error', interrupted)).toBe('caller');
+    expect(classifyToolError(null, 'error', JSON.stringify({
+      ok: false,
+      reason: 'git_command_interrupted',
+      message: 'Git evidence request was aborted before repository validation',
+    }))).toBe('caller');
+    // Real Git failures without the cancellation reason remain on the structural lane.
+    expect(classifyToolError('handler_error', 'error', 'git ls-tree failed: fatal: bad object'))
+      .toBe('structural');
+  });
+
   it('classifies the code:run typed-root shape diagnostic as caller misuse, not a tool defect', () => {
     expect(classifyToolError(
       'handler_error',

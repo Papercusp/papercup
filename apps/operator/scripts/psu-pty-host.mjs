@@ -11180,8 +11180,10 @@ export function hostThroughPty(o) {
     const codexMarkerKickoffRequiresFrame = () =>
       requireInitialOutput &&
       verifyKickoffMarkerEcho &&
-      childBackendTuiStartedAt > 0 &&
       String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex';
+    // A fresh marked Codex kickoff requires positive backend-frame evidence
+    // even before its banner arrives. A delayed banner cannot authorize the
+    // marker-only last resort through the absence of startup observations.
     const startupReadinessProven = () =>
       codexMarkerKickoffRequiresFrame() ? childBackendFirstFrameAt > 0 : childStartupReady;
     const codexStartupExplicitlyStarting = () =>
@@ -11298,7 +11300,7 @@ export function hostThroughPty(o) {
         !startupFallbackCanAuthorize() &&
         !codexBackendFrameWaitExpired() &&
         !codexStartingStuck() &&
-        !(codexStartingHeldAt > 0 && hostCleanedUp) &&
+        !hostCleanedUp && !shuttingDown &&
         (Date.now() < deadline || holdForCodexStartingFooter())
       ) {
         const recoveryState = claudeResumeCompaction.tick();
@@ -11359,6 +11361,7 @@ export function hostThroughPty(o) {
       let composerUnseenFallbackRecorded = false;
       // eslint-disable-next-line no-constant-condition
       while (true) {
+        if (hostCleanedUp || shuttingDown) return { delivered: false, reason: 'host-ended', attempts };
         if (startupMarkerMissing) {
           // A bounded last resort is for a MISSED readiness marker. It must
           // not overrule Codex's explicit Starting footer, which says its
@@ -11517,6 +11520,7 @@ export function hostThroughPty(o) {
             break;
           }
           if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+          if (hostCleanedUp || shuttingDown) return { delivered: false, reason: 'host-ended', attempts };
           const claudeKickoffReadinessAtWrite = headlessClaudeKickoffReadiness({
             enabled: headlessClaudeOnboardingEnabled(env),
             requireInitialOutput,
@@ -11571,6 +11575,7 @@ export function hostThroughPty(o) {
             const step = steps[stepIndex];
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+            if (hostCleanedUp || shuttingDown) return { delivered: false, reason: 'host-ended', attempts };
             const chunks = ptyWriteChunks(step.data);
             const marker = stepIndex === 0 && verifyKickoffMarkerEcho
               ? leadingTurnOriginMarker(text)

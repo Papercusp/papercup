@@ -239,7 +239,7 @@ export async function readBudgetedTaskComparisonArtifacts(evidenceRoot, pins) {
     return json ? JSON.parse(bytes.toString("utf8")) : bytes;
   };
   if (pins.mode === "command-preparation")
-    return readOriginalCommandPreparation(readPinned, pins);
+    return readOriginalCommandPreparation(readPinned, pins, root);
   const manifest = await readPinned(pins.manifest.ref, pins.manifest.sha256);
   // Check structural identity before following refs supplied by an invalid manifest.
   const prepared = prepareBudgetedTaskComparison(manifest);
@@ -302,7 +302,7 @@ export async function readBudgetedTaskComparisonArtifacts(evidenceRoot, pins) {
 // Standalone command-local preparation is deliberately a separate branch of the
 // existing IO reader. It never turns a partial selection into a comparison
 // manifest, admits a cohort, or attests installed dependencies/runtime closure.
-async function readOriginalCommandPreparation(readPinned, pins) {
+async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const require = (ok, message) => {
     if (!ok) throw new Error(`COMMAND_PREPARATION_REFUSAL ${message}`);
@@ -337,7 +337,10 @@ async function readOriginalCommandPreparation(readPinned, pins) {
     const desktop = obligation.kind === "command-check" && obligation.check === "desktop-selftest-aggregate";
     const fixture = obligation.kind === "npm-lifecycle" && obligation.script === "pretest" &&
       obligation.command === "node scripts/build.mjs";
-    require(desktop || fixture,
+    const astro = obligation.kind === "command-check" && obligation.check === "astro-check" &&
+      obligation.command === "astro check";
+    const nested = fixture || astro;
+    require(desktop || fixture || astro,
       "unsupported native command receipt format");
     const tasks = selection.tasks.filter(task => task.id === pin.task);
     require(tasks.length === 1, "exact original task required");
@@ -354,52 +357,78 @@ async function readOriginalCommandPreparation(readPinned, pins) {
       new Set(inputs.map(row => row.path)).size === inputs.length &&
       (fixture ? occurrences.length === 0 : occurrences.length > 0) &&
       new Set(occurrences.map(row => row.file)).size === occurrences.length &&
-      occurrences.every(row => row.kind === "test-file" && row.command === obligation.command &&
+      occurrences.every(row => row.kind === (astro ? "check-input" : "test-file") && row.command === obligation.command &&
         inputs.some(input => input.path === row.file)), "original input occurrences differ");
     const receipt = await readPinned(pin.receipt.ref, pin.receipt.sha256);
-    const execution = fixture ? receipt.execution : receipt;
-    const finishedAt = fixture ? execution?.completedAt : receipt.finishedAt;
-    const childWallMs = fixture ? Date.parse(finishedAt) - Date.parse(execution?.startedAt) : receipt.childWallMs;
-    require((fixture ? receipt.kind === "original-native-command-execution" :
+    const execution = nested ? receipt.execution : receipt;
+    const finishedAt = nested ? execution?.completedAt : receipt.finishedAt;
+    const childWallMs = nested ? Date.parse(finishedAt) - Date.parse(execution?.startedAt) : receipt.childWallMs;
+    require((nested ? receipt.kind === "original-native-command-execution" :
       receipt.schemaVersion === 1 && receipt.kind === "original-command-execution") &&
       receipt.cwd === task.dir && same(execution?.command, fixture ? ["node", "scripts/build.mjs"] :
-        ["bash", "bin/lib/run-selftests.sh"]) &&
-      obligation.command === execution.command.join(" ") && execution.exitCode === 0 &&
+        astro ? ["npm", "run", "check"] : ["bash", "bin/lib/run-selftests.sh"]) &&
+      (astro ? same(receipt.originalCommand, ["astro", "check"]) &&
+        same(receipt.wrapperCommand, execution.command) && execution.signal === null && execution.error === null :
+        obligation.command === execution.command.join(" ")) && execution.exitCode === 0 &&
       Number.isFinite(childWallMs) && childWallMs > 0 &&
       Number.isFinite(Date.parse(execution.startedAt)) &&
       Date.parse(finishedAt) > Date.parse(execution.startedAt),
     "successful original native command identity required");
-    require(fixture || Array.isArray(receipt.logs) && receipt.logs.length === 6 &&
+    require(nested || Array.isArray(receipt.logs) && receipt.logs.length === 6 &&
       new Set(receipt.logs.map(row => row.path)).size === 6, "six original command logs required");
     const logs = {};
     for (const role of ["stdout", "stderr", "beforeStdout", "beforeStderr", "afterStdout", "afterStderr"]) {
       const log = pin.logs?.[role];
       const phase = role.startsWith("before") ? receipt.before : role.startsWith("after") ? receipt.after : execution;
-      const stagePath = fixture ? phase?.[role.toLowerCase().endsWith("stdout") ? "stdout" : "stderr"] : null;
-      require(log && (fixture ? typeof stagePath === "string" &&
-        (stagePath.startsWith("~/") ? stagePath.slice(2) : stagePath) === log.ref :
+      const stagePath = nested ? phase?.[role.toLowerCase().endsWith("stdout") ? "stdout" : "stderr"] : null;
+      require(log && (nested ? typeof stagePath === "string" &&
+        ((stagePath.startsWith("~/") ? stagePath.slice(2) : stagePath) === log.ref ||
+          stagePath === join(evidenceRoot, log.ref)) :
         receipt.logs.some(row => (row.path.startsWith("~/") ? row.path.slice(2) : row.path) ===
           log.ref && row.sha256 === log.sha256)), "log pin absent from original receipt");
       logs[role] = await readPinned(log.ref, log.sha256, false);
     }
     require(new Set(Object.values(pin.logs).map(log => log.ref)).size === 6,
       "command log roles must be distinct");
-    const before = marker(logs.beforeStdout, "COMMAND_CHECK_SELECTION=");
-    const after = marker(logs.afterStdout, "COMMAND_CHECK_SELECTION=");
-    require(logs.beforeStderr.length === 0 && logs.afterStderr.length === 0 &&
+    const census = bytes => {
+      if (!astro) return marker(bytes, "COMMAND_CHECK_SELECTION=");
+      const result = marker(bytes, "PC_VITEST_CONFIG_CONTRACTS=").results;
+      require(Array.isArray(result) && result.length === 1 && result[0].ok === true &&
+        result[0].enumerated === true && result[0].config?.runner === "astro-check" &&
+        result[0].sync?.status === "completed" && result[0].sync?.beforePopulation === true &&
+        result[0].executed === false && result[0].runtimeClosure === "unmeasured" &&
+        result[0].operationalAcceptance === false, "completed original Astro input discovery required");
+      // Discovery timing is diagnostic data, not population identity.
+      const { diagnostics, ...population } = result[0];
+      return population;
+    };
+    const before = census(logs.beforeStdout);
+    const after = census(logs.afterStdout);
+    require(astro ? same(before, after) && logs.beforeStderr.equals(logs.afterStderr) &&
+      same(before.inputs, inputs) && same(before.config, obligation.discovery?.config) &&
+      same(before.repositoryFiles, obligation.discovery?.repositoryFiles) &&
+      same(occurrences.map(row => row.file).sort(), before.repositoryFiles?.slice().sort()) :
+      logs.beforeStderr.length === 0 && logs.afterStderr.length === 0 &&
       same(before, after) && (fixture || same(before, receipt.before) && same(after, receipt.after)) &&
       before.schemaVersion === 1 && before.kind === "command-check-inputs" &&
       before.check === (fixture ? "fixture-build" : obligation.check) &&
       same(before.inputs, inputs), "unchanged original command census required");
-    if (fixture) {
-      const discoveryCommand = ["node", "scripts/build.mjs", "--print-selection", "--repository-root", sourceRoot];
+    if (nested) {
+      const discoveryCommand = astro ? receipt.before?.command :
+        ["node", "scripts/build.mjs", "--print-selection", "--repository-root", sourceRoot];
+      require(!astro || Array.isArray(discoveryCommand) && discoveryCommand.length === 3 &&
+        typeof discoveryCommand[0] === "string" && isAbsolute(discoveryCommand[0]) &&
+        /\/node$/.test(discoveryCommand[0]) && discoveryCommand[1] === "scripts/resolve-vitest-config-contracts.mjs" &&
+        discoveryCommand[2] === "--astro-selection-child" &&
+        [receipt.before, receipt.after].every(phase => phase.signal === null && phase.error === null),
+      "original Astro discovery command required");
       require(same(receipt.before.command, discoveryCommand) && same(receipt.after.command, discoveryCommand) &&
         receipt.before.exitCode === 0 && receipt.after.exitCode === 0 &&
         Date.parse(receipt.before.startedAt) <= Date.parse(receipt.before.completedAt) &&
         Date.parse(receipt.before.completedAt) <= Date.parse(execution.startedAt) &&
         Date.parse(finishedAt) <= Date.parse(receipt.after.startedAt) &&
         Date.parse(receipt.after.startedAt) <= Date.parse(receipt.after.completedAt) &&
-        same(before.files, []), "original lifecycle discovery/execution ordering required");
+        (astro || same(before.files, [])), "original discovery/execution ordering required");
     }
     for (const input of inputs) {
       const path = await realpath(join(sourceRoot, input.path));
@@ -411,9 +440,27 @@ async function readOriginalCommandPreparation(readPinned, pins) {
         createHash("sha256").update(bytes).digest("hex") === input.sha256,
       `current command input differs: ${input.path}`);
     }
+    let diagnostics;
+    if (astro) {
+      const packagePath = `${task.dir}/package.json`;
+      require(inputs.some(input => input.path === packagePath), "pinned original Astro wrapper script required");
+      const pkg = JSON.parse(await readFile(join(sourceRoot, packagePath), "utf8"));
+      require(pkg.scripts?.check === obligation.command, "original npm check wrapper mapping differs");
+      const stdout = logs.stdout.toString("utf8");
+      const summaries = [...stdout.matchAll(/^Result \((\d+) files\):[ \t]*\r?$/gm)];
+      const counters = name => [...stdout.matchAll(new RegExp(`^- (\\d+) ${name}\\r?$`, "gm"))];
+      const errors = counters("errors"), warnings = counters("warnings"), hints = counters("hints");
+      require(stdout.split(/\r?\n/).filter(line => line === "> astro check").length === 1 &&
+        summaries.length === 1 && Number(summaries[0][1]) === before.repositoryFiles.length &&
+        errors.length === 1 && warnings.length === 1 && hints.length === 1 && Number(errors[0][1]) === 0 &&
+        summaries[0].index < errors[0].index && errors[0].index < warnings[0].index && warnings[0].index < hints[0].index,
+      "complete original Astro diagnostics required");
+      diagnostics = { filesChecked: Number(summaries[0][1]), errors: 0,
+        warnings: Number(warnings[0][1]), hints: Number(hints[0][1]) };
+    }
     const verdicts = [...logs.stdout.toString("utf8").matchAll(/^--- ([^\r\n]+): (PASS|FAIL|SKIP)$/gm)]
       .map(match => ({ script: match[1], verdict: match[2] }));
-    require(fixture ? logs.stdout.toString("utf8").split(/\r?\n/).filter(line =>
+    require(astro || (fixture ? logs.stdout.toString("utf8").split(/\r?\n/).filter(line =>
       /^Fixture built: [a-f0-9]{64}$/.test(line)).length === 1 :
       Array.isArray(before.listed) && before.listed.length > 0 &&
       new Set(before.listed).size === before.listed.length &&
@@ -422,13 +469,13 @@ async function readOriginalCommandPreparation(readPinned, pins) {
       same(verdicts.map(row => row.script), before.listed) &&
       verdicts.every(row => row.verdict === "PASS") &&
       logs.stdout.toString("utf8").split(/\r?\n/).filter(line =>
-        line === `PASS — all ${before.listed.length} papercusp-desktop selftests green`).length === 1,
+        line === `PASS — all ${before.listed.length} papercusp-desktop selftests green`).length === 1),
     "complete original native command result required");
     qualified.push({ task: pin.task, step: pin.step, kind: obligation.kind,
       ...(fixture ? { script: obligation.script } : { check: obligation.check }),
       command: obligation.command, inputs, fileOccurrences: occurrences,
       receipt: pin.receipt, childWallMs, scriptsExecuted: verdicts.length,
-      scriptOrder: verdicts.map(row => row.script) });
+      scriptOrder: verdicts.map(row => row.script), ...(astro ? { diagnostics } : {}) });
   }
   return freezeComparison({ mode: "command-preparation", selection, commands: qualified,
     originalArtifactsResolved: true, currentDeclaredInputsMatched: true,

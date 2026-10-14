@@ -71,6 +71,19 @@ describe('generated SQL CASE ↔ classifyToolError parity (P-011)', () => {
     ]);
   });
 
+  it('classifies capability:git-evidence cancellation as caller control flow in generated SQL', async () => {
+    const sql = db.adminSql;
+    const message =
+      'git_command_interrupted: git ls-tree -z 26dba0b0757c551cd1590b6abec54a9e94ebe6da -- ' +
+      'packages/operator-ui/src/onboarding/product-tutorial.test.tsx was aborted before returning a result';
+    const rows = await sql<{ klass: string }[]>`
+      SELECT ${toolErrorClassSqlCase(sql)} AS klass
+        FROM (VALUES ('handler_error'::text, 'error'::text, ${message}::text))
+             AS interrupted(error_code, status, error_message)
+    `;
+    expect(rows).toEqual([{ klass: 'caller' }]);
+  });
+
   it('classifies every corpus row identically in SQL and TS', async () => {
     const sql = db.adminSql;
     const rows = await sql<{ idx: number; error_code: string | null; status: string; error_message: string | null; klass: string }[]>`
@@ -167,6 +180,12 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
       { tool: 'tools:invoke', status: 'error', code: 'handler_error', msg: 'invalid_input: invalid_args: Unrecognized key: "workspace"', n: 11 },
       { tool: 'tools:invoke', status: 'error', code: 'handler_error', msg: 'role_not_allowed: Role "judge" cannot call tool "sessions:search" (allowed roles: operator)', n: 11 },
       { tool: 'plans:list', status: 'timeout', code: null, msg: 'tool "plans:list" exceeded timeout of 60s (handler returned but signal had aborted)', n: 16 },
+      {
+        tool: 'capability:git-evidence', status: 'error', code: 'handler_error',
+        msg: 'git_command_interrupted: git ls-tree -z 26dba0b0757c551cd1590b6abec54a9e94ebe6da -- ' +
+          'packages/operator-ui/src/onboarding/product-tutorial.test.tsx was aborted before returning a result',
+        n: 2,
+      },
     ];
     for (const s of seed) {
       for (let k = 0; k < s.n; k++) {
@@ -187,6 +206,9 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
     expect(new Set(expectedFingerprintedKeys).size).toBe(4);
     // …and the timeout is a fingerprinted transient key.
     expect(keys.some((k) => k.startsWith('plans:list:transient:'))).toBe(true);
+    // The same two cancellation rows that met the structural count floor must not
+    // re-enter the auto-implementation lane as a false major bug.
+    expect(keys.some((k) => k.startsWith('capability:git-evidence:structural:'))).toBe(false);
   });
 
   it('excludes marked dispatch-wrapper rows from both the failure count and per-tool denominator (P-012)', async () => {

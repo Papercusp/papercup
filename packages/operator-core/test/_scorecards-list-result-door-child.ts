@@ -107,6 +107,27 @@ async function run() {
              now()
         FROM generate_series(1, ${rowCount}) AS fixture(n)`;
 
+    const [storedEvidenceRow] = await sql`
+      SELECT count(*)::int AS row_count,
+             min(length(payload #>> '{observation,ratings,history-integrity,evidence}'))::int AS min_chars,
+             max(length(payload #>> '{observation,ratings,history-integrity,evidence}'))::int AS max_chars,
+             sum(length(payload #>> '{observation,ratings,history-integrity,evidence}'))::int AS total_chars
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${workspaceId}
+         AND issue_id LIKE 'EI-sclrd-%'`;
+    const storedEvidence = {
+      rows: Number(storedEvidenceRow!.row_count),
+      minChars: Number(storedEvidenceRow!.min_chars),
+      maxChars: Number(storedEvidenceRow!.max_chars),
+      totalChars: Number(storedEvidenceRow!.total_chars),
+    };
+    assert.deepEqual(storedEvidence, {
+      rows: rowCount,
+      minChars: evidenceChars,
+      maxChars: evidenceChars,
+      totalChars: rowCount * evidenceChars,
+    });
+
     const listTool = (await import('../lib/agent-tools/scorecards/list')).default;
     assert.equal(listTool.name, 'scorecards:list');
     const projected = lookupByMcpName('scorecards:list');
@@ -134,6 +155,16 @@ async function run() {
     assert.equal(targetBody?.scorecards.length, rowCount);
     assert.equal(targetBody?.scorecards[0]?.issueId, 'EI-sclrd-0001');
     assert.equal(targetBody?.scorecards.at(-1)?.issueId, 'EI-sclrd-0100');
+    const returnedEvidenceLengths = targetBody!.scorecards.map((row) => {
+      const evidence = row.ratings['history-integrity']?.evidence;
+      return typeof evidence === 'string' ? Buffer.byteLength(evidence, 'utf8') : 0;
+    });
+    const returnedEvidence = {
+      rows: returnedEvidenceLengths.filter((length) => length > 0).length,
+      minBytes: Math.min(...returnedEvidenceLengths),
+      maxBytes: Math.max(...returnedEvidenceLengths),
+      totalBytes: returnedEvidenceLengths.reduce((sum, length) => sum + length, 0),
+    };
 
     const invokeTool = (await import('../lib/agent-tools/tools/invoke')).default;
     let nestedDispatches = 0;
@@ -233,7 +264,14 @@ async function run() {
         privateScratchRoot: scratchRoot,
         credentialsStripped: true,
       },
-      list: { args, rowCount: targetBody.scorecards.length, outputBytes: targetBytes, elapsedMs: listElapsedMs },
+      list: {
+        args,
+        rowCount: targetBody.scorecards.length,
+        outputBytes: targetBytes,
+        storedEvidence,
+        returnedEvidence,
+        elapsedMs: listElapsedMs,
+      },
       invoke: { nestedDispatches, outputBytes: Buffer.byteLength(invoked.content[0]?.text ?? '', 'utf8'), elapsedMs: invokeElapsedMs },
       resultDoor: {
         elapsedMs: doorElapsedMs,

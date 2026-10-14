@@ -636,6 +636,53 @@ describe('testing:runs payload-tier shape', () => {
     expect(payload?.runs[0]).toMatchObject({ id: 17692431, workspaceId: 'workspace-a', harnessSlug: 'papercusp' });
   });
 
+  it('preserves every exact receipt row when case details exceed the inline tier budget', async () => {
+    const exactIds = [21207957, 21208029];
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      const query = call.strings.join(' ');
+      if (query.includes('WITH filtered')) return Promise.resolve([
+        { ...dbRows[0], id: String(exactIds[0]), status: 'pass', output_tail: null, total: '2' },
+        { ...dbRows[1], id: String(exactIds[1]), status: 'pass', output_tail: null, total: '2' },
+      ]);
+      if (query.includes('FROM harness_shared.test_case_runs')) return Promise.resolve(exactIds.map((id, index) => ({
+        test_run_id: String(id),
+        case_key: `suite > case ${index + 1}`,
+        occurrence: 1,
+        status: 'pass',
+        duration_ms: 3,
+        error_tail: `${index}: ${'case detail '.repeat(180)}`,
+      })));
+      return Promise.resolve([]);
+    });
+
+    const raw = await runsTool.handler({ testRunIds: exactIds, cases: true } as never, {} as never) as { data: unknown };
+    expect(JSON.stringify(raw.data).length).toBeGreaterThan(4_800);
+
+    const projected = lookupByMcpName('testing:runs');
+    expect(projected).toBeDefined();
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'testing:runs',
+      { testRunIds: exactIds, cases: true },
+      dispatchContext('trimmed'),
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const payload = readJsonResult<{
+      count: number;
+      total: number;
+      runs: Array<{ id: number; cases: Array<{ caseKey: string; errorTail: string | null }> }>;
+      payloadBounded?: { droppedRuns?: number };
+    }>(dispatched.result!);
+    expect(payload?.count).toBe(2);
+    expect(payload?.total).toBe(2);
+    expect(payload?.runs.map((row) => row.id)).toEqual(exactIds);
+    expect(payload?.runs.every((row) => row.cases.length === 1 && row.cases[0]?.errorTail?.length! > 1_000)).toBe(true);
+    expect(payload?.payloadBounded?.droppedRuns ?? 0).toBe(0);
+  });
+
   it('bounds verbose saved case details without clipping identities or changing measured counts', () => {
     const executionDetails = {
       schemaVersion: 1, root: '/tmp', filePath: 'measured.test.ts', runGroupId: 'measured',

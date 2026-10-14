@@ -1,7 +1,59 @@
 import { describe, expect, it } from 'vitest';
-import { assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples } from './retention-interval-evidence';
+import { assessDiskHeadroomSoak, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples } from './retention-interval-evidence';
 
 const GIB = 1024 ** 3;
+describe('disk headroom post-shipment soak assessment', () => {
+  const at = (hours: number) => new Date(Date.parse('2026-10-14T00:00:00Z') + hours * 3_600_000).toISOString();
+  const requirements = { host: 'fixture-host', artifactRef: 'fixture-shipped-artifact', shippedAt: at(0),
+    startAt: at(1), measuredAt: at(73), maxSampleGapMs: 3_600_000, maxAlarmGapMs: 3_600_000 };
+  const fixture = () => ({
+    censuses: Array.from({ length: 73 }, (_, hour) => ['/', '/mnt/data'].map((path) => ({
+      id: `${path}-${hour}`, host: 'fixture-host', path: path as '/' | '/mnt/data', at: at(hour + 1),
+      availableBytes: 100 * GIB, complete: true,
+    }))).flat(),
+    alarms: [] as Array<{ id: string; host: string; at: string; consumers: Record<string, string[]> }>,
+  });
+  it('accepts a full healthy window and accounts for every emitted check', () => {
+    const result = assessDiskHeadroomSoak(fixture(), requirements);
+    expect(result.soakStatus).toBe('pass');
+    expect([...result.coverage.checked, ...result.coverage.notChecked].sort()).toEqual([...result.coverage.population].sort());
+    expect(result.scope).toContain('capacity between samples remains unmeasured');
+  });
+  it('keeps unfinished, empty or one-device windows unknown', () => {
+    expect(assessDiskHeadroomSoak(fixture(), { ...requirements, measuredAt: at(72) }).soakStatus).toBe('unknown');
+    expect(assessDiskHeadroomSoak({ censuses: [], alarms: [] }, requirements).soakStatus).toBe('unknown');
+    const input = fixture(); input.censuses = input.censuses.filter((x) => x.path === '/');
+    expect(assessDiskHeadroomSoak(input, requirements).soakStatus).toBe('unknown');
+  });
+  it('detects an unalarmed middle dip despite healthy endpoints', () => {
+    const input = fixture(); input.censuses[50]!.availableBytes = 99 * GIB;
+    expect(assessDiskHeadroomSoak(input, requirements).soakStatus).toBe('fail');
+    input.alarms.push({ id: 'alarm', host: 'fixture-host', at: input.censuses[50]!.at,
+      consumers: { '/': ['postgres'], '/mnt/data': ['scratch'] } });
+    expect(assessDiskHeadroomSoak(input, requirements).soakStatus).toBe('pass');
+    input.alarms[0]!.at = at(1);
+    expect(assessDiskHeadroomSoak(input, requirements).soakStatus).toBe('fail');
+  });
+  it('fails an unnamed alarm even when all samples are healthy', () => {
+    const input = fixture(); input.alarms.push({ id: 'unnamed', host: 'fixture-host', at: at(12), consumers: { '/': ['postgres'] } });
+    expect(assessDiskHeadroomSoak(input, requirements).soakStatus).toBe('fail');
+  });
+  it('does not accept missing samples, incomplete reads or duplicate records', () => {
+    const input = fixture(); input.censuses.splice(50, 2);
+    expect(assessDiskHeadroomSoak(input, requirements).soakStatus).toBe('fail');
+    const incomplete = fixture(); incomplete.censuses[50]!.complete = false;
+    expect(assessDiskHeadroomSoak(incomplete, requirements).soakStatus).toBe('unknown');
+    const duplicate = fixture(); duplicate.censuses.push(duplicate.censuses[0]!);
+    expect(assessDiskHeadroomSoak(duplicate, requirements).soakStatus).toBe('fail');
+  });
+  it('rejects pre-shipment-only evidence, foreign hosts and fabricated future samples', () => {
+    expect(assessDiskHeadroomSoak(fixture(), { ...requirements, shippedAt: at(2) }).soakStatus).toBe('unknown');
+    const foreign = fixture(); foreign.censuses[0]!.host = 'other-host';
+    expect(assessDiskHeadroomSoak(foreign, requirements).soakStatus).toBe('unknown');
+    const future = fixture(); future.censuses[0]!.at = at(74);
+    expect(assessDiskHeadroomSoak(future, requirements).soakStatus).toBe('unknown');
+  });
+});
 const generationId = 'v1-' + 'a'.repeat(64);
 function fixture() {
   const snapshot = (path: string, dev: number) => ({ path, dev, totalBytes: 500 * GIB, availableBytes: 50 * GIB, reservedBytes: 12 * GIB });
