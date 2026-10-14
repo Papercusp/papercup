@@ -69,7 +69,6 @@ import { mastodonEventName } from './mastodon-adapter';
 import { redditEventName } from './reddit-adapter';
 import { youtubeActivityEventName } from './youtube-activities-adapter';
 import { youtubeCommentEventName } from './youtube-comments-adapter';
-import { instagramCommentEventName } from './instagram-comments-adapter';
 import { threadsReplyEventName } from './threads-conversation-adapter';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
@@ -157,10 +156,7 @@ const PRODUCIBLE: Record<string, { names: Set<string>; closed: boolean }> = {
     closed: true,
   },
   instagram: {
-    names: new Set([
-      instagramCommentEventName({ parent_id: 'p' } as never),
-      instagramCommentEventName({} as never),
-    ]),
+    names: new Set<string>(), // Filled by the installed provider, including push.
     closed: true,
   },
   threads: {
@@ -200,10 +196,29 @@ beforeAll(async () => {
     cursor = page.nextCursor;
     if (!page.hasMore) {
       expect(PRODUCIBLE['facebook-pages']!.names).toEqual(new Set(['post', 'comment', 'reply']));
-      return;
+      break;
     }
   }
-  throw new Error('Facebook package event scan did not finish');
+  expect(PRODUCIBLE['facebook-pages']!.names.size).toBe(3);
+  const instagram = createRequire(import.meta.url)(resolve(REPO_ROOT, 'libs/papercusp/plugins/instagram/index.cjs')).providerAdapter as ProviderAdapter;
+  cursor = null;
+  const config = { igUserId: '17841400000000000', watchWindow: 1 };
+  for (let n = 0; n < 4; n++) {
+    const page = await instagram.syncPage({ source: 'instagram-events', config, cursor, mode: cursor ? 'incremental' : 'backfill' }, {
+      fetch: async ({ request }) => jsonResponse(200, { data: new URL(request.url).pathname.endsWith('/media')
+        ? [{ id: '222' }]
+        : [{ id: '111', text: 'comment', timestamp: created_time, replies: { data: [{ id: '112', text: 'reply', timestamp: created_time }] } }],
+      }),
+    });
+    for (const record of page.records) PRODUCIBLE.instagram!.names.add(record.event!);
+    cursor = page.nextCursor;
+    if (!page.hasMore) break;
+  }
+  const mentions = await instagram.invoke({ source: 'instagram-events', capability: 'ingress.normalize', args: {
+    sourceConfig: config, envelope: { object: 'instagram', entry: [{ id: config.igUserId, changes: [{ field: 'mentions', value: { media_id: '333' } }] }] },
+  } }, { fetch: async () => jsonResponse(200, { id: config.igUserId, mentioned_media: { id: '333', caption: 'mention', timestamp: created_time } }) }) as { records: Array<{ event: string }> };
+  for (const record of mentions.records) PRODUCIBLE.instagram!.names.add(record.event);
+  expect(PRODUCIBLE.instagram!.names).toEqual(new Set(['comment', 'reply', 'mention']));
 });
 
 /**
