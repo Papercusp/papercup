@@ -297,9 +297,10 @@ export const HOSTED_CUSTOMER_DATA_TABLES: readonly CustomerDataTable[] = [
   table('papercusp_auth', 'hosted_usage_receipts', {
     purpose: 'Append-only usage and cost receipts per customer workspace.',
     systemOfRecord: 'papercusp', retention: 'billing-record', organizationLink: ORG,
-    access: 'openrouter_key_sha256',
+    // A credential REFERENCE is access-shaped: it names where the OpenRouter key lives.
+    access: 'openrouter_key_sha256 openrouter_credential_ref',
     billing: 'provider category payer quantity unit cost_source cost_micros openrouter_is_byok openrouter_budget_grant',
-    operational: 'openrouter_credential_ref control_workspace_id organization_id customer_workspace_id record_id usage_id revision occurred_at_ms observed_at_ms source_ref received_at',
+    operational: 'control_workspace_id organization_id customer_workspace_id record_id usage_id revision occurred_at_ms observed_at_ms source_ref received_at',
   }),
   table('papercusp_auth', 'hosted_budget_receipts', {
     purpose: 'Budget reservation and settlement receipts per customer workspace.',

@@ -300,6 +300,8 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
       { qualified: 'harness_shared.trigger_webhook_secrets', retention: 'account' },
       { qualified: 'harness_shared.connector_push_secrets', retention: 'account' },
       { qualified: 'harness_shared.trigger_deliveries', retention: 'source-mirrored' },
+      // FK child of trigger_bindings and trigger_deliveries (both ON DELETE RESTRICT).
+      { qualified: 'harness_shared.trigger_runs', retention: 'source-mirrored' },
       { qualified: 'harness_shared.chat_bug_suggestions', retention: 'source-mirrored' },
       { qualified: 'harness_shared.chat_rollup_queue', retention: 'ephemeral' },
     ],
@@ -324,8 +326,8 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
       'Hosted control-plane stores are recorded as deferred; their executor is cloud-portal P-010 (WI-6554700010011223).',
       'The organization-to-workspace binding is declared by the caller, not derived.',
       'No scheduled pilot backup exists; the restore drill runs against a scratch database.',
-      'Admission rules, chat bug suggestions, the chat rollup queue, trigger bindings, trigger deliveries and push or webhook secrets are in the population only as data-source dependents. Their own processing (admission, triggers, push intake) is not mapped as a pilot path.',
-      'A legal hold covers chat content only. Trigger deliveries and chat bug suggestions of a held source are deleted with the rest of the scope.',
+      'Admission rules, chat bug suggestions, the chat rollup queue, trigger bindings, trigger deliveries, trigger runs and push or webhook secrets are in the population only as data-source dependents. Their own processing (admission, triggers, push intake) is not mapped as a pilot path.',
+      'A legal hold covers chat content only. Trigger deliveries, trigger runs and chat bug suggestions of a held source are deleted with the rest of the scope.',
     ],
   },
 ];
