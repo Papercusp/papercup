@@ -22,7 +22,7 @@ function call(name: string, args: Record<string, unknown>, origin: string) {
     input: JSON.stringify({ name, args: { ...args, payloadTier: 'full' } }),
   });
   expect(result.status, result.stderr || result.stdout).toBe(0);
-    const value = JSON.parse(result.stdout);
+  const value = JSON.parse(result.stdout);
   expect(value.ok, JSON.stringify(value)).not.toBe(false);
   expect(value.error, JSON.stringify(value)).toBeUndefined();
   return value;
@@ -114,8 +114,9 @@ describe.skipIf(!profilePath)('consult-backed parking on the loaded staging oper
               WHERE workspace_id = ${literal(workspace)} AND harness_slug = 'papercusp' AND feature_id = ${literal(workItemId)}`, origin);
             expect(item.payload.externalBlockers.find((b: { ref: string }) => b.ref === blockerRef).status).toBe('cleared');
             const [wake] = rows(`SELECT fired_at, fired_payload FROM harness_shared.event_awaits
-              WHERE workspace_id = ${literal(workspace)} AND subscriber_id = ${literal(owner)}
+              WHERE workspace_id = 'default' AND subscriber_id = ${literal(owner)}
                 AND event_key = ${literal(eventKey)} ORDER BY id DESC LIMIT 1`, origin);
+            expect(wake, `Verdict await ${eventKey} in the event corpus`).toBeDefined();
             expect(wake.fired_at).toBeTruthy();
             expect(wake.fired_payload).toMatchObject({ verdict: flow, workItemId, recordedAs: 'peer-review' });
             observations.push({ flow, consultId, workItemId, outcome: state.park_state.outcomes.at(-1), wake: wake.fired_payload });
