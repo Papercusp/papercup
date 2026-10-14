@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CheckpointResult } from './green-checkpoint';
 import {
+  armSelfWatchdog,
   buildCrashCheckpointResult,
   buildSelfWatchdogCheckpointResult,
   buildTerminalFailureCheckpointResult,
@@ -34,6 +35,31 @@ const build = (failingTests: string[] = []) =>
     failingTests,
     candidateSource: 'tip',
   });
+
+describe('P-033: watchdog expiry diagnostics', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('identifies idle expiry before the hard ceiling when the idle budget exceeds half the ceiling', () => {
+    const onFire = vi.fn();
+    const kill = vi.fn();
+    armSelfWatchdog({ release: vi.fn() }, {
+      ms: 60,
+      hardCeilingMs: 100,
+      pid: 999,
+      kill,
+      log: () => {},
+      snapshotProcessGroup: () => null,
+      onFire,
+    });
+
+    vi.advanceTimersByTime(59);
+    expect(onFire).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onFire.mock.calls[0]?.[0]).toBe('idle-timeout');
+    expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+  });
+});
 
 /**
  * WI-41740 — the SELF-WATCHDOG kill path.

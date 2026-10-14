@@ -121,6 +121,7 @@ beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.provider_identity_mappings WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_vault_settings WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.datatype_registry WHERE workspace_id = ${WS} AND created_by = 'system:test'`;
   sourceId = await makeSource('source-acl');
 });
 
@@ -403,6 +404,14 @@ describe('chat retrieval units (P-015)', () => {
     await org.adminSql`
       UPDATE harness_shared.data_sources SET destination_policy = '{"chat-message": ["document"]}'::jsonb
        WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
+    // The sink routes by the workspace's registered nature (per-workspace registry, as on a real install).
+    await org.adminSql`
+      INSERT INTO harness_shared.datatype_registry
+        (id, workspace_id, title, description, tier, work_item_kind, authoritative_writer,
+         status, published, review_status, tags, created_by, nature, audience, updated_at)
+      VALUES ('chat-message', ${WS}, 'Chat message', 'A chat message', 'first-class', NULL, 'papercusp',
+        'active', TRUE, 'approved', ARRAY['test'], 'system:test', 'document', NULL, now())
+      ON CONFLICT DO NOTHING`;
     const legacyKey = `chat-message:${sourceId}:${CH}:16.1`;
     const sinks = await createDatatypeDestinationSinks(org.adminSql, { workspaceId: WS, sourceId, datatype: 'chat-message' });
     expect(sinks.map((s) => s.kind)).toEqual(['data-source-chat-message']);
@@ -446,6 +455,70 @@ describe('chat retrieval units (P-015)', () => {
       UPDATE harness_shared.data_sources
          SET config = '{"note": "renamed"}'::jsonb, scope = scope
        WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
+    expect(await queuedBuckets()).toEqual([]);
+  });
+});
+
+// WI-6554700010011913: one bucket that always fails must not stall the buckets queued behind it.
+// A test-only trigger makes every unit insert for POISON raise, so that bucket fails on each render.
+describe('chat rollup isolates a failing bucket', () => {
+  const POISON = 'T1:CPOISON';
+  const poisonMsg = (id: string, at: string, body: string) => ({ ...msg(id, at, body, id), channelId: POISON });
+
+  beforeAll(async () => {
+    await org.adminSql.unsafe(`
+      CREATE OR REPLACE FUNCTION harness_shared.test_chat_unit_poison() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.channel_id = '${POISON}' THEN RAISE EXCEPTION 'poisoned bucket'; END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER test_chat_unit_poison BEFORE INSERT ON harness_shared.chat_retrieval_units
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.test_chat_unit_poison();`);
+  });
+
+  afterAll(async () => {
+    await org.adminSql.unsafe(`
+      DROP TRIGGER IF EXISTS test_chat_unit_poison ON harness_shared.chat_retrieval_units;
+      DROP FUNCTION IF EXISTS harness_shared.test_chat_unit_poison();`).catch(() => {});
+  });
+
+  it('inside the pass, the failing bucket rolls back alone and waits out its delay; the bucket behind it commits', async () => {
+    // Separate statements, so the poisoned bucket is queued first and heads the queue.
+    await upsertChatMessages(org.adminSql, WS, sourceId, [poisonMsg('20.1', '2026-09-30T09:00:00Z', 'poisoned')]);
+    await upsertChatMessages(org.adminSql, WS, sourceId, [msg('21.1', '2026-09-30T10:00:00Z', 'healthy basalt', '21.1')]);
+
+    // batchSize 1: the poisoned bucket is batch 1 on its own. Before the fix that batch threw and
+    // rolled back its dequeue, so the pass rejected and 21.1 was never rendered.
+    const pass = await runChatRollupPass(org.adminSql, { workspaceId: WS, batchSize: 1 });
+    expect(pass).toMatchObject({ buckets: 2, failed: 1, unitsWritten: 1, documentsWritten: 1 });
+    expect(pass.failures).toEqual([expect.objectContaining({
+      dataSourceId: sourceId, channelId: POISON, bucketKind: 'thread', bucketKey: '20.1',
+      error: expect.stringContaining('poisoned bucket'),
+    })]);
+    expect(await units()).toEqual([{ unit_kind: 'thread', unit_key: '21.1', message_count: 1 }]);
+
+    // Re-queued, not dropped, and not due before the default retry delay.
+    const queued = await org.adminSql<Array<{ bucket_key: string; due_in: number }>>`
+      SELECT bucket_key, EXTRACT(EPOCH FROM queued_at - now())::float8 AS due_in
+        FROM harness_shared.chat_rollup_queue WHERE workspace_id = ${WS}`;
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({ bucket_key: '20.1' });
+    expect(queued[0]!.due_in).toBeGreaterThan(200);
+    expect(await runChatRollupPass(org.adminSql, { workspaceId: WS, batchSize: 1 })).toMatchObject({ buckets: 0, failed: 0 });
+  });
+
+  it('outside a transaction each bucket gets its own, and a re-queued bucket renders once its cause is gone', async () => {
+    await upsertChatMessages(org.adminSql, WS, sourceId, [poisonMsg('22.1', '2026-09-30T09:00:00Z', 'poisoned')]);
+    await upsertChatMessages(org.adminSql, WS, sourceId, [msg('23.1', '2026-09-30T10:00:00Z', 'healthy gneiss', '23.1')]);
+
+    expect(await rollupChatUnits(org.adminSql, WS, { retryDelaySeconds: 0 }))
+      .toMatchObject({ buckets: 2, failed: 1, unitsWritten: 1 });
+    expect(await queuedBuckets()).toEqual([[sourceId, 'thread', '22.1']]);
+
+    // The bucket's only message goes away, so its render writes no unit and the retry succeeds.
+    await org.adminSql`
+      UPDATE harness_shared.chat_messages SET deleted_at = now() WHERE workspace_id = ${WS} AND channel_id = ${POISON}`;
+    expect(await rollupChatUnits(org.adminSql, WS, { retryDelaySeconds: 0 })).toMatchObject({ buckets: 1, failed: 0 });
     expect(await queuedBuckets()).toEqual([]);
   });
 });

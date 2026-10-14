@@ -224,7 +224,7 @@ describe('connector-sync Google Contacts Personal Vault path', () => {
   });
 });
 
-const NO_CHAT = { buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0 };
+const NO_CHAT = { buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0, failed: 0, failures: [] };
 
 function quietDeps(sql: Sql) {
   return {
@@ -241,15 +241,32 @@ function quietDeps(sql: Sql) {
 describe('connector-sync chat rollup step', () => {
   it('runs the chat rollup pass for the workspace and reports its counts', async () => {
     const sql = {} as Sql;
-    const runChatRollup = vi.fn(async () => ({ buckets: 3, unitsWritten: 2, unitsRemoved: 1, expired: 4, legacyMigrated: 5 }));
+    const runChatRollup = vi.fn(async () => ({
+      buckets: 3, unitsWritten: 2, unitsRemoved: 1, expired: 4, legacyMigrated: 5, failed: 0, failures: [],
+    }));
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const result = await runConnectorSyncAction(ctx, { ...quietDeps(sql), runChatRollup });
 
     expect(runChatRollup).toHaveBeenCalledWith(sql, { workspaceId: ctx.workspaceId });
     expect(result.diagnostics).toMatchObject({
       chatBuckets: 3, chatUnitsWritten: 2, chatUnitsRemoved: 1, chatExpired: 4, chatLegacyMigrated: 5, chatRollupFailed: 0,
+      chatBucketsFailed: 0,
     });
     expect(result).not.toHaveProperty('softError');
+  });
+
+  // WI-6554700010011913: the pass survives a failing bucket; the bucket is named in the soft error.
+  it('a bucket that failed and was re-queued is a soft error naming the bucket', async () => {
+    const sql = {} as Sql;
+    const runChatRollup = vi.fn(async () => ({
+      buckets: 2, unitsWritten: 1, unitsRemoved: 0, expired: 0, legacyMigrated: 0, failed: 1,
+      failures: [{ dataSourceId: 'ds-1', channelId: 'C1', bucketKind: 'thread' as const, bucketKey: '1.1', error: 'boom' }],
+    }));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await runConnectorSyncAction(ctx, { ...quietDeps(sql), runChatRollup });
+
+    expect(result.diagnostics).toMatchObject({ chatBuckets: 2, chatUnitsWritten: 1, chatRollupFailed: 0, chatBucketsFailed: 1 });
+    expect(result.softError).toContain('chat rollup: 1 bucket(s) failed and were re-queued: ds-1/C1/thread:1.1:boom');
   });
 
   it('a failed rollup is a soft error, never a failed pass', async () => {

@@ -1,7 +1,18 @@
 {
-  "measuredAt": "2026-10-14T05:22:30.950Z",
+  "measuredAt": "2026-10-14T06:02:43.888Z",
   "protocolPin": "20bb8955d6665afbc484718e573d864d9090fbe2d72fcdb0ea59f98883fcf99b",
   "blindHash": "57b4ed2c5b2b9f48d3cc2c88d55cf7b58e396b2902a65aee859cfe00dc2aa985",
+  "keyPublication": {
+    "kind": "identity-safe-derived-view",
+    "originalSha256": "fe11fa101ef56226ec10b254f8caf43d45e9095d241d4f2162d011e5cb048332",
+    "originalBytes": 352437,
+    "custody": {
+      "reportId": "rpt_58627438-a267-4570-9330-5a6dc3b1aa80",
+      "path": "/reports?sel=rpt_58627438-a267-4570-9330-5a6dc3b1aa80",
+      "visibility": "owner"
+    },
+    "note": "Diagnostic identity strings are redacted in this view. Original frozen evidence is preserved in owner custody."
+  },
   "treatments": [
     {
       "treatment": "graph",
