@@ -716,6 +716,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'polling scorecards or test_runs for a criterion that fell below its bar',
   },
   {
+    family: 'plan-drift-alarm',
+    keyTemplate: 'plan:drift-alarm:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the plan whose spec-conformance run found drift' }],
+    describe:
+      "A spec-conformance run OPENED a drift alarm on one of this plan's requirements: a `violatedWhen` falsifier fired, or the requirement's done-when check moved pass → fail (a done-when that never passed is progress, not drift). Fires once per newly opened alarm, never again while that alarm stays open. Payload carries `barKey`, `alarmId`, `firedFalsifiers`, `doneWhenRegressed` and the `blocked` work-item ids the alarm now blocks. Standing alert: `watch:create { pattern: 'plan:drift-alarm:<slug>', targetKind: 'event', wake: false }`.",
+    emitter:
+      'spec-conformance run (packages/operator-core/lib/spec-conformance/conformance-run.ts runPlanConformance) through the production adapter emitDriftAlarm in packages/operator-core/lib/spec-conformance/conformance-run-deps.ts; one event per alarm opening',
+    exists: true,
+    replacesPoll: 'polling work_items or the conformance results ledger for a requirement that drifted',
+  },
+  {
     family: 'plan-acceptance-changed',
     keyTemplate: 'plan:acceptance:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the subject plan slug' }],
