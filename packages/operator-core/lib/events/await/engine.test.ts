@@ -1467,26 +1467,37 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     },
   );
 
-  it('keeps an accepted pending psu-host delivery parked at the retry cap until late host settlement', async () => {
+  it.each(['ordinary', 'cold', 'warm'] as const)(
+    'keeps an accepted pending %s psu-host delivery parked at the retry cap until late host settlement',
+    async (carry) => {
     const pendingReason =
       'psu-host pending-delivery-id: delivery accepted before turn-start proof; retry remains durable';
+    const pendingDelivery: Partial<DeliveryWork> = {
+      id: 17,
+      subscriberId: 'su-pending-host-cap',
+      lastError: pendingReason,
+      ...(carry === 'ordinary' ? {} : {
+        source: 'loop:rt-loop-pending-host',
+        payload: { carry, wakeCount: 165, harness: 'papercusp', routineId: 'rt-loop-pending-host' },
+      }),
+    };
     h.executeWake
       .mockResolvedValueOnce({ kind: 'park', reason: pendingReason, hostCommitPending: true })
       .mockResolvedValueOnce({ kind: 'park', reason: pendingReason, hostCommitPending: true })
       .mockResolvedValueOnce({ kind: 'delivered', channel: 'psu-socket-inject' });
     h.store.claimDueDeliveries.mockResolvedValueOnce([
-      workRow({ id: 17, subscriberId: 'su-pending-host-cap', attempts: 1, lastError: pendingReason }),
+      workRow({ ...pendingDelivery, attempts: 1 }),
     ]);
 
     const first = await pumpWakeDeliveries('ws-test');
 
     h.store.claimDueDeliveries.mockResolvedValueOnce([
-      workRow({ id: 17, subscriberId: 'su-pending-host-cap', attempts: 8, lastError: pendingReason }),
+      workRow({ ...pendingDelivery, attempts: 8 }),
     ]);
     const pending = await pumpWakeDeliveries('ws-test');
 
     h.store.claimDueDeliveries.mockResolvedValueOnce([
-      workRow({ id: 17, subscriberId: 'su-pending-host-cap', attempts: 9, lastError: pendingReason }),
+      workRow({ ...pendingDelivery, attempts: 9 }),
     ]);
     const settled = await pumpWakeDeliveries('ws-test');
 
@@ -1505,7 +1516,8 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
     expect(settled.delivered).toBe(1);
     expect(settled.inbox).toBe(0);
-  });
+    },
+  );
 
   it('settles a park-exhausted wake as dropped when the inbox fallback fails', async () => {
     h.degradeToInboxOrDrop.mockResolvedValueOnce({
