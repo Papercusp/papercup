@@ -62,6 +62,9 @@ export function upsertRoleSql(spec: RoleSpec): string {
 // ── hosted control plane roles (P-005, D-010) ────────────────────────────────
 
 export const HOSTED_DATABASE = 'papercusp_hosted';
+/** P-013: login only for the audited, consent-bound customer reader. */
+export const HOSTED_OPS_ROLE = 'harness_ops';
+export const HOSTED_OPS_URL_REF_ENV = 'PAPERCUSP_HOSTED_OPS_DATABASE_URL_REF';
 
 export interface HostedRoleNames {
   /** Migration user and the D-009 admin URL (HARNESS_ADMIN_DATABASE_URL). */
@@ -106,6 +109,24 @@ export interface HostedRoleSql {
   extensions: string;
 }
 
+/** No ambient table privileges or memberships: migration 1511 owns the reader grant. */
+export function productionOpsRoleSql(verifier: string, database = HOSTED_DATABASE): string {
+  const db = assertIdent('database', database);
+  const role = HOSTED_OPS_ROLE;
+  return [
+    // A non-superuser cannot remove privileged attributes. Refuse drift before
+    // changing a password or making an existing role usable.
+    `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles r WHERE rolname = '${role}' AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR EXISTS (SELECT 1 FROM pg_auth_members WHERE member = r.oid))) THEN RAISE EXCEPTION 'harness_ops must be unprivileged and hold no role memberships'; END IF; END $$;`,
+    upsertRoleSql({ name: role, login: true, connectionLimit: 2, verifier }),
+    `REVOKE ALL ON DATABASE ${db} FROM ${role};`,
+    `GRANT CONNECT ON DATABASE ${db} TO ${role};`,
+    `ALTER ROLE ${role} SET default_transaction_read_only = on;`,
+    `ALTER ROLE ${role} SET transaction_timeout = '15min';`,
+    `ALTER ROLE ${role} SET statement_timeout = '15min';`,
+    `ALTER ROLE ${role} SET idle_in_transaction_session_timeout = '15min';`,
+  ].join('\n');
+}
+
 /**
  * D-010 bootstrap, run once as `postgres` before the first migration and safe to re-run.
  *
@@ -120,6 +141,8 @@ export interface HostedRoleSql {
 export function productionRoleSql(opts: {
   adminVerifier: string;
   appVerifier: string;
+  /** Omit only for the existing D-010 bootstrap; production provisioning supplies it. */
+  opsVerifier?: string;
   database?: string;
   roles?: HostedRoleNames;
 }): HostedRoleSql {
@@ -134,6 +157,7 @@ export function productionRoleSql(opts: {
     `REVOKE ALL ON DATABASE ${db} FROM PUBLIC;`,
     `GRANT CONNECT, CREATE, TEMPORARY ON DATABASE ${db} TO ${admin};`,
     `GRANT CONNECT, TEMPORARY ON DATABASE ${db} TO ${app};`,
+    ...(opts.opsVerifier === undefined ? [] : [productionOpsRoleSql(opts.opsVerifier, db)]),
   ].join('\n');
   const inDatabase = `GRANT USAGE, CREATE ON SCHEMA public TO ${admin};`;
   const extensions = HOSTED_DB_EXTENSIONS.map((e) => `CREATE EXTENSION IF NOT EXISTS "${e}";`).join('\n');

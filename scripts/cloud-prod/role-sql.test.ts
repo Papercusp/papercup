@@ -9,6 +9,9 @@ import {
   HOSTED_DB_EXTENSIONS,
   hostedPasswordSecret,
   hostedUrlSecret,
+  HOSTED_OPS_ROLE,
+  HOSTED_OPS_URL_REF_ENV,
+  productionOpsRoleSql,
   productionRoleSql,
   upsertRoleSql,
 } from './role-sql';
@@ -48,6 +51,34 @@ describe('upsertRoleSql', () => {
     expect(() => upsertRoleSql({ name: 'r; DROP ROLE x', login: false })).toThrow(/unsafe role name/);
     expect(() => upsertRoleSql({ name: 'r', login: true })).toThrow(/LOGIN role needs a verifier/);
     expect(() => upsertRoleSql({ name: 'r', login: false, verifier: v })).toThrow(/NOLOGIN role must not have one/);
+  });
+});
+
+describe('productionOpsRoleSql (P-013)', () => {
+  const sql = productionOpsRoleSql(scramSha256Verifier('ops-pw-not-in-sql'));
+
+  it('creates a bounded nonprivileged login with only CONNECT and read-only defaults', () => {
+    expect(sql).toContain('CREATE ROLE harness_ops LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 2');
+    expect(sql).toContain('REVOKE ALL ON DATABASE papercusp_hosted FROM harness_ops;');
+    expect(sql).toContain('GRANT CONNECT ON DATABASE papercusp_hosted TO harness_ops;');
+    expect(sql).toContain('SET default_transaction_read_only = on;');
+    expect(sql).toContain("SET transaction_timeout = '15min';");
+    expect(sql).not.toMatch(/GRANT (SELECT|INSERT|UPDATE|DELETE|CREATE|TEMPORARY|USAGE|EXECUTE)/);
+    expect(sql).not.toContain('ops-pw-not-in-sql');
+  });
+
+  it('refuses privileged or member-role drift before the password upsert', () => {
+    expect(sql.split('\n')[0]).toContain('rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls');
+    expect(sql.split('\n')[0]).toContain('pg_auth_members WHERE member = r.oid');
+    expect(() => productionOpsRoleSql('plaintext')).toThrow(/not a SCRAM/);
+    expect(() => productionOpsRoleSql(scramSha256Verifier('p'), 'x; DROP DATABASE y')).toThrow(/unsafe database/);
+  });
+
+  it('extends the existing hosted bootstrap and dedicated secret naming', () => {
+    expect(productionRoleSql({ adminVerifier: scramSha256Verifier('a'), appVerifier: scramSha256Verifier('b'), opsVerifier: scramSha256Verifier('o') }).inPostgres).toContain('GRANT CONNECT ON DATABASE papercusp_hosted TO harness_ops;');
+    expect(hostedPasswordSecret(HOSTED_OPS_ROLE)).toBe('cloudsql-harness-ops-password');
+    expect(hostedUrlSecret(HOSTED_OPS_ROLE)).toBe('cloudsql-harness-ops-url');
+    expect(HOSTED_OPS_URL_REF_ENV).toBe('PAPERCUSP_HOSTED_OPS_DATABASE_URL_REF');
   });
 });
 
