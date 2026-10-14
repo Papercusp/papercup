@@ -118,6 +118,10 @@ describe('P007 — identity, one hire vote, acceptance and membership',()=>{
       if(!issued.ok) throw new Error('Hosted wallet challenge failed');
       const challengeId=String(issued.value.challengeId),message=String(issued.value.message);
       expect(message).toContain('urn:papercusp:principal:gh:'+actor.githubUserId);
+      // SPEC-P-007-A: an issued challenge cannot bind without a signature.
+      expect(await runOnboardingWalletAction(k,{action:'wallet-verify',challengeId,signature:''},d)).toMatchObject({ok:false,status:422});
+      await expect(verifyOnboardingIdentity(k,d)).rejects.toMatchObject({code:'wallet_unverified'});
+      expect(await getWorkProfile({...key,personId:'PER-wallet-proof'},{sql:db.adminSql})).toBeNull();
       const bad=await runOnboardingWalletAction(k,{action:'wallet-verify',challengeId,signature:await wrong.signMessage({message})},d);
       expect(bad.ok).toBe(false);
       await expect(verifyOnboardingIdentity(k,d)).rejects.toMatchObject({code:'wallet_unverified'});
