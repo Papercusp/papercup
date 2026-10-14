@@ -1,10 +1,15 @@
 /** Real Postgres + signed V2 EVM transactions. Provider completion is a fixture,
  * so this suite is tree evidence and never claims live Documenso acceptance. */
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { bytesToHex, createAddressFromString } from '@ethereumjs/util';
 import type { Hex, Address } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
+import { installIdentityFixture, prepareIdentityFixture } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
+import { startDaoHrWalletBindingFixture } from './wallet-binding-fixture';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { equityV2Evm } from '../equity/evm-test-helpers';
 import { unsafeFederatedPotScope } from '../federated-pot-scope';
@@ -16,7 +21,7 @@ import { completeContractSigning, prepareContractExecution, startContractSigning
 import { DocumensoAdapter } from './documenso';
 import { getWorkProfile } from './work-profile';
 import { DEFAULT_EQUITY_POLICY, resolveOfferTermsFrom, updateEquityPolicy } from './equity-policy';
-import { admitHire, onboardingChecklist, prepareHireAcceptance, prepareHireProposal, readOnboarding, recordHireExecution, recordHireProposal, reconcileFailedHire, verifyOnboardingIdentity,
+import { admitHire, onboardingChecklist, prepareHireAcceptance, prepareHireProposal, readOnboarding, recordHireExecution, recordHireProposal, reconcileFailedHire, runOnboardingWalletAction, verifyOnboardingIdentity,
   type CandidateIdentity, type OnboardingChain, type OnboardingContract, type OnboardingDeps } from './onboarding';
 import type { HivePolicy } from '../hive-policy-schema';
 import { buildDaoWorkspaceView } from '../dao-workspace-view';
@@ -86,6 +91,49 @@ beforeAll(async()=>{
 },180_000);
 afterAll(async()=>{await db?.cleanup();});
 describe('P007 — identity, one hire vote, acceptance and membership',()=>{
+  it('persists a wallet link only after the candidate signs the production hosted challenge',async()=>{
+    vi.stubEnv('PAPERCUSP_VERIFY_TAURI_ISOLATED','1');
+    const directory=mkdtempSync(join(tmpdir(),'dao-hr-onboarding-wallet-'));
+    const identity=JSON.parse(readFileSync(prepareIdentityFixture(directory),'utf8'));
+    const restore=installIdentityFixture(identity);
+    let hosted:Awaited<ReturnType<typeof startDaoHrWalletBindingFixture>>|undefined;
+    try {
+      hosted=await startDaoHrWalletBindingFixture();
+      vi.stubEnv('PAPERCUSP_CUPBOARD_URL',hosted.url);
+      const actor=identity.actors.candidate;
+      await db.adminSql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,title,payload)
+        VALUES (${key.workspaceId},'papercusp','PER-wallet-proof','person','Signed-wallet candidate',${db.adminSql.json({email:actor.email})})`;
+      const k=await signedOffer('PER-wallet-proof');
+      // Only the external GitHub identity transport is a fixture. The hosted
+      // challenge, signature recovery, SQLite uniqueness and HR PG writes run.
+      const d:OnboardingDeps={sql:db.adminSql,identity:async()=>({githubUserId:actor.githubUserId,
+        githubLogin:actor.githubLogin,verifiedEmails:[actor.email],authToken:actor.token})};
+      const account=privateKeyToAccount(bytesToHex(randomBytes(32)));
+      const wrong=privateKeyToAccount(bytesToHex(randomBytes(32)));
+      await expect(verifyOnboardingIdentity(k,d)).rejects.toMatchObject({code:'wallet_unverified'});
+      expect(await getWorkProfile({...key,personId:'PER-wallet-proof'},{sql:db.adminSql})).toBeNull();
+      expect((await row(k.offerId)).candidate_github_id).toBeNull();
+      const issued=await runOnboardingWalletAction(k,{action:'wallet-challenge',walletAddress:account.address,chainId:1},d);
+      expect(issued.ok).toBe(true);
+      if(!issued.ok) throw new Error('Hosted wallet challenge failed');
+      const challengeId=String(issued.value.challengeId),message=String(issued.value.message);
+      expect(message).toContain('urn:papercusp:principal:gh:'+actor.githubUserId);
+      const bad=await runOnboardingWalletAction(k,{action:'wallet-verify',challengeId,signature:await wrong.signMessage({message})},d);
+      expect(bad.ok).toBe(false);
+      await expect(verifyOnboardingIdentity(k,d)).rejects.toMatchObject({code:'wallet_unverified'});
+      expect(await getWorkProfile({...key,personId:'PER-wallet-proof'},{sql:db.adminSql})).toBeNull();
+      const signature=await account.signMessage({message});
+      expect(await runOnboardingWalletAction(k,{action:'wallet-verify',challengeId,signature},d)).toMatchObject({ok:true});
+      const linked=await verifyOnboardingIdentity(k,d);
+      expect(linked).toMatchObject({personId:'PER-wallet-proof',memberGithubUserId:actor.githubUserId,
+        wallet:{address:account.address.toLowerCase(),chainId:1,bindingRef:challengeId}});
+      expect(Number((await row(k.offerId)).candidate_github_id)).toBe(actor.githubUserId);
+      expect(await runOnboardingWalletAction(k,{action:'wallet-verify',challengeId,signature},d)).toMatchObject({ok:false,status:409});
+      expect((await getWorkProfile({...key,personId:'PER-wallet-proof'},{sql:db.adminSql}))?.wallet?.address).toBe(account.address.toLowerCase());
+    } finally {
+      await hosted?.stop();restore();vi.unstubAllEnvs();rmSync(directory,{recursive:true,force:true});
+    }
+  },120_000);
   it('rejects a foreign signer identity, unverified hosted binding and duplicate wallet before saving any link',async()=>{
     const k=await signedOffer();
     await expect(verifyOnboardingIdentity(k,{...deps(),identity:async()=>({...candidate,verifiedEmails:['stranger@example.test']})})).rejects.toMatchObject({code:'identity_mismatch'});
