@@ -1,4 +1,243 @@
 {
+  "nativeNewSixCandidateQualification1107Z20261014": {
+    "schemaVersion": "native-new-temp-candidate-evidence-v1",
+    "taskId": "0mv809m5i19pxaoz9o8",
+    "logPath": ".papercusp/scratch/bash-b4314c32-6e8.log",
+    "logSha256": "c1fe6894eb8682a9c6d6f06b0735dc7d22274ff0d93cbf68634b5f76ef6378df",
+    "terminalExitCode": 0,
+    "receipt": {
+      "kind": "native-new-six-candidate-retention-inspection",
+      "readAt": "2026-10-14T11:07:26.472Z",
+      "completedAt": "2026-10-14T11:07:26.506Z",
+      "instrument": "maintained inspectRetentionTrees + selectRetentionEntries; inline manual assembly; no evidence binding",
+      "root": "/mnt/data/tmp",
+      "classId": "mnt-tmp",
+      "cutoff": "2026-10-07T11:07:26.472Z",
+      "paths": [
+        "/mnt/data/tmp/su521-c",
+        "/mnt/data/tmp/su521-c2",
+        "/mnt/data/tmp/su521-s2",
+        "/mnt/data/tmp/app-agent-p010-email-20261007",
+        "/mnt/data/tmp/wi41095-whole-source-20261011T0829",
+        "/mnt/data/tmp/pui-ei255226-candidate.HpMPxo"
+      ],
+      "witnesses": [
+        {
+          "path": "/mnt/data/tmp/su521-c",
+          "classification": {
+            "status": "class",
+            "classId": "mnt-tmp",
+            "pattern": "/mnt/data/tmp",
+            "rootDepth": 3
+          },
+          "keep": {
+            "kind": "max-age",
+            "maxAgeHours": 168
+          },
+          "dev": "66304",
+          "ino": "7544355742",
+          "uid": "1000",
+          "isSymlink": false,
+          "mtimeNs": "1791694507326507615",
+          "ctimeNs": "1791694507326507615",
+          "rootAllocatedB": "8192"
+        },
+        {
+          "path": "/mnt/data/tmp/su521-c2",
+          "classification": {
+            "status": "class",
+            "classId": "mnt-tmp",
+            "pattern": "/mnt/data/tmp",
+            "rootDepth": 3
+          },
+          "keep": {
+            "kind": "max-age",
+            "maxAgeHours": 168
+          },
+          "dev": "66304",
+          "ino": "10756749391",
+          "uid": "1000",
+          "isSymlink": false,
+          "mtimeNs": "1791724733456625797",
+          "ctimeNs": "1791724733456625797",
+          "rootAllocatedB": "8192"
+        },
+        {
+          "path": "/mnt/data/tmp/su521-s2",
+          "classification": {
+            "status": "class",
+            "classId": "mnt-tmp",
+            "pattern": "/mnt/data/tmp",
+            "rootDepth": 3
+          },
+          "keep": {
+            "kind": "max-age",
+            "maxAgeHours": 168
+          },
+          "dev": "66304",
+          "ino": "5927439805",
+          "uid": "1000",
+          "isSymlink": false,
+          "mtimeNs": "1791694040102733888",
+          "ctimeNs": "1791694040102733888",
+          "rootAllocatedB": "8192"
+        },
+        {
+          "path": "/mnt/data/tmp/app-agent-p010-email-20261007",
+          "classification": {
+            "status": "class",
+            "classId": "mnt-tmp",
+            "pattern": "/mnt/data/tmp",
+            "rootDepth": 3
+          },
+          "keep": {
+            "kind": "max-age",
+            "maxAgeHours": 168
+          },
+          "dev": "66304",
+          "ino": "6469901731",
+          "uid": "1000",
+          "isSymlink": false,
+          "mtimeNs": "1791437043940680715",
+          "ctimeNs": "1791437043940680715",
+          "rootAllocatedB": "4096"
+        },
+        {
+          "path": "/mnt/data/tmp/wi41095-whole-source-20261011T0829",
+          "classification": {
+            "status": "class",
+            "classId": "mnt-tmp",
+            "pattern": "/mnt/data/tmp",
+            "rootDepth": 3
+          },
+          "keep": {
+            "kind": "max-age",
+            "maxAgeHours": 168
+          },
+          "dev": "66304",
+          "ino": "6499426710",
+          "uid": "1000",
+          "isSymlink": false,
+          "mtimeNs": "1791707369733379290",
+          "ctimeNs": "1791707369733379290",
+          "rootAllocatedB": "4096"
+        },
+        {
+          "path": "/mnt/data/tmp/pui-ei255226-candidate.HpMPxo",
+          "classification": {
+            "status": "class",
+            "classId": "mnt-tmp",
+            "pattern": "/mnt/data/tmp",
+            "rootDepth": 3
+          },
+          "keep": {
+            "kind": "max-age",
+            "maxAgeHours": 168
+          },
+          "dev": "66304",
+          "ino": "4296793598",
+          "uid": "1000",
+          "isSymlink": false,
+          "mtimeNs": "1791844823457542368",
+          "ctimeNs": "1791844823457542368",
+          "rootAllocatedB": "4096"
+        }
+      ],
+      "result": {
+        "entries": [],
+        "retained": [],
+        "inspectedNodes": 6,
+        "retainedRecentTrees": 6
+      },
+      "selected": [],
+      "sourceHashes": {
+        "packages/operator-core/lib/storage/disk-consumer-census.ts": "bf136c9c45175cbd81e4f230c16e2471e013573c3fe5b61493f53d30b82b6b77",
+        "packages/operator-core/lib/storage/disk-reclaim.ts": "eedc08da28120006aae6aae42a88a9fe854b7d72f045df1abee8c34d867e45df",
+        "packages/operator-core/lib/storage/retention-policy.ts": "5744bca6680b10953f4b3ddbf3c24489141f9289678cbf7ae4e4306626d56490"
+      },
+      "scope": "Exact six previously unqualified roots only; read-only. Selected entries are planning candidates, not deletion authorization; current references/protection/holders and exclusive allocation remain required."
+    },
+    "conclusion": "PRESERVE all six roots: the maintained inspector observed six recent roots under the existing168h cutoff and selected0. No current subtree allocation/exclusive reclaim/capacity gain claim.",
+    "noInstrumentDeclaration": "Maintained inspectors with source hashes; inline manual assembly; no evidence binding attempted."
+  },
+  "nativeNewAtomicCapacity1109Z20261014": {
+    "taskId": "0mv80che39vuc8p12b4",
+    "logPath": ".papercusp/scratch/bash-38ab22d7-62a.log",
+    "logSha256": "a12295709bdf8b06fc2717deb40166521bf477b977973cd2d88ebc75f6acb774",
+    "terminalExitCode": 0,
+    "receipt": {
+      "kind": "native-new-atomic-capacity-1110Z",
+      "readAt": "2026-10-14T11:09:40.698Z",
+      "snapshotSha256": "38f282a24bc12de25eecaa64a3787dfa24b1c7ff7a183c5ef99bc2729622f8df",
+      "sequence": 197,
+      "sampledAtMs": 1791976175849,
+      "ageMs": 4850,
+      "sourceCustody": {
+        "kind": "node-entry-sha256",
+        "nativePid": 2913917,
+        "processIdentity": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:76459362",
+        "sha256": "5eee043852c6b1502359c2f1f2997d5781bf85630fe264f6e91a4aa71b6a70c8",
+        "sampleStartedAtMs": 1791976175849,
+        "sampleCompletedAtMs": 1791976176609,
+        "stableDuringSample": true
+      },
+      "policy": {
+        "freePctMin": 0.1,
+        "freeBytesMin": 107374182400,
+        "freeInodesPctMin": 0.05,
+        "criticalFreePctMin": 0.02,
+        "criticalFreeBytesMin": 2147483648,
+        "criticalFreeBytesCap": 68719476736
+      },
+      "snapshots": [
+        {
+          "path": "/",
+          "state": "measured",
+          "dev": 66307,
+          "totalBytes": 2013991550976,
+          "availableBytes": 103997296640,
+          "totalInodes": 124960768,
+          "freeInodes": 103115356,
+          "reservationState": "measured",
+          "reservedBytes": 10737418240,
+          "issues": [],
+          "usableAfterReservationsBytes": 93259878400,
+          "criticalFloorBytes": 40279831019.520004
+        },
+        {
+          "path": "/mnt/data",
+          "state": "measured",
+          "dev": 66304,
+          "totalBytes": 7999426224128,
+          "availableBytes": 44099592192,
+          "totalInodes": 115448400,
+          "freeInodes": 86238544,
+          "reservationState": "measured",
+          "reservedBytes": 0,
+          "issues": [],
+          "usableAfterReservationsBytes": 44099592192,
+          "criticalFloorBytes": 68719476736
+        },
+        {
+          "path": "/tmp/pcv",
+          "state": "measured",
+          "dev": 66304,
+          "totalBytes": 7999426224128,
+          "availableBytes": 44099592192,
+          "totalInodes": 115448400,
+          "freeInodes": 86238544,
+          "reservationState": "measured",
+          "reservedBytes": 0,
+          "issues": [],
+          "usableAfterReservationsBytes": 44099592192,
+          "criticalFloorBytes": 68719476736
+        }
+      ],
+      "scope": "One captured native atomic snapshot, not interval acceptance or present admission. No reservation/runtime mutation."
+    },
+    "conclusion": "At captured11:09:40Z source-attributed atomic sample, root usable93259878400B exceeds recorded critical40279831019.520004B; data/tmp aliases share dev66304, reserved0, usable44099592192B below68719476736B floor by24619884544B. One discrete snapshot only; fullR5 sustainedusablecapacity staysOPEN.",
+    "noInstrumentDeclaration": "Existing criticalWriteHeadroomBytes computes recorded floor; inline manual assembly; no evidence binding attempted. Source custody is the native writer recorded witness, never restamped onto earlier frames."
+  },
   "nativeNewTempCandidateQualification1052Z20261014": {
     "schemaVersion": "native-new-temp-candidate-evidence-v1",
     "qualification": {

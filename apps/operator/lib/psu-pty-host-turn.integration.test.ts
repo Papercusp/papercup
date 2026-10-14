@@ -1592,7 +1592,7 @@ it('quota wall during launch kickoff preserves the host and publishes recovery t
   expect(existsSync(sock)).toBe(false);
 }, 25000);
 
-it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'owner-edit', 'automatic', 'automatic-transient', 'automatic-unavailable'] as const)('Codex quota recovery verifies its auto route before replacing the child (%s)', async (repair) => {
+it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'interactive-replay', 'owner-edit', 'automatic', 'automatic-transient', 'automatic-unavailable'] as const)('Codex quota recovery verifies its auto route before replacing the child (%s)', async (repair) => {
   const root = mkdtempSync(join(tmpdir(), 'psu-quota-recovery-'));
   const codexHome = join(root, 'codex');
   const originalNativeId = '12345678-1234-1234-1234-123456789abc';
@@ -1603,17 +1603,18 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'owner
   const sock = socketPathFor(ownerId);
   const eventPath = eventLogPathForOwner(ownerId);
   const automatic = repair.startsWith('automatic');
-  const fixture = ['interactive', 'owner-edit'].includes(repair) || automatic ? bridgedIo() : fakeIo();
+  const fixture = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic ? bridgedIo() : fakeIo();
   const { io, captured } = fixture;
   const operationId = String(9_000_000 + Math.floor(performance.now()));
   const marker = '⟦turn-origin:wake-pump nonce:0123456789abcdef⟧';
-  const preservesConversation = ['interactive', 'owner-edit'].includes(repair) || automatic;
+  const preservesConversation = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic;
   const childCode = [
     "const fs=require('node:fs'),path=require('node:path');",
     "const recycled=process.argv[1]==='RECYCLED';",
     "if(recycled){const config=fs.readFileSync(path.join(process.env.CODEX_HOME,'config.toml'),'utf8');",
     "process.stdout.write('RECYCLED-ROUTE:'+process.env.PAPERCUSP_ACCOUNT_ROUTING_MODE+':'+config.includes('model_provider = \"papercusp-codex-gateway\"')+'\\n');}",
     "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');let b='';",
+    repair === 'interactive-replay' ? "if(recycled)process.stdout.write(\"You've hit your usage limit.\\n\");" : '',
     "process.stdout.write(recycled?'RECYCLED-READY\\n':'READY\\n');",
     "process.stdin.on('data',d=>{if(d.includes('\\x04'))process.exit(0);b+=d;if(!b.includes('\\r'))return;",
     "const prompt=b;b='';if(!recycled){process.stdout.write(\"You've hit your usage limit.\\n\");return;}",

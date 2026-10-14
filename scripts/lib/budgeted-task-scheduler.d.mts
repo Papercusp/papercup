@@ -9,6 +9,66 @@ export interface TaskBudgetInput {
   pidsReserve?: number | string;
 }
 
+export interface BudgetedTaskComparisonInput {
+  selection: { kind: "full-gate"; coverage: "complete"; unenumerated: string[];
+    originalRef: string; originalSha256: string; files: string[] };
+  source: { commit: string; receiptSha256: string; dependencySha256: string;
+    runtimeClosureSha256: string; files: Array<{ path: string; sha256: string }> };
+  tasks: Array<{ id: string; files: string[] }>;
+  baseline: TaskBudgetInput;
+  candidate: TaskBudgetInput;
+  envelope: { hardMemoryMb: number; pidsMax: number; heapMb: number };
+  estimates: Array<{ task: string; ms: number; originalRef: string; originalSha256: string }>;
+}
+export interface BudgetedTaskComparisonManifest extends BudgetedTaskComparisonInput {
+  schemaVersion: 1;
+  kind: "budgeted-task-comparison";
+  order: string[];
+  fileSetSha256: string;
+  manifestSha256: string;
+}
+export interface BudgetedTaskComparisonCohort {
+  side: "baseline" | "candidate";
+  repeat: number;
+  runId: string;
+  originalRef: string;
+  originalSha256: string;
+  manifestSha256: string;
+  sourceUnchanged: boolean;
+  sourceReceiptSha256: string;
+  dependencySha256: string;
+  runtimeClosureSha256: string;
+  policy: TaskBudgetInput;
+  envelope: BudgetedTaskComparisonInput["envelope"];
+  wallMs: number;
+  acquiredWaitsMs: number[];
+  executionWallMs: number;
+  memory: { pairedSamples: number; maxAnonPerAllocatedWorkerMb: number; oomKills: number };
+  stats: { memoryReadings: number; lastMemAvailableMb: number; observedMaxWorkers: number;
+    observedMaxTasks: number; observedMaxMemoryMb: number };
+  /** Actual scheduler START order, not the declaration-ordered result array. */
+  children: Array<{ task: string; lane: "primary" | "reserved"; files: string[];
+    code: number; signal: string | null; childWallMs: number; resultLine: string;
+    originalRef: string; originalSha256: string; expectedCgroup: string; runGroup: string;
+    deadlineEpochMs: number; cgroupObservations: Array<{ pid: number; cgroupPath: string;
+      runGroup: string; deadlineEpochMs: number | string; vitestFork?: boolean; phase?: string }> }>;
+}
+export function prepareBudgetedTaskComparison(input: BudgetedTaskComparisonInput): BudgetedTaskComparisonManifest;
+export function evaluateBudgetedTaskComparison(manifest: BudgetedTaskComparisonManifest,
+  cohorts: BudgetedTaskComparisonCohort[]): { assertions: Array<{ name: string; passed: boolean }>;
+    baselineWallMs: number | null; candidateWallMs: number | null; ratio: number | null;
+    operationalAcceptance: false; fileSetSha256: string | null };
+export interface BudgetedTaskComparisonArtifactPins {
+  manifest: { ref: string; sha256: string };
+  source: { ref: string };
+  dependencies: { ref: string };
+  runtimeClosure: { ref: string };
+  cohorts: Array<{ ref: string; sha256: string }>;
+}
+export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
+  pins: BudgetedTaskComparisonArtifactPins): Promise<{ manifest: BudgetedTaskComparisonManifest;
+    cohorts: BudgetedTaskComparisonCohort[]; originalArtifactsResolved: true; populationSha256: string }>;
+
 export interface ResolvedTaskBudget {
   workerBudget: number;
   memoryBudgetMb: number;

@@ -8,7 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 
 const spawnMock = vi.fn();
-vi.mock('node:child_process', () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }));
+vi.mock('node:child_process', () => ({
+  spawn: (...args: unknown[]) => spawnMock(...args),
+  execFile: (_file: unknown, _args: unknown, _options: unknown, callback: (...args: unknown[]) => void) => {
+    queueMicrotask(() => callback(null, '', ''));
+    return undefined;
+  },
+}));
 
 // ── EI-19479764372783341 fallout: this file's subject now sits behind an ASYNC
 // chokepoint ──────────────────────────────────────────────────────────────────

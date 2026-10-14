@@ -11,6 +11,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  makeAuthBlockDetector,
   makeQuotaBlockDetector,
   parseQuotaResetAtMs,
   QUOTA_PROBE_BASE_MS,
@@ -24,6 +25,28 @@ const INCIDENT_WALL =
   'https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 14th, 2026 8:24 PM.';
 const INCIDENT_RESET = new Date(2026, 9, 14, 20, 24, 0, 0).getTime();
 const BEFORE_RESET = new Date(2026, 9, 11, 0, 5, 0, 0).getTime();
+
+describe('provider detector replay mode follows the replacement child', () => {
+  it.each([
+    ['quota', makeQuotaBlockDetector, INCIDENT_WALL],
+    ['auth', makeAuthBlockDetector, 'Your access token could not be refreshed. Please log out and sign in again.'],
+  ] as const)('%s ignores resumed history after a fresh launch, then detects a fresh failure', (_kind, make, wall) => {
+    const detector = make({ agent: 'codex', now: () => BEFORE_RESET });
+    expect(detector.observe(wall)).toBe('detected');
+
+    detector.reset({ deferUntilSubmit: true });
+    expect(detector.observe(wall)).toBeNull();
+    expect(detector.isBlocked()).toBe(false);
+    detector.observeInput('pasted prompt\r');
+    expect(detector.observe(wall)).toBeNull();
+    detector.observeInput('\r');
+    expect(detector.observe(wall)).toBe('detected');
+    expect(detector.isBlocked()).toBe(true);
+
+    detector.reset({ deferUntilSubmit: false });
+    expect(detector.observe(wall)).toBe('detected');
+  });
+});
 
 describe('parseQuotaResetAtMs (WI-6554700010008412)', () => {
   it('parses the incident copy as a local-time instant', () => {

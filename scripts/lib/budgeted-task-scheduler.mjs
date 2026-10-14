@@ -1,5 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { readFile, realpath } from "node:fs/promises";
+import { dirname, join, relative, isAbsolute } from "node:path";
 import { withFsMutex } from "./fs-mutex.mjs";
 // EI-21442389733525112: `task-exit-class.mjs` is dependency-free by design, so importing it
 // here cannot reintroduce the coupling its own header warns about — and it is the one module
@@ -9,6 +11,254 @@ import { withFsMutex } from "./fs-mutex.mjs";
 import { formatTaskBudgetRefusal } from "./task-exit-class.mjs";
 
 export const DURATION_HISTORY_VERSION = 1;
+
+const comparisonHash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const comparisonDigest = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const comparisonPath = (value) => typeof value === "string" && value.length > 0 &&
+  !value.startsWith("/") && !value.includes("\\") &&
+  value.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+function freezeComparison(value) {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) freezeComparison(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
+ * R12 preparation only: pin one ORIGINAL, fully enumerated gate selection and the
+ * same source/dependencies/task partition for both sides. Never discovers a population
+ * from a 32-file calibration, admits a cohort, or changes the gate's default policy.
+ * Selection/source/dependency refs must be resolved by the native producer before
+ * these inputs can become operational evidence. The pure checker cannot attest IO.
+ */
+export function prepareBudgetedTaskComparison(input) {
+  const data = structuredClone(input);
+  const { selection, source, tasks, baseline, candidate, envelope, estimates } = data;
+  const require = (condition, message) => {
+    if (!condition) throw new Error(`COMPARISON_INPUT_REFUSAL ${message}`);
+  };
+  require(selection?.kind === "full-gate" && selection.coverage === "complete" &&
+    Array.isArray(selection.unenumerated) && selection.unenumerated.length === 0 &&
+    typeof selection.originalRef === "string" && selection.originalRef.trim() &&
+    comparisonDigest(selection.originalSha256), "original complete full-gate selection required");
+  require(/^[a-f0-9]{40}$/.test(source?.commit ?? "") &&
+    comparisonDigest(source.receiptSha256) && comparisonDigest(source.dependencySha256) &&
+    comparisonDigest(source.runtimeClosureSha256), "immutable source/dependency/runtime closure required");
+  require(Array.isArray(selection.files) && selection.files.length > 0 &&
+    selection.files.every(comparisonPath) && new Set(selection.files).size === selection.files.length,
+  "full file population must be nonempty, unique and repository-relative");
+  selection.files.sort();
+  require(Array.isArray(source.files) && source.files.length > 0 &&
+    source.files.every((row) => comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
+    new Set(source.files.map((row) => row.path)).size === source.files.length &&
+    selection.files.every((file) => source.files.some((row) => row.path === file)),
+  "source receipt must contain every selected file without duplicate paths");
+  source.files.sort((a, b) => a.path.localeCompare(b.path));
+  require(Array.isArray(tasks) && tasks.length > 1 &&
+    tasks.every((task) => typeof task.id === "string" && task.id.trim() &&
+      Array.isArray(task.files) && task.files.length > 0 && task.files.every(comparisonPath)) &&
+    new Set(tasks.map((task) => task.id)).size === tasks.length,
+  "distinct nonempty tasks required");
+  const partition = tasks.flatMap((task) => task.files).sort();
+  require(JSON.stringify(partition) === JSON.stringify(selection.files),
+    "task partition must equal the full selection exactly once");
+  require(Array.isArray(estimates) && estimates.length === tasks.length &&
+    new Set(estimates.map((row) => row.task)).size === tasks.length &&
+    tasks.every((task) => estimates.some((row) => row.task === task.id &&
+      Number.isFinite(row.ms) && row.ms > 0 && comparisonDigest(row.originalSha256) &&
+      typeof row.originalRef === "string" && row.originalRef.trim())),
+  "original total-child-wall estimates required for every task");
+  require(envelope && ["hardMemoryMb", "pidsMax", "heapMb"].every((key) =>
+    Number.isSafeInteger(envelope[key]) && envelope[key] > 0), "finite hard envelope required");
+  require(baseline && candidate && JSON.stringify(Object.keys(baseline).sort()) ===
+    JSON.stringify(Object.keys(candidate).sort()) &&
+    Object.keys(baseline).filter((key) => key !== "maxConcurrentTasks").every((key) =>
+      JSON.stringify(baseline[key]) === JSON.stringify(candidate[key])) &&
+    candidate.maxConcurrentTasks > baseline.maxConcurrentTasks,
+  "only the explicit task ceiling may differ between sides");
+  for (const policy of [baseline, candidate]) {
+    const resolved = resolveTaskBudget(policy);
+    require(resolved.maxConcurrentTasks === policy.maxConcurrentTasks &&
+      resolved.effectiveWorkerBudget === policy.workerBudget &&
+      policy.workerMemoryMb >= envelope.heapMb && policy.memoryBudgetMb < envelope.hardMemoryMb &&
+      policy.taskCgroupPidsMax === envelope.pidsMax,
+    "policy exceeds measured memory/worker/PID envelope");
+  }
+  const payload = { schemaVersion: 1, kind: "budgeted-task-comparison", selection, source,
+    tasks, baseline, candidate, envelope, estimates,
+    order: ["baseline:1", "candidate:1", "candidate:2", "baseline:2"],
+    fileSetSha256: comparisonHash(selection.files) };
+  return freezeComparison({ ...payload, manifestSha256: comparisonHash(payload) });
+}
+
+/**
+ * Read-only qualification of the complete four original cohort receipts. Readers
+ * must independently resolve all refs/hashes and raw child/cgroup observations;
+ * passing this PURE function alone is never a native operational receipt.
+ * Queue waits are excluded only after validating every acquired wait. Incomplete,
+ * skipped, substituted, OOM, drifted or unknown-runtime runs cannot be a baseline.
+ */
+export function evaluateBudgetedTaskComparison(manifest, cohorts) {
+  try { return evaluateResolvedBudgetedTaskComparison(manifest, cohorts); }
+  catch (error) {
+    return { assertions: [
+      "immutable-full-gate-comparison-inputs", "complete-original-abba-cohort-population",
+      "unchanged-contained-no-skip-paired-headroom-longest-first-cohorts",
+      "full-identical-file-set-at-most-half-baseline-wall",
+    ].map((name) => ({ name, passed: false })), baselineWallMs: null, candidateWallMs: null,
+    ratio: null, operationalAcceptance: false, fileSetSha256: null,
+    qualificationError: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function evaluateResolvedBudgetedTaskComparison(manifest, cohorts) {
+  const assertions = [];
+  const check = (name, passed) => assertions.push({ name, passed: Boolean(passed) });
+  const { manifestSha256, ...payload } = manifest ?? {};
+  let prepared = null;
+  try { prepared = prepareBudgetedTaskComparison(payload); } catch { /* fail closed */ }
+  const pinned = prepared && comparisonDigest(manifestSha256) &&
+    comparisonHash(payload) === manifestSha256 && prepared.manifestSha256 === manifestSha256;
+  check("immutable-full-gate-comparison-inputs", pinned);
+  const rows = Array.isArray(cohorts) ? cohorts : [];
+  const complete = pinned && rows.length === 4 &&
+    rows.every((row, index) => `${row.side}:${row.repeat}` === prepared.order[index]) &&
+    new Set(rows.map((row) => row.runId)).size === 4 &&
+    rows.every((row) => typeof row.runId === "string" && row.runId.trim() &&
+      typeof row.originalRef === "string" && row.originalRef.trim() && comparisonDigest(row.originalSha256));
+  check("complete-original-abba-cohort-population", complete);
+  let qualified = Boolean(complete);
+  const executionWalls = [];
+  for (const row of rows) {
+    if (!pinned) { qualified = false; break; }
+    const policy = row.side === "baseline" ? prepared.baseline : prepared.candidate;
+    const children = Array.isArray(row.children) ? row.children : [];
+    const waits = Array.isArray(row.acquiredWaitsMs) ? row.acquiredWaitsMs : [];
+    const queuedMs = waits.reduce((sum, wait) => sum + wait, 0);
+    let valid = row.manifestSha256 === manifestSha256 && row.sourceUnchanged === true &&
+      row.sourceReceiptSha256 === prepared.source.receiptSha256 &&
+      row.dependencySha256 === prepared.source.dependencySha256 &&
+      row.runtimeClosureSha256 === prepared.source.runtimeClosureSha256 &&
+      JSON.stringify(row.policy) === JSON.stringify(policy) &&
+      JSON.stringify(row.envelope) === JSON.stringify(prepared.envelope) &&
+      Number.isSafeInteger(row.wallMs) && row.wallMs > 0 &&
+      Array.isArray(row.acquiredWaitsMs) && waits.length > 0 &&
+      waits.every((wait) => Number.isSafeInteger(wait) && wait >= 0) &&
+      Number.isSafeInteger(queuedMs) && queuedMs < row.wallMs &&
+      row.executionWallMs === row.wallMs - queuedMs &&
+      Number.isSafeInteger(row.memory?.pairedSamples) && row.memory.pairedSamples > 0 &&
+      Number.isFinite(row.memory?.maxAnonPerAllocatedWorkerMb) && row.memory.maxAnonPerAllocatedWorkerMb > 0 &&
+      row.memory.maxAnonPerAllocatedWorkerMb <= policy.workerMemoryMb &&
+      row.memory.oomKills === 0 && row.stats?.memoryReadings > 0 &&
+      Number.isFinite(row.stats?.lastMemAvailableMb) && row.stats.lastMemAvailableMb > 0 &&
+      row.stats.observedMaxWorkers <= policy.workerBudget && row.stats.observedMaxWorkers > 0 &&
+      row.stats.observedMaxTasks <= policy.maxConcurrentTasks && row.stats.observedMaxTasks > 0 &&
+      Number.isFinite(row.stats.observedMaxMemoryMb) && row.stats.observedMaxMemoryMb > 0 &&
+      row.stats.observedMaxMemoryMb <= policy.memoryBudgetMb &&
+      children.length === prepared.tasks.length &&
+      new Set(children.map((child) => child.task)).size === prepared.tasks.length;
+    const remaining = new Map(prepared.tasks.map((task) => [task.id,
+      prepared.estimates.find((estimate) => estimate.task === task.id).ms]));
+    for (const child of children) {
+      const task = prepared.tasks.find((task) => task.id === child.task);
+      const observations = Array.isArray(child.cgroupObservations) ? child.cgroupObservations : [];
+      const tokens = Object.fromEntries([...(child.resultLine ?? "").matchAll(/([A-Za-z]+)=([^\s]+)/g)]
+        .map((match) => [match[1], match[2]]));
+      const allowed = child.lane === "primary" ? Math.max(...remaining.values()) :
+        child.lane === "reserved" ? Math.min(...remaining.values()) : null;
+      valid &&= Boolean(task && remaining.has(child.task) && remaining.get(child.task) === allowed &&
+        JSON.stringify(child.files?.slice().sort()) === JSON.stringify(task.files.slice().sort()) &&
+        child.code === 0 && child.signal === null && Number.isSafeInteger(child.childWallMs) && child.childWallMs > 0 &&
+        comparisonDigest(child.originalSha256) && typeof child.originalRef === "string" && child.originalRef.trim() &&
+        tokens.status === "passed" && Number(tokens.requested) === task.files.length &&
+        Number(tokens.executed) === task.files.length && Number(tokens.matched) === task.files.length &&
+        tokens.skippedTests === "0" && tokens.childSubstituted === "0" &&
+        typeof child.expectedCgroup === "string" && child.expectedCgroup.trim() &&
+        typeof child.runGroup === "string" && child.runGroup.trim() &&
+        Number.isSafeInteger(child.deadlineEpochMs) && child.deadlineEpochMs > 0 &&
+        observations.length > 0 && observations.some((observation) => observation.vitestFork === true && observation.phase === "preload") &&
+        observations.every((observation) => Number.isSafeInteger(observation.pid) && observation.pid > 0 &&
+          observation.cgroupPath === child.expectedCgroup && observation.runGroup === child.runGroup &&
+          Number(observation.deadlineEpochMs) === child.deadlineEpochMs));
+      remaining.delete(child.task);
+    }
+    qualified &&= valid;
+    executionWalls.push(row.wallMs - queuedMs);
+  }
+  check("unchanged-contained-no-skip-paired-headroom-longest-first-cohorts", qualified);
+  const baselineWallMs = qualified ? executionWalls[0] + executionWalls[3] : null;
+  const candidateWallMs = qualified ? executionWalls[1] + executionWalls[2] : null;
+  const ratio = qualified ? candidateWallMs / baselineWallMs : null;
+  const repeatRatios = qualified ? [executionWalls[1] / executionWalls[0], executionWalls[2] / executionWalls[3]] : [];
+  // Preserve each repeat instead of hiding one slow candidate in an aggregate.
+  // The final rubric's statistical semantics still require outside-lineage review.
+  check("full-identical-file-set-at-most-half-baseline-wall", ratio !== null && ratio <= 0.5 &&
+    repeatRatios.every((value) => value <= 0.5));
+  return { assertions, baselineWallMs, candidateWallMs, ratio,
+    repeatRatios, operationalAcceptance: false, fileSetSha256: pinned ? prepared.fileSetSha256 : null };
+}
+
+/** Resolve pinned ORIGINAL files before evaluation; never accepts caller-loaded receipts. */
+export async function readBudgetedTaskComparisonArtifacts(evidenceRoot, pins) {
+  const root = await realpath(evidenceRoot);
+  const readPinned = async (ref, sha256, json = true) => {
+    if (!comparisonPath(ref) || !comparisonDigest(sha256)) throw new Error("Invalid original artifact pin");
+    const path = await realpath(join(root, ref));
+    const within = relative(root, path);
+    if (!within || isAbsolute(within) || within === ".." || within.startsWith("../"))
+      throw new Error("Original artifact escaped evidence root");
+    const bytes = await readFile(path);
+    if (bytes.length > 64 * 1024 * 1024) throw new Error("Original artifact exceeded read budget");
+    if (createHash("sha256").update(bytes).digest("hex") !== sha256)
+      throw new Error(`Original artifact hash mismatch: ${ref}`);
+    return json ? JSON.parse(bytes.toString("utf8")) : bytes;
+  };
+  const manifest = await readPinned(pins.manifest.ref, pins.manifest.sha256);
+  // Check structural identity before following refs supplied by an invalid manifest.
+  const prepared = prepareBudgetedTaskComparison(manifest);
+  if (prepared.manifestSha256 !== manifest.manifestSha256)
+    throw new Error("Comparison manifest identity mismatch");
+  const selection = await readPinned(manifest.selection.originalRef, manifest.selection.originalSha256);
+  if (selection.kind !== "full-gate" || selection.coverage !== "complete" ||
+    !Array.isArray(selection.unenumerated) || selection.unenumerated.length !== 0 ||
+    JSON.stringify(selection.files?.slice().sort()) !== JSON.stringify(manifest.selection.files))
+    throw new Error("Original full-gate selection differs from comparison manifest");
+  const source = await readPinned(pins.source.ref, manifest.source.receiptSha256);
+  if (source.schemaVersion !== "verifier-source-v1" || source.sourceCommit !== manifest.source.commit ||
+    JSON.stringify(source.files?.map((row) => ({ path: row.path, sha256: row.sha256 }))
+      .sort((a, b) => a.path.localeCompare(b.path))) !== JSON.stringify(manifest.source.files))
+    throw new Error("Original source census differs from comparison manifest");
+  await readPinned(pins.dependencies.ref, manifest.source.dependencySha256, false);
+  const closure = await readPinned(pins.runtimeClosure.ref, manifest.source.runtimeClosureSha256);
+  if (closure.status !== "complete" || closure.sourceCommit !== manifest.source.commit ||
+    JSON.stringify(closure.files?.slice().sort()) !== JSON.stringify(manifest.selection.files))
+    throw new Error("Original runtime closure is incomplete or mismatched");
+  for (const estimate of manifest.estimates) {
+    const original = await readPinned(estimate.originalRef, estimate.originalSha256);
+    if (original.task !== estimate.task || original.childWallMs !== estimate.ms)
+      throw new Error("Original total child wall differs from frozen estimate");
+  }
+  if (!Array.isArray(pins.cohorts) || pins.cohorts.length !== 4)
+    throw new Error("Four original cohort pins required");
+  const cohorts = [];
+  for (const pin of pins.cohorts) {
+    const cohort = await readPinned(pin.ref, pin.sha256);
+    // The file's own hash/ref is injected from measured bytes, not self-referential JSON.
+    cohort.originalRef = pin.ref; cohort.originalSha256 = pin.sha256;
+    for (const child of cohort.children ?? []) {
+      const original = await readPinned(child.originalRef, child.originalSha256);
+      const { originalRef, originalSha256, ...fields } = child;
+      // Object key order is serialization detail; compare the actual projected fields.
+      if (Object.keys(original).length !== Object.keys(fields).length ||
+        Object.entries(fields).some(([key, value]) => JSON.stringify(original[key]) !== JSON.stringify(value)))
+        throw new Error("Original child receipt differs from cohort projection");
+    }
+    cohorts.push(cohort);
+  }
+  return { manifest, cohorts, originalArtifactsResolved: true,
+    populationSha256: comparisonHash({ manifest, cohorts }) };
+}
 // EI-21669294176320490: the scheduler's worker/task counters are local to one
 // Node invocation.  A fleet of concurrent `test:affected` processes could
 // therefore each admit its own "bounded" pool and multiply Vitest workers and

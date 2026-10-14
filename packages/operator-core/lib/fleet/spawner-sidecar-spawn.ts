@@ -12,7 +12,7 @@
  * spawns, so this module is byte-irrelevant there.
  */
 
-import { ChildProcess, execFileSync } from 'node:child_process';
+import { execFile, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -55,17 +55,29 @@ const readyWaiters: (() => void)[] = [];
  * own managed spawn, so addressing it is identity-preserving: it cannot reach a
  * recycled pid the way a bare `kill(pid)` can.
  *
- * SYNCHRONOUS on purpose — the call sites are a process-exit hook and a timer
- * callback, neither of which has an async turn left to await. Best-effort by
- * design: the caller's own client-signal remains the unconfined fallback.
+ * Asynchronous and bounded: systemctl can stall on the user manager, so it must
+ * never block the host event loop. Callers that can await preserve scope-before-
+ * client cleanup; the synchronous exit hook also signals the child immediately.
  */
-function killOwnedScope(scopeUnit: string | null, signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
-  if (!scopeUnit) return;
-  try {
-    execFileSync('systemctl', ['--user', 'kill', `--signal=${signal}`, scopeUnit], { stdio: 'ignore' });
-  } catch {
-    /* best effort — an unconfined sidecar has no scope to signal. */
-  }
+const OWNED_SCOPE_KILL_TIMEOUT_MS = 1_500;
+
+function killOwnedScope(scopeUnit: string | null, signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): Promise<void> {
+  if (!scopeUnit) return Promise.resolve();
+  return new Promise((resolve) => {
+    try {
+      // systemctl talks to the user manager and can stall with it. Keep that work
+      // off the operator event loop and cap the helper lifetime even during shutdown.
+      execFile(
+        'systemctl',
+        ['--user', 'kill', `--signal=${signal}`, scopeUnit],
+        { timeout: OWNED_SCOPE_KILL_TIMEOUT_MS, killSignal: 'SIGKILL', windowsHide: true },
+        () => resolve(),
+      );
+    } catch {
+      /* best effort — an unconfined sidecar has no scope to signal. */
+      resolve();
+    }
+  });
 }
 
 /**
@@ -409,21 +421,32 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
 
   const child = sidecarProcess;
   return new Promise<void>((resolve, reject) => {
+    let childReady = false;
+    let timedOut = false;
     const timeout = setTimeout(() => {
       // Settle the deadline before kill(): injected children can emit exit
       // synchronously, but that exit is the guard's effect, not its cause.
+      timedOut = true;
       reject(new Error('Spawner sidecar startup timeout'));
-      if (!sidecarReady && sidecarProcess) {
+      if (!childReady && sidecarProcess === child) {
         // EI-20200233989444731: kill the SCOPE first. This path then drops the only
         // reference we hold (`sidecarProcess = null`), so a payload that survived a
         // client-only signal here would be orphaned with nothing left to stop it —
         // a live process in a scope no ledger row claims, i.e. the "unaccounted
         // cgroup" the task-manager alarm reports. A sidecar that missed its 10s
         // handshake is exactly the case most likely to still be mid-startup.
-        killOwnedScope(sidecarScopeUnit);
-        sidecarProcess.kill();
+        const proc = sidecarProcess;
+        const scopeUnit = sidecarScopeUnit;
         sidecarProcess = null;
         sidecarScopeUnit = null;
+        sidecarReady = false;
+        void killOwnedScope(scopeUnit).then(() => {
+          try {
+            proc.kill();
+          } catch {
+            /* already gone */
+          }
+        });
       }
     }, 10000);
 
@@ -441,7 +464,8 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
       for (const line of lines.slice(0, -1)) {
         console.log('[spawner-sidecar]', line);
 
-        if (line.includes('PAPERCUSP_SPAWNER_READY')) {
+        if (!timedOut && line.includes('PAPERCUSP_SPAWNER_READY')) {
+          childReady = true;
           sidecarReady = true;
           clearTimeout(timeout);
           // A sidecar is long-lived while its host is alive, but it must not
@@ -491,16 +515,18 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
 
     child.on('error', (err) => {
       clearTimeout(timeout);
-      sidecarProcess = null;
-      sidecarScopeUnit = null;
-      sidecarReady = false;
+      if (sidecarProcess === child) {
+        sidecarProcess = null;
+        sidecarScopeUnit = null;
+        sidecarReady = false;
+      }
       reject(err);
     });
 
     child.on('exit', (code, signal) => {
       // This child's handshake cannot arrive after exit. Clear its timer even
       // when crash recovery starts another child before the original deadline.
-      const exitedBeforeReady = !sidecarReady;
+      const exitedBeforeReady = !childReady;
       clearTimeout(timeout);
       // The child found a LIVE sidecar on the shared path and declined to start
       // (listenUnixSocketExclusive). Same outcome as the stderr bind-race case above,
@@ -516,9 +542,11 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
       if (!deliberateStop) {
         console.warn(`[spawner-sidecar] died (${msg})`);
       }
-      sidecarProcess = null;
-      sidecarScopeUnit = null;
-      sidecarReady = false;
+      if (sidecarProcess === child) {
+        sidecarProcess = null;
+        sidecarScopeUnit = null;
+        sidecarReady = false;
+      }
 
       // Bind-race loser: our child exited because a SIBLING already owns the shared
       // socket, which the stderr handler above detected and recorded. The awaited
@@ -584,19 +612,22 @@ export async function stopSpawnerSidecar(): Promise<void> {
     respawnTimer = null;
   }
   const proc = sidecarProcess;
-  killOwnedScope(sidecarScopeUnit);
+  await killOwnedScope(sidecarScopeUnit);
   await gracefulStopChild(proc, { timeoutMs: 5000, kill: (sig) => proc.kill(sig) });
-  sidecarProcess = null;
-  sidecarScopeUnit = null;
-  sidecarReady = false;
+  if (sidecarProcess === proc) {
+    sidecarProcess = null;
+    sidecarScopeUnit = null;
+    sidecarReady = false;
+  }
 }
 
 /**
  * EI-24863236643374267: SYNCHRONOUS stop, run by the host's before-exit hook
  * (shutdown-state onBeforeHostExit → host-recycle exitOnce). The host exits by
  * SIGKILLing itself right after, so this cannot await gracefulStopChild's SIGKILL
- * escalation: it signals the owned scope and the child, and the sidecar's own
- * SIGTERM handling (plus its owner-PID watchdog, WI-10002859) finishes the job.
+ * escalation. It starts the bounded owned-scope signal and only then signals the
+ * client. If the host exits first, systemd is already processing the scope signal;
+ * the sidecar's owner-PID watchdog (WI-10002859) remains the cleanup backstop.
  */
 export function stopSpawnerSidecarAtHostExit(): void {
   adoptedSocketPath = null;
@@ -607,8 +638,15 @@ export function stopSpawnerSidecarAtHostExit(): void {
     respawnTimer = null;
   }
   const proc = sidecarProcess;
-  killOwnedScope(sidecarScopeUnit);
+  const scopeUnit = sidecarScopeUnit;
+  sidecarProcess = null;
+  sidecarScopeUnit = null;
+  sidecarReady = false;
+  void killOwnedScope(scopeUnit);
   try {
+    // The host exits immediately after this hook. Start the owned-scope request
+    // first, then signal our client in this same turn; its owner-PID watchdog is
+    // the cleanup backstop if the host dies before systemctl finishes.
     proc.kill('SIGTERM');
   } catch {
     /* already gone */

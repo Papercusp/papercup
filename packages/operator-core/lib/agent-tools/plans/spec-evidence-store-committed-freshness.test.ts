@@ -186,6 +186,27 @@ beforeEach(async () => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe('listSpecEvidence measures repo-files proof at the measurement commit', () => {
+  it('coalesces identical committed recipes within a request while retaining distinct recipes and fresh commits', async () => {
+    const original = h.rows[0]!;
+    h.rows = [original, { ...original, id: 3, work_item_id: 'WI-3' },
+      { ...original, id: 4, work_item_id: 'WI-4' }, h.rows[1]!];
+    const diagnostics = { phaseMs: {}, committedTree: createCommittedTreeDiagnostics(),
+      bindings: { selectedRows: 0, rowsWithRecipe: 0, measured: 0, unavailable: 0, skipped: 0,
+        totalMeasurementMs: 0, maxMeasurementMs: 0 } };
+    const first = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'], diagnostics });
+    expect(first).toHaveLength(4);
+    expect(first.every((row) => row.currentness.overall === 'current')).toBe(true);
+    expect(diagnostics.bindings.measured).toBe(4);
+    expect(diagnostics.committedTree.reads).toBe(2);
+
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 2;\n');
+    git(root, 'commit', '-q', '-am', 'changed committed measurement');
+    const second = await list();
+    expect(second.slice(0, 3).every((row) => row.currentness.staleReasons.includes('source-stale'))).toBe(true);
+    expect(second[3]?.currentness.overall).toBe('current');
+    expect(first[0]?.serverMeasurement?.measuredAtCommit).not.toBe(second[0]?.serverMeasurement?.measuredAtCommit);
+  });
+
   it('attributes real cold and warm committed measurements to separate request counters', async () => {
     // A fresh content address guarantees a miss without resetting the shared memo.
     writeFileSync(join(root, 'src/a.ts'), `export const nonce = '${randomBytes(32).toString('hex')}';\n`);

@@ -6136,9 +6136,10 @@ export function makeQuotaBlockDetector({
      *  `quota-block-detected` row says what was actually on screen and a false
      *  positive is diagnosable from the event log alone. */
     lastMatch: () => lastMatch,
-    /** Reset to a fresh, un-walled state. Call on recycle: a fresh child has
-     *  no screen history and cannot inherit the old child's wall. */
-    reset() {
+    /** Reset for the replacement child's launch mode. A fresh process can
+     * replay a resumed transcript even when the original launch was fresh. */
+    reset({ deferUntilSubmit: nextDeferUntilSubmit = deferUntilSubmit } = {}) {
+      deferUntilSubmit = nextDeferUntilSubmit;
       buffer = '';
       blocked = false;
       awaitingSubmit = deferUntilSubmit;
@@ -6254,7 +6255,8 @@ export function makeAuthBlockDetector({
     isBlocked: () => blocked,
     snapshot: () => ({ authBlocked: blocked, authBlockedSinceMs: blockedSinceMs }),
     lastMatch: () => lastMatch,
-    reset() {
+    reset({ deferUntilSubmit: nextDeferUntilSubmit = deferUntilSubmit } = {}) {
+      deferUntilSubmit = nextDeferUntilSubmit;
       buffer = '';
       blocked = false;
       awaitingSubmit = deferUntilSubmit;
@@ -13064,6 +13066,10 @@ export function hostThroughPty(o) {
         }
         let resumed;
         try {
+          const deferUntilSubmit = env.PAPERCUSP_AGENT === 'codex' &&
+            resume.args.some((arg) => ['resume', 'fork', '--resume', '--fork-session'].includes(arg));
+          quotaBlockDetector.reset({ deferUntilSubmit });
+          authBlockDetector.reset({ deferUntilSubmit });
           resumed = spawnChild(resume.args);
         } catch (error) {
           appendHostEvent(ownerId, 'child-unpark-failed', {
@@ -15725,11 +15731,14 @@ export function hostThroughPty(o) {
         childBackendTuiStartedAt = 0;
         childBackendFirstFrameAt = 0;
         lastMachineTurnWriteStartedAtMs = 0;
-        // WI-1386682 (1): a fresh child has no screen history and cannot
-        // inherit the old child's wall.
-        quotaBlockDetector.reset();
-        // P-004: nor the old child's dead login.
-        authBlockDetector.reset();
+        // Reset against the successor's actual mode, not the host's original
+        // argv. Quota recovery preserves the native transcript and repaints
+        // its old errors before its first request (EI-25950082740366890).
+        const deferUntilSubmit = env.PAPERCUSP_AGENT === 'codex' &&
+          (resumeQuotaConversation || recycleArgs.some((arg) =>
+            ['resume', 'fork', '--resume', '--fork-session'].includes(arg)));
+        quotaBlockDetector.reset({ deferUntilSubmit });
+        authBlockDetector.reset({ deferUntilSubmit });
         // Composer state belongs to the child that was just killed. Carrying a
         // staged-line bit across this hard process boundary can make every wake
         // to the healthy successor defer forever, even though that successor's

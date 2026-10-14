@@ -610,13 +610,8 @@ export async function setPotIntegrationMode(input: SetPotIntegrationModeInput): 
     );
   }
   if (mode === 'review') {
-    if (input.hasSubmodules === true) {
-      // Fail closed: an unknown submodule list cannot prove every submodule has a fork.
-      const missing = input.submodulePaths ? input.submodulePaths.filter((p) => !input.submoduleForks?.[p]) : null;
-      if (!missing || missing.length > 0) {
-        return { ok: false, error: 'submodule_forks_required', message: submoduleForksRequiredMessage(missing) };
-      }
-    }
+    // The guided switch checks this before creating forks. Keep its refusal
+    // actionable when the checkout also has unconfigured submodule forks.
     if (!input.greenCmd || !input.greenCmd.trim()) {
       return {
         ok: false,
@@ -625,6 +620,13 @@ export async function setPotIntegrationMode(input: SetPotIntegrationModeInput): 
           'working-copy mode needs a test suite: set the pot’s green-gate test command (release.greenCmd) first, ' +
           'so a PR built from the working copy has really passed tests',
       };
+    }
+    if (input.hasSubmodules === true) {
+      // Fail closed: an unknown submodule list cannot prove every submodule has a fork.
+      const missing = input.submodulePaths ? input.submodulePaths.filter((p) => !input.submoduleForks?.[p]) : null;
+      if (!missing || missing.length > 0) {
+        return { ok: false, error: 'submodule_forks_required', message: submoduleForksRequiredMessage(missing) };
+      }
     }
     if (!input.forkRemote) {
       return {

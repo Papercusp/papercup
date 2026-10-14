@@ -3320,6 +3320,40 @@ export async function listToolsWithNativeSessionFallback(
 const SDK_IMPORT_MUTEX_TIMEOUT_MS = 10 * 60_000;
 
 /**
+ * WI-6554700010012487 — one LITERAL-specifier loader per SDK module ptool
+ * imports. The packaged Server esbuild-bundles this file into
+ * sidecar/scripts/ptool.mjs (papercusp-desktop/bin/build-desktop-sidecar.sh)
+ * and ships no @modelcontextprotocol tree. esbuild inlines an import() only
+ * when its specifier is a string literal, so a computed `import(specifier)`
+ * survived the bundle as a runtime lookup and failed on every packaged install
+ * ("Cannot find package '@modelcontextprotocol/sdk'"). The sidecar build
+ * imports these loaders from a copy of the bundle outside any node_modules
+ * tree and fails the build when one does not resolve.
+ */
+export const PTOOL_SDK_MODULE_LOADERS = Object.freeze({
+  '@modelcontextprotocol/sdk/types.js': () => import('@modelcontextprotocol/sdk/types.js'),
+  '@modelcontextprotocol/sdk/client/index.js': () => import('@modelcontextprotocol/sdk/client/index.js'),
+  '@modelcontextprotocol/sdk/client/streamableHttp.js': () =>
+    import('@modelcontextprotocol/sdk/client/streamableHttp.js'),
+});
+
+/** Default SDK importer: refuses a specifier with no bundle-traceable loader. */
+export function importPtoolSdkModule(specifier) {
+  const load = Object.hasOwn(PTOOL_SDK_MODULE_LOADERS, specifier)
+    ? PTOOL_SDK_MODULE_LOADERS[specifier]
+    : null;
+  if (!load) {
+    return Promise.reject(
+      new Error(
+        `ptool: SDK module ${specifier} has no bundle-traceable loader; ` +
+          'add a literal import() for it to PTOOL_SDK_MODULE_LOADERS',
+      ),
+    );
+  }
+  return load();
+}
+
+/**
  * EI-21860372620642128 — install:safe reifies shared node_modules in place
  * while holding a repo-keyed fs mutex. A ptool import can race that rewrite;
  * the 2026-10-01 reproduction kept the SDK entrypoint unavailable across a
@@ -3340,7 +3374,7 @@ const SDK_IMPORT_MUTEX_TIMEOUT_MS = 10 * 60_000;
 export async function importSdkModuleWithInstallAwareness(
   specifier,
   {
-    doImport = (spec) => import(spec),
+    doImport = importPtoolSdkModule,
     loadInstallMutex = () =>
       Promise.all([
         import('../../../scripts/lib/fs-mutex.mjs'),

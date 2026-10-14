@@ -71,6 +71,7 @@ export const SCAN_FILES = [
   'lib/plan-audits.ts',
   // This system action runs on the operator host; its Git log must stay off the event loop.
   'lib/harness/routines/frozen-candidate-drift-sweep-action.ts',
+  'lib/fleet/spawner-sidecar-spawn.ts',
 ] as const;
 
 const SYNC_SPAWN_NAMES: ReadonlySet<string> = new Set(['execFileSync', 'spawnSync', 'execSync']);
@@ -227,7 +228,6 @@ const BASELINE: ReadonlyMap<string, number> = new Map<string, number>([
   ['lib/agent-tools/plans/git-history.ts', 1], // git rev-parse --show-toplevel
   ['lib/agent-tools/work_items/fabricated-paths.ts', 1], // git log -1 -- <path>, once per cited path
   ['lib/release/admission-fix-precheck.ts', 1], // git rev-parse --git-common-dir
-  ['lib/release/checkpoint-qualification-transaction.ts', 1], // systemctl --user is-active
   ['lib/release/checkpoint-required-ancestor.ts', 2], // git probes via spawnSync(cmd, argv)
   ['lib/release/gate-fire-drill-deps.ts', 2], // systemctl is-active; systemctl stop (timeout 60s)
   ['lib/release/in-flight-retriage.ts', 1], // git probe
@@ -313,6 +313,12 @@ describe('operator main thread — synchronous child-process calls (WI-10005242 
     for (const root of SCAN_ROOTS) expect(files.some((f) => f.startsWith(`${root}/`))).toBe(true);
     // A SCAN_FILES entry that moved would read as a silent 0, not as an error.
     for (const file of SCAN_FILES) expect(existsSync(path.join(WORKSPACE_ROOT, file)), file).toBe(true);
+  });
+
+  it('the fleet spawner sidecar cleanup stays off the operator event loop', () => {
+    const file = 'lib/fleet/spawner-sidecar-spawn.ts';
+    expect(SCAN_FILES).toContain(file);
+    expect(countSyncSpawnReferences(readFileSync(path.join(WORKSPACE_ROOT, file), 'utf8'), file)).toBe(0);
   });
 
   it('no file gains a synchronous child-process reference on the main thread', () => {

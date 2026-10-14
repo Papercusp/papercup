@@ -70,7 +70,8 @@ afterAll(async () => {
       const outcome = await killTask(taskId, { includeSubtree: true, reapTerminalResidue: true, escalateAfterMs: 500 });
       if (!outcome.ok && outcome.error !== 'already_gone') throw new Error(`LSP fixture cleanup refused: ${outcome.error}`);
       if (!outcome.ok) await closeTask(taskId, { state: 'stranded', exitReason: 'fixture verified process gone at teardown' });
-      await expect.poll(async () => {
+      // Suite hooks have no active test for expect.poll; use the maintained hook-safe wait.
+      await vi.waitFor(async () => {
         const [row] = await storage.sql!`
           SELECT task.state, task.ended_at IS NOT NULL AS ended,
                  fire.last_payload->>'taskId' AS emitted_task,
@@ -78,8 +79,8 @@ afterAll(async () => {
             FROM harness_shared.task_ledger task
             LEFT JOIN harness_shared.event_key_fires fire ON fire.event_key = ${taskTerminalEventKey(taskId)}
            WHERE task.task_id = ${taskId}`;
-        return row;
-      }, { timeout: 5_000, interval: 20 }).toMatchObject({ ended: true, emitted_task: taskId, matching_state: true });
+        expect(row).toMatchObject({ ended: true, emitted_task: taskId, matching_state: true });
+      }, { timeout: 5_000, interval: 20 });
     }
   } finally {
     if (previousAutoPump !== undefined) eventEngine.setAutoPumpEnabledForTests(previousAutoPump);
@@ -216,7 +217,13 @@ describe('native P026 remaining authored language acceptance', () => {
         expect(answer.freshness.health).not.toBe('healthy');
         expect(sites).toEqual([]);
       } else {
-        expect(answer.freshness.staleVsDisk).toBe(false);
+        // Captured server input hashes establish this fixture's exact version;
+        // they do not turn unmeasured project readiness into a fresh/healthy claim.
+        expect(answer.freshness.staleVsDisk).not.toBe(true);
+        if (answer.freshness.staleVsDisk === null) expect(answer.freshness.health).not.toBe('healthy');
+        expect(answer.evidence?.sourceScope.supportingFiles).toContainEqual(expect.objectContaining({
+          path, contentHash: createHash('sha256').update(source).digest('hex'),
+        }));
         expect(sites).toEqual([...keys.get(kase.id)!.sites].sort());
       }
     } finally {

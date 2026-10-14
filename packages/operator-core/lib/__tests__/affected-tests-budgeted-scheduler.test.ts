@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
+import { createHash } from 'node:crypto';
 import * as terminalCounters from '../../../../scripts/lib/terminal-counter-fields.mjs';
 
 import { parseTaskBudgetRefusal } from '../../../../scripts/lib/task-exit-class.mjs';
@@ -24,6 +25,9 @@ import {
   mergeDurationHistory,
   pidsEventRefusalDelta,
   planAffectedTaskShards,
+  prepareBudgetedTaskComparison,
+  evaluateBudgetedTaskComparison,
+  readBudgetedTaskComparisonArtifacts,
   readDurationHistory,
   readTaskCgroupMemoryMaxMb,
   readTaskCgroupMemoryUsage,
@@ -51,6 +55,141 @@ const SCHEDULER_SRC = readFileSync(
   resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs'),
   'utf8',
 );
+
+describe('R12 immutable full-gate comparison preparation', () => {
+  const hash = 'a'.repeat(64);
+  function input() {
+    const policy = { workerBudget: 8, memoryBudgetMb: 32768, workerMemoryMb: 4096,
+      maxConcurrentTasks: 2, reserveWorkers: 1, taskCgroupPidsMax: 32768 };
+    return { selection: { kind: 'full-gate' as const, coverage: 'complete' as const,
+      unenumerated: [] as string[], originalRef: 'fixture:full-selection', originalSha256: hash,
+      files: ['long.test.ts', 'short.test.ts'] },
+    source: { commit: 'b'.repeat(40), receiptSha256: hash, dependencySha256: hash,
+      runtimeClosureSha256: hash, files: ['long.test.ts', 'short.test.ts'].map(path => ({ path, sha256: hash })) },
+    tasks: [{ id: 'long', files: ['long.test.ts'] }, { id: 'short', files: ['short.test.ts'] }],
+    baseline: policy, candidate: { ...policy, maxConcurrentTasks: 4 },
+    envelope: { hardMemoryMb: 45056, pidsMax: 32768, heapMb: 4096 },
+    estimates: [{ task: 'long', ms: 100, originalRef: 'fixture:long-wall', originalSha256: hash },
+      { task: 'short', ms: 20, originalRef: 'fixture:short-wall', originalSha256: hash }] };
+  }
+  function pair() {
+    const manifest = prepareBudgetedTaskComparison(input());
+    const cohorts = manifest.order.map((key, index) => {
+      const [side, repeat] = key.split(':');
+      const executionWallMs = side === 'baseline' ? 100 : 50;
+      return { side: side as 'baseline' | 'candidate', repeat: Number(repeat), runId: `fixture:run-${index}`,
+        originalRef: `fixture:cohort-${index}`, originalSha256: hash, manifestSha256: manifest.manifestSha256,
+        sourceUnchanged: true, sourceReceiptSha256: hash, dependencySha256: hash, runtimeClosureSha256: hash,
+        policy: side === 'baseline' ? manifest.baseline : manifest.candidate, envelope: manifest.envelope,
+        wallMs: executionWallMs + 30, acquiredWaitsMs: [10, 20], executionWallMs,
+        memory: { pairedSamples: 3, maxAnonPerAllocatedWorkerMb: 300, oomKills: 0 },
+        stats: { memoryReadings: 2, lastMemAvailableMb: 40000, observedMaxWorkers: 8,
+          observedMaxTasks: 2, observedMaxMemoryMb: 32768 },
+        children: manifest.tasks.map(task => ({ task: task.id, lane: 'primary' as const, files: [...task.files],
+          code: 0, signal: null, childWallMs: 20,
+          resultLine: 'TEST_FILE_RESULT status=passed requested=1 executed=1 matched=1 skippedTests=0 childSubstituted=0',
+          originalRef: `fixture:child-${index}-${task.id}`, originalSha256: hash, expectedCgroup: '/fixture',
+          runGroup: `fixture:group-${index}-${task.id}`, deadlineEpochMs: 1000,
+          cgroupObservations: [{ pid: 123, cgroupPath: '/fixture', runGroup: `fixture:group-${index}-${task.id}`,
+            deadlineEpochMs: 1000, vitestFork: true, phase: 'preload' }] })) };
+    });
+    return { manifest, cohorts };
+  }
+  it('detaches and deeply freezes the full selection, source, partition and ABBA order', () => {
+    const original = input(); const manifest = prepareBudgetedTaskComparison(original);
+    original.selection.files.pop(); original.source.files[0]!.sha256 = 'c'.repeat(64);
+    expect(manifest.selection.files).toHaveLength(2);
+    expect(manifest.source.files[0]!.sha256).toBe(hash);
+    expect(Object.isFrozen(manifest.tasks[0]!.files)).toBe(true);
+    expect(manifest.order).toEqual(['baseline:1', 'candidate:1', 'candidate:2', 'baseline:2']);
+  });
+  it.each(['partial', 'unknown-runtime', 'missing-file', 'duplicate-task', 'heap-change', 'unknown-estimate'])
+  ('refuses %s inputs before any cohort is admitted', defect => {
+    const data = input();
+    if (defect === 'partial') data.selection.unenumerated.push('wide workspace');
+    if (defect === 'unknown-runtime') data.source.runtimeClosureSha256 = 'unknown';
+    if (defect === 'missing-file') data.tasks.pop();
+    if (defect === 'duplicate-task') data.tasks[1]!.files = [...data.tasks[0]!.files];
+    if (defect === 'heap-change') data.candidate.workerMemoryMb = 2048;
+    if (defect === 'unknown-estimate') data.estimates[0]!.ms = NaN;
+    expect(() => prepareBudgetedTaskComparison(data)).toThrow('COMPARISON_INPUT_REFUSAL');
+  });
+  it('qualifies exactly half the execution wall and excludes every acquired queue wait', () => {
+    const { manifest, cohorts } = pair(); const result = evaluateBudgetedTaskComparison(manifest, cohorts);
+    expect(result.assertions.every(row => row.passed)).toBe(true);
+    expect(result).toMatchObject({ ratio: 0.5, baselineWallMs: 200, candidateWallMs: 100, operationalAcceptance: false });
+  });
+  it.each(['missing-repeat', 'duplicate-run', 'drift', 'skip', 'substitution', 'escape', 'oom',
+    'unpaired', 'headroom', 'order', 'queue', 'slow', 'tampered-manifest'])
+  ('fails closed on %s, with no operational acceptance from fixtures', defect => {
+    const { manifest, cohorts } = pair(); const row = cohorts[1]!;
+    if (defect === 'missing-repeat') cohorts.pop();
+    if (defect === 'duplicate-run') row.runId = cohorts[0]!.runId;
+    if (defect === 'drift') row.sourceUnchanged = false;
+    if (defect === 'skip') row.children[0]!.resultLine = row.children[0]!.resultLine.replace('skippedTests=0', 'skippedTests=1');
+    if (defect === 'substitution') row.children[0]!.resultLine = row.children[0]!.resultLine.replace('childSubstituted=0', 'childSubstituted=1');
+    if (defect === 'escape') row.children[0]!.cgroupObservations[0]!.cgroupPath = '/elsewhere';
+    if (defect === 'oom') row.memory.oomKills = 1;
+    if (defect === 'unpaired') row.memory.pairedSamples = 0;
+    if (defect === 'headroom') row.stats.memoryReadings = 0;
+    if (defect === 'order') row.children.reverse();
+    if (defect === 'queue') row.acquiredWaitsMs = [row.wallMs];
+    if (defect === 'slow') { row.wallMs++; row.executionWallMs++; }
+    const subject = defect === 'tampered-manifest' ? { ...manifest, manifestSha256: 'c'.repeat(64) } : manifest;
+    expect(evaluateBudgetedTaskComparison(subject, cohorts).assertions.some(assertion => !assertion.passed)).toBe(true);
+    expect(evaluateBudgetedTaskComparison(subject, cohorts).operationalAcceptance).toBe(false);
+  });
+  it('rejects malformed external rows rather than throwing or accepting missing data', () => {
+    const { manifest } = pair();
+    expect(evaluateBudgetedTaskComparison(manifest, [null] as never).assertions.every(a => !a.passed)).toBe(true);
+  });
+  it('retains each repeat so an aggregate half-time cannot hide a slow candidate', () => {
+    const { manifest, cohorts } = pair();
+    cohorts[1]!.wallMs += 10; cohorts[1]!.executionWallMs += 10;
+    cohorts[2]!.wallMs -= 10; cohorts[2]!.executionWallMs -= 10;
+    const result = evaluateBudgetedTaskComparison(manifest, cohorts);
+    expect(result.ratio).toBe(0.5);
+    expect(result.assertions.at(-1)!.passed).toBe(false);
+  });
+  it('resolves complete original artifact chains and rejects later byte drift', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'r12-original-artifacts-'));
+    const pin = (ref: string, value: unknown, raw = false) => {
+      const bytes = raw ? String(value) : JSON.stringify(value);
+      writeFileSync(join(root, ref), bytes);
+      return { ref, sha256: createHash('sha256').update(bytes).digest('hex') };
+    };
+    try {
+      const data = input();
+      const selection = pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [], files: data.selection.files });
+      data.selection.originalRef = selection.ref; data.selection.originalSha256 = selection.sha256;
+      const source = pin('source.json', { schemaVersion: 'verifier-source-v1', sourceCommit: data.source.commit, files: data.source.files });
+      const dependencies = pin('dependencies.txt', 'fixture independent dependency bytes', true);
+      const runtimeClosure = pin('closure.json', { status: 'complete', sourceCommit: data.source.commit, files: data.selection.files });
+      data.source.receiptSha256 = source.sha256; data.source.dependencySha256 = dependencies.sha256;
+      data.source.runtimeClosureSha256 = runtimeClosure.sha256;
+      data.estimates = data.estimates.map(estimate => {
+        const original = pin(`${estimate.task}-wall.json`, { task: estimate.task, childWallMs: estimate.ms });
+        return { ...estimate, originalRef: original.ref, originalSha256: original.sha256 };
+      });
+      const manifest = prepareBudgetedTaskComparison(data);
+      const rows = pair().cohorts.map((row, index) => ({ ...row, manifestSha256: manifest.manifestSha256,
+        sourceReceiptSha256: source.sha256, dependencySha256: dependencies.sha256, runtimeClosureSha256: runtimeClosure.sha256,
+        children: row.children.map(child => {
+          const { originalRef, originalSha256, ...fields } = child;
+          void originalRef; void originalSha256;
+          const original = pin(`child-${index}-${child.task}.json`, fields);
+          return { ...fields, originalRef: original.ref, originalSha256: original.sha256 };
+        }) }));
+      const pins = { manifest: pin('manifest.json', manifest), source, dependencies, runtimeClosure,
+        cohorts: rows.map((row, index) => pin(`cohort-${index}.json`, row)) };
+      const original = await readBudgetedTaskComparisonArtifacts(root, pins);
+      expect(original.originalArtifactsResolved).toBe(true);
+      expect(evaluateBudgetedTaskComparison(original.manifest, original.cohorts).ratio).toBe(0.5);
+      writeFileSync(join(root, 'child-1-long.json'), '{}');
+      await expect(readBudgetedTaskComparisonArtifacts(root, pins)).rejects.toThrow('hash mismatch');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 // HYGIENE, NOT A FIX — do not read this as the reason the timeouts went away.
 //

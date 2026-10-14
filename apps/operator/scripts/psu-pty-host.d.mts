@@ -2276,9 +2276,11 @@ export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit,
         pattern: null;
         excerpt: null;
     };
-    /** Reset to a fresh, un-walled state. Call on recycle: a fresh child has
-     *  no screen history and cannot inherit the old child's wall. */
-    reset(): void;
+    /** Reset for the replacement child's launch mode. A fresh process can
+     * replay a resumed transcript even when the original launch was fresh. */
+    reset({ deferUntilSubmit: nextDeferUntilSubmit }?: {
+        deferUntilSubmit?: boolean | undefined;
+    }): void;
 };
 /** Match the backend's own auth-failure copy; retain the existing export for callers. */
 export function codexAuthFailureMatch(text: any, agent?: string): {
@@ -2319,7 +2321,9 @@ export function makeAuthBlockDetector({ capBytes, agent, now, deferUntilSubmit, 
         pattern: null;
         excerpt: null;
     };
-    reset(): void;
+    reset({ deferUntilSubmit: nextDeferUntilSubmit }?: {
+        deferUntilSubmit?: boolean | undefined;
+    }): void;
 };
 /**
  * Control-socket wire protocol (v1). A connector writes ONE UTF-8 payload then

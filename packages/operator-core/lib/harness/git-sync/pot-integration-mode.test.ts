@@ -437,6 +437,19 @@ describe('setPotIntegrationMode (P-015 guard)', () => {
     expect(r).toMatchObject({ ok: false, error: 'fork_required' });
     expect(store.setHiveSetting).not.toHaveBeenCalled();
   });
+  it('the guided switch names the missing suite before unconfigured submodule forks and creates nothing', async () => {
+    const createSubmoduleForks = vi.fn();
+    const ensureFork = vi.fn();
+    const r = await choosePotIntegrationMode({
+      ...base, harnessSlug: 'member', mode: 'review', greenCmd: null,
+      forkRemote: null, upstreamRemote: 'https://github.com/acme/widget.git',
+      hasSubmodules: true, checkoutPath: '/repo',
+    }, { createSubmoduleForks, ensureFork });
+    expect(r).toMatchObject({ ok: false, error: 'green_cmd_required' });
+    expect(createSubmoduleForks).not.toHaveBeenCalled();
+    expect(ensureFork).not.toHaveBeenCalled();
+    expect(store.setHiveSetting).not.toHaveBeenCalled();
+  });
   it('accepts working-copy mode with a test command and a fork', async () => {
     const r = await setPotIntegrationMode({ ...base, mode: 'review', greenCmd: 'npm test', forkRemote: FORK });
     expect(r).toEqual({ ok: true, mode: 'review' });

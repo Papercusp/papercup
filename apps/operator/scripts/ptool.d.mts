@@ -722,6 +722,8 @@ export function listToolsWithNativeSessionFallback(initialClient: any, { discove
     tools: any[] | null;
     error?: unknown;
 }>;
+/** Default SDK importer: refuses a specifier with no bundle-traceable loader. */
+export function importPtoolSdkModule(specifier: any): any;
 /**
  * EI-21860372620642128 — install:safe reifies shared node_modules in place
  * while holding a repo-keyed fs mutex. A ptool import can race that rewrite;
@@ -741,7 +743,7 @@ export function listToolsWithNativeSessionFallback(initialClient: any, { discove
  * surfacing a stuck installer as an error.
  */
 export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, loadInstallMutex, }?: {
-    doImport?: ((spec: any) => Promise<any>) | undefined;
+    doImport?: typeof importPtoolSdkModule | undefined;
     loadInstallMutex?: (() => Promise<[typeof import("../../../scripts/lib/fs-mutex.mjs"), typeof import("../../../scripts/npm-install-safe.mjs")]>) | undefined;
 }): Promise<any>;
 /**
@@ -923,6 +925,22 @@ export function replayCodeRunWithProof(client: any, params: any, replayProof: an
 }): Promise<{
     client: any;
     result: any;
+}>;
+/**
+ * WI-6554700010012487 — one LITERAL-specifier loader per SDK module ptool
+ * imports. The packaged Server esbuild-bundles this file into
+ * sidecar/scripts/ptool.mjs (papercusp-desktop/bin/build-desktop-sidecar.sh)
+ * and ships no @modelcontextprotocol tree. esbuild inlines an import() only
+ * when its specifier is a string literal, so a computed `import(specifier)`
+ * survived the bundle as a runtime lookup and failed on every packaged install
+ * ("Cannot find package '@modelcontextprotocol/sdk'"). The sidecar build
+ * imports these loaders from a copy of the bundle outside any node_modules
+ * tree and fails the build when one does not resolve.
+ */
+export const PTOOL_SDK_MODULE_LOADERS: Readonly<{
+    '@modelcontextprotocol/sdk/types.js': () => Promise<typeof import("@modelcontextprotocol/sdk/types.js")>;
+    '@modelcontextprotocol/sdk/client/index.js': () => Promise<typeof import("@modelcontextprotocol/sdk/client/index.js")>;
+    '@modelcontextprotocol/sdk/client/streamableHttp.js': () => Promise<typeof import("@modelcontextprotocol/sdk/client/streamableHttp.js")>;
 }>;
 /** Exit status when the call was delivered but the tool ANSWERED ok:false — a
  *  refused write, a missing id, a partially-failed batch. Distinct from 1 (the
