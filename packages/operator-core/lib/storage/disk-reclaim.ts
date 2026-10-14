@@ -42,6 +42,8 @@ export interface DiskReclaimReceipt {
   entries: Array<{ path: string; classId: string; status: 'removed' | 'would-remove' | 'protected' | 'changed' | 'failed'; bytes: number; reason?: string }>;
   delegates: Array<{ classId: string; ok: boolean; detail: unknown }>;
   errors: string[];
+  /** Physical roots actually enforced; aliases share identity, selection and holder evidence. */
+  roots?: Array<{ path: string; classId: string; aliases: string[] }>;
   scan?: { inspectedNodes: number; retainedRecentTrees: number; stoppedAtRoot: string | null; incompleteRoots?: string[] };
   effects?: Array<{
     root: string; selected: number; processed: number; remaining: number;
@@ -234,6 +236,41 @@ function overlap(a: string, b: string): boolean {
 function message(err: unknown): string { return err instanceof Error ? err.message : String(err); }
 function absent(err: unknown): boolean { return (err as NodeJS.ErrnoException)?.code === 'ENOENT'; }
 
+/** Bind mounts have different paths but the same device/inode. Never run two policies on those bytes. */
+export async function physicalRetentionRoots(roots: Array<{ path: string; classId: string }>, errors: string[],
+  inspect: (path: string) => Promise<{ dev: number; ino: number; isDirectory(): boolean; isSymbolicLink(): boolean }> = lstat,
+): Promise<Array<{ path: string; classId: string; aliases: string[] }>> {
+  const groups = new Map<string, { path: string; classId: string; aliases: string[]; conflict: boolean }>();
+  for (const root of roots) {
+    try {
+      const stat = await inspect(root.path);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) { errors.push(`unsafe retention root:${root.path}`); continue; }
+      const key = `${stat.dev}:${stat.ino}`;
+      const prior = groups.get(key);
+      if (!prior) groups.set(key, { ...root, aliases: [root.path], conflict: false });
+      else if (prior.classId !== root.classId) {
+        prior.conflict = true;
+        errors.push(`conflicting physical retention classes:${prior.classId}/${root.classId}:${root.path}`);
+      } else if (!prior.aliases.includes(root.path)) prior.aliases.push(root.path);
+    } catch (error) { if (!absent(error)) errors.push(`root:${root.path}: ${message(error)}`); }
+  }
+  return [...groups.values()].filter((root) => !root.conflict).map(({ conflict: _conflict, ...root }) => root);
+}
+
+/** A descriptor opened through either bind alias protects the selected physical tree. */
+export async function scanRetentionRootHolders(root: { path: string; aliases: string[] }, paths: readonly string[],
+  scan: (paths: readonly string[]) => Promise<OpenWriterScan>,
+): Promise<OpenWriterScan> {
+  const aliases = (path: string) => root.aliases.map((alias) => alias + path.slice(root.path.length));
+  const result = await scan([...new Set(paths.flatMap(aliases))]);
+  const byPath = new Map<string, string[]>();
+  for (const path of paths) {
+    const pids = [...new Set(aliases(path).flatMap((alias) => result.byPath.get(alias) ?? []))];
+    if (pids.length) byPath.set(path, pids);
+  }
+  return { ...result, byPath };
+}
+
 /** Expand policy patterns using the policy's own compiled segment matchers. No symlink traversal. */
 async function policyRoots(policy: CompiledPolicy, home: string, errors: string[]): Promise<Array<{ path: string; classId: string }>> {
   const roots: Array<{ path: string; classId: string }> = [];
@@ -322,12 +359,16 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   try {
     await options.record?.('started', receipt);
     await withFsMutex('papercusp-disk-retention', async () => {
-      const roots = options.roots ?? await policyRoots(policy, home, receipt.errors);
+      const roots = await physicalRetentionRoots(options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors);
+      receipt.roots = roots;
       // A registered workspace's tool run dirs belong exclusively to scratch-gc.
       const workspaceIds = (options.registeredWorkspaces ?? (() => readRegistry().workspaces.map((x) => x.id)))();
       const protectedPaths = (options.protectedPaths ?? []).map((path) => resolve(path));
       const progress = receipt.scan = { inspectedNodes: 0, retainedRecentTrees: 0, stoppedAtRoot: null as string | null, incompleteRoots: [] as string[] };
       for (const root of roots) {
+        const rootProtectedPaths = protectedPaths.flatMap((path) => root.aliases.map((alias) =>
+          path === alias || path.startsWith(alias + '/') ? root.path + path.slice(alias.length) : path));
+        const scanRoot = (paths: readonly string[]) => scanRetentionRootHolders(root, paths, scan);
         const budget = { left: options.maxEntries ?? 100_000, deadline: Date.now() + (options.budgetMs ?? 60_000), progress };
         const budgetExpired = () => budget.left <= 0 || Date.now() >= budget.deadline;
         // Each root gets the same inspection allowance. Holder scans retain
@@ -352,7 +393,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           const names = await readdir(root.path);
           const excluded = names.map((name) => join(root.path, name)).filter((path) =>
             (root.classId === 'papercusp-scratch' && workspaceIds.includes(path.slice(root.path.length + 1))) ||
-            protectedPaths.some((protectedPath) => overlap(path, protectedPath)) ||
+            rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath)) ||
             !deletionClassFor(path, policy) || containsClassRoot(path, policy));
           if (options.inspectTrees && retainAfterMs !== undefined) {
             // Native find bounds the complete walk by elapsed time while streaming
@@ -376,7 +417,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               receipt.entries.push({ path, classId: root.classId, status, bytes: 0, reason });
             };
             if (root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) { retain('registered workspace scratch owner'); return null; }
-            if (protectedPaths.some((protectedPath) => overlap(path, protectedPath))) { retain('live retention lease'); return null; }
+            if (rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) { retain('live retention lease'); return null; }
             // Refuse nested policy roots before walking (e.g. a scratch PG data dir).
             if (!deletionClassFor(path, policy) || containsClassRoot(path, policy)) { retain('protected policy root'); return null; }
             try {
@@ -420,7 +461,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         };
         await recordProgress();
         if (stopEffects()) { await recordProgress(); continue; }
-        const holders = await outsideInspectionBudget(() => scan(selected.map((e) => e.path)));
+        const holders = await outsideInspectionBudget(() => scanRoot(selected.map((e) => e.path)));
         if (!holders.complete) {
           receipt.errors.push(`incomplete process-holder scan:${root.path}: ${JSON.stringify(holders.diagnostics ?? {})}`);
           await recordProgress(); continue;
@@ -449,7 +490,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               (reason) => { outcome.reason = reason; });
             if (!fresh) continue;
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
-            const freshHolders = await outsideInspectionBudget(() => scan([entry.path]));
+            const freshHolders = await outsideInspectionBudget(() => scanRoot([entry.path]));
             if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) {
               outcome.reason = 'process evidence unavailable or held';
               if (!freshHolders.complete) receipt.errors.push(`incomplete process-holder scan before removal:${entry.path}: ${JSON.stringify(freshHolders.diagnostics ?? {})}`);

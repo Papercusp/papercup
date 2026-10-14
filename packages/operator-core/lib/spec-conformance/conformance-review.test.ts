@@ -172,7 +172,7 @@ describe('system:spec-conformance-review action', () => {
   });
 
   it('files for input.planSlug in the payload harness and reports diagnostics', async () => {
-    const upsertReview = vi.fn(async () => ({ id: 'WI-5', created: true }));
+    const upsertReview = vi.fn(async (_filing: unknown) => ({ id: 'WI-5', created: true }));
     const out = await runConformanceReviewAction(
       ctx({ templateSlug: 't', harnessSlug: 'papercusp', input: { planSlug: 'plan-a' } }),
       { resolveImplementers: async () => ['su-x'], upsertReview },
@@ -185,7 +185,7 @@ describe('system:spec-conformance-review action', () => {
   });
 
   it('falls back to the install slug and refuses a missing plan', async () => {
-    const upsertReview = vi.fn(async () => ({ id: 'WI-6', created: false }));
+    const upsertReview = vi.fn(async (_filing: unknown) => ({ id: 'WI-6', created: false }));
     await runConformanceReviewAction(ctx({ input: { planSlug: 'plan-b' } }), { resolveImplementers: async () => [], upsertReview });
     expect(upsertReview.mock.calls[0][0]).toMatchObject({ conditionKey: 'spec-conformance-review:install-h/plan-b' });
     await expect(runConformanceReviewAction(ctx({ input: {} }), { resolveImplementers: async () => [], upsertReview })).rejects.toThrow(

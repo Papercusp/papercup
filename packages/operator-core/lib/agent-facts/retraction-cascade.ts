@@ -306,8 +306,11 @@ export async function cascadeFactChange(
     // Inside a caller's transaction a failed statement would abort the WHOLE
     // transaction, fact write included. A savepoint confines the failure to the
     // cascade, so "never throws" also means "never poisons the caller's tx".
-    const savepoint = (sql as unknown as { savepoint?: <T>(fn: (s: Sql) => Promise<T>) => Promise<T> }).savepoint;
-    const { matched, flagged, truncated } =
+    // Concrete (non-generic) signature: `.call` on a generic `<T>` signature cannot
+    // infer T and would type the outcome as `unknown`.
+    const savepoint = (sql as unknown as { savepoint?: (fn: (s: Sql) => Promise<FlagOutcome>) => Promise<FlagOutcome> })
+      .savepoint;
+    const { matched, flagged, truncated }: FlagOutcome =
       typeof savepoint === 'function'
         ? await savepoint.call(sql, (s: Sql) => flagMatchingItems(s, e, opts))
         : await flagMatchingItems(sql, e, opts);
@@ -328,11 +331,13 @@ export async function cascadeFactChange(
   }
 }
 
-async function flagMatchingItems(
-  sql: Sql,
-  e: FactChangeEvent,
-  opts: { now?: () => Date },
-): Promise<{ matched: number; flagged: FlaggedItem[]; truncated: boolean }> {
+interface FlagOutcome {
+  matched: number;
+  flagged: FlaggedItem[];
+  truncated: boolean;
+}
+
+async function flagMatchingItems(sql: Sql, e: FactChangeEvent, opts: { now?: () => Date }): Promise<FlagOutcome> {
   {
     // Containment narrows on the indexed population (migration 1506's predicate is
     // repeated verbatim so the partial index applies); the JS matcher then applies

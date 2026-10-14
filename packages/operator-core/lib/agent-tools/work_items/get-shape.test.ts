@@ -1624,6 +1624,85 @@ describe("citedFacts survives the shaper (EI-19465127338264010)", () => {
 });
 
 /**
+ * P-003 (R-3, carry-recheck-and-governed-memory-2026-10-14): the retraction cascade's
+ * READ seam. A flag that the whitelist drops is a flag nobody sees — R-3 requires it
+ * be VISIBLE, naming the fact and the reason — so it must survive every tier,
+ * including the compact single-item floor, and say so when it is cut.
+ */
+describe("assumptionFlags survive the shaper (P-003 / R-3)", () => {
+  const flag = (i: number) => ({
+    dedupeKey: `retracted:workspace::release-window:${i}`,
+    condition: "retracted",
+    factRef: `workspace:release-window-${i}`,
+    scope: "workspace",
+    scopeRef: null,
+    key: `release-window-${i}`,
+    citedVersionId: null,
+    versionId: 10 + i,
+    supersededBy: null,
+    reason: "window moved",
+    by: "su-peer",
+    at: "2026-10-14T18:00:00.000Z",
+    line: `Fact workspace:release-window-${i} was retracted by su-peer: window moved`,
+  });
+
+  for (const tier of ["trimmed", "standard"] as const) {
+    it(`keeps the flag, naming fact and reason, at the '${tier}' tier`, () => {
+      const out = shapeWorkItemsGet(envelope([row({ assumptionFlags: [flag(0)] })]), tier) as Envelope;
+      const flags = out.results[0].assumptionFlags as Array<Record<string, unknown>>;
+      expect(flags).toHaveLength(1);
+      expect(flags[0].factRef).toBe("workspace:release-window-0");
+      expect(flags[0].line).toContain("window moved");
+      expect(out.results[0].assumptionFlagsTruncated).toBeUndefined();
+    });
+  }
+
+  it("discloses truncation as { shown, total } rather than dropping flags silently", () => {
+    const many = Array.from({ length: 9 }, (_, i) => flag(i));
+    const out = shapeWorkItemsGet(envelope([row({ assumptionFlags: many })]), "trimmed") as Envelope;
+    const flags = out.results[0].assumptionFlags as unknown[];
+    expect(flags.length).toBeLessThan(many.length);
+    expect(out.results[0].assumptionFlagsTruncated).toEqual({ shown: flags.length, total: 9 });
+    expect(out._shapeNote?.dropped).toContain("assumptionFlags");
+  });
+
+  it("keeps the flag line at the compact single-item floor", () => {
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          checkpoint: "C".repeat(40_000),
+          holder: { goalRef: "WI-1", goalText: "H".repeat(40_000), assumptions: { keys: [] }, agreement: "sole", competing: [] },
+          lifecycle: { events: Array.from({ length: 100 }, (_, i) => ({ kind: `event-${i}` })) },
+          priorAttempts: { attempts: [{ text: "A".repeat(10_000) }] },
+          assumptionFlags: [flag(0)],
+        }),
+      ]),
+      "trimmed",
+    ) as Envelope;
+    expect(out._shapeNote?.singleItemFloor, "did not reach the single-item floor").toMatch(/reduced identity/);
+    const flags = out.results[0].assumptionFlags as Array<Record<string, unknown>>;
+    expect(flags).toEqual([
+      { condition: "retracted", factRef: "workspace:release-window-0", line: flag(0).line },
+    ]);
+  });
+
+  it("is absent when the item carries no flag", () => {
+    const out = shapeWorkItemsGet(envelope([row()]), "trimmed") as Envelope;
+    expect(out.results[0].assumptionFlags).toBeUndefined();
+    expect(out.results[0].assumptionFlagsTruncated).toBeUndefined();
+  });
+
+  it("CONTROL: an unlisted sibling of identical shape is dropped, so the keep is the whitelist's doing", () => {
+    const out = shapeWorkItemsGet(
+      envelope([row({ assumptionFlags: [flag(0)], notWhitelistedFlags: [flag(1)] })]),
+      "trimmed",
+    ) as Envelope;
+    expect(out.results[0].notWhitelistedFlags).toBeUndefined();
+    expect(out.results[0].assumptionFlags).toBeDefined();
+  });
+});
+
+/**
  * EI-19454477695046958 — the SAME whitelist-drop class as the block above, and it
  * recurred anyway: `checkpointRetractions` was added to get.ts, shipped unit-green
  * and typecheck-clean, and was dropped here silently. Caught only by probing the

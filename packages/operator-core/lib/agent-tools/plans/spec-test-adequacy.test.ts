@@ -2499,6 +2499,21 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(covered.ratings['correct-layer'].evidence).toContain('ref="live:verified-report"');
   });
 
+  it('names active non-mutation bindings when correct-layer is not applicable', () => {
+    const activeTest = successfulTestBinding('packages/example/no-layer.test.ts');
+    activeTest.id = 41696;
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: [], requiredTestLayers: [] }),
+      evidence: [activeTest],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['correct-layer'].rating).toBe('not-applicable');
+    expect(result.ratings['correct-layer'].evidence).toContain('no required test layer; layer reachability is not evaluated');
+    expect(result.ratings['correct-layer'].evidence).toContain('id=41696');
+    expect(result.ratings['correct-layer'].evidence).not.toContain('no bound evidence rows');
+  });
+
   it('requires each canonical evidence kind declared by the exact clause revision', () => {
     const operationalClause = clause({ requiredEvidence: ['operational'], requiredTestLayers: [] });
     const wrongRevision = evidence({

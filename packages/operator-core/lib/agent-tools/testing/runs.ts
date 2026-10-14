@@ -292,6 +292,7 @@ export const TESTING_RUNS_TIER_CAPS = {
 } as const;
 
 type TestingRunsTier = keyof typeof TESTING_RUNS_TIER_CAPS;
+type TestingRunsShapeArgs = Readonly<{ testRunIds?: readonly number[] }>;
 
 function clipOutputTail(value: unknown, maxChars: number): { value: unknown; clipped: boolean } {
   if (typeof value !== 'string' || value.length <= maxChars) return { value, clipped: false };
@@ -348,12 +349,17 @@ function projectTestingRun(row: unknown, outputTailChars: number): { row: Record
   };
 }
 
-export function shapeTestingRuns(data: unknown, tier: TestingRunsTier): unknown {
+export function shapeTestingRuns(data: unknown, tier: TestingRunsTier, args?: TestingRunsShapeArgs): unknown {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
   const d = data as Record<string, unknown>;
   const caps = TESTING_RUNS_TIER_CAPS[tier];
 
   if (Array.isArray(d.runs)) {
+    // Exact-ID reads are evidence receipts, not browse lists. Dropping a whole
+    // selected row here makes the later result-door spill permanently partial:
+    // it can only preserve the already-shaped payload. Let the result-door
+    // spill the complete receipt set when the rows do not fit inline.
+    const preserveExactReceiptRows = (args?.testRunIds?.length ?? 0) > 0;
     const base = { ...d, runs: [] as Record<string, unknown>[] };
     const kept: Record<string, unknown>[] = [];
     let clippedRows = 0;
@@ -362,7 +368,7 @@ export function shapeTestingRuns(data: unknown, tier: TestingRunsTier): unknown 
       const candidate = { ...base, runs: [...kept, projected.row] };
       // Keep the first valid row even if an unusual envelope is larger than the
       // target; never return an empty row list that looks like no test ran.
-      if (JSON.stringify(candidate).length > caps.targetChars && kept.length > 0) break;
+      if (JSON.stringify(candidate).length > caps.targetChars && kept.length > 0 && !preserveExactReceiptRows) break;
       kept.push(projected.row);
       if (projected.clipped) clippedRows += 1;
     }
@@ -561,8 +567,8 @@ export default defineTool({
   // What can actually regress here is the row BUDGET and the `payloadBounded`
   // marker: behavioural, not key-presence, and covered by this shaper's own tests.
   shape: {
-    standard: (data) => shapeTestingRuns(data, 'standard'),
-    trimmed: (data) => shapeTestingRuns(data, 'trimmed'),
+    standard: (data, sctx) => shapeTestingRuns(data, 'standard', sctx.args as TestingRunsShapeArgs),
+    trimmed: (data, sctx) => shapeTestingRuns(data, 'trimmed', sctx.args as TestingRunsShapeArgs),
   },
   async handler(args: {
     testRunIds?: number[];

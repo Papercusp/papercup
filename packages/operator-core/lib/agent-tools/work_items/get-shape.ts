@@ -601,6 +601,7 @@ function compactSingleRow(
       completionPresent && sameCompletionRecord(r.completion, w?.terminalCompletionEvidence),
     ),
     ...(completionRelevant ? { completion, hasCompletionEvidence: completionPresent } : {}),
+    ...projectAssumptionFlags(r.assumptionFlags, caps, dropped, true),
     // `threadLimit` is an explicit bounded diagnostic request, not incidental
     // detail. Keep it even at the exact-read floor: dropping it here turns the
     // caller's measured recent window into silence precisely on large items.
@@ -720,6 +721,28 @@ function projectCitedFacts(raw: unknown, caps: FieldCaps, dropped: Set<string>):
     ...(cited.length > caps.citedFacts
       ? { citedTruncated: { shown: kept.length, total: cited.length } }
       : {}),
+  };
+}
+
+/**
+ * P-003 (R-3): a fact this closed item's completion assumptions cited was retracted
+ * or superseded. Kept at EVERY tier — it is a "read before trusting this close"
+ * warning, small, and the whole point is that it stays visible. The compact form
+ * keeps only what names the fact and the reason (`line` renders both). Truncation
+ * is disclosed as `{ shown, total }`, never silently.
+ */
+function projectAssumptionFlags(raw: unknown, caps: FieldCaps, dropped: Set<string>, compact: boolean): Row {
+  if (!Array.isArray(raw) || raw.length === 0) return {};
+  const kept = raw.slice(0, caps.citedFacts).map((f) => {
+    if (!f || typeof f !== "object") return f;
+    const e = f as Row;
+    const line = typeof e.line === "string" ? clip(e.line, caps.warning) : e.line;
+    return compact ? { condition: e.condition, factRef: e.factRef, line } : { ...e, line };
+  });
+  if (raw.length > kept.length) dropped.add("assumptionFlags");
+  return {
+    assumptionFlags: kept,
+    ...(raw.length > kept.length ? { assumptionFlagsTruncated: { shown: kept.length, total: raw.length } } : {}),
   };
 }
 
@@ -1203,6 +1226,7 @@ function projectRow(
     // Conditional "read before acting" warnings this tool's `returns` promises.
     ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
     ...(r.citedFacts ? { citedFacts: projectCitedFacts(r.citedFacts, caps, dropped) } : {}),
+    ...projectAssumptionFlags(r.assumptionFlags, caps, dropped, false),
     ...(r.planItemBlocked ? { planItemBlocked: r.planItemBlocked } : {}),
     ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
     ...(r.planItemTextDrift ? { planItemTextDrift: r.planItemTextDrift } : {}),

@@ -31,9 +31,23 @@
  * organization document is still readable through each revoked identity, and records a restore
  * receipt.
  *
+ * Restore and legal holds (P-017d): a restore replaces the database files from a snapshot, so the
+ * row-level hold triggers do not run during it. It can overwrite a held row with its backup-point
+ * version and remove held rows written after that point, and it undoes holds placed or released
+ * after it. Rows under a hold that is active in the restored database are protected again the moment
+ * the restore finishes, by the same triggers. `reconcileRestoredAccess` re-applies the hold changes
+ * the caller names (with their original ids and times), compares each held content the caller
+ * exported before the restore (`exportLegalHoldContent` digest) with what the restore left, and
+ * records both in the receipt. The documented restore (packages/backup/scripts/restore-pg-dump.sh)
+ * loads the dump into a NEW database, so the database it replaces still has the held rows, kept by
+ * the hold triggers. Given that database as `preRestoreSource`, reconciliation copies a mismatched
+ * hold's rows back from it before comparing. Without it, a mismatch is recorded, not repaired, and
+ * the pre-restore export is the copy of record.
+ *
  * Metadata keys never name a store or column. Names like `hosted_cli_tokens` would trip the
  * forbidden-key rule in `assertGovernancePayloadSafe`. Stores and columns are always values.
  */
+import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import {
   appendOrganizationAuditEvent,
@@ -43,6 +57,7 @@ import {
 import { CUSTOMER_DATA_CLASSES, customerDataTable } from '../auth/hosted/customer-data-map';
 import type { HostedPermission, HostedPrincipal } from '../auth/hosted-principal';
 import { getBuildInfo } from '../build-info';
+import { placeLegalHold, releaseLegalHold } from '../data-sources/chat-retrieval-units';
 import { revokeProviderIdentityMapping } from '../data-sources/documents-corpus';
 import { pilotStorePopulation, type PilotRetention, type PopulationEntry } from './pilot-processing-map';
 
@@ -312,9 +327,9 @@ export function authorizeDataOperation(
   return { actorKind: actor.kind, actorId: nonEmpty(actor.id, 'actor id') };
 }
 
-export function validateScope(scope: OrganizationDataScope): OrganizationDataScope {
+export function validateScope(scope: OrganizationDataScope, allowEmptyWorkspaces = false): OrganizationDataScope {
   const workspaceIds = [...new Set(scope.workspaceIds.map((w) => nonEmpty(w, 'workspaceId')))];
-  if (!workspaceIds.length) throw new Error('organization-data-receipts: at least one workspaceId is required');
+  if (!workspaceIds.length && !allowEmptyWorkspaces) throw new Error('organization-data-receipts: at least one workspaceId is required');
   return { organizationId: nonEmpty(scope.organizationId, 'organizationId'), workspaceIds };
 }
 
@@ -356,13 +371,44 @@ export interface RevocationCheck {
   readonly denied: boolean;
 }
 
+/** A legal-hold change made after the backup point, as restore reconciliation re-applied it. */
+export interface HoldChangeCheck {
+  readonly holdId: string;
+  readonly workspaceId: string;
+  readonly change: 'place' | 'release';
+  /** 'reapplied' = the restored database lacked the change; 'present' = it already had it. */
+  readonly applied: 'reapplied' | 'present';
+  /** Whether the hold is active after reconciliation. */
+  readonly active: boolean;
+}
+
+/** One hold's content after the restore, compared with the digest of an export taken before it. */
+export interface HeldContentCheck {
+  readonly holdId: string;
+  readonly workspaceId: string;
+  readonly expectedDigest: string;
+  /** Digest of what the hold keeps after the restore; null when the restored database has no such hold. */
+  readonly restoredDigest: string | null;
+  readonly matchesExport: boolean;
+  /**
+   * Rows copied back from the pre-restore database (inserted, or reset to their pre-restore values)
+   * before `restoredDigest` was taken. null = no repair was attempted: the content matched, no
+   * pre-restore source was given, or the hold is not active in the restored database.
+   */
+  readonly repairedRows: number | null;
+}
+
 export interface OrganizationDataReceipt {
   readonly operation: DataOperation;
+  /** Hosted account exports also cover organizations that have not created a workspace. */
+  readonly executor?: Executor;
   readonly scope: OrganizationDataScope;
   readonly purpose: string;
   readonly stores: readonly StoreReceipt[];
   readonly holdConflicts?: readonly HoldConflict[];
   readonly revocations?: readonly RevocationCheck[];
+  readonly holdChanges?: readonly HoldChangeCheck[];
+  readonly heldContent?: readonly HeldContentCheck[];
   /** Required on, and only on, a key operation. */
   readonly keyLifecycle?: KeyLifecycleRecord;
   readonly limitations: readonly string[];
@@ -398,6 +444,7 @@ export function receiptMetadata(receipt: OrganizationDataReceipt, codeVersion: s
     codeVersion,
     schemaVersion: receipt.schemaVersion,
   };
+  if (receipt.executor) meta.executor = receipt.executor;
   if (receipt.holdConflicts) {
     meta.holdConflicts = receipt.holdConflicts.map((h) => ({
       holdId: h.holdId, workspaceId: h.workspaceId, dataSourceId: h.dataSourceId, channelId: h.channelId,
@@ -408,6 +455,17 @@ export function receiptMetadata(receipt: OrganizationDataReceipt, codeVersion: s
     meta.revocations = receipt.revocations.map((r) => ({
       workspaceId: r.workspaceId, provider: r.provider, providerUserId: r.providerUserId,
       mappingsRevoked: r.mappingsRevoked, readableDocuments: r.readableDocuments, denied: r.denied,
+    }));
+  }
+  if (receipt.holdChanges) {
+    meta.holdChanges = receipt.holdChanges.map((h) => ({
+      holdId: h.holdId, workspaceId: h.workspaceId, change: h.change, applied: h.applied, active: h.active,
+    }));
+  }
+  if (receipt.heldContent) {
+    meta.heldContent = receipt.heldContent.map((h) => ({
+      holdId: h.holdId, workspaceId: h.workspaceId, expectedDigest: h.expectedDigest,
+      restoredDigest: h.restoredDigest, matchesExport: h.matchesExport, repairedRows: h.repairedRows,
     }));
   }
   if (receipt.keyLifecycle) {
@@ -430,7 +488,7 @@ export async function writeOrganizationDataReceipt(
   actor: ReceiptActor,
   transaction?: Sql,
 ): Promise<string> {
-  const scope = validateScope(receipt.scope);
+  const scope = validateScope(receipt.scope, receipt.executor === 'hosted-control-plane');
   const auth = authorizeDataOperation(receipt.operation, scope.organizationId, actor);
   if (isKeyOperation(receipt.operation)) {
     // A key operation touches no store rows. It must say what it did to the keys instead.
@@ -511,32 +569,73 @@ export interface OrganizationDataExport {
   readonly stores: readonly { readonly store: string; readonly columns: readonly string[]; readonly rows: readonly Record<string, unknown>[] }[];
 }
 
+/** Follow the code-owned attribution map, including the sealed-session join.
+ * Both UUID and text organization/user columns exist in the hosted schema.
+ * Only mapped identifiers enter the statement; the organization is a bound value.
+ */
+function hostedOrganizationPredicate(store: string, alias = 't', seen = new Set<string>()): string {
+  const table = customerDataTable(store);
+  if (!table || seen.has(store)) throw new Error(`organization-data-receipts: invalid attribution for ${store}`);
+  const link = table.organizationLink;
+  const column = (name: string) => {
+    if (!IDENT.test(name)) throw new Error('organization-data-receipts: unsafe attribution column');
+    return `${alias}."${name}"`;
+  };
+  if (link.via === 'column') return `${column(link.column)}::text = $1::text`;
+  if (link.via === 'user') return `EXISTS (SELECT 1 FROM papercusp_auth.organization_memberships m
+    WHERE m.user_id::text = ${column(link.column)}::text AND m.organization_id::text = $1::text)`;
+  if (link.via !== 'join') throw new Error(`organization-data-receipts: unattributable store ${store}`);
+  const [schema, targetTable, targetColumn, extra] = link.target.split('.');
+  if (!schema || !targetTable || !targetColumn || extra || !IDENT.test(targetColumn)) {
+    throw new Error('organization-data-receipts: unsafe attribution target');
+  }
+  const target = `${schema}.${targetTable}`;
+  const nextAlias = `${alias}_parent`;
+  return `EXISTS (SELECT 1 FROM ${quoted(target)} ${nextAlias}
+    WHERE ${nextAlias}."${targetColumn}"::text = ${column(link.column)}::text
+      AND (${hostedOrganizationPredicate(target, nextAlias, new Set([...seen, store]))}))`;
+}
+
 /**
- * Export every pilot data-plane store of the scope, without secret-class columns, and record an
- * export receipt in the same transaction. `sql` is the pilot data-plane connection.
+ * Export stores for one executor without secret-class columns and write the shared receipt
+ * atomically. The default remains the pilot data plane. P-010's hosted executor derives
+ * workspace ownership from the database and follows every mapped account attribution.
  */
 export async function exportOrganizationData(
   sql: Sql,
-  input: { scope: OrganizationDataScope; actor: ReceiptActor; purpose: string },
+  input: { scope: OrganizationDataScope; actor: ReceiptActor; purpose: string; executor?: Executor },
 ): Promise<OrganizationDataExport> {
-  const scope = validateScope(input.scope);
-  authorizeDataOperation('export', scope.organizationId, input.actor);
+  const executor = input.executor ?? 'pilot-data-plane';
+  const requestedScope = validateScope(input.scope, executor === 'hosted-control-plane');
+  authorizeDataOperation('export', requestedScope.organizationId, input.actor);
   return sql.begin(async (tx) => {
     const t = tx as unknown as Sql;
+    const owned = executor === 'hosted-control-plane'
+      ? await t<{ id: string }[]>`SELECT id::text AS id FROM harness_shared.customer_workspaces
+          WHERE organization_id::text = ${requestedScope.organizationId} ORDER BY id`
+      : null;
+    const scope = owned ? { organizationId: requestedScope.organizationId, workspaceIds: owned.map((w) => w.id) } : requestedScope;
     const stores: OrganizationDataExport['stores'][number][] = [];
     const receipts: StoreReceipt[] = [];
     for (const treatment of planOrganizationDataOperation()) {
-      if (treatment.executor !== 'pilot-data-plane') {
+      if (treatment.executor !== executor || treatment.attribution.kind === 'unattributable') {
         receipts.push(deferred(treatment, 'export'));
         continue;
       }
       const live = await liveColumns(t, treatment.store);
+      if (executor === 'hosted-control-plane') {
+        const mapped = new Set([...(treatment.exportColumns ?? []), ...treatment.excludedColumns]);
+        if (!live.length || live.some((c) => !mapped.has(c)) || [...mapped].some((c) => !live.includes(c))) {
+          throw new Error(`organization-data-receipts: unmapped live schema for ${treatment.store}`);
+        }
+      }
       const excluded = live.filter((c) => treatment.excludedColumns.includes(c) || ACCESS_SHAPED_COLUMN.test(c));
       const columns = live.filter((c) => !excluded.includes(c));
       if (!columns.length) throw new Error(`organization-data-receipts: ${treatment.store} has no exportable columns`);
       const rows = await t.unsafe<Record<string, unknown>[]>(
-        `SELECT ${columns.map((c) => `"${c}"`).join(', ')} FROM ${quoted(treatment.store)} WHERE workspace_id = ANY($1::text[])`,
-        [scope.workspaceIds as string[]],
+        `SELECT ${columns.map((c) => `t."${c}"`).join(', ')} FROM ${quoted(treatment.store)} t WHERE ${
+          executor === 'hosted-control-plane' ? hostedOrganizationPredicate(treatment.store) : 't.workspace_id = ANY($1::text[])'}`,
+        executor === 'hosted-control-plane' ? [scope.organizationId] : [scope.workspaceIds as string[]],
       );
       stores.push({ store: treatment.store, columns, rows: [...rows] });
       receipts.push({
@@ -545,8 +644,12 @@ export async function exportOrganizationData(
       });
     }
     const receiptId = await writeOrganizationDataReceipt({
-      operation: 'export', scope, purpose: input.purpose, stores: receipts,
-      limitations: [...BASE_LIMITATIONS, 'Export rows are materialized in memory; there is no streaming or row cap.'],
+      operation: 'export', executor, scope, purpose: input.purpose, stores: receipts,
+      limitations: executor === 'hosted-control-plane'
+        ? ['Pilot workspace content is deferred to its data-plane executor.',
+          'Unattributable provider and legacy stores are explicitly excluded by the data map.',
+          'Export rows are materialized in memory; there is no streaming or row cap.']
+        : [...BASE_LIMITATIONS, 'Export rows are materialized in memory; there is no streaming or row cap.'],
       schemaVersion: await readSchemaVersion(t),
     }, input.actor, t);
     return { receiptId, stores };
@@ -625,6 +728,11 @@ export async function exportHoldContent(sql: Sql, hold: HoldTarget): Promise<Hol
     out.push({ store, columns, excludedColumns: excluded, rows: sorted.map((s) => s.row) });
   }
   return out;
+}
+
+/** sha256 (hex) of held content as `exportHoldContent` returns it: the e-discovery export digest. */
+export function holdContentDigest(stores: readonly HoldContentExport[]): string {
+  return createHash('sha256').update(JSON.stringify(stores.map((s) => [s.store, s.columns, s.rows]))).digest('hex');
 }
 
 /** Active holds in the scope and, per hold, the rows each keeps (also the legal-hold listing, legal-holds.ts). */
@@ -743,9 +851,195 @@ export async function documentsReadableThroughIdentity(
 }
 
 /**
- * After restoring a pilot database, re-apply the revocations made after the backup point, verify
- * each revoked identity can read no organization document, and record a restore receipt. Throws
- * (and writes nothing) when a revoked identity can still read a document.
+ * A legal-hold change made after the backup point, which a restore undoes. The caller names it from
+ * the audit or SIEM export (`organization.legal_hold.place` / `.release` events), never from the
+ * restored audit table: a restore that shares the database rolls that table back too.
+ */
+export type PostBackupHoldChange =
+  | {
+      readonly kind: 'place';
+      readonly holdId: string;
+      readonly workspaceId: string;
+      readonly dataSourceId: string;
+      /** null = the whole data source is held. */
+      readonly channelId: string | null;
+      readonly reason: string;
+      readonly placedBy: string;
+      readonly placedAt: string;
+    }
+  | {
+      readonly kind: 'release';
+      readonly holdId: string;
+      readonly workspaceId: string;
+      readonly releasedBy: string;
+      readonly releasedAt: string;
+    };
+
+/** The digest of one hold's content from an export taken just before the restore (exportLegalHoldContent). */
+export interface PreRestoreHeldContent {
+  readonly holdId: string;
+  readonly workspaceId: string;
+  readonly digest: string;
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+function holdChangeTime(c: PostBackupHoldChange): number {
+  const at = Date.parse(c.kind === 'place' ? c.placedAt : c.releasedAt);
+  if (Number.isNaN(at)) throw new Error(`organization-data-receipts: hold change ${c.holdId} has an invalid time`);
+  return at;
+}
+
+interface RestoredHold {
+  data_source_id: string;
+  channel_id: string | null;
+  placed_at: Date;
+  released_at: Date | null;
+}
+
+async function readRestoredHold(sql: Sql, workspaceId: string, holdId: string): Promise<RestoredHold | undefined> {
+  const [row] = await sql<RestoredHold[]>`
+    SELECT data_source_id::text AS data_source_id, channel_id, placed_at, released_at
+      FROM harness_shared.data_source_legal_holds
+     WHERE workspace_id = ${workspaceId} AND id::text = ${holdId}
+     FOR UPDATE`;
+  return row;
+}
+
+/**
+ * Re-apply one post-backup hold change through the hold writers (data-sources/chat-retrieval-units),
+ * with its original id and time. A change the restored database already has is reported as present,
+ * so running reconciliation twice changes nothing.
+ */
+async function reapplyHoldChange(sql: Sql, c: PostBackupHoldChange): Promise<HoldChangeCheck> {
+  const existing = await readRestoredHold(sql, c.workspaceId, c.holdId);
+  let applied: HoldChangeCheck['applied'] = 'present';
+  if (c.kind === 'place') {
+    if (existing) {
+      if (existing.data_source_id !== c.dataSourceId.toLowerCase() || existing.channel_id !== (c.channelId ?? null)) {
+        throw new Error(`organization-data-receipts: hold ${c.holdId} in the restored database covers a different source or container than the named placement`);
+      }
+    } else {
+      const [source] = await sql<{ id: string }[]>`
+        SELECT id FROM harness_shared.data_sources WHERE workspace_id = ${c.workspaceId} AND id::text = ${c.dataSourceId.toLowerCase()}`;
+      if (!source) {
+        throw new Error(`organization-data-receipts: hold ${c.holdId} names data source ${c.dataSourceId}, which the restored database does not have`);
+      }
+      await placeLegalHold(sql, c.workspaceId, {
+        id: c.holdId, dataSourceId: c.dataSourceId, channelId: c.channelId, reason: c.reason, placedBy: c.placedBy, placedAt: c.placedAt,
+      });
+      applied = 'reapplied';
+    }
+  } else {
+    if (!existing) {
+      throw new Error(`organization-data-receipts: released hold ${c.holdId} is not in the restored database; name its placement as well`);
+    }
+    if (holdChangeTime(c) < new Date(existing.placed_at).getTime()) {
+      throw new Error(`organization-data-receipts: hold ${c.holdId} release time is before its placement`);
+    }
+    if (!existing.released_at) {
+      const { released } = await releaseLegalHold(sql, c.workspaceId, { id: c.holdId, releasedBy: c.releasedBy, releasedAt: c.releasedAt });
+      if (released !== 1) throw new Error(`organization-data-receipts: hold ${c.holdId} could not be released`);
+      applied = 'reapplied';
+    }
+  }
+  const after = await readRestoredHold(sql, c.workspaceId, c.holdId);
+  return { holdId: c.holdId, workspaceId: c.workspaceId, change: c.kind, applied, active: !!after && after.released_at === null };
+}
+
+/** Non-generated columns of `store` in one database, in table order. */
+async function insertableColumns(sql: Sql, store: string): Promise<string[]> {
+  const [schema, table] = store.split('.');
+  const rows = await sql<{ column_name: string }[]>`
+    SELECT column_name FROM information_schema.columns
+     WHERE table_schema = ${schema!} AND table_name = ${table!} AND is_generated = 'NEVER'
+     ORDER BY ordinal_position`;
+  return rows.map((r) => r.column_name);
+}
+
+async function primaryKeyColumns(sql: Sql, store: string): Promise<string[]> {
+  const rows = await sql<{ attname: string }[]>`
+    SELECT a.attname FROM pg_index i
+      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+     WHERE i.indrelid = ${store}::regclass AND i.indisprimary
+     ORDER BY array_position(i.indkey::int2[], a.attnum)`;
+  return rows.map((r) => r.attname);
+}
+
+/**
+ * Copy the rows one hold keeps from the pre-restore database into the restored one: rows the restore
+ * lost are inserted, rows it rolled back are set back to their pre-restore values. Rows the restored
+ * database has and the source lacks are left as restored (keeping more is not a hold breach). Every
+ * non-generated column both databases have is copied, including the ones the e-discovery export
+ * leaves out: this is a database-to-database copy, not an export. Values travel as JSON text and are
+ * parsed by the restored column types. Returns the number of rows inserted or changed.
+ */
+async function repairHeldContent(target: Sql, source: Sql, hold: HoldTarget): Promise<number> {
+  let changed = 0;
+  for (const store of HOLD_CONTENT_STORES) {
+    const sourceColumns = new Set(await insertableColumns(source, store));
+    const cols = (await insertableColumns(target, store)).filter((c) => sourceColumns.has(c));
+    const pk = await primaryKeyColumns(target, store);
+    if (!pk.length || pk.some((c) => !cols.includes(c))) {
+      throw new Error(`organization-data-receipts: ${store} has no primary key both databases share; held content cannot be repaired`);
+    }
+    const [agg] = await source.unsafe<{ rows: string | null }[]>(
+      `SELECT json_agg(s)::text AS rows FROM ${quoted(store)} s WHERE ${holdCoverageWhere(store)}`,
+      holdCoverageParams(hold),
+    );
+    if (!agg?.rows) continue;
+    const list = cols.map((c) => `"${c}"`).join(', ');
+    const updates = cols.filter((c) => !pk.includes(c));
+    const onConflict = updates.length
+      ? `DO UPDATE SET ${updates.map((c) => `"${c}" = EXCLUDED."${c}"`).join(', ')}
+         WHERE ROW(${cols.map((c) => `t."${c}"`).join(', ')})::text IS DISTINCT FROM ROW(${cols.map((c) => `EXCLUDED."${c}"`).join(', ')})::text`
+      : 'DO NOTHING';
+    const result = await target.unsafe(
+      `INSERT INTO ${quoted(store)} AS t (${list}) OVERRIDING SYSTEM VALUE
+       SELECT ${list} FROM json_populate_recordset(NULL::${quoted(store)}, $1::json)
+       ON CONFLICT (${pk.map((c) => `"${c}"`).join(', ')}) ${onConflict}`,
+      [agg.rows],
+    );
+    changed += result.count;
+  }
+  return changed;
+}
+
+/**
+ * Compare what one hold keeps after the restore with the digest of its pre-restore export. When they
+ * differ and the caller named the pre-restore database, copy the hold's rows back from it first.
+ */
+async function checkHeldContent(sql: Sql, h: PreRestoreHeldContent, source: Sql | undefined): Promise<HeldContentCheck> {
+  const hold = await readRestoredHold(sql, h.workspaceId, h.holdId);
+  if (!hold) {
+    return { holdId: h.holdId, workspaceId: h.workspaceId, expectedDigest: h.digest, restoredDigest: null, matchesExport: false, repairedRows: null };
+  }
+  const target: HoldTarget = { workspace_id: h.workspaceId, data_source_id: hold.data_source_id, channel_id: hold.channel_id };
+  const digest = async () => holdContentDigest(await exportHoldContent(sql, target));
+  let restoredDigest = await digest();
+  let repairedRows: number | null = null;
+  if (restoredDigest !== h.digest && source && !hold.released_at) {
+    const [held] = await source<RestoredHold[]>`
+      SELECT data_source_id::text AS data_source_id, channel_id, placed_at, released_at
+        FROM harness_shared.data_source_legal_holds
+       WHERE workspace_id = ${h.workspaceId} AND id::text = ${h.holdId}`;
+    if (!held || held.released_at || held.data_source_id !== hold.data_source_id || held.channel_id !== hold.channel_id) {
+      throw new Error(`organization-data-receipts: the pre-restore database has no active hold ${h.holdId} covering the same source and container; held content cannot be repaired from it`);
+    }
+    repairedRows = await repairHeldContent(sql, source, target);
+    restoredDigest = await digest();
+  }
+  return { holdId: h.holdId, workspaceId: h.workspaceId, expectedDigest: h.digest, restoredDigest, matchesExport: restoredDigest === h.digest, repairedRows };
+}
+
+/**
+ * After restoring a pilot database: re-apply the legal-hold changes and the revocations made after
+ * the backup point, verify each revoked identity can read no organization document, compare the
+ * held content the caller exported before the restore, and record a restore receipt naming the
+ * active holds and what each keeps. Throws (and writes nothing) when a revoked identity can still
+ * read a document or a named change cannot be applied. A held-content mismatch does not throw: with a
+ * `preRestoreSource` the hold's rows are first copied back from that database, and what remains is
+ * recorded in the receipt (see the module comment). A source without the same active hold throws.
  */
 export async function reconcileRestoredAccess(
   sql: Sql,
@@ -754,17 +1048,47 @@ export async function reconcileRestoredAccess(
     actor: ReceiptActor;
     purpose: string;
     revocations: readonly PostBackupRevocation[];
+    holdChanges?: readonly PostBackupHoldChange[];
+    heldContent?: readonly PreRestoreHeldContent[];
+    /**
+     * The database the restore replaces. restore-pg-dump.sh loads into a new database, so this one
+     * still has every held row. Used only to repair mismatched held content; never written.
+     */
+    preRestoreSource?: Sql;
   },
-): Promise<{ receiptId: string; stores: readonly StoreReceipt[]; revocations: readonly RevocationCheck[] }> {
+): Promise<{
+  receiptId: string;
+  stores: readonly StoreReceipt[];
+  revocations: readonly RevocationCheck[];
+  holdChanges: readonly HoldChangeCheck[];
+  heldContent: readonly HeldContentCheck[];
+  holdConflicts: readonly HoldConflict[];
+}> {
   const scope = validateScope(input.scope);
   authorizeDataOperation('restore', scope.organizationId, input.actor);
-  for (const r of input.revocations) {
-    if (!scope.workspaceIds.includes(r.workspaceId)) {
-      throw new Error(`organization-data-receipts: revocation workspace ${r.workspaceId} is outside the scope`);
+  const inScope = (workspaceId: string, what: string) => {
+    if (!scope.workspaceIds.includes(workspaceId)) {
+      throw new Error(`organization-data-receipts: ${what} workspace ${workspaceId} is outside the scope`);
     }
+  };
+  for (const r of input.revocations) inScope(r.workspaceId, 'revocation');
+  for (const c of input.holdChanges ?? []) {
+    inScope(c.workspaceId, 'hold change');
+    nonEmpty(c.holdId, 'holdId');
+    holdChangeTime(c);
   }
+  for (const h of input.heldContent ?? []) {
+    inScope(h.workspaceId, 'held content');
+    nonEmpty(h.holdId, 'holdId');
+    if (!SHA256_HEX.test(h.digest)) throw new Error(`organization-data-receipts: held content digest for hold ${h.holdId} is not a sha256 hex digest`);
+  }
+  // Re-apply in the order the changes happened, so a hold placed and released after the backup
+  // point ends released.
+  const holdChanges = [...(input.holdChanges ?? [])].sort((a, b) => holdChangeTime(a) - holdChangeTime(b));
   return sql.begin(async (tx) => {
     const t = tx as unknown as Sql;
+    const holdChecks: HoldChangeCheck[] = [];
+    for (const c of holdChanges) holdChecks.push(await reapplyHoldChange(t, c));
     const checks: RevocationCheck[] = [];
     for (const r of input.revocations) {
       const { revoked } = await revokeProviderIdentityMapping(t, r.workspaceId, {
@@ -788,14 +1112,21 @@ export async function reconcileRestoredAccess(
         outcome: 'verified', rowCount: await countRows(t, treatment.store, scope.workspaceIds), rowsRemaining: null,
         exportedColumns: null, excludedColumns: treatment.excludedColumns, reason: null });
     }
+    const heldContent: HeldContentCheck[] = [];
+    for (const h of input.heldContent ?? []) heldContent.push(await checkHeldContent(t, h, input.preRestoreSource));
+    const conflicts = await holdConflicts(t, scope.workspaceIds);
     const receiptId = await writeOrganizationDataReceipt({
       operation: 'restore', scope, purpose: input.purpose, stores, revocations: checks,
+      holdChanges: holdChecks, heldContent, holdConflicts: conflicts,
       limitations: [
         ...BASE_LIMITATIONS,
         'Only the revocations the caller names are re-applied; deletions made after the backup point are not replayed.',
+        'A restore replaces the database files, so the legal-hold triggers do not run during it: held rows written or changed after the backup point can be lost or rolled back. Rows under a hold that is active after reconciliation are protected by the hold triggers again.',
+        'Only the hold placements and releases the caller names are re-applied, with their original ids and times; they are not read from the restored audit table, which can predate them.',
+        'Held content is compared only for the holds whose pre-restore export digest the caller names. A mismatch means the content differs from that export (a row lost, rolled back or changed since). It is repaired only when the caller names the pre-restore database: rows are copied back from it (repairedRows), and rows that database no longer has are left as restored. Without it, a mismatch is recorded, not repaired, and the export is the copy of record.',
       ],
       schemaVersion: await readSchemaVersion(t),
     }, input.actor, t);
-    return { receiptId, stores, revocations: checks };
+    return { receiptId, stores, revocations: checks, holdChanges: holdChecks, heldContent, holdConflicts: conflicts };
   });
 }

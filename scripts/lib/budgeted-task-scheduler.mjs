@@ -334,37 +334,52 @@ async function readOriginalCommandPreparation(readPinned, pins) {
     const obligation = originals[0];
     // Add another maintained native format only when its raw execution and
     // diagnostics have an independently measured contract. Unknown formats fail.
-    require(obligation.kind === "command-check" && obligation.check === "desktop-selftest-aggregate",
+    const desktop = obligation.kind === "command-check" && obligation.check === "desktop-selftest-aggregate";
+    const fixture = obligation.kind === "npm-lifecycle" && obligation.script === "pretest" &&
+      obligation.command === "node scripts/build.mjs";
+    require(desktop || fixture,
       "unsupported native command receipt format");
     const tasks = selection.tasks.filter(task => task.id === pin.task);
     require(tasks.length === 1, "exact original task required");
     const task = tasks[0];
     const step = pin.step === null ? task : task.steps?.[pin.step];
-    require(step && step.command === obligation.command, "original ordered command differs");
+    require(step && (fixture ? task.lifecycleCommands?.some(row => row.script === obligation.script &&
+      row.command === obligation.command) : step.command === obligation.command),
+    "original ordered command differs");
     const occurrences = selection.fileOccurrences.filter(row => row.task === pin.task &&
-      (row.step ?? null) === pin.step);
+      (row.step ?? null) === pin.step && row.command === obligation.command);
     const inputs = obligation.inputs;
     require(Array.isArray(inputs) && inputs.length > 0 && inputs.every(row =>
       comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
       new Set(inputs.map(row => row.path)).size === inputs.length &&
-      occurrences.length > 0 && new Set(occurrences.map(row => row.file)).size === occurrences.length &&
+      (fixture ? occurrences.length === 0 : occurrences.length > 0) &&
+      new Set(occurrences.map(row => row.file)).size === occurrences.length &&
       occurrences.every(row => row.kind === "test-file" && row.command === obligation.command &&
         inputs.some(input => input.path === row.file)), "original input occurrences differ");
     const receipt = await readPinned(pin.receipt.ref, pin.receipt.sha256);
-    require(receipt.schemaVersion === 1 && receipt.kind === "original-command-execution" &&
-      receipt.cwd === task.dir && same(receipt.command, ["bash", "bin/lib/run-selftests.sh"]) &&
-      obligation.command === receipt.command.join(" ") && receipt.exitCode === 0 &&
-      Number.isFinite(receipt.childWallMs) && receipt.childWallMs > 0 &&
-      Number.isFinite(Date.parse(receipt.startedAt)) &&
-      Date.parse(receipt.finishedAt) > Date.parse(receipt.startedAt),
+    const execution = fixture ? receipt.execution : receipt;
+    const finishedAt = fixture ? execution?.completedAt : receipt.finishedAt;
+    const childWallMs = fixture ? Date.parse(finishedAt) - Date.parse(execution?.startedAt) : receipt.childWallMs;
+    require((fixture ? receipt.kind === "original-native-command-execution" :
+      receipt.schemaVersion === 1 && receipt.kind === "original-command-execution") &&
+      receipt.cwd === task.dir && same(execution?.command, fixture ? ["node", "scripts/build.mjs"] :
+        ["bash", "bin/lib/run-selftests.sh"]) &&
+      obligation.command === execution.command.join(" ") && execution.exitCode === 0 &&
+      Number.isFinite(childWallMs) && childWallMs > 0 &&
+      Number.isFinite(Date.parse(execution.startedAt)) &&
+      Date.parse(finishedAt) > Date.parse(execution.startedAt),
     "successful original native command identity required");
-    require(Array.isArray(receipt.logs) && receipt.logs.length === 6 &&
+    require(fixture || Array.isArray(receipt.logs) && receipt.logs.length === 6 &&
       new Set(receipt.logs.map(row => row.path)).size === 6, "six original command logs required");
     const logs = {};
     for (const role of ["stdout", "stderr", "beforeStdout", "beforeStderr", "afterStdout", "afterStderr"]) {
       const log = pin.logs?.[role];
-      require(log && receipt.logs.some(row => (row.path.startsWith("~/") ? row.path.slice(2) : row.path) ===
-        log.ref && row.sha256 === log.sha256), "log pin absent from original receipt");
+      const phase = role.startsWith("before") ? receipt.before : role.startsWith("after") ? receipt.after : execution;
+      const stagePath = fixture ? phase?.[role.toLowerCase().endsWith("stdout") ? "stdout" : "stderr"] : null;
+      require(log && (fixture ? typeof stagePath === "string" &&
+        (stagePath.startsWith("~/") ? stagePath.slice(2) : stagePath) === log.ref :
+        receipt.logs.some(row => (row.path.startsWith("~/") ? row.path.slice(2) : row.path) ===
+          log.ref && row.sha256 === log.sha256)), "log pin absent from original receipt");
       logs[role] = await readPinned(log.ref, log.sha256, false);
     }
     require(new Set(Object.values(pin.logs).map(log => log.ref)).size === 6,
@@ -372,9 +387,20 @@ async function readOriginalCommandPreparation(readPinned, pins) {
     const before = marker(logs.beforeStdout, "COMMAND_CHECK_SELECTION=");
     const after = marker(logs.afterStdout, "COMMAND_CHECK_SELECTION=");
     require(logs.beforeStderr.length === 0 && logs.afterStderr.length === 0 &&
-      same(before, after) && same(before, receipt.before) && same(after, receipt.after) &&
-      before.schemaVersion === 1 && before.kind === "command-check-inputs" && before.check === obligation.check &&
+      same(before, after) && (fixture || same(before, receipt.before) && same(after, receipt.after)) &&
+      before.schemaVersion === 1 && before.kind === "command-check-inputs" &&
+      before.check === (fixture ? "fixture-build" : obligation.check) &&
       same(before.inputs, inputs), "unchanged original command census required");
+    if (fixture) {
+      const discoveryCommand = ["node", "scripts/build.mjs", "--print-selection", "--repository-root", sourceRoot];
+      require(same(receipt.before.command, discoveryCommand) && same(receipt.after.command, discoveryCommand) &&
+        receipt.before.exitCode === 0 && receipt.after.exitCode === 0 &&
+        Date.parse(receipt.before.startedAt) <= Date.parse(receipt.before.completedAt) &&
+        Date.parse(receipt.before.completedAt) <= Date.parse(execution.startedAt) &&
+        Date.parse(finishedAt) <= Date.parse(receipt.after.startedAt) &&
+        Date.parse(receipt.after.startedAt) <= Date.parse(receipt.after.completedAt) &&
+        same(before.files, []), "original lifecycle discovery/execution ordering required");
+    }
     for (const input of inputs) {
       const path = await realpath(join(sourceRoot, input.path));
       const within = relative(sourceRoot, path);
@@ -387,7 +413,9 @@ async function readOriginalCommandPreparation(readPinned, pins) {
     }
     const verdicts = [...logs.stdout.toString("utf8").matchAll(/^--- ([^\r\n]+): (PASS|FAIL|SKIP)$/gm)]
       .map(match => ({ script: match[1], verdict: match[2] }));
-    require(Array.isArray(before.listed) && before.listed.length > 0 &&
+    require(fixture ? logs.stdout.toString("utf8").split(/\r?\n/).filter(line =>
+      /^Fixture built: [a-f0-9]{64}$/.test(line)).length === 1 :
+      Array.isArray(before.listed) && before.listed.length > 0 &&
       new Set(before.listed).size === before.listed.length &&
       same(before.files, before.listed.map(script => `${receipt.cwd}/bin/lib/${script}`)) &&
       same(occurrences.map(row => row.file).sort(), before.files.slice().sort()) &&
@@ -395,10 +423,11 @@ async function readOriginalCommandPreparation(readPinned, pins) {
       verdicts.every(row => row.verdict === "PASS") &&
       logs.stdout.toString("utf8").split(/\r?\n/).filter(line =>
         line === `PASS — all ${before.listed.length} papercusp-desktop selftests green`).length === 1,
-    "complete ordered native aggregate PASS verdicts required");
-    qualified.push({ task: pin.task, step: pin.step, kind: obligation.kind, check: obligation.check,
+    "complete original native command result required");
+    qualified.push({ task: pin.task, step: pin.step, kind: obligation.kind,
+      ...(fixture ? { script: obligation.script } : { check: obligation.check }),
       command: obligation.command, inputs, fileOccurrences: occurrences,
-      receipt: pin.receipt, childWallMs: receipt.childWallMs, scriptsExecuted: verdicts.length,
+      receipt: pin.receipt, childWallMs, scriptsExecuted: verdicts.length,
       scriptOrder: verdicts.map(row => row.script) });
   }
   return freezeComparison({ mode: "command-preparation", selection, commands: qualified,

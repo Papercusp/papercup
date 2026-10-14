@@ -15,6 +15,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { createHostedPrincipal } from '../auth/hosted-principal';
 import { createPersonalGrant, purgePersonalSource, upsertPersonalDocuments } from '../personal-vault/store';
 import {
   CHAT_DERIVED_DOCUMENT_KINDS,
@@ -239,6 +240,61 @@ describe('organization data receipts (P-007c)', () => {
     for (const s of meta.stores.filter((x: { executor: string }) => x.executor === 'hosted-control-plane')) {
       expect(['deferred', 'not-attributable']).toContain(s.outcome);
       for (const c of s.excludedColumns) expect(s.exportedColumns ?? []).not.toContain(c);
+    }
+  });
+
+  it('exports hosted accounts without workspaces, including joined records, while isolating tenants and secrets (P-010)', async () => {
+    const targetOrg = randomUUID();
+    const otherOrg = randomUUID();
+    const targetUser = randomUUID();
+    const otherUser = randomUUID();
+    for (const [organizationId, userId, label] of [[targetOrg, targetUser, 'target'], [otherOrg, otherUser, 'other']] as const) {
+      await org.adminSql`INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name)
+        VALUES (${organizationId}::uuid, ${`p010-${organizationId}`}, ${label})`;
+      await org.adminSql`INSERT INTO papercusp_auth.hosted_users (id, primary_email)
+        VALUES (${userId}::uuid, ${`${label}@example.test`})`;
+      await org.adminSql`INSERT INTO papercusp_auth.organization_memberships (organization_id, user_id, role, created_via)
+        VALUES (${organizationId}::uuid, ${userId}::uuid, 'owner', 'organization_bootstrap')`;
+      await org.adminSql`INSERT INTO papercusp_auth.hosted_sessions
+        (id, user_id, organization_id, upstream_provider, upstream_session_id, expires_at)
+        VALUES (${`never-emit-me-${label}`}, ${userId}, ${organizationId}, 'workos',
+          ${`never-emit-me-upstream-${label}`}, now() + interval '1 hour')`;
+      await org.adminSql`INSERT INTO papercusp_auth.workos_sealed_sessions (external_session_id, sealed_session, expires_at)
+        VALUES (${`never-emit-me-upstream-${label}`}, ${`never-emit-me-sealed-${label}`}, now() + interval '1 hour')`;
+    }
+    const principal = createHostedPrincipal({ workspaceId: 'control', userId: targetUser, activeOrganizationId: targetOrg,
+      sessionId: 'test', sessionVersion: 1, permissions: ['members:manage'] });
+    const out = await exportOrganizationData(org.adminSql, { executor: 'hosted-control-plane',
+      scope: { organizationId: targetOrg, workspaceIds: [] }, actor: { kind: 'customer_user', principal }, purpose: 'customer export' });
+    const rows = (store: string) => out.stores.find((s) => s.store === store)!.rows;
+    expect(rows('papercusp_auth.organizations').map((r) => r.id)).toEqual([targetOrg]);
+    expect(rows('papercusp_auth.hosted_users').map((r) => r.primary_email)).toEqual(['target@example.test']);
+    expect(rows('papercusp_auth.organization_memberships').map((r) => r.user_id)).toEqual([targetUser]);
+    expect(rows('papercusp_auth.hosted_sessions')).toHaveLength(1);
+    expect(rows('papercusp_auth.workos_sealed_sessions')).toHaveLength(1);
+    expect(JSON.stringify(out)).not.toContain('never-emit-me');
+    expect(JSON.stringify(out)).not.toContain(otherOrg);
+    expect(JSON.stringify(out)).not.toContain(otherUser);
+    const receipt = await receiptRow(out.receiptId);
+    expect(receipt).toMatchObject({ actor_kind: 'customer_user', organization_id: targetOrg });
+    expect(receipt.metadata.workspaceIds).toEqual([]);
+    expect(receipt.metadata.executor).toBe('hosted-control-plane');
+    expect(receipt.metadata.populationSize).toBe(planOrganizationDataOperation().length);
+    expect(receipt.metadata.stores.find((s: { store: string }) => s.store === 'papercusp_auth.workos_sealed_sessions'))
+      .toMatchObject({ outcome: 'exported', rowCount: 1 });
+  });
+
+  it('refuses a new unmapped hosted column and rolls the export receipt back (P-010)', async () => {
+    await org.adminSql.unsafe('ALTER TABLE papercusp_auth.hosted_users ADD COLUMN p010_unmapped text');
+    try {
+      await expect(exportOrganizationData(org.adminSql, { executor: 'hosted-control-plane',
+        scope: { organizationId: scope.organizationId, workspaceIds: [] }, actor, purpose: 'schema drift test' }))
+        .rejects.toThrow('unmapped live schema');
+      const rows = await org.adminSql`SELECT id FROM papercusp_auth.organization_audit_events
+        WHERE organization_id = ${scope.organizationId}::uuid AND action = 'organization.data.export'`;
+      expect(rows).toHaveLength(0);
+    } finally {
+      await org.adminSql.unsafe('ALTER TABLE papercusp_auth.hosted_users DROP COLUMN p010_unmapped');
     }
   });
 

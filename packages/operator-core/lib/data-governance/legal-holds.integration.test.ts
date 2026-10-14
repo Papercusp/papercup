@@ -11,8 +11,14 @@
  *  - the listing reports, per hold, the rows it keeps (the deletion receipt's holdConflicts rule);
  *  - a container given in its permission-list form `<sourceId>#<container>` is stored bare, so chat
  *    and document enforcement both match it.
+ *
+ * P-017d (WI-6554700010012584): e-discovery export of exactly what one hold keeps, and restore under a
+ * hold. A restore replaces the database files, which these tests simulate by writing rows with
+ * session_replication_role = replica (no row triggers run, as in a file-level restore) or by removing
+ * the hold row the snapshot predates.
  */
 import { randomUUID } from 'node:crypto';
+import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createHostedPrincipal } from '../auth/hosted-principal';
@@ -26,7 +32,13 @@ import {
   placeOrganizationLegalHold,
   releaseOrganizationLegalHold,
 } from './legal-holds';
-import type { OrganizationDataScope, ReceiptActor } from './organization-data-receipts';
+import {
+  reconcileRestoredAccess,
+  type OrganizationDataScope,
+  type PostBackupHoldChange,
+  type PreRestoreHeldContent,
+  type ReceiptActor,
+} from './organization-data-receipts';
 
 let org: OrgTestDb;
 const WS = 'legal-holds-test';
@@ -278,5 +290,232 @@ describe('legal-hold administration (P-017b)', () => {
     await expect(exportLegalHoldContent(org.adminSql, { scope, actor: admin, holdId: hold.holdId, purpose: 'x' }))
       .rejects.toMatchObject({ code: 'already_released' });
     expect((await auditRows()).filter((r) => r.action === LEGAL_HOLD_ACTIONS.export)).toHaveLength(0);
+  });
+});
+
+describe('restore under a legal hold (P-017d)', () => {
+  const restore = (extra: { holdChanges?: PostBackupHoldChange[]; heldContent?: PreRestoreHeldContent[]; actor?: ReceiptActor }) =>
+    reconcileRestoredAccess(org.adminSql, {
+      scope, actor: extra.actor ?? admin, purpose: 'restore drill', revocations: [],
+      holdChanges: extra.holdChanges, heldContent: extra.heldContent,
+    });
+  const restoreReceipts = async () => (await auditRows()).filter((r) => r.action === 'organization.data.restore');
+  const holdRow = async (id: string) => (await org.adminSql<Array<{ placed_at: Date; reason: string; placed_by: string;
+    released_at: Date | null; released_by: string | null }>>`
+    SELECT placed_at, reason, placed_by, released_at, released_by FROM harness_shared.data_source_legal_holds
+     WHERE workspace_id = ${WS} AND id = ${id}::uuid`)[0];
+  const dropHoldRow = (id: string) =>
+    org.adminSql`DELETE FROM harness_shared.data_source_legal_holds WHERE workspace_id = ${WS} AND id = ${id}::uuid`;
+  const iso = (d: Date | null | undefined) => (d ? new Date(d).toISOString() : null);
+
+  it('a hold active in the restored database protects its rows at once, and the receipt shows its content matches the pre-restore export', async () => {
+    const { hold } = await placeOrganizationLegalHold(org.adminSql, {
+      scope, actor: admin, workspaceId: WS, dataSourceId: slackId, channelId: CH, reason: 'matter 31',
+    });
+    const before = await exportLegalHoldContent(org.adminSql, { scope, actor: admin, holdId: hold.holdId, purpose: 'pre-restore 31' });
+
+    const out = await restore({ heldContent: [{ holdId: hold.holdId, workspaceId: WS, digest: before.digest }] });
+    expect(out.heldContent).toEqual([{ holdId: hold.holdId, workspaceId: WS, expectedDigest: before.digest,
+      restoredDigest: before.digest, matchesExport: true, repairedRows: null }]);
+    expect(out.holdChanges).toEqual([]);
+    expect(out.holdConflicts.find((c) => c.holdId === hold.holdId)!.retained)
+      .toEqual(expect.arrayContaining([{ store: 'harness_shared.chat_messages', rows: 2 }]));
+    await expect(org.adminSql`DELETE FROM harness_shared.chat_messages WHERE workspace_id = ${WS} AND channel_id = ${CH}`)
+      .rejects.toThrow(/chat_message_under_legal_hold/);
+
+    const receipts = await restoreReceipts();
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.metadata.heldContent).toEqual([{ holdId: hold.holdId, workspaceId: WS, expectedDigest: before.digest,
+      restoredDigest: before.digest, matchesExport: true, repairedRows: null }]);
+    expect(receipts[0]!.metadata.holdConflicts.map((h: { holdId: string }) => h.holdId)).toContain(hold.holdId);
+    expect(receipts[0]!.metadata.limitations.join(' ')).toMatch(/legal-hold triggers do not run during it/);
+  });
+
+  it('a hold placed after the backup point is re-applied with its original id and time, and protects its rows again', async () => {
+    const { hold } = await placeOrganizationLegalHold(org.adminSql, {
+      scope, actor: admin, workspaceId: WS, dataSourceId: ghId, channelId: 'acme/held', reason: 'matter 32',
+    });
+    // The snapshot predates the placement: the restored database has no hold row.
+    await dropHoldRow(hold.holdId);
+    expect(await holdRow(hold.holdId)).toBeUndefined();
+    const change: PostBackupHoldChange = {
+      kind: 'place', holdId: hold.holdId, workspaceId: WS, dataSourceId: ghId, channelId: 'acme/held',
+      reason: 'matter 32', placedBy: hold.placedBy, placedAt: hold.placedAt,
+    };
+
+    const out = await restore({ holdChanges: [change] });
+    expect(out.holdChanges).toEqual([{ holdId: hold.holdId, workspaceId: WS, change: 'place', applied: 'reapplied', active: true }]);
+    const row = await holdRow(hold.holdId);
+    expect(iso(row!.placed_at)).toBe(hold.placedAt);
+    expect(row).toMatchObject({ reason: 'matter 32', placed_by: 'admin:tester', released_at: null });
+    await expect(org.adminSql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS} AND dedupe_key = 'acme/held#1'`)
+      .rejects.toThrow(/document_under_legal_hold/);
+    expect((await restoreReceipts())[0]!.metadata.holdChanges)
+      .toEqual([{ holdId: hold.holdId, workspaceId: WS, change: 'place', applied: 'reapplied', active: true }]);
+
+    // Reconciling again finds the hold present and changes nothing.
+    const again = await restore({ holdChanges: [change] });
+    expect(again.holdChanges).toEqual([{ holdId: hold.holdId, workspaceId: WS, change: 'place', applied: 'present', active: true }]);
+    expect((await holdRows()).filter((h) => h.id === hold.holdId)).toHaveLength(1);
+  });
+
+  it('a release made after the backup point is re-applied, and changes apply in the order they happened', async () => {
+    const { hold } = await placeOrganizationLegalHold(org.adminSql, {
+      scope, actor: admin, workspaceId: WS, dataSourceId: slackId, channelId: CH, reason: 'matter 33',
+    });
+    const releasedAt = new Date(Date.parse(hold.placedAt) + 60_000).toISOString();
+    // The restored database still has the hold active; the caller names its release from the SIEM export.
+    const out = await restore({ holdChanges: [{ kind: 'release', holdId: hold.holdId, workspaceId: WS, releasedBy: 'admin:releaser', releasedAt }] });
+    expect(out.holdChanges).toEqual([{ holdId: hold.holdId, workspaceId: WS, change: 'release', applied: 'reapplied', active: false }]);
+    const row = await holdRow(hold.holdId);
+    expect(iso(row!.released_at)).toBe(releasedAt);
+    expect(row!.released_by).toBe('admin:releaser');
+    // Released: the channel's messages are no longer protected.
+    await org.adminSql`DELETE FROM harness_shared.chat_messages WHERE workspace_id = ${WS} AND channel_id = ${CH}`;
+
+    // Placed and released after the backup point, named release-first: it still ends released.
+    const { hold: whole } = await placeOrganizationLegalHold(org.adminSql, {
+      scope, actor: admin, workspaceId: WS, dataSourceId: ghId, reason: 'matter 34',
+    });
+    await dropHoldRow(whole.holdId);
+    const both = await restore({ holdChanges: [
+      { kind: 'release', holdId: whole.holdId, workspaceId: WS, releasedBy: 'admin:tester',
+        releasedAt: new Date(Date.parse(whole.placedAt) + 60_000).toISOString() },
+      { kind: 'place', holdId: whole.holdId, workspaceId: WS, dataSourceId: ghId, channelId: null, reason: 'matter 34',
+        placedBy: whole.placedBy, placedAt: whole.placedAt },
+    ] });
+    expect(both.holdChanges.map((c) => [c.change, c.applied, c.active])).toEqual([['place', 'reapplied', true], ['release', 'reapplied', false]]);
+    expect((await holdRow(whole.holdId))!.released_by).toBe('admin:tester');
+  });
+
+  it('refuses an unauthorized actor, a change outside the scope, a source or hold the restored database lacks, and writes nothing', async () => {
+    const { hold } = await placeOrganizationLegalHold(org.adminSql, {
+      scope, actor: admin, workspaceId: WS, dataSourceId: slackId, channelId: CH, reason: 'matter 36',
+    });
+    const holdsBefore = await holdRows();
+    const auditBefore = (await auditRows()).length;
+    const now = new Date().toISOString();
+    const freshPlace = (over: Partial<Extract<PostBackupHoldChange, { kind: 'place' }>>): PostBackupHoldChange => ({
+      kind: 'place', holdId: randomUUID(), workspaceId: WS, dataSourceId: slackId, channelId: 'T1:COPEN', reason: 'matter 37',
+      placedBy: 'admin:tester', placedAt: now, ...over,
+    });
+
+    await expect(restore({ actor: member(['members:manage'], scope.organizationId), holdChanges: [freshPlace({})] }))
+      .rejects.toThrow(/restore requires workspace:destroy/);
+    await expect(restore({ holdChanges: [freshPlace({ workspaceId: OTHER_WS })] })).rejects.toThrow(/outside the scope/);
+    await expect(restore({ holdChanges: [freshPlace({ dataSourceId: randomUUID() })] })).rejects.toThrow(/restored database does not have/);
+    await expect(restore({ holdChanges: [freshPlace({ holdId: hold.holdId, channelId: 'T1:COTHER' })] }))
+      .rejects.toThrow(/different source or container/);
+    await expect(restore({ holdChanges: [{ kind: 'release', holdId: randomUUID(), workspaceId: WS, releasedBy: 'admin:tester', releasedAt: now }] }))
+      .rejects.toThrow(/not in the restored database/);
+    await expect(restore({ heldContent: [{ holdId: hold.holdId, workspaceId: WS, digest: 'not-a-digest' }] })).rejects.toThrow(/sha256/);
+    // One good change and one bad one in the same call: the good one is rolled back with it.
+    await expect(restore({ holdChanges: [
+      freshPlace({}),
+      { kind: 'release', holdId: randomUUID(), workspaceId: WS, releasedBy: 'admin:tester', releasedAt: now },
+    ] })).rejects.toThrow(/not in the restored database/);
+
+    expect(await holdRows()).toEqual(holdsBefore);
+    expect((await auditRows()).length).toBe(auditBefore);
+  });
+
+  it('records, without repairing, held content the restore rolled back, and a hold the restored database lacks', async () => {
+    const { hold } = await placeOrganizationLegalHold(org.adminSql, {
+      scope, actor: admin, workspaceId: WS, dataSourceId: slackId, channelId: CH, reason: 'matter 38',
+    });
+    const before = await exportLegalHoldContent(org.adminSql, { scope, actor: admin, holdId: hold.holdId, purpose: 'pre-restore 38' });
+    const { hold: docHold } = await placeOrganizationLegalHold(org.adminSql, {
+      scope, actor: admin, workspaceId: WS, dataSourceId: ghId, channelId: 'acme/held', reason: 'matter 39',
+    });
+    const docBefore = await exportLegalHoldContent(org.adminSql, { scope, actor: admin, holdId: docHold.holdId, purpose: 'pre-restore 39' });
+
+    // The snapshot holds an earlier version of message 1.2. A file-level restore runs no row
+    // triggers, so the held row is overwritten; replica mode reproduces that.
+    await org.adminSql.begin(async (tx) => {
+      await tx`SET LOCAL session_replication_role = replica`;
+      await tx`UPDATE harness_shared.chat_messages SET body = 'backup-point version'
+                WHERE workspace_id = ${WS} AND channel_id = ${CH} AND provider_message_id = '1.2'`;
+    });
+    // And the snapshot predates the document hold.
+    await dropHoldRow(docHold.holdId);
+
+    const out = await restore({ heldContent: [
+      { holdId: hold.holdId, workspaceId: WS, digest: before.digest },
+      { holdId: docHold.holdId, workspaceId: WS, digest: docBefore.digest },
+    ] });
+    const chat = out.heldContent.find((h) => h.holdId === hold.holdId)!;
+    expect(chat.matchesExport).toBe(false);
+    expect(chat.restoredDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(chat.restoredDigest).not.toBe(before.digest);
+    expect(out.heldContent.find((h) => h.holdId === docHold.holdId)).toEqual({ holdId: docHold.holdId, workspaceId: WS,
+      expectedDigest: docBefore.digest, restoredDigest: null, matchesExport: false, repairedRows: null });
+    // Recorded, not repaired: the receipt is written and the rolled-back body stays as restored.
+    expect((await restoreReceipts())[0]!.metadata.heldContent.map((h: { matchesExport: boolean }) => h.matchesExport)).toEqual([false, false]);
+    const [{ body }] = await org.adminSql<{ body: string }[]>`
+      SELECT body FROM harness_shared.chat_messages WHERE workspace_id = ${WS} AND provider_message_id = '1.2'`;
+    expect(body).toBe('backup-point version');
+    // The hold still protects what the restore left.
+    await expect(org.adminSql`DELETE FROM harness_shared.chat_messages WHERE workspace_id = ${WS} AND provider_message_id = '1.1'`)
+      .rejects.toThrow(/chat_message_under_legal_hold/);
+  });
+
+  it('repairs held content from the pre-restore database: a lost row is re-inserted and a rolled-back row reset (EI-25980833213582300)', async () => {
+    const { hold } = await placeOrganizationLegalHold(org.adminSql, {
+      scope, actor: admin, workspaceId: WS, dataSourceId: slackId, channelId: CH, reason: 'matter 40',
+    });
+    // After the backup point, while held: message 1.1 is edited (allowed under a hold) and 1.3 arrives.
+    await upsertChatMessages(org.adminSql, WS, slackId, [{ ...msg(CH, '1.1'), body: 'edited after backup' }, msg(CH, '1.3')]);
+    const before = await exportLegalHoldContent(org.adminSql, { scope, actor: admin, holdId: hold.holdId, purpose: 'pre-restore 40' });
+
+    // The database the restore replaces: restore-pg-dump.sh loads into a NEW database, so this copy
+    // keeps the held rows. A template copy is a file-level image of it.
+    const server = postgres(Object.assign(new URL(org.adminDsn), { pathname: '/postgres' }).toString(), { max: 1, onnotice: () => {} });
+    const preDb = `${org.dbName}_pre`;
+    let pre: postgres.Sql | undefined;
+    try {
+      await server`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${org.dbName} AND pid <> pg_backend_pid()`;
+      await server.unsafe(`CREATE DATABASE "${preDb}" TEMPLATE "${org.dbName}"`);
+      pre = postgres(Object.assign(new URL(org.adminDsn), { pathname: `/${preDb}` }).toString(), { max: 1, onnotice: () => {} });
+
+      // The restored database is at the backup point. The restore runs no row triggers (replica mode
+      // reproduces that): 1.1 has its backup-point body and 1.3 is gone.
+      await org.adminSql.begin(async (tx) => {
+        await tx`SET LOCAL session_replication_role = replica`;
+        await tx`UPDATE harness_shared.chat_messages SET body = 'message 1.1'
+                  WHERE workspace_id = ${WS} AND channel_id = ${CH} AND provider_message_id = '1.1'`;
+        await tx`DELETE FROM harness_shared.chat_messages WHERE workspace_id = ${WS} AND channel_id = ${CH} AND provider_message_id = '1.3'`;
+      });
+      const heldContent = [{ holdId: hold.holdId, workspaceId: WS, digest: before.digest }];
+      const reconcile = () => reconcileRestoredAccess(org.adminSql, {
+        scope, actor: admin, purpose: 'restore drill 40', revocations: [], heldContent, preRestoreSource: pre,
+      });
+      const bodies = async () => Object.fromEntries((await org.adminSql<{ id: string; body: string }[]>`
+        SELECT provider_message_id AS id, body FROM harness_shared.chat_messages WHERE workspace_id = ${WS} AND channel_id = ${CH}`)
+        .map((r) => [r.id, r.body]));
+
+      // A source that no longer holds that content as an active hold is refused, and nothing is written.
+      await pre`UPDATE harness_shared.data_source_legal_holds SET released_at = now(), released_by = 'tester' WHERE id = ${hold.holdId}::uuid`;
+      await expect(reconcile()).rejects.toThrow(/no active hold/);
+      expect(await restoreReceipts()).toHaveLength(0);
+      expect(await bodies()).toEqual({ '1.1': 'message 1.1', '1.2': 'message 1.2' });
+      await pre`UPDATE harness_shared.data_source_legal_holds SET released_at = NULL, released_by = NULL WHERE id = ${hold.holdId}::uuid`;
+
+      const repaired = await reconcile();
+      expect(repaired.heldContent).toEqual([{ holdId: hold.holdId, workspaceId: WS, expectedDigest: before.digest,
+        restoredDigest: before.digest, matchesExport: true, repairedRows: 2 }]);
+      expect(await bodies()).toEqual({ '1.1': 'edited after backup', '1.2': 'message 1.2', '1.3': 'message 1.3' });
+      expect((await restoreReceipts())[0]!.metadata.heldContent).toEqual([{ holdId: hold.holdId, workspaceId: WS,
+        expectedDigest: before.digest, restoredDigest: before.digest, matchesExport: true, repairedRows: 2 }]);
+      // The re-inserted row is held again at once.
+      await expect(org.adminSql`DELETE FROM harness_shared.chat_messages WHERE workspace_id = ${WS} AND provider_message_id = '1.3'`)
+        .rejects.toThrow(/chat_message_under_legal_hold/);
+      // Content that already matches is not copied again.
+      const again = await reconcile();
+      expect(again.heldContent[0]).toMatchObject({ matchesExport: true, repairedRows: null });
+    } finally {
+      await pre?.end({ timeout: 5 });
+      await server.unsafe(`DROP DATABASE IF EXISTS "${preDb}" WITH (FORCE)`);
+      await server.end({ timeout: 5 });
+    }
   });
 });

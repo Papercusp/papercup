@@ -79,7 +79,7 @@ export interface BudgetedTaskCommandPreparationPins {
 export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
   pins: BudgetedTaskCommandPreparationPins): Promise<{ mode: "command-preparation";
     selection: unknown; commands: Array<{ task: string; step: number | null;
-      kind: "command-check"; check: string; command: string;
+      kind: "command-check" | "npm-lifecycle"; check?: string; script?: string; command: string;
       inputs: Array<{ path: string; sha256: string }>; fileOccurrences: unknown[];
       receipt: { ref: string; sha256: string }; childWallMs: number; scriptsExecuted: number;
       scriptOrder: string[] }>;

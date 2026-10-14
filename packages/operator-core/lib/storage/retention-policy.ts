@@ -52,9 +52,9 @@ export type KeepRule =
 
 export type Enforcer =
   /** an existing scheduled deleter owns the class. `ref` is repo-qualified. */
-  | { kind: 'existing'; ref: string; schedule: string }
+  | { kind: 'existing'; ref: string; schedule: string; sourceSha256?: string }
   /** the standing reclaim (P-004) runs it on its schedule, optionally by calling `via`. */
-  | { kind: 'standing-reclaim'; via?: string }
+  | { kind: 'standing-reclaim'; via?: string; sourceSha256?: string }
   /** a program outside this repo (apt, snapd, journald, the tool itself). */
   | { kind: 'external'; manager: string }
   /** nothing deletes it (keep / review classes). */
@@ -231,11 +231,12 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
   // ── Agent classes with an existing scheduled enforcer ────────────────────
   {
     id: 'tmp-scratch',
-    title: 'Shared /tmp scratch',
+    title: 'Shared agent scratch (/tmp and its data-disk alias)',
     origin: 'agent',
-    roots: ['/tmp'],
+    roots: ['/mnt/data/tmp', '/tmp'],
     keep: { kind: 'max-age', maxAgeHours: 4 },
-    enforcers: [{ kind: 'existing', ref: 'papercusp/scripts/reclaim-tmp-scratch-residue.sh', schedule: 'papercup-tmp-scratch-reclaim.timer, every 30 min' }],
+    enforcers: [{ kind: 'standing-reclaim' }],
+    note: 'One age/lease/holder-aware executor for both bind-mount aliases; the legacy name-only shell actor is retired.',
   },
   {
     id: 'container-storage',
@@ -244,7 +245,7 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
     roots: ['/var/lib/docker', '/var/lib/containers'],
     stores: ['docker:'],
     keep: { kind: 'native', manager: 'docker/podman', rule: 'build cache 24h, unreferenced images 168h, dangling anonymous volumes 24h' },
-    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17' }],
+    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17', sourceSha256: '9d78516da4748a88f44cc72c92134b32be0a21950c561ddcba862046c855f6ad' }],
     note: 'Leaked Postgres test containers are fixed at the source by P-005 (R-4).',
   },
   {
@@ -335,8 +336,8 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
     roots: ['/mnt/data/cargo-target/.papercusp-target-slots'],
     keep: { kind: 'lease', record: 'a claimant lock, a live reference or a release retention lease', graceHours: 1 },
     enforcers: [
-      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch' },
-      { kind: 'standing-reclaim', via: 'papercusp/papercusp-desktop/bin/reap-private-target-slots.sh' },
+      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: 'c72a58ccc0fce910827b4534b693ddbc4d87ad85bf392ae041ebb2b3bc48e142' },
+      { kind: 'standing-reclaim', via: 'papercusp/papercusp-desktop/bin/reap-private-target-slots.sh', sourceSha256: '45737910e89b2154dfbc6d0cc83ba190a1f53433a79cfde167bef7b69d3a9416' },
     ],
   },
   {
@@ -379,14 +380,6 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
     roots: ['~/.papercusp-workspaces/*'],
     keep: { kind: 'lease', record: 'an entry in the workspace registry', graceHours: 14 * DAY },
     enforcers: [{ kind: 'standing-reclaim', via: 'papercusp/packages/operator-core/lib/workspace-registry.ts readRegistry' }],
-  },
-  {
-    id: 'mnt-tmp',
-    title: 'Agent temp dirs on /mnt/data/tmp',
-    origin: 'agent',
-    roots: ['/mnt/data/tmp'],
-    keep: { kind: 'max-age', maxAgeHours: 7 * DAY },
-    enforcers: [{ kind: 'standing-reclaim' }],
   },
   {
     id: 'offload-work-copies',
@@ -710,6 +703,12 @@ export function validatePolicy(policy: readonly RetentionClass[] = RETENTION_POL
     if (!cls.keep) problems.push(`${cls.id}: no keep rule`);
     if (cls.roots.length === 0 && (cls.stores ?? []).length === 0) problems.push(`${cls.id}: no roots`);
     if (cls.enforcers.length === 0) problems.push(`${cls.id}: no enforcer entry`);
+    for (const enforcer of cls.enforcers) {
+      const ref = enforcer.kind === 'existing' ? enforcer.ref : enforcer.kind === 'standing-reclaim' ? enforcer.via : undefined;
+      if (ref?.split(' ')[0]?.endsWith('.sh') && !('sourceSha256' in enforcer && /^[a-f0-9]{64}$/.test(enforcer.sourceSha256 ?? ''))) {
+        problems.push(`${cls.id}: script enforcer ${ref} has no reviewed source pin`);
+      }
+    }
     const deletable = isDeletableRule(cls.keep);
     if (cls.origin === 'owner' && cls.keep.kind !== 'keep') problems.push(`${cls.id}: owner data must be keep (D-002)`);
     if (deletable) {

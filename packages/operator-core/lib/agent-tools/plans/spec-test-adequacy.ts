@@ -2918,9 +2918,10 @@ export function evaluateSpecTestAdequacy(input: {
 
   let layerRating: CorrectLayerEvidencePart;
   if (clause.requiredTestLayers.length === 0) {
-    layerRating = plainCorrectLayerPart(
+    layerRating = boundCorrectLayerPart(
       'not-applicable',
-      `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseDeclarationProbe(clause, input.harness)}`,
+      `The clause ${clauseIdentity(clause)} declares no required test layer; layer reachability is not evaluated. ${clauseDeclarationProbe(clause, input.harness)}`,
+      evidence.filter((row) => row.evidenceKind !== 'mutation'),
     );
   } else {
     const legacyOperationalRequired = clause.requiredTestLayers.find((layer) =>

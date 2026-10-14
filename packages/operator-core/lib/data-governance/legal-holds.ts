@@ -21,8 +21,13 @@
  *
  * Releasing records nothing in the hold table beyond `released_at` / `released_by`; the release
  * reason lives in the audit event, together with what the hold was keeping when it was released.
+ *
+ * E-discovery (P-017d): `exportLegalHoldContent` exports exactly what one active hold keeps, with the
+ * organization export's column shaping and a digest. Take that export before restoring a database:
+ * restore reconciliation (organization-data-receipts `reconcileRestoredAccess`) compares the held
+ * content the restore left with that digest, and re-applies hold placements and releases made after
+ * the backup point.
  */
-import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { appendOrganizationAuditEvent, type GovernanceJson } from '../auth/hosted/governance';
 import { placeLegalHold, releaseLegalHold } from '../data-sources/chat-retrieval-units';
@@ -30,6 +35,7 @@ import {
   authorizeDataOperation,
   exportHoldContent,
   holdConflicts,
+  holdContentDigest,
   validateScope,
   type HoldConflict,
   type HoldContentExport,
@@ -287,9 +293,7 @@ export async function exportLegalHoldContent(
     if (!held) throw new LegalHoldError('not_found', `hold ${holdId} not found in organization ${scope.organizationId}'s scope`);
     if (held.released_at) throw new LegalHoldError('already_released', `hold ${holdId} was released; it keeps nothing to export`);
     const stores = await exportHoldContent(t, held);
-    const digest = createHash('sha256')
-      .update(JSON.stringify(stores.map((s) => [s.store, s.columns, s.rows])))
-      .digest('hex');
+    const digest = holdContentDigest(stores);
     const retained = await retainedFor(t, held.workspace_id, held.id);
     const auditEventId = await appendOrganizationAuditEvent({
       // Workspace in metadata only: the event's workspace_id column holds hosted (uuid) workspace ids.

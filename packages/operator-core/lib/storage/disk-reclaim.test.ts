@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { compilePolicy, type RetentionClass } from './retention-policy';
-import { nativeRetentionCommand, scanRetentionHolders, selectRetentionEntries, type RetentionEntry } from './disk-reclaim';
+import { nativeRetentionCommand, physicalRetentionRoots, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type RetentionEntry } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -18,6 +18,27 @@ const policy: RetentionClass[] = [
 ];
 const compiled = compilePolicy(policy, '/home/test');
 const entry = (path: string, classId: string, ageHours: number): RetentionEntry => ({ path, root: path.slice(0, path.lastIndexOf('/')), classId, newestWriteMs: now - ageHours * HOUR, bytes: 100, dev: 1, ino: 1 });
+
+describe('physical retention ownership', () => {
+  const inspect = async () => ({ dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false });
+  it('runs one enforcer for bind aliases, and refuses conflicting policies on the same bytes', async () => {
+    const roots = [{ path: '/mnt/data/tmp', classId: 'tmp' }, { path: '/tmp', classId: 'tmp' }];
+    const errors: string[] = [];
+    expect(await physicalRetentionRoots(roots, errors, inspect)).toEqual([
+      { path: '/mnt/data/tmp', classId: 'tmp', aliases: ['/mnt/data/tmp', '/tmp'] },
+    ]);
+    expect(errors).toEqual([]);
+    expect(await physicalRetentionRoots([roots[0]!, { path: '/tmp', classId: 'other-policy' }], errors, inspect)).toEqual([]);
+    expect(errors).toEqual([expect.stringContaining('conflicting physical retention classes')]);
+  });
+  it('protects a descriptor or cwd opened through either alias, with incomplete evidence preserved', async () => {
+    const scan = vi.fn(async () => ({ complete: false, byPath: new Map([['/tmp/arbitrary/task', ['42']]]) }));
+    const result = await scanRetentionRootHolders({ path: '/mnt/data/tmp', aliases: ['/mnt/data/tmp', '/tmp'] }, ['/mnt/data/tmp/arbitrary/task'], scan);
+    expect(scan).toHaveBeenCalledWith(['/mnt/data/tmp/arbitrary/task', '/tmp/arbitrary/task']);
+    expect(result.complete).toBe(false);
+    expect(result.byPath.get('/mnt/data/tmp/arbitrary/task')).toEqual(['42']);
+  });
+});
 
 describe('scheduled retention selection', () => {
   it('expires only stale entries, oldest first, without a disk-pressure input', () => {

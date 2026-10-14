@@ -1119,27 +1119,36 @@ export async function runChatRollupPass(
   return result;
 }
 
+/**
+ * The one writer that places a hold. `id` and `placedAt` are for restore reconciliation only
+ * (organization-data-receipts `reconcileRestoredAccess`): a hold placed after the backup point is put
+ * back with its original id and placement time, so audit events that name it still resolve.
+ */
 export async function placeLegalHold(
   sql: Sql,
   workspaceId: string,
-  input: { dataSourceId: string; channelId?: string | null; reason: string; placedBy: string },
+  input: { dataSourceId: string; channelId?: string | null; reason: string; placedBy: string; id?: string; placedAt?: string },
 ): Promise<{ id: string }> {
   const rows = await sql<Array<{ id: string }>>`
-    INSERT INTO harness_shared.data_source_legal_holds (workspace_id, data_source_id, channel_id, reason, placed_by)
-    VALUES (${workspaceId}, ${input.dataSourceId}::uuid, ${input.channelId?.trim() || null},
-            ${nonEmpty(input.reason, 'invalid_legal_hold_reason')}, ${nonEmpty(input.placedBy, 'invalid_legal_hold_placed_by')})
+    INSERT INTO harness_shared.data_source_legal_holds (workspace_id, id, data_source_id, channel_id, reason, placed_by, placed_at)
+    VALUES (${workspaceId}, COALESCE(${input.id ?? null}::uuid, gen_random_uuid()), ${input.dataSourceId}::uuid,
+            ${input.channelId?.trim() || null},
+            ${nonEmpty(input.reason, 'invalid_legal_hold_reason')}, ${nonEmpty(input.placedBy, 'invalid_legal_hold_placed_by')},
+            COALESCE(${input.placedAt ?? null}::timestamptz, now()))
     RETURNING id`;
   return { id: rows[0]!.id };
 }
 
+/** The one writer that releases a hold. `releasedAt` is for restore reconciliation only (see placeLegalHold). */
 export async function releaseLegalHold(
   sql: Sql,
   workspaceId: string,
-  input: { id: string; releasedBy: string },
+  input: { id: string; releasedBy: string; releasedAt?: string },
 ): Promise<{ released: number }> {
   const rows = await sql`
     UPDATE harness_shared.data_source_legal_holds
-       SET released_at = now(), released_by = ${nonEmpty(input.releasedBy, 'invalid_legal_hold_released_by')}
+       SET released_at = COALESCE(${input.releasedAt ?? null}::timestamptz, now()),
+           released_by = ${nonEmpty(input.releasedBy, 'invalid_legal_hold_released_by')}
      WHERE workspace_id = ${workspaceId} AND id = ${input.id}::uuid AND released_at IS NULL
     RETURNING id`;
   return { released: rows.length };

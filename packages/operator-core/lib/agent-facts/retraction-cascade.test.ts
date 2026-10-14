@@ -305,11 +305,17 @@ describe('cascadeFactChange', () => {
     expect(readAssumptionFlags(items[0].payload)).toEqual([]);
   });
 
-  it('never throws: a failed read is reported, not raised', async () => {
-    const { sql } = fakeSql([], { failSelect: true });
-    const r = await cascadeFactChange(sql, retraction(), { now: NOW });
-    expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/does not exist/);
+  it('never throws: a failed read is reported and logged, not raised', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { sql } = fakeSql([], { failSelect: true });
+      const r = await cascadeFactChange(sql, retraction(), { now: NOW });
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/does not exist/);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[retraction-cascade] retracted harness:papercusp:release-window@42 failed'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('runs inside a savepoint when handed a transaction', async () => {

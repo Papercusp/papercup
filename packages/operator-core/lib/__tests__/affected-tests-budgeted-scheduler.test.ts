@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -244,6 +244,157 @@ describe('R12 immutable full-gate comparison preparation', () => {
       pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [], files: data.selection.files });
       writeFileSync(join(root, 'child-1-long.json'), '{}');
       await expect(readBudgetedTaskComparisonArtifacts(root, pins)).rejects.toThrow('hash mismatch');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('R12 native command-local artifact preparation', () => {
+  function fixture() {
+    const root = mkdtempSync(join(tmpdir(), 'r12-native-command-'));
+    const repositoryRoot = join(root, 'repo');
+    mkdirSync(join(repositoryRoot, 'desktop/bin/lib'), { recursive: true });
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const pin = (ref: string, value: unknown, raw = false) => {
+      const bytes = raw ? String(value) : JSON.stringify(value);
+      writeFileSync(join(root, ref), bytes);
+      return { ref, sha256: digest(bytes) };
+    };
+    const listed = ['b.selftest.sh', 'a.selftest.sh'];
+    const files = listed.map(script => `desktop/bin/lib/${script}`);
+    const inputs = [...files, 'desktop/bin/lib/run-selftests.sh', 'desktop/bin/lib/baseline.txt']
+      .sort().map(path => {
+        writeFileSync(join(repositoryRoot, path), path);
+        return { path, sha256: digest(path) };
+      });
+    const command = 'bash bin/lib/run-selftests.sh';
+    const obligation = { task: 'desktop :: test', step: 7, kind: 'command-check',
+      check: 'desktop-selftest-aggregate', command, inputs, executed: false };
+    const fileOccurrences = files.slice().sort().map(file => ({ task: obligation.task,
+      step: 7, command, file, kind: 'test-file' }));
+    const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'partial',
+      unenumerated: ['remaining native chain'], fileOccurrences,
+      commandObligations: [obligation], tasks: [{ id: obligation.task, dir: 'desktop',
+        steps: [...Array.from({ length: 7 }, () => ({ command: 'other native command' })), { command }] }] };
+    const before = { schemaVersion: 1, kind: 'command-check-inputs',
+      check: obligation.check, files, inputs, listed, executed: false };
+    const stdout = listed.map(script => `--- ${script}: PASS`).join('\n') +
+      '\n  ✓ assertion about SKIP handling\nPASS — all 2 papercusp-desktop selftests green\n';
+    const logs = { stdout: pin('command.out', stdout, true), stderr: pin('command.err', '', true),
+      beforeStdout: pin('before.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(before)}\n`, true),
+      beforeStderr: pin('before.err', '', true),
+      afterStdout: pin('after.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(before)}\n`, true),
+      afterStderr: pin('after.err', '', true) };
+    const receipt = { schemaVersion: 1, kind: 'original-command-execution', cwd: 'desktop',
+      command: ['bash', 'bin/lib/run-selftests.sh'], exitCode: 0, childWallMs: 1000,
+      startedAt: '2026-10-14T00:00:00Z', finishedAt: '2026-10-14T00:00:01Z', before, after: before,
+      logs: Object.values(logs).map(log => ({ path: log.ref, sha256: log.sha256 })) };
+    const pins = { mode: 'command-preparation' as const, repositoryRoot,
+      selection: pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true),
+      commands: [{ task: obligation.task, step: 7, receipt: pin('receipt.json', receipt), logs }] };
+    const saveSelection = () => { pins.selection = pin('selection.log',
+      `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true); };
+    const saveReceipt = () => { pins.commands[0]!.receipt = pin('receipt.json', receipt); };
+    const saveStdout = (text: string) => {
+      logs.stdout = pin('command.out', text, true);
+      receipt.logs = Object.values(logs).map(log => ({ path: log.ref, sha256: log.sha256 }));
+      saveReceipt();
+    };
+    return { root, pins, selection, receipt, stdout, files, pin, saveSelection, saveReceipt, saveStdout };
+  }
+  it('resolves raw receipts and logs, preserving script order, guard inputs and partial selection', async () => {
+    const f = fixture();
+    try {
+      const result = await readBudgetedTaskComparisonArtifacts(f.root, f.pins);
+      expect(result).toMatchObject({ mode: 'command-preparation', originalArtifactsResolved: true,
+        currentDeclaredInputsMatched: true, operationalAcceptance: false,
+        orderedChainQualified: false, runtimeClosure: 'unmeasured' });
+      expect(result.commands[0]!.inputs).toHaveLength(4);
+      expect(result.commands[0]!.fileOccurrences).toHaveLength(2);
+      expect(result.commands[0]!.scriptOrder).toEqual(['b.selftest.sh', 'a.selftest.sh']);
+      expect(result.selection).toMatchObject({ coverage: 'partial', unenumerated: ['remaining native chain'] });
+      expect(Object.isFrozen(result.commands[0]!.inputs)).toBe(true);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['step', 'task', 'command', 'format', 'exit', 'census', 'occurrence-kind',
+    'occurrence-missing', 'occurrence-duplicate', 'script-order', 'skip', 'missing-verdict',
+    'duplicate-marker', 'duplicate-command', 'role-alias', 'source-drift', 'source-escape', 'log-drift'])
+  ('refuses %s without admitting any comparison cohort', async defect => {
+    const f = fixture();
+    try {
+      if (defect === 'step') f.pins.commands[0]!.step = 6;
+      if (defect === 'task') f.pins.commands[0]!.task = 'another task';
+      if (defect === 'command') { f.receipt.command = ['bash', 'different.sh']; f.saveReceipt(); }
+      if (defect === 'format') { f.selection.commandObligations[0]!.check = 'unknown-format'; f.saveSelection(); }
+      if (defect === 'exit') { f.receipt.exitCode = 1; f.saveReceipt(); }
+      if (defect === 'census') { f.selection.commandObligations[0]!.inputs.pop(); f.saveSelection(); }
+      if (defect === 'occurrence-kind') { f.selection.fileOccurrences[0]!.kind = 'check-input'; f.saveSelection(); }
+      if (defect === 'occurrence-missing') { f.selection.fileOccurrences.pop(); f.saveSelection(); }
+      if (defect === 'occurrence-duplicate') { f.selection.fileOccurrences.push(f.selection.fileOccurrences[0]!); f.saveSelection(); }
+      if (defect === 'script-order') f.saveStdout(f.stdout.replace('b.selftest.sh: PASS', 'a.selftest.sh: PASS')
+        .replace('--- a.selftest.sh: PASS\n  ✓', '--- b.selftest.sh: PASS\n  ✓'));
+      if (defect === 'skip') f.saveStdout(f.stdout.replace('b.selftest.sh: PASS', 'b.selftest.sh: SKIP'));
+      if (defect === 'missing-verdict') f.saveStdout(f.stdout.replace('--- a.selftest.sh: PASS\n', ''));
+      if (defect === 'duplicate-marker') { f.pins.selection = { ...f.pins.selection,
+        sha256: createHash('sha256').update(readFileSync(join(f.root, 'selection.log'))).digest('hex') };
+        const bytes = readFileSync(join(f.root, 'selection.log'), 'utf8');
+        writeFileSync(join(f.root, 'selection.log'), bytes + bytes);
+        f.pins.selection.sha256 = createHash('sha256').update(bytes + bytes).digest('hex'); }
+      if (defect === 'duplicate-command') f.pins.commands.push(f.pins.commands[0]!);
+      if (defect === 'role-alias') f.pins.commands[0]!.logs.afterStderr = f.pins.commands[0]!.logs.beforeStderr;
+      if (defect === 'source-drift') writeFileSync(join(f.pins.repositoryRoot, f.files[0]!), 'changed');
+      if (defect === 'source-escape') { const path = join(f.pins.repositoryRoot, f.files[0]!);
+        rmSync(path); symlinkSync(join(f.root, 'receipt.json'), path); }
+      if (defect === 'log-drift') writeFileSync(join(f.root, 'command.out'), 'changed');
+      await expect(readBudgetedTaskComparisonArtifacts(f.root, f.pins)).rejects.toThrow();
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+});
+
+describe('R12 original fixture lifecycle receipt', () => {
+  it.each(['valid', 'missing-lifecycle', 'wrong-script', 'wrong-discovery', 'after-before-exit',
+    'discovery-failure', 'missing-build-result'])('qualifies lifecycle only with %s evidence', async defect => {
+    const root = mkdtempSync(join(tmpdir(), 'r12-fixture-lifecycle-'));
+    const pin = (ref: string, value: unknown, raw = false) => {
+      const bytes = raw ? String(value) : JSON.stringify(value);
+      writeFileSync(join(root, ref), bytes);
+      return { ref, sha256: createHash('sha256').update(bytes).digest('hex') };
+    };
+    try {
+      const repositoryRoot = join(root, 'repo'); mkdirSync(repositoryRoot);
+      writeFileSync(join(repositoryRoot, 'source.ts'), 'source');
+      const inputs = [{ path: 'source.ts', sha256: createHash('sha256').update('source').digest('hex') }];
+      const command = 'node scripts/build.mjs';
+      const lifecycleCommands = defect === 'missing-lifecycle' ? [] :
+        [{ script: defect === 'wrong-script' ? 'other' : 'pretest', command }];
+      const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'partial',
+        fileOccurrences: [], tasks: [{ id: 'fixture :: test', dir: 'fixture', command: 'vitest run', lifecycleCommands }],
+        commandObligations: [{ task: 'fixture :: test', kind: 'npm-lifecycle', script: 'pretest', command, inputs }] };
+      const census = { schemaVersion: 1, kind: 'command-check-inputs', check: 'fixture-build', files: [], inputs };
+      const logs = { stdout: pin('command.out', defect === 'missing-build-result' ? 'partial build\n' :
+        `Fixture built: ${'a'.repeat(64)}\n`, true), stderr: pin('command.err', '', true),
+        beforeStdout: pin('before.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(census)}\n`, true),
+        beforeStderr: pin('before.err', '', true),
+        afterStdout: pin('after.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(census)}\n`, true),
+        afterStderr: pin('after.err', '', true) };
+      const discoveryCommand = ['node', 'scripts/build.mjs', '--print-selection', '--repository-root', repositoryRoot];
+      const receipt = { kind: 'original-native-command-execution', cwd: 'fixture',
+        before: { command: defect === 'wrong-discovery' ? ['node', 'unrelated.mjs'] : discoveryCommand,
+          startedAt: '2026-10-14T00:00:00Z', completedAt: '2026-10-14T00:00:01Z',
+          exitCode: defect === 'discovery-failure' ? 1 : 0, stdout: 'before.out', stderr: 'before.err' },
+        execution: { command: ['node', 'scripts/build.mjs'], startedAt: '2026-10-14T00:00:01Z',
+          completedAt: '2026-10-14T00:00:02Z', exitCode: 0, stdout: 'command.out', stderr: 'command.err' },
+        after: { command: discoveryCommand,
+          startedAt: defect === 'after-before-exit' ? '2026-10-14T00:00:01Z' : '2026-10-14T00:00:02Z',
+          completedAt: '2026-10-14T00:00:03Z', exitCode: 0, stdout: 'after.out', stderr: 'after.err' } };
+      const pins = { mode: 'command-preparation' as const, repositoryRoot,
+        selection: pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true),
+        commands: [{ task: 'fixture :: test', step: null, receipt: pin('receipt.json', receipt), logs }] };
+      if (defect === 'valid') {
+        const result = await readBudgetedTaskComparisonArtifacts(root, pins);
+        expect(result.commands[0]).toMatchObject({ kind: 'npm-lifecycle', script: 'pretest',
+          command, fileOccurrences: [], scriptsExecuted: 0 });
+        expect(result.orderedChainQualified).toBe(false);
+      } else await expect(readBudgetedTaskComparisonArtifacts(root, pins)).rejects.toThrow();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

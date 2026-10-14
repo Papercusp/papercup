@@ -33,7 +33,7 @@
  *
  * Run: cd apps/operator && npx vitest run scripts/psu-launcher-codex-writer-lock.test.ts
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, readFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
