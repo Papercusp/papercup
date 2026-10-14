@@ -37,6 +37,12 @@ import routes, { GOVERNANCE_POLICY_CHANGE_STATUS } from './policy';
 const [explainRoute, simulateRoute, setRoute, addExceptionRoute, prepareRoute, decideRoute, applyRoute, delegateRoute, revokeRoute, authorityRoute] =
   routes;
 
+const FORBIDDEN_REFUSAL = {
+  observed: { authorization: 'not satisfied' },
+  liftsWhen: 'the actor has the required governance authority for the target layer',
+  whoCanMakeItTrue: ['owner', 'host'],
+} as const;
+
 function ctxFor(input: Record<string, unknown>, slug: string | null = 'tester') {
   return { input, principal: slug ? { slug } : null } as never;
 }
@@ -126,9 +132,12 @@ describe('/api/governance-policy/* — the admin pane doors (P-005)', () => {
 
   it('maps write refusals to status codes, so the pane never shows a false success', async () => {
     for (const [code, status] of [['invalid', 400], ['parent', 400], ['conflict', 409], ['unavailable', 503], ['approval-required', 403], ['forbidden', 403]] as const) {
-      vi.mocked(setGovernancePolicyLayer).mockResolvedValueOnce({ ok: false, code, error: code });
+      vi.mocked(setGovernancePolicyLayer).mockResolvedValueOnce(code === 'forbidden'
+        ? { ok: false, code, error: code, refusal: FORBIDDEN_REFUSAL }
+        : { ok: false, code, error: code });
       const out = await call(setRoute, { ...LAYER, reason: 'r' }, null);
       expect(out).toMatchObject({ status, body: { ok: false, code } });
+      if (code === 'forbidden') expect(out.body).toMatchObject({ refusal: FORBIDDEN_REFUSAL });
     }
     expect(vi.mocked(setGovernancePolicyLayer).mock.calls[0]?.[1]).toBe('admin:operator');
   });
@@ -198,9 +207,12 @@ describe('/api/governance-policy/* — sensitive-change doors (P-006, D-015)', (
     };
     for (const [code, status] of Object.entries(expected) as [SensitiveActionErrorCode, number][]) {
       expect(GOVERNANCE_POLICY_CHANGE_STATUS[code]).toBe(status);
-      vi.mocked(applyGovernancePolicyChange).mockResolvedValueOnce({ ok: false, code, error: code });
+      vi.mocked(applyGovernancePolicyChange).mockResolvedValueOnce(code === 'forbidden'
+        ? { ok: false, code, error: code, refusal: FORBIDDEN_REFUSAL }
+        : { ok: false, code, error: code });
       const out = await call(applyRoute, { requestId: 'sar-1' });
       expect(out).toMatchObject({ status, body: { ok: false, op: 'apply', code } });
+      if (code === 'forbidden') expect(out.body).toMatchObject({ refusal: FORBIDDEN_REFUSAL });
     }
     vi.mocked(decideGovernancePolicyChange).mockResolvedValueOnce({ ok: false, code: 'self-approval', error: 'no' });
     expect((await call(decideRoute, { requestId: 'sar-1', decision: 'approve', reason: 'r' })).status).toBe(403);
