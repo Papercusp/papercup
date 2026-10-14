@@ -73,12 +73,19 @@ describe('carry blind window over real invocation rows', () => {
     expect(await read()).toMatchObject({ callsAfter: 1, lastToolName: 'reports:publish' });
   });
 
+  it('retains the wrapper when the snapshot arguments were not recorded', async () => {
+    await invocation('session:request-compaction', snapshot, compactionArgs);
+    await db.sql`UPDATE harness_shared.tool_invocations SET args_json = NULL`;
+    await invocation('tools:invoke', wrapper, { name: 'session:request-compaction', args: compactionArgs });
+    expect(await read()).toMatchObject({ callsAfter: 1, lastToolName: 'tools:invoke' });
+  });
+
   it.each([
     ['a different target', { name: 'reports:publish', args: compactionArgs }, 'ok'],
     ['different compaction arguments', { name: 'session:request-compaction', args: { focus: 'A later request' } }, 'ok'],
     ['a failed matching wrapper', { name: 'session:request-compaction', args: compactionArgs }, 'error'],
     ['an unrecognized wrapper payload', {}, 'ok'],
-  ])('retains %s as unseen activity', async (_label, args, status) => {
+  ] as const)('retains %s as unseen activity', async (_label, args, status) => {
     await invocation('session:request-compaction', snapshot, compactionArgs);
     await invocation('tools:invoke', wrapper, args, status);
     expect(await read()).toMatchObject({ callsAfter: 1, lastToolName: 'tools:invoke' });
