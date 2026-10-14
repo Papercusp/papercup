@@ -21,6 +21,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, readdirSync, readlinkSync } from 'node:fs';
+import { readdir, readlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -312,9 +313,12 @@ describe('candidateNativeBgRecords', () => {
 });
 
 describe.each([
-  { label: 'async host', procIo: undefined },
-  { label: 'isolated native worker', procIo: { readdir: readdirSync, readlink: readlinkSync } },
-])('openWriterPidsMany (WI-10005283) $label', ({ procIo }) => {
+  { label: 'async host', direct: false, procIo: undefined },
+  { label: 'isolated native worker', direct: true, procIo: { readdir: readdirSync, readlink: readlinkSync } },
+  { label: 'injected promise backend', direct: false, procIo: {
+    readdir, readlink,
+  } },
+])('openWriterPidsMany (WI-10005283) $label', ({ procIo, direct }) => {
   const openWriterPidsMany = (paths: readonly string[], opts: NonNullable<Parameters<typeof scanOpenWriters>[1]> = {}) =>
     scanOpenWriters(paths, { ...opts, procIo });
   it.runIf(process.platform === 'linux')('detects path-only descriptors that Linux write leases do not exclude', async () => {
@@ -369,6 +373,20 @@ describe.each([
       });
       expect(scan.complete).toBe(true);
       expect(scan.byPath.get('/tmp/tree')).toEqual(['1', '3']);
+    } finally { rmSync(proc, { recursive: true, force: true }); }
+  });
+
+  it('reads fresh descriptor evidence on every scan', async () => {
+    const proc = fakeProc({ '20': [] });
+    try {
+      const options = { procRoot: proc, descendants: true, includeCwd: true, failClosed: true };
+      const first = await openWriterPidsMany(['/tmp/tree'], options);
+      expect(first.complete).toBe(true);
+      expect(first.byPath.has('/tmp/tree')).toBe(false);
+      symlinkSync('/tmp/tree/new-file', join(proc, '20', 'fd', '5'));
+      const second = await openWriterPidsMany(['/tmp/tree'], options);
+      expect(second.complete).toBe(true);
+      expect(second.byPath.get('/tmp/tree')).toEqual(['20']);
     } finally { rmSync(proc, { recursive: true, force: true }); }
   });
 
@@ -465,7 +483,7 @@ describe.each([
       const scan = await openWriterPidsMany(['/tmp/wanted.log'], { procRoot: proc });
       running = false;
       expect(scan.complete).toBe(true);
-      if (procIo) expect(ticks).toBe(0);
+      if (direct) expect(ticks).toBe(0);
       else expect(ticks).toBeGreaterThan(0);
     } finally {
       rmSync(proc, { recursive: true, force: true });

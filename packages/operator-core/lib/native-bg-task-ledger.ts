@@ -208,7 +208,8 @@ export async function openWriterPidsMany(
   const readProcLink = opts.procIo?.readlink ?? readlink;
   let entries: string[];
   try {
-    entries = await readProcDirectory(procRoot);
+    const pending = readProcDirectory(procRoot);
+    entries = Array.isArray(pending) ? pending : await pending;
   } catch (err) {
     return { byPath, complete: !opts.failClosed, ...(opts.failClosed ? { diagnostics: {
       reason: 'proc root unreadable', elapsedMs: Date.now() - started, readFailures: 1,
@@ -237,7 +238,8 @@ export async function openWriterPidsMany(
     while (next < pids.length) {
       if (expired()) return;
       const pid = pids[next++];
-      const fdDir = join(procRoot, pid, 'fd');
+      const pidDir = join(procRoot, pid);
+      const fdDir = `${pidDir}/fd`;
       const seen = new Set<string>();
       const record = (rawTarget: string): void => {
         const target = rawTarget.replace(/ \(deleted\)$/, '');
@@ -260,12 +262,16 @@ export async function openWriterPidsMany(
         }
       };
       if (opts.includeCwd) {
-        try { record(await readProcLink(join(procRoot, pid, 'cwd'))); }
-        catch (err) { readFailed(err, 'cwd', join(procRoot, pid, 'cwd')); }
+        const cwdPath = `${pidDir}/cwd`;
+        try {
+          const pending = readProcLink(cwdPath);
+          record(typeof pending === 'string' ? pending : await pending);
+        } catch (err) { readFailed(err, 'cwd', cwdPath); }
       }
       let fds: string[];
       try {
-        fds = await readProcDirectory(fdDir);
+        const pending = readProcDirectory(fdDir);
+        fds = Array.isArray(pending) ? pending : await pending;
       } catch (err) {
         readFailed(err, 'fd-directory', fdDir);
         processesScanned++;
@@ -275,10 +281,15 @@ export async function openWriterPidsMany(
         if (expired()) return;
         descriptorsScanned++;
         let target: string;
+        const fdPath = `${fdDir}/${fd}`;
         try {
-          target = await readProcLink(join(fdDir, fd));
+          // Direct reads run only in the isolated native worker. Avoid one
+          // promise continuation and path normalization per descriptor there;
+          // both backends still share matching, deadlines and failure handling.
+          const pending = readProcLink(fdPath);
+          target = typeof pending === 'string' ? pending : await pending;
         } catch (err) {
-          readFailed(err, 'fd', join(fdDir, fd));
+          readFailed(err, 'fd', fdPath);
           continue; // fd closed under us — skip
         }
         record(target);
