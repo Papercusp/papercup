@@ -6104,13 +6104,40 @@ describe("psu-launcher arg parsing", () => {
     });
     expect(verdict.kind).toBe("refuse");
     expect(verdict.recoveryAt).toBeNull();
-    expect(verdict.message).toContain("Codex upstream is unreachable");
+    expect(verdict.message).toContain("Codex upstream has not responded");
     expect(verdict.message).toContain("fresh transport failures across accounts");
-    expect(verdict.message).toContain("network/connectivity problem");
-    expect(verdict.message).toContain("not a usage or credit wall");
-    expect(verdict.message).toContain("Check this machine's network");
+    expect(verdict.message).toContain("transport cause has not been established");
+    expect(verdict.message).toContain("do not establish a usage or credit wall");
+    expect(verdict.message).not.toContain("Check this machine's network");
     expect(verdict.message).not.toContain("429");
     expect(verdict.message).not.toContain("earliest known recovery");
+  });
+
+  it.each([
+    { kind: "timeout" as const, diagnosis: "upstream response timeout" },
+    { kind: "dns" as const, diagnosis: "DNS lookup error" },
+    { kind: "connect" as const, diagnosis: "connection error" },
+    { kind: "other" as const, diagnosis: "transport cause has not been established" },
+  ])("codexAutoPoolVerdict: reports measured $kind failures without inventing account exhaustion", ({ kind, diagnosis }) => {
+    const verdict = codexAutoPoolVerdict({
+      agent: "codex",
+      model: "gpt-6.1-sol",
+      account: "auto",
+      stats: {
+        codexHealthyAccounts: 0,
+        codexTotalAccounts: 8,
+        codexEarliestRecoveryAt: null,
+        codexUnserviceableCause: "upstream-unreachable",
+        codexReachability: { lastTransportFailureKind: kind },
+      },
+    });
+    expect(verdict.kind).toBe("refuse");
+    expect(verdict.recoveryAt).toBeNull();
+    expect(verdict.message).toContain(diagnosis);
+    expect(verdict.message).toContain("do not establish a usage or credit wall");
+    expect(verdict.message).not.toContain("fully walled");
+    expect(verdict.message).not.toContain("Check this machine's network");
+    if (kind === "timeout") expect(verdict.message).toContain("does not establish that this machine's network is down");
   });
 
   it("codexAutoPoolVerdict: an UNKNOWN horizon still refuses; a horizon already PAST only warns", () => {
@@ -9199,6 +9226,14 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
     expect(
       suWrapperExtraArgs("codex", { model: "gpt-5.5", resumeSession: "s-3" }),
     ).toEqual(["-m", "gpt-5.5", "resume", "s-3"]);
+  });
+
+  it('registered Codex bootstrap budget controls native argv (WI-6554700010011827)', () => {
+    const argv = suWrapperExtraArgs('codex', {
+      model: 'gpt-6.1-sol:xhigh', compactionLimit: 225_000,
+    });
+    expect(argv).toContain('model_auto_compact_token_limit=180000');
+    expect(argv).not.toContain('model_auto_compact_token_limit=784800');
   });
 
   // The claude CLI takes effort as its own flag — a verbatim `<model>:<effort>` spec

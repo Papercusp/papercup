@@ -73,9 +73,11 @@ async function main() {
   const sourceSha256 = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
   const isCommittedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader';
   const isBlueprintRoute = e.STAGING_FIRST_HTTP_SCENARIO === 'blueprint-account-route';
-  const prepared = isCommittedReader || isBlueprintRoute
+  const isCurrentSuNative = e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native';
+  const requiresPrepared = isCommittedReader || isBlueprintRoute || isCurrentSuNative;
+  const prepared = requiresPrepared
     ? resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir) : undefined;
-  assert.ok(!(isCommittedReader || isBlueprintRoute) || prepared,
+  assert.ok(!requiresPrepared || prepared,
     'Selected request scenario requires its prepared pinned API');
   const bundle = prepared ?? join(evidenceDir, 'hono-host.mjs');
   if (!prepared) {
@@ -140,6 +142,15 @@ async function main() {
   assert.ok(hostIdentity, 'private host kernel identity required');
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'codex-budget') {
+    const receipt = await (await import('./codex-budget-http-scenario')).measureCodexBudgetScenario({
+      workspace, base, headers, evidenceDir,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('CODEX_BUDGET_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
+    return;
+  }
   if (blueprintRoute) {
     const receipt = await blueprintRoute.execute(stopHost);
     await stopHost();

@@ -119,12 +119,12 @@ export function processGroupLifetime(child: ChildProcess, report: (message: stri
             probeFailureReported = true;
           }
         }
-        // Linux signal 0 also succeeds for an unreaped dead task. After the
-        // referenced leader has exited, verify that every visible member is
-        // dead before releasing the fence; unreadable/live members stay open.
+        // Linux signal 0 also succeeds for an unreaped dead task. A kernel
+        // exit may precede Node's child exit notification, so that notification
+        // cannot gate this proof. Verify every visible member is dead before
+        // releasing the fence; unreadable/live members stay open.
         // Only sample this exceptional case, and do not scan on every 10ms tick.
-        if (groupFound && process.platform === 'linux' &&
-            (child.exitCode !== null || child.signalCode !== null) && Date.now() >= nextMemberProbe) {
+        if (groupFound && process.platform === 'linux' && Date.now() >= nextMemberProbe) {
           const evidence = groupExitEvidence(group);
           nextMemberProbe = Date.now() + 100;
           if (!evidence.error && evidence.unreadable === 0 && evidence.members.length > 0 && evidence.liveMembers === 0) {

@@ -7931,6 +7931,35 @@ export function createInferenceGateway(deps: GatewayDeps) {
             return;
           }
 
+          // WI-6554700010011504: the wedge-prevention deadline ran out between a chosen
+          // route and its attempt. That is the ladder's SHED — the same terminal 429 the
+          // retry ladder forwards when it is exhausted (x-should-retry=false + the
+          // attempt count), never an "upstream stall" 502.
+          if (failure.code === 'retry-budget-exhausted') {
+            retryBudgetExhausted(); // records the shed exactly once (idempotent)
+            sendJson(
+              res,
+              429,
+              {
+                type: 'error',
+                error: {
+                  type: 'rate_limit_error',
+                  message: `inference-gateway: internal-retry deadline ${internalRetryDeadlineMs}ms exhausted for ${model} (last account '${active.accountId}'); no account could take the request`,
+                },
+                gateway: true,
+              },
+              {
+                ...shapeTerminalThrottle({
+                  attempts: attemptsUsed,
+                  retriesExhaustedHeader: RETRIES_EXHAUSTED_HEADER,
+                  suppressClientRetry: true,
+                }).headers,
+                [ROUTED_ACCOUNT_HEADER]: active.accountId,
+              },
+            );
+            return;
+          }
+
           // A TOKEN failure: penalized per-attempt above. Shed a retryable 503 and
           // record the stall so the stall-waker re-wakes an identified bee when this
           // account recovers.

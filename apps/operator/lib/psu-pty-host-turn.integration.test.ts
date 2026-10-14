@@ -1550,7 +1550,7 @@ it('quota wall during launch kickoff preserves the host and publishes recovery t
   expect(existsSync(sock)).toBe(false);
 }, 25000);
 
-it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'owner-edit', 'automatic'] as const)('Codex quota recovery verifies its auto route before replacing the child (%s)', async (repair) => {
+it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'owner-edit', 'automatic', 'automatic-transient', 'automatic-unavailable'] as const)('Codex quota recovery verifies its auto route before replacing the child (%s)', async (repair) => {
   const root = mkdtempSync(join(tmpdir(), 'psu-quota-recovery-'));
   const codexHome = join(root, 'codex');
   const originalNativeId = '12345678-1234-1234-1234-123456789abc';
@@ -1560,11 +1560,12 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'owner
   const ownerId = uniqueOwner('QUOTA-RECOVERY');
   const sock = socketPathFor(ownerId);
   const eventPath = eventLogPathForOwner(ownerId);
-  const fixture = ['interactive', 'owner-edit', 'automatic'].includes(repair) ? bridgedIo() : fakeIo();
+  const automatic = repair.startsWith('automatic');
+  const fixture = ['interactive', 'owner-edit'].includes(repair) || automatic ? bridgedIo() : fakeIo();
   const { io, captured } = fixture;
   const operationId = String(9_000_000 + Math.floor(performance.now()));
   const marker = '⟦turn-origin:wake-pump nonce:0123456789abcdef⟧';
-  const preservesConversation = ['interactive', 'owner-edit', 'automatic'].includes(repair);
+  const preservesConversation = ['interactive', 'owner-edit'].includes(repair) || automatic;
   const childCode = [
     "const fs=require('node:fs'),path=require('node:path');",
     "const recycled=process.argv[1]==='RECYCLED';",
@@ -1590,7 +1591,7 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'owner
       PAPERCUSP_SID: ownerId,
       PAPERCUSP_AGENT: 'codex',
       PAPERCUSP_LAUNCHED_BY: 'su-integration-leader',
-      PAPERCUSP_ACCOUNT_ROUTING_MODE: repair === 'automatic' ? 'auto' : 'default',
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: automatic ? 'auto' : 'default',
       CODEX_HOME: codexHome,
       TEST_TRANSCRIPT: transcript,
       PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
@@ -1620,7 +1621,8 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'owner
       routeRepairs += 1;
       expect(options).toEqual({ routeMode: 'auto' });
       expect(recycleMints).toBe(0);
-      if (repair === 'unavailable') return null;
+      if (repair === 'unavailable' || repair === 'automatic-unavailable' ||
+          (repair === 'automatic-transient' && routeRepairs === 1)) return null;
       if (repair === 'repaired' || preservesConversation) applyCodexGatewayRoute(codexHome, { mode: 'auto', ownerId });
       if (repair === 'owner-edit' && 'type' in fixture) fixture.type('unfinished owner input');
       return { ok: true };
@@ -1636,8 +1638,19 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'owner
     expect(await waitForOutput(captured, 'READY', 5_000)).toBe(true);
     expect(await injectIntoHost(sock, { mode: 'turn', data: 'trigger-wall', ownerId })).toBe(true);
     expect(await waitForOutput(captured, "You've hit your usage limit", 5_000)).toBe(true);
-    if (repair === 'automatic') {
+    if (repair === 'automatic-unavailable') {
+      const deadline = Date.now() + 8_000;
+      while (routeRepairs < 2 && Date.now() < deadline) await sleep(20);
+      expect(routeRepairs).toBe(2);
+      await sleep(200);
+      expect(routeRepairs).toBe(2); // repeated ticks cannot exceed the existing hourly budget
+      expect(recycleMints).toBe(0);
+      expect(captured()).not.toContain('RECYCLED-READY');
+      return;
+    }
+    if (automatic) {
       expect(await waitForOutput(captured, 'RECYCLED-READY', 8_000)).toBe(true);
+      expect(routeRepairs).toBe(repair === 'automatic-transient' ? 2 : 1);
       expect(recycleMints).toBe(1);
       expect(captured()).toContain('RECYCLED-ROUTE:auto:true');
       expect(captured()).not.toContain('RECOVERED-TURN'); // no automatic prompt replay

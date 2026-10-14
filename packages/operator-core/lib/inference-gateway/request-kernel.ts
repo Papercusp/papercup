@@ -333,6 +333,7 @@ export type GatewayRequestKernelErrorCode =
   | 'body-read-timeout'
   | 'request-ceiling'
   | 'ttfb-timeout'
+  | 'retry-budget-exhausted'
   | 'upstream-body-idle'
   | 'downstream-idle'
   | 'cancelled'
@@ -1069,6 +1070,16 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
           // inside the loop — and give this attempt only what is left of it.
           // A cap that is absent or non-finite leaves the deadline untouched.
           const cap = opts.policy.ttfbCapMs?.();
+          // WI-6554700010011504: a budget already SPENT (e.g. a chosen route's pre-attempt
+          // pace ran past the deadline) is a shed, not an attempt. Clamping it to a 1ms
+          // TTFB used to upload the prompt, abort it at once and surface the lane's own
+          // deadline as an "upstream stall" 502.
+          if (typeof cap === 'number' && Number.isFinite(cap) && Math.floor(cap) < 1) {
+            throw new GatewayRequestKernelError(
+              `gateway retry budget exhausted before attempt ${attempt} could start`,
+              { code: 'retry-budget-exhausted', outcome: 'shed', status: 429, retryable: false },
+            );
+          }
           const attemptTtfbMs =
             typeof cap === 'number' && Number.isFinite(cap)
               ? Math.max(1, Math.min(ttfbTimeoutMs, Math.floor(cap)))

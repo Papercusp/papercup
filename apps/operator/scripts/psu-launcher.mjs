@@ -1786,13 +1786,13 @@ function compactionLimitForResumeSession(session) {
  */
 export function suWrapperExtraArgs(
   agent,
-  { model, resumeSession, claudeSettings } = {},
+  { model, resumeSession, claudeSettings, compactionLimit } = {},
 ) {
   const args = [];
   // claude also gets here model-less: an inherited unsupported effortLevel still
   // needs its clamped --effort (WI-10005900). `[]` when there is nothing to clamp.
   if (model || agent === "claude")
-    args.push(...modelArgsFor(agent, model, { claudeSettings }));
+    args.push(...modelArgsFor(agent, model, { claudeSettings, compactionLimit }));
   if (agent === "omp") args.push(...ompTitleMitigationArgs(model));
   if (resumeSession) {
     if (agent === "omp" || agent === "claude") args.push("-r", resumeSession);
@@ -7237,7 +7237,7 @@ export const WALLED_POOL_REFUSAL_EXIT = 78;
  *   agent?: string | null,
  *   model?: string | null,
  *   account?: string | null | { mode?: string, provider?: string },
- *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'accounts-unserviceable' | null } | null,
+ *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'accounts-unserviceable' | null, codexReachability?: { lastTransportFailureKind?: 'dns' | 'connect' | 'timeout' | 'other' | null } } | null,
  *   now?: number
  * }} input
  * @returns {{ kind: 'proceed' | 'warn' | 'refuse', message: string | null, recoveryAt: number | null }}
@@ -7279,12 +7279,21 @@ export function codexAutoPoolVerdict({
   // estimate. When the gateway has fresh transport failures across accounts and
   // no HTTP response since, report the actual blocker and leave recovery time unknown.
   if (stats.codexUnserviceableCause === "upstream-unreachable") {
+    const failureKind = stats.codexReachability?.lastTransportFailureKind;
+    const diagnosis = failureKind === "timeout"
+      ? "The latest failure was an upstream response timeout. A response deadline does not establish that this machine's network is down. "
+      : failureKind === "dns"
+        ? "The latest failure was a DNS lookup error; check upstream hostname resolution on the gateway host. "
+        : failureKind === "connect"
+          ? "The latest failure was a connection error; check the gateway's upstream connection and proxy route. "
+          : "The underlying transport cause has not been established; inspect the gateway's latest upstream error. ";
     return {
       kind: "refuse",
       recoveryAt: null,
       message:
-        "psu: REFUSING TO LAUNCH — Codex upstream is unreachable: the gateway reports fresh transport failures across accounts and no HTTP response. " +
-        "This is a network/connectivity problem, not a usage or credit wall. Check this machine's network and retry when the gateway can reach OpenAI again. " +
+        "psu: REFUSING TO LAUNCH — Codex upstream has not responded: the gateway reports fresh transport failures across accounts and no HTTP response. " +
+        diagnosis +
+        "These failures do not establish a usage or credit wall. Retry when an upstream route is serviceable. " +
         "Override with " +
         ALLOW_WALLED_LAUNCH_ENV +
         "=1 if you know this snapshot is wrong.",
@@ -17969,6 +17978,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // model/resume passthrough (raw-CLI flags: claude/omp --model/-r, codex -m/resume).
   const extra = suWrapperExtraArgs(res.agent, {
     model: launchModel,
+    compactionLimit: res.compactionLimit ?? args.compactionLimit,
     resumeSession: args.resumeSession,
     claudeSettings:
       res.agent === "claude"

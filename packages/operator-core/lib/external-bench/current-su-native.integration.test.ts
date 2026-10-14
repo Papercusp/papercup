@@ -8,11 +8,13 @@ import type {} from '../../test/current-su-native-http-scenario';
 import type {} from '../../test/staging-first-http-fixture';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
+import { preparePrivateOperatorApiBundle } from '../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const options = isolatedWorkerOptions(480_000);
 
 it('launches autonomous current-su through the native container adapter without provider forwarding', async context => {
+  let prepared: ReturnType<typeof preparePrivateOperatorApiBundle> | undefined;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/external-bench/current-su-native.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
@@ -26,12 +28,20 @@ it('launches autonomous current-su through the native container adapter without 
       'packages/operator-core/lib/external-bench/codex-hook-bridge.ts',
       'packages/operator-core/lib/agent-tools/capability/launch-agent.ts',
       'packages/operator-core/lib/console-spawn.ts', 'apps/operator/scripts/psu-launcher.mjs',
-      'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh'],
+      'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
+    retainedArtifacts: ['phases/prepare/operator-api-build.log', 'phases/prepare/hono-host.mjs.build-steps.jsonl'],
+    prepare: evidenceDir => {
+      // Compilation and every guard must finish before the disposable native
+      // runtime/database exists. The worker consumes only these pinned bytes.
+      prepared = preparePrivateOperatorApiBundle(root, evidenceDir);
+    },
     execute: async (observe, evidenceDir) => {
+      expect(prepared, 'Private API preparation must precede runtime allocation').toBeDefined();
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--managed-tasks', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        '--prepared-api-sha=' + prepared!.sha256, '--prepared-receipt-sha=' + prepared!.receiptSha256],
       { cwd: root, detached: true, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
           STAGING_FIRST_HTTP_SCENARIO: 'current-su-native', STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,

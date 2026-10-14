@@ -19,7 +19,101 @@
  * gate the work it observes.
  */
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
-import type { TelemetryKind } from './telemetry-kinds';
+import { createHash } from 'node:crypto';
+import { isHostedPrincipal, type HostedPrincipal } from './auth/hosted-principal';
+import { cloudTelemetryConsentSchema, cloudTelemetryEventSchema, CLOUD_ERROR_CODES, type CloudTelemetryEvent, type TelemetryKind } from './telemetry-kinds';
+
+export interface CloudTelemetryContext {
+  /** Supplied by the authenticated server route, never request JSON. */
+  principal: HostedPrincipal;
+  environment: 'development' | 'staging' | 'production';
+  release: string;
+  origin: 'portal' | 'control-plane' | 'customer-runtime';
+  hostingMode: 'managed' | 'byoc';
+  observedAt?: string;
+  /** Only controlled server probes may set this; excluded from business views. */
+  synthetic?: boolean;
+}
+export interface CloudTelemetryEnvelope {
+  event: CloudTelemetryEvent['event'];
+  distinct_id: string;
+  timestamp: string;
+  properties: CloudTelemetryEvent['properties'] & {
+    organization_id: string; workspace_id?: string; operation_id: string;
+    environment: CloudTelemetryContext['environment']; release: string;
+    source: CloudTelemetryContext['origin']; synthetic: boolean;
+  };
+}
+export type CloudTelemetryPreparation = { ok: true; envelope: CloudTelemetryEnvelope } |
+  { ok: false; code: 'invalid_cloud_event' | 'unverified_principal' | 'invalid_runtime' | 'customer_data_local' | 'unwitnessed_outcome' | 'consent_unavailable' | 'consent_disabled' | 'outside_consent_epoch' };
+
+function opaqueCloudIdentity(kind: string, environment: string, organization: string, identifier: string): string {
+  return createHash('sha256').update(JSON.stringify(['papercusp-cloud-v1', kind, environment, organization, identifier])).digest('hex');
+}
+
+/** Revalidate at the FINAL delivery boundary, including batches queued earlier.
+ * A missing/changed consent epoch fails closed instead of backfilling history. */
+export function prepareCloudTelemetryDelivery(input: unknown, context: CloudTelemetryContext, consent: unknown): CloudTelemetryPreparation {
+  const parsed = cloudTelemetryEventSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, code: 'invalid_cloud_event' };
+  if (!context.principal || !isHostedPrincipal(context.principal)) return { ok: false, code: 'unverified_principal' };
+  const observedAt = context.observedAt ?? new Date().toISOString();
+  if (!['development', 'staging', 'production'].includes(context.environment) ||
+      !/^[a-f0-9]{7,64}$/.test(context.release) || !Number.isFinite(Date.parse(observedAt)) ||
+      !['portal', 'control-plane', 'customer-runtime'].includes(context.origin) ||
+      !['managed', 'byoc'].includes(context.hostingMode)) return { ok: false, code: 'invalid_runtime' };
+  const event = parsed.data;
+  const aggregate = event.event === 'cloud_diagnostic_aggregate';
+  if (context.origin === 'customer-runtime' && !aggregate) return { ok: false, code: 'customer_data_local' };
+  if (aggregate && !context.principal.selectedWorkspaceId) return { ok: false, code: 'unverified_principal' };
+  // Browser assertions cannot establish confirmed provisioning or private task outcomes.
+  if (event.event === 'cloud_workspace_provisioning' && context.origin !== 'control-plane') return { ok: false, code: 'unwitnessed_outcome' };
+  if (event.event === 'cloud_tutorial' && (event.properties.action === 'complete' ||
+      (event.properties.step && ['agent', 'task', 'result', 'revision', 'practice'].includes(event.properties.step)))) {
+    if (context.hostingMode === 'byoc' || context.origin !== 'control-plane') return { ok: false, code: 'customer_data_local' };
+  }
+  const authorization = cloudTelemetryConsentSchema.safeParse(consent);
+  if (!authorization.success) return { ok: false, code: 'consent_unavailable' };
+  const choice = aggregate ? authorization.data.diagnostics : authorization.data.analytics;
+  if (!choice.enabled || !choice.since) return { ok: false, code: 'consent_disabled' };
+  if (Date.parse(observedAt) < Date.parse(choice.since) ||
+      (aggregate && Date.parse(event.properties.period_start) < Date.parse(choice.since))) return { ok: false, code: 'outside_consent_epoch' };
+  const principal = context.principal;
+  return { ok: true, envelope: {
+    event: event.event,
+    distinct_id: opaqueCloudIdentity('person', context.environment, principal.activeOrganizationId, principal.userId),
+    timestamp: new Date(observedAt).toISOString(),
+    properties: {
+      ...event.properties,
+      organization_id: opaqueCloudIdentity('organization', context.environment, principal.activeOrganizationId, principal.activeOrganizationId),
+      ...(aggregate ? { workspace_id: opaqueCloudIdentity('workspace', context.environment, principal.activeOrganizationId, principal.selectedWorkspaceId!) } : {}),
+      operation_id: opaqueCloudIdentity('operation', context.environment, principal.activeOrganizationId, event.operation_id),
+      environment: context.environment, release: context.release,
+      source: context.origin, synthetic: context.synthetic === true,
+    },
+  } };
+}
+
+/** Optional analytics never changes the primary product outcome. Consent is
+ * read afresh per delivery; this function holds no queue or consent cache. */
+export async function deliverCloudTelemetry(input: unknown, context: CloudTelemetryContext, dependencies: {
+  readConsent: () => Promise<unknown>; send: (envelope: CloudTelemetryEnvelope) => Promise<void>;
+}): Promise<{ delivered: boolean; code?: string }> {
+  try {
+    const prepared = prepareCloudTelemetryDelivery(input, context, await dependencies.readConsent());
+    if (!prepared.ok) return { delivered: false, code: prepared.code };
+    await dependencies.send(prepared.envelope);
+    return { delivered: true };
+  } catch { return { delivered: false, code: 'delivery_unavailable' }; }
+}
+
+/** No free-form message, stack, URL, component name or customer value crosses
+ * the error boundary. The fingerprint groups only reviewed code/type pairs. */
+export function safeCloudError(code: typeof CLOUD_ERROR_CODES[number], error: unknown) {
+  const allowedNames = ['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'URIError'];
+  const type = error instanceof Error && allowedNames.includes(error.name) ? error.name : 'Error';
+  return { code, fingerprint: createHash('sha256').update(JSON.stringify([code, type])).digest('hex') };
+}
 
 const REPORTS_KEY = 'telemetry_reports';
 

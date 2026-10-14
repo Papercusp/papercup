@@ -18,7 +18,7 @@ async function until(check: () => boolean, timeoutMs = 6_000, detail = () => '')
 
 let serial = 0;
 async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, requireNativeTurnStart = true,
-  options: { acceptBeforeRecovery?: boolean; activityPersistMs?: number } = {}) {
+  options: { acceptBeforeRecovery?: boolean; activityPersistMs?: number; env?: Record<string, string> } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'provider-submit-'));
   const home = join(root, 'home');
   const nativeDir = agent === 'omp' ? join(home, 'agent', 'sessions')
@@ -75,6 +75,7 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
     PAPERCUSP_PSU_PTY_NATIVE_START_TIMEOUT_MS: '100',
     PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20', PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '4',
     PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '60', PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+    ...options.env,
   });
   expect(nativeTurnVerifierSupport(agent, env), 'fixture must support native receipt verification').toMatchObject({ supported: true });
   const done = hostThroughPty({ command: process.execPath, args: ['-e', childCode],
@@ -217,6 +218,40 @@ describe('pending submission after provider recovery (EI-25878022553042846)', ()
       expect(f.rows()).toContainEqual(expect.objectContaining({
         kind: 'submit-verify-unconfirmed', reason: 'pending-composer-ownership-lost',
       }));
+    } finally { await f.close(); }
+  }, 20_000);
+
+  // EI-25930229050142968: a composer that never accepts the Enter used to get
+  // one recovery Enter every retry window forever (393 in one session), and the
+  // live pending record deferred every later wake. The recovery must stop,
+  // tombstone the delivery (no repaste), and let a different wake write again.
+  it.each(['codex', 'claude'] as const)('retires an unconfirmable %s submission after the recovery budget so later wakes inject', async agent => {
+    const f = await fixture(agent, 'API Error: 502 Bad Gateway', true,
+      { env: { PAPERCUSP_PSU_PTY_SUBMIT_RECOVERY_MAX_CR: '2' } });
+    try {
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope)).toMatchObject({ ok: true, reason: 'accepted' });
+      await until(() => f.rows().some(row => row.kind === 'pending-submit-recovery-exhausted'), 6_000,
+        () => JSON.stringify({ output: f.output(), events: f.rows() }));
+      const recoveryEnters = f.rows().filter(row => row.kind === 'submit-verify-recovery-resubmit');
+      expect(recoveryEnters).toHaveLength(2);
+      expect(f.rows()).toContainEqual(expect.objectContaining({ kind: 'pending-submit-recovery-exhausted',
+        deliveryId: f.envelope.deliveryId, retiredDeliveryIds: [f.envelope.deliveryId], reason: 'max-resubmits' }));
+      const entersAtRetire = f.output().match(/ENTER:/g)?.length ?? 0;
+      await delay(300);
+      // Bounded: no further recovery Enter for the retired record.
+      expect(f.output().match(/ENTER:/g)?.length ?? 0).toBe(entersAtRetire);
+      // The durable retry of the retired delivery is refused, never repasted.
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope)).toMatchObject({
+        ok: false, reason: 'deferred-native-turn-start-superseded',
+      });
+      expect(f.output()).not.toContain('SUBMITTED:');
+      // A different wake is no longer deferred behind the retired record.
+      const next = { ...f.envelope, deliveryId: `${f.envelope.deliveryId}-next`,
+        data: `⟦turn-origin:wake-pump nonce:${'f'.repeat(16)}⟧\nnext wake` };
+      expect(await injectIntoHostWithConfirmation(f.sock, next)).toMatchObject({ ok: true, reason: 'accepted' });
+      await until(() => (f.output().match(/ENTER:/g)?.length ?? 0) > entersAtRetire, 6_000,
+        () => JSON.stringify({ phase: 'next-wake', output: f.output(), events: f.rows() }));
+      expect(f.rows().some(row => row.kind === 'deferred-native-turn-start')).toBe(false);
     } finally { await f.close(); }
   }, 20_000);
 

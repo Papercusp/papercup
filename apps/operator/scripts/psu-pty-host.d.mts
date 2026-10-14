@@ -976,6 +976,34 @@ export function shouldRedeliverLaunchKickoffAfterRespawn({ reason, managedKickof
     redeliveries?: number | undefined;
     maxRedeliveries?: number | undefined;
 }): boolean;
+/** Hold a persisted kickoff's success receipt until `deliveredAtMs + graceMs`,
+ *  and stop early when the quota detector latches. `rejected:true` means the
+ *  provider answered the kickoff with a usage-limit wall. Polling is used
+ *  because the detector exposes only a level, not an edge. Pure apart from the
+ *  injected clock and sleep; exported for tests.
+ * @param {object} opts
+ * @param {() => boolean} opts.isQuotaBlocked
+ * @param {number} opts.deliveredAtMs
+ * @param {number} [opts.graceMs]
+ * @param {number} [opts.pollMs]
+ * @param {() => number} [opts.now]
+ * @param {(ms: number) => Promise<void>} [opts.sleep]
+ * @param {() => boolean} [opts.shouldStop]
+ * @returns {Promise<{ rejected: boolean, waitedMs: number, stopped: boolean }>}
+ */
+export function awaitKickoffQuotaRejection({ isQuotaBlocked, deliveredAtMs, graceMs, pollMs, now, sleep, shouldStop, }?: {
+    isQuotaBlocked: () => boolean;
+    deliveredAtMs: number;
+    graceMs?: number | undefined;
+    pollMs?: number | undefined;
+    now?: (() => number) | undefined;
+    sleep?: ((ms: number) => Promise<void>) | undefined;
+    shouldStop?: (() => boolean) | undefined;
+}): Promise<{
+    rejected: boolean;
+    waitedMs: number;
+    stopped: boolean;
+}>;
 /** WI-10004943: the Codex `Starting` options for one launch-kickoff attempt. While a
  *  fresh-child retry remains, give up early on a child still at `Starting` after
  *  `stuckMs` so the host can replace it (the WI-10005106 carry remedy). The last
@@ -4364,6 +4392,56 @@ export function clearSettleMs(env?: EnvironmentMap): any;
  *  @param {EnvironmentMap} [env]
  */
 export function submitVerifyQuietMs(env?: EnvironmentMap): any;
+/** @param {EnvironmentMap} [env] @returns {number} */
+export function submitRecoveryMaxResubmits(env?: EnvironmentMap): number;
+/** @param {EnvironmentMap} [env] @returns {number} */
+export function submitRecoveryMaxAgeMs(env?: EnvironmentMap): number;
+/** One recovery-tick decision for an unconfirmed machine submission. Pure —
+ *  exported for tests (EI-25930229050142968).
+ *  - `wait`: output is not quiet yet, or the previous Enter's retry window is open.
+ *  - `resubmit`: press one standalone Enter. `counted` is false while the provider
+ *    is quota/auth-blocked: a blocked provider rejects every Enter, so those
+ *    presses say nothing about the composer and never spend the budget.
+ *  - `exhausted`: retire the record. Either `maxResubmits` counted Enters were
+ *    made and the last one received its full retry window (`max-resubmits`), or
+ *    the submission is older than `maxAgeMs` (`max-age`, which also covers a TUI
+ *    that is never quiet long enough to receive an Enter). Neither fires while
+ *    the provider is blocked.
+ *  @param {{ resubmits?: number, countedResubmits?: number, submittedAtMs?: number,
+ *    lastResubmitAtMs?: number, lastOutputAtMs?: number, now?: number, quietMs: number,
+ *    retryCap: number, maxResubmits: number, maxAgeMs?: number, providerBlocked?: boolean }} input
+ *  @returns {{ action: 'wait' | 'resubmit' | 'exhausted', retryMs: number, counted: boolean,
+ *    reason: 'max-resubmits' | 'max-age' | null }} */
+export function decidePendingSubmissionRecovery({ resubmits, countedResubmits, submittedAtMs, lastResubmitAtMs, lastOutputAtMs, now, quietMs, retryCap, maxResubmits, maxAgeMs, providerBlocked }: {
+    resubmits?: number;
+    countedResubmits?: number;
+    submittedAtMs?: number;
+    lastResubmitAtMs?: number;
+    lastOutputAtMs?: number;
+    now?: number;
+    quietMs: number;
+    retryCap: number;
+    maxResubmits: number;
+    maxAgeMs?: number;
+    providerBlocked?: boolean;
+}): {
+    action: "wait" | "resubmit" | "exhausted";
+    retryMs: number;
+    counted: boolean;
+    reason: "max-resubmits" | "max-age" | null;
+};
+/** Retire one unconfirmed submission so later wakes can inject again. Every
+ *  delivery id coalesced onto `pending` is removed from `pendingById` and
+ *  tombstoned as superseded, so a durable retry of that id is refused
+ *  (`deferred-native-turn-start-superseded`) instead of pasting the text a second
+ *  time. Pure over its arguments — exported for tests (EI-25930229050142968).
+ *  @param {Map<string, unknown>} pendingById
+ *  @param {unknown} pending
+ *  @param {{ markSuperseded(id: string): void }} dedup
+ *  @returns {string[]} the retired delivery ids */
+export function retirePendingSubmission(pendingById: Map<string, unknown>, pending: unknown, dedup: {
+    markSuperseded(id: string): void;
+}): string[];
 /** EI-24961854655864836: authenticate the successor before submitting its work.
  * A failed first report may confirm through the launcher's existing durable retry.
  * The bounded wait never treats submission/transcript proof as identity authority.
@@ -4776,6 +4854,15 @@ export const UNBOUND_CHILD_WINDOW_MS: 120000;
  *  into the successor of a same-host respawn. One: a successor that is itself
  *  replaced before its kickoff lands is a respawn loop, not a delivery problem. */
 export const LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX: 1;
+/** EI-25925116860039557: native transcript proof shows that the USER turn was
+ *  recorded. It does not show that the provider accepted the turn. Measured
+ *  2026-10-14 on su-d648b4f9: turn-delivered (confirmed native) at 03:01:27.290Z,
+ *  then "You've hit your weekly limit" latched the quota detector at
+ *  03:01:29.810Z. The launch had already published success, so the fleet got a
+ *  registered member that deferred every wake for 75 minutes. A wall that
+ *  latches within this window after delivery means the kickoff never ran. */
+export const KICKOFF_QUOTA_REJECTION_GRACE_MS: 10000;
+export const KICKOFF_QUOTA_REJECTION_POLL_MS: 250;
 /** The persona-refresh `reason` the operator returns when a restart would activate a
  *  priced Cupboard identity that has no funds behind it and cannot be dropped from the
  *  stack (agent-economy-flywheel P-016, D-012). The respawn is refused on it, never
@@ -4993,6 +5080,15 @@ export const DELIVERY_DEDUP_TTL_MS: number;
 /** Enough trailing output to hold a DEC private-mode toggle split across two
  *  pty chunks (`ESC[?1004;2004h` is 14 chars). */
 export const BRACKETED_PASTE_TAIL_CHARS: 32;
+/** EI-25930229050142968: hard bounds on the standalone-Enter recovery of ONE
+ *  unconfirmed machine submission (EI-25878022553042846). SUBMIT_VERIFY_MAX_CR
+ *  caps only the backoff MULTIPLIER, so the recovery count was unbounded: one
+ *  session pressed Enter 393 times over 3.5h. While its nativeStartPending record
+ *  stayed live, every later wake was deferred (`deferred-native-turn-start` /
+ *  `native-turn-start-pending`), and a fleet leader went silent for ~2h.
+ *  Session-env tunable; the module default is the fallback. */
+export const SUBMIT_RECOVERY_MAX_RESUBMITS: 8;
+export const SUBMIT_RECOVERY_MAX_AGE_MS: number;
 /** Absolute path to the session-compacted emit CLI (a sibling script, built by the
  *  event-await-discoverability plan / P-103). The host resolves it relative to itself so
  *  the same path works from the staging AND release checkouts. */

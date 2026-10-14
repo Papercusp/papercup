@@ -1442,6 +1442,9 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
   it('egresses origin/staging before a slow completion-settlement pass times out', async () => {
     const priorBudget = process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS;
     process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS = '35';
+    // WI-6554700010008342: exercise the deadline itself without waiting for
+    // wall-clock scheduling in a concurrent gate run.
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const order: string[] = [];
     const egressSha = 'a'.repeat(40);
@@ -1478,6 +1481,10 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     emitGitSyncEgressedEventMock.mockImplementationOnce(() => {
       order.push('egressed');
     });
+    let settlementStarted!: () => void;
+    const settlementStartedPromise = new Promise<void>((resolve) => {
+      settlementStarted = resolve;
+    });
     let observedSignal: AbortSignal | undefined;
     reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async (_sha, _scope, { signal, onProgress }) => {
       order.push('settlement');
@@ -1498,6 +1505,7 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
           },
           { once: true },
         );
+        settlementStarted();
       });
     });
     runGitSyncMock.mockImplementationOnce(async () => {
@@ -1509,7 +1517,17 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     });
 
     try {
-      await action(ctx);
+      const running = action(ctx);
+      await settlementStartedPromise;
+      expect(order).toEqual(['bridge-tick', 'egressed', 'settlement']);
+      await vi.advanceTimersByTimeAsync(34);
+      expect(observedSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(observedSignal?.reason).toMatchObject({
+        code: 'git_sync_completion_settlement_budget',
+        timeoutMs: 35,
+      });
+      await running;
 
       expect(reconcileProposedCompletionsAtCommitMock).toHaveBeenCalledOnce();
       expect(order).toEqual(['bridge-tick', 'egressed', 'settlement']);
@@ -1532,11 +1550,12 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('remaining candidates will be retried on a later fire'));
     } finally {
       warn.mockRestore();
+      vi.useRealTimers();
       if (priorBudget === undefined) delete process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS;
       else process.env.PAPERCUSP_GIT_SYNC_COMPLETION_SETTLEMENT_BUDGET_MS = priorBudget;
     }
-    // The per-test cap bounds a whole mocked action(ctx) run, not the 35ms settlement budget
-    // this test asserts on. 2s was beaten under green-checkpoint load (WI-6554700010008342).
+    // The cap bounds orchestration/setup; cancellation is checked at exactly
+    // 35 virtual milliseconds, including the not-yet-expired boundary.
   }, 15_000);
 
   it('stamps every whole-fire metadata marker with its per-fire lock owner and PID', async () => {

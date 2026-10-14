@@ -181,7 +181,9 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
         workspaceId: WS, observedAt: priorAt,
       })).toBe(true);
     }
-    expect(await flushFallbackObservations()).toMatchObject({ written: 20, failed: 0 });
+    // Identical observations coalesce into ONE row whose `samples` is 20 (WI-6554700010009713);
+    // the window readers sum(samples), so this is still 20 decisions of prior evidence.
+    expect(await flushFallbackObservations()).toMatchObject({ written: 1, failed: 0 });
 
     const root = mkdtempSync(join(tmpdir(), 'degradation-watchdog-reuse-it-'));
     let armed: Awaited<ReturnType<typeof armTargetedTaskReuse>> | undefined;

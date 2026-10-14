@@ -2547,6 +2547,61 @@ export function shouldRedeliverLaunchKickoffAfterRespawn({
   return reason === 'superseded';
 }
 
+/** EI-25925116860039557: native transcript proof shows that the USER turn was
+ *  recorded. It does not show that the provider accepted the turn. Measured
+ *  2026-10-14 on su-d648b4f9: turn-delivered (confirmed native) at 03:01:27.290Z,
+ *  then "You've hit your weekly limit" latched the quota detector at
+ *  03:01:29.810Z. The launch had already published success, so the fleet got a
+ *  registered member that deferred every wake for 75 minutes. A wall that
+ *  latches within this window after delivery means the kickoff never ran. */
+export const KICKOFF_QUOTA_REJECTION_GRACE_MS = 10_000;
+export const KICKOFF_QUOTA_REJECTION_POLL_MS = 250;
+
+/** Hold a persisted kickoff's success receipt until `deliveredAtMs + graceMs`,
+ *  and stop early when the quota detector latches. `rejected:true` means the
+ *  provider answered the kickoff with a usage-limit wall. Polling is used
+ *  because the detector exposes only a level, not an edge. Pure apart from the
+ *  injected clock and sleep; exported for tests.
+ * @param {object} opts
+ * @param {() => boolean} opts.isQuotaBlocked
+ * @param {number} opts.deliveredAtMs
+ * @param {number} [opts.graceMs]
+ * @param {number} [opts.pollMs]
+ * @param {() => number} [opts.now]
+ * @param {(ms: number) => Promise<void>} [opts.sleep]
+ * @param {() => boolean} [opts.shouldStop]
+ * @returns {Promise<{ rejected: boolean, waitedMs: number, stopped: boolean }>}
+ */
+export async function awaitKickoffQuotaRejection({
+  isQuotaBlocked,
+  deliveredAtMs,
+  graceMs = KICKOFF_QUOTA_REJECTION_GRACE_MS,
+  pollMs = KICKOFF_QUOTA_REJECTION_POLL_MS,
+  now = Date.now,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  shouldStop = () => false,
+} = {}) {
+  const startMs = Number(now());
+  const fromMs = Number.isFinite(Number(deliveredAtMs)) ? Number(deliveredAtMs) : startMs;
+  const windowMs = Number(graceMs) > 0 ? Number(graceMs) : KICKOFF_QUOTA_REJECTION_GRACE_MS;
+  const stepMs = Number(pollMs) > 0 ? Number(pollMs) : KICKOFF_QUOTA_REJECTION_POLL_MS;
+  const deadlineMs = fromMs + windowMs;
+  for (;;) {
+    const atMs = Number(now());
+    const waitedMs = Math.max(0, atMs - fromMs);
+    let blocked = false;
+    try {
+      blocked = isQuotaBlocked() === true;
+    } catch {
+      blocked = false;
+    }
+    if (blocked) return { rejected: true, waitedMs, stopped: false };
+    if (shouldStop()) return { rejected: false, waitedMs, stopped: true };
+    if (atMs >= deadlineMs) return { rejected: false, waitedMs, stopped: false };
+    await sleep(Math.min(stepMs, deadlineMs - atMs));
+  }
+}
+
 /** WI-10004943: the Codex `Starting` options for one launch-kickoff attempt. While a
  *  fresh-child retry remains, give up early on a child still at `Starting` after
  *  `stuckMs` so the host can replace it (the WI-10005106 carry remedy). The last
@@ -9184,6 +9239,75 @@ export function submitVerifyQuietMs(env = process.env) {
   return positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS, SUBMIT_VERIFY_QUIET_MS);
 }
 
+/** EI-25930229050142968: hard bounds on the standalone-Enter recovery of ONE
+ *  unconfirmed machine submission (EI-25878022553042846). SUBMIT_VERIFY_MAX_CR
+ *  caps only the backoff MULTIPLIER, so the recovery count was unbounded: one
+ *  session pressed Enter 393 times over 3.5h. While its nativeStartPending record
+ *  stayed live, every later wake was deferred (`deferred-native-turn-start` /
+ *  `native-turn-start-pending`), and a fleet leader went silent for ~2h.
+ *  Session-env tunable; the module default is the fallback. */
+export const SUBMIT_RECOVERY_MAX_RESUBMITS = 8;
+export const SUBMIT_RECOVERY_MAX_AGE_MS = 30 * 60_000;
+/** @param {EnvironmentMap} [env] @returns {number} */
+export function submitRecoveryMaxResubmits(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_RECOVERY_MAX_CR, SUBMIT_RECOVERY_MAX_RESUBMITS);
+}
+/** @param {EnvironmentMap} [env] @returns {number} */
+export function submitRecoveryMaxAgeMs(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_RECOVERY_MAX_AGE_MS, SUBMIT_RECOVERY_MAX_AGE_MS);
+}
+
+/** One recovery-tick decision for an unconfirmed machine submission. Pure —
+ *  exported for tests (EI-25930229050142968).
+ *  - `wait`: output is not quiet yet, or the previous Enter's retry window is open.
+ *  - `resubmit`: press one standalone Enter. `counted` is false while the provider
+ *    is quota/auth-blocked: a blocked provider rejects every Enter, so those
+ *    presses say nothing about the composer and never spend the budget.
+ *  - `exhausted`: retire the record. Either `maxResubmits` counted Enters were
+ *    made and the last one received its full retry window (`max-resubmits`), or
+ *    the submission is older than `maxAgeMs` (`max-age`, which also covers a TUI
+ *    that is never quiet long enough to receive an Enter). Neither fires while
+ *    the provider is blocked.
+ *  @param {{ resubmits?: number, countedResubmits?: number, submittedAtMs?: number,
+ *    lastResubmitAtMs?: number, lastOutputAtMs?: number, now?: number, quietMs: number,
+ *    retryCap: number, maxResubmits: number, maxAgeMs?: number, providerBlocked?: boolean }} input
+ *  @returns {{ action: 'wait' | 'resubmit' | 'exhausted', retryMs: number, counted: boolean,
+ *    reason: 'max-resubmits' | 'max-age' | null }} */
+export function decidePendingSubmissionRecovery({ resubmits = 0, countedResubmits = 0, submittedAtMs = 0,
+  lastResubmitAtMs = 0, lastOutputAtMs = 0, now = Date.now(), quietMs, retryCap, maxResubmits,
+  maxAgeMs = Number.POSITIVE_INFINITY, providerBlocked = false }) {
+  const retryMs = quietMs * Math.min(2 ** Math.min(resubmits, 20), retryCap);
+  if (!providerBlocked && submittedAtMs > 0 && now - submittedAtMs >= maxAgeMs) {
+    return { action: 'exhausted', retryMs, counted: false, reason: 'max-age' };
+  }
+  if (now - lastOutputAtMs < quietMs || now - lastResubmitAtMs < retryMs) {
+    return { action: 'wait', retryMs, counted: false, reason: null };
+  }
+  if (providerBlocked) return { action: 'resubmit', retryMs, counted: false, reason: null };
+  if (countedResubmits >= maxResubmits) return { action: 'exhausted', retryMs, counted: false, reason: 'max-resubmits' };
+  return { action: 'resubmit', retryMs, counted: true, reason: null };
+}
+
+/** Retire one unconfirmed submission so later wakes can inject again. Every
+ *  delivery id coalesced onto `pending` is removed from `pendingById` and
+ *  tombstoned as superseded, so a durable retry of that id is refused
+ *  (`deferred-native-turn-start-superseded`) instead of pasting the text a second
+ *  time. Pure over its arguments — exported for tests (EI-25930229050142968).
+ *  @param {Map<string, unknown>} pendingById
+ *  @param {unknown} pending
+ *  @param {{ markSuperseded(id: string): void }} dedup
+ *  @returns {string[]} the retired delivery ids */
+export function retirePendingSubmission(pendingById, pending, dedup) {
+  const retired = [];
+  for (const [id, entry] of pendingById) {
+    if (entry !== pending) continue;
+    dedup.markSuperseded(id);
+    retired.push(id);
+  }
+  for (const id of retired) pendingById.delete(id);
+  return retired;
+}
+
 /** Absolute path to the session-compacted emit CLI (a sibling script, built by the
  *  event-await-discoverability plan / P-103). The host resolves it relative to itself so
  *  the same path works from the staging AND release checkouts. */
@@ -11822,6 +11946,7 @@ export function hostThroughPty(o) {
           }
           return;
         }
+        const kickoffDeliveredAtMs = Date.now();
         let proof;
         try {
           proof = await verifyNativeTurnStartWithRetry({
@@ -11855,6 +11980,63 @@ export function hostThroughPty(o) {
             lostChars: proof.markerTruncated.lostChars,
             nativeRef: proof.nativeRef ?? null,
           });
+        }
+        // EI-25925116860039557: a recorded user turn can still be rejected by the
+        // provider with a usage-limit wall. Delay the success receipt until the
+        // grace window after delivery has passed. A wall that latches in that
+        // window makes this a refused launch, the same outcome as a wall that was
+        // already visible when the kickoff was submitted.
+        if (proof.persisted === true && !adoptedCarryRespawn) {
+          const quotaVerdict = await awaitKickoffQuotaRejection({
+            isQuotaBlocked: () => quotaBlockDetector.isBlocked(),
+            deliveredAtMs: kickoffDeliveredAtMs,
+            graceMs: positiveNumber(
+              env.PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS,
+              KICKOFF_QUOTA_REJECTION_GRACE_MS,
+            ),
+            shouldStop: () => hostCleanedUp || shuttingDown,
+          });
+          if (quotaVerdict.rejected) {
+            const kickoffReason = 'provider-quota-rejected';
+            appendHostEvent(ownerId, 'launch-kickoff-quota-rejected', {
+              waitedMs: quotaVerdict.waitedMs,
+              nativeRef: proof.nativeRef ?? null,
+              agent: String(env.PAPERCUSP_AGENT ?? '') || null,
+            });
+            recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
+              reason: kickoffReason,
+              attempts: r.attempts,
+              budgetMs: kickoffBudgetMs,
+              outputSeen: childStartupOutput.length > 0,
+              nativeRef: proof.nativeRef ?? null,
+            });
+            try {
+              writeTerminalDiagnostic(
+                `psu: kickoff REJECTED: the provider answered the launch kickoff with a usage-limit wall ` +
+                  `${quotaVerdict.waitedMs}ms after delivery. This account cannot run the member. ` +
+                  `Relaunch with account:'auto' (gateway pool with failover) or pin another account.\n`,
+              );
+            } catch {
+              /* diagnostics are best-effort */
+            }
+            const receipt = publishKickoffProof({
+              persisted: false,
+              nativeRef: proof.nativeRef ?? null,
+              reason: `kickoff-not-submitted:${kickoffReason}`,
+            });
+            if (unreportedKickoffRefusalStrandsHost({
+              delivered: false,
+              headless: env.PAPERCUSP_PSU_HEADLESS === '1',
+              receipt,
+            })) {
+              terminateUnreportedKickoffRefusal({
+                kickoffReason,
+                receiptReason: receipt?.reason ?? null,
+                receiptErrorCode: receipt?.errorCode ?? null,
+              });
+            }
+            return;
+          }
         }
         // Publish the native transcript verdict before any caller-facing
         // handling. The detached parent owns the placeholder and uses this
@@ -12166,8 +12348,28 @@ export function hostThroughPty(o) {
   // failing; quota/auth banners are not evidence of an unsubmitted composer.
   let pendingSubmissionRetryActive = false;
   const pendingSubmissionRecovery = (submittedAtMs, composerGenerationAtWrite) => ({
-    submittedAtMs, composerGenerationAtWrite, lastResubmitAtMs: Date.now(), resubmits: 0, stopped: false,
+    submittedAtMs, composerGenerationAtWrite, lastResubmitAtMs: Date.now(), resubmits: 0, countedResubmits: 0, stopped: false,
   });
+  // EI-25930229050142968: a recovery that can no longer succeed must release
+  // the record. A live nativeStartPending entry defers every later wake, so a
+  // stopped-but-retained record silences the session until a respawn.
+  const retireUnconfirmedSubmission = (deliveryId, pending, reason, extra = {}) => {
+    pending.submissionRecovery.stopped = true;
+    const retired = retirePendingSubmission(nativeStartPending, pending, deliveryDedup);
+    appendHostEvent(ownerId, 'pending-submit-recovery-exhausted', {
+      deliveryId, retiredDeliveryIds: retired, reason, childGeneration,
+      resubmits: pending.submissionRecovery.resubmits, ...extra,
+    });
+    try {
+      writeTerminalDiagnostic(
+        `psu-pty-host: gave up re-submitting machine turn ${deliveryId} for ${ownerId} (${reason}, ` +
+          `${pending.submissionRecovery.resubmits} recovery Enters, no native receipt). Its text may still sit ` +
+          `in the composer; later wakes are no longer deferred behind it (EI-25930229050142968).\n`,
+      );
+    } catch {
+      /* never let a diagnostic write break the host */
+    }
+  };
   const retryPendingSubmissions = async () => {
     if (pendingSubmissionRetryActive || !nativeStartPending.size || deliveriesInFlight > 0) return;
     pendingSubmissionRetryActive = true;
@@ -12185,34 +12387,61 @@ export function hostThroughPty(o) {
         // Submission and execution are different receipts. A persisted user
         // row with a failed/slow model call MUST NOT receive another Enter.
         if (findNativeTranscriptMarker({ agent: env.PAPERCUSP_AGENT, env,
-          marker: pending.marker, sinceMs: pending.submittedAtMs })) continue;
+          marker: pending.marker, sinceMs: pending.submittedAtMs })) {
+          // Submitted, but no native turn activity ever followed. Never press
+          // Enter here; once the age bound passes, stop deferring later wakes
+          // behind a turn that is not going to start (EI-25930229050142968).
+          const ageMs = Date.now() - recovery.submittedAtMs;
+          if (!quotaBlockDetector.isBlocked() && !authBlockDetector.isBlocked() &&
+            ageMs >= submitRecoveryMaxAgeMs(env)) {
+            retireUnconfirmedSubmission(deliveryId, pending, 'max-age-submitted-without-turn', { ageMs });
+          }
+          continue;
+        }
         const lostComposer = ownerStopRequested ||
           recovery.composerGenerationAtWrite !== composerInputGeneration ||
           recovery.submittedAtMs !== lastMachineTurnWriteStartedAtMs ||
           Number(activity.snapshot().lastInputAt ?? 0) > recovery.submittedAtMs ||
           ownerComposerGate.hasPending();
         if (lostComposer) {
-          recovery.stopped = true;
           appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
             deliveryId, reason: 'pending-composer-ownership-lost', terminated: false,
           });
+          // The composer is no longer the machine's to submit, so no later Enter
+          // can confirm this record. Retaining it deferred every wake until a
+          // carry-respawn (EI-25930229050142968).
+          retireUnconfirmedSubmission(deliveryId, pending, 'pending-composer-ownership-lost');
           continue;
         }
         if (machineTurnActive || nativeExecutionBlocksInjection(currentNativeExecution())) continue;
-        const quietMs = submitVerifyQuietMs(env);
-        const retryCap = positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR, SUBMIT_VERIFY_MAX_RESUBMITS);
-        const retryMs = quietMs * Math.min(2 ** Math.min(recovery.resubmits, 20), retryCap);
+        const quotaBlocked = quotaBlockDetector.isBlocked();
+        const authBlocked = authBlockDetector.isBlocked();
         const now = Date.now();
-        if (now - Number(activity.snapshot().lastOutputAt ?? 0) < quietMs ||
-          now - recovery.lastResubmitAtMs < retryMs) continue;
+        const decision = decidePendingSubmissionRecovery({
+          resubmits: recovery.resubmits, countedResubmits: recovery.countedResubmits,
+          submittedAtMs: recovery.submittedAtMs, lastResubmitAtMs: recovery.lastResubmitAtMs,
+          lastOutputAtMs: Number(activity.snapshot().lastOutputAt ?? 0), now,
+          quietMs: submitVerifyQuietMs(env),
+          retryCap: positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR, SUBMIT_VERIFY_MAX_RESUBMITS),
+          maxResubmits: submitRecoveryMaxResubmits(env), maxAgeMs: submitRecoveryMaxAgeMs(env),
+          providerBlocked: quotaBlocked || authBlocked,
+        });
+        if (decision.action === 'wait') continue;
+        if (decision.action === 'exhausted') {
+          retireUnconfirmedSubmission(deliveryId, pending, decision.reason ?? 'max-resubmits', {
+            countedResubmits: recovery.countedResubmits, ageMs: now - recovery.submittedAtMs,
+          });
+          continue;
+        }
         // No await between the ownership/receipt checks and this write: an
         // owner keystroke cannot race the decision. Never rewrite the payload.
         child.write('\r');
         recovery.lastResubmitAtMs = now;
         recovery.resubmits++;
+        if (decision.counted) recovery.countedResubmits++;
         appendHostEvent(ownerId, 'submit-verify-recovery-resubmit', {
           deliveryId, childGeneration, resubmits: recovery.resubmits,
-          quotaBlocked: quotaBlockDetector.isBlocked(), authBlocked: authBlockDetector.isBlocked(),
+          countedResubmits: recovery.countedResubmits, quotaBlocked, authBlocked,
         });
       }
     } finally {
@@ -16026,7 +16255,15 @@ export function hostThroughPty(o) {
             operationId, recoveryOwnerId: ownerId, startedAtMs: now,
             cause: 'quota', accountRoutingMode: 'auto', automatic: true,
           });
-          await recycleChild('', { quotaRecovery: { operationId, ownerId, startedAtMs: now, cause: 'quota' } });
+          const result = await recycleChild('', { quotaRecovery: { operationId, ownerId, startedAtMs: now, cause: 'quota' } });
+          // A transient repair refusal occurs BEFORE stopping the writer. It
+          // must not consume this child's only opportunity forever: the next
+          // discovery tick may use the remaining bounded recovery attempt.
+          // A successful resume, an owner boundary or a post-stop failure still
+          // retains the per-child fence and never replays the owner's prompt.
+          if (result?.delivered === false && result.reason === 'codex-auto-route-unavailable' && child === target) {
+            quotaRecoveryAttemptedChild = null;
+          }
         } catch (error) {
           appendHostEvent(ownerId, 'quota-recovery-dropped', { cause: 'quota', automatic: true,
             reason: 'resume-failed', detail: String(error?.message ?? error).slice(0, 200) });
