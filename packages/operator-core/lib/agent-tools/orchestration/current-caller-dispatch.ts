@@ -24,6 +24,7 @@ import {
 } from '../../endpoint-route/routes/transport/role-principal-caps';
 import { ToolDispatchError, unwrapToolResult, type ToolResult } from '@papercusp/tooldef';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { resolveHarnessScope } from '../_harness-scope';
 import {
   applyNestedProjection,
   nestedProjectionContext,
@@ -55,10 +56,12 @@ function acceptanceCall(name: string, input: unknown, ctx: UnifiedToolContext) {
     (name === 'plans:set-plan-status' && (args?.status === 'shipped' || args?.status === 'done'));
   if ((!evaluation && !dependent) || !args) return undefined;
   const slugs = typeof args.slug === 'string' ? [args.slug] : Array.isArray(args.slugs) ? args.slugs : [];
+  const harnessScope = resolveHarnessScope(typeof args.harness === 'string' ? args.harness : undefined, ctx);
+  const harnessIdentity = harnessScope.kind === 'harness' ? `harness:${harnessScope.slug}` : harnessScope.kind;
   return {
     evaluation,
     keys: slugs.filter((slug): slug is string => typeof slug === 'string').map(slug =>
-      JSON.stringify([ctx.workspaceId, args.harness ?? ctx.harnessSlug, slug])),
+      JSON.stringify([ctx.workspaceId, harnessIdentity, slug])),
   };
 }
 
