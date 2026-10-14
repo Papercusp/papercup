@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({ session: vi.fn(), membership: vi.fn(), audit: 
 vi.mock('../auth/hosted-session', () => ({ HostedSessionStore: class { resolveForUpdate = mocks.session; } }));
 vi.mock('../auth/hosted-membership-authority', () => ({ PostgresHostedMembershipAuthority: class { resolveActiveForUpdate = mocks.membership; } }));
 vi.mock('../auth/hosted/governance', () => ({ appendOrganizationAuditEvent: mocks.audit }));
-import { admitHostedCustomerDeletion } from './hosted-customer-data';
+import { admitHostedCustomerDeletion, createHostedCustomerDeletionRequester } from './hosted-customer-data';
 
 const principal = createHostedPrincipal({ workspaceId: 'control', userId: 'u-1', activeOrganizationId: 'o-1',
   sessionId: 's-1', sessionVersion: 7, permissions: ['workspace:view', 'workspace:destroy'] });
@@ -27,6 +27,46 @@ beforeEach(() => {
 });
 
 describe('hosted customer deletion admission (P-010)', () => {
+  it('commits the immutable admission before sending its server-derived request to DBOS', async () => {
+    const order: string[] = [];
+    const enqueueCustomerDeletion = vi.fn(async request => {
+      expect(order).toEqual(['admitted', 'committed']);
+      expect(request).toMatchObject({ organizationId: 'o-1', requestedBy: 'u-1', target: { kind: 'organization' }, policy });
+      order.push('enqueued');
+      return { operationId: request.operationId };
+    });
+    const requestDeletion = createHostedCustomerDeletionRequester({
+      runService: async fn => { const request = await fn(tx); order.push('admitted', 'committed'); return request; },
+      resolveApprovedPolicy: async () => policy, enqueueCustomerDeletion,
+    });
+    const result = await requestDeletion(principal, { kind: 'organization', confirmation: 'DELETE ORGANIZATION' });
+    expect(result.operationId).toEqual(enqueueCustomerDeletion.mock.calls[0]?.[0].operationId);
+    expect(order).toEqual(['admitted', 'committed', 'enqueued']);
+  });
+
+  it('does not enqueue after a failed commit or a pending policy', async () => {
+    const enqueueCustomerDeletion = vi.fn();
+    const options = { runService: async <T>(fn: (sql: Sql) => Promise<T>): Promise<T> => {
+      await fn(tx); throw new Error('commit-failed');
+    }, resolveApprovedPolicy: async () => policy, enqueueCustomerDeletion };
+    await expect(createHostedCustomerDeletionRequester(options)(principal,
+      { kind: 'organization', confirmation: 'DELETE ORGANIZATION' })).rejects.toThrow('commit-failed');
+    await expect(createHostedCustomerDeletionRequester({ ...options, resolveApprovedPolicy: async () => null })(principal,
+      { kind: 'organization', confirmation: 'DELETE ORGANIZATION' })).rejects.toThrow('retention_policy_pending');
+    expect(enqueueCustomerDeletion).not.toHaveBeenCalled();
+  });
+
+  it('preserves the admitted operation receipt on queue failure and rejects a mismatched queue identity', async () => {
+    const options = { runService: async <T>(fn: (sql: Sql) => Promise<T>) => fn(tx),
+      resolveApprovedPolicy: async () => policy, enqueueCustomerDeletion: vi.fn(async () => { throw new Error('queue-unavailable'); }) };
+    const input = { kind: 'organization' as const, confirmation: 'DELETE ORGANIZATION' };
+    await expect(createHostedCustomerDeletionRequester(options)(principal, input)).rejects.toThrow('queue-unavailable');
+    expect(mocks.audit).toHaveBeenCalledOnce();
+    await expect(createHostedCustomerDeletionRequester({ ...options,
+      enqueueCustomerDeletion: async () => ({ operationId: 'different' }) })(principal, input))
+      .rejects.toThrow('customer_deletion_enqueue_identity_mismatch');
+  });
+
   it('derives scope and actor from the current authenticated account and writes a request receipt', async () => {
     const request = await admitHostedCustomerDeletion(tx, principal,
       { kind: 'organization', confirmation: 'DELETE ORGANIZATION' }, async () => policy);

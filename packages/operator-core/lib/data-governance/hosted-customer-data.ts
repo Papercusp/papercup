@@ -9,6 +9,7 @@ import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-aut
 import { appendOrganizationAuditEvent } from '../auth/hosted/governance';
 import type { HostedOrganizationRole } from '../auth/hosted-role-permissions';
 import type { HostedCustomerDeletionPolicy, HostedCustomerDeletionRequest } from './hosted-customer-deletion';
+import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import { exportOrganizationData, type OrganizationDataExport } from './organization-data-receipts';
 
 export class HostedCustomerDataAuthorizationError extends Error {
@@ -66,6 +67,23 @@ export class HostedCustomerDeletionAdmissionError extends Error {
   constructor(readonly code: 'confirmation_required' | 'retention_policy_pending' | 'transfer_organization_ownership_required') {
     super(code);
   }
+}
+
+/** Request-only composition: the admission receipt must COMMIT before an
+ * independent DBOS executor can see the queued workflow. No workflow execution
+ * or provider mutation takes place in the browser process. Queue failures leave
+ * the immutable operation receipt available for operator recovery. */
+export function createHostedCustomerDeletionRequester(options: {
+  runService: HostedServiceContextRunner;
+  resolveApprovedPolicy: () => Promise<HostedCustomerDeletionPolicy | null>;
+  enqueueCustomerDeletion: (request: HostedCustomerDeletionRequest) => Promise<{ operationId: string }>;
+}) {
+  return async (principal: HostedPrincipal, input: { kind: 'organization' | 'user'; confirmation: string }) => {
+    const request = await options.runService(tx => admitHostedCustomerDeletion(tx, principal, input, options.resolveApprovedPolicy));
+    const queued = await options.enqueueCustomerDeletion(request);
+    if (queued.operationId !== request.operationId) throw new Error('customer_deletion_enqueue_identity_mismatch');
+    return { operationId: request.operationId };
+  };
 }
 
 /** Read-side admission and immutable request receipt in the caller's service

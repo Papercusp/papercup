@@ -21,6 +21,7 @@ import type { RefusalContract } from '../../../capability-envelope/refusal-contr
 import { createHash } from 'node:crypto';
 import { postStripeForm } from '../../../cupboard/payment-adapters/stripe';
 import type { StripeBalanceTransaction } from '../../../cupboard/money-journal-producers';
+import { parseHostedBillingEvent, type HostedBillingEvent } from './stripe-billing-events';
 
 export const STRIPE_API_BASE = 'https://api.stripe.com/v1';
 
@@ -39,6 +40,10 @@ export type StripeBillingCallResult<T> =
 
 export interface StripeBillingClient {
   readonly livemode: boolean;
+  /** One bounded recovery page for a server-recorded customer. API object
+   * digests are observation provenance, NEVER original webhook byte digests.
+   * The caller owns durable cursor advancement and transactional application. */
+  readBillingEventPage(input: StripeBillingEventPagePin, signal?: AbortSignal): Promise<StripeBillingCallResult<{ evidence: StripeBillingEventPageEvidence }>>;
   /** Read-only provider evidence. This is NOT a payment/reversal census or
    * transaction-bound funding authority; it must be reconciled with those. */
   readAccountCash(input: {
@@ -92,6 +97,39 @@ export interface StripeBillingClient {
     /** `bpc_…`; absent = Stripe's dashboard default configuration (which must then exist). */
     configurationId?: string | null;
   }): Promise<StripeBillingCallResult<{ url: string }>>;
+}
+
+export interface StripeBillingEventPagePin {
+  readonly accountId: string;
+  readonly customerId: string;
+  readonly organizationId: string;
+  /** Fixed half-open provider-created window, in whole Unix seconds. Stripe
+   * retains event history for a limited time; this is not a lifetime census. */
+  readonly createdFrom: number;
+  readonly createdBefore: number;
+  readonly startingAfter?: string;
+  readonly limit?: number;
+}
+
+export interface StripeBillingEventPageEvidence {
+  readonly source: 'stripe-authenticated-api';
+  readonly accountId: string;
+  readonly customerId: string;
+  readonly organizationId: string;
+  readonly livemode: boolean;
+  readonly createdFrom: number;
+  readonly createdBefore: number;
+  readonly startingAfter: string | null;
+  readonly nextCursor: string | null;
+  readonly hasMore: boolean;
+  readonly observedAtMs: number;
+  readonly requestIds: readonly string[];
+  readonly observations: readonly {
+    readonly event: HostedBillingEvent;
+    /** Digest of the decoded API object, not the signed delivery bytes. */
+    readonly apiObjectDigest: string;
+  }[];
+  readonly evidenceRef: string;
 }
 
 export interface StripeAccountCashEvidence {
@@ -431,6 +469,60 @@ export function createStripeBillingClient(input: {
 
   const client: StripeBillingClient = {
     livemode: mode === 'live',
+
+    async readBillingEventPage(input, signal) {
+      // Snapshot caller-owned inputs before asynchronous scope reads.
+      const { accountId, customerId, organizationId, createdFrom, createdBefore, startingAfter, limit = 100 } = input;
+      if (!Number.isSafeInteger(createdFrom) || createdFrom < 0 ||
+          !Number.isSafeInteger(createdBefore) || createdBefore <= createdFrom || createdBefore > 8_640_000_000_000 ||
+          !Number.isSafeInteger(limit) || limit < 1 || limit > 100 ||
+          (startingAfter !== undefined && !/^evt_[A-Za-z0-9]+$/.test(startingAfter))) {
+        return malformed(0, 'invalid stripe billing recovery window');
+      }
+      const scope = await readScope(accountId, customerId, organizationId, signal);
+      if (!scope.ok) return scope;
+      const query = new URLSearchParams({ limit: String(limit), 'created[gte]': String(createdFrom), 'created[lt]': String(createdBefore) });
+      if (startingAfter) query.set('starting_after', startingAfter);
+      const result = await get(`/events?${query}`, signal);
+      if (!result.ok) return result;
+      const { data, has_more: hasMore } = result.body;
+      if (result.body.object !== 'list' || !Array.isArray(data) || data.length > limit || typeof hasMore !== 'boolean' ||
+          (hasMore && data.length === 0) || (result.body.url !== undefined && result.body.url !== '/v1/events')) {
+        return malformed(result.status, 'incomplete stripe billing recovery page');
+      }
+      const observations: { event: HostedBillingEvent; apiObjectDigest: string }[] = [];
+      const seen = new Set<string>();
+      let lastCreated = createdBefore;
+      let lastId: string | null = null;
+      for (const raw of data) {
+        if (!object(raw) || raw.object !== 'event' || typeof raw.id !== 'string' || !/^evt_[A-Za-z0-9]+$/.test(raw.id) ||
+            seen.has(raw.id) || raw.id === startingAfter || raw.livemode !== (mode === 'live') ||
+            (raw.account !== undefined && raw.account !== accountId) ||
+            !Number.isSafeInteger(raw.created) || (raw.created as number) < createdFrom ||
+            (raw.created as number) >= createdBefore || (raw.created as number) > lastCreated) {
+          return malformed(result.status, 'invalid stripe billing recovery event');
+        }
+        const encoded = JSON.stringify(raw);
+        const parsed = parseHostedBillingEvent(encoded);
+        if (!parsed.ok) return malformed(result.status, 'unusable stripe billing recovery event');
+        seen.add(raw.id); lastId = raw.id; lastCreated = raw.created as number;
+        const facts = parsed.event.facts;
+        // /events has no customer filter. Advance across unrelated events,
+        // but never return their data as this customer's repair authority.
+        if (!facts.some(fact => fact.stripeCustomerId === customerId)) continue;
+        if (facts.some(fact => fact.stripeCustomerId !== customerId ||
+            (fact.organizationId !== null && fact.organizationId !== organizationId))) {
+          return malformed(result.status, 'stripe billing recovery tenant mismatch');
+        }
+        observations.push({ event: parsed.event, apiObjectDigest: createHash('sha256').update(encoded).digest('hex') });
+      }
+      const selected = { source: 'stripe-authenticated-api' as const, accountId, customerId, organizationId,
+        livemode: mode === 'live', createdFrom, createdBefore, startingAfter: startingAfter ?? null,
+        nextCursor: hasMore ? lastId : null, hasMore, observedAtMs: Date.now(),
+        requestIds: [...scope.requestIds, result.requestId], observations };
+      const evidenceRef = `stripe-billing-page:${createHash('sha256').update(JSON.stringify(selected)).digest('hex')}`;
+      return { ok: true, evidence: freezeEvidence({ ...selected, evidenceRef }) };
+    },
 
     async readAccountCash(input, signal) {
       const { accountId, customerId, organizationId } = input;

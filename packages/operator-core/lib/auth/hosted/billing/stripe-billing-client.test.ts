@@ -120,6 +120,118 @@ describe('stripeKeyMode / live-mode gate', () => {
   });
 });
 
+describe('authenticated billing recovery event pages (P-016)', () => {
+  const pin = { accountId: 'acct_Recovery', customerId: 'cus_Recovery', organizationId: ORG,
+    createdFrom: 1_790_000_000, createdBefore: 1_790_000_100, limit: 2 };
+  const account = { object: 'account', id: pin.accountId };
+  const customer = { object: 'customer', id: pin.customerId, livemode: false, metadata: { organizationId: ORG } };
+  const event = (id = 'evt_Recovery', created = pin.createdBefore - 1) => ({
+    object: 'event', id, type: 'customer.subscription.updated', created, livemode: false,
+    data: { object: { id: 'sub_Recovery', customer: pin.customerId, status: 'active',
+      metadata: { organizationId: ORG }, items: { data: [{ price: { id: 'price_team' } }] },
+      customer_email: 'private@example.test', description: 'private customer data' } },
+  });
+  const page = (data: unknown[], has_more = false) => ({ object: 'list', url: '/v1/events', data, has_more });
+  function reader(bodies: unknown[], options: { noRequestIdAt?: number; statusAt?: number } = {}) {
+    let index = 0;
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => {
+      const current = index++;
+      return new Response(JSON.stringify(bodies[current] ?? {}), {
+        status: options.statusAt === current ? 503 : 200,
+        headers: options.noRequestIdAt === current ? {} : { 'request-id': `req_Recovery${current}` },
+      });
+    });
+    const built = createStripeBillingClient({ secretKey: 'sk_test_recovery', fetchImpl, liveModeAllowed: false });
+    if (!built.ok) throw new Error('fixture');
+    return { client: built.client, fetchImpl };
+  }
+
+  it('reads a fixed window with authenticated provenance and a cursor across unrelated customer events', async () => {
+    const own = event();
+    const unrelated = event('evt_Other', own.created - 1);
+    unrelated.data.object.customer = 'cus_Other';
+    unrelated.data.object.metadata.organizationId = '22222222-2222-4333-8444-555555555555';
+    const r = reader([account, customer, page([own, unrelated], true), account, customer, page([])]);
+    const first = await r.client.readBillingEventPage(pin);
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error('fixture');
+    expect(first.evidence).toMatchObject({ source: 'stripe-authenticated-api', accountId: pin.accountId,
+      customerId: pin.customerId, organizationId: ORG, startingAfter: null, nextCursor: unrelated.id,
+      hasMore: true, requestIds: ['req_Recovery0', 'req_Recovery1', 'req_Recovery2'],
+      observations: [{ event: { eventId: own.id, facts: [{ organizationId: ORG }] },
+        apiObjectDigest: createHash('sha256').update(JSON.stringify(own)).digest('hex') }],
+      evidenceRef: expect.stringMatching(/^stripe-billing-page:[a-f0-9]{64}$/) });
+    expect(first.evidence.observations).toHaveLength(1);
+    expect(Object.isFrozen(first.evidence.observations)).toBe(true);
+    const serialized = JSON.stringify(first.evidence);
+    for (const privateValue of ['private@example.test', 'private customer data', 'sk_test_recovery', 'bodyDigest', 'signature']) {
+      expect(serialized).not.toContain(privateValue);
+    }
+    expect(await r.client.readBillingEventPage({ ...pin, startingAfter: first.evidence.nextCursor! }))
+      .toMatchObject({ ok: true, evidence: { hasMore: false, nextCursor: null, observations: [] } });
+    const urls = r.fetchImpl.mock.calls.map(([url]) => new URL(String(url)));
+    expect(urls[2]!.pathname).toBe('/v1/events');
+    expect(Object.fromEntries(urls[2]!.searchParams)).toEqual({ limit: '2',
+      'created[gte]': String(pin.createdFrom), 'created[lt]': String(pin.createdBefore) });
+    expect(urls[5]!.searchParams.get('starting_after')).toBe(unrelated.id);
+    for (const [, init] of r.fetchImpl.mock.calls) expect(init).toMatchObject({ method: 'GET', redirect: 'error',
+      headers: { authorization: 'Bearer sk_test_recovery' } });
+  });
+
+  it.each([
+    { createdFrom: -1 }, { createdFrom: 0.1 }, { createdBefore: pin.createdFrom },
+    { createdBefore: Infinity }, { createdBefore: 8_640_000_000_001 }, { limit: 0 }, { limit: 101 },
+    { startingAfter: 'evt_bad/path' },
+  ])('rejects invalid recovery bounds before transport: %j', async change => {
+    const r = reader([]);
+    expect(await r.client.readBillingEventPage({ ...pin, ...change })).toMatchObject({ ok: false });
+    expect(r.fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ ...account, id: 'acct_Other' }, customer],
+    [account, { ...customer, id: 'cus_Other' }],
+    [account, { ...customer, livemode: true }],
+    [account, { ...customer, metadata: { organizationId: 'other' } }],
+  ])('refuses account/customer/mode/tenant scope before event retrieval', async (first, second) => {
+    const r = reader([first, second, page([event()])]);
+    expect(await r.client.readBillingEventPage(pin)).toMatchObject({ ok: false });
+    expect(r.fetchImpl.mock.calls.some(([url]) => String(url).includes('/events?'))).toBe(false);
+  });
+
+  it.each([
+    page([], true), { ...page([]), has_more: 'false' }, { ...page([]), url: '/v1/charges' },
+    page([event(), event('evt_B'), event('evt_C')]), page([event(), event()]),
+    page([event('evt_Low', pin.createdFrom), event('evt_High')]),
+    page([{ ...event(), object: 'customer' }]), page([{ ...event(), account: 'acct_Other' }]),
+    page([{ ...event(), livemode: true }]), page([event('evt_Old', pin.createdFrom - 1)]),
+    page([event('evt_New', pin.createdBefore)]), page([{ ...event(), created: 1.5 }]),
+    page([{ ...event(), id: 'evt_bad/path' }]), page([{ ...event(), data: null }]),
+    page([{ ...event(), data: { object: { ...event().data.object, metadata: { organizationId: '22222222-2222-4333-8444-555555555555' } } } }]),
+  ])('discards the entire page on malformed, overlapping or foreign evidence', async body => {
+    const r = reader([account, customer, body]);
+    const result = await r.client.readBillingEventPage(pin);
+    expect(result).toMatchObject({ ok: false, code: 'malformed-response' });
+    expect(result).not.toHaveProperty('evidence');
+  });
+
+  it('refuses a non-advancing cursor and missing request provenance', async () => {
+    const r = reader([account, customer, page([event()])]);
+    expect(await r.client.readBillingEventPage({ ...pin, startingAfter: event().id })).toMatchObject({ ok: false });
+    const missing = reader([account, customer, page([event()])], { noRequestIdAt: 2 });
+    expect(await missing.client.readBillingEventPage(pin)).toMatchObject({ ok: false });
+  });
+
+  it('returns a fixed provider failure and honors cancellation without leaking response content', async () => {
+    const r = reader([account, customer, { private: 'private@example.test sk_test_recovery' }], { statusAt: 2 });
+    const result = await r.client.readBillingEventPage(pin);
+    expect(result).toEqual({ ok: false, code: 'provider-error', status: 503, detail: 'stripe authenticated read failed' });
+    const canceled = reader([]); const abort = new AbortController(); abort.abort();
+    expect(await canceled.client.readBillingEventPage(pin, abort.signal)).toMatchObject({ ok: false, code: 'provider-error' });
+    expect(canceled.fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 describe('requests', () => {
   function client(responses: Array<{ status?: number; body: unknown }>) {
     const fake = fakeFetch(responses);
