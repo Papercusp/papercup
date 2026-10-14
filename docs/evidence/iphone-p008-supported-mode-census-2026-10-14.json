@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "kind": "acceptance-coverage-census",
+  "workItemId": "WI-10004735",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "planItemId": "P-008",
+  "spec": "AUTO-BAR-R-2-P-008@2",
+  "scope": "Current source and retained simulator subsets; this census does not close the whole R-2 live acceptance bar.",
+  "source": {
+    "repository": "papercup-rust-mobile",
+    "commit": "b264f57cbdaaafa0f7e2c7ca7f7e547b4a2275a8",
+    "dirty": false,
+    "fingerprint": "1038f28b436acd0361508fcfefa1fe8067c2bfac0faa728b5f317e5bed8bdacf"
+  },
+  "supportedModes": [
+    {
+      "mode": "Desktop operator on LAN or protected public HTTPS",
+      "advertised": true,
+      "evidence": "Current PairView.swift and store/LISTING.md; native visible LAN pairing/reply/relaunch and public HTTPS authorized Inbox receipts retained separately.",
+      "limit": "The public HTTPS native result does not exercise operator chat."
+    },
+    {
+      "mode": "BYOC or hosted cloud workspace through advertised relay",
+      "advertisedInAppGuidance": true,
+      "advertisedInReleaseListing": false,
+      "evidence": "PairView names cloud workspace; Credentials parses baseUrls kind relay. LISTING and APP-STORE-REVIEW retain explicit pending cloud sections. Native controlled relay UI is verified.",
+      "limit": "A controlled NWListener relay is not an accepted live hosted/BYOC target. P-016 remains blocked on WI-10006956 and target/custody admission."
+    },
+    {
+      "mode": "In-app account signup or paid subscription",
+      "advertised": false,
+      "evidence": "ios/README.md says the app does not create a hosted account or sell a subscription; APP-STORE-REVIEW says no public sign-up or paid features.",
+      "limit": "This copy census does not certify platform-side cloud billing/entitlements."
+    },
+    {
+      "mode": "Optional ElevenLabs cloud voice",
+      "advertised": true,
+      "evidence": "LISTING and APP-STORE-REVIEW require explicit consent; retained unit tests cover default denied, grant persistence and revoke.",
+      "limit": "Consent unit tests do not prove a live cloud voice journey."
+    }
+  ],
+  "copyGuard": {
+    "command": "make test-store-cloud-pending",
+    "exitCode": 0,
+    "result": "PASS with 7 rejecting controls",
+    "framework": "Maintained Makefile check target tools/tests/store-cloud-pending-test.sh",
+    "runOnCommit": "b264f57cbdaaafa0f7e2c7ca7f7e547b4a2275a8"
+  },
+  "retainedNativeCloudProof": {
+    "receipt": "docs/evidence/iphone-p008-native-cloud-ui-2026-10-14.json",
+    "nativeJobId": "0mv81k6r19sd6h51u4z",
+    "unitPassed": 60,
+    "uiPassed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "artifactHashSizeMatches": 230,
+    "proofScope": "Native app with controlled loopback relay, not a live cloud deployment",
+    "executedSourceFingerprint": "a1461312f610358aaca978e0e23ab684d9e49c859ec5b01481aa69afeff064a2",
+    "unchangedNamedFiles": "Current PairView, Credentials, SettingsView, DesktopRouteTests and CloudWorkspaceOfflineUITests bytes equal verified committed mobile 0d96db6cd7c1d671dddbf39904b778c1235f9848; complete current mobile fingerprint differs."
+  },
+  "acceptanceRows": [
+    {
+      "row": 1,
+      "journey": "Clean installation and current pairing instructions",
+      "status": "partial",
+      "observed": "Native fresh-launch choices and current Remote access/cloud wording passed with wiped credentials.",
+      "remaining": "Census has not independently established actual uninstall/reinstall behavior."
+    },
+    {
+      "row": 2,
+      "journey": "Visible LAN pairing and real operator reply",
+      "status": "retained-passed-subset",
+      "evidence": "WI-10007213-native-paired-20261014T064302Z-89effcd2",
+      "remaining": "Preserve exact historical source identity; do not rerun merely to reconstruct the receipt."
+    },
+    {
+      "row": 3,
+      "journey": "Supported public HTTPS pairing, workspace and chat",
+      "status": "partial",
+      "evidence": "docs/evidence/iphone-p008-native-public-https-2026-10-14.json; testRunId 21244733; binding 44553",
+      "observed": "Actual iOS URLSession protected 404/401 boundaries, visible pairing and authorized Inbox passed.",
+      "remaining": "Actual public HTTPS operator chat and production hostname configuration EI-25946131547854574."
+    },
+    {
+      "row": 4,
+      "journey": "Ordinary relaunch retains authorized Keychain pairing",
+      "status": "retained-passed-subset",
+      "evidence": "WI-10007213-native-paired-20261014T064302Z-89effcd2",
+      "remaining": "No additional relaunch rerun is required to preserve this executed subset."
+    },
+    {
+      "row": 5,
+      "journey": "Disconnect owned operator and automatic recovery",
+      "status": "partial",
+      "observed": "Controlled relay workspace_offline and transport failure recovered without re-pairing in native UI.",
+      "remaining": "Equivalent live owned operator stop/restore journey."
+    },
+    {
+      "row": 6,
+      "journey": "Real backend revocation, negative reads and fresh pairing",
+      "status": "partial",
+      "evidence": "docs/evidence/iphone-p008-native-revocation-2026-10-14.json; testRunId 21244211; binding 44412",
+      "observed": "Native real revocation, Pair again, Keychain clearing through ordinary relaunch and fresh device identity passed.",
+      "remaining": "Reconcile existing backend authorization proof 21243583/binding 44242 before claiming explicit read/switch coverage; do not rerun passed native revocation."
+    },
+    {
+      "row": 7,
+      "journey": "Expired pair and device credentials",
+      "status": "not-established-by-this-census",
+      "remaining": "Find or execute exact expiry-negative receipts with fresh-pair recovery against owned current-build backend."
+    },
+    {
+      "row": 8,
+      "journey": "Unauthorized workspace isolation and supported UI switching",
+      "status": "not-established-by-this-census",
+      "remaining": "Reconcile current integration proof and execute any missing native authorized/unauthorized switching journey."
+    },
+    {
+      "row": 9,
+      "journey": "Delete and reinstall clears old Keychain pairing",
+      "status": "not-established-by-this-census",
+      "observed": "CredentialStore has resetIfFreshInstall and native unit guards.",
+      "remaining": "Actual uninstall/reinstall native journey; ordinary process relaunch is a different case."
+    },
+    {
+      "row": 10,
+      "journey": "Advertised hosted/account/paid modes match copy",
+      "status": "partial",
+      "observed": "No in-app account or paid feature is promised; pending cloud copy guard passed; native controlled relay label/recovery is verified.",
+      "remaining": "Accepted live hosted/BYOC target and relevant platform entitlement evidence. P-016 typed dependency is preserved."
+    }
+  ],
+  "acceptanceGovernance": {
+    "rubric": "acceptance-iphone-public-release-2026-08-11",
+    "revision": 3,
+    "vetting": "unvetted",
+    "reason": "rejected-attestation: grading-audit-unsettled",
+    "candidate": "EI-24782775335411324",
+    "note": "Current rubric read is authoritative; candidate work item is done but grade-the-grader audit remains reported pending. No acceptance grade was asserted."
+  },
+  "disclosedGaps": [
+    "No physical cellular-radio or production APNs claim",
+    "No signed IPA, store submission or shipment claim",
+    "No rerun of completed native jobs",
+    "Ledger binding 44553 source currentness is unknown: caller fingerprints are not independent server measurements",
+    "Owner directives 1483 and 1485 remain open"
+  ]
+}
