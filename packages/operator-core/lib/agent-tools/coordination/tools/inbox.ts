@@ -1418,6 +1418,14 @@ export default defineTool({
       ctx as Parameters<typeof verifiedSpawnSessionAlias>[0],
       identity.ownerId,
     );
+    // WI-10005678: a verified role-scoped spawn may be addressed by either its
+    // namespaced principal id or its signed bare session id. The display read
+    // already unions the alias; keep the directed and unanswered views on that
+    // same recipient set so the inbox agrees with turn-start's bare-id owner.
+    const readerOwnerIds = [
+      identity.ownerId,
+      ...(sessionAlias && sessionAlias !== identity.ownerId ? [sessionAlias] : []),
+    ];
     const all = sessionAlias
       ? mergeInboxEntries(
           ownInbox,
@@ -1464,10 +1472,10 @@ export default defineTool({
     // arg descriptions promise and the summary counts below see the final set.
     const directedInput = bySender as unknown as Array<Record<string, unknown>>;
     const broadcastExcluded = directedOnly
-      ? directedInput.filter((e) => !isDirectedDelivery(e, identity.ownerId)).length
+      ? directedInput.filter((e) => !readerOwnerIds.some((readerId) => isDirectedDelivery(e, readerId))).length
       : 0;
     const byDelivery = directedOnly
-      ? (directedInput.filter((e) => isDirectedDelivery(e, identity.ownerId)) as unknown as typeof bySender)
+      ? (directedInput.filter((e) => readerOwnerIds.some((readerId) => isDirectedDelivery(e, readerId))) as unknown as typeof bySender)
       : bySender;
 
     // EI-13159: unanswered_only — narrow to exactly the msg_ids fleet:assignments'
@@ -1482,11 +1490,13 @@ export default defineTool({
       try {
         const unansweredMap = await measureInboxPhase(
           "unanswered-directed-lookup",
-          () => fetchUnansweredDirected([identity.ownerId], {
+          () => fetchUnansweredDirected(readerOwnerIds, {
             perRecipientCap: UNANSWERED_FILTER_CAP,
           }),
         );
-        unansweredMsgIds = replyOwedMessageIds(unansweredMap.get(identity.ownerId)?.newest ?? []);
+        unansweredMsgIds = replyOwedMessageIds(
+          readerOwnerIds.flatMap((readerId) => unansweredMap.get(readerId)?.newest ?? []),
+        );
       } catch {
         unansweredMsgIds = new Set();
         unansweredLookupFailed = true;
