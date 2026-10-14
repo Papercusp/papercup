@@ -137,11 +137,9 @@ export const ALLOW_COUNTS = new Map([
   ['scripts/check-sql-guidance-justified.mjs|file-url-to-path', 1],
   ['scripts/check-undrained-stdout-exit.mjs|file-url-to-path', 1],
   ['scripts/check-vimock-export-strands.mjs|file-url-to-path', 1],
-  ['scripts/check-vitest-config-enrollment.mjs|file-url-to-path', 1],
   ['scripts/content-lint-runner.mjs|file-url-to-path', 1],
   ['scripts/gen-declarations.ts|file-url-to-path', 1],
   ['scripts/test-files.mjs|file-url-to-path', 1],
-  ['scripts/workspace-test.mjs|file-url-to-path', 1],
 ]);
 
 /**
