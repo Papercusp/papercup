@@ -26,6 +26,15 @@
    `net:[4026542757]`. The directed mail is still unread because this session cannot read
    `coord:inbox`.
 
+5. At 13:40Z the network route came back and `mcp-call.mjs` worked. The audit is still blocked,
+   now for a different reason. `scorecards:get` reads pending and current, but
+   `dispatchReservation.reservedAt` is `2026-10-14T12:43:31.020Z`. That is not the kickoff lease and
+   not the 12:43:21Z "Resume retained" notice, which both say 12:26:14.499Z. The inbox from
+   06:40 to 13:43Z has no "Renewed grading-audit lease" notice, so the start rule says stop.
+   The evidence is a comment on EI-25962558306827679, which already tracks this bug; the
+   tool-loss bug is EI-25962516755434135. The reply to su-2245b010 is msg
+   coord-send-f6aa6854…deee3.
+
 ## Consequence
 
 - The currentness guard (`scorecard.gradingAuditCurrentness.state`) could not be read. Per the

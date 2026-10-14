@@ -22,6 +22,7 @@ import { toast } from 'sonner';
 import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
 import { Modal } from '@/app/harness/Modal';
+import { Table } from '@/app/harness/Table';
 import type { DiskReclaimReceipt } from '@papercusp/operator-core/lib/storage/disk-reclaim';
 
 /* ── Wire types — mirror StorageUsageRow / PruneResult (operator-core/lib/storage). ── */
@@ -235,10 +236,16 @@ export default function StorageSettingsPage() {
         {receiptError && <p role="alert">{receiptError}</p>}
         {receipt && <>
           <p>{receipt.finishedAt} · {receipt.dryRun ? 'Preview' : 'Cleanup'} · {receipt.complete ? 'Complete' : 'Partial'}</p>
-          <table><thead><tr><th>Disk</th><th>Free before</th><th>Free after</th></tr></thead>
-            <tbody>{receipt.devices.map((d) => <tr key={d.path}><td>{d.path}</td>
-              <td>{d.beforeFreeBytes === null ? 'Unknown' : formatBytes(d.beforeFreeBytes)}</td>
-              <td>{d.afterFreeBytes === null ? 'Unknown' : formatBytes(d.afterFreeBytes)}</td></tr>)}</tbody></table>
+          <Table
+            ariaLabel="Disk space before and after cleanup"
+            rows={receipt.devices}
+            getRowKey={(device) => device.path}
+            columns={[
+              { key: 'disk', header: 'Disk', render: (device) => device.path },
+              { key: 'before', header: 'Free before', render: (device) => device.beforeFreeBytes === null ? 'Unknown' : formatBytes(device.beforeFreeBytes) },
+              { key: 'after', header: 'Free after', render: (device) => device.afterFreeBytes === null ? 'Unknown' : formatBytes(device.afterFreeBytes) },
+            ]}
+          />
           <ul>{receipt.entries.map((e, i) => <li key={e.path + i}>{e.path} · {e.status} · {formatBytes(e.bytes)}{e.reason ? ' · ' + e.reason : ''}</li>)}</ul>
           {receipt.delegates.map((d, i) => <details key={d.classId + i}><summary>{d.classId}: {d.ok ? 'Complete' : 'Failed'}</summary><pre>{JSON.stringify(d.detail, null, 2)}</pre></details>)}
           {receipt.errors.length > 0 && <p role="alert">{receipt.errors.join('; ')}</p>}

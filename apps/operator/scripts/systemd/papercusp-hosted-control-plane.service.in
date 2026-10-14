@@ -8,10 +8,12 @@
 #
 # What boots: `bin/serve.ts` under PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane,
 # i.e. ONLY the audited `/api` allowlist (hosted-runtime.ts) plus the same-origin
-# SPA — never the local operator handler. External Postgres is attached
-# (PAPERCUSP_USE_EMBEDDED_PG=0) via the operator checkout's .env.local.
+# SPA — never the local operator handler. External Postgres is attached with
+# PAPERCUSP_USE_EMBEDDED_PG=0. Development reads the checkout's .env.local;
+# --production-release reads only the injected hosted env file, pins the explicit
+# production database policy and verifies the prebuilt bundle before every start.
 #
-# Secrets are NOT in this unit. The hosted env file carries only non-secret
+# Secrets are NOT in this unit. The injected hosted env file carries database
 # configuration plus `integration:NAME` references that the runtime resolves
 # from the encrypted operator_integration_credentials store at point of use.
 [Unit]
@@ -26,8 +28,8 @@ Type=simple
 WorkingDirectory=@OPERATOR_ROOT@
 Environment=NODE_ENV=production
 Environment=BUNDLE_HOST_OPERATOR_DIR=@OPERATOR_ROOT@
-Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1
-ExecStartPre=/usr/bin/bash @OPERATOR_ROOT@/scripts/systemd/papercusp-script-snapshot.sh @OPERATOR_ROOT@/bin/bundle-host.sh bin/serve.ts dist-hosted-control-plane/serve.mjs
+@BUNDLE_POLICY@
+@BUNDLE_PRE_START@
 Environment=PAPERCUSP_INTEGRATION_ROOT=@REPO_ROOT@
 # In-app brains use the maintained inference gateway's account pool. Without
 # these existing route selectors, isolated Codex/Claude children inherit the
@@ -54,7 +56,7 @@ Environment=PATH=@NODE_DIR@:%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/lo
 # so it is derived at exec time instead of copying a DB credential into a second
 # file (`$$` is systemd escaping — bash receives a literal `$`). The app-role URL
 # resolves from that pin (libs/papercusp/libs/db/src/connection.ts, WI-7424).
-ExecStart=/usr/bin/bash -c 'set -a; [ -f .env.local ] && . ./.env.local; [ -f "@HOSTED_ENV_FILE@" ] && . "@HOSTED_ENV_FILE@"; set +a; export HARNESS_ADMIN_DATABASE_URL="$${HARNESS_ADMIN_DATABASE_URL:-$$DATABASE_URL}" PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane PAPERCUSP_ENV_OPERATOR_ID=hosted-control-plane PAPERCUSP_USE_EMBEDDED_PG=0 PAPERCUSP_HONO_PORT=@PORT@ PAPERCUSP_BIND_HOST=127.0.0.1 PAPERCUSP_BACKGROUND_WORKERS=0; exec node dist-hosted-control-plane/serve.mjs'
+@HOSTED_EXEC_START@
 Restart=on-failure
 RestartSec=3s
 TimeoutStartSec=180s

@@ -73,13 +73,15 @@ OPTIONAL_LABEL_NAMES=(
 REQUIRED_NAMES=("${LITERAL_NAMES[@]}" "${REF_NAMES[@]}")
 
 MODE="render-only"
+PRODUCTION_RELEASE=""
 
 log() { printf 'hosted-control-plane: %s\n' "$*"; }
 die() { printf 'hosted-control-plane: ERROR: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-Usage: deploy-hosted-control-plane.sh [--render-only|--check-env|--install-only]
+Usage: deploy-hosted-control-plane.sh [--render-only|--check-env|--install-only|--check-release]
+                                    [--production-release <full-green-main-sha>]
 
   --render-only  (default) validate inputs and print the rendered unit; do not
                  write or call systemd
@@ -98,6 +100,14 @@ Usage: deploy-hosted-control-plane.sh [--render-only|--check-env|--install-only]
                  the runtime stores verbatim, not a secret reference.
   --install-only atomically install + verify + daemon-reload the unit. Does NOT
                  enable or start it.
+  --production-release <sha>
+                 require a detached, clean checkout at the exact green main pin
+                 and a prebuilt bundle with a valid bundle-host freshness proof.
+                 Render a production boot that sources only the injected hosted
+                 env file and checks the proof again before every start. Build
+                 with PAPERCUSP_BUNDLE_REUSE_FRESH=1 before installing.
+  --check-release validate that production release without writing or starting
+                 anything; requires --production-release.
 
 Environment overrides:
   PAPERCUSP_HOSTED_CP_REPO_ROOT, PAPERCUSP_HOSTED_CP_PORT (default 3880),
@@ -107,13 +117,24 @@ Environment overrides:
 EOF
 }
 
-case "${1:-}" in
-  "" | --render-only) MODE="render-only" ;;
-  --check-env) MODE="check-env" ;;
-  --install-only) MODE="install-only" ;;
-  -h | --help) usage; exit 0 ;;
-  *) usage >&2; exit 2 ;;
-esac
+while (($#)); do
+  case "$1" in
+    --render-only) MODE="render-only" ;;
+    --check-env) MODE="check-env" ;;
+    --install-only) MODE="install-only" ;;
+    --check-release) MODE="check-release" ;;
+    --production-release)
+      [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die "production release requires a full commit SHA"
+      PRODUCTION_RELEASE="$2"; shift ;;
+    -h | --help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [[ "${PAPERCUSP_DEPLOYMENT_ENVIRONMENT:-}" == production || "$MODE" == check-release ]]; then
+  [[ -n "$PRODUCTION_RELEASE" ]] || die "production requires --production-release <full-green-main-sha>"
+fi
 
 [[ -f "$TEMPLATE" ]] || die "template not found: $TEMPLATE"
 [[ -d "$OPERATOR_ROOT" && -f "$OPERATOR_ROOT/bin/serve.ts" ]] || die "operator checkout not found at $OPERATOR_ROOT"
@@ -121,14 +142,71 @@ esac
 [[ -n "$NODE_BIN" && -x "$NODE_BIN" ]] || die "node binary not found (set PAPERCUSP_HOSTED_CP_NODE)"
 NODE_DIR="$(dirname -- "$(readlink -f -- "$NODE_BIN")")"
 
+check_production_release() {
+  local main_sha head_sha value
+  # Same trust anchor as release/deploy.ts gatherPlan: main is written only by
+  # the green-checkpoint. Never accept an arbitrary configurable branch here.
+  main_sha="$(git -C "$REPO_ROOT" rev-parse --verify 'refs/heads/main^{commit}')" || die "green main pin is unavailable"
+  [[ "$main_sha" == "$PRODUCTION_RELEASE" ]] || die "requested production release is not the green main pin"
+  head_sha="$(git -C "$REPO_ROOT" rev-parse --verify 'HEAD^{commit}')" || die "release HEAD is unavailable"
+  [[ "$head_sha" == "$PRODUCTION_RELEASE" ]] || die "release checkout does not match requested SHA"
+  if git -C "$REPO_ROOT" symbolic-ref -q HEAD >/dev/null; then
+    die "production requires a detached release checkout"
+  fi
+  # These paths become both shell and systemd syntax. Refuse unsafe bytes
+  # before rendering instead of letting a path change the generated command.
+  for value in "$REPO_ROOT" "$HOSTED_ENV_FILE" "$NODE_BIN"; do
+    [[ "$value" =~ ^/[a-zA-Z0-9_./:@+-]+$ ]] || die "production paths must be absolute and contain no shell/systemd metacharacters"
+  done
+  [[ ! -e "$OPERATOR_ROOT/dist-hosted-control-plane/.bundle-stale.json" ]] || die "production bundle is marked stale"
+  "$NODE_BIN" "$OPERATOR_ROOT/bin/bundle-host-freshness.mjs" check \
+    --repo-root "$REPO_ROOT" --entry "$OPERATOR_ROOT/bin/serve.ts" \
+    --outfile "$OPERATOR_ROOT/dist-hosted-control-plane/serve.mjs" \
+    --manifest "$OPERATOR_ROOT/dist-hosted-control-plane/.bundle-fresh.json" >/dev/null \
+    || die "production bundle freshness proof failed"
+}
+
+[[ -z "$PRODUCTION_RELEASE" ]] || check_production_release
+
+render_boot() {
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      @BUNDLE_POLICY@)
+        if [[ -n "$PRODUCTION_RELEASE" ]]; then
+          printf '%s\n' 'Environment=PAPERCUSP_DEPLOYMENT_ENVIRONMENT=production'
+        else
+          printf '%s\n' 'Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1'
+        fi ;;
+      @BUNDLE_PRE_START@)
+        if [[ -n "$PRODUCTION_RELEASE" ]]; then
+          printf '%s\n' "ExecStartPre=/usr/bin/bash @OPERATOR_ROOT@/scripts/systemd/deploy-hosted-control-plane.sh --check-release --production-release $PRODUCTION_RELEASE"
+        else
+          printf '%s\n' 'ExecStartPre=/usr/bin/bash @OPERATOR_ROOT@/scripts/systemd/papercusp-script-snapshot.sh @OPERATOR_ROOT@/bin/bundle-host.sh bin/serve.ts dist-hosted-control-plane/serve.mjs'
+        fi ;;
+      @HOSTED_EXEC_START@)
+        if [[ -n "$PRODUCTION_RELEASE" ]]; then
+          cat <<'PRODUCTION_BOOT'
+ExecStart=/usr/bin/bash -ec 'set -a; . "@HOSTED_ENV_FILE@"; set +a; export PAPERCUSP_DEPLOYMENT_ENVIRONMENT=production PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane PAPERCUSP_ENV_OPERATOR_ID=hosted-control-plane PAPERCUSP_USE_EMBEDDED_PG=0 PAPERCUSP_HONO_PORT=@PORT@ PAPERCUSP_BIND_HOST=127.0.0.1 PAPERCUSP_BACKGROUND_WORKERS=0; exec node dist-hosted-control-plane/serve.mjs'
+PRODUCTION_BOOT
+        else
+          cat <<'DEVELOPMENT_BOOT'
+ExecStart=/usr/bin/bash -c 'set -a; [ -f .env.local ] && . ./.env.local; [ -f "@HOSTED_ENV_FILE@" ] && . "@HOSTED_ENV_FILE@"; set +a; export HARNESS_ADMIN_DATABASE_URL="$${HARNESS_ADMIN_DATABASE_URL:-$$DATABASE_URL}" PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane PAPERCUSP_ENV_OPERATOR_ID=hosted-control-plane PAPERCUSP_USE_EMBEDDED_PG=0 PAPERCUSP_HONO_PORT=@PORT@ PAPERCUSP_BIND_HOST=127.0.0.1 PAPERCUSP_BACKGROUND_WORKERS=0; exec node dist-hosted-control-plane/serve.mjs'
+DEVELOPMENT_BOOT
+        fi ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < "$TEMPLATE"
+}
+
 render() {
+  render_boot |
   sed \
     -e "s|@PORT@|$PORT|g" \
     -e "s|@OPERATOR_ROOT@|$OPERATOR_ROOT|g" \
     -e "s|@REPO_ROOT@|$REPO_ROOT|g" \
     -e "s|@HOSTED_ENV_FILE@|$HOSTED_ENV_FILE|g" \
-    -e "s|@NODE_DIR@|$NODE_DIR|g" \
-    "$TEMPLATE"
+    -e "s|@NODE_DIR@|$NODE_DIR|g"
 }
 
 # An unfilled template value is WORSE than an unset one: it satisfies a
@@ -164,12 +242,16 @@ check_env() {
   report="$(
     set +u
     set -a
-    [[ -f "$OPERATOR_ROOT/.env.local" ]] && . "$OPERATOR_ROOT/.env.local"
+    if [[ -z "$PRODUCTION_RELEASE" && -f "$OPERATOR_ROOT/.env.local" ]]; then . "$OPERATOR_ROOT/.env.local"; fi
     [[ -f "$HOSTED_ENV_FILE" ]] && . "$HOSTED_ENV_FILE"
     set +a
     # The resolver reads the encrypted store, so give it the same database
     # handle and integration root the unit's ExecStart exports.
-    export HARNESS_ADMIN_DATABASE_URL="${HARNESS_ADMIN_DATABASE_URL:-${DATABASE_URL:-}}"
+    if [[ -n "$PRODUCTION_RELEASE" ]]; then
+      export PAPERCUSP_DEPLOYMENT_ENVIRONMENT=production
+    else
+      export HARNESS_ADMIN_DATABASE_URL="${HARNESS_ADMIN_DATABASE_URL:-${DATABASE_URL:-}}"
+    fi
     export PAPERCUSP_INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-$REPO_ROOT}"
 
     rc=0
@@ -205,6 +287,9 @@ check_env() {
 }
 
 case "$MODE" in
+  check-release)
+    log "production release proof verified: $PRODUCTION_RELEASE"
+    ;;
   render-only)
     render
     ;;
