@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "kind": "r12-paired-preparation",
+  "status": "local-preparation-unapproved-no-operational-acceptance",
+  "report": {
+    "reportId": "rpt_cd32bfd0-49df-4d2b-b912-6db895d2e6ae",
+    "path": "/reports?sel=rpt_cd32bfd0-49df-4d2b-b912-6db895d2e6ae",
+    "sourcePath": "docs/evidence/green-main-r12-preparation-progress-20261014.md",
+    "bodySha256": "4349cdf9dee5e96d4304f22052013abe6ebe44f7094e3c18e30d613ee495d4c7",
+    "requestKey": "c0523-r12-preparation-20261014-edition1",
+    "readbackExact": true,
+    "visibility": "owner",
+    "frictionRef": "EI-25698211877223668"
+  },
+  "workItemId": "WI-6554700010010682",
+  "planSlug": "green-main-cycle-time-2026-10-08",
+  "subjectPlanRevision": 129,
+  "activationAuditSeq": 5,
+  "rubricRevision": 5,
+  "reused": [
+    "scripts/lib/budgeted-task-scheduler.mjs",
+    "VerifierSourceReceipt",
+    "executeOperationalRun",
+    "existing test_runs ledger",
+    "existing managed preload/cgroup observations"
+  ],
+  "source": {
+    "head": "253089b56e4ff64c3208c4ad9e25400719a8a4e7",
+    "files": [
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.mjs",
+        "sha256": "286b770e32c1403508717c8e62e7399a5d10ffc1a00dbe932c20207e8bb6e4e4",
+        "mtimeNs": 1791975813653527600,
+        "equalsCommitted": false
+      },
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.d.mts",
+        "sha256": "9eee5e9f6492901dc1ce5c7f31ebc64c68c6676ff954463a9cfedb129a8f289c",
+        "mtimeNs": 1791975606105532700,
+        "equalsCommitted": false
+      },
+      {
+        "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "sha256": "27ae95bfd2381432341422dc6de89da1bd86d3886adf4489e6aef5d27c4c778d",
+        "mtimeNs": 1791975813654527700,
+        "equalsCommitted": false
+      },
+      {
+        "path": "packages/operator-core/lib/release/green-main-slo.ts",
+        "sha256": "bba4710bc15c9d5a955eb1a67d7b64f885730dea5c961b3e039f7b623afaf8be",
+        "mtimeNs": 1791976105813051600,
+        "equalsCommitted": false
+      }
+    ]
+  },
+  "functions": [
+    "prepareBudgetedTaskComparison",
+    "evaluateBudgetedTaskComparison",
+    "readBudgetedTaskComparisonArtifacts",
+    "executeGreenMainThroughputComparison"
+  ],
+  "verification": {
+    "scheduler": {
+      "passed": 145,
+      "requested": 1,
+      "executed": 1,
+      "matched": 1,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "exitCode": 0,
+      "log": "~/.papercusp/scratch/c0523-r12-comparison-tests-v3.log",
+      "scope": "maintained local unit and real temporary artifact IO fixtures; no benchmark/cohort"
+    },
+    "slo": {
+      "passed": 70,
+      "requested": 1,
+      "executed": 1,
+      "matched": 1,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "exitCode": 0,
+      "log": "~/.papercusp/scratch/c0523-r12-slo-tests.log",
+      "scope": "existing local SLO unit suite; no native throughput execution"
+    },
+    "typecheck": {
+      "status": "passed",
+      "exitCode": 0,
+      "scope": "Named three paths plus routed/importing legs; no whole-suite claim. Native wrapper command serialization changed during the running check without changing its string[] type; wrapper remains unexecuted.",
+      "log": "~/.papercusp/scratch/c0523-r12-comparison-tsc-v3.log",
+      "previousFailure": "Native assertions initially omitted required evidence field; fixed before v3. v2 exit1 preserved.",
+      "previousLog": "~/.papercusp/scratch/c0523-r12-comparison-tsc-v2.log"
+    },
+    "nodeSyntax": "passed",
+    "diffCheck": "passed"
+  },
+  "constraints": {
+    "D020": "hold preserved; no cohort launched or prerequisite retry",
+    "P006": "blocked/unassigned; preparation stays on registered full-plan umbrella",
+    "LIVE_GATE_OPS": "none",
+    "planAndRubric": "129/audit5/rubric5 preserved; no review/amendment/BAR apply",
+    "operationalAcceptance": false
+  },
+  "remaining": [
+    "Verify actual D020 prerequisite receipt before any comparison",
+    "Freeze NEW actual complete gate selection and complete source/dependency/runtime closure",
+    "Produce full original four-cohort ABBA pair with exact no-skip/substitution/containment/headroom/start-order artifacts",
+    "Resolve original population refs/hashes through native current-build producer; require serializer/source runtime containment",
+    "Complete all forms before one outside-lineage amendment review; statistical semantics unapproved",
+    "P028 actual pickup/cadence; actual seven-day P018; strict idle60; genuine alarm onset/delivery; shipped D045 first requests/P031 historical cause; EI259325 original cause unknown"
+  ],
+  "nativeWrapperIntegration": {
+    "issueId": "EI-25953680209463431",
+    "rootCause": "The wrapper captured caller-owned args/pins across asynchronous native executor checks, so its artifact reader could observe a different original population than the recorded command.",
+    "fix": "Detach scope, runtime units and nested cohort pins synchronously before the first dynamic import.",
+    "guardPath": "packages/operator-core/lib/release/green-main-throughput.integration.test.ts",
+    "passed": 4,
+    "requested": 1,
+    "executed": 1,
+    "matched": 1,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "exitCode": 0,
+    "redLog": "~/.papercusp/scratch/c0523-r12-wrapper-red-v2.log",
+    "greenLog": "~/.papercusp/scratch/c0523-r12-wrapper-green.log",
+    "typecheckLog": "~/.papercusp/scratch/c0523-r12-wrapper-tsc.log",
+    "typecheck": "Scoped2file exit0; importing legs clean. No whole-tree claim.",
+    "committedAtRead": "18777cf5623f8783ee87d0316eb050ef98582c17",
+    "sourceSha256": "13c67c9af425582bf846510faeb88d84569bf5b14e14d1c3d864b8d628da4916",
+    "guardSha256": "e4a4a9f80e95e5821f51187bd22b9a8870df579734cdd931122065ac8d39309f",
+    "scope": "Real artifact IO, evaluator and native executor; snapshot/runtime/persist boundaries are fixtures. No real benchmark, serving-runtime observation or operational acceptance.",
+    "redQualification": "Mutation case failed against original wrapper; two rejection controls passed. A separate repository-root fixture assertion was corrected. First red log is a >=2-task fixture setup failure, not causal evidence.",
+    "sqlForm": {
+      "component": "throughput",
+      "status": "draft-unapproved-unbound",
+      "syntaxAndColumnReferences": "valid",
+      "method": "Read-only EXPLAIN against explicit env localhost5432 with non-evidence sentinels",
+      "taskId": "0mv81908bbkxe2o1l08",
+      "parametersBound": false,
+      "operationalAcceptance": false
+    },
+    "handlesDrained": [16329, 4093, 50036, 71996, 56799],
+    "syncFire": "Background-worker attributed git-sync fire returned firedtrue/in_progress; not retried. Independent source reads prove both fix and guard committed."
+  },
+  "next": "No native command handles remain. Prepare actual original full-gate inputs and runtime closure without launching the D020-held cohort. Wrapper local integration is complete; reuse saved proofs only at matching source hashes. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
+}
