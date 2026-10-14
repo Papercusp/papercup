@@ -106,8 +106,8 @@ export async function inspectPrDeliveryRow(
   // the fixing pot is required to publish its unreviewed work to its fork.
   const remoteHeads = await git(project.path, ['ls-remote', '--exit-code', '--heads', project.github_remote]);
   const tips = remoteHeads.stdout.split('\n').filter(Boolean).map(line => {
-    const [commit, ref] = line.split(/\s+/);
-    return { sha: commit, branch: ref?.replace(/^refs\/heads\//, '') };
+    const [commit = '', ref = ''] = line.split(/\s+/);
+    return { sha: commit, branch: ref.startsWith('refs/heads/') ? ref.slice(11) : '' };
   });
   if (remoteHeads.code !== 0 || !tips.length
     || tips.some(t => !sha.test(t.sha ?? '') || !t.branch))

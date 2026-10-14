@@ -4947,7 +4947,7 @@
       "tests": [21243956, 21243960],
       "logs": ["/dev/shm/get-feedback-stderr-red-20261014T1016.log", "/dev/shm/get-feedback-stderr-green-20261014T1017.log"],
       "result": "Original maintained Vitest regression2fail/4pass; repaired6pass. Both ledger rows are LOCAL dirty and harnessSlug=null, not committed/scoped/shipment evidence. Genuine model failure and mixed warning suffix remain warned.",
-      "item": "EI-25948560223902720 remains open for qualification; no silent warning suppression. Owned D024 run21244000 also retains a real COMMITTED_SOURCE stderr warning."
+      "item": "Historical local qualification was incomplete. EI-25948560223902720 is now done with committed scoped run21244227:6pass/0fail/0skip at0ef71d7c94abc355e4de9c9694b66c4ca9975688; clean ledger and canonical source/test hash equality verified. Log /dev/shm/get-feedback-stderr-committed-20261014T1133.log; retained snapshot /dev/shm/pcv/papercusp-lint-as-committed-0ef71d7c94-1tvJLz. Exact split informational DB-target records remain info, while actual/mixed/final diagnostics remain warnings. This closes stderr severity only; plan shipment remains open. Owned D024 run21244000 retains a real COMMITTED_SOURCE stderr warning."
     },
     "harnessAudit": "Before each additional CPU attempt, distinguished semantic question/contrast mismatch, omitted owned-sidecar default/privateDB precondition, and informational transport severity. Maintained scorer test now defaults to owned sidecar absent an explicit override and restores enable state. Existing owned home, ancestry, private migrated DB and governed first-inference preflight remain. Explicit in-process/shared overrides yield distinct evidence, never owned proof.",
     "d024": {
@@ -4983,7 +4983,16 @@
       "harnessAudit": "Before further CPU scoring, verify cheap catalogue nomination, source-owned runtime/private migrated DB/ancestry and governed warmup prerequisites; log full natural passage/contract pairs and scores. No new synthetic internal acknowledgement contract. Natural-only scorer failure still does not prove production population-wide precision.",
       "measurement": "FAILED owned CPU/q8 local dirty papercusp21244208; /dev/shm/get-feedback-d026-owned-cpu-20261014T1118.log. Source253089b56e endpoint41643, launch3272830 to serving3273801 ancestry verified, private migrated DB, warmup5103ms. Truelease0.550313 retained; receipt0.576698/continuation0.513944 false; naturalfalse2 and unchangedfivefalse2, allavailable. Receipt primary0.692238 beats actualcoord:ack0.538841. D027 rejects priority-slot source and candidate-specific assertions; restore D025 behavior while preserving full pair instrumentation. No further CPU before fresh failure-class audit. Original D02521244040 RED remains immutable; no completion or shipment claim."
     },
-    "remaining": "EI259448 natural receipt false-selection diagnosis; stderr committed/scoped qualification; original native42423cbd actor/ABA/physical-call/retention, original warmup/deletion, whole graph/independent/R6 and exactR7 shipment. All prior receipts and original538eeb7/960d986 remain immutable. No HEAD/maps-only replay."
+    "d028": {
+      "authority": "D028 records a rejected hypothesis, with no production scorer change.",
+      "testRun": 21244222,
+      "log": "/dev/shm/get-feedback-forward-diagnostic-20261014T1129.log",
+      "runtime": "Owned source CPU/q8 launch3838671 to serving3839660 ancestry verified; private migrated DB; warmup7392ms. Local dirty papercusp ledger, not committed semantic acceptance.",
+      "forwardPrimaryScores": { "lease-auditor": 0.9133541408818798, "continuation-recovery": 0.5654843119807847, "protected-data-scan": 0.41222857019006653, "continuation-policy": 0.7202065686331137, "receipt-delivery": 0.7803540767698935 },
+      "productionResult": "D025 behavior reproduced: naturalfalse1/truelease retained; originalfive0false, allavailable. Forward primary-question scoring alone also accepts three labelled negatives, so direction alone is not the fix. No labels/floors/production ranking changed.",
+      "harnessAudit": "The maintained integration preserves same-runtime forward primary-question/passage scores beside production reverse-contract scores. Actual full pairs and warm/ancestry/privateDB proof survive teardown. Next work must diagnose evidence qualification, not repeat unchanged CPU batteries; fresh consult had no available responder."
+    },
+    "remaining": "EI259448 natural receipt false-selection diagnosis; original native42423cbd actor/ABA/physical-call/retention, original warmup/deletion, whole graph/independent/R6 and exactR7 shipment. Stderr severity is source-complete under EI259485 with committed scoped6pass; not a final shipment claim. All prior receipts and original538eeb7/960d986 remain immutable. No HEAD/maps-only replay."
   },
   "reuse": "Extends the existing docs/evidence manual-provenance surface. This preparation inventory supplies references for the required final R7 shipment artifact; it is not that final artifact."
 }

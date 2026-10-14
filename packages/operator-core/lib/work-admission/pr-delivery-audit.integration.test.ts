@@ -74,7 +74,7 @@ describe('PR bypass falsifier against real upstream Git', () => {
       .toMatchObject({ verdict: 'pass', upstreamSha: fix, prUrl: url });
   });
   it('accepts the merged standing PR when its base differs from the registered default branch', async () => {
-    git(repo, 'push', 'origin', `${base}:staging`);
+    git(repo, 'push', 'origin', `${base}:refs/heads/staging`);
     git(repo, 'push', 'origin', 'HEAD:main'); link();
     project.github_default_branch = 'staging';
     expect(await inspectPrDeliveryRow(row, project, { host: host(pr()) }))

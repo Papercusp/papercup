@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { prepareBudgetedTaskComparison, readBudgetedTaskComparisonArtifacts,
   type BudgetedTaskComparisonArtifactPins } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 import type { RecordOperationalRunDeps } from '../agent-tools/testing/record-run';
 import { executeGreenMainThroughputComparison } from './green-main-slo';
+
+const REPO_ROOT = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
 
 // Exercise the real artifact reader, evaluator and native executor together.
 // Only executor boundaries use fixtures: these are neither real benchmark cohorts
@@ -93,7 +96,7 @@ describe('native throughput wrapper artifact-to-executor integration', () => {
     const pins: BudgetedTaskComparisonArtifactPins = {
       manifest: pin('manifest.json', manifest), source, dependencies, runtimeClosure, cohorts,
     };
-    return { workspaceId: 'workspace-fixture', harnessSlug: 'papercusp', projectDir: process.cwd(),
+    return { workspaceId: 'workspace-fixture', harnessSlug: 'papercusp', projectDir: REPO_ROOT,
       runtimeUnits: ['fixture-runtime'], evidenceRoot: root, pins };
   }
 
@@ -118,7 +121,7 @@ describe('native throughput wrapper artifact-to-executor integration', () => {
     expect(receipt.rows[0]!.outputTail).toContain(`original_population_sha256=${original.populationSha256}`);
     expect(receipt.rows[0]!.outputTail).toContain('ratio=0.5');
     expect(receipt.rows[0]!.outputTail).toContain('statistical semantics await');
-    expect(boundary.verifyDefinition).toHaveBeenCalledWith(process.cwd(),
+    expect(boundary.verifyDefinition).toHaveBeenCalledWith(REPO_ROOT,
       'packages/operator-core/lib/release/green-main-slo.ts', 'b'.repeat(40));
     expect(boundary.snapshot).toHaveBeenCalledTimes(2);
     expect(boundary.readRuntime).toHaveBeenCalledTimes(2);

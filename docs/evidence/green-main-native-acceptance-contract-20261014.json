@@ -38,7 +38,51 @@
     "runtimeFingerprint": null,
     "sqlSchemaRevision": null
   },
+  "throughputParameters": {
+    "definitionCommit": null,
+    "evidenceRoot": null,
+    "manifestRef": null,
+    "manifestFileSha256": null,
+    "manifestContentSha256": null,
+    "fileSetSha256": null,
+    "sourceRef": null,
+    "dependenciesRef": null,
+    "runtimeClosureRef": null,
+    "cohortPins": null,
+    "runtimeUnits": null,
+    "runtimeFingerprint": null,
+    "sqlSchemaRevision": null,
+    "D020PrerequisiteReceipt": null
+  },
   "components": [
+    {
+      "key": "throughput",
+      "filePath": "packages/operator-core/lib/release/green-main-slo.ts",
+      "producer": "executeGreenMainThroughputComparison",
+      "status": "draft-unapproved-unbound",
+      "assertions": [
+        "immutable-full-gate-comparison-inputs",
+        "complete-original-abba-cohort-population",
+        "unchanged-contained-no-skip-paired-headroom-longest-first-cohorts",
+        "full-identical-file-set-at-most-half-baseline-wall"
+      ],
+      "testRunId": null,
+      "populationHash": null,
+      "sqlTemplate": "SELECT CASE WHEN count(*) = 1 THEN 1 ELSE 0 END AS accepted\nFROM harness_shared.test_runs r\nWHERE r.id = __TEST_RUN_ID__\nAND r.workspace_id = 'papercusp-workspace' AND r.harness_slug = 'papercusp'\nAND r.file_path = 'packages/operator-core/lib/release/green-main-slo.ts' AND r.framework = 'operational'\nAND r.source = 'local' AND r.run_group_id LIKE 'operational-native:%'\nAND r.status = 'pass' AND r.worktree_dirty = false AND r.commit_sha = '__DEFINITION_COMMIT__'\nAND r.finished_at IS NOT NULL AND r.finished_at >= r.started_at\nAND r.execution_details->>'schemaVersion' = '1'\nAND r.execution_details->>'worktreeDirty' = 'false'\nAND r.execution_details->>'commitSha' = r.commit_sha\nAND r.execution_details->>'workspaceId' = r.workspace_id\nAND r.execution_details->>'harnessSlug' = r.harness_slug\nAND r.execution_details->>'filePath' = r.file_path\nAND r.execution_details->>'runGroupId' = r.run_group_id\nAND r.execution_details->>'passed' = '4'\nAND r.execution_details->>'failed' = '0' AND r.execution_details->>'skipped' = '0'\nAND r.execution_details->>'collectionFailed' = 'false'\nAND coalesce(r.execution_details->>'passedCaseTitlesTruncated', 'false') = 'false'\nAND r.execution_details->'passedCaseTitles' @> '[\"immutable-full-gate-comparison-inputs\",\"complete-original-abba-cohort-population\",\"unchanged-contained-no-skip-paired-headroom-longest-first-cohorts\",\"full-identical-file-set-at-most-half-baseline-wall\"]'::jsonb\nAND jsonb_array_length(r.execution_details->'passedCaseTitles') = 4\nAND r.execution_details->'operational'->>'schemaVersion' = '1'\nAND r.execution_details->'operational'->'command' = '[\"executeGreenMainThroughputComparison\",\"papercusp-workspace\",\"papercusp\",\"__EVIDENCE_ROOT__\",\"__MANIFEST_REF__\",\"__MANIFEST_FILE_SHA256__\",\"__SOURCE_REF__\",\"__DEPENDENCIES_REF__\",\"__RUNTIME_CLOSURE_REF__\",\"__COHORT_0_REF__\",\"__COHORT_0_SHA256__\",\"__COHORT_1_REF__\",\"__COHORT_1_SHA256__\",\"__COHORT_2_REF__\",\"__COHORT_2_SHA256__\",\"__COHORT_3_REF__\",\"__COHORT_3_SHA256__\"]'::jsonb\nAND r.output_tail LIKE '%manifest_sha256=__MANIFEST_CONTENT_SHA256__%'\nAND r.output_tail LIKE '%file_set_sha256=__FILE_SET_SHA256__%'\nAND r.output_tail LIKE '%original_population_sha256=__POPULATION_SHA256__%'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'schemaVersion' = '1'\nAND r.execution_details->'runtimeEnvironmentBefore'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentAfter'->>'fingerprint' = '__RUNTIME_FINGERPRINT__'\nAND r.execution_details->'runtimeEnvironmentBefore'->'units' = '__RUNTIME_UNITS_JSON__'::jsonb\nAND r.execution_details->'runtimeEnvironmentAfter'->'units' = '__RUNTIME_UNITS_JSON__'::jsonb\nAND (r.execution_details->'runtimeEnvironmentBefore'->>'observedAt')::timestamptz <= r.started_at\nAND (r.execution_details->'runtimeEnvironmentAfter'->>'observedAt')::timestamptz >= r.finished_at",
+      "probeTemplate": {
+        "kind": "sql",
+        "schemaRevision": "__SQL_SCHEMA_REVISION__",
+        "maxRows": 1,
+        "expect": { "path": "$.rows[0].accepted", "op": "eq", "value": 1 }
+      },
+      "bindingRequirements": [
+        "Verify the actual D020 storage/mutex-write prerequisite before any new slow comparison.",
+        "Resolve the complete original gate-file selection and unchanged source/dependency/runtime closure; a planner task list or fixture declaration is insufficient.",
+        "Resolve all four NEW real ABBA cohorts and their original child/cgroup observations, acquired waits and headroom; local integration fixtures cannot bind these parameters.",
+        "Manifest file SHA256 pins serialized bytes; manifest content SHA256 pins canonical comparison input. Preserve both identities.",
+        "This SQL recognizes a native receipt only after independent original-population and scope validation; it does not authorize statistical semantics or policy promotion."
+      ]
+    },
     {
       "key": "recovery",
       "filePath": "packages/operator-core/lib/release/green-main-slo.ts",
