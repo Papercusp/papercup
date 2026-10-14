@@ -115,13 +115,17 @@ kopia_as_root() {
 # caller logs. GRACE_SEC must stay below the guard's KOPIA_BACKUP_STOP_GRACE_SEC
 # (default 20), which SIGKILLs the calling script if its cleanup outlives that.
 kopia_stop_flushing() {
-  local pid="$1" grace="${2:-15}" ticks=0 max_ticks=0
+  local pid="$1" grace="${2:-15}" deadline=0
   [[ "$grace" =~ ^[0-9]+$ ]] || grace=15
   /usr/bin/timeout --kill-after=1s 1s "$SUDO_BIN" -n -- "$KILL_BIN" -TERM "$pid" >/dev/null 2>&1 || true
-  max_ticks=$((grace * 5))
-  while [ -d "$PROC_ROOT/$pid" ] && [ "$ticks" -lt "$max_ticks" ]; do
+  # Bound the grace by WALL-CLOCK time, never by a count of `sleep 0.2` ticks. Each
+  # tick forks a sleep, and at host load ~280 every fork overran, so a "15 s" grace
+  # outlived kopia-home-snapshot's 30 s TimeoutStopSec. systemd then killed the
+  # cleanup mid-wait and the root Kopia leaked ('stop-post' timed out, 2026-10-13
+  # 23:43 EDT, WI-6554700010011790).
+  deadline=$((SECONDS + grace))
+  while [ -d "$PROC_ROOT/$pid" ] && [ "$SECONDS" -lt "$deadline" ]; do
     sleep 0.2
-    ticks=$((ticks + 1))
   done
   # A zombie keeps its /proc dir but no readable exe, so it fails the match: gone.
   kopia_pid_matches "$pid" || return 0
