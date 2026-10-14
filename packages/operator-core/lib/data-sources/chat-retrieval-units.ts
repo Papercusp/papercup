@@ -213,35 +213,51 @@ export async function upsertChatMessages(
 /**
  * Record a provider delete. The body and raw payload are erased at once unless a
  * legal hold covers the message, in which case they are kept but never rendered.
+ *
+ * A delete for a message not stored yet (a live delete that beat the backfill which
+ * would have stored it) leaves a body-less tombstone row, so the later copy cannot
+ * insert the deleted text: `upsertChatMessages` never revives a tombstone. Such a row
+ * takes `postedAt` (default: the delete time) and `threadKey` only to satisfy the
+ * table; it is never live, so it joins no unit and queues no rollup. One statement
+ * does both, so a concurrent first insert of the message cannot slip between them.
  */
 export async function tombstoneChatMessage(
   sql: Sql,
   workspaceId: string,
   dataSourceId: string,
-  input: { channelId: string; providerMessageId: string; deletedAt?: string | Date },
+  input: {
+    channelId: string;
+    providerMessageId: string;
+    deletedAt?: string | Date;
+    postedAt?: string | Date;
+    threadKey?: string | null;
+  },
 ): Promise<{ tombstoned: boolean; held: boolean }> {
   const channelId = nonEmpty(input.channelId, 'invalid_chat_channel_id');
   const providerMessageId = nonEmpty(input.providerMessageId, 'invalid_chat_provider_message_id');
   const deletedAt = input.deletedAt ? toDate(input.deletedAt, 'invalid_chat_deleted_at') : new Date();
-  const rows = await sql<Array<{ thread_key: string | null; posted_at: Date; held: boolean }>>`
-    WITH target AS (
-      SELECT id, harness_shared.chat_message_under_hold(workspace_id, data_source_id, channel_id) AS held
-        FROM harness_shared.chat_messages
-       WHERE workspace_id = ${workspaceId} AND data_source_id = ${dataSourceId}::uuid
-         AND channel_id = ${channelId} AND provider_message_id = ${providerMessageId}
-         AND deleted_at IS NULL
-    )
-    UPDATE harness_shared.chat_messages m
-       SET deleted_at = ${deletedAt},
-           body = CASE WHEN t.held THEN m.body ELSE NULL END,
-           raw = CASE WHEN t.held THEN m.raw ELSE NULL END,
-           held_revisions = CASE WHEN t.held THEN m.held_revisions ELSE '[]'::jsonb END,
-           updated_at = now()
-      FROM target t
-     WHERE m.workspace_id = ${workspaceId} AND m.id = t.id
-    RETURNING m.thread_key, m.posted_at, t.held`;
+  const postedAt = input.postedAt ? toDate(input.postedAt, 'invalid_chat_posted_at') : deletedAt;
+  const threadKey = input.threadKey?.trim() || null;
+  const rows = await sql<Array<{ thread_key: string | null; posted_at: Date; held: boolean; inserted: boolean }>>`
+    INSERT INTO harness_shared.chat_messages AS m
+      (workspace_id, data_source_id, channel_id, provider_message_id, thread_key, body, posted_at, deleted_at)
+    VALUES (${workspaceId}, ${dataSourceId}::uuid, ${channelId}, ${providerMessageId}, ${threadKey}, NULL, ${postedAt}, ${deletedAt})
+    ON CONFLICT (workspace_id, data_source_id, channel_id, provider_message_id)
+    DO UPDATE SET deleted_at = EXCLUDED.deleted_at,
+                  body = CASE WHEN harness_shared.chat_message_under_hold(m.workspace_id, m.data_source_id, m.channel_id)
+                              THEN m.body ELSE NULL END,
+                  raw = CASE WHEN harness_shared.chat_message_under_hold(m.workspace_id, m.data_source_id, m.channel_id)
+                             THEN m.raw ELSE NULL END,
+                  held_revisions = CASE WHEN harness_shared.chat_message_under_hold(m.workspace_id, m.data_source_id, m.channel_id)
+                                        THEN m.held_revisions ELSE '[]'::jsonb END,
+                  updated_at = now()
+     WHERE m.deleted_at IS NULL
+    RETURNING m.thread_key, m.posted_at, (m.xmax = 0) AS inserted,
+              harness_shared.chat_message_under_hold(m.workspace_id, m.data_source_id, m.channel_id) AS held`;
   const row = rows[0];
   if (!row) return { tombstoned: false, held: false };
+  // A tombstone recorded ahead of its message holds no text, so nothing is kept and no unit changes.
+  if (row.inserted) return { tombstoned: true, held: false };
   await enqueue(sql, workspaceId, dataSourceId, channelId, bucketFor(row.thread_key, new Date(row.posted_at)));
   return { tombstoned: true, held: row.held };
 }
