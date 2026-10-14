@@ -440,6 +440,9 @@ describe('plain launch kickoff turn-start proof', () => {
           CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, SUBMIT_FILE: submitFile,
           NATIVE_PUBLICATION: nativePublication, NATIVE_RELEASE_FILE: nativeReleaseFile,
           [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: proofToken,
+          // This child models transcript persistence, with no provider. Keep
+          // the production quota grace out of its receipt/cleanup ordering.
+          PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '1',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
           PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '1000',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
@@ -690,6 +693,9 @@ describe('plain launch kickoff turn-start proof', () => {
           ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, COUNT_FILE: countFile,
           EVENT_LOG_FILE: eventLogPathForOwner(ownerId),
+          // Native retry ordering is the oracle here; the synthetic child
+          // does not model a provider's delayed quota response.
+          PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '1',
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '10',
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
@@ -4709,6 +4715,12 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
       }, { timeout: 5000 });
 
       await controlInject(sock, 'recycle', '');
+      // The exit fence may spend its graceful stop budget before spawning.
+      // Start the successor assertion only after that phase is observed.
+      await vi.waitFor(() => {
+        expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+          .toContain('"kind":"respawn-predecessor-stop-finished"');
+      }, { timeout: 8_000 });
       await vi.waitFor(() => {
         expect(captured().split('BOOT:').length - 1).toBe(2);
       }, { timeout: 5000 });
