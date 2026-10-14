@@ -11576,6 +11576,8 @@ export async function reportSessionPortDelivery(
     operatorUrl = launcherOperatorTarget().url,
     token = null,
     timeoutMs = 10_000,
+    coordOwnerId = null,
+    appendEventImpl = appendHostEvent,
   } = {},
 ) {
   if (!sessionPort?.portId || !sessionPort?.targetAdvSessionId) {
@@ -11587,14 +11589,45 @@ export async function reportSessionPortDelivery(
     "content-type": "application/json",
     ...(tok ? { authorization: `Bearer ${tok}` } : {}),
   };
+  const receipts = [];
+  const attempt = async (stage, url, options) => {
+    const traceId = randomUUID();
+    const startedAt = Date.now();
+    const receipt = { stage, traceId, httpStatus: null, portStatus: null, targetAdvSessionId: null, forwardingResult: null, errorName: null, elapsedMs: 0 };
+    try {
+      const response = await fetchImpl(url, {
+        ...options,
+        headers: { ...headers, "x-papercusp-mcp-trace-id": traceId },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      receipt.httpStatus = response.status;
+      const body = await response.json();
+      const observedStatus = stage === "delivery" ? body?.status : body?.port?.status;
+      if (["prepared", "pending", "delivered", "failed", "expired"].includes(observedStatus)) receipt.portStatus = observedStatus;
+      const observedTarget = stage === "delivery" ? body?.targetAdvSessionId : body?.port?.targetAdvSessionId;
+      if (observedTarget != null && Number.isSafeInteger(Number(observedTarget)) && Number(observedTarget) > 0) receipt.targetAdvSessionId = Number(observedTarget);
+      if (["not_forwarded", "queued", "applied", "outcome_unknown"].includes(body?.forwardingResult)) receipt.forwardingResult = body.forwardingResult;
+      return { response, body };
+    } catch (error) {
+      receipt.errorName = typeof error?.name === "string" && /^[A-Za-z][A-Za-z0-9_-]*$/.test(error.name) ? error.name.slice(0, 64) : "Error";
+      return { response: null, body: null };
+    } finally {
+      receipt.elapsedMs = Math.max(0, Date.now() - startedAt);
+      receipts.push(receipt);
+      if (coordOwnerId) {
+        try {
+          appendEventImpl(coordOwnerId, "session-port-ack-attempt", { portId: sessionPort.portId, expectedTargetAdvSessionId: Number(sessionPort.targetAdvSessionId), expectedStatus: status, ...receipt });
+        } catch { /* diagnostics must not change the acknowledgement verdict */ }
+      }
+    }
+  };
   let responseBody = null;
-  try {
-    const response = await fetchImpl(
+  let refused = false;
+  {
+    const { response, body } = await attempt("delivery",
       operatorUrl + "/api/adv/sessions/port/delivery",
       {
         method: "POST",
-        signal: AbortSignal.timeout(timeoutMs),
-        headers,
         body: JSON.stringify({
           protocolVersion: sessionPort.protocolVersion,
           transformVersion: sessionPort.transformVersion,
@@ -11616,39 +11649,43 @@ export async function reportSessionPortDelivery(
         }),
       },
     );
-    responseBody = await response.json().catch(() => null);
-    if (response.ok && responseBody?.ok && responseBody.status === status)
+    responseBody = body;
+    if (response?.ok && responseBody?.ok && responseBody.status === status &&
+        (responseBody.targetAdvSessionId == null || Number(responseBody.targetAdvSessionId) === Number(sessionPort.targetAdvSessionId)))
       return responseBody;
-  } catch {
-    /* reconcile below — the server may have committed before the response was lost */
+    refused = response?.status >= 400 && response.status < 500 && response.status !== 429 && body?.ok === false;
   }
-  try {
+  {
     const query = new URLSearchParams({ id: sessionPort.portId });
     if (sessionPort.workspace) query.set("workspace", sessionPort.workspace);
-    const response = await fetchImpl(
+    const { response, body } = await attempt("status",
       `${operatorUrl}/api/adv/sessions/port/status?${query}`,
       {
         method: "GET",
-        signal: AbortSignal.timeout(timeoutMs),
-        headers,
       },
     );
-    const body = await response.json().catch(() => null);
     if (
-      response.ok &&
+      response?.ok &&
       body?.ok &&
       body.port?.status === status &&
+      (body.port?.id == null || body.port.id === sessionPort.portId) &&
       Number(body.port?.targetAdvSessionId) ===
         Number(sessionPort.targetAdvSessionId)
     )
       return body;
-  } catch {
-    /* the disposition remains unacknowledged */
+    if (response?.ok && body?.ok && body.port &&
+        ((body.port.id != null && body.port.id !== sessionPort.portId) ||
+         (body.port.targetAdvSessionId != null && Number(body.port.targetAdvSessionId) !== Number(sessionPort.targetAdvSessionId)) ||
+         (Number(body.port.targetAdvSessionId) === Number(sessionPort.targetAdvSessionId) &&
+          ["delivered", "failed", "expired"].includes(body.port.status)))) refused = true;
   }
-  throw new Error(
+  const error = new Error(
     `operator did not acknowledge session port ${sessionPort.portId} as ${status}` +
       (responseBody?.error ? `: ${responseBody.error}` : ""),
   );
+  error.code = refused ? "session_port_ack_refused" : "session_port_ack_outcome_unknown";
+  error.acknowledgement = { portId: sessionPort.portId, targetAdvSessionId: Number(sessionPort.targetAdvSessionId), status, outcome: refused ? "refused" : "outcome_unknown", receipts };
+  throw error;
 }
 
 /** Finalize any failure after /prepare, whether bootstrap never minted a target
@@ -12800,7 +12837,7 @@ export function runWrapper(options) {
         sessionPort,
         adoptedCarryRespawn,
         onKickoffPersisted: (proof) =>
-          reportSessionPortDelivery(sessionPort, proof),
+          reportSessionPortDelivery(sessionPort, proof, { coordOwnerId: ownerId }),
         // Codex chooses its id at startup, before it persists a user turn.
         // Read the existing writer lock and accept only this PTY's process tree.
         resolveRespawnNativeId: env.PAPERCUSP_AGENT === "codex" && process.platform === "linux"
@@ -14789,6 +14826,21 @@ export function forkBootstrapFallbackMessage(ownerId, reason) {
   return `psu: ${reason} — falling back to an UNTRACKED fork (resumable only by uuid).`;
 }
 
+/**
+ * Capability shared with managed callers before they reserve or open a process.
+ * Native/manual forks have their own fallback; this only describes tracked forks.
+ * @param {{ agent?: string | null, sessionId?: string | null, coordOwnerId?: string | null, id?: number | string | null }} session
+ * @returns {boolean}
+ */
+export function supportsTrackedFork(session) {
+  return Boolean(
+    session.agent === "claude" &&
+    session.sessionId &&
+    session.coordOwnerId &&
+    session.id != null,
+  );
+}
+
 export async function launchTrackedFork(
   session,
   args = {},
@@ -14824,12 +14876,7 @@ export async function launchTrackedFork(
     console.error(forkBootstrapFallbackMessage(args.ownerId, reason));
     await resumeFallback(session, forkOpts);
   };
-  const forkable =
-    session.agent === "claude" &&
-    session.sessionId &&
-    session.coordOwnerId &&
-    session.id != null;
-  if (!forkable) {
+  if (!supportsTrackedFork(session)) {
     // Untracked claude (no adv row) → the plain untracked fork; non-claude →
     // launchResume refuses with a clear message. Preserve that manual fallback,
     // but fail closed when a managed caller pre-pinned an identity.

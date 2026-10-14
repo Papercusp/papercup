@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { Server } from 'node:net';
 import type { GovernedExecution } from '../resource-governor/execution';
 
-const h = vi.hoisted(() => ({ begin: vi.fn(), finished: vi.fn(), cancelled: vi.fn() }));
+const h = vi.hoisted(() => ({ begin: vi.fn(), finished: vi.fn(), cancelled: vi.fn(), pending: new Set<Promise<unknown>>() }));
 vi.mock('../flag-override-store-boot-effect', () => ({}));
 vi.mock('../flag-override-store', () => ({ installFlagOverrideStore: () => {} }));
 vi.mock('../flag-change-listener', () => ({ ensureFlagChangeListener: async () => {} }));
@@ -18,8 +18,12 @@ vi.mock('./sidecar-exec-process', async (original) => {
   const actual = await original<typeof import('./sidecar-exec-process')>();
   return {
     ...actual,
-    execProcess: (params: Parameters<typeof actual.execProcess>[0], deps: Parameters<typeof actual.execProcess>[1]) =>
-      actual.execProcess(params, { ...deps, beginExecution: h.begin, killGraceMs: 100, lazyReceiptMs: 0 }),
+    execProcess: (params: Parameters<typeof actual.execProcess>[0], deps: Parameters<typeof actual.execProcess>[1]) => {
+      const result = actual.execProcess(params, { ...deps, beginExecution: h.begin, killGraceMs: 100, lazyReceiptMs: 0 });
+      h.pending.add(result);
+      void result.then(() => h.pending.delete(result), () => h.pending.delete(result));
+      return result;
+    },
   };
 });
 
@@ -82,6 +86,9 @@ afterEach(async () => {
   for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
   pids.clear();
   if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+  // A closed client rejects before the server finishes draining its child and
+  // receipt. Drain those executions before the next test resets the shared mocks.
+  await Promise.allSettled([...h.pending]);
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   await rm(dir, { recursive: true, force: true });
@@ -629,6 +636,8 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], { stdio: 'ignore' }).unref(); const timer = setInterval(() => { if (require('node:fs').existsSync(${JSON.stringify(readyPath)})) { clearInterval(timer); process.exit(0); } }, 5);`;
     const controller = new AbortController();
     let parentPid = 0;
+    let parentClosed!: () => void;
+    const parentExit = new Promise<void>((resolve) => { parentClosed = resolve; });
     let helperAliveAtSettlement: boolean | undefined;
     h.finished.mockImplementationOnce(async () => {
       helperAliveAtSettlement = alive(Number(await readFile(readyPath, 'utf8')));
@@ -636,14 +645,15 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     });
     const result = execProcess({ command: process.execPath, args: ['-e', parent], timeoutMs: 5000 }, {
       signal: controller.signal, onPid: (pid) => { parentPid = pid; pids.add(pid); },
+      onStage: (stage) => { if (stage === 'child-close') parentClosed(); },
     });
-    let helperPid = 0;
-    await vi.waitFor(async () => {
-      helperPid = Number(await readFile(readyPath, 'utf8'));
-      pids.add(helperPid);
-      expect(parentPid).toBeGreaterThan(0);
-      expect(alive(parentPid)).toBe(false);
-    });
+    // Wait for the observed child lifecycle instead of vi.waitFor's unrelated
+    // one-second default; the command's own deadline remains authoritative.
+    await parentExit;
+    const helperPid = Number(await readFile(readyPath, 'utf8'));
+    pids.add(helperPid);
+    expect(parentPid).toBeGreaterThan(0);
+    expect(alive(parentPid)).toBe(false);
     expect(alive(helperPid)).toBe(true);
     const early = await Promise.race([
       result.then(() => 'settled'),

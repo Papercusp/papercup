@@ -4,6 +4,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { bindOwnerRpcResource, locateOwnerRpcResource, callOwnerProcess, registerOwnerRpcHandler } from '../../cluster-owner-rpc';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { browserScope, browserResponseBytes, defaultBrowserDeps, runBrowserSession, type BrowserDeps, type BrowserSessionArgs } from './browser-session';
 import type { PolicyFetchInput } from './fetch-policy';
 
@@ -103,7 +104,8 @@ export async function runManagedBrowserSession(args: BrowserSessionArgs, url: st
   try {
     const out = await callOwnerProcess({ targetPid: pid, kind: KIND, timeoutMs: opts.timeoutMs + 3000,
       payload: { op: 'run', token, scope, args, url, opts,
-        caller: { workspaceId: ctx.workspaceId, ownerId: resolveAgentIdentity(ctx).ownerId, harnessSlug: ctx.harnessSlug, role: ctx.role } } });
+        caller: { workspaceId: ctx.workspaceId, ownerId: resolveAgentIdentity(ctx).ownerId,
+          harnessSlug: resolveConcreteHarnessSlug(undefined, ctx) ?? undefined, role: ctx.role } } });
     if (out.ok) return out.result as Result;
     abort();
     return failure(out.code === 'owner_gone' ? 'browser_unrecoverable' : `browser_owner_unreachable:${out.code}`);

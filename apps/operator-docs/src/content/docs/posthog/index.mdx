@@ -158,6 +158,8 @@ The current source implements the following boundaries. Final shipment is establ
 
 ### Choices and the export journey
 
+Diagnostic export grants require the existing organization owner or administrator authority. A regular member can choose personal portal analytics and revoke their own diagnostic consent, but cannot enable export. The customer runtime rechecks administrator authority at final delivery, so a demotion also stops export. The grant records its authenticated organization/user, disclosure version and current consent epoch in the existing preference row.
+
 In **Settings → Profile → Cloud monitoring and privacy**, analytics and diagnostic export start off. Each category is stored in the existing organization/user preference row with a server-stamped consent epoch. An unavailable preference read grants neither category.
 
 The **Insights → Tokens** view shows up to 20 local calls, preserving unknown per-call counters and separating provider-reported, estimated and unknown model cost. Recorded cost is not a subscription balance, provider-account invoice or cloud bill. Papercusp service charges remain separate.

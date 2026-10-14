@@ -8,6 +8,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import type { Browser, BrowserContext, BrowserServer, Page, Route } from 'playwright-core';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { capabilityExecSandboxPolicy, buildCapabilitySandboxCommand, assertCapabilitySandboxAvailable, scrubExecEnv } from './exec-sandbox';
 import type { OperationBoundaryProfile } from './boundary-profile';
 import { fetchWithCapabilityPolicy, parseAndValidateUrl } from './fetch-policy';
@@ -56,7 +57,8 @@ const { sessions, openings } = pinModuleState('@papercusp/operator-core.browser-
 
 export function browserScope(ctx: UnifiedToolContext): string {
   if (!ctx.workspaceId?.trim()) throw new Error('browser_workspace_required');
-  return JSON.stringify([ctx.workspaceId, resolveAgentIdentity(ctx).ownerId, ctx.harnessSlug ?? null]);
+  const harnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
+  return JSON.stringify([ctx.workspaceId, resolveAgentIdentity(ctx).ownerId, harnessSlug]);
 }
 function status(session: Session) {
   return { id: session.id, task_id: session.taskId, state: session.state, busy: session.busy,
@@ -104,7 +106,7 @@ export async function launchBrowserProcess(ctx: UnifiedToolContext, root: string
   await browserStartupStage(ctx, 'launcher-write', () => writeFile(wrapper, script, { mode: 0o700 }));
   const ownerId = resolveAgentIdentity(ctx).ownerId;
   const row = await browserStartupStage(ctx, 'task-register', () => registerTask({ class: 'browser', title: 'Managed browser session', argv: [sandbox.binary, ...sandbox.argv],
-    cwd: root, launchedBy: ownerId, sessionId: ownerId, harnessSlug: ctx.harnessSlug,
+    cwd: root, launchedBy: ownerId, sessionId: ownerId, harnessSlug: resolveConcreteHarnessSlug(undefined, ctx) ?? undefined,
     detail: { surface: 'capability:fetch', browserSessionId: id, restartRecovery: 'unrecoverable' } }, { workspaceId: ctx.workspaceId }));
   let server: BrowserServer | undefined;
   try {

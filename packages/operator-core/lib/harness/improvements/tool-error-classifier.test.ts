@@ -197,6 +197,12 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
         status: 'not_dispatched',
         message: 'This Codex session attempted tools.mcp__papercusp_su__scheduler_get_claim_spec directly; the normalized wrapper was undefined and calling it threw TypeError before MCP dispatch.',
       },
+      {
+        toolName: 'papercusp:list_workspaces',
+        errorCode: 'client_wrapper_missing',
+        status: 'dispatch_unavailable',
+        message: 'The catalog exposed papercusp:list_workspaces, but the normalized functions.exec method mcp__papercusp_su__papercusp_list_workspaces was undefined and raised a TypeError before dispatch. The capability remains reachable through the documented ptool CLI fallback.',
+      },
     ];
 
     for (const report of reports) {

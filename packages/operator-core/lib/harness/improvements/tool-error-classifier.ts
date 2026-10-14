@@ -241,6 +241,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     // server defect because the target MCP handler never ran.
     class: 'caller',
     errorCodes: [
+      'client_wrapper_missing',
       'wrapper-unavailable',
       'client_wrapper_unavailable',
       'client-wrapper-unavailable',
@@ -254,6 +255,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     ],
     messagePattern:
       'The normalized direct wrapper [A-Za-z0-9_.]+ was undefined, so attempting it raised a local TypeError before MCP dispatch|' +
+      'The catalog exposed [^,]+, but the normalized functions\\.exec method [A-Za-z0-9_.]+ was undefined and raised a TypeError before dispatch|' +
       'the normalized wrapper was undefined and calling it threw TypeError before MCP dispatch|' +
       'tools\\.mcp__papercusp_su__[A-Za-z0-9_]+ is not callable .*calling it raised TypeError before dispatch|' +
       'Direct nested [^ ]+ wrapper call threw TypeError: tools\\.mcp__papercusp_su__[A-Za-z0-9_]+ is not a function before dispatch',

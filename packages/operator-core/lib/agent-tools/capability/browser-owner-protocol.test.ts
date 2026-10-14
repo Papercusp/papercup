@@ -6,7 +6,7 @@ import { runManagedBrowserSession } from './browser-owner';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 const id = 'f3e23fb1-7d32-49e8-af81-6cba0744e9d1';
 const ctx = { uiClientId: 'browser-protocol-owner', workspaceId: 'browser-protocol-workspace', isSuperuser: true,
-  role: 'operator', signal: new AbortController().signal, log: () => {}, authenticatedPrincipal: () => 'opaque' } as unknown as UnifiedToolContext;
+  harnessSlug: '*', role: 'operator', signal: new AbortController().signal, log: () => {}, authenticatedPrincipal: () => 'opaque' } as unknown as UnifiedToolContext;
 const opts = { timeoutMs: 20, maxText: 500 };
 const call = async () => JSON.parse((await runManagedBrowserSession({ op: 'observe', id }, undefined, ctx, opts)).content[0].text!);
 beforeEach(() => { rpc.locate.mockReset(); rpc.call.mockReset(); });

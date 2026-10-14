@@ -10,6 +10,7 @@ import { firstPartyCallersOffthread, type FirstPartyCallersRunOptions } from './
 import type { FirstPartyCallersJob } from './first-party-callers.worker';
 import type { CodeIntelSourceFile, SymbolSite } from './contracts';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
+import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 
 type Context = Pick<UnifiedToolContext, 'principal' | 'workspaceId' | 'harnessSlug' | 'role'>;
 type Endpoint = { harness: string; repositoryId: string; sourceFingerprint: string; site: SymbolSite; contentHash: string };
@@ -56,11 +57,12 @@ effects: ScopedContractEffects = { registry: workspaceId => loadHarnessRegistry(
     return refuse('contracts requires an authenticated concrete workspace principal with intel:read.');
   if ((ctx.workspaceId && ctx.workspaceId !== '*' && ctx.workspaceId !== workspace)
     || (args.workspace && args.workspace !== workspace)) return refuse('contracts workspace is outside the authenticated scope.');
-  const harnesses = [...new Set(args.harnesses ?? (ctx.harnessSlug && ctx.harnessSlug !== '*' ? [ctx.harnessSlug] : []))];
+  const callerHarness = resolveConcreteHarnessSlug(undefined, ctx);
+  const harnesses = [...new Set(args.harnesses ?? (callerHarness ? [callerHarness] : []))];
   if (!harnesses.length || harnesses.length > 8 || harnesses.some(slug => !slug || slug === '*' || slug === 'all'))
     return refuse('contracts requires one to eight explicit registered harness slugs.');
-  if (ctx.harnessSlug && ctx.harnessSlug !== '*') {
-    if (harnesses.some(slug => slug !== ctx.harnessSlug)) return refuse('contracts repository is outside the caller harness scope.');
+  if (callerHarness) {
+    if (harnesses.some(slug => slug !== callerHarness)) return refuse('contracts repository is outside the caller harness scope.');
   } else if (ctx.role !== 'operator' && ctx.role !== 'oracle') return refuse('Cross-harness contracts requires the existing operator/oracle read scope.');
   // All authorization decisions above precede registry IO and worker/source IO.
   const registry = await effects.registry(workspace);

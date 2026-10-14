@@ -29,6 +29,12 @@ describe('native P019 contract authorization before registry or source IO', () =
     const result = await scopedContractQuery({ harnesses: ['service', 'secret'] }, { ...context, harnessSlug: 'service' }, io);
     expect(result.error).toContain('harness scope'); expect(io.registry).not.toHaveBeenCalled(); expect(io.worker).not.toHaveBeenCalled();
   });
+  it('keeps operator cross-harness admission distinct from a concrete caller harness', async () => {
+    const io = effects(); io.registry.mockResolvedValue({ projects: [] });
+    const result = await scopedContractQuery({ harnesses: ['service'] }, context, io);
+    expect(io.registry).toHaveBeenCalledWith('workspace-a');
+    expect(result.error).toContain('not registered');
+  });
   it.each([[], ['*'], ['all']].map(harnesses => ({ harnesses })))('does not interpret an absent/wildcard cohort as a global registry read', async ({ harnesses }) => {
     const io = effects();
     expect((await scopedContractQuery({ harnesses }, context, io)).error).toBeTruthy();

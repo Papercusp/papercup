@@ -101,6 +101,19 @@ export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, fil
         command: any;
     } | {
         files: never[];
+        commandObligations: any[];
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    } | {
+        files: never[];
         lifecycleCommands: {
             script: string;
             command: any;

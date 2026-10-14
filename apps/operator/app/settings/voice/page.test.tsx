@@ -68,25 +68,25 @@ describe('full-agent engine capabilities', () => {
     expect(fetch).not.toHaveBeenCalledWith('/api/agent-mcp/operator-voice-prefs', expect.anything());
   });
 
-  it('disables release-unavailable cloud TTS and Porcupine while local engines stay selectable', async () => {
+  it('disables release-unavailable cloud TTS and Porcupine while supported engines stay selectable', async () => {
     render(<VoiceSettingsPage />);
     await screen.findByRole('combobox', { name: 'TTS engine' });
-    for (const name of [/ElevenLabs Turbo/, /OpenAI tts-1/, /Cartesia/, /Porcupine/]) {
+    for (const name of [/OpenAI tts-1/, /Cartesia/, /Porcupine/]) {
       const option = screen.getByRole('option', { name }) as HTMLOptionElement;
       expect(option.disabled).toBe(true);
       expect(option.textContent).toMatch(/not available in this release/);
     }
-    for (const name of [/Kokoro/, /Browser \(OS voices\)/, /openWakeWord/]) {
+    for (const name of [/Kokoro/, /Browser \(OS voices\)/, /ElevenLabs Turbo/, /openWakeWord/]) {
       expect((screen.getByRole('option', { name }) as HTMLOptionElement).disabled).toBe(false);
     }
   });
 
   it('preserves a saved unavailable TTS engine and explains it', async () => {
-    h.prefs.ttsEngine = 'elevenlabs';
+    h.prefs.ttsEngine = 'openai';
     render(<VoiceSettingsPage />);
     const select = await screen.findByRole('combobox', { name: 'TTS engine' }) as HTMLSelectElement;
-    expect(select.value).toBe('elevenlabs');
-    expect(screen.getByRole('alert').textContent).toMatch(/ElevenLabs TTS is not available in this release/);
+    expect(select.value).toBe('openai');
+    expect(screen.getByRole('alert').textContent).toMatch(/OpenAI TTS is not available in this release/);
     expect(fetch).not.toHaveBeenCalledWith('/api/agent-mcp/operator-voice-prefs', expect.anything());
   });
 

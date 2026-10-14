@@ -12402,7 +12402,14 @@ export function hostThroughPty(o) {
       } catch (error) {
         appendHostEvent(ownerId, 'session-port-delivery-ack-failed', hostErrorEvidence(error));
         writeTerminalDiagnostic(`psu: session-port delivery acknowledgement failed: ${error?.message ?? error}\n`);
-        if (!quotaBlockDetector.isBlocked()) {
+        if (error?.code === 'session_port_ack_outcome_unknown') {
+          // Native persistence is already verified. A late/unknown operator
+          // acknowledgement must not turn that physical proof into a child kill.
+          // Keep the server disposition unconfirmed; do not replay the mutation
+          // or publish a delivered acknowledgement on this path.
+          appendHostEvent(ownerId, 'session-port-delivery-ack-pending', hostErrorEvidence(error));
+          writeTerminalDiagnostic('psu: native seed is persisted; operator acknowledgement remains unconfirmed. The target stays alive.\n');
+        } else if (!quotaBlockDetector.isBlocked()) {
           try { child.kill(); } catch { /* already exited */ }
         }
       }

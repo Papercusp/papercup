@@ -30,12 +30,12 @@ let root: string;
 
 // Match the stock-native fixture's asynchronous phase diagnostics. Ending stdin
 // explicitly is required for the wrapper's docker exec -i on noninteractive probes.
-async function command(bin: string, args: string[], env?: NodeJS.ProcessEnv) {
+async function command(bin: string, args: string[], env?: NodeJS.ProcessEnv, timeout = 30_000) {
   const phase = bin === 'docker' ? args.slice(0, 2).join(' ') : 'wrapper';
   const started = Date.now();
   console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: 'started', containerIds: containers }));
   const result = await new Promise<{ stdout: string; stderr: string; status: number | null; signal: string | null; timedOut: boolean; error: string | null }>(resolve => {
-    const child = execFile(bin, args, { env, encoding: 'utf8', timeout: 30_000 }, (error, stdout, stderr) => {
+    const child = execFile(bin, args, { env, encoding: 'utf8', timeout }, (error, stdout, stderr) => {
       resolve({ stdout, stderr, status: typeof error?.code === 'number' ? error.code : error ? null : 0,
         signal: error?.signal ?? null, timedOut: error?.killed === true || error?.code === 'ETIMEDOUT',
         error: error ? String(error) : null });
@@ -90,6 +90,20 @@ afterAll(async () => {
 });
 
 describe('container exec target against a live container', () => {
+  it('records timeout kills as failures even when the child exits with a numeric code', async () => {
+    const result = await command(process.execPath, ['-e',
+      "process.on('SIGTERM', () => process.exit(143)); setInterval(() => {}, 1000)"], undefined, 1_000);
+    expect(result.timedOut).toBe(true);
+    expect(result.error).not.toBeNull();
+    expect(result.status).not.toBe(0);
+  });
+
+  it('closes stdin for noninteractive probes instead of leaving a reader alive', async () => {
+    const result = await command(process.execPath, ['-e',
+      "process.stdin.resume(); process.stdin.on('end', () => process.stdout.write('stdin-closed'))"]);
+    expect(result).toMatchObject({ status: 0, signal: null, timedOut: false, stdout: 'stdin-closed' });
+  });
+
   it.runIf(process.platform === 'linux')('executes the default wrapper across the native device namespace when TMPDIR is /dev/shm', () => {
     const previous = process.env.TMPDIR;
     let dir: string | undefined;

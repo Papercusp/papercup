@@ -3237,11 +3237,13 @@ export function refreshPersonaRender(coordOwnerId: any, { fetchImpl, operatorUrl
  * reconcile through the status route before deciding whether acknowledgement
  * failed; killing a successfully-delivered target on a network ambiguity would
  * be as wrong as accepting PTY output as persistence. */
-export function reportSessionPortDelivery(sessionPort: any, proof: any, { fetchImpl, operatorUrl, token, timeoutMs, }?: {
+export function reportSessionPortDelivery(sessionPort: any, proof: any, { fetchImpl, operatorUrl, token, timeoutMs, coordOwnerId, appendEventImpl, }?: {
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
     timeoutMs?: number | undefined;
+    coordOwnerId?: null | undefined;
+    appendEventImpl?: typeof appendHostEvent | undefined;
 }): Promise<any>;
 /** Finalize any failure after /prepare, whether bootstrap never minted a target
  * row (`prepared`) or local launch setup failed after bootstrap (`pending`). The
@@ -3943,6 +3945,18 @@ export function forkFallbackAccountRoute(account?: null): {
  * untracked resume path.
  */
 export function forkBootstrapFallbackMessage(ownerId: any, reason: any): string;
+/**
+ * Capability shared with managed callers before they reserve or open a process.
+ * Native/manual forks have their own fallback; this only describes tracked forks.
+ * @param {{ agent?: string | null, sessionId?: string | null, coordOwnerId?: string | null, id?: number | string | null }} session
+ * @returns {boolean}
+ */
+export function supportsTrackedFork(session: {
+    agent?: string | null;
+    sessionId?: string | null;
+    coordOwnerId?: string | null;
+    id?: number | string | null;
+}): boolean;
 export function launchTrackedFork(session: any, args?: {}, acct?: {
     id: null;
     env: {};

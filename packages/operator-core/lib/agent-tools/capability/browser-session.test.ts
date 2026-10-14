@@ -55,6 +55,8 @@ describe('managed browser authority and lifecycle', () => {
     expect(fetchTool.args.safeParse({ browser: { op: 'open' }, headers: { cookie: 'secret' } }).success).toBe(false);
     expect(browserSessionArg.safeParse({ op: 'open', id: crypto.randomUUID() }).success).toBe(false);
     expect(browserScope(ctx('a:b', 'c'))).not.toBe(browserScope(ctx('b', 'c:a')));
+    expect(browserScope({ ...ctx(), harnessSlug: '*' } as UnifiedToolContext))
+      .toBe(browserScope({ ...ctx(), harnessSlug: undefined } as UnifiedToolContext));
     expect(() => browserScope({ workspaceId: 'unattributed' } as UnifiedToolContext)).toThrow();
   });
   it('refuses file and credential URLs before launching any browser', async () => {

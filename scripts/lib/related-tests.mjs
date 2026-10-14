@@ -309,7 +309,9 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
             try { return createHash('sha256').update(readFileSync(path.resolve(root, input.path))).digest('hex') === input.sha256; }
             catch { return false; }
           })()) || !population.every(file => result.inputs.some(input => input.path === file)))) {
-      entries.push({ ...task, files: [] });
+      entries.push({ ...task, files: [], commandObligations: [{
+        ...task.commandObligations[0], discovery: result,
+      }] });
       unenumerated.push({ task: task.id, reason: result?.error ?? 'invalid-post-sync-astro-population', command: task.command });
       continue;
     }
