@@ -62,9 +62,10 @@
     {
       "row": 1,
       "journey": "Clean installation and current pairing instructions",
-      "status": "partial",
-      "observed": "Native fresh-launch choices and current Remote access/cloud wording passed with wiped credentials.",
-      "remaining": "Census has not independently established actual uninstall/reinstall behavior."
+      "status": "retained-passed-subset",
+      "evidence": "docs/evidence/iphone-p008-native-reinstall-2026-10-14.json",
+      "observed": "Actual OS uninstall/reinstall created a different app data container. Two unseeded launches showed current pairing instructions, Scan QR and Paste manually; no Operator UI.",
+      "remaining": "This is exact historical simulator-source evidence; supported live cloud acceptance remains in row 10."
     },
     {
       "row": 2,
@@ -120,9 +121,11 @@
     {
       "row": 9,
       "journey": "Delete and reinstall clears old Keychain pairing",
-      "status": "not-established-by-this-census",
-      "observed": "CredentialStore has resetIfFreshInstall and native unit guards.",
-      "remaining": "Actual uninstall/reinstall native journey; ordinary process relaunch is a different case."
+      "status": "retained-passed-subset",
+      "evidence": "docs/evidence/iphone-p008-native-reinstall-2026-10-14.json",
+      "executedSourceFingerprint": "a27b8bc9cec096016510895cfd53dde164f9d55d0171ebc12712e1303b0acb85",
+      "observed": "Maintained native pair, ordinary authorized relaunch and post-uninstall onboarding phases each passed with zero failures/skips. OS receipt proves removal of the original container and a different installed container; both post-reinstall launches used no credential wipe or seed. All 356 retained artifact hashes/sizes match.",
+      "remaining": "Preserve the exact dirty execution fingerprint and source limits; no native rerun is required to retain this subset."
     },
     {
       "row": 10,
