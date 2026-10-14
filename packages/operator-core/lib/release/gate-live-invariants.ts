@@ -27,6 +27,7 @@
  */
 import type { Sql } from 'postgres';
 import { frozenRepairLatency, type FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
+import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 
 export const GATE_INVARIANT_NAMES = [
   'fixer-spawn-latency',
@@ -413,6 +414,121 @@ export interface GateInvariantTransition {
 export const GATE_INVARIANT_LEASE_MS = 5 * 60_000;
 /** A pipeline_events row at least this often even when nothing changed — the acceptance ledger. */
 export const GATE_INVARIANT_HEARTBEAT_MS = 60 * 60_000;
+
+export const GATE_INVARIANT_ACCEPTANCE_WINDOW_MS = 7 * 24 * 60 * 60_000;
+/** The hourly writer runs behind the existing five-minute evaluation lease. */
+export const GATE_INVARIANT_ACCEPTANCE_GAP_MS = GATE_INVARIANT_HEARTBEAT_MS + GATE_INVARIANT_LEASE_MS;
+
+/** Historical evidence only; this never reads or operates the current gate. */
+export async function readGateInvariantWindow(sql: Sql, scope: { workspaceId: string; installSlug: string },
+  window: { windowStartMs: number; windowEndMs: number; maxRows?: number }): Promise<PipelineEventWindowRead> {
+  const { windowStartMs, windowEndMs } = window;
+  const maxRows = window.maxRows ?? 10_000;
+  const base = { windowStartMs, windowEndMs, total: null, rows: [] };
+  if (!scope.workspaceId.trim() || !scope.installSlug.trim() ||
+      !Number.isSafeInteger(windowStartMs) || windowStartMs < 0 ||
+      !Number.isSafeInteger(windowEndMs) || windowStartMs >= windowEndMs ||
+      !Number.isSafeInteger(maxRows) || maxRows < 1 || maxRows > 50_000) {
+    return { ...base, status: 'invalid', reason: 'Exact scope, finite window and bounded population are required.' };
+  }
+  try {
+    // The predecessor establishes the state at the left boundary. A count and
+    // its rows share one statement snapshot, so truncation cannot look healthy.
+    const rows = await sql<{ id: string; status: string; detail: Record<string, unknown>;
+      created_at: Date | string; population_count: string | number }[]>`
+      WITH predecessor AS (
+        SELECT id, status, detail, created_at FROM harness_shared.pipeline_events
+        WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.installSlug}
+          AND kind = 'gate_invariants' AND created_at <= ${new Date(windowStartMs)}
+        ORDER BY created_at DESC, id DESC LIMIT 1
+      ), population AS (
+        SELECT * FROM predecessor
+        UNION ALL
+        SELECT id, status, detail, created_at FROM harness_shared.pipeline_events
+        WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.installSlug}
+          AND kind = 'gate_invariants' AND created_at > ${new Date(windowStartMs)}
+          AND created_at <= ${new Date(windowEndMs)}
+      )
+      SELECT id::text, status, detail, created_at, count(*) OVER () AS population_count
+      FROM population ORDER BY created_at, id LIMIT ${maxRows + 1}`;
+    const total = rows.length ? Number(rows[0]!.population_count) : 0;
+    if (!Number.isSafeInteger(total) || total < rows.length ||
+        (total <= maxRows && total !== rows.length) || rows.some(row => Number(row.population_count) !== total)) {
+      return { ...base, status: 'unavailable', reason: 'Historical population count is inconsistent.' };
+    }
+    return { windowStartMs, windowEndMs, total,
+      status: total > maxRows ? 'capped' : 'complete',
+      reason: total > maxRows ? 'Historical population exceeds the row budget.' : null,
+      rows: rows.slice(0, maxRows).map(row => ({ id: row.id, kind: 'gate_invariants', status: row.status,
+        detail: row.detail, createdAtMs: new Date(row.created_at).getTime() })) };
+  } catch (error) {
+    return { ...base, status: 'unavailable', reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Fresh evaluation of the original history; it does not restamp old tests. */
+export function evaluateGateInvariantWindow(history: PipelineEventWindowRead, observedAtMs = Date.now()) {
+  const rows = [...history.rows].sort((a, b) => a.createdAtMs - b.createdAtMs);
+  const validClocks = Number.isSafeInteger(history.windowStartMs) && history.windowStartMs >= 0 &&
+    Number.isSafeInteger(history.windowEndMs) && rows.every(row => Number.isSafeInteger(row.createdAtMs) &&
+      row.createdAtMs >= 0 && row.createdAtMs <= history.windowEndMs);
+  const complete = history.status === 'complete' && history.total === rows.length && rows.length > 0 &&
+    rows.every(row => row.kind === 'gate_invariants' && typeof row.id === 'string' && row.id.length > 0) &&
+    new Set(rows.map(row => row.id)).size === rows.length;
+  const exactResults = rows.every(row => {
+    const results: unknown = row.detail?.results;
+    if (!Array.isArray(results) || results.length !== GATE_INVARIANT_NAMES.length) return false;
+    return GATE_INVARIANT_NAMES.every(name => results.filter(result => result?.name === name).length === 1);
+  });
+  const passOnly = rows.every(row => row.status === 'pass' && Array.isArray(row.detail?.results) &&
+    row.detail.results.every(result => result?.status === 'pass'));
+  const gaps = rows.slice(1).map((row, i) => row.createdAtMs - rows[i]!.createdAtMs);
+  const leftGap = rows[0] ? history.windowStartMs - rows[0].createdAtMs : Infinity;
+  const rightGap = rows.at(-1) ? history.windowEndMs - rows.at(-1)!.createdAtMs : Infinity;
+  const coverage = validClocks && rows.length > 0 && leftGap >= 0 &&
+    Math.max(leftGap, rightGap, ...gaps) <= GATE_INVARIANT_ACCEPTANCE_GAP_MS;
+  const assertions = [
+    { id: 'seven-day-invariant-window', passed: validClocks &&
+      history.windowEndMs - history.windowStartMs === GATE_INVARIANT_ACCEPTANCE_WINDOW_MS &&
+      Number.isSafeInteger(observedAtMs) && history.windowEndMs <= observedAtMs,
+      evidence: `start=${history.windowStartMs}; end=${history.windowEndMs}; observed=${observedAtMs}; required=${GATE_INVARIANT_ACCEPTANCE_WINDOW_MS}ms` },
+    { id: 'complete-invariant-population', passed: complete,
+      evidence: `read=${history.status}; population=${history.total}; rows=${rows.length}; ${history.reason ?? 'no read error'}` },
+    { id: 'exact-seven-invariant-identities', passed: complete && exactResults,
+      evidence: GATE_INVARIANT_NAMES.join(', ') },
+    { id: 'pass-only-invariant-history', passed: complete && exactResults && passOnly,
+      evidence: 'Every original overall status and every named result must pass; breach and unknown remain failures.' },
+    { id: 'hourly-invariant-history-coverage', passed: complete && coverage,
+      evidence: `left=${leftGap}ms; right=${rightGap}ms; largest internal gap=${Math.max(0, ...gaps)}ms; bound=${GATE_INVARIANT_ACCEPTANCE_GAP_MS}ms` },
+  ];
+  return { assertions, eventIds: rows.map(row => row.id) };
+}
+
+/** Only the invariant portion of R17; no cycle-time, P006 or shipment claim. */
+export async function executeGateInvariantWindow(sql: Sql, args: {
+  workspaceId: string; harnessSlug: string; projectDir: string; installSlug: string;
+  runtimeUnits: string[]; windowStartMs: number; windowEndMs: number;
+}) {
+  const { createHash } = await import('node:crypto');
+  const { executeOperationalRun } = await import('../agent-tools/testing/record-run');
+  return executeOperationalRun({
+    filePath: 'packages/operator-core/lib/release/gate-live-invariants.ts',
+    name: 'Seven-day live gate invariant history', framework: 'operational',
+    command: ['executeGateInvariantWindow', args.workspaceId, args.installSlug,
+      String(args.windowStartMs), String(args.windowEndMs)], runtimeUnits: args.runtimeUnits,
+    run: async () => {
+      const history = await readGateInvariantWindow(sql, args, args);
+      const evaluation = evaluateGateInvariantWindow(history);
+      const populationHash = createHash('sha256').update(JSON.stringify(history)).digest('hex');
+      return { exitCode: evaluation.assertions.every(assertion => assertion.passed) ? 0 : 1,
+        assertions: evaluation.assertions,
+        summary: `Invariant history only: workspace=${args.workspaceId}; install=${args.installSlug}; ` +
+          `window=${args.windowStartMs}..${args.windowEndMs}; rows=${history.rows.length}; ` +
+          `original_population_sha256=${populationHash}; first=${evaluation.eventIds[0] ?? 'none'}; ` +
+          `last=${evaluation.eventIds.at(-1) ?? 'none'}. Runtime goal and final shipment require separate evidence.` };
+    },
+  }, args);
+}
 
 export function parseGateInvariantsState(raw: unknown): GateInvariantsState | null {
   let value = raw;

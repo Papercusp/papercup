@@ -12,12 +12,17 @@ import {
   evaluateGateLiveInvariants,
   foldGateInvariants,
   GATE_INVARIANT_HEARTBEAT_MS,
+  GATE_INVARIANT_NAMES,
+  GATE_INVARIANT_ACCEPTANCE_WINDOW_MS,
+  GATE_INVARIANT_ACCEPTANCE_GAP_MS,
+  evaluateGateInvariantWindow,
   overallGateInvariantStatus,
   parseGateInvariantsState,
   resolveGateExecutorDrift,
   type GateInvariantName,
   type GateInvariantSnapshot,
 } from './gate-live-invariants';
+import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 
 const C = '1111111111111111111111111111111111111111';
 const C1 = '2222222222222222222222222222222222222222';
@@ -26,6 +31,81 @@ const BASE = '4444444444444444444444444444444444444444';
 const T0 = 1_800_000_000_000;
 const MIN = 60_000;
 const TICK = 4 * MIN;
+
+describe('seven-day original invariant history acceptance', () => {
+  function history(): PipelineEventWindowRead {
+    const rows = Array.from({ length: 169 }, (_, i) => ({
+      id: `original-event-${i}`, kind: 'gate_invariants' as const, status: 'pass',
+      createdAtMs: T0 + i * GATE_INVARIANT_HEARTBEAT_MS,
+      detail: { results: GATE_INVARIANT_NAMES.map(name => ({ name, status: 'pass', observed: 'measured by original writer' })) },
+    }));
+    return { status: 'complete', total: rows.length, rows, reason: null,
+      windowStartMs: T0, windowEndMs: T0 + GATE_INVARIANT_ACCEPTANCE_WINDOW_MS };
+  }
+  const verdict = (h: PipelineEventWindowRead, id: string) =>
+    evaluateGateInvariantWindow(h, h.windowEndMs).assertions.find(assertion => assertion.id === id)!.passed;
+  const results = (h: PipelineEventWindowRead, index: number) =>
+    h.rows[index]!.detail.results as Array<{ name: string; status: string }>;
+
+  it('accepts exactly seven complete days and preserves every original event identity', () => {
+    const h = history();
+    const result = evaluateGateInvariantWindow(h, h.windowEndMs);
+    expect(result.assertions.every(assertion => assertion.passed)).toBe(true);
+    expect(result.eventIds).toEqual(h.rows.map(row => row.id));
+  });
+  it('rejects a future seven-day endpoint even if input rows claim passes', () => {
+    const h = history();
+    expect(evaluateGateInvariantWindow(h, h.windowEndMs - 1).assertions.find(a => a.id === 'seven-day-invariant-window')!.passed).toBe(false);
+  });
+  it.each(['unknown', 'breach'])('rejects an interior %s even when both endpoints pass', status => {
+    const h = history();
+    results(h, 80)[0]!.status = status;
+    expect(verdict(h, 'pass-only-invariant-history')).toBe(false);
+  });
+  it('rejects a recent pass, a short window and a missing left-boundary observation', () => {
+    const h = history();
+    h.rows = h.rows.slice(-1); h.total = 1;
+    expect(verdict(h, 'hourly-invariant-history-coverage')).toBe(false);
+    h.windowStartMs = h.windowEndMs - GATE_INVARIANT_HEARTBEAT_MS;
+    expect(verdict(h, 'seven-day-invariant-window')).toBe(false);
+  });
+  it('rejects a silent interval and stale right boundary', () => {
+    const h = history();
+    h.rows.splice(80, 2); h.total = h.rows.length;
+    expect(verdict(h, 'hourly-invariant-history-coverage')).toBe(false);
+    const right = history();
+    right.rows.splice(-2); right.total = right.rows.length;
+    expect(verdict(right, 'hourly-invariant-history-coverage')).toBe(false);
+  });
+  it('allows only the existing lease slack at the hourly boundary', () => {
+    const h = history();
+    h.rows[0]!.createdAtMs = T0 - (GATE_INVARIANT_ACCEPTANCE_GAP_MS - GATE_INVARIANT_HEARTBEAT_MS);
+    expect(verdict(h, 'hourly-invariant-history-coverage')).toBe(true);
+    h.rows[0]!.createdAtMs -= 1;
+    expect(verdict(h, 'hourly-invariant-history-coverage')).toBe(false);
+  });
+  it.each(['capped', 'unavailable', 'invalid'] as const)('rejects a %s read with a retained healthy subset', status => {
+    const h = history(); h.status = status;
+    expect(verdict(h, 'complete-invariant-population')).toBe(false);
+    expect(verdict(h, 'pass-only-invariant-history')).toBe(false);
+  });
+  it('rejects a count mismatch, duplicate IDs and unnamed invariant results', () => {
+    const h = history(); h.total! += 1;
+    expect(verdict(h, 'complete-invariant-population')).toBe(false);
+    const duplicate = history(); duplicate.rows[80]!.id = duplicate.rows[79]!.id;
+    expect(verdict(duplicate, 'complete-invariant-population')).toBe(false);
+    const missing = history(); results(missing, 80).pop();
+    expect(verdict(missing, 'exact-seven-invariant-identities')).toBe(false);
+    const renamed = history(); results(renamed, 80)[0]!.name = 'unrelated-invariant';
+    expect(verdict(renamed, 'exact-seven-invariant-identities')).toBe(false);
+  });
+  it('rejects nonfinite and future historical clocks', () => {
+    const h = history(); h.rows[80]!.createdAtMs = NaN;
+    expect(verdict(h, 'hourly-invariant-history-coverage')).toBe(false);
+    const future = history(); future.rows[80]!.createdAtMs = future.windowEndMs + 1;
+    expect(verdict(future, 'hourly-invariant-history-coverage')).toBe(false);
+  });
+});
 
 function queue(over: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateRepairQueue {
   return { ...createFrozenCandidateRepairQueue({ candidate: C, base: BASE, failingTests: ['lib/a.test.ts'], nowMs: T0 }), ...over };
