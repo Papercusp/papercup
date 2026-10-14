@@ -174,6 +174,7 @@ describe('connector-sync Google Contacts Personal Vault path', () => {
       runConnectorSync: vi.fn(async () => ({ providers: [], sources: [] }) as never),
       runParticipantBackfills: vi.fn(async () => []),
       runGoogleContacts,
+      runChatRollup: vi.fn(async () => NO_CHAT),
     });
 
     expect(getSystemAction('connector-sync')).toBeTypeOf('function');
@@ -214,10 +215,49 @@ describe('connector-sync Google Contacts Personal Vault path', () => {
         pages: 0,
         failures: [],
       })),
+      runChatRollup: vi.fn(async () => NO_CHAT),
     });
 
     expect(result.diagnostics).toMatchObject({ sources: 1, failed: 0, admitted: 0 });
     expect(runConnectorSync).toHaveBeenCalledWith(sql, { workspaceId: ctx.workspaceId, harness: ctx.installSlug });
     expect(result).not.toHaveProperty('softError');
+  });
+});
+
+const NO_CHAT = { buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0 };
+
+function quietDeps(sql: Sql) {
+  return {
+    sql,
+    reconcilePush: vi.fn(async () => ({ sources: [] }) as never),
+    runConnectorWakes: vi.fn(async () => ({ sources: [] }) as never),
+    runConnectorSync: vi.fn(async () => ({ providers: 0, sources: [] }) as never),
+    runParticipantBackfills: vi.fn(async () => []),
+    runGoogleContacts: vi.fn(async () => ({ sources: 0, succeeded: 0, failed: 0, contacts: 0, pages: 0, failures: [] })),
+  };
+}
+
+// D-016 (papercusp-enterprise-readiness-roadmap-2026-10-09): the chat rollup driver runs each tick.
+describe('connector-sync chat rollup step', () => {
+  it('runs the chat rollup pass for the workspace and reports its counts', async () => {
+    const sql = {} as Sql;
+    const runChatRollup = vi.fn(async () => ({ buckets: 3, unitsWritten: 2, unitsRemoved: 1, expired: 4, legacyMigrated: 5 }));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await runConnectorSyncAction(ctx, { ...quietDeps(sql), runChatRollup });
+
+    expect(runChatRollup).toHaveBeenCalledWith(sql, { workspaceId: ctx.workspaceId });
+    expect(result.diagnostics).toMatchObject({
+      chatBuckets: 3, chatUnitsWritten: 2, chatUnitsRemoved: 1, chatExpired: 4, chatLegacyMigrated: 5, chatRollupFailed: 0,
+    });
+    expect(result).not.toHaveProperty('softError');
+  });
+
+  it('a failed rollup is a soft error, never a failed pass', async () => {
+    const sql = {} as Sql;
+    const runChatRollup = vi.fn(async () => { throw new Error('rollup exploded'); });
+    const result = await runConnectorSyncAction(ctx, { ...quietDeps(sql), runChatRollup });
+
+    expect(result.diagnostics).toMatchObject({ chatBuckets: 0, chatRollupFailed: 1 });
+    expect(result.softError).toContain('chat rollup failed: rollup exploded');
   });
 });

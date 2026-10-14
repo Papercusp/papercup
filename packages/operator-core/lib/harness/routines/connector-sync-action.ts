@@ -14,6 +14,7 @@ import {
 } from '../../providers/connector-runtime';
 import { formatConnectorPushLog, reconcileConnectorPush, type ConnectorPushResult } from '../../providers/connector-push';
 import { runPendingParticipantBackfills } from '../../relationship-graph/participant-backfill';
+import { runChatRollupPass } from '../../data-sources/chat-retrieval-units';
 import type { Sql } from 'postgres';
 import {
   isGoogleWorkspaceTerminalAuthError,
@@ -136,6 +137,7 @@ export interface ConnectorSyncActionDeps {
   runConnectorSync?: typeof runConnectorSync;
   runParticipantBackfills?: typeof runPendingParticipantBackfills;
   runGoogleContacts?: (ctx: SystemActionCtx, sql: Sql) => Promise<GoogleContactsPersonalVaultPollResult>;
+  runChatRollup?: (sql: Sql, opts: { workspaceId: string }) => Promise<{ buckets: number; unitsWritten: number; unitsRemoved: number; expired: number; legacyMigrated: number }>;
 }
 
 /** The registered one-minute connector runner, exported as a deterministic test seam. */
@@ -186,6 +188,20 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
   );
   if (backfills.length > 0) console.log(`connector-sync participant backfill: ${JSON.stringify(backfills)}`);
   const backfillFailed = backfills.filter((b) => b.outcome === 'failed');
+  // D-016: render the chat messages this tick (and earlier ones) stored into their thread/window
+  // units, after retention. Independent of the sync outcome; a failure is reported, never a
+  // failed pass, and its uncommitted batch stays queued for the next tick.
+  let chatRollupError: string | null = null;
+  const chat = await (provided.runChatRollup ?? runChatRollupPass)(sql, { workspaceId: ctx.workspaceId }).catch((cause: unknown) => {
+    chatRollupError = errorText(cause);
+    return { buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0 };
+  });
+  if (chat.buckets > 0 || chat.expired > 0 || chat.legacyMigrated > 0) {
+    console.log(
+      '[connector-sync] chat rollup buckets=' + chat.buckets + ' unitsWritten=' + chat.unitsWritten +
+        ' unitsRemoved=' + chat.unitsRemoved + ' expired=' + chat.expired + ' legacyMigrated=' + chat.legacyMigrated,
+    );
+  }
   const softErrors = [
     ...(failed.length > 0
       ? [`connector-sync: ${failed.length} source(s) failed: ${failed.map((s) => `${s.sourceId}:${s.error ?? s.outcome}`).join('; ')}`]
@@ -199,6 +215,7 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
     ...(pushFailed.length > 0
       ? [`push subscribe: ${pushFailed.length} source(s) failed: ${pushFailed.map((s) => `${s.sourceId}:${s.error ?? 'failed'}`).join('; ')}`]
       : []),
+    ...(chatRollupError ? [`chat rollup failed: ${chatRollupError}`] : []),
   ];
   return {
     diagnostics: {
@@ -217,6 +234,12 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
       participantBackfillFailed: backfillFailed.length,
       pushSubscribed: push.sources.filter((source) => source.outcome === 'subscribed').length,
       pushFailed: pushFailed.length,
+      chatBuckets: chat.buckets,
+      chatUnitsWritten: chat.unitsWritten,
+      chatUnitsRemoved: chat.unitsRemoved,
+      chatExpired: chat.expired,
+      chatLegacyMigrated: chat.legacyMigrated,
+      chatRollupFailed: chatRollupError ? 1 : 0,
     },
     ...(softErrors.length > 0 ? { softError: softErrors.join(' | ').slice(0, 1000) } : {}),
   };

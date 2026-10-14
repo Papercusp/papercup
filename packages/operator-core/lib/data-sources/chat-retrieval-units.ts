@@ -666,6 +666,150 @@ export async function purgeExpiredChatMessages(
   return { expired: expired.length, tombstonesErased: erased.length, revisionsDropped: dropped.length };
 }
 
+/** The connector record fields a chat message is read from (CanonicalExternalEvent's shape). */
+export interface ChatMessageRecord {
+  externalId: string;
+  occurredAt?: string | Date | null;
+  payload: Record<string, unknown>;
+}
+
+function textOf(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Map a provider-neutral `chat-message` connector record to a raw chat message. The provider
+ * names the thread in `payload.threadKey` (null = a channel message); the host never reads a
+ * provider's own extensions. The record's native id is the provider message id.
+ */
+export function chatMessageInputFromRecord(record: ChatMessageRecord): ChatMessageInput {
+  const payload = record.payload ?? {};
+  const occurred = record.occurredAt || textOf(payload.occurredAt);
+  return {
+    channelId: textOf(payload.channelId) || textOf(payload.aclRef),
+    providerMessageId: record.externalId,
+    threadKey: textOf(payload.threadKey) || null,
+    authorRef: textOf(payload.sender) || null,
+    authorLabel: textOf(payload.senderLabel) || null,
+    body: typeof payload.text === 'string' ? payload.text : typeof payload.body === 'string' ? payload.body : '',
+    postedAt: occurred || new Date(),
+    raw: payload,
+  };
+}
+
+/** The corpus key the connector document sink stored a per-message chat row under before D-016. */
+export function legacyChatMessageDocumentKeys(input: {
+  sourceId: string;
+  corpusSource: string;
+  externalId: string;
+  providerAccountId?: string | null;
+}): string[] {
+  // datatype-destination-sink.ts dataSourceDocumentDedupeKey: `<datatype>:<sourceId>:<nativeId>`.
+  const plain = `${DEFAULT_CHAT_MESSAGE_DATATYPE}:${input.sourceId}:${input.externalId}`;
+  const providerAccountId = input.providerAccountId?.trim();
+  if (!providerAccountId) return [plain];
+  // A personal source's row went through the vault writer, which prefixes the key by account.
+  return [plain, dedupeKeyFor({ source: input.corpusSource, kind: DEFAULT_CHAT_MESSAGE_DATATYPE, dedupeKey: plain, providerAccountId })];
+}
+
+/** Remove the legacy per-message corpus row of one message, so its text is indexed only through its unit. */
+export async function removeLegacyChatMessageDocument(
+  sql: Sql,
+  workspaceId: string,
+  input: Parameters<typeof legacyChatMessageDocumentKeys>[0],
+): Promise<number> {
+  const rows = await sql`
+    DELETE FROM harness_shared.documents
+     WHERE workspace_id = ${workspaceId} AND source = ${input.corpusSource}
+       AND kind = ${DEFAULT_CHAT_MESSAGE_DATATYPE}
+       AND dedupe_key = ANY(${sql.array(legacyChatMessageDocumentKeys(input))}::text[])
+    RETURNING 1`;
+  return rows.length;
+}
+
+/**
+ * The cut-over of per-message corpus rows written before D-016 (one `chat-message` document per
+ * message): each becomes a raw chat message of its data source and is then deleted, so the
+ * message is indexed once, through its unit, with the unit's permission list.
+ */
+export async function migrateLegacyChatMessageDocuments(
+  sql: Sql,
+  workspaceId: string,
+  opts: { limit?: number } = {},
+): Promise<{ migrated: number }> {
+  const limit = Math.max(1, Math.min(1000, opts.limit ?? DEFAULT_ROLLUP_BATCH));
+  const rows = await sql<Array<{ id: string; data_source_id: string; external_id: string | null; occurred_at: Date | null; metadata: Record<string, unknown> | null }>>`
+    SELECT d.id::text AS id, s.id::text AS data_source_id, d.external_id, d.occurred_at, d.metadata
+      FROM harness_shared.documents d
+      JOIN harness_shared.data_sources s
+        ON s.workspace_id = d.workspace_id AND s.id::text = d.metadata ->> 'dataSourceId'
+     WHERE d.workspace_id = ${workspaceId} AND d.kind = ${DEFAULT_CHAT_MESSAGE_DATATYPE}
+     ORDER BY d.id
+     LIMIT ${limit}`;
+  let migrated = 0;
+  for (const row of rows) {
+    const input = row.external_id
+      ? chatMessageInputFromRecord({ externalId: row.external_id, occurredAt: row.occurred_at, payload: row.metadata ?? {} })
+      : null;
+    // A row that names no message cannot become one; it is still a duplicate of nothing, so it goes.
+    if (input && input.channelId) await upsertChatMessages(sql, workspaceId, row.data_source_id, [input]);
+    await sql`DELETE FROM harness_shared.documents WHERE workspace_id = ${workspaceId} AND id::text = ${row.id}`;
+    migrated += 1;
+  }
+  return { migrated };
+}
+
+export interface ChatRollupPassResult extends ChatRollupResult {
+  expired: number;
+  tombstonesErased: number;
+  revisionsDropped: number;
+  legacyMigrated: number;
+  batches: number;
+}
+
+/**
+ * One driver pass (D-016): retention first (its deletes re-queue buckets), then the legacy
+ * cut-over, then up to `maxBatches` rollup batches. Each step commits in its own transaction, so
+ * a failed batch re-queues only its own buckets; the error propagates to the caller.
+ */
+export async function runChatRollupPass(
+  sql: Sql,
+  opts: { workspaceId: string; maxBatches?: number; batchSize?: number; gapMinutes?: number; now?: Date },
+): Promise<ChatRollupPassResult> {
+  const { workspaceId } = opts;
+  const batchSize = Math.max(1, Math.min(1000, opts.batchSize ?? DEFAULT_ROLLUP_BATCH));
+  const maxBatches = Math.max(1, opts.maxBatches ?? 5);
+  const tx = <T>(fn: (inner: Sql) => Promise<T>): Promise<T> =>
+    sql.begin((inner) => fn(inner as unknown as Sql)) as Promise<T>;
+  const purged = await tx((inner) => purgeExpiredChatMessages(inner, workspaceId, { now: opts.now }));
+  const legacy = await tx((inner) => migrateLegacyChatMessageDocuments(inner, workspaceId, { limit: batchSize }));
+  const result: ChatRollupPassResult = {
+    ...purged,
+    legacyMigrated: legacy.migrated,
+    batches: 0,
+    buckets: 0,
+    unitsWritten: 0,
+    unitsUnchanged: 0,
+    unitsRemoved: 0,
+    documentsWritten: 0,
+    corpusSkipped: {},
+  };
+  for (let i = 0; i < maxBatches; i += 1) {
+    const batch = await tx((inner) => rollupChatUnits(inner, workspaceId, { limit: batchSize, gapMinutes: opts.gapMinutes }));
+    result.batches += 1;
+    result.buckets += batch.buckets;
+    result.unitsWritten += batch.unitsWritten;
+    result.unitsUnchanged += batch.unitsUnchanged;
+    result.unitsRemoved += batch.unitsRemoved;
+    result.documentsWritten += batch.documentsWritten;
+    for (const [reason, count] of Object.entries(batch.corpusSkipped) as Array<[CorpusSkipReason, number]>) {
+      result.corpusSkipped[reason] = (result.corpusSkipped[reason] ?? 0) + count;
+    }
+    if (batch.buckets < batchSize) break;
+  }
+  return result;
+}
+
 export async function placeLegalHold(
   sql: Sql,
   workspaceId: string,

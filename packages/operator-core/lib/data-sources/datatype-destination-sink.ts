@@ -31,7 +31,16 @@ import {
   type CreateWorkItemInput,
 } from '../work-items';
 import type { CanonicalExternalEvent, ExternalTriggerSink } from '../external-triggers/ingestion';
-import { corpusRouteFor, ensurePermissionList, writeCorpusDocument } from './chat-retrieval-units';
+import {
+  DEFAULT_CHAT_MESSAGE_DATATYPE,
+  chatMessageInputFromRecord,
+  containerPermissionRef,
+  corpusRouteFor,
+  ensurePermissionList,
+  removeLegacyChatMessageDocument,
+  upsertChatMessages,
+  writeCorpusDocument,
+} from './chat-retrieval-units';
 import { replacePermissionListMembers } from './documents-corpus';
 import { normalizePersonalSource } from '../personal-vault/store';
 import { refreshAdmittedFromSource } from '../work-admission/admit';
@@ -300,6 +309,27 @@ export async function createDatatypeDestinationSinks(
     }];
   }
 
+  if (nature === 'document' && datatype === DEFAULT_CHAT_MESSAGE_DATATYPE) {
+    // Chat is indexed by unit, not by message (D-016): the message is stored raw, its thread or
+    // time window is queued, and the connector-sync rollup renders the unit into the corpus under
+    // the source's route. Stored even when the source routes no corpus row today: retention, legal
+    // holds and chat promotion read the raw rows, and a later routing change re-queues the units.
+    const corpusSource = normalizePersonalSource(source.kind);
+    return [{
+      kind: 'data-source-chat-message',
+      ref,
+      async deliver(event: CanonicalExternalEvent) {
+        await upsertChatMessages(sql, source.workspaceId, source.id, [chatMessageInputFromRecord(event)]);
+        await removeLegacyChatMessageDocument(sql, source.workspaceId, {
+          sourceId: source.id,
+          corpusSource,
+          externalId: event.externalId,
+          providerAccountId: source.providerAccountId,
+        });
+      },
+    }];
+  }
+
   if (nature === 'document') {
     const route = corpusRouteFor(
       {
@@ -421,9 +451,4 @@ export async function applyDataSourceMembership(
     removed,
     ...(input.containers ? { containers: input.containers.length } : {}),
   };
-}
-
-/** The permission-list source_ref of one container of a source (D-026). */
-export function containerPermissionRef(sourceId: string, ref: string): string {
-  return `${sourceId}#${ref}`;
 }
