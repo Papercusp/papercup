@@ -91,6 +91,11 @@ for entry in entries:
         record = read_lock_operation(entry.path, os.environ.get('PAPERCUSP_LOCK_SID') or os.environ.get('PAPERCUSP_SID'), session_id)
         if not record:
             continue
+        # Lifecycle cleanup carries no positive edit proof. Terminal records
+        # are retained tombstones, not pending cleanup work; PostToolUse may
+        # still enrich a cancelled record when native proof arrives later.
+        if record.get('terminal') in ('completed', 'cancelled'):
+            continue
         try:
             subprocess.run(['bash', release_hook], input=json.dumps({
                 'hook_event_name': event.get('hook_event_name'),
