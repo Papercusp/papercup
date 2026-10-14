@@ -290,16 +290,33 @@ describe('Kopia healthcheck: a process that outlived its stopped unit (WI-655470
     expect(run.systemctlCalls).toBe(0);
   });
 
-  it('does not let the leftover check hide a stale dump source (it runs last)', () => {
+  it('a stale dump source leads the page, and the leftover still rides on it (never silenced)', () => {
+    // A leaked walk is likeliest exactly while backups are failing. The first version
+    // only checked for leftovers after every other check passed, so a stale dump hid it.
     const run = runHealthcheck(3 * 60 * 60, {}, {
       unit: 'kopia-home-snapshot.service',
       procs: '3691914\n',
       subStates: ['auto-restart'],
     });
     const evidence = [run.result.stdout, run.result.stderr, run.log].join('\n');
+    const failLine = run.log.split('\n').find((l) => l.includes('FAIL: ')) ?? '';
 
     expect(run.result.status, evidence).toBe(1);
-    expect(evidence).toContain('Postgres dump source snapshot is STALE');
-    expect(evidence).not.toContain('outlived their stopped unit');
+    expect(failLine).toContain('Postgres dump source snapshot is STALE');
+    expect(failLine).toContain('ALSO: Kopia process(es) outlived their stopped unit');
+    expect(failLine).toContain('kopia-home-snapshot.service is stopped but its cgroup still holds pid(s) 3691914');
+    expect(failLine.indexOf('STALE')).toBeLessThan(failLine.indexOf('ALSO:'));
+  });
+
+  it('does not append the leftover note to its own page', () => {
+    const run = runHealthcheck(10 * 60, {}, {
+      unit: 'kopia-home-snapshot.service',
+      procs: '3691914\n',
+      subStates: ['auto-restart'],
+    });
+    const failLine = run.log.split('\n').find((l) => l.includes('FAIL: ')) ?? '';
+
+    expect(failLine).toContain('outlived their stopped unit');
+    expect(failLine).not.toContain('ALSO:');
   });
 });
