@@ -8,7 +8,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
-import { qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
+import { privateBundleRuntimeEnv, waitForPrivateOperator, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -116,46 +116,17 @@ async function main() {
   // The real native request fixture grants writes only to its disposable state.
   // Apply the mount boundary to the whole operator/invoke/native lineage.
   const privateRoot = dirname(e.HOME!);
+  const hostEnv = privateBundleRuntimeEnv(e);
   host = blueprintRoute
     ? spawn('bwrap', ['--die-with-parent', '--ro-bind', '/', '/', '--bind', privateRoot, privateRoot,
       '--bind', evidenceDir, evidenceDir, '--dev', '/dev', '--proc', '/proc', '--', process.execPath, bundle],
-    { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] })
-    : spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+    { cwd: root, env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn(process.execPath, [bundle], { cwd: root, env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   host.stdout!.on('data', chunk => process.stdout.write(chunk));
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
   hostIdentity = readProcessIdentity(host.pid!);
   assert.ok(hostIdentity, 'private host kernel identity required');
-  let health: any;
-  const readinessStarted = Date.now();
-  const deadline = readinessStarted + 90_000;
-  const readinessProbes: Array<{ elapsedMs: number; status?: number; service?: unknown; error?: string }> = [];
-  let readinessAttempts = 0;
-  while (Date.now() < deadline) {
-    assert.equal(host.exitCode, null, 'private host exited before readiness');
-    assert.equal(host.signalCode, null, 'private host was signaled before readiness');
-    readinessAttempts++;
-    try {
-      const response = await fetch(base + '/api/health', { headers, signal: AbortSignal.timeout(2_000) });
-      const probe = { elapsedMs: Date.now() - readinessStarted, status: response.status, service: undefined as unknown };
-      readinessProbes.push(probe);
-      if (response.ok) {
-        health = await response.json();
-        probe.service = health?.service;
-        break;
-      }
-    } catch (error) {
-      readinessProbes.push({ elapsedMs: Date.now() - readinessStarted,
-        error: error instanceof Error ? `${error.name}: ${error.message}; cause=${String(error.cause ?? '')}` : String(error) });
-    }
-    // Keep the last failures without retaining response bodies or credentials.
-    if (readinessProbes.length > 24) readinessProbes.shift();
-    await new Promise(done => setTimeout(done, 250));
-  }
-  const readiness = { base, pid: host.pid, hostIdentity, mallocArenaMax: e.MALLOC_ARENA_MAX ?? null,
-    elapsedMs: Date.now() - readinessStarted, attempts: readinessAttempts, probes: readinessProbes.slice(-24) };
-  writeFileSync(join(evidenceDir, 'readiness.json'), JSON.stringify(readiness));
-  assert.equal(health?.service, 'papercusp-operator',
-    'private operator never became ready: ' + JSON.stringify(readiness));
+  const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('STAGING_FIRST_HTTP_PHASE request-ready');
   if (blueprintRoute) {
     const receipt = await blueprintRoute.execute();

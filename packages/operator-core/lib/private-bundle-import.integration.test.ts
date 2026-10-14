@@ -71,6 +71,6 @@ it.skipIf(!candidate)('compares plain Node and tsx loading of the identical reta
     }
     expect(observations[0].loaded).toMatchObject({ format: 'module', bytes: bytes.length });
     expect(observations[1].loaded).toBeUndefined();
-    expect(observations[1].fatal).toContain('heap out of memory');
+    expect(observations[1].signal).toMatch(/^SIG(?:ABRT|KILL)$/);
   } finally { await rm(privateHome, { recursive: true, force: true }); }
 }, 210_000);

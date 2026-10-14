@@ -1,6 +1,6 @@
 /** Registry preflight shared by standalone private HTTP workers and their cheap guard. */
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
@@ -13,6 +13,73 @@ import { PANEL_LABELS, type PanelKey, type SystemHealth } from '../lib/system-he
 import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSourceFile } from '../lib/verifier-source';
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
   CommittedReaderPreparationHandoff } from './isolated-integration-proof';
+
+/** Prepared ESM bundles must not re-enter tsx's transformer. Keep every other
+ * preload, especially the committed-source guard, and all resource limits. */
+export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const tokens = (env.NODE_OPTIONS ?? '').match(/(?:[^\s"']+|"(?:\\.|[^"\\])*"|'[^']*')+/g) ?? [];
+  const value = (token: string) => token.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g,
+    (_, double: string | undefined, single: string | undefined) => double?.replace(/\\(["\\])/g, '$1') ?? single!);
+  const tsx = (specifier: string) => /^tsx(?:\/(?:esm|cjs))?$/.test(specifier)
+    || /(?:^|\/)node_modules\/tsx\//.test(specifier);
+  const kept: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = value(tokens[i]);
+    const inline = token.match(/^(?:--import|--loader|--experimental-loader|--require|-r)=(.+)$/);
+    if (inline && tsx(inline[1])) continue;
+    if (/^(?:--import|--loader|--experimental-loader|--require|-r)$/.test(token)
+      && tokens[i + 1] && tsx(value(tokens[i + 1]))) { i++; continue; }
+    kept.push(tokens[i]);
+  }
+  return { ...env, NODE_OPTIONS: kept.join(' ') };
+}
+
+/** Retain readiness evidence even when the host exits, is signaled, or fails
+ * to spawn. Request failures converge; process termination never retries. */
+export async function waitForPrivateOperator(options: {
+  host: ChildProcess; base: string; headers?: Record<string, string>; evidenceDir: string;
+  hostIdentity?: string; environment: NodeJS.ProcessEnv; timeoutMs?: number;
+}) {
+  const { host, base, headers, evidenceDir, environment } = options;
+  const started = Date.now();
+  const deadline = started + (options.timeoutMs ?? 90_000);
+  const probes: Array<{ elapsedMs: number; status?: number; service?: unknown; error?: string }> = [];
+  let attempts = 0;
+  let health: any;
+  let failure: unknown;
+  let spawnError: Error | undefined;
+  const onError = (error: Error) => { spawnError = error; };
+  host.once('error', onError);
+  try {
+    while (Date.now() < deadline) {
+      if (spawnError) throw spawnError;
+      assert.equal(host.exitCode, null, 'private host exited before readiness');
+      assert.equal(host.signalCode, null, 'private host was signaled before readiness');
+      attempts++;
+      try {
+        const response = await fetch(base + '/api/health', { headers, signal: AbortSignal.timeout(2_000) });
+        const probe = { elapsedMs: Date.now() - started, status: response.status, service: undefined as unknown };
+        probes.push(probe);
+        if (response.ok) { health = await response.json(); probe.service = health?.service; break; }
+      } catch (error) {
+        probes.push({ elapsedMs: Date.now() - started,
+          error: error instanceof Error ? `${error.name}: ${error.message}; cause=${String(error.cause ?? '')}` : String(error) });
+      }
+      if (probes.length > 24) probes.shift();
+      await new Promise(done => setTimeout(done, 250));
+    }
+    assert.equal(health?.service, 'papercusp-operator', 'private operator never became ready');
+    return health;
+  } catch (error) { failure = error; throw error; }
+  finally {
+    host.off('error', onError);
+    writeFileSync(join(evidenceDir, 'readiness.json'), JSON.stringify({ base, pid: host.pid,
+      hostIdentity: options.hostIdentity, mallocArenaMax: environment.MALLOC_ARENA_MAX ?? null,
+      nodeOptions: environment.NODE_OPTIONS ?? null, exitCode: host.exitCode, signalCode: host.signalCode,
+      elapsedMs: Date.now() - started, attempts, probes: probes.slice(-24),
+      failure: failure instanceof Error ? failure.message : failure === undefined ? undefined : String(failure) }));
+  }
+}
 
 /** Additional pins on the existing operator-api-preflight.json receipt. This
  * is preparation evidence, not proof that a host loaded or served the bundle.
