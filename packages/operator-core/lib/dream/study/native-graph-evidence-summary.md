@@ -5,11 +5,11 @@
 | Treatment | Attempts | Candidates | Provider/accounted USD | Qualified families |
 |---|---:|---:|---:|---:|
 | graph | 2 | 0 | 0.000000 | 0 |
-| control | 2 | 2 | 0.949124 | unknown |
+| control | 2 | 2 | 0.949124 | 0 |
 
 Protocol: 20bb8955d6665afbc484718e573d864d9090fbe2d72fcdb0ea59f98883fcf99b. Blind packet: 57b4ed2c5b2b9f48d3cc2c88d55cf7b58e396b2902a65aee859cfe00dc2aa985.
 
-Downstream: qualification-incomplete; executed trials 0.
+Downstream: not-applicable-no-qualified-candidates; executed trials 0.
 
 - Exploratory four-trial cohort; no treatment effect estimate.
 - Two graph attempts failed before candidate generation. Later source checks do not explain those historical failures.

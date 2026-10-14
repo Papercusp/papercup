@@ -10,8 +10,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createPersonalGrant, searchPersonalDocuments, setPersonalVaultEnabled } from '../personal-vault/store';
+import { createDatatypeDestinationSinks } from './datatype-destination-sink';
 import {
   chatUnitDedupeKey,
+  containerPermissionRef,
+  migrateLegacyChatMessageDocuments,
+  runChatRollupPass,
   placeLegalHold,
   purgeExpiredChatMessages,
   releaseLegalHold,
@@ -66,7 +70,7 @@ async function orgSearchAsAlice(query: string): Promise<Array<[string, string | 
     scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: 'owner',
   });
   await mapProviderIdentity(org.adminSql, WS, { provider: 'slack', providerUserId: 'T1:UALICE', userId: alice, mappedBy: 'owner' });
-  const list = await upsertPermissionList(org.adminSql, WS, { source: 'slack', sourceRef: CH, title: '#general' });
+  const list = await upsertPermissionList(org.adminSql, WS, { source: 'slack', sourceRef: containerPermissionRef(sourceId, CH), title: '#general' });
   await replacePermissionListMembers(org.adminSql, WS, list.id, [{ provider: 'slack', providerUserId: 'T1:UALICE' }]);
   const out = await searchOrganizationDocuments(org.adminSql, { workspaceId: WS, role: 'meeting-prep' }, {
     workspaceId: WS, principalUserId: alice, agentOwnerId: 'chat-units-test', query,
@@ -146,7 +150,7 @@ describe('chat retrieval units (P-015)', () => {
       workspaceId: WS, principalUserId: alice, agentOwnerId: 'chat-units-test', query: 'cobalt launch',
     });
     expect(await search()).toMatchObject({ allowed: true, results: [] });
-    const list = await upsertPermissionList(org.adminSql, WS, { source: 'slack', sourceRef: CH, title: '#general' });
+    const list = await upsertPermissionList(org.adminSql, WS, { source: 'slack', sourceRef: containerPermissionRef(sourceId, CH), title: '#general' });
     await replacePermissionListMembers(org.adminSql, WS, list.id, [{ provider: 'slack', providerUserId: 'T1:UALICE' }]);
     const out = await search();
     expect(out.allowed && out.results.map((r) => [r.kind, r.externalId])).toEqual([['chat-window', '2.1']]);
@@ -191,7 +195,7 @@ describe('chat retrieval units (P-015)', () => {
       scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: 'owner',
     });
     await mapProviderIdentity(org.adminSql, WS, { provider: 'slack', providerUserId: 'T1:UALICE', userId: alice, mappedBy: 'owner' });
-    const list = await upsertPermissionList(org.adminSql, WS, { source: 'slack', sourceRef: CH, title: '#general' });
+    const list = await upsertPermissionList(org.adminSql, WS, { source: 'slack', sourceRef: containerPermissionRef(sourceId, CH), title: '#general' });
     await replacePermissionListMembers(org.adminSql, WS, list.id, [{ provider: 'slack', providerUserId: 'T1:UALICE' }]);
     await upsertChatMessages(org.adminSql, WS, sourceId, [
       msg('5.1', '2026-09-30T10:00:00Z', 'The zircon rollout starts Monday', '5.1'),
@@ -390,6 +394,47 @@ describe('chat retrieval units (P-015)', () => {
       ['pot', 'research-pot', 'alice: olivine standup notes'],
     ]);
     expect(await orgSearchAsAlice('olivine')).toEqual([]);
+  });
+
+  // D-016: the connector document sink is the writer, runChatRollupPass the driver; the unit is
+  // read through the channel's CONTAINER list (the one the membership snapshot fills), and the
+  // legacy per-message row is removed so the text is indexed once.
+  it('a chat-message connector record lands as a raw message, rolls into a unit the channel member can read, and replaces the legacy row', async () => {
+    await org.adminSql`
+      UPDATE harness_shared.data_sources SET destination_policy = '{"chat-message": ["document"]}'::jsonb
+       WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
+    const legacyKey = `chat-message:${sourceId}:${CH}:16.1`;
+    const sinks = await createDatatypeDestinationSinks(org.adminSql, { workspaceId: WS, sourceId, datatype: 'chat-message' });
+    expect(sinks.map((s) => s.kind)).toEqual(['data-source-chat-message']);
+    const event = (ts: string, text: string, threadKey: string | null) => ({
+      dedupeKey: `slack:${ts}`, externalId: `${CH}:${ts}`, occurredAt: '2026-09-30T10:00:00Z',
+      payload: { channelId: CH, aclRef: CH, sender: 'T1:UALICE', text, threadKey },
+    }) as never;
+    await sinks[0]!.deliver(event('16.1', 'The quartz migration starts Monday', '16.1'));
+    await sinks[0]!.deliver(event('16.2', 'quartz owner is dave', '16.1'));
+    expect(await units()).toEqual([]);
+
+    const pass = await runChatRollupPass(org.adminSql, { workspaceId: WS });
+    expect(pass).toMatchObject({ buckets: 1, unitsWritten: 1, documentsWritten: 1 });
+    expect(await units()).toEqual([{ unit_kind: 'thread', unit_key: '16.1', message_count: 2 }]);
+    expect(await orgSearchAsAlice('quartz')).toEqual([['chat-thread', '16.1']]);
+    expect((await corpusRows()).filter((r) => r.dedupe_key === legacyKey)).toEqual([]);
+  });
+
+  it('the cut-over turns a legacy per-message corpus row into a raw message and deletes the row', async () => {
+    const [user] = await org.adminSql<{ id: string }[]>`SELECT ${alice}::uuid AS id`;
+    await org.adminSql`
+      INSERT INTO harness_shared.documents (workspace_id, user_id, scope, source, kind, external_id, occurred_at, title, text, metadata, dedupe_key)
+      VALUES (${WS}, ${user!.id}::uuid, 'personal', 'slack', 'chat-message', ${`${CH}:17.1`}, '2026-09-30T10:00:00Z', 'legacy',
+              'pyrite legacy text', ${org.adminSql.json({ dataSourceId: sourceId, channelId: CH, sender: 'T1:UALICE', text: 'pyrite legacy text' })},
+              ${`legacy:${CH}:17.1`})`;
+    expect(await migrateLegacyChatMessageDocuments(org.adminSql, WS)).toEqual({ migrated: 1 });
+    expect((await corpusRows()).filter((r) => r.text === 'pyrite legacy text')).toEqual([]);
+    const raw = await org.adminSql<{ provider_message_id: string; body: string }[]>`
+      SELECT provider_message_id, body FROM harness_shared.chat_messages WHERE workspace_id = ${WS}`;
+    expect(raw).toEqual([{ provider_message_id: `${CH}:17.1`, body: 'pyrite legacy text' }]);
+    expect(await runChatRollupPass(org.adminSql, { workspaceId: WS })).toMatchObject({ unitsWritten: 1, documentsWritten: 1 });
+    expect(await orgSearchAsAlice('pyrite')).toEqual([['chat-window', `${CH}:17.1`]]);
   });
 
   it('an update that changes no routing column queues nothing', async () => {
