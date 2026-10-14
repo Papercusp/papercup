@@ -1204,7 +1204,13 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
   // failures while the codex admission window kept EXPANDING (it only ever heard 429s and successes),
   // so the gateway kept admitting full-body re-uploads onto a saturated uplink for ~35 min. An admitted
   // OAuth attempt that dies on the wire must contract the codex window; clean traffic must not.
-  it('an admitted codex OAuth transport failure CONTRACTS the codex admission window; clean traffic does not', async () => {
+  // WI-6554700010011426 replaced the WI-6554700010009426 "transport failure CONTRACTS"
+  // contract: one request is one unit of congestion pressure (plan D-001), so a
+  // lone failover leaves the window open and only sustained pressure contracts it.
+  it.each([
+    { label: 'a lone transport failure leaves the codex window open', aimd: undefined, contracts: false },
+    { label: 'sustained transport pressure still contracts the codex window', aimd: { decreaseThreshold: 1 }, contracts: true },
+  ])('admitted codex OAuth transport failure: $label', async ({ aimd, contracts }) => {
     const cliAccounts = [
       { accountId: 'oauth-a', home: await makeCodexHome('oauth-a') },
       { accountId: 'oauth-b', home: await makeCodexHome('oauth-b') },
@@ -1225,6 +1231,7 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
       codexCliRun: async () => ({ text: 'unused', inputTokens: 1, outputTokens: 1 }),
       codexOAuthProxy: true, fetchImpl,
       selfHeal: { enabled: false },
+      ...(aimd ? { aimd } : {}),
     });
     port = await gw.listen(0);
     const initial = gw.stats().codexAdmission.maxConcurrent;
@@ -1237,7 +1244,42 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(res.status).toBe(200);
     await res.text();
     expect(gw.stats().egressFailsByAccount).not.toEqual({});
-    expect(gw.stats().codexAdmission.maxConcurrent).toBeLessThan(initial);
+    if (contracts) expect(gw.stats().codexAdmission.maxConcurrent).toBeLessThan(initial);
+    else expect(gw.stats().codexAdmission.maxConcurrent).toBe(initial);
+  });
+
+  it('a terminal out-of-usage (weekly-wall) codex 429 leaves the codex window unchanged (WI-6554700010011426)', async () => {
+    await bootCodex(
+      (_req, res) => {
+        res.writeHead(429, {
+          'content-type': 'application/json',
+          'x-codex-primary-used-percent': '100',
+          'x-codex-primary-window-minutes': '10080',
+          'x-codex-primary-reset-after-seconds': String(3 * 24 * 3600),
+        });
+        res.end(JSON.stringify({ error: { type: 'usage_limit_reached', message: 'usage limit reached' } }));
+      },
+      [codexAcct('cdx-walled')],
+      {
+        concurrency: 8,
+        aimd: { floor: 1, decreaseThreshold: 1, increaseEvery: 100 },
+        requestAbsorbMs: 0,
+        internalRetryDeadlineMs: 1,
+        bare429FailoverBackoffMs: 1,
+      },
+    );
+    const before = ((await (await ask('/stats')).json()) as { codexAdmission: { maxConcurrent: number } })
+      .codexAdmission.maxConcurrent;
+    expect((await postResponses({ model: 'gpt-x', input: 'hi' })).status).toBe(429);
+    const stats = (await (await ask('/stats')).json()) as {
+      codexAdmission: { maxConcurrent: number };
+      codexAimd: { decreases: number };
+    };
+    // FALSIFIER: the sibling test above ('Codex throttles shrink only the Codex
+    // admission controller') sends a TRANSIENT 429 with the same threshold of 1 and
+    // DOES contract; only the exhausted window differs here.
+    expect(stats.codexAimd.decreases).toBe(0);
+    expect(stats.codexAdmission.maxConcurrent).toBe(before);
   });
 
   it('a streaming ChatGPT CLI bridge failover carries final route metadata in response.completed', async () => {

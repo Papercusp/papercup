@@ -498,7 +498,11 @@ test('a successful response RESETS the streak — a flapping proxy that recovers
 // herd of TTFB/transport failures left the window wide open and every abort re-uploaded its whole body
 // onto a saturated uplink. The window must contract on the transport failure itself — and must NOT
 // contract when the same traffic is clean (the control, so this cannot pass vacuously).
-test('an admitted transport failure CONTRACTS the claude admission window; clean traffic does not', async () => {
+// WI-6554700010011426 (plan gateway-admission-congestion-only-2026-10-13 P-002) replaced
+// WI-6554700010009426's "an admitted transport failure CONTRACTS the window" contract:
+// one request's transport failure is one unit of pressure, and the window contracts
+// only when that pressure is sustained across distinct requests.
+test('a lone admitted transport failure does NOT contract the claude admission window', async () => {
   const dead = new Set<string>(['DEAD']);
   gw = createInferenceGateway({
     pool: createFailoverPool([acct('DEAD'), acct('OK')]),
@@ -509,15 +513,32 @@ test('an admitted transport failure CONTRACTS the claude admission window; clean
   });
   port = await gw.listen(0);
   const initial = gw.stats().admission.maxConcurrent;
-  // Control: a clean request through the healthy account leaves the window where it was.
   const clean = await post({ 'x-papercusp-account': 'OK' });
   assert.equal(clean.status, 200);
   assert.equal(gw.stats().admission.maxConcurrent, initial, 'a clean success does not contract the window');
-  // A transport failure on DEAD (then failover to OK) must contract it.
+  const res = await post({ 'x-papercusp-account': 'DEAD' });
+  assert.equal(res.status, 200, 'the request still fails over and is served');
+  assert.ok(Object.keys(gw.stats().egressFailsByAccount ?? {}).length > 0, 'CALIBRATION: the transport failure happened');
+  assert.equal(gw.stats().admission.maxConcurrent, initial, 'one slow request cannot shrink the lane');
+});
+
+test('admitted transport failures still reach the claude window once pressure is sustained (herd guard wiring)', async () => {
+  const dead = new Set<string>(['DEAD']);
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('DEAD'), acct('OK')]),
+    fetchImpl: egressFetch(dead),
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 2000,
+    // A threshold of one distinct request makes the herd guard observable with one request.
+    aimd: { decreaseThreshold: 1 },
+  });
+  port = await gw.listen(0);
+  const initial = gw.stats().admission.maxConcurrent;
   const res = await post({ 'x-papercusp-account': 'DEAD' });
   assert.equal(res.status, 200, 'the request still fails over and is served');
   assert.ok(
     gw.stats().admission.maxConcurrent < initial,
-    `the admitted transport failure contracted the claude window (${initial} → ${gw.stats().admission.maxConcurrent})`,
+    `the transport failure reached the claude window (${initial} → ${gw.stats().admission.maxConcurrent})`,
   );
 });
