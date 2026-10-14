@@ -45,6 +45,28 @@ describe('call', () => {
     expect(String(await p)).toContain('-32000: kaboom');
   });
 
+  it('keeps the error reply code and data on the rejected Error (a provider sync error kind rides in data)', async () => {
+    // The host classifier (plugin-sdk providerSyncErrorOf) reads `cause.data`; dropping it turned every
+    // daemon provider's rate limit or revoked token into a generic transient failure (P-011c, WI-6554700010012144).
+    const p = bridge.call('sync').catch((e: unknown) => e);
+    await flush();
+    peerSend({ jsonrpc: '2.0', id: 1, error: { code: -32010, message: 'slack 429', data: { kind: 'rate-limited', retryAfterSeconds: 30 } } });
+    const err = (await p) as Error & { code?: unknown; data?: unknown };
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe(-32010);
+    expect(err.data).toEqual({ kind: 'rate-limited', retryAfterSeconds: 30 });
+  });
+
+  it('leaves data undefined when the error reply carries none', async () => {
+    const p = bridge.call('boom').catch((e: unknown) => e);
+    await flush();
+    peerSend({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'kaboom' } });
+    const err = (await p) as Error & { code?: unknown; data?: unknown };
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe(-32000);
+    expect('data' in err).toBe(false);
+  });
+
   it('assigns monotonic ids and routes each reply to its own caller', async () => {
     const a = bridge.call('a');
     const b = bridge.call('b');
