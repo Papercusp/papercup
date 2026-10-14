@@ -255,7 +255,7 @@ describe('retention on a real fixture tree', () => {
     const receipt = await runDiskReclaimOnce({ ...options, nowMs: Date.now(), maxEntries: 2 });
     expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
     expect(receipt.entries).toEqual([]);
-    expect(receipt.scan).toEqual({ inspectedNodes: 0, retainedRecentTrees: 32, stoppedAtRoot: null });
+    expect(receipt.scan).toEqual({ inspectedNodes: 0, retainedRecentTrees: 32, stoppedAtRoot: null, incompleteRoots: [] });
     expect(await stat(join(root, 'recent-31'))).toBeTruthy();
   });
   it('keeps the complete newest-write inspection bound for count retention', async () => {
@@ -265,7 +265,7 @@ describe('retention on a real fixture tree', () => {
     const receipt = await runDiskReclaimOnce({ ...options, policy, nowMs: Date.now(), maxEntries: 2 });
     expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
     expect(receipt.entries).toEqual([]);
-    expect(receipt.scan).toEqual({ inspectedNodes: 2, retainedRecentTrees: 0, stoppedAtRoot: root });
+    expect(receipt.scan).toEqual({ inspectedNodes: 2, retainedRecentTrees: 0, stoppedAtRoot: root, incompleteRoots: [root] });
     expect(await stat(join(root, 'recent-31'))).toBeTruthy();
   });
   it('stops at a recent descendant while preserving an otherwise stale large tree', async () => {
