@@ -299,6 +299,15 @@
       "limits": "No full-tree guard, current gate, operational R12 or shipment verdict. The prior full-tree guard logs remain historical evidence only."
     }
   },
+  "guardSettlementReport": {
+    "reportId": "rpt_9aff8ed9-9635-473c-bb94-9efde069ad08",
+    "path": "/reports?sel=rpt_9aff8ed9-9635-473c-bb94-9efde069ad08",
+    "requestKey": "c0523-evidence-guard-settlement-20261014-edition1",
+    "bodySha256": "e0ce979fe5dfbdcc3664c26c95a9186c2fd27d949c5b09c719242bc5919622ab",
+    "visibility": "owner",
+    "readbackExact": true,
+    "sourceEvidencePath": "docs/evidence/green-main-r12-paired-preparation-20261014.json"
+  },
   "fullSelectionPreparation": {
     "status": "writer-checked-no-complete-original-population-yet",
     "reuses": ["scripts/affected-tests.mjs", "scripts/lib/related-tests.mjs#staticImportClosure", "libs/test-config/src/verifier-source.ts#VerifierSourceReceipt", "scripts/lib/budgeted-task-scheduler.mjs#readBudgetedTaskComparisonArtifacts"],
