@@ -27,6 +27,33 @@ test('browser readiness runs launch and close with a deadline inside its outer b
   assert.match(result.stdout, /fixture-browser/);
   assert.match(result.stdout, /"phase":"ready"/);
   assert.match(result.stderr, /closed owned browser/);
+  assert.deepEqual(result.diagnostics.phases.map(x => x.phase), ['import', 'launch', 'close', 'ready']);
+  for (const mark of result.diagnostics.phases) {
+    assert.equal(Number.isFinite(Date.parse(mark.at)), true);
+    assert.equal(mark.elapsedMs >= 0, true);
+  }
+});
+
+test('browser readiness preserves pending CDP requests across split lines and bounded log tails', async t => {
+  const root = browserFixture(t, `export const chromium={async launch(){
+    if (!process.env.DEBUG.includes('pw:protocol')) throw Error('protocol logging missing');
+    process.stderr.write('2026-10-14T00:00:00.000Z pw:protocol SEND ► {"id":1,"method":"Browser.get');
+    await new Promise(resolve=>setTimeout(resolve,10));
+    process.stderr.write('Version"}\\n');
+    console.error('2026-10-14T00:00:00.001Z pw:protocol ◀ RECV {"id":1,"result":{}}');
+    console.error('2026-10-14T00:00:00.002Z pw:protocol SEND ► {"id":2,"method":"Target.setAutoAttach"}');
+    console.error('2026-10-14T00:00:00.003Z pw:protocol ◀ RECV {broken}');
+    console.error('x'.repeat(20000));
+    throw Error('fixture pending protocol refused');
+  }};`);
+  await assert.rejects(browserLaunchReady(root, { timeoutMs: 2000 }), error => {
+    assert.equal(error.phase, 'launch');
+    assert.deepEqual(error.diagnostics.protocol, { sent: 2, received: 1,
+      pending: [{ id: 2, method: 'Target.setAutoAttach', at: '2026-10-14T00:00:00.002Z' }] });
+    assert.doesNotMatch(error.stderr, /Browser.getVersion/);
+    assert.match(error.message, /Target.setAutoAttach/);
+    return true;
+  });
 });
 
 test('browser readiness preserves the failing phase and browser diagnostics', async t => {

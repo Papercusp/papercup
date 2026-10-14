@@ -155,7 +155,8 @@ export function browserReady(root) {
 export async function browserLaunchReady(root, { env = process.env, timeoutMs = 15000 } = {}) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 100) throw new Error('Invalid browser readiness deadline');
   const launchTimeout = Math.min(10000, Math.floor(timeoutMs * 0.75));
-  const program = `const mark=(phase,extra={})=>console.log(JSON.stringify({phase,...extra}));
+  const program = `const start=performance.now();
+const mark=(phase,extra={})=>console.log(JSON.stringify({phase,at:new Date().toISOString(),elapsedMs:performance.now()-start,...extra}));
 mark('import');
 try {
   const { chromium } = await import('playwright');
@@ -169,9 +170,43 @@ try {
     const grouped = process.platform !== 'win32';
     const child = spawn(process.execPath, ['--input-type=module', '-e', program], {
       cwd: root, detached: grouped, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...env, DEBUG: [env.DEBUG, 'pw:browser'].filter(Boolean).join(',') },
+      env: { ...env, DEBUG: [env.DEBUG, 'pw:browser', 'pw:protocol'].filter(Boolean).join(',') },
     });
     let stdout = '', stderr = '', phase = 'start', timedOut = false, escalation;
+    const phases = [], pending = new Map();
+    let stdoutLine = '', stderrLine = '', sent = 0, received = 0;
+    // Keep structured startup evidence separately from the bounded log tails.
+    // A timeout after Browser.getVersion differs from a Node import stall.
+    const lines = (chunk, previous, consume) => {
+      const parts = (previous + chunk).split('\n');
+      const remainder = parts.pop();
+      for (const line of parts) consume(line);
+      return remainder.slice(-16384);
+    };
+    const phaseLine = line => {
+      try {
+        const mark = JSON.parse(line);
+        if (['import', 'launch', 'close', 'ready'].includes(mark.phase)) {
+          phase = mark.phase;
+          phases.push({ phase, at: mark.at, elapsedMs: mark.elapsedMs });
+        }
+      } catch { /* Other stdout is retained in the log tail. */ }
+    };
+    const protocolLine = line => {
+      const match = line.match(/^(\S+)\s+pw:protocol\s+(SEND ►|◀ RECV)\s+(\{.*\})$/);
+      if (!match) return;
+      try {
+        const message = JSON.parse(match[3]);
+        if (!Number.isInteger(message.id)) return;
+        if (match[2] === 'SEND ►' && typeof message.method === 'string') {
+          sent++;
+          pending.set(message.id, { id: message.id, method: message.method, at: match[1] });
+        } else if (match[2] === '◀ RECV' && pending.has(message.id)) {
+          received++;
+          pending.delete(message.id);
+        }
+      } catch { /* Malformed diagnostics cannot replace a browser verdict. */ }
+    };
     const terminate = signal => {
       try { if (grouped && child.pid) process.kill(-child.pid, signal); else child.kill(signal); }
       catch (error) { if (error.code !== 'ESRCH') stderr += `\n${error.message}`; }
@@ -183,22 +218,26 @@ try {
     }, timeoutMs);
     child.stdout.on('data', chunk => {
       stdout = (stdout + chunk).slice(-16384);
-      const marks = [...stdout.matchAll(/"phase":"(import|launch|close|ready)"/g)];
-      if (marks.length) phase = marks.at(-1)[1];
+      stdoutLine = lines(chunk, stdoutLine, phaseLine);
     });
-    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-16384); });
+    child.stderr.on('data', chunk => {
+      stderr = (stderr + chunk).slice(-16384);
+      stderrLine = lines(chunk, stderrLine, protocolLine);
+    });
     const clear = () => { clearTimeout(deadline); clearTimeout(escalation); };
     child.once('error', error => { clear(); rejectProbe(error); });
     child.once('close', (code, signal) => {
       clear();
+      phaseLine(stdoutLine); protocolLine(stderrLine);
+      const diagnostics = { phases, protocol: { sent, received, pending: [...pending.values()] } };
       if (code === 0 && !timedOut && phase === 'ready') {
-        resolveProbe({ stdout: stdout.trim(), stderr: stderr.trim() });
+        resolveProbe({ stdout: stdout.trim(), stderr: stderr.trim(), diagnostics });
         return;
       }
       // Clean up remaining descendants even when the parent exited first.
       terminate('SIGKILL');
-      const error = new Error(`Browser readiness failed in ${phase}: ${timedOut ? 'deadline exceeded' : `exit ${code} signal ${signal}`}\n${stderr}\n${stdout}`);
-      Object.assign(error, { phase, timedOut, exitCode: code, stdout, stderr });
+      const error = new Error(`Browser readiness failed in ${phase}: ${timedOut ? 'deadline exceeded' : `exit ${code} signal ${signal}`}\n${JSON.stringify(diagnostics)}\n${stderr}\n${stdout}`);
+      Object.assign(error, { phase, timedOut, exitCode: code, stdout, stderr, diagnostics });
       rejectProbe(error);
     });
   });
