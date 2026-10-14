@@ -103,6 +103,25 @@ export async function materializeFrozenControls(tree: string, inputs: FrozenFair
   }
 }
 
+/** Replay a saved repository question only on its preregistered source bytes.
+ * Configuration and process custody are separate witnesses, never implied by
+ * materializing one file or by a directory whose name contains a commit.
+ */
+export async function materializeFrozenRepositoryTask(tree: string, kase: FairCase,
+  inputs: FrozenFairInputs, source: string) {
+  validateFrozenInputs(inputs);
+  const frozen = inputs.cases.find(candidate => candidate.id === kase.id);
+  if (!frozen || hashCases([frozen]) !== hashCases([kase]) || kase.source !== 'repository-task')
+    throw new Error('repository task differs from frozen question');
+  const pin = inputs.sourcePins.find(candidate => candidate.path === kase.anchorFile);
+  const contentHash = createHash('sha256').update(source).digest('hex');
+  if (!pin || pin.sha256 !== kase.sourceFingerprint || pin.sha256 !== contentHash)
+    throw new Error('repository task source differs from frozen pin');
+  await mkdir(dirname(join(tree, pin.path)), { recursive: true });
+  await writeFile(join(tree, pin.path), source);
+  return { path: pin.path, contentHash, sourceCommit: pin.commit, taskRef: kase.taskRef };
+}
+
 /** Restore before each question; mutations cannot leak into a later control. */
 export async function prepareFrozenControl(tree: string, kase: FairCase, inputs: FrozenFairInputs) {
   const frozen = inputs.cases.find(candidate => candidate.id === kase.id);
