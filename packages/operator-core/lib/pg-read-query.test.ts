@@ -80,6 +80,25 @@ describe('assertSingleReadStatement', () => {
     expect(assertSingleReadStatement(q)).toBe(q);
   });
 
+  it('accepts parenthesized SELECT operands in a UNION query expression', () => {
+    const q =
+      '(SELECT owner_id, occurred_at FROM harness_shared.coord_event_log WHERE owner_id = \'su-a\') ' +
+      'UNION ALL ' +
+      '(SELECT owner_id, updated_at FROM harness_shared.workspace_host_resources WHERE owner_id = \'su-b\')';
+    expect(assertSingleReadStatement(q)).toBe(q);
+  });
+
+  it('accepts nested parentheses around a read query expression', () => {
+    const q = '((SELECT 1 AS n) UNION ALL (SELECT 2 AS n))';
+    expect(assertSingleReadStatement(q)).toBe(q);
+  });
+
+  it('continues to reject parenthesized non-read statements', () => {
+    for (const q of ['(DELETE FROM foo)', '((UPDATE foo SET x = 1))', '(DROP TABLE foo)']) {
+      expect(() => assertSingleReadStatement(q), q).toThrow(/read-only/i);
+    }
+  });
+
   it('is case-insensitive on the leading keyword', () => {
     expect(assertSingleReadStatement('select 1')).toBe('select 1');
     expect(assertSingleReadStatement('  WiTh t as (select 1) select * from t')).toMatch(/^WiTh/);

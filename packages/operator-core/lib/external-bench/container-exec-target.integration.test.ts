@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFile, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,6 +25,7 @@ import {
 } from './container-exec-target';
 
 const containers: string[] = [];
+const cleanupFailures: Array<{ containerId: string; error: string }> = [];
 let root: string;
 
 // Match the stock-native fixture's asynchronous phase diagnostics. Ending stdin
@@ -32,27 +34,43 @@ async function command(bin: string, args: string[], env?: NodeJS.ProcessEnv) {
   const phase = bin === 'docker' ? args.slice(0, 2).join(' ') : 'wrapper';
   const started = Date.now();
   console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: 'started', containerIds: containers }));
-  const result = await new Promise<{ stdout: string; stderr: string; status: number }>((resolve, reject) => {
+  const result = await new Promise<{ stdout: string; stderr: string; status: number | null; signal: string | null; timedOut: boolean; error: string | null }>(resolve => {
     const child = execFile(bin, args, { env, encoding: 'utf8', timeout: 30_000 }, (error, stdout, stderr) => {
-      if (error && typeof error.code !== 'number') {
-        console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: 'failed', elapsedMs: Date.now() - started,
-          error: String(error), stderr }));
-        reject(error);
-      } else resolve({ stdout, stderr, status: error?.code ?? 0 });
+      resolve({ stdout, stderr, status: typeof error?.code === 'number' ? error.code : error ? null : 0,
+        signal: error?.signal ?? null, timedOut: error?.killed === true || error?.code === 'ETIMEDOUT',
+        error: error ? String(error) : null });
     });
     child.stdin?.end();
   });
-  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: 'completed', elapsedMs: Date.now() - started,
-    status: result.status }));
+  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: result.error ? 'failed' : 'completed', elapsedMs: Date.now() - started,
+    status: result.status, signal: result.signal, timedOut: result.timedOut, error: result.error }));
   return result;
 }
 
 async function startContainer(extra: string[] = []): Promise<string> {
-  const result = await command('docker', ['run', '-d', '--network', 'none', ...extra, 'alpine', 'sleep', '300']);
-  expect(result.status, result.stderr).toBe(0);
+  // A failed docker client can still have allocated the container. Own its name
+  // before the call, so afterAll can clean a partial create without a returned id.
+  const name = `container-exec-proof-${randomUUID()}`;
+  containers.push(name);
+  const result = await command('docker', ['run', '-d', '--name', name, '--network', 'none', ...extra, 'alpine', 'sleep', '300']);
+  expect(result.status, JSON.stringify(result)).toBe(0);
   const id = result.stdout.trim();
-  containers.push(id);
+  expect(id).toMatch(/^[a-f0-9]{64}$/);
+  containers[containers.indexOf(name)] = id;
   return id;
+}
+
+async function removeContainer(id: string, primaryError?: unknown): Promise<void> {
+  const index = containers.indexOf(id);
+  if (index >= 0) containers.splice(index, 1);
+  try {
+    const removed = await command('docker', ['rm', '-f', id]);
+    expect(removed.status, JSON.stringify({ id, removed })).toBe(0);
+  } catch (error) {
+    cleanupFailures.push({ containerId: id, error: String(error) });
+    throw primaryError === undefined ? error : new AggregateError([primaryError, error],
+      'Container assertion and cleanup both failed');
+  }
 }
 
 beforeAll(async () => {
@@ -62,18 +80,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  const failures: string[] = [];
-  for (const id of containers) {
-    try {
-      const removed = await command('docker', ['rm', '-f', id]);
-      expect(removed.status, removed.stderr).toBe(0);
-    } catch (error) {
-      failures.push(`${id}: ${String(error)}`);
-    }
-  }
+  // Only partial creates remain. Each gets one bounded cleanup attempt; retain
+  // earlier cleanup failures rather than retrying and overwriting their verdict.
+  await Promise.allSettled([...containers].map(id => removeContainer(id)));
   // Keep fixture files on cleanup failure for inspection; Vitest retains the
   // primary assertion independently of this hook's complete cleanup verdict.
-  if (failures.length) throw new Error(JSON.stringify({ root, cleanupFailures: failures }));
+  if (cleanupFailures.length) throw new Error(JSON.stringify({ root, cleanupFailures }));
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
@@ -102,25 +114,29 @@ describe('container exec target against a live container', () => {
 
   it('resolveBackendLaunch picks the wrapper, which runs inside the container in the workdir', async () => {
     const cid = await startContainer();
-    const { wrapperPath } = materializeDockerExecWrapper(
-      { kind: 'docker-exec', containerId: cid, workdir: '/tmp', binPath: '/bin/sh' },
-      { dir: mkdtempSync(join(root, 'w-')) },
-    );
-    const env = {
-      PATH: process.env.PATH ?? '/usr/bin:/bin',
-      CODEX_HOME: '/codex-home-from-host',
-      UNRELATED_SECRET: 'must-not-cross',
-      [backendBinOverrideEnvKey('codex')]: wrapperPath,
-    };
-    const launch = resolveBackendLaunch('codex', { env });
-    expect(launch?.bin).toBe(wrapperPath);
-    const r = await command(
-      launch!.bin,
-      ['-c', 'pwd; hostname; printf "%s|%s\\n" "$CODEX_HOME" "${UNRELATED_SECRET:-unset}"'],
-      env,
-    );
-    expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout.trim().split('\n')).toEqual(['/tmp', cid.slice(0, 12), '/codex-home-from-host|unset']);
+    let primaryError: unknown;
+    try {
+      const { wrapperPath } = materializeDockerExecWrapper(
+        { kind: 'docker-exec', containerId: cid, workdir: '/tmp', binPath: '/bin/sh' },
+        { dir: mkdtempSync(join(root, 'w-')) },
+      );
+      const env = {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        CODEX_HOME: '/codex-home-from-host',
+        UNRELATED_SECRET: 'must-not-cross',
+        [backendBinOverrideEnvKey('codex')]: wrapperPath,
+      };
+      const launch = resolveBackendLaunch('codex', { env });
+      expect(launch?.bin).toBe(wrapperPath);
+      const r = await command(
+        launch!.bin,
+        ['-c', 'pwd; hostname; printf "%s|%s\\n" "$CODEX_HOME" "${UNRELATED_SECRET:-unset}"'],
+        env,
+      );
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout.trim().split('\n')).toEqual(['/tmp', cid.slice(0, 12), '/codex-home-from-host|unset']);
+    } catch (error) { primaryError = error; throw error; }
+    finally { await removeContainer(cid, primaryError); }
   });
 
   it('relocated session home: the container reads and writes it through a same-path per-task mount and sees no other session', async () => {
@@ -132,6 +148,8 @@ describe('container exec target against a live container', () => {
     writeFileSync(join(homes, 'session-8', 'auth.json'), '{"token":"other-session"}\n');
     // The seam mounts each per-task dir over its shared root, at the same absolute path.
     const cid = await startContainer(['-v', `${perHomes}:${homes}`, '-v', `${perSqlite}:${sqlite}`]);
+    let primaryError: unknown;
+    try {
     const { wrapperPath } = materializeDockerExecWrapper(
       { kind: 'docker-exec', containerId: cid, workdir: '/', binPath: '/bin/sh',
         sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }, { hostRoot: sqlite, perTaskDir: perSqlite }] } },
@@ -146,21 +164,29 @@ describe('container exec target against a live container', () => {
     expect(r.stdout.split('\n').filter(l => l.startsWith('session-'))).toEqual(['session-7']);
     // Host readers (rollout/usage ingest) see the container's write through the symlink.
     expect(readFileSync(join(homes, 'session-7', 'rollout.jsonl'), 'utf8')).toBe('from-container\n');
+    } catch (error) { primaryError = error; throw error; }
+    finally { await removeContainer(cid, primaryError); }
   });
 
   it("returns the in-container process's exit code", async () => {
     const cid = await startContainer();
+    let primaryError: unknown;
+    try {
     const { wrapperPath } = materializeDockerExecWrapper(
       { kind: 'docker-exec', containerId: cid, workdir: '/', binPath: '/bin/sh' },
       { dir: mkdtempSync(join(root, 'x-')) },
     );
     const r = await command(wrapperPath, ['-c', 'exit 5'], { PATH: process.env.PATH ?? '' });
     expect(r.status).toBe(5);
+    } catch (error) { primaryError = error; throw error; }
+    finally { await removeContainer(cid, primaryError); }
   });
 
   it('runs the musl Codex from the host install, mounted read-only at the seam path, with no network', async () => {
     const musl = resolveContainerCodexBinary();
     const cid = await startContainer(['-v', `${musl}:${CONTAINER_CODEX_BIN_PATH}:ro`]);
+    let primaryError: unknown;
+    try {
     const { wrapperPath } = materializeDockerExecWrapper(
       { kind: 'docker-exec', containerId: cid, workdir: '/', binPath: CONTAINER_CODEX_BIN_PATH },
       { dir: mkdtempSync(join(root, 'c-')) },
@@ -168,5 +194,7 @@ describe('container exec target against a live container', () => {
     const r = await command(wrapperPath, ['--version'], { PATH: process.env.PATH ?? '' });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/codex-cli \d+\.\d+\.\d+/);
+    } catch (error) { primaryError = error; throw error; }
+    finally { await removeContainer(cid, primaryError); }
   });
 });

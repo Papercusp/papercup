@@ -3134,6 +3134,23 @@ export async function main(
   // them before anything is spawned: every child below receives `process.env`, so leaving them
   // there handed the parent's unique barrier to any test that spawns a nested router.
   const preemptMarkerPaths = consumePreemptMarkerEnv(process.env);
+  // An explicit receipt sink marks a proof-consuming run. Snapshot its current
+  // end so only receipts written by this invocation can satisfy the verdict.
+  // Ordinary focused runs keep the reporter's fail-soft contract when no sink
+  // was requested by their caller.
+  const receiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim()
+    ? resolve(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE.trim())
+    : null;
+  const receiptChildEnv = receiptFile
+    ? { ...process.env, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile }
+    : process.env;
+  let receiptStartOffset = 0;
+  let receiptStartError = null;
+  if (receiptFile && existsSync(receiptFile)) {
+    try { receiptStartOffset = statSync(receiptFile).size; }
+    catch (error) { receiptStartError = error; }
+  }
+  const expectedVitestReceiptPaths = new Set();
   // WI-6554700010009516: the child notice channel. Opened after the restricted-hold census (below)
   // and closed in the finally, so it stays null on every early return before that point.
   let childSourceNoticeSink = null;
@@ -3610,6 +3627,9 @@ export async function main(
     }
 
     const exact = matched.map((file) => relative(group.cwd, file));
+    for (const file of matched) {
+      expectedVitestReceiptPaths.add(relative(repoRoot, file).split(sep).join('/'));
+    }
     // Captured so the EI-18099113673609528 silent-collection-failure signature can be detected
     // below; forwarded verbatim on completion so nothing is lost for a live TTY. The ASYNC seam
     // emits bounded progress separately while retaining the existing 256MB capture ceiling.
@@ -3623,7 +3643,7 @@ export async function main(
       ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
       {
         cwd: group.cwd,
-        env: process.env,
+        env: receiptChildEnv,
         files: exact,
         cwdLabel,
         timeoutMs: runTimeoutMs,
@@ -3737,7 +3757,7 @@ export async function main(
             ['vitest', 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)],
             {
               cwd: group.cwd,
-              env: process.env,
+              env: receiptChildEnv,
               files: [file],
               cwdLabel,
               ...finalizationCallbacks(),
@@ -4034,6 +4054,42 @@ export async function main(
         'for a run that measured nothing.',
     );
     return TEST_FILE_EXIT_NOT_MEASURED;
+  }
+  if (receiptFile && expectedVitestReceiptPaths.size > 0) {
+    let expectedPaths = [...expectedVitestReceiptPaths];
+    let missingPaths = [];
+    let receiptIssue = receiptStartError
+      ? `could not inspect receipt file before run: ${receiptStartError instanceof Error ? receiptStartError.message : String(receiptStartError)}`
+      : null;
+    try {
+      // Load the canonical path and receipt validators from the same module that
+      // writes rows; duplicating its JSON/path rules here would recreate the drift
+      // this gate is meant to catch.
+      await loadGovernedExecutionModule();
+      const reporter = await import('../libs/test-config/src/admin-test-runs-reporter.ts');
+      expectedPaths = expectedPaths.filter(reporter.shouldRecordTestRunPath);
+      if (expectedPaths.length > 0 && !receiptIssue && receiptFile) {
+        const contents = readFileSync(receiptFile);
+        if (contents.length < receiptStartOffset) {
+          receiptIssue = 'receipt file was shortened during the run';
+        } else {
+          const receiptLog = contents.subarray(receiptStartOffset).toString('utf8');
+          missingPaths = reporter.missingTestRunReceiptPaths(receiptLog, expectedPaths);
+          if (missingPaths.length > 0) receiptIssue = 'one or more recordable Vitest files lack an inserted ledger receipt';
+        }
+      }
+    } catch (error) {
+      receiptIssue = `could not validate Vitest ledger receipts: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (expectedPaths.length > 0 && receiptIssue) {
+      console.error(
+        `TEST_FILE_LEDGER_RECEIPT_MISSING requested=${expectedPaths.length} missing=${missingPaths.length} ` +
+          `status=not-measured paths=${JSON.stringify(missingPaths.length > 0 ? missingPaths : expectedPaths)} ` +
+          `detail=${JSON.stringify(receiptIssue)} — refusing to report a terminal test verdict without ` +
+          'an inserted canonical test_runs receipt for every recordable Vitest file.',
+      );
+      return TEST_FILE_EXIT_NOT_MEASURED;
+    }
   }
   const status = summary.anyFailed ? 'failed' : 'passed';
   const skippedField =

@@ -2041,6 +2041,109 @@ describe('main() — failed assertion details survive private report cleanup (EI
   });
 });
 
+describe('main() — evidence runs require inserted Vitest ledger receipts', () => {
+  const file = 'packages/operator-core/lib/__tests__/test-file-router.test.ts';
+
+  async function runEvidenceCase(writeReceipt: boolean) {
+    const dir = mkdtempSync(join(tmpdir(), 'test-file-receipt-verdict-'));
+    const receiptFile = join(dir, 'receipts.jsonl');
+    const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+    const priorReporterDisabled = process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = receiptFile;
+    delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const runCapturedTestProcessMock = vi.fn(async (_command: string, _args: string[], options: any) => {
+      if (writeReceipt) {
+        const filePath = 'packages/operator-core/lib/__tests__/test-file-router.test.ts';
+        writeFileSync(options.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE, `${JSON.stringify({
+          receiptId: 'router-test-receipt', attempt: 0, filePath, status: 'pass',
+          row: { filePath, startedAt: '2026-10-14T17:00:00.000Z', finishedAt: '2026-10-14T17:00:01.000Z' },
+          outcome: 'inserted', id: 'test-run-901',
+        })}\n`);
+      }
+      return { status: 0, signal: null, stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
+        stderr: '', timedOut: false, error: null };
+    });
+
+    try {
+      const code = await main([file], {
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        runVitestListImpl: async () => ({ status: 0, signal: null,
+          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', timedOut: false, error: null }),
+        runCapturedTestProcessImpl: runCapturedTestProcessMock,
+      });
+      return {
+        code,
+        output: logSpy.mock.calls.map(([line]) => String(line)).join('\n'),
+        errors: errorSpy.mock.calls.map(([line]) => String(line)).join('\n'),
+      };
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      if (priorReceiptFile === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = priorReceiptFile;
+      if (priorReporterDisabled === undefined) delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+      else process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER = priorReporterDisabled;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('withholds a passing terminal marker when a recordable Vitest file has no inserted receipt', async () => {
+    const result = await runEvidenceCase(false);
+
+    expect(result.code).toBe(2);
+    expect(result.errors).toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
+    expect(result.errors).toContain('packages/operator-core/lib/__tests__/test-file-router.test.ts');
+    expect(result.output).not.toContain('TEST_FILE_RESULT');
+  });
+
+  it('keeps the passing terminal marker when the current run inserted its receipt', async () => {
+    const result = await runEvidenceCase(true);
+
+    expect(result.code).toBe(0);
+    expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+    expect(result.errors).not.toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
+  });
+
+  it('does not create or require a receipt sink for ordinary focused runs', async () => {
+    const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+    const priorReporterDisabled = process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+    delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const runCapturedTestProcessMock = vi.fn(async (_command: string, _args: string[], options: any) => {
+      expect(options.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBeUndefined();
+      return { status: 0, signal: null, stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
+        stderr: '', timedOut: false, error: null };
+    });
+
+    try {
+      const code = await main([file], {
+        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        runVitestListImpl: async () => ({ status: 0, signal: null,
+          stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', timedOut: false, error: null }),
+        runCapturedTestProcessImpl: runCapturedTestProcessMock,
+      });
+      const output = logSpy.mock.calls.map(([line]) => String(line)).join('\n');
+      const errors = errorSpy.mock.calls.map(([line]) => String(line)).join('\n');
+
+      expect(code).toBe(0);
+      expect(runCapturedTestProcessMock).toHaveBeenCalledOnce();
+      expect(output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+      expect(errors).not.toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      if (priorReceiptFile === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = priorReceiptFile;
+      if (priorReporterDisabled === undefined) delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+      else process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER = priorReporterDisabled;
+    }
+  });
+});
+
 // EI-25671809770924720: pc-heavy addresses its two marker paths to the router it launched. Every
 // child the router spawns receives `process.env`, so a router that left them there handed the
 // parent's unique barrier to any test that spawns a nested router — which then refused with

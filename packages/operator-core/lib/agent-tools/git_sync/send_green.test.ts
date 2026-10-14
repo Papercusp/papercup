@@ -9,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const CTX = { log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role: 'operator' } as never;
 
 function parse(result: unknown): Record<string, unknown> {
-  return JSON.parse((result as { content: Array<{ text: string }> }).content[0].text);
+  const output = result as { data?: Record<string, unknown>; content?: Array<{ text: string }> };
+  return output.data ?? JSON.parse(output.content![0].text);
 }
 
 function mockCommon(repoDir: string | null) {

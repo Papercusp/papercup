@@ -49,7 +49,7 @@ export default defineTool({
         operation: { id: op.id, deadline: op.deadline, paths: op.paths, intent: op.intent,
           ttlSec: op.ttl_sec, outcome: 'cancelled' },
       }, op.authority);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      return { data: result };
     }
     const ticketIds = Array.from(new Set([...(args.ticket_id ? [args.ticket_id] : []), ...(args.ticket_ids ?? [])]));
     const env = await runBulk(

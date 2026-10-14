@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import * as net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -40,8 +41,18 @@ function receipt(): GovernedExecution {
 }
 
 function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch (e) {
+  if (pid <= 0) return false;
+  try { process.kill(pid, 0); } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw e;
+  }
+  if (process.platform !== 'linux') return true;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const commEnd = stat.lastIndexOf(')');
+    return stat.slice(commEnd + 2).split(' ', 1)[0] !== 'Z';
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw e;
   }
 }

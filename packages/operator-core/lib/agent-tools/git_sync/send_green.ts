@@ -16,7 +16,7 @@ import {
 } from '../../harness/git-sync/promotion-push-target';
 
 function textResult(payload: Record<string, unknown>) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+  return { data: payload };
 }
 
 export default defineTool({

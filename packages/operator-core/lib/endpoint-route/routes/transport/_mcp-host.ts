@@ -852,6 +852,16 @@ function isExplicitPlatformPotGitSyncTarget(toolName: string, arg: string, slug:
 }
 
 /**
+ * `dev:build_status` accepts `harness` only as an ambient compatibility label.
+ * Its feed is deliberately cross-workspace and does not dispatch to the named
+ * harness, so applying the workspace/hive routing clamp to that field would
+ * contradict the tool's published contract and reject harmless diagnostics.
+ */
+function isAmbientHarnessCompatibilityTarget(toolName: string, arg: string): boolean {
+  return toolName === 'dev:build_status' && arg === 'harness';
+}
+
+/**
  * The routine table also has deliberate harness-less hosts (`@...` and the
  * workspace id). They are not tenant harnesses, so the hive clamp must not
  * mistake an exact, one-row routine operation for a cross-hive escape. Keep
@@ -1138,7 +1148,11 @@ async function applyScopedSuperuserTransportClamp(
         // tool remains responsible for reporting an unresolved harness.
         harnessWorkspace = null;
       }
-      if (harnessWorkspace && harnessWorkspace !== spawnCtx.workspaceId) {
+      if (
+        harnessWorkspace &&
+        harnessWorkspace !== spawnCtx.workspaceId &&
+        !isAmbientHarnessCompatibilityTarget(toolName, 'harness')
+      ) {
         return {
           ok: false,
           result: {
@@ -1189,6 +1203,7 @@ async function applyScopedSuperuserTransportClamp(
           requestedHarness,
           args,
         );
+        const isAmbientHarnessCompatibility = isAmbientHarnessCompatibilityTarget(toolName, 'harness');
         const isReservedHarnesslessRoutineTarget = isExplicitReservedHarnesslessRoutineTarget(
           toolName,
           'harness',
@@ -1200,6 +1215,7 @@ async function applyScopedSuperuserTransportClamp(
         const escapesHive =
           !isEngineeringDocsSurface &&
           !isPlatformPotGitSyncTarget &&
+          !isAmbientHarnessCompatibility &&
           !isReservedHarnesslessRoutineTarget &&
           !isSelfOwnedCheckpointRead &&
           (requestedHarness === 'all' ||
@@ -1325,7 +1341,8 @@ async function applyScopedSuperuserTransportClamp(
       for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
         if (
           isExplicitPlatformPotGitSyncTarget(toolName, arg, slug, args) ||
-          isExplicitReservedHarnesslessRoutineTarget(toolName, arg, slug, args, spawnCtx.workspaceId)
+          isExplicitReservedHarnesslessRoutineTarget(toolName, arg, slug, args, spawnCtx.workspaceId) ||
+          isAmbientHarnessCompatibilityTarget(toolName, arg)
         ) continue;
         const escapesHive =
           slug === 'all' || slug === '*' || (await potHomeSlugForHarness(spawnCtx.workspaceId, slug)) !== scopeHive;
@@ -4135,7 +4152,11 @@ export function registerMcpHost(server: McpServer): void {
               // fail OPEN — let the tool resolve/fail loud rather than block a same-name slug.
               harnessWs = null;
             }
-            if (harnessWs && harnessWs !== spawnRes.ctx.workspaceId) {
+            if (
+              harnessWs &&
+              harnessWs !== spawnRes.ctx.workspaceId &&
+              !isAmbientHarnessCompatibilityTarget(toolName, 'harness')
+            ) {
               return {
                 isError: true,
                 content: [
@@ -4203,6 +4224,7 @@ export function registerMcpHost(server: McpServer): void {
                 argHarness,
                 args,
               );
+              const isAmbientHarnessCompatibility = isAmbientHarnessCompatibilityTarget(toolName, 'harness');
               const isReservedHarnesslessRoutineTarget = isExplicitReservedHarnesslessRoutineTarget(
                 toolName,
                 'harness',
@@ -4214,6 +4236,7 @@ export function registerMcpHost(server: McpServer): void {
               const escapes =
                 !isEngineeringDocsSurface &&
                 !isPlatformPotGitSyncTarget &&
+                !isAmbientHarnessCompatibility &&
                 !isReservedHarnesslessRoutineTarget &&
                 !isSelfOwnedCheckpointRead &&
                 (argHarness === 'all' ||
@@ -4424,7 +4447,8 @@ export function registerMcpHost(server: McpServer): void {
             for (const { arg, slug } of collectHarnessSlugArgs(args, { toolName })) {
               if (
                 isExplicitPlatformPotGitSyncTarget(toolName, arg, slug, args) ||
-                isExplicitReservedHarnesslessRoutineTarget(toolName, arg, slug, args, spawnRes.ctx.workspaceId)
+                isExplicitReservedHarnesslessRoutineTarget(toolName, arg, slug, args, spawnRes.ctx.workspaceId) ||
+                isAmbientHarnessCompatibilityTarget(toolName, arg)
               ) continue;
               const escapesHive =
                 slug === 'all' ||

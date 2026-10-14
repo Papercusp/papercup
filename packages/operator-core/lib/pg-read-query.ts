@@ -4024,7 +4024,17 @@ export function assertSingleReadStatement(raw: string): string {
       'only a single statement is allowed — remove the `;`-separated statements',
     );
   }
-  if (!/^(select|with)\b/i.test(noiseStripped)) {
+  // PostgreSQL permits a query expression to begin with a parenthesized
+  // SELECT, including set-operation forms such as (SELECT …) UNION ALL
+  // (SELECT …). Accept that read-query head while retaining the early reject
+  // for parenthesized DML/DDL. The transaction's READ ONLY mode remains the
+  // enforcement for nested data-modifying constructs inside a WITH query.
+  let queryHead = skipSqlTrivia(noiseStripped, 0);
+  while (noiseStripped[queryHead] === '(') {
+    queryHead = skipSqlTrivia(noiseStripped, queryHead + 1);
+  }
+  const headWord = readSqlWord(noiseStripped, queryHead)?.word;
+  if (!headWord || !/^(select|with)$/i.test(headWord)) {
     throw new PgReadQueryError(
       'only SELECT / WITH…SELECT queries are allowed (this is a read-only surface; use the documented write verbs to change state)',
     );

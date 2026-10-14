@@ -5495,6 +5495,36 @@ describe('work_items:checkpoint — launched-but-unread run lint (EI-19455262557
 });
 
 describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268/EI-22550731555241787)', () => {
+  it('expands [turn:self] on the action-claim write path before persisting the checkpoint', async () => {
+    const id = 'WI-ACTION-PROOF-CURRENT-TURN';
+    const currentTurn = {
+      ref: '[turn:01a13b68@2026-10-14T17:14:42.743Z]',
+      verdict: 'agent-injected',
+      origin: 'loop-fire',
+    };
+    const submitted = 'Messaged fleet leader su-bce40c51 directly; see [turn:self].';
+    const expanded = submitted.replace('[turn:self]', currentTurn.ref);
+    getWorkItem.mockResolvedValue({ id, harness: 'papercup' });
+    resolveCurrentTurnStamp.mockClear();
+    readSuccessfulActionInvocations.mockResolvedValueOnce([
+      { toolName: 'coord:send', args: { to: ['su-bce40c51'], summary: 'handoff' } },
+    ]);
+    resolveCurrentTurnStamp.mockResolvedValueOnce(currentTurn);
+    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, checkpointText: string) => checkpointText);
+
+    const result = await one({ id, checkpoint: submitted });
+
+    expect(result.ok).toBe(true);
+    expect(readSuccessfulActionInvocations).toHaveBeenCalledTimes(1);
+    expect(resolveCurrentTurnStamp).toHaveBeenCalledTimes(1);
+    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), expanded);
+    expect(result.turnProvenance).toMatchObject({
+      writtenDuring: currentTurn,
+      refs: [{ ref: currentTurn.ref, found: true, checked: true, verdict: currentTurn.verdict }],
+    });
+    expect(result.provenanceLint).toBeUndefined();
+  });
+
   it('queries the caller spawn with the stable owner fallback and clears only a successful matching coord action', async () => {
     const stored = 'Messaged fleet leader su-bce40c51 directly';
     getWorkItem.mockResolvedValue({ id: 'WI-ACTION-PROOF', harness: 'papercup' });

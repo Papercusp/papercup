@@ -95,6 +95,10 @@ const h = vi.hoisted(() => {
     nativeVerifierSampling: [] as unknown[][],
     /** EI-21641783475680586: deterministic getRubric seam for the nested transport test. */
     rubricGet: vi.fn(async (_rubricRef: string): Promise<unknown> => null),
+    /** EI-25857690731655159: deterministic handler seam for dev:build_status clamp tests. */
+    devBuildStatus: vi.fn(async (): Promise<Record<string, unknown>> => ({})),
+    devTestFlakeRollup: vi.fn(async (_days: number) => ({ entries: [] as unknown[] })),
+    devFlagFlakeSuspects: vi.fn((_entries: unknown[], _days: number) => [] as unknown[]),
     /** EI-22390450916579377: plugin-host warm seam for late projected-tool registration. */
     pluginHostWarm: vi.fn(async (): Promise<unknown> => ({})),
     /** scoped-superuser-workspace-clamp: dispatch tests toggle the flag via this. */
@@ -496,6 +500,17 @@ vi.mock('../../hive-federation', async (importOriginal) => {
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, getRubric: h.rubricGet };
+});
+// The transport matrix tests the real registered handler path, but keeps the
+// host probes and flake scan deterministic and independent of local services.
+vi.mock('../../dev-data', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    buildStatus: h.devBuildStatus,
+    testFlakeRollup: h.devTestFlakeRollup,
+    flagFlakeSuspects: h.devFlagFlakeSuspects,
+  };
 });
 // P-017 workspace-tier clamp seam — only the foreign-workspace harness resolver
 // is stubbed; the rest of harness-core stays real (the wide agent-tools import graph).
@@ -3718,6 +3733,26 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).toContain('harness_forbidden');
   });
 
+  it('flag ON: treats dev:build_status harness as ambient through direct handler dispatch', async () => {
+    h.scopedClampFlag.value = true;
+    h.devBuildStatus.mockResolvedValueOnce({
+      prodBuild: { exists: true, mtimeMs: 1000 },
+      devBuild: { exists: true, mtimeMs: 1000 },
+      prodLogTail: null,
+      dev3055Reachable: true,
+      prod3070Reachable: true,
+    });
+    h.devTestFlakeRollup.mockResolvedValueOnce({ entries: [] });
+    h.devFlagFlakeSuspects.mockReturnValueOnce([]);
+
+    const res = await callTool('dev:build_status', { harness: 'foreign-ws-harness' }, hiveScoped());
+
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).not.toContain('harness_forbidden');
+    expect(h.devBuildStatus).toHaveBeenCalledOnce();
+    expect(h.withWorkspaceCalls).not.toContain('other-ws');
+  });
+
   const GOAL_LOCAL_LAUNCH_TOOLS = [
     'fleet:launch-on-plan',
     'fleet:create',
@@ -5253,6 +5288,30 @@ describe('tools:invoke re-dispatch inherits the scoped-superuser hive clamp (EI-
     );
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('harness_forbidden');
+  });
+
+  it('flag ON: treats dev:build_status harness as ambient through nested handler dispatch', async () => {
+    h.scopedClampFlag.value = true;
+    h.devBuildStatus.mockResolvedValueOnce({
+      prodBuild: { exists: true, mtimeMs: 1000 },
+      devBuild: { exists: true, mtimeMs: 1000 },
+      prodLogTail: null,
+      dev3055Reachable: true,
+      prod3070Reachable: true,
+    });
+    h.devTestFlakeRollup.mockResolvedValueOnce({ entries: [] });
+    h.devFlagFlakeSuspects.mockReturnValueOnce([]);
+
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'dev:build_status', args: { harness: 'foreign-ws-harness' } },
+      hiveScoped(),
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(textOf(res)).not.toContain('harness_forbidden');
+    expect(h.devBuildStatus).toHaveBeenCalledOnce();
+    expect(h.withWorkspaceCalls).not.toContain('other-ws');
   });
 
   const GOAL_LOCAL_LAUNCH_TOOLS = [
