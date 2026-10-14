@@ -115,8 +115,20 @@ export function isActiveException(e: unknown, nowMs: number): e is PolicyExcepti
   return expiry.success && Date.parse(expiry.data) > nowMs;
 }
 
+/**
+ * The work-scope matcher (exact, `*`, `prefix*`, `root/*`) plus a LEADING-`*` suffix form so an
+ * egress host list can say `*.acme.example` (matches `docs.acme.example`, not `acme.example`).
+ * Kept local: widening the shared matcher would change work-scope semantics.
+ */
+export function matchPolicyPattern(pattern: string, value: string): boolean {
+  const p = (pattern ?? '').trim();
+  const v = (value ?? '').trim();
+  if (p.length > 1 && p.startsWith('*') && !p.endsWith('*')) return !!v && v.endsWith(p.slice(1));
+  return matchHarnessPattern(p, v);
+}
+
 function firstMatch(patterns: readonly string[] | undefined, value: string): string | undefined {
-  return patterns?.find((p) => matchHarnessPattern(p, value));
+  return patterns?.find((p) => matchPolicyPattern(p, value));
 }
 
 function judgeLayer(layer: unknown, category: GovernedCategory, value: string, nowMs: number): PolicyTraceStep {
@@ -141,7 +153,7 @@ function judgeLayer(layer: unknown, category: GovernedCategory, value: string, n
   }
   // Only THIS layer's own exceptions can lift THIS layer's refusal.
   const exception = (layer.exceptions ?? []).find(
-    (e) => isActiveException(e, nowMs) && e.category === category && matchHarnessPattern(e.pattern, value),
+    (e) => isActiveException(e, nowMs) && e.category === category && matchPolicyPattern(e.pattern, value),
   ) as (PolicyException & { expiresAt: string }) | undefined;
   if (exception) return { ...base, outcome: 'excepted', pattern: exception.pattern, expiresAt: exception.expiresAt };
   return denied ? { ...base, outcome: 'deny-rule', pattern: denied } : { ...base, outcome: 'not-allowed' };

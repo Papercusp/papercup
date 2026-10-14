@@ -115,7 +115,9 @@ export function governedRequestOf(request: Pick<KernelEnforcementRequest, 'toolN
   const actions = [...capabilities];
   if (request.boundary && request.boundary !== 'dispatch') actions.push(`boundary:${request.boundary}`);
   if (request.boundary === 'native' || request.boundary === 'shell') {
-    const bin = request.operation ?? (typeof args?.bin === 'string' ? args.bin : '');
+    // wrapKernelSpawn sets `operation` to the whole command line ("<bin> <args…>"), so the
+    // executable is `args.bin` when the adapter passed it, else the operation's first token.
+    const bin = typeof args?.bin === 'string' && args.bin.trim() ? args.bin.trim() : (request.operation ?? '').trim().split(/\s+/)[0] ?? '';
     const base = bin.split('/').pop()?.trim();
     if (base) actions.push(`exec:${base}`);
   }
