@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
-  "framework": "vitest",
+  "framework": "operational",
   "name": "P-008 current-source device expiry, revocation and workspace isolation integration",
   "command": [
     "npm",
@@ -31,9 +31,13 @@
   "planItemId": "P-008",
   "spec": "AUTO-BAR-R-2-P-008@2",
   "repository": "papercusp",
-  "canonicalSourceCommit": "913a57275c",
-  "sourceCommitAtExecution": "913a57275c",
-  "sourceDirtyAtExecution": false,
+  "canonicalSourceCommit": "913a57275cd3069f798c314fbc1529e8fed913d3",
+  "sourceCommitAtExecution": "913a57275cd3069f798c314fbc1529e8fed913d3",
+  "sourceDirtyAtExecution": true,
+  "executionFramework": "vitest",
+  "testRunId": 21246468,
+  "bindingId": 44986,
+  "sourceIdentityNote": "The exact Vitest ledger records a dirty shared worktree at execution. The conventional integration suite verifies committed-source loader receipts for its private operator child; this is scoped source evidence, not a clean whole-tree or signed-candidate admission. The existing Vitest ledger is the executable result; this JSON preserves the human-reviewed receipt.",
   "disclosedGaps": [
     "This is integration evidence for current source; it does not claim live hosted/BYOC cloud acceptance.",
     "Native simulator offline/reconnect and public HTTPS evidence remain separate retained operational receipts.",
