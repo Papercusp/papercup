@@ -200,6 +200,18 @@ export function resolveCriterionWindow(
  *
  * Fuzzy + deterministic criteria coexist in one rubric.
  */
+const rubricRatingBandSchema = z
+  .object({
+    rating: z.string().trim().min(1).max(80),
+    expect: z
+      .object({
+        op: z.enum(['lt', 'lte', 'gt', 'gte', 'eq']),
+        value: z.number().finite(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -282,8 +294,23 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
             "reading records pass/fail in the results ledger and scorecards:emit { fromLedger:true } " +
             'rates the criterion from that row; without it the reading is recorded but a grader rates it.',
         ),
+      ratingBands: z
+        .array(rubricRatingBandSchema)
+        .min(1)
+        .max(8)
+        .optional()
+        .describe(
+          'Optional ordered intermediate ratings for ledger-backed numeric values, checked only after the current expect fails. ' +
+            'Each entry names a rating from the criterion/rubric scale and a numeric predicate over the same measured value. ' +
+            'List entries in the scale\'s best-to-worst order; omit the best, worst, and unknown levels. Without a matching band, the worst level applies.',
+        ),
     })
-    .strict(),
+    .strict()
+    .superRefine((check, ctx) => {
+      if (check.ratingBands && !check.expect) {
+        ctx.addIssue({ code: 'custom', path: ['ratingBands'], message: 'ratingBands require the instrument check to declare its best-level expect threshold' });
+      }
+    }),
   z
     .object({
       kind: z.literal('probe'),
@@ -307,6 +334,16 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
           "unit of the scalar each probe reads at its predicate path (e.g. 'ms', 'pct', 'cores', 'MB/s'). " +
             'Recorded on every results-ledger row this check writes, so a reading can be compared with a ' +
             'baseline or an earlier run; a row with a different unit no longer describes the check. Omitted = unitless.',
+        ),
+      ratingBands: z
+        .array(rubricRatingBandSchema)
+        .min(1)
+        .max(8)
+        .optional()
+        .describe(
+          'Optional ordered intermediate ratings for ledger-backed numeric values, checked only after the current probe predicate fails. ' +
+            'Each entry names a rating from the criterion/rubric scale and a numeric predicate over the scalar recorded by this check. ' +
+            'List entries in the scale\'s best-to-worst order; omit the best, worst, and unknown levels. Without a matching band, the worst level applies.',
         ),
     })
     .strict()
