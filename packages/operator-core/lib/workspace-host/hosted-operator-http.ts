@@ -89,6 +89,7 @@ export const OPERATOR_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
   // Sync transport behind useSyncQuery (chat lists, session rosters).
   { method: 'GET', pattern: /^\/api\/zero-harness\/rest-query$/, surface: 'sync read' },
   { method: 'GET', pattern: /^\/api\/zero-harness\/sse$/, surface: 'sync stream' },
+  { method: 'POST', pattern: new RegExp(`^/api/harness/${SEG}/insights/diagnostic-export$`), surface: 'explicit customer-local aggregate export' },
   // "Ask Papercup" agent chats (portal agent-chats.ts).
   { method: 'GET', pattern: new RegExp(`^/api/harness/${SEG}/agent-chats$`), surface: 'agent chats list' },
   { method: 'POST', pattern: new RegExp(`^/api/harness/${SEG}/agent-chats$`), surface: 'agent chat create' },
