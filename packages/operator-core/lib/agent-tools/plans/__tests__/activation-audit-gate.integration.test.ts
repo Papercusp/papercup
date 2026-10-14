@@ -161,7 +161,7 @@ describe('conversation activation audit gate', () => {
     );
 
     expect(result).toMatchObject({
-      kind: 'applied',
+      kind: 'refused',
       value: { ok: false, code: 'conversation_audit_required', message: expect.stringContaining("plans:audit { phase:'activation'") },
     });
     const rows = await fx.admin<Array<{ content: string }>>`
@@ -193,7 +193,7 @@ describe('conversation activation audit gate', () => {
       { slug: SLUG, harnessSlug: HARNESS, workspaceId: fx.workspaceId, intent: 'test direct ready' },
       async () => ({ newBody: flipReady(DRAFT), value: { ok: true } }),
     );
-    expect(direct).toMatchObject({ kind: 'applied', value: { code: 'conversation_audit_required' } });
+    expect(direct).toMatchObject({ kind: 'refused', value: { code: 'conversation_audit_required' } });
 
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, flipReady(DRAFT));
     const cosmetic = await withPlanLock<{ ok: true }>(
@@ -247,7 +247,7 @@ describe('conversation activation audit gate', () => {
     );
 
     expect(result).toMatchObject({
-      kind: 'applied',
+      kind: 'refused',
       value: { ok: false, code: 'child_seed_template_reserved' },
     });
     const rows = await fx.admin`
@@ -266,7 +266,7 @@ describe('conversation activation audit gate', () => {
         value: { ok: true },
       }),
     );
-    expect(result).toMatchObject({ kind: 'applied', value: { code: 'child_seed_template_reserved' } });
+    expect(result).toMatchObject({ kind: 'refused', value: { code: 'child_seed_template_reserved' } });
   });
 
   it('exempts the spawn_child writer, and a later edit that keeps the template passes', async () => {
@@ -305,7 +305,7 @@ describe('conversation activation audit gate', () => {
     );
 
     expect(result).toMatchObject({
-      kind: 'applied',
+      kind: 'refused',
       value: { ok: false, code: 'conversation_audit_required' },
     });
   });
