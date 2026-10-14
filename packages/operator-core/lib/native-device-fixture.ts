@@ -117,6 +117,25 @@ async function stopChild(child: ChildProcess | undefined) {
   clearTimeout(kill);
 }
 
+/** Stop the exact owned operator, retain its private DB/signing identity, then replace it. */
+export async function interruptFixtureHost(child: ChildProcess, restart: () => Promise<ChildProcess>,
+  seconds: number, record: (value: Record<string, unknown>) => void,
+  env = process.env, pause = delay) {
+  fixtureIdentity(env);
+  assert(Number.isInteger(seconds) && seconds >= 30 && seconds <= 120, 'Bounded operator interruption required');
+  assert(child.pid && child.exitCode === null && child.signalCode === null, 'Owned operator must be live');
+  const stoppedPid = child.pid;
+  await stopChild(child);
+  assert(child.exitCode !== null || child.signalCode !== null, 'Owned operator must exit before recovery');
+  record({ stoppedPid, stoppedAt: new Date().toISOString(), exitCode: child.exitCode, signal: child.signalCode });
+  await pause(seconds * 1000);
+  const restored = await restart();
+  assert(restored.pid && restored.pid !== stoppedPid && restored.exitCode === null && restored.signalCode === null,
+    'Recovery must start a different live operator process');
+  record({ restoredPid: restored.pid, restoredAt: new Date().toISOString() });
+  return restored;
+}
+
 /** Expire only an unused token in this request-only fixture's private database. */
 export async function expireFixturePair(pairToken: string, workspaceId: string, env = process.env) {
   const identity = fixtureIdentity(env);
@@ -136,6 +155,9 @@ export async function expireFixturePair(pairToken: string, workspaceId: string, 
 export async function runNativeDeviceFixture(evidencePath: string, certPath: string, seconds = 1800) {
   const identity = fixtureIdentity(process.env); // All preconditions precede any external write.
   assert(Number.isInteger(seconds) && seconds >= 30 && seconds <= 3600, 'Bounded lifetime required');
+  const interruptionSeconds = Number(process.env.PAPERCUSP_NATIVE_OFFLINE_SECONDS ?? '0');
+  assert(interruptionSeconds === 0 || (Number.isInteger(interruptionSeconds) && interruptionSeconds >= 30 &&
+    interruptionSeconds <= 120), 'Offline fixture interval must be 30 to 120 seconds');
   const evidence = resolve(evidencePath);
   assert(isAbsolute(evidencePath) && relative(ROOT, evidence).startsWith('..'), 'Evidence/private input must be outside the repository');
   const login = parseArgoTunnelCert(readFileSync(certPath, 'utf8'));
@@ -170,10 +192,13 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   };
   try {
     save();
-    host = start(process.execPath, ['--import', 'tsx', resolve(ROOT, 'apps/operator/bin/hono-host.ts')], {
+    const hostEnv = {
       ...process.env, MOBILE_JWT_SECRET: randomBytes(48).toString('base64url'),
       MOBILE_DESKTOP_PUBLIC_URL: String(receipt.publicBase), MOBILE_DESKTOP_HOST: hostname,
-    }, 'host.log');
+    };
+    const startHost = (log: string) => start(process.execPath,
+      ['--import', 'tsx', resolve(ROOT, 'apps/operator/bin/hono-host.ts')], hostEnv, log);
+    host = startHost('host.log');
     receipt.hostPid = host.pid;
     const readyBy = Date.now() + 180_000;
     for (;;) {
@@ -253,9 +278,47 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
     console.log('NATIVE_HTTPS_FIXTURE_READY=' + JSON.stringify({ receipt: resolve(evidence, 'runtime.json'),
       publicBase: receipt.publicBase, workspaceId: identity.workspaceId }));
     const until = Date.now() + seconds * 1000;
+    let interruptionDone = false;
     while (!stopped && Date.now() < until && !existsSync(resolve(evidence, 'stop'))) {
       assert(host.exitCode === null && connector.exitCode === null && host.signalCode === null && connector.signalCode === null,
         'Owned fixture process exited');
+      if (interruptionSeconds && !interruptionDone) {
+        const { listDevices } = await import('./device-store');
+        const devices = await listDevices(identity.workspaceId);
+        assert(devices.length <= 1, 'Offline acceptance requires exactly one owned phone');
+        if (devices.length === 1 && devices[0]!.last_seen) {
+          // Let the visible authorized read finish before disconnecting. The
+          // native case then waits on actual UI outcomes, not this timer.
+          receipt.interruption = { pairedDeviceCount: 1, heartbeatBeforeStop: true,
+            seconds: interruptionSeconds, requestedAt: new Date().toISOString() }; save();
+          await delay(15_000);
+          host = await interruptFixtureHost(host, async () => startHost('restored-host.log'),
+            interruptionSeconds, value => {
+              Object.assign(receipt.interruption as object, value); save();
+            });
+          receipt.hostPid = host.pid;
+          const recoveryBy = Date.now() + 120_000;
+          for (;;) {
+            assert(host.exitCode === null && host.signalCode === null, 'Restored operator exited');
+            try {
+              const health = await fetch(identity.base + '/api/health', { signal: AbortSignal.timeout(2000) });
+              assert((await health.json()).ok === true, 'Restored operator health failed');
+              receipt.restoredPublicBoundary = await verifyProtectedIngress(String(receipt.publicBase));
+              const after = await listDevices(identity.workspaceId);
+              assert(after.length === 1 && after[0]!.device_id === devices[0]!.device_id,
+                'Recovery must preserve the original paired phone');
+              Object.assign(receipt.interruption as object, { readyAt: new Date().toISOString(),
+                originalDevicePreserved: true }); save();
+              break;
+            } catch (error) {
+              receipt.recoveryLastFailure = fixtureFailure(error); save();
+              if (Date.now() >= recoveryBy) throw error;
+              await delay(1000);
+            }
+          }
+          interruptionDone = true;
+        }
+      }
       await delay(500);
     }
   } catch (error) {

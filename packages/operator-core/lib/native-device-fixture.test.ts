@@ -1,6 +1,7 @@
 import { createServer, request } from 'node:http';
+import { spawn } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns } from './native-device-fixture';
+import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, interruptFixtureHost, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns } from './native-device-fixture';
 import type { CloudflareApi } from './own-tunnel/cloudflare-api';
 
 const privateEnv = {
@@ -12,6 +13,51 @@ const privateEnv = {
 };
 
 describe('disposable native HTTPS fixture admission', () => {
+  it('actually stops and replaces its owned HTTP process while retaining its signing identity', async () => {
+    let port = 0;
+    const children: ReturnType<typeof spawn>[] = [];
+    const start = async () => {
+      const child = spawn(process.execPath, ['-e', `
+        require('node:http').createServer((q,s)=>s.end(process.env.FIXTURE_SIGNING_ID))
+          .listen(Number(process.env.FIXTURE_PORT),'127.0.0.1',function(){console.log(this.address().port)});
+      `], { env: { ...process.env, FIXTURE_SIGNING_ID: 'same-private-identity', FIXTURE_PORT: String(port) },
+        stdio: ['ignore', 'pipe', 'pipe'] });
+      children.push(child);
+      port = await new Promise<number>((done, reject) => {
+        child.once('error', reject);
+        child.once('exit', () => reject(new Error('HTTP child exited before readiness')));
+        child.stdout!.once('data', value => done(Number(String(value).trim())));
+      });
+      return child;
+    };
+    try {
+      const original = await start();
+      const base = 'http://127.0.0.1:' + port;
+      expect(await (await fetch(base)).text()).toBe('same-private-identity');
+      const events: Record<string, unknown>[] = [];
+      await expect(interruptFixtureHost(original, start, 55, value => events.push(value),
+        { ...privateEnv, PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace' }))
+        .rejects.toThrow('Disposable workspace required');
+      expect(original.signalCode).toBeNull();
+      await expect(interruptFixtureHost(original, start, 0, value => events.push(value), privateEnv))
+        .rejects.toThrow('Bounded operator interruption required');
+      const restored = await interruptFixtureHost(original, start, 55, value => events.push(value), privateEnv,
+        async ms => {
+          expect(ms).toBe(55_000);
+          expect(original.signalCode).toBe('SIGTERM');
+          await expect(fetch(base, { signal: AbortSignal.timeout(1000) })).rejects.toThrow();
+        });
+      expect(restored.pid).not.toBe(original.pid);
+      expect(await (await fetch(base)).text()).toBe('same-private-identity');
+      expect(events).toMatchObject([{ stoppedPid: original.pid, signal: 'SIGTERM' }, { restoredPid: restored.pid }]);
+    } finally {
+      await Promise.all(children.map(child => {
+        if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+        const exited = new Promise<void>(done => child.once('exit', () => done()));
+        child.kill('SIGKILL'); return exited;
+      }));
+    }
+  });
   it('refuses non-fixture expiry and cross-workspace tokens before database access', async () => {
     await expect(expireFixturePair('private-token', 'papercusp-workspace', privateEnv))
       .rejects.toThrow('must belong to this fixture');
