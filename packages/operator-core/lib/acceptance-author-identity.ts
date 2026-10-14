@@ -163,7 +163,9 @@ function identityEdges(sql: Sql, workspaceId: string) {
  * like a descendant grader, while siblings remain eligible (sharing a parent is
  * not lineage).
  * Spawn ids and session owners are aliases in the spawned-agent table; both
- * representations are bridged. The recursive walk is bounded and cycle-safe.
+ * representations are bridged. UNION deduplicates (node, depth) states, rather
+ * than enumerating every path through a converging graph. The hop bound keeps
+ * cycles finite without changing reachability or sibling independence.
  */
 export async function areAcceptanceLineageRelated(
   firstId: string | null | undefined,
@@ -181,23 +183,21 @@ export async function areAcceptanceLineageRelated(
       WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
-      walk(node, path, depth) AS (
-        SELECT ${first}::text, ARRAY[${first}::text], 0
-        UNION ALL
-        SELECT edge.to_id, walk.path || edge.to_id, walk.depth + 1
+      walk(node, depth) AS (
+        SELECT ${first}::text, 0
+        UNION
+        SELECT edge.to_id, walk.depth + 1
           FROM walk
           JOIN identity_edges AS edge ON edge.from_id = walk.node
          WHERE walk.depth < 64
-           AND NOT edge.to_id = ANY(walk.path)
       ),
-      reverse_walk(node, path, depth) AS (
-        SELECT ${second}::text, ARRAY[${second}::text], 0
-        UNION ALL
-        SELECT edge.to_id, reverse_walk.path || edge.to_id, reverse_walk.depth + 1
+      reverse_walk(node, depth) AS (
+        SELECT ${second}::text, 0
+        UNION
+        SELECT edge.to_id, reverse_walk.depth + 1
           FROM reverse_walk
           JOIN identity_edges AS edge ON edge.from_id = reverse_walk.node
          WHERE reverse_walk.depth < 64
-           AND NOT edge.to_id = ANY(reverse_walk.path)
       )
       SELECT EXISTS (SELECT 1 FROM walk WHERE node = ${second})
           OR EXISTS (SELECT 1 FROM reverse_walk WHERE node = ${first}) AS matches
@@ -226,23 +226,21 @@ export async function acceptanceLineageClosure(
       WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
-      descendants(node, path, depth) AS (
-        SELECT ${self}::text, ARRAY[${self}::text], 0
-        UNION ALL
-        SELECT edge.to_id, descendants.path || edge.to_id, descendants.depth + 1
+      descendants(node, depth) AS (
+        SELECT ${self}::text, 0
+        UNION
+        SELECT edge.to_id, descendants.depth + 1
           FROM descendants
           JOIN identity_edges AS edge ON edge.from_id = descendants.node
          WHERE descendants.depth < 64
-           AND NOT edge.to_id = ANY(descendants.path)
       ),
-      ancestors(node, path, depth) AS (
-        SELECT ${self}::text, ARRAY[${self}::text], 0
-        UNION ALL
-        SELECT edge.from_id, ancestors.path || edge.from_id, ancestors.depth + 1
+      ancestors(node, depth) AS (
+        SELECT ${self}::text, 0
+        UNION
+        SELECT edge.from_id, ancestors.depth + 1
           FROM ancestors
           JOIN identity_edges AS edge ON edge.to_id = ancestors.node
          WHERE ancestors.depth < 64
-           AND NOT edge.from_id = ANY(ancestors.path)
       )
       SELECT node FROM descendants
       UNION
@@ -275,14 +273,13 @@ export async function acceptanceLineageAncestors(
       WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
-      ancestors(node, path, depth) AS (
-        SELECT ${self}::text, ARRAY[${self}::text], 0
-        UNION ALL
-        SELECT edge.from_id, ancestors.path || edge.from_id, ancestors.depth + 1
+      ancestors(node, depth) AS (
+        SELECT ${self}::text, 0
+        UNION
+        SELECT edge.from_id, ancestors.depth + 1
           FROM ancestors
           JOIN identity_edges AS edge ON edge.to_id = ancestors.node
          WHERE ancestors.depth < 64
-           AND NOT edge.from_id = ANY(ancestors.path)
       )
       SELECT node FROM ancestors
   `;
@@ -313,7 +310,7 @@ export async function isAcceptanceAuthorIdentity(
   try {
     const sql = opts.sql ?? getOrgPg().sql;
     const rows = await sql<Array<{ matches: boolean }>>`
-      WITH RECURSIVE rebind_edges AS (
+      WITH RECURSIVE rebind_edges AS MATERIALIZED (
         SELECT args_json->>'from' AS from_id,
                COALESCE(NULLIF(args_json->>'to', ''), coord_owner_id) AS to_id
           FROM harness_shared.tool_invocations
@@ -322,14 +319,13 @@ export async function isAcceptanceAuthorIdentity(
            AND status = 'ok'
            AND args_json->>'from' IS NOT NULL
            AND COALESCE(NULLIF(args_json->>'to', ''), coord_owner_id) IS NOT NULL
-      ), author_lineage(owner_id, path, depth) AS (
-        SELECT ${author}::text, ARRAY[${author}::text], 0
-        UNION ALL
-        SELECT edge.to_id, lineage.path || edge.to_id, lineage.depth + 1
+      ), author_lineage(owner_id, depth) AS (
+        SELECT ${author}::text, 0
+        UNION
+        SELECT edge.to_id, lineage.depth + 1
           FROM author_lineage AS lineage
           JOIN rebind_edges AS edge ON edge.from_id = lineage.owner_id
          WHERE lineage.depth < 32
-           AND NOT edge.to_id = ANY(lineage.path)
       )
       SELECT EXISTS(
         SELECT 1 FROM author_lineage WHERE owner_id = ${candidate}
@@ -472,15 +468,14 @@ export async function lineagePartyKeys(
       WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
-      walk(src, node, path, depth) AS (
-        SELECT s.seed, s.seed, ARRAY[s.seed], 0
+      walk(src, node, depth) AS (
+        SELECT s.seed, s.seed, 0
           FROM unnest(${ordered}::text[]) AS s(seed)
-        UNION ALL
-        SELECT walk.src, edge.to_id, walk.path || edge.to_id, walk.depth + 1
+        UNION
+        SELECT walk.src, edge.to_id, walk.depth + 1
           FROM walk
           JOIN identity_edges AS edge ON edge.from_id = walk.node
          WHERE walk.depth < 64
-           AND NOT edge.to_id = ANY(walk.path)
       )
       SELECT DISTINCT walk.src AS a, walk.node AS b
         FROM walk
