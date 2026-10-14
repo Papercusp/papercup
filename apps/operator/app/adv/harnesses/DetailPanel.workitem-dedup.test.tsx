@@ -11,7 +11,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import { resolveSelectionKind } from './DetailPanel';
 
-type SyncCall = { queryName: string; enabled?: boolean; args?: Record<string, unknown> };
+type SyncCall = { queryName: string; enabled?: boolean; args?: Record<string, unknown>; requestClass?: string };
 const { syncCalls, detailState, issueState } = vi.hoisted(() => ({
   syncCalls: [] as SyncCall[],
   detailState: { loading: false, error: null as Error | null, data: [] as unknown[],
@@ -22,8 +22,8 @@ const { syncCalls, detailState, issueState } = vi.hoisted(() => ({
 vi.mock('@papercusp/sync', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/sync')>()),
   onSyncBusEvent: () => () => {},
-  useSyncQuery: (opts: { queryName: string; enabled?: boolean; args?: Record<string, unknown> }) => {
-    syncCalls.push({ queryName: opts.queryName, enabled: opts.enabled, args: opts.args });
+  useSyncQuery: (opts: SyncCall) => {
+    syncCalls.push({ queryName: opts.queryName, enabled: opts.enabled, args: opts.args, requestClass: opts.requestClass });
     const enabled = opts.enabled !== false;
     const detail = enabled && opts.queryName === 'workItems.detail';
     return {
@@ -156,5 +156,6 @@ describe('DetailPanel work-item detail subscription', () => {
     expect(list, 'detail must not depend on a bounded list page').toBeUndefined();
     const detail = syncCalls.find((c) => c.queryName === 'workItems.detail' && c.enabled !== false);
     expect(detail?.args).toEqual({ harnessSlug: 'h1', id: 'WI-1' });
+    expect(detail?.requestClass, 'selected detail must use the shared scheduler interactive reservation').toBe('interactive-control');
   });
 });
