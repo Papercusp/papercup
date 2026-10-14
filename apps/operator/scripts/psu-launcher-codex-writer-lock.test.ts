@@ -136,6 +136,21 @@ describe('process-local writer-lock evidence (WI-10007670)', () => {
       statFile: () => ({ dev: 66307, ino: 36177832 }),
     }).held).toBe(false);
   });
+
+  it('selects the exact-process reader for a known holder and never the global oracle', () => {
+    const local = vi.fn(() =>
+      '1: FLOCK ADVISORY WRITE 42 103:03:36177832 0 EOF\n');
+    const lockPath = codexThreadWriterLockPath(dir, LIVE_THREAD);
+    mkdirSync(join(dir, 'thread-writer-locks'), { recursive: true });
+    writeFileSync(lockPath, '');
+    const got = codexThreadWriterHolder(dir, LIVE_THREAD, {
+      holderPid: 42,
+      readProcessLocks: local,
+      statFile: () => ({ dev: 66307, ino: 36177832 }),
+    });
+    expect(got.held).toBe(true);
+    expect(local).toHaveBeenCalledWith(42);
+  });
 });
 
 describe('devMajorMinor', () => {
