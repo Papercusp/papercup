@@ -423,9 +423,13 @@ describe('computeGreenMainSlo — alerts on breach (AUTO-BAR-R-13)', () => {
       ],
       admissions: [{ atMs: NOW - 8 * H, actor: 'su-a', source: { ref: 'staging', sha: 's' }, fromRepairHead: 'h1', toRepairHead: 'a9', paths: [], unchanged: [], blobs: {} }],
     });
-    expect(
-      alerts({ ...base, lastGreenAtMs: NOW - H, lastVerdictAtMs: NOW - H, queue: q, syncTallies: [{ fleet: 'f', judgedBatches: 10, redBatches: 3 }] }),
-    ).toEqual(['round-cycle-time', 'queue-idle', 'red-adding-admission', 'per-sync-red-rate']);
+    const result = computeGreenMainSlo({ ...base, lastGreenAtMs: NOW - H, lastVerdictAtMs: NOW - H, queue: q,
+      syncTallies: [{ fleet: 'f', judgedBatches: 10, redBatches: 3 }] });
+    expect(result.breaches.filter(b => b.severity === 'alert').map(b => b.metric)).toEqual(
+      ['round-cycle-time', 'queue-idle', 'red-adding-admission', 'per-sync-red-rate']);
+    const admission = result.breaches.find(b => b.metric === 'red-adding-admission');
+    expect(admission?.title).toBe('A round after admission recorded more failures on papercusp');
+    expect(admission?.detail).toMatch(/association, not that the admission caused the increase/);
   });
 
   it('raises nothing when every metric is inside its target', () => {
