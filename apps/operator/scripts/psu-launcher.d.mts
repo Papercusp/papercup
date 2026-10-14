@@ -3483,11 +3483,13 @@ export function readLinuxProcessFlockText(pid: number, { listFdInfo, readFdInfo,
  * Pure apart from the injected readers — exported for tests.
  * @param {string | null | undefined} codexHome
  * @param {string | null} sessionId
- * @param {{readProcLocks?: () => string, statFile?: (path:string)=>{dev:number|bigint, ino:number|bigint},
- * listDir?: typeof safeReaddir, holderPid?: number | null}} [options]
+ * @param {{readProcLocks?: () => string, readProcessLocks?: (pid:number) => string,
+ * statFile?: (path:string)=>{dev:number|bigint, ino:number|bigint}, listDir?: typeof safeReaddir,
+ * holderPid?: number | null}} [options]
  */
-export function codexThreadWriterHolder(codexHome: string | null | undefined, sessionId: string | null, { readProcLocks, statFile, listDir, holderPid, }?: {
+export function codexThreadWriterHolder(codexHome: string | null | undefined, sessionId: string | null, { readProcLocks, statFile, listDir, holderPid, readProcessLocks, }?: {
     readProcLocks?: () => string;
+    readProcessLocks?: (pid: number) => string;
     statFile?: (path: string) => {
         dev: number | bigint;
         ino: number | bigint;

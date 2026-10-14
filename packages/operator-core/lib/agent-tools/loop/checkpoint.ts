@@ -710,7 +710,9 @@ export default defineTool({
             'are accepted and mapped to {claim}; the non-owner analog ' +
             'of walls; renders a ## Checks section every wake). `verified` is a STRING (evidence, ≤300 chars), never ' +
             'a boolean — a claim OMITTING `verified` renders PREDICTED, a successor must run its recheck before ' +
-            'relying on it. If its evidence contains STILL RUNNING, pending, outstanding, in-flight, unverified, or ' +
+            'relying on it. There is no caller-supplied `sinceMs` field here: that timestamp is server-owned carry metadata, ' +
+            'inherited for existing claims and stamped for new claims. Do not copy `sinceMs` from work_items:checkpoint rows. ' +
+            'If its evidence contains STILL RUNNING, pending, outstanding, in-flight, unverified, or ' +
             'awaiting while the claim asserts a completed/healthy state, the writer downgrades it to `contested` and ' +
             'reports the repair; when the claim itself asserts that unresolved state, the evidence remains VERIFIED. ' +
             'Use `contested` to force an explicit warning; contested rows render ⚠ and require a re-check. ' +

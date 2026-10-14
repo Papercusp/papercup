@@ -149,6 +149,17 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
     expect(timeoutStartSeconds).toBeGreaterThanOrEqual(defaultRootCount * timeoutSeconds + 900);
   });
 
+  it('uses lowest best-effort I/O priority while keeping CPU priority mild', () => {
+    const script = readFileSync(PROBE, 'utf8');
+    const unit = readFileSync(join(SCRIPTS, 'systemd', 'papercup-fedplane-key-permission.service'), 'utf8');
+
+    expect(script).toMatch(/timeout "\$KEYPERM_DEEP_TIMEOUT_S" nice -n 10 ionice -c 2 -n 7 bash -c/);
+    expect(unit).toMatch(/^Nice=10$/m);
+    expect(unit).toMatch(/^CPUWeight=50$/m);
+    expect(unit).toMatch(/^IOSchedulingClass=best-effort$/m);
+    expect(unit).toMatch(/^IOSchedulingPriority=7$/m);
+  });
+
   it('prunes configured vendored directories from the tier-1 .ssh sweep', () => {
     const fx = withControl(fixture());
     const vendoredSsh = join(fx.root, 'vendor', '.ssh');

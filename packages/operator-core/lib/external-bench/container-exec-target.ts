@@ -27,6 +27,8 @@
  * seam's teardown (`docker rm -f`) owns that.
  */
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import type { NativeContainerExecBinding } from '@papercusp/orchestrator/fleet-srt-spawn';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
@@ -469,7 +471,7 @@ export interface MaterializeWrapperOptions extends RenderWrapperOptions {
 export function materializeDockerExecWrapper(
   target: DockerExecTarget,
   opts: MaterializeWrapperOptions = {},
-): { dir: string; wrapperPath: string } {
+): { dir: string; wrapperPath: string; nativeBoundary: NativeContainerExecBinding } {
   const agent = opts.agent ?? 'codex';
   if (!/^[a-z][a-z0-9-]*$/.test(agent)) throw new Error(`container exec target: invalid agent name ${JSON.stringify(agent)}`);
   const source = renderDockerExecWrapper(target, opts);
@@ -487,5 +489,6 @@ export function materializeDockerExecWrapper(
   const wrapperPath = join(dir, agent);
   writeFileSync(wrapperPath, source, { mode: 0o755 });
   chmodSync(wrapperPath, 0o755);
-  return { dir, wrapperPath };
+  return { dir, wrapperPath, nativeBoundary: { kind: 'docker-exec', command: wrapperPath,
+    sha256: createHash('sha256').update(source).digest('hex') } };
 }

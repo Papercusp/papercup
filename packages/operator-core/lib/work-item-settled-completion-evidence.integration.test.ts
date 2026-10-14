@@ -28,7 +28,7 @@ import type postgres from 'postgres';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
-import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
+import type { CompletionVerificationEvidence, PersistedCompletionEvidence } from './coord-lifecycle/records';
 
 const COORD_EVENT_LOG_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (
@@ -164,6 +164,25 @@ const attestations = (payload: any): any[] =>
   Array.isArray(payload?._completionAttestations) ? payload._completionAttestations : [];
 
 describe('attachCompletionEvidenceToSettledItem — real PG', () => {
+  it('persists and reads back the complete long checkpoint prose snapshot', async () => {
+    const id = await watchdogResolved(THIN);
+    const prose = `## Did\n${'x'.repeat(26_950)}\n\n## Rollback\nrestore from the verified backup\n\n## Final evidence\nsource sha=0123456789abcdef`;
+    const evidence: PersistedCompletionEvidence = {
+      ...RICH,
+      checkpointProseSnapshot: prose,
+    };
+
+    const attached = await wi.attachCompletionEvidenceToSettledItem(id, {
+      by: AGENT,
+      completionEvidence: evidence,
+      completionAuthority: 'committed',
+    });
+    expect(attached.outcome).toBe('upgraded');
+
+    const readback = await wi.getWorkItem(id, 'papercup');
+    expect(readback?.terminalCompletionEvidence?.checkpointProseSnapshot).toBe(prose);
+  });
+
   it('UPGRADES a thin stored record: the richer one becomes authoritative, the loser is ARCHIVED', async () => {
     const id = await watchdogResolved(THIN);
 

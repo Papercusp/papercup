@@ -52,6 +52,19 @@ The CLI performs these steps automatically on normal completion or caught errors
 After process death, reconciliation must complete them using the recorded nonce
 and operation. Never clear deletion protection on the production source.
 
+After cleanup, `verify-receipt` reconciles the saved evidence through read-only
+source, scratch and operation descriptions and emits an operational test receipt:
+
+```bash
+npx tsx scripts/cloud-prod/backup-restore-drill.ts verify-receipt < saved-evidence.json
+```
+
+It preserves the original receipt, including failed cleanup, and rejects a
+permission/transport failure as proof that the scratch is absent. The saved
+canary-removal observation remains historical: reconciliation does not reopen SQL
+or rerun PITR. Register the new committed receipt with `testing:record-run`; retain
+the original evidence alongside it.
+
 ## Nightly logical exports and age detector
 
 `nightly-backup-plan.ts` builds a preview for cloud-owned exports. Separate backup

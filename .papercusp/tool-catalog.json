@@ -5065,7 +5065,7 @@
           "POST"
         ]
       },
-      "description": "Find code by SHAPE with pinned ast-grep: `pattern` uses metavariables (`foo($X)`, `if ($C) { $$$BODY }`) and matches syntax, ignoring formatting and strings/comments. op:\"search\" lists matches; op:\"rewrite_preview\" also shows each proposed replacement; op:\"syntax_index\" indexes declarations/imports/inheritance from 1..16 explicit source files with source hashes and inferred relationships. Read-only: this tool cannot emit ast-grep --update-all. Returns { sites:[{path,line1,detail}], truncation, freshness, evidence?, error }; line1 is ONE-indexed. It knows no types: identically-shaped calls from different modules are indistinguishable.",
+      "description": "Find code by SHAPE with pinned ast-grep: `pattern` uses metavariables (`foo($X)`, `if ($C) { $$$BODY }`) and matches syntax, ignoring formatting and strings/comments. op:\"search\" lists matches; op:\"rewrite_preview\" shows proposed replacements; op:\"syntax_index\" indexes declarations/imports/inheritance with source hashes. op:\"taint\" separately evaluates local data flow with admitted Semgrep OSS against explicit files and caller-declared taint.sources/sinks/sanitizers. Taint returns {analysisKind:\"local-taint\",findings,sources,analyzer,ruleSha256,freshness,truncation,dynamicBoundary,limitations,error}; it is inferred static evidence, never a runtime or vulnerability verdict. Other ops return {sites,truncation,freshness,evidence?,error}. Locations are ONE-indexed. All operations are read-only.",
       "capabilities": [
         "intel:read"
       ],
@@ -22908,7 +22908,7 @@
           "POST"
         ]
       },
-      "description": "Spec-conformance writes on a plan. op:'propose-deviation' { slug, requirement, reason } records a proposed deviation from a requirement as a Decision; op:'approve-deviation' { slug, requirement, proposal, ownerTurnRef? } approves it. An owner-sourced requirement needs ownerTurnRef verified as an owner turn. Approved deviations suppress the requirement's drift alarm.",
+      "description": "Spec-conformance writes on a plan. op:'propose-deviation' { slug, requirement, reason } records a proposed deviation from a requirement as a Decision; op:'approve-deviation' { slug, requirement, proposal, ownerTurnRef? } approves it. An owner-sourced requirement needs ownerTurnRef verified as an owner turn. Approved deviations suppress the requirement's drift alarm. op:'report' { statuses?, harness? } is the read-only conformance census across plans.",
       "capabilities": [
         "plans:write"
       ],

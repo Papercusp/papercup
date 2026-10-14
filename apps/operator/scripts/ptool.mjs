@@ -229,7 +229,7 @@ export function ptoolConnectionRetryOptions(args = {}, env = process.env) {
   let pinnedUrl = '';
   try {
     pinnedUrl = typeof args.url === 'string' && args.url.trim()
-      ? args.url.trim()
+      ? routeStagingOperatorThroughProxy(args.url.trim(), env)
       : resolvePtoolOperatorBase(env);
     if (ptoolConnectAttemptTimeoutMs(pinnedUrl, env) < PTOOL_CONNECT_TIMEOUT_MS) {
       return {
@@ -272,8 +272,16 @@ function describePtoolOperatorRoute(operatorUrl, env = process.env) {
     const proxyPort = Number.isInteger(configuredProxyPort) && configuredProxyPort > 0
       ? configuredProxyPort
       : 9071;
+    const configuredStagingProxyPort = Number(env.PAPERCUSP_MCP_STAGING_PROXY_PORT);
+    const stagingProxyPort = Number.isInteger(configuredStagingProxyPort) && configuredStagingProxyPort > 0
+      ? configuredStagingProxyPort
+      : null;
     return {
-      routeClass: matchesProxyBase || port === proxyPort ? 'local-proxy' : 'local-direct',
+      routeClass: matchesProxyBase || port === proxyPort || (
+        port === stagingProxyPort &&
+        env.PAPERCUSP_MCP_PROXY !== '0' &&
+        env.PAPERCUSP_MCP_STAGING_PROXY !== '0'
+      ) ? 'local-proxy' : 'local-direct',
       host: hostname,
       port,
       attemptTimeoutMs,
@@ -1471,7 +1479,15 @@ export function ptoolConnectAttemptTimeoutMs(operatorUrl, env = process.env) {
     const proxyPort = Number.isInteger(configuredProxyPort) && configuredProxyPort > 0
       ? configuredProxyPort
       : 9071;
-    if (Number(url.port) === proxyPort) return PTOOL_CONNECT_TIMEOUT_MS;
+    const configuredStagingProxyPort = Number(env.PAPERCUSP_MCP_STAGING_PROXY_PORT);
+    const stagingProxyPort = Number.isInteger(configuredStagingProxyPort) && configuredStagingProxyPort > 0
+      ? configuredStagingProxyPort
+      : null;
+    if (
+      Number(url.port) === proxyPort ||
+      (stagingProxyPort !== null && Number(url.port) === stagingProxyPort &&
+        env.PAPERCUSP_MCP_PROXY !== '0' && env.PAPERCUSP_MCP_STAGING_PROXY !== '0')
+    ) return PTOOL_CONNECT_TIMEOUT_MS;
   } catch {
     // connectWithLocalRetry/connect() will surface the malformed URL. Do not
     // turn input validation into an unrelated timeout-policy error here.

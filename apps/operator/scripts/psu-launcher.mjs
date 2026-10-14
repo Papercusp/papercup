@@ -13218,8 +13218,9 @@ export function readLinuxProcessFlockText(pid, {
  * Pure apart from the injected readers — exported for tests.
  * @param {string | null | undefined} codexHome
  * @param {string | null} sessionId
- * @param {{readProcLocks?: () => string, statFile?: (path:string)=>{dev:number|bigint, ino:number|bigint},
- * listDir?: typeof safeReaddir, holderPid?: number | null}} [options]
+ * @param {{readProcLocks?: () => string, readProcessLocks?: (pid:number) => string,
+ * statFile?: (path:string)=>{dev:number|bigint, ino:number|bigint}, listDir?: typeof safeReaddir,
+ * holderPid?: number | null}} [options]
  */
 export function codexThreadWriterHolder(
   codexHome,
@@ -13229,6 +13230,7 @@ export function codexThreadWriterHolder(
     statFile = statSync,
     listDir = safeReaddir,
     holderPid = null,
+    readProcessLocks = null,
   } = {},
 ) {
   const miss = (reason, lockPath = null, statErrorCodes = []) => ({
@@ -13245,7 +13247,7 @@ export function codexThreadWriterHolder(
     // Periodic native identity already knows its exact native PID. Read only
     // that process; the one-shot resume guard still uses the global oracle.
     const readLocks = readProcLocks ?? (holderPid == null
-      ? readProcLocksText : () => readLinuxProcessFlockText(holderPid));
+      ? readProcLocksText : () => (readProcessLocks ?? readLinuxProcessFlockText)(holderPid));
     procLocks = readLocks();
   } catch {
     return miss("no-proc-locks");

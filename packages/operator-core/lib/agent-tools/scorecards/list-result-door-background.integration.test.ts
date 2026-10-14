@@ -75,6 +75,18 @@ it('spills and reads back a real 100-row scorecards:list result in a private iso
         expect(receipt.runtime.pgPort).toBeTruthy();
         expect(receipt.list.rowCount).toBe(100);
         expect(receipt.list.outputBytes).toBeGreaterThan(100_000);
+        expect(receipt.list.storedEvidence).toEqual({
+          rows: 100,
+          minChars: 2_000,
+          maxChars: 2_000,
+          totalChars: 200_000,
+        });
+        expect(receipt.list.returnedEvidence).toEqual({
+          rows: 100,
+          minBytes: 2_000,
+          maxBytes: 2_000,
+          totalBytes: 200_000,
+        });
         expect(receipt.invoke.nestedDispatches).toBe(1);
         expect(receipt.resultDoor).toMatchObject({
           truncated: true,

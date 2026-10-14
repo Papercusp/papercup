@@ -452,7 +452,9 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
     # sweep reports rc=1 and is indistinguishable from a clean one. That is
     # precisely the false-clean this probe exists to refuse, so it is worth the
     # extra process.
-    deep_out="$(timeout "$KEYPERM_DEEP_TIMEOUT_S" nice -n 19 ionice -c 3 bash -c '
+    # Best-effort class at priority 7 is the lowest best-effort level. Unlike
+    # idle class, it can still make progress while the device has active work.
+    deep_out="$(timeout "$KEYPERM_DEEP_TIMEOUT_S" nice -n 10 ionice -c 2 -n 7 bash -c '
         set -o pipefail
         re="$1"; shift
         # The current workspace population is over 1.1M eligible files. Larger
