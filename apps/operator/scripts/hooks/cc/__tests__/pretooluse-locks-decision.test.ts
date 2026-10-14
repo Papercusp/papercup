@@ -41,6 +41,10 @@ let nextInner: unknown = { ok: true, lock_id: "stub-lock" };
 let nextInnerSeq: unknown[] | null = null;
 /** Simulate a stale operator that rejects the newer coordination_domain arg. */
 let rejectCoordinationDomain = false;
+/** Simulate a serving operator that rejects hook_operation despite tools/list. */
+let rejectHookOperation = false;
+/** Reject hook_operation only after the native operation authority is pinned. */
+let rejectHookOperationAfterAuthority = false;
 /** Optionally frame the response as text/event-stream (the hook parses both). */
 let useSse = false;
 /** Simulate an acquire that committed but returned an empty MCP content array. */
@@ -116,7 +120,8 @@ beforeAll(async () => {
           content: [{ type: "text", text: acquireRefusalText }] } }));
         return;
       }
-      if (toolName === 'locks:acquire' && operation && !operation.authority && !rejectCoordinationDomain) {
+      if (toolName === 'locks:acquire' && operation && !operation.authority &&
+          !rejectCoordinationDomain && !rejectHookOperation) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text',
           text: JSON.stringify({ ok: false, reason: 'operation_authority_required', operation_authority: 'decision-fixture' }),
@@ -127,6 +132,8 @@ beforeAll(async () => {
       requests.push(lastRequest);
       const rejectsDomain =
         rejectCoordinationDomain && args?.coordination_domain;
+      const rejectsHookOperation = toolName === "locks:acquire" && operation &&
+        (rejectHookOperation || (rejectHookOperationAfterAuthority && operation.authority));
       let recoveryInner: unknown | null = null;
       if (toolName === "locks:queue" && recoveryQueueInner !== null) {
         recoveryInner = JSON.parse(JSON.stringify(recoveryQueueInner));
@@ -153,7 +160,18 @@ beforeAll(async () => {
               ? { state: toolName === 'locks:release' ? 'completed' : 'cancelled' } : {}) }
         : value;
       };
-      const rpc = rejectsDomain
+      const rpc = rejectsHookOperation
+        ? {
+            jsonrpc: "2.0",
+            id: 1,
+            error: {
+              code: -32602,
+              message: rejectsDomain
+                ? 'invalid_input: invalid_args: Unrecognized keys: "coordination_domain", "hook_operation"'
+                : 'invalid_input: invalid_args: Unrecognized key: "hook_operation"',
+            },
+          }
+        : rejectsDomain
         ? {
             jsonrpc: "2.0",
             id: 1,
@@ -230,6 +248,8 @@ afterEach(() => {
   nextInner = { ok: true, lock_id: "stub-lock" };
   nextInnerSeq = null;
   rejectCoordinationDomain = false;
+  rejectHookOperation = false;
+  rejectHookOperationAfterAuthority = false;
   useSse = false;
   emptyAcquireContent = false;
   acquireRefusalText = null;
@@ -698,6 +718,69 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
       fs.realpathSync(repo),
     );
     expect(fs.existsSync(join(cache, 'tu-legacy-operator.lock'))).toBe(false);
+  });
+
+  it("falls back to a legacy acquire when the serving operator rejects the advertised operation scope", async () => {
+    rejectCoordinationDomain = true;
+    rejectHookOperation = true;
+    nextInner = { ok: true, lock_id: "legacy-operation-lock" };
+    const toolUseId = "tu-legacy-operation";
+    const r = await run(editOf("sub/legacy-operation.ts", toolUseId));
+    expect(r.status).toBe(0);
+
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput).toMatchObject({
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      permissionDecisionReason: "file-lock compatibility fallback (non-blocking)",
+    });
+    expect(out.hookSpecificOutput.additionalContext).toContain(
+      "rejected hook_operation despite advertising the native edit protocol",
+    );
+    expect(out.hookSpecificOutput.additionalContext).toContain(
+      "rejected the coordination_domain argument",
+    );
+    expect(requests).toHaveLength(3);
+    expect(requests[0].body.params.arguments.hook_operation).toBeDefined();
+    expect(requests[0].body.params.arguments.coordination_domain).toBe(
+      fs.realpathSync(repo),
+    );
+    expect(requests[1].body.params.arguments.hook_operation).toBeUndefined();
+    expect(requests[1].body.params.arguments.coordination_domain).toBe(
+      fs.realpathSync(repo),
+    );
+    expect(requests[2].body.params.arguments).not.toHaveProperty("hook_operation");
+    expect(requests[2].body.params.arguments).not.toHaveProperty("coordination_domain");
+    expect(fs.readFileSync(join(cache, `${toolUseId}.lock`), "utf8")).toBe(
+      "legacy-operation-lock",
+    );
+    expect(fs.existsSync(join(cache, `${toolUseId}.operation.json`))).toBe(false);
+  });
+
+  it("does not downgrade after the native operation authority has been prepared", async () => {
+    rejectHookOperationAfterAuthority = true;
+    const toolUseId = "tu-authorized-operation";
+    const r = await run(editOf("sub/authorized-operation.ts", toolUseId));
+    expect(r.status).toBe(0);
+
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput).toMatchObject({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+    });
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(
+      /rejected the native operation scope after authority was prepared/i,
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body.params.arguments.hook_operation.authority).toBe(
+      "decision-fixture",
+    );
+    expect(requests[0].body.params.arguments).toHaveProperty("coordination_domain");
+    const record = JSON.parse(
+      fs.readFileSync(join(cache, `${toolUseId}.operation.json`), "utf8"),
+    );
+    expect(record.operation.authority).toBe("decision-fixture");
+    expect(fs.existsSync(join(cache, `${toolUseId}.lock`))).toBe(false);
   });
 
   it("PostToolUse releases through the same physical domain as PreToolUse", async () => {
