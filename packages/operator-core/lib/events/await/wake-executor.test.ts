@@ -2140,6 +2140,52 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     expect(block.indexOf('CARRIED PROBES')).toBeLessThan(block.indexOf('TRUST THIS BLOCK'));
   });
 
+  // P-002 (carry-recheck-and-governed-memory-2026-10-14, R-2 / R-12 / R-21): the LIVE RE-CHECK block
+  // carries the delivered note's moved references, and nothing when none moved.
+  it('places the delivery-time carried-reference changes inside the live re-check block', async () => {
+    const note = 'Did: shipped WI-1234 and decided plan-x#D-002.';
+    const carryRefBlockFn = vi.fn(async (_input: unknown) =>
+      '🔗 CARRIED REFERENCES re-checked at wake delivery — 1 reference has moved since the checkpoint was written:\n  ✗ GONE — work-item:WI-1234 [loop note]: stamped open@1',
+    );
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-refs', workspaceId: 'ws-refs' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs: Date.now() - 1_000 })),
+      carryRefBlockFn,
+    });
+    expect(carryRefBlockFn).toHaveBeenCalledTimes(1);
+    const arg = carryRefBlockFn.mock.calls[0]![0] as {
+      ownerId: string;
+      harness: string;
+      workspaceId: string;
+      deliveredNote: string;
+      readAtIso: string;
+    };
+    expect(arg).toMatchObject({ ownerId: 'su-refs', harness: 'papercusp', workspaceId: 'ws-refs', deliveredNote: note });
+    expect(arg.readAtIso).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    const block = out.slice(0, out.indexOf(STALE_TEXT));
+    expect(block).toContain('✗ GONE — work-item:WI-1234 [loop note]');
+    expect(block.indexOf('CARRIED REFERENCES')).toBeGreaterThan(block.indexOf('LIVE RE-CHECK'));
+    expect(block.indexOf('CARRIED REFERENCES')).toBeLessThan(block.indexOf('TRUST THIS BLOCK'));
+  });
+
+  it('prints no carried-reference line when nothing moved, and skips the re-check on a failed note read', async () => {
+    const carryRefBlockFn = vi.fn(async () => null);
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-refs' });
+    const unchanged = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note: 'Did: WI-1234', updatedAtMs: Date.now() - 1_000 })),
+      carryRefBlockFn,
+    });
+    expect(carryRefBlockFn).toHaveBeenCalledTimes(1);
+    expect(unchanged).not.toContain('CARRIED REFERENCES');
+    const failedRead = vi.fn(async () => 'SHOULD NOT APPEAR');
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note: 'Did: WI-1234', updatedAtMs: null, readFailed: true })),
+      carryRefBlockFn: failedRead,
+    });
+    expect(failedRead).not.toHaveBeenCalled();
+    expect(out).not.toContain('SHOULD NOT APPEAR');
+  });
+
   it('does not run the probe runner when no carried check has a probe', async () => {
     const { renderCarryNote } = await import('../../carry-note');
     const note = renderCarryNote({ did: 'x', checks: [{ claim: 'prose-only claim', recheck: 'look' }] });

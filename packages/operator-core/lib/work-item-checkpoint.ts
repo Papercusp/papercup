@@ -49,7 +49,8 @@ import {
 } from './freshness';
 import { resolveCurrentTokens } from './freshness/resolvers';
 import { stampDeclaredDeps } from './freshness/stamp';
-import { stampCarryRefs } from './carry-ref-stamps';
+import { parseCarryRefStamps, stampCarryRefs } from './carry-ref-stamps';
+import type { DepStamp } from './freshness/index';
 
 export interface WorkItemCheckpointRef {
   /**
@@ -371,6 +372,46 @@ export async function getWorkItemCheckpointDeps(ref: WorkItemCheckpointRef): Pro
   } catch {
     return null;
   }
+}
+
+/**
+ * P-002 (carry-recheck-and-governed-memory-2026-10-14, D-006): the REFERENCE version stamps
+ * (`deps.refs`) of several work-item checkpoints in ONE query per workspace, keyed by
+ * work-item id, each with the stored note so a caller can keep only the stamps that note
+ * still cites. Same row selection as {@link getWorkItemCheckpointDeps}; a blank note, a
+ * missing row or a failed read simply yields no entry (never a guessed baseline).
+ */
+export async function getWorkItemCheckpointRefStamps(
+  refs: readonly WorkItemCheckpointRef[],
+): Promise<Map<string, { note: string; stamps: DepStamp[] }>> {
+  const out = new Map<string, { note: string; stamps: DepStamp[] }>();
+  const byWs = new Map<string, Map<string, string>>();
+  for (const ref of refs) {
+    const ws = resolveConcreteWorkspaceId(ref.workspaceId);
+    if (!ws || !ref.workItemId) continue;
+    const scopes = byWs.get(ws) ?? new Map<string, string>();
+    scopes.set(workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId), ref.workItemId);
+    byWs.set(ws, scopes);
+  }
+  await Promise.all(
+    [...byWs].map(async ([ws, scopes]) => {
+      try {
+        const { sql } = getOrgPg();
+        const rows = await sql<{ scope: string; deps: unknown; note: string | null }[]>`
+          SELECT scope, deps, note FROM harness_shared.carry_notes
+           WHERE workspace_id = ${ws} AND scope = ANY(${[...scopes.keys()]})`;
+        for (const row of rows) {
+          const id = scopes.get(row.scope);
+          const note = row.note ?? '';
+          if (!id || !note.trim()) continue;
+          out.set(id, { note, stamps: parseCarryRefStamps(row.deps) });
+        }
+      } catch {
+        /* no stamps for this workspace — the delivery says nothing rather than guessing */
+      }
+    }),
+  );
+  return out;
 }
 
 /**

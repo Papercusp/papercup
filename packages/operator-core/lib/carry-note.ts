@@ -53,7 +53,12 @@ import {
 import { resolveCurrentTokens } from './freshness/resolvers';
 import { stampDeclaredDeps } from './freshness/stamp';
 import type { DepStamp } from './freshness/index';
-import { mergeCarryRefStampsIntoDeps, reconcileCarryRefStamps, stampCarryRefs } from './carry-ref-stamps';
+import {
+  mergeCarryRefStampsIntoDeps,
+  parseCarryRefStamps,
+  reconcileCarryRefStamps,
+  stampCarryRefs,
+} from './carry-ref-stamps';
 
 /**
  * First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
@@ -3536,6 +3541,32 @@ export async function getLoopCarryNoteDeps(ref: LoopCarryNoteRef): Promise<Decla
     return parseDeclaredDeps(rows[0]?.deps);
   } catch {
     return null;
+  }
+}
+
+/**
+ * P-002 (carry-recheck-and-governed-memory-2026-10-14, D-006): the loop note's REFERENCE
+ * version stamps (`deps.refs`, written by `setLoopCarryNoteWithPrior`), read from the SAME
+ * row {@link getLoopCarryNoteDeps} selects, together with that row's note so a caller can
+ * keep only the stamps the note it is actually delivering still cites. A blank note or a
+ * failed read yields no stamps — never a guessed baseline.
+ */
+export async function getLoopCarryNoteRefStamps(
+  ref: LoopCarryNoteRef,
+): Promise<{ note: string | null; stamps: DepStamp[] }> {
+  const scope = loopScope(ref.harness, ref.ownerId);
+  try {
+    const rows = await boundedPgReadTxn<{ deps: unknown; note: string | null }[]>(
+      (tx) => tx`
+      SELECT deps, note FROM harness_shared.carry_notes
+       WHERE scope = ${scope} AND note IS NOT NULL
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`,
+    );
+    const note = rows[0]?.note ?? null;
+    if (!(note ?? '').trim()) return { note: null, stamps: [] };
+    return { note, stamps: parseCarryRefStamps(rows[0]?.deps) };
+  } catch {
+    return { note: null, stamps: [] };
   }
 }
 

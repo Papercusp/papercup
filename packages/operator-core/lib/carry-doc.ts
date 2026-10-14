@@ -1613,6 +1613,11 @@ export function renderAutomaticCompactionRecovery(
   if (recovery.carriedProbes && !judgeSafe) {
     lines.push(recovery.carriedProbes);
   }
+  // P-002 (carry-recheck-and-governed-memory-2026-10-14): carried references whose stamped version
+  // moved or no longer resolves since the checkpoint was written. Absent when nothing moved.
+  if (recovery.carriedRefChanges && !judgeSafe) {
+    lines.push(recovery.carriedRefChanges);
+  }
   if (marker.complete) {
     lines.push(postCompactionRecoveryInstruction(role));
   }

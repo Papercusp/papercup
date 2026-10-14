@@ -1875,6 +1875,30 @@ export async function defaultCarriedProbeBlock(input: {
   }
 }
 
+/**
+ * Default delivery-time carried-reference block (P-002, carry-recheck-and-governed-memory-2026-10-14).
+ * Re-checks the version stamps of the references the delivered loop note cites; null when none moved.
+ * Loaded lazily; never throws (an import failure renders as an explicit could-not-re-check line).
+ */
+export async function defaultCarryRefBlock(input: {
+  ownerId: string;
+  harness: string;
+  workspaceId: string | null | undefined;
+  deliveredNote: string;
+  readAtIso: string;
+}): Promise<string | null> {
+  try {
+    const { carryRefChangesForWake } = await import('../../carry-ref-delivery');
+    return await carryRefChangesForWake(input);
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return (
+      `🔗 CARRIED REFERENCES — COULD NOT RE-CHECK at wake delivery (readAt=${input.readAtIso}): ${why.slice(0, 220)}. ` +
+      `This is NOT evidence they are unchanged.`
+    );
+  }
+}
+
 export async function rehydrateLoopWakeText(
   d: DeliveryWork,
   baseText: string,
@@ -1896,6 +1920,12 @@ export async function rehydrateLoopWakeText(
      * reuses the bounded read-only continuity-probe runner (carry-probe-eval.ts).
      */
     carriedProbeBlockFn?: typeof defaultCarriedProbeBlock;
+    /**
+     * P-002 (carry-recheck-and-governed-memory-2026-10-14): re-check the version stamps of the
+     * references the delivered note cites and render one line per changed or gone reference
+     * (nothing when none moved). Injectable for tests; the default is carry-ref-delivery.ts.
+     */
+    carryRefBlockFn?: typeof defaultCarryRefBlock;
   } = {},
 ): Promise<string> {
   try {
@@ -1978,6 +2008,18 @@ export async function rehydrateLoopWakeText(
           ownerId: d.subscriberId,
           checks,
           harness: marker.harness,
+          readAtIso: deliveryReadAtIso,
+        })
+      : null;
+    // P-002 (carry-recheck-and-governed-memory-2026-10-14): one line per reference the delivered
+    // note cites whose stamped version moved or no longer resolves; null (prints nothing) when none
+    // did. A note citing no reference never reads the stamp row.
+    const refsNow = readableNote
+      ? await (deps.carryRefBlockFn ?? defaultCarryRefBlock)({
+          ownerId: d.subscriberId,
+          harness: marker.harness,
+          workspaceId: d.workspaceId,
+          deliveredNote: readableNote,
           readAtIso: deliveryReadAtIso,
         })
       : null;
@@ -2093,6 +2135,7 @@ export async function rehydrateLoopWakeText(
       `\n\nCurrent open walls:\n${wallsNow}\n` +
       (checksNow ? `${checksNow}\n` : '') +
       (probesNow ? `${probesNow}\n` : '') +
+      (refsNow ? `${refsNow}\n` : '') +
       // EI-21988107654213811: the delivery read is ordered only to its own
       // readAt instant. A newer loop:checkpoint can be written immediately
       // afterward, so the authority claim must not make a recipient trust this

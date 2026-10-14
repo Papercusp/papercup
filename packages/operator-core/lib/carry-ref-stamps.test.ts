@@ -12,6 +12,7 @@ import {
   extractCarryRefDeps,
   mergeCarryRefStampsIntoDeps,
   parseCarryRefStamps,
+  reconcileCarryRefStamps,
   renderCarryRefChanges,
   resolveDecisionTokens,
   resolveFactTokens,
@@ -88,6 +89,50 @@ describe('stampCarryRefs (write side)', () => {
       throw new Error('pg down');
     };
     expect(await stampCarryRefs({ text: 'WI-1111', workspaceId: 'ws-1', harness: null, resolve: boom })).toEqual([]);
+  });
+
+  // CRGM-P-002-own-item-excluded: a work-item checkpoint never stamps its own id, so the next
+  // wake cannot report the author's own write as a moved reference.
+  it('never stamps an excluded reference (a checkpoint citing its own work item)', async () => {
+    const resolve = vi.fn<CarryRefResolver>(async (deps) => new Map(deps.map((d) => [d, 'open@1'])));
+    const stamps = await stampCarryRefs({
+      text: 'WI-5000 waits on WI-1111',
+      workspaceId: 'ws-1',
+      harness: 'papercusp',
+      exclude: ['work-item:WI-5000'],
+      resolve,
+    });
+    expect(stamps.map((s) => s.dep)).toEqual(['work-item:WI-1111']);
+    expect(resolve.mock.calls[0]![0]).toEqual(['work-item:WI-1111']);
+  });
+});
+
+describe('reconcileCarryRefStamps (what a write persists)', () => {
+  const prior = {
+    v: 1,
+    stamps: [],
+    refs: [
+      { dep: 'work-item:WI-1111', token: 'wip@1', at: 1 },
+      { dep: 'work-item:WI-2222', token: 'open@1', at: 1 },
+    ],
+  };
+
+  it('lets fresh stamps win and keeps a prior baseline only while the stored note still cites it', () => {
+    const out = reconcileCarryRefStamps('Still on WI-1111 and WI-3333.', [{ dep: 'work-item:WI-3333', token: 'open@9', at: 9 }], prior);
+    expect(out).toEqual([
+      { dep: 'work-item:WI-3333', token: 'open@9', at: 9 },
+      { dep: 'work-item:WI-1111', token: 'wip@1', at: 1 },
+    ]);
+  });
+
+  it('prefers the fresh stamp over a prior one for the same reference', () => {
+    const out = reconcileCarryRefStamps('WI-1111', [{ dep: 'work-item:WI-1111', token: 'done@5', at: 5 }], prior);
+    expect(out).toEqual([{ dep: 'work-item:WI-1111', token: 'done@5', at: 5 }]);
+  });
+
+  it('keeps cited priors when the caller did not stamp, and stores nothing for a cleared note', () => {
+    expect(reconcileCarryRefStamps('WI-2222 only', undefined, prior).map((s) => s.dep)).toEqual(['work-item:WI-2222']);
+    expect(reconcileCarryRefStamps(null, [{ dep: 'work-item:WI-1111', token: 'x', at: 1 }], prior)).toEqual([]);
   });
 });
 

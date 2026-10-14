@@ -124,6 +124,10 @@ export interface CompactionRecovery {
    *  could-not-run. Set only on the automatic boundary path — coord:orient replays the same
    *  probes itself (`continuityProbes`). Absent when no carried check has a probe. */
   carriedProbes?: string;
+  /** P-002 (carry-recheck-and-governed-memory-2026-10-14): one line per carried reference (loop
+   *  carry-note + held-item checkpoints) whose stamped version moved or no longer resolves,
+   *  re-checked at automatic recovery. Absent when nothing moved — an unchanged carry prints nothing. */
+  carriedRefChanges?: string;
   /** Held (assigned, non-terminal) work-items + their checkpoints. `body` is the
    *  item's description (capped) so the post-compaction agent doesn't re-fetch it
    *  via work_items:get — measured at 43% of post-compaction orients
@@ -549,6 +553,35 @@ export async function defaultRecoveryCarriedProbes(
   }
 }
 
+/**
+ * P-002 (carry-recheck-and-governed-memory-2026-10-14): re-check the version stamps of the
+ * references the successor's carried notes cite (loop carry-note + held items, reusing the
+ * held-item rows the carry document already read). Never throws; null when nothing moved.
+ */
+export async function defaultRecoveryCarriedRefChanges(
+  ownerId: string,
+  workspaceId: string,
+  opts: { sessionHarness?: string | null; heldItems?: CarryBriefHeldItem[] },
+): Promise<string | null> {
+  const readAtIso = new Date().toISOString();
+  try {
+    const { carryRefChangesForRecovery } = await import('../../carry-ref-delivery');
+    return await carryRefChangesForRecovery({
+      ownerId,
+      workspaceId,
+      sessionHarness: opts.sessionHarness ?? null,
+      heldItems: opts.heldItems?.map((h) => ({ id: h.id, harness: h.harness ?? null, checkpoint: h.checkpoint ?? null })),
+      readAtIso,
+    });
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return (
+      `🔗 CARRIED REFERENCES — COULD NOT RE-CHECK at compaction recovery (readAt=${readAtIso}): ${why.slice(0, 220)}. ` +
+      `This is NOT evidence they are unchanged.`
+    );
+  }
+}
+
 export async function buildAutomaticCompactionRecovery(
   ownerId: string,
   workspaceId: string,
@@ -557,10 +590,12 @@ export async function buildAutomaticCompactionRecovery(
     heldItems?: CarryBriefHeldItem[];
     /** Injectable for tests; defaults to defaultRecoveryCarriedProbes. */
     carriedProbesFn?: typeof defaultRecoveryCarriedProbes;
+    /** Injectable for tests; defaults to defaultRecoveryCarriedRefChanges. */
+    carriedRefChangesFn?: typeof defaultRecoveryCarriedRefChanges;
   } = {},
 ): Promise<AutomaticCompactionRecovery> {
-  const { carriedProbesFn, ...recoveryOpts } = opts;
-  const [recovery, memoryEpoch, carriedProbes] = await Promise.all([
+  const { carriedProbesFn, carriedRefChangesFn, ...recoveryOpts } = opts;
+  const [recovery, memoryEpoch, carriedProbes, carriedRefChanges] = await Promise.all([
     buildCompactionRecovery(ownerId, workspaceId, recoveryOpts),
     (async () => {
       try {
@@ -574,8 +609,10 @@ export async function buildAutomaticCompactionRecovery(
       }
     })(),
     (carriedProbesFn ?? defaultRecoveryCarriedProbes)(ownerId, workspaceId, recoveryOpts).catch(() => null),
+    (carriedRefChangesFn ?? defaultRecoveryCarriedRefChanges)(ownerId, workspaceId, recoveryOpts).catch(() => null),
   ]);
   if (carriedProbes) recovery.carriedProbes = carriedProbes;
+  if (carriedRefChanges) recovery.carriedRefChanges = carriedRefChanges;
   return {
     marker: {
       schemaVersion: AUTOMATIC_COMPACTION_RECOVERY_SCHEMA,

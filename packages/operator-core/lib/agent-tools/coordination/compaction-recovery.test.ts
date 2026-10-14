@@ -455,3 +455,65 @@ describe('automatic compaction recovery — carried probes run at recovery', () 
     expect(renderAutomaticCompactionRecovery(delivery, 'judge')).not.toContain('CARRIED PROBES');
   });
 });
+
+// P-002 (carry-recheck-and-governed-memory-2026-10-14, R-11 / R-20 / R-22): compaction recovery
+// re-checks the carried references' version stamps and renders only the ones that moved.
+describe('automatic compaction recovery — carried references re-checked at recovery', () => {
+  const REFS =
+    '🔗 CARRIED REFERENCES re-checked at compaction recovery — 1 reference has moved since the checkpoint was written:\n' +
+    '  ✗ GONE — work-item:WI-2 [WI-1 checkpoint]: stamped open@1';
+
+  it('attaches the reference block and passes the already-read held items through', async () => {
+    const { buildAutomaticCompactionRecovery } = await import('./compaction-recovery');
+    const carriedRefChangesFn = vi.fn(async () => REFS);
+    const heldItems = [{ id: 'WI-1', title: 't', harness: 'h', checkpoint: 'see WI-2', holderProof: { ownerId: 'owner-x', workspaceId: 'ws-1' } }];
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      sessionHarness: 'h',
+      heldItems: heldItems as never,
+      carriedProbesFn: async () => null,
+      carriedRefChangesFn,
+    });
+    expect(carriedRefChangesFn).toHaveBeenCalledWith('owner-x', 'ws-1', { sessionHarness: 'h', heldItems });
+    expect(delivery.recovery.carriedRefChanges).toBe(REFS);
+  });
+
+  it('omits the field when nothing moved, and never lets a re-check failure break recovery', async () => {
+    const { buildAutomaticCompactionRecovery } = await import('./compaction-recovery');
+    const none = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      heldItems: [],
+      carriedProbesFn: async () => null,
+      carriedRefChangesFn: async () => null,
+    });
+    expect('carriedRefChanges' in none.recovery).toBe(false);
+    const thrown = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      heldItems: [],
+      carriedProbesFn: async () => null,
+      carriedRefChangesFn: async () => {
+        throw new Error('boom');
+      },
+    });
+    expect('carriedRefChanges' in thrown.recovery).toBe(false);
+    expect(thrown.recovery.coverage.heldItems).toBe(true);
+  });
+
+  it('the carry document renders the reference block for a successor, but not for a judge', async () => {
+    const { renderAutomaticCompactionRecovery } = await import('../../carry-doc');
+    const delivery = {
+      marker: {
+        schemaVersion: 'post-compaction-recovery-v1',
+        complete: false,
+        memoryEpoch: 1,
+        controlGeneration: null,
+        controlStateHash: null,
+        fallback: { verb: 'coord:orient', args: { afterCompaction: true }, when: [] },
+      },
+      recovery: {
+        selfRecall: 'recall',
+        coverage: { selfSession: false, control: false, heldItems: true, staleness: null },
+        carriedRefChanges: REFS,
+      },
+    } as never;
+    expect(renderAutomaticCompactionRecovery(delivery)).toContain('✗ GONE — work-item:WI-2 [WI-1 checkpoint]');
+    expect(renderAutomaticCompactionRecovery(delivery, 'judge')).not.toContain('CARRIED REFERENCES');
+  });
+});
