@@ -124,7 +124,7 @@ describe('problem-specific expertise qualification', () => {
       if (query === issue) return text.startsWith('writer') ? 0.8 : 0.1;
       return 0.2;
     }));
-    const scores = await scoreSubjectEvidence(question, ['writer lease audit', 'distributed request delivery'],
+    const scores = await scoreSubjectEvidence(question, ['writer lease audit for a distributed request', 'distributed request delivery'],
       Date.now() + 4000, { scorer, contracts });
     expect(scores[0]).toBeGreaterThanOrEqual(SUBJECT_EVIDENCE_MIN_SCORE);
     expect(scores[1]).toBeLessThan(SUBJECT_EVIDENCE_MIN_SCORE);

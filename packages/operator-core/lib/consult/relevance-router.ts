@@ -573,6 +573,15 @@ export function subjectEvidenceQuery(subject: string, toolDescription?: string |
   return action ? `${subject}\n${action}` : null;
 }
 
+/** An explicit contextual adjunct is not the issue the question asks about.
+ * Keep the full question, but measure its interrogative clause independently:
+ * matching only the context cannot establish evidence for that issue. Unknown
+ * syntax stays intact; this is not a domain-keyword or lexical-overlap gate. */
+function subjectEvidenceTargets(query: string): string[] {
+  const issue = query.match(/^(?:for|in|with|regarding|about|given)\b[\s\S]*?,\s*((?:what|which|who|whose|where|when|why|how|can|could|should|does|do|is|are|will|would)\b[\s\S]*)$/i)?.[1];
+  return issue ? [query, issue] : [query];
+}
+
 export const SUBJECT_EVIDENCE_CONTRAST_LIMIT = 3;
 export interface SubjectContract { name: string; description: string }
 
@@ -620,18 +629,21 @@ export async function scoreSubjectEvidence(subject: string, texts: string[], dea
   if (!TOOL_SUBJECT_PATTERN.test(subject) && extractPathTokens(subject).includes(subject)) {
     return scorer(query, texts, { deadline });
   }
-  // At most 24 passages × (target + 3 contrasts), all on the same 4s deadline.
+  const targets = TOOL_SUBJECT_PATTERN.test(subject) ? [query] : subjectEvidenceTargets(query);
+  // At most 24 passages × (2 targets + 3 contrasts), all on the same 4s deadline.
   // Reverse retrieval asks which contract explains THIS passage, avoiding the
   // procedural vocabulary that made broad tool descriptions and natural
   // questions false friends. For a natural question the full query is retained.
   return Promise.all(texts.map(async text => {
     const contrasts = subjectContrasts(subject, text, contracts);
     if (!contrasts.length || Date.now() >= deadline) return null;
-    const scores = await scorer(text, [query, ...contrasts.map(c => subjectEvidenceQuery(c.name, c.description)!)], { deadline })
+    const scores = await scorer(text, [...targets, ...contrasts.map(c => subjectEvidenceQuery(c.name, c.description)!)], { deadline })
       .catch(() => null);
     if (scores === null) return null;
-    if (scores.length !== contrasts.length + 1) return null;
-    return contrastedSubjectScore(scores[0], scores.slice(1));
+    if (scores.length !== contrasts.length + targets.length) return null;
+    const alternatives = scores.slice(targets.length);
+    const qualified = scores.slice(0, targets.length).map(target => contrastedSubjectScore(target, alternatives));
+    return qualified.some(score => score === null) ? null : Math.min(...qualified as number[]);
   }));
 }
 
