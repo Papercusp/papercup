@@ -127,7 +127,12 @@ describe('current-build execution route contract', () => {
       expect(progress.at(-2).pgConnections).toEqual(expect.arrayContaining([
         expect.objectContaining({ application_name: expect.any(String), client_port: expect.any(Number) }),
       ]));
-      expect(progress.at(-1).activeSockets.filter((socket: any) => socket.active && socket.referenced && socket.pgConnection)).toEqual([]);
+      // A disconnected TCP handle can retain its local endpoint for one more
+      // close callback even though this child already exited normally. The
+      // original native leak kept an established remote PG endpoint alive.
+      // Keep that distinction alongside the authoritative child-exit guard.
+      expect(progress.at(-1).activeSockets.filter((socket: any) =>
+        socket.active && socket.referenced && socket.remote && socket.pgConnection)).toEqual([]);
     } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
   }, 200_000);
 

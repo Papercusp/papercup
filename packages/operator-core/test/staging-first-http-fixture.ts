@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { Socket } from 'node:net';
 import { getOrgPg, getOrgPgApp, getOrgPgListener, _resetForTests } from '@papercusp/db-org';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
@@ -14,6 +15,23 @@ import { retainIsolatedWorkerProgress } from './isolated-integration-proof';
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
 let disposeScenario: (() => Promise<void>) | undefined;
+const socketOrigins = new Map<number, string>();
+const originalConnect = Socket.prototype.connect;
+// Evidence only: trace the native worker's real PG clients, including clients
+// opened by a detached exit callback after the shared pools were reset.
+if (process.env.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native')) {
+  Socket.prototype.connect = function(this: Socket, ...args: unknown[]) {
+    const stack = new Error('Private fixture PG connection creation').stack ?? '';
+    this.once('connect', () => {
+      if (this.remotePort === Number(process.env.PAPERCUSP_PG_PORT) && this.localPort) {
+        socketOrigins.set(this.localPort, stack);
+        retainIsolatedWorkerProgress(process.env.STAGING_FIRST_HTTP_EVIDENCE_DIR!,
+          'fixture-pg-socket-opened', { localPort: this.localPort, remotePort: this.remotePort, stack });
+      }
+    });
+    return Reflect.apply(originalConnect, this, args);
+  } as typeof originalConnect;
+}
 async function stopHost(afterExit?: () => Promise<void>) {
   if (!host) { await afterExit?.(); return; }
   await stopPrivateOperatorHost(host, afterExit);
@@ -50,11 +68,34 @@ async function main() {
   assert.deepEqual(scope, { workspaceId: workspace, harnessSlug: workspace });
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
   const { sql } = getOrgPg();
-  if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-pool-cleanup')) {
+  if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-pool-cleanup') ||
+      e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-launch-cleanup') ||
+      e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-spawn-cleanup')) {
     // Native launch readers use pools besides the org query client. Exercise
     // the idle LISTEN connection too: ending only sql cannot release it.
     await getOrgPgApp().sql`SELECT 1`;
     await getOrgPgListener().sql.listen('private_native_cleanup', () => {});
+    if (!e.STAGING_FIRST_HTTP_SCENARIO.startsWith('current-su-native-pool-cleanup')) {
+      // Exercise the native launch module and its standing-wake callback without
+      // spawning a CLI, container, provider request or private API build.
+      await import('../lib/agent-tools/capability/launch-agent');
+      const { armInboxWake } = await import('../lib/events/await/inbox-wake-arm');
+      await armInboxWake({ ownerId: `su-private-cleanup-${workspace}`, workspaceId: workspace });
+    }
+    if (e.STAGING_FIRST_HTTP_SCENARIO.startsWith('current-su-native-spawn-cleanup')) {
+      const { spawnGovernedAgentProcess } = await import('../lib/resource-governor/spawn-execution');
+      const result = await spawnGovernedAgentProcess({ workspaceId: workspace,
+        owner: `private-cleanup-${workspace}`, idempotencyKey: `private-cleanup-${workspace}` }, async () => {
+        const child = spawn(process.execPath, ['-e', 'process.exit(1)'], { stdio: 'ignore' });
+        const childExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(done =>
+          child.once('exit', (code, signal) => done({ code, signal })));
+        return { status: 'ok', pid: child.pid ?? null, terminal: 'private-no-agent-control',
+          display: null, desktopEnvResolvedVia: null, child, childExit };
+      });
+      assert.equal(result.status, 'ok');
+      assert.ok(result.childExit);
+      assert.equal((await result.childExit).code, 1);
+    }
     console.log('CURRENT_SU_NATIVE_POOL_READY ' + JSON.stringify({ workspace }));
     if (e.STAGING_FIRST_HTTP_SCENARIO.endsWith('-failure'))
       throw new Error('Private native pool cleanup exception control');
@@ -304,13 +345,31 @@ catch (error) {
   } finally {
     // This process owns a disposable database. Reuse the maintained reset to
     // retire org, app, harness and LISTEN pools, including on assertion failure.
+    // Auth's principal-invalidation LISTEN is lazy and starts fire-and-forget;
+    // await its generation-aware teardown before db-org reset so a late
+    // listen() completion cannot reopen the retired socket.
+    const { _stopInvalidationListenerForTests } = await import('@papercusp/agent-mcp/auth');
+    await _stopInvalidationListenerForTests();
+    const { sql } = getOrgPg();
+    const pgConnections = await sql`SELECT client_port, application_name, state
+      FROM pg_stat_activity WHERE datname = current_database() AND client_port IS NOT NULL`
+      .catch(error => { retainIsolatedWorkerProgress(evidenceDir, 'fixture-pg-census-unavailable',
+        { error: String(error) }); return []; });
+    retainIsolatedWorkerProgress(evidenceDir, 'fixture-pools-closing', { pgConnections });
     await _resetForTests();
+    // libuv completes socket close callbacks on the next loop turn. Record
+    // after that boundary so an already-closing handle is not called a leak.
+    await new Promise<void>(done => setImmediate(done));
     const report = process.report!.getReport() as { libuv?: Array<Record<string, unknown>> };
     retainIsolatedWorkerProgress(evidenceDir, 'fixture-pools-closed', {
       activeResources: process.getActiveResourcesInfo(), exitCode: process.exitCode ?? 0,
       activeSockets: (report.libuv ?? []).filter(handle => handle.type === 'tcp').slice(0, 16)
         .map(handle => ({ active: handle.is_active, referenced: handle.is_referenced,
-          local: handle.localEndpoint, remote: handle.remoteEndpoint })),
+          local: handle.localEndpoint, remote: handle.remoteEndpoint,
+          creationStack: socketOrigins.get((handle.localEndpoint as { port?: number } | undefined)?.port ?? 0) ?? null,
+          pgConnection: pgConnections.find(row => row.client_port ===
+            (handle.localEndpoint as { port?: number } | undefined)?.port) ?? null })),
     });
+    Socket.prototype.connect = originalConnect;
   }
 }
