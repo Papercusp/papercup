@@ -884,6 +884,38 @@ describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270
     }
   });
 
+  it('surfaces an operational Git failure instead of treating it as a missing audited citation', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-git-failure-'));
+    const citedPath = path.join(root, 'src', 'cited.ts');
+    const fakeGitDir = path.join(root, 'fake-bin');
+    try {
+      fs.mkdirSync(path.dirname(citedPath), { recursive: true });
+      fs.writeFileSync(citedPath, 'export const cited = true;\n');
+      git(root, 'init', '-q');
+      git(root, 'config', 'user.email', 'plan-audits-test@example.com');
+      git(root, 'config', 'user.name', 'Plan Audits Test');
+      git(root, 'add', '--', 'src/cited.ts');
+      git(root, 'commit', '-qm', 'cited source');
+      const auditedSha = git(root, 'rev-parse', 'HEAD').trim();
+
+      fs.mkdirSync(fakeGitDir);
+      const fakeGit = path.join(fakeGitDir, 'git');
+      fs.writeFileSync(fakeGit, '#!/bin/sh\nprintf \'synthetic Git transport failure\\n\' >&2\nexit 42\n');
+      fs.chmodSync(fakeGit, 0o755);
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${fakeGitDir}${path.delimiter}${previousPath ?? ''}`;
+      try {
+        await expect(citationBlobShaAt(code('src/cited.ts'), auditedSha, repoCitationDeps(root)))
+          .rejects.toMatchObject({ name: 'CitationGitReadError', code: 'citation_git_read_unavailable' });
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('resolves a cited blob through the superproject gitlink at audited SHA (EI-22580796784944702)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-submodule-'));
     const childRoot = path.join(root, 'chat-protocol');

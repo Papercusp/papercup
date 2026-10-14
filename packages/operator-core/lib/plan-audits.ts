@@ -60,7 +60,12 @@ import {
   type HarnessRegistry,
 } from './harness-registry';
 import { discoverKnownHiveCheckoutRoots } from './agent-tools/testing/run';
-import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
+import {
+  gitSidecarEnabled,
+  isSidecarInfrastructureFault,
+  noteSidecarFallback,
+  runGitViaSpawnerSidecar,
+} from './fleet/git-via-sidecar';
 import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
 // The monorepo-root walk-up lives in the docs tool helper only because that is where
 // it was first needed; it is imported rather than re-derived so there stays exactly
@@ -535,6 +540,18 @@ export type CitationFailureReason =
   | 'reason_missing'
   | 'ref_missing';
 
+/** A commit-scoped Git read failed after the request reached Git. This is distinct from
+ * a missing commit/path: callers must report it as unavailable and retry, rather than
+ * recording a false `citation_audited_sha_unresolvable` refusal. */
+export class CitationGitReadError extends Error {
+  readonly code = 'citation_git_read_unavailable';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'CitationGitReadError';
+  }
+}
+
 export interface CitationDeps {
   /** Repo-relative → does a regular file exist there? */
   statFile: (rel: string) => { isFile: boolean } | null;
@@ -627,7 +644,7 @@ export async function measureCitationBlobsAtHead(
   const climb = (root: string): Promise<string> => {
     let pending = topOf.get(root);
     if (!pending) {
-      pending = gitlinkParentForRepoAsync(root).then((parent) => (parent ? climb(parent.superprojectRoot) : root));
+      pending = gitlinkParentForRepoAsync(root).then((parent) => (parent ? climb(parent.superprojectRoot) : root)).catch(() => root);
       topOf.set(root, pending);
     }
     return pending;
@@ -994,10 +1011,12 @@ function gitDirForRoot(root: string): string | null {
   const marker = path.join(root, '.git');
   try {
     const stat = fs.statSync(marker);
-    if (stat.isDirectory()) return marker;
+    if (stat.isDirectory()) return fs.existsSync(path.join(marker, 'HEAD')) ? marker : null;
     if (!stat.isFile()) return null;
     const match = /^gitdir:\s*(.+)$/im.exec(fs.readFileSync(marker, 'utf8'));
-    return match?.[1] ? path.resolve(root, match[1].trim()) : null;
+    if (!match?.[1]) return null;
+    const gitDir = path.resolve(root, match[1].trim());
+    return fs.existsSync(path.join(gitDir, 'HEAD')) ? gitDir : null;
   } catch {
     return null;
   }
@@ -1029,10 +1048,16 @@ function gitObjectShaAt(root: string, ref: string, rel: string): Promise<string 
 }
 
 async function gitObjectShaAtUncached(root: string, ref: string, rel: string): Promise<string | null> {
-  const object = (await readGitOutputAsync(root, [
-    'rev-parse', '--verify', '--end-of-options', `${ref}:${rel}`,
-  ]))?.trim();
-  return object && /^[0-9a-f]{40}$/i.test(object) ? object : null;
+  // `ls-tree` returns exit 0 with empty stdout for a missing path. `rev-parse
+  // --verify <ref>:<path>` uses exit 128 for both that normal miss and a Git/process
+  // failure, which made the old null result indistinguishable from an unavailable read.
+  const raw = await readGitOutputAsync(root, [
+    'ls-tree', '--full-tree', ref, '--', rel,
+  ]);
+  if (raw === null) return null;
+  const output = raw.trim();
+  const match = /^(?:0*\d+) blob ([0-9a-f]{40})\t/.exec(output.split('\n').find(Boolean) ?? '');
+  return match?.[1] ?? null;
 }
 
 /**
@@ -1161,7 +1186,9 @@ const TRACKED_LISTING_ARGS = ['ls-files', '-s', '-z', '--full-name'] as const;
 /**
  * Run a read-only `git -C <root> <args>` WITHOUT blocking the event loop: through the
  * spawner sidecar when enabled for this host (no fork of the large request process),
- * otherwise an async local child. Null on any failure — callers keep ownership unknown.
+ * otherwise an async local child. Returns null only for a confirmed missing commit/path;
+ * operational Git/process failures throw CitationGitReadError so callers do not conflate
+ * unavailability with an unresolved citation.
  */
 async function readGitOutputAsync(root: string, args: readonly string[]): Promise<string | null> {
   __repoCitationTrackingCache.asyncGitReads = (__repoCitationTrackingCache.asyncGitReads ?? 0) + 1;
@@ -1170,18 +1197,47 @@ async function readGitOutputAsync(root: string, args: readonly string[]): Promis
     try {
       const result = await runGitViaSpawnerSidecar(argv, root, 5_000, process.env);
       if (result.code === 0) return result.stdout;
+      if (!isSidecarInfrastructureFault(result)) {
+        if (isMissingGitRead(result.stderr)) return null;
+        throw new CitationGitReadError(gitReadFailureDetail(root, args, result.code, result.stderr));
+      }
+      noteSidecarFallback('plan-audits', new Error(result.stderr), undefined, 'local');
     } catch (e) {
+      if (e instanceof CitationGitReadError) throw e;
       noteSidecarFallback('plan-audits', e);
     }
   }
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     execFile(
       'git',
       argv,
       { encoding: 'utf8', timeout: 5_000, killSignal: 'SIGKILL', maxBuffer: TRACKED_REPO_SNAPSHOT_MAX_BUFFER },
-      (error, stdout) => resolve(error ? null : stdout),
+      (error, stdout, stderr) => {
+        if (!error) {
+          resolve(stdout);
+          return;
+        }
+        const code = typeof error.code === 'number' ? error.code : null;
+        if (isMissingGitRead(stderr)) {
+          resolve(null);
+          return;
+        }
+        reject(new CitationGitReadError(
+          gitReadFailureDetail(root, args, code, stderr || error.message),
+        ));
+      },
     );
   });
+}
+
+function isMissingGitRead(stderr: string): boolean {
+  return /not a tree object|not a valid object name|unknown revision|bad object|needed a single revision/i.test(stderr);
+}
+
+function gitReadFailureDetail(root: string, args: readonly string[], code: number | null, stderr: string): string {
+  const why = code === null ? 'no exit status' : `exit ${code}`;
+  const detail = stderr.trim().split('\n')[0]?.slice(0, 240) ?? 'no stderr';
+  return `Git citation read failed (${why}): git -C ${root} ${args.join(' ')} — ${detail}`;
 }
 
 async function loadTrackedRepoSnapshotAsync(root: string, gitDir: string): Promise<void> {
