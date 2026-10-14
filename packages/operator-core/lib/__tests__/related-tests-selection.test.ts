@@ -92,6 +92,84 @@ describe('original gate selection preparation', () => {
     expect(enumerateAffectedTaskSelection([task('test', 'UNKNOWN=value vitest run')], options([])).coverage).toBe('partial');
   });
 
+  it('measures the original fixture build lifecycle inputs without building or resolving installed dependencies', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    const parent = join(repo, '.papercusp/scratch');
+    mkdirSync(parent, { recursive: true });
+    const dir = mkdtempSync(join(parent, 'fixture-build-selection-'));
+    try {
+      for (const sub of ['scripts', 'app', 'public', 'packages/data/src', '.next']) mkdirSync(join(dir, sub), { recursive: true });
+      for (const file of ['build.mjs', 'source-identity.mjs', 'dependency-preflight.mjs'])
+        writeFileSync(join(dir, 'scripts', file), readFileSync(join(repo, 'apps/slack-asana-bug-drill/scripts', file)));
+      writeFileSync(join(dir, 'package.json'), '{"type":"module","dependencies":{"never-installed":"0.0.0"}}');
+      writeFileSync(join(dir, 'app/page.tsx'), 'throw new Error("discovery compiled the app");');
+      writeFileSync(join(dir, 'packages/data/src/index.ts'), 'throw new Error("discovery bundled data");');
+      writeFileSync(join(dir, 'public/logo.svg'), '<svg/>');
+      writeFileSync(join(dir, 'next-env.d.ts'), 'declare const input: true;');
+      writeFileSync(join(dir, '.next/fixture-build.json'), 'unchanged build sentinel');
+      const relativeDir = dir.slice(repo.length + 1).replaceAll('\\', '/');
+      const ws = { name: '@bug-drill/fixture', dir: relativeDir,
+        scripts: { test: 'vitest run', pretest: 'node scripts/build.mjs' } };
+      const discover = () => enumerateAffectedTaskSelection([{ ws, script: 'test' }],
+        { root: repo, runResolver: () => [resolved(['a.test.ts'])] });
+      const result = discover();
+      expect(result.files).toEqual([`${relativeDir}/a.test.ts`]);
+      expect(result.unenumerated).toMatchObject([{ reason: 'unexecuted-lifecycle-command' }]);
+      const obligation = result.commandObligations[0];
+      expect(obligation).toMatchObject({ kind: 'npm-lifecycle', script: 'pretest',
+        command: 'node scripts/build.mjs', executed: false,
+        discovery: { check: 'fixture-build', files: [], dependencyClosure: 'unmeasured', runtimeClosure: 'unmeasured' } });
+      const paths = obligation.inputs.map((input: { path: string }) => input.path);
+      expect(paths).toEqual(expect.arrayContaining(['scripts/build.mjs', 'scripts/source-identity.mjs',
+        'scripts/dependency-preflight.mjs', 'app/page.tsx', 'packages/data/src/index.ts',
+        'public/logo.svg', 'next-env.d.ts', 'package.json'].map(path => `${relativeDir}/${path}`)));
+      expect(paths.some((path: string) => path.includes('/.next/'))).toBe(false);
+      for (const input of obligation.inputs) expect(input.sha256)
+        .toBe(createHash('sha256').update(readFileSync(join(repo, input.path))).digest('hex'));
+      const before = obligation.inputs.find((input: { path: string }) => input.path.endsWith('/public/logo.svg'))!.sha256;
+      writeFileSync(join(dir, 'public/logo.svg'), '<svg>changed asset</svg>');
+      expect(discover().commandObligations[0].inputs.find((input: { path: string }) => input.path.endsWith('/public/logo.svg'))!.sha256)
+        .not.toBe(before);
+      expect(readFileSync(join(dir, '.next/fixture-build.json'), 'utf8')).toBe('unchanged build sentinel');
+      expect(existsSync(join(dir, 'node_modules'))).toBe(false);
+      expect(result.coverage).toBe('partial');
+      expect(result.executed).toBe(false);
+      expect(result.operationalAcceptance).toBe(false);
+      const chained = enumerateAffectedTaskSelection([{ ws: { ...ws,
+        scripts: { ...ws.scripts, test: 'npm run first && npm run second', first: 'vitest run', second: 'vitest run' } }, script: 'test' }],
+        { root: repo, runResolver: () => [resolved(['a.test.ts'])] });
+      expect(chained.commandObligations[0]).toMatchObject({ step: 0, script: 'pretest',
+        discovery: { check: 'fixture-build' }, executed: false });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('keeps a failed or forged fixture lifecycle discovery as explicit residue with the original command', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'fixture-build-selection-refusal-'));
+    try {
+      const wsRoot = join(dir, 'fixture');
+      mkdirSync(join(wsRoot, 'scripts'), { recursive: true });
+      writeFileSync(join(wsRoot, 'package.json'), '{"type":"module"}');
+      const ws = { name: '@bug-drill/fixture', dir: 'fixture', scripts: { test: 'vitest run', pretest: 'node scripts/build.mjs' } };
+      const base = { schemaVersion: 1, kind: 'command-check-inputs', check: 'fixture-build', files: [],
+        inputs: [{ path: 'fixture/package.json', sha256: createHash('sha256').update(readFileSync(join(wsRoot, 'package.json'))).digest('hex') }],
+        executed: false, dependencyClosure: 'unmeasured', runtimeClosure: 'unmeasured', operationalAcceptance: false };
+      for (const receipt of [{ ...base, executed: true }, { ...base, operationalAcceptance: true },
+        { ...base, inputs: [{ ...base.inputs[0], sha256: 'a'.repeat(64) }] },
+        { ...base, inputs: [...base.inputs, ...base.inputs] }, { ...base, inputs: [] },
+        { ...base, dependencyClosure: 'complete' }, { ...base, files: ['fixture/package.json'] }]) {
+        writeFileSync(join(wsRoot, 'scripts/build.mjs'), `console.log('COMMAND_CHECK_SELECTION='+${JSON.stringify(JSON.stringify(receipt))});`);
+        const result = enumerateAffectedTaskSelection([{ ws, script: 'test' }],
+          { root: dir, runResolver: () => [resolved(['a.test.ts'])] });
+        expect(result.commandObligations[0]).toMatchObject({ command: 'node scripts/build.mjs', inputs: null, executed: false });
+        expect(result.coverage).toBe('partial');
+        expect(result.unenumerated).toHaveLength(2);
+      }
+      rmSync(join(wsRoot, 'scripts/build.mjs'));
+      expect(enumerateAffectedTaskSelection([{ ws, script: 'test' }],
+        { root: dir, runResolver: () => [resolved(['a.test.ts'])] }).commandObligations[0].inputs).toBe(null);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('enumerates npm shell expansion before native Node globs without importing a test', () => {
     const dir = mkdtempSync(join(tmpdir(), 'node-selection-'));
     try {
@@ -230,7 +308,7 @@ describe('original gate selection preparation', () => {
       mkdirSync(join(dir, 'src'), { recursive: true });
       writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
       writeFileSync(join(dir, 'astro.config.mjs'), `export default { integrations: [{ name: 'selection-fixture', hooks: {
-        'astro:config:setup': ({injectTypes}) => injectTypes({filename: 'selection-generated.d.ts', content: 'declare const syncedValue: string;'})
+        'astro:config:done': ({injectTypes}) => injectTypes({filename: 'selection-generated.d.ts', content: 'declare const syncedValue: string;'})
       }}] };`);
       writeFileSync(join(dir, 'tsconfig.json'), '{"extends":"astro/tsconfigs/strict","include":[".astro/types.d.ts","src/**/*"],"exclude":["dist"]}');
       writeFileSync(join(dir, 'src/checked.ts'), 'export const broken: string = 123;');
