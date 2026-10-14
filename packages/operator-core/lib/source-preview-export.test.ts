@@ -701,6 +701,21 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification Git checkout');
   });
 
+  it('prepares a real verifier checkout from a relative repository path', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-relative-repo-fixture'));
+    git(fixture.repo, ['commit', '--allow-empty', '-m', 'with parent']);
+    const head = git(fixture.repo, ['rev-parse', 'HEAD']);
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const dest = join(tmp, 'verifier-relative-repo-checkout');
+    const receipt = await prepareVerifierSource({
+      repo: relative(process.cwd(), fixture.repo), ref: head, dest,
+      inputs: [input], gitCheckout: true,
+    });
+    expect(git(dest, ['rev-parse', 'HEAD'])).toBe(head);
+    expect(readFileSync(join(dest, input))).toEqual(readFileSync(join(fixture.repo, input)));
+    await expect(verifyVerifierSource(dest, receipt)).resolves.toEqual(receipt);
+  });
+
   it('refuses an unreadable parent or submodule checkout before verification runs', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-checkout-parent-fixture'));
     const input = SHIPPED.find(p => p.startsWith('apps/'))!;

@@ -628,15 +628,36 @@ export async function spawnEmbedSidecar(): Promise<void> {
       }
     });
 
-    // The DB resolver writes its redacted target to stderr to keep CLI stdout
-    // parseable. Stderr is a transport, not a severity: recognise only that
-    // complete informational record and keep every other diagnostic a warning.
+    // The DB resolver and passive startup preload use stderr to keep CLI stdout
+    // parseable. Recognise their complete informational records; unknown events,
+    // malformed records and extra diagnostic fields must still warn.
     // Buffer lines so a chunk boundary or a mixed chunk cannot hide a warning.
     let stderrBuffer = '';
+    const exactObject = (value: unknown, keys: string[]): value is Record<string, unknown> =>
+      typeof value === 'object' && value !== null && !Array.isArray(value)
+      && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+    const loaderIdentity = (value: unknown): boolean =>
+      exactObject(value, ['sha256', 'bytes', 'switches'])
+      && typeof value.sha256 === 'string' && /^[a-f0-9]{64}$/.test(value.sha256)
+      && typeof value.bytes === 'number' && Number.isSafeInteger(value.bytes) && value.bytes >= 0
+      && Array.isArray(value.switches) && value.switches.every(s =>
+        typeof s === 'string' && /^(?:--(?:import|loader|experimental-loader|require|conditions)|-r)$/.test(s));
+    const startupNodeLoaded = (line: string): boolean => {
+      const prefix = 'TEST_FILE_STARTUP_TRACE ';
+      if (!line.startsWith(prefix)) return false;
+      try {
+        const row: unknown = JSON.parse(line.slice(prefix.length));
+        return exactObject(row, ['pid', 'event', 'nodeOptions', 'execArgv'])
+          && typeof row.pid === 'number' && Number.isSafeInteger(row.pid) && row.pid > 0
+          && row.event === 'node-loaded' && loaderIdentity(row.nodeOptions) && loaderIdentity(row.execArgv);
+      } catch {
+        return false;
+      }
+    };
     const reportStderr = (line: string) => {
       const text = line.trim();
       if (!text) return;
-      if (/^\[db\] target source=\S+ endpoint=\S+$/.test(text)) console.log('[embed-sidecar-err]', text);
+      if (/^\[db\] target source=\S+ endpoint=\S+$/.test(text) || startupNodeLoaded(text)) console.log('[embed-sidecar-err]', text);
       else console.warn('[embed-sidecar-err]', text);
     };
     sidecarProcess.stderr?.on('data', (chunk: Buffer) => {

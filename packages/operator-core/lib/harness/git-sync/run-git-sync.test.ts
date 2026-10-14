@@ -3502,8 +3502,8 @@ describe('runGitSync (real git, no submodule)', () => {
     const bodies = git(originDir, 'log', '--format=%B', 'main');
     expect(bodies).toContain('Co-Authored-By: Cup Seven <cup-7@agents.papercusp>');
     const orderedSubjects = git(originDir, 'log', '--format=%s', '--reverse', 'main').split('\n');
-    const residualIndex = orderedSubjects.findIndex((subject) => subject.includes('auto-commit test'));
-    const attributedIndex = orderedSubjects.findIndex((subject) => subject.includes('wire the parser'));
+    const residualIndex = orderedSubjects.findIndex((subject) => subject.includes('other.txt'));
+    const attributedIndex = orderedSubjects.findIndex((subject) => subject.includes('mine.txt'));
     expect(residualIndex).toBeGreaterThanOrEqual(0);
     expect(attributedIndex).toBeGreaterThanOrEqual(0);
     expect(residualIndex).toBeLessThan(attributedIndex);

@@ -164,6 +164,52 @@ describe('spawnEmbedSidecar READY deadline (WI-10005932)', () => {
     await started;
   });
 
+  it('preserves validated node-loaded startup telemetry across chunks and at stderr end', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const started = spawnEmbedSidecar();
+    const child = fake.children[0];
+    const identity = { sha256: 'a'.repeat(64), bytes: 31, switches: ['--import', '-r'] };
+    const record = `TEST_FILE_STARTUP_TRACE ${JSON.stringify({ pid: 123, event: 'node-loaded', nodeOptions: identity, execArgv: identity })}`;
+    child.stderr.emit('data', Buffer.from(record.slice(0, 80)));
+    expect(console.log).not.toHaveBeenCalledWith('[embed-sidecar-err]', expect.anything());
+    child.stderr.emit('data', Buffer.from(`${record.slice(80)}\n${record}`));
+    expect(console.log).toHaveBeenCalledWith('[embed-sidecar-err]', record);
+    child.stderr.emit('end');
+    expect(vi.mocked(console.log).mock.calls.filter(([tag]) => tag === '[embed-sidecar-err]')).toHaveLength(2);
+    expect(warning).not.toHaveBeenCalled();
+    say(child, `${EMBED_SIDECAR_READY_LINE} port=41301`);
+    await started;
+  });
+
+  it('keeps malformed, extended and warning-bearing startup diagnostics as warnings', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const started = spawnEmbedSidecar();
+    const child = fake.children[0];
+    const identity = { sha256: 'a'.repeat(64), bytes: 31, switches: ['--import'] };
+    const row = { pid: 123, event: 'node-loaded', nodeOptions: identity, execArgv: identity };
+    const trace = (value: unknown) => `TEST_FILE_STARTUP_TRACE ${JSON.stringify(value)}`;
+    const diagnostics = [
+      'TEST_FILE_STARTUP_TRACE {',
+      trace(null),
+      trace([]),
+      trace({ ...row, event: 'worker-exit' }),
+      trace({ ...row, error: 'model warmup failed' }),
+      trace({ ...row, pid: 0 }),
+      trace({ ...row, nodeOptions: { ...identity, sha256: 'invalid' } }),
+      trace({ ...row, execArgv: { ...identity, bytes: -1 } }),
+      trace({ ...row, nodeOptions: { ...identity, switches: ['--warning'] } }),
+      trace({ ...row, execArgv: { ...identity, warning: 'model warmup failed' } }),
+      `${trace(row)} WARNING`,
+      'model warmup failed',
+    ];
+    child.stderr.emit('data', Buffer.from(`${trace(row)}\n${diagnostics.join('\n')}`));
+    child.stderr.emit('end');
+    expect(console.log).toHaveBeenCalledWith('[embed-sidecar-err]', trace(row));
+    expect(warning.mock.calls).toEqual(diagnostics.map(line => ['[embed-sidecar-err]', line]));
+    say(child, `${EMBED_SIDECAR_READY_LINE} port=41301`);
+    await started;
+  });
+
   it('still kills and rejects a child that never reaches READY by the deadline', async () => {
     process.env[EMBED_SIDECAR_STARTUP_TIMEOUT_ENV] = '20000';
     const outcome = spawnEmbedSidecar().then(

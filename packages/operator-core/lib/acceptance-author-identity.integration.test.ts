@@ -192,6 +192,14 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
         coord_owner_id: 'su-amend-implementer-child',
         launch_spec: { launchedBy: 'su-amend-implementer' },
       },
+      // The consult selection stamp is best-effort: the durable task-ledger
+      // consultAnswer row is the fallback source for this routed fork's lineage.
+      {
+        workspace_id: workspaceId,
+        mode: 'console',
+        coord_owner_id: 'su-amend-review-ledger-fork',
+        launch_spec: { launchedBy: 'su-amend-implementer' },
+      },
     ];
     await db.adminSql`INSERT INTO harness_shared.adv_sessions ${db.adminSql(sessions)}`;
     // P-004 consult-dispatch edges. `su-consult-fork` is launched by the SYSTEM
@@ -251,8 +259,55 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
           },
         },
       },
+      {
+        workspace_id: workspaceId,
+        conversation_id: 'conv-amend-review-ledger',
+        requester_id: 'su-amend-implementer',
+        responder_id: 'su-amend-expert',
+        state: 'awaiting_responder',
+        question: 'q',
+        latency_contract: 'hard-blocked',
+        routing: {
+          policy: 'acceptance-bar-amendment-review',
+          selection: { selected: [{ ownerId: 'su-amend-expert', via: 'floor' }] },
+        },
+      },
     ].map((row) => ({ ...row, routing: db.adminSql.json(row.routing as never) }));
     await db.adminSql`INSERT INTO harness_shared.consult_state ${db.adminSql(consults)}`;
+    await db.adminSql`INSERT INTO harness_shared.task_ledger ${db.adminSql([
+      {
+        task_id: 'consult-answer-ledger-fork',
+        workspace_id: workspaceId,
+        root_task_id: 'consult-answer-ledger-fork',
+        class: 'agent-session',
+        title: 'consult answer fork without selection stamp',
+        launched_by: 'su-amend-implementer',
+        detail: db.adminSql.json({
+          consultAnswer: {
+            conversationId: 'conv-amend-review-ledger',
+            operation: 'fork',
+            sourceOwnerId: 'su-amend-expert',
+            answeringOwnerId: 'su-amend-review-ledger-fork',
+          },
+        }),
+      },
+      {
+        task_id: 'consult-answer-cross-tenant-fork',
+        workspace_id: 'different-workspace',
+        root_task_id: 'consult-answer-cross-tenant-fork',
+        class: 'agent-session',
+        title: 'cross-tenant consult answer must not leak lineage',
+        launched_by: 'su-other-tenant',
+        detail: db.adminSql.json({
+          consultAnswer: {
+            conversationId: 'conv-cross-tenant-ledger',
+            operation: 'fork',
+            sourceOwnerId: 'su-author',
+            answeringOwnerId: 'su-cross-tenant-ledger-fork',
+          },
+        }),
+      },
+    ])}`;
     const planWorkItems = [
       {
         workspace_id: workspaceId,
@@ -436,6 +491,25 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
     const keys = await lineagePartyKeys(['su-amend-implementer', 'su-amend-review-fork', 'su-amend-expert'], opts);
     expect(keys.get('su-amend-review-fork')).toBe(keys.get('su-amend-expert'));
     expect(keys.get('su-amend-review-fork')).not.toBe(keys.get('su-amend-implementer'));
+  });
+
+  it('P-005: consultAnswer ledger lineage covers a routed fork whose selection has no answeringOwnerId', async () => {
+    const opts = { sql: db.adminSql, workspaceId };
+    await expect(
+      areAcceptanceLineageRelated('su-amend-review-ledger-fork', 'su-amend-expert', opts),
+    ).resolves.toBe(true);
+    await expect(
+      areAcceptanceLineageRelated('su-amend-review-ledger-fork', 'su-amend-implementer', opts),
+    ).resolves.toBe(false);
+    await expect(
+      areAcceptanceLineageRelated('su-author', 'su-cross-tenant-ledger-fork', opts),
+    ).resolves.toBe(false);
+    const keys = await lineagePartyKeys(
+      ['su-amend-expert', 'su-amend-review-ledger-fork', 'su-amend-implementer'],
+      opts,
+    );
+    expect(keys.get('su-amend-review-ledger-fork')).toBe(keys.get('su-amend-expert'));
+    expect(keys.get('su-amend-review-ledger-fork')).not.toBe(keys.get('su-amend-implementer'));
   });
 
   it('P-005: acceptanceLineageClosure(id).has(x) equals areAcceptanceLineageRelated(x, id) for every fixture pair', async () => {

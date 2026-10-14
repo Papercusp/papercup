@@ -20,6 +20,7 @@ import type { PerfRegressionProducerHealth } from './perf-regression-rig';
 import type { GitSyncFailingLeg } from '../harness/git-sync/git-sync-escalation';
 import type { ScorecardFreshnessStatus } from '../scorecard-freshness';
 import type { AgentStrandHealth } from './agent-strand-census';
+import type { WorkspaceHostReliability } from '../workspace-host/observability-store';
 
 /**
  * A panel's health light. `unknown` = the source could not be read this tick
@@ -764,6 +765,8 @@ export interface HostPressureHealth {
 /** Infra — PG + gateway reachability + fresh host pressure + the per-thread perf
  *  verdict (F1/P-030) + the MCP tool-call transport SLO (W8/P-008). */
 export interface InfraHealth {
+  /** Existing hosted control-plane ledgers; independent of the analytics sink. */
+  hostedControlPlane?: WorkspaceHostReliability | null;
   pg: {
     version: string;
     total: number;

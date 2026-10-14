@@ -12,7 +12,7 @@ import { fireLaunchBlueprint } from '../lib/blueprint/launch-blueprint';
 import { readProcessIdentity } from '../lib/process-identity';
 import { harnessPackageDir, invokeOnceBin, tsxBin } from '../lib/harness-paths';
 import { CODEX_SAFE_DEFAULT_MODEL } from '../lib/model-context-budget.mjs';
-import { retainPrivateProviderResponse } from './private-http-workspace-preflight';
+import { privateCodexModelConfig, retainPrivateProviderResponse } from './private-http-workspace-preflight';
 
 // Reuse the maintained launch policy rather than a retired fixture model id.
 const [primaryModel, primaryEffort] = CODEX_SAFE_DEFAULT_MODEL.split(':');
@@ -145,16 +145,22 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
   function measureChildConfig() {
     const candidates = nativeProcesses.flatMap(({ pid }) => {
       try {
+        // CODEX_HOME is also inherited by wrappers. Measure the native binary
+        // that actually consumes CLI config overrides, not an ancestor shell.
+        if (!realpathSync(`/proc/${pid}/exe`).endsWith('/codex')) return [];
+        const argv = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').slice(0, -1);
         const env = Object.fromEntries(readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')
           .filter(Boolean).map(entry => { const i = entry.indexOf('='); return [entry.slice(0, i), entry.slice(i + 1)]; }));
-        return env.CODEX_HOME ? [{ pid, home: env.CODEX_HOME }] : [];
+        return env.CODEX_HOME ? [{ pid, home: env.CODEX_HOME, argv }] : [];
       } catch { return []; }
     });
     const child = candidates.at(-1);
     assert.ok(child, 'actual native lineage must expose its per-spawn CODEX_HOME');
+    assert.equal(candidates.length, 1, 'the bounded primary proof must expose exactly one native Codex child');
     assert.ok(child.home.startsWith(resolve(e.HOME!, '..') + '/'), 'native config escaped private runtime');
     const bytes = readFileSync(join(child.home, 'config.toml'));
     const config = parseToml(bytes.toString('utf8')) as any;
+    const effective = privateCodexModelConfig(child.argv, config);
     const provider = config.model_providers?.[config.model_provider];
     assert.equal(provider?.base_url, `http://127.0.0.1:${gateway.port}/v1`);
     assert.equal(provider.http_headers['x-papercusp-owner'], spawnId);
@@ -170,8 +176,9 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       .sort((a, b) => b.path.length - a.path.length);
     assert.ok(mounts[0]?.options.includes('ro'), 'actual native mount must deny canonical tree writes');
     return { pid: child.pid, sha256: createHash('sha256').update(bytes).digest('hex'),
+      argvSha256: createHash('sha256').update(JSON.stringify(child.argv)).digest('hex'),
       provider: config.model_provider, baseUrl: provider.base_url, ownerId: provider.http_headers['x-papercusp-owner'],
-      accountPinPresent: false, model: config.model, effort: config.model_reasoning_effort,
+      accountPinPresent: false, ...effective,
       mcpOrigin: mcp.origin, mcpOwnerId: mcp.searchParams.get('client'),
       canonicalMount: mounts[0] };
   }

@@ -18,11 +18,11 @@ import { randomBytes } from 'node:crypto';
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
-const h = vi.hoisted(() => ({ appSql: null as any }));
+const h = vi.hoisted(() => ({ appSql: null as any, adminSql: null as any }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
-  withWorkspace: async <T>(ws: string, cb: (tx: unknown) => Promise<T>): Promise<T> =>
-    h.appSql.begin(async (tx: any) => {
+  withWorkspace: async <T>(ws: string, cb: (tx: unknown) => Promise<T>, opts?: { bypassRlsForAdmin?: boolean }): Promise<T> =>
+    (opts?.bypassRlsForAdmin ? h.adminSql : h.appSql).begin(async (tx: any) => {
       await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
       return cb(tx);
     }),
@@ -30,7 +30,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 // The store fans sync invalidations on some writes; that transport is not under test here.
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 
-const { recordWorkspaceHostHealth, upsertWorkspaceHost } = await import('./observability-store');
+const { recordWorkspaceHostHealth, upsertWorkspaceHost, readWorkspaceHostReliability } = await import('./observability-store');
 const { listWorkspaceHostSpotReclaimTargets, listWorkspaceHostStandingHealthTargets } = await import(
   './standing-health-store'
 );
@@ -102,6 +102,7 @@ describe('listWorkspaceHostStandingHealthTargets (real PG + forced RLS)', () => 
   beforeAll(async () => {
     db = await createOrgTestDb();
     h.appSql = db.appSql;
+    h.adminSql = db.adminSql;
     const connA = await seedConnection(WS_A);
     const connB = await seedConnection(WS_B);
     await seedHost({ workspaceId: WS_A, connectionId: connA, id: 'a-running', controllerId: MINE, desiredState: 'running' });
@@ -138,6 +139,57 @@ describe('listWorkspaceHostStandingHealthTargets (real PG + forced RLS)', () => 
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  it('projects real scoped hosted health, lifecycle duration and sampled API evidence without customer fields', async () => {
+    const now = Date.now();
+    const wsA = `reliability_a_${suffix}`;
+    const wsB = `reliability_b_${suffix}`;
+    for (const ws of [wsA, wsB]) {
+      const connectionId = await seedConnection(ws);
+      await seedHost({ workspaceId: ws, connectionId, id: 'rly-host', controllerId: `${OTHER}:reliability`, desiredState: 'running' });
+      await db.adminSql`
+        UPDATE harness_shared.workspace_hosts
+        SET observed_state = 'running', health_status = 'unreachable',
+            health_attested_at = ${new Date(now)}, health_checks = '[{"detail":"private guest output"}]'::jsonb
+        WHERE workspace_id = ${ws} AND id = 'rly-host'
+      `;
+      await db.adminSql`
+        INSERT INTO harness_shared.customer_workspaces
+          (workspace_id, id, organization_id, workspace_host_id, display_name, state,
+           created_by_principal_kind, created_by_principal_id, billing_owner_kind, billing_owner_id)
+        VALUES (${ws}, 'customer-rly', 'org-rly', 'rly-host', 'private customer name', 'active',
+          'hosted-user', 'user-rly', ${ws === wsA ? 'platform' : 'organization'}, 'billing-rly')
+      `;
+      await db.adminSql`
+        INSERT INTO harness_shared.workspace_host_operations
+          (workspace_id, id, host_id, action, status, created_at, finished_at, customer_workspace_id)
+        VALUES (${ws}, 'rly-ready', 'rly-host', 'provision', 'succeeded',
+          ${new Date(now - 1000)}, ${new Date(now - 750)}, 'customer-rly')
+      `;
+      await db.adminSql`
+        INSERT INTO harness_shared.route_invocations (workspace_id, method, path, status, duration_ms, invoked_at)
+        VALUES (${ws}, 'GET', '/api/hosted/workspaces/:id', 'ok', 25, ${new Date(now - 500)}),
+          (${ws}, 'GET', '/api/hosted/workspaces/:id', 'timeout', 500, ${new Date(now - 500)}),
+          (${ws}, 'INTERNAL', 'internal:expertise-routing', 'error', 9000, ${new Date(now - 500)})
+      `;
+    }
+    const reading = await readWorkspaceHostReliability(wsA, now);
+    expect(reading.hosts).toEqual({ expectedRunning: 1, unhealthy: 1, unobserved: 0, platformOwnedRunning: 1 });
+    expect(reading.lifecycle).toEqual({ succeeded: 1, failed: 0, queued: 0, running: 0, successP95Ms: 250 });
+    expect(reading.api).toEqual({ samples: 2, errors: 1, p95Ms: 25 });
+    expect(reading.providerConnections).toEqual({ connected: 0, degraded: 1 });
+    expect(JSON.stringify(reading)).not.toMatch(/private|org-rly|user-rly|customer-rly|billing-rly/);
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET health_status = 'healthy', health_attested_at = ${new Date(now)}
+      WHERE workspace_id = ${wsA} AND id = 'rly-host'`;
+    await db.adminSql`UPDATE harness_shared.workspace_host_connections SET status = 'connected'
+      WHERE workspace_id = ${wsA}`;
+    const recovered = await readWorkspaceHostReliability(wsA, now);
+    expect(recovered.hosts?.unhealthy).toBe(0);
+    expect(recovered.providerConnections).toEqual({ connected: 1, degraded: 0 });
+    // Expired health is unknown, not an observed recovery or a fresh outage.
+    const stale = await readWorkspaceHostReliability(wsB, now + 21 * 60_000);
+    expect(stale.hosts).toEqual({ expectedRunning: 1, unhealthy: 0, unobserved: 1, platformOwnedRunning: 0 });
   });
 
   it('lists exactly the live, spec-bearing hosts this controller owns, across workspaces', async () => {

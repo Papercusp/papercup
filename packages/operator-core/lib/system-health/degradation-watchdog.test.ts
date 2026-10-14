@@ -290,6 +290,13 @@ describe('mechanism registry', () => {
     expect(() => registerDegradationMechanism({ mechanism: 'gate-pass-reuse', description: 'dup' })).toThrow(/already registered/);
   });
 
+  it('does not pin scoped gate-pass-reuse alarms to a historical run', () => {
+    const mechanism = getDegradationMechanism('gate-pass-reuse');
+    if (!mechanism) throw new Error('gate-pass-reuse registration is missing');
+    expect(mechanism.description).not.toContain('762a13a6');
+    expect(mechanism.description).not.toMatch(/\brun [a-f0-9]{8}\b/i);
+  });
+
   it('registers and unregisters a test mechanism', () => {
     registerDegradationMechanism({ mechanism: 'unit-test-only', description: 'x' });
     expect(getDegradationMechanism('unit-test-only')).toBeDefined();

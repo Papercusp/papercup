@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
+import { parse as parseToml } from '@iarna/toml';
 import { classifyHttpError } from '@papercusp/papercusp-shared/agent';
 import { CODEX_REFUSAL_BODY_MAX_BYTES, codexModelRefusalDetail, isCodexModelRefusal } from '../lib/inference-gateway/codex-model-refusals';
 import { presentedSecretsFromHeaders, scrubErrorText } from '../lib/inference-gateway/error-body-scrub';
@@ -69,6 +70,35 @@ export async function retainPrivateProviderResponse(evidenceDir: string, respons
       modelRefusal: isCodexModelRefusal(response.status, text), detail: codexModelRefusalDetail(text) } : null };
   writeFileSync(join(evidenceDir, 'provider-response.json'), JSON.stringify(observation), { mode: 0o600 });
   return observation;
+}
+
+/** Measure the native Codex launch, rather than its role spec or TOML alone.
+ * Codex applies config overrides over TOML, then its dedicated model flag.
+ * Like the CLI, config values that are not TOML strings remain literal strings. */
+export function privateCodexModelConfig(argv: readonly string[], config: Record<string, unknown>) {
+  let model = config.model;
+  let effort = config.model_reasoning_effort;
+  let modelFlag: string | undefined;
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--model' || arg === '-m') modelFlag = argv[++i];
+    else if (arg.startsWith('--model=')) modelFlag = arg.slice('--model='.length);
+    else {
+      const override = arg === '-c' || arg === '--config' ? argv[++i]
+        : arg.startsWith('--config=') ? arg.slice('--config='.length)
+        : arg.startsWith('-c=') ? arg.slice(3) : undefined;
+      if (override === undefined) continue;
+      const split = override.indexOf('=');
+      const key = override.slice(0, split).trim();
+      if (split < 0 || !['model', 'model_reasoning_effort'].includes(key)) continue;
+      const raw = override.slice(split + 1).trim();
+      let value: unknown;
+      try { value = parseToml(`value = ${raw}`).value; } catch { value = raw; }
+      if (key === 'model') model = value;
+      else effort = value;
+    }
+  }
+  return { model: modelFlag ?? model, effort };
 }
 
 /** Stop admission before reaping descendants that can keep the host's pipes open. */

@@ -22,6 +22,36 @@ import { provisionCloudflareTunnel, removeCloudflareTunnel } from './provision';
 const INGRESS_PORT = 38111;
 const OPERATOR_PORT = 3070;
 
+describe('remote tunnel configuration inspection', () => {
+  it('reads the applied multi-host configuration without rewriting any rules', async () => {
+    const applied = { version: 16, config: { ingress: [
+      { hostname: 'phone.example.com', path: '^/api/device', service: 'http://127.0.0.1:38111' },
+      { hostname: 'other.example.com', service: 'http://127.0.0.1:8080' },
+      { service: 'http_status:404' },
+    ] } };
+    const requests: Array<{ url: string; method: string; body: unknown; authorization: string | null }> = [];
+    const api = cloudflareApi({ apiToken: 'test-token', fetch: (async (url, init) => {
+      requests.push({ url: String(url), method: init?.method ?? 'GET', body: init?.body,
+        authorization: new Headers(init?.headers).get('authorization') });
+      return new Response(JSON.stringify({ success: true, result: applied }), { status: 200 });
+    }) as typeof fetch });
+    expect(await api.getTunnelConfig('account/one', 'tunnel/one')).toEqual(applied);
+    expect(requests).toEqual([{
+      url: 'https://api.cloudflare.com/client/v4/accounts/account%2Fone/cfd_tunnel/tunnel%2Fone/configurations',
+      method: 'GET', body: undefined, authorization: 'Bearer test-token',
+    }]);
+  });
+
+  it('reports a refused configuration read instead of treating it as an empty config', async () => {
+    const api = cloudflareApi({ apiToken: 'test-token', fetch: (async () =>
+      new Response(JSON.stringify({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] }),
+        { status: 403 })) as typeof fetch });
+    await expect(api.getTunnelConfig('account', 'tunnel')).rejects.toMatchObject({
+      status: 403, cfCode: 10000, isAuth: true,
+    });
+  });
+});
+
 describe('R-21: the generated cloudflared ingress targets the external-ingress listener', () => {
   it('forwards the chosen hostname to the ingress listener on loopback, and nothing else', () => {
     const cfg = buildCloudflaredIngress({ hostname: 'Papercusp.Example.com', ingressPort: INGRESS_PORT });

@@ -18,6 +18,7 @@ import {
   exportWorkspaceHostAudit,
   readWorkspaceHostConnection,
   readWorkspaceHostControl,
+  readWorkspaceHostReliability,
   readWorkspaceHostDestroyTarget,
   readWorkspaceHostResourceCheckpoints,
   recordWorkspaceHostOperationTerminalFailure,
@@ -43,6 +44,44 @@ beforeEach(() => {
 });
 
 describe('workspace-host observability store', () => {
+  it('projects scoped control-plane counts without exporting underlying private fields', async () => {
+    H.rows.set('FROM harness_shared.workspace_host_operations operation', [{
+      succeeded: '3', failed: '1', queued: '2', running: '1', success_p95_ms: 1250,
+      request: { token: 'private' }, error: 'private diagnostic',
+    }]);
+    H.rows.set('FROM harness_shared.workspace_hosts host', [{
+      expected_running: '4', unhealthy: '1', unobserved: '1', platform_owned_running: '2',
+      cost_signals: { customerBill: 999 }, health_checks: ['private guest output'],
+    }]);
+    H.rows.set('FROM harness_shared.workspace_host_connections connection', [{ connected: '1', degraded: '1' }]);
+    H.rows.set('FROM harness_shared.route_invocations', [{ samples: '5', errors: '1', p95_ms: 25 }]);
+    const snapshot = await readWorkspaceHostReliability('ws-A', 3_600_000);
+    expect(H.withWorkspace).toHaveBeenCalledWith('ws-A', expect.any(Function), {
+      bypassRlsForAdmin: true, statementTimeoutMs: 2_000, lockTimeoutMs: 500,
+    });
+    expect(snapshot).toEqual({
+      observedAt: 3_600_000, windowMs: 3_600_000,
+      lifecycle: { succeeded: 3, failed: 1, queued: 2, running: 1, successP95Ms: 1250 },
+      hosts: { expectedRunning: 4, unhealthy: 1, unobserved: 1, platformOwnedRunning: 2 },
+      providerConnections: { connected: 1, degraded: 1 },
+      api: { samples: 5, errors: 1, p95Ms: 25 },
+    });
+    expect(JSON.stringify(snapshot)).not.toMatch(/private|customerBill|token|request|health_checks/);
+  });
+
+  it('keeps an unreadable slice unknown while preserving independently observed slices', async () => {
+    const throwing = Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join(' ').includes('FROM harness_shared.workspace_hosts host')) throw new Error('read unavailable');
+      return fakeTx(strings, ...values);
+    }, { json: (v: unknown) => v });
+    H.withWorkspace.mockImplementation(async (_ws, run) => run(throwing));
+    H.rows.set('FROM harness_shared.route_invocations', [{ samples: '0', errors: '0', p95_ms: null }]);
+    const snapshot = await readWorkspaceHostReliability('ws-A', 3_600_000);
+    expect(snapshot.hosts).toBeNull();
+    expect(snapshot.lifecycle).toBeNull();
+    expect(snapshot.api).toEqual({ samples: 0, errors: 0, p95Ms: null });
+  });
+
   it('redacts secret-shaped fields and secret-bearing text recursively', () => {
     expect(
       redactWorkspaceHostValue({

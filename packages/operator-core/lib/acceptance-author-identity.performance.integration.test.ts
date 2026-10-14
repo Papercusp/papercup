@@ -18,7 +18,11 @@ let db: OrgTestDb;
 // Keep the real production edge set and recursive query in both arms. Change
 // only where the launch parent comes from, so parity cannot pass by comparing
 // two independently handwritten implementations of lineage.
-function withProjection(projected: boolean, explain?: (plan: Record<string, unknown>) => void): Sql {
+function withProjection(
+  projected: boolean,
+  explain?: (plan: Record<string, unknown>) => void,
+  analyze = true,
+): Sql {
   return new Proxy(db.adminSql, {
     apply(target, receiver, args: unknown[]) {
       const [first, ...values] = args;
@@ -27,7 +31,9 @@ function withProjection(projected: boolean, explain?: (plan: Record<string, unkn
         : part.replaceAll('launch_parent_owner IS NOT NULL', "NULLIF(launch_spec->>'launchedBy', '') IS NOT NULL")
           .replaceAll('launch_parent_owner', "(launch_spec->>'launchedBy')"));
       const outer = /^\s*WITH RECURSIVE/.test(strings[0]);
-      if (explain && outer) strings[0] = 'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + strings[0];
+      if (explain && outer) {
+        strings[0] = (analyze ? 'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' : 'EXPLAIN (FORMAT JSON) ') + strings[0];
+      }
       const query = Reflect.apply(target, receiver, [Object.assign(strings, { raw: strings }), ...values]);
       return explain && outer ? query.then((rows: Record<string, unknown>[]) => {
         explain((rows[0]['QUERY PLAN'] as Record<string, unknown>[])[0]);
@@ -67,6 +73,22 @@ beforeAll(async () => {
     (workspace_id,conversation_id,requester_id,responder_id,state,question,latency_contract,routing)
     VALUES (${workspaceId},'p004-consult','requester','chain-2','awaiting_responder','q','proceed',
       '{"selection":{"selected":[{"ownerId":"chain-2","answeringOwnerId":"consult-fork"}]}}')`;
+  // Model a ledger much larger than the consult-answer population. The partial
+  // covering index must let the production edge query skip ordinary task rows.
+  await db.adminSql`
+    INSERT INTO harness_shared.task_ledger
+      (task_id,workspace_id,root_task_id,class,title,launched_by,detail)
+    SELECT 'p004-ledger-' || n, ${workspaceId}, 'p004-ledger-' || n,
+           'agent-session', 'P004 lineage index fixture', 'performance-test',
+           CASE WHEN n <= 1500 THEN jsonb_build_object('consultAnswer', jsonb_build_object(
+             'operation','fork',
+             'conversationId','p004-ledger-consult-' || n,
+             'sourceOwnerId',CASE WHEN n = 1 THEN 'chain-2' ELSE 'ledger-source-' || n END,
+             'answeringOwnerId',CASE WHEN n = 1 THEN 'consult-fork' ELSE 'ledger-answer-' || n END
+           )) ELSE '{}'::jsonb END
+      FROM generate_series(1,15000) n
+  `;
+  await db.adminSql`ANALYZE harness_shared.task_ledger`;
   const ddl = readFileSync(migration, 'utf8');
   await db.adminSql.begin(async (tx) => { await tx.unsafe(ddl); });
   await db.adminSql.begin(async (tx) => { await tx.unsafe(ddl); });
@@ -108,6 +130,40 @@ it('preserves cycles, bounded ancestry, consult ancestry, siblings and tenant ex
   expect(await lineagePartyKeys(candidates,{sql:withProjection(true),workspaceId})).toEqual(legacy);
 }, 60_000);
 
+it('plans consultAnswer lineage through the partial task-ledger index', async () => {
+  const candidates = ['chain-0','chain-2','consult-fork','sibling-a','sibling-b','cycle-a','cycle-b','foreign-child'];
+  const indexes: string[] = [];
+  const nodes: Record<string, unknown>[] = [];
+  let executionTimeMs: number | null = null;
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    const entry = node as Record<string, unknown>;
+    if (typeof entry['Index Name'] === 'string') indexes.push(entry['Index Name']);
+    nodes.push(Object.fromEntries([
+      ['nodeType', entry['Node Type']],
+      ['relation', entry['Relation Name']],
+      ['index', entry['Index Name']],
+      ['rows', entry['Plan Rows']],
+      ['actualRows', entry['Actual Rows']],
+      ['actualLoops', entry['Actual Loops']],
+      ['actualTimeMs', entry['Actual Total Time']],
+      ['sharedHitBlocks', entry['Shared Hit Blocks']],
+      ['indexCond', entry['Index Cond']],
+      ['filter', entry.Filter],
+    ].filter(([, value]) => value !== undefined)));
+    if (Array.isArray(entry.Plans)) entry.Plans.forEach(visit);
+  };
+  await lineagePartyKeys(candidates, {
+    workspaceId,
+    sql: withProjection(true, (plan) => {
+      executionTimeMs = Number(plan['Execution Time']);
+      visit(plan.Plan);
+    }),
+  });
+  console.info('P004_CONSULT_ANSWER_INDEX_PLAN', JSON.stringify({ executionTimeMs, nodes }));
+  expect(indexes).toContain('task_ledger_consult_answer_lineage_idx');
+}, 30_000);
+
 it('completes 100 frozen candidate lookups below 500ms p95 with parity and a cheaper measured edge scan', async () => {
   const candidates = ['chain-0','chain-2','consult-fork','sibling-a','sibling-b','cycle-a','cycle-b','foreign-child'];
   const expected = await lineagePartyKeys(candidates,{sql:withProjection(false),workspaceId});
@@ -127,11 +183,19 @@ it('completes 100 frozen candidate lookups below 500ms p95 with parity and a che
     acceptance.push(performance.now()-start);
   }
   const percentile=(values:number[],p:number)=>[...values].sort((a,b)=>a-b)[Math.ceil(values.length*p)-1];
-  const plans: Record<string,{executionMs:unknown;hits:number}> = {};
+  const plans: Record<string,{executionMs:unknown;hits:number;indexes:string[]}> = {};
   for (const projected of [false,true]) {
     await lineagePartyKeys(candidates,{workspaceId,sql:withProjection(projected,(plan)=>{
       const root=plan.Plan as Record<string,unknown>;
-      plans[projected?'projected':'legacy']={executionMs:plan['Execution Time'],hits:Number(root['Shared Hit Blocks'])};
+      const indexes:string[]=[];
+      const visit=(node:unknown):void=>{
+        if(!node||typeof node!=='object')return;
+        const entry=node as Record<string,unknown>;
+        if(typeof entry['Index Name']==='string')indexes.push(entry['Index Name']);
+        if(Array.isArray(entry.Plans))entry.Plans.forEach(visit);
+      };
+      visit(root);
+      plans[projected?'projected':'legacy']={executionMs:plan['Execution Time'],hits:Number(root['Shared Hit Blocks']),indexes};
     })});
   }
   console.info('P004_FROZEN_LINEAGE',JSON.stringify({rows:4000,payloadBytes:16384,candidates,
@@ -139,6 +203,7 @@ it('completes 100 frozen candidate lookups below 500ms p95 with parity and a che
     completed:acceptance.length,p95:percentile(acceptance,.95),plans}));
   expect(percentile(acceptance,.95)).toBeLessThanOrEqual(500);
   expect(percentile(timings.projected,.5)).toBeLessThan(percentile(timings.legacy,.5));
+  expect(plans.projected.indexes).toContain('task_ledger_consult_answer_lineage_idx');
   // Mechanism guard: an index change or a warm cache cannot erase the extra
   // heap/TOAST accesses caused by reading the JSON document for every edge.
   expect(plans.projected.hits).toBeLessThan(plans.legacy.hits);

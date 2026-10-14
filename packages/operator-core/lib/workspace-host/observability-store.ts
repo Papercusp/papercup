@@ -20,6 +20,106 @@ import { notifySyncInvalidate } from '../sync-sse';
 
 export const WORKSPACE_HOST_CONTROL_QUERY = 'workspaceHosts.control';
 
+/** Aggregate control-plane observations only; never guest logs, usage, credentials or bills. */
+export interface WorkspaceHostReliability {
+  observedAt: number;
+  windowMs: number;
+  lifecycle: { succeeded: number; failed: number; queued: number; running: number; successP95Ms: number | null } | null;
+  hosts: { expectedRunning: number; unhealthy: number; unobserved: number; platformOwnedRunning: number } | null;
+  providerConnections: { connected: number; degraded: number } | null;
+  api: { samples: number; errors: number; p95Ms: number | null } | null;
+}
+
+/** Read existing ledgers, not another probe. Null slices are unobserved, never healthy zeros. */
+export async function readWorkspaceHostReliability(
+  workspaceId: string, nowMs = Date.now(), tx?: Sql,
+): Promise<WorkspaceHostReliability> {
+  const windowMs = 60 * 60_000;
+  const since = new Date(nowMs - windowMs).toISOString();
+  const freshSince = new Date(nowMs - 20 * 60_000).toISOString();
+  {
+    type Counts = Record<string, number | string | null>;
+    const n = (row: Counts, key: string) => Number(row[key] ?? 0);
+    const nullable = (row: Counts, key: string) => row[key] == null ? null : Number(row[key]);
+    // Each production slice has its own scoped transaction. A failed SQL statement
+    // cannot poison the other reads with PostgreSQL's aborted-transaction state.
+    const read = async (run: (query: Sql) => PromiseLike<Counts[]>) => {
+      try {
+        // Like standing-health target selection, the operator must read the hosted
+        // service ledger with admin authority. harness_app has no customer-directory
+        // grants. Explicit workspace predicates still bound every aggregate.
+        const rows = tx ? await run(tx) : await withWorkspace(workspaceId,
+          async query => await run(query),
+          { bypassRlsForAdmin: true, statementTimeoutMs: 2_000, lockTimeoutMs: 500 });
+        return rows[0] ?? null;
+      }
+      catch { return null; }
+    };
+    const lifecycle = await read(query => query<Counts[]>`
+      SELECT count(*) FILTER (WHERE operation.status = 'succeeded') AS succeeded,
+             count(*) FILTER (WHERE operation.status = 'failed') AS failed,
+             count(*) FILTER (WHERE operation.status = 'queued') AS queued,
+             count(*) FILTER (WHERE operation.status = 'running') AS running,
+             percentile_cont(0.95) WITHIN GROUP (ORDER BY
+               extract(epoch FROM (operation.finished_at - operation.created_at)) * 1000)
+               FILTER (WHERE operation.status = 'succeeded'
+                 AND operation.action IN ('provision', 'restore')
+                 AND operation.finished_at >= operation.created_at) AS success_p95_ms
+      FROM harness_shared.workspace_host_operations operation
+      WHERE operation.workspace_id = ${workspaceId}
+        AND operation.customer_workspace_id IS NOT NULL
+        AND (operation.created_at >= ${since}::timestamptz OR operation.status IN ('queued', 'running'))
+    `);
+    const hosts = await read(query => query<Counts[]>`
+      SELECT count(*) AS expected_running,
+             count(*) FILTER (WHERE host.health_attested_at >= ${freshSince}::timestamptz
+               AND host.health_status IN ('degraded', 'unreachable')) AS unhealthy,
+             count(*) FILTER (WHERE host.health_attested_at IS NULL
+               OR host.health_attested_at < ${freshSince}::timestamptz
+               OR host.health_status IS NULL OR host.health_status = 'unknown') AS unobserved,
+             count(*) FILTER (WHERE customer.billing_owner_kind = 'platform'
+               AND host.observed_state = 'running') AS platform_owned_running
+      FROM harness_shared.workspace_hosts host
+      JOIN harness_shared.customer_workspaces customer
+        ON customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
+      WHERE host.workspace_id = ${workspaceId} AND host.desired_state = 'running'
+        AND customer.state = 'active'
+    `);
+    const connections = await read(query => query<Counts[]>`
+      SELECT count(*) FILTER (WHERE connection.status = 'connected') AS connected,
+             count(*) FILTER (WHERE connection.status IN ('degraded', 'invalid')) AS degraded
+      FROM harness_shared.workspace_host_connections connection
+      WHERE connection.workspace_id = ${workspaceId} AND EXISTS (
+        SELECT 1 FROM harness_shared.workspace_hosts host
+        JOIN harness_shared.customer_workspaces customer
+          ON customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
+        WHERE host.workspace_id = connection.workspace_id AND host.connection_id = connection.id
+          AND host.desired_state = 'running' AND customer.state = 'active'
+      )
+    `);
+    // route_invocations stores RouteExecution status, not HTTP status codes. This is a
+    // sampled route-stack window; INTERNAL expertise calls and payload fields are excluded.
+    const api = await read(query => query<Counts[]>`
+      SELECT count(*) AS samples,
+             count(*) FILTER (WHERE status IN ('error', 'timeout')) AS errors,
+             percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)
+               FILTER (WHERE status = 'ok') AS p95_ms
+      FROM harness_shared.route_invocations
+      WHERE workspace_id = ${workspaceId} AND invoked_at >= ${since}::timestamptz
+        AND method <> 'INTERNAL' AND (path LIKE '/hosted/%' OR path LIKE '/api/hosted/%')
+    `);
+    return {
+      observedAt: nowMs, windowMs,
+      lifecycle: lifecycle ? { succeeded: n(lifecycle, 'succeeded'), failed: n(lifecycle, 'failed'),
+        queued: n(lifecycle, 'queued'), running: n(lifecycle, 'running'), successP95Ms: nullable(lifecycle, 'success_p95_ms') } : null,
+      hosts: hosts ? { expectedRunning: n(hosts, 'expected_running'), unhealthy: n(hosts, 'unhealthy'),
+        unobserved: n(hosts, 'unobserved'), platformOwnedRunning: n(hosts, 'platform_owned_running') } : null,
+      providerConnections: connections ? { connected: n(connections, 'connected'), degraded: n(connections, 'degraded') } : null,
+      api: api ? { samples: n(api, 'samples'), errors: n(api, 'errors'), p95Ms: nullable(api, 'p95_ms') } : null,
+    };
+  }
+}
+
 type JsonRecord = Record<string, unknown>;
 type ConnectionStatus = 'connected' | 'degraded' | 'invalid';
 type OperationStatus = 'queued' | 'running' | 'succeeded' | 'failed';

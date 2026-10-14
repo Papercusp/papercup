@@ -149,7 +149,7 @@ registerDegradationMechanism({
   mechanism: 'gate-pass-reuse',
   description:
     'green-checkpoint pass reuse: tasks whose prior passing proof could have been reused instead of re-running. ' +
-    'A collapse means the gate is re-running work it should be reusing (run 762a13a6 reused 0 of ~7,689).',
+    'A collapse means eligible passing proofs were not reused in the observed window.',
   scopeKeyed: true,
   yieldDrop: {
     minPreviousEligible: DEGRADATION_MIN_ELIGIBLE,

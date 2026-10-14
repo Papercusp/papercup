@@ -681,6 +681,19 @@ describe('evaluateHostPressure — fresh resource-governor host evidence', () =>
 });
 
 describe('infraStatus — PG + gateway + perf + MCP-proxy SLO (W8/P-008)', () => {
+  it('surfaces a witnessed hosted failure with its responder independently of PostHog and PG', () => {
+    const hostedControlPlane: NonNullable<InfraHealth['hostedControlPlane']> = {
+      observedAt: 1_000_000, windowMs: 3_600_000, lifecycle: null, api: null,
+      hosts: { expectedRunning: 2, unhealthy: 1, unobserved: 0, platformOwnedRunning: 1 },
+      providerConnections: { connected: 1, degraded: 0 },
+    };
+    const failed = infra({ pg: null, hostedControlPlane });
+    expect(infraStatus(failed)).toBe('crit');
+    expect(infraSummary(failed, false)).toContain('Responder: workspace-host controller');
+    expect(infraStatus(infra({ hostedControlPlane: { ...hostedControlPlane,
+      hosts: { ...hostedControlPlane.hosts!, unhealthy: 0 },
+    } }))).toBe('ok');
+  });
   it('ok when PG healthy, gateway up, no perf/mcp signal', () => {
     expect(infraStatus(infra())).toBe('ok');
   });
@@ -785,6 +798,12 @@ describe('infraCritAmbientOnly — EI-21025158485847408 (ambient-host infra crit
 
   it('true when perf crit is caused ONLY by ambient-host attribution and no other leg is crit', () => {
     expect(infraCritAmbientOnly(infra({ perf: ambientPerf }))).toBe(true);
+  });
+  it('does not downgrade a witnessed hosted fault when ambient host pressure is also present', () => {
+    expect(infraCritAmbientOnly(infra({ perf: ambientPerf, hostedControlPlane: {
+      observedAt: 1_000_000, windowMs: 3_600_000, lifecycle: null, hosts: null, api: null,
+      providerConnections: { connected: 0, degraded: 1 },
+    } }))).toBe(false);
   });
   it('false when perf is not crit at all', () => {
     expect(infraCritAmbientOnly(infra({ perf: null }))).toBe(false);

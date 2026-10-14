@@ -659,6 +659,8 @@ export function evaluateHostPressure(
  *  (visible, sub-page). ok otherwise. A null/stale perf verdict — and a null (unreadable)
  *  mcpProxy leg — contribute nothing (fail-soft). */
 export function infraStatus(d: InfraHealth): PanelStatus {
+  if ((d.hostedControlPlane?.hosts?.unhealthy ?? 0) > 0 ||
+      (d.hostedControlPlane?.providerConnections?.degraded ?? 0) > 0) return 'crit';
   if (d.perf?.status === 'crit') return 'crit';
   // A real, agent-facing tool-call failure stream OUTRANKS a greyed PG leg: a crit
   // MCP-proxy SLO breach reds Infra even if PG is momentarily unreadable this tick.
@@ -730,6 +732,12 @@ export function infraStatus(d: InfraHealth): PanelStatus {
  * in the sibling test fails if a crit renders a summary that names nothing.
  */
 export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
+  if ((d.hostedControlPlane?.hosts?.unhealthy ?? 0) > 0 ||
+      (d.hostedControlPlane?.providerConnections?.degraded ?? 0) > 0) {
+    return `Hosted control plane: ${d.hostedControlPlane?.hosts?.unhealthy ?? 'unknown'} freshly unhealthy hosts, ` +
+      `${d.hostedControlPlane?.providerConnections?.degraded ?? 'unknown'} degraded provider connections. ` +
+      'Responder: workspace-host controller; inspect the existing Hosts operation timeline and standing-health attestation.';
+  }
   const toolsCrit = d.toolFailures?.rating === 'broken';
   const mcpHard = d.mcpProxy?.hardFailures ?? 0;
   const mcpCrit = mcpHard >= MCP_PROXY_HARD_FAIL_CRIT;
@@ -818,6 +826,8 @@ export function infraSummary(d: InfraHealth, gatewayEnabled: boolean): string {
  * the same fail-safe stance `evaluatePerfSignals` itself documents for this split.
  */
 export function infraCritAmbientOnly(d: InfraHealth): boolean {
+  if ((d.hostedControlPlane?.hosts?.unhealthy ?? 0) > 0 ||
+      (d.hostedControlPlane?.providerConnections?.degraded ?? 0) > 0) return false;
   const perfCrit = d.perf?.status === 'crit';
   const hostPressureCrit = d.hostPressure?.status === 'crit';
   if (!perfCrit && !hostPressureCrit) return false;

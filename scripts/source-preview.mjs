@@ -541,6 +541,7 @@ export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFil
  * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, tauriInputs?: boolean, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
  */
 export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false, tauriInputs = false, operatorApi }) {
+  repo = realpathSync(repo);
   if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
   const { sha, paths } = await validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInputs });
   // Observations come from a separately selected root, never this exporter.

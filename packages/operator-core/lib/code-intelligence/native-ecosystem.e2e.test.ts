@@ -13,6 +13,40 @@ const baseUrl = process.env.OPERATOR_BASE_URL;
 const taskBriefItem = process.env.NATIVE_TASK_BRIEF_ITEM;
 const planningPlan = process.env.NATIVE_PLANNING_PLAN;
 
+type NativeFixtureTiming = {
+  timeoutMs?: number;
+  elapsedMs?: number;
+  remainingMs?: number;
+  phaseCount?: number;
+  phases?: Array<{ elapsedMs: number; line: string }>;
+};
+
+/** Keep a child failure actionable without embedding every phase in Vitest's saved error tail. */
+function nativeFixtureFailureDiagnostic(
+  label: string,
+  result: Awaited<ReturnType<typeof nativeFixtureProcess>>,
+): string {
+  const timingLine = result.output.split('\n').find(line => line.startsWith('NATIVE_FIXTURE_TIMING='));
+  let timing: NativeFixtureTiming | null = null;
+  try {
+    if (timingLine) timing = JSON.parse(timingLine.slice('NATIVE_FIXTURE_TIMING='.length)) as NativeFixtureTiming;
+  } catch { /* Preserve the bounded child tail even if timing evidence is malformed. */ }
+  const tailMarker = result.output.lastIndexOf('\ntail:\n');
+  const childOutput = tailMarker < 0 ? result.output : result.output.slice(tailMarker + '\ntail:\n'.length);
+  const timingSummary = timing && {
+    timeoutMs: timing.timeoutMs,
+    elapsedMs: timing.elapsedMs,
+    remainingMs: timing.remainingMs,
+    phaseCount: timing.phaseCount,
+    finalPhases: timing.phases?.slice(-4).map(phase => ({
+      elapsedMs: phase.elapsedMs,
+      line: phase.line.slice(0, 240),
+    })),
+  };
+  return `${label} child exit=${JSON.stringify({ code: result.code, signal: result.signal, timing: timingSummary })}\n` +
+    `child output tail:\n${childOutput.slice(-4_000)}`;
+}
+
 describe('native P018 private operator CLI incident claim and resume', () => {
   it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async () => {
     const root = resolve(import.meta.dirname, '../../../..');
@@ -28,7 +62,7 @@ describe('native P018 private operator CLI incident claim and resume', () => {
       [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/host-handler.ts', handlerPath], {
         cwd: root, env: process.env, timeoutMs: 120_000,
       });
-    expect(build.code, `signal=${build.signal ?? 'none'}\n${build.output}`).toBe(0);
+    expect(build.code, nativeFixtureFailureDiagnostic('Host bundle', build)).toBe(0);
     const handlerHash = createHash('sha256').update(readFileSync(handlerPath)).digest('hex');
     let pendingStage = '';
     let result;
@@ -47,7 +81,7 @@ describe('native P018 private operator CLI incident claim and resume', () => {
           }
         },
       });
-    expect(result.code, result.output).toBe(0);
+    expect(result.code, nativeFixtureFailureDiagnostic('Private fixture', result)).toBe(0);
     const line = result.output.split('\n').find(row => row.startsWith('NATIVE_INCIDENT_API_PROOF='));
     expect(line, result.output).toBeDefined();
     expect(JSON.parse(line!.slice('NATIVE_INCIDENT_API_PROOF='.length))).toMatchObject({

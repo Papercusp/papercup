@@ -159,7 +159,156 @@
     "guardItems": ["WI-6554700010012745", "WI-6554700010012746", "WI-6554700010012747", "WI-6554700010012748", "WI-6554700010012749", "WI-6554700010012750", "WI-6554700010012782", "WI-6554700010012783"],
     "verification": "All six named files have zero findings using the canonical box/literal detectors and the live resolved literal set; portable original log targets exist; JSON parses. Full-tree guard commands still exit1 on existing dream/study/cycle-events.jsonl findings, outside this owned evidence scope.",
     "guardLogs": ["~/.papercusp/scratch/c0523-evidence-box-guard.log", "~/.papercusp/scratch/c0523-evidence-literal-guard.log"],
-    "publishedReportHistory": "The original published report bodies and hashes remain immutable. Source MD path corrections do not rewrite those historical bodies. The current wrapper report above was published after correction and read back exactly."
+    "publishedReportHistory": "The original published report bodies and hashes remain immutable. Source MD path corrections do not rewrite those historical bodies. The current wrapper report above was published after correction and read back exactly.",
+    "settlement": {
+      "status": "done-committed",
+      "verifiedAt": "2026-10-14T12:04:25.965Z",
+      "scope": "Six named evidence files; the following hashes describe the corrected committed bytes before this settlement record was appended.",
+      "committedAtRead": "af04f0fa03df7edcc3c9cd1d2193f0f29eedea88",
+      "canonicalGuardProof": [
+        {
+          "path": "docs/evidence/green-main-acceptance-recovery-20261014.json",
+          "sha256": "7c40556eca305bf63104e8cc8a64b331f8f47122a87d10ef1e698b8809765525",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 3,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 3,
+            "identityLiterals": 3
+          }
+        },
+        {
+          "path": "docs/evidence/green-main-native-receipt-progress-20261014.md",
+          "sha256": "fd8f048fa2412e6aee68cc339e4e46466303cd855320a9fc1a742d0b9899b9a8",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 3,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 1,
+            "identityLiterals": 1
+          }
+        },
+        {
+          "path": "docs/evidence/green-main-native-receipt-settlement-20261014.json",
+          "sha256": "c598ccd60d8d6403d01e936d722fe2b27806e24095d6f7efbc66add111295141",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 3,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 3,
+            "identityLiterals": 3
+          }
+        },
+        {
+          "path": "docs/evidence/green-main-r12-paired-preparation-20261014.json",
+          "sha256": "1d9fb8d340b3a489b3e8528d45c4a7fbc89a8e21aca75c9a9f017eb0591c9296",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 9,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 9,
+            "identityLiterals": 8
+          }
+        },
+        {
+          "path": "docs/evidence/green-main-r12-preparation-progress-20261014.md",
+          "sha256": "4349cdf9dee5e96d4304f22052013abe6ebe44f7094e3c18e30d613ee495d4c7",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 0,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 0,
+            "identityLiterals": 0
+          }
+        },
+        {
+          "path": "docs/evidence/green-main-r12-wrapper-progress-20261014.md",
+          "sha256": "27a8e6039e590617fd98335769df544f54518ded57be0295ee9d61b2203d672d",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 3,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 1,
+            "identityLiterals": 1
+          }
+        }
+      ],
+      "completionReceipts": [
+        {
+          "id": "WI-6554700010012745",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012746",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012747",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012748",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012749",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012750",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012782",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012783",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        }
+      ],
+      "recurrenceGuard": "Existing maintained identity guard commands and their shared edit-time matcher; no new detector or exception.",
+      "limits": "No full-tree guard, current gate, operational R12 or shipment verdict. The prior full-tree guard logs remain historical evidence only."
+    }
+  },
+  "fullSelectionPreparation": {
+    "status": "writer-checked-no-complete-original-population-yet",
+    "reuses": ["scripts/affected-tests.mjs", "scripts/lib/related-tests.mjs#staticImportClosure", "libs/test-config/src/verifier-source.ts#VerifierSourceReceipt", "scripts/lib/budgeted-task-scheduler.mjs#readBudgetedTaskComparisonArtifacts"],
+    "writerFindings": [
+      "The maintained --dry/--dry-run route stops before taskContexts, the original duration history read and the execution boundary. Its status=dry-run tasks field is a task count; it does not enumerate every actual test file or attest runtime transforms.",
+      "taskContexts selects relatedFiles only when a concrete list exists; unrestricted lanes use null. Treating that null as an empty file set would undercount the original gate population.",
+      "staticImportClosure records static source and unresolved edges. Bare imports are excluded by that static mechanism; it cannot replace a dependency receipt or final transformed runtime closure.",
+      "The native artifact reader independently pins selection, source census, dependency bytes, runtime closure, every original estimate and all four original cohort/child receipts. Preparation must produce those original artifacts before binding any throughput parameter."
+    ],
+    "next": "Resolve the full original gate-file population from the maintained selector and each lane's actual include/exclude/filter semantics; preserve unenumerated residue explicitly. Then pin source and independent dependencies and obtain final-transform runtime closure. Do not substitute a task-only dry plan, static closure or the old 32-file calibration. D020/P006 remains held; no new comparison, native acceptance or amendment review."
   },
   "next": "No native command handles remain. Prepare actual original full-gate inputs and runtime closure without launching the D020-held cohort. Wrapper local integration is complete; reuse saved proofs only at matching source hashes. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
 }
