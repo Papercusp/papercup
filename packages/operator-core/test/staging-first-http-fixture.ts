@@ -56,7 +56,8 @@ async function main() {
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-setup') {
     await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
     console.log('CURRENT_SU_NATIVE_SETUP_RECEIPT ' + JSON.stringify({ workspace,
-      accountId: 'private-current-su', provider: 'codex', providerForwarding: false }));
+      accountId: 'private-current-su', provider: 'codex', providerForwarding: false,
+      launcherPath: process.env.PAPERCUSP_PSU_LAUNCHER ?? null }));
     return;
   }
   if (['committed-reader-setup', 'committed-reader-setup-exception'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '')) {

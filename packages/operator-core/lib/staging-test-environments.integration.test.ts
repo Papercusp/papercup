@@ -25,7 +25,8 @@ describe('current-build execution route contract', () => {
       expect(line, result.stdout.slice(-2000)).toBeTruthy();
       expect(JSON.parse(line!.slice('CURRENT_SU_NATIVE_SETUP_RECEIPT '.length))).toMatchObject({
         workspace: expect.stringMatching(/^test-runtime-/), accountId: 'private-current-su',
-        provider: 'codex', providerForwarding: false });
+        provider: 'codex', providerForwarding: false,
+        launcherPath: join(root, 'apps/operator/scripts/psu-launcher.mjs') });
     } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
   }, 200_000);
 
