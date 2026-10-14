@@ -748,8 +748,8 @@ export function claudeAuthModeForRef(credentialRef: string): ClaudeAuthMode {
  * account can rotate to a Console API-key account and must present THAT account's credential shape.
  *  - `oauth` (subscription): `authorization: Bearer <token>` and the `oauth-2025-04-20` beta.
  *  - `api-key` (Console credits): `x-api-key: <key>`, NO `authorization`, and the OAuth beta
- *    REMOVED — a Console key carrying the subscription-only beta is rejected — while every other
- *    client beta (context-1m, …) is kept.
+ *    REMOVED together with Claude Code's beta and CLI user-agent — a Console key carrying those
+ *    subscription identity headers is rejected — while feature betas (context-1m, …) are kept.
  * Any `authorization` / `x-api-key` already in `base` is dropped first, so a caller can never
  * smuggle its own credential upstream (the gateway also strips them at intake; this is the
  * attempt-level backstop). Header names are matched case-insensitively.
@@ -767,7 +767,7 @@ export function claudeAttemptHeaders(
     if (lk === 'authorization' || lk === 'x-api-key' || lk === 'anthropic-workspace-id') continue;
     // Anthropic treats the Claude CLI user-agent as subscription traffic. Forwarding it on a
     // Console API-key fallback produces a misleading HTTP400 credit-balance error.
-    if (lk === 'user-agent' && /^claude-cli\//i.test(v)) continue;
+    if (authMode === 'api-key' && lk === 'user-agent' && /^claude-cli\//i.test(v)) continue;
     if (lk === 'anthropic-beta') {
       beta = beta ? `${beta},${v}` : v;
       continue;
@@ -786,4 +786,28 @@ export function claudeAttemptHeaders(
   }
   if (flags.size) out['anthropic-beta'] = [...flags].join(',');
   return out;
+}
+
+/** Translate CLI billing attribution to the SDK route on an API-key attempt. Keep the original body
+ * available for a later rotation back to OAuth, and leave every instruction/cache marker intact. */
+export function claudeAttemptBody(body: Uint8Array | null, authMode: ClaudeAuthMode): Uint8Array | null {
+  if (authMode !== 'api-key' || body === null) return body;
+  const text = Buffer.from(body).toString('utf8');
+  if (!text.includes('x-anthropic-billing-header:')) return body;
+  try {
+    const parsed = JSON.parse(text) as { system?: unknown };
+    if (!Array.isArray(parsed.system)) return body;
+    let changed = false;
+    const system = parsed.system.map((block) => {
+      if (block?.type !== 'text' || typeof block.text !== 'string' || !/^x-anthropic-billing-header:/i.test(block.text)) return block;
+      const translated = block.text.replace(/\bcc_entrypoint=cli(?=;|\s|$)/g, 'cc_entrypoint=sdk-cli');
+      if (translated === block.text) return block;
+      changed = true;
+      return { ...block, text: translated };
+    });
+    if (!changed) return body;
+    return Buffer.from(JSON.stringify({ ...parsed, system }));
+  } catch {
+    return body;
+  }
 }
