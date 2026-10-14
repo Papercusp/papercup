@@ -134,6 +134,7 @@ async function scanPrivilegedRetentionHolders(paths: readonly string[], control:
   // Both namespaces and the ORIGINAL caller's PID are positive controls.
   const worker = `
     import { readFile } from 'node:fs/promises';
+    import { readdirSync, readlinkSync } from 'node:fs';
     const input = [];
     for await (const chunk of process.stdin) input.push(chunk);
     const paths = JSON.parse(Buffer.concat(input).toString('utf8'));
@@ -143,6 +144,8 @@ async function scanPrivilegedRetentionHolders(paths: readonly string[], control:
     const { openWriterPidsMany } = await import(process.argv[1]);
     const result = await openWriterPidsMany(paths, {
       descendants: true, includeCwd: true, failClosed: true, deadlineMs: ${RETENTION_HOLDER_SCAN_MS},
+      // This process is an enrolled, isolated worker, never the operator loop.
+      procIo: { readdir: (path) => readdirSync(path), readlink: (path) => readlinkSync(path) },
     });
     process.stdout.write(JSON.stringify({ complete: result.complete, byPath: [...result.byPath], diagnostics: result.diagnostics }));
   `;
