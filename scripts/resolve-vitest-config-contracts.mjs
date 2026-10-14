@@ -9,7 +9,12 @@
 
 import { createVitest, resolveConfig } from 'vitest/node';
 import { glob } from 'tinyglobby';
-import { resolve, relative, isAbsolute } from 'node:path';
+import { resolve, relative, isAbsolute, dirname } from 'node:path';
+import { createRequire } from 'node:module';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { readFileSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 const MARKER = 'PC_VITEST_CONFIG_CONTRACTS=';
 
@@ -23,11 +28,73 @@ const input = JSON.parse(await readStdin());
 const requests = Array.isArray(input.requests) ? input.requests : [];
 const results = [];
 
+// Astro sync owns process-global content state. Each workspace uses a fresh
+// process, then the exact installed checker population after sync. Discovery
+// never runs diagnostics; its original `astro check` remains an obligation.
+if (process.argv.includes('--astro-selection-child')) {
+  const request = requests[0];
+  try {
+    if (requests.length !== 1 || request.runner !== 'astro-check' || request.syncBeforeCheck !== true)
+      throw new Error('astro-sync-not-requested');
+    process.chdir(request.root);
+    process.env.NODE_ENV = 'production';
+    const workspaceRequire = createRequire(resolve(request.root, 'package.json'));
+    const astroPackage = workspaceRequire.resolve('astro/package.json');
+    const checkModule = workspaceRequire.resolve('@astrojs/check');
+    const checkRequire = createRequire(checkModule);
+    const languageServerModule = checkRequire.resolve('@astrojs/language-server');
+    const typescriptModule = checkRequire.resolve('typescript');
+    const syncModule = resolve(dirname(astroPackage), 'dist/core/sync/index.js');
+    const { default: sync } = await import(pathToFileURL(syncModule).href);
+    await sync({});
+    const { AstroCheck } = checkRequire('@astrojs/language-server');
+    const checker = new AstroCheck(request.root, typescriptModule);
+    // Same exclusion as AstroCheck.lint, not a source glob or a tsconfig approximation.
+    const absoluteFiles = checker.linter.getRootFileNames()
+      .filter(file => !file.endsWith('.vue') && !file.endsWith('.svelte'));
+    const repositoryRoot = realpathSync(request.repositoryRoot ?? request.root);
+    const repositoryPath = file => {
+      const result = relative(repositoryRoot, realpathSync(file)).replaceAll('\\', '/');
+      if (!result || isAbsolute(result) || result === '..' || result.startsWith('../'))
+        throw new Error('astro-input-escapes-repository');
+      return result;
+    };
+    const files = [...new Set(absoluteFiles.map(repositoryPath))].sort();
+    if (!files.length || files.length !== absoluteFiles.length) throw new Error('invalid-astro-file-population');
+    const producerFiles = [astroPackage, checkModule, syncModule, languageServerModule, typescriptModule,
+      resolve(dirname(languageServerModule), 'check.js'),
+      resolve(dirname(astroPackage), 'dist/cli/check/index.js'), resolve(request.root, 'package.json'),
+      ...(checker.getTsconfig() ? [checker.getTsconfig()] : [])];
+    const inputs = [...new Set([...files, ...producerFiles.map(repositoryPath)])].sort().map(file => ({
+      path: file, sha256: createHash('sha256').update(readFileSync(resolve(repositoryRoot, file))).digest('hex'),
+    }));
+    results.push({ ok: true, enumerated: true, repositoryFiles: files, inputs,
+      config: { runner: 'astro-check', tsconfig: checker.getTsconfig() ? repositoryPath(checker.getTsconfig()) : null },
+      sync: { status: 'completed', beforePopulation: true },
+      executed: false, runtimeClosure: 'unmeasured', operationalAcceptance: false });
+  } catch (error) {
+    results.push({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+  process.stdout.write(`${MARKER}${JSON.stringify({ results })}\n`);
+  process.exit(0);
+}
+
 for (const request of requests) {
   const cwd = process.cwd();
   const keys = ['PC_TEST_LANE', 'PC_TEST_FILTER_LIST', 'PC_TEST_REUSE_SKIP_LIST', 'TEMPLATE_CHECKS_CONFIG'];
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   try {
+    if (request.runner === 'astro-check') {
+      const output = execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--astro-selection-child'], {
+        cwd: request.root, input: JSON.stringify({ requests: [request] }), encoding: 'utf8',
+        timeout: 120_000, maxBuffer: 64 * 1024 * 1024,
+      });
+      const marker = output.split(/\r?\n/).reverse().find(line => line.startsWith(MARKER));
+      const child = marker && JSON.parse(marker.slice(MARKER.length)).results;
+      if (!Array.isArray(child) || child.length !== 1) throw new Error('invalid-astro-discovery-receipt');
+      results.push(child[0]);
+      continue;
+    }
     if (request.enumerateFiles) {
       // Configs derive lane membership from cwd, exactly as npm's workspace child does.
       process.chdir(request.root);
