@@ -249,6 +249,41 @@ describe('censusSpawnArgs', () => {
     censusSpawnArgs([], given);
     expect(given).toEqual({ PATH: '/usr/bin' });
   });
+
+  it('keeps census Git independent of inherited host sidecar routes', async () => {
+    const { gitSidecarEnabled } = await import('../fleet/git-via-sidecar');
+    const overrides = ['PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR', 'PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR',
+      'PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR', 'PAPERCUSP_FUTURE_READER_SPAWN_SIDECAR'];
+    const given = { PATH: '/usr/bin', PAPERCUSP_CLUSTER: '16',
+      PAPERCUSP_SPAWNER_IPC_SOCKET: '/foreign/host.sock', PAPERCUSP_SPAWNER_SIDECAR: '1',
+      ...Object.fromEntries(overrides.map(key => [key, '1'])),
+      PAPERCUSP_WORKSPACE_ID: 'private-verifier', PAPERCUSP_ADMISSION_CONTEXT: 'parent-lineage' };
+    // Control: host-only overrides select the sidecar in a short-lived census.
+    for (const key of overrides) expect(gitSidecarEnabled(key, given)).toBe(true);
+    const { env } = censusSpawnArgs([], given);
+    for (const key of overrides) expect(gitSidecarEnabled(key, env)).toBe(false);
+    expect(env.PAPERCUSP_SPAWNER_IPC_SOCKET).toBeUndefined();
+    expect(env.PAPERCUSP_SPAWNER_SIDECAR).toBeUndefined();
+    expect(env.PAPERCUSP_CLUSTER).toBeUndefined();
+    expect(env).toMatchObject({ PATH: '/usr/bin', PAPERCUSP_WORKSPACE_ID: 'private-verifier',
+      PAPERCUSP_ADMISSION_CONTEXT: 'parent-lineage', NODE_OPTIONS: LOADER_OPTION });
+    expect(given.PAPERCUSP_SPAWNER_IPC_SOCKET).toBe('/foreign/host.sock');
+  });
+
+  it('scrubs at the real census spawn boundary without losing a restricted-write refusal', async () => {
+    const { gitSidecarEnabled } = await import('../fleet/git-via-sidecar');
+    const { runBundleRestrictedHoldPreflight } = await import('../../../../scripts/lib/restricted-hold-preflight.mjs');
+    const spawn = vi.fn((_command, _args, options) => {
+      expect(gitSidecarEnabled('PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR', options.env)).toBe(false);
+      expect(options.env.PAPERCUSP_SPAWNER_IPC_SOCKET).toBeUndefined();
+      return { status: 3, stdout: line({ verdict: 'refuse', error: 'restricted_write_held', hint: 'source is held' }) };
+    });
+    expect(runBundleRestrictedHoldPreflight({ repoRoot: '/repo', inputsFile: '/repo/inputs.json',
+      env: { PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR: '1', PAPERCUSP_SPAWNER_IPC_SOCKET: '/foreign/host.sock' },
+      spawn: spawn as never,
+    })).toEqual({ verdict: 'refuse', error: 'restricted_write_held', hint: 'source is held' });
+    expect(spawn).toHaveBeenCalledOnce();
+  });
 });
 
 it('formats a refusal as one greppable line that says nothing was measured', () => {

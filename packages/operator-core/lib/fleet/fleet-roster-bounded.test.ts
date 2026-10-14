@@ -153,6 +153,33 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     expect(findLiveHostMock).not.toHaveBeenCalled();
   });
 
+  it('degrades a stalled psu-host discovery leg within the roster budget', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    findLiveHostAsyncMock.mockReturnValue(neverSettles<never>());
+
+    let completed = false;
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      readPresence: async () => [{ ...pres('su-1'), agentRole: 'su' }],
+    }).then((result) => {
+      completed = true;
+      return result;
+    });
+
+    await vi.advanceTimersByTimeAsync(FLEET_ROSTER_SUBREAD_TIMEOUT_MS - 1);
+    expect(completed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await resultPromise;
+
+    expect(result.degradedLegs).toContain('psuHosts');
+    expect(result.entries).toHaveLength(1);
+    expect(findLiveHostAsyncMock).toHaveBeenCalledWith('su-1');
+    warnSpy.mockRestore();
+  });
+
   it('reads the durable leader through the liveness legs even when it has no presence row', async () => {
     fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
     fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());

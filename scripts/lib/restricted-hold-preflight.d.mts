@@ -8,6 +8,9 @@ export declare const RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER: 'admitted-by-
 export declare const RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_VITEST: 'admitted-by-vitest-root';
 export declare const RESTRICTED_HOLD_PREFLIGHT_CLI: string;
 
+export type BundleHoldProgress = { step: string; event: 'start' | 'end'; status?: number; error?: string };
+export declare function recordBundleHoldProgress(progress: BundleHoldProgress, env?: NodeJS.ProcessEnv): void;
+
 export type RestrictedHoldPreflightRefusal = { verdict: 'refuse'; error: string; hint: string };
 export type RestrictedHoldPreflightSkipReason = 'testing-run' | 'admitted-upstream' | 'release-gate' | 'nested-in-vitest';
 export type RestrictedHoldPreflightResult =

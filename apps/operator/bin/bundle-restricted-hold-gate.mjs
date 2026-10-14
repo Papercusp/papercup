@@ -38,6 +38,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import {
   formatBundleRestrictedHoldRefusal,
+  recordBundleHoldProgress,
   runBundleRestrictedHoldPreflight,
 } from '../../../scripts/lib/restricted-hold-preflight.mjs';
 
@@ -138,13 +139,19 @@ export function collectBundleInputs({ baseDir, metafiles = [], metafileDirs = []
 export function runGate({ root, baseDir, outdir, snapshotDir, metafiles, metafileDirs, listFiles, paths, preflight = runBundleRestrictedHoldPreflight, log = console.log }) {
   let verdict;
   let inputCount = 0;
+  let collectingInputs = true;
   try {
+    recordBundleHoldProgress({ step: 'restricted-hold-inputs', event: 'start' });
     const inputs = collectBundleInputs({ baseDir, metafiles, metafileDirs, listFiles, paths });
     inputCount = inputs.files.length + inputs.dirs.length;
     const inputsFile = join(snapshotDir, 'inputs.json');
     writeFileSync(inputsFile, JSON.stringify(inputs));
+    recordBundleHoldProgress({ step: 'restricted-hold-inputs', event: 'end', status: 0 });
+    collectingInputs = false;
     verdict = preflight({ repoRoot: root, inputsFile });
   } catch (error) {
+    if (collectingInputs) recordBundleHoldProgress({ step: 'restricted-hold-inputs', event: 'end', status: 3,
+      error: error instanceof Error ? error.message : String(error) });
     verdict = {
       verdict: 'refuse',
       error: 'restricted_hold_state_unknown',

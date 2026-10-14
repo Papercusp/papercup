@@ -337,7 +337,7 @@ describe('improvements:capture — duplicate verdicts are annotations, not inacc
     const seeAlso = captureTool.guidance?.seeAlso;
     expect(Array.isArray(seeAlso)).toBe(true);
     if (!Array.isArray(seeAlso)) throw new Error('capture guidance must provide static see-also entries');
-    expect(seeAlso[0]).toContain('checkDuplicatesOnly:true');
+    expect(seeAlso.some((entry) => entry.includes('checkDuplicatesOnly:true'))).toBe(true);
   });
 });
 

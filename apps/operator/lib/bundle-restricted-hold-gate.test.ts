@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, w
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   RESTRICTED_HOLD_PREFLIGHT_EXIT,
   RESTRICTED_HOLD_PREFLIGHT_MARKER,
@@ -58,6 +58,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(work, { recursive: true, force: true });
 });
 
@@ -138,6 +139,29 @@ describe('runGate', () => {
     return { code, lines };
   }
 
+  it('retains input collection and census timeout evidence outside redirected process output', () => {
+    snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs'] });
+    rebuild();
+    const journal = join(work, 'steps.jsonl');
+    vi.stubEnv('BUNDLE_HOST_STEP_LOG', journal);
+    const main = writeMetafile('hono-host.mjs.meta.json', ['bin/hono-host.ts']);
+    const { code } = gate(opts => runBundleRestrictedHoldPreflight({ ...opts,
+      spawn: (() => ({ status: null, signal: 'SIGKILL', error: new Error('ETIMEDOUT'),
+        pid: 0, output: [], stdout: '', stderr: '' })) as typeof spawnSync,
+    }), [main]);
+    expect(code).toBe(GATE_EXIT.refuse);
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
+    const records = readFileSync(journal, 'utf8').trim().split('\n').map(row => JSON.parse(row));
+    expect(records.map(({ step, event, status }) => ({ step, event, status }))).toEqual([
+      { step: 'restricted-hold-inputs', event: 'start', status: undefined },
+      { step: 'restricted-hold-inputs', event: 'end', status: 0 },
+      { step: 'restricted-hold-census', event: 'start', status: undefined },
+      { step: 'restricted-hold-census', event: 'end', status: 3 },
+    ]);
+    expect(records.at(-1).error).toContain('ETIMEDOUT');
+    expect(records.every(row => typeof row.at === 'number' && typeof row.pid === 'number')).toBe(true);
+  });
+
   it('admits: keeps the fresh bundle, discards the snapshot, and hands the census the exact inputs', () => {
     snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs', 'blueprints', 'sql'] });
     rebuild();
@@ -198,7 +222,7 @@ describe('bundle-host.sh wiring', () => {
   it('snapshots before esbuild, gates after the last publish and before the freshness stamp', () => {
     const order = [
       at('"$GATE_HELPER" snapshot'),
-      at('npx --yes esbuild@0.25.0 "$ENTRY"'),
+      at('bundle_host_run_step host-compile bundle_host_esbuild "$REPO_ROOT" "$ENTRY"'),
       at('cp -f "$METAFILE" "$BUNDLE_HOST_GATE_META_DIR/${OUTFILE##*/}.meta.json"'),
       at('mv -f "$TMPFILE" "$OUTFILE"'),
       at('GATE_PENDING=1'),

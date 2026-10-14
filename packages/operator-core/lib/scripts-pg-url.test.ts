@@ -359,11 +359,30 @@ function isPortableExplicitPgReader(rel: string, masked: string): boolean {
 const TEST_PG_SUPERVISOR = 'with-test-pg.mjs';
 function isTestPgSupervisor(rel: string, masked: string): boolean {
   if (rel !== TEST_PG_SUPERVISOR) return false;
-  return masked.includes('startEmbeddedPostgresServer') &&
-    masked.includes("PAPERCUSP_PG_PORT: String(port)") &&
-    masked.includes("PAPERCUSP_SKIP_PG_DISCOVERY: '1'") &&
-    masked.includes('const testAdminUrl = new URL(pg.urls.admin)') &&
-    masked.includes('PAPERCUSP_TEST_PG_ADMIN_URL: testAdminUrl.toString()');
+  const compact = masked.replace(/\s+/g, ' ');
+  const importsPrivatePg = /const \{\s*startEmbeddedPostgresServer\s*\}\s*=\s*await import\(\s*['"]\.\.\/libs\/papercusp\/packages\/embedded-postgres-server\/src\/index\.js['"]\s*\)/.test(compact);
+  const startsPrivatePg = /pg\s*=\s*await startEmbeddedPostgresServer\(\s*\{\s*dataDir,\s*port,\s*dbSqlDir:\s*sqlDir/.test(compact);
+  const adminUrlAt = compact.indexOf('const testAdminUrl = new URL(pg.urls.admin);');
+  const childLaunchAt = compact.indexOf('child = spawn(cmd[0], childArgs');
+  if (!importsPrivatePg || !startsPrivatePg || adminUrlAt < 0 || childLaunchAt < adminUrlAt) return false;
+
+  const adminPreflight = compact.slice(adminUrlAt, childLaunchAt);
+  const validatesPrivateAdminUrl =
+    adminPreflight.includes("!['postgres:', 'postgresql:'].includes(testAdminUrl.protocol)") &&
+    adminPreflight.includes("!['localhost', '127.0.0.1', '[::1]'].includes(testAdminUrl.hostname)") &&
+    adminPreflight.includes('testAdminUrl.port !== String(port)') &&
+    adminPreflight.includes('!testAdminUrl.username') &&
+    adminPreflight.includes('!testAdminUrl.pathname.slice(1)');
+  if (!validatesPrivateAdminUrl) return false;
+
+  const childLaunch = compact.slice(childLaunchAt);
+  const envAt = childLaunch.indexOf('env: {');
+  const envEndAt = childLaunch.indexOf('}, detached: isolatedRuntime', envAt);
+  if (envAt < 0 || envEndAt < 0) return false;
+  const childEnv = childLaunch.slice(envAt, envEndAt);
+  return childEnv.includes('PAPERCUSP_PG_PORT: String(port)') &&
+    childEnv.includes("PAPERCUSP_SKIP_PG_DISCOVERY: '1'") &&
+    childEnv.includes('PAPERCUSP_TEST_PG_ADMIN_URL: testAdminUrl.toString()');
 }
 
 function handRolledFiles(): string[] {
@@ -434,8 +453,11 @@ describe('the guard is falsifiable', () => {
     expect(isTestPgSupervisor(TEST_PG_SUPERVISOR, masked)).toBe(true);
     expect(isTestPgSupervisor('another-script.mjs', masked)).toBe(false);
     for (const mutated of [
-      masked.replace('startEmbeddedPostgresServer', 'startExternalPostgresServer'),
-      masked.replace("PAPERCUSP_SKIP_PG_DISCOVERY: '1'", "PAPERCUSP_SKIP_PG_DISCOVERY: '0'"),
+      masked.replace('await startEmbeddedPostgresServer({', 'await startExternalPostgresServer({'),
+      masked.replace('const { startEmbeddedPostgresServer } = await import(', 'const { startExternalPostgresServer } = await import('),
+      masked.split("PAPERCUSP_SKIP_PG_DISCOVERY: '1'").join("PAPERCUSP_SKIP_PG_DISCOVERY: '0'"),
+      masked.replace("!['localhost', '127.0.0.1', '[::1]'].includes(testAdminUrl.hostname)", 'true'),
+      masked.replace('PAPERCUSP_PG_PORT: String(port)', 'PAPERCUSP_PG_PORT: String(port + 1)'),
       masked.replace('const testAdminUrl = new URL(pg.urls.admin)', 'const testAdminUrl = new URL(process.env.DATABASE_URL)'),
       masked.replace('PAPERCUSP_TEST_PG_ADMIN_URL: testAdminUrl.toString()', 'PAPERCUSP_TEST_PG_ADMIN_URL: process.env.DATABASE_URL'),
     ]) expect(isTestPgSupervisor(TEST_PG_SUPERVISOR, mutated)).toBe(false);

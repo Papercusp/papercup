@@ -186,6 +186,21 @@ describe('fleet metric scope resolver and query kernel', () => {
     expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('presence') });
   });
 
+  it('preserves explicit unavailable behavior when psu-host discovery degrades', async () => {
+    const result = await resolveFleetMetricScope(
+      { workspaceId: 'ws', harness: 'papercusp', fleet: 'fleet-a', flowMode: 'current-spec' },
+      deps({
+        listFleetRosterDiagnosed: async () => ({ entries: [], degradedLegs: ['psuHosts'] }),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'fleet_metrics_unavailable',
+      reason: 'current roster read degraded: psuHosts',
+      recoverVia: 'fleet:status { fleet }',
+    });
+  });
+
   it('turns a datastore exception into an explicit unavailable envelope', async () => {
     const result = await resolveFleetMetricScope(
       { workspaceId: 'ws', harness: 'papercusp', fleet: 'fleet-a', flowMode: 'current-spec' },

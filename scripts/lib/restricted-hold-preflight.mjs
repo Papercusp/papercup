@@ -11,6 +11,7 @@
 // entry (restricted-hold-preflight-cli.ts) that runs the exact `restrictedHoldRefusal` testing:run
 // uses. It fails CLOSED: no marker line, bad JSON, a crash or a timeout all refuse.
 import { spawnSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -47,6 +48,12 @@ export const RESTRICTED_HOLD_PREFLIGHT_CLI = fileURLToPath(
 );
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+
+/** Reuse the builder's retained step journal, including evidence from a killed census child. */
+export function recordBundleHoldProgress(progress, env = process.env) {
+  if (!env.BUNDLE_HOST_STEP_LOG) return;
+  appendFileSync(env.BUNDLE_HOST_STEP_LOG, JSON.stringify({ at: Date.now() / 1000, pid: process.pid, ...progress }) + '\n');
+}
 
 function unknownState(why) {
   return {
@@ -200,7 +207,18 @@ export function runBundleRestrictedHoldPreflight({ repoRoot, inputsFile, env = p
   // snapshot dir relative to apps/operator (the default OUTFILE is dist-host/hono-host.mjs). A
   // relative path crossing that cwd change made every default build fail closed with ENOENT, so
   // resolve it here, in the caller's frame, before the cwd changes.
-  return spawnCensus({ repoRoot, files: [], env, timeoutMs, spawn, leading: ['--bundle-inputs', resolve(inputsFile)] });
+  const step = 'restricted-hold-census';
+  recordBundleHoldProgress({ step, event: 'start' }, env);
+  let verdict;
+  try {
+    verdict = spawnCensus({ repoRoot, files: [], env, timeoutMs, spawn, leading: ['--bundle-inputs', resolve(inputsFile)] });
+  } catch (error) {
+    recordBundleHoldProgress({ step, event: 'end', status: 3, error: error instanceof Error ? error.message : String(error) }, env);
+    throw error;
+  }
+  recordBundleHoldProgress({ step, event: 'end', status: verdict.verdict === 'admit' ? 0 : 3,
+    ...(verdict.verdict === 'refuse' ? { error: verdict.hint } : {}) }, env);
+  return verdict;
 }
 
 /**
@@ -287,9 +305,20 @@ export function censusSpawnArgs(args, env) {
   const loaderImport = `--import=${pathToFileURL(COMMITTED_SOURCE_LOADER).href}`;
   const inherited = env.NODE_OPTIONS ?? '';
   const nodeOptions = inherited.includes(loaderImport) ? inherited : `${loaderImport} ${inherited}`.trim();
+  // A census is a short-lived verifier child, not an operator subsystem.
+  // Host-only overrides can otherwise route its committed Git-object reads
+  // into a foreign shared sidecar and fail publication on that host's circuit.
+  // Preserve workspace/database/admission lineage and every restriction check.
+  const censusEnv = Object.fromEntries(Object.entries(env).filter(([key]) =>
+    key !== 'PAPERCUSP_CLUSTER' &&
+    key !== 'PAPERCUSP_SPAWNER_IPC_SOCKET' &&
+    key !== 'PAPERCUSP_SPAWNER_SIDECAR' &&
+    key !== 'PAPERCUSP_SPAWNER_SIDECAR_MODE' &&
+    !/^PAPERCUSP_.*_SPAWN_SIDECAR$/.test(key),
+  ));
   return {
     argv: ['--import', COMMITTED_SOURCE_LOADER, '--import', 'tsx', RESTRICTED_HOLD_PREFLIGHT_CLI, ...args],
-    env: { ...env, NODE_OPTIONS: nodeOptions },
+    env: { ...censusEnv, NODE_OPTIONS: nodeOptions },
   };
 }
 
