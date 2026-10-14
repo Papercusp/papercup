@@ -444,6 +444,15 @@ describe('spawnAgentInHarness — happy path', () => {
   it('times out a spawn that never reaches child pid and releases only its reserved work item claim', async () => {
     vi.useFakeTimers();
     vi.stubEnv('PAPERCUSP_SPAWN_CHILD_START_TIMEOUT_MS', '1000');
+    vi.mocked(superviseCrash).mockResolvedValue({
+      spawnId: 'timed-out-spawn',
+      action: 'restart',
+      intensity: null,
+      strategy: 'one_for_one',
+      toRestart: ['timed-out-spawn'],
+      reason: 'restart (one_for_one)',
+      relaunches: [],
+    });
     let captured: AbortSignal | undefined;
     vi.mocked(spawnInvokeOnceWithFallback).mockImplementation(((
       _d: string,
@@ -479,6 +488,14 @@ describe('spawnAgentInHarness — happy path', () => {
         harness: 'demo',
         expectedAssignee: res.spawnId,
       });
+      expect(superviseCrash).toHaveBeenCalledTimes(1);
+      expect(superviseCrash).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        workspaceId: 'ws-1',
+        spawnId: res.spawnId,
+        reason: expect.stringContaining('timed out before child process start'),
+      }));
+      expect(vi.mocked(releaseWorkItem).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(superviseCrash).mock.invocationCallOrder[0]);
     } finally {
       vi.useRealTimers();
       vi.unstubAllEnvs();

@@ -1630,6 +1630,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     errorMessage?: string | null;
     outputTail?: string | null;
     releaseClaim?: boolean;
+    superviseBeforeChildStart?: boolean;
   }): Promise<void> => {
     if (terminalRecorded) return;
     terminalRecorded = true;
@@ -1697,7 +1698,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       localSpawnPids.delete(spawnId);
     }
     let restartPending = false;
-    if (finishedDurably && args.status === 'failed' && childStarted) {
+    if (finishedDurably && args.status === 'failed' && (childStarted || args.superviseBeforeChildStart)) {
       try {
         const { superviseCrash } = await import('./supervision');
         const result = await superviseCrash(sql, {
@@ -1739,6 +1740,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       status: 'failed',
       errorMessage: `spawn launch timed out before child process start after ${timeoutMs}ms`,
       releaseClaim: true,
+      superviseBeforeChildStart: true,
     }).catch(() => {
       /* PG down — nothing left to record to */
     });

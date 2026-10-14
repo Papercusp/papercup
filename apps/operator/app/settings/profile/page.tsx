@@ -7,6 +7,7 @@ import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
 import { useLexicon } from '@/lib/useLexicon';
 import { OperatorSettingsSlot } from '@papercusp/operator-ui/settings-slots';
 import { CloudMonitoringPreferences } from '@papercusp/operator-ui/browser-telemetry';
+import { CustomerDataControls } from './CustomerDataControls';
 
 /**
  * The `preferred_models` block (scoper/worker/validator/reviewer/orchestrator)
@@ -31,7 +32,7 @@ const ProfileSchema = z.object({
 type ProfileFormData = z.infer<typeof ProfileSchema>;
 
 export default function ProfilePage() {
-  return <><OperatorSettingsSlot name="profile" fallback={<DesktopProfilePage />} /><CloudMonitoringPreferences /></>;
+  return <><OperatorSettingsSlot name="profile" fallback={<DesktopProfilePage />} /><CustomerDataControls /><CloudMonitoringPreferences /></>;
 }
 
 function DesktopProfilePage() {

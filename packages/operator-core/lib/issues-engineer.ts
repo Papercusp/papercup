@@ -2137,7 +2137,8 @@ async function listIssuesWithLimit(filter: ListIssuesFilter, rowLimit: number | 
   // Complete metric reads do not need a database sort of large text/JSON rows.
   // Keep the same created-time ordering after mapping. Limited reads must sort
   // before LIMIT; every ordinary full/detail caller also retains its SQL order.
-  const metricSource = rowLimit === null && filter.payloadProjection === 'fleetMetrics';
+  const metricSource = rowLimit === null &&
+    (filter.payloadProjection === 'fleetMetrics' || filter.payloadProjection === 'fleetMetricsCensus');
   // Kind gate: an explicit single `kind`, else an explicit `kinds` set, else the
   // default = ISSUE_KINDS (bug|change) so `task` work-items never surface as issues.
   const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);

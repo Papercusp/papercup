@@ -761,7 +761,9 @@ export function captureVerifierDependencies({ dest, receipt }) {
       timeout: 120_000, maxBuffer: 128 * 1024 * 1024 });
     if (records.error || records.status !== 0)
       throw new PreviewError(`verifier dependency census failed: ${records.error?.message || records.stderr || records.status}`, 2);
-    const population = records.stdout.trimEnd().split('\n').filter(Boolean).map(line => line.split('\t'));
+    // The final link-target column is empty for regular files/directories.
+    // Trimming whitespace would erase that field from the final record.
+    const population = records.stdout.split('\n').filter(Boolean).map(line => line.split('\t'));
     assert.ok(population.every(row => row.length === 10 && ['d', 'f', 'l'].includes(row[1])),
       'Invalid verifier dependency generation records');
     const files = verifierSourceFiles(tree, { symlinkRoot: root,

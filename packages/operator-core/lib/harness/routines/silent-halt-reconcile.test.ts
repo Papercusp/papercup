@@ -8,6 +8,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   countPendingWakeSources,
   evaluateSilentHalt,
+  silentHaltWakeBody,
   sweepSilentHalts,
   disarmEpochToken,
   wakeMarkerSummary,
@@ -262,6 +263,21 @@ function candidate(over: Partial<SilentHaltCandidate> = {}): SilentHaltCandidate
     ...over,
   };
 }
+
+describe('silent-halt wake guidance', () => {
+  it('checks checkpoint gates before resuming or releasing held work', () => {
+    const body = silentHaltWakeBody(
+      candidate(),
+      { halted: true, reason: 'held work with no wake source', exemption: null, staleFloorMs: 30 * MIN },
+      null,
+    );
+
+    expect(body).toContain('governing decision');
+    expect(body).toContain('Preserve any named evidence gate or explicit stop');
+    expect(body).toContain('this alarm does not prove the gate cleared');
+    expect(body).toContain('only when that named condition permits it');
+  });
+});
 
 describe('sweepSilentHalts', () => {
   const now = Date.parse('2026-09-01T07:00:00.000Z');
@@ -824,6 +840,9 @@ describe('sweepSilentHalts — P-007 slice 2 (D-006)', () => {
     const [slug, summary, body, ws] = fresh.alertFleetLeader.mock.calls[0];
     expect(slug).toBe('fleet-x');
     expect(summary).toMatch(/su-halted is halted holding 3 work-item\(s\)/);
+    expect(summary).toMatch(/inspect checkpoints; re-place or resume only if their gates permit/);
+    expect(body).toMatch(/re-read each held item's checkpoint and governing decision/);
+    expect(body).toMatch(/Preserve any named evidence gate or explicit stop/);
     expect(body).toMatch(/is alive but has taken no turns/);
     expect(ws).toBe('ws');
 

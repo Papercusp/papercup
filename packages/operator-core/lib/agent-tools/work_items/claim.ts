@@ -1258,6 +1258,10 @@ export default defineTool({
   // commits before a transport timeout, surface that completed claim instead
   // of making the caller retry an already-landed write.
   idempotent: true,
+  // EI-25882027630574649: claim-time advisory reads can exceed the default
+  // 60s handler budget even when the idempotent claim succeeds. Match the
+  // 120s server deadline that ptool now allows for direct and wrapped calls.
+  timeoutSec: 120,
   requirePrincipal: false,
   // Admit the research task's claim door without adding researcher to the
   // general coordination/placement role set.

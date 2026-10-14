@@ -188,15 +188,17 @@ export function silentHaltWakeBody(
     `real turn, the next sweep tick pages the human owner about the stranded work.`,
     ``,
     `NEXT, in this turn:`,
-    `  1. Re-read each actionable held item's checkpoint (work_items:get) and either RESUME the work or`,
-    `     work_items:checkpoint + work_items:release what you cannot continue.`,
+    `  1. Re-read each actionable held item's checkpoint (work_items:get) and governing decision.`,
+    `     Preserve any named evidence gate or explicit stop: this alarm does not prove the gate cleared.`,
+    `     Resume, release, or re-place only when that named condition permits it. Otherwise checkpoint`,
+    `     and release what you cannot continue.`,
     ...(blockerParkedIds.length > 0
       ? [`     Keep the listed blocker-parked items visible with their typed blockers; do not count them as stranded work.`]
       : []),
     `  2. Restore a real wake source before ending the turn: loop:arm { intervalSec, goal }`,
     `     (verify loop:status.active) or events:await { event } when blocked on a completion.`,
-    `  3. If you deliberately stopped (loop:end), note that a clean wind-down releases held claims`,
-    `     first — holding work with no wake source is exactly the strand this sweep exists to catch.`,
+    `  3. If a checkpoint or decision explicitly parks the lane, preserve that hold until its gate`,
+    `     permits action. For an ordinary clean wind-down (loop:end), release held claims first.`,
     ...park,
   ].join('\n');
 }
@@ -962,8 +964,9 @@ export async function sweepSilentHalts(opts: {
           await alertFleetLeader(
             candidate.fleetSlug,
             `silent-halt: fleet member ${candidate.ownerId} is halted holding ` +
-              `${candidate.heldWorkItems} work-item(s) — re-place or resume it`,
-            `${title}.\n\n${body}`,
+              `${candidate.heldWorkItems} work-item(s) — inspect checkpoints; re-place or resume only if their gates permit`,
+            `${title}.\n\nBefore re-placing or resuming, re-read each held item's checkpoint and governing decision. ` +
+              `Preserve any named evidence gate or explicit stop until its condition is satisfied.\n\n${body}`,
             candidate.workspaceId,
           );
           result.fleetLeaderAlerted.push(candidate.ownerId);

@@ -1666,6 +1666,17 @@ export const PTOOL_SCORECARD_REPAIR_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// EI-25882027630574649: plans:start declares timeoutSec=120, making the MCP
+// deadline 125s with its settlement buffer. A successful call took 77.763s,
+// longer than the old 60s ptool budget; leave room for the complete server
+// deadline so callers receive its structured result instead of outcome-unknown.
+export const PTOOL_PLANS_START_TIMEOUT_MS = 130_000;
+
+// EI-25882027630574649: work_items:claim now declares timeoutSec=120. A
+// successful claim took 69.467s, beyond the old 60s ptool cutoff; keep direct
+// and tools:invoke calls above the full 125s MCP deadline.
+export const PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS = 130_000;
+
 // EI-25416411149123222: a measured dev:service_health dispatch settled after
 // 77.2s. Keep the ptool client above that observed handler time so its phase
 // breakdown can reach the caller instead of becoming an outcome-unknown timeout.
@@ -1918,12 +1929,10 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // EI-23098800759403082: preserve the legacy-host compatibility path's typed
   // queued receipt beyond the tool's 600s budget + MCP settlement buffer.
   ['session:request-compaction', PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS],
-  // EI-21567372634210816: plans:start runs the plan-start consult, approval,
-  // idempotent item promotion, exact-plan admission, and claim-spec binding.
-  // Its projected dispatcher defaults to 60s when no timeoutSec is declared;
-  // keep ptool from cutting the request off at its ordinary 30s deadline and
-  // turning a completed-or-in-flight mutation into outcome_unknown.
-  ['plans:start', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-25882027630574649: plans:start declares timeoutSec=120, giving MCP a
+  // 125s deadline with settlement buffer. A successful call took 77.763s,
+  // beyond ptool's old 60s budget; wait past the server deadline for its result.
+  ['plans:start', PTOOL_PLANS_START_TIMEOUT_MS],
   // EI-21360596114670049: the idempotent plan lifecycle writer evaluates the
   // full completion/audit/spec/rubric gate before taking the plan lock. Under
   // operator pressure that valid pre-write path can outlive the flat 30s
@@ -2096,12 +2105,10 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // Observe the bounded dispatch receipt before the client deadline, including
   // through tools:invoke, using the existing foreground transport allowance.
   ['plans:bind-spec-evidence', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
-  // EI-22722799928417577: by-id claims perform admission, claim, and several
-  // claim-time advisory reads. The ordinary 30s client deadline can expire
-  // before the idempotent claim's MCP result settles, reporting outcome-unknown
-  // even though the server-side write may have landed. Keep both direct and
-  // tools:invoke-wrapped claims beyond the transport cap.
-  ['work_items:claim', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-25882027630574649: the claim handler declares timeoutSec=120, giving
+  // MCP a 125s deadline with settlement buffer. A successful claim took
+  // 69.467s, beyond ptool's old 60s budget; cover direct and wrapped calls.
+  ['work_items:claim', PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS],
   // EI-25420975795006444: set_state has no tool-specific server timeout, so MCP
   // applies its 55s default. The flat 30s client deadline can preempt that
   // structured timeout after the write landed, surfacing an unknown outcome.

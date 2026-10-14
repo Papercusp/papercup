@@ -63,6 +63,18 @@ async function planOfListIssues(): Promise<{ rows: Awaited<ReturnType<typeof iss
   return { rows, nodes: flatten(plan[0]!.Plan) };
 }
 
+/** Capture the complete metric-source statement, which must not sort the full issue population. */
+async function completeMetricQuery(): Promise<{ rows: Awaited<ReturnType<typeof issues.listAllIssuesForFileExport>>; query: string }> {
+  captured.length = 0;
+  const rows = await issues.listAllIssuesForFileExport({
+    kinds: ['bug', 'change', 'task'],
+    payloadProjection: 'fleetMetricsCensus',
+  });
+  const query = captured.find((c) => /FROM harness_shared\.engineer_issues/.test(c.query))?.query;
+  expect(query, 'complete metric source sent no statement over engineer_issues').toBeDefined();
+  return { rows, query: query! };
+}
+
 beforeAll(async () => {
   savedWsEnv = process.env.PAPERCUSP_WORKSPACE_ID;
   process.env.PAPERCUSP_WORKSPACE_ID = WS;
@@ -136,5 +148,12 @@ describe('issue-family list query plan (P-004)', () => {
     } finally {
       await db.sql.unsafe(readFileSync(MIGRATION, 'utf8'));
     }
+  });
+
+  it('does not sort the complete fleetMetricsCensus source population', async () => {
+    const { rows, query } = await completeMetricQuery();
+
+    expect(rows).toHaveLength(ISSUE_ROWS);
+    expect(query).not.toMatch(/ORDER BY created_at DESC/);
   });
 });

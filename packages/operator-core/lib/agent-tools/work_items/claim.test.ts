@@ -238,6 +238,10 @@ describe('work_items:claim idempotent-completion opt-in (EI-21593186656422114)',
   it('declares idempotent:true so a committed-but-slow claim surfaces success, not a false timeout', () => {
     expect((tool as { idempotent?: boolean }).idempotent).toBe(true);
   });
+
+  it('allows up to 120 seconds for a successful claim and its advisory reads (EI-25882027630574649)', () => {
+    expect((tool as { timeoutSec?: number }).timeoutSec).toBe(120);
+  });
 });
 
 describe('work_items:claim handler (keyed-array)', () => {
