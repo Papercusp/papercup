@@ -299,6 +299,13 @@ describe('original gate selection preparation', () => {
       expect(accepted.coverage).toBe('partial');
       expect(accepted.unenumerated[0].reason).toBe('unexecuted-command-obligations');
       expect(accepted.commandObligations[0].inputs).toEqual(receipt.inputs);
+      const failedReceipt = { ok: false, error: 'sync fixture failed',
+        diagnostics: { currentPhase: 'sync', elapsedMs: 21, phases: {} } };
+      const failed = enumerateAffectedTaskSelection([request], { root: dir, syncAstro: true,
+        runResolver: () => [failedReceipt] });
+      expect(failed.unenumerated[0].reason).toBe('sync fixture failed');
+      expect(failed.commandObligations[0]).toMatchObject({ executed: false, inputs: null,
+        discovery: failedReceipt });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -331,6 +338,11 @@ describe('original gate selection preparation', () => {
       expect(readFileSync(join(dir, '.astro/types.d.ts'), 'utf8')).toContain('selection-generated.d.ts');
       expect(result.commandObligations[0]).toMatchObject({ check: 'astro-check', executed: false,
         discovery: { sync: { status: 'completed', beforePopulation: true }, executed: false } });
+      const diagnostics = result.commandObligations[0].discovery.diagnostics;
+      expect(diagnostics.currentPhase).toBe('completed');
+      for (const name of ['syncMs', 'checkerMs', 'populationMs'])
+        expect(diagnostics.phases[name]).toBeGreaterThanOrEqual(0);
+      expect(diagnostics.elapsedMs).toBeGreaterThanOrEqual(diagnostics.phases.syncMs);
       expect(result.runtimeClosure).toBe('unmeasured');
       expect(result.operationalAcceptance).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
