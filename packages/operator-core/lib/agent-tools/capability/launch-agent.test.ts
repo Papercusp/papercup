@@ -75,7 +75,8 @@ const codexThreadWriterHolderMock = vi.hoisted(() =>
   })),
 );
 const originalRoutingGuardMock = vi.hoisted(() => vi.fn());
-vi.mock('../../../../../apps/operator/scripts/psu-launcher.mjs', () => ({
+vi.mock('../../../../../apps/operator/scripts/psu-launcher.mjs', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
   ORIGINAL_CODEX_ROUTING_ENV: 'PAPERCUSP_ORIGINAL_CODEX_ROUTING',
   assertOriginalCodexRouting: (...args: unknown[]) => originalRoutingGuardMock(...args),
   codexThreadWriterHolder: (...args: [string, string | null]) => codexThreadWriterHolderMock(...args),
@@ -2632,7 +2633,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).not.toContain('launch verification DID NOT RUN');
   });
 
-  it('EI-21725123573114023: the owner-id guard is scoped to in-place resumes — an EXPLICIT fork of the same target still launches', async () => {
+  it('refuses a managed fork without the source coord identity required by tracked bootstrap', async () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, ownerId: null });
 
     const res = await launchAgent.handler(
@@ -2640,9 +2641,11 @@ describe('resume + fork (D-004/D-007)', () => {
       ctx,
     );
 
-    expect(isError(res)).toBe(false);
-    expect(spawnConsoleMock).toHaveBeenCalled();
-    expect(spawnedCommand()).toContain('--fork');
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('tracked fork is unavailable');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it("preserves the resumed target's durable fleet instead of inheriting the caller's fleet", async () => {
@@ -3048,7 +3051,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(clearContextEstimateMock).not.toHaveBeenCalled();
   });
 
-  it('FORKS a Codex source with an active thread writer even when no pty host is registered', async () => {
+  it('refuses an unsupported managed Codex fork when a writer is active without a registered pty host', async () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex', live: false });
     findLiveHostMock.mockReturnValue(null);
     codexThreadWriterHolderMock.mockReturnValue({
@@ -3064,11 +3067,56 @@ describe('resume + fork (D-004/D-007)', () => {
       ctx,
     );
 
-    expect(isError(res)).toBe(false);
+    expect(isError(res)).toBe(true);
     expect(codexThreadWriterHolderMock).toHaveBeenCalledWith(expect.any(String), 'sid-dead');
-    expect(spawnedCommand()).toContain('--resume=sid-dead --fork');
-    expect(textOf(res)).toContain('Codex reports an active writer');
-    expect(textOf(res)).toContain('FRESH identity');
+    expect(textOf(res)).toContain('tracked fork is unavailable');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['codex', 'omp'])('refuses explicit and protective managed %s forks before admission in either placement', async (agent) => {
+    for (const fork of [true, undefined]) {
+      for (const headless of [true, false]) {
+        resolveResumeTargetMock.mockResolvedValue({ ...dead, agent, live: fork === undefined, endedAt: null });
+        findLiveHostMock.mockReturnValue({ ownerId: dead.ownerId, pid: 42 });
+        const res = await launchAgent.handler(
+          { resume: { sessionId: dead.sessionId }, fork, headless, brief: 'branch the recovery' }, ctx,
+        );
+        expect(isError(res)).toBe(true);
+        expect(textOf(res)).toContain('tracked fork is unavailable');
+        expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+        expect(spawnConsoleMock).not.toHaveBeenCalled();
+        expect(spawnHeadlessMock).not.toHaveBeenCalled();
+        expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it('refuses a managed Claude fork without a tracked source row before admission', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, advSessionId: null });
+    const res = await launchAgent.handler(
+      { resume: { sessionId: dead.sessionId }, fork: true, brief: 'branch the recovery' }, ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('tracked fork is unavailable');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('retains a dormant Codex source with explicit fork:false (headless=%s)', async (headless) => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex' });
+    findLiveHostMock.mockReturnValue(null);
+    const res = await launchAgent.handler(
+      { resume: { sessionId: dead.sessionId }, fork: false, headless, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(false);
+    const command = spawnedCommand(headless ? spawnHeadlessMock : spawnConsoleMock);
+    expect(command).toContain('--resume=sid-dead');
+    expect(command).not.toContain('--fork');
+    expect(dataOf(res)?.launch).toMatchObject({ mode: 'resume', resumedOwnerId: dead.ownerId });
   });
 
   it('refuses visible restore when a Codex writer is active without a managed host', async () => {

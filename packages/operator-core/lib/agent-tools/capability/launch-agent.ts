@@ -108,7 +108,7 @@ import {
   PSU_LAUNCH_LOG_TAIL_CHARS,
   readPsuLaunchLogTail,
 } from '../../psu-launch-log.mjs';
-import { assertOriginalCodexRouting, codexThreadWriterHolder, ORIGINAL_CODEX_ROUTING_ENV } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
+import { assertOriginalCodexRouting, codexThreadWriterHolder, ORIGINAL_CODEX_ROUTING_ENV, supportsTrackedFork } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
 import { LaunchModelAliasError, resolveCodexModelSelection, resolveLaunchModelAlias } from '../../model-context-budget.mjs';
 import { isSuTierRole } from '../../su-role-addendum';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
@@ -1522,6 +1522,24 @@ export default defineTool({
           );
         }
       }
+    }
+
+    // Every capability fork pre-pins a managed identity. Check the launcher's
+    // actual tracked-fork capability before reservation or terminal allocation,
+    // rather than opening a child that must refuse before registering.
+    if (isResume && fork && !supportsTrackedFork({
+      agent: resumeAgent,
+      sessionId: resumeSessionId,
+      coordOwnerId: resumeOwnerId,
+      id: resumeSourceAdvSessionId,
+    })) {
+      return err(
+        `Cannot launch a managed fork of ${resumeId ?? 'that session'}: tracked fork is unavailable for this ` +
+          `${resumeAgent ?? 'unknown'} source. It currently requires a Claude source with a native session id, ` +
+          'coord owner and tracked session row. No process was admitted or opened. ' +
+          'Resume in place with `fork:false` only after the source and its writer have ended, ' +
+          'or launch a fresh agent with a context-seeded brief.',
+      );
     }
 
     // A same-owner resume must preserve the target session's loop lifecycle. The
