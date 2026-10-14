@@ -15,12 +15,28 @@ import {
   DATA_SOURCE_DEPENDENTS,
   authorizeDataOperation,
   deletionOrder,
+  holdConflicts,
   planOrganizationDataOperation,
   receiptMetadata,
+  validateScope,
   type StoreReceipt,
 } from './organization-data-receipts';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
+
+describe('shared legal-hold receipt helpers', () => {
+  it('exports the helpers required by legal-hold administration and normalizes its scope', async () => {
+    // Keep the consumer on the real import graph: a missing ESM export must
+    // fail this suite before it can prevent the operator from starting.
+    const legalHolds = await import('./legal-holds');
+    expect(typeof legalHolds.listOrganizationLegalHolds).toBe('function');
+    expect(typeof holdConflicts).toBe('function');
+    expect(validateScope({ organizationId: ORG, workspaceIds: ['one', 'one', 'two'] }))
+      .toEqual({ organizationId: ORG, workspaceIds: ['one', 'two'] });
+    expect(() => validateScope({ organizationId: ORG, workspaceIds: [] }))
+      .toThrow('at least one workspaceId');
+  });
+});
 
 describe('planOrganizationDataOperation', () => {
   const plan = planOrganizationDataOperation();
@@ -75,12 +91,15 @@ describe('planOrganizationDataOperation', () => {
     }
   });
 
-  it('deletes hold-aware chat stores unless held, and retains audit and billing records', () => {
+  it('deletes hold-aware chat and document stores unless held, and retains audit and billing records', () => {
     const by = (s: string) => plan.find((p) => p.store === s)!.deletion.action;
     expect(by('harness_shared.chat_messages')).toBe('delete-unless-held');
     expect(by('harness_shared.chat_retrieval_units')).toBe('delete-unless-held');
     expect(by('harness_shared.data_sources')).toBe('delete-unless-held');
-    expect(by('harness_shared.documents')).toBe('delete');
+    // P-017a (migration 1502): a held document keeps its row, its permission list and the list's members.
+    expect(by('harness_shared.documents')).toBe('delete-unless-held');
+    expect(by('harness_shared.document_permission_lists')).toBe('delete-unless-held');
+    expect(by('harness_shared.document_permission_members')).toBe('delete-unless-held');
     expect(by('harness_shared.data_source_legal_holds')).toBe('retain');
     expect(by('papercusp_auth.organization_audit_events')).toBe('retain');
     expect(by('papercusp_auth.hosted_subscriptions')).toBe('retain');
