@@ -82,7 +82,7 @@ describe('terminal identity repair adoption', () => {
       const before = await sample();
       expect(before).toMatchObject({ pid: child.pid, result: 'native-thread', globalReads: 1, localReads: 0 });
       const parsed: any[] = [];
-      client.ws.on('message', (data: any) => { const m = JSON.parse(String(data)); if (m.method === 'Debugger.scriptParsed' && m.params.url === pathToFileURL(file).href) parsed.push(m.params); });
+      client.ws.on?.('message', (data: any) => { const m = JSON.parse(String(data)); if (m.method === 'Debugger.scriptParsed' && m.params.url === pathToFileURL(file).href) parsed.push(m.params); });
       await client.send('Debugger.enable');
       expect(parsed).toHaveLength(1);
       const scriptId = parsed[0].scriptId;
