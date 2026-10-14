@@ -456,18 +456,29 @@ export async function purgePersonalSource(
   userId: string,
   sourceInput?: string | null,
   provenance: { sourceId?: string | null; providerAccountId?: string | null } = {},
-): Promise<{ documents: number; cursors: number; aliases: number; identities: number }> {
+): Promise<{ documents: number; held: number; cursors: number; aliases: number; identities: number }> {
   const source = sourceInput ? normalizePersonalSource(sourceInput) : null;
   const sourceId = normalizePersonalSourceId(provenance.sourceId);
   const providerAccountId = normalizePersonalProviderAccountId(provenance.providerAccountId);
   const accountScoped = sourceId !== null || providerAccountId !== null;
   return sql.begin(async (tx) => {
+    // Documents under an active legal hold (migration 1502) are kept and counted, not deleted: the
+    // documents trigger would refuse them and abort the whole purge.
+    const heldRows = await tx<Array<{ n: number }>>`
+      SELECT count(*)::int AS n
+        FROM harness_shared.documents
+       WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
+         AND (${source}::text IS NULL OR source = ${source})
+         AND (${sourceId}::uuid IS NULL OR source_id = ${sourceId}::uuid)
+         AND (${providerAccountId}::text IS NULL OR provider_account_id = ${providerAccountId})
+         AND harness_shared.document_under_hold(workspace_id, source_id, kind, metadata, permission_list_id)`;
     const docs = await tx<Array<{ id: string }>>`
       DELETE FROM harness_shared.documents
        WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
          AND (${source}::text IS NULL OR source = ${source})
          AND (${sourceId}::uuid IS NULL OR source_id = ${sourceId}::uuid)
          AND (${providerAccountId}::text IS NULL OR provider_account_id = ${providerAccountId})
+         AND NOT harness_shared.document_under_hold(workspace_id, source_id, kind, metadata, permission_list_id)
       RETURNING id`;
     const cursors = await tx<Array<{ source: string }>>`
       DELETE FROM harness_shared.personal_sync_state
@@ -496,7 +507,13 @@ export async function purgePersonalSource(
             WHERE a.workspace_id = i.workspace_id AND a.user_id = i.user_id
               AND a.identity_id = i.id)
       RETURNING id`;
-    return { documents: docs.length, cursors: cursors.length, aliases: aliases.length, identities: identities.length };
+    return {
+      documents: docs.length,
+      held: heldRows[0]?.n ?? 0,
+      cursors: cursors.length,
+      aliases: aliases.length,
+      identities: identities.length,
+    };
   });
 }
 
