@@ -4,6 +4,8 @@ import { join, resolve } from 'node:path';
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { expect, it } from 'vitest';
 import { loadAccountPool } from '../deployment/account-pool-store';
+import { getOrgPg } from '@papercusp/db-org';
+import { getTxPool } from '../agent-tools/locks/su-lock-store';
 import { accountsForProvider, isSpawnEligible } from '../deployment/account-pool';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
@@ -37,10 +39,12 @@ it('records the exact real primary blueprint request on its private spawn row', 
       'packages/operator-core/lib/inference-gateway/gateway.ts',
       'packages/operator-core/lib/inference-gateway/spawn-env.ts',
       'packages/operator-core/lib/fleet/spawn-tree.ts',
+      'packages/operator-core/lib/gym/gym-db-init.ts',
       'libs/papercusp/packages/orchestrator/src/invoke.ts',
       'libs/papercusp/packages/orchestrator/src/spawn-mcp.ts'],
     retainedArtifacts: ['phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-build.log',
       'phases/execute/account-route.json', 'phases/execute/account-route-preflight.json',
+      'phases/execute/shared-effects.json',
       'phases/execute/worker.log'],
     prepare: evidenceDir => {
       // Compilation and its real restricted-write census run before allocating
@@ -77,16 +81,33 @@ it('records the exact real primary blueprint request on its private spawn row', 
       expect(line, result.output.slice(-4_000)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('BLUEPRINT_ACCOUNT_ROUTE_RECEIPT '.length));
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), hostStopped: true,
-        childStopped: true, responseDeliveredToChild: false, upstream: { status: 200, requests: 1 },
+        childStopped: true, responseObservedByChild: false, responseBufferedWhileChildPaused: true,
+        upstream: { status: 200, requests: 1 },
         canonicalTreeReadOnly: true, privateMcp: true,
         declared: { account: 'auto', backend: 'codex', codexGatewayPresent: false } });
       expect(receipt.firstRequest.ownerId).toBe(receipt.spawnId);
+      expect(receipt.firstRequest.requestId).toBe(receipt.telemetry.requestId);
       expect(receipt.firstRequest.servingAccountId).toBe(receipt.telemetry.servingAccountId);
       expect(receipt.route.resolvedAccountIds).toContain(receipt.firstRequest.servingAccountId);
       expect(receipt.firstRequest.model).toBe(receipt.route.launchedModel);
       expect(receipt.firstRequest.effort).toBe(receipt.route.launchedEffort);
       expect(receipt.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(receipt.runtimeInputs.invoke).toBe(join(root, 'libs/papercusp/packages/orchestrator/bin/invoke-once.ts'));
+      expect(receipt.privateGateUnchanged).toBe(true);
+      expect(receipt.privateClaims).toBe(0);
+      expect(receipt.childConfig).toMatchObject({ ownerId: receipt.spawnId, mcpOwnerId: receipt.spawnId,
+        accountPinPresent: false, canonicalMount: { options: expect.arrayContaining(['ro']) } });
+      // Read shared state by the exact child identity; concurrent peer activity
+      // cannot create a false failure or hide a child-owned claim/lock.
+      const { sql } = getOrgPg();
+      const [claims] = await sql`SELECT count(*)::int AS count FROM harness_shared.work_item_claims
+        WHERE owner=${receipt.spawnId}`;
+      const [locks] = await getTxPool()`SELECT count(*)::int AS count FROM agent_file_locks
+        WHERE owner=${receipt.spawnId}`;
+      expect(claims.count).toBe(0);
+      expect(locks.count).toBe(0);
+      receipt.sharedEffects = { ownerId: receipt.spawnId, claims: claims.count, fileLocks: locks.count };
+      await writeFile(join(evidenceDir, 'shared-effects.json'), JSON.stringify(receipt.sharedEffects));
       console.info('BLUEPRINT_ACCOUNT_ROUTE_VERIFIED ' + JSON.stringify(receipt));
     },
   });

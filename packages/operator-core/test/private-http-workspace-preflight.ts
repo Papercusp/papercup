@@ -14,6 +14,29 @@ import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSource
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
   CommittedReaderPreparationHandoff } from './isolated-integration-proof';
 
+/** Stop admission before reaping descendants that can keep the host's pipes open. */
+export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: () => Promise<void>, graceMs = 5_000) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bounded = async (promise: Promise<void>, label: string) => {
+    try {
+      await Promise.race([promise, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Private host ${label} did not settle`)), graceMs);
+      })]);
+    } finally { clearTimeout(timer); }
+  };
+  const alreadyExited = host.exitCode !== null || host.signalCode !== null;
+  const exited = alreadyExited ? Promise.resolve() : new Promise<void>(done => host.once('exit', () => done()));
+  const pipesEnded = () => [host.stdout, host.stderr].every(stream => !stream || stream.destroyed || stream.readableEnded);
+  const closed = alreadyExited && pipesEnded() ? Promise.resolve() : new Promise<void>(done => host.once('close', () => done()));
+  if (!alreadyExited) {
+    host.kill('SIGTERM');
+    try { await bounded(exited, 'exit'); }
+    catch { host.kill('SIGKILL'); await bounded(exited, 'forced exit'); }
+  }
+  await afterExit?.();
+  await bounded(closed, 'stdio drainage');
+}
+
 /** Prepared ESM bundles must not re-enter tsx's transformer. Keep every other
  * preload, especially the committed-source guard, and all resource limits. */
 export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

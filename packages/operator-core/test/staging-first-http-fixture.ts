@@ -8,22 +8,14 @@ import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
-import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
 let disposeScenario: (() => Promise<void>) | undefined;
-async function stopHost() {
-  if (!host) return;
-  if (host.exitCode === null && host.signalCode === null) {
-    const closed = new Promise<void>(done => host!.once('close', () => done()));
-    host.kill('SIGTERM');
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([closed, new Promise<void>(done => { timer = setTimeout(done, 5_000); })]);
-    clearTimeout(timer);
-    if (host.exitCode === null && host.signalCode === null) host.kill('SIGKILL');
-    await closed;
-  }
+async function stopHost(afterExit?: () => Promise<void>) {
+  if (!host) { await afterExit?.(); return; }
+  await stopPrivateOperatorHost(host, afterExit);
   assert.notEqual(readProcessIdentity(host.pid!), hostIdentity, 'private host survived cleanup');
 }
 
@@ -277,7 +269,7 @@ catch (error) {
     stack: assertion.stack, actual: assertion.actual, expected: assertion.expected }));
   process.exitCode = 1;
 } finally {
-  await stopHost();
-  await disposeScenario?.();
+  await stopHost(disposeScenario);
+  disposeScenario = undefined;
   await getOrgPg().sql.end({ timeout: 1 });
 }

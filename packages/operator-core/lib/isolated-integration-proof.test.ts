@@ -6,6 +6,35 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
 import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress } from '../test/isolated-integration-proof';
+import { stopPrivateOperatorHost } from '../test/private-http-workspace-preflight';
+
+it('reaps a native descendant after host exit before waiting for inherited pipes', async () => {
+  const host = spawn(process.execPath, ['-e', `
+    const { spawn } = require('node:child_process');
+    const native = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 1, 2] });
+    console.log(native.pid);
+    process.on('SIGTERM', () => process.exit(0));
+    setInterval(() => {}, 1000);
+  `], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let nativePid: number | undefined;
+  try {
+    const [chunk] = await once(host.stdout!, 'data');
+    nativePid = Number(String(chunk).trim());
+    expect(Number.isSafeInteger(nativePid)).toBe(true);
+    let hostExitedBeforeReap = false;
+    await stopPrivateOperatorHost(host, async () => {
+      hostExitedBeforeReap = host.exitCode !== null;
+      process.kill(nativePid!, 0);
+      process.kill(nativePid!, 'SIGKILL');
+    }, 1_000);
+    expect(hostExitedBeforeReap).toBe(true);
+    expect(host.stdout!.destroyed).toBe(true);
+    expect(host.stderr!.destroyed).toBe(true);
+  } finally {
+    host.kill('SIGKILL');
+    if (nativePid) try { process.kill(nativePid, 'SIGKILL'); } catch { /* already reaped */ }
+  }
+}, 5_000);
 
 it('retains native output when a later source snapshot is empty or shorter', () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-native-shrink-'));

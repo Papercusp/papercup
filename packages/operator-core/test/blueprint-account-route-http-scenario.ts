@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { parse as parseToml } from '@iarna/toml';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { updateAccountPool } from '../lib/deployment/account-pool-store';
@@ -75,6 +77,10 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
     prompt, config, observedAt: source.observedAt, accountIds: source.accounts.map((account: any) => account.id) }));
   console.log('BLUEPRINT_ACCOUNT_ROUTE_PHASE runtime-preflight-ready');
   const { sql } = getOrgPg();
+  const privateGateBefore = await sql`SELECT name, active, next_fire_at, metadata
+    FROM harness_shared.routines WHERE workspace_id=${workspace} AND name='green-checkpoint'`;
+  assert.equal(privateGateBefore.length, 1);
+  assert.equal(privateGateBefore[0].active, false, 'private publication must stay paused');
   let spawnId: string | undefined;
   let stopped = false;
   let nativeProcesses: Array<{ pid: number; identity: ReturnType<typeof readProcessIdentity> }> = [];
@@ -121,8 +127,51 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       ? true : null, 'native lineage cleanup', 10_000);
     stopped = true;
   }
+  async function pauseNative() {
+    for (const { pid, identity } of nativeProcesses) {
+      assert.ok(identity && readProcessIdentity(pid) === identity, 'native lifetime moved before pause');
+      process.kill(pid, 'SIGSTOP');
+    }
+    await eventually(async () => nativeProcesses.every(({ pid, identity }) => {
+      if (readProcessIdentity(pid) !== identity) return false;
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] === 'T';
+    }) ? true : null, 'kernel-stopped native lineage', 10_000);
+  }
+  function measureChildConfig() {
+    const candidates = nativeProcesses.flatMap(({ pid }) => {
+      try {
+        const env = Object.fromEntries(readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')
+          .filter(Boolean).map(entry => { const i = entry.indexOf('='); return [entry.slice(0, i), entry.slice(i + 1)]; }));
+        return env.CODEX_HOME ? [{ pid, home: env.CODEX_HOME }] : [];
+      } catch { return []; }
+    });
+    const child = candidates.at(-1);
+    assert.ok(child, 'actual native lineage must expose its per-spawn CODEX_HOME');
+    assert.ok(child.home.startsWith(resolve(e.HOME!, '..') + '/'), 'native config escaped private runtime');
+    const bytes = readFileSync(join(child.home, 'config.toml'));
+    const config = parseToml(bytes.toString('utf8')) as any;
+    const provider = config.model_providers?.[config.model_provider];
+    assert.equal(provider?.base_url, `http://127.0.0.1:${gateway.port}/v1`);
+    assert.equal(provider.http_headers['x-papercusp-owner'], spawnId);
+    assert.equal(provider.http_headers['x-papercusp-account'], undefined, 'auto must not acquire a pin');
+    const mcp = new URL(config.mcp_servers.papercusp.url);
+    assert.equal(mcp.origin, new URL(e.PAPERCUSP_OPERATOR_URL!).origin);
+    assert.equal(mcp.searchParams.get('client'), spawnId);
+    assert.equal(mcp.searchParams.get('workspace'), workspace);
+    const mounts = readFileSync(`/proc/${child.pid}/mountinfo`, 'utf8').trim().split('\n').map(line => {
+      const fields = line.split(' ');
+      return { path: fields[4].replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8))), options: fields[5].split(',') };
+    }).filter(mount => root === mount.path || root.startsWith(mount.path.endsWith('/') ? mount.path : mount.path + '/'))
+      .sort((a, b) => b.path.length - a.path.length);
+    assert.ok(mounts[0]?.options.includes('ro'), 'actual native mount must deny canonical tree writes');
+    return { pid: child.pid, sha256: createHash('sha256').update(bytes).digest('hex'),
+      provider: config.model_provider, baseUrl: provider.base_url, ownerId: provider.http_headers['x-papercusp-owner'],
+      accountPinPresent: false, model: config.model, mcpOrigin: mcp.origin, mcpOwnerId: mcp.searchParams.get('client'),
+      canonicalMount: mounts[0] };
+  }
   return {
-    async execute(stopInvokeHost: () => Promise<void>) {
+    async execute(stopInvokeHost: (afterExit?: () => Promise<void>) => Promise<void>) {
       console.log('BLUEPRINT_ACCOUNT_ROUTE_PHASE launch-real-primary');
       const launched = await fireLaunchBlueprint('release-fix', { installSlug: workspace, workspaceId: workspace,
         kickoff: 'Inert routing proof: reply READY without tools.', timeoutMs: 90_000,
@@ -139,10 +188,11 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       assert.equal(upstream?.status, 200, 'real upstream must accept and serve the request');
       assert.ok(await measureNative(), 'actual invoke handoff must precede the provider response');
       assert.ok(nativeProcesses.length > 1, 'real native descendant must exist');
-      // Close the private invoke endpoint before killing its child. The real
-      // launcher's no-turn fallback can no longer admit another native process.
-      await stopInvokeHost();
-      await stopNative();
+      const childConfig = measureChildConfig();
+      // Freeze the actual consumer before releasing the real successful body.
+      // The gateway can finish its socket write and persist success, while the
+      // native process cannot consume the completion or take a tool action.
+      await pauseNative();
       releaseResponse!();
       const row = await eventually(async () => {
         const [entry] = await sql`SELECT account_route, first_gateway_request FROM harness_shared.spawned_agents WHERE spawn_id=${spawnId!}`;
@@ -152,17 +202,31 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       const first = ownerReport.stageTelemetry.recent.find((entry: any) => entry.ownerId === spawnId);
       assert.ok(first, 'same gateway must report the same explicit owner');
       assert.equal(row.first_gateway_request.ownerId, spawnId);
+      assert.equal(row.first_gateway_request.requestId, `${ownerReport.process.instanceId}:${first.requestId}`);
+      assert.equal(row.first_gateway_request.requestOrdinal, first.requestId);
+      assert.equal(ownerReport.process.identity, readProcessIdentity(process.pid));
+      assert.equal(row.first_gateway_request.finalStatus, 200);
+      assert.equal(row.first_gateway_request.outcome, 'ok');
       assert.equal(row.first_gateway_request.servingAccountId, first.cache.servingAccountId);
       assert.ok(row.account_route.resolvedAccountIds.includes(first.cache.servingAccountId));
       assert.equal(row.first_gateway_request.model, row.account_route.launchedModel);
       assert.equal(row.first_gateway_request.effort, row.account_route.launchedEffort);
+      assert.equal(childConfig.model, row.account_route.launchedModel);
+      // Host exit closes admission. Descendant reaping then closes inherited
+      // pipes; waiting for pipe-close before reaping would deadlock this order.
+      await stopInvokeHost(stopNative);
       const [state] = await sql`SELECT count(*) AS claims FROM harness_shared.work_item_claims`;
       assert.equal(Number(state.claims), 0, 'private child must not claim work');
+      const privateGateAfter = await sql`SELECT name, active, next_fire_at, metadata
+        FROM harness_shared.routines WHERE workspace_id=${workspace} AND name='green-checkpoint'`;
+      assert.deepEqual(privateGateAfter, privateGateBefore, 'inert child must not alter private gate controls');
       return { workspace, spawnId, route: row.account_route, firstRequest: row.first_gateway_request,
-        upstream, telemetry: { servingAccountId: first.cache.servingAccountId, requestId: first.requestId },
+        upstream, telemetry: { servingAccountId: first.cache.servingAccountId,
+          requestId: `${ownerReport.process.instanceId}:${first.requestId}` }, childConfig,
         childStopped: stopped, stoppedPids: nativeProcesses.map(({ pid }) => pid),
-        responseDeliveredToChild: false, canonicalTreeReadOnly: true, privateMcp: true,
-        gatewayRuntime: ownerReport.process,
+        responseObservedByChild: false, responseBufferedWhileChildPaused: true,
+        canonicalTreeReadOnly: true, privateMcp: true,
+        gatewayRuntime: ownerReport.process, privateGateUnchanged: true, privateClaims: Number(state.claims),
         runtimeInputs,
         declared: { account: 'auto', backend: 'codex', model: 'gpt-5.4', effort: 'high', codexGatewayPresent: false },
         preflight: { observedAt: source.observedAt, headroom: source.headroom,
