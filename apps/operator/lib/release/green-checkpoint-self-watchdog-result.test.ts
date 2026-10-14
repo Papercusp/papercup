@@ -12,7 +12,7 @@ import {
 // as literals — exactly as green-checkpoint-crash-result.test.ts does, and for the same reason:
 // the defect being fixed here existed precisely because the producer's vocabulary and the
 // consumer's class lists could drift apart while both suites stayed green.
-import { classifyGateStallStatus } from '@papercusp/operator-core/lib/harness/routines/release-actions';
+import { buildCheckpointDetail, classifyGateStallStatus } from '@papercusp/operator-core/lib/harness/routines/release-actions';
 import {
   classifyGateAbort,
   gateAbortLever,
@@ -58,6 +58,67 @@ describe('P-033: watchdog expiry diagnostics', () => {
     vi.advanceTimersByTime(1);
     expect(onFire.mock.calls[0]?.[0]).toBe('idle-timeout');
     expect(kill).toHaveBeenCalledWith(-999, 'SIGKILL');
+  });
+
+  it('persists the actual idle interval and trigger through the terminal event writer', () => {
+    vi.setSystemTime(0);
+    let result: CheckpointResult | undefined;
+    const watchdog = armSelfWatchdog({ release: vi.fn() }, {
+      ms: 60,
+      hardCeilingMs: 100,
+      trigger: 'scheduled-parent-backstop',
+      pid: 999,
+      kill: vi.fn(),
+      log: () => {},
+      snapshotProcessGroup: () => null,
+      onFire: (reason, context) => {
+        result = buildSelfWatchdogCheckpointResult({
+          candidate: 'b3e519a1bfce', runId: 'watchdog-idle', summary: 'Rescued suite evidence.',
+          failingTests: ['failing.test.ts'], watchdog: { reason, context },
+        });
+      },
+    });
+    vi.advanceTimersByTime(20);
+    watchdog.progress();
+    vi.advanceTimersByTime(60);
+
+    expect(result).toBeDefined();
+    const detail = buildCheckpointDetail(result!);
+    expect(detail.summary).toContain('self-watchdog fired: idle-timeout');
+    expect(detail.summary).toContain('trigger=scheduled-parent-backstop');
+    expect(detail.summary).toContain('elapsedMs=80; idleForMs=60');
+    expect(detail.summary).toContain('idleBudgetMs=60; hardCeilingMs=100');
+    expect(detail.summary).toContain('Rescued suite evidence.');
+    expect(detail.summary).not.toMatch(/lost.*parent|presumed-dead parent/);
+    expect(detail.failingTests).toEqual(['failing.test.ts']);
+    expect(detail.green).toBeNull();
+    expect(detail.crashed).toBeUndefined();
+  });
+
+  it('records a tightened hard ceiling and its phase without misreporting the original budget', () => {
+    vi.setSystemTime(0);
+    let result: CheckpointResult | undefined;
+    const watchdog = armSelfWatchdog({ release: vi.fn() }, {
+      ms: 100, hardCeilingMs: 100, trigger: 'manual-run-deadline',
+      pid: 999, kill: vi.fn(), log: () => {}, snapshotProcessGroup: () => null,
+      onFire: (reason, context) => {
+        result = buildSelfWatchdogCheckpointResult({
+          candidate: 'b3e519a1bfce', runId: 'watchdog-finalizing', summary: '',
+          failingTests: [], watchdog: { reason, context },
+        });
+      },
+    });
+    vi.advanceTimersByTime(20);
+    watchdog.progress();
+    expect(watchdog.tighten({ hardCeilingMs: 30, reason: 'post-verdict finalizing' })).toBe(true);
+    vi.advanceTimersByTime(30);
+
+    expect(result?.summary).toContain('self-watchdog fired: absolute-hard-ceiling');
+    expect(result?.summary).toContain('trigger=manual-run-deadline');
+    expect(result?.summary).toContain('elapsedMs=50; idleForMs=30');
+    expect(result?.summary).toContain('idleBudgetMs=100; hardCeilingMs=50');
+    expect(result?.summary).toContain('tightenedBecause=post-verdict finalizing');
+    expect(result?.green).toBeNull();
   });
 });
 
