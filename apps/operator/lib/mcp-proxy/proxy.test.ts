@@ -4406,6 +4406,23 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     ).toBe(true);
     expect(isReservedControlPlaneCall(call("scheduler:get_next"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:orient"))).toBe(true);
+    expect(isReservedControlPlaneCall(call("coord:declare-intent"))).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: {
+                name: "mcp__papercusp_su__coord_declare_intent",
+                args: { intent: "claim and advance the selected fleet item" },
+              },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:send"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:glance"))).toBe(true);
     expect(isReservedControlPlaneCall(targetedCall("coord:presence", { owner: "su-target" }))).toBe(true);
@@ -5580,6 +5597,90 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
 
     releaseUpstream();
     const results = await Promise.all([...heldOrdinary, ...heldControlPlane]);
+    expect(results.every((result) => result.status === 200)).toBe(true);
+  });
+
+  it("routes direct and deferred coord:declare-intent around a saturated ordinary class", async () => {
+    let releaseUpstream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseUpstream = resolve;
+    });
+    const upstream = track(
+      http.createServer(
+        (_req, res) => void gate.then(() => res.end('{"result":"ok"}')),
+      ),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        maxInFlight: 4,
+        controlPlaneReserve: 2,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const ordinaryBody = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "resources/read",
+      params: { uri: "test://ordinary" },
+    });
+    const heldOrdinary = [
+      request(port(proxy), ordinaryBody),
+      request(port(proxy), ordinaryBody),
+    ];
+    await new Promise((r) => setTimeout(r, 40));
+    expect((await request(port(proxy), ordinaryBody)).status).toBe(429);
+
+    const directIntent = request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "coord:declare-intent",
+          arguments: { intent: "claim and advance the selected fleet item" },
+        },
+      }),
+    );
+    const deferredIntent = request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "mcp__papercusp_su__coord_declare_intent",
+            args: { intent: "claim and advance the selected fleet item" },
+          },
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 40));
+
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight).toMatchObject({
+      ordinary: 2,
+      reservedControlPlane: 2,
+      maxInFlight: 4,
+    });
+
+    releaseUpstream();
+    const results = await Promise.all([
+      ...heldOrdinary,
+      directIntent,
+      deferredIntent,
+    ]);
     expect(results.every((result) => result.status === 200)).toBe(true);
   });
 
