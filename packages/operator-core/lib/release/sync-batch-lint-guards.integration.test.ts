@@ -29,9 +29,23 @@ it('runs a real guard child, files its seeded red and queues the ledgered editor
     createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')]));
   const runId = await recordIsolatedIntegrationProof({ root, filePath, sourcePaths,
     execute: async (observe, evidenceDir) => {
+      // The nested isolated child is not a test reporter, so the outer runner's
+      // per-process evidence sinks must not leak into it. The mutation probe
+      // exports PAPERCUSP_TEST_RUN_RECEIPT_FILE per phase, and with-test-pg
+      // --isolated-runtime refuses a receipt sink without a ledger URL. That
+      // failed every mutation-probe baseline (WI-6554700010010481).
+      const childEnv = { ...process.env };
+      delete childEnv.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      delete childEnv.PC_EXECUTED_SOURCE_MAP_RESULT;
+      // Filing embeds the new item. Under GPU contention, onnxruntime failed a
+      // CUDA allocation for embeddinggemma and the child then aborted natively
+      // ("corrupted double-linked list"). Pin the CPU device, as
+      // sidecar-performance.integration.test.ts does, so this proof never
+      // competes for VRAM.
+      childEnv.PAPERCUSP_EMBED_DEVICE = 'cpu';
       const child = spawn(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
         process.execPath, '--import', 'tsx', resolve(root, 'packages/operator-core/test/_sync-batch-lint-guards-child.ts')], {
-        cwd: root, detached: true, env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+        cwd: root, detached: true, env: { ...childEnv, PC_ISOLATED_RUNTIME_PROOF: '1',
           SYNC_LINT_EXPECTED_SOURCE_HASHES: JSON.stringify(sourceHashes) }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       });
       observe(child);
