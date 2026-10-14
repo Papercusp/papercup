@@ -1982,5 +1982,244 @@
       "runtimeClosure": "unmeasured"
     }
   },
+  "postFixVoiceExecutionPreparation": {
+    "schemaVersion": 1,
+    "recordedAt": "2026-10-14T16:19:47.793Z",
+    "workItem": "EI-25970186699682942",
+    "supersedesForCurrentSource": "originalCommandExecutionPreparation.voice",
+    "task": "@papercusp/web :: lint:el-tools",
+    "cwd": "apps/operator",
+    "command": "node scripts/el-tools-check.mjs",
+    "check": "el-tools-drift",
+    "nativeExecution": {
+      "sessionId": "01a13b2e-b43f-7511-b168-5ed9a7616762",
+      "eventOrdinal": 201,
+      "eventId": "exec-aab592a4-8148-4fa7-98be-e53de8be1540",
+      "startedAt": "2026-10-14T16:18:30.433Z",
+      "completedAt": "2026-10-14T16:18:31.404Z",
+      "commandExitCode": 0,
+      "afterDiscoveryExitCode": 0,
+      "outerExitCode": 0,
+      "sourceTranscript": "~/.papercusp/su-codex-homes/session-42663/sessions/2026/10/14/rollout-2026-10-14T12-11-19-01a13b2e-b43f-7511-b168-5ed9a7616762.jsonl",
+      "provenance": "Native command executed between unchanged before/after input censuses in this continuation."
+    },
+    "qualification": {
+      "headAtRead": "07a9ea0bcc926874ec0a7907f2596b2052ac253d",
+      "beforeAfterInputsIdentical": true,
+      "inputHashesMatchCurrent": true,
+      "inputHashesMatchCommitted": true,
+      "inputs": [
+        {
+          "path": "apps/operator/scripts/el-agent-sync.mjs",
+          "sha256": "239a1ea99f20a8c7f20c69a73d6d1e4d82d5217caa48b523732af4a5d86ac31a",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "apps/operator/scripts/el-tools-check.mjs",
+          "sha256": "1ed3c2f70d93d771a69a434f702789fb17169dbe1d49673282a3c79092ff5f41",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/agent-dispatch.ts",
+          "sha256": "752a16bde85869a1b793ee9f36473b6909395c49a04b166edbbbacb7bbf32849",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/agents.ts",
+          "sha256": "7c1686c0f85ed0a78bf49d285cfd97e3729367b39f8b29dc175eb35c1d4e0825",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/chat.ts",
+          "sha256": "6e125aaa7f5db7803564d04ad36f34a6bd16cace0f95c3d967f6481a8b66c107",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/delegation.ts",
+          "sha256": "5aed1a73a30abe909ee497c50d1253b7d009da67ad85db4f13b3bded19af8724",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/harness.ts",
+          "sha256": "ef27d4734d42296c502d44526169beac2fe1d20708220e9f289245c23697fd80",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/help.ts",
+          "sha256": "093ea447c31d618ca51ddd5cece65c61b1a33a20b3f5dc37950e5135a02e2755",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/nav.ts",
+          "sha256": "37d9d1d192f4a47a8606317775adc013520bb0ae3f716a8cc99a483123f8901c",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/operator.ts",
+          "sha256": "9186d53f3a310a5a14b483ec83beb6eca5c365031e5c703946a804a5ded7de1b",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/recent-activity.ts",
+          "sha256": "f002cb38717ee7a50bd00eaceac199e92b55753f75b6c64d80113a07943c0479",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/voice.ts",
+          "sha256": "04cb7d8ef5e171f3d0ea3f6754cb7a33fdfbc0e354c56cf0f0a0fd62ef19d1b5",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/workspace.ts",
+          "sha256": "11b8deb0ceb0da3c8e0348197d1523fec82714c3f7945ee5bdd6e0f22560b87e",
+          "currentMatch": true,
+          "committedMatch": true
+        }
+      ],
+      "logs": [
+        {
+          "path": "~/.papercusp/scratch/c0523-voice-command-inputs-before-fix-receipt-v2.log",
+          "sha256": "36525d429420ea35ba9c37337607e2dcfd3a648b3f009bc106677103f7c3417b"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-voice-command-inputs-after-fix-receipt-v2.log",
+          "sha256": "36525d429420ea35ba9c37337607e2dcfd3a648b3f009bc106677103f7c3417b"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-voice-command-result-fix-receipt-v2.log",
+          "sha256": "5a92c6080ffce78f9449116aa5636b36e47ae56fe90c576f0e89c917220e9f8b"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-voice-command-result-fix-receipt-v2.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-voice-report-guard-v1.log",
+          "sha256": "abcbc8499cf5e57e45ad46795d3cd86a886359756500c805a641da285aefdb92"
+        }
+      ],
+      "stdout": "[el-tools-check] ✓ aligned — 25 client tools, all backed by registry defs.\n",
+      "stderr": "",
+      "files": [],
+      "testFilesFabricated": false,
+      "executed": true,
+      "runtimeClosure": "unmeasured",
+      "operationalAcceptance": false,
+      "limits": "Declared check inputs exclude the imported formatter and installed runtime dependencies. No external ElevenLabs sync was run."
+    },
+    "regressionGuard": {
+      "file": "packages/operator-core/lib/commands/defs/help.test.ts",
+      "sha256": "b713676e47a48c01f244947f8ff9f6994e97f57f7c13b02b67e953eb30116fa9",
+      "committedMatchAtRead": false,
+      "command": "npm run test:file -- packages/operator-core/lib/commands/defs/help.test.ts",
+      "nativeExecution": {
+        "sessionId": "01a13b0f-6940-7d23-ab81-f40580f5a3b3",
+        "eventOrdinal": 481,
+        "eventId": "exec-bb2241fd-246d-4d4b-a9ad-9ad38ab769f4",
+        "startedAt": "2026-10-14T16:08:09.900Z",
+        "completedAt": "2026-10-14T16:09:05.289Z",
+        "exitCode": 0
+      },
+      "result": {
+        "requested": 1,
+        "executed": 1,
+        "matched": 1,
+        "passedTests": 5,
+        "skippedTests": 0,
+        "childSubstituted": 0,
+        "testedHead": "494deaaa9c",
+        "uncommittedPaths": 1,
+        "scope": "Named maintained guard ran locally. Full import graph provenance was not measured."
+      },
+      "settlement": "Catalog source matches committed HEAD; regression guard awaits auto-commit settlement. Original warning receipt remains historical."
+    }
+  },
+  "postFixDesktopFocusedPreparation": {
+    "schemaVersion": 1,
+    "workItem": "EI-25971079786392324",
+    "recordedAt": "2026-10-14T16:39:28.585Z",
+    "source": {
+      "path": "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh",
+      "repoHeadAtRead": "d646444ec2e3fd8f0906555cf6a606343497e4e7",
+      "sha256": "cb43b84004c5cdc1453d5f727a9de9de9ee7f2855331b6e685e2154bd6ff0bfe",
+      "committedMatch": true
+    },
+    "rootCauseEvidence": {
+      "observedAtUnixSeconds": 1791995246.9594395,
+      "ownedPrefix": "~/.cache/inno-uninst-prefix.rhBnel",
+      "serverDirectory": "/run/user/1000/wine/server-10303-780233",
+      "lockHolderPid": 4062305,
+      "socketConnectErrno": 111,
+      "socketConnectError": "ECONNREFUSED",
+      "holderState": "D (disk sleep)",
+      "holderWait": "do_get_write_access",
+      "writer": "Wine9 dlls/ntdll/unix/server.c1322-1340; server/request.c935-959 closes listener before flush_registry; original preserved installer compiled successfully.",
+      "finding": "Per-command display/server shutdown permits a still-held prefix lock with an unavailable listener while registry writes finish. Retaining one display and a persistent owned server removes shutdown between phases.",
+      "limits": "Historical server PID2329578 had exited before diagnosis. The new baseline directly measured the same failure state but ultimately passed; no claim that storage capacity, CPU load or memory utilization caused the historical event."
+    },
+    "baseline": {
+      "nativeExecution": {
+        "sessionId": "01a13b2e-b43f-7511-b168-5ed9a7616762",
+        "eventOrdinal": 404,
+        "eventId": "exec-c2a9c312-2647-4e17-9dea-726df6350704",
+        "startedAt": "2026-10-14T16:24:29.098Z",
+        "completedAt": "2026-10-14T16:28:24.000Z",
+        "exitCode": 0
+      },
+      "scope": "Original standalone selftest ultimately passed; intermediate connection-refused shutdown state was observed. Not a deterministic historical failure reproduction."
+    },
+    "fixedVerification": {
+      "command": "BASH_XTRACEFD=3 timeout 600 bash -x bin/lib/inno-uninstall-cleanup.selftest.sh",
+      "cwd": "papercusp-desktop",
+      "nativeExecution": {
+        "sessionId": "01a13b2e-b43f-7511-b168-5ed9a7616762",
+        "eventOrdinal": 494,
+        "eventId": "exec-a3f2be28-c5af-42c7-b80b-389885ce2747",
+        "startedAt": "2026-10-14T16:32:34.919Z",
+        "completedAt": "2026-10-14T16:34:33.608Z",
+        "exitCode": 0
+      },
+      "result": "PASS: lifecycle fault injection plus real compilation, installs, uninstall, sibling/shared-runtime controls, autostart cleanup and user-config preservation. No real toolchain skip.",
+      "recurrenceGuard": "Existing failure_reporting_contract_selftest now rejects the nonpersistent-server fixture, verifies one display across compiler/install/query, and requires scoped kill+wait before display teardown.",
+      "runtimeClosure": "unmeasured",
+      "operationalAcceptance": false,
+      "limits": "Focused standalone selftest only. Original aggregate failed receipt remains unchanged. Shipping/runtime closure and a new full aggregate verdict are not asserted."
+    },
+    "logs": [
+      {
+        "path": "~/.papercusp/scratch/c0523-inno-wine-baseline-v3.log",
+        "sha256": "9286018a989c4de8b250c93ed1c01c8d2d76f86eafe96595ff826fe6d38cf600"
+      },
+      {
+        "path": "~/.papercusp/scratch/c0523-inno-wine-baseline-v3.trace",
+        "sha256": "619e8fb94c41e730f1420776676442e40e1cd23428bd638768444e320ae91b03"
+      },
+      {
+        "path": "~/.papercusp/scratch/c0523-inno-wine-lifecycle-v1.log",
+        "sha256": "f2084f0e02d45d74c6a13110c85958ff2d5882d9240c64b0e275d19b5af93265"
+      },
+      {
+        "path": "~/.papercusp/scratch/c0523-inno-wine-lifecycle-v1.trace",
+        "sha256": "bb8b3112cca17b33fa49e6451f4d18b64a458edeb38d7a32cdbaade2d4b6f6bd"
+      }
+    ],
+    "residue": {
+      "id": "EI-25973450727337503",
+      "assignee": "su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+      "scope": "Legacy Inno test has the same lifecycle pattern. Original aggregate passed it; current failure is unconfirmed. Owned follow-up retains that limitation."
+    }
+  },
   "next": "No native command handles remain. Prepare actual original full-gate inputs and runtime closure without launching the D020-held cohort. Wrapper local integration is complete; reuse saved proofs only at matching source hashes. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
 }
