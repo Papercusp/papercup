@@ -34,6 +34,13 @@ import {
 } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
 import {
+  NATIVE_ADOPTION_VERSION,
+  measureNativeAdoptionWindow,
+  nativeAdoptionCriterionForInstrument,
+  rateNativeAdoption,
+  type NativeAdoptionMetrics,
+} from './code-intelligence/native-adoption';
+import {
   collectGoalHolderBehaviorMetrics,
   holderBehaviorCriterionForInstrument,
   rateGoalHolderBehavior,
@@ -402,6 +409,8 @@ export async function resolveScorecardInstrumentSnapshots(
     /** Read retained artifact bytes from the serving checkout, never cwd or a sibling tree. */
     readArtifact?: (path: string) => Promise<string>;
     gateReuseAudit?: typeof measureGateReuseAuditWindow;
+    /** Native code-intelligence adoption for one workspace window (P-033). */
+    nativeAdoption?: (window: { workspaceId: string; windowStart: string; windowEnd: string }) => Promise<NativeAdoptionMetrics>;
     /** Holder-behavior metrics for the subject window; null when no goal was stewarded. */
     holderMetrics?: (input: {
       holderOwnerId: string;
@@ -469,6 +478,19 @@ export async function resolveScorecardInstrumentSnapshots(
       }
     })();
     return holderRatings;
+  };
+  // native-code-intelligence-ecosystem-and-dream-2026-10-09 P-033: adoption is read once per
+  // call for the rubric's workspace and the subject window, then rated per criterion.
+  let nativeAdoptionMeasured: Promise<{ metrics: NativeAdoptionMetrics } | { error: string }> | null = null;
+  const measureNativeAdoption = (window: { workspaceId: string; windowStart: string; windowEnd: string }) => {
+    nativeAdoptionMeasured ??= (async () => {
+      try {
+        return { metrics: await (deps.nativeAdoption ?? ((w) => measureNativeAdoptionWindow(w)))(window) };
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
+    })();
+    return nativeAdoptionMeasured;
   };
   const keys = new Set(input.rubric.criteria.map((criterion) =>
     criterion.check?.kind === 'instrument' ? criterion.check.instrumentKey : criterion.instrumentKey,
@@ -543,6 +565,49 @@ export async function resolveScorecardInstrumentSnapshots(
         snapshots[key] = { ...unknown(`Archive instrument unavailable: ${error instanceof Error ? error.message : String(error)}`),
           evidenceRef, window: scopedWindow };
       }
+      continue;
+    }
+    const adoptionCriterion = nativeAdoptionCriterionForInstrument(key);
+    if (adoptionCriterion) {
+      const evidenceRef = 'harness_shared.tool_invocations+agent_activity:native-code-intelligence-adoption';
+      const workspaceId = input.rubric.workspaceId;
+      const scopedWindow = { ...window, workspaceId };
+      if (!workspaceId || start >= end || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('A canonical workspace and a completed, non-empty subject window are required.'),
+          evidenceRef, window: scopedWindow };
+        continue;
+      }
+      const measured = await measureNativeAdoption({
+        workspaceId, windowStart: subject.windowStart, windowEnd: subject.windowEnd,
+      });
+      if ('error' in measured) {
+        snapshots[key] = { ...unknown(`Native adoption instrument unavailable: ${measured.error}`),
+          evidenceRef, window: scopedWindow };
+        continue;
+      }
+      const rating = rateNativeAdoption(measured.metrics)[adoptionCriterion];
+      snapshots[key] = {
+        verdict: rating.verdict,
+        measuredAt,
+        provenance: 'platform-computed',
+        window: scopedWindow,
+        evidenceRef,
+        value: {
+          resolver: key,
+          resolverVersion: NATIVE_ADOPTION_VERSION,
+          criterion: adoptionCriterion,
+          reason: rating.reason,
+          ...(rating.unknownReason ? { unknownReason: rating.unknownReason } : {}),
+          native: {
+            calls: measured.metrics.native.calls, ok: measured.metrics.native.ok,
+            refused: measured.metrics.native.refused, refusalsByRole: measured.metrics.native.refusalsByRole,
+            byOp: measured.metrics.native.byOp, followThrough: measured.metrics.native.followThrough,
+          },
+          substitutes: measured.metrics.substitutes,
+          adoption: measured.metrics.adoption,
+          cannotObserve: measured.metrics.cannotObserve,
+        },
+      };
       continue;
     }
     const holderCriterion = holderBehaviorCriterionForInstrument(key);

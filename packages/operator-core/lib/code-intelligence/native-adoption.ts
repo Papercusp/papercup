@@ -331,7 +331,21 @@ export interface NativeAdoptionTarget {
   maxRefusalRate: number;
 }
 
-export const NATIVE_ADOPTION_TARGET: NativeAdoptionTarget | null = null;
+/**
+ * Frozen 2026-10-14 from the baseline window (plan D-011), before any P-033 intervention:
+ * double agent adoption and native call share, halve the refusal rate, floor = 1/4 baseline lookups.
+ * NEVER edit these numbers to fit a later window — a miss is reported as fail.
+ */
+export const NATIVE_ADOPTION_TARGET: NativeAdoptionTarget | null = Object.freeze({
+  decisionRef: 'native-code-intelligence-ecosystem-and-dream-2026-10-09#D-011',
+  frozenAt: '2026-10-14T06:45:00.000Z',
+  baselineWindow: Object.freeze({ windowStart: '2026-10-11T06:00:00.000Z', windowEnd: '2026-10-14T06:00:00.000Z' }),
+  baseline: Object.freeze({ agentAdoptionRate: 0.06, nativeCallShare: 0.0706, refusalRate: 0.177, lookups: 1857 }),
+  minLookups: 464,
+  minAgentAdoptionRate: 0.12,
+  minNativeCallShare: 0.14,
+  maxRefusalRate: 0.088,
+});
 
 export interface NativeAdoptionRating {
   verdict: 'pass' | 'fail' | 'unknown';

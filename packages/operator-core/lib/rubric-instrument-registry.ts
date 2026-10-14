@@ -32,6 +32,7 @@ import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
+import { NATIVE_ADOPTION_INSTRUMENT_KEYS } from './code-intelligence/native-adoption';
 
 /** The explicit manual binding: the criterion is deliberately graded by a person. */
 export const MANUAL_INSTRUMENT_KEY = 'none';
@@ -579,6 +580,8 @@ export function platformComputedInstrumentKeys(): string[] {
     GATE_REUSE_AUDIT_INSTRUMENT_KEY,
     ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS),
     ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
+    // native-code-intelligence-ecosystem-and-dream-2026-10-09 P-033 (R-30/R-31).
+    ...Object.values(NATIVE_ADOPTION_INSTRUMENT_KEYS),
   ];
 }
 
