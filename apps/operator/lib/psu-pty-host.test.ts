@@ -6721,6 +6721,107 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     expect(h.controller.pendingCount()).toBe(0);
   });
 
+  it('settles a queued production carry when the host ends, clears wake suppression, and ignores a late gate release', async () => {
+    const events: Array<{ kind: string; [key: string]: unknown }> = [];
+    const settlements: Array<{ ids: string[]; outcome: unknown }> = [];
+    let releasePrompt: ((result: { deferred: boolean }) => void) | null = null;
+    const controller = makeCarryRearmController({
+      acquireInject: async () => () => {},
+      waitAtPrompt: () => new Promise<{ deferred: boolean }>((resolve) => {
+        releasePrompt = resolve;
+      }),
+      recycle: async () => {
+        throw new Error('a disposed host must not recycle its dead child');
+      },
+      emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
+      onSettlement: (messages, outcome) => settlements.push({
+        ids: messages.map((message) => String(message.deliveryId)),
+        outcome,
+      }),
+      capMs: 1234,
+    });
+    const message = { ...NON_DRILL_MSG, deliveryId: 'host-exit-carry-1' };
+
+    expect(controller.schedule(message)).toBe('queued');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(controller.pendingCount('carry-respawn')).toBe(1);
+
+    expect(controller.dispose('host-ending')).toBe(true);
+    expect(controller.pendingCount()).toBe(0);
+    expect(events.filter((event) => event.kind === 'respawn-carry-dropped')).toEqual([
+      expect.objectContaining({
+        reason: 'host-ending',
+        rearmed: true,
+        deliveryIds: ['host-exit-carry-1'],
+      }),
+    ]);
+    expect(settlements).toEqual([
+      { ids: ['host-exit-carry-1'], outcome: { delivered: false, reason: 'host-ending' } },
+    ]);
+    expect(controller.dispose('host-ending')).toBe(false);
+    // The original first-attempt promise may report its busy-gate defer only
+    // after cleanup. Its late hand-off must not emit a duplicate terminal row.
+    expect(controller.schedule(message)).toBe('closed');
+
+    // A gate that was already awaiting the prompt can still resolve after
+    // cleanup. The disposed controller must finish without touching recycle or
+    // emitting a second terminal row.
+    releasePrompt?.({ deferred: false });
+    for (let i = 0; i < 4; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(events.filter((event) => event.kind === 'respawn-carry-dropped')).toHaveLength(1);
+    expect(controller.pendingCount()).toBe(0);
+  });
+
+  it('terminally settles a carry accepted before a busy-gate rearm when child exit closes the host', () => {
+    const events: Array<{ kind: string; [key: string]: unknown }> = [];
+    const settlements: Array<{ ids: string[]; outcome: unknown }> = [];
+    const controller = makeCarryRearmController({
+      acquireInject: async () => () => {},
+      waitAtPrompt: async () => ({ deferred: true }),
+      recycle: async () => {},
+      emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
+      onSettlement: (messages, outcome) => settlements.push({
+        ids: messages.map((message) => String(message.deliveryId)),
+        outcome,
+      }),
+    });
+    const message = { ...NON_DRILL_MSG, deliveryId: 'host-exit-before-rearm' };
+
+    controller.beginFirstAttempt(message);
+    expect(controller.pendingCount('carry-respawn')).toBe(1);
+    expect(events).toEqual([]); // exact incident window: accepted, not yet rearm-queued
+
+    expect(controller.dispose('host-ending')).toBe(true);
+    expect(controller.pendingCount()).toBe(0);
+    expect(events).toEqual([
+      expect.objectContaining({
+        kind: 'respawn-carry-dropped',
+        reason: 'host-ending',
+        deliveryIds: ['host-exit-before-rearm'],
+      }),
+    ]);
+    expect(settlements).toEqual([
+      { ids: ['host-exit-before-rearm'], outcome: { delivered: false, reason: 'host-ending' } },
+    ]);
+    // The first attempt may finish after host cleanup; it must not create a
+    // second queued/drop pair for a message already terminally settled.
+    expect(controller.schedule(message)).toBe('closed');
+    controller.endFirstAttempt(message);
+    expect(controller.pendingCount()).toBe(0);
+    expect(events).toHaveLength(1);
+    expect(settlements).toHaveLength(1);
+  });
+
+  it('wires host cleanup to carry-rearm disposal before child teardown', () => {
+    const source = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    const cleanup = source.indexOf('const cleanup = (code, signal = null) => {');
+    const dispose = source.indexOf("carryRearm.dispose('host-ending')", cleanup);
+    const kill = source.indexOf("killPtyProcessTree(child, 'SIGKILL')", cleanup);
+    expect(cleanup).toBeGreaterThan(-1);
+    expect(dispose).toBeGreaterThan(cleanup);
+    expect(kill).toBeGreaterThan(dispose);
+  });
+
   // WI-5623: a PRODUCTION respawn is a MUST-DELIVER — it RE-POLLS across
   // successive busy-gate windows instead of dropping after one retry. A drill
   // stays one-shot. (The old behavior — drop after one defer — meant 0/22
