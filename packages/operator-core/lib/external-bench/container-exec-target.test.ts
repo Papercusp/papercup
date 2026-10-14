@@ -32,7 +32,7 @@ let argvLog: string;
 let envLog: string;
 
 beforeAll(() => {
-  root = mkdtempSync(join(tmpdir(), 'cexec-test-'));
+  root = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'cexec-test-'));
   argvLog = join(root, 'argv.log');
   envLog = join(root, 'env.log');
   fakeDocker = join(root, 'fake-docker');
@@ -69,6 +69,13 @@ describe('validateDockerExecTarget', () => {
 });
 
 describe('materializeDockerExecWrapper', () => {
+  it.runIf(process.platform === 'linux')('rejects an explicit device-namespace directory and its symlink alias', () => {
+    const alias = join(root, 'device-temp');
+    symlinkSync('/dev/shm', alias);
+    for (const dir of ['/dev/shm', alias])
+      expect(() => materializeDockerExecWrapper(target, { dir })).toThrow('masked by the native device namespace');
+  });
+
   it('writes an executable named after the agent, so psu still applies --no-daemon', () => {
     const { wrapperPath } = materializeDockerExecWrapper(target, { dir: mkdtempSync(join(root, 'm-')) });
     expect(basename(wrapperPath)).toBe('codex');

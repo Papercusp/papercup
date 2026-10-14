@@ -35,7 +35,7 @@ function startContainer(extra: string[] = []): string {
 }
 
 beforeAll(() => {
-  root = mkdtempSync(join(tmpdir(), 'cexec-int-'));
+  root = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'cexec-int-'));
   execFileSync('docker', ['image', 'inspect', 'alpine'], { stdio: 'ignore' });
 });
 
@@ -45,6 +45,28 @@ afterAll(() => {
 });
 
 describe('container exec target against a live container', () => {
+  it.runIf(process.platform === 'linux')('executes the default wrapper across the native device namespace when TMPDIR is /dev/shm', () => {
+    const previous = process.env.TMPDIR;
+    let dir: string | undefined;
+    try {
+      process.env.TMPDIR = '/dev/shm';
+      const wrapper = materializeDockerExecWrapper(
+        { kind: 'docker-exec', containerId: 'private-boundary', workdir: '/app', binPath: '/bin/sh' },
+        { dockerBin: '/bin/echo' },
+      );
+      dir = wrapper.dir;
+      const result = spawnSync('bwrap', ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--',
+        wrapper.wrapperPath, '--boundary-proof'], { encoding: 'utf8', timeout: 10000 });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('private-boundary /bin/sh --boundary-proof');
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previous;
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('resolveBackendLaunch picks the wrapper, which runs inside the container in the workdir', () => {
     const cid = startContainer();
     const { wrapperPath } = materializeDockerExecWrapper(

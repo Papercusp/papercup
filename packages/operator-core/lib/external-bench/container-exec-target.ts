@@ -459,7 +459,7 @@ child.on('exit', (code, signal) => {
 }
 
 export interface MaterializeWrapperOptions extends RenderWrapperOptions {
-  /** Directory to write into. Default: a fresh mkdtemp under the OS temp dir. */
+  /** Directory to write into. Linux device/proc namespaces cannot hold a native wrapper. */
   dir?: string;
   /** File name = the agent psu resolves. Default 'codex'. */
   agent?: string;
@@ -473,7 +473,17 @@ export function materializeDockerExecWrapper(
   const agent = opts.agent ?? 'codex';
   if (!/^[a-z][a-z0-9-]*$/.test(agent)) throw new Error(`container exec target: invalid agent name ${JSON.stringify(agent)}`);
   const source = renderDockerExecWrapper(target, opts);
-  const dir = opts.dir ?? mkdtempSync(join(tmpdir(), 'papercusp-cexec-'));
+  // The metered native launcher replaces /dev before applying its executable
+  // read grants. A valid host file under /dev/shm is therefore absent there.
+  // Resolve aliases too, and keep the existing short /tmp native-root policy.
+  const masked = (path: string) => process.platform === 'linux' && /^\/(dev|proc)(\/|$)/.test(path);
+  let parent = realpathSync(opts.dir ?? tmpdir());
+  if (masked(parent)) {
+    if (opts.dir) throw new Error('container exec target: wrapper directory is masked by the native device namespace');
+    parent = realpathSync('/tmp');
+    if (masked(parent)) throw new Error('container exec target: native temporary root is masked by the device namespace');
+  }
+  const dir = opts.dir ? parent : mkdtempSync(join(parent, 'papercusp-cexec-'));
   const wrapperPath = join(dir, agent);
   writeFileSync(wrapperPath, source, { mode: 0o755 });
   chmodSync(wrapperPath, 0o755);
