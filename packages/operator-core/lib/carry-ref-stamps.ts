@@ -40,6 +40,8 @@ export const CARRY_REF_MAX = 24;
 export const CARRY_REF_DELIVERY_MAX = 48;
 /** Re-resolution budget for one delivery. Past it the block says so instead of guessing. */
 export const CARRY_REF_DELIVERY_TIMEOUT_MS = 4_000;
+/** Bound on write-time stamping, which sits on the checkpoint write path. */
+export const CARRY_REF_STAMP_TIMEOUT_MS = 2_000;
 
 const WORK_ITEM_REF = /\b(?:WI|EI)-\d{4,}\b/g;
 const DECISION_REF = /\b(?:plan:)?([a-z0-9][a-z0-9-]*[a-z0-9])#(D-\d{3,})\b/gi;
@@ -237,15 +239,23 @@ export async function stampCarryRefs(input: {
   exclude?: readonly string[];
   now?: number;
   resolve?: CarryRefResolver;
+  /** Bound on the resolution; a write never waits longer than this (→ `[]`). */
+  timeoutMs?: number;
 }): Promise<DepStamp[]> {
   if (!input.workspaceId) return [];
   const deps = extractCarryRefDeps(input.text, { exclude: input.exclude });
   if (deps.length === 0) return [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const tokens = await (input.resolve ?? resolveCarryRefTokens)(deps, {
-      workspaceId: input.workspaceId,
-      harness: input.harness,
-    });
+    const tokens = await Promise.race([
+      (input.resolve ?? resolveCarryRefTokens)(deps, {
+        workspaceId: input.workspaceId,
+        harness: input.harness,
+      }),
+      new Promise<Map<string, string | null>>((resolve) => {
+        timer = setTimeout(() => resolve(new Map()), input.timeoutMs ?? CARRY_REF_STAMP_TIMEOUT_MS);
+      }),
+    ]);
     const at = input.now ?? Date.now();
     const stamps: DepStamp[] = [];
     for (const dep of deps) {
@@ -255,7 +265,33 @@ export async function stampCarryRefs(input: {
     return stamps;
   } catch {
     return [];
+  } finally {
+    if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * The ref stamps a write should persist for the note it actually STORED. Fresh stamps
+ * (computed from the incoming text) win; a prior stamp survives only while the stored
+ * note still cites its reference (a row the merge transform carried forward keeps the
+ * baseline it was first written against); a reference the note stopped citing is
+ * dropped. `fresh === undefined` (a caller that did not stamp) keeps the cited priors.
+ */
+export function reconcileCarryRefStamps(
+  storedNote: string | null,
+  fresh: readonly DepStamp[] | undefined,
+  priorDeps: unknown,
+): DepStamp[] {
+  if (!storedNote) return [];
+  const out = [...(fresh ?? [])];
+  const have = new Set(out.map((s) => s.dep));
+  const cited = new Set(extractCarryRefDeps(storedNote, { max: Number.MAX_SAFE_INTEGER }));
+  for (const prior of parseCarryRefStamps(priorDeps)) {
+    if (have.has(prior.dep) || !cited.has(prior.dep) || out.length >= CARRY_REF_MAX) continue;
+    have.add(prior.dep);
+    out.push(prior);
+  }
+  return out;
 }
 
 /** Read the `refs` stamps out of a raw `carry_notes.deps` payload. Malformed → `[]`. */
