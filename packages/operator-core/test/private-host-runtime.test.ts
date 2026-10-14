@@ -5,10 +5,31 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+it('stops builder descendants on timeout and retains the original diagnostics', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
+  const childFile = join(evidenceDir, 'descendant.pid');
+  let descendant: number | undefined;
+  try {
+    expect(() => buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+      args: ['-c', 'sleep 60 & echo $! > "$1"; echo CHILD_READY; wait', '_', childFile],
+      timeoutMs: 1000 })).toThrow(/ETIMEDOUT/);
+    descendant = Number(readFileSync(childFile, 'utf8'));
+    expect(readFileSync(join(evidenceDir, 'operator-api-build.log'), 'utf8')).toContain('CHILD_READY');
+    const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+    expect(receipt).toMatchObject({ signal: 'SIGKILL', status: null, error: { code: 'ETIMEDOUT' }, groupStop: 'signaled' });
+    await expect.poll(() => {
+      try { return readFileSync(`/proc/${descendant}/stat`, 'utf8').split(') ')[1].split(' ')[0]; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'gone'; throw error; }
+    }).toMatch(/^(?:gone|Z|X)$/);
+  } finally {
+    if (descendant) { try { process.kill(descendant, 'SIGKILL'); } catch { /* already stopped */ } }
+  }
+});
 
 it.each(['--import=tsx', '--import "tsx"', '--loader=tsx/esm', '--require tsx/cjs',
   '--import="file:///repo/node_modules/tsx/dist/loader.mjs"'])('removes %s and preserves guarded plain Node options', preload => {

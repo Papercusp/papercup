@@ -1,6 +1,6 @@
 /** Registry preflight shared by standalone private HTTP workers and their cheap guard. */
 import assert from 'node:assert/strict';
-import { execFileSync, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
@@ -590,15 +590,39 @@ function assertPrivatePreparationEvidence() {
   'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
 }
 
-function buildPrivateOperatorApiBundle(root: string, evidenceDir: string) {
+export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string, builder?: {
+  command: string; args: string[]; timeoutMs: number;
+}) {
   const path = join(evidenceDir, 'hono-host.mjs');
   // Write both streams directly to retained evidence: a timeout, signal or
   // parent failure must not erase the compiler/census's original diagnostics.
   const log = openSync(join(evidenceDir, 'operator-api-build.log'), 'w', 0o600);
+  const started = Date.now();
+  let receipt: Record<string, unknown> = { startedAt: new Date(started).toISOString() };
   try {
-    execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path],
-      { cwd: root, env: process.env, stdio: ['ignore', log, log], timeout: 240_000 });
-  } finally { closeSync(log); }
+    // The shell starts compiler, checker and guard descendants. Killing just
+    // the shell on timeout lets them keep changing the failed run's evidence.
+    const result = spawnSync(builder?.command ?? 'bash',
+      builder?.args ?? [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path],
+      { cwd: root, env: process.env, stdio: ['ignore', log, log], detached: true,
+        timeout: builder?.timeoutMs ?? 240_000, killSignal: 'SIGKILL' });
+    receipt = { ...receipt, pid: result.pid, status: result.status, signal: result.signal,
+      error: result.error && { code: (result.error as NodeJS.ErrnoException).code, message: result.error.message } };
+    if (result.error || result.status !== 0) {
+      if (result.pid) {
+        try { process.kill(-result.pid, 'SIGKILL'); receipt.groupStop = 'signaled'; }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+          receipt.groupStop = 'already-exited';
+        }
+      }
+      throw result.error ?? new Error(`Private operator builder exited ${result.status}/${result.signal}; see operator-api-build.log`);
+    }
+  } finally {
+    closeSync(log);
+    writeFileSync(join(evidenceDir, 'operator-api-build-result.json'), JSON.stringify({ ...receipt,
+      endedAt: new Date().toISOString(), elapsedMs: Date.now() - started }));
+  }
   return { path, sha256: digestBytes(readFileSync(path)) };
 }
 
