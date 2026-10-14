@@ -1473,7 +1473,11 @@ const resumable = defineTool({
     // after the move-sessions-off-disk-to-DB change — those sessions ARE resumable,
     // they just need rematerializing first). The picker keeps a session that is on
     // disk OR archived, and rematerializes an archived one on selection.
-    const archivedIds = new Set<string>();
+    const archivedKeys = new Set<string>();
+    const archiveKeyFor = (s: (typeof sessions)[number]): string | null => {
+      const archiveSessionId = s.agent === 'omp' ? s.ompThreadId : s.sessionId;
+      return s.agent && archiveSessionId ? `${s.agent}:${archiveSessionId}` : null;
+    };
     try {
       // Lazy: session-archive fails LOUD at import when zstd is unavailable —
       // keep that off this module's load path (mirrors the rematerialize route).
@@ -1481,9 +1485,11 @@ const resumable = defineTool({
       const store = pgSessionArchiveStore();
       await Promise.all(
         sessions.map(async (s) => {
-          // Only claude/codex sessions are keyed by a session_id in the archive;
-          // omp resumes by thread name and is never ghost-filtered by the picker.
-          if (!s.sessionId || (s.agent !== 'claude' && s.agent !== 'codex')) return;
+          // Claude/codex archives are keyed by session_id; OMP archives are keyed by
+          // omp_thread_id because OMP rows intentionally have no session_id.
+          const archiveAgent = s.agent;
+          const archiveSessionId = s.agent === 'omp' ? s.ompThreadId : s.sessionId;
+          if (!archiveSessionId || (archiveAgent !== 'claude' && archiveAgent !== 'codex' && archiveAgent !== 'omp')) return;
           try {
             // Read the stamp with the SAME key the writer writes. The archive
             // ref built at archive-at-death carries no workspaceId, so every row
@@ -1497,8 +1503,8 @@ const resumable = defineTool({
             // 2026-07-13 owner bug it was added to fix. Omitting the argument
             // defaults to WS_DEFAULT, which is also how /adv/sessions/rematerialize
             // already reads (and why restoring worked while detection did not).
-            const stamp = await store.readStamp(s.agent, s.sessionId);
-            if (stamp) archivedIds.add(s.sessionId);
+            const stamp = await store.readStamp(archiveAgent, archiveSessionId);
+            if (stamp) archivedKeys.add(`${archiveAgent}:${archiveSessionId}`);
           } catch {
             /* best-effort per session — a read failure just leaves hasArchive false */
           }
@@ -1518,16 +1524,19 @@ const resumable = defineTool({
       fetchPresenceFleet(codexOwnerIds),
     ]);
     const presenceByOwner = new Map(presenceRows.map((p) => [p.ownerId, p]));
-    const enriched = await Promise.all(sessions.map(async (s) => ({
-      ...s,
-      hasArchive: s.sessionId ? archivedIds.has(s.sessionId) : false,
-      ...(s.agent === 'codex' ? {
-        compactionLimit: await compactionLimitForResumeRow(s, null, {
-          compactionLimit: presenceByOwner.get(s.coordOwnerId ?? '')?.compactionLimit ?? null,
-          fleetRole: fleetMemberships.get(s.coordOwnerId ?? '')?.fleetRole ?? null,
-        }),
-      } : {}),
-    })));
+    const enriched = await Promise.all(sessions.map(async (s) => {
+      const archiveKey = archiveKeyFor(s);
+      return {
+        ...s,
+        hasArchive: Boolean(archiveKey && archivedKeys.has(archiveKey)),
+        ...(s.agent === 'codex' ? {
+          compactionLimit: await compactionLimitForResumeRow(s, null, {
+            compactionLimit: presenceByOwner.get(s.coordOwnerId ?? '')?.compactionLimit ?? null,
+            fleetRole: fleetMemberships.get(s.coordOwnerId ?? '')?.fleetRole ?? null,
+          }),
+        } : {}),
+      };
+    }));
     return new Response(
       JSON.stringify({
         sessions: enriched,
