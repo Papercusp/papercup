@@ -273,6 +273,7 @@ check_env() {
     else
       export HARNESS_ADMIN_DATABASE_URL="${HARNESS_ADMIN_DATABASE_URL:-${DATABASE_URL:-}}"
     fi
+    rc=0
     if [[ "${PAPERCUSP_DEPLOYMENT_ENVIRONMENT:-}" == production ]]; then
       REF_NAMES+=("${PRODUCTION_REF_NAMES[@]}")
       if [[ -n "${PAPERCUSP_HOSTED_GCP_DELEGATION_SOURCE_CREDENTIALS:-}" ]]; then
@@ -281,7 +282,6 @@ check_env() {
     fi
     export PAPERCUSP_INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-$REPO_ROOT}"
 
-    rc=0
     for name in "${LITERAL_NAMES[@]}"; do
       literal_value="${!name:-}"
       if [[ -z "$literal_value" ]]; then
