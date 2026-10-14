@@ -144,22 +144,59 @@ export function classifyGuardRun(run: GuardRun): GuardVerdict {
 /** A repo-relative file path token: at least one directory and an extension. */
 const PATH_TOKEN_RE = /(?:^|[\s'"`(,=])((?:\/[^\s'"`()]+?)|(?:[A-Za-z0-9_@.+\-[\]]+(?:\/[A-Za-z0-9_@.+\-[\]]+)+))\.([A-Za-z0-9]{1,8})(?=$|[\s'"`):,;])/gm;
 
+/** Structured paths emitted by scripts/test-files.mjs for measured assertion failures. */
+const TEST_FILE_ASSERTION_FAILURE_FILE_RE = /^TEST_FILE_ASSERTION_FAILURE file=("(?:\\.|[^"\\])*")(?:\s|$)/;
+
+function normalizeGuardOffenderPath(path: string, root: string): string | null {
+  let p = path;
+  if (p.startsWith('/')) {
+    if (!p.startsWith(root)) return null;
+    p = p.slice(root.length);
+  }
+  if (
+    !p ||
+    p === '(unknown file)' ||
+    p.includes('node_modules/') ||
+    p.includes('://') ||
+    (p.startsWith('.') && !p.startsWith('.papercusp/'))
+  ) {
+    return null;
+  }
+  return p;
+}
+
 /**
- * The repo-relative paths a guard's output names, de-duplicated, first-seen order.
- * Absolute paths under `repoRoot` are made relative; any other absolute path, a
- * `node_modules` path and a URL are dropped.
+ * The repo-relative paths a guard's failure evidence names, de-duplicated in first-seen order.
+ * When the test-file runner emits structured assertion records, use only those file fields;
+ * other output can contain unrelated source paths from loader and runner instrumentation.
+ * Otherwise, preserve the path-token parser used by the other lint guards. Absolute paths under
+ * `repoRoot` are made relative; any other absolute path, a `node_modules` path and a URL are dropped.
  */
 export function parseGuardOffenders(output: string, repoRoot: string): string[] {
   const root = repoRoot.endsWith('/') ? repoRoot : `${repoRoot}/`;
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const m of output.matchAll(PATH_TOKEN_RE)) {
-    let p = `${m[1]}.${m[2]}`;
-    if (p.startsWith('/')) {
-      if (!p.startsWith(root)) continue;
-      p = p.slice(root.length);
+  const assertionFailureLines = output
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('TEST_FILE_ASSERTION_FAILURE file='));
+  const candidates: string[] = [];
+  if (assertionFailureLines.length > 0) {
+    for (const line of assertionFailureLines) {
+      const match = TEST_FILE_ASSERTION_FAILURE_FILE_RE.exec(line);
+      if (!match) continue;
+      try {
+        const path: unknown = JSON.parse(match[1]);
+        if (typeof path === 'string') candidates.push(path);
+      } catch {
+        // A malformed structured record is not permission to fall back to unrelated path tokens.
+      }
     }
-    if (p.includes('node_modules/') || p.includes('://') || (p.startsWith('.') && !p.startsWith('.papercusp/'))) continue;
+  } else {
+    for (const m of output.matchAll(PATH_TOKEN_RE)) candidates.push(`${m[1]}.${m[2]}`);
+  }
+  for (const candidate of candidates) {
+    const p = normalizeGuardOffenderPath(candidate, root);
+    if (p === null) continue;
     if (!seen.has(p)) {
       seen.add(p);
       out.push(p);

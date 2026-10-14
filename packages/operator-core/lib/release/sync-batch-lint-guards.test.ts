@@ -71,6 +71,17 @@ describe('parseGuardOffenders', () => {
       'app/api/[[...route]]/route.ts',
     ]);
   });
+
+  it('uses structured assertion paths instead of committed-source instrumentation paths', () => {
+    const failedFile = `${ROOT}/apps/operator/app/settings/storage/page.tsx`;
+    const out = [
+      'COMMITTED_SOURCE substituted packages/coordination/src/presence/pg-store.ts: the working tree differs from HEAD',
+      `TEST_FILE_ASSERTION_FAILURE file=${JSON.stringify(failedFile)} name="design primitive assertion" message="expected token"`,
+      'TEST_FILE_RESULT requested=3 executed=3 matched=3 status=failed skippedTests=0',
+    ].join('\n');
+
+    expect(parseGuardOffenders(out, ROOT)).toEqual(['apps/operator/app/settings/storage/page.tsx']);
+  });
 });
 
 describe('diffGuardViolations', () => {
