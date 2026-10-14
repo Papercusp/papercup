@@ -25,13 +25,26 @@ export interface FirstPartyCallersJob extends Omit<FirstPartyCallersQuery, 'ts' 
   readonly rgPath?: string;
 }
 
+/** Progress extends the existing IPC exchange; it never counts as an answer. */
+export interface FirstPartyCallersProgress {
+  readonly kind: 'first-party-callers-progress';
+  readonly phase: 'job-received' | 'typescript-load' | 'compiler-query';
+  readonly elapsedMs: number;
+}
+
 if (!process.send) throw new Error('first-party-callers.worker must be forked with an IPC channel');
 
 const job = await new Promise<FirstPartyCallersJob>((resolve) => process.once('message', resolve));
 const started = Date.now();
+const progress = (phase: FirstPartyCallersProgress['phase']) => process.send!({
+  kind: 'first-party-callers-progress', phase, elapsedMs: Date.now() - started,
+} satisfies FirstPartyCallersProgress);
+progress('job-received');
 let result: FirstPartyCallersAnswer;
 try {
+  progress('typescript-load');
   const ts = loadVendoredTypescript(job.vendorDir);
+  progress('compiler-query');
   result = firstPartyCallers({ ...job, ts });
 } catch (error) {
   // Loading TypeScript is the one step firstPartyCallers does not guard itself.

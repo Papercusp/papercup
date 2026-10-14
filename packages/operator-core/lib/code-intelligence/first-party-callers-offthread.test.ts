@@ -34,6 +34,8 @@ beforeAll(() => {
   writeFileSync(join(fakes, 'hang.mjs'), 'process.on("message", () => {}); setInterval(() => {}, 1000);\n');
   writeFileSync(join(fakes, 'exit.mjs'), 'process.on("message", () => { console.error("Error: boom from the fake"); process.exit(3); });\n');
   writeFileSync(join(fakes, 'junk.mjs'), 'process.on("message", () => process.send({ nope: true }, () => process.disconnect()));\n');
+  writeFileSync(join(fakes, 'progress-hang.mjs'), 'process.on("message", () => process.send({ kind: "first-party-callers-progress", phase: "compiler-query", elapsedMs: 12 })); setInterval(() => {}, 1000);\n');
+  writeFileSync(join(fakes, 'invalid-progress.mjs'), 'process.on("message", () => process.send({ kind: "first-party-callers-progress", phase: "compiler-query", elapsedMs: -1 }, () => process.disconnect()));\n');
 });
 afterAll(() => {
   rmSync(root, { recursive: true, force: true });
@@ -76,6 +78,26 @@ describe('firstPartyCallersOffthread', () => {
     );
     expect(a.error).toMatch(/exited \(3\) before answering: Error: boom from the fake/);
     expect(a.sites).toEqual([]);
+  });
+
+  it('retains measured compiler progress on a deadline without accepting it as an answer', async () => {
+    const result = await firstPartyCallersOffthread(
+      { vendorDir: VENDOR_DIR, root, name: 'target' },
+      { workerPath: join(fakes, 'progress-hang.mjs'), budgetMs: 2_000 },
+    );
+    expect(result.error).toContain('exceeded its 2000 ms deadline');
+    expect(result.error).toContain('last measured phase=compiler-query, workerElapsedMs=12');
+    expect(result.sites).toEqual([]);
+    expect(result.freshness.health).toBe('unhealthy');
+  }, 15_000);
+
+  it('refuses an invalid progress frame rather than extending the worker deadline', async () => {
+    const result = await firstPartyCallersOffthread(
+      { vendorDir: VENDOR_DIR, root, name: 'target' },
+      { workerPath: join(fakes, 'invalid-progress.mjs') },
+    );
+    expect(result.error).toContain('not an answer');
+    expect(result.sites).toEqual([]);
   });
 
   it('refuses a reply that is not an answer', async () => {

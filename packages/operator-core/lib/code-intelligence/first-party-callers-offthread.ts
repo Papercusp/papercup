@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { terminateSpawnTree } from '@papercusp/backup/hook';
 import { createTextCollector } from '../child-output';
 import { failedCallersAnswer, type FirstPartyCallersAnswer } from './first-party-callers';
-import type { FirstPartyCallersJob } from './first-party-callers.worker';
+import type { FirstPartyCallersJob, FirstPartyCallersProgress } from './first-party-callers.worker';
 
 export const FIRST_PARTY_CALLERS_WORKER_BUNDLED = 'first-party-callers.worker.mjs';
 export const FIRST_PARTY_CALLERS_WORKER_SOURCE = 'first-party-callers.worker.ts';
@@ -55,6 +55,14 @@ const isAnswer = (value: unknown): value is FirstPartyCallersAnswer =>
   value !== null &&
   (value as FirstPartyCallersAnswer).backend === 'typescript-service' &&
   Array.isArray((value as FirstPartyCallersAnswer).sites);
+
+const isProgress = (value: unknown): value is FirstPartyCallersProgress => {
+  if (typeof value !== 'object' || value === null) return false;
+  const progress = value as FirstPartyCallersProgress;
+  return progress.kind === 'first-party-callers-progress'
+    && ['job-received', 'typescript-load', 'compiler-query'].includes(progress.phase)
+    && Number.isFinite(progress.elapsedMs) && progress.elapsedMs >= 0;
+};
 
 /** Who calls `job.name`, answered in a forked worker process. Never rejects. */
 export async function firstPartyCallersOffthread(
@@ -87,15 +95,19 @@ export async function firstPartyCallersOffthread(
     });
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let lastProgress: FirstPartyCallersProgress | null = null;
   try {
     return await new Promise<FirstPartyCallersAnswer>((resolve) => {
       timer = setTimeout(
-        () => resolve(fail(`the callers worker exceeded its ${budgetMs} ms deadline and was killed`)),
+        () => resolve(fail(`the callers worker exceeded its ${budgetMs} ms deadline and was killed; `
+          + (lastProgress ? `last measured phase=${lastProgress.phase}, workerElapsedMs=${lastProgress.elapsedMs}`
+            : 'no worker progress received (startup or delivery is unmeasured)'))),
         budgetMs,
       );
-      child.once('message', (message: unknown) =>
-        resolve(isAnswer(message) ? message : fail('the callers worker returned something that is not an answer')),
-      );
+      child.on('message', (message: unknown) => {
+        if (isProgress(message)) { lastProgress = message; return; }
+        resolve(isAnswer(message) ? message : fail('the callers worker returned something that is not an answer'));
+      });
       child.once('error', (error) => resolve(fail(`callers worker error: ${error.message}`)));
       child.once('exit', (code, signal) => {
         const stderrText = stderr.peek();
