@@ -548,30 +548,45 @@ export function groupRoutes(routes) {
  * temp dir it owns and gets the complete run. A single-group run is byte-identical to
  * the caller's request either way.
  */
+function perGroupOutputPath(p, groupIndex, groupCount) {
+  if (groupCount <= 1 || groupIndex === 0) return p;
+  const dot = p.lastIndexOf('.');
+  const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf(sep));
+  // Only treat a dot AFTER the last separator as an extension, so a dotted
+  // DIRECTORY (…/my.dir/report) is never split in the middle.
+  return dot > slash && dot > 0
+    ? `${p.slice(0, dot)}.${groupIndex}${p.slice(dot)}`
+    : `${p}.${groupIndex}.json`;
+}
+
 export function perGroupVitestArgs(vitestArgs, groupIndex, groupCount) {
   if (groupCount <= 1 || groupIndex === 0) return vitestArgs;
-  const perGroupPath = (p) => {
-    const dot = p.lastIndexOf('.');
-    const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf(sep));
-    // Only treat a dot AFTER the last separator as an extension, so a dotted
-    // DIRECTORY (…/my.dir/report) is never split in the middle.
-    return dot > slash && dot > 0
-      ? `${p.slice(0, dot)}.${groupIndex}${p.slice(dot)}`
-      : `${p}.${groupIndex}.json`;
-  };
   const out = [];
   for (let i = 0; i < vitestArgs.length; i += 1) {
     const arg = vitestArgs[i];
     if (arg.startsWith('--outputFile=')) {
-      out.push(`--outputFile=${perGroupPath(arg.slice('--outputFile='.length))}`);
+      out.push(`--outputFile=${perGroupOutputPath(arg.slice('--outputFile='.length), groupIndex, groupCount)}`);
     } else if (arg === '--outputFile' && i + 1 < vitestArgs.length) {
-      out.push(arg, perGroupPath(vitestArgs[i + 1]));
+      out.push(arg, perGroupOutputPath(vitestArgs[i + 1], groupIndex, groupCount));
       i += 1;
     } else {
       out.push(arg);
     }
   }
   return out;
+}
+
+/** EI-25984462569375438: source-map OUT is another overwrite-on-flush report.
+ * Reuse the CLI report naming rule; RESULT remains one append-only stream.
+ * Resolve relative OUT paths before changing workspace cwd, and never mutate
+ * the parent env (later groups must suffix the original path, not each other).
+ */
+export function perGroupVitestEnv(env, groupIndex, groupCount) {
+  const outPath = env.PC_EXECUTED_SOURCE_MAP_OUT?.trim();
+  if (!outPath) return env;
+  return { ...env,
+    PC_EXECUTED_SOURCE_MAP_OUT: perGroupOutputPath(resolve(outPath), groupIndex, groupCount),
+  };
 }
 
 /**
@@ -3509,9 +3524,11 @@ export async function main(
     // `--outputFile` but would keep `--reporter=json`, and would then print JSON where a human is
     // meant to read a failure — never sees these args.
     const injectedReportDir = injectedReportDirFor();
+    const groupChildEnv = perGroupVitestEnv(receiptChildEnv, groupIndex, groups.length);
     const { args: groupVitestArgs, injectedReportPath } = withInjectedJsonReport(
       perGroupVitestArgs(vitestArgs, groupIndex, groups.length),
       injectedReportDir ? join(injectedReportDir, `group-${groupIndex}.json`) : null,
+      { env: groupChildEnv },
     );
     const requested = group.routes.map((route) => route.requested);
     // A null config is a config-less Vitest package (libs/generic/* shape): omit `--config`
@@ -3519,6 +3536,9 @@ export async function main(
     // documented `npm test` (`vitest run`) does.
     const configArgs = [...(group.config ? ['--config', group.config] : []), ...configLoaderArgs];
     console.log(`ROUTE cwd=${cwdLabel} config=${group.config ?? '(package default)'}`);
+    if (groupChildEnv.PC_EXECUTED_SOURCE_MAP_OUT?.trim()) {
+      console.log(`TEST_FILE_SOURCE_MAP_OUT group=${groupIndex} path=${JSON.stringify(groupChildEnv.PC_EXECUTED_SOURCE_MAP_OUT)}`);
+    }
     for (const file of requested) console.log(`  requested ${file}`);
 
     warnIfInstallInFlight(`\`vitest list\` (group cwd=${cwdLabel})`);
@@ -3529,7 +3549,7 @@ export async function main(
       ['vitest', 'list', '--filesOnly', ...configArgs, ...requested],
       {
         cwd: group.cwd,
-        env: process.env,
+        env: groupChildEnv,
         cwdLabel,
         timeoutMs: listTimeoutMs,
       },
@@ -3629,7 +3649,7 @@ export async function main(
             ['vitest', 'list', '--filesOnly', ...configArgs, route.requested],
             {
               cwd: group.cwd,
-              env: process.env,
+              env: groupChildEnv,
               cwdLabel,
               timeoutMs: listTimeoutMs,
             },
@@ -3692,7 +3712,7 @@ export async function main(
       ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
       {
         cwd: group.cwd,
-        env: receiptChildEnv,
+        env: groupChildEnv,
         files: exact,
         cwdLabel,
         timeoutMs: runTimeoutMs,
@@ -3799,14 +3819,21 @@ export async function main(
         console.error(
           `TEST_FILE_DETAIL_RECOVERY cwd=${cwdLabel} Vitest printed zero per-suite error detail for ${exact.length} failed files (known Vitest 4 reporter gap when >=2 files fail collection at once) — re-running each file individually to surface the actual error:`,
         );
-        for (const file of exact) {
+        for (const [detailIndex, file] of exact.entries()) {
           console.error(`\n>>> re-running ${file} alone for detail`);
+          const detailEnv = groupChildEnv.PC_EXECUTED_SOURCE_MAP_OUT?.trim()
+            ? { ...groupChildEnv, PC_EXECUTED_SOURCE_MAP_OUT:
+              perGroupOutputPath(groupChildEnv.PC_EXECUTED_SOURCE_MAP_OUT, `detail-${detailIndex}`, 2) }
+            : groupChildEnv;
+          if (detailEnv.PC_EXECUTED_SOURCE_MAP_OUT?.trim()) {
+            console.log(`TEST_FILE_SOURCE_MAP_OUT group=${groupIndex} detail=${detailIndex} path=${JSON.stringify(detailEnv.PC_EXECUTED_SOURCE_MAP_OUT)}`);
+          }
           const detailResult = await runCapturedTestProcessImpl(
             'npx',
             ['vitest', 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)],
             {
               cwd: group.cwd,
-              env: receiptChildEnv,
+              env: detailEnv,
               files: [file],
               cwdLabel,
               ...finalizationCallbacks(),

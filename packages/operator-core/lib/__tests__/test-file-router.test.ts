@@ -68,6 +68,7 @@ import {
   publishPreemptReadyMarker,
   transformFailureMarker,
   perGroupVitestArgs,
+  perGroupVitestEnv,
   privateIntegrationVerifierInputs,
   runCapturedTestProcess,
   runGovernedTestFileProcess,
@@ -572,6 +573,79 @@ describe('test-files router', () => {
     it('passes unrelated vitest args through untouched', () => {
       expect(perGroupVitestArgs(['-t', 'my test', '--reporter=json'], 1, 2))
         .toEqual(['-t', 'my test', '--reporter=json']);
+    });
+
+    it('isolates source-map OUT with the same naming rule while preserving the shared RESULT sink', () => {
+      const env = Object.freeze({ PC_EXECUTED_SOURCE_MAP_OUT: '/tmp/my.dir/sources',
+        PC_EXECUTED_SOURCE_MAP_RESULT: '/tmp/result.jsonl', PAPERCUSP_TEST_RUN_RECEIPT_FILE: '/tmp/receipt.jsonl' });
+      const children = [0, 1, 2].map(index => perGroupVitestEnv(env, index, 3));
+      expect(children.map(child => child.PC_EXECUTED_SOURCE_MAP_OUT))
+        .toEqual(['/tmp/my.dir/sources', '/tmp/my.dir/sources.1.json', '/tmp/my.dir/sources.2.json']);
+      for (const child of children) {
+        expect(child.PC_EXECUTED_SOURCE_MAP_RESULT).toBe(env.PC_EXECUTED_SOURCE_MAP_RESULT);
+        expect(child.PAPERCUSP_TEST_RUN_RECEIPT_FILE).toBe(env.PAPERCUSP_TEST_RUN_RECEIPT_FILE);
+      }
+      expect(env.PC_EXECUTED_SOURCE_MAP_OUT).toBe('/tmp/my.dir/sources');
+      expect(perGroupVitestEnv({ PC_EXECUTED_SOURCE_MAP_OUT: '/tmp/sources.json' }, 0, 1)
+        .PC_EXECUTED_SOURCE_MAP_OUT).toBe('/tmp/sources.json');
+      expect(perGroupVitestEnv({ PC_EXECUTED_SOURCE_MAP_OUT: 'sources.json' }, 1, 3)
+        .PC_EXECUTED_SOURCE_MAP_OUT).toBe(resolve('sources.1.json'));
+      const unarmed = { PC_EXECUTED_SOURCE_MAP_OUT: ' ' };
+      expect(perGroupVitestEnv(unarmed, 1, 3)).toBe(unarmed);
+      expect(perGroupVitestEnv({}, 1, 3)).toEqual({});
+    });
+
+    it('preserves each source-map group and detail rerun output through main()', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'source-map-groups-'));
+      const originalOut = join(root, 'sources.json');
+      const files = ['one/a.test.ts', 'one/b.test.ts', 'two/c.test.ts', 'three/d.test.ts'];
+      const saved = { PC_EXECUTED_SOURCE_MAP_OUT: process.env.PC_EXECUTED_SOURCE_MAP_OUT,
+        PAPERCUSP_TEST_RUN_RECEIPT_FILE: process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE };
+      process.env.PC_EXECUTED_SOURCE_MAP_OUT = originalOut;
+      delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      const captures: Array<{ path: string; files: string[] }> = [];
+      try {
+        for (const dir of ['one', 'two', 'three']) {
+          mkdirSync(join(root, dir));
+          writeFileSync(join(root, dir, 'vitest.config.ts'), 'export default {};');
+        }
+        for (const file of files) writeFileSync(join(root, file), '');
+        const code = await main(files, {
+          repoRoot: root,
+          restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+          runVitestListImpl: async (_command: string, args: string[]) => ({ status: 0, signal: null,
+            stdout: args.filter(arg => arg.endsWith('.test.ts')).join('\n'), stderr: '', timedOut: false }),
+          runCapturedTestProcessImpl: async (_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+            const requested = args.filter(arg => arg.endsWith('.test.ts'));
+            const path = options.env.PC_EXECUTED_SOURCE_MAP_OUT!;
+            captures.push({ path, files: requested });
+            writeFileSync(path, JSON.stringify(requested));
+            const failed = requested.length === 2;
+            return { status: failed ? 1 : 0, signal: null, timedOut: false, stderr: '',
+              stdout: failed ? '❯ a.test.ts (0 test)\n❯ b.test.ts (0 test)\nTest Files 2 failed (2)\n'
+                : 'Test Files 1 passed (1)\nTests 1 passed (1)\n' };
+          },
+        });
+        expect(code).toBe(1); // The first group's red must survive the later green groups.
+        expect(captures.map(capture => capture.path)).toEqual([originalOut,
+          join(root, 'sources.detail-0.json'), join(root, 'sources.detail-1.json'),
+          join(root, 'sources.1.json'), join(root, 'sources.2.json')]);
+        for (const capture of captures) {
+          expect(JSON.parse(readFileSync(capture.path, 'utf8'))).toEqual(capture.files);
+          expect(logSpy.mock.calls.some(([line]) => String(line).includes(`path=${JSON.stringify(capture.path)}`))).toBe(true);
+        }
+        expect(JSON.parse(readFileSync(originalOut, 'utf8'))).toEqual(['a.test.ts', 'b.test.ts']);
+        expect(process.env.PC_EXECUTED_SOURCE_MAP_OUT).toBe(originalOut);
+      } finally {
+        logSpy.mockRestore(); errorSpy.mockRestore(); stdoutSpy.mockRestore();
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[key]; else process.env[key] = value;
+        }
+        rmSync(root, { recursive: true, force: true });
+      }
     });
 
     it('strips --outputFile for the detail-recovery re-runs, in both arg forms', () => {
