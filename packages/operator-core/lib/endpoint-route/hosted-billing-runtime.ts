@@ -41,7 +41,7 @@ import type { HostedSubscriptionEntitlementProvider } from '../auth/hosted/billi
 import { createStripeBillingClient, STRIPE_API_BASE } from '../auth/hosted/billing/stripe-billing-client';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import { customerPaymentReceipts } from '../cupboard/payment-receipt-store';
-import { resolveSecretRef } from '../inference-gateway/egress-providers/secret-ref';
+import { assertPinnedGcpSecretReference, resolveSecretRef } from '../inference-gateway/egress-providers/secret-ref';
 import {
   HOSTED_BILLING_ROUTES,
   createHostedBillingRoutes,
@@ -59,6 +59,7 @@ export interface HostedBillingRuntimeConfiguration {
   readonly publicOrigin: string;
   readonly stripeSecretKeyRef: string | null;
   readonly stripeWebhookSecretRef: string | null;
+  readonly requireManagedSecrets?: boolean;
   readonly plans: readonly HostedBillingPlan[];
   /** Explicit customer-portal configuration (`bpc_…`, not a secret); null = Stripe's dashboard default. */
   readonly stripePortalConfigurationId?: string | null;
@@ -150,10 +151,16 @@ export function readHostedBillingRuntimeConfiguration(
 ): HostedBillingRuntimeConfiguration {
   const publicOrigin = env.PAPERCUSP_HOSTED_PUBLIC_ORIGIN?.trim();
   if (!publicOrigin) throw new TypeError('hosted_billing_runtime_configuration_missing:PAPERCUSP_HOSTED_PUBLIC_ORIGIN');
+  const requireManagedSecrets = env.PAPERCUSP_DEPLOYMENT_ENVIRONMENT === 'production';
+  if (requireManagedSecrets) {
+    assertPinnedGcpSecretReference(env.PAPERCUSP_STRIPE_SECRET_KEY_REF ?? '');
+    assertPinnedGcpSecretReference(env.PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF ?? '');
+  }
   return {
     publicOrigin,
     stripeSecretKeyRef: optionalRef(env.PAPERCUSP_STRIPE_SECRET_KEY_REF),
     stripeWebhookSecretRef: optionalRef(env.PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF),
+    ...(requireManagedSecrets ? { requireManagedSecrets: true } : {}),
     plans: parseHostedBillingPlans(env.PAPERCUSP_HOSTED_BILLING_PLANS),
     stripePortalConfigurationId: parseStripePortalConfigurationId(env.PAPERCUSP_STRIPE_PORTAL_CONFIGURATION_ID),
     stripeAccountId: parseStripeAccountId(env.PAPERCUSP_STRIPE_ACCOUNT_ID),
@@ -312,6 +319,10 @@ async function resolveStripe(
   configuration: HostedBillingRuntimeConfiguration,
   dependencies: HostedBillingRuntimeDependencies,
 ): Promise<{ stripe: HostedBillingStripe | null; reason: string | null }> {
+  if (configuration.requireManagedSecrets) {
+    assertPinnedGcpSecretReference(configuration.stripeSecretKeyRef ?? '');
+    assertPinnedGcpSecretReference(configuration.stripeWebhookSecretRef ?? '');
+  }
   if (!configuration.stripeSecretKeyRef || !configuration.stripeWebhookSecretRef) {
     return { stripe: null, reason: 'billing_not_configured' };
   }
