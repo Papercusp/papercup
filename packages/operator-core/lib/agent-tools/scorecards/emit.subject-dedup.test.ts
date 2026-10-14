@@ -233,4 +233,65 @@ describe('scorecards:emit unchanged-evidence subject scope', () => {
     });
     expect(captureImprovement).not.toHaveBeenCalled();
   });
+
+  it('supersedes a same-author terminal card when changed evidence replaces a pending audit target', async () => {
+    const oldRatings = { c1: { rating: 'pass', evidence: 'prior measured evidence' } };
+    const priorCard = {
+      issueId: 'EI-prior-terminal',
+      createdBy: 'su-grader',
+      rubricRef,
+      sourceHive: 'papercusp',
+      subject: { kind: 'plan', ref: subjectRef },
+      ratings: oldRatings,
+      evidenceFingerprint: scorecardEvidenceFingerprint({ rubricRef, ratings: oldRatings }),
+      rubricRevision: RUBRIC.revision,
+      criteriaHash: RUBRIC.criteriaHash,
+      gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity' },
+    };
+    listScorecards.mockImplementation(async (filter: { limit?: number }) =>
+      filter.limit === 1 || filter.limit === 100 ? [priorCard] : [],
+    );
+
+    const result = await emitScorecard(
+      {
+        rubricRef,
+        ratings: { c1: { rating: 'pass', evidence: 'new measured evidence' } },
+        terminal: true,
+        subject: { kind: 'plan', ref: subjectRef },
+      },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(result).toMatchObject({ ok: true, created: true, supersedes: 'EI-prior-terminal' });
+    expect(captureImprovement.mock.calls[0]?.[0].payloadExtra.observation).toMatchObject({
+      supersedes: 'EI-prior-terminal',
+    });
+  });
+
+  it('keeps force as an explicit append and does not auto-supersede the prior terminal card', async () => {
+    const priorCard = {
+      issueId: 'EI-prior-terminal',
+      createdBy: 'su-grader',
+      rubricRef,
+      sourceHive: 'papercusp',
+      subject: { kind: 'plan', ref: subjectRef },
+      ratings,
+      evidenceFingerprint: scorecardEvidenceFingerprint({ rubricRef, ratings }),
+      rubricRevision: RUBRIC.revision,
+      criteriaHash: RUBRIC.criteriaHash,
+      gradingAudit: { state: 'passed', metaRubricRef: 'grading-integrity' },
+    };
+    listScorecards.mockImplementation(async (filter: { limit?: number }) =>
+      filter.limit === 1 ? [priorCard] : [],
+    );
+
+    const result = await emitScorecard(
+      { rubricRef, ratings, terminal: true, force: true, subject: { kind: 'plan', ref: subjectRef } },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(result).toMatchObject({ ok: true, created: true });
+    expect(result).not.toHaveProperty('supersedes');
+    expect(captureImprovement.mock.calls[0]?.[0].payloadExtra.observation).not.toHaveProperty('supersedes');
+  });
 });
