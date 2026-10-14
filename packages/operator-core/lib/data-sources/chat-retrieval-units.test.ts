@@ -1,7 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import {
-  chatMessageInputFromRecord, corpusRouteFor, legacyChatMessageDocumentKeys, renderChatUnit, splitIntoWindows,
+  chatMessageInputFromRecord, corpusRouteFor, legacyChatMessageDocumentKeys, renderChatUnit, rollupRetryDelaySeconds,
+  splitIntoWindows,
 } from './chat-retrieval-units';
+
+// WI-6554700010012111: the delay before a failed bucket is retried.
+describe('rollupRetryDelaySeconds', () => {
+  it('doubles the base delay with each consecutive failure, up to the cap', () => {
+    expect([1, 2, 3, 4, 5, 6, 7].map((n) => rollupRetryDelaySeconds(n, 300, 6 * 3600)))
+      .toEqual([300, 600, 1200, 2400, 4800, 9600, 19200]);
+    expect(rollupRetryDelaySeconds(8, 300, 6 * 3600)).toBe(6 * 3600);
+    expect(rollupRetryDelaySeconds(1000, 300, 6 * 3600)).toBe(6 * 3600);
+  });
+
+  it('never waits less than the base delay, and a zero base never waits', () => {
+    expect(rollupRetryDelaySeconds(3, 300, 100)).toBe(300);
+    expect(rollupRetryDelaySeconds(0, 300, 6 * 3600)).toBe(300);
+    expect(rollupRetryDelaySeconds(5, 0, 6 * 3600)).toBe(0);
+  });
+});
 
 const at = (iso: string) => ({ postedAt: new Date(iso), id: iso });
 

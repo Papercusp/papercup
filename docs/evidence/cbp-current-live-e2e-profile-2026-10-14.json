@@ -1,0 +1,10 @@
+{
+  "origin": "http://127.0.0.1:3170",
+  "runtimeUnits": ["hono-host:3170"],
+  "consultBrief": {
+    "questions": [
+      "When you graded after an exact evaluator replay, what sequence did you follow to confirm the stored ratings distribution and the immutable clause identities matched the replay, to make sure no earlier interim scorecard for the same rubric and subject was being carried forward, and which lease or currentness check did you insist on right before the terminal emit? My own replay-then-emit grading depends on getting this order right.",
+      "The exact replay reproduced the stored distribution and immutable clause identity. In that grading procedure, how did you prevent an earlier interim scorecard for the same rubric and subject from being carried forward, and which currentness lease did you verify immediately before the terminal emit? I need the sequence grounded in the evaluator replay."
+    ]
+  }
+}

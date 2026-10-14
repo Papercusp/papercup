@@ -224,7 +224,7 @@ describe('connector-sync Google Contacts Personal Vault path', () => {
   });
 });
 
-const NO_CHAT = { buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0, failed: 0, failures: [] };
+const NO_CHAT = { buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0, failed: 0, deadLettered: 0, failures: [] };
 
 function quietDeps(sql: Sql) {
   return {
@@ -242,7 +242,7 @@ describe('connector-sync chat rollup step', () => {
   it('runs the chat rollup pass for the workspace and reports its counts', async () => {
     const sql = {} as Sql;
     const runChatRollup = vi.fn(async () => ({
-      buckets: 3, unitsWritten: 2, unitsRemoved: 1, expired: 4, legacyMigrated: 5, failed: 0, failures: [],
+      buckets: 3, unitsWritten: 2, unitsRemoved: 1, expired: 4, legacyMigrated: 5, failed: 0, deadLettered: 0, failures: [],
     }));
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const result = await runConnectorSyncAction(ctx, { ...quietDeps(sql), runChatRollup });
@@ -250,7 +250,7 @@ describe('connector-sync chat rollup step', () => {
     expect(runChatRollup).toHaveBeenCalledWith(sql, { workspaceId: ctx.workspaceId });
     expect(result.diagnostics).toMatchObject({
       chatBuckets: 3, chatUnitsWritten: 2, chatUnitsRemoved: 1, chatExpired: 4, chatLegacyMigrated: 5, chatRollupFailed: 0,
-      chatBucketsFailed: 0,
+      chatBucketsFailed: 0, chatBucketsDeadLettered: 0,
     });
     expect(result).not.toHaveProperty('softError');
   });
@@ -259,14 +259,37 @@ describe('connector-sync chat rollup step', () => {
   it('a bucket that failed and was re-queued is a soft error naming the bucket', async () => {
     const sql = {} as Sql;
     const runChatRollup = vi.fn(async () => ({
-      buckets: 2, unitsWritten: 1, unitsRemoved: 0, expired: 0, legacyMigrated: 0, failed: 1,
-      failures: [{ dataSourceId: 'ds-1', channelId: 'C1', bucketKind: 'thread' as const, bucketKey: '1.1', error: 'boom' }],
+      buckets: 2, unitsWritten: 1, unitsRemoved: 0, expired: 0, legacyMigrated: 0, failed: 1, deadLettered: 0,
+      failures: [{
+        dataSourceId: 'ds-1', channelId: 'C1', bucketKind: 'thread' as const, bucketKey: '1.1', error: 'boom',
+        attempts: 2, deadLettered: false,
+      }],
     }));
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const result = await runConnectorSyncAction(ctx, { ...quietDeps(sql), runChatRollup });
 
-    expect(result.diagnostics).toMatchObject({ chatBuckets: 2, chatUnitsWritten: 1, chatRollupFailed: 0, chatBucketsFailed: 1 });
-    expect(result.softError).toContain('chat rollup: 1 bucket(s) failed and were re-queued: ds-1/C1/thread:1.1:boom');
+    expect(result.diagnostics).toMatchObject({
+      chatBuckets: 2, chatUnitsWritten: 1, chatRollupFailed: 0, chatBucketsFailed: 1, chatBucketsDeadLettered: 0,
+    });
+    expect(result.softError).toContain('chat rollup: 1 bucket(s) failed (1 re-queued, 0 dead-lettered): ds-1/C1/thread:1.1:boom (attempt 2)');
+  });
+
+  // WI-6554700010012111: a bucket that reached the attempt cap is reported as dead-lettered, not re-queued.
+  it('a dead-lettered bucket is reported as dead-lettered', async () => {
+    const sql = {} as Sql;
+    const runChatRollup = vi.fn(async () => ({
+      buckets: 1, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0, failed: 1, deadLettered: 1,
+      failures: [{
+        dataSourceId: 'ds-1', channelId: 'C1', bucketKind: 'day' as const, bucketKey: '2026-09-30', error: 'boom',
+        attempts: 8, deadLettered: true,
+      }],
+    }));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const result = await runConnectorSyncAction(ctx, { ...quietDeps(sql), runChatRollup });
+
+    expect(result.diagnostics).toMatchObject({ chatBucketsFailed: 1, chatBucketsDeadLettered: 1 });
+    expect(result.softError).toContain(
+      'chat rollup: 1 bucket(s) failed (0 re-queued, 1 dead-lettered): ds-1/C1/day:2026-09-30:boom (attempt 8, dead-lettered)');
   });
 
   it('a failed rollup is a soft error, never a failed pass', async () => {

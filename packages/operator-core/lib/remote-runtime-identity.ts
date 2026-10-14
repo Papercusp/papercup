@@ -22,6 +22,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from './runtime-vintage';
+import { getPosthogConfigWithSource } from './posthog-config';
 
 /** Reads one control-plane document; resolves the raw stdout, or null on any failure. */
 export type RemoteDescribe = (argv: readonly string[]) => Promise<string | null>;
@@ -33,6 +34,8 @@ interface RemoteRuntimeProvider {
   describeArgv(unit: string): readonly string[] | null;
   /** Identity tuple from the describe document, or null when it does not identify a usable runtime. */
   identity(unit: string, doc: Record<string, unknown>): readonly unknown[] | null;
+  /** Optional provider-native reader; explicit and global test seams override it. */
+  describe?: RemoteDescribe;
 }
 
 // Project ids: 6-30 chars, lowercase letter first. Instance ids: lowercase letter first.
@@ -60,7 +63,54 @@ const gcpCloudSql: RemoteRuntimeProvider = {
   },
 };
 
-const PROVIDERS: readonly RemoteRuntimeProvider[] = [gcpCloudSql];
+const POSTHOG_PROJECT_UNIT = /^posthog-project:([a-z0-9][a-z0-9.-]{0,252}(?::[1-9]\d{0,4})?)\/([1-9]\d{0,11})$/;
+// Only configuration that affects this evidence plane; no personal credentials,
+// usage counters or mutable request timestamps enter the identity.
+const POSTHOG_IDENTITY_FIELDS = ['timezone', 'event_retention_months', 'events_retention_enforced',
+  'autocapture_opt_out', 'autocapture_exceptions_opt_in', 'session_recording_opt_in',
+  'session_recording_retention_period', 'session_replay_config', 'person_processing_opt_out'] as const;
+const posthogProject: RemoteRuntimeProvider = {
+  prefix: 'posthog-project:',
+  describeArgv(unit) {
+    const match = POSTHOG_PROJECT_UNIT.exec(unit);
+    return match ? ['posthog-project', match[1]!, match[2]!] : null;
+  },
+  async describe(argv) {
+    const [, host, id] = argv;
+    const config = getPosthogConfigWithSource().config;
+    if (!config || !host || !id) return null;
+    let base: URL;
+    try { base = new URL(config.host); } catch { return null; }
+    // A unit can only read the already-configured destination, not an arbitrary
+    // HTTP target. Keys stay server-side and redirects cannot widen the target.
+    if (base.host !== host || base.username || base.password || !['https:', 'http:'].includes(base.protocol)) return null;
+    try {
+      const [project, capture] = await Promise.all([
+        fetch(`${base.origin}/api/projects/${id}/`, { headers: { authorization: `Bearer ${config.personalApiKey}` },
+          redirect: 'error', signal: AbortSignal.timeout(10_000) }),
+        fetch(`${base.origin}/batch/`, { redirect: 'error', signal: AbortSignal.timeout(10_000) }),
+      ]);
+      if (!project.ok || capture.status !== 400) return null;
+      const doc = await project.json() as Record<string, unknown>;
+      if (doc.api_token !== config.projectKey) return null;
+      const safe: Record<string, unknown> = { id: doc.id, uuid: doc.uuid ?? null, organization: doc.organization,
+        created_at: doc.created_at, captureStatus: capture.status };
+      for (const field of POSTHOG_IDENTITY_FIELDS) safe[field] = doc[field] ?? null;
+      return JSON.stringify(safe);
+    } catch { return null; }
+  },
+  identity(unit, doc) {
+    const match = POSTHOG_PROJECT_UNIT.exec(unit);
+    const createdAt = str(doc.created_at), organization = str(doc.organization);
+    if (!match || String(doc.id) !== match[2] || !createdAt || !Number.isFinite(Date.parse(createdAt)) ||
+      !organization || doc.captureStatus !== 400 || !Number.isSafeInteger(doc.event_retention_months) ||
+      typeof doc.events_retention_enforced !== 'boolean') return null;
+    return [doc.id, doc.uuid ?? null, organization, createdAt,
+      POSTHOG_IDENTITY_FIELDS.map(field => [field, doc[field] ?? null])];
+  },
+};
+
+const PROVIDERS: readonly RemoteRuntimeProvider[] = [gcpCloudSql, posthogProject];
 
 function providerFor(unit: string): RemoteRuntimeProvider | undefined {
   return PROVIDERS.find((provider) => unit.startsWith(provider.prefix));
@@ -97,13 +147,13 @@ export function resetRemoteRuntimeDescribe(): void {
 /** Identity digest of one remote runtime unit, or null when it cannot be established now. */
 export async function measureRemoteRuntimeIdentity(
   unit: string,
-  describe: RemoteDescribe = state.describe ?? gcloudDescribe,
+  describe?: RemoteDescribe,
 ): Promise<string | null> {
   const provider = providerFor(unit);
   const argv = provider?.describeArgv(unit);
   if (!provider || !argv) return null;
   let raw: string | null;
-  try { raw = await describe(argv); } catch { return null; }
+  try { raw = await (describe ?? state.describe ?? provider.describe ?? gcloudDescribe)(argv); } catch { return null; }
   if (!raw) return null;
   let doc: unknown;
   try { doc = JSON.parse(raw); } catch { return null; }
@@ -135,7 +185,7 @@ export async function measureRuntimeEnvironment(
   const local = units.filter((unit) => !isRemoteRuntimeUnit(unit));
   const localFingerprint = local.length > 0 ? measureRuntimeVintageEnvironment(rows, local) : null;
   if (local.length > 0 && localFingerprint === null) return null;
-  const describe = deps.describe ?? state.describe ?? gcloudDescribe;
+  const describe = deps.describe ?? state.describe ?? undefined;
   const identities = await Promise.all(remote.map((unit) => {
     const cached = deps.memo?.get(unit);
     if (cached) return cached;

@@ -17,6 +17,9 @@
  *  - egress : the provider API host the session's inference reaches. A backend whose provider
  *             cannot be resolved here is judged as UNRESOLVED_PROVIDER_EGRESS, so an egress
  *             allow list refuses it rather than assuming it is permitted.
+ *  - providers / regions (P-016a): the model provider and processing region that API host
+ *             belongs to (./processing-route.ts). A global endpoint's region is unresolved, so
+ *             a `regions` allow list refuses it until a region-pinned route exists.
  *  - dataUse: every injection leg carries MODEL_CONTEXT_DATA_USE plus its own label, so one
  *             rule (`dataUse.deny: ['model-context']`) stops all injected source text, and a
  *             narrower rule stops one leg.
@@ -26,6 +29,7 @@
  */
 import type { GovernedRequest } from './inherited-policy';
 import { workspacePolicyJudge, type EnforceInheritedPolicyDeps } from './enforce';
+import { MODEL_PROVIDER_EGRESS, modelPrefixProviderHost, processingRouteOfHost, type ProcessingRoute } from './processing-route';
 
 /** Provider API host per launch backend. `omp` routes per model, so it is resolved from the model. */
 export const BACKEND_PROVIDER_EGRESS: Readonly<Record<string, string>> = {
@@ -34,14 +38,8 @@ export const BACKEND_PROVIDER_EGRESS: Readonly<Record<string, string>> = {
   codex: 'api.openai.com',
 };
 
-/** Provider API host for a `<provider>/<model>` id (the omp / gateway form). */
-export const MODEL_PROVIDER_EGRESS: Readonly<Record<string, string>> = {
-  anthropic: 'api.anthropic.com',
-  openai: 'api.openai.com',
-  google: 'generativelanguage.googleapis.com',
-  gemini: 'generativelanguage.googleapis.com',
-  openrouter: 'openrouter.ai',
-};
+/** Provider API host for a `<provider>/<model>` id; defined beside the route resolver. */
+export { MODEL_PROVIDER_EGRESS };
 
 /** Judged when the provider of a launch cannot be resolved; an egress allow list refuses it. */
 export const UNRESOLVED_PROVIDER_EGRESS = 'unresolved-provider';
@@ -69,9 +67,7 @@ export function providerEgressOf(target: LaunchGovernanceTarget): string {
   const agent = target.agent?.trim() || DEFAULT_LAUNCH_BACKEND;
   const byBackend = BACKEND_PROVIDER_EGRESS[agent];
   if (byBackend) return byBackend;
-  const model = normalizeSessionModel(target.model);
-  const prefix = model?.includes('/') ? model.split('/')[0]?.toLowerCase() : undefined;
-  return (prefix && MODEL_PROVIDER_EGRESS[prefix]) || UNRESOLVED_PROVIDER_EGRESS;
+  return modelPrefixProviderHost(normalizeSessionModel(target.model)) || UNRESOLVED_PROVIDER_EGRESS;
 }
 
 /**
@@ -96,16 +92,30 @@ export function launchTargetFromRecord(
   return { agent, model };
 }
 
+/**
+ * The model-processing route (provider + region) one launch target's inference reaches, derived
+ * from its provider API host (./processing-route.ts). An unresolved backend yields the
+ * unresolved sentinels, so a `providers` or `regions` allow list refuses it.
+ */
+export function launchProcessingRouteOf(target: LaunchGovernanceTarget): ProcessingRoute {
+  return processingRouteOfHost(providerEgressOf(target));
+}
+
 /** Map launch targets onto governed categories. Pure, exported for tests. */
 export function launchGovernedRequest(targets: readonly LaunchGovernanceTarget[]): GovernedRequest {
   const models = new Set<string>();
   const egress = new Set<string>();
+  const providers = new Set<string>();
+  const regions = new Set<string>();
   for (const target of targets) {
     const model = normalizeSessionModel(target.model);
     if (model) models.add(model);
     egress.add(providerEgressOf(target));
+    const route = launchProcessingRouteOf(target);
+    providers.add(route.provider);
+    regions.add(route.region);
   }
-  return { models: [...models], egress: [...egress] };
+  return { models: [...models], providers: [...providers], regions: [...regions], egress: [...egress] };
 }
 
 export interface SessionGovernanceDeps extends EnforceInheritedPolicyDeps {

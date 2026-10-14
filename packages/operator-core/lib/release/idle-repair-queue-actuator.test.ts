@@ -4,11 +4,14 @@ import {
   IDLE_RUNG_GRACE_MS,
   decideIdleQueueAction,
   runIdleQueueActuatorPass,
+  evaluateIdleQueueActuatorWindow,
+  type IdleQueueActuatorObservation,
   type IdleQueueActuatorDeps,
   type IdleQueueEpisode,
   type IdleQueueSnapshot,
   type IdleRungResult,
 } from './idle-repair-queue-actuator';
+import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 
 const MIN = 60_000;
 const OPENED = Date.parse('2026-10-08T00:00:00Z');
@@ -69,10 +72,20 @@ function fixture(
     state.now = OPENED + minutesAfterOpen * MIN;
     return runIdleQueueActuatorPass(deps);
   };
-  return { state, calls, messages, at };
+  return { state, calls, messages, at, deps };
 }
 
 describe('idle repair-queue actuator (P-002, WI-10007476)', () => {
+  it('records effect completion after the awaited action, not its invocation clock', async () => {
+    const f = fixture(snapshot());
+    f.deps.dispatchFixer = async () => {
+      f.state.now += 2 * MIN;
+      return { ok: true, detail: 'dispatch completed' };
+    };
+    const result = await f.at(61);
+    expect(result.acted[0]).toMatchObject({ startedAtMs: OPENED + 61 * MIN,
+      completedAtMs: OPENED + 63 * MIN, outcome: 'acted' });
+  });
   it('a stalled queue walks dispatch-fixer, then wake-gate-owner, then escalate-owner, in order and once each', async () => {
     const f = fixture(snapshot());
     const grace = IDLE_RUNG_GRACE_MS / MIN;
@@ -220,5 +233,83 @@ describe('idle repair-queue actuator (P-002, WI-10007476)', () => {
     const frozen = JSON.stringify(prior);
     decideIdleQueueAction(snapshot({ phase: 'ready-to-test' }), prior, OPENED + 61 * MIN);
     expect(JSON.stringify(prior)).toBe(frozen);
+  });
+});
+
+describe('original idle-actuator history acceptance', () => {
+  // A synthetic history tests the measurement only. The real actuator's >60-minute trigger
+  // must not be mistaken for a measured <=60-minute operational pass.
+  function history(): PipelineEventWindowRead {
+    const rows = [45, 60, 75].map((minute, i) => {
+      const startedAtMs = OPENED + minute * MIN;
+      const completedAtMs = i === 0 ? OPENED + 59 * MIN : startedAtMs;
+      const observation: IdleQueueActuatorObservation = {
+        version: 1, startedAtMs, completedAtMs, snapshot: snapshot(), episode: null,
+        result: { decision: i === 0 ? 'act' : 'wait', acted: i === 0 ? [{
+          rung: 'dispatch-fixer', outcome: 'acted', detail: 'original receipt', startedAtMs, completedAtMs,
+        }] : [] },
+      };
+      return { id: String(i + 1), kind: 'green_checkpoint_repair_latency' as const, status: 'converging',
+        createdAtMs: completedAtMs, detail: { candidate: snapshot().candidate, idleActuator: observation } };
+    });
+    return { status: 'complete', total: rows.length, rows, reason: null,
+      windowStartMs: OPENED + 45 * MIN, windowEndMs: OPENED + 75 * MIN };
+  }
+  const evaluate = (h: PipelineEventWindowRead) => evaluateIdleQueueActuatorWindow(h, h.windowEndMs);
+  const observation = (h: PipelineEventWindowRead, index = 0) => h.rows[index]!.detail.idleActuator as IdleQueueActuatorObservation;
+  const passes = (h: PipelineEventWindowRead) => evaluate(h).assertions.every(a => a.passed);
+
+  it('uses original completed receipts and preserves their event identities', () => {
+    const h = history();
+    expect(passes(h)).toBe(true);
+    expect(evaluate(h).eventIds).toEqual(['1', '2', '3']);
+    expect(evaluate(h).episodes[0]!.firstActionAtMs).toBe(OPENED + 59 * MIN);
+  });
+
+  it('does not turn an attempted, failed or missing action into a delivered action', () => {
+    for (const kind of ['failed', 'missing', 'carried-only']) {
+      const h = history(), o = observation(h);
+      if (kind === 'failed') o.result.acted[0]!.outcome = 'failed';
+      else o.result.acted = [];
+      if (kind === 'carried-only') o.episode = { candidate: o.snapshot.candidate, idleSinceMs: OPENED,
+        rungs: { 'dispatch-fixer': { atMs: OPENED + 30 * MIN, outcome: 'acted', detail: 'mutable legacy stamp' } } };
+      expect(passes(h)).toBe(false);
+    }
+  });
+
+  it('keeps the strict 60-minute bound, without an extra tick of slack', () => {
+    const h = history(), o = observation(h);
+    o.completedAtMs = o.result.acted[0]!.completedAtMs = OPENED + 60 * MIN + 1;
+    h.rows[0]!.createdAtMs = o.completedAtMs;
+    expect(evaluate(h).assertions.find(a => a.id === 'idle-actuator-action-at-most-60min')!.passed).toBe(false);
+  });
+
+  it.each(['capped', 'unavailable', 'invalid'] as const)('rejects a %s population', status => {
+    const h = history(); h.status = status;
+    expect(passes(h)).toBe(false);
+  });
+
+  it.each(['empty', 'count', 'duplicate-id', 'duplicate-observation', 'legacy', 'unknown-lock',
+    'foreign-candidate', 'future', 'gap', 'head-gap', 'tail-gap', 'invalid-receipt'])('rejects %s evidence', kind => {
+    const h = history();
+    if (kind === 'empty') { h.rows = []; h.total = 0; }
+    if (kind === 'count') h.total = 4;
+    if (kind === 'duplicate-id') h.rows[1]!.id = h.rows[0]!.id;
+    if (kind === 'duplicate-observation') { h.rows.push({ ...h.rows[0]!, id: '4' }); h.total = 4; }
+    if (kind === 'legacy') delete h.rows[0]!.detail.idleActuator;
+    if (kind === 'unknown-lock') observation(h).snapshot.runInFlight = null;
+    if (kind === 'foreign-candidate') observation(h).snapshot.candidate = 'foreign';
+    if (kind === 'future') observation(h).completedAtMs = h.windowEndMs + 1;
+    if (kind === 'gap') { h.rows.splice(1, 1); h.total = 2; }
+    if (kind === 'head-gap') h.windowStartMs -= 16 * MIN;
+    if (kind === 'tail-gap') h.windowEndMs += 16 * MIN;
+    if (kind === 'invalid-receipt') observation(h).result.acted[0]!.startedAtMs = OPENED;
+    expect(passes(h)).toBe(false);
+  });
+
+  it('rejects a future window and invalid observation cadence', () => {
+    const h = history();
+    expect(evaluateIdleQueueActuatorWindow(h, h.windowEndMs - 1).assertions.every(a => a.passed)).toBe(false);
+    expect(evaluateIdleQueueActuatorWindow(h, h.windowEndMs, Infinity).assertions.every(a => a.passed)).toBe(false);
   });
 });

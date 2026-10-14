@@ -22,6 +22,7 @@ import {
   UNRESOLVED_PROVIDER_EGRESS,
 } from './session-governance';
 import type { ChainLoad, StoredPolicyLayer } from './store';
+import { UNRESOLVED_REGION } from './processing-route';
 
 const WS = 'ws-governed';
 
@@ -76,6 +77,9 @@ describe('launch mapping', () => {
     expect(normalizeSessionModel('')).toBeNull();
     expect(launchGovernedRequest([{ agent: 'claude', model: 'claude-opus-4-1:high' }, { agent: 'claude' }])).toEqual({
       models: ['claude-opus-4-1'],
+      providers: ['anthropic'],
+      // api.anthropic.com is a global endpoint: it does not prove a region (P-016a).
+      regions: [UNRESOLVED_REGION],
       egress: ['api.anthropic.com'],
     });
   });
@@ -133,6 +137,8 @@ describe('judgeInjectionLegs', () => {
     expect(injectionGovernedRequest('live', { agent: 'codex', model: 'gpt-5.6' })).toEqual({
       dataUse: [MODEL_CONTEXT_DATA_USE, 'federated-search'],
       models: ['gpt-5.6'],
+      providers: ['openai'],
+      regions: [UNRESOLVED_REGION],
       egress: ['api.openai.com'],
     });
   });

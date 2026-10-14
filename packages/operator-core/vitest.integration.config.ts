@@ -9,6 +9,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const liveRuntime = process.env.PAPERCUSP_WOE_SERVED_AUDIT === '1'
   ? await tsImport('./lib/runtime-vintage.ts', import.meta.url) : null;
 const liveRuntimeDb = liveRuntime ? await tsImport('@papercusp/db-org', import.meta.url) : null;
+const posthogRuntimeUnit = process.env.PAPERCUSP_TEST_POSTHOG_LIVE === 'true'
+  ? process.env.PAPERCUSP_TEST_POSTHOG_RUNTIME_UNIT : null;
+const remoteRuntime = posthogRuntimeUnit ? await tsImport('./lib/remote-runtime-identity.ts', import.meta.url) : null;
 
 // The SP1 C4 carve moved the plans/cross_harness integration tests here; they
 // inject('baselineSchemaDsn') via _pg-tool-fixture, so this package needs the
@@ -20,8 +23,13 @@ const liveRuntimeDb = liveRuntime ? await tsImport('@papercusp/db-org', import.m
 export default defineVitestConfig({
   layer: 'integration',
   exclude: ['lib/blueprint/launch-blueprint-account-route.e2e.test.ts'],
-  ...(liveRuntime ? {
+  ...(liveRuntime || remoteRuntime ? {
     readRuntimeEnvironment: async () => {
+      if (remoteRuntime && posthogRuntimeUnit) {
+        const units = [posthogRuntimeUnit];
+        const fingerprint = await remoteRuntime.measureRuntimeEnvironment([], units);
+        return fingerprint ? { schemaVersion: 1 as const, units, fingerprint, observedAt: new Date().toISOString() } : null;
+      }
       const units = ['hono-host:3170'];
       const { sql } = liveRuntimeDb!.createDedicatedOrgPg('woe-integration-runtime', { max: 1 });
       try {

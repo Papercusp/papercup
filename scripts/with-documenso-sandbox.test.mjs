@@ -408,6 +408,67 @@ test('running database readiness retries converge and exhaustion retains the fin
   assert.equal(probes, 2);
 });
 
+test('database initialization can advance beyond the TCP failure budget before the final server accepts', async () => {
+  let probes = 0, delays = 0;
+  const receipts = [];
+  await waitForSandboxPostgres('owned-pg', {
+    delay: async () => { delays++; }, onProgress: receipt => receipts.push(receipt),
+    run: args => {
+      if (args[0] === 'exec') return { status: ++probes === 47 ? 0 : 2, stdout: '127.0.0.1:5432 - no response' };
+      if (args[0] === 'inspect') return { status: 0, stdout: 'running' };
+      // Simulate the retained failure: initialization and the temporary
+      // shutdown progress while none of the final TCP probes can succeed.
+      return { status: 0, stderr: probes < 16 ? 'performing post-bootstrap initialization' :
+        probes < 31 ? 'listening on Unix socket' : 'checkpoint starting: shutdown immediate' };
+    },
+  });
+  assert.equal(probes, 47);
+  assert.equal(delays, 46);
+  assert.equal(receipts.at(-1).status, 'accepting');
+  assert.equal(receipts.every(receipt => receipt.stalledAttempts <= 16), true);
+  assert.deepEqual([...new Set(receipts.map(receipt => receipt.initializationStage))],
+    ['post-bootstrap', 'temporary-server', 'shutdown-checkpoint']);
+});
+
+test('database initialization stalls despite repeated milestones, arbitrary log activity and backwards stages', async () => {
+  let probes = 0, delays = 0;
+  const receipts = [], secret = randomUUID();
+  await assert.rejects(waitForSandboxPostgres('owned-pg', {
+    attempts: 3, secrets: [secret], delay: async () => { delays++; },
+    onProgress: receipt => receipts.push(receipt),
+    run: args => {
+      if (args[0] === 'exec') return { status: ++probes === 4 ? 0 : 2, stdout: '127.0.0.1:5432 - no response' };
+      if (args[0] === 'inspect') return { status: 0, stdout: args[2] === '{{.State.Status}}' ? 'running' : '{}' };
+      return { status: 0, stderr: (probes === 1 ? 'checkpoint starting: shutdown immediate' : 'listening on Unix socket') +
+        '\nactivity=' + probes + ' password=' + secret };
+    },
+  }), error => {
+    assert.match(error.message, /no response/);
+    assert.match(error.message, /redacted/);
+    assert.equal(error.message.includes(secret), false);
+    return true;
+  });
+  assert.equal(probes, 3, 'a stalled stage must fail before a later successful probe');
+  assert.equal(delays, 2);
+  assert.deepEqual(receipts.map(receipt => receipt.stalledAttempts), [1, 2, 3]);
+  assert.equal(receipts.every(receipt => receipt.initializationStage === 'shutdown-checkpoint'), true);
+  assert.equal(JSON.stringify(receipts).includes(secret), false);
+});
+
+test('failed database probes cannot gain a fresh failure budget from initialization logs', async () => {
+  let probes = 0;
+  await assert.rejects(waitForSandboxPostgres('owned-pg', {
+    attempts: 2, delay: async () => {}, onProgress: () => {},
+    run: args => {
+      if (args[0] === 'exec') return { status: null, error: new Error('Docker probe timed out ' + ++probes) };
+      if (args[0] === 'inspect') return { status: 0, stdout: args[2] === '{{.State.Status}}' ? 'running' : '{}' };
+      assert.equal(probes, 2, 'probe errors must not request startup logs until collecting failure evidence');
+      return { status: 0, stdout: 'PostgreSQL init process complete; ready for start up' };
+    },
+  }), /Docker probe timed out 2/);
+  assert.equal(probes, 2);
+});
+
 test('database readiness reports each actual TCP probe without emitting Docker output or secrets', async () => {
   const secret = randomUUID(), receipts = [];
   let probes = 0;

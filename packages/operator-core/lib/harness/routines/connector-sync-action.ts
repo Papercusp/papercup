@@ -139,7 +139,7 @@ export interface ConnectorSyncActionDeps {
   runGoogleContacts?: (ctx: SystemActionCtx, sql: Sql) => Promise<GoogleContactsPersonalVaultPollResult>;
   runChatRollup?: (sql: Sql, opts: { workspaceId: string }) => Promise<{
     buckets: number; unitsWritten: number; unitsRemoved: number; expired: number; legacyMigrated: number;
-    failed: number; failures: ChatRollupFailure[];
+    failed: number; deadLettered: number; failures: ChatRollupFailure[];
   }>;
 }
 
@@ -198,7 +198,7 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
   let chatRollupError: string | null = null;
   const chat = await (provided.runChatRollup ?? runChatRollupPass)(sql, { workspaceId: ctx.workspaceId }).catch((cause: unknown) => {
     chatRollupError = errorText(cause);
-    return { buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0, failed: 0, failures: [] };
+    return { buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0, failed: 0, deadLettered: 0, failures: [] };
   });
   if (chat.buckets > 0 || chat.expired > 0 || chat.legacyMigrated > 0) {
     console.log(
@@ -220,9 +220,11 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
       ? [`push subscribe: ${pushFailed.length} source(s) failed: ${pushFailed.map((s) => `${s.sourceId}:${s.error ?? 'failed'}`).join('; ')}`]
       : []),
     ...(chatRollupError ? [`chat rollup failed: ${chatRollupError}`] : []),
+    // WI-6554700010012111: a re-queued bucket backs off; a dead-lettered one is not retried again until
+    // a new message or a routing change revives it, so this is its last report.
     ...(chat.failed > 0
-      ? [`chat rollup: ${chat.failed} bucket(s) failed and were re-queued: ${chat.failures
-        .map((f) => `${f.dataSourceId}/${f.channelId}/${f.bucketKind}:${f.bucketKey}:${f.error}`).join('; ')}`]
+      ? [`chat rollup: ${chat.failed} bucket(s) failed (${chat.failed - chat.deadLettered} re-queued, ${chat.deadLettered} dead-lettered): ${chat.failures
+        .map((f) => `${f.dataSourceId}/${f.channelId}/${f.bucketKind}:${f.bucketKey}:${f.error} (attempt ${f.attempts}${f.deadLettered ? ', dead-lettered' : ''})`).join('; ')}`]
       : []),
   ];
   return {
@@ -249,6 +251,7 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
       chatLegacyMigrated: chat.legacyMigrated,
       chatRollupFailed: chatRollupError ? 1 : 0,
       chatBucketsFailed: chat.failed,
+      chatBucketsDeadLettered: chat.deadLettered,
     },
     ...(softErrors.length > 0 ? { softError: softErrors.join(' | ').slice(0, 1000) } : {}),
   };

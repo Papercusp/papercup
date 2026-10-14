@@ -82,6 +82,9 @@ describe('governedRequestOf — subject mapping', () => {
       tools: ['tools:invoke', 'repomix.pack'],
       plugins: ['repomix'],
       models: ['claude-x'],
+      // A bare model id and an ordinary web host name no processing route (P-016a).
+      providers: [],
+      regions: [],
       egress: ['api.example.com'],
       dataUse: ['pii', 'secrets'],
       actions: ['secrets:read', 'net:fetch', 'boundary:indirect-dispatch'],

@@ -22,6 +22,9 @@
  *  - tools   : the tool name, plus the inner `args.name` of a `tools:invoke` wrapper.
  *  - plugins : the `<plugin>` prefix of a namespaced plugin verb (`repomix.pack` → `repomix`).
  *  - models  : `model` / `modelId` / `modelAlias` arguments (string or string[]).
+ *  - providers / regions (P-016a): `provider` / `region` arguments, plus the route of any
+ *              model-provider host among the URL arguments and of any `<provider>/<model>` id
+ *              (./processing-route.ts). Nothing is guessed from a bare model id.
  *  - egress  : the hostname of `url` / `urls` / `endpoint` / `baseUrl` / `href` / `uri`
  *              arguments (an unparseable value is judged verbatim, so it fails an allow list).
  *  - dataUse : declared `dataUse` / `dataUses` / `dataClass` arguments, plus `<ns>` for every
@@ -32,6 +35,7 @@
 import type { KernelEnforcementRequest, KernelEnforcementResult } from '@papercusp/agent-mcp';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { evaluateInheritedPolicy, type GovernedRequest } from './inherited-policy';
+import { knownProcessingRouteOfHost, modelPrefixProviderHost, processingRouteOfHost } from './processing-route';
 import { loadChainForWorkspace, type ChainLoad } from './store';
 
 export const ORG_POLICY_CODE_PREFIX = 'org_policy:';
@@ -93,6 +97,8 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 const MODEL_KEYS = ['model', 'modelId', 'modelAlias'] as const;
+const PROVIDER_KEYS = ['provider', 'providers', 'modelProvider'] as const;
+const REGION_KEYS = ['region', 'regions', 'processingRegion'] as const;
 const URL_KEYS = ['url', 'urls', 'endpoint', 'baseUrl', 'href', 'uri'] as const;
 const DATA_USE_KEYS = ['dataUse', 'dataUses', 'dataClass'] as const;
 const PLUGIN_VERB = /^([a-z0-9][a-z0-9-]*)\.[a-z0-9_-]+$/i;
@@ -135,11 +141,25 @@ export function governedRequestOf(request: Pick<KernelEnforcementRequest, 'toolN
     if (base) actions.push(`exec:${base}`);
   }
   const uniq = (xs: string[]) => [...new Set(xs.filter(Boolean))];
+  const models = pick(MODEL_KEYS);
+  const egress = pick(URL_KEYS).map(hostOf);
+  // A route is judged only where the arguments NAME it: a model-provider host, or a
+  // `<provider>/<model>` id. A bare model id or an ordinary web host names no route, so the
+  // dispatch seat never guesses one (the session's own route is judged at launch/injection).
+  const routes = [
+    ...egress.map((host) => knownProcessingRouteOfHost(host)),
+    ...models.map((m) => {
+      const host = modelPrefixProviderHost(m);
+      return host ? processingRouteOfHost(host) : null;
+    }),
+  ].filter((r): r is NonNullable<typeof r> => r !== null);
   return {
     tools: uniq(tools),
     plugins: uniq(plugins),
-    models: uniq(pick(MODEL_KEYS)),
-    egress: uniq(pick(URL_KEYS).map(hostOf)),
+    models: uniq(models),
+    providers: uniq([...pick(PROVIDER_KEYS).map((p) => p.toLowerCase()), ...routes.map((r) => r.provider)]),
+    regions: uniq([...pick(REGION_KEYS).map((r) => r.toLowerCase()), ...routes.map((r) => r.region)]),
+    egress: uniq(egress),
     dataUse: uniq(dataUse),
     actions: uniq(actions),
   };

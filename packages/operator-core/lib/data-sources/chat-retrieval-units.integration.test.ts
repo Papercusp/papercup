@@ -540,7 +540,110 @@ describe('chat rollup isolates a failing bucket', () => {
     expect(await rollupChatUnits(org.adminSql, WS, { retryDelaySeconds: 0 })).toMatchObject({ buckets: 1, failed: 0 });
     expect(await queuedBuckets()).toEqual([]);
   });
+
+  // WI-6554700010012111: a bucket that keeps failing backs off, then stops being retried.
+  it('a bucket that keeps failing backs off exponentially, ignores new input while backing off, and is dead-lettered at the cap', async () => {
+    const opts = { retryDelaySeconds: 100, maxRetryDelaySeconds: 250, deadLetterAttempts: 4 };
+    await upsertChatMessages(org.adminSql, WS, sourceId, [poisonMsg('24.1', '2026-09-30T09:00:00Z', 'poisoned')]);
+
+    const first = await rollupChatUnits(org.adminSql, WS, opts);
+    expect(first).toMatchObject({ buckets: 1, failed: 1, deadLettered: 0 });
+    expect(first.failures).toEqual([expect.objectContaining({ bucketKey: '24.1', attempts: 1, deadLettered: false })]);
+    const [afterFirst] = await queueState();
+    expect(afterFirst).toMatchObject({
+      bucket_key: '24.1', attempts: 1, dead_lettered: false, last_error: expect.stringContaining('poisoned bucket'),
+    });
+    expect(afterFirst!.due_in).toBeGreaterThan(90);
+    expect(afterFirst!.due_in).toBeLessThanOrEqual(100);
+    expect(afterFirst!.first_failed_at).toBeInstanceOf(Date);
+
+    // A new message while the bucket backs off leaves its schedule and its count alone.
+    await upsertChatMessages(org.adminSql, WS, sourceId, [{ ...msg('24.2', '2026-09-30T09:05:00Z', 'still poisoned', '24.1'), channelId: POISON }]);
+    const [afterInput] = await queueState();
+    expect(afterInput).toMatchObject({ bucket_key: '24.1', attempts: 1, dead_lettered: false });
+    expect(afterInput!.due_in).toBeGreaterThan(90);
+
+    // Each further failure doubles the delay, up to the cap; first_failed_at keeps the run's start.
+    for (const [attempts, delay] of [[2, 200], [3, 250]] as const) {
+      await makeDue();
+      expect(await rollupChatUnits(org.adminSql, WS, opts)).toMatchObject({ buckets: 1, failed: 1, deadLettered: 0 });
+      const [row] = await queueState();
+      expect(row).toMatchObject({ attempts, dead_lettered: false });
+      expect(row!.due_in).toBeGreaterThan(delay - 10);
+      expect(row!.due_in).toBeLessThanOrEqual(delay);
+      expect(row!.first_failed_at).toEqual(afterFirst!.first_failed_at);
+    }
+
+    // The cap-th failure dead-letters the bucket: it stays queued with its error and is never dequeued.
+    await makeDue();
+    const last = await rollupChatUnits(org.adminSql, WS, opts);
+    expect(last).toMatchObject({ buckets: 1, failed: 1, deadLettered: 1 });
+    expect(last.failures).toEqual([expect.objectContaining({ attempts: 4, deadLettered: true })]);
+    expect(await queueState()).toEqual([expect.objectContaining({ bucket_key: '24.1', attempts: 4, dead_lettered: true })]);
+    await makeDue();
+    expect(await rollupChatUnits(org.adminSql, WS, opts)).toMatchObject({ buckets: 0, failed: 0 });
+    expect(await runChatRollupPass(org.adminSql, { workspaceId: WS })).toMatchObject({ buckets: 0, failed: 0, deadLettered: 0 });
+  });
+
+  it('a new message revives a dead-lettered bucket, which then renders once its cause is gone', async () => {
+    const opts = { retryDelaySeconds: 0, deadLetterAttempts: 1 };
+    await upsertChatMessages(org.adminSql, WS, sourceId, [poisonMsg('25.1', '2026-09-30T09:00:00Z', 'poisoned')]);
+    expect(await rollupChatUnits(org.adminSql, WS, opts)).toMatchObject({ buckets: 1, failed: 1, deadLettered: 1 });
+    expect(await rollupChatUnits(org.adminSql, WS, opts)).toMatchObject({ buckets: 0 });
+
+    await upsertChatMessages(org.adminSql, WS, sourceId, [{ ...msg('25.2', '2026-09-30T09:05:00Z', 'a reply', '25.1'), channelId: POISON }]);
+    const [revived] = await queueState();
+    expect(revived).toMatchObject({ bucket_key: '25.1', attempts: 0, dead_lettered: false, last_error: null, first_failed_at: null });
+    expect(revived!.due_in).toBeLessThanOrEqual(0);
+
+    await org.adminSql`
+      UPDATE harness_shared.chat_messages SET deleted_at = now() WHERE workspace_id = ${WS} AND channel_id = ${POISON}`;
+    expect(await rollupChatUnits(org.adminSql, WS, opts)).toMatchObject({ buckets: 1, failed: 0, deadLettered: 0 });
+    expect(await queuedBuckets()).toEqual([]);
+  });
+
+  // Migration 1500 changed the 1326 trigger: a routing change also clears a bucket's failure state.
+  it('a routing change revives a dead-lettered bucket of that source', async () => {
+    await upsertChatMessages(org.adminSql, WS, sourceId, [msg('26.1', '2026-09-30T10:00:00Z', 'healthy diorite', '26.1')]);
+    expect(await rollupChatUnits(org.adminSql, WS)).toMatchObject({ buckets: 1, failed: 0, unitsWritten: 1 });
+    // A bucket that rendered before can fail later; give its queue row a dead-letter state directly.
+    await org.adminSql`
+      INSERT INTO harness_shared.chat_rollup_queue
+        (workspace_id, data_source_id, channel_id, bucket_kind, bucket_key, attempts, last_error, first_failed_at, dead_lettered_at)
+      VALUES (${WS}, ${sourceId}::uuid, ${CH}, 'thread', '26.1', 8, 'boom', now(), now())`;
+    expect(await rollupChatUnits(org.adminSql, WS)).toMatchObject({ buckets: 0 });
+
+    await org.adminSql`
+      UPDATE harness_shared.data_sources SET destination_policy = '{"chat-message": ["document"]}'::jsonb
+       WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
+    expect(await queueState()).toEqual([expect.objectContaining({
+      bucket_key: '26.1', attempts: 0, dead_lettered: false, last_error: null, first_failed_at: null,
+    })]);
+    expect(await rollupChatUnits(org.adminSql, WS)).toMatchObject({ buckets: 1, failed: 0 });
+  });
 });
+
+type QueueStateRow = {
+  bucket_key: string; attempts: number; last_error: string | null; first_failed_at: Date | null; dead_lettered: boolean;
+  /** Seconds until the row is due (negative once due). */
+  due_in: number;
+};
+
+/** The test workspace's rollup queue with its failure state, by bucket_key. */
+async function queueState(): Promise<QueueStateRow[]> {
+  const rows = await org.adminSql<QueueStateRow[]>`
+    SELECT bucket_key, attempts, last_error, first_failed_at, dead_lettered_at IS NOT NULL AS dead_lettered,
+           EXTRACT(EPOCH FROM queued_at - now())::float8 AS due_in
+      FROM harness_shared.chat_rollup_queue
+     WHERE workspace_id = ${WS}
+     ORDER BY bucket_key`;
+  return [...rows];
+}
+
+/** Make every queued bucket in the test workspace due now, as if its retry delay had passed. */
+async function makeDue(): Promise<void> {
+  await org.adminSql`UPDATE harness_shared.chat_rollup_queue SET queued_at = now() WHERE workspace_id = ${WS}`;
+}
 
 /** Every queued rollup bucket in the test workspace, as [data_source_id, bucket_kind, bucket_key]. */
 async function queuedBuckets(): Promise<Array<[string, string, string]>> {

@@ -279,15 +279,32 @@ export function sandboxFailureDiagnostic(name, run, secrets = [], readiness = ''
   return diagnostic;
 }
 
+// Only stock-image lifecycle milestones count as progress. Repeated log lines,
+// connection attempts and a merely running container cannot extend the guard.
+const postgresStartupMilestones = [
+  ['bootstrap', /running bootstrap script/],
+  ['post-bootstrap', /performing post-bootstrap initialization/],
+  ['syncing', /syncing data to disk/],
+  ['temporary-server', /listening on Unix socket/],
+  ['database-created', /^CREATE DATABASE$/m],
+  ['temporary-shutdown', /received fast shutdown request/],
+  ['shutdown-checkpoint', /checkpoint starting: shutdown/],
+  ['initialized', /PostgreSQL init process complete; ready for start up/],
+  ['tcp-listener', /listening on IPv[46] address/],
+];
+
 export async function waitForSandboxPostgres(name, { run, secrets = [],
   attempts = 31, isStopped = () => false, delay = () => new Promise(done => setTimeout(done, 1000)),
   onProgress = receipt => console.error('[documenso-sandbox-postgres] ' + JSON.stringify(receipt)),
 }) {
   const startedAt = Date.now();
+  let startupStage = 0, stalledAttempts = 0;
   const progress = (attempt, ready, state) => onProgress({ container: name, attempt: attempt + 1,
     attempts, status: !ready.error && ready.status === 0 ? 'accepting' : ready.error ? 'probe-error' : 'not-ready',
+    initializationStage: startupStage ? postgresStartupMilestones[startupStage - 1][0] : 'starting',
+    stalledAttempts,
     ...(state ? { containerState: state } : {}), at: new Date().toISOString(), elapsedMs: Date.now() - startedAt });
-  for (let attempt = 0; attempt < attempts; attempt++) {
+  for (let attempt = 0; ; attempt++) {
     if (isStopped()) return;
     // The image initializes through a temporary Unix-socket-only server, then
     // stops it before starting the final TCP listener used by Documenso.
@@ -296,9 +313,24 @@ export async function waitForSandboxPostgres(name, { run, secrets = [],
     const inspected = run(['inspect', '--format', '{{.State.Status}}', name]);
     const rawState = (inspected.stdout || '').trim();
     const state = /^(created|running|paused|restarting|removing|exited|dead)$/.test(rawState) ? rawState : 'unknown';
-    progress(attempt, ready, state);
     const terminal = /^(exited|dead)$/.test(state);
-    if (terminal || attempt === attempts - 1) {
+    let observedStage = startupStage;
+    if (!terminal && !ready.error && ready.status === 2 && !inspected.error && inspected.status === 0 && state === 'running') {
+      const logs = run(['logs', '--tail', '100', name]);
+      if (!logs.error && logs.status === 0) {
+        const text = (logs.stdout || '') + (logs.stderr || '');
+        for (let index = startupStage; index < postgresStartupMilestones.length; index++) {
+          if (postgresStartupMilestones[index][1].test(text)) observedStage = index + 1;
+        }
+      }
+    }
+    // The same bounded failure budget applies to each advancing startup stage.
+    // Initialization is finite and monotonic; final TCP acceptance is still
+    // required, and a stalled stage fails without waiting for the outer test.
+    stalledAttempts = observedStage > startupStage ? 1 : stalledAttempts + 1;
+    startupStage = observedStage;
+    progress(attempt, ready, state);
+    if (terminal || stalledAttempts >= attempts) {
       const readiness = ready.error?.message || (ready.stdout || '') + (ready.stderr || '') || 'exit=' + ready.status;
       throw new Error('Sandbox Postgres did not become ready: ' + sandboxFailureDiagnostic(name, run, secrets, readiness));
     }

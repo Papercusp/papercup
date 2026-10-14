@@ -89,6 +89,15 @@ export function chunkHeaderText(part: number, of: number, group: string, continu
   return `⟦part ${part}/${of} g:${group}${continues ? ' cont' : ''}⟧`;
 }
 
+/** True for the tool-generated header section that opens every chunked part.
+ *  A detector that judges what the AUTHOR wrote must skip it: the header's
+ *  8-hex group id is sha-shaped and sits right beside the authored prose, so
+ *  the cell-transcription hint reported the send's own group id as a stated
+ *  commit sha (EI-25825895362217288). */
+export function isChunkHeaderSection(section: MessageSection): boolean {
+  return HEADER_RE.test(section.text);
+}
+
 /** Header length for the widest header this module can emit, so the per-part
  *  content budget holds whatever the final part count turns out to be. */
 const WIDEST_HEADER_CHARS = chunkHeaderText(

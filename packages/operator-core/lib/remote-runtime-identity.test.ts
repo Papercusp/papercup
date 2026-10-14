@@ -3,7 +3,7 @@
  * remote managed resource (WI-6554700010011907). The describe call is injected; the default
  * gcloud reader is exercised live by the cloud-portal SPEC-P-004 binding, not here.
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { hostname } from 'node:os';
 import { readProcessIdentity } from './process-identity';
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from './runtime-vintage';
@@ -13,6 +13,9 @@ import {
   measureRuntimeEnvironment,
   type RemoteDescribe,
 } from './remote-runtime-identity';
+const configured = vi.hoisted(() => ({ host: 'https://flags.example.test', projectKey: 'capture-key', personalApiKey: 'server-secret' }));
+vi.mock('./posthog-config', () => ({ getPosthogConfigWithSource: () => ({ config: configured }) }));
+afterEach(() => vi.unstubAllGlobals());
 
 const UNIT = 'gcp-cloudsql:papercusp-cloud-prod/pc-cloud-prod-pg';
 
@@ -37,6 +40,50 @@ const describing = (doc: unknown): RemoteDescribe & { calls: string[][] } => {
   fn.calls = calls;
   return fn;
 };
+
+describe('configured PostHog project identity', () => {
+  const unit = 'posthog-project:flags.example.test/1';
+  const project = { id: 1, uuid: 'project-uuid', organization: 'organization-uuid', created_at: '2026-07-09T00:00:00Z',
+    event_retention_months: 84, events_retention_enforced: false, captureStatus: 400 };
+  it('measures a stable identity and invalidates recreation or retention changes', async () => {
+    const identity = await measureRemoteRuntimeIdentity(unit, describing(project));
+    expect(identity).toMatch(/^[a-f0-9]{64}$/);
+    for (const changed of [{ ...project, uuid: 'replacement' }, { ...project, created_at: '2026-10-14T00:00:00Z' },
+      { ...project, events_retention_enforced: true }, { ...project, event_retention_months: 1 }]) {
+      expect(await measureRemoteRuntimeIdentity(unit, describing(changed))).not.toBe(identity);
+    }
+  });
+  it.each([null, {}, { ...project, id: 2 }, { ...project, captureStatus: 502 },
+    { ...project, organization: null }, { ...project, created_at: 'invalid' }, { ...project, events_retention_enforced: null }])
+    ('fails closed for unavailable or ambiguous project identity %j', async doc => {
+      expect(await measureRemoteRuntimeIdentity(unit, describing(doc))).toBeNull();
+    });
+  it('uses the configured authenticated reader and keeps credentials out of the identity document', async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request) => String(url).endsWith('/batch/')
+      ? new Response('missing data', { status: 400 })
+      : Response.json({ ...project, api_token: 'capture-key' }));
+    vi.stubGlobal('fetch', fetcher);
+    expect(await measureRemoteRuntimeIdentity(unit)).toMatch(/^[a-f0-9]{64}$/);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(await measureRemoteRuntimeIdentity('posthog-project:foreign.example.test/1')).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    fetcher.mockImplementation(async () => Response.json({ ...project, api_token: 'another-key' }));
+    expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
+  });
+  it('rejects malformed selectors before calling any reader', async () => {
+    const d = describing(project);
+    for (const invalid of ['posthog-project:--url=evil/1', 'posthog-project:flags.example.test/../1',
+      'posthog-project:flags.example.test/0', 'posthog-project:flags.example.test/1?token=secret']) {
+      expect(await measureRemoteRuntimeIdentity(invalid, d)).toBeNull();
+    }
+    expect(d.calls).toEqual([]);
+  });
+  it('folds project identity into the existing environment evaluator without a local PID', async () => {
+    const measured = await measureRuntimeEnvironment([], [unit], { describe: describing(project) });
+    expect(measured).toMatch(/^[a-f0-9]{64}$/);
+    expect(await measureRuntimeEnvironment([], [unit], { describe: describing({ ...project, captureStatus: 502 }) })).toBeNull();
+  });
+});
 
 describe('remote runtime units', () => {
   it('recognises provider-prefixed units only', () => {

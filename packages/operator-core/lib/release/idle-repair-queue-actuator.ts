@@ -41,6 +41,7 @@
 
 import type { Sql } from 'postgres';
 import type { FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
+import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 
 export const IDLE_REPAIR_QUEUE_MS = 60 * 60_000;
 export const IDLE_RUNG_GRACE_MS = 30 * 60_000;
@@ -293,7 +294,8 @@ export interface IdleQueueActuatorDeps {
 
 export interface IdleQueuePassResult {
   decision: IdleQueueDecision['kind'];
-  acted: Array<{ rung: IdleQueueRung; outcome: IdleRungOutcome; detail: string }>;
+  acted: Array<{ rung: IdleQueueRung; outcome: IdleRungOutcome; detail: string;
+    startedAtMs: number; completedAtMs: number }>;
 }
 
 /**
@@ -331,7 +333,7 @@ export async function runIdleQueueActuatorPass(deps: IdleQueueActuatorDeps): Pro
     }
     const outcome: IdleRungOutcome = result.ok ? 'acted' : 'failed';
     episode = recordIdleRungOutcome(d.episode, d.rung, outcome, result.detail, now);
-    acted.push({ rung: d.rung, outcome, detail: result.detail });
+    acted.push({ rung: d.rung, outcome, detail: result.detail, startedAtMs: now, completedAtMs: deps.nowMs() });
     await deps.saveEpisode(episode);
     if (result.ok) return { decision: 'act', acted };
   }
@@ -421,6 +423,168 @@ export async function saveIdleActuatorEpisode(
                   mtime_ms = EXCLUDED.mtime_ms`;
 }
 
+/** Original observations share the existing repair-latency stream, without becoming gate fires
+ * or verdicts. The snapshot precedes effects; receipt clocks bracket the actual awaited effect.
+ * A carried episode's old rung stamp is deliberately not a delivery receipt. */
+export interface IdleQueueActuatorObservation {
+  version: 1;
+  startedAtMs: number;
+  completedAtMs: number;
+  snapshot: IdleQueueSnapshot;
+  episode: IdleQueueEpisode | null;
+  result: IdleQueuePassResult;
+}
+
+export async function recordIdleQueueActuatorObservation(sql: Sql,
+  scope: { workspaceId: string; installSlug: string }, queue: FrozenCandidateRepairQueue,
+  observation: IdleQueueActuatorObservation): Promise<void> {
+  const { buildGateRepairLatencyLedgerRow, deriveTickFreezeDisposition, GATE_REPAIR_LATENCY_KIND } =
+    await import('./freeze-disposition');
+  const { appendPipelineEvent } = await import('../harness/git-sync/pipeline-events');
+  // This describes the queue the actuator read, not a gate verdict or a measurement of the flag.
+  const row = buildGateRepairLatencyLedgerRow(deriveTickFreezeDisposition({
+    flagEnabled: true, repairQueue: queue, nowMs: observation.startedAtMs,
+    summary: 'Original idle-actuator observation; no gate verdict implied',
+  }), observation.startedAtMs)!;
+  await appendPipelineEvent({ ...scope, kind: GATE_REPAIR_LATENCY_KIND, status: row.status,
+    detail: { ...row.detail, idleActuator: observation } }, sql, { required: true });
+}
+
+/** Read the complete original population and its boundary observation in one PG snapshot.
+ * Legacy mutable episodes cannot reconstruct missing receipts; they stay unmeasured. */
+export async function readIdleQueueActuatorWindow(sql: Sql,
+  scope: { workspaceId: string; installSlug: string },
+  window: { windowStartMs: number; windowEndMs: number; maxRows?: number }): Promise<PipelineEventWindowRead> {
+  const { windowStartMs, windowEndMs } = window;
+  const maxRows = window.maxRows ?? 10_000;
+  const base = { windowStartMs, windowEndMs, total: null, rows: [] };
+  if (!scope.workspaceId.trim() || !scope.installSlug.trim() ||
+      !Number.isSafeInteger(windowStartMs) || windowStartMs < 0 ||
+      !Number.isSafeInteger(windowEndMs) || windowEndMs <= windowStartMs ||
+      !Number.isSafeInteger(maxRows) || maxRows < 1 || maxRows > 50_000) {
+    return { ...base, status: 'invalid', reason: 'Exact scope, finite window and bounded population are required.' };
+  }
+  try {
+    const rows = await sql<{ id: string; status: string; detail: Record<string, unknown>;
+      created_at: Date | string; population_count: string | number }[]>`
+      WITH scoped AS MATERIALIZED (
+        SELECT id, status, detail, created_at FROM harness_shared.pipeline_events
+        WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.installSlug}
+          AND kind = 'green_checkpoint_repair_latency' AND detail ? 'idleActuator'
+      ), predecessor AS (
+        SELECT * FROM scoped WHERE created_at <= ${new Date(windowStartMs)}
+        ORDER BY created_at DESC, id DESC LIMIT 1
+      ), population AS (
+        SELECT * FROM predecessor UNION ALL
+        SELECT * FROM scoped WHERE created_at > ${new Date(windowStartMs)}
+          AND created_at <= ${new Date(windowEndMs)}
+      )
+      SELECT id::text, status, detail, created_at, count(*) OVER () AS population_count
+      FROM population ORDER BY created_at, id LIMIT ${maxRows + 1}`;
+    const total = rows.length ? Number(rows[0]!.population_count) : 0;
+    if (!Number.isSafeInteger(total) || total < rows.length ||
+        (total <= maxRows && total !== rows.length) || rows.some(row => Number(row.population_count) !== total)) {
+      return { ...base, status: 'unavailable', reason: 'Historical population count is inconsistent.' };
+    }
+    return { windowStartMs, windowEndMs, total, status: total > maxRows ? 'capped' : 'complete',
+      reason: total > maxRows ? 'Historical population exceeds the row budget.' : null,
+      rows: rows.slice(0, maxRows).map(row => ({ id: row.id, kind: 'green_checkpoint_repair_latency',
+        status: row.status, detail: row.detail, createdAtMs: new Date(row.created_at).getTime() })) };
+  } catch (error) {
+    return { ...base, status: 'unavailable', reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Strict historical measurement, not an amendment of the Goal: action delay is bounded by
+ * 60 minutes, with no extra tick silently added. Coverage requires uninterrupted observations;
+ * absent-queue gaps and legacy data remain unqualified, never a vacuous operational pass. */
+export function evaluateIdleQueueActuatorWindow(history: PipelineEventWindowRead,
+  observedAtMs = Date.now(), maxGapMs = 15 * 60_000) {
+  const stamp = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+  const windowValid = stamp(history.windowStartMs) && stamp(history.windowEndMs) &&
+    history.windowEndMs > history.windowStartMs && stamp(observedAtMs) && observedAtMs >= history.windowEndMs &&
+    stamp(maxGapMs) && maxGapMs > 0 && maxGapMs <= IDLE_REPAIR_QUEUE_MS;
+  const complete = history.status === 'complete' && history.total === history.rows.length &&
+    history.rows.length > 0 && new Set(history.rows.map(row => row.id)).size === history.rows.length;
+  const rows = [...history.rows].sort((a, b) => a.createdAtMs - b.createdAtMs || a.id.localeCompare(b.id));
+  const samples: number[] = [];
+  const episodes = new Map<string, { idleSinceMs: number; observedAtMs: number; firstActionAtMs: number | null }>();
+  const observations = new Set<string>();
+  let qualified = complete;
+  for (const row of rows) {
+    const o = row.detail?.idleActuator as IdleQueueActuatorObservation | undefined;
+    const s = o?.snapshot;
+    if (!row.id?.trim() || row.kind !== 'green_checkpoint_repair_latency' || row.status !== 'converging' ||
+        !stamp(row.createdAtMs) || row.createdAtMs > history.windowEndMs || o?.version !== 1 ||
+        !stamp(o.startedAtMs) || !stamp(o.completedAtMs) || o.startedAtMs > o.completedAtMs ||
+        o.completedAtMs > row.createdAtMs || !s || typeof s.candidate !== 'string' || !s.candidate.trim() ||
+        row.detail.candidate !== s.candidate || !stamp(s.openedAtMs) || s.openedAtMs > o.startedAtMs ||
+        !['ready-to-test', 'awaiting-fixer', 'ready-to-verify', 'ready-to-promote', 'blocked'].includes(s.phase) ||
+        typeof s.runInFlight !== 'boolean' || !Number.isSafeInteger(s.failingLegs) || s.failingLegs < 0 ||
+        ![s.lastAdmittedAtMs, s.lastResumeRunStartedAtMs].every(t => t === null ||
+          (stamp(t) && t >= s.openedAtMs && t <= o.startedAtMs)) ||
+        !o.result || !['act', 'not-idle', 'wait', 'exhausted'].includes(o.result.decision) ||
+        !Array.isArray(o.result.acted)) { qualified = false; continue; }
+    const identity = JSON.stringify([s.candidate, s.openedAtMs, o.startedAtMs]);
+    if (observations.has(identity)) qualified = false;
+    observations.add(identity);
+    samples.push(o.startedAtMs);
+    const idleSinceMs = Math.max(s.openedAtMs, s.lastAdmittedAtMs ?? 0, s.lastResumeRunStartedAtMs ?? 0);
+    const key = JSON.stringify([s.candidate, s.openedAtMs, idleSinceMs]);
+    const episode = episodes.get(key) ?? { idleSinceMs, observedAtMs: o.startedAtMs, firstActionAtMs: null };
+    for (const action of o.result.acted) {
+      if (!action || !IDLE_QUEUE_RUNGS.includes(action.rung) || !['acted', 'failed'].includes(action.outcome) ||
+          !stamp(action.startedAtMs) || !stamp(action.completedAtMs) || action.startedAtMs < o.startedAtMs ||
+          action.completedAtMs < action.startedAtMs || action.completedAtMs > o.completedAtMs) {
+        qualified = false; continue;
+      }
+      if (action.outcome === 'acted') episode.firstActionAtMs = Math.min(episode.firstActionAtMs ?? Infinity, action.completedAtMs);
+    }
+    if (!s.runInFlight && s.phase !== 'ready-to-promote' && s.failingLegs > 0) {
+      episode.observedAtMs = Math.max(episode.observedAtMs, o.startedAtMs);
+      episodes.set(key, episode);
+    }
+  }
+  samples.sort((a, b) => a - b);
+  const coverage = qualified && windowValid && samples.length > 0 && samples[0]! <= history.windowStartMs &&
+    history.windowStartMs - samples[0]! <= maxGapMs &&
+    history.windowEndMs - samples.at(-1)! <= maxGapMs &&
+    samples.every((t, i) => i === 0 || t - samples[i - 1]! <= maxGapMs);
+  const due = [...episodes.values()].filter(e => e.observedAtMs - e.idleSinceMs >= IDLE_REPAIR_QUEUE_MS);
+  const admissible = windowValid && complete && qualified && coverage && due.length > 0;
+  return { episodes: due, eventIds: rows.map(row => row.id), assertions: [
+    { id: 'bounded-idle-actuator-window', passed: windowValid, evidence: `start=${history.windowStartMs}; end=${history.windowEndMs}; observed=${observedAtMs}; maxGap=${maxGapMs}` },
+    { id: 'complete-idle-actuator-population', passed: complete, evidence: `read=${history.status}; population=${history.total}; rows=${rows.length}` },
+    { id: 'original-idle-actuator-receipts', passed: complete && qualified, evidence: 'Original queue clocks and awaited effect receipts; carried rung stamps cannot substitute.' },
+    { id: 'continuous-idle-actuator-observations', passed: coverage, evidence: `samples=${samples.length}; maxGap=${maxGapMs}` },
+    { id: 'nonempty-idle-actuator-episodes', passed: admissible, evidence: `dueEpisodes=${due.length}` },
+    { id: 'idle-actuator-action-at-most-60min', passed: admissible && due.every(e =>
+      e.firstActionAtMs !== null && e.firstActionAtMs - e.idleSinceMs <= IDLE_REPAIR_QUEUE_MS),
+      evidence: `actionDelaysMs=${due.map(e => e.firstActionAtMs === null ? 'unknown' : e.firstActionAtMs - e.idleSinceMs).join(',')}` },
+  ] };
+}
+
+export async function executeIdleQueueActuatorWindow(sql: Sql, args: {
+  workspaceId: string; harnessSlug: string; projectDir: string; installSlug: string;
+  runtimeUnits: string[]; windowStartMs: number; windowEndMs: number;
+}) {
+  const { createHash } = await import('node:crypto');
+  const { executeOperationalRun } = await import('../agent-tools/testing/record-run');
+  return executeOperationalRun({ filePath: 'packages/operator-core/lib/release/idle-repair-queue-actuator.ts',
+    name: 'Original idle-actuator history', framework: 'operational', runtimeUnits: args.runtimeUnits,
+    command: ['executeIdleQueueActuatorWindow', args.workspaceId, args.installSlug,
+      String(args.windowStartMs), String(args.windowEndMs)],
+    run: async () => {
+      const history = await readIdleQueueActuatorWindow(sql, args, args);
+      const evaluation = evaluateIdleQueueActuatorWindow(history);
+      return { exitCode: evaluation.assertions.every(a => a.passed) ? 0 : 1, assertions: evaluation.assertions,
+        summary: `Idle-actuator history only: window=${args.windowStartMs}..${args.windowEndMs}; ` +
+          `original_population_sha256=${createHash('sha256').update(JSON.stringify(history)).digest('hex')}. ` +
+          'No cycle, repair-round, invariant-soak, alarm or shipment assertion.' };
+    },
+  }, args);
+}
+
 const IDLE_ACTUATOR_IDENTITY = {
   ownerId: 'system-watchdog',
   ownerLabel: 'system-watchdog',
@@ -466,7 +630,10 @@ export async function checkIdleRepairQueue(
     if (!claim.claimed) return null;
     const storedEpisode = claim.episode;
 
+    const startedAtMs = (opts.nowMs ?? Date.now)();
     let queue: FrozenCandidateRepairQueue | null = null;
+    let snapshot: IdleQueueSnapshot | null = null;
+    let episode = storedEpisode;
     let queueMeasured = false;
     const result = await runIdleQueueActuatorPass({
       installSlug,
@@ -493,7 +660,7 @@ export async function checkIdleRepairQueue(
           // Unknown is distinct from idle: do not wake the gate owner or recommend a refire.
           runInFlight = null;
         }
-        return {
+        snapshot = {
           candidate: queue.candidate,
           repairHead: queue.repairHead,
           phase: queue.phase,
@@ -508,10 +675,13 @@ export async function checkIdleRepairQueue(
           gateHolderWakeable: holderState === 'live' || holderState === 'parked',
           blockedReason: queue.blockedReason ?? null,
         };
+        return snapshot;
       },
       loadEpisode: async () => storedEpisode,
-      saveEpisode: (episode) =>
-        saveIdleActuatorEpisode(sql, { installSlug, workspaceId, nowMs: (opts.nowMs ?? Date.now)(), episode }),
+      saveEpisode: async (nextEpisode) => {
+        await saveIdleActuatorEpisode(sql, { installSlug, workspaceId, nowMs: (opts.nowMs ?? Date.now)(), episode: nextEpisode });
+        episode = nextEpisode;
+      },
       dispatchFixer: async () => {
         const q = queue;
         if (!q) return { ok: false, detail: 'queue vanished before dispatch' };
@@ -559,6 +729,11 @@ export async function checkIdleRepairQueue(
         return { ok: true, detail: 'urgent intervention raised on the owner attention surface' };
       },
     });
+    if (queue && snapshot) {
+      await recordIdleQueueActuatorObservation(sql, { workspaceId, installSlug }, queue, {
+        version: 1, startedAtMs, completedAtMs: (opts.nowMs ?? Date.now)(), snapshot, episode, result,
+      });
+    }
     if (queueMeasured && result.decision === 'not-idle') {
       const { resolveAlarm } = await import('../alarm-attention');
       await resolveAlarm(`alarm:idle-repair-queue:${installSlug}`, 'idle-repair-queue', opts.alarm);
