@@ -502,9 +502,20 @@ preflight_staging_migrations() {
     fi
     set +a
     cd "$candidate_root" &&
-    export PAPERCUSP_INTEGRATION_ROOT="$candidate_root" &&
-    node scripts/lint-migrations.mjs &&
-    node scripts/check-migration-forward-compat.mjs
+    export PAPERCUSP_INTEGRATION_ROOT="$candidate_root" || exit 1
+    # Match the setup/bundle phase budget. A synchronous parser-cache read can
+    # stall without throwing, so an exception-only fallback cannot bound this
+    # safety check (EI-25987864550799293). Expiry must keep the old API serving.
+    for check in scripts/lint-migrations.mjs scripts/check-migration-forward-compat.mjs; do
+      log "running staging migration check $check (deadline=900s)"
+      if timeout --kill-after=10s 900s node "$check"; then
+        log "staging migration check $check passed"
+      else
+        check_status=$?
+        log "FATAL: staging migration check $check failed or exceeded its deadline (exit $check_status)"
+        exit "$check_status"
+      fi
+    done
   ); then
     log "FATAL: staging migration lint failed; keeping the current $UNIT process"
     return 1
@@ -533,6 +544,7 @@ prepare_staging_schema() {
       node --import tsx --input-type=module - <<'JS'
 import { resolve } from 'node:path';
 import { applyPendingMigrationsNow } from './packages/operator-core/lib/db-boot-migrate.ts';
+import { assertRequiredServingMigrationsApplied } from './packages/operator-core/lib/serving-generation.ts';
   try {
     const result = await applyPendingMigrationsNow({
       sqlDir: resolve('libs/papercusp/libs/db/sql'),
@@ -542,6 +554,7 @@ import { applyPendingMigrationsNow } from './packages/operator-core/lib/db-boot-
       console.error('[staging-sync] target schema preparation failed:', JSON.stringify(result));
       process.exit(1);
     }
+    await assertRequiredServingMigrationsApplied();
     console.log('[staging-sync] target schema prepared:', JSON.stringify(result));
     process.exit(0);
   } catch (error) {

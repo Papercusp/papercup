@@ -301,6 +301,46 @@ describe('sync-staging-checkout.sh argument parsing', () => {
 });
 
 describe('sync-staging-checkout.sh migration restart preflight (EI-24180437038891110)', () => {
+  it.each(['scripts/lint-migrations.mjs', 'scripts/check-migration-forward-compat.mjs'])(
+    'kills a stuck %s and refuses publication after the phase deadline', (stuckCheck) => {
+      const root = mkdtempSync(join(tmpdir(), 'staging-preflight-deadline-'));
+      try {
+        const bin = join(root, 'bin');
+        mkdirSync(bin);
+        const trace = join(root, 'checks');
+        const pidFile = join(root, 'stuck.pid');
+        writeFileSync(join(bin, 'node'), [
+          '#!/bin/sh',
+          'printf "%s\\n" "$1" >> "$TRACE_FILE"',
+          '[ "$1" = "$STUCK_CHECK" ] || exit 0',
+          'printf "%s" "$$" > "$PID_FILE"',
+          'trap "" TERM',
+          'while :; do sleep 1; done',
+          '',
+        ].join('\n'), { mode: 0o700 });
+        const result = runFn(['preflight_staging_migrations'], [
+          'log() { printf "%s\\n" "$*"; }',
+          // Shorten only the fixture clock; real GNU timeout owns cancellation.
+          'timeout() { printf "BOUND:%s\\n" "$*"; shift 2; command timeout --kill-after=1s 1s "$@"; }',
+          'preflight_staging_migrations && printf "PUBLISHED\\n"',
+        ].join('\n'), { env: {
+          STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: trace,
+          PID_FILE: pidFile, STUCK_CHECK: stuckCheck, PATH: `${bin}:${process.env.PATH}`,
+        } });
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stdout).toContain(`BOUND:--kill-after=10s 900s node ${stuckCheck}`);
+        expect(result.stdout).toContain(`${stuckCheck} failed or exceeded its deadline (exit 137)`);
+        expect(result.stdout).toContain('keeping the current fixture.service process');
+        expect(result.stdout).not.toContain('PUBLISHED');
+        expect(readFileSync(trace, 'utf8').trim().split('\n')).toEqual(
+          stuckCheck.endsWith('/lint-migrations.mjs') ? [stuckCheck]
+            : ['scripts/lint-migrations.mjs', stuckCheck],
+        );
+        expect(existsSync(`/proc/${readFileSync(pidFile, 'utf8')}`)).toBe(false);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }, 15_000,
+  );
+
   it.each([false, true])('loads the candidate runtime DB before reservation lint (broken env: %s)', (broken) => {
     const root = mkdtempSync(join(tmpdir(), 'staging-lint-env-'));
     try {
