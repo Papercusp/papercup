@@ -1,13 +1,14 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 
 const dirs: string[] = [];
+const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 it('stops builder descendants on timeout and retains the original diagnostics', async () => {
@@ -16,12 +17,15 @@ it('stops builder descendants on timeout and retains the original diagnostics', 
   let descendant: number | undefined;
   try {
     expect(() => buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
-      args: ['-c', 'sleep 60 & echo $! > "$1"; echo CHILD_READY; wait', '_', childFile],
+      args: ['-c', 'source "$2"; BUNDLE_HOST_STEP_LOG="$3"; bundle_host_run_step blocked-builder bash -c \'sleep 60 & echo $! > "$1"; echo CHILD_READY; wait\' _ "$1"',
+        '_', childFile, common, join(evidenceDir, 'hono-host.mjs.build-steps.jsonl')],
       timeoutMs: 1000 })).toThrow(/ETIMEDOUT/);
     descendant = Number(readFileSync(childFile, 'utf8'));
     expect(readFileSync(join(evidenceDir, 'operator-api-build.log'), 'utf8')).toContain('CHILD_READY');
     const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
     expect(receipt).toMatchObject({ signal: 'SIGKILL', status: null, error: { code: 'ETIMEDOUT' }, groupStop: 'signaled' });
+    expect(receipt.steps).toMatchObject({ active: 'blocked-builder', count: 1, unreadableRows: [],
+      last: { step: 'blocked-builder', event: 'start', pid: expect.any(Number), at: expect.any(Number) } });
     await expect.poll(() => {
       try { return readFileSync(`/proc/${descendant}/stat`, 'utf8').split(') ')[1].split(' ')[0]; }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'gone'; throw error; }
@@ -29,6 +33,28 @@ it('stops builder descendants on timeout and retains the original diagnostics', 
   } finally {
     if (descendant) { try { process.kill(descendant, 'SIGKILL'); } catch { /* already stopped */ } }
   }
+});
+
+it('retains completed step timing and the failing command status', () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
+  const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
+  expect(() => buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+    args: ['-c', 'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; bundle_host_run_step cli-guard bash -c "exit 17"',
+      '_', common, journal], timeoutMs: 1000 })).toThrow(/exited 17/);
+  const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+  expect(receipt).toMatchObject({ status: 17, steps: { active: null, count: 2, unreadableRows: [],
+    durationsMs: [{ step: 'cli-guard', status: 17, elapsedMs: expect.any(Number) }] } });
+  expect(receipt.steps.durationsMs[0].elapsedMs).toBeGreaterThanOrEqual(0);
+});
+
+it('preserves the timeout when the final journal append is partial', () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
+  writeFileSync(join(evidenceDir, 'hono-host.mjs.build-steps.jsonl'),
+    JSON.stringify({ at: 1, pid: 1, step: 'syntax-check', event: 'start' }) + '\n{"at":');
+  expect(() => buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+    args: ['-c', 'sleep 60'], timeoutMs: 100 })).toThrow(/ETIMEDOUT/);
+  const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+  expect(receipt).toMatchObject({ error: { code: 'ETIMEDOUT' }, steps: { active: 'syntax-check', unreadableRows: [2] } });
 });
 
 it.each(['--import=tsx', '--import "tsx"', '--loader=tsx/esm', '--require tsx/cjs',
