@@ -1,5 +1,6 @@
 /** P-044 (RSR-P-044-A): deriving a proof binding from a recorded test run — pure derivation + scope rules. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -796,6 +797,74 @@ describe('expandTestRunBinding: harness attribution', () => {
         path: GUARD_SUBJECT,
         startedAt: STARTED,
       });
+    });
+  });
+
+  describe('committed operational output is not an executed input', () => {
+    const output = 'docs/evidence/generated-output.json';
+    const subject = 'pkg/guard/subject.ts';
+    const started = '2026-09-23T15:00:00.000Z';
+    const finished = '2026-09-23T15:00:01.000Z';
+    const commit = 'a'.repeat(40);
+    const artifact = JSON.stringify({ schemaVersion: 1, kind: 'operational-test-evidence',
+      name: 'guard output', framework: 'operational', command: ['node guard.js'],
+      startedAt: started, finishedAt: finished, exitCode: 0, summary: 'One completed assertion.',
+      assertions: [{ id: 'guard', passed: true, evidence: 'verified' }] });
+    const digest = createHash('sha256').update(artifact).digest('hex');
+
+    async function prepare() {
+      await mkdir(path.join(root, 'docs/evidence'), { recursive: true });
+      await writeFile(path.join(root, output), artifact);
+      await utimes(path.join(root, output), new Date(finished), new Date(finished));
+      await utimes(path.join(root, subject), new Date('2026-09-23T14:00:00Z'), new Date('2026-09-23T14:00:00Z'));
+      const row = run({ root, file_path: output, framework: 'operational', commit_sha: commit,
+        started_at: started, finished_at: finished, execution_details: {
+          runGroupId: `operational:${digest.slice(0, 40)}`, runStartedAt: started,
+          passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        } });
+      const d = deps(row).d;
+      d.git = async (_root, args) => {
+        if (args[0] === 'show' && args[1] === `${commit}:${output}`) return artifact;
+        throw new Error('unavailable committed artifact');
+      };
+      return { row, d, binding: input({ sourcePaths: [subject] }) };
+    }
+
+    it('binds authenticated generated output written after execution, preserving source measurement', async () => {
+      const { d, binding } = await prepare();
+      expect(await expandTestRunBinding(binding, SCOPE, d)).toMatchObject({ ok: true,
+        binding: { measurement: { testPaths: [output], sourcePaths: [subject] },
+          details: { testRun: { operationalArtifact: { sha256: digest, commitSha: commit } } } } });
+    });
+
+    it('still refuses an executed source edited after the run', async () => {
+      const { d, binding } = await prepare();
+      await utimes(path.join(root, subject), new Date(finished), new Date(finished));
+      expect(await expandTestRunBinding(binding, SCOPE, d)).toMatchObject({ ok: false,
+        error: 'test_run_source_modified_after_run', message: expect.stringContaining(subject) });
+    });
+
+    it('keeps an output explicitly declared as an executed source behind the source guard', async () => {
+      const { d } = await prepare();
+      expect(await expandTestRunBinding(input({ sourcePaths: [subject, output] }), SCOPE, d))
+        .toMatchObject({ ok: false, error: 'test_run_source_modified_after_run' });
+    });
+
+    it.each(['changed-output', 'changed-commit', 'missing-commit', 'changed-ledger'])
+      ('refuses unauthenticated output: %s', async (fault) => {
+        const { row, d, binding } = await prepare();
+        if (fault === 'changed-output') await writeFile(path.join(root, output), `${artifact}\n`);
+        if (fault === 'changed-commit') d.git = async () => `${artifact}\n`;
+        if (fault === 'missing-commit') d.git = async () => { throw new Error('missing commit'); };
+        if (fault === 'changed-ledger') row.execution_details = { ...row.execution_details as object, passed: 2 };
+        expect(await expandTestRunBinding(binding, SCOPE, d)).toMatchObject({ ok: false });
+      });
+
+    it('does not exempt an ordinary receipt without the operational writer identity', async () => {
+      const { row, d, binding } = await prepare();
+      row.execution_details = { runStartedAt: started, passed: 1, failed: 0, skipped: 0 };
+      expect(await expandTestRunBinding(binding, SCOPE, d))
+        .toMatchObject({ ok: false, error: 'test_run_source_modified_after_run' });
     });
   });
 
