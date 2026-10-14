@@ -126,16 +126,15 @@ export async function inspectPrDeliveryRow(
         : actual?.status === 'resolved' && actual.sha === e.workingTreeBlobSha;
     });
   };
-  // Inspect history too: a later change/revert must not hide an earlier direct push.
+  // Inspect first-parent history too: a later change/revert must not hide a direct
+  // push. A settlement baseline can be the PR head; generic ancestry would also
+  // reach it through a merge's second parent, without it ever being an upstream
+  // target commit. Let the actual first-parent census decide, without injecting
+  // or excluding that baseline.
   const history = await git(project.path, ['log', '--first-parent', '--format=%H', `--max-count=${HISTORY_MAX + 1}`,
-    ...tips.map(t => t.sha), '--not', manifest.headSha, '--', ...paths]);
+    ...tips.map(t => t.sha), '--', ...paths]);
   if (history.code !== 0) return answer('unknown', 'Upstream objects are not available in the maintained working copy.', { upstreamSha });
-  const baselineAncestries = await Promise.all(tips.map(t =>
-    git(project.path, ['merge-base', '--is-ancestor', manifest.headSha, t.sha])));
-  if (baselineAncestries.some(a => ![0, 1].includes(a.code)))
-    return answer('unknown', 'The completion baseline ancestry could not be read.', { upstreamSha });
-  const commits = [...new Set([...tips.map(t => t.sha), ...history.stdout.split('\n').filter(Boolean),
-    ...(baselineAncestries.some(a => a.code === 0) ? [manifest.headSha] : [])])];
+  const commits = [...new Set([...tips.map(t => t.sha), ...history.stdout.split('\n').filter(Boolean)])];
   let fixSha: string | undefined;
   const matchingCommits: string[] = [];
   for (const commit of commits.slice(0, HISTORY_MAX)) {

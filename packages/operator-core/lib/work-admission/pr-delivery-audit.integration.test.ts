@@ -73,6 +73,28 @@ describe('PR bypass falsifier against real upstream Git', () => {
     expect(await inspectPrDeliveryRow(row, project, { host: host(pr()) }))
       .toMatchObject({ verdict: 'pass', upstreamSha: fix, prUrl: url });
   });
+  it('accepts a two-parent PR merge when the completion baseline is its fork head', async () => {
+    git(repo, 'branch', 'standing', fix); git(repo, 'reset', '--hard', base);
+    git(repo, 'merge', '--no-ff', '-m', 'reviewed standing PR', 'standing');
+    const merge = git(repo, 'rev-parse', 'HEAD'); git(repo, 'push', 'origin', 'HEAD:main'); link();
+    const evidence = row.payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as {
+      settlementManifest: { headSha: string };
+    };
+    evidence.settlementManifest.headSha = fix;
+    expect(git(repo, 'merge-base', '--is-ancestor', fix, merge)).toBe('');
+    expect(git(repo, 'rev-list', '--first-parent', merge).split('\n')).not.toContain(fix);
+    expect(await inspectPrDeliveryRow(row, project, { host: host(pr({ merge_commit_sha: merge })) }))
+      .toMatchObject({ verdict: 'pass', upstreamSha: merge, prUrl: url });
+  });
+  it('detects a directly pushed completion baseline after an upstream revert', async () => {
+    const evidence = row.payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as {
+      settlementManifest: { headSha: string };
+    };
+    evidence.settlementManifest.headSha = fix;
+    git(repo, 'push', 'origin', 'HEAD:main'); git(repo, 'revert', '--no-edit', fix); git(repo, 'push', 'origin', 'HEAD:main');
+    expect(await inspectPrDeliveryRow(row, project, { host: null }))
+      .toMatchObject({ verdict: 'fail', fixSha: fix });
+  });
   it('accepts the merged standing PR when its base differs from the registered default branch', async () => {
     git(repo, 'push', 'origin', `${base}:refs/heads/staging`);
     git(repo, 'push', 'origin', 'HEAD:main'); link();
