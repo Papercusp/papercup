@@ -1298,6 +1298,7 @@ export class GatewayRequestTelemetry {
   private readonly recentCapacity: number;
   private readonly now: () => number;
   private readonly onStartupEvidence: ((line: string, record: StartupCacheEvidenceRecord) => void) | undefined;
+  private readonly onCompleted: ((timeline: GatewayRequestTimeline) => void | Promise<void>) | undefined;
 
   constructor(opts: {
     sampleCapacity?: number;
@@ -1305,6 +1306,8 @@ export class GatewayRequestTelemetry {
     now?: () => number;
     /** Durable sink for first-request-per-owner startup evidence (the gateway journal). Never throws into the request path. */
     onStartupEvidence?: (line: string, record: StartupCacheEvidenceRecord) => void;
+    /** Durable sink for completed request outcomes. Never awaited on the request path. */
+    onCompleted?: (timeline: GatewayRequestTimeline) => void | Promise<void>;
   } = {}) {
     this.sampleCapacity = Math.max(1, Math.floor(opts.sampleCapacity ?? 4096));
     this.recentCapacity = Math.max(1, Math.floor(opts.recentCapacity ?? 256));
@@ -1315,6 +1318,7 @@ export class GatewayRequestTelemetry {
     };
     this.now = opts.now ?? Date.now;
     this.onStartupEvidence = opts.onStartupEvidence;
+    this.onCompleted = opts.onCompleted;
     this.stageSamples = Object.fromEntries(
       GATEWAY_REQUEST_STAGE_NAMES.map((stage) => [stage, new BoundedSamples(this.sampleCapacity)]),
     ) as Record<GatewayRequestStageName, BoundedSamples>;
@@ -1382,6 +1386,13 @@ export class GatewayRequestTelemetry {
         if (record) this.onStartupEvidence(formatStartupCacheEvidenceLine(record), record);
       } catch {
         // Durable evidence capture is best-effort and must never fail a completed request.
+      }
+    }
+    if (this.onCompleted) {
+      try {
+        void this.onCompleted(timeline);
+      } catch {
+        // Durable outcome capture is best-effort and must never fail a completed request.
       }
     }
   }

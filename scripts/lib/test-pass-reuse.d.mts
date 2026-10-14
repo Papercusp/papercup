@@ -362,20 +362,26 @@ export function gateReuseObservations(task: string, decision: {
     scope: string;
 }>;
 /**
- * Both round types use the SAME durable primitive; tsImport supports plain-Node gate scripts.
- * Flush before returning because their callers may terminate with process.exit(). Telemetry
- * failures never change the selector's skip list or throw into its caller.
+ * Green-checkpoint decisions use the durable gate-health primitive. Clean-local runs
+ * are intentionally excluded because their shared working trees are often dirty.
+ * Gate rows use the `default` workspace partition and correlate with the verdict run
+ * group when it is a UUID. `runContext` is required so callers cannot silently
+ * publish local decisions as gate health.
  * @param {string} task
  * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
- * @param {{ observeFallback: Function, flushFallbackObservations: Function }} [writer]
+ * @param {{ runContext: 'green-checkpoint'|'clean-local', runGroupId?: string, writer?: { observeFallback: Function, flushFallbackObservations: Function } }} context
  */
 export function recordGateReuseDecision(task: string, decision: {
     summary?: Record<string, number>;
     offReason?: string;
     eligible?: number;
-}, writer?: {
-    observeFallback: Function;
-    flushFallbackObservations: Function;
+}, context: {
+    runContext: "green-checkpoint" | "clean-local";
+    runGroupId?: string;
+    writer?: {
+        observeFallback: Function;
+        flushFallbackObservations: Function;
+    };
 }): Promise<boolean>;
 /**
  * The lane a unit task script runs, or `null` for a task that runs its workspace's whole unit

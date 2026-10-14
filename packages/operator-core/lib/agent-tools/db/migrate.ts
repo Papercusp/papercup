@@ -695,6 +695,7 @@ export default defineTool({
     ],
   },
   capability: 'locks:write',
+  irreversible: true,
   // EI-9417: + budget for the default lock-timeout retry loop's worst case (5
   // attempts x DEFAULT_LOCK_TIMEOUT_SEC, plus backoff between them — see
   // above). WI-6381: widened to also cover the caller-opted-in long-wait path

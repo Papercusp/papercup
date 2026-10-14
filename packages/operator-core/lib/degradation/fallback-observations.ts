@@ -455,11 +455,12 @@ export function summarizeFallbackWindow(
 export async function readFallbackWindow(
   mechanism: string,
   windowMs: number,
-  opts: { sql?: Sql; workspaceId?: string; now?: Date } = {},
+  opts: { sql?: Sql; workspaceId?: string; processTag?: string; now?: Date } = {},
 ): Promise<FallbackWindow> {
   const sql = opts.sql ?? getOrgPg().sql;
   const since = new Date((opts.now ?? new Date()).getTime() - windowMs);
   const ws = opts.workspaceId ?? null;
+  const processTag = opts.processTag ?? null;
   const rows = await sql<Array<{ reason: string; samples: number | string; eligible: number | string; applied: number | string }>>`
     SELECT reason,
            sum(samples)::bigint  AS samples,
@@ -469,6 +470,7 @@ export async function readFallbackWindow(
      WHERE mechanism = ${mechanism.trim()}
        AND observed_at >= ${since}
        AND (${ws}::text IS NULL OR workspace_id = ${ws}::text)
+       AND (${processTag}::text IS NULL OR process_tag = ${processTag}::text)
      GROUP BY reason
   `;
   return summarizeFallbackWindow(
@@ -493,7 +495,7 @@ export interface ScopedFallbackWindow {
 export async function readFallbackWindowsByScope(
   mechanism: string,
   windowMs: number,
-  opts: { sql?: Sql; workspaceId?: string; now?: Date } = {},
+  opts: { sql?: Sql; workspaceId?: string; processTag?: string; now?: Date } = {},
 ): Promise<ScopedFallbackWindow[]> {
   const sql = opts.sql ?? getOrgPg().sql;
   // Half-open windows make two adjacent reads disjoint: [now - windowMs, now).
@@ -502,6 +504,7 @@ export async function readFallbackWindowsByScope(
   const until = opts.now ?? new Date();
   const since = new Date(until.getTime() - windowMs);
   const ws = opts.workspaceId ?? null;
+  const processTag = opts.processTag ?? null;
   const name = mechanism.trim();
   const rows = await sql<Array<{ scope: string | null; reason: string; samples: number | string; eligible: number | string; applied: number | string }>>`
     SELECT scope,
@@ -514,6 +517,7 @@ export async function readFallbackWindowsByScope(
        AND observed_at >= ${since}
        AND observed_at < ${until}
        AND (${ws}::text IS NULL OR workspace_id = ${ws}::text)
+       AND (${processTag}::text IS NULL OR process_tag = ${processTag}::text)
      GROUP BY scope, reason
   `;
   const byScope = new Map<string | null, FallbackReasonAggregate[]>();

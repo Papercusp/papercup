@@ -368,6 +368,10 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   const d = { ...defaultDeps, ...deps };
   const label = `${workspace}::${script}`;
   const out = { ...env };
+  const runContext = out.GREEN_CHECKPOINT === "1" && out.PAPERCUSP_TEST_RUN_SOURCE === "ci"
+    ? "green-checkpoint"
+    : "clean-local";
+  const runGroupId = out.PAPERCUSP_TEST_RUN_GROUP;
   for (const key of [
     TEST_REUSE_SKIP_LIST_ENV,
     EXECUTED_MAP_WORKSPACE_ENV,
@@ -418,7 +422,7 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   let args = [];
   const result = (reused) => ({ env: out, args, lines, reused, recording, finish: finishWith(resultFile) });
   const record = async (decision) => {
-    try { await d.recordReuse(label, decision); } catch { /* telemetry must not affect task execution */ }
+    try { await d.recordReuse(label, decision, { runContext, runGroupId }); } catch { /* telemetry must not affect task execution */ }
   };
   const off = async (reason) => {
     lines.push(`${TARGETED_REUSE_LINE_PREFIX}TEST_PASS_REUSE ws=${label} scope=${scope} applied=false reason=${reason}`);
@@ -462,8 +466,6 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   const proofFormat = (typeof d.proofFormat === "function" ? d.proofFormat(root) : null) ?? REUSE_PROOF_FORMAT;
   const runnerIdentity = d.runnerIdentity(root, out, proofFormat);
   if (!runnerIdentity) return off("no-runner-identity");
-  const runContext = out.GREEN_CHECKPOINT === "1" ? "green-checkpoint" : "clean-local";
-
   let client;
   try {
     client = await d.connect(out);

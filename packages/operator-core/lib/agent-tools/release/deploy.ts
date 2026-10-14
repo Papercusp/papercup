@@ -389,6 +389,7 @@ export default defineTool({
     ],
   },
   capability: 'operator:write',
+  irreversible: (args) => args.op === 'force' && args.confirm === true,
   // The status branch only reads pipeline state; trigger/force remain writes. Keep the
   // static effect as `write` so unknown or malformed calls stay behind the dry-run gate.
   effectForCall: (args) => (args.op === 'status' || args.op === 'gate-history' ? 'read' : 'write'),

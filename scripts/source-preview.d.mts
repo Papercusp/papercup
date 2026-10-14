@@ -280,6 +280,61 @@ export function verifierSourceChildEnv({ root, receiptPath, env }: {
     VERIFY_TAURI_SOURCE_RECEIPT: string;
     VERIFY_TAURI_SOURCE_REF: any;
 };
+/** @param {NodeJS.ProcessEnv} [env] @returns {number | null} */
+export function readVerifierTaskDeadline(env?: NodeJS.ProcessEnv): number | null;
+/**
+ * Measure the work the next synchronous source verification will perform. The manifest is
+ * the authority for the population; statting those paths measures the current bytes without
+ * recursively walking an untrusted tree a second time.
+ * @param {string} root
+ * @param {{ files: { path: string }[], submodules?: { path: string }[] }} expected
+ */
+export function measureVerifierSourceVerification(root: string, expected: {
+    files: {
+        path: string;
+    }[];
+    submodules?: {
+        path: string;
+    }[];
+}): {
+    bytes: number;
+    entries: number;
+    repositories: number;
+    estimatedMs: number;
+};
+/**
+ * Refuse a verifier that cannot reserve time for its child and final attestations. A missing
+ * deadline is UNKNOWN/unbounded and leaves the historical CLI behaviour unchanged.
+ */
+export function admitVerifierSourceVerification({ root, expected, env, nowMs, reserveMs }: {
+    root: any;
+    expected: any;
+    env?: NodeJS.ProcessEnv | undefined;
+    nowMs?: number | undefined;
+    reserveMs?: number | undefined;
+}): {
+    admitted: boolean;
+    deadlineEpochMs: null;
+    remainingMs: null;
+    reserveMs: number;
+    measurement: {
+        bytes: number;
+        entries: number;
+        repositories: number;
+        estimatedMs: number;
+    };
+} | {
+    admitted: boolean;
+    deadlineEpochMs: number;
+    remainingMs: number;
+    reserveMs: number;
+    measurement: {
+        bytes: number;
+        entries: number;
+        repositories: number;
+        estimatedMs: number;
+    };
+};
 export function noticeText(manifest: any): string;
 /**
  * The releases page README.md links to: `${PAPERCUSP_UPDATE_BASE_URL}/index.html`.
@@ -633,6 +688,19 @@ export class PreviewError extends Error {
  * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
  */
 export const TAURI_VERIFIER_INPUTS: readonly string[];
+/**
+ * The source verifier runs synchronously and walks the complete recorded population. A
+ * task deadline therefore needs an admission check before that walk starts: otherwise a
+ * verifier can spend the last part of its launcher lifetime in a pre-child check and be
+ * killed without a child verdict or a cleanup phase. The estimate is intentionally derived
+ * from the pinned population in the receipt and the bytes actually present in the tree; it
+ * never lowers the source census or turns a timeout into a pass.
+ */
+export const VERIFIER_TASK_DEADLINE_ENV: "PAPERCUSP_TASK_DEADLINE_EPOCH_MS";
+export const VERIFIER_SOURCE_BYTES_PER_MS: 20000;
+export const VERIFIER_SOURCE_ENTRY_MS: 0.25;
+export const VERIFIER_SOURCE_GIT_REPO_MS: 1000;
+export const VERIFIER_POSTCHECK_RESERVE_MS: 15000;
 export const ALLOWLIST_PATH: string;
 export { main as runCli };
 /**

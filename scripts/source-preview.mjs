@@ -803,9 +803,15 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase });
     await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
       `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
-    const childEnv = verifierSourceChildEnv({ root, receiptPath,
-      env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
-        VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } });
+    const childEnv = await runPhase('child.preflight', () => {
+      // Keep the expensive synchronous provenance check inside the phase receipt. The
+      // admission check runs first and refuses a run whose launcher deadline cannot reserve
+      // this measured population plus the child/post-check window.
+      admitVerifierSourceVerification({ root, expected: receipt, env });
+      return verifierSourceChildEnv({ root, receiptPath,
+        env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
+          VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } });
+    });
     const exitCode = await runPhase('child.run', async () => {
       const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv, stdio: 'inherit' });
       const onInt = () => child.kill('SIGINT'), onTerm = () => child.kill('SIGTERM');
@@ -993,6 +999,74 @@ export function verifierSourceChildEnv({ root, receiptPath, env = process.env })
   const expected = JSON.parse(readFileSync(receipt, 'utf8'));
   verifyVerifierSourceSync(sourceRoot, expected, { runtimeArtifacts: true });
   return { ...env, VERIFY_TAURI_SOURCE_RECEIPT: receipt, VERIFY_TAURI_SOURCE_REF: expected.sourceCommit };
+}
+
+/**
+ * The source verifier runs synchronously and walks the complete recorded population. A
+ * task deadline therefore needs an admission check before that walk starts: otherwise a
+ * verifier can spend the last part of its launcher lifetime in a pre-child check and be
+ * killed without a child verdict or a cleanup phase. The estimate is intentionally derived
+ * from the pinned population in the receipt and the bytes actually present in the tree; it
+ * never lowers the source census or turns a timeout into a pass.
+ */
+export const VERIFIER_TASK_DEADLINE_ENV = 'PAPERCUSP_TASK_DEADLINE_EPOCH_MS';
+export const VERIFIER_SOURCE_BYTES_PER_MS = 20_000;
+export const VERIFIER_SOURCE_ENTRY_MS = 0.25;
+export const VERIFIER_SOURCE_GIT_REPO_MS = 1_000;
+export const VERIFIER_POSTCHECK_RESERVE_MS = 15_000;
+
+/** @param {NodeJS.ProcessEnv} [env] @returns {number | null} */
+export function readVerifierTaskDeadline(env = process.env) {
+  const value = Number(env?.[VERIFIER_TASK_DEADLINE_ENV]);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+/**
+ * Measure the work the next synchronous source verification will perform. The manifest is
+ * the authority for the population; statting those paths measures the current bytes without
+ * recursively walking an untrusted tree a second time.
+ * @param {string} root
+ * @param {{ files: { path: string }[], submodules?: { path: string }[] }} expected
+ */
+export function measureVerifierSourceVerification(root, expected) {
+  assert.ok(expected && Array.isArray(expected.files) && expected.files.length > 0,
+    'verifier source population is required for deadline admission');
+  let bytes = 0;
+  for (const file of expected.files) {
+    const path = join(root, file.path);
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) bytes += Buffer.byteLength(readlinkSync(path));
+    else {
+      assert.ok(stat.isFile(), `verifier source population entry is not a file: ${file.path}`);
+      bytes += stat.size;
+    }
+  }
+  const entries = expected.files.length;
+  const repositories = 1 + (expected.submodules?.length ?? 0);
+  const estimatedMs = Math.max(1, Math.ceil(
+    bytes / VERIFIER_SOURCE_BYTES_PER_MS + entries * VERIFIER_SOURCE_ENTRY_MS +
+    repositories * VERIFIER_SOURCE_GIT_REPO_MS));
+  return { bytes, entries, repositories, estimatedMs };
+}
+
+/**
+ * Refuse a verifier that cannot reserve time for its child and final attestations. A missing
+ * deadline is UNKNOWN/unbounded and leaves the historical CLI behaviour unchanged.
+ */
+export function admitVerifierSourceVerification({ root, expected, env = process.env,
+  nowMs = Date.now(), reserveMs = VERIFIER_POSTCHECK_RESERVE_MS }) {
+  const deadlineEpochMs = readVerifierTaskDeadline(env);
+  const measurement = measureVerifierSourceVerification(root, expected);
+  if (deadlineEpochMs === null) return { admitted: true, deadlineEpochMs: null, remainingMs: null, reserveMs, measurement };
+  const remainingMs = deadlineEpochMs - nowMs;
+  if (remainingMs <= measurement.estimatedMs + reserveMs) {
+    throw new PreviewError(
+      `VERIFIER_DEADLINE_REFUSAL remainingMs=${Math.round(remainingMs)} ` +
+      `verificationEstimateMs=${measurement.estimatedMs} reserveMs=${reserveMs} ` +
+      `entries=${measurement.entries} bytes=${measurement.bytes} repositories=${measurement.repositories} ` +
+      '— refusing before the synchronous pre-child source check; raise the launching timeout.', 2);
+  }
+  return { admitted: true, deadlineEpochMs, remainingMs, reserveMs, measurement };
 }
 
 async function listFiles(dir) {

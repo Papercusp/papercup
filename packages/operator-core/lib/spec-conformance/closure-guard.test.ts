@@ -26,9 +26,9 @@ function plan(options: { manual?: boolean; malformed?: boolean; deviation?: 'pro
 - **P-001** \`todo\` Deliver R-1
 - **P-002** \`todo\` Deliver R-2
 - **P-003** \`todo\` Unmapped support work
-${options.malformed ? '## Conformance\n```conformance\n{\n```\n' : ''}
+${options.malformed ? '## Conformance\n```conformance\n{\n```\n' : options.manual ? `## Conformance\n\`\`\`conformance\n${JSON.stringify({ requirements: { 'R-1': { unenforced: { reason: 'Owner-reviewed manual outcome.', approvalRef: 'D-003' } } } })}\n\`\`\`\n` : ''}
 ## Decisions
-${decisions}`;
+${decisions}${options.manual ? '\n### D-003 — Approved manual verification\nR-1 is explicitly unenforced; the manual review supplies the outcome.\n' : ''}`;
 }
 function world(verdict: ConformanceCheckVerdict | null = 'pass', alarms: OpenDriftAlarm[] = []) {
   const deps: ConformanceClosureDeps = { listOpenDriftAlarms: vi.fn(async () => alarms), readDoneWhenVerdict: vi.fn(async () => verdict) };

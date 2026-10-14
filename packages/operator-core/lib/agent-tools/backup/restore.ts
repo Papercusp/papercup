@@ -24,6 +24,7 @@ export default defineTool({
     'omitting it restores the full snapshot. mode="in_place" overwrites the target ' +
     'after taking a safety snapshot first; source does not narrow in_place.',
   capability: 'backup:write',
+  irreversible: (args) => args.mode === 'in_place',
   guidance: {
     when: `Restore a backup snapshot — replay PG dump + filesystem into the workspace. Destructive: replaces current state.`,
     notWhen: `For ROLLING BACK without changing the snapshot list, use \`backup:rollback\`. restore is the full apply.`,

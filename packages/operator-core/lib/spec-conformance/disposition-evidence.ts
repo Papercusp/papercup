@@ -6,12 +6,13 @@ export const URL_ONLY_DISPOSITION_HINT =
 export function hasOnlyUrlReferences(note: string): boolean {
   let references = 0;
   const withoutLinks = note
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, '')
     // A Markdown label does not turn a link into verification evidence.
-    .replace(/\[[^\]\n]*\]\(\s*https?:\/\/[^\s]+(?:\s+"[^"\n]*")?\s*\)/gi, () => {
+    .replace(/\[[^\]\n]*\]\(\s*(?:[a-z][a-z\d+.-]*:\/\/|\/reports[?#/])[^\s]+(?:\s+"[^"\n]*")?\s*\)/gi, () => {
       references += 1;
       return '';
     })
-    .replace(/https?:\/\/[^\s<>]+/gi, () => {
+    .replace(/(?:[a-z][a-z\d+.-]*:\/\/|\/reports[?#/])[^\s<>]+/gi, () => {
       references += 1;
       return '';
     });

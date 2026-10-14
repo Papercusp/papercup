@@ -937,14 +937,21 @@ export function gateReuseObservations(task, decision) {
 
 let fallbackWriter;
 /**
- * Both round types use the SAME durable primitive; tsImport supports plain-Node gate scripts.
- * Flush before returning because their callers may terminate with process.exit(). Telemetry
- * failures never change the selector's skip list or throw into its caller.
+ * Green-checkpoint decisions use the durable gate-health primitive. Clean-local runs
+ * are intentionally excluded because their shared working trees are often dirty.
+ * Gate rows use the `default` workspace partition and correlate with the verdict run
+ * group when it is a UUID. `runContext` is required so callers cannot silently
+ * publish local decisions as gate health.
  * @param {string} task
  * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
- * @param {{ observeFallback: Function, flushFallbackObservations: Function }} [writer]
+ * @param {{ runContext: 'green-checkpoint'|'clean-local', runGroupId?: string, writer?: { observeFallback: Function, flushFallbackObservations: Function } }} context
  */
-export async function recordGateReuseDecision(task, decision, writer) {
+export async function recordGateReuseDecision(task, decision, context) {
+  if (context?.runContext === 'clean-local') return true;
+  if (context?.runContext !== 'green-checkpoint') return false;
+  let writer = context.writer;
+  const runGroupId = typeof context.runGroupId === 'string' ? context.runGroupId : '';
+  const correlationId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runGroupId) ? runGroupId : undefined;
   try {
     if (!writer) {
       if (!fallbackWriter) {
@@ -953,7 +960,13 @@ export async function recordGateReuseDecision(task, decision, writer) {
       }
       writer = await fallbackWriter;
     }
-    for (const row of gateReuseObservations(task, decision)) writer.observeFallback('gate-pass-reuse', row, { processTag: 'gate-reuse' });
+    for (const row of gateReuseObservations(task, decision)) {
+      writer.observeFallback('gate-pass-reuse', row, {
+        workspaceId: 'default',
+        processTag: 'gate-reuse:green-checkpoint',
+        ...(correlationId ? { correlationId } : {}),
+      });
+    }
     const result = await writer.flushFallbackObservations();
     return result.failed === 0;
   } catch {

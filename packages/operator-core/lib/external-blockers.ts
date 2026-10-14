@@ -17,6 +17,11 @@ export type ExternalBlockerCapability =
   | 'external-service-action'
   | 'live-dependency'
   | 'product-decision';
+export type HumanBlockerCapability = Exclude<ExternalBlockerCapability, 'live-dependency'>;
+export type DirectHumanCapability = Extract<
+  HumanBlockerCapability,
+  'credential' | 'physical-device' | 'external-service-action'
+>;
 
 export type ExternalBlockerCapabilitySource = 'explicit' | 'inferred' | 'legacy-inferred';
 
@@ -42,6 +47,29 @@ export const EXTERNAL_BLOCKER_CAPABILITIES = [
   'live-dependency',
   'product-decision',
 ] as const satisfies readonly ExternalBlockerCapability[];
+
+const HUMAN_BLOCKER_CAPABILITIES = new Set<HumanBlockerCapability>([
+  'approval-auto-clearable',
+  'credential',
+  'physical-device',
+  'external-service-action',
+  'product-decision',
+]);
+const DIRECT_HUMAN_CAPABILITIES = new Set<DirectHumanCapability>([
+  'credential',
+  'physical-device',
+  'external-service-action',
+]);
+
+/** A human blocker must name one of the closed human-capability cases. */
+export function isHumanBlockerCapability(value: unknown): value is HumanBlockerCapability {
+  return typeof value === 'string' && HUMAN_BLOCKER_CAPABILITIES.has(value as HumanBlockerCapability);
+}
+
+/** These capabilities require a direct owner question; product decisions use consult parks. */
+export function isDirectHumanCapability(value: unknown): value is DirectHumanCapability {
+  return typeof value === 'string' && DIRECT_HUMAN_CAPABILITIES.has(value as DirectHumanCapability);
+}
 
 const CAPABILITY_POLICIES: Record<ExternalBlockerCapability, Omit<ExternalBlockerCapabilityPolicy, 'capability'>> = {
   'approval-auto-clearable': {
@@ -136,6 +164,8 @@ export interface ExternalBlockerRecord {
   defaultIfUnanswered?: string;
   /** ISO timestamp when {@link defaultIfUnanswered} is intended to take effect. */
   decideBy?: string;
+  /** The real `coord:ask-owner` conversation opened for this direct capability blocker. */
+  ownerAskConversationId?: string;
   /** WI-10005010: the TYPED, machine-executable form of {@link defaultIfUnanswered}.
    *  The free text is a disclosure to a human and is NEVER parsed; only this closed
    *  vocabulary may be executed by the blocker-default reaper once `decideBy` has
@@ -258,6 +288,7 @@ export function updateExternalBlockerHistory(
     decideBy?: string;
     /** WI-10005010: typed executable default; see {@link OWNER_ASK_DEFAULT_ACTIONS}. */
     defaultAction?: OwnerAskDefaultAction;
+    ownerAskConversationId?: string;
     clear?: boolean;
   },
   actor: string,
@@ -318,6 +349,9 @@ export function updateExternalBlockerHistory(
       recheckAt,
       ...(input.defaultIfUnanswered?.trim() ? { defaultIfUnanswered: input.defaultIfUnanswered.trim() } : {}),
       ...(input.decideBy?.trim() ? { decideBy: input.decideBy.trim() } : {}),
+      ...(input.ownerAskConversationId?.trim()
+        ? { ownerAskConversationId: input.ownerAskConversationId.trim() }
+        : {}),
     };
     return { blockers, changed: true };
   }
@@ -338,6 +372,9 @@ export function updateExternalBlockerHistory(
     ...(input.defaultIfUnanswered?.trim() ? { defaultIfUnanswered: input.defaultIfUnanswered.trim() } : {}),
     ...(input.decideBy?.trim() ? { decideBy: input.decideBy.trim() } : {}),
     ...(input.defaultAction ? { defaultAction: input.defaultAction } : {}),
+    ...(input.ownerAskConversationId?.trim()
+      ? { ownerAskConversationId: input.ownerAskConversationId.trim() }
+      : {}),
   });
   const active = blockers.filter((row) => row.status === 'active');
   const cleared = blockers.filter((row) => row.status === 'cleared').slice(-40);

@@ -12,6 +12,10 @@ describe('URL-only directive completion evidence (R-20)', () => {
     '- [Report](https://example.test/report)\n- https://example.test/proof',
     '`https://example.test/report`.',
     '(https://example.test/result), <https://example.test/proof>',
+    '/reports?sel=rpt-test',
+    '[Read the report](/reports?sel=rpt-test)',
+    '1. https://example.test/report\n2. /reports?sel=rpt-test',
+    'papercusp://scratch/verification',
   ])('recognises references without an outcome: %s', (note) => {
     expect(hasOnlyUrlReferences(note)).toBe(true);
   });

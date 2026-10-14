@@ -145,6 +145,33 @@ describe('fallback observations — durable and readable across processes (real 
     expect(scoped.map((s) => [s.scope, s.window.samples])).toEqual([['op', 4]]);
   });
 
+  it('filters scoped windows by the explicit workspace and producer context', async () => {
+    const gateTag = 'gate-reuse:green-checkpoint';
+    observeFallback('context-filter', { eligible: 1, applied: 0, reason: 'dirty-checkout', scope: 'shared-task' }, {
+      sql: db.adminSql, workspaceId: 'default', processTag: gateTag,
+    });
+    observeFallback('context-filter', { eligible: 2, applied: 0, reason: 'dirty-checkout', scope: 'shared-task' }, {
+      sql: db.adminSql, workspaceId: WS, processTag: 'gate-reuse',
+    });
+    observeFallback('context-filter', { eligible: 3, applied: 0, reason: 'otherRunner', scope: 'shared-task' }, {
+      sql: db.adminSql, workspaceId: 'default', processTag: 'local-check',
+    });
+    expect(await flushFallbackObservations()).toMatchObject({ written: 3, failed: 0 });
+
+    const scoped = await readFallbackWindowsByScope('context-filter', 60 * 60 * 1000, {
+      sql: db.adminSql, workspaceId: 'default', processTag: gateTag,
+    });
+    const flat = await readFallbackWindow('context-filter', 60 * 60 * 1000, {
+      sql: db.adminSql, workspaceId: 'default', processTag: gateTag,
+    });
+    expect(flat).toMatchObject({ samples: 1, eligible: 1, applied: 0 });
+    expect(scoped).toHaveLength(1);
+    expect(scoped[0]).toMatchObject({
+      scope: 'shared-task',
+      window: { samples: 1, eligible: 1, applied: 0, reasons: [{ reason: 'dirty-checkout', eligible: 1 }] },
+    });
+  });
+
   it('the table refuses an applied count above eligible', async () => {
     await expect(db.adminSql`
       INSERT INTO harness_shared.fallback_observations (workspace_id, mechanism, eligible, applied, reason)

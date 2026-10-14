@@ -13,6 +13,7 @@ export default defineTool({
   needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'operator:write',
+  irreversible: true,
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'papercup', 'papercup-deep'],
   description:
