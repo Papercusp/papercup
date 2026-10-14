@@ -73,6 +73,28 @@ describe('retained storage sample coverage assessment', () => {
     expect(assessRetainedStorageSamples(samples, sampleRequirements).sampleStatus).toBe('unknown');
   });
 
+  it('checks recorded headroom while absent source and stability witnesses remain unknown', () => {
+    const samples = sampleFixture().map(({ scriptSha256: _source, runtimeStableDuringRead: _stability, ...sample }) => sample);
+    samples[1]!.snapshots[1]!.reservedBytes = 45 * GIB;
+    samples[1]!.snapshots[2]!.reservedBytes = 45 * GIB;
+    const result = assessRetainedStorageSamples(samples, sampleRequirements);
+    expect(result.sampleStatus).toBe('fail');
+    expect(result.checks.find((x) => x.id === 'window-coverage')?.status).toBe('pass');
+    expect(result.checks.find((x) => x.id === 'runtime-custody')?.status).toBe('unknown');
+    expect(result.checks.find((x) => x.id === 'byte-headroom:/mnt/data')?.status).toBe('fail');
+    expect(result.checks.find((x) => x.id === 'physical-alias-budget')?.status).toBe('pass');
+    expect(result.coverage.notChecked).toContain('runtime-custody');
+  });
+
+  it('does not certify custody from stability alone when source was never recorded', () => {
+    const samples = sampleFixture().map(({ scriptSha256: _source, ...sample }) => sample);
+    expect(assessRetainedStorageSamples(samples, sampleRequirements).checks
+      .find((x) => x.id === 'runtime-custody')?.status).toBe('unknown');
+    Object.assign(samples[1]!, { scriptSha256: 'malformed' });
+    expect(assessRetainedStorageSamples(samples, sampleRequirements).checks
+      .find((x) => x.id === 'sample-shape')?.status).toBe('unknown');
+  });
+
   it.each(['duplicate', 'reversed'] as const)('refuses %s timestamps instead of silently repairing the sample sequence', (kind) => {
     const samples = sampleFixture();
     if (kind === 'duplicate') samples[1]!.at = samples[0]!.at;

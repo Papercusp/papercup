@@ -81,7 +81,11 @@ export interface RetentionIntervalAssessment {
 const REQUIRED_PATHS = ['/', '/mnt/data', '/tmp/pcv'] as const;
 const EXTERNAL_CHECKS = new Set(['inode-headroom', 'final-candidate-demand']);
 
-const sampleSeriesSchema = z.array(endpoint.omit({ stores: true })).min(1).max(20_000);
+// Compact native samples have measured storage and a writer identity, but no
+// loaded-source witness. Assess their measurements without inventing one.
+const sampleSeriesSchema = z.array(endpoint.omit({ stores: true }).extend({
+  scriptSha256: sha256.optional(),
+})).min(1).max(20_000);
 const sampleRequirementsSchema = z.object({
   startAt: z.string().datetime({ offset: true }),
   endAt: z.string().datetime({ offset: true }),
@@ -140,7 +144,7 @@ export function assessRetainedStorageSamples(input: unknown, requirements: unkno
   add('sample-gap', largestGapMs === null ? 'unknown' : largestGapMs <= required.data.maxSampleGapMs ? 'pass' : 'fail',
     `Largest observed gap ${largestGapMs ?? 'unknown'}ms; evaluator permits ${required.data.maxSampleGapMs}ms. No interpolation.`);
   const baseline = window[0]!;
-  add('runtime-custody', window.some((x) => x.runtimeStableDuringRead === undefined) ? 'unknown' :
+  add('runtime-custody', window.some((x) => x.runtimeStableDuringRead === undefined || x.scriptSha256 === undefined) ? 'unknown' :
     window.every((x) => x.runtimeStableDuringRead && x.nativePid === baseline.nativePid && x.scriptSha256 === baseline.scriptSha256) ? 'pass' : 'fail',
     'Every included read must record the same PID/source and an explicit stability witness.');
   for (const path of REQUIRED_PATHS) {
