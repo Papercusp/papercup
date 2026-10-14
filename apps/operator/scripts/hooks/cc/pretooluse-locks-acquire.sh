@@ -2088,40 +2088,33 @@ if operation_record is not None and inner.get('reason') == 'operation_authority_
 if inner.get('_hook_operation_unsupported'):
     detail = inner.get('_detail', 'hook_operation rejected')
     operation = operation_record.get('operation') if isinstance(operation_record, dict) else None
-    if not isinstance(operation, dict) or operation.get('authority'):
-        if operation_record is not None:
-            forget_origin_operation_protocol(cache_dir, operator_url)
+    if operation_record is None:
+        mark_error('compatibility', detail)
+        _batch_deny(
+            'locks: running operator rejected the native operation scope without a persisted operation; '
+            'no legacy acquire retry is safe.',
+            settle=False)
+    forget_origin_operation_protocol(cache_dir, operator_url)
+    if not isinstance(operation, dict):
+        mark_error('compatibility', detail)
+        _batch_deny(
+            'locks: running operator rejected the native operation scope and its persisted operation is invalid; '
+            'no legacy acquire retry is safe.',
+            settle=False)
+    mark_error('compatibility', detail)
+    if operation.get('authority'):
         _batch_deny(
             'locks: running operator rejected the native operation scope after authority was prepared; '
             'no legacy acquire retry is safe.',
             settle=False)
-    # The operator's explicit invalid-key response proves this unpinned
-    # operation was never admitted. Remove its retry record before taking the
-    # legacy path, so PostToolUse cannot mistake it for an active operation.
-    try:
-        if operation_path:
-            os.remove(operation_path)
-    except FileNotFoundError:
-        pass
-    except Exception as exc:
-        mark_error('operation-compatibility-cleanup', exc)
-        _batch_deny('locks: could not retire the unadmitted native operation; no legacy acquire retry is safe.',
-                    settle=False)
-    operation_record = None
-    operation_path = None
-    forget_origin_operation_protocol(cache_dir, operator_url)
-    compatibility_advisory = (
-        'locks:acquire compatibility fallback: the running operator rejected '
-        'hook_operation despite advertising the native edit protocol. Retried '
-        'with the legacy acquire and retained file-lock enforcement; native '
-        'operation fencing is unavailable until the advertised schema and '
-        'running operator agree.'
-    )
-    mark_error('compatibility', detail)
-    request = req_legacy_lock
-    req_without_coordination_domain = req_legacy_without_coordination_domain
-    inner = _locks_acquire_once(request)
-    _batch_allow_fail_open(inner)
+    else:
+        # Keep the operation identity even when no authority was prepared. A
+        # serving runtime that rejects hook_operation is not qualified for
+        # this request; retrying as a legacy acquire drops its terminal fence.
+        _batch_deny(
+            'locks: running operator rejected the native operation scope before authority was prepared; '
+            'the operation record is retained and no legacy acquire retry is safe.',
+            settle=False)
 if operation_record is not None and inner.get('ok') is True and (not operation_record['operation'].get('authority')
         or inner.get('operation_id') != operation_record['operation']['id']):
     _batch_deny('locks: running operator did not confirm the native operation protocol; no legacy acquire retry is safe.')
