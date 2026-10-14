@@ -190,6 +190,12 @@ test('actual sandbox entry refuses provider allocation when pinned image prepara
     assert.equal(result.error, undefined);
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /registry unavailable/);
+    const phases = result.stderr.split('\n').filter(line => line.startsWith('[documenso-sandbox-phase] '))
+      .map(line => JSON.parse(line.slice('[documenso-sandbox-phase] '.length)));
+    assert.deepEqual(phases.map(({ phase, status }) => [phase, status]),
+      [['images', 'started'], ['images', 'failed'], ['cleanup', 'started'], ['cleanup', 'completed']]);
+    assert.ok(phases.every(row => /^daohr-documenso-/.test(row.network) &&
+      Number.isFinite(Date.parse(row.at)) && row.elapsedMs >= 0));
     const requests = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(requests, [
       ['image', 'inspect', 'documenso/documenso@sha256:' + 'a'.repeat(64)],
@@ -229,6 +235,21 @@ test('allocation errors redact injected credentials', async () => {
     spawnChild: () => spawn(process.execPath, ['-e', 'process.stderr.write(process.env.PASSWORD);process.exitCode=7'],
       { env: { ...process.env, PASSWORD: NEVER_EMIT_MARKER } }),
   }), error => error.message.includes('[redacted]') && !error.message.includes(NEVER_EMIT_MARKER));
+});
+
+test('allocation evidence identifies a pending request and its failed outcome without logging arguments or secrets', async () => {
+  // Generate the credential at runtime so this redaction fixture contains no secret assignment in source.
+  const receipts = [], owner = 'daohr-documenso-12345678-abc-pg', secret = randomUUID();
+  await assert.rejects(dockerAllocation(['start', owner, secret], { PASSWORD: secret }, {
+    pendingAfterMs: 10, onPending() {}, onProgress: receipt => receipts.push(receipt),
+    spawnChild: () => spawn(process.execPath, ['-e', 'setTimeout(()=>{process.stderr.write("private output");process.exitCode=7},80)']),
+  }), /start 7/);
+  assert.deepEqual(receipts.map(row => row.status), ['started', 'pending', 'failed']);
+  assert.ok(receipts.every(row => row.operation === 'start' && row.resource === owner &&
+    Number.isFinite(Date.parse(row.at)) && row.elapsedMs >= 0));
+  assert.ok(receipts.at(-1).elapsedMs >= receipts[1].elapsedMs);
+  assert.equal(JSON.stringify(receipts).includes(secret), false);
+  assert.equal(JSON.stringify(receipts).includes('private output'), false);
 });
 
 test('container start remains joined past its warning and cleanup follows the actual daemon outcome', { timeout: 5000 }, async () => {
