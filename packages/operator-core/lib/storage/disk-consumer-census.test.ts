@@ -10,8 +10,9 @@ import { chmodSync, mkdtempSync, promises as fsp, rmSync, writeFileSync } from '
 import { request, type ClientRequest, type IncomingMessage, type RequestOptions } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { measureDocker, resolveCensusSudo } from './disk-consumer-census';
+import { inspectRetentionTrees, measureDocker, resolveCensusSudo, type CensusSpawn } from './disk-consumer-census';
 
 vi.mock('node:http', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:http')>()),
@@ -19,6 +20,37 @@ vi.mock('node:http', async (importOriginal) => ({
 }));
 
 const isRoot = process.getuid?.() === 0;
+
+describe('streaming retention census evidence', () => {
+  it('refuses truncated and malformed metadata instead of selecting a partial tree', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-metadata-'));
+    const spawn = ((_command: string, _args: string[]) => {
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+      queueMicrotask(() => { child.stdout.write('f\0not-a-device\0'); child.emit('close', 0); });
+      return child;
+    }) as unknown as CensusSpawn;
+    try {
+      const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), spawn });
+      expect(census.error).toBe('incomplete retention metadata records');
+      expect(census.entries).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('kills a timed-out native walk and refuses the incomplete candidate set', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-timeout-'));
+    const kill = vi.fn();
+    const spawn = ((_command: string, _args: string[]) => {
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill });
+      kill.mockImplementation(() => { child.emit('close', null); return true; });
+      return child;
+    }) as unknown as CensusSpawn;
+    try {
+      const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), timeoutMs: 1, spawn });
+      expect(census.error).toBe('retention native census timed out');
+      expect(census.entries).toEqual([]); expect(kill).toHaveBeenCalledWith('SIGKILL');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('resolveCensusSudo', () => {
   let dir: string;

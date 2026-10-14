@@ -30,7 +30,7 @@ import { randomUUID } from 'node:crypto';
 import { constants as fsConstants, promises as fsp, statfs as statfsCb } from 'node:fs';
 import { request } from 'node:http';
 import { hostname } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 import { watchedPaths } from './disk-space-alarm';
@@ -323,6 +323,97 @@ export const CENSUS_OWN_FILES_TIMEOUT_MS = 10 * 60 * 1000;
 export type CensusSpawn = (cmd: string, args: string[]) => ChildProcessByStdio<null, Readable, Readable>;
 
 const defaultCensusSpawn: CensusSpawn = (cmd, args) => spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+export interface RetentionTreeCensus {
+  entries: Array<{ path: string; newestWriteMs: number; bytes: number; dev: number; ino: number }>;
+  retained: Array<{ path: string; reason: string }>;
+  inspectedNodes: number;
+  retainedRecentTrees: number;
+  error?: string;
+}
+
+/** Full max-age census through the same read-only native find as own-files.
+ * Stream metadata, aggregate direct children, and prune proven recent/protected
+ * subtrees. A time cap or unreadable node invalidates the entire candidate set.
+ * The result is planning evidence only; callers must remeasure before deletion.
+ */
+export async function inspectRetentionTrees(root: string, opts: {
+  retainAfterMs: number; excludedPaths?: readonly string[]; paths?: readonly string[]; timeoutMs?: number; spawn?: CensusSpawn;
+}): Promise<RetentionTreeCensus> {
+  root = resolve(root);
+  const result: RetentionTreeCensus = { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0 };
+  const rootStat = await fsp.lstat(root);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return { ...result, error: 'retention root is not a plain directory' };
+  if (opts.paths?.some((path) => resolve(path) !== path || dirname(path) !== root)) return { ...result, error: 'retention target outside root' };
+  if (opts.paths?.length === 0) return result;
+  const literal = (path: string) => path.replace(/[\\*?[\]]/g, '\\$&');
+  const excluded = (opts.excludedPaths ?? []).map((path) => resolve(path)).filter((path) => path.startsWith(root + '/'));
+  const prune = excluded.flatMap((path, index) => [...(index ? ['-o'] : []), '-path', literal(path)]);
+  const uid = process.getuid?.();
+  const foreignOwner = uid === undefined ? [] : ['!', '-uid', String(uid)];
+  const format = '%y\\0%D\\0%i\\0%T@\\0%C@\\0%b\\0%U\\0%p\\0';
+  const recent = ['(', '-newermt', `@${opts.retainAfterMs / 1000}`, '-o', '-newerct', `@${opts.retainAfterMs / 1000}`, ')'];
+  const args = [...(opts.paths ?? [root]), '-xdev', '-mindepth', opts.paths ? '0' : '1', '(', ...prune, ...(prune.length ? ['-o'] : []),
+    ...foreignOwner, ...(foreignOwner.length ? ['-o'] : []), ...recent,
+    ')', '-printf', format, '-prune', '-o', '-printf', format];
+  const [command, argv] = censusCommand('find', args, { ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
+  return new Promise<RetentionTreeCensus>((done) => {
+    const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; reason?: string }>();
+    let pending = '', fields: string[] = [], stderr = '', malformed = false, timedOut = false, settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const take = (row: string[]) => {
+      const [type, dev, ino, mtime, ctime, blocks, owner, path] = row;
+      if (!path?.startsWith(root + '/') || !/^[fdlbcsp]$/.test(type!) ||
+          ![dev, ino, blocks, owner].every((v) => /^\d+$/.test(v!)) || ![mtime, ctime].every((v) => Number.isFinite(Number(v)))) {
+        malformed = true; return;
+      }
+      result.inspectedNodes++;
+      const child = join(root, path.slice(root.length + 1).split('/')[0]!);
+      const direct = path === child;
+      let group = groups.get(child);
+      if (!group) {
+        if (!direct) { malformed = true; return; }
+        group = { entry: { path: child, newestWriteMs: 0, bytes: 0, dev: Number(dev), ino: Number(ino) } };
+        groups.set(child, group);
+      }
+      const newest = Math.max(Number(mtime), Number(ctime)) * 1000;
+      group.entry.newestWriteMs = Math.max(group.entry.newestWriteMs, newest);
+      group.entry.bytes += Number(blocks) * 512;
+      if (excluded.includes(path)) group.reason = 'protected policy root';
+      else if (type === 'l') group.reason = 'symlink boundary';
+      else if (type !== 'f' && type !== 'd') group.reason = 'special filesystem entry';
+      else if (Number(dev) !== rootStat.dev) group.reason = 'filesystem boundary';
+      else if (uid !== undefined && Number(owner) !== uid) group.reason = 'foreign ownership boundary';
+      else if (newest >= opts.retainAfterMs && !group.reason) group.reason = 'recent write';
+    };
+    const finish = (error?: string) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      for (const { entry, reason } of groups.values()) {
+        if (reason === 'recent write') result.retainedRecentTrees++;
+        else if (reason) result.retained.push({ path: entry.path, reason });
+        else result.entries.push(entry);
+      }
+      if (error) { result.error = error; result.entries = []; }
+      done(result);
+    };
+    let child: ReturnType<CensusSpawn>;
+    try { child = (opts.spawn ?? defaultCensusSpawn)(command, argv); }
+    catch (error) { finish(`find failed: ${String(error)}`); return; }
+    timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.timeoutMs ?? 60_000);
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      const records = (pending + chunk).split('\0'); pending = records.pop() ?? '';
+      for (const value of records) { fields.push(value); if (fields.length === 8) { take(fields); fields = []; } }
+    });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
+    child.once('error', (error) => finish(`find failed: ${String(error)}`));
+    child.once('close', (code) => finish(timedOut ? 'retention native census timed out' :
+      code !== 0 ? `find exited ${code}: ${stderr.trim()}` :
+      malformed || pending.length || fields.length ? 'incomplete retention metadata records' : undefined));
+  });
+}
 
 export interface OwnFilesListing {
   /** The directory's immediate regular files at or above the floor, ALLOCATED bytes (du's unit). */

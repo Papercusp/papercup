@@ -3,6 +3,7 @@ import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { createServer } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
@@ -13,6 +14,7 @@ import type { AttentionNotifyInput } from '../attention-notify';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { nativeRetentionCommand, readReclaimReceipt, runDiskReclaimOnce, writeReclaimAudit, type ReclaimSql } from './disk-reclaim';
 import { type RetentionClass } from './retention-policy';
+import { inspectRetentionTrees } from './disk-consumer-census';
 import { createFreshPgDb, applyEventSubstrateMigrationsForTest, COORD_SUBSCRIPTION_SUBSTRATE } from '../../test/_pg-helpers';
 
 const inspectionProbe = vi.hoisted(() => ({ before: undefined as ((path: string) => (() => void) | undefined) | undefined }));
@@ -288,6 +290,74 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
     expect(receipt.errors).toEqual(['incomplete tree scan: retention scan budget exhausted']);
     expect(receipt.entries).toEqual([]); expect(await stat(join(parent, 'child-0'))).toBeTruthy();
+  });
+  it('completes a large expiry tree through native census and remeasures it before removal', async () => {
+    const { root, options } = await setup();
+    const parent = join(root, 'expired'); await mkdir(parent);
+    await Promise.all(Array.from({ length: 64 }, (_, i) => writeFile(join(parent, `child-${i}`), 'expired')));
+    const inspectTrees = vi.fn(inspectRetentionTrees);
+    const receipt = await runDiskReclaimOnce({ ...options, maxEntries: 3, inspectTrees });
+    expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+    expect(receipt.entries).toEqual([expect.objectContaining({ path: parent, status: 'removed' })]);
+    expect(receipt.scan?.inspectedNodes).toBe(65);
+    expect(inspectTrees).toHaveBeenCalledTimes(2);
+    expect(inspectTrees.mock.calls[1]?.[1]).toMatchObject({ paths: [parent] });
+    await expect(stat(parent)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it('native census handles delimiter-looking names, protected roots and symlinks without traversing them', async () => {
+    const { root, options } = await setup();
+    const expired = join(root, 'expired\nwith\ttabs[*]'); await writeFile(expired, 'expired');
+    const protectedPath = join(root, 'native[?*]'); await mkdir(protectedPath); await chmod(protectedPath, 0);
+    const owner = join(fixture!, 'owner'); await mkdir(owner); await writeFile(join(owner, 'data'), 'keep');
+    const tree = join(root, 'linked'); await mkdir(tree); await symlink(owner, join(tree, 'link'));
+    try {
+      // Explicit live lease protects the literal path; a glob in a name cannot
+      // turn the native find exclusion into a wildcard over another candidate.
+      const receipt = await runDiskReclaimOnce({ ...options, protectedPaths: [protectedPath], inspectTrees: inspectRetentionTrees });
+      expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+      expect(receipt.entries).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: protectedPath, status: 'protected', reason: 'protected policy root' }),
+        expect.objectContaining({ path: tree, status: 'protected', reason: 'symlink boundary' }),
+        expect.objectContaining({ path: expired, status: 'removed' }),
+      ]));
+      expect(await stat(join(owner, 'data'))).toBeTruthy();
+    } finally { await chmod(protectedPath, 0o700); }
+  });
+  it('native census retains a new write between planning and the effect and fails closed on unreadable trees', async () => {
+    const { root, options } = await setup(); const parent = join(root, 'tree'); await mkdir(parent);
+    const child = join(parent, 'data'); await writeFile(child, 'expired');
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees, record: async (phase) => {
+      if (phase === 'remove-intent') await utimes(child, new Date(options.nowMs), new Date(options.nowMs));
+    } });
+    expect(receipt.complete).toBe(true); expect(receipt.entries[0]).toMatchObject({ path: parent, status: 'protected', reason: 'recent write' });
+    expect(await stat(child)).toBeTruthy();
+    await chmod(parent, 0);
+    try {
+      const denied = await runDiskReclaimOnce({ ...options, inspectTrees: inspectRetentionTrees });
+      expect(denied.complete).toBe(false); expect(denied.policyExhausted).toBeNull();
+      expect(denied.entries).toEqual([]); expect(denied.errors[0]).toContain('find exited 1');
+    } finally { await chmod(parent, 0o700); }
+  });
+  it('native census records a foreign-owned candidate as protected before trying to read it', async () => {
+    const { root, options } = await setup();
+    const path = join(root, 'private'); await mkdir(path); await writeFile(join(path, 'data'), 'keep'); await chmod(path, 0);
+    const uid = vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 1000) + 1);
+    try {
+      const census = await inspectRetentionTrees(root, { retainAfterMs: options.nowMs - 24 * 3_600_000 });
+      expect(census.error).toBeUndefined(); expect(census.entries).toEqual([]);
+      expect(census.retained).toEqual([{ path, reason: 'foreign ownership boundary' }]);
+    } finally { uid.mockRestore(); await chmod(path, 0o700); }
+  });
+  it.each([undefined, inspectRetentionTrees])('preserves an old live Unix socket when path holder evidence is empty (%s)', async (inspectTrees) => {
+    const { root, options } = await setup(); const path = join(root, 'live.sock');
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(path, resolve); });
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, inspectTrees });
+      expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+      expect(receipt.entries).toEqual([expect.objectContaining({ path, status: 'protected', reason: 'special filesystem entry' })]);
+      expect((await stat(path)).isSocket()).toBe(true);
+    } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
   it('never follows a symlink into owner data', async () => {
     const { root, options } = await setup(); const owner = join(fixture!, 'owner'); await mkdir(owner); await writeFile(join(owner, 'data'), 'keep');

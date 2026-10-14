@@ -59,6 +59,8 @@ export interface DiskReclaimOptions {
   expectedDevices?: readonly string[];
   /** Production writes to audit_log before an effect and after the completed pass. */
   record?: (phase: string, details: unknown) => Promise<void>;
+  /** Production reuses the streaming native census for complete max-age trees. */
+  inspectTrees?: typeof import('./disk-consumer-census').inspectRetentionTrees;
 }
 
 export type ReclaimSql = Pick<import('postgres').Sql, 'unsafe'>;
@@ -231,6 +233,9 @@ async function inspectEntry(path: string, root: string, classId: string, budget:
       retained?.(s.isSymbolicLink() ? 'symlink boundary' : 'filesystem boundary');
       return null;
     }
+    // Unix sockets are represented as socket:[inode] in /proc, so a path-only
+    // holder scan cannot prove them unused. Native/system owners retain these.
+    if (!s.isFile() && !s.isDirectory()) { retained?.('special filesystem entry'); return null; }
     newestWriteMs = Math.max(newestWriteMs, s.mtimeMs, s.ctimeMs);
     // A single recent write proves a max-age tree ineligible. Its remaining
     // descendants cannot change that verdict, so leave them unwalked. Count
@@ -293,7 +298,26 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const keep = policy.classes.get(root.classId)?.keep;
         const retainAfterMs = keep?.kind === 'max-age' ? started - keep.maxAgeHours * HOUR : undefined;
         try {
-          const inspected = await mapWithConcurrency(await readdir(root.path), 16, async (name) => {
+          const names = await readdir(root.path);
+          const excluded = names.map((name) => join(root.path, name)).filter((path) =>
+            (root.classId === 'papercusp-scratch' && workspaceIds.includes(path.slice(root.path.length + 1))) ||
+            protectedPaths.some((protectedPath) => overlap(path, protectedPath)) ||
+            !deletionClassFor(path, policy) || containsClassRoot(path, policy));
+          if (options.inspectTrees && retainAfterMs !== undefined) {
+            // Native find bounds the complete walk by elapsed time while streaming
+            // metadata. It avoids permanently restarting a large tree at a JS node cap.
+            const census = await outsideInspectionBudget(() => options.inspectTrees!(root.path, { retainAfterMs, excludedPaths: excluded }));
+            progress.inspectedNodes += census.inspectedNodes;
+            progress.retainedRecentTrees += census.retainedRecentTrees;
+            receipt.entries.push(...census.retained.map((entry) => ({ ...entry, classId: root.classId, status: 'protected' as const, bytes: 0 })));
+            if (census.error) {
+              receipt.errors.push(`inspect:${root.path}: ${census.error}`);
+              progress.stoppedAtRoot ??= root.path; progress.incompleteRoots.push(root.path);
+              continue;
+            }
+            entries = census.entries.map((entry) => ({ ...entry, root: root.path, classId: root.classId }));
+          } else {
+            const inspected = await mapWithConcurrency(names, 16, async (name) => {
             if (budgetStopped) return null;
             if (budgetExpired()) { stopAtBudget(root.path); return null; }
             const path = join(root.path, name);
@@ -315,8 +339,9 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               receipt.errors.push(`inspect:${path}: ${message(err)}`);
               return null;
             }
-          });
-          entries = inspected.filter((entry): entry is RetentionEntry => entry !== null);
+            });
+            entries = inspected.filter((entry): entry is RetentionEntry => entry !== null);
+          }
         } catch (err) { if (!absent(err)) receipt.errors.push(`list:${root.path}: ${message(err)}`); }
         // An incomplete class census cannot establish oldest-first selection.
         // Leave its entries untouched and retain the independent owner delegates.
@@ -335,7 +360,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             // slow database round trip cannot widen the check-to-effect window.
             if (!receipt.dryRun) await outsideInspectionBudget(async () => options.record?.('remove-intent', entry));
             // Rescan write activity + identity and process holders immediately before the effect.
-            const fresh = await inspectEntry(entry.path, entry.root, entry.classId, budget, undefined,
+            let fresh: RetentionEntry | null;
+            if (options.inspectTrees && retainAfterMs !== undefined) {
+              const census = await outsideInspectionBudget(() => options.inspectTrees!(entry.root, { retainAfterMs, paths: [entry.path] }));
+              if (census.error) throw new Error(census.error);
+              const current = census.entries.find((candidate) => candidate.path === entry.path);
+              fresh = current ? { ...current, root: entry.root, classId: entry.classId } : null;
+              if (!fresh) outcome.reason = census.retained[0]?.reason ?? 'recent write';
+            } else fresh = await inspectEntry(entry.path, entry.root, entry.classId, budget, undefined,
               (reason) => { outcome.reason = reason; });
             if (!fresh) continue;
             const freshHolders = await outsideInspectionBudget(() => scan([entry.path]));
@@ -480,7 +512,8 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     } },
   ];
   let runId = '';
-  return runDiskReclaimOnce({ ...options, delegates, protectedPaths, record: async (phase, detail) => {
+  const { inspectRetentionTrees } = await import('./disk-consumer-census');
+  return runDiskReclaimOnce({ ...options, delegates, protectedPaths, inspectTrees: inspectRetentionTrees, record: async (phase, detail) => {
     if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;
     await writeReclaimAudit(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(), runId, phase, detail);
   } });
