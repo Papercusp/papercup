@@ -178,7 +178,7 @@ export async function areAcceptanceLineageRelated(
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
   const rows = await sql<Array<{ matches: boolean }>>`
-      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+      WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
       walk(node, path, depth) AS (
@@ -223,7 +223,7 @@ export async function acceptanceLineageClosure(
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
   const rows = await sql<Array<{ node: string }>>`
-      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+      WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
       descendants(node, path, depth) AS (
@@ -272,7 +272,7 @@ export async function acceptanceLineageAncestors(
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
   const rows = await sql<Array<{ node: string }>>`
-      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+      WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
       ancestors(node, path, depth) AS (
@@ -469,7 +469,7 @@ export async function lineagePartyKeys(
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
   const pairs = await sql<Array<{ a: string; b: string }>>`
-      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+      WITH RECURSIVE identity_edges(from_id, to_id) AS MATERIALIZED (
         ${identityEdges(sql, workspaceId)}
       ),
       walk(src, node, path, depth) AS (
