@@ -280,15 +280,24 @@ export function sandboxFailureDiagnostic(name, run, secrets = [], readiness = ''
 }
 
 export async function waitForSandboxPostgres(name, { run, secrets = [],
-  attempts = 31, isStopped = () => false, delay = () => new Promise(done => setTimeout(done, 1000)) }) {
+  attempts = 31, isStopped = () => false, delay = () => new Promise(done => setTimeout(done, 1000)),
+  onProgress = receipt => console.error('[documenso-sandbox-postgres] ' + JSON.stringify(receipt)),
+}) {
+  const startedAt = Date.now();
+  const progress = (attempt, ready, state) => onProgress({ container: name, attempt: attempt + 1,
+    attempts, status: !ready.error && ready.status === 0 ? 'accepting' : ready.error ? 'probe-error' : 'not-ready',
+    ...(state ? { containerState: state } : {}), at: new Date().toISOString(), elapsedMs: Date.now() - startedAt });
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (isStopped()) return;
     // The image initializes through a temporary Unix-socket-only server, then
     // stops it before starting the final TCP listener used by Documenso.
     const ready = run(['exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'documenso', '-d', 'documenso']);
-    if (!ready.error && ready.status === 0) return;
+    if (!ready.error && ready.status === 0) { progress(attempt, ready); return; }
     const inspected = run(['inspect', '--format', '{{.State.Status}}', name]);
-    const terminal = /^(exited|dead)$/.test((inspected.stdout || '').trim());
+    const rawState = (inspected.stdout || '').trim();
+    const state = /^(created|running|paused|restarting|removing|exited|dead)$/.test(rawState) ? rawState : 'unknown';
+    progress(attempt, ready, state);
+    const terminal = /^(exited|dead)$/.test(state);
     if (terminal || attempt === attempts - 1) {
       const readiness = ready.error?.message || (ready.stdout || '') + (ready.stderr || '') || 'exit=' + ready.status;
       throw new Error('Sandbox Postgres did not become ready: ' + sandboxFailureDiagnostic(name, run, secrets, readiness));
