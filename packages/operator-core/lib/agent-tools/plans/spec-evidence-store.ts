@@ -3431,6 +3431,11 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     diagnostics.bindings.maxMeasurementMs = Math.max(diagnostics.bindings.maxMeasurementMs, elapsedMs);
   };
   const serverMeasurementsStartedAt = diagnostics ? Date.now() : 0;
+  // Bindings often repeat the same recipe at different clauses or work items. Share
+  // only the immutable file measurement within this evaluation, before any process
+  // starts; binding-specific runtime and adequacy checks still run below. A rejected
+  // measurement remains rejected for every identical binding, never a cached pass.
+  const committedMeasurements = new Map<string, Promise<DetailedRepoEvidenceMeasurement>>();
   const serverMeasurements = await Promise.all(
     rows.map(async (row, index) => {
       const bindingStartedAt = diagnostics ? Date.now() : 0;
@@ -3495,10 +3500,22 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           const fixtureSnapshot = fixtureRoot === measurementRoot ? snapshot : probeSnapshots.get(fixtureRoot);
           let detailed: DetailedRepoEvidenceMeasurement;
           if (measuredAtCommit) {
-            detailed = await measureRepoFilesEvidenceDetailedAtCommit(measurementRoot, recipe, measuredAtCommit, {
-              ...(committedTree ? { deps: { diagnostics: committedTree } } : {}),
-              ...(hasRepoFixturePaths(recipe) ? { fixtureRoot, fixtureCommit, fixtureRootHarnessSlug } : {}),
-            });
+            // A fixture outside a committed repository still needs its own
+            // working-tree read and mutation-probe fences for each binding.
+            const measurementKey = !hasRepoFixturePaths(recipe) || fixtureCommit
+              ? JSON.stringify([
+                  measurementRoot, measuredAtCommit, recipe, fixtureRoot, fixtureCommit, fixtureRootHarnessSlug ?? null,
+                ])
+              : null;
+            let measurement = measurementKey ? committedMeasurements.get(measurementKey) : undefined;
+            if (!measurement) {
+              measurement = measureRepoFilesEvidenceDetailedAtCommit(measurementRoot, recipe, measuredAtCommit, {
+                ...(committedTree ? { deps: { diagnostics: committedTree } } : {}),
+                ...(hasRepoFixturePaths(recipe) ? { fixtureRoot, fixtureCommit, fixtureRootHarnessSlug } : {}),
+              });
+              if (measurementKey) committedMeasurements.set(measurementKey, measurement);
+            }
+            detailed = await measurement;
           } else if (snapshot && (fixtureRoot === measurementRoot || !hasRepoFixturePaths(recipe) || fixtureSnapshot)) {
             const sourcePaths = await expandedRepoSourcePathsAtRoot(measurementRoot, recipe);
             const fixturePaths = await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe);
