@@ -311,6 +311,28 @@ describe('candidateNativeBgRecords', () => {
 });
 
 describe('openWriterPidsMany (WI-10005283)', () => {
+  it('finds every nested holder in a wide candidate batch without sibling-prefix matches', async () => {
+    const proc = fakeProc({
+      '300': ['/tmp/tree/deep/file', '/tmp/tree/deep/file (deleted)', '/tmp/tree-other/file'],
+      '20': ['/tmp/tree'],
+      '7': ['/tmp/unrelated/file'],
+    });
+    symlinkSync('/tmp/tree/deep', join(proc, '20', 'cwd'));
+    const candidates = Array.from({ length: 10_000 }, (_, i) => `/tmp/unused-${i}`);
+    try {
+      const scan = await openWriterPidsMany([...candidates, '/tmp/tree', '/tmp/tree/deep', '/tmp/tree/deep/file', '/tmp/tree-other'], {
+        procRoot: proc, descendants: true, includeCwd: true, failClosed: true,
+      });
+      expect(scan.complete).toBe(true);
+      expect([...scan.byPath].sort(([a], [b]) => a.localeCompare(b))).toEqual([
+        ['/tmp/tree', ['20', '300']],
+        ['/tmp/tree-other', ['300']],
+        ['/tmp/tree/deep', ['20', '300']],
+        ['/tmp/tree/deep/file', ['300']],
+      ]);
+    } finally { rmSync(proc, { recursive: true, force: true }); }
+  });
+
   it('retention mode matches descendants and cwd without matching sibling prefixes', async () => {
     const proc = fakeProc({ '1': ['/tmp/tree/deep/file'], '2': ['/tmp/tree-other/file'], '3': [] });
     symlinkSync('/tmp/tree/nested', join(proc, '3', 'cwd'));

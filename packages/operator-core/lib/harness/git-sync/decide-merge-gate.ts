@@ -18,6 +18,11 @@
  *      tested merge sha. Never a fresh merge made by the forge after testing.
  *   4. If the target tip (or the PR head) moved since the test, the old result
  *      is void: build and test a new merge result.
+ *   5. Every submodule commit the PR head pins must already be on that
+ *      submodule's main repository (slack-asana-reproduced-bug-fix-pr-workflow
+ *      -2026-10-08 D-017 §6). Otherwise the merge would land gitlinks nobody can
+ *      check out, so it is refused until the submodule pull requests are merged.
+ *      A check that could not answer refuses too.
  *
  * Pure + sync. The caller fetches the facts (PR head, promoted sha, current
  * target tip, the latest merge-test record) and performs the action.
@@ -44,6 +49,15 @@ export interface MergeTestRecord {
   failure?: MergeTestFailure;
 }
 
+/**
+ * Which submodule commits pinned by the PR head (relative to the target tip) are
+ * missing from their submodule's main repository. `ok: false` = the check could
+ * not answer.
+ */
+export type SubmodulePinCheck =
+  | { ok: true; unpublished: ReadonlyArray<{ path: string; sha: string }> }
+  | { ok: false; error: string };
+
 export interface MergeGateInput {
   /** Head of the standing PR (the working copy's main as pushed to the PR). */
   prHeadSha: string;
@@ -53,12 +67,25 @@ export interface MergeGateInput {
   targetTipSha: string;
   /** The latest merge-result test, if any. */
   lastTest: MergeTestRecord | null;
+  /**
+   * The submodule publication check (D-017 §6). The merge step always supplies it.
+   * It is absent only for a display-only caller that cannot run git (the PR
+   * viewer), whose merge click still goes through the merge step.
+   */
+  submodulePins?: SubmodulePinCheck;
 }
+
+export type MergeGateRefusalReason =
+  | 'nothing-promoted'
+  | 'pr-head-not-promoted'
+  | 'unpublished-gitlinks'
+  | 'submodule-pins-unverifiable'
+  | 'merge-result-failed';
 
 export type MergeGateDecision =
   | {
       action: 'refuse';
-      reason: 'nothing-promoted' | 'pr-head-not-promoted' | 'merge-result-failed';
+      reason: MergeGateRefusalReason;
       detail: string;
     }
   | {
@@ -95,6 +122,23 @@ export function decideMergeGate(input: MergeGateInput): MergeGateDecision {
       action: 'refuse',
       reason: 'pr-head-not-promoted',
       detail: `The pull request head (${short(prHeadSha)}) is not the commit that passed the working copy's test suite (${short(promotedSha)}). Only the tested commit can be merged.`,
+    };
+  }
+
+  const pins = input.submodulePins;
+  if (pins && !pins.ok) {
+    return {
+      action: 'refuse',
+      reason: 'submodule-pins-unverifiable',
+      detail: `Could not check that the submodule commits this pull request uses are in their main repositories (${pins.error}). The merge waits until that check succeeds.`,
+    };
+  }
+  if (pins && pins.unpublished.length > 0) {
+    const list = pins.unpublished.map((p) => `${p.path} (${short(p.sha)})`).join(', ');
+    return {
+      action: 'refuse',
+      reason: 'unpublished-gitlinks',
+      detail: `This pull request uses submodule commits that are not in their main repositories yet: ${list}. Merge the submodule pull requests first.`,
     };
   }
 

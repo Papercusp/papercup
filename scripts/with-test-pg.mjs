@@ -644,12 +644,20 @@ if (operatorApi) {
     await saveHarnessRegistry({ projects: [{ slug: id, path: home, harness_kind: 'hive' }] }, id);
     const registry = await loadHarnessRegistry(id, { fresh: true });
     if (!registry.projects.some(p => p.slug === id && p.path === home)) throw new Error('private home harness was not registered');
+    // The first native spawn signs before an MCP request can lazily mint the
+    // verifier's key. Reuse fresh-database provisioning, before admitting work.
+    stage('private-spawn-signing-key');
+    const { premintSpawnSigningKey } = await trackedImport('imports:spawn-signing-key', './packages/operator-core/lib/gym/gym-db-init.ts');
+    const { sql } = getOrgPg();
+    await premintSpawnSigningKey(sql);
+    const signingRows = await sql\`SELECT octet_length(decode(value_b64, 'base64')) AS bytes
+      FROM harness_shared.operator_secrets WHERE name = 'spawn-signing-key'\`;
+    if (signingRows.length !== 1 || signingRows[0].bytes !== 32) throw new Error('private spawn-signing key preflight failed');
     // Inbox refuses an unmeasured system source. An empty disposable database
     // has no pipeline at all, so register an explicitly PAUSED fixture through
     // the maintained routine store. Never manufacture a green verdict or arm
     // a release action against the developer's checkout.
     stage('paused-routine');
-    const { sql } = getOrgPg();
     await upsertRoutine(sql, { workspaceId: id, installSlug: id,
       name: 'green-checkpoint', triggerKind: 'api', triggerConfig: {},
       targetRole: 'operator', active: false, nextFireAt: null }, () => null);

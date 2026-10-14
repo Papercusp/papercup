@@ -360,6 +360,26 @@ process.exit(result.status ?? 1);`);
       }
     });
 
+    it.each(['hardlink', 'copy'])('excludes absolute cache entry symlinks from %s snapshots', mode => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      const external = join(t, 'external-cache');
+      write(join(external, 'changing.js'), 'external cache');
+      write(join(donor, 'node_modules/dep/index.js'), 'package');
+      const caches = ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data'];
+      for (const cache of caches) {
+        symlinkSync(external, join(donor, 'node_modules', cache));
+        symlinkSync(join(t, 'absent-cache'), join(donor, 'node_modules/dep', cache));
+      }
+      const r = runLib(['snapshot', donor, snapshot, mode]);
+      expect(r.code, r.err).toBe(0);
+      expect(readFileSync(join(snapshot, 'node_modules/dep/index.js'), 'utf8')).toBe('package');
+      for (const cache of caches) {
+        expect(existsSync(join(snapshot, 'node_modules', cache))).toBe(false);
+        expect(existsSync(join(snapshot, 'node_modules/dep', cache))).toBe(false);
+      }
+      expect(readFileSync(join(external, 'changing.js'), 'utf8')).toBe('external cache');
+    });
+
     it('does not validate disposable cache links as package dependencies', () => {
       const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
       write(join(donor, 'node_modules/dep/index.js'), 'package');

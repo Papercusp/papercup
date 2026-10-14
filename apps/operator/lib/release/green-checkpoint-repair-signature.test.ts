@@ -953,6 +953,32 @@ describe("WI-10007489 verifyRepairHead stamps the radius it EXECUTED on its verd
     }
   });
 
+  // P-005 stage 2 (measured on live queue 4a0ab756, rounds 2 and 3): the only withheld reason
+  // was `gate-run-incomplete`, and the only non-pass/fail gate was the registered non-gating
+  // NOT CHECKED detector. The producer counts it coverage-neutral; the receipt must too, or
+  // every round falls back to the cumulative radius.
+  it("P-005: a registered NOT CHECKED leg does not withhold the receipt; an errored one does", async () => {
+    const queue = queueWith([...signature, entry({ kind: "lint-leg", id: "lint:vimock-export-strands" })]);
+    const run = (status: "not-checked" | "errored") => verifyRepairHead({
+      runTestsAtRef: async (head, files) => ({
+        pass: false, summary: "a fails", measuredHead: head, coverageComplete: true,
+        perWorkspace: [{ workspace: CORE, files: files.map((f) => f.file), status: "fail" }],
+      }),
+      runGateAtRef: async (head, ids) => ({
+        pass: status === "not-checked", summary: "lint", measuredHead: head,
+        coverageComplete: status === "not-checked",
+        perGate: ids.map((id) => ({ id, status: id === "lint:vimock-export-strands" ? status : "pass" as const })),
+      }),
+    }, queue);
+    const neutral = await run("not-checked");
+    if (neutral.kind !== "red") throw new Error(`expected red, got ${neutral.kind}`);
+    expect(neutral.executed?.coverageWithheld ?? []).not.toContain("gate-run-incomplete");
+    const errored = await run("errored");
+    expect(errored.kind === "red" ? errored.executed?.coverageWithheld : errored.kind)
+      .not.toEqual(neutral.executed?.coverageWithheld ?? []);
+    if (errored.kind === "red") expect(errored.executed?.coverageWithheld).toContain("gate-run-incomplete");
+  });
+
   it("P-005: the withheld reasons reach the persisted round", async () => {
     const queue = queueWith(signature);
     const result = await verifyRepairHead({

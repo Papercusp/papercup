@@ -45,7 +45,11 @@
  *                          fresh epoch key when this box's keychain has no hive identity. Never for the
  *                          canonical hive — a minted key is unwrappable by every admitted member (WI-1981).
  *   --epoch <n>            cutAtEpoch override (default: resolved from PG if --workspace-id, else 0)
- *   --workspace-id <id>    SHIPPING seal: resolve cutAtEpoch from live hive_settings + seal via=epoch
+ *   --workspace-id <id>    SHIPPING seal: resolve cutAtEpoch from live hive_settings + seal via=epoch.
+ *                          Refuses unless the admin DB came from DATABASE_URL (or HARNESS_*) or the
+ *                          operator env file (WI-6554700010012344): discovery/fallback can be a foreign cluster.
+ *   --allow-discovered-db  with --workspace-id: accept an embedded-PG discovery/fallback DB. Only on a box
+ *                          whose advertised embedded PG IS the hive's operator DB.
  *   --core-keys <hex,hex>  extra admitted member log keys to seed (owner's own log is always included)
  *   --skip-corestore-refresh
  *   --no-force-backfill      resume a cut whose backfill already ran: trust
@@ -116,7 +120,7 @@ import { rm, readFile, writeFile, rename, cp, readdir, mkdir, mkdtemp, lstat, re
 import Corestore from 'corestore';
 import { captureSeedUuidOriginalSpan, exportSeedUuidIdempotencySource, readSeedFrozenExecution } from '@papercusp/operator-core/lib/sync/hyperbee/seed-provider-corestore';
 import type postgres from 'postgres';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, resolvedAdminDatabaseTarget, type DatabaseUrlSource } from '@papercusp/db-org';
 import {
   cutHiveSeed,
   enumerateOwnStoreCoreKeys,
@@ -1627,6 +1631,39 @@ export function parseHeadSnapshotTimeoutMs(args: Args, env: NodeJS.ProcessEnv = 
   return timeoutMs;
 }
 
+/**
+ * WI-6554700010012344: the DB sources a SHIPPING cut (--workspace-id) may read hive
+ * state from. These are an explicit env DSN or the operator's own env file. Embedded-PG
+ * discovery and the port fallback are dev conveniences. A materialized release checkout
+ * has no .env.local, so they pick whichever cluster this box advertises. The cut then
+ * reads that cluster's hive epoch and seals and refreshes against it, with no error
+ * unless --reuse-corestore happens to cross-check the epoch.
+ */
+const SHIPPING_CUT_DB_SOURCES: ReadonlySet<DatabaseUrlSource> = new Set<DatabaseUrlSource>(['env', 'operator-env-file']);
+
+export function assertShippingCutDbTarget(inp: {
+  readonly workspaceId: string;
+  readonly target: { readonly source: DatabaseUrlSource; readonly endpoint: string };
+  readonly allowDiscoveredDb: boolean;
+  readonly warn?: (msg: string) => void;
+}): void {
+  if (SHIPPING_CUT_DB_SOURCES.has(inp.target.source)) return;
+  const what =
+    `--workspace-id ${inp.workspaceId} resolved its database via ${inp.target.source} (${inp.target.endpoint})`;
+  if (inp.allowDiscoveredDb) {
+    (inp.warn ?? ((m: string) => console.warn(m)))(
+      `[cut-seed] ⚠ --allow-discovered-db: ${what}. Proceeding; that cluster must be the hive's operator DB.`,
+    );
+    return;
+  }
+  throw new Error(
+    `[cut-seed] REFUSING shipping cut: ${what}, not an explicit DATABASE_URL or the operator env file. ` +
+      'Discovery picks whichever cluster this box advertises, so the cut could read and seal a foreign hive ' +
+      '(WI-6554700010012344). Export DATABASE_URL for the operator DB, or pass --allow-discovered-db when the ' +
+      "advertised embedded PG IS the hive's operator DB.",
+  );
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if ('export-uuid-idempotency-census' in args) {
@@ -1776,6 +1813,15 @@ async function main(): Promise<void> {
   // is under epoch 0, decryptable by a new member's single epoch-0 key).
   let cutAtEpoch = 0;
   const workspaceId = str(args, 'workspace-id');
+  // Before ANY PG read: every --workspace-id step (epoch, identity, refresh, backfill)
+  // reads the cluster the resolver picked, so refuse a dev-convenience one up front.
+  if (workspaceId) {
+    assertShippingCutDbTarget({
+      workspaceId,
+      target: resolvedAdminDatabaseTarget(),
+      allowDiscoveredDb: args['allow-discovered-db'] === true,
+    });
+  }
   if (str(args, 'epoch') !== undefined) {
     cutAtEpoch = Number(str(args, 'epoch'));
   } else if (workspaceId) {

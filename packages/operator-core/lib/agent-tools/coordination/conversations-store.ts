@@ -252,6 +252,15 @@ export type SupersedeStoreError =
   | { error: 'not_open'; conversation: ConversationRow }
   | { error: 'source_changed'; conversation: ConversationRow };
 
+export interface CloseIfOpenStoreResult {
+  ok: true;
+  conversation: ConversationRow;
+}
+
+export type CloseIfOpenStoreError =
+  | { error: 'not_found' }
+  | { error: 'not_open'; conversation: ConversationRow };
+
 /** The same column list QUALIFIED to the `c` alias, for the list query's LEFT JOIN
  *  against coord_threads. Required, not cosmetic: coord_threads also has `title`,
  *  `created_at` and `workspace_id`, so an unqualified list would be an ambiguous
@@ -387,6 +396,30 @@ export class PgConversationStore {
              superseded_by = CASE WHEN ${state} = 'superseded' THEN superseded_by ELSE NULL END,
              superseded_at = CASE WHEN ${state} = 'superseded' THEN superseded_at ELSE NULL END
        WHERE workspace_id = ${this.ws} AND id = ${id}`;
+  }
+
+  /**
+   * Atomically close an OPEN conversation with no answer and no replacement —
+   * the store half of conversations:withdraw. The `state = 'open'` predicate is
+   * the compare-and-set: two racing withdraws (or a withdraw racing a resolve)
+   * cannot both win, and the loser learns which terminal state beat it.
+   */
+  async closeIfOpen(
+    id: string,
+    opts: { now_ts: string },
+  ): Promise<CloseIfOpenStoreResult | CloseIfOpenStoreError> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const rows = await sql<ConversationRowDb[]>`
+      UPDATE harness_shared.coord_conversations
+         SET state = 'closed',
+             updated_at = ${opts.now_ts},
+             resolved_at = NULL
+       WHERE workspace_id = ${this.ws} AND id = ${id} AND state = 'open'
+   RETURNING ${sql.unsafe(SELECT_COLS)}`;
+    if (rows[0]) return { ok: true, conversation: toRow(rows[0]) };
+    const current = await this.get(id);
+    return current ? { error: 'not_open', conversation: current } : { error: 'not_found' };
   }
 
   /**

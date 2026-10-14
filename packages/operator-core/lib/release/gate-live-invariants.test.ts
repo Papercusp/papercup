@@ -16,6 +16,7 @@ import {
   GATE_INVARIANT_ACCEPTANCE_WINDOW_MS,
   GATE_INVARIANT_ACCEPTANCE_GAP_MS,
   evaluateGateInvariantWindow,
+  evaluateGateInvariantAlarmWindow,
   overallGateInvariantStatus,
   parseGateInvariantsState,
   resolveGateExecutorDrift,
@@ -31,6 +32,90 @@ const BASE = '4444444444444444444444444444444444444444';
 const T0 = 1_800_000_000_000;
 const MIN = 60_000;
 const TICK = 4 * MIN;
+
+describe('original invariant breach filing history', () => {
+  const name = 'no-verdict-rate' as const;
+  function history(): PipelineEventWindowRead {
+    return { status: 'complete', total: 3, reason: null, windowStartMs: T0, windowEndMs: T0 + 2 * TICK,
+      rows: [0, 1, 2].map(i => ({ id: `alarm-event-${i}`, kind: 'gate_invariants',
+        status: i < 2 ? 'breach' : 'pass', createdAtMs: T0 + i * TICK,
+        detail: { evaluatedAtMs: T0 + i * TICK,
+          results: GATE_INVARIANT_NAMES.map(n => ({ name: n, status: n === name && i < 2 ? 'breach' : 'pass', observed: 'original' })),
+          alarmEpisodes: { version: 1, entries: i < 2 ? [{ name, sinceMs: T0, tickMs: TICK,
+            filedItemId: i ? 'WI-original-alarm' : null, filedAtMs: i ? T0 + TICK : null }] : [] } } })) };
+  }
+  const entries = (h: PipelineEventWindowRead, i: number) =>
+    (h.rows[i]!.detail.alarmEpisodes as { entries: Array<{ name: string; sinceMs: number; tickMs: number;
+      filedItemId: string | null; filedAtMs: number | null }> }).entries;
+  const check = (h: PipelineEventWindowRead, id = 'invariant-breach-filings-within-one-tick') =>
+    evaluateGateInvariantAlarmWindow(h, h.windowEndMs).assertions.find(a => a.id === id)!.passed;
+
+  it('accepts a completion at the frozen deadline and retains original event and episode identities', () => {
+    const h = history(), result = evaluateGateInvariantAlarmWindow(h, h.windowEndMs);
+    expect(result.assertions.every(a => a.passed)).toBe(true);
+    expect(result.eventIds).toEqual(h.rows.map(row => row.id));
+    expect(result.episodes).toEqual(entries(h, 1));
+  });
+  it('measures the awaited completion, not the earlier evaluation start', () => {
+    const h = history();
+    entries(h, 1)[0]!.filedAtMs! += 1;
+    h.rows[1]!.createdAtMs += 1;
+    expect(check(h, 'original-invariant-breach-filing-receipts')).toBe(true);
+    expect(check(h)).toBe(false);
+  });
+  it('does not widen the original tick when a retry observes a slower cadence', () => {
+    const h = history(); entries(h, 1)[0]!.tickMs *= 2;
+    expect(check(h, 'original-invariant-breach-filing-receipts')).toBe(false);
+  });
+  it('does not accept an unfiled episode even if a later observation has recovered', () => {
+    const h = history(); entries(h, 1)[0]!.filedItemId = null; entries(h, 1)[0]!.filedAtMs = null;
+    expect(check(h)).toBe(false);
+  });
+  it('rejects legacy histories and a work-item id without its completion clock', () => {
+    const legacy = history(); delete legacy.rows[0]!.detail.alarmEpisodes;
+    expect(check(legacy)).toBe(false);
+    const noClock = history(); entries(noClock, 1)[0]!.filedAtMs = null;
+    expect(check(noClock)).toBe(false);
+  });
+  it('rejects missing or duplicated breach entries and partial invariant populations', () => {
+    const missing = history(); entries(missing, 0).pop(); expect(check(missing)).toBe(false);
+    const duplicate = history(); entries(duplicate, 0).push({ ...entries(duplicate, 0)[0]! }); expect(check(duplicate)).toBe(false);
+    const partial = history(); (partial.rows[0]!.detail.results as unknown[]).pop(); expect(check(partial)).toBe(false);
+  });
+  it('rejects conflicting successful receipt identities and clocks', () => {
+    const h = history(); h.rows.splice(2, 0, structuredClone(h.rows[1]!)); h.total!++;
+    h.rows[2]!.id = 'conflicting-receipt'; entries(h, 2)[0]!.filedItemId = 'WI-different';
+    expect(check(h)).toBe(false);
+    entries(h, 2)[0]!.filedItemId = 'WI-original-alarm'; entries(h, 2)[0]!.filedAtMs!--;
+    expect(check(h)).toBe(false);
+  });
+  it('rejects future, reversed and nonfinite receipt clocks', () => {
+    for (const at of [NaN, Infinity, T0 - 1, T0 + 3 * TICK]) {
+      const h = history(); entries(h, 1)[0]!.filedAtMs = at; expect(check(h)).toBe(false);
+    }
+    const h = history(); h.rows[1]!.detail.evaluatedAtMs = h.rows[1]!.createdAtMs + 1;
+    expect(check(h)).toBe(false);
+  });
+  it.each(['capped', 'unavailable', 'invalid'] as const)('rejects a %s healthy subset', status => {
+    const h = history(); h.status = status; expect(check(h)).toBe(false);
+  });
+  it('rejects count/identity mismatches, absent coverage and future windows', () => {
+    const count = history(); count.total!++; expect(check(count)).toBe(false);
+    const duplicate = history(); duplicate.rows[1]!.id = duplicate.rows[0]!.id; expect(check(duplicate)).toBe(false);
+    const gap = history(); gap.windowEndMs += GATE_INVARIANT_ACCEPTANCE_GAP_MS + 1; expect(check(gap)).toBe(false);
+    const left = history(); left.windowStartMs--; expect(check(left)).toBe(false);
+    const future = history(); expect(evaluateGateInvariantAlarmWindow(future, future.windowEndMs - 1).assertions.every(a => a.passed)).toBe(false);
+  });
+  it('keeps separate breach episodes of the same invariant and rejects an empty population', () => {
+    const h = history();
+    h.rows[2]!.status = 'breach';
+    (h.rows[2]!.detail.results as Array<{ name: string; status: string }>).find(r => r.name === name)!.status = 'breach';
+    entries(h, 2).push({ name, sinceMs: T0 + 2 * TICK, tickMs: TICK, filedItemId: null, filedAtMs: null });
+    expect(evaluateGateInvariantAlarmWindow(h, h.windowEndMs).episodes).toHaveLength(2);
+    expect(check(h)).toBe(false);
+    const empty = history(); empty.rows = []; empty.total = 0; expect(check(empty)).toBe(false);
+  });
+});
 
 describe('seven-day original invariant history acceptance', () => {
   function history(): PipelineEventWindowRead {
@@ -437,8 +522,22 @@ describe('fold: transitions, counters, heartbeat', () => {
   it('state survives the jsonb round trip, including when the driver hands back a string', () => {
     const next = foldGateInvariants(null, breach, T0).next;
     next.invariants['no-verdict-rate']!.filedItemId = 'WI-1';
+    next.invariants['no-verdict-rate']!.filedAtMs = T0 + 100;
+    next.invariants['no-verdict-rate']!.alarmTickMs = TICK;
     expect(parseGateInvariantsState(JSON.parse(JSON.stringify(next)))).toEqual(next);
     expect(parseGateInvariantsState(JSON.stringify(next))).toEqual(next);
     expect(parseGateInvariantsState('{nope')).toBeNull();
+  });
+
+  it('freezes the first observed tick and never backfills a legacy breach budget', () => {
+    const first = foldGateInvariants(null, breach, T0, TICK).next;
+    first.invariants['no-verdict-rate']!.filedItemId = 'WI-original';
+    first.invariants['no-verdict-rate']!.filedAtMs = T0 + 1;
+    const next = foldGateInvariants(first, breach, T0 + TICK, 2 * TICK).next;
+    expect(next.invariants['no-verdict-rate']).toMatchObject({ alarmTickMs: TICK, filedAtMs: T0 + 1 });
+    const recovered = foldGateInvariants(next, pass, T0 + 2 * TICK).next;
+    expect(recovered.invariants['no-verdict-rate']!.filedAtMs).toBeUndefined();
+    const legacy = foldGateInvariants(null, breach, T0).next;
+    expect(foldGateInvariants(legacy, breach, T0 + TICK, TICK).next.invariants['no-verdict-rate']!.alarmTickMs).toBeUndefined();
   });
 });

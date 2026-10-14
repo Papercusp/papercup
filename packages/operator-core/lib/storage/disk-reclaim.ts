@@ -216,7 +216,8 @@ interface RetentionScanBudget {
   left: number; deadline: number;
   progress: NonNullable<DiskReclaimReceipt['scan']>;
 }
-async function inspectEntry(path: string, root: string, classId: string, budget: RetentionScanBudget, retainAfterMs?: number): Promise<RetentionEntry | null> {
+async function inspectEntry(path: string, root: string, classId: string, budget: RetentionScanBudget, retainAfterMs?: number,
+  retained?: (reason: string) => void): Promise<RetentionEntry | null> {
   const first = await lstat(path);
   let newestWriteMs = 0, bytes = 0;
   const stack = [path];
@@ -224,7 +225,12 @@ async function inspectEntry(path: string, root: string, classId: string, budget:
     if (Date.now() > budget.deadline) throw new Error('incomplete tree scan');
     const current = stack.pop()!;
     const s = current === path ? first : await lstat(current);
-    if (s.isSymbolicLink() || s.dev !== first.dev) throw new Error('symlink or filesystem boundary');
+    // A known traversal boundary conclusively protects the whole candidate.
+    // Never follow it, and do not confuse that retain verdict with lost evidence.
+    if (s.isSymbolicLink() || s.dev !== first.dev) {
+      retained?.(s.isSymbolicLink() ? 'symlink boundary' : 'filesystem boundary');
+      return null;
+    }
     newestWriteMs = Math.max(newestWriteMs, s.mtimeMs, s.ctimeMs);
     // A single recent write proves a max-age tree ineligible. Its remaining
     // descendants cannot change that verdict, so leave them unwalked. Count
@@ -291,15 +297,21 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (budgetStopped) return null;
             if (budgetExpired()) { stopAtBudget(root.path); return null; }
             const path = join(root.path, name);
-            if (root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) return null;
-            if (protectedPaths.some((protectedPath) => overlap(path, protectedPath))) return null;
+            const retain = (reason: string, status: 'protected' | 'changed' = 'protected') => {
+              receipt.entries.push({ path, classId: root.classId, status, bytes: 0, reason });
+            };
+            if (root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) { retain('registered workspace scratch owner'); return null; }
+            if (protectedPaths.some((protectedPath) => overlap(path, protectedPath))) { retain('live retention lease'); return null; }
             // Refuse nested policy roots before walking (e.g. a scratch PG data dir).
-            if (!deletionClassFor(path, policy) || containsClassRoot(path, policy)) return null;
+            if (!deletionClassFor(path, policy) || containsClassRoot(path, policy)) { retain('protected policy root'); return null; }
             try {
-              return await inspectEntry(path, root.path, root.classId, budget, retainAfterMs);
+              return await inspectEntry(path, root.path, root.classId, budget, retainAfterMs, retain);
             }
             catch (err) {
               if (budgetExpired()) { stopAtBudget(root.path); return null; }
+              // Concurrent disappearance proves this candidate cannot be removed;
+              // permission/IO failures still leave eligibility unknown and fail closed.
+              if (absent(err)) { retain('disappeared during inspection', 'changed'); return null; }
               receipt.errors.push(`inspect:${path}: ${message(err)}`);
               return null;
             }
@@ -312,7 +324,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const selected = selectRetentionEntries(entries, policy, started);
         if (!selected.length) continue;
         const holders = await outsideInspectionBudget(() => scan(selected.map((e) => e.path)));
-        if (!holders.complete) { receipt.errors.push('incomplete process-holder scan'); continue; }
+        if (!holders.complete) { receipt.errors.push(`incomplete process-holder scan:${root.path}`); continue; }
         for (const entry of selected) {
           if (budgetExpired()) { stopAtBudget(root.path); break; }
           const outcome: DiskReclaimReceipt['entries'][number] = { path: entry.path, classId: entry.classId, bytes: entry.bytes, status: 'protected' };
@@ -323,8 +335,9 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             // slow database round trip cannot widen the check-to-effect window.
             if (!receipt.dryRun) await outsideInspectionBudget(async () => options.record?.('remove-intent', entry));
             // Rescan write activity + identity and process holders immediately before the effect.
-            const fresh = await inspectEntry(entry.path, entry.root, entry.classId, budget);
-            if (!fresh) throw new Error('entry identity unavailable');
+            const fresh = await inspectEntry(entry.path, entry.root, entry.classId, budget, undefined,
+              (reason) => { outcome.reason = reason; });
+            if (!fresh) continue;
             const freshHolders = await outsideInspectionBudget(() => scan([entry.path]));
             if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) { outcome.reason = 'process evidence unavailable or held'; continue; }
             if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs) { outcome.status = 'changed'; continue; }
@@ -333,6 +346,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             outcome.status = 'removed';
             await outsideInspectionBudget(async () => options.record?.('removed', outcome));
           } catch (err) {
+            if (absent(err)) { outcome.status = 'changed'; outcome.reason = 'disappeared before removal'; continue; }
             outcome.status = 'failed'; outcome.reason = message(err);
             if (budgetExpired()) { stopAtBudget(root.path); break; }
             receipt.errors.push(`remove:${entry.path}: ${message(err)}`);

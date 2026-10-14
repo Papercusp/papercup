@@ -47,6 +47,8 @@ import type { InjectSink } from '../fanout-delivery';
 import type { AgentIdentity } from '../identity';
 import { ADMIN_COORD_UI_OWNER } from '../identity';
 import type {
+  CloseIfOpenStoreError,
+  CloseIfOpenStoreResult,
   ConversationRow,
   ConversationState,
   CreateConversationInput,
@@ -66,6 +68,7 @@ import {
   resolveConversationCore,
   settleConsultConversationCore,
   supersedeConversationCore,
+  withdrawConversationCore,
   type CaptureFn,
   type ConversationDeps,
   type ConversationStoreLike,
@@ -198,6 +201,17 @@ class InMemoryConversationStore implements ConversationStoreLike {
     old.accepted_post_id = null;
     old.capture_target = null;
     return { conversation: { ...old }, replacement: replacementRow };
+  }
+
+  /** Mirrors PgConversationStore.closeIfOpen: compare-and-set open → closed. */
+  async closeIfOpen(id: string, opts: { now_ts: string }): Promise<CloseIfOpenStoreResult | CloseIfOpenStoreError> {
+    const row = this.rows.get(id);
+    if (!row) return { error: 'not_found' };
+    if (row.state !== 'open') return { error: 'not_open', conversation: { ...row } };
+    row.state = 'closed';
+    row.updated_ts = opts.now_ts;
+    row.resolved_ts = null;
+    return { ok: true, conversation: { ...row } };
   }
 
   async setAcceptedAnswer(
@@ -537,6 +551,121 @@ describe('supersedeConversationCore', () => {
       replacement: { body: '   ' },
     })).toEqual({ error: 'invalid_replacement' });
     expect((await store.get(fresh.conversation.id))?.state).toBe('open');
+  });
+});
+
+describe('withdrawConversationCore (WI-6554700010012347)', () => {
+  it('lets the asker close an owner question with no answer, no capture and no replacement', async () => {
+    const old = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      producer: 'coord:ask-owner',
+      body: 'Should I fix the 502 now?',
+    });
+    await subs.subscribe({
+      subscriber_id: 'follower',
+      target_kind: 'object',
+      target_ref: objectToTargetRef({ kind: 'conversation', ref: old.conversation.id }),
+      created_ts: T0,
+    });
+    sinkBox.clear();
+
+    const result = await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      reason: 'The owner told me to fix it in chat.',
+    });
+
+    if ('error' in result) throw new Error(result.error);
+    expect(result.conversation).toMatchObject({
+      state: 'closed',
+      accepted_answer: null,
+      accepted_post_id: null,
+      superseded_by: null,
+      resolved_ts: null,
+    });
+    expect(captureCalls).toEqual([]);
+    expect(await store.list()).toHaveLength(1);
+    const posts = await threads.listPosts(`thr-${old.conversation.id}`);
+    expect(posts.map((p) => ({ author: p.author_id, body: p.body }))).toEqual([
+      { author: 'asker', body: 'Withdrawn by the asker: The owner told me to fix it in chat.' },
+    ]);
+    expect(result.reasonPostId).toBe(posts[0]!.id);
+    expect(result.delivered).toBe(1);
+    expect(sinkBox.inbox.follower?.[0]).toMatchObject({
+      notify_kind: 'conversation_withdrawn',
+      withdrawn_reason: 'The owner told me to fix it in chat.',
+    });
+    expect(sinkBox.inbox.asker).toBeUndefined();
+    expect(await postReplyCore(deps, ident('latecomer'), { conversation_id: old.conversation.id, body: 'late' })).toEqual({
+      error: 'closed',
+    });
+  });
+
+  it('refuses a peer, leaving the gate open', async () => {
+    const old = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'mine' });
+    expect(await withdrawConversationCore(deps, ident('peer'), {
+      conversation_id: old.conversation.id,
+      reason: 'not my question',
+    })).toEqual({ error: 'not_owner' });
+    expect((await store.get(old.conversation.id))?.state).toBe('open');
+  });
+
+  it('refuses a blank reason, an unknown id, a consult, and an already-terminal conversation', async () => {
+    const open = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q' });
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: open.conversation.id,
+      reason: '   ',
+    })).toEqual({ error: 'invalid_reason' });
+    expect((await store.get(open.conversation.id))?.state).toBe('open');
+
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: 'conv-missing',
+      reason: 'gone',
+    })).toEqual({ error: 'not_found' });
+
+    const consult = await openConversationCore(deps, ident('asker'), { kind: 'consult', body: 'q' });
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: consult.conversation.id,
+      reason: 'moot',
+    })).toEqual({ error: 'consult_requires_typed_verb' });
+
+    const answered = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'peer q' });
+    const resolved = await resolveConversationCore(deps, ident('peer'), {
+      conversation_id: answered.conversation.id,
+      accepted_answer: 'yes',
+    });
+    if ('error' in resolved) throw new Error(resolved.error);
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: answered.conversation.id,
+      reason: 'too late',
+    })).toEqual({ error: 'already_terminal', state: 'resolved' });
+    expect((await store.get(answered.conversation.id))?.accepted_answer).toBe('yes');
+  });
+
+  it('a second withdraw reports already_terminal instead of closing twice', async () => {
+    const old = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q' });
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      reason: 'moot',
+    })).not.toHaveProperty('error');
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      reason: 'moot again',
+    })).toEqual({ error: 'already_terminal', state: 'closed' });
+    expect(await threads.listPosts(`thr-${old.conversation.id}`)).toHaveLength(1);
+  });
+
+  it('still closes when the best-effort reason post fails', async () => {
+    const old = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q' });
+    deps.threadTxn = async () => {
+      throw new Error('thread write stalled');
+    };
+    const result = await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      reason: 'moot',
+    });
+    if ('error' in result) throw new Error(result.error);
+    expect(result.reasonPostId).toBeNull();
+    expect((await store.get(old.conversation.id))?.state).toBe('closed');
   });
 });
 

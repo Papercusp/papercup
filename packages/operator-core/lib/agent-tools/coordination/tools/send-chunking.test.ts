@@ -13,7 +13,6 @@ import {
   chunkContentBudget,
   chunkHeaderText,
   chunkOverCapMessage,
-  isChunkHeaderSection,
   reassembleChunkedBodies,
   splitTextForChunks,
   type ChunkableMessage,
@@ -144,25 +143,6 @@ describe('reassembleChunkedBodies', () => {
   it('refuses to present an incomplete message as whole', () => {
     const bodies = chunkedBodies(baseMessage([{ text: 'w'.repeat(DEFAULT_INBOX_BODY_CAP * 3) }]));
     expect(() => reassembleChunkedBodies(bodies.slice(1))).toThrow(/expected parts/);
-  });
-});
-
-describe('isChunkHeaderSection (EI-25825895362217288)', () => {
-  it('recognises every generated header and nothing the author wrote', () => {
-    expect(isChunkHeaderSection({ text: chunkHeaderText(1, 3, 'ef1943ee', false) })).toBe(true);
-    expect(isChunkHeaderSection({ text: chunkHeaderText(2, 3, 'ef1943ee', true) })).toBe(true);
-    // A header quoted inside authored prose is authored text, not a header.
-    expect(isChunkHeaderSection({ text: `see ${chunkHeaderText(1, 3, 'ef1943ee', false)}` })).toBe(false);
-    expect(isChunkHeaderSection({ text: 'the green-checkpoint candidate is ef1943ee' })).toBe(false);
-  });
-
-  it('marks exactly one section per delivered part: its first', () => {
-    const plan = chunkOverCapMessage(baseMessage([{ text: 'word '.repeat(400) }]));
-    if (plan.kind !== 'chunked') throw new Error('expected a chunked plan');
-    for (const { message } of plan.parts) {
-      const flags = (message.body as MessageSection[]).map(isChunkHeaderSection);
-      expect(flags).toEqual([true, ...flags.slice(1).map(() => false)]);
-    }
   });
 });
 

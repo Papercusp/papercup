@@ -216,14 +216,22 @@ export async function openWriterPidsMany(
       const seen = new Set<string>();
       const record = (rawTarget: string): void => {
         const target = rawTarget.replace(/ \(deleted\)$/, '');
-        const matching = opts.descendants ? wanted : wanted.has(target) ? [target] : [];
-        for (const path of matching) {
-          if (target !== path && !(opts.descendants && target.startsWith(path + '/'))) continue;
-          if (seen.has(path)) continue;
+        const recordPath = (path: string): void => {
+          if (seen.has(path)) return;
           seen.add(path);
           const holders = byPath.get(path);
           if (holders) holders.push(pid);
           else byPath.set(path, [pid]);
+        };
+        if (wanted.has(target)) recordPath(target);
+        if (opts.descendants) {
+          // A descriptor can only belong to its own ancestors. Walking those
+          // components makes the work depend on target depth rather than the
+          // number of retention candidates times every descriptor on the host.
+          for (let end = target.lastIndexOf('/'); end > 0; end = target.lastIndexOf('/', end - 1)) {
+            const parent = target.slice(0, end);
+            if (wanted.has(parent)) recordPath(parent);
+          }
         }
       };
       if (opts.includeCwd) {

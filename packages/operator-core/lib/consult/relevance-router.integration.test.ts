@@ -56,6 +56,8 @@ const vecAt = (theta: number): number[] => {
 
 let rootSql: Sql;
 let fixtureDb: MigratedTestDb;
+let recordNativeTurnQuery = false;
+let nativeTurnQuery: { query: string; parameters: unknown[] } | null = null;
 
 const deps = (embedTheta: number | null, over: Partial<ConsultRouteDeps> = {}): ConsultRouteDeps => ({
   getSql: () => rootSql,
@@ -99,7 +101,12 @@ async function insertWorkItem(owner: string, authority: string, closedMsAgo: num
 
 beforeAll(async () => {
   fixtureDb = await createFreshTestDb({ prefix: 'consultr' });
-  rootSql = postgres(fixtureDb.url, { max: 1, onnotice: () => {} });
+  rootSql = postgres(fixtureDb.url, { max: 1, onnotice: () => {},
+    debug: (_connection, query, parameters) => {
+      if (recordNativeTurnQuery && query.includes('AS "subjectText"')) {
+        nativeTurnQuery = { query, parameters };
+      }
+    } });
   await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
   const ledgerMigration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/archive/077-route-invocations.sql', import.meta.url));
@@ -290,6 +297,61 @@ describe('native source population before retrieval and subject bounds', () => {
     expect(result.qualified).toEqual([]);
     expect(result.snapshot.candidates.map(c => c.ownerId)).toEqual(['native-pop-lexical-right']);
     expect(result.snapshot).toMatchObject({ degraded: 'embed-unavailable', fallback: 'lexical' });
+  });
+
+  it('retrieves a claimed live native source outside the global HNSW scan budget', async () => {
+    const owner = 'native-hnsw-held';
+    const noise = 'native-hnsw-incompatible';
+    await source(owner, 0.2);
+    await rootSql`INSERT INTO harness_shared.plan_item_claims (workspace_id, owner, expires_ts)
+      VALUES (${WS}, ${owner}, clock_timestamp() + interval '1 hour')`;
+    addedOwners.push(noise);
+    await rootSql`INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, owner, speaker, text,
+       text_embedding, text_embedding_mode, text_embedding_profile)
+      SELECT 'default', 'codex', ${'sess-' + noise}, n, ${noise}, 'assistant', ${question},
+             ${JSON.stringify(vecAt(0))}::vector, 'gemma', ${EMBEDDER_DIM_SPECS.gemma.profileId}
+        FROM generate_series(1, 2000) n`;
+    await rootSql.unsafe(`CREATE INDEX native_source_hnsw_test
+      ON harness_shared.session_turns USING hnsw (text_embedding vector_cosine_ops)
+      WITH (m = 4, ef_construction = 8)`);
+    try {
+      await rootSql.begin(async tx => {
+        await tx.unsafe('SET LOCAL enable_seqscan = off');
+        await tx.unsafe('SET LOCAL enable_sort = off');
+        await tx.unsafe('SET LOCAL hnsw.iterative_scan = relaxed_order');
+        await tx.unsafe('SET LOCAL hnsw.ef_search = 1');
+        await tx.unsafe('SET LOCAL hnsw.max_scan_tuples = 1');
+        const plan = await tx`EXPLAIN (FORMAT JSON) SELECT session_id
+          FROM harness_shared.session_turns WHERE owner = ${owner}
+          ORDER BY text_embedding <=> ${JSON.stringify(vecAt(0))}::vector LIMIT 1`;
+        expect(JSON.stringify(plan)).toContain('native_source_hnsw_test');
+        // A global ANN scan can stop before reaching this existing source.
+        // The router must measure within the eligible native population.
+        const exact = await tx`SELECT session_id FROM harness_shared.session_turns
+          WHERE session_id = ${'sess-' + owner} AND owner = ${owner}`;
+        expect(exact).toHaveLength(1);
+        nativeTurnQuery = null;
+        recordNativeTurnQuery = true;
+        const result = await routeConsult({ ...baseParams, question: 'native source evidence',
+          nativeConsult: { ...nativeConsult, requireSourcePlanClaims: true },
+          turnLimit: 1, maxCandidates: 1, maxQualified: 1 },
+        deps(0, { getSql: () => tx as unknown as Sql }));
+        recordNativeTurnQuery = false;
+        expect(nativeTurnQuery).not.toBeNull();
+        // Verify the actual router query, not only a simpler lookalike query.
+        const executedPlan = await tx.unsafe('EXPLAIN (FORMAT JSON) ' + nativeTurnQuery!.query,
+          nativeTurnQuery!.parameters as never[]);
+        const planText = JSON.stringify(executedPlan);
+        expect(planText.includes('native_source_hnsw_test') || planText.includes('native_turns')).toBe(true);
+        expect(result.qualified.map(candidate => candidate.ownerId)).toEqual([owner]);
+        expect(result.snapshot.simFloor).toBe(DEFAULT_SIM_FLOOR);
+        expect(result.snapshot.relevanceFloor).toBe(DEFAULT_RELEVANCE_FLOOR);
+      });
+    } finally {
+      recordNativeTurnQuery = false;
+      await rootSql.unsafe('DROP INDEX IF EXISTS harness_shared.native_source_hnsw_test');
+    }
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Pr } from '../../pr-host/types';
-import type { MergeTestRecord } from './decide-merge-gate';
+import type { MergeTestRecord, SubmodulePinCheck } from './decide-merge-gate';
 import { STANDING_PR_BRANCH } from './decide-standing-pr';
 import {
   decideStandingPrMergePolicy,
@@ -27,16 +27,35 @@ function pr(over: Partial<Pr> = {}): Pr {
   } as Pr;
 }
 
-function fakeDeps(opts: { tip?: string; last?: MergeTestRecord | null; merge?: string | null; advance?: AdvanceTargetResult } = {}) {
-  const calls: { saved: MergeTestRecord[]; started: MergeTestRecord[]; advanced: Array<{ sha: string; expectedTip: string }> } = {
+function fakeDeps(
+  opts: {
+    tip?: string;
+    last?: MergeTestRecord | null;
+    merge?: string | null;
+    advance?: AdvanceTargetResult;
+    pins?: SubmodulePinCheck | (() => Promise<SubmodulePinCheck>);
+  } = {},
+) {
+  const calls: {
+    saved: MergeTestRecord[];
+    started: MergeTestRecord[];
+    advanced: Array<{ sha: string; expectedTip: string }>;
+    pinChecks: Array<{ head: string; tip: string }>;
+  } = {
     saved: [],
     started: [],
     advanced: [],
+    pinChecks: [],
   };
   const deps: StandingPrMergeDeps = {
     readTargetTip: async () => opts.tip ?? TIP,
     loadLastTest: async () => opts.last ?? null,
     saveTest: async (_n, rec) => void calls.saved.push(rec),
+    findUnpublishedGitlinks: async (head, tip) => {
+      calls.pinChecks.push({ head, tip });
+      if (typeof opts.pins === 'function') return opts.pins();
+      return opts.pins ?? { ok: true, unpublished: [] };
+    },
     buildMergeResult: async () => (opts.merge === undefined ? MERGE : opts.merge),
     startTests: async (_n, rec) => void calls.started.push(rec),
     advanceTarget: async (a) => {
@@ -184,5 +203,61 @@ describe('stepStandingPrMerge (P-021 + P-024 exact-merge gate)', () => {
     const { deps, calls } = fakeDeps({ last });
     expect(await stepStandingPrMerge({ ...base, pr: pr() }, deps)).toMatchObject({ action: 'refused', reason: 'merge-result-failed' });
     expect(calls.advanced).toEqual([]);
+  });
+});
+
+// slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 D-017 §6: a superproject PR
+// must not land gitlinks its submodules' main repositories cannot resolve.
+describe('stepStandingPrMerge: submodule commits must be published first (D-017 §6)', () => {
+  const base = { policy: 'auto' as const, promotedSha: HEAD, authorRevoked: false };
+  const pending = { ok: true as const, unpublished: [{ path: 'libs/core', sha: 'f'.repeat(40) }] };
+
+  it('checks the promoted PR head against the CURRENT target tip', async () => {
+    const { deps, calls } = fakeDeps({ tip: TIP2 });
+    await stepStandingPrMerge({ ...base, pr: pr() }, deps);
+    expect(calls.pinChecks).toEqual([{ head: HEAD, tip: TIP2 }]);
+  });
+
+  it('refuses before building or testing while a submodule commit is unpublished', async () => {
+    const { deps, calls } = fakeDeps({ pins: pending });
+    const out = await stepStandingPrMerge({ ...base, pr: pr() }, deps);
+    expect(out).toMatchObject({ action: 'refused', reason: 'unpublished-gitlinks' });
+    expect(out.action === 'refused' && out.detail).toContain('libs/core (ffffffffff)');
+    expect(calls.saved).toEqual([]);
+    expect(calls.started).toEqual([]);
+  });
+
+  it('refuses even a passed merge test while a submodule commit is unpublished', async () => {
+    const last = { mergeSha: MERGE, prHeadSha: HEAD, targetTipSha: TIP, result: 'pass' as const };
+    const { deps, calls } = fakeDeps({ last, pins: pending });
+    expect(await stepStandingPrMerge({ ...base, pr: pr() }, deps)).toMatchObject({ action: 'refused', reason: 'unpublished-gitlinks' });
+    expect(calls.advanced).toEqual([]);
+  });
+
+  it('refuses when the check cannot answer, and when it throws', async () => {
+    const last = { mergeSha: MERGE, prHeadSha: HEAD, targetTipSha: TIP, result: 'pass' as const };
+    const failed = fakeDeps({ last, pins: { ok: false, error: 'could not fetch libs/core' } });
+    expect(await stepStandingPrMerge({ ...base, pr: pr() }, failed.deps))
+      .toMatchObject({ action: 'refused', reason: 'submodule-pins-unverifiable' });
+    const threw = fakeDeps({ last, pins: () => Promise.reject(new Error('network down')) });
+    const out = await stepStandingPrMerge({ ...base, pr: pr() }, threw.deps);
+    expect(out).toMatchObject({ action: 'refused', reason: 'submodule-pins-unverifiable' });
+    expect(out.action === 'refused' && out.detail).toContain('network down');
+    expect(failed.calls.advanced).toEqual([]);
+    expect(threw.calls.advanced).toEqual([]);
+  });
+
+  it('merges once every submodule commit is published', async () => {
+    const last = { mergeSha: MERGE, prHeadSha: HEAD, targetTipSha: TIP, result: 'pass' as const };
+    const { deps, calls } = fakeDeps({ last, pins: { ok: true, unpublished: [] } });
+    expect(await stepStandingPrMerge({ ...base, pr: pr() }, deps)).toMatchObject({ action: 'merged', mergeSha: MERGE });
+    expect(calls.advanced).toEqual([{ sha: MERGE, expectedTip: TIP }]);
+  });
+
+  it('skips the check for a head that is not promoted (it is refused anyway)', async () => {
+    const { deps, calls } = fakeDeps({ pins: pending });
+    const out = await stepStandingPrMerge({ ...base, pr: pr(), promotedSha: 'e'.repeat(40) }, deps);
+    expect(out).toMatchObject({ action: 'refused', reason: 'pr-head-not-promoted' });
+    expect(calls.pinChecks).toEqual([]);
   });
 });

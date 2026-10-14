@@ -521,7 +521,8 @@ export async function createDefaultPublishPromotionDeps(log: (line: string) => v
     // fetched fresh so "published" is judged against what the PR actually merges into.
     findUnpublishedGitlinks: async (repoPath, sha, baseBranch) => {
       const fetched = await execGitCode(
-        ['fetch', '--no-tags', 'origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
+        // Superproject refs only: recursing would fetch submodule pins and fail on unpublished ones.
+        ['fetch', '--no-tags', '--no-recurse-submodules', 'origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
         repoPath,
       );
       if (fetched.code !== 0) {

@@ -24,6 +24,7 @@ import {
   parseHeadSnapshotTimeoutMs,
   pickGitEncryption,
   assertEpochSealIdentityPresent,
+  assertShippingCutDbTarget,
   encodeEpochKeysFile,
   collectSeedEpochKeys,
   graftCorestoreEntry,
@@ -197,6 +198,71 @@ describe('D166 private row-drop plan transport', () => {
         expect(result.stderr).toContain('fresh cut with --skip-corestore-refresh');
         expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior bytes');
       }
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('assertShippingCutDbTarget (WI-6554700010012344: a shipping cut never reads a discovered DB)', () => {
+  const base = { workspaceId: 'papercusp-workspace', allowDiscoveredDb: false } as const;
+
+  it('accepts an explicit env DSN and the operator env file', () => {
+    for (const source of ['env', 'operator-env-file'] as const) {
+      expect(() => assertShippingCutDbTarget({ ...base, target: { source, endpoint: 'localhost:5432' } })).not.toThrow();
+    }
+  });
+
+  it('refuses embedded-PG discovery and the port fallback, naming the source and endpoint', () => {
+    for (const [source, endpoint] of [['discovery', 'localhost:19406'], ['fallback', 'localhost:5432']] as const) {
+      let message = '';
+      try {
+        assertShippingCutDbTarget({ ...base, target: { source, endpoint } });
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      expect(message).toContain('REFUSING shipping cut');
+      expect(message).toContain(`via ${source} (${endpoint})`);
+      expect(message).toContain('--workspace-id papercusp-workspace');
+      expect(message).toContain('DATABASE_URL');
+      expect(message).toContain('--allow-discovered-db');
+    }
+  });
+
+  it('lets --allow-discovered-db through with a loud warning', () => {
+    const warn = vi.fn();
+    expect(() =>
+      assertShippingCutDbTarget({
+        ...base,
+        allowDiscoveredDb: true,
+        target: { source: 'discovery', endpoint: 'localhost:19406' },
+        warn,
+      }),
+    ).not.toThrow();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('--allow-discovered-db');
+    expect(String(warn.mock.calls[0]?.[0])).toContain('via discovery (localhost:19406)');
+  });
+
+  it('the CLI refuses --workspace-id before any cut work when no env DSN or operator env file pins the DB', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'seed-db-source-refuse-'));
+    try {
+      const out = join(dir, 'prior-seed'); await mkdir(out);
+      await writeFile(join(out, 'manifest.json'), 'prior bytes');
+      const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_SKIP_PG_DISCOVERY: '1' };
+      for (const key of ['DATABASE_URL', 'HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'PAPERCUSP_PG_PORT']) {
+        delete env[key];
+      }
+      // A MISSING --reuse-corestore: if the guard ever regresses, the CLI dies at
+      // readReusableCorestore, right after a read-only epoch lookup and BEFORE the git
+      // cut, instead of bundling the whole repo. (--no-git is refused earlier with reuse.)
+      const result = spawnSync(process.execPath, ['--import', 'tsx',
+        fileURLToPath(new URL('./cut-seed-cli.ts', import.meta.url)), '--out', out,
+        '--workspace-id', 'wi-6554700010012344-test',
+        '--reuse-corestore', join(dir, 'missing-corestore')],
+      { encoding: 'utf8', timeout: 60_000, env });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('REFUSING shipping cut');
+      expect(result.stderr).toMatch(/via (discovery|fallback) \(/);
+      expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior bytes');
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });

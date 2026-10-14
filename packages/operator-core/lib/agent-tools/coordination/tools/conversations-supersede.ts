@@ -32,12 +32,13 @@ const itemSpec = z.object({
 export default defineTool({
   name: 'conversations:supersede',
   description:
-    'Retract one OR many open conversations and open corrected replacements as real gates. A resolved owner question can be corrected by supplying its exact current accepted answer as expected_answer. The old row becomes superseded with a superseded_by pointer and the replacement row is inserted atomically; owner-ask escalation twins are retired too. Single: { id, expected_answer?, replacement:{ body, title?, topics?, direct_to?, kind? }, reason? }. Many: items:[{ id, expected_answer?, replacement, reason? }]. Returns replacement conversation/thread ids and the old RETRACTED state.',
+    'Retract one OR many open conversations and open corrected replacements as real gates. A resolved owner question can be corrected by supplying its exact current accepted answer as expected_answer. The old row becomes superseded with a superseded_by pointer and the replacement row is inserted atomically; owner-ask escalation twins are retired too. Single: { id, expected_answer?, replacement:{ body, title?, topics?, direct_to?, kind? }, reason? }. Many: items:[{ id, expected_answer?, replacement, reason? }].',
   guidance: {
+    returns: 'Replacement conversation/thread ids and the old RETRACTED state.',
     when:
       'An open question was framed on a premise that is now false, stale, or otherwise not answerable; use this to replace the gate durably so the correction is visible in conversations and the old gate cannot continue to block work. Correcting a resolved owner question requires its exact current accepted answer in expected_answer.',
     notWhen:
-      'You are merely notifying someone → coord:send. The original question is answered → conversations:resolve. An unrelated new owner question → coord:ask-owner; a peer question → coord:send with expects:"answer". An owner question may only be superseded by the agent that asked it (or a recovered owner with matching lane provenance); ask that agent to make a correction when it is not yours.',
+      'You are merely notifying someone → coord:send. The original question is answered → conversations:resolve. No replacement is needed → conversations:withdraw. An unrelated new owner question → coord:ask-owner; a peer question → coord:send with expects:"answer". An owner question may only be superseded by the agent that asked it (or a recovered owner with matching lane provenance); ask that agent to make a correction when it is not yours.',
     chaining:
       'conversations:get → conversations:supersede → events:await { event: "conversation:answered:<replacement_id>" } or conversations:resolve on the replacement.',
     seeAlso: [

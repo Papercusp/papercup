@@ -222,6 +222,25 @@ describe('setState — resolved_at semantics, no transition guard', () => {
   });
 });
 
+describe('closeIfOpen — the conversations:withdraw compare-and-set', () => {
+  it('closes an open row once, and the loser of a second close learns the terminal state', async () => {
+    await store.create(input('w1'));
+    const first = await store.closeIfOpen('w1', { now_ts: T1 });
+    expect(first).toMatchObject({ ok: true, conversation: { id: 'w1', state: 'closed', resolved_ts: null, updated_ts: T1 } });
+
+    const second = await store.closeIfOpen('w1', { now_ts: T2 });
+    expect(second).toMatchObject({ error: 'not_open', conversation: { state: 'closed', updated_ts: T1 } });
+  });
+
+  it('never overwrites a resolved row, and reports an unknown id as not_found', async () => {
+    await store.create(input('w2'));
+    await store.setState('w2', 'resolved', { now_ts: T1 });
+    expect(await store.closeIfOpen('w2', { now_ts: T2 })).toMatchObject({ error: 'not_open', conversation: { state: 'resolved' } });
+    expect((await store.get('w2'))?.resolved_ts).toBe(T1);
+    expect(await store.closeIfOpen('ghost', { now_ts: T1 })).toEqual({ error: 'not_found' });
+  });
+});
+
 describe('setAcceptedAnswer', () => {
   it('persists answer + post id + capture target and bumps updated_at', async () => {
     await store.create(input('a1'));

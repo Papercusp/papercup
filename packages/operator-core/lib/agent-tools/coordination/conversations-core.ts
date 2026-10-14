@@ -28,6 +28,8 @@ import { type InjectEvent, type InjectSink } from './fanout-delivery';
 import { fanoutForObject } from '../../sync/hyperbee/fanout-projection';
 import { ADMIN_COORD_UI_OWNER, type AgentIdentity } from './identity';
 import type {
+  CloseIfOpenStoreError,
+  CloseIfOpenStoreResult,
   ConversationKind,
   ConversationProducer,
   ConversationRow,
@@ -57,6 +59,8 @@ export interface ConversationStoreLike {
     replacement: CreateConversationInput,
     opts: { now_ts: string; expected_answer?: string },
   ): Promise<SupersedeStoreResult | SupersedeStoreError>;
+  /** Compare-and-set an OPEN conversation to 'closed' (conversations:withdraw). */
+  closeIfOpen(id: string, opts: { now_ts: string }): Promise<CloseIfOpenStoreResult | CloseIfOpenStoreError>;
   setAcceptedAnswer(id: string, input: { answer: string; post_id?: number | null; capture_target?: string | null; now_ts: string }): Promise<void>;
   setPromoted(id: string, input: { issue_id: string; now_ts: string }): Promise<void>;
   touch(id: string, now_ts: string): Promise<void>;
@@ -460,6 +464,94 @@ export async function supersedeConversationCore(
   const delivered = await fanout(deps, convRef(old.id), ev, identity.ownerId);
   const updated = (await deps.conversations.get(old.id)) ?? swapped.conversation;
   return { conversation: updated, replacement, delivered };
+}
+
+// ── Withdraw ────────────────────────────────────────────────────────────────
+
+export interface WithdrawConversationInput {
+  conversation_id: string;
+  /** Why the question no longer needs an answer — posted to the thread. */
+  reason: string;
+}
+
+export interface WithdrawConversationResult {
+  conversation: ConversationRow;
+  /** Thread post carrying the reason; null when the best-effort post failed. */
+  reasonPostId: number | null;
+  delivered: number;
+}
+
+export type WithdrawConversationError =
+  | { error: 'not_found' }
+  | { error: 'not_owner' }
+  | { error: 'already_terminal'; state: ConversationState }
+  | { error: 'invalid_reason' }
+  | { error: 'consult_requires_typed_verb' };
+
+/**
+ * The asker retracts an OPEN question/discussion that no longer needs an
+ * answer, WITHOUT inventing one (resolve) or opening a replacement
+ * (supersede). Asker-only: a peer must not be able to cancel someone else's
+ * gate. Nothing is captured to memory and no answer is recorded, so the
+ * conversation:answered wait is never satisfied by a fake answer — the host
+ * wrapper retires those awaits and the owner-ask escalation instead.
+ */
+export async function withdrawConversationCore(
+  deps: ConversationDeps,
+  identity: AgentIdentity,
+  input: WithdrawConversationInput,
+): Promise<WithdrawConversationResult | WithdrawConversationError> {
+  const conv = await deps.conversations.get(input.conversation_id);
+  if (!conv) return { error: 'not_found' };
+  // consult_state owns consult lifecycle (see resolveConversationCore).
+  if (conv.kind === 'consult') return { error: 'consult_requires_typed_verb' };
+  if (conv.state !== 'open') return { error: 'already_terminal', state: conv.state };
+  if (conv.asker_id !== identity.ownerId) return { error: 'not_owner' };
+  const reason = input.reason?.trim() ?? '';
+  if (!reason) return { error: 'invalid_reason' };
+
+  const now = deps.nowIso();
+  const closed = await deps.conversations.closeIfOpen(conv.id, { now_ts: now });
+  if ('error' in closed) {
+    if (closed.error === 'not_found') return closed;
+    return { error: 'already_terminal', state: closed.conversation.state };
+  }
+
+  // Best-effort: the reason rides the thread so a reader of the conversation
+  // sees why it ended. The state change above is the durable fact; a failed
+  // post must not report the withdraw as failed.
+  let reasonPostId: number | null = null;
+  try {
+    const post = await deps.threadTxn(async (threads) => {
+      const thread = await threads.getOrCreateThread(convRef(conv.id), {
+        thread_id: `thr-${conv.id}`,
+        created_by: identity.ownerId,
+        created_ts: now,
+        harness_slug: conv.harness_slug ?? undefined,
+      });
+      return threads.addPost({
+        thread_id: thread.thread_id,
+        author_id: identity.ownerId,
+        body: `Withdrawn by the asker: ${reason}`,
+        created_ts: now,
+      });
+    });
+    reasonPostId = post.id;
+  } catch {
+    reasonPostId = null;
+  }
+
+  const ev: InjectEvent = {
+    from: identity.ownerId,
+    subject: `conversation:${conv.id}`,
+    summary: `↩️ withdrawn ${conv.kind} ${conv.id}: ${truncate(reason)}`,
+    body: reason,
+    notify_kind: 'conversation_withdrawn',
+    isResolution: true,
+    extra: { withdrawn_reason: reason },
+  };
+  const delivered = await fanout(deps, convRef(conv.id), ev, identity.ownerId);
+  return { conversation: closed.conversation, reasonPostId, delivered };
 }
 
 // ── Post / answer ────────────────────────────────────────────────────────────

@@ -51,6 +51,8 @@ export interface PlanSpecQualityResult {
     draftSpecIds: string[];
     atomicityClauseDiagnostics: SpecQualityAtomicityClauseDiagnostic[];
     atomicityDetectorControls: Array<{ behavior: string; expected: 'atomic' | 'compound'; actual: 'atomic' | 'compound'; passed: boolean }>;
+    implementationIndependenceClauseDiagnostics: SpecQualityClauseDiagnostic[];
+    implementationIndependenceDetectorControls: Array<{ behavior: string; expected: 'coupled' | 'independent'; actual: 'coupled' | 'independent'; passed: boolean }>;
     prerequisiteRuntimeBarMismatches: Array<{
       prerequisiteItemId: string;
       barKey: string;
@@ -74,7 +76,9 @@ export interface SpecQualityPlanItem {
   blockedBy?: readonly string[];
 }
 
-export type SpecQualityAtomicityClauseDiagnostic =
+export type SpecQualityAtomicityClauseDiagnostic = SpecQualityClauseDiagnostic;
+
+export type SpecQualityClauseDiagnostic =
   | {
       specId: string;
       planItemId: string;
@@ -288,9 +292,20 @@ function implementationCouplingReason(behavior: string): string | null {
     return 'names an internal operation ' + JSON.stringify(operationReference[0]);
   }
   const existingSurfaceReuse =
-    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates)\b[^.\n]{0,80}\bexisting\s+(?:page|screen|route|endpoint|component|handler|operation|op|module|service)\b/i.exec(behavior);
+    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates)\b[^.\n]{0,80}\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\b/i.exec(behavior);
   if (existingSurfaceReuse) {
     return 'prescribes reuse of an existing implementation surface ' + JSON.stringify(existingSurfaceReuse[0].trim());
+  }
+  // A contract can prescribe machinery without a reuse verb ("through the
+  // existing runtime"), or name the machinery directly ("Reuse PostHog").
+  // Restrict the former to implementation nouns and usage/subject positions:
+  // an existing customer/account is an observable identity, not code coupling.
+  const implementationPrescription =
+    /\b(?:through|via|using)\s+(?:the\s+)?existing\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\b/i.exec(behavior) ??
+    /\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\s+(?:implements?|handles?|runs?|invokes?|provides?)\b/i.exec(behavior) ??
+    /(?:^|[.!?]\s+)(?:reuse|extend|modify|wire|integrate|evaluate)\s+(?!(?:of|is|was|will|must|can|may)\b)[^.!?\n]+/i.exec(behavior);
+  if (implementationPrescription) {
+    return 'prescribes implementation reuse or selection ' + JSON.stringify(implementationPrescription[0].trim());
   }
   const filesystemPermission =
     /\b0[0-7]{3}\b[^.!?\n]{0,60}\b(?:file|file\s+system|filesystem|directory)\b|\b(?:file|file\s+system|filesystem|directory)\b[^.!?\n]{0,60}\b0[0-7]{3}\b/i.exec(behavior);
@@ -671,19 +686,49 @@ export function evaluatePlanSpecQuality(input: {
           )
         : pass(`${itemBehavioral.length} independent item behavior clause(s) state falsifiable outcomes.${projectionEvidence}`);
 
-  const couplingFailures = behavioral
-    .map((clause) => ({ clause, reason: implementationCouplingReason(clause.behavior) }))
-    .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
+  const implementationIndependenceClauseDiagnostics: SpecQualityClauseDiagnostic[] = currentSet.map((clause) => {
+    const identity = { specId: clause.specId, planItemId: clause.planItemId, behavior: clause.behavior };
+    if (!CONTRACT_STATUSES.has(clause.lifecycleStatus)) {
+      return { ...identity, disposition: 'excluded', rating: 'not-applicable',
+        reason: `${clause.lifecycleStatus} clause is outside the active/accepted behavioral population.` };
+    }
+    const reason = implementationCouplingReason(clause.behavior);
+    return reason
+      ? { ...identity, disposition: 'evaluated', rating: 'fail', reason }
+      : { ...identity, disposition: 'evaluated', rating: 'pass', reason: null };
+  });
+  const couplingFailures = implementationIndependenceClauseDiagnostics.filter(
+    (entry) => entry.disposition === 'evaluated' && entry.rating === 'fail',
+  );
+  const implementationIndependenceDetectorControls = [
+    { behavior: 'The customer job completes through the existing runtime.', expected: 'coupled' as const },
+    { behavior: 'The existing cloud subscription flow implements the approved offer.', expected: 'coupled' as const },
+    { behavior: 'A failure produces an alarm through the existing alarm subscription mechanism.', expected: 'coupled' as const },
+    { behavior: 'Reuse the runtime usage ledger for per-call token counts.', expected: 'coupled' as const },
+    { behavior: 'Reuse PostHog for consented portal events.', expected: 'coupled' as const },
+    { behavior: 'An existing customer sees their subscription after signing in.', expected: 'independent' as const },
+    { behavior: 'The customer reuses an existing account when accepting an invitation.', expected: 'independent' as const },
+    { behavior: 'Reuse of an expired invitation is refused.', expected: 'independent' as const },
+  ].map((control) => {
+    const actual = implementationCouplingReason(control.behavior) === null ? 'independent' as const : 'coupled' as const;
+    return { ...control, actual, passed: actual === control.expected };
+  });
+  const implementationIndependenceControlsPassed = implementationIndependenceDetectorControls.every((control) => control.passed);
   const implementationIndependenceCoverage =
-    ' Detector coverage: implementation filenames/symbols, internal route literals, named operations, mandated reuse of existing surfaces, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
+    ' Detector coverage: implementation filenames/symbols, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, ledgers and mechanisms), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
     behavioral.length + ' active/accepted behavior clause(s), including ' +
-    behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).';
+    behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).' +
+    ` ${currentSet.length - behavioral.length} draft/exempt clause(s) excluded; per-clause dispositions are in details.implementationIndependenceClauseDiagnostics.` +
+    ' Detector controls: see details.implementationIndependenceDetectorControls for coupled counterexamples and independent observable outcomes.' +
+    ' Coverage is structural pattern detection, not a proof of arbitrary natural-language semantics.';
   ratings['implementation-independence'] =
     behavioral.length === 0
       ? notApplicable('0 behavioral clause(s) are available for implementation-independence evaluation.')
+      : !implementationIndependenceControlsPassed
+        ? unknown('The implementation-independence detector failed its coupled/independent controls; no pass is earned.' + implementationIndependenceCoverage)
       : couplingFailures.length
         ? fail(
-            couplingFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; ') + '.' + implementationIndependenceCoverage,
+            couplingFailures.map(({ specId, reason }) => `${specId}:${reason}`).join('; ') + '.' + implementationIndependenceCoverage,
             'Describe externally observable behavior instead of filenames or internal constructs.',
           )
         : pass('No active/accepted behavior clause is coupled to an implementation detail covered by the detector.' + implementationIndependenceCoverage);
@@ -769,6 +814,8 @@ export function evaluatePlanSpecQuality(input: {
       draftSpecIds,
       atomicityClauseDiagnostics,
       atomicityDetectorControls,
+      implementationIndependenceClauseDiagnostics,
+      implementationIndependenceDetectorControls,
       prerequisiteRuntimeBarMismatches: runtimeBarMismatches,
     },
     scorecardDraft: {

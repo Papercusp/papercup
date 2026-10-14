@@ -7044,8 +7044,13 @@ export function interpretRepairHeadMeasurements(input: {
   // cannot tell us whether a failing batch stopped before its final workspace.
   const completeFiles = !fileRun || (fileOutcomes !== null && fileRun.coverageComplete === true &&
     fileOutcomes.every((entry) => entry.status !== "errored"));
+  // A registered non-gating NOT CHECKED leg is coverage-NEUTRAL (WI-10004928 / D-129 item 2;
+  // validateTargetedGateOutcomes already refused it for any unregistered id). The producer
+  // counts it complete; requiring pass|fail here withheld `gate-run-incomplete` on EVERY live
+  // targeted round (green-main-cycle-time-2026-10-08#P-005 stage 2, rounds of queue 4a0ab756),
+  // so every round fell back to the cumulative radius.
   const completeGates = !gateRun || (gateOutcomes !== null && gateRun.coverageComplete === true &&
-    gateOutcomes.every((entry) => entry.status === "pass" || entry.status === "fail"));
+    gateOutcomes.every((entry) => entry.status === "pass" || entry.status === "fail" || entry.status === "not-checked"));
   // P-005: name EVERY condition that withheld the receipt, on the round itself. A red round
   // with no receipt forces the next round back onto the cumulative radius, so "why no
   // receipt" must be readable from queue history rather than re-derived from logs.

@@ -85,6 +85,21 @@ async function git(repoDir: string, args: string[]): Promise<string> {
   return stdout.trim();
 }
 
+/** git with its exit status reported instead of thrown (the `CodeRunGit` shape). */
+async function gitCode(args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await execFileP('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 });
+    return { code: 0, stdout, stderr };
+  } catch (err) {
+    const e = err as { code?: unknown; stdout?: unknown; stderr?: unknown; message?: unknown };
+    return {
+      code: typeof e.code === 'number' ? e.code : 1,
+      stdout: typeof e.stdout === 'string' ? e.stdout : '',
+      stderr: typeof e.stderr === 'string' ? e.stderr : String(e.message ?? err),
+    };
+  }
+}
+
 function errText(err: unknown): string {
   const e = err as { stderr?: unknown; message?: unknown };
   const stderr = typeof e?.stderr === 'string' ? e.stderr.trim() : '';
@@ -147,6 +162,19 @@ export function createDefaultStandingPrMergeDeps(args: DefaultStandingPrMergeDep
     }
   }
 
+  /**
+   * Fetch the PR head and the target tip into `repoDir` when either is missing.
+   * `--no-recurse-submodules`: git's default on-demand recursion would also fetch every
+   * submodule commit the PR pins, and fail on exactly the unpublished pins the merge
+   * gate has to report (D-017 §6). Only the superproject commits are needed here.
+   */
+  async function ensureCommits(prHeadSha: string, targetTipSha: string): Promise<void> {
+    if (!(await hasCommit(prHeadSha)) || !(await hasCommit(targetTipSha))) {
+      await git(repoDir, ['fetch', '--quiet', '--no-recurse-submodules', remote, `refs/pull/${prNumber}/head`]);
+      if (!(await hasCommit(targetTipSha))) await git(repoDir, ['fetch', '--quiet', '--no-recurse-submodules', remote]);
+    }
+  }
+
   return {
     readTargetTip,
 
@@ -161,11 +189,21 @@ export function createDefaultStandingPrMergeDeps(args: DefaultStandingPrMergeDep
       await writeRecord(n, rec);
     },
 
-    async buildMergeResult(prHeadSha, targetTipSha) {
-      if (!(await hasCommit(prHeadSha)) || !(await hasCommit(targetTipSha))) {
-        await git(repoDir, ['fetch', '--quiet', remote, `refs/pull/${prNumber}/head`]);
-        if (!(await hasCommit(targetTipSha))) await git(repoDir, ['fetch', '--quiet', remote]);
+    async findUnpublishedGitlinks(prHeadSha, targetTipSha) {
+      try {
+        await ensureCommits(prHeadSha, targetTipSha);
+      } catch (err) {
+        return { ok: false, error: `could not fetch the pull request: ${errText(err).slice(0, 200)}` };
       }
+      // The submodules checked out in `repoDir` have the submodule main repositories as
+      // their `origin`, so "published" means reachable from that origin's default branch.
+      const { findUnpublishedGitlinks } = await import('./submodule-forks');
+      const found = await findUnpublishedGitlinks({ repoDir, commit: prHeadSha, baseCommit: targetTipSha, runGit: gitCode });
+      return found.ok ? { ok: true, unpublished: found.unpublished.map(({ path, sha }) => ({ path, sha })) } : found;
+    },
+
+    async buildMergeResult(prHeadSha, targetTipSha) {
+      await ensureCommits(prHeadSha, targetTipSha);
       let tree: string;
       try {
         tree = (await git(repoDir, ['merge-tree', '--write-tree', targetTipSha, prHeadSha])).split('\n')[0];

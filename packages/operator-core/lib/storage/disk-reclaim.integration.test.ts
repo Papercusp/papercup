@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod } from 'node:fs/promises';
 import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -293,7 +293,48 @@ describe('retention on a real fixture tree', () => {
     const { root, options } = await setup(); const owner = join(fixture!, 'owner'); await mkdir(owner); await writeFile(join(owner, 'data'), 'keep');
     await symlink(owner, join(root, 'link'));
     const receipt = await runDiskReclaimOnce(options);
-    expect(receipt.complete).toBe(false); expect(await stat(join(owner, 'data'))).toBeTruthy();
+    expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+    expect(receipt.entries).toEqual([expect.objectContaining({ path: join(root, 'link'), status: 'protected', reason: 'symlink boundary' })]);
+    expect(await stat(join(owner, 'data'))).toBeTruthy();
+  });
+  it('retains an entire tree containing a symlink while draining an independent expired entry', async () => {
+    const { root, options } = await setup();
+    const tree = join(root, 'tree'); await mkdir(tree);
+    const owner = join(fixture!, 'owner'); await mkdir(owner); await writeFile(join(owner, 'data'), 'keep');
+    await symlink(owner, join(tree, 'link'));
+    const expired = join(root, 'expired'); await writeFile(expired, 'remove');
+    const receipt = await runDiskReclaimOnce(options);
+    expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+    expect(receipt.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: tree, status: 'protected', reason: 'symlink boundary' }),
+      expect.objectContaining({ path: expired, status: 'removed' }),
+    ]));
+    expect(await stat(join(owner, 'data'))).toBeTruthy();
+    await expect(stat(expired)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it('records nested protected policy trees without reading them and refuses unknown permissions', async () => {
+    const { root, options } = await setup();
+    const protectedPath = join(root, 'private'); await mkdir(protectedPath);
+    const unknown = join(root, 'unknown'); await mkdir(unknown);
+    await writeFile(join(protectedPath, 'data'), 'keep'); await writeFile(join(unknown, 'data'), 'keep');
+    await chmod(protectedPath, 0); await chmod(unknown, 0);
+    try {
+      const policy: RetentionClass[] = [...options.policy, { id: 'protected', title: 'native private', origin: 'system', roots: [protectedPath], keep: { kind: 'keep', reason: 'native owner' }, enforcers: [{ kind: 'none' }] }];
+      const receipt = await runDiskReclaimOnce({ ...options, policy });
+      expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
+      expect(receipt.entries).toContainEqual(expect.objectContaining({ path: protectedPath, status: 'protected', reason: 'protected policy root' }));
+      expect(receipt.errors).toEqual([expect.stringContaining(`inspect:${unknown}: EACCES`)]);
+    } finally { await chmod(protectedPath, 0o700); await chmod(unknown, 0o700); }
+  });
+  it('records a candidate that disappears during inspection without a false partial failure', async () => {
+    const { root, options } = await setup(); const path = join(root, 'gone'); await writeFile(path, 'remove');
+    inspectionProbe.before = (current) => {
+      if (current === path) throw Object.assign(new Error('concurrently removed'), { code: 'ENOENT' });
+      return undefined;
+    };
+    const receipt = await runDiskReclaimOnce(options);
+    expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+    expect(receipt.entries).toEqual([expect.objectContaining({ path, status: 'changed', reason: 'disappeared during inspection' })]);
   });
   it('refuses deletion when process evidence is incomplete or a process holds the file', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'keep');

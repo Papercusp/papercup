@@ -459,6 +459,75 @@ describe('evaluatePlanSpecQuality', () => {
   });
 
   it.each([
+    'A supported OpenRouter agent job completes through the existing runtime with correct provider-reported cost and the declared key/retention policy.',
+    'The existing cloud organization subscription flow implements the owner-approved public self-service offer under cloud-portal-public-release-2026-10-13 with verified live billing and bounded disclosed consumption.',
+    'A witnessed control-plane failure produces one accountable alarm through the existing alarm subscription mechanism.',
+    'Reuse the runtime usage ledger and existing workspace diagnostics for per-call token counts.',
+    'Reuse PostHog for disclosed, consented hosted portal events.',
+    'Extend existing lifecycle, health, public-ingress and API instrumentation.',
+    'Reuse restricted audit records for accountable access observations.',
+    'Evaluate existing PostHog error capability before adding another vendor.',
+  ])('detects reuse prescriptions in both item and sourceBar contracts: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship',
+      clauses: [clause({ behavior }), clause({
+        specId: 'AUTO-BAR-R-1-P-001', sourceValId: null, behavior,
+        sourceBar: { barKey: 'R-1', barHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64),
+          rubricSlug: 'acceptance-quality-plan', rubricRevision: 1, evidencePlane: 'tree' },
+      })],
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    for (const specId of ['SPEC-001-01', 'AUTO-BAR-R-1-P-001']) {
+      expect(result.ratings['implementation-independence'].evidence).toContain(specId + ':');
+      expect(result.details.implementationIndependenceClauseDiagnostics).toContainEqual(
+        expect.objectContaining({ specId, behavior, disposition: 'evaluated', rating: 'fail', reason: expect.any(String) }),
+      );
+    }
+  });
+
+  it.each([
+    'An existing customer sees their subscription after signing in.',
+    'The customer reuses an existing account when accepting an invitation.',
+    'The customer completes a job with the reported provider cost.',
+    'Reuse of an expired invitation is refused.',
+  ])('keeps observable existing-customer and reuse outcomes independent: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      clauses: [clause({ behavior })], classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    expect(result.details.implementationIndependenceClauseDiagnostics).toContainEqual({
+      specId: 'SPEC-001-01', planItemId: 'P-001', behavior,
+      disposition: 'evaluated', rating: 'pass', reason: null,
+    });
+  });
+
+  it('reports implementation-independence controls and explicit exclusions for the current clause population', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship', clauses: [
+        clause({ lifecycleStatus: 'accepted' }),
+        clause({ specId: 'DRAFT', lifecycleStatus: 'draft', behavior: 'Reuse the runtime usage ledger.' }),
+        clause({ specId: 'EXEMPT', lifecycleStatus: 'exempt', behaviorClass: 'non-automated',
+          exemption: { justification: 'Documentation only.', provenance: 'D-001' } }),
+      ],
+    });
+    expect(result.details.implementationIndependenceClauseDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ specId: 'SPEC-001-01', disposition: 'evaluated', rating: 'pass', reason: null }),
+      expect.objectContaining({ specId: 'DRAFT', disposition: 'excluded', rating: 'not-applicable', reason: expect.stringContaining('draft') }),
+      expect.objectContaining({ specId: 'EXEMPT', disposition: 'excluded', rating: 'not-applicable', reason: expect.stringContaining('exempt') }),
+    ]));
+    const controls = result.details.implementationIndependenceDetectorControls;
+    expect(controls.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(controls.map(({ expected }) => expected))).toEqual(new Set(['coupled', 'independent']));
+    expect(controls.every(({ expected, actual, passed }) => passed && actual === expected)).toBe(true);
+    expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceClauseDiagnostics');
+    expect(result.ratings['implementation-independence'].evidence).toContain('details.implementationIndependenceDetectorControls');
+    expect(result.ratings['implementation-independence'].evidence).toContain('structural pattern detection');
+  });
+
+  it.each([
     {
       label: 'internal routes and page reuse',
       behavior:

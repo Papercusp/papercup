@@ -78,7 +78,8 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
               if (attempt.outcome !== 'dispatched') expect(attempt.reason).toBeTruthy();
             }
             const dispatch = consult.dispatch;
-            observations.push({ conversationId: id, operation: dispatch?.operation, attempts: walk!.attempts });
+            observations.push({ conversationId: id, operation: dispatch?.operation,
+              attempts: walk!.attempts.map(({ rank, operation, outcome, reason }) => ({ rank, operation, outcome, reason })) });
             if (dispatch?.operation !== 'brief') continue;
             expect(dispatch.verified).toBe(true);
             const sourceOwner = dispatch.sourceOwnerId as string;
@@ -89,7 +90,7 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
               WHERE workspace_id = 'papercusp-workspace' AND coord_owner_id = ${literal(sourceOwner)}
               ORDER BY id DESC LIMIT 1`, profile.origin);
             expect(source).toHaveLength(1);
-            expect(source[0]!.role, 'organic routing must reach an expert session that cannot be forked').not.toBeNull();
+            expect(source[0]!.role, 'organic routing must reach an expert session that cannot be forked').toBeTypeOf('string');
             const refs = consult.responder.evidence as Array<{ session_id: string; turn_idx: number }>;
             expect(refs.length).toBeGreaterThan(0);
             const excerpts = refs.flatMap(ref => rows(`SELECT substring(text FROM 1 FOR 1000) AS text
@@ -116,14 +117,15 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
         }
         console.info('CBP_LIVE_DISPATCH_PROOF', JSON.stringify({ observations, proof }));
         expect(proof, 'Both organic questions must not miss the non-forkable brief path (D-019/D-020)').toBeDefined();
-        return { exitCode: 0, summary: JSON.stringify({ observations, proof }), assertions: [
-          { id: 'organic-dispatch-attempts-recorded', passed: true, evidence: JSON.stringify(observations) },
+        return { exitCode: 0, summary: JSON.stringify({ observations, proof }).slice(0, 3000), assertions: [
+          { id: 'organic-dispatch-attempts-recorded', passed: true, evidence: JSON.stringify(observations).slice(0, 2000) },
           { id: 'fresh-cited-turn-brief-launched', passed: true, evidence: JSON.stringify(proof) },
         ] };
       },
     }, { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: root });
     console.info('CBP_LIVE_DISPATCH_RUN', JSON.stringify(measured));
     expect(measured).toMatchObject({ ok: true, status: 'pass', runtimeEnvironmentMeasured: true });
+    if (!measured.ok) throw new Error(JSON.stringify(measured));
     expect(measured.testRunIds).toHaveLength(1);
   }, 720_000);
 });

@@ -14,6 +14,39 @@ const test = (over: Partial<MergeTestRecord> = {}): MergeTestRecord => ({
   ...over,
 });
 
+describe('decideMergeGate: submodule commits must be published (D-017 §6)', () => {
+  const unpublished = { ok: true as const, unpublished: [{ path: 'libs/core', sha: OTHER }] };
+
+  it('refuses unpublished gitlinks before building, waiting or merging', () => {
+    for (const lastTest of [null, test({ result: 'running' }), test()]) {
+      const d = decideMergeGate({ prHeadSha: PR, promotedSha: PR, targetTipSha: TIP, lastTest, submodulePins: unpublished });
+      expect(d).toMatchObject({ action: 'refuse', reason: 'unpublished-gitlinks' });
+      expect(d.action === 'refuse' && d.detail).toContain('libs/core (dddddddddd)');
+    }
+  });
+
+  it('refuses when the publication check could not answer', () => {
+    const d = decideMergeGate({
+      prHeadSha: PR, promotedSha: PR, targetTipSha: TIP, lastTest: test(),
+      submodulePins: { ok: false, error: 'fetch failed' },
+    });
+    expect(d).toMatchObject({ action: 'refuse', reason: 'submodule-pins-unverifiable' });
+  });
+
+  it('keeps the promotion refusals first', () => {
+    const d = decideMergeGate({ prHeadSha: PR, promotedSha: OTHER, targetTipSha: TIP, lastTest: test(), submodulePins: unpublished });
+    expect(d).toMatchObject({ action: 'refuse', reason: 'pr-head-not-promoted' });
+  });
+
+  it('merges as before when every pin is published', () => {
+    const d = decideMergeGate({
+      prHeadSha: PR, promotedSha: PR, targetTipSha: TIP, lastTest: test(),
+      submodulePins: { ok: true, unpublished: [] },
+    });
+    expect(d).toMatchObject({ action: 'merge', advanceTargetTo: MERGE, expectedTargetTip: TIP });
+  });
+});
+
 describe('decideMergeGate (P-024 / D-008)', () => {
   it('refuses when the working copy has nothing promoted', () => {
     const d = decideMergeGate({ prHeadSha: PR, promotedSha: null, targetTipSha: TIP, lastTest: test() });

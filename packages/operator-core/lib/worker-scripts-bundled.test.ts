@@ -222,9 +222,8 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     '-c', 'set -euo pipefail; source "$1"; bundle_host_workers "$2" "$3" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}"', 'worker-recipe-test', subject, REPO_ROOT, destination,
   ], {
     cwd: REPO_ROOT,
-    // The fixture compiler reads installed local bytes and never touches npm's
-    // real cache. Exercise the lease in a private domain, so real maintenance
-    // cannot delay this bounded unit build.
+    // The pinned fixture resolves once before this build. Exercise the recipe's
+    // lease calls in a private domain, so real maintenance cannot delay it.
     env: { ...process.env, PATH: compilerPath, PAPERCUSP_FS_MUTEX_LOCK_DIR: join(output, 'package-cache-locks'),
       PAPERCUSP_EMBED_WORKER_SCRIPT: '', BUNDLE_HOST_GATE_META_DIR: join(destination, 'missing-gate-meta'), ...extraEnv },
     encoding: 'utf8',
@@ -251,12 +250,12 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
 
   it('holds the shared package-cache reader for every actual worker compiler invocation', () => {
     expect((buildOutput.match(/NPM_INSTALL_SAFE guarding package-cache reader:/g) ?? []).length)
-      .toBe(ESBUILD_WORKERS.length);
+      .toBe(ESBUILD_WORKERS.length + 1); // one pin resolution, then every compile
   });
 
   it('control: successful compilation without the package-cache lease is detected', () => {
     const original = readFileSync(recipe, 'utf8');
-    const guarded = '"${package_runner[@]}" npx --yes esbuild@0.25.0 "$source"';
+    const guarded = 'bundle_host_esbuild "$repo_root" "$source"';
     expect(original.split(guarded)).toHaveLength(2);
     const subject = join(output, 'recipe-without-cache-lease.sh');
     writeFileSync(subject, original.replace(guarded, 'npx --yes esbuild@0.25.0 "$source"'));

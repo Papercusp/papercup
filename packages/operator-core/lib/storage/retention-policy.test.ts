@@ -56,6 +56,15 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
     expect(del(`${HOME}/papercupai-workspace/papercusp-relcut-0026/x`)).toBe('release-cut-worktrees');
   });
 
+  it('leaves service-private temp trees to their native owner inside generic scratch', () => {
+    for (const root of ['/tmp', '/mnt/data/tmp']) {
+      const path = `${root}/systemd-private-boot-service/tmp/private`;
+      expect(classifyPath(path, policy)).toMatchObject({ classId: 'os' });
+      expect(del(path)).toBeNull();
+    }
+    expect(del('/mnt/data/tmp/agent-fixture/expired')).toBe('mnt-tmp');
+  });
+
   it('protects the owner macOS VM and deletes nothing on /mnt/backup (WI-6554700010011387)', () => {
     // The owner-protected VM: the OSX-KVM disk, its recovery images and the backup-source link.
     for (const p of [

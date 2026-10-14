@@ -543,7 +543,8 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
   while :; do
     bundle_host_run_step host-probe-wait "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" wait --root "$REPO_ROOT" \
       --stamp-file "$PROBE_STAMP" || exit 1
-    if ! bundle_host_run_step host-compile bundle_host_esbuild "$REPO_ROOT" "$ENTRY" \
+    compiler_rc=0
+    bundle_host_run_step host-compile bundle_host_esbuild "$REPO_ROOT" "$ENTRY" \
       --bundle --platform=node --format=esm --target=node22 \
       "${HOST_MINIFY_ARGS[@]}" \
       --outfile="$TMPFILE" \
@@ -553,9 +554,10 @@ if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT
       --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
       "${BUNDLED_SOURCE_SHA_DEFINE[@]}" \
       --log-limit=20 \
-      "${HOST_EXTERNALS[@]}" "${HOST_VIEM_ALIASES[@]}"; then
+      "${HOST_EXTERNALS[@]}" "${HOST_VIEM_ALIASES[@]}" || compiler_rc=$?
+    if (( compiler_rc != 0 )); then
       echo "ERROR: esbuild failed to bundle $ENTRY (see the esbuild diagnostics above)."
-      exit 1
+      exit "$compiler_rc"
     fi
     if bundle_host_run_step host-probe-verify "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" verify --root "$REPO_ROOT" \
       --stamp-file "$PROBE_STAMP"; then

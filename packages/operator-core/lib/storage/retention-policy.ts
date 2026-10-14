@@ -139,7 +139,7 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
     id: 'os',
     title: 'Operating system, packages and system logs',
     origin: 'system',
-    roots: ['/usr', '/opt', '/boot', '/snap', '/root', '/srv', '/var/lib/snapd', '/var/lib/apt', '/var/lib/dpkg', '/var/lib/flatpak', '/var/log', '/var/cache', '/var/tmp', '/var/lib/waydroid', '/home/linuxbrew'],
+    roots: ['/usr', '/opt', '/boot', '/snap', '/root', '/srv', '/var/lib/snapd', '/var/lib/apt', '/var/lib/dpkg', '/var/lib/flatpak', '/var/log', '/var/cache', '/var/tmp', '/var/lib/waydroid', '/home/linuxbrew', '/tmp/systemd-private-*', '/mnt/data/tmp/systemd-private-*'],
     keep: { kind: 'native', manager: 'apt/snapd/journald/logrotate', rule: 'each owns its retention' },
     enforcers: [{ kind: 'external', manager: 'apt/snapd/journald/logrotate' }],
   },

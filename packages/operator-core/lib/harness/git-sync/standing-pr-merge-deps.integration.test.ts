@@ -505,3 +505,60 @@ describe('makeWorktreeSuiteRunner (real git)', () => {
     await expect(makeWorktreeSuiteRunner('sleep 5', { timeoutMs: 200 })({ repoDir: deps_repo, sha: tip })).rejects.toThrow();
   });
 });
+
+// slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 D-017 §6: the merge gate's
+// publication check, against a real superproject whose submodule has its own main repo.
+describe('findUnpublishedGitlinks: submodule commits must be on their main repository (real git)', () => {
+  const gitF = (cwd: string, ...args: string[]) => git(cwd, '-c', 'protocol.file.allow=always', ...args);
+
+  it('names a pinned submodule commit until it reaches the submodule main repository, then merges', async () => {
+    // The submodule's main repository, and the superproject (upstream) using it.
+    const subBare = join(root, 'sub.git');
+    const subWork = join(root, 'sub-work');
+    git(root, 'init', '-q', '--bare', '-b', 'main', subBare);
+    git(root, 'clone', '-q', subBare, subWork);
+    git(subWork, 'checkout', '-q', '-b', 'main');
+    commitFile(subWork, 's.txt', 's1\n', 'sub base');
+    git(subWork, 'push', '-q', 'origin', 'main');
+    gitF(work, 'submodule', 'add', '-q', subBare, 'libs/sub');
+    git(work, 'commit', '-q', '-m', 'add submodule');
+    git(work, 'push', '-q', 'origin', 'main');
+    // The deps run in the upstream's own checkout, submodules checked out.
+    const upstreamCheckout = join(root, 'upstream-checkout');
+    gitF(root, 'clone', '-q', '--recurse-submodules', bare, upstreamCheckout);
+    const store = memStore();
+    const d = createDefaultStandingPrMergeDeps({
+      repoDir: upstreamCheckout, installSlug: INSTALL, prNumber: PR_NUMBER, store, runSuite: async () => true,
+    });
+
+    // A PR without gitlink changes has nothing to publish.
+    const plain = makePrHead();
+    expect(await d.findUnpublishedGitlinks(plain, git(bare, 'rev-parse', 'main'))).toEqual({ ok: true, unpublished: [] });
+
+    // The working copy bumps the submodule to a commit only its fork has.
+    const workSub = join(work, 'libs/sub');
+    const s2 = commitFile(workSub, 's.txt', 's2\n', 'sub change');
+    git(work, 'add', 'libs/sub');
+    git(work, 'commit', '-q', '-m', 'bump libs/sub');
+    const head = git(work, 'rev-parse', 'HEAD');
+    publishPrHead(head);
+    const tip = git(bare, 'rev-parse', 'main');
+    const pending = await d.findUnpublishedGitlinks(head, tip);
+    if (!pending.ok) throw new Error(`pin check failed: ${pending.error}`);
+    expect(pending.unpublished).toEqual([{ path: 'libs/sub', sha: s2 }]);
+
+    // The gate refuses before building or testing anything.
+    const pr = {
+      ref: { number: PR_NUMBER }, head_ref: STANDING_PR_BRANCH, base_ref: 'main', head_sha: head,
+      review_decision: 'approved', checks_state: 'success',
+    } as unknown as Pr;
+    const input = { pr, policy: 'auto' as const, promotedSha: head, authorRevoked: false };
+    expect(await stepStandingPrMerge(input, d)).toMatchObject({ action: 'refused', reason: 'unpublished-gitlinks' });
+    expect(store.raw()[STANDING_PR_MERGE_TESTS_META_KEY]).toBeUndefined();
+
+    // The submodule PR merges into the submodule's main repository: the gate opens.
+    git(workSub, 'push', '-q', 'origin', 'HEAD:main');
+    expect(await d.findUnpublishedGitlinks(head, tip)).toEqual({ ok: true, unpublished: [] });
+    expect(await stepStandingPrMerge(input, d)).toMatchObject({ action: 'testing', reason: 'never-tested' });
+  });
+});

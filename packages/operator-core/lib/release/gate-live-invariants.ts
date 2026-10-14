@@ -397,6 +397,10 @@ export interface GateInvariantEntryState {
   passes: number;
   /** Work-item filed for the current breach episode, when one was. */
   filedItemId?: string;
+  /** Completion clock of the condition upsert, never the earlier evaluation clock. */
+  filedAtMs?: number;
+  /** Original measured gate tick at episode start; later ticks cannot widen its budget. */
+  alarmTickMs?: number;
 }
 
 export interface GateInvariantsState {
@@ -531,6 +535,99 @@ export async function executeGateInvariantWindow(sql: Sql, args: {
   }, args);
 }
 
+/** Original filing receipts only. This does not prove human delivery or pickup. */
+export function evaluateGateInvariantAlarmWindow(history: PipelineEventWindowRead, observedAtMs = Date.now()) {
+  const validWindow = Number.isSafeInteger(history.windowStartMs) && history.windowStartMs >= 0 &&
+    Number.isSafeInteger(history.windowEndMs) && history.windowEndMs > history.windowStartMs &&
+    Number.isSafeInteger(observedAtMs) && observedAtMs >= history.windowEndMs;
+  const rows = [...history.rows].sort((a, b) => a.createdAtMs - b.createdAtMs);
+  const complete = history.status === 'complete' && history.total === rows.length && rows.length > 0 &&
+    new Set(rows.map(row => row.id)).size === rows.length;
+  type Episode = { name: GateInvariantName; sinceMs: number; tickMs: number;
+    filedItemId: string | null; filedAtMs: number | null };
+  const episodes = new Map<string, Episode>();
+  let qualified = complete;
+  for (const row of rows) {
+    const results = row.detail?.results as GateInvariantResult[] | undefined;
+    const original = row.detail?.alarmEpisodes as { version?: unknown; entries?: Episode[] } | undefined;
+    const evaluatedAtMs = row.detail?.evaluatedAtMs;
+    if (!row.id?.trim() || row.kind !== 'gate_invariants' ||
+        !Number.isSafeInteger(row.createdAtMs) || row.createdAtMs < 0 || row.createdAtMs > history.windowEndMs ||
+        !Number.isSafeInteger(evaluatedAtMs) || (evaluatedAtMs as number) < 0 ||
+        (evaluatedAtMs as number) > row.createdAtMs || !Array.isArray(results) ||
+        results.length !== GATE_INVARIANT_NAMES.length ||
+        !GATE_INVARIANT_NAMES.every(name => results.filter(result => result?.name === name).length === 1) ||
+        results.some(result => !['pass', 'breach', 'unknown'].includes(result.status)) ||
+        row.status !== overallGateInvariantStatus(results) || original?.version !== 1 ||
+        !Array.isArray(original.entries)) { qualified = false; continue; }
+    const breached = results.filter(result => result.status === 'breach').map(result => result.name);
+    if (original.entries.length !== breached.length ||
+        !breached.every(name => original.entries!.filter(entry => entry?.name === name).length === 1)) qualified = false;
+    for (const entry of original.entries) {
+      if (!entry || !breached.includes(entry.name) || !Number.isSafeInteger(entry.sinceMs) || entry.sinceMs < 0 ||
+          entry.sinceMs > (evaluatedAtMs as number) || !Number.isSafeInteger(entry.tickMs) || entry.tickMs <= 0 ||
+          (entry.filedItemId !== null && (typeof entry.filedItemId !== 'string' || !entry.filedItemId.trim())) ||
+          ((entry.filedItemId === null) !== (entry.filedAtMs === null)) ||
+          (entry.filedAtMs !== null && (!Number.isSafeInteger(entry.filedAtMs) ||
+            entry.filedAtMs < entry.sinceMs || entry.filedAtMs > row.createdAtMs))) { qualified = false; continue; }
+      const key = JSON.stringify([entry.name, entry.sinceMs]);
+      const previous = episodes.get(key);
+      if (previous && (previous.tickMs !== entry.tickMs || (previous.filedItemId !== null &&
+          (previous.filedItemId !== entry.filedItemId || previous.filedAtMs !== entry.filedAtMs)))) qualified = false;
+      episodes.set(key, { ...entry });
+    }
+  }
+  const leftGap = rows[0] ? history.windowStartMs - rows[0].createdAtMs : Infinity;
+  const rightGap = rows.at(-1) ? history.windowEndMs - rows.at(-1)!.createdAtMs : Infinity;
+  const gaps = rows.slice(1).map((row, i) => row.createdAtMs - rows[i]!.createdAtMs);
+  const coverage = leftGap >= 0 && Math.max(leftGap, rightGap, ...gaps) <= GATE_INVARIANT_ACCEPTANCE_GAP_MS;
+  const population = [...episodes.values()];
+  const admissible = validWindow && complete && qualified && coverage && population.length > 0;
+  return { episodes: population, eventIds: rows.map(row => row.id), assertions: [
+    { id: 'bounded-invariant-alarm-window', passed: validWindow,
+      evidence: `start=${history.windowStartMs}; end=${history.windowEndMs}; observed=${observedAtMs}` },
+    { id: 'complete-invariant-alarm-population', passed: complete && coverage,
+      evidence: `read=${history.status}; population=${history.total}; rows=${rows.length}; left=${leftGap}; right=${rightGap}` },
+    { id: 'original-invariant-breach-filing-receipts', passed: complete && qualified,
+      evidence: 'Original episode start, frozen tick budget and condition-upsert completion clock; legacy or conflicting receipts fail.' },
+    { id: 'nonempty-invariant-breach-episodes', passed: admissible, evidence: `episodes=${population.length}` },
+    { id: 'invariant-breach-filings-within-one-tick', passed: admissible && population.every(episode =>
+      episode.filedItemId !== null && episode.filedAtMs !== null && episode.filedAtMs - episode.sinceMs <= episode.tickMs),
+      evidence: 'Every observed breach has a completed filing by its original tick deadline; pending and late receipts fail.' },
+  ] };
+}
+
+export async function executeGateInvariantAlarmWindow(sql: Sql, args: {
+  workspaceId: string; harnessSlug: string; projectDir: string; installSlug: string;
+  runtimeUnits: string[]; windowStartMs: number; windowEndMs: number;
+}) {
+  const { createHash } = await import('node:crypto');
+  const { executeOperationalRun } = await import('../agent-tools/testing/record-run');
+  return executeOperationalRun({ filePath: 'packages/operator-core/lib/release/gate-live-invariants.ts',
+    name: 'Original invariant breach filing history', framework: 'operational',
+    command: ['executeGateInvariantAlarmWindow', args.workspaceId, args.installSlug,
+      String(args.windowStartMs), String(args.windowEndMs)], runtimeUnits: args.runtimeUnits,
+    run: async () => {
+      const history = await readGateInvariantWindow(sql, args, args);
+      const evaluation = evaluateGateInvariantAlarmWindow(history);
+      return { exitCode: evaluation.assertions.every(assertion => assertion.passed) ? 0 : 1,
+        assertions: evaluation.assertions,
+        summary: `Breach filing history only: workspace=${args.workspaceId}; install=${args.installSlug}; ` +
+          `window=${args.windowStartMs}..${args.windowEndMs}; episodes=${evaluation.episodes.length}; ` +
+          `original_population_sha256=${createHash('sha256').update(JSON.stringify(history)).digest('hex')}. ` +
+          'Human delivery, pickup, runtime Goal and shipment require separate evidence.' };
+    },
+  }, args);
+}
+
+function originalAlarmEpisodes(state: GateInvariantsState) {
+  return { version: 1, entries: GATE_INVARIANT_NAMES.flatMap(name => {
+    const entry = state.invariants[name];
+    return entry?.status === 'breach' ? [{ name, sinceMs: entry.sinceMs, tickMs: entry.alarmTickMs ?? null,
+      filedItemId: entry.filedItemId ?? null, filedAtMs: entry.filedAtMs ?? null }] : [];
+  }) };
+}
+
 export function parseGateInvariantsState(raw: unknown): GateInvariantsState | null {
   let value = raw;
   if (typeof value === 'string') {
@@ -556,6 +653,8 @@ export function parseGateInvariantsState(raw: unknown): GateInvariantsState | nu
       evaluations: typeof e.evaluations === 'number' ? e.evaluations : 0,
       passes: typeof e.passes === 'number' ? e.passes : 0,
       ...(typeof e.filedItemId === 'string' ? { filedItemId: e.filedItemId } : {}),
+      ...(typeof e.filedAtMs === 'number' ? { filedAtMs: e.filedAtMs } : {}),
+      ...(typeof e.alarmTickMs === 'number' ? { alarmTickMs: e.alarmTickMs } : {}),
     };
   }
   return {
@@ -570,6 +669,7 @@ export function foldGateInvariants(
   prev: GateInvariantsState | null,
   results: readonly GateInvariantResult[],
   nowMs: number,
+  alarmTickMs?: number,
 ): { next: GateInvariantsState; transitions: GateInvariantTransition[]; emit: boolean } {
   const invariants: GateInvariantsState['invariants'] = {};
   const transitions: GateInvariantTransition[] = [];
@@ -585,6 +685,9 @@ export function foldGateInvariants(
       evaluations: (before?.evaluations ?? 0) + 1,
       passes: (before?.passes ?? 0) + (r.status === 'pass' ? 1 : 0),
       ...(!changed && before?.filedItemId ? { filedItemId: before.filedItemId } : {}),
+      ...(!changed && before?.filedAtMs !== undefined ? { filedAtMs: before.filedAtMs } : {}),
+      ...(r.status === 'breach' && (changed ? alarmTickMs !== undefined : before?.alarmTickMs !== undefined)
+        ? { alarmTickMs: changed ? alarmTickMs : before!.alarmTickMs } : {}),
     };
   }
   const emit = transitions.length > 0 || !prev || nowMs - prev.lastEmittedAtMs >= GATE_INVARIANT_HEARTBEAT_MS;
@@ -712,6 +815,10 @@ export interface RecordGateInvariantsDeps {
   installSlug: string;
   nowMs: number;
   results: readonly GateInvariantResult[];
+  /** Freeze this evaluation's measured tick only for a newly observed breach. */
+  alarmTickMs?: number;
+  /** Read after each awaited filing; the earlier nowMs is not a delivery receipt. */
+  clockMs?: () => number;
   /** Required append on the supplied transaction: failure must roll back its evaluation lease. */
   appendEvent: (status: GateInvariantStatus, detail: Record<string, unknown>, transactionSql: Sql) => Promise<void>;
   fileBreach: (result: GateInvariantResult) => Promise<string | null>;
@@ -732,12 +839,13 @@ export async function recordGateLiveInvariants(deps: RecordGateInvariantsDeps): 
     if (rows.length === 0) return null;
     const prev = parseGateInvariantsState(rows[0]?.state);
     if (prev && nowMs - prev.evaluatedAtMs < GATE_INVARIANT_LEASE_MS) return null;
-    const out = foldGateInvariants(prev, results, nowMs);
+    const out = foldGateInvariants(prev, results, nowMs, deps.alarmTickMs);
     if (out.emit) {
       await deps.appendEvent(overallGateInvariantStatus(results), {
         evaluatedAtMs: nowMs,
         results: results.map((r) => ({ name: r.name, status: r.status, observed: r.observed })),
         transitions: out.transitions,
+        alarmEpisodes: originalAlarmEpisodes(out.next),
       }, tx as unknown as Sql);
     }
     await tx`
@@ -749,12 +857,16 @@ export async function recordGateLiveInvariants(deps: RecordGateInvariantsDeps): 
   if (!folded) return { recorded: false, transitions: [], emitted: false, filed: [] };
 
   const filed: { name: GateInvariantName; id: string }[] = [];
+  const filedClocks = new Map<GateInvariantName, number>();
   for (const result of results) {
     // The state transition is committed before filing. A failed condition
     // upsert must remain eligible when the next tick sees the same breach.
     if (result.status !== 'breach' || folded.next.invariants[result.name]?.filedItemId) continue;
     const id = await deps.fileBreach(result).catch(() => null);
-    if (id) filed.push({ name: result.name, id });
+    if (id) {
+      filed.push({ name: result.name, id });
+      filedClocks.set(result.name, (deps.clockMs ?? Date.now)());
+    }
   }
   let emitted = folded.emit;
   if (filed.length > 0) {
@@ -764,7 +876,10 @@ export async function recordGateLiveInvariants(deps: RecordGateInvariantsDeps): 
     folded.next.lastEmittedAtMs = nowMs;
     for (const f of filed) {
       const entry = folded.next.invariants[f.name];
-      if (entry) entry.filedItemId = f.id;
+      if (entry) {
+        entry.filedItemId = f.id;
+        entry.filedAtMs = filedClocks.get(f.name);
+      }
     }
     const receiptEmitted = await sql.begin(async (tx) => {
       const rows = await tx`
@@ -779,6 +894,7 @@ export async function recordGateLiveInvariants(deps: RecordGateInvariantsDeps): 
         results: results.map((r) => ({ name: r.name, status: r.status, observed: r.observed })),
         transitions: folded.transitions,
         filed,
+        alarmEpisodes: originalAlarmEpisodes(folded.next),
       }, tx as unknown as Sql);
       return true;
     });
@@ -830,6 +946,8 @@ export async function checkGateLiveInvariants(
       installSlug,
       nowMs,
       results,
+      alarmTickMs: measuredTickMs(snapshot, thresholds),
+      clockMs: opts.nowMs ?? Date.now,
       appendEvent: (status, detail, transactionSql) =>
         appendPipelineEvent({ workspaceId, installSlug, kind: 'gate_invariants', status, detail }, transactionSql, { required: true }),
       fileBreach: async (r) => {

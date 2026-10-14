@@ -1117,24 +1117,53 @@ async function routeConsultCore(
   //      over-filtering starves the router.
   //    - withIterativeScan: without it the HNSW scan stops at hnsw.ef_search
   //      and silently under-returns (WI-37603).
-  const fetchedTurnRows = (await measure('transcripts', () => withIterativeScan(sql as never, (s) => (s as unknown as Sql)`
-    SELECT owner, session_id, turn_idx,
-           COALESCE(ts, ingested_at) AS ts,
-           left(COALESCE(text, ''), ${SUBJECT_EVIDENCE_TEXT_LIMIT}) AS "subjectText",
-           1 - (text_embedding <=> ${qVec}::vector) AS sim
-      FROM harness_shared.session_turns
-     WHERE (workspace_id = ${params.workspaceId} OR workspace_id = 'default')
+  const fetchedTurnRows = (await measure('transcripts', () => withIterativeScan(sql as never, (s) => {
+    const tx = s as unknown as Sql;
+    const turnFilter = tx`(workspace_id = ${params.workspaceId} OR workspace_id = 'default')
        AND text_embedding IS NOT NULL
-       AND ${proseProfilePredicateSql(sql, deps.embeddingProfile, 'text_embedding_profile', 'text_embedding_mode')}
+       AND ${proseProfilePredicateSql(tx, deps.embeddingProfile, 'text_embedding_profile', 'text_embedding_mode')}
        AND owner IS NOT NULL
        AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
        AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
        AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
        AND ${notRestricted}
-       AND ${nativePopulation}
-  ORDER BY text_embedding <=> ${qVec}::vector
-     LIMIT ${turnLimit}
-  `))) as unknown as Array<{
+       AND ${nativePopulation}`;
+    const columns = tx`owner, session_id, turn_idx, COALESCE(ts, ingested_at) AS ts,
+      left(COALESCE(text, ''), ${SUBJECT_EVIDENCE_TEXT_LIMIT}) AS "subjectText"`;
+    if (params.nativeConsult?.sourceState === 'live') {
+      // A global HNSW scan can exhaust max_scan_tuples before encountering
+      // any of these sparse current incarnations, even with iterative scan.
+      // Use indexed native-session lookups first, then rank their exact
+      // eligible population. Keep the canonical eligibility predicate above.
+      return tx`WITH native_sources AS MATERIALIZED (
+        SELECT DISTINCT a.coord_owner_id AS native_owner,
+          CASE WHEN a.agent = 'omp' THEN COALESCE(a.omp_thread_id, a.session_id)
+               ELSE a.session_id END AS native_session_id
+          FROM harness_shared.adv_sessions a
+         WHERE a.workspace_id = ${params.workspaceId}
+           AND a.agent = ${params.nativeConsult.sourceBackend}
+           AND a.role IS NULL AND a.ended_at IS NULL
+      ), native_turns AS MATERIALIZED (
+        SELECT ${columns}, text_embedding
+          FROM native_sources n
+          CROSS JOIN LATERAL (
+            SELECT * FROM harness_shared.session_turns
+             WHERE session_id = n.native_session_id AND owner = n.native_owner
+               AND ${turnFilter}
+            OFFSET 0
+          ) session_turns
+      ) SELECT owner, session_id, turn_idx, ts, "subjectText",
+               1 - (text_embedding <=> ${qVec}::vector) AS sim
+          FROM native_turns
+      ORDER BY text_embedding <=> ${qVec}::vector
+         LIMIT ${turnLimit}`;
+    }
+    return tx`SELECT ${columns}, 1 - (text_embedding <=> ${qVec}::vector) AS sim
+        FROM harness_shared.session_turns
+       WHERE ${turnFilter}
+    ORDER BY text_embedding <=> ${qVec}::vector
+       LIMIT ${turnLimit}`;
+  }))) as unknown as Array<{
     owner: string;
     session_id: string;
     turn_idx: number;

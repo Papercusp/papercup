@@ -373,7 +373,11 @@ export async function findUnpublishedGitlinks(input: {
     }
     const branch = await originDefaultBranch(runGit, subDir);
     if (input.fetch !== false) {
-      const fetched = await network(['fetch', '--no-tags', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], subDir);
+      // No recursion: a nested unpublished pin would fail the fetch instead of being reported.
+      const fetched = await network(
+        ['fetch', '--no-tags', '--no-recurse-submodules', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+        subDir,
+      );
       if (fetched.code !== 0) {
         return { ok: false, error: `could not fetch ${fullPath}'s main repository (${branch}): ${fetched.stderr.trim().slice(0, 200)}` };
       }
@@ -381,7 +385,11 @@ export async function findUnpublishedGitlinks(input: {
     const contained = await runGit(['merge-base', '--is-ancestor', link.sha, `refs/remotes/origin/${branch}`], subDir);
     if (contained.code === 0) continue;
     unpublished.push({ path: fullPath, sha: link.sha, url, branch });
-    if (depth < 8) {
+    // Nested pins can only be read from a pinned commit this checkout has. A checkout that
+    // never received it (the main repository's own checkout, at the merge gate) has nothing
+    // to recurse into, and the entry above already blocks.
+    const present = await runGit(['cat-file', '-e', `${link.sha}^{commit}`], subDir);
+    if (present.code === 0 && depth < 8) {
       const nested = await findUnpublishedGitlinks({
         ...input,
         repoDir: subDir,

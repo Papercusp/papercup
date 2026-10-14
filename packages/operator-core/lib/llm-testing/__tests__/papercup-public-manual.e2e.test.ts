@@ -62,6 +62,16 @@ let chat: ChatSession | undefined;
 let registeredFixture = false;
 let runtimeBuild: { sha: string; measuredAt: string };
 const runPtool = promisify(execFile);
+function manualChatSetupRecorder(evidenceDir: string) {
+  mkdirSync(evidenceDir, { recursive: true });
+  return publicManualHostedPhaseRecorder(value => {
+    // A timed-out hook may never enter the case's try/finally or create case.json.
+    writeFileSync(join(evidenceDir, 'setup.json'), JSON.stringify({
+      id: 'public-manual-chat-setup', ...value,
+    }), { mode: 0o600 });
+    console.log('PUBLIC_MANUAL_SETUP_PHASE', JSON.stringify(value));
+  });
+}
 // Optional isolated bundle host: production's existing cwd/bundled-source resolver
 // reads this disposable directory. Never change the canonical or served manual.
 let manualFixtureDir = process.env.PAPERCUSP_TEST_PUBLIC_MANUAL_FIXTURE_DIR;
@@ -436,6 +446,25 @@ function manualCleanupEvidence(failures: { step: string; error: unknown }[]) {
 }
 
 describe('public manual fixture cleanup evidence', () => {
+  it('retains the active shared-chat setup operation before a hook can interrupt it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'manual-chat-setup-evidence-'));
+    const phase = manualChatSetupRecorder(root);
+    let finish!: () => void;
+    try {
+      const pending = phase('principal-admission', () => new Promise<void>(resolve => { finish = resolve; }));
+      expect(JSON.parse(readFileSync(join(root, 'setup.json'), 'utf8'))).toMatchObject({
+        id: 'public-manual-chat-setup', stage: 'principal-admission', state: 'running',
+      });
+      finish();
+      await pending;
+      await expect(phase('registry-lock-acquire', async () => { throw Error('private-bearer-must-not-leak'); }))
+        .rejects.toThrow('private-bearer-must-not-leak');
+      expect(JSON.parse(readFileSync(join(root, 'setup.json'), 'utf8'))).toMatchObject({
+        stage: 'registry-lock-acquire', state: 'failed', errorCode: 'hosted_fixture_phase_failed',
+      });
+      expect(readFileSync(join(root, 'setup.json'), 'utf8')).not.toContain('private-bearer');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it('times out a stalled read-only phase and runs owned cleanup before the runner timeout', async () => {
     vi.useFakeTimers();
     const phases: unknown[] = [];
@@ -2459,27 +2488,28 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
   beforeEach(async () => {
     ownedOperator?.assertAlive();
     workspaceId = `public-chat-manual-${randomUUID()}`;
-    await mutateFixtureRegistry(() => {
+    const phase = manualChatSetupRecorder(join(llmBatteryEvidenceRoot(), `public-manual-setup-${randomUUID()}`));
+    await phase('registry-coordination', () => mutateFixtureRegistry(() => {
       const before = readRegistry();
       expect(before.workspaces.some((entry) => entry.id === workspaceId)).toBe(false);
       const registered = ensureWorkspaceEntry(workspaceId, 'Temporary public manual acceptance');
       registeredFixture = true;
       expect(registered.current).toBe(before.current);
       expect(registered.workspaces.some((entry) => entry.id === workspaceId)).toBe(true);
-    });
+    }));
     principalSessionId = `public-chat-manual-${randomUUID()}`;
-    const principal = await startPiSession({
+    const principal = await phase('principal-admission', () => startPiSession({
       workspaceId, sessionId: principalSessionId, capabilities: ['docs:read'],
       allowedTools: ['docs:search', 'docs:get'],
       expiresAt: new Date(Date.now() + 15 * 60_000),
-    });
+    }));
     principalBearer = principal.bearer;
-    if (manualFixtureDir) await verifyFixtureBundle();
-    const conversation = await getOrCreateActiveConversation(workspaceId);
-    chat = await new OperatorTarget({
+    if (manualFixtureDir) await phase('manual-bundle-read', () => verifyFixtureBundle());
+    const conversation = await phase('conversation-create', () => getOrCreateActiveConversation(workspaceId));
+    chat = await phase('target-open', () => new OperatorTarget({
       baseUrl, role: 'papercup', hostTrust: 'public', workspaceId,
       principalToken: principal.bearer, conversationId: conversation.id,
-    }).open({ runId: randomUUID(), workspaceMode: 'real', transport: 'http-sse' });
+    }).open({ runId: randomUUID(), workspaceMode: 'real', transport: 'http-sse' }));
   }, 30_000);
 
   afterEach(async () => {

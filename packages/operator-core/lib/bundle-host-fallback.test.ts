@@ -54,6 +54,19 @@ let outfile: string;
 let marker: string;
 let compilerPath: string;
 
+/** Inject at the compiler seam after the pinned resolver, preserving the real
+ * version check and cache-protected execution used by all bundle entries. */
+function compilerShim(directory: string, lines: string[]): string {
+  mkdirSync(directory, { recursive: true });
+  const compiler = execFileSync('npx', ['--yes', '--package=esbuild@0.25.0', '-c', 'command -v esbuild'],
+    { env: { ...process.env, PATH: compilerPath }, encoding: 'utf8' }).trim();
+  const shim = join(directory, 'esbuild');
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  writeFileSync(shim, ['#!/usr/bin/env bash', ...lines, `exec ${quote(compiler)} "$@"`, ''].join('\n'), { mode: 0o755 });
+  writeFileSync(join(directory, 'npx'), ['#!/usr/bin/env bash', `printf '%s\\n' ${quote(shim)}`, ''].join('\n'), { mode: 0o755 });
+  return `${directory}:${compilerPath}`;
+}
+
 /** Run bundle-host.sh, returning its exit code and combined output. */
 function runBundler(entry: string, extraEnv?: Record<string, string>): { code: number; output: string } {
   // EI-24917607035361603: bundle-host.sh's restricted-hold gate (WI-10005745) would read the
@@ -106,6 +119,71 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+describe('shared bundle compiler pin', () => {
+  function runPinnedCompiler(version: string, removeBetweenUses = false) {
+    const shimDir = join(dir, 'pin-shim');
+    mkdirSync(shimDir);
+    const compiler = join(shimDir, 'esbuild');
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    writeFileSync(compiler, [
+      '#!/usr/bin/env bash',
+      '[[ "${BUNDLE_TEST_CACHE_LEASE:-}" == 1 ]] || exit 90',
+      'if [[ "${1:-}" == --version ]]; then printf \'%s\\n\' ' + quote(version) + '; exit 0; fi',
+      'printf "%s\\n" "$*" >> "$BUNDLE_TEST_COMPILES"',
+      '',
+    ].join('\n'), { mode: 0o755 });
+    writeFileSync(join(shimDir, 'npx'), [
+      '#!/usr/bin/env bash',
+      '[[ "${BUNDLE_TEST_CACHE_LEASE:-}" == 1 ]] || exit 90',
+      'printf "%s\\n" "$*" >> "$BUNDLE_TEST_RESOLVES"',
+      `printf '%s\\n' ${quote(compiler)}`,
+      '',
+    ].join('\n'), { mode: 0o755 });
+    const compiles = join(dir, 'compiles.log');
+    const resolves = join(dir, 'resolves.log');
+    const result = execFileSyncResult('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$1"',
+      'run_sidecar_cached_package() { BUNDLE_TEST_CACHE_LEASE=1 "$@"; }',
+      'bundle_host_esbuild "$2" first',
+      ...(removeBetweenUses ? ['rm "$3"'] : []),
+      'bundle_host_esbuild "$2" second',
+    ].join('\n'), 'pin-guard', join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh'), REPO_ROOT, compiler],
+    { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, BUNDLE_TEST_COMPILES: compiles, BUNDLE_TEST_RESOLVES: resolves });
+    return { ...result, compiles: existsSync(compiles) ? readFileSync(compiles, 'utf8') : '',
+      resolves: existsSync(resolves) ? readFileSync(resolves, 'utf8') : '' };
+  }
+
+  function execFileSyncResult(command: string, args: string[], env: NodeJS.ProcessEnv) {
+    try { return { code: 0, output: execFileSync(command, args, { env, encoding: 'utf8', timeout: 10_000 }) }; }
+    catch (error) {
+      const result = error as { status?: number; stdout?: string; stderr?: string };
+      return { code: result.status ?? 1, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
+    }
+  }
+
+  it('resolves once and validates and compiles each use inside the cache lease', () => {
+    const result = runPinnedCompiler('0.25.0');
+    expect(result.code, result.output).toBe(0);
+    expect(result.resolves.trim().split('\n')).toEqual(['--yes --package=esbuild@0.25.0 -c command -v esbuild']);
+    expect(result.compiles.trim().split('\n')).toEqual(['first', 'second']);
+  });
+
+  it('refuses a newer resolved compiler before compiling', () => {
+    const result = runPinnedCompiler('0.27.3');
+    expect(result.code).toBe(78);
+    expect(result.output).toContain('requires esbuild 0.25.0; resolved 0.27.3');
+    expect(result.compiles).toBe('');
+  });
+
+  it('fails closed if cache cleanup removed the resolved compiler between uses', () => {
+    const result = runPinnedCompiler('0.25.0', true);
+    expect(result.code).toBe(78);
+    expect(result.compiles.trim()).toBe('first');
+    expect(result.resolves.trim().split('\n')).toHaveLength(1);
+  });
+});
+
 describe('bundle-host.sh standalone spawner fallback', () => {
   it.each([
     { caller: 'release', allowStale: '0', previousSibling: true, expectedCode: 1 },
@@ -120,19 +198,15 @@ describe('bundle-host.sh standalone spawner fallback', () => {
     const entry = join(dir, 'hono-host.ts');
     writeFileSync(entry, 'export const freshHost = true;\n');
     const shimDir = join(dir, 'shim');
-    mkdirSync(shimDir);
-    writeFileSync(join(shimDir, 'npx'), [
-      '#!/usr/bin/env bash',
+    const path = compilerShim(shimDir, [
       'for a in "$@"; do',
       '  if [[ "$a" == */apps/operator/bin/spawner-sidecar.ts ]]; then',
       '    echo "ERROR: injected standalone compiler refusal" >&2; exit 1',
       '  fi',
       'done',
-      'PATH="${PATH#*:}" exec npx "$@"',
-      '',
-    ].join('\n'), { mode: 0o755 });
+    ]);
     const { code, output } = runBundler(entry, {
-      PATH: `${shimDir}:${compilerPath}`,
+      PATH: path,
       PAPERCUSP_BUNDLE_ALLOW_STALE_START: allowStale,
     });
     expect(code, output).toBe(expectedCode);
@@ -230,7 +304,7 @@ describe('bundle-host.sh last-known-good fallback', () => {
     const src = readFileSync(SCRIPT, 'utf8');
     const guardIdx = src.indexOf('--exec-under-lock');
     const commonInputsIdx = src.indexOf('source "$SCRIPT_DIR/bundle-host-common.sh"');
-    const esbuildIdx = src.indexOf('npx --yes esbuild@0.25.0');
+    const esbuildIdx = src.indexOf('compiler-resolve bundle_host_prepare_esbuild');
 
     expect(guardIdx).toBeGreaterThan(-1);
     expect(src).toContain('installMutexIsHeld(installLockNameForRoot(process.argv[2]))');
@@ -329,36 +403,29 @@ describe('bundle-host.sh last-known-good fallback', () => {
   // generation bundle died 10s in with an EMPTY build log. The old
   // `if ! ( … ); then bundle_rc=1` discarded the subshell's real status, so a
   // kill read exactly like a build error and the cause was unrecoverable once
-  // the candidate checkout was pruned. A fake `npx` that SIGKILLs its parent
-  // (the bundle subshell) reproduces that shape on a perfectly buildable entry.
+  // the candidate checkout was pruned. A compiler shim SIGKILLs its cache-helper
+  // parent; preserve that signal through the compiler function and subshell.
   it(
-    'reports an EXTERNAL kill of the bundle step as a signal, with an empty-log diagnosis',
+    'reports an EXTERNAL kill during compilation as a signal with retained diagnostics',
     () => {
       const entry = join(dir, 'ok-entry.ts');
       writeFileSync(entry, 'export const ok = 1;\nconsole.log(ok);\n');
       const shimDir = join(dir, 'shim');
-      execFileSync('mkdir', ['-p', shimDir], { timeout: 10_000, killSignal: 'SIGKILL' });
-      writeFileSync(
-        join(shimDir, 'npx'),
-        [
-          '#!/usr/bin/env bash',
+      const path = compilerShim(shimDir, [
           'for a in "$@"; do',
           '  if [[ "$a" == "$BUNDLE_TEST_KILL_ENTRY" ]]; then kill -9 "$PPID"; sleep 1; exit 0; fi',
           'done',
-          'PATH="${PATH#*:}" exec npx "$@"',
-          '',
-        ].join('\n'),
-        { mode: 0o755 },
-      );
+      ]);
 
       const { code, output } = runBundler(entry, {
-        PATH: `${shimDir}:${compilerPath}`,
+        PATH: path,
         BUNDLE_TEST_KILL_ENTRY: entry,
       });
 
       expect(code).not.toBe(0);
       expect(output).toMatch(/KILLED by signal 9 \(SIGKILL, exit status 137\)/);
-      expect(output).toMatch(/build log is EMPTY/);
+      expect(output).toContain('NPM_INSTALL_SAFE guarding package-cache reader');
+      expect(output).not.toMatch(/build log is EMPTY/);
       expect(output).toMatch(/NO previous bundle/);
       expect(existsSync(outfile)).toBe(false);
     },

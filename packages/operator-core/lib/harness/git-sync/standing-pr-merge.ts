@@ -22,7 +22,13 @@
 
 import type { Pr } from '../../pr-host/types';
 import { STANDING_PR_BRANCH } from './decide-standing-pr';
-import { confirmMergeAdvance, decideMergeGate, type MergeTestRecord } from './decide-merge-gate';
+import {
+  confirmMergeAdvance,
+  decideMergeGate,
+  type MergeGateRefusalReason,
+  type MergeTestRecord,
+  type SubmodulePinCheck,
+} from './decide-merge-gate';
 import type { PotIntegrationModeRead } from './pot-integration-mode';
 
 export type StandingPrMergePolicy = 'owner' | 'auto';
@@ -64,6 +70,12 @@ export interface StandingPrMergeDeps {
   /** The latest exact-merge test recorded for this PR, if any. */
   loadLastTest(prNumber: number): Promise<MergeTestRecord | null>;
   saveTest(prNumber: number, rec: MergeTestRecord): Promise<void>;
+  /**
+   * D-017 §6: which submodule commits `prHeadSha` pins (relative to `targetTipSha`)
+   * are not on their submodule's main repository yet. Repos without submodules answer
+   * `{ ok: true, unpublished: [] }`. Report a failed check as `ok: false`, never as empty.
+   */
+  findUnpublishedGitlinks(prHeadSha: string, targetTipSha: string): Promise<SubmodulePinCheck>;
   /** Merge the PR head onto the target tip; the result sha, or null on a conflict. */
   buildMergeResult(prHeadSha: string, targetTipSha: string): Promise<string | null>;
   /** Start the pot suite on `rec.mergeSha`; its pass/fail lands later via `saveTest`. */
@@ -94,7 +106,7 @@ export type StandingPrMergeOutcome =
   | { action: 'left-for-owner' }
   | {
       action: 'refused';
-      reason: 'author-revoked' | 'nothing-promoted' | 'pr-head-not-promoted' | 'merge-result-failed' | 'merge-conflict';
+      reason: 'author-revoked' | MergeGateRefusalReason | 'merge-conflict';
       detail: string;
     }
   | { action: 'skipped'; reason: 'not-approved' | 'checks-failing'; detail: string }
@@ -128,11 +140,20 @@ export async function stepStandingPrMerge(
   const prNumber = pr.ref.number;
   const targetTipSha = await deps.readTargetTip(pr.base_ref);
   const lastTest = await deps.loadLastTest(prNumber);
+  // Only a promoted head can merge, so the (network) pin check runs only for one.
+  const submodulePins: SubmodulePinCheck | undefined =
+    input.promotedSha !== null && pr.head_sha === input.promotedSha
+      ? await deps.findUnpublishedGitlinks(pr.head_sha, targetTipSha).catch((err: unknown) => ({
+          ok: false as const,
+          error: err instanceof Error ? err.message : String(err),
+        }))
+      : undefined;
   const decision = decideMergeGate({
     prHeadSha: pr.head_sha,
     promotedSha: input.promotedSha,
     targetTipSha,
     lastTest,
+    submodulePins,
   });
 
   switch (decision.action) {

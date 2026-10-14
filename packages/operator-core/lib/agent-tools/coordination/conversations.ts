@@ -166,6 +166,7 @@ import {
   resolveConversationCore,
   settleConsultConversationCore,
   supersedeConversationCore,
+  withdrawConversationCore,
   promoteConversationCore,
   type AppendPostError,
   type ConversationDeps,
@@ -183,6 +184,9 @@ import {
   type ResolveResult,
   type SupersedeConversationInput,
   type SupersedeConversationResult,
+  type WithdrawConversationError,
+  type WithdrawConversationInput,
+  type WithdrawConversationResult,
 } from './conversations-core';
 import type { AgentIdentity } from './identity';
 import type {
@@ -462,6 +466,49 @@ export async function supersedeConversation(
           choice: SUPERSEDED_QUESTION_CHOICE,
           resolver: SUPERSEDED_QUESTION_RESOLVER,
           note: `superseded by conversation ${result.replacement.conversation.id}`,
+        })),
+      );
+    })().catch(() => {});
+  }
+  return result;
+}
+
+/**
+ * The asker retracts an open question with no answer and no replacement. Like
+ * supersede, the question's conversation:answered awaits and any ask-owner
+ * escalation twin are retired so nothing keeps waiting on a dead gate.
+ */
+export async function withdrawConversation(
+  identity: AgentIdentity,
+  input: WithdrawConversationInput,
+): Promise<WithdrawConversationResult | WithdrawConversationError> {
+  const result = await withConversationsIdentityScope(identity, undefined, () =>
+    withdrawConversationCore(deps, identity, input),
+  );
+  if (!('error' in result)) {
+    try {
+      await retireInterestEventAwaits({ kind: 'conversation-question', ref: result.conversation.id });
+    } catch {
+      /* lifecycle cleanup is fail-soft */
+    }
+    void (async () => {
+      const [{ selectEscalationsForConversation, WITHDRAWN_QUESTION_RESOLVER, WITHDRAWN_QUESTION_CHOICE }, { listEscalations, resolveEscalationsBatch }] =
+        await Promise.all([
+          import('../../attention/conversation-escalation-link.js'),
+          import('./escalations.js'),
+        ]);
+      const opens = await listEscalations({ status: 'open' });
+      const msgIds = selectEscalationsForConversation(
+        opens as unknown as { msg_id: string }[],
+        result.conversation.id,
+      );
+      if (msgIds.length === 0) return;
+      await resolveEscalationsBatch(
+        msgIds.map((msg_id) => ({
+          msg_id,
+          choice: WITHDRAWN_QUESTION_CHOICE,
+          resolver: WITHDRAWN_QUESTION_RESOLVER,
+          note: `withdrawn by the asker: ${input.reason.trim()}`,
         })),
       );
     })().catch(() => {});

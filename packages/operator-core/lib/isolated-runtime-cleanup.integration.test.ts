@@ -13,6 +13,36 @@ import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp
 const root = resolve(import.meta.dirname, '../../..');
 const workerOptions = isolatedWorkerOptions(30_000);
 
+it('pre-mints the private operator spawn-signing key before admitting its first native launch', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-spawn-signing-'));
+  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: evidenceDir };
+  delete env.PC_HEAVY_PREEMPT_READY_FILE;
+  delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+  const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+    process.execPath, '--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import postgres from 'postgres';
+      assert.match(process.env.PAPERCUSP_WORKSPACE_ID, /^test-runtime-/);
+      const url = new URL(process.env.HARNESS_ADMIN_DATABASE_URL);
+      assert.equal(url.port, process.env.PAPERCUSP_PG_PORT);
+      assert.notEqual(url.port, '5432');
+      const sql = postgres(url.toString(), { max: 1 });
+      try {
+        const rows = await sql\`SELECT octet_length(decode(value_b64, 'base64')) AS bytes
+          FROM harness_shared.operator_secrets WHERE name = 'spawn-signing-key'\`;
+        assert.equal(rows.length, 1, 'the signing key must exist before the first native launch');
+        assert.equal(rows[0].bytes, 32);
+        console.log('private-spawn-signing-ready');
+      } finally { await sql.end(); }
+    `], { cwd: root, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  try {
+    const result = await captureIsolatedWorker(child, evidenceDir, isolatedWorkerOptions(120_000));
+    expect(result, result.output.slice(-6000)).toMatchObject({ code: 0, signal: null, timedOut: false,
+      exitWaitTimedOut: false, stdioDrainTimedOut: false });
+    expect(result.output).toContain('private-spawn-signing-ready');
+  } finally { await rm(evidenceDir, { recursive: true, force: true }); }
+}, 180_000);
+
 it('keeps HOME-dependent ripgrep executable assets available while product HOME stays isolated', async () => {
   const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-ripgrep-assets-'));
   const originalHome = join(evidenceDir, 'original-home');

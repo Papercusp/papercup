@@ -29,11 +29,44 @@
  *   operational — everything else: surrogate keys (uuid ids, user_id, organization_id),
  *                 enums/states, timestamps, revision counters, digests of non-secret
  *                 bodies.
+ *   customer-content — content the customer brings in: documents, messages, search hits,
+ *                 prompts and model outputs. Its composition is unknown, so it may carry any
+ *                 other class. No hosted control-plane column holds it (declared with the
+ *                 `content` key below); pilot data paths carry it
+ *                 (data-governance/pilot-processing-map.ts).
+ *
+ * DLP (P-016a, WI-6554700010011918). This is also the ONE classification vocabulary that
+ * governance policy administers. A class is governed as the `dataUse` label `class:<class>`
+ * (`dataClassUseLabel`). Injection legs and dispatched calls carry the labels of the classes
+ * they move, so an organization rule `dataUse.deny: ['class:pii']` withholds them. The policy
+ * write path refuses a `class:` label that names no class here (governance-policy/store.ts),
+ * so a typo cannot silently protect nothing.
  */
 
-export type CustomerDataClass = 'pii' | 'secret' | 'billing' | 'operational';
+export type CustomerDataClass = 'pii' | 'secret' | 'billing' | 'operational' | 'customer-content';
 
-export const CUSTOMER_DATA_CLASSES: readonly CustomerDataClass[] = ['pii', 'secret', 'billing', 'operational'];
+export const CUSTOMER_DATA_CLASSES: readonly CustomerDataClass[] = ['pii', 'secret', 'billing', 'operational', 'customer-content'];
+
+export function isCustomerDataClass(value: unknown): value is CustomerDataClass {
+  return typeof value === 'string' && (CUSTOMER_DATA_CLASSES as readonly string[]).includes(value);
+}
+
+/** Prefix of a data class's governance `dataUse` label. */
+export const DATA_CLASS_USE_PREFIX = 'class:';
+
+/** The governance `dataUse` label of one data class (`pii` → `class:pii`). */
+export function dataClassUseLabel(cls: CustomerDataClass): string {
+  return `${DATA_CLASS_USE_PREFIX}${cls}`;
+}
+
+/** One line per class, for the governance administration surface. */
+export const CUSTOMER_DATA_CLASS_DESCRIPTIONS: Readonly<Record<CustomerDataClass, string>> = {
+  pii: 'Identifies or describes a natural person.',
+  secret: 'Grants or helps grant access; never exported or logged.',
+  billing: 'Money and entitlement facts.',
+  operational: 'Keys, states, timestamps and other non-personal facts.',
+  'customer-content': 'Customer documents, messages, prompts and outputs; may carry any other class.',
+};
 
 /** Where the authoritative copy of the facts in a table lives. */
 export type SystemOfRecord =
@@ -100,14 +133,22 @@ function table(
     readonly access?: string;
     readonly billing?: string;
     readonly operational?: string;
+    /** Columns of class `customer-content`. */
+    readonly content?: string;
   },
 ): CustomerDataTable {
-  const { pii = '', access = '', billing = '', operational = '', ...rest } = spec;
+  const { pii = '', access = '', billing = '', operational = '', content = '', ...rest } = spec;
   return {
     schema,
     table: name,
     ...rest,
-    columns: { pii: cols(pii), secret: cols(access), billing: cols(billing), operational: cols(operational) },
+    columns: {
+      pii: cols(pii),
+      secret: cols(access),
+      billing: cols(billing),
+      operational: cols(operational),
+      'customer-content': cols(content),
+    },
   };
 }
 

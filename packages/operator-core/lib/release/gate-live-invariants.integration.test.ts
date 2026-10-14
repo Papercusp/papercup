@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { GATE_INVARIANT_NAMES, readGateInvariantWindow, evaluateGateInvariantWindow,
   GATE_INVARIANT_ACCEPTANCE_WINDOW_MS, GATE_INVARIANT_HEARTBEAT_MS, GATE_INVARIANT_LEASE_MS,
-  recordGateLiveInvariants, type GateInvariantResult } from './gate-live-invariants';
+  recordGateLiveInvariants, evaluateGateInvariantAlarmWindow, type GateInvariantResult } from './gate-live-invariants';
 import { readGreenMainRecoveryWindow, evaluateGreenMainRecoveryWindow, readGreenMainRepairRoundWindow, evaluateGreenMainRepairRoundWindow } from './green-main-slo';
 
 describe('historical invariant acceptance (real PG)', () => {
@@ -157,10 +157,14 @@ describe('invariant breach delivery (real PG)', () => {
     await db.sql`CREATE TABLE harness_shared.routines (
       workspace_id text NOT NULL, install_slug text NOT NULL, name text NOT NULL,
       metadata jsonb NOT NULL DEFAULT '{}', PRIMARY KEY (workspace_id, install_slug, name))`;
+    await db.sql`CREATE TABLE harness_shared.pipeline_events (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, install_slug text NOT NULL,
+      kind text NOT NULL, status text NOT NULL, detail jsonb NOT NULL, created_at timestamptz NOT NULL)`;
   }, 120_000);
   afterAll(async () => { await db?.cleanup(); });
   beforeEach(async () => {
     await db.sql`DELETE FROM harness_shared.routines`;
+    await db.sql`DELETE FROM harness_shared.pipeline_events`;
     await db.sql`INSERT INTO harness_shared.routines (workspace_id, install_slug, name)
       VALUES (${scope.workspaceId}, ${scope.installSlug}, 'green-checkpoint')`;
   });
@@ -212,8 +216,53 @@ describe('invariant breach delivery (real PG)', () => {
       nowMs: start + GATE_INVARIANT_LEASE_MS, results: [breach], fileBreach: async () => 'WI-retry',
       appendEvent: async (status, detail) => { events.push({ status, detail }); } });
     expect(outcome).toMatchObject({ transitions: [], emitted: true });
-    expect(events).toEqual([{ status: 'breach', detail: { evaluatedAtMs: start + GATE_INVARIANT_LEASE_MS, results: [breach], transitions: [],
+    expect(events).toMatchObject([{ status: 'breach', detail: { evaluatedAtMs: start + GATE_INVARIANT_LEASE_MS, results: [breach], transitions: [],
       filed: [{ name: breach.name, id: 'WI-retry' }] } }]);
+  });
+
+  it('records the actual awaited filing clock while retaining the original breach tick (real PG)', async () => {
+    let clock = start;
+    const events: Record<string, unknown>[] = [];
+    const appendEvent = async (_status: unknown, detail: Record<string, unknown>) => { events.push(detail); };
+    await recordGateLiveInvariants({ sql: db.sql, ...scope, nowMs: start, alarmTickMs: GATE_INVARIANT_LEASE_MS,
+      clockMs: () => clock, results: [breach], fileBreach: async () => null, appendEvent });
+    clock = start + GATE_INVARIANT_LEASE_MS;
+    await recordGateLiveInvariants({ sql: db.sql, ...scope, nowMs: clock, alarmTickMs: 10 * GATE_INVARIANT_LEASE_MS,
+      clockMs: () => clock, results: [breach], fileBreach: async () => { clock += 7; return 'WI-timed'; }, appendEvent });
+    expect(await entry()).toMatchObject({ sinceMs: start, alarmTickMs: GATE_INVARIANT_LEASE_MS,
+      filedAtMs: start + GATE_INVARIANT_LEASE_MS + 7, filedItemId: 'WI-timed' });
+    expect(events.at(-1)).toMatchObject({ alarmEpisodes: { version: 1, entries: [{ name: breach.name,
+      sinceMs: start, tickMs: GATE_INVARIANT_LEASE_MS, filedAtMs: clock, filedItemId: 'WI-timed' }] } });
+    expect(events[0]).toMatchObject({ alarmEpisodes: { entries: [{ filedItemId: null, filedAtMs: null }] } });
+  });
+
+  it.each([0, 1])('judges original persisted retry completion at deadline +%ims, rather than its start (real PG)', async delayMs => {
+    let clock = start;
+    const results = (breached: boolean): GateInvariantResult[] => GATE_INVARIANT_NAMES.map(name =>
+      ({ name, status: name === breach.name && breached ? 'breach' : 'pass', observed: 'original evaluation' }));
+    const appendEvent = async (status: string, detail: Record<string, unknown>, tx: typeof db.sql) => {
+      await tx`INSERT INTO harness_shared.pipeline_events
+        (workspace_id, install_slug, kind, status, detail, created_at)
+        VALUES (${scope.workspaceId}, ${scope.installSlug}, 'gate_invariants', ${status},
+          ${JSON.stringify(detail)}::text::jsonb, ${new Date(clock)})`;
+    };
+    await recordGateLiveInvariants({ sql: db.sql, ...scope, nowMs: clock, results: results(true),
+      alarmTickMs: GATE_INVARIANT_LEASE_MS, clockMs: () => clock, fileBreach: async () => null, appendEvent });
+    clock += GATE_INVARIANT_LEASE_MS;
+    await recordGateLiveInvariants({ sql: db.sql, ...scope, nowMs: clock, results: results(true),
+      alarmTickMs: 2 * GATE_INVARIANT_LEASE_MS, clockMs: () => clock,
+      fileBreach: async () => { clock += delayMs; return 'WI-original-receipt'; }, appendEvent });
+    clock += GATE_INVARIANT_LEASE_MS;
+    await recordGateLiveInvariants({ sql: db.sql, ...scope, nowMs: clock, results: results(false),
+      alarmTickMs: GATE_INVARIANT_LEASE_MS, clockMs: () => clock,
+      fileBreach: async () => { throw new Error('pass must not file'); }, appendEvent });
+    const history = await readGateInvariantWindow(db.sql, scope, { windowStartMs: start, windowEndMs: clock });
+    expect(history).toMatchObject({ status: 'complete', total: 3 });
+    const evaluation = evaluateGateInvariantAlarmWindow(history, clock);
+    expect(evaluation.assertions.find(a => a.id === 'original-invariant-breach-filing-receipts')!.passed).toBe(true);
+    expect(evaluation.assertions.find(a => a.id === 'invariant-breach-filings-within-one-tick')!.passed).toBe(delayMs === 0);
+    expect(evaluation.episodes).toEqual([{ name: breach.name, sinceMs: start, tickMs: GATE_INVARIANT_LEASE_MS,
+      filedAtMs: start + GATE_INVARIANT_LEASE_MS + delayMs, filedItemId: 'WI-original-receipt' }]);
   });
 
   it('rolls back a failed required history append so the next unchanged observation retries', async () => {

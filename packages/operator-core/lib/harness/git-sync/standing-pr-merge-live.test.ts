@@ -29,6 +29,7 @@ function fakeDeps(): StandingPrMergeDeps & { started: number } {
     readTargetTip: async () => 'b'.repeat(40),
     loadLastTest: async () => null,
     saveTest: async () => undefined,
+    findUnpublishedGitlinks: async () => ({ ok: true as const, unpublished: [] }),
     buildMergeResult: async () => 'c'.repeat(40),
     async startTests() {
       d.started += 1;
