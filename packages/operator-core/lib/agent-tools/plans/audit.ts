@@ -34,6 +34,7 @@ import {
   CITATION_KINDS,
   citationBlobSha,
   citationBlobShaAt,
+  CitationGitReadError,
   getEffectiveItemAudits,
   getLatestActivationAudit,
   getPlanItemStatuses,
@@ -1306,7 +1307,21 @@ export default defineTool({
               storedCitations.push(c);
               continue;
             }
-            const auditedBlobSha = await citationBlobShaAt(c, auditedSha, deps);
+            let auditedBlobSha: string | null;
+            try {
+              auditedBlobSha = await citationBlobShaAt(c, auditedSha, deps);
+            } catch (error) {
+              if (!(error instanceof CitationGitReadError)) throw error;
+              problems.push({
+                itemId: it.itemId,
+                code: 'citation_audited_sha_unavailable',
+                detail: `${c.kind} citation '${c.path ?? ''}' could not be checked against auditedSha ` +
+                  `'${auditedSha}' because the Git read failed; retry after the repository is available. ` +
+                  `${error.message}`,
+              });
+              storedCitations.push(c);
+              continue;
+            }
             if (!auditedBlobSha) {
               problems.push({
                 itemId: it.itemId,

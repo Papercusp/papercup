@@ -93,6 +93,7 @@ vi.mock('../../scorecards', async (orig) => ({
 }));
 
 import {
+  CitationGitReadError,
   getEffectiveItemAudits,
   getLatestActivationAudit,
   getPlanItemStatuses,
@@ -621,6 +622,35 @@ describe('plans:audit D-008 writer contract', () => {
 
     expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
     expect(result.problems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ itemId: 'P-001', code: 'citation_audited_sha_unresolvable' }),
+    ]));
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it('reports an operational audited-SHA Git failure separately from a missing citation', async () => {
+    mockContext.mockResolvedValue({
+      repoRoot: '/repo',
+      rootSource: 'canonical-repo',
+      deps: {
+        statFile: (path) => (path === 'src/gate.ts' ? { isFile: true } : null),
+        readFile: (path) => (path === 'src/gate.ts' ? 'export const gate = true;\n' : null),
+        blobSha: (path) => (path === 'src/gate.ts' ? '3'.repeat(40) : null),
+        blobShaAt: async () => {
+          throw new CitationGitReadError('Git citation read failed (no exit status): repository unavailable');
+        },
+      },
+    });
+
+    const result = await body(
+      [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] }],
+      { auditedSha: 'a'.repeat(40) },
+    );
+
+    expect(result).toMatchObject({ ok: false, error: 'audit_invalid' });
+    expect(result.problems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ itemId: 'P-001', code: 'citation_audited_sha_unavailable' }),
+    ]));
+    expect(result.problems).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ itemId: 'P-001', code: 'citation_audited_sha_unresolvable' }),
     ]));
     expect(mockRecord).not.toHaveBeenCalled();
