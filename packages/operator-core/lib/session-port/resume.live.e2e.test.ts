@@ -1,6 +1,6 @@
 /** D-021's final current-build matrix. Run only after the launcher source wall. */
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
@@ -53,6 +53,7 @@ async function native(session: Session, archivedSource = false) {
   // Ended fixtures are archived and removed from disk by the normal lifecycle.
   // Read their exact native archive with the production manifest/hash guards.
   // A fresh cross-backend target must still prove its physical live transcript.
+  if (!path && !archivedSource) return undefined;
   const snapshot = path ? await readStableLiveJsonl(path) : session.agent === 'claude'
     ? await readCanonicalClaudeArchive({ sessionId: id }, pgSessionArchiveStore())
     : await readCanonicalNativeArchive({ backend: session.agent, sessionId: id }, pgSessionArchiveStore());
@@ -94,6 +95,7 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
       expect(hash(canonical), `Canonical ${path} changed after preparation`).toBe(sourceHashes[path]);
     }
     const observations: Array<Record<string, unknown>> = [];
+    const attemptId = randomUUID();
     const measured = await executeOperationalRun({
       filePath: 'packages/operator-core/lib/session-port/resume.live.e2e.test.ts',
       name: 'D-021 six ordered session ports and original-backend PUI resume shapes', framework: 'operational',
@@ -105,6 +107,12 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
           const args = ['--no-picker', '--headless', `--workspace=${workspace}`, '--harness=papercusp',
             '--no-plan', '--context-size=trimmed', '--account=auto', `--launched-by=${owner}`,
             `--resume=${source.id}`, `--label=cbp-final-${source.agent}-${target ?? 'same'}`];
+          // A completed semantic request is intentionally idempotent. This
+          // validation is a new request, so bind its actual instruction to this
+          // attempt rather than accidentally reopening yesterday's target.
+          const instruction = `Resume validation ${attemptId}, ${source.agent} to ${target ?? source.agent}. ` +
+            'Report the fixture marker already present in the carried user history. Do not call tools or start other work.';
+          args.push(`--kickoff=${instruction}`);
           if (target) {
             args.push(`--agent=${target}`);
             // Preserve the established matrix's compatible backend profiles.
@@ -119,11 +127,21 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
             run_in_background: true, work_item_id: 'WI-6554700010009934',
             description: `Final matrix ${source.agent} to ${target ?? 'original backend'}` }, origin);
           expect(task.task_id).toBeTruthy();
+          expect(task.log_path).toBeTruthy();
           console.info('CBP_FINAL_RESUME_TASK', JSON.stringify(task));
+          const assertLauncherProgress = () => {
+            let log = '';
+            try { log = readFileSync(task.log_path, 'utf8'); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+            if (/JOB END: status=(?:failed|killed)|JOB DIED|refusing to launch|session-port target bootstrap\/spawn failed/.test(log)) {
+              throw new Error(`Owned matrix launcher failed (${task.task_id}): ${log.slice(-4000)}`);
+            }
+          };
           try {
             let resumed!: Session;
             let port: Record<string, any> | undefined;
             await expect.poll(() => {
+              assertLauncherProgress();
               const candidates = rows(`SELECT id, agent, coord_owner_id, session_id, omp_thread_id, ended_at,
                 port_id FROM harness_shared.adv_sessions WHERE workspace_id = ${literal(workspace)}
                 AND ${target ? `label = ${literal(`cbp-final-${source.agent}-${target}`)}
@@ -135,11 +153,14 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
               if (!target) return Boolean(resumed.session_id || resumed.omp_thread_id);
               port = rows(`SELECT id, status, source_adv_session_id, target_adv_session_id, metadata
                 FROM harness_shared.session_ports WHERE workspace_id = ${literal(workspace)}
+                AND source_adv_session_id = ${Number(source.id)}
+                AND prepared_at >= ${literal(startedAt)}::timestamptz
                 AND target_adv_session_id = ${Number(resumed.id)} ORDER BY prepared_at DESC LIMIT 1`, origin)[0];
               return port?.status === 'delivered';
             }, { timeout: 240_000, interval: 5000 }).toBe(true);
             let snapshot: Awaited<ReturnType<typeof native>>;
             await expect.poll(async () => {
+              assertLauncherProgress();
               snapshot = await native(resumed);
               return Boolean(snapshot?.text.includes(target ? `port-id: ${port!.id}` : 'MATRIX-SRC'));
             }, { timeout: 120_000, interval: 5000 }).toBe(true);
@@ -150,6 +171,7 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
               expect(port!.metadata.persistenceProof).toBeTruthy();
             }
             observations.push({ source: source.agent, target: target ?? source.agent,
+              attemptId,
               sourceAdvSessionId: source.id, targetAdvSessionId: resumed.id,
               port, nativePath: snapshot!.path, nativeSha256: snapshot!.sha256, nativeSessionId: snapshot!.id });
             console.info('CBP_FINAL_RESUME_OBSERVATION', JSON.stringify(observations.at(-1)));
