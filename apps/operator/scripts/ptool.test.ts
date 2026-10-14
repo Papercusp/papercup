@@ -21,6 +21,8 @@ import {
   escapeJsonStringControls,
   formatJsonInputError,
   importSdkModuleWithInstallAwareness,
+  importPtoolSdkModule,
+  PTOOL_SDK_MODULE_LOADERS,
   preparePtoolConnectionModules,
   parseArgs,
   parseJsonInput,
@@ -3307,5 +3309,42 @@ describe('ptool SDK import install-race tolerance (EI-21860372620642128)', () =>
       if (previousMutexHeld === undefined) delete process.env.PAPERCUSP_INSTALL_MUTEX_HELD;
       else process.env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMutexHeld;
     }
+  });
+});
+
+// WI-6554700010012487: the packaged Server esbuild-bundles ptool.mjs and ships no
+// @modelcontextprotocol tree, so every SDK import must be a literal import() that
+// esbuild can inline. A computed import(specifier) shipped as a runtime lookup and
+// failed on every packaged install.
+describe('ptool SDK imports are bundle-traceable (WI-6554700010012487)', () => {
+  const source = readFileSync(new URL('./ptool.mjs', import.meta.url), 'utf8');
+
+  it('gives every SDK specifier ptool references a literal loader', () => {
+    const referenced = new Set(source.match(/@modelcontextprotocol\/sdk\/[A-Za-z0-9_./-]+\.js/g) ?? []);
+    expect(referenced.size).toBeGreaterThan(0);
+    for (const specifier of referenced) {
+      expect(Object.keys(PTOOL_SDK_MODULE_LOADERS)).toContain(specifier);
+      expect(source).toContain(`import('${specifier}')`);
+    }
+  });
+
+  it('defaults the install-aware importer to the literal loader table, not a computed import()', () => {
+    expect(source).not.toMatch(/doImport\s*=\s*\(\s*spec\s*\)\s*=>\s*import\(\s*spec\s*\)/);
+    expect(source).toMatch(/doImport\s*=\s*importPtoolSdkModule/);
+  });
+
+  it('resolves each loader to the real SDK module', async () => {
+    const client = await importPtoolSdkModule('@modelcontextprotocol/sdk/client/index.js');
+    const transport = await importPtoolSdkModule('@modelcontextprotocol/sdk/client/streamableHttp.js');
+    const types = await importPtoolSdkModule('@modelcontextprotocol/sdk/types.js');
+    expect(typeof client.Client).toBe('function');
+    expect(typeof transport.StreamableHTTPClientTransport).toBe('function');
+    expect(types.CallToolResultSchema).toBeDefined();
+  });
+
+  it('refuses a specifier that has no loader instead of importing it dynamically', async () => {
+    await expect(importPtoolSdkModule('@modelcontextprotocol/sdk/server/index.js')).rejects.toThrow(
+      /no bundle-traceable loader/,
+    );
   });
 });
