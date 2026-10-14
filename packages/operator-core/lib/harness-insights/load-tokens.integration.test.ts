@@ -1,11 +1,47 @@
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import SecretStream from '@hyperswarm/secret-stream';
+import { WebSocket, WebSocketServer } from 'ws';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createHostedPrincipal } from '../auth/hosted-principal';
 import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from '../telemetry-kinds';
 import { deliverCloudTelemetry, readCloudTelemetryConsent, writeCloudTelemetryConsent, type CloudTelemetryEnvelope } from '../cloud-telemetry';
 import { exportCustomerUsageDiagnostics, loadHarnessTokens } from './load-tokens';
+import { HostedSessionStore } from '../auth/hosted-session';
+import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
+import { createHostedChannelPrincipalResolver } from '../auth/hosted-principal-resolver';
+import { HostedWorkspaceSessionBroker } from '../endpoint-route/hosted-workspace-session';
+import type { HostedConnectorBinding, HostedConnectorTicketBinding } from '../endpoint-route/hosted-workspace-connector';
+import { HostedWorkspaceHostSessionAdapter } from '../workspace-host/hosted-session-host';
+import { ByocSealedChannel, isByocSealedPacket } from '../workspace-host/byoc-sealed-channel';
+
+// Keep the production HTTP handler and query unchanged; route its maintained
+// withWorkspace seam onto the migrated role-scoped private database.
+const httpFixture = vi.hoisted(() => ({ sql: null as Sql | null, sent: null as CloudTelemetryEnvelope[] | null }));
+vi.mock('@papercusp/db-org', async original => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  withWorkspace: async <T>(workspaceId: string, callback: (tx: Sql) => Promise<T>) => {
+    if (!httpFixture.sql) throw new Error('private_http_fixture_missing');
+    return httpFixture.sql.begin(async transaction => {
+      const tx = transaction as unknown as Sql;
+      await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
+      return callback(tx);
+    });
+  },
+}));
+vi.mock('../cloud-telemetry-posthog', async original => {
+  const actual = await original<typeof import('../cloud-telemetry-posthog')>();
+  return { ...actual, deliverCloudPosthog: async (...args: Parameters<typeof actual.deliverCloudPosthog>) => {
+    if (!httpFixture.sent) return actual.deliverCloudPosthog(...args);
+    return deliverCloudTelemetry(args[0], args[1], { readConsent: args[2],
+      send: async envelope => { httpFixture.sent!.push(envelope); } });
+  } };
+});
 
 let db: OrgTestDb;
 const workspace = `local-usage-${randomUUID()}`;
@@ -128,6 +164,139 @@ it('exports only a complete selected-runtime window, rechecks revocation, and ke
   expect(f.sent).toHaveLength(2);
   expect((await f.local()).totals).toEqual(local.totals);
 });
+
+it('runs the production export HTTP handler through a native sealed BYOC channel with persisted session and consent', async () => {
+  const f = await exportFixture();
+  const p = f.principal, control = p.workspaceId, customer = p.selectedWorkspaceId!;
+  const hostId = `diagnostic-host-${randomUUID()}`, connectionId = `diagnostic-connection-${randomUUID()}`;
+  const root = await mkdtemp(join(tmpdir(), 'diagnostic-http-'));
+  const sockets: WebSocket[] = [], wire: string[] = [], errors: unknown[] = [];
+  let adapter: HostedWorkspaceHostSessionAdapter | undefined, sealed: ByocSealedChannel | undefined;
+  let broker: HostedWorkspaceSessionBroker | undefined, server: WebSocketServer | undefined;
+  const sent: CloudTelemetryEnvelope[] = [];
+  try {
+    await db.adminSql`INSERT INTO papercusp_auth.hosted_users (id, primary_email, display_name)
+      VALUES (${p.userId}::uuid, ${`${p.userId}@example.test`}, 'Private diagnostic user')`;
+    await db.adminSql`INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name)
+      VALUES (${p.activeOrganizationId}::uuid, ${`diagnostic-${p.activeOrganizationId}`}, 'Private diagnostic organization')`;
+    await db.adminSql`INSERT INTO papercusp_auth.organization_memberships
+      (organization_id, user_id, role, status, authority, created_via)
+      VALUES (${p.activeOrganizationId}::uuid, ${p.userId}::uuid, 'owner', 'active', 'papercusp', 'organization_bootstrap')`;
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_connections
+      (workspace_id, id, target, label, credential_ref, status)
+      VALUES (${control}, ${connectionId}, 'gcp', 'Private connection', 'acceptance://no-provider', 'connected')`;
+    await db.adminSql`INSERT INTO harness_shared.workspace_hosts
+      (workspace_id, id, name, connection_id, target, scope_label, region, size, image, disk_gib, network, desired_state, observed_state)
+      VALUES (${control}, ${hostId}, 'Private host', ${connectionId}, 'gcp', 'acceptance', 'us-central1',
+        'n2-standard-2', 'ubuntu-2404', 40, 'default', 'running', 'running')`;
+    await db.adminSql`INSERT INTO harness_shared.customer_workspaces
+      (workspace_id, id, organization_id, workspace_host_id, display_name, state, created_by_principal_kind, created_by_principal_id)
+      VALUES (${control}, ${customer}, ${p.activeOrganizationId}, ${hostId}, 'Private workspace', 'active', 'user', ${p.userId})`;
+    const store = new HostedSessionStore(db.adminSql), membership = new PostgresHostedMembershipAuthority(db.adminSql);
+    const authority = await membership.resolveActive({ userId: p.userId, organizationId: p.activeOrganizationId });
+    if (!authority) throw new Error('diagnostic_membership_missing');
+    const session = await store.create({ userId: p.userId, organizationId: p.activeOrganizationId, workspaceId: customer,
+      permissionVersion: authority.permissionVersion, upstreamProvider: 'workos', upstreamSessionId: randomUUID(),
+      expiresAt: new Date(Date.now() + 60000) });
+    const binding: HostedConnectorBinding = { controlPlaneWorkspaceId: control, organizationId: p.activeOrganizationId,
+      customerWorkspaceId: customer, hostId, routeLabel: 'diagnostic-http', generation: 1,
+      transport: 'websocket', state: 'active', hosting: 'byoc' };
+    const ticket: HostedConnectorTicketBinding = { ...binding, kind: 'session', audience: 'workspace-operator',
+      userId: p.userId, hostedSessionId: session.id, expiresAt: new Date(Date.now() + 60000) };
+    broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0,
+      resolveChannelPrincipal: bound => createHostedChannelPrincipalResolver({ controlPlaneWorkspaceId: control,
+        sessionStore: store, membershipAuthority: membership }, bound)(),
+      readMonitoringConsent: async principal => await db.adminSql.begin(async transaction => {
+        const tx = transaction as unknown as Sql;
+        await tx.unsafe('SET LOCAL ROLE hosted_app');
+        await tx`SELECT set_config('app.organization_id', ${principal.activeOrganizationId}, true),
+          set_config('app.user_id', ${principal.userId}, true)`;
+        return readCloudTelemetryConsent(tx, principal);
+      }),
+    });
+    server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    server.on('error', error => errors.push(error));
+    server.on('connection', (socket, request) => {
+      socket.on('error', error => errors.push(error));
+      socket.on('message', data => wire.push(data.toString()));
+      // Ticket/connector bindings are trusted fixture admission; the native
+      // channel rechecks persisted session/membership for every export.
+      if (request.url === '/host') broker!.attachConnector(binding, socket);
+      else if (request.url === '/browser') broker!.attachBrowser(ticket, socket, { kind: 'operator-http', sealed: true });
+      else socket.close(4403);
+    });
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('diagnostic_socket_missing');
+    const dial = async (path: string) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${address.port}${path}`);
+      sockets.push(socket); socket.on('error', error => errors.push(error));
+      socket.on('message', data => wire.push(data.toString()));
+      await once(socket, 'open'); return socket;
+    };
+    const host = await dial('/host');
+    const clientKey = SecretStream.keyPair(), hostKey = SecretStream.keyPair();
+    adapter = new HostedWorkspaceHostSessionAdapter({ binding, workspaceRoot: root,
+      send: frame => host.send(JSON.stringify(frame)),
+      byocSealedChannel: { localKeyPair: hostKey, expectedRemotePublicKey: clientKey.publicKey },
+    });
+    host.on('message', data => { void adapter!.accept(JSON.parse(data.toString())).catch(error => errors.push(error)); });
+    const browser = await dial('/browser'), frames: Record<string, unknown>[] = [];
+    sealed = new ByocSealedChannel({ initiator: true, localKeyPair: clientKey, expectedRemotePublicKey: hostKey.publicKey,
+      sendPacket: packet => browser.send(JSON.stringify(packet)), onFrame: frame => frames.push(frame),
+      onError: error => errors.push(error) });
+    browser.on('message', data => {
+      const frame: unknown = JSON.parse(data.toString());
+      if (isByocSealedPacket(frame)) sealed!.receive(frame);
+    });
+    httpFixture.sql = db.appSql; httpFixture.sent = sent;
+    await sealed.opened;
+    const request = async (body = f.input()) => {
+      const requestId = randomUUID();
+      await sealed!.send({ type: 'http.request', requestId, method: 'POST',
+        path: '/api/harness/customer-runtime/insights/diagnostic-export', headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify(body)).toString('base64') });
+      await expect.poll(() => frames.some(frame => frame.type === 'http.end' && frame.requestId === requestId)).toBe(true);
+      expect(frames.find(frame => frame.type === 'http.response' && frame.requestId === requestId)?.status).toBe(202);
+      return JSON.parse(frames.filter(frame => frame.type === 'http.body' && frame.requestId === requestId)
+        .map(frame => Buffer.from(String(frame.data), 'base64').toString()).join(''));
+    };
+    expect(await request()).toEqual({ delivered: false, code: 'consent_disabled' });
+    const grant = await f.choice(true); await f.seed(grant.diagnostics.since!);
+    const privateOperation = f.input();
+    expect(await request(privateOperation)).toEqual({ delivered: true });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ event: 'cloud_diagnostic_aggregate', properties: {
+      calls: 1, input_tokens: 11, output_tokens: 7, cache_read_tokens: 3, cache_creation_tokens: 2 } });
+    expect(await request({ ...f.input(), workspace_id: 'foreign', calls: 999 } as ReturnType<typeof f.input>))
+      .toEqual({ delivered: false, code: 'invalid_export_request' });
+    await f.choice(false);
+    expect(await request()).toEqual({ delivered: false, code: 'consent_disabled' });
+    const local = await f.local(); expect(local.totals).toMatchObject({ runs: 2, tokens: 36023 });
+    const renewed = await f.choice(true);
+    expect(await request()).toEqual({ delivered: true });
+    expect(sent[1]).toMatchObject({ properties: { calls: 0, input_tokens: 0, period_start: renewed.diagnostics.since } });
+    expect(await store.revoke(session.id, 'diagnostic_acceptance_logout')).toBe(true);
+    expect(await request()).toEqual({ delivered: false, code: 'unverified_principal' });
+    expect(sent).toHaveLength(2);
+    expect((await f.local()).totals).toEqual(local.totals);
+    expect(wire.join('\n')).not.toContain(privateOperation.operation_id);
+    expect(JSON.stringify(privateOperation)).toContain(privateOperation.operation_id); // plaintext positive control
+    expect(JSON.stringify(sent)).not.toContain(customer);
+    expect(errors).toEqual([]);
+    console.info('CUSTOMER_DIAGNOSTIC_SEALED_HTTP_RECEIPT', JSON.stringify({
+      transport: 'native-websocket-noise', admission: 'trusted-fixture-ticket', authorization: 'persisted-session-membership',
+      defaultRefused: true, grantedCalls: 1, revokedRefused: true, reconsentedCalls: 0,
+      sessionRevokedRefused: true, localCalls: 2, localTokens: 36023, privateRequestAbsentOnWire: true,
+      sink: 'strict-cloud-delivery-capture' }));
+  } finally {
+    httpFixture.sent = null; httpFixture.sql = null;
+    sealed?.close(); adapter?.close(); broker?.dispose();
+    sockets.forEach(socket => socket.terminate());
+    if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60000);
 
 it.runIf(process.env.PAPERCUSP_TEST_POSTHOG_LIVE === 'true')('witnesses actual PostHog ingestion of local ledger aggregate beside default, revoked and hostile-request absence', async () => {
   const { getPosthogConfigWithSource } = await import('../posthog-config');
