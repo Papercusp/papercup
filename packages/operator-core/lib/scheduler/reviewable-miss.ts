@@ -28,6 +28,11 @@
  * `revision-requested` rows are NOT counted: they wait on their SUBMITTER's resubmission, which
  * a peer cannot perform, so they would advertise work the caller cannot do.
  *
+ * Pending rows HELD by another agent (`taken_by` set and not the caller) are NOT counted
+ * either (EI-25949663083795915): improvements:agent-review refuses them with
+ * `claim-conflict` (holder !== reviewer), so `pendingAgentReview` means "pending AND
+ * claimable by this caller", and the advised sample ids carry the same predicate.
+ *
  * PURE: no I/O, so both miss paths share one wording and a focused test pins the advice,
  * including the bug reproduction gate.
  */
@@ -40,7 +45,8 @@ export interface ReviewQueueCounts {
 export const REVIEWABLE_MISS_IDS_AT = 'excludedSample.queueControl.agentReview[].id';
 
 export interface ReviewableMissRoute {
-  /** Spec-matched rows whose peer review is pending — work a non-submitter can do now. */
+  /** Spec-matched rows whose peer review is pending and that no OTHER agent holds — work a
+   *  non-submitter can claim now. */
   pendingAgentReview: number;
   /** Step 1: list the spec's pending-review ids (read-only). The ids are at
    *  `excludedSample.queueControl.agentReview[].id`, each with its `ledgerIdeaId`. */

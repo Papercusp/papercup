@@ -1540,8 +1540,13 @@ async function aggregateIssueClaimExclusionsOn(
           AND NULLIF(BTRIM(COALESCE(payload ->> 'held_open_by', '')), '') IS NULL
           AND NULLIF(BTRIM(COALESCE(payload ->> 'claim_hold_by', '')), '') IS NULL
       )::int AS unattributed_claim_holds,
+      -- EI-25949663083795915: count only review rows THIS caller could claim.
+      -- improvements:agent-review refuses a row another agent holds
+      -- (holder !== reviewer -> 'claim-conflict'), so counting held rows told a
+      -- drained claimant "REVIEWABLE, NOT IDLE" about work it could never take.
       count(*) FILTER (
         WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'pending'
+          AND (NULLIF(BTRIM(COALESCE(taken_by, '')), '') IS NULL OR BTRIM(taken_by) = ${assignee})
       )::int AS pending_agent_review,
       count(*) FILTER (
         WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
@@ -1819,6 +1824,9 @@ export async function sampleIssueClaimExclusions(
       (SELECT 'agent-review'::text AS axis, feature_id, taken_by, taken_at, payload
          FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} c
         WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'pending'
+          -- Same claimability predicate as pending_agent_review (EI-25949663083795915):
+          -- never advise an id the review claim would refuse as held by another agent.
+          AND (NULLIF(BTRIM(COALESCE(taken_by, '')), '') IS NULL OR BTRIM(taken_by) = ${assignee})
         ORDER BY updated_ts DESC NULLS LAST LIMIT ${sampleLimit})
     ) queue_control
   `) as Array<{

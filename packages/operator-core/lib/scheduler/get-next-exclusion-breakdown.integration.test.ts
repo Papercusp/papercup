@@ -493,6 +493,35 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
       },
     ]);
   });
+
+  it('excludes pending reviews another agent holds from the count and the sample (EI-25949663083795915)', async () => {
+    const review = (idea: string) => ({
+      agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: idea, round: 1 },
+    });
+    // improvements:agent-review refuses this one with claim-conflict (holder !== reviewer).
+    await seedIssue('WI-QC-REVIEW-HELD-OTHER', review('idea-held-other'), { takenBy: 'su-other' });
+    await seedIssue('WI-QC-REVIEW-UNHELD', review('idea-unheld'));
+    // The caller's own hold is claimable by the caller, so it still counts.
+    await seedIssue('WI-QC-REVIEW-HELD-SELF', review('idea-held-self'), { takenBy: 'su-asking' });
+
+    const out = await readIssueClaimability(undefined, { harness: H, assignee: 'su-asking' }, {
+      limit: 20,
+      sampleLimit: 5,
+      breakdownOnly: true,
+    });
+    expect(out.breakdown.queueControl.pendingAgentReview).toBe(2);
+    expect((out.sample?.queueControl.agentReview ?? []).map((r) => r.id).sort()).toEqual([
+      'WI-QC-REVIEW-HELD-SELF',
+      'WI-QC-REVIEW-UNHELD',
+    ]);
+
+    // The direct (unmaterialized) aggregate applies the same predicate.
+    const direct = await aggregateIssueClaimExclusions(undefined, { harness: H, assignee: 'su-asking' });
+    expect(direct.queueControl.pendingAgentReview).toBe(2);
+    // With no caller, every held row is someone else's: only the unheld one is reviewable.
+    const anonymous = await aggregateIssueClaimExclusions(undefined, { harness: H });
+    expect(anonymous.queueControl.pendingAgentReview).toBe(1);
+  });
 });
 
 /**
