@@ -17,9 +17,10 @@
  * Read-only — it can never affect the system it watches.
  */
 import { promisify } from 'node:util';
-import { stat as statCb, statfs as statfsCb } from 'node:fs';
+import { stat as statCb, statfs as statfsCb, statSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { RETENTION_POLICY, type RetentionClass } from './retention-policy';
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
@@ -51,6 +52,43 @@ export function watchedPaths(): string[] {
     .filter(Boolean);
   const all = ['/', workspacesRoot(), '/mnt/data', tmpdir(), ...extra];
   return [...new Set(all)]; // dedup identical paths
+}
+
+/** The mount point that holds `path`: walk up while st_dev stays the same. Null when
+ *  `path` does not exist. */
+export function mountPointOf(path: string, stat: (p: string) => { dev: number } = (p) => statSync(p)): string | null {
+  let cur = path;
+  let dev: number;
+  try { dev = stat(cur).dev; } catch { return null; }
+  for (;;) {
+    const parent = dirname(cur);
+    if (parent === cur) return cur;
+    try { if (stat(parent).dev !== dev) return cur; } catch { return cur; }
+    cur = parent;
+  }
+}
+
+/** The alarm's OWN sampling set: watchedPaths() plus the mount point of every absolute
+ *  retention-policy root. A volume that holds retained data then cannot fill unwatched
+ *  (WI-6554700010011387: /mnt/backup reached 92% and the DB backup failed on its headroom
+ *  with no alarm, because no list named it). Derived from the policy, so a new volume is
+ *  watched as soon as a class names it. Deliberately NOT folded into watchedPaths(): the
+ *  release gate reuses that set for WRITE admission, and a volume the suite never writes
+ *  to must not hold the gate. `~` roots resolve under the home volume, already watched. */
+export function alarmWatchedPaths(
+  policy: readonly RetentionClass[] = RETENTION_POLICY,
+  stat?: (p: string) => { dev: number },
+): string[] {
+  const out = new Set(watchedPaths());
+  for (const cls of policy) {
+    for (const root of cls.roots) {
+      if (!root.startsWith('/')) continue;
+      const literal = root.includes('*') ? dirname(root.slice(0, root.indexOf('*')) + 'x') : root;
+      const mount = mountPointOf(literal, stat);
+      if (mount) out.add(mount);
+    }
+  }
+  return [...out];
 }
 
 // ── Pure detection ─────────────────────────────────────────────────────────────
@@ -310,7 +348,7 @@ export interface DiskAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 'r
   readContext?: () => Promise<DiskAlarmContext>;
   /** Bounded consumer attribution, sampled only when a filesystem breaches. */
   attributeUsage?: () => Promise<DiskRootChildScan>;
-  /** Injectable for tests — defaults to a `statfs` probe of watchedPaths(). */
+  /** Injectable for tests — defaults to a `statfs` probe of alarmWatchedPaths(). */
   sample?: () => Promise<DiskSnapshot[]>;
   /** Injectable for tests — defaults to a toast_log row + sync invalidate. */
   emitToast?: (t: { level: string; message: string; description: string }) => Promise<void>;
@@ -483,7 +521,7 @@ export async function runDiskSpaceAlarmOnce(
   deps: DiskAlarmDeps = {},
   policy: DiskAlarmPolicy = diskPolicyFromEnv(),
 ): Promise<{ checked: number; breaches: DiskBreach[]; escalated: boolean }> {
-  const sample = deps.sample ?? sampleDiskSnapshots;
+  const sample = deps.sample ?? (() => sampleDiskSnapshots(alarmWatchedPaths()));
   const emitToast = deps.emitToast ?? defaultEmitToast;
   const escalate = deps.escalate;
   const recentlyEscalated = deps.recentlyEscalated;

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AttentionNotifyInput } from '../attention-notify';
+import { RETENTION_POLICY, type RetentionClass } from './retention-policy';
 import { listDiskRootChildrenAsync } from './disk';
 vi.mock('./disk', async (importOriginal) => ({
   ...await importOriginal<typeof import('./disk')>(),
@@ -25,6 +26,8 @@ import {
   runDiskSpaceAlarmOnce as runDiskSpaceAlarmWithDefaults,
   diskPolicyFromEnv,
   watchedPaths,
+  alarmWatchedPaths,
+  mountPointOf,
   sampleDiskSnapshots,
   DEFAULT_DISK_POLICY,
   type DiskSnapshot,
@@ -568,6 +571,45 @@ describe('watchedPaths', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('alarmWatchedPaths — every retention volume is watched (WI-6554700010011387)', () => {
+  // A fake host: /mnt/backup and /mnt/data are their own devices; everything else is '/'.
+  const fakeStat = (p: string) => {
+    if (p === '/mnt/missing' || p.startsWith('/mnt/missing/')) throw new Error('ENOENT');
+    if (p === '/mnt/backup' || p.startsWith('/mnt/backup/')) return { dev: 2 };
+    if (p === '/mnt/data' || p.startsWith('/mnt/data/')) return { dev: 3 };
+    return { dev: 1 };
+  };
+  const cls = (id: string, roots: string[]): RetentionClass => ({
+    id, title: id, origin: 'system', roots, keep: { kind: 'keep', reason: 'fixture' }, enforcers: [{ kind: 'none' }],
+  });
+
+  it('mountPointOf walks up to the device boundary and is null for a missing path', () => {
+    expect(mountPointOf('/mnt/backup/offload/macos-vm/OSX-KVM', fakeStat)).toBe('/mnt/backup');
+    expect(mountPointOf('/usr/lib', fakeStat)).toBe('/');
+    expect(mountPointOf('/mnt/missing/x', fakeStat)).toBeNull();
+  });
+
+  it('adds the mount of every absolute class root, including glob roots, and skips ~ roots', () => {
+    const paths = alarmWatchedPaths([
+      cls('vm', ['/mnt/backup/offload/macos-vm']),
+      cls('trees', ['/mnt/backup/cloud-e2e-*']),
+      cls('home', ['~/.cache']),
+      cls('gone', ['/mnt/missing/x']),
+    ], fakeStat);
+    expect(paths).toContain('/mnt/backup');
+    expect(paths.filter((p) => p === '/mnt/backup')).toHaveLength(1);
+    expect(paths).not.toContain('/mnt/missing');
+    for (const p of watchedPaths()) expect(paths).toContain(p);
+  });
+
+  it('the shipped policy puts /mnt/backup in the ALARM set but not the gate write-admission set', () => {
+    // The gate reuses watchedPaths() for write admission (green-checkpoint sampleCheckpointDisk);
+    // a volume the suite never writes to must not hold it.
+    expect(alarmWatchedPaths(RETENTION_POLICY, fakeStat)).toContain('/mnt/backup');
+    expect(watchedPaths()).not.toContain('/mnt/backup');
   });
 });
 
