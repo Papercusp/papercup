@@ -13,7 +13,16 @@
     "method": "Read-only EXPLAIN (FORMAT JSON) of each template against the live test_runs schema using explicit non-evidence sentinel parameters.",
     "sourcePath": "docs/evidence/green-main-native-receipt-settlement-20261014.json",
     "schemaRevisionBinding": "Still unbound; the ContinuityProbe writer resolves schemaRevision:live to its own exact registry revision before an approved amendment is stored.",
-    "operationalAcceptance": false
+    "operationalAcceptance": false,
+    "throughputExtension": {
+      "component": "throughput",
+      "syntaxAndColumnReferences": "valid",
+      "method": "Read-only EXPLAIN with non-evidence sentinel parameters; explicit env database target localhost5432",
+      "taskId": "0mv81908bbkxe2o1l08",
+      "sourcePath": "docs/evidence/green-main-r12-paired-preparation-20261014.json",
+      "parametersBound": false,
+      "operationalAcceptance": false
+    }
   },
   "reuses": [
     "harness_shared.test_runs",
