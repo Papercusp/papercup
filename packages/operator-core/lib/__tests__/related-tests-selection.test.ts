@@ -232,6 +232,10 @@ describe('original gate selection preparation', () => {
       options([resolved(['a.test.ts']), resolved(['a.test.ts'])]));
     expect(result.coverage).toBe('partial');
     expect(result.overlaps).toEqual(['packages/core/a.test.ts']);
+    expect(result.fileOccurrences).toEqual([
+      { task: '@probe/core :: test', step: null, command: 'vitest run', file: 'packages/core/a.test.ts', kind: 'test-file' },
+      { task: '@probe/core :: test:integration', step: null, command: 'vitest run', file: 'packages/core/a.test.ts', kind: 'test-file' },
+    ]);
   });
 
   it('retains ordered local npm chains, lifecycle checks and unknown Astro steps without inventing files', () => {
@@ -361,6 +365,36 @@ describe('original gate selection preparation', () => {
     expect(result.files).toEqual(['packages/core/a.test.ts']);
     expect(result.coverage).toBe('partial');
     expect(result.unenumerated[0].reason).toBe('overlapping-chain-file-population');
+    expect(result.fileOccurrences).toEqual([
+      { task: '@probe/core :: test', step: 0, command: 'vitest run', file: 'packages/core/a.test.ts', kind: 'test-file' },
+      { task: '@probe/core :: test', step: 1, command: 'vitest run', file: 'packages/core/a.test.ts', kind: 'test-file' },
+    ]);
+  });
+
+  it('retains both the Astro check input and Vitest execution occurrence of one source path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'astro-vitest-occurrences-'));
+    try {
+      const file = 'packages/core/a.test.ts';
+      mkdirSync(join(dir, 'packages/core'), { recursive: true });
+      writeFileSync(join(dir, file), 'export const checked = true;');
+      const astro = { ok: true, enumerated: true, repositoryFiles: [file],
+        inputs: [{ path: file, sha256: createHash('sha256').update(readFileSync(join(dir, file))).digest('hex') }],
+        sync: { status: 'completed', beforePopulation: true }, executed: false,
+        runtimeClosure: 'unmeasured', operationalAcceptance: false };
+      const result = enumerateAffectedTaskSelection([task('test', 'astro check && vitest run')], {
+        root: dir, syncAstro: true,
+        runResolver: (requests: Array<{ runner?: string }>) => requests.map(request =>
+          request.runner === 'astro-check' ? astro : resolved(['a.test.ts'])),
+      });
+      expect(result.files).toEqual([file]);
+      expect(result.fileOccurrences).toEqual([
+        { task: '@probe/core :: test', step: 0, command: 'astro check', file, kind: 'check-input' },
+        { task: '@probe/core :: test', step: 1, command: 'vitest run', file, kind: 'test-file' },
+      ]);
+      expect(result.commandObligations[0]).toMatchObject({ command: 'astro check', executed: false });
+      expect(result.coverage).toBe('partial');
+      expect(result.operationalAcceptance).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('discovers actual aggregate array and guard inputs without executing any selftest or hiding disk drift', () => {

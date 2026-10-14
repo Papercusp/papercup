@@ -859,6 +859,145 @@
       },
       "constraints": "D020/P006 hold, original six forms and whole-plan residue preserved. No benchmark/cohort, BAR apply, new agent, manual git or LIVE_GATE_OPS. Original fixture build pretest/voice/desktop checks remain unexecuted."
     },
+    "originalCommandOccurrencePreparation": {
+      "status": "native-occurrence-preparation-local-verification-pass-full-comparison-held",
+      "reuses": [
+        "scripts/lib/related-tests.mjs#enumerateAffectedTaskSelection",
+        "scripts/lib/budgeted-task-scheduler.mjs#prepareBudgetedTaskComparison/readBudgetedTaskComparisonArtifacts"
+      ],
+      "behavior": "The maintained selector retains each ordered task/command/step/file occurrence and distinguishes Astro check inputs from test executions. The comparison reader pins one-to-one file-only occurrences; omitted or changed original occurrence metadata, check inputs, repeated populations and legacy ordered chains remain refused until native command-step execution receipts qualify them. Command and lifecycle obligations remain independently retained and refused.",
+      "nativePreview": {
+        "command": "node scripts/affected-tests.mjs --all --print-selection --sync-astro",
+        "log": "~/.papercusp/scratch/c0523-full-selection-occurrences-v1.log",
+        "logSha256": "4f93a4d48f6d57ddd0610eeb09080ec483328e0e64ab43617c641696d3131c32",
+        "nativeExitCode": 0,
+        "coverage": "partial",
+        "uniqueFiles": 10150,
+        "fileOccurrences": 10153,
+        "representedTasks": 112,
+        "unenumeratedRecords": 6,
+        "crossTaskOverlaps": [],
+        "repeatedPublicDocsFiles": [
+          "apps/papercusp-docs/lib/first-task.test.ts",
+          "apps/papercusp-docs/lib/pagefind-output.test.ts",
+          "apps/papercusp-docs/lib/public-build-parity.test.ts"
+        ],
+        "repeatedPublicDocsRoles": [
+          { "step": 0, "command": "astro check", "kind": "check-input" },
+          { "step": 1, "command": "vitest run", "kind": "test-file" }
+        ],
+        "executed": false,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false
+      },
+      "verification": {
+        "firstRun": { "passed": 225, "failed": 0, "skipped": 0, "requested": 2, "executed": 2, "matched": 2, "childSubstituted": 0, "nativeExitCode": 0 },
+        "finalScheduler": { "passed": 147, "failed": 0, "skipped": 0, "requested": 1, "executed": 1, "matched": 1, "childSubstituted": 0, "nativeExitCode": 0 },
+        "finalTypecheck": "Two named test files: zero errors, status clean, native exit0. No full-project claim.",
+        "controls": "Actual Astro-check/Vitest occurrence roles; same-file ordered repeats and cross-task occurrences; immutable valid one-to-one manifest population; omitted/changed original occurrence metadata and legacy repeated or distinct ordered steps fail the independent pinned-artifact reader.",
+        "receipts": [
+          { "path": "~/.papercusp/scratch/c0523-command-occurrences-tests-v1.log", "sha256": "ffb44076190499b1d0c8144ae5544f052aa667a99b60eb9b6ec96f4b1aa53ba0" },
+          { "path": "~/.papercusp/scratch/c0523-command-occurrences-scheduler-v2.log", "sha256": "067711f7d952cb12f16d073e61f2a6bb15933355017cb4300cfc616f5c568598" },
+          { "path": "~/.papercusp/scratch/c0523-command-occurrences-tsc-v2.log", "sha256": "572229f9e0e5de3159aedaa26032097adf9c783be579e8378f8cf1763e0989cb" },
+          { "path": "~/.papercusp/scratch/c0523-full-selection-occurrences-v1.err", "sha256": "36913e1e79af9b73bedd614ad323f281c8d796ca2d0c7a174c11662b67d8f13f" }
+        ],
+        "syntaxAndDiff": "Both changed .mjs syntax checks and named-path diff check pass."
+      },
+      "sourceAtRead": {
+        "head": "91819b308e4603cd1b547e0ceee89bede6539beb",
+        "files": [
+          { "path": "scripts/lib/related-tests.mjs", "sha256": "95ea62a9235804317f21c6adf2912468cb7fee16d5c721682a5e92c9506494f1", "committedMatch": false },
+          { "path": "scripts/lib/related-tests.d.mts", "sha256": "455219453d9cc756f71930ef1948830635ee886e377b31983a9498fc650a7b98", "committedMatch": false },
+          { "path": "scripts/lib/budgeted-task-scheduler.mjs", "sha256": "4ae94ca953ec13cefe70aef7334791a631e3b707af081759fa4891623d1c999b", "committedMatch": false },
+          { "path": "scripts/lib/budgeted-task-scheduler.d.mts", "sha256": "70b79eb3613c32ded8d2eb123173197af721c87fa44fdb8f104f59937502f529", "committedMatch": false },
+          { "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts", "sha256": "a806ea1fba629ed236855a88dbb13811cd489b25b342fe1b887245fd17d1a015", "committedMatch": false },
+          { "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts", "sha256": "f3c08939279367b8b6013f0cdc74b3dd4c5c7a529661550838d844d267cd3e47", "committedMatch": false }
+        ],
+        "limits": "Named local source/guard bytes only. Check current bytes and automatic settlement before reusing proof."
+      },
+      "remaining": "Original command-step execution receipts remain unproduced. No complete source/dependency/final-runtime closure, original ABBA cohorts or operational acceptance. D020/P006 and six forms stay unbound/unapproved. Whole plan UNSHIPPED."
+    },
+    "fixturePretestPreparation": {
+      "status": "original-fixture-pretest-source-discovery-local-verification-pass",
+      "reuses": [
+        "apps/slack-asana-bug-drill/scripts/source-identity.mjs#sourceIdentity",
+        "apps/slack-asana-bug-drill/scripts/build.mjs#--print-selection",
+        "scripts/lib/related-tests.mjs command input qualification and lifecycle obligations"
+      ],
+      "behavior": "Read-only fixture build discovery includes maintained source identity plus public assets and next-env.d.ts before dependency preflight, Next compilation, native hydration and esbuild bundling. The selector independently hashes inputs and retains the pretest command as unexecuted; malformed, forged or drifted receipts keep explicit residue and never invent a test file.",
+      "fixture": {
+        "task": "@bug-drill/fixture :: test",
+        "originalCommand": "node scripts/build.mjs",
+        "script": "pretest",
+        "selectedTestFiles": 10,
+        "inputCount": 25,
+        "inputReceipt": "~/.papercusp/scratch/c0523-fixture-pretest-native-v1.log",
+        "inputReceiptSha256": "3bde26cea9020910eb1d13ef32608a508b43a08fac9174aab0ec151f9063a976",
+        "discovery": {
+          "schemaVersion": 1,
+          "kind": "command-check-inputs",
+          "check": "fixture-build",
+          "files": [],
+          "executed": false,
+          "dependencyClosure": "unmeasured",
+          "runtimeClosure": "unmeasured",
+          "operationalAcceptance": false
+        }
+      },
+      "nativePreview": {
+        "command": "node scripts/affected-tests.mjs --all --print-selection --sync-astro",
+        "log": "~/.papercusp/scratch/c0523-full-selection-fixture-pretest-v1.log",
+        "logSha256": "931845fa7ce1d5de6bbc28b217eaac6b96fd5af5081404452f35a361b14c6fbf",
+        "nativeExitCode": 0,
+        "coverage": "partial",
+        "files": 10150,
+        "representedTasks": 112,
+        "unenumerated": [
+          "@papercusp/web :: lint:el-tools (unexecuted command obligation)",
+          "@papercupai/papercusp-docs :: test (overlapping astro/vitest chain)",
+          "@papercusp/desktop :: test step 7 (unexecuted aggregate)",
+          "@papercupai/operator-docs :: test (unexecuted astro check)",
+          "@bug-drill/fixture :: test (unexecuted lifecycle command)"
+        ],
+        "overlaps": [],
+        "executed": false,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false
+      },
+      "verification": {
+        "testCommand": "npm run test:file -- packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+        "passed": 77,
+        "failed": 0,
+        "skipped": 0,
+        "requested": 1,
+        "executed": 1,
+        "matched": 1,
+        "childSubstituted": 0,
+        "nativeExitCode": 0,
+        "typecheck": "Named test-file TypeScript check: zero errors, status clean, native exit0; no whole-project claim.",
+        "syntax": "Build, source identity and selector pass node --check.",
+        "controls": "A copied build runs with no node_modules, an app that throws if compiled and a prior-build sentinel; public asset drift changes the census. Forged execution/acceptance/hash, duplicate/empty input, dependency-closure and fabricated-file cases retain the original command as residue.",
+        "receipts": [
+          { "path": "~/.papercusp/scratch/c0523-fixture-pretest-tests-v1.log", "sha256": "0b10f111c8815110133feaa412498955fb73724740646867e3c004f40470c1d5" },
+          { "path": "~/.papercusp/scratch/c0523-fixture-pretest-tsc-v1.log", "sha256": "bb33800a5a885d8a9c11a537b3ce2541ab659525ac65afd1e563b722442f97ae" },
+          { "path": "~/.papercusp/scratch/c0523-fixture-pretest-native-v1.log", "sha256": "3bde26cea9020910eb1d13ef32608a508b43a08fac9174aab0ec151f9063a976" },
+          { "path": "~/.papercusp/scratch/c0523-full-selection-fixture-pretest-v1.log", "sha256": "931845fa7ce1d5de6bbc28b217eaac6b96fd5af5081404452f35a361b14c6fbf" }
+        ]
+      },
+      "sourceAtRead": {
+        "superprojectHead": "91819b308e4603cd1b547e0ceee89bede6539beb",
+        "fixtureSubmoduleHead": "4aa24b04d75f76e6ef73c3868c0938b14d4d5b05",
+        "files": [
+          { "path": "scripts/lib/related-tests.mjs", "sha256": "09a6e9a1c23bf62aab72daa2810b96bb4c8f9fded8f4aebe0e65aaab4ba266d7", "committedMatch": true },
+          { "path": "scripts/lib/related-tests.d.mts", "sha256": "784ecb1fb6b6fc486804128c4074b9f78e5bdf087f61dd70d2eee1f4cc803902", "committedMatch": true },
+          { "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts", "sha256": "a222ee5e09bfabf30e9792fa3ff919c61833c560a5edbf95ce6d849b0b865ffa", "committedMatch": true },
+          { "path": "apps/slack-asana-bug-drill/scripts/build.mjs", "sha256": "267c2fe56f9c007636e4917cbc99f4ccf7c05d730392e5c4200acb6bcdc308ad", "committedMatch": true },
+          { "path": "apps/slack-asana-bug-drill/scripts/source-identity.mjs", "sha256": "dead8c647eb79b8530005a268e189714d00482ff57af56403f54fa7b668eb720", "committedMatch": true }
+        ],
+        "limits": "Named source/guard bytes only. Full installed dependency and final transformed runtime closure remain unmeasured."
+      },
+      "limits": "The original fixture build has not executed. Installed dependency and final transformed runtime closures remain unmeasured; this is source-input preparation only."
+    },
     "nativeCommandObligationPreparation": {
       "status": "partial-original-population-preparation-no-operational-acceptance",
       "reuses": [
@@ -1047,7 +1186,7 @@
         }
       },
       "remainingWriterFindings": [
-        "The original fixture test has a real node scripts/build.mjs pretest, now retained rather than dropped. It still needs an original input/execution receipt.",
+        "The original fixture test now has a native source-input receipt for node scripts/build.mjs; its build execution, installed dependency closure and final transformed runtime closure remain unmeasured.",
         "Astro sync still precedes actual diagnostics. Both Astro populations remain unknown; prior pre-sync discovery cannot qualify them.",
         "File-only comparison preparation and original-artifact readback refuse retained command obligations until a native command-receipt contract independently qualifies them. This refusal is intentional and cannot be removed to bind throughput."
       ]
