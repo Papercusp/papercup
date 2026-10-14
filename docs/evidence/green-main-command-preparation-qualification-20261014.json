@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-command-preparation-reader-qualification",
+  "workItemId": "WI-6554700010010682",
+  "status": "saved-native-readback-passed-no-operational-acceptance",
+  "reader": "scripts/lib/budgeted-task-scheduler.mjs::readBudgetedTaskComparisonArtifacts",
+  "mode": "command-preparation",
+  "commands": [
+    {
+      "task": "@papercupai/operator-docs :: test",
+      "step": null,
+      "format": "astro-check",
+      "inputs": 14,
+      "checkedFiles": 5,
+      "diagnostics": { "errors": 0, "warnings": 0, "hints": 23 },
+      "wrapperMapping": "apps/operator-docs/package.json check -> astro check"
+    },
+    {
+      "task": "@papercupai/papercusp-docs :: test",
+      "step": 0,
+      "format": "astro-check",
+      "inputs": 18,
+      "checkedFiles": 9,
+      "diagnostics": { "errors": 0, "warnings": 0, "hints": 0 },
+      "wrapperMapping": "apps/papercusp-docs/package.json check -> astro check"
+    },
+    {
+      "task": "@papercusp/web :: lint:el-tools",
+      "step": null,
+      "format": "native-transcript-command-check",
+      "inputs": 13,
+      "clientTools": 25,
+      "wrapperMapping": "apps/operator/scripts/el-tools-check.mjs"
+    }
+  ],
+  "qualification": {
+    "astroReceipts": "docs/evidence/green-main-astro-native-receipts-20261014.json",
+    "voiceSourceReceipt": "original native CommandExecution event pinned in postFixVoiceExecutionPreparation",
+    "readback": "~/.papercusp/scratch/c0523-five-command-preparation-readback-v1.json",
+    "readbackSha256": "5d69109b3c8beef43350b275f0122135d20ffbf641abea0d60118b6bd60a85c0",
+    "maintainedTests": {
+      "log": "~/.papercusp/scratch/c0523-command-preparation-astro-voice-tests-v1.log",
+      "sha256": "949ac30bb09fcfa3cf9061dde8b202219336d05f57b22f75638765b876e8228a",
+      "passed": 223,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "nativeExitCode": 0
+    },
+    "typecheck": {
+      "log": "~/.papercusp/scratch/c0523-command-preparation-astro-voice-tsc-v1.log",
+      "sha256": "8a750ba77a346ed00318ebeb1fda0efbac2f5a8e9ab034c74af468ef34d097a2",
+      "namedFiles": 1,
+      "typeErrors": 0,
+      "nativeExitCode": 0
+    }
+  },
+  "scope": {
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "selection": "partial",
+    "remaining": "dependency/import/final-transform closure, complete ordered chain, ABBA cohorts and shipment remain open"
+  }
+}

@@ -24,6 +24,15 @@ const request = {
 };
 
 describe('escalateAlarm', () => {
+  it('preserves detector evidence without allowing it to replace the condition identity', async () => {
+    const notify = vi.fn(async () => {});
+    await escalateAlarm({ ...request, data: { host: 'fixture-host', consumers: { '/': ['postgres'] }, conditionKey: 'wrong' } }, {
+      notify, recentlyEscalated: async () => false,
+    });
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+      data: { host: 'fixture-host', consumers: { '/': ['postgres'] }, conditionKey: request.conditionKey },
+    }));
+  });
   it('delivers when the durable cooldown is clear', async () => {
     const notify = vi.fn(async () => {});
     const result = await escalateAlarm(request, {

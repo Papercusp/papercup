@@ -470,6 +470,27 @@ describe('ptool operator routing', () => {
     })).toBe('http://127.0.0.1:3170');
   });
 
+  it('routes configured local staging pins through the same-vintage staging proxy', () => {
+    expect(resolvePtoolOperatorBase({
+      PAPERCUSP_HONO_PORT: '3170',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070/api/mcp',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071',
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
+    })).toBe('http://127.0.0.1:9171');
+
+    expect(resolvePtoolOperatorCandidates(
+      { PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171' },
+      'http://localhost:3170/api/mcp?superuser=1',
+    )).toEqual(['http://127.0.0.1:9171/api/mcp?superuser=1']);
+  });
+
+  it('keeps direct staging pins when staging proxy routing is disabled', () => {
+    expect(resolvePtoolOperatorCandidates(
+      { PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171', PAPERCUSP_MCP_STAGING_PROXY: '0' },
+      'http://localhost:3170',
+    )).toEqual(['http://localhost:3170']);
+  });
+
   it('keeps the resilient proxy when it fronts the current host', () => {
     expect(resolvePtoolOperatorBase({
       PAPERCUSP_HONO_PORT: '3070',

@@ -4850,6 +4850,17 @@ async function amendAcceptanceBarRubric(
           stored.criteria as unknown as Array<Record<string, unknown>>,
           guard.data.criteria as Array<Record<string, unknown>>,
         ),
+        // Older amendment writers left explicit Requirements stale. Reapplying
+        // the canonical criteria must repair that copy before the no-op return;
+        // no BAR meaning changes and legacy prose remains untouched.
+        ...diffAmendedCriteriaAgainstRequirements({
+          requirementBars: requirements.bars,
+          nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
+          changedBars,
+        }).entries.filter((entry) =>
+          entry.kind === 'text-differs' &&
+          requirements.bars.some((bar) => bar.barKey === entry.barKey && bar.criterion),
+        ).map((entry) => entry.barKey),
       ])];
       const requirementsRerender = rerenderAmendedRequirementBlocks(subjectRow.content, {
         nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,

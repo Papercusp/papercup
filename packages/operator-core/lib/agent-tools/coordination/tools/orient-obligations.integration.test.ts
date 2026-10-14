@@ -1,4 +1,4 @@
-/** P-007: the advertised complete-agenda recovery must reach the real GOAL reader. */
+/** P-007: the advertised complete-agenda recovery must reach the canonical reader. */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -14,6 +14,7 @@ import { _refreshL2FlagForTests, getL2Store } from '../../../cache/l2-tier';
 import { seedPlan } from '../../plans/__tests__/_pg-tool-fixture';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../../_baseline-coord-fixture';
 import { setMode } from '../../../modes/store';
+import { recordOwnerDirective } from '../../../owner-directives';
 import * as obligationReader from '../../../agent-obligation-reader';
 import * as goalSettings from '../../../goal-launch-settings';
 import * as ownerReportHistory from '../../../system-health/goal-owner-report-watchdog';
@@ -30,6 +31,7 @@ import '../../fleet/assignments';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const OWNER = `su-orient-obligations-${RUN}`;
+const NON_GOAL_OWNER = `su-orient-obligations-non-goal-${RUN}`;
 const GOAL = `orient-obligations-${RUN}`;
 const WS = 'default';
 let fx: BaselineCoordFixture;
@@ -78,7 +80,7 @@ afterAll(async () => {
   await fx.dispose();
 });
 
-async function readOrientation(overrides: Record<string, unknown> = {}) {
+async function readOrientation(overrides: Record<string, unknown> = {}, ownerId = OWNER) {
   const result = await runWithWorkspace(WS, () => orientTool.handler(
     {
       mode: 'monitor',
@@ -94,7 +96,7 @@ async function readOrientation(overrides: Record<string, unknown> = {}) {
     },
     {
       isSuperuser: true,
-      uiClientId: OWNER,
+      uiClientId: ownerId,
       workspaceId: WS,
       harnessSlug: 'papercusp',
       metadata: vi.fn(),
@@ -110,7 +112,31 @@ async function readOrientation(overrides: Record<string, unknown> = {}) {
   } }).data;
 }
 
-describe('GOAL-holder complete agenda recovery through coord:orient', () => {
+describe('complete agenda recovery through coord:orient', () => {
+  it('delivers the canonical agenda to an attributable non-GOAL session', async () => {
+    await recordOwnerDirective({
+      workspaceId: WS,
+      ownerId: NON_GOAL_OWNER,
+      sessionRef: `session-${RUN}`,
+      sourceTurnRef: `turn-${RUN}`,
+      verbatimText: 'Deliver ordinary obligations to this non-GOAL session.',
+      recordedBy: NON_GOAL_OWNER,
+      capturedByHook: true,
+    }, fx.admin);
+    try {
+      const read = await readOrientation({}, NON_GOAL_OWNER);
+
+      expect(read.goalPortfolio).toBeUndefined();
+      expect(read.obligations).toBeTruthy();
+      expect(read.obligations.evaluations.map(entry => entry.family)).toContain('owner-directive');
+    } finally {
+      await fx.admin`
+        DELETE FROM harness_shared.owner_directives
+        WHERE workspace_id = ${WS} AND owner_id = ${NON_GOAL_OWNER}
+      `;
+    }
+  }, 90_000);
+
   it('keeps proceed advice and retained requester history out of the reporting agenda', async () => {
     // The gate/deploy reader is outside this consultation contract and points
     // at a host runtime. Keep its established null fallback deterministic;

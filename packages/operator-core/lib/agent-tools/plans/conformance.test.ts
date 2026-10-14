@@ -8,10 +8,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   readPlanBySlug: vi.fn(),
   addDecisionOne: vi.fn(),
+  loadConformanceReportPlans: vi.fn(),
 }));
 
 vi.mock('./source', () => ({ readPlanBySlug: mocks.readPlanBySlug }));
 vi.mock('./add-decision', () => ({ addDecisionOne: mocks.addDecisionOne }));
+vi.mock('../../spec-conformance/conformance-report', async (orig) => ({
+  ...(await orig<typeof import('../../spec-conformance/conformance-report')>()),
+  loadConformanceReportPlans: mocks.loadConformanceReportPlans,
+}));
 vi.mock('./_ctx-opts', () => ({ ctxToPlanSourceOpts: async () => ({ workspaceId: 'ws', harnessSlug: 'h' }) }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'su-test' }) }));
 vi.mock('../_harness-scope', async (orig) => ({
@@ -137,5 +142,38 @@ describe('plans:conformance handler', () => {
   it('surfaces a missing plan as plan_not_found', async () => {
     mocks.readPlanBySlug.mockResolvedValue(null);
     expect(await call({ op: 'propose-deviation', slug: 'p', requirement: 'R-2', reason: 'x' })).toMatchObject({ ok: false, error: 'plan_not_found' });
+  });
+
+  it('refuses a deviation op without slug or requirement, writing nothing', async () => {
+    expect(await call({ op: 'propose-deviation', requirement: 'R-2', reason: 'x' })).toMatchObject({ error: 'invalid_args' });
+    expect(await call({ op: 'approve-deviation', slug: 'p', proposal: 'D-001' })).toMatchObject({ error: 'invalid_args' });
+    expect(mocks.addDecisionOne).not.toHaveBeenCalled();
+  });
+});
+
+describe("plans:conformance op:'report' (R-22)", () => {
+  beforeEach(() => {
+    mocks.loadConformanceReportPlans.mockReset();
+    mocks.addDecisionOne.mockReset();
+    mocks.loadConformanceReportPlans.mockResolvedValue([
+      { planSlug: 'p', harnessSlug: 'h', status: 'active', content: PLAN },
+      { planSlug: 'q', harnessSlug: 'h', status: 'active', content: '# Q\n' },
+    ]);
+  });
+
+  it('censuses the loaded plans read-only, with no slug, and writes no decision', async () => {
+    const out = await call({ op: 'report' });
+    expect(out).toMatchObject({ ok: true, op: 'report', statuses: ['active', 'ready'] });
+    expect((out.plans as unknown[]).length).toBe(2);
+    expect(mocks.loadConformanceReportPlans).toHaveBeenCalledWith({ workspaceId: 'ws' });
+    expect(mocks.addDecisionOne).not.toHaveBeenCalled();
+  });
+
+  it('forwards an explicit harness and statuses filter to the loader and the census', async () => {
+    const out = await call({ op: 'report', harness: 'h', statuses: ['shipped'] });
+    expect(mocks.loadConformanceReportPlans).toHaveBeenCalledWith({ workspaceId: 'ws', harnessSlug: 'h', statuses: ['shipped'] });
+    expect(out).toMatchObject({ ok: true, statuses: ['shipped'] });
+    // the census re-filters by status, so active rows from a loose loader are excluded
+    expect((out.plans as unknown[]).length).toBe(0);
   });
 });

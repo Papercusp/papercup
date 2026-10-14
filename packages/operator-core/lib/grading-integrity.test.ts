@@ -21,6 +21,9 @@ import {
   GRADING_AUDIT_DISPATCH_LIMIT,
   GRADING_AUDIT_FAILURE_BACKOFF_MS,
   GRADING_AUDIT_RESERVATION_TTL_MS,
+  GRADING_AUDIT_STRANDED_AFTER_MS,
+  assessEvaluatorBuildStranding,
+  type EvaluatorBuildStrandingCard,
   GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_MIN_MS,
@@ -545,6 +548,109 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
+  it('EI-25965998744903219: names a stranded drift card and its exact re-grade call, still without touching card or lease', async () => {
+    const d = deps();
+    const issueId = 'EI-evaluator-build-stranded';
+    const nowMs = Date.parse('2026-10-14T18:00:00.000Z');
+    const lapsed = { key: `grading-audit:${issueId}`, reservedAt: '2026-10-14T13:39:00.000Z' };
+    const rerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      evaluatorBuild: { sha: '9cb343871d', version: '1.2.2' },
+      args: { harness: 'papercusp', slug: 'some-plan' },
+      selection: { bindingIds: [44556] },
+    } as NonNullable<ScorecardRow['rerunRecipe']>;
+    const target = card(issueId, {
+      evidenceFingerprint: 'scorecard-evidence-v1',
+      rerunRecipe,
+      gradingAudit: {
+        state: 'pending',
+        metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+        stampedAt: '2026-10-14T13:30:00.000Z',
+        lastDispatchReservation: lapsed,
+      },
+    });
+    d.listScorecards.mockResolvedValue([target]);
+    const generationAncestry = vi.fn(() => true);
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: [issueId], ctx },
+      {
+        ...d,
+        now: () => nowMs,
+        getEvaluatorBuild: () => ({ sha: 'd357aa11bb', version: '1.2.2' }) as ReturnType<
+          NonNullable<DispatchPendingGradingAuditsDeps['getEvaluatorBuild']>
+        >,
+        generationAncestry,
+      },
+    );
+
+    expect(generationAncestry).toHaveBeenCalledWith(expect.any(String), '9cb343871d', 'd357aa11bb');
+    expect(target.gradingAudit).toMatchObject({ state: 'pending', lastDispatchReservation: lapsed });
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(result.receipts).toEqual([
+      expect.objectContaining({
+        issueId,
+        state: 'skipped',
+        reason: expect.stringMatching(/^stranded: .*plans:evaluate-spec-test-adequacy/),
+        stranded: expect.objectContaining({
+          stranded: true,
+          idleSince: '2026-10-14T13:39:00.000Z',
+          regrade: { tool: 'plans:evaluate-spec-test-adequacy', args: { harness: 'papercusp', slug: 'some-plan' } },
+        }),
+      }),
+    ]);
+  });
+
+  describe('assessEvaluatorBuildStranding (EI-25965998744903219)', () => {
+    const nowMs = Date.parse('2026-10-14T18:00:00.000Z');
+    const live = { sha: 'd357aa11bb', version: '0.0.0' };
+    const base = (over: Partial<NonNullable<EvaluatorBuildStrandingCard['gradingAudit']>> = {}): EvaluatorBuildStrandingCard => ({
+      gradingAudit: { state: 'pending', stampedAt: '2026-10-14T13:30:00.000Z', ...over },
+      rerunRecipe: {
+        evaluator: 'plans:evaluate-spec-test-adequacy',
+        evaluatorBuild: { sha: '9cb343871d', version: '0.0.0' },
+        args: { slug: 'p' },
+      },
+    });
+    const opts = (probe: () => boolean | null) => ({ nowMs, root: '/repo', probe });
+
+    it('flags a descendant-host card idle past the grace with no live lease', () => {
+      const verdict = assessEvaluatorBuildStranding(base(), live, opts(() => true));
+      expect(verdict).toMatchObject({ stranded: true, idleSince: '2026-10-14T13:30:00.000Z' });
+    });
+
+    it('does not fire while an audit lease is live', () => {
+      const reservedAt = new Date(nowMs - GRADING_AUDIT_RESERVATION_TTL_MS + 60_000).toISOString();
+      const verdict = assessEvaluatorBuildStranding(base({ dispatchReservation: { reservedAt } }), live, opts(() => true));
+      expect(verdict).toEqual({ stranded: false, reason: 'audit-lease-live' });
+    });
+
+    it('does not fire inside the exact-build grace window', () => {
+      const stampedAt = new Date(nowMs - GRADING_AUDIT_STRANDED_AFTER_MS + 60_000).toISOString();
+      const verdict = assessEvaluatorBuildStranding(base({ stampedAt }), live, opts(() => true));
+      expect(verdict).toEqual({ stranded: false, reason: 'within-exact-build-grace' });
+    });
+
+    it('does not fire from a host OLDER than the recorded build, or when ancestry is unknown', () => {
+      expect(assessEvaluatorBuildStranding(base(), live, opts(() => false))).toEqual({
+        stranded: false,
+        reason: 'live-build-not-proven-descendant:auditor-build-older-than-graded-build',
+      });
+      expect(assessEvaluatorBuildStranding(base(), live, opts(() => null))).toMatchObject({ stranded: false });
+    });
+
+    it('does not fire on the exact build, a non-pending card, or a superseded card', () => {
+      const probe = opts(() => true);
+      expect(assessEvaluatorBuildStranding(base(), { sha: '9cb343871d', version: '0.0.0' }, probe))
+        .toEqual({ stranded: false, reason: 'exact-build-dispatcher' });
+      expect(assessEvaluatorBuildStranding(base({ state: 'passed' }), live, probe)).toMatchObject({ stranded: false });
+      expect(assessEvaluatorBuildStranding({ ...base(), supersededBy: 'EI-newer' }, live, probe)).toMatchObject({ stranded: false });
+    });
+  });
+
   it('can dispatch the same deferred card from its exact evaluator build and pins the fresh judge to that host', async () => {
     const issueId = 'EI-cross-runtime-replay';
     const rerunRecipe: NonNullable<ScorecardRow['rerunRecipe']> = {
@@ -660,6 +766,36 @@ describe('dispatchPendingGradingAudits', () => {
     expect(result.receipts[0]).toMatchObject({ state: 'routed', conversationId: 'audit-consult' });
     expect(d.launch).not.toHaveBeenCalled();
     expect(d.release).not.toHaveBeenCalled();
+  });
+
+  it('EI-25973755387060974: requires complete recipe and criterion pages before judging re-runnability', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-paged-evidence')]);
+
+    await dispatchPendingGradingAudits({ targetIds: ['EI-paged-evidence'], ctx }, d);
+
+    const brief = d.route.mock.calls[0]?.[0].brief ?? '';
+    expect(brief).toContain('follow rerunRecipeRead.read and every rerunRecipeRead.next');
+    expect(brief).toContain('parse only when rerunRecipeRead.complete is true');
+    expect(brief).toContain('through the entire criterion index');
+    expect(brief).toContain('applies only to that criterion');
+    expect(brief).toContain('Do not rate re-runnable-evidence from the first page');
+    expect(brief).toContain('preserve the exact cursor request and returned failure');
+  });
+
+  it('EI-25974515694473003: distinguishes a stored submodule pin from a failed parent-repository lookup', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-repository-pin')]);
+
+    await dispatchPendingGradingAudits({ targetIds: ['EI-repository-pin'], ctx }, d);
+
+    const brief = d.route.mock.calls[0]?.[0].brief ?? '';
+    expect(brief).toContain('read the cited binding\'s full details with plans:get-spec-evidence');
+    expect(brief).toContain('inspect measurementPin.files and measurementPin.repos');
+    expect(brief).toContain('repos[].repo may name a submodule inside it');
+    expect(brief).toContain('Do not send a submodule\'s commit to the parent repository');
+    expect(brief).toContain('Use only a supported exact-blob route for the recorded repository');
+    expect(brief).toContain('report the exact unsupported locator');
   });
 
   it('reuses an active routed audit and never falls through to launch', async () => {

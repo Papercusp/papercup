@@ -18,7 +18,7 @@
  */
 import { promisify } from 'node:util';
 import { stat as statCb, statfs as statfsCb, statSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir, homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RETENTION_POLICY, type RetentionClass } from './retention-policy';
 import { generated, getOrgPg } from '@papercusp/db-org';
@@ -536,9 +536,17 @@ export async function runDiskSpaceAlarmOnce(
 
   const breaches = detectLowSpace(snapshots, policy);
   let attribution = '';
+  const alarmData: Record<string, unknown> = { host: hostname(), consumers: {} };
   if (breaches.length > 0) {
     let savedContext = '';
-    try { savedContext = formatDiskAlarmContext(await (deps.readContext ?? readDiskAlarmContext)()); }
+    try {
+      const context = await (deps.readContext ?? readDiskAlarmContext)();
+      savedContext = formatDiskAlarmContext(context);
+      alarmData.consumers = Object.fromEntries(['/', '/mnt/data'].map((path) => [path,
+        context.devices.find((device) => device.device === path)?.consumers?.slice(0, 5).map((consumer) => consumer.consumer) ?? [],
+      ]));
+      alarmData.reclaimReceiptId = context.receipt?.id ?? null;
+    }
     catch { savedContext = '\nSaved census/receipt unavailable; /settings/storage'; }
     try {
       const breachedPaths = breaches.flatMap((breach) => [
@@ -586,6 +594,7 @@ export async function runDiskSpaceAlarmOnce(
         cooldownMs: ESCALATE_COOLDOWN_MS,
         source: 'disk-space-alarm',
         conditionKey: DISK_SPACE_ALARM_CONDITION_KEY,
+        data: alarmData,
       },
       { notify: escalate, recentlyEscalated, broadcast: deps.broadcast },
     );

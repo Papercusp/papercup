@@ -93,8 +93,48 @@ export function resolvePtoolOperatorBase(env = process.env) {
   const resolvedBase = typeof env.PAPERCUSP_OPERATOR_BASE === 'string'
     ? env.PAPERCUSP_OPERATOR_BASE.trim()
     : '';
-  if (resolvedBase) return resolveOperatorBase({ operatorUrl: resolvedBase }, env);
-  return resolveOperatorBase({}, env, { preferSelfPort: true });
+  const base = resolvedBase
+    ? resolveOperatorBase({ operatorUrl: resolvedBase }, env)
+    : resolveOperatorBase({}, env, { preferSelfPort: true });
+  return routeStagingOperatorThroughProxy(base, env);
+}
+
+/**
+ * Keep ptool on the selected staging runtime while avoiding the :3170 listener
+ * that is restarted by staging sync. The configured :9171 proxy is dedicated
+ * to :3170, so this is a same-vintage route change, not a fallback to green.
+ * Honor the proxy opt-outs and leave every other explicit endpoint untouched.
+ * @param {string} operatorUrl
+ * @param {EnvironmentMap} env
+ */
+function routeStagingOperatorThroughProxy(operatorUrl, env) {
+  if (env.PAPERCUSP_MCP_PROXY === '0' || env.PAPERCUSP_MCP_STAGING_PROXY === '0') return operatorUrl;
+  const rawProxyPort = typeof env.PAPERCUSP_MCP_STAGING_PROXY_PORT === 'string'
+    ? env.PAPERCUSP_MCP_STAGING_PROXY_PORT.trim()
+    : '';
+  const proxyPort = Number(rawProxyPort);
+  if (
+    !/^[0-9]+$/.test(rawProxyPort) ||
+    !Number.isInteger(proxyPort) ||
+    proxyPort < 1 ||
+    proxyPort > 65535 ||
+    String(proxyPort) !== rawProxyPort ||
+    proxyPort === 3170
+  ) return operatorUrl;
+
+  try {
+    const url = new URL(operatorUrl);
+    if (
+      url.protocol !== 'http:' ||
+      !['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase()) ||
+      url.port !== '3170'
+    ) return operatorUrl;
+    url.hostname = '127.0.0.1';
+    url.port = String(proxyPort);
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return operatorUrl;
+  }
 }
 
 /**
@@ -111,7 +151,7 @@ export function resolvePtoolOperatorBase(env = process.env) {
  */
 export function resolvePtoolOperatorCandidates(env = process.env, explicitUrl = null) {
   const explicit = typeof explicitUrl === 'string' ? explicitUrl.trim() : '';
-  if (explicit) return [explicit];
+  if (explicit) return [routeStagingOperatorThroughProxy(explicit, env)];
 
   const primary = resolvePtoolOperatorBase(env);
   const selfPort = typeof env.PAPERCUSP_HONO_PORT === 'string'

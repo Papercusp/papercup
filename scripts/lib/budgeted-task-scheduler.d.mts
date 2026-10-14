@@ -73,16 +73,20 @@ export interface BudgetedTaskCommandPreparationPins {
   selection: { ref: string; sha256: string };
   commands: Array<{ task: string; step: number | null;
     receipt: { ref: string; sha256: string };
-    logs: Record<"stdout" | "stderr" | "beforeStdout" | "beforeStderr" | "afterStdout" | "afterStderr",
-      { ref: string; sha256: string }> }>;
+    /** Required only for a receipt pin referring to an original native voice JSONL transcript. */
+    nativeEvent?: { sessionId: string; eventId: string };
+    logs: Record<"stdout" | "stderr" | "beforeStdout" | "afterStdout", { ref: string; sha256: string }> &
+      Partial<Record<"beforeStderr" | "afterStderr", { ref: string; sha256: string }>> }>;
 }
 export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
   pins: BudgetedTaskCommandPreparationPins): Promise<{ mode: "command-preparation";
     selection: unknown; commands: Array<{ task: string; step: number | null;
       kind: "command-check" | "npm-lifecycle"; check?: string; script?: string; command: string;
       inputs: Array<{ path: string; sha256: string }>; fileOccurrences: unknown[];
-      receipt: { ref: string; sha256: string }; childWallMs: number; scriptsExecuted: number;
-      scriptOrder: string[]; diagnostics?: { filesChecked: number; errors: number; warnings: number; hints: number } }>;
+      receipt: { ref: string; sha256: string }; childWallMs: number | null; scriptsExecuted: number;
+      scriptOrder: string[]; diagnostics?: { filesChecked: number; errors: number; warnings: number; hints: number };
+      nativeEvent?: { sessionId: string; eventId: string }; nativeExecutionWallMs?: number;
+      durationScope?: "discovery-and-command"; voiceResult?: { clientTools: number } }>;
     originalArtifactsResolved: true; currentDeclaredInputsMatched: true;
     orderedChainQualified: false; runtimeClosure: "unmeasured";
     operationalAcceptance: false; populationSha256: string }>;

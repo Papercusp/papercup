@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { assessDiskHeadroomSoak, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples } from './retention-interval-evidence';
+import { describe, expect, it, vi } from 'vitest';
+import { assessDiskHeadroomSoak, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples } from './retention-interval-evidence';
 
 const GIB = 1024 ** 3;
 describe('disk headroom post-shipment soak assessment', () => {
@@ -52,6 +52,24 @@ describe('disk headroom post-shipment soak assessment', () => {
     expect(assessDiskHeadroomSoak(foreign, requirements).soakStatus).toBe('unknown');
     const future = fixture(); future.censuses[0]!.at = at(74);
     expect(assessDiskHeadroomSoak(future, requirements).soakStatus).toBe('unknown');
+  });
+  it('keeps hostless historical alarms unknown rather than assigning them to the target host', () => {
+    const input = fixture();
+    input.alarms.push({ id: 'legacy', host: null as unknown as string, at: at(12), consumers: { '/': ['postgres'], '/mnt/data': ['scratch'] } });
+    expect(assessDiskHeadroomSoak(input, requirements).soakStatus).toBe('unknown');
+  });
+  it('reads one bounded native snapshot and exposes a census cap hit', async () => {
+    const input = fixture();
+    const unsafe = vi.fn(async () => [input]);
+    const result = await readDiskHeadroomSoakEvidence({ unsafe } as unknown as Pick<import('postgres').Sql, 'unsafe'>, 'fixture-workspace', requirements);
+    expect(result.assessment.soakStatus).toBe('pass');
+    const [query, parameters] = unsafe.mock.calls[0]! as unknown as [string, string[]];
+    expect(query).toContain('WITH censuses');
+    expect(query).toContain('workspace_id = $4');
+    expect(query).toContain("data->>'host' IS NULL");
+    expect(parameters).toEqual(['fixture-host', at(0), at(73), 'fixture-workspace', at(1), at(73)]);
+    input.censuses = Array.from({ length: 20_001 }, () => input.censuses[0]!);
+    expect((await readDiskHeadroomSoakEvidence({ unsafe } as unknown as Pick<import('postgres').Sql, 'unsafe'>, 'fixture-workspace', requirements)).assessment.soakStatus).toBe('unknown');
   });
 });
 const generationId = 'v1-' + 'a'.repeat(64);

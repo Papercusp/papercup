@@ -18,6 +18,8 @@ import { readPlanBySlug } from './source';
 import { addDecisionOne } from './add-decision';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { parseTurnRefs, verifyTurnRefs, type TurnRefVerdict } from '../../turn-provenance/turn-ref';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { buildConformanceReport, loadConformanceReportPlans } from '../../spec-conformance/conformance-report';
 import {
   approveDeviation,
   OWNER_TURN_VERDICT_SET,
@@ -117,9 +119,15 @@ function productionDeviationDeps(ctx: UnifiedToolContext, harness: string | unde
 
 const argsSchema = z.object({
   harness: harnessArg,
-  op: z.enum(['propose-deviation', 'approve-deviation']),
-  slug: z.string().min(1).describe('Plan slug.'),
-  requirement: z.string().regex(/^R-\d+$/, 'R-N form required').describe('The requirement key under ## Requirements.'),
+  op: z.enum(['propose-deviation', 'approve-deviation', 'report']),
+  slug: z.string().min(1).optional().describe('Plan slug (deviation ops).'),
+  requirement: z.string().regex(/^R-\d+$/, 'R-N form required').optional().describe('The requirement key under ## Requirements (deviation ops).'),
+  statuses: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(10)
+    .optional()
+    .describe("report: plan statuses to census (default ['active','ready'])."),
   reason: z.string().trim().min(1).max(2000).optional().describe('propose-deviation: why the requirement should not (or cannot) be met.'),
   proposal: z.string().regex(/^D-\d{3,}$/, 'D-NNN form required').optional().describe('approve-deviation: the proposal Decision being approved.'),
   ownerTurnRef: z
@@ -139,7 +147,7 @@ const text = (payload: Record<string, unknown>, isError = false) => ({
 export default defineTool({
   name: 'plans:conformance',
   description:
-    "Spec-conformance writes on a plan. op:'propose-deviation' { slug, requirement, reason } records a proposed deviation from a requirement as a Decision; op:'approve-deviation' { slug, requirement, proposal, ownerTurnRef? } approves it. An owner-sourced requirement needs ownerTurnRef verified as an owner turn. Approved deviations suppress the requirement's drift alarm.",
+    "Spec-conformance writes on a plan. op:'propose-deviation' { slug, requirement, reason } records a proposed deviation from a requirement as a Decision; op:'approve-deviation' { slug, requirement, proposal, ownerTurnRef? } approves it. An owner-sourced requirement needs ownerTurnRef verified as an owner turn. Approved deviations suppress the requirement's drift alarm. op:'report' { statuses?, harness? } is the read-only conformance census across plans.",
   guidance: {
     when: 'A plan requirement cannot or should no longer be met. Propose the deviation, then approve it with the right authority, instead of leaving the requirement red or editing it away.',
     notWhen: 'Changing what a requirement says (edit the plan). An ordinary ruling (plans:add-decision).',
@@ -151,6 +159,24 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    if (args.op === 'report') {
+      // R-22 census: read-only, so it needs no plan slug and writes nothing. A harness
+      // filter applies only when the caller passed one explicitly.
+      const sctx = harnessScopedCtx(args.harness, ctx);
+      const workspaceId = (sctx as { workspaceId?: string }).workspaceId ?? activeWorkspaceId();
+      const plans = await loadConformanceReportPlans({
+        workspaceId,
+        ...(args.harness ? { harnessSlug: args.harness } : {}),
+        ...(args.statuses ? { statuses: args.statuses } : {}),
+      });
+      const report = buildConformanceReport(plans, args.statuses ? { statuses: args.statuses } : {});
+      return text({ ok: true, op: 'report', ...report } as unknown as Record<string, unknown>);
+    }
+    if (!args.slug || !args.requirement) {
+      return text({ ok: false, error: 'invalid_args', message: `op:'${args.op}' requires slug and requirement` }, true);
+    }
+    const slug = args.slug;
+    const requirement = args.requirement;
     let actor = 'system:plans-conformance';
     try {
       actor = resolveAgentIdentity(ctx).ownerId;
@@ -163,7 +189,7 @@ export default defineTool({
         return text({ ok: false, error: 'invalid_args', message: "op:'propose-deviation' requires reason" }, true);
       }
       const result = await proposeDeviation(
-        { slug: args.slug, requirement: args.requirement, reason: args.reason, actor },
+        { slug, requirement, reason: args.reason, actor },
         deps,
       );
       return text(result as unknown as Record<string, unknown>, !result.ok);
@@ -173,8 +199,8 @@ export default defineTool({
     }
     const result = await approveDeviation(
       {
-        slug: args.slug,
-        requirement: args.requirement,
+        slug,
+        requirement,
         proposal: args.proposal,
         actor,
         ...(args.ownerTurnRef ? { ownerTurnRef: args.ownerTurnRef } : {}),

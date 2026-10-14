@@ -10,7 +10,14 @@ import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transpor
 // ── Mocks for the CAPTURE wiring (code-recipes-2026-06-21 P-003) ─────────────
 // maybeCaptureRecipe lazy-imports these; replace them so no PG / embedder /
 // registry is touched and we can assert captureRecipe was invoked on success.
-const { captureRecipeMock, recordRecipeRunMock, normalizeExecutionTraceMock, normalizedTrace } = vi.hoisted(() => {
+const {
+  captureRecipeMock,
+  recordRecipeRunMock,
+  normalizeExecutionTraceMock,
+  resolveLiveBoundRefsMock,
+  resolvePresenceFleetMock,
+  normalizedTrace,
+} = vi.hoisted(() => {
   const trace = {
     schemaVersion: 1 as const,
     backend: 'server' as const,
@@ -26,6 +33,15 @@ const { captureRecipeMock, recordRecipeRunMock, normalizeExecutionTraceMock, nor
     captureRecipeMock: vi.fn<typeof import('./capture-recipe').captureRecipe>(async () => null),
     recordRecipeRunMock: vi.fn(async () => {}),
     normalizeExecutionTraceMock: vi.fn(async () => trace),
+    resolveLiveBoundRefsMock: vi.fn(async () => ({
+      workspaces: [],
+      fleets: [],
+      plans: ['workspace-host-deferred-spend-reconciliation-2026-09-07'],
+      harnesses: ['alpha'],
+      items: ['WI-live'],
+      resources: ['resource-live'],
+    })),
+    resolvePresenceFleetMock: vi.fn(async () => ({ fleetSlug: null, fleetRole: null })),
     normalizedTrace: trace,
   };
 });
@@ -38,6 +54,18 @@ vi.mock('../../code-recipes-store', async (importOriginal) => ({
 }));
 vi.mock('../../orchestration-trace', () => ({
   normalizeExecutionTrace: normalizeExecutionTraceMock,
+}));
+vi.mock('../../recipe-authority', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveLiveBoundRefs: resolveLiveBoundRefsMock,
+}));
+vi.mock('../coordination/presence-fleet', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolvePresenceFleet: resolvePresenceFleetMock,
+}));
+vi.mock('../locks/su-lock-store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getTxPool: () => orgSqlMock,
 }));
 // ── Mocks for the WI-1411 per-inner-call rebinding wiring ────────────────────
 // withWorkspace/synthesizeDispatchPrincipal/runWithWorkspaceIfConcrete would
@@ -578,6 +606,13 @@ describe('code:run → recipe capture (P-003)', () => {
     expect(input.workspaceId).toBe('ws-test');
     expect(input.title).toBe('add');
     expect(input.executionTrace).toBe(normalizedTrace);
+    expect(input.recommendationContext).toEqual({
+      workspace: 'ws-test',
+      harness: 'alpha',
+      plan: 'workspace-host-deferred-spend-reconciliation-2026-09-07',
+      items: ['WI-live'],
+      resources: ['resource-live'],
+    });
     expect(payload.callRecords).toBeUndefined();
   });
 

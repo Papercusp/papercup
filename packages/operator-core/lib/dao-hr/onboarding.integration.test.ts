@@ -123,7 +123,11 @@ describe('P007 — identity, one hire vote, acceptance and membership',()=>{
       await expect(verifyOnboardingIdentity(k,d)).rejects.toMatchObject({code:'wallet_unverified'});
       expect(await getWorkProfile({...key,personId:'PER-wallet-proof'},{sql:db.adminSql})).toBeNull();
       const bad=await runOnboardingWalletAction(k,{action:'wallet-verify',challengeId,signature:await wrong.signMessage({message})},d);
-      expect(bad.ok).toBe(false);
+      // The cryptographic boundary must reject a signature recovered to a
+      // different wallet before the hosted challenge is consumed. Checking
+      // only ok:false would also pass if a later persistence layer rejected
+      // an already-consumed or mismatched challenge.
+      expect(bad).toMatchObject({ok:false,status:422,error:'address_mismatch'});
       await expect(verifyOnboardingIdentity(k,d)).rejects.toMatchObject({code:'wallet_unverified'});
       expect(await getWorkProfile({...key,personId:'PER-wallet-proof'},{sql:db.adminSql})).toBeNull();
       const signature=await account.signMessage({message});

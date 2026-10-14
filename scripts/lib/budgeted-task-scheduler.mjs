@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { dirname, join, relative, isAbsolute } from "node:path";
+import { pathToFileURL } from "node:url";
 import { withFsMutex } from "./fs-mutex.mjs";
 // EI-21442389733525112: `task-exit-class.mjs` is dependency-free by design, so importing it
 // here cannot reintroduce the coupling its own header warns about — and it is the one module
@@ -320,6 +321,18 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
   require(Array.isArray(pins.commands) && pins.commands.length > 0 && pins.commands.length <= 64,
     "bounded original command pins required");
   const sourceRoot = await realpath(pins.repositoryRoot);
+  const matchCurrentInputs = async inputs => {
+    for (const input of inputs) {
+      const path = await realpath(join(sourceRoot, input.path));
+      const within = relative(sourceRoot, path);
+      require(within && !isAbsolute(within) && within !== ".." && !within.startsWith("../"),
+        "command source escaped repository root");
+      const bytes = await readFile(path);
+      require(bytes.length <= 64 * 1024 * 1024 &&
+        createHash("sha256").update(bytes).digest("hex") === input.sha256,
+      `current command input differs: ${input.path}`);
+    }
+  };
   const qualified = [];
   const identities = new Set();
   for (const pin of pins.commands) {
@@ -339,8 +352,10 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
       obligation.command === "node scripts/build.mjs";
     const astro = obligation.kind === "command-check" && obligation.check === "astro-check" &&
       obligation.command === "astro check";
+    const voice = obligation.kind === "command-check" && obligation.check === "el-tools-drift" &&
+      obligation.command === "node scripts/el-tools-check.mjs";
     const nested = fixture || astro;
-    require(desktop || fixture || astro,
+    require(desktop || fixture || astro || voice,
       "unsupported native command receipt format");
     const tasks = selection.tasks.filter(task => task.id === pin.task);
     require(tasks.length === 1, "exact original task required");
@@ -355,10 +370,67 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
     require(Array.isArray(inputs) && inputs.length > 0 && inputs.every(row =>
       comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
       new Set(inputs.map(row => row.path)).size === inputs.length &&
-      (fixture ? occurrences.length === 0 : occurrences.length > 0) &&
+      (fixture || voice ? occurrences.length === 0 : occurrences.length > 0) &&
       new Set(occurrences.map(row => row.file)).size === occurrences.length &&
       occurrences.every(row => row.kind === (astro ? "check-input" : "test-file") && row.command === obligation.command &&
         inputs.some(input => input.path === row.file)), "original input occurrences differ");
+    if (voice) {
+      // This historical native command has a Codex CommandExecution event,
+      // not a standalone receipt. Resolve the original JSONL event itself;
+      // an agent-authored projection is insufficient execution evidence.
+      require(pin.nativeEvent && typeof pin.nativeEvent.sessionId === "string" &&
+        typeof pin.nativeEvent.eventId === "string", "original native voice event pin required");
+      const transcript = await readPinned(pin.receipt.ref, pin.receipt.sha256, false);
+      const events = transcript.toString("utf8").split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
+        .filter(row => row.type === "event_msg" && row.payload?.type === "item_completed" &&
+          row.payload.item?.type === "CommandExecution" && row.payload.item.id === pin.nativeEvent.eventId);
+      require(events.length === 1, "exact original native voice execution event required");
+      const { payload } = events[0], item = payload.item;
+      const logs = {}, paths = {};
+      for (const role of ["stdout", "stderr", "beforeStdout", "afterStdout"]) {
+        const log = pin.logs?.[role];
+        require(log && /^[A-Za-z0-9_./-]+$/.test(join(evidenceRoot, log.ref)),
+          "original voice log path required");
+        paths[role] = join(evidenceRoot, log.ref);
+        logs[role] = await readPinned(log.ref, log.sha256, false);
+      }
+      require(Object.keys(pin.logs).length === 4 && new Set(Object.values(paths)).size === 4,
+        "four distinct original voice logs required");
+      const shell = [
+        `${obligation.command} --print-selection > ${paths.beforeStdout}`,
+        `${obligation.command} > ${paths.stdout} 2> ${paths.stderr}`,
+        "voice_status=$?",
+        `${obligation.command} --print-selection > ${paths.afterStdout}`,
+        "selection_status=$?",
+        "printf 'voice_exit=%s selection_exit=%s\\n' \"$voice_status\" \"$selection_status\"",
+        "exit \"$voice_status\"",
+      ].join("\n");
+      const nativeExecutionWallMs = payload.completed_at_ms - payload.started_at_ms;
+      require(payload.thread_id === pin.nativeEvent.sessionId &&
+        item.cwd === pathToFileURL(join(sourceRoot, task.dir)).href &&
+        same(item.command, ["/bin/bash", "-lc", shell]) && item.source === "unified_exec_startup" &&
+        item.status === "completed" && item.exit_code === 0 &&
+        item.aggregated_output === "voice_exit=0 selection_exit=0\n" &&
+        Number.isSafeInteger(payload.started_at_ms) && Number.isSafeInteger(payload.completed_at_ms) &&
+        nativeExecutionWallMs > 0, "successful original native voice command and ordering required");
+      const before = marker(logs.beforeStdout, "COMMAND_CHECK_SELECTION=");
+      const after = marker(logs.afterStdout, "COMMAND_CHECK_SELECTION=");
+      require(same(before, after) && before.schemaVersion === 1 && before.kind === "command-check-inputs" &&
+        before.check === obligation.check && same(before.files, []) && same(before.inputs, inputs) &&
+        before.executed === false && before.runtimeClosure === "unmeasured" &&
+        before.operationalAcceptance === false, "unchanged original voice input census required");
+      const result = logs.stdout.toString("utf8").match(
+        /^\[el-tools-check\] ✓ aligned — ([1-9]\d*) client tools, all backed by registry defs\.\r?\n$/);
+      require(result && logs.stderr.length === 0, "complete original aligned voice result required");
+      await matchCurrentInputs(inputs);
+      qualified.push({ task: pin.task, step: pin.step, kind: obligation.kind, check: obligation.check,
+        command: obligation.command, inputs, fileOccurrences: occurrences, receipt: pin.receipt,
+        nativeEvent: pin.nativeEvent, childWallMs: null, nativeExecutionWallMs,
+        durationScope: "discovery-and-command", scriptsExecuted: 0, scriptOrder: [],
+        voiceResult: { clientTools: Number(result[1]) } });
+      continue;
+    }
+    require(!pin.nativeEvent, "native event pin does not match receipt format");
     const receipt = await readPinned(pin.receipt.ref, pin.receipt.sha256);
     const execution = nested ? receipt.execution : receipt;
     const finishedAt = nested ? execution?.completedAt : receipt.finishedAt;
@@ -430,16 +502,7 @@ async function readOriginalCommandPreparation(readPinned, pins, evidenceRoot) {
         Date.parse(receipt.after.startedAt) <= Date.parse(receipt.after.completedAt) &&
         (astro || same(before.files, [])), "original discovery/execution ordering required");
     }
-    for (const input of inputs) {
-      const path = await realpath(join(sourceRoot, input.path));
-      const within = relative(sourceRoot, path);
-      require(within && !isAbsolute(within) && within !== ".." && !within.startsWith("../"),
-        "command source escaped repository root");
-      const bytes = await readFile(path);
-      require(bytes.length <= 64 * 1024 * 1024 &&
-        createHash("sha256").update(bytes).digest("hex") === input.sha256,
-      `current command input differs: ${input.path}`);
-    }
+    await matchCurrentInputs(inputs);
     let diagnostics;
     if (astro) {
       const packagePath = `${task.dir}/package.json`;

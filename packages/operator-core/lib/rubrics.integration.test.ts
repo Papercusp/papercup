@@ -2571,6 +2571,32 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
   });
 
+  it('refuses unit-only check files for an e2e BAR during preview before any revision write', async () => {
+    const seeded = await seedBarContract('amendment-unit-check-e2e-layer');
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const unitCheckForE2e = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'check-layer-preview-author',
+      reason: 'A source unit test cannot discharge the declared end-to-end obligation.',
+      criteria: before.criteria.map((criterion) => ({
+        ...criterion,
+        method: 'Run the declared end-to-end proof.',
+        requiredTestLayers: ['e2e'],
+        check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+      })),
+    };
+
+    await expect(rubrics.previewAcceptanceBarAmendment(unitCheckForE2e)).rejects.toThrow(
+      /acceptance_bar_amendment_check_layer_mismatch.*R-1.*e2e.*acceptance-bar-seed\.test\.ts is unit/,
+    );
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+    const [subject] = await db.adminSql<{ version: number }[]>`
+      SELECT version FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+    expect(subject!.version).toBe(before.barContract!.subjectPlanRevision);
+  });
+
   // EI-24372605712471072: a BAR on a plan that has not started may name the test file its
   // own items will write. The seed already allowed that; amendment used to refuse it.
   describe('planned proof paths on an un-started subject plan', () => {
@@ -3466,6 +3492,51 @@ describe('template_data persistence boundary — the set-template-data door', ()
       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
     return { ...seeded, rubric, content, subjectRevision: Number(row!.version) };
   }
+
+  it('repairs stale explicit Requirements on an unchanged amendment without changing BAR meaning', async () => {
+    const seeded = await explicitAmendmentSubject('stale-requirement-repair-subject');
+    const { parseRequirementBars } = await import('./acceptance-bar-seed');
+    const original = parseRequirementBars(seeded.content);
+    expect(original.ok).toBe(true);
+    const staleContent = seeded.content.replace(
+      JSON.stringify({ method: seeded.rubric.criteria[0]!.method, check: seeded.rubric.criteria[0]!.check }),
+      JSON.stringify({ method: 'Superseded verification procedure.', check: { kind: 'instrument', instrumentKey: 'none' } }),
+    );
+    expect(staleContent).not.toBe(seeded.content);
+    await db.adminSql`UPDATE harness_shared.harness_plans
+      SET content=${staleContent}, content_hash=${hashPlanContent(staleContent)}
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const amendment = {
+      rubricId: seeded.rubricSlug, actorId: 'projection-repair-author',
+      reason: 'Repair an older amendment writer\'s stale Requirements from the canonical rubric.',
+      expectedRubricRevision: seeded.rubric.revision, expectedSubjectPlanRevision: seeded.subjectRevision,
+      criteria: seeded.rubric.criteria,
+    };
+    expect(await rubrics.previewAcceptanceBarAmendment(amendment)).toMatchObject({
+      changedBars: [], approvalRequired: false, requirementsDrift: { rerenderedOnApply: ['R-1'] },
+      revisionMovement: { subject: { from: seeded.subjectRevision, to: seeded.subjectRevision + 1 } },
+    });
+    await expect(rubrics.amendRubric({ ...amendment, faultInjection: 'after-rubric' })).rejects.toThrow();
+    const [rolledBack] = await db.adminSql`SELECT content, version FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    expect(rolledBack!.content).toBe(staleContent);
+    expect(Number(rolledBack!.version)).toBe(seeded.subjectRevision);
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.rubric.revision);
+
+    const after = (await rubrics.amendRubric(amendment))!;
+    expect(after.criteria).toEqual(seeded.rubric.criteria);
+    expect(after.barSetHash).toBe(seeded.rubric.barSetHash);
+    expect(after.barContract!.meaningRevision).toBe(seeded.rubric.barContract!.meaningRevision);
+    const [row] = await db.adminSql`SELECT content, version, acceptance_bar_rubric_revision FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const repaired = parseRequirementBars(row!.content);
+    expect(repaired.ok).toBe(true);
+    if (repaired.ok && original.ok) {
+      expect(repaired.bars).toEqual(original.bars);
+    }
+    expect(Number(row!.version)).toBe(seeded.subjectRevision + 1);
+    expect(Number(row!.acceptance_bar_rubric_revision)).toBe(after.revision);
+  });
 
   it('EI-25970739425963382: commits a METHOD-only requirement update atomically without changing BAR meaning', async () => {
     const seeded = await explicitAmendmentSubject('method-render-subject');

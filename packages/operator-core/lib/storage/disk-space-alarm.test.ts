@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true),
   broadcastSevereEventResolved: vi.fn(async () => true) }));
 vi.mock('../agent-tools/coordination/tools/conditions', () => ({ readConditionEnvelopes: async () => [],
-  computeConditionStates: () => [] }));
+  computeConditionStates: () => [], readLatestConditionEnvelope: vi.fn(async () => null) }));
 vi.mock('../attention-notify', () => ({ notifyAttention: vi.fn(async () => {}), notifyAttentionOnce: vi.fn(async () => {}) }));
 import { tmpdir } from 'node:os';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AttentionNotifyInput } from '../attention-notify';
+import { readLatestConditionEnvelope } from '../agent-tools/coordination/tools/conditions';
 import { RETENTION_POLICY, type RetentionClass } from './retention-policy';
 import { listDiskRootChildrenAsync } from './disk';
 vi.mock('./disk', async (importOriginal) => ({
@@ -30,6 +31,7 @@ import {
   mountPointOf,
   sampleDiskSnapshots,
   DEFAULT_DISK_POLICY,
+  DISK_SPACE_ALARM_CONDITION_KEY,
   type DiskSnapshot,
   type DiskAlarmPolicy,
   type DiskAlarmContext,
@@ -288,6 +290,10 @@ describe('runDiskSpaceAlarmOnce', () => {
     const result = await runDiskSpaceAlarmOnce({ ...deps, sample: async () => [snap({ path: '/', freeBytes: 99 * GIB, freePct: 0.198 }), snap({ path: '/mnt/data' })] });
     expect(result.escalated).toBe(true);
     expect(escalate.mock.calls[0]![0].importance).toBe('urgent');
+    expect(escalate.mock.calls[0]![0].data).toEqual({
+      conditionKey: DISK_SPACE_ALARM_CONDITION_KEY, host: expect.any(String),
+      consumers: { '/': ['/home/builduser'], '/mnt/data': ['/mnt/data/offload'] }, reclaimReceiptId: 'receipt-123',
+    });
     for (const text of ['/home/builduser', '/mnt/data/offload', '/settings/storage?reclaim=receipt-123', 'partial']) {
       expect(escalate.mock.calls[0]![0].body).toContain(text);
       expect(emitToast.mock.calls[0]![0].description).toContain(text);
@@ -498,9 +504,12 @@ describe('escalation ladder — a worsening critical disk re-escalates inside th
 
   it('emits NO toast when every filesystem is healthy', async () => {
     const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
+    vi.mocked(readLatestConditionEnvelope).mockClear();
     const res = await runDiskSpaceAlarmOnce({ sample: async () => [snap(), snap({ path: '/tmp' })], emitToast });
     expect(res.breaches).toEqual([]);
     expect(emitToast).not.toHaveBeenCalled();
+    expect(readLatestConditionEnvelope).toHaveBeenCalledOnce();
+    expect(readLatestConditionEnvelope).toHaveBeenCalledWith(DISK_SPACE_ALARM_CONDITION_KEY);
   });
 
   it('never throws when sampling fails — returns an empty result', async () => {

@@ -350,6 +350,177 @@ describe('R12 native command-local artifact preparation', () => {
   });
 });
 
+describe('R12 original Astro command receipt', () => {
+  it.each(['valid-standalone', 'valid-ordered', 'wrapper-command', 'wrapper-script', 'original-command',
+    'failed-execution', 'signal', 'failed-discovery', 'discovery-command', 'discovery-order',
+    'sync-incomplete', 'discovery-executed', 'duplicate-discovery', 'multiple-results',
+    'changed-inputs', 'changed-population', 'wrong-occurrence-kind', 'missing-occurrence',
+    'missing-summary', 'duplicate-summary', 'wrong-file-count', 'errors', 'missing-counter',
+    'duplicate-counter', 'missing-wrapper-output', 'log-path', 'stderr-drift', 'source-drift'])
+  ('qualifies Astro only with %s evidence', async defect => {
+    const root = mkdtempSync(join(tmpdir(), 'r12-astro-command-'));
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const pin = (ref: string, value: unknown, raw = false) => {
+      const bytes = raw ? String(value) : JSON.stringify(value);
+      writeFileSync(join(root, ref), bytes);
+      return { ref, sha256: digest(bytes) };
+    };
+    try {
+      const repositoryRoot = join(root, 'repo'); mkdirSync(join(repositoryRoot, 'docs'), { recursive: true });
+      const packageText = JSON.stringify({ scripts: { check: defect === 'wrapper-script' ? 'astro check && true' : 'astro check' } });
+      const files = ['docs/page.astro', 'docs/types.d.ts'];
+      const inputs = [...files, 'docs/package.json'].sort().map(path => {
+        const bytes = path.endsWith('package.json') ? packageText : path;
+        writeFileSync(join(repositoryRoot, path), bytes);
+        return { path, sha256: digest(bytes) };
+      });
+      const command = 'astro check', task = 'docs :: test';
+      const step = defect === 'valid-standalone' ? null : 0;
+      const census = { ok: true, enumerated: true, repositoryFiles: files, inputs,
+        config: { runner: 'astro-check', tsconfig: null }, sync: { status: 'completed', beforePopulation: true },
+        executed: false, runtimeClosure: 'unmeasured', operationalAcceptance: false };
+      const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'partial',
+        unenumerated: ['remaining original chain'],
+        fileOccurrences: files.map(file => ({ task, step, command, file, kind: 'check-input' })),
+        tasks: [{ id: task, dir: 'docs', command: step === null ? command : 'astro check && vitest run',
+          ...(step === null ? {} : { steps: [{ command }, { command: 'vitest run' }] }) }],
+        commandObligations: [{ task, step, kind: 'command-check', check: 'astro-check', command, inputs, discovery: census }] };
+      const before = structuredClone(census), after = structuredClone(census);
+      if (defect === 'failed-discovery') before.ok = false;
+      if (defect === 'sync-incomplete') before.sync.status = 'pending';
+      if (defect === 'discovery-executed') before.executed = true;
+      if (defect === 'changed-inputs') after.inputs[0]!.sha256 = 'f'.repeat(64);
+      if (defect === 'changed-population') after.repositoryFiles.pop();
+      if (defect === 'wrong-occurrence-kind') selection.fileOccurrences[0]!.kind = 'test-file';
+      if (defect === 'missing-occurrence') selection.fileOccurrences.pop();
+      const discovery = (value: typeof census, elapsedMs: number) => 'PC_VITEST_CONFIG_CONTRACTS=' +
+        JSON.stringify({ results: [ { ...value, diagnostics: { elapsedMs } },
+          ...(defect === 'multiple-results' ? [value] : []) ] }) + '\n';
+      let stdout = '\n> docs@0.1.0 check\n> astro check\n\nResult (2 files): \n- 0 errors\n- 1 warnings\n- 23 hints\n';
+      if (defect === 'missing-summary') stdout = stdout.replace('Result (2 files): \n', '');
+      if (defect === 'duplicate-summary') stdout += 'Result (2 files): \n';
+      if (defect === 'wrong-file-count') stdout = stdout.replace('(2 files)', '(1 files)');
+      if (defect === 'errors') stdout = stdout.replace('- 0 errors', '- 1 errors');
+      if (defect === 'missing-counter') stdout = stdout.replace('- 1 warnings\n', '');
+      if (defect === 'duplicate-counter') stdout += '- 0 errors\n';
+      if (defect === 'missing-wrapper-output') stdout = stdout.replace('> astro check\n', '');
+      const beforeLog = discovery(before, 10);
+      const logs = { stdout: pin('command.out', stdout, true), stderr: pin('command.err', 'deprecation\n', true),
+        beforeStdout: pin('before.out', beforeLog + (defect === 'duplicate-discovery' ? beforeLog : ''), true),
+        beforeStderr: pin('before.err', 'deprecation\n', true),
+        afterStdout: pin('after.out', discovery(after, 20), true),
+        afterStderr: pin('after.err', defect === 'stderr-drift' ? 'different\n' : 'deprecation\n', true) };
+      const discoveryCommand = ['/installed/bin/node', 'scripts/resolve-vitest-config-contracts.mjs', '--astro-selection-child'];
+      const receipt = { kind: 'original-native-command-execution', cwd: 'docs',
+        originalCommand: defect === 'original-command' ? ['astro', 'sync'] : ['astro', 'check'],
+        wrapperCommand: ['npm', 'run', 'check'],
+        before: { command: defect === 'discovery-command' ? ['/installed/bin/node', 'other.mjs'] : discoveryCommand,
+          startedAt: '2026-10-14T00:00:00Z', completedAt: '2026-10-14T00:00:01Z',
+          exitCode: 0, signal: null, error: null, stdout: join(root, 'before.out'), stderr: join(root, 'before.err') },
+        execution: { command: defect === 'wrapper-command' ? ['npm', 'run', 'other'] : ['npm', 'run', 'check'],
+          startedAt: '2026-10-14T00:00:01Z', completedAt: '2026-10-14T00:00:02Z',
+          exitCode: defect === 'failed-execution' ? 1 : 0, signal: defect === 'signal' ? 'SIGTERM' : null,
+          error: null, stdout: defect === 'log-path' ? '/elsewhere/command.out' : join(root, 'command.out'),
+          stderr: join(root, 'command.err') },
+        after: { command: discoveryCommand,
+          startedAt: defect === 'discovery-order' ? '2026-10-14T00:00:01Z' : '2026-10-14T00:00:02Z',
+          completedAt: '2026-10-14T00:00:03Z', exitCode: 0, signal: null, error: null,
+          stdout: join(root, 'after.out'), stderr: join(root, 'after.err') } };
+      const pins = { mode: 'command-preparation' as const, repositoryRoot,
+        selection: pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true),
+        commands: [{ task, step, receipt: pin('receipt.json', receipt), logs }] };
+      if (defect === 'source-drift') writeFileSync(join(repositoryRoot, files[0]!), 'changed');
+      if (defect.startsWith('valid-')) {
+        const result = await readBudgetedTaskComparisonArtifacts(root, pins);
+        expect(result.commands[0]).toMatchObject({ task, step, command, scriptsExecuted: 0,
+          diagnostics: { filesChecked: 2, errors: 0, warnings: 1, hints: 23 } });
+        expect(result.selection).toMatchObject({ coverage: 'partial', unenumerated: ['remaining original chain'] });
+        expect(result.orderedChainQualified).toBe(false);
+        expect(result.runtimeClosure).toBe('unmeasured');
+        expect(result.operationalAcceptance).toBe(false);
+        expect(Object.isFrozen(result.commands[0]!.diagnostics)).toBe(true);
+      } else await expect(readBudgetedTaskComparisonArtifacts(root, pins)).rejects.toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('R12 original native voice transcript receipt', () => {
+  it.each(['valid', 'projection-only', 'missing-event-pin', 'duplicate-event', 'wrong-event', 'wrong-session',
+    'wrong-cwd', 'wrong-shell', 'extra-shell-command', 'failed-execution', 'failed-selection',
+    'unfinished-event', 'source-mismatch', 'wrong-clock', 'changed-census', 'executed-discovery',
+    'fabricated-occurrence', 'missing-result', 'duplicate-result', 'warnings', 'log-drift', 'source-drift'])
+  ('qualifies original voice only with %s evidence', async defect => {
+    const root = mkdtempSync(join(tmpdir(), 'r12-voice-command-'));
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const pin = (ref: string, value: string) => {
+      writeFileSync(join(root, ref), value);
+      return { ref, sha256: digest(value) };
+    };
+    try {
+      const repositoryRoot = join(root, 'repo'); mkdirSync(join(repositoryRoot, 'operator/scripts'), { recursive: true });
+      const source = 'operator/scripts/el-tools-check.mjs';
+      writeFileSync(join(repositoryRoot, source), 'source');
+      const inputs = [{ path: source, sha256: digest('source') }];
+      const task = 'operator :: lint:el-tools', command = 'node scripts/el-tools-check.mjs';
+      const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'partial',
+        unenumerated: ['remaining original chain'],
+        fileOccurrences: defect === 'fabricated-occurrence' ? [{ task, step: null, command, file: source, kind: 'test-file' }] : [],
+        tasks: [{ id: task, dir: 'operator', command }],
+        commandObligations: [{ task, kind: 'command-check', check: 'el-tools-drift', command, inputs }] };
+      const before = { schemaVersion: 1, kind: 'command-check-inputs', check: 'el-tools-drift', files: [], inputs,
+        executed: defect === 'executed-discovery', runtimeClosure: 'unmeasured', operationalAcceptance: false };
+      const after = structuredClone(before);
+      if (defect === 'changed-census') after.inputs[0]!.sha256 = 'f'.repeat(64);
+      const result = '[el-tools-check] ✓ aligned — 25 client tools, all backed by registry defs.\n';
+      const logs = { stdout: pin('command.out', defect === 'missing-result' ? '' : result + (defect === 'duplicate-result' ? result : '')),
+        stderr: pin('command.err', defect === 'warnings' ? '[el-tools-check] 1 warning:\n' : ''),
+        beforeStdout: pin('before.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(before)}\n`),
+        afterStdout: pin('after.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(after)}\n`) };
+      const shell = [
+        `${command} --print-selection > ${join(root, 'before.out')}`,
+        `${command} > ${join(root, 'command.out')} 2> ${join(root, 'command.err')}`,
+        'voice_status=$?',
+        `${command} --print-selection > ${join(root, 'after.out')}`,
+        'selection_status=$?',
+        "printf 'voice_exit=%s selection_exit=%s\\n' \"$voice_status\" \"$selection_status\"",
+        'exit "$voice_status"',
+      ].join('\n');
+      const event = { type: 'event_msg', payload: { type: 'item_completed', thread_id: 'original-session',
+        started_at_ms: 1000, completed_at_ms: defect === 'wrong-clock' ? 999 : 2000,
+        item: { type: 'CommandExecution', id: 'original-event', cwd: `file://${join(repositoryRoot, 'operator')}`,
+          command: ['/bin/bash', '-lc', defect === 'wrong-shell' ? shell.replace(command, 'node scripts/other.mjs') :
+            shell + (defect === 'extra-shell-command' ? '\ntrue' : '')],
+          source: defect === 'source-mismatch' ? 'agent-authored' : 'unified_exec_startup',
+          status: defect === 'unfinished-event' ? 'running' : 'completed',
+          exit_code: defect === 'failed-execution' ? 1 : 0,
+          aggregated_output: defect === 'failed-selection' ? 'voice_exit=0 selection_exit=1\n' : 'voice_exit=0 selection_exit=0\n' } } };
+      if (defect === 'wrong-cwd') event.payload.item.cwd = `file://${repositoryRoot}`;
+      // A copied native event in tool-output text does not qualify as the native event.
+      const projection = { type: 'response_item', payload: { type: 'custom_tool_call_output', output: JSON.stringify(event) } };
+      const transcript = [projection, ...(defect === 'projection-only' ? [] : [event]),
+        ...(defect === 'duplicate-event' ? [event] : [])].map(row => JSON.stringify(row)).join('\n') + '\n';
+      const pins = { mode: 'command-preparation' as const, repositoryRoot,
+        selection: pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`),
+        commands: [{ task, step: null, receipt: pin('native.jsonl', transcript), logs,
+          ...(defect === 'missing-event-pin' ? {} : { nativeEvent: {
+            sessionId: defect === 'wrong-session' ? 'another-session' : 'original-session',
+            eventId: defect === 'wrong-event' ? 'another-event' : 'original-event' } }) }] };
+      if (defect === 'log-drift') writeFileSync(join(root, 'command.out'), 'changed');
+      if (defect === 'source-drift') writeFileSync(join(repositoryRoot, source), 'changed');
+      if (defect === 'valid') {
+        const receipt = await readBudgetedTaskComparisonArtifacts(root, pins);
+        expect(receipt.commands[0]).toMatchObject({ task, step: null, command, fileOccurrences: [],
+          childWallMs: null, nativeExecutionWallMs: 1000, durationScope: 'discovery-and-command',
+          scriptsExecuted: 0, scriptOrder: [], voiceResult: { clientTools: 25 } });
+        expect(receipt.selection).toMatchObject({ coverage: 'partial' });
+        expect(receipt.runtimeClosure).toBe('unmeasured');
+        expect(receipt.orderedChainQualified).toBe(false);
+        expect(receipt.operationalAcceptance).toBe(false);
+      } else await expect(readBudgetedTaskComparisonArtifacts(root, pins)).rejects.toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe('R12 original fixture lifecycle receipt', () => {
   it.each(['valid', 'missing-lifecycle', 'wrong-script', 'wrong-discovery', 'after-before-exit',
     'discovery-failure', 'missing-build-result'])('qualifies lifecycle only with %s evidence', async defect => {

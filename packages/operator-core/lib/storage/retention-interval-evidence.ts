@@ -150,6 +150,37 @@ export function assessDiskHeadroomSoak(input: unknown, requirements: unknown) {
   return finish();
 }
 
+/** One snapshot of the existing native ledgers. A cap hit or legacy hostless alarm cannot pass. */
+export async function readDiskHeadroomSoakEvidence(
+  sql: Pick<import('postgres').Sql, 'unsafe'>, workspaceId: string, requirements: unknown,
+) {
+  const required = soakRequirementsSchema.parse(requirements);
+  const end = new Date(Date.parse(required.startAt) + 72 * 3_600_000).toISOString();
+  const censusEnd = new Date(Math.min(Date.parse(required.measuredAt), Date.parse(end) + required.maxSampleGapMs)).toISOString();
+  const alarmEnd = new Date(Math.min(Date.parse(required.measuredAt), Date.parse(end))).toISOString();
+  const rows = await sql.unsafe(`
+    WITH censuses AS (
+      SELECT run_id::text AS id, host, device AS path, finished_at AS at,
+             avail_bytes AS "availableBytes", complete
+        FROM harness_shared.disk_census_runs
+       WHERE host = $1 AND device IN ('/', '/mnt/data')
+         AND finished_at BETWEEN $2::timestamptz AND $3::timestamptz
+       ORDER BY finished_at, device, run_id LIMIT 20001
+    ), alarms AS (
+      SELECT id::text AS id, data->>'host' AS host, created_at AS at, data->'consumers' AS consumers
+        FROM harness_shared.attention_notifications
+       WHERE workspace_id = $4 AND data->>'conditionKey' = 'alarm:disk-space'
+         AND (data->>'host' = $1 OR data->>'host' IS NULL)
+         AND created_at BETWEEN $5::timestamptz AND $6::timestamptz
+       ORDER BY created_at, id LIMIT 20001
+    )
+    SELECT COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.at, c.path, c.id) FROM censuses c), '[]'::jsonb) AS censuses,
+           COALESCE((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.at, a.id) FROM alarms a), '[]'::jsonb) AS alarms`,
+  [required.host, required.shippedAt, censusEnd, workspaceId, required.startAt, alarmEnd]);
+  const records = rows[0] ?? { censuses: [], alarms: [] };
+  return { records, requirements: required, assessment: assessDiskHeadroomSoak(records, required) };
+}
+
 const REQUIRED_PATHS = ['/', '/mnt/data', '/tmp/pcv'] as const;
 const EXTERNAL_CHECKS = new Set(['inode-headroom', 'final-candidate-demand']);
 

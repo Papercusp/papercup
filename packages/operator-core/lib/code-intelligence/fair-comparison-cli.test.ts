@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { buildArm, FAIR_ARM_IDS, workspaceDirs } from './fair-comparison-cli';
+import { buildArm, FAIR_ARM_IDS, indexFileCensus, loadFairInputs, materializeFrozenControls,
+  prepareFrozenControl, validateFrozenInputs, verifyFrozenSource, workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
 
 // Transitive users can mock only their own subprocess seam. Importing the CLI's
 // helpers must not read/promisify the absent execFile before an actual CLI run.
@@ -26,6 +27,7 @@ const pkg = (dir: string, name = dir.replace(/\//g, '-')) => {
   writeFileSync(join(root, dir, 'package.json'), JSON.stringify({ name }));
 };
 pkg('apps/operator');
+pkg('apps/operator-checkpoint');
 pkg('packages/a');
 pkg('packages/b');
 mkdirSync(join(root, 'packages/no-manifest'), { recursive: true });
@@ -48,14 +50,21 @@ describe('workspaceDirs', () => {
     expect(await workspaceDirs(root, ['nowhere/*', 'packages/a'])).toEqual(['packages/a']);
   });
 
-  it('expands every pattern in the real root workspaces to at least one package', async () => {
+  it('applies exclusions regardless of order and deduplicates overlapping inclusions', async () => {
+    expect(await workspaceDirs(root, ['apps/*', '!apps/*-checkpoint', 'apps/operator'])).toEqual(['apps/operator']);
+    expect(await workspaceDirs(root, ['!apps/*-checkpoint', 'apps/*'])).toEqual(['apps/operator']);
+    expect(await workspaceDirs(root, ['!apps/*-checkpoint'])).toEqual([]);
+  });
+
+  it('resolves the real root workspace inclusions while honoring its exclusions', async () => {
     const repo = resolve(__dirname, '../../../..');
     const { workspaces = [] } = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { workspaces?: string[] };
     expect(workspaces.length).toBeGreaterThan(0);
-    // Only exact dirs and one trailing /* are supported; any other glob shape would expand to nothing.
-    const unsupported = workspaces.filter((p) => /[*?{[]/.test(p.endsWith('/*') ? p.slice(0, -2) : p));
-    expect(unsupported).toEqual([]);
-    for (const p of workspaces) {
+    const dirs = await workspaceDirs(repo, workspaces);
+    expect(dirs).toContain('apps/operator');
+    expect(dirs.some(dir => /^apps\/.*-checkpoint$/.test(dir))).toBe(false);
+    expect(new Set(dirs).size).toBe(dirs.length);
+    for (const p of workspaces.filter(pattern => !pattern.startsWith('!'))) {
       expect(await workspaceDirs(repo, [p]), p).not.toEqual([]);
     }
   });
@@ -71,5 +80,99 @@ describe('CLI import without execFile', () => {
   it('constructs an arm without starting a subprocess under a narrow mock', async () => {
     expect((await buildArm('rg')).capabilities.armId).toBe('rg');
     expect(spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe('logical index file census', () => {
+  it('keeps source and dependency baseline files apart from newly created index/cache files', async () => {
+    const isolated = mkdtempSync(join(tmpdir(), 'fair-index-census-'));
+    try {
+      const source = join(isolated, 'source.ts');
+      writeFileSync(source, 'export const source = 1;');
+      expect(await indexFileCensus([isolated], new Set([source]))).toEqual([]);
+      mkdirSync(join(isolated, 'cache'));
+      const index = join(isolated, 'cache', 'index');
+      writeFileSync(index, '1234567');
+      expect(await indexFileCensus([isolated], new Set([source]))).toEqual([{ path: index, bytes: 7 }]);
+    } finally { rmSync(isolated, { recursive: true, force: true }); }
+  });
+  it('returns unknown for incomplete paths, rather than an apparently measured empty index', async () => {
+    expect(await indexFileCensus([join(root, 'missing-index-root')], new Set())).toBeNull();
+  });
+});
+
+describe('saved native protocol inputs and worker controls', () => {
+  const frozenPath = new URL('../../../../docs/evidence/native-code-intelligence-preregistration-2026-10-09.json', import.meta.url);
+  const frozen = JSON.parse(readFileSync(frozenPath, 'utf8')) as FrozenFairInputs;
+  const control = (state: string, configuration = 'configured') => frozen.cases.find(kase =>
+    kase.language === 'typescript' && kase.intent === 'callers' && kase.source === 'authored' &&
+    kase.subject === 'target' && kase.sourceState === state && kase.configuration === configuration)!;
+
+  it('loads all saved cases and keys without generating or rewriting preregistration', async () => {
+    const out = mkdtempSync(join(tmpdir(), 'fair-frozen-input-'));
+    try {
+      const original = readFileSync(frozenPath, 'utf8');
+      const loaded = await loadFairInputs(out, frozenPath.pathname);
+      expect(loaded.cases).toHaveLength(143);
+      expect(loaded.keys).toHaveLength(143);
+      expect(loaded.preregistration.hash).toBe(frozen.preregistration.hash);
+      expect(readFileSync(frozenPath, 'utf8')).toBe(original);
+      expect(existsSync(join(out, 'prereg.json'))).toBe(false);
+      writeFileSync(join(out, 'prereg.json'), JSON.stringify(frozen.preregistration));
+      await expect(loadFairInputs(out)).rejects.toThrow(/requires --frozen/);
+      await expect(loadFairInputs(out, frozenPath.pathname)).resolves.toEqual(frozen);
+      writeFileSync(join(out, 'prereg.json'), JSON.stringify({ ...frozen.preregistration, seed: 1 }));
+      await expect(loadFairInputs(out, frozenPath.pathname)).rejects.toThrow(/differs from frozen/);
+    } finally { rmSync(out, { recursive: true, force: true }); }
+  });
+
+  it('refuses changed questions, keys, fixture bytes and unsafe file paths before materialization', async () => {
+    expect(() => validateFrozenInputs({ ...frozen, cases: frozen.cases.slice(1) })).toThrow(/cases or keys/);
+    expect(() => validateFrozenInputs({ ...frozen, keys: frozen.keys.slice(1) })).toThrow(/cases or keys/);
+    const path = control('current').anchorFile!;
+    expect(() => validateFrozenInputs({ ...frozen, controlFiles: { ...frozen.controlFiles, [path]: 'changed' } }))
+      .toThrow(/fixture hash/);
+    for (const unsafe of ['../escape.ts', '/escape.ts', 'folder/../escape.ts', 'folder\\escape.ts']) {
+      expect(() => validateFrozenInputs({ ...frozen, controlFiles: { ...frozen.controlFiles, [unsafe]: 'bad' } }))
+        .toThrow(/path or bytes/);
+    }
+    expect(() => validateFrozenInputs({ ...frozen, sourcePins: [] })).toThrow(/source custody/);
+    expect(() => validateFrozenInputs({ ...frozen, sourcePins: frozen.sourcePins.map(pin =>
+      ({ ...pin, commit: '0'.repeat(40) })) })).toThrow(/source custody/);
+  });
+
+  it('refuses a donor with mismatched pinned source bytes before starting a worker', async () => {
+    const tree = mkdtempSync(join(tmpdir(), 'fair-source-custody-'));
+    try {
+      const pin = frozen.sourcePins[0]!;
+      mkdirSync(join(tree, pin.path, '..'), { recursive: true });
+      writeFileSync(join(tree, pin.path), 'a changed source at a plausible snapshot path');
+      await expect(verifyFrozenSource(tree, frozen)).rejects.toThrow(`source mismatch: ${pin.path}`);
+    } finally { rmSync(tree, { recursive: true, force: true }); }
+  });
+
+  it('indexes original bytes, removes configuration, mutates or deletes source, then restores the next control', async () => {
+    const tree = mkdtempSync(join(tmpdir(), 'fair-control-worker-'));
+    try {
+      const kase = control('current'), path = kase.anchorFile!, source = frozen.controlFiles[path]!;
+      const config = join(tree, 'native-controls/typescript/tsconfig.json');
+      await materializeFrozenControls(tree, frozen);
+      expect(readFileSync(join(tree, path), 'utf8')).toBe(source);
+      const current = await prepareFrozenControl(tree, kase, frozen);
+      const unconfigured = await prepareFrozenControl(tree, control('current', 'unconfigured'), frozen);
+      expect(existsSync(config)).toBe(false);
+      expect(unconfigured?.configurationFiles.map(file => file.hash)).toEqual([null]);
+      const stale = await prepareFrozenControl(tree, control('stale'), frozen);
+      expect(existsSync(config)).toBe(true);
+      expect(stale?.originalSourceHash).toBe(current?.currentSourceHash);
+      expect(stale?.currentSourceHash).not.toBe(stale?.originalSourceHash);
+      expect(readFileSync(join(tree, path), 'utf8')).not.toContain('return target()');
+      expect((await prepareFrozenControl(tree, control('deleted'), frozen))?.currentSourceHash).toBeNull();
+      expect(existsSync(join(tree, path))).toBe(false);
+      expect((await prepareFrozenControl(tree, kase, frozen))?.currentSourceHash).toBe(current?.currentSourceHash);
+      expect(readFileSync(join(tree, path), 'utf8')).toBe(source);
+      await expect(prepareFrozenControl(tree, { ...kase, subject: 'changed' }, frozen)).rejects.toThrow(/differs from frozen/);
+      expect(readFileSync(join(tree, path), 'utf8')).toBe(source);
+    } finally { rmSync(tree, { recursive: true, force: true }); }
   });
 });

@@ -23,6 +23,8 @@ export interface AlarmAttentionRequest {
   source: string;
   /** Stable per-caller identity, independent of the repeat-notification cooldown. */
   conditionKey: string;
+  /** Native detector evidence persisted with the existing notification receipt. */
+  data?: AttentionNotifyInput['data'];
 }
 
 export interface AlarmAttentionDeps {
@@ -135,7 +137,7 @@ async function defaultNotify(request: AlarmAttentionRequest, deps: AlarmAttentio
       title: request.title,
       body: request.body,
       importance: 'urgent',
-      data: request.conditionKey ? { conditionKey: request.conditionKey } : undefined,
+      data: request.conditionKey ? { ...request.data, conditionKey: request.conditionKey } : request.data,
     };
     if (deps.notify) await deps.notify(input);
     else {
