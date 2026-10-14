@@ -139,7 +139,8 @@ OUTFILE="${2:-dist-host/hono-host.mjs}"
 [[ "$ENTRY" = /* ]] || ENTRY="$OPERATOR_DIR/$ENTRY"
 [[ "$OUTFILE" = /* ]] || OUTFILE="$OPERATOR_DIR/$OUTFILE"
 OUTDIR="$(dirname "$OUTFILE")"
-BUNDLE_HOST_STEP_LOG="$OUTFILE.build-steps.jsonl"
+# Node gate and census children append their phases to the same retained log.
+export BUNDLE_HOST_STEP_LOG="$OUTFILE.build-steps.jsonl"
 mkdir -p "$OUTDIR"
 : > "$BUNDLE_HOST_STEP_LOG"
 # >>> custom-output runtime dependencies (EI-25510203057543967)

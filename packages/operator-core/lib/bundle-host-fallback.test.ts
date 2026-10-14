@@ -69,6 +69,9 @@ function compilerShim(directory: string, lines: string[]): string {
 
 /** Run bundle-host.sh, returning its exit code and combined output. */
 function runBundler(entry: string, extraEnv?: Record<string, string>): { code: number; output: string } {
+  // An inherited exported binding would mask a missing export in the script.
+  const inheritedEnv = { ...process.env };
+  delete inheritedEnv.BUNDLE_HOST_STEP_LOG;
   // EI-24917607035361603: bundle-host.sh's restricted-hold gate (WI-10005745) would read the
   // real org-admin census, which the unit guard refuses, and fail every case closed. Inject an
   // empty census (nothing held) through the CLI's VITEST-only seam; the gate itself still runs.
@@ -85,7 +88,7 @@ function runBundler(entry: string, extraEnv?: Record<string, string>): { code: n
       // WI-10005321: the bundler's mutation-probe gate reads admission markers from this
       // scratch dir, not the live /tmp, so a peer's probe window cannot fail these cases.
       env: {
-        ...process.env,
+        ...inheritedEnv,
         PAPERCUSP_BUNDLE_ALLOW_STALE_START: '0',
         PAPERCUSP_MUTATION_PROBE_TMPDIR: dir,
         PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: census,
@@ -248,6 +251,20 @@ describe('bundle-host.sh last-known-good fallback', () => {
     const bundle = readFileSync(outfile);
     const metadata = readFileSync(outfile + '.meta.json');
     const graph = JSON.parse(metadata.toString());
+    // The real Bash -> Node gate -> census chain must share the retained
+    // journal, including the last phase reached if preparation is killed.
+    const steps = readFileSync(outfile + '.build-steps.jsonl', 'utf8').trim().split('\n')
+      .map(line => JSON.parse(line) as { step: string; event: string; status?: number; pid: number });
+    for (const step of ['restricted-hold-inputs', 'restricted-hold-census', 'restricted-hold-live-census']) {
+      expect(steps, step).toEqual(expect.arrayContaining([
+        expect.objectContaining({ step, event: 'start', pid: expect.any(Number) }),
+        expect.objectContaining({ step, event: 'end', status: 0, pid: expect.any(Number) }),
+      ]));
+    }
+    // Gate and census run in separate Node children, rather than having the
+    // parent shell synthesize rows after the child has already returned.
+    expect(steps.find(row => row.step === 'restricted-hold-inputs')!.pid)
+      .not.toBe(steps.find(row => row.step === 'restricted-hold-live-census')!.pid);
     // npm-install-safe executes the compiler from repoRoot, regardless of the shell's cwd.
     const inputPaths = Object.keys(graph.inputs).map(path => resolve(REPO_ROOT, path));
     expect(inputPaths, JSON.stringify({ inputs: graph.inputs, inputPaths, entry, dependency })).toContain(entry);
