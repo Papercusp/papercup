@@ -190,6 +190,34 @@ describe('listWorkspaceHostStandingHealthTargets (real PG + forced RLS)', () => 
     // Expired health is unknown, not an observed recovery or a fresh outage.
     const stale = await readWorkspaceHostReliability(wsB, now + 21 * 60_000);
     expect(stale.hosts).toEqual({ expectedRunning: 1, unhealthy: 0, unobserved: 1, platformOwnedRunning: 0 });
+    await db.adminSql`UPDATE harness_shared.customer_workspaces
+      SET monthly_lifecycle_budget_cents = 1000, lifecycle_budget_period_started_at = ${new Date(now - 60000)}
+      WHERE workspace_id = ${wsA}`;
+    for (const ws of [wsA, wsB]) {
+      await db.adminSql`UPDATE harness_shared.workspace_host_operations
+        SET organization_id = 'org-rly', provider_target = 'gcp',
+          billing_owner_kind = ${ws === wsA ? 'platform' : 'organization'}, billing_owner_id = 'billing-rly',
+          estimated_cost_cents = ${ws === wsA ? 2400 : 99999}, cost_currency = 'USD',
+          cost_estimate_source = 'private-fixture', cost_estimate_ref = 'private-estimate', cost_estimated_at = ${new Date(now)}
+        WHERE workspace_id = ${ws} AND id = 'rly-ready'`;
+      await db.adminSql`INSERT INTO papercusp_auth.hosted_workspace_connectors
+        (control_workspace_id, organization_id, customer_workspace_id, host_id, route_label,
+         generation, credential_hash, state, transport, registered_at, heartbeat_at)
+        VALUES (${ws}, 'org-rly', 'customer-rly', 'rly-host', ${ws + '-route'},
+          1, ${'a'.repeat(64)}, 'active', 'websocket', ${new Date(now - 100000)}, ${new Date(now - 100000)})`;
+    }
+    const breached = await readWorkspaceHostReliability(wsA, now);
+    expect(breached.reverseConnectors).toEqual({ active: 1, lost: 1 });
+    expect(breached.ownedCost).toEqual({ estimatedUsdCents: 2400, estimates: 1, unpriced: 0, breachedBudgets: 1 });
+    expect((await readWorkspaceHostReliability(wsB, now)).ownedCost)
+      .toEqual({ estimatedUsdCents: null, estimates: 0, unpriced: 0, breachedBudgets: 0 });
+    await db.adminSql`UPDATE papercusp_auth.hosted_workspace_connectors SET heartbeat_at = ${new Date(now)}
+      WHERE control_workspace_id = ${wsA}`;
+    expect((await readWorkspaceHostReliability(wsA, now)).reverseConnectors).toEqual({ active: 1, lost: 0 });
+    // A connector explicitly detached by the existing producer clears heartbeat_at.
+    await db.adminSql`UPDATE papercusp_auth.hosted_workspace_connectors SET heartbeat_at = NULL
+      WHERE control_workspace_id = ${wsA}`;
+    expect((await readWorkspaceHostReliability(wsA, now)).reverseConnectors).toEqual({ active: 1, lost: 1 });
   });
 
   it('lists exactly the live, spec-bearing hosts this controller owns, across workspaces', async () => {

@@ -1,5 +1,6 @@
 /** Generation-bound relay between one outbound workspace connector and browser sessions. */
 import { randomUUID } from 'node:crypto';
+import { safeCloudError } from '../cloud-telemetry';
 import { isHostedPrincipal } from '../auth/hosted-principal';
 import type { HostedPrincipalResolution } from '../auth/hosted-principal-resolver';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
@@ -354,7 +355,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     } catch (error) {
       console.warn(
         `[hosted-relay] could not read the membership report for organization ${binding.organizationId}:`,
-        error instanceof Error ? error.message : error,
+        safeCloudError('connector_unavailable', error),
       );
       return null;
     }

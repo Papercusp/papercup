@@ -2537,6 +2537,15 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         m('sampled hosted API errors / samples (1h)', hostedControlPlane?.api
           ? `${hostedControlPlane.api.errors} / ${hostedControlPlane.api.samples}` : 'unknown'),
         m('sampled hosted API success p95 ms', hostedControlPlane?.api?.p95Ms ?? 'unknown'),
+        m('reverse connectors active / heartbeat lost', hostedControlPlane?.reverseConnectors
+          ? `${hostedControlPlane.reverseConnectors.active} / ${hostedControlPlane.reverseConnectors.lost}` : 'unknown'),
+        m('Papercusp-funded lifecycle estimates USD (current budget periods)',
+          hostedControlPlane?.ownedCost?.estimatedUsdCents == null ? 'unknown'
+            : `$${(hostedControlPlane.ownedCost.estimatedUsdCents / 100).toFixed(2)} (estimated)`),
+        m('platform lifecycle estimates / unpriced', hostedControlPlane?.ownedCost
+          ? `${hostedControlPlane.ownedCost.estimates} / ${hostedControlPlane.ownedCost.unpriced}` : 'unknown'),
+        m('platform lifecycle budget breaches', hostedControlPlane?.ownedCost?.breachedBudgets ?? 'unknown'),
+        m('provider infrastructure invoices', 'unknown — account access not granted'),
         m('performance history', performanceHistory.note,
           performanceHistory.status === 'disabled' ? undefined : performanceHistory.status),
         m('disk', worstDisk === null ? 'n/a' : `${worstDisk}%`, worstDisk === null ? undefined : worstDisk >= DISK_USED_CRIT_PCT ? 'crit' : worstDisk >= DISK_USED_WARN_PCT ? 'warn' : undefined),

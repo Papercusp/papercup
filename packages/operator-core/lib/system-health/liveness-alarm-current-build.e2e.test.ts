@@ -2,7 +2,7 @@ import { fork } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { expect, it } from 'vitest';
+import { expect, it, type TestContext } from 'vitest';
 import {
   captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof,
 } from '../../test/isolated-integration-proof';
@@ -12,10 +12,7 @@ const options = isolatedWorkerOptions(480_000);
 
 // R-12 needs a real request worker and durable ledger, independently of the unit
 // alarm seam. Reuse the maintained private operator profile and lifetime proof.
-it.each([
-  { subject: 'agents-wedged', title: 'keeps a request-worker wedged alarm standing across restart and resolves only a measured recovery' },
-  { subject: 'hosted-control-plane-degraded', title: 'keeps one accountable hosted reliability alarm across restart and unknown evidence, then resolves witnessed recovery' },
-])('$title', async ({ subject }) => {
+async function verifyAlarm(subject: 'agents-wedged' | 'hosted-control-plane-degraded', context: TestContext) {
   const runId = await recordIsolatedIntegrationProof({
     root,
     filePath: 'packages/operator-core/lib/system-health/liveness-alarm-current-build.e2e.test.ts',
@@ -86,7 +83,11 @@ it.each([
       console.info('LIVENESS_ALARM_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },
   });
-  const task = expect.getState().task;
-  if (task) Object.assign(task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
   console.info('LIVENESS_ALARM_HTTP_PROOF_RUN ' + runId);
-}, options.testTimeoutMs);
+}
+
+it('keeps a request-worker wedged alarm standing across restart and resolves only a measured recovery',
+  context => verifyAlarm('agents-wedged', context), options.testTimeoutMs);
+it('keeps one accountable hosted reliability alarm across restart and unknown evidence, then resolves witnessed recovery',
+  context => verifyAlarm('hosted-control-plane-degraded', context), options.testTimeoutMs);

@@ -600,6 +600,8 @@ export const EVALUATED_LIVENESS_SIGNATURES: ReadonlySet<string> = new Set([
   'pg-restarted',
   'dns-resolution-failing',
   'hosted-control-plane-degraded',
+  'hosted-reverse-connector-lost',
+  'platform-lifecycle-budget-exceeded',
   'agents-wedged',
   'agents-stranded',
 ]);
@@ -915,6 +917,19 @@ export function evaluateLivenessAlarm(
   }
 
   const hosted = health.panels.infra?.data?.hostedControlPlane;
+  if (hosted && health.evaluatedAt - hosted.observedAt <= 120_000) {
+    if ((hosted.reverseConnectors?.lost ?? 0) > 0) signals.push({
+      key: 'hosted-reverse-connector-lost', severity: 'blocker',
+      summary: `Hosted reverse connector heartbeat LOST: ${hosted.reverseConnectors!.lost} of ` +
+        `${hosted.reverseConnectors!.active} active WebSocket bindings are stale. ` +
+        'Responder: Mug / workspace-host controller; inspect the existing connector generation and heartbeat, without guest content.',
+    });
+    if ((hosted.ownedCost?.breachedBudgets ?? 0) > 0) signals.push({
+      key: 'platform-lifecycle-budget-exceeded', severity: 'blocker',
+      summary: `Papercusp-funded lifecycle estimate exceeds ${hosted.ownedCost!.breachedBudgets} configured monthly budget(s). ` +
+        'Responder: Mug / billing operator. Estimates are recorded lifecycle charges; provider invoices and customer account spend are unknown.',
+    });
+  }
   if (hosted && health.evaluatedAt - hosted.observedAt <= 120_000 &&
       ((hosted.hosts?.unhealthy ?? 0) > 0 || (hosted.providerConnections?.degraded ?? 0) > 0)) {
     signals.push({
@@ -1137,6 +1152,10 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
   const infraPanel = health.panels.infra;
   // Both legs must be witnessed to declare recovery; a partial/unreadable read retains the alarm.
   const hosted = infraPanel?.data?.hostedControlPlane;
+  if (!hosted?.reverseConnectors || health.evaluatedAt - hosted.observedAt > 120_000)
+    out.add('hosted-reverse-connector-lost');
+  if (!hosted?.ownedCost || health.evaluatedAt - hosted.observedAt > 120_000)
+    out.add('platform-lifecycle-budget-exceeded');
   if (!hosted?.hosts || hosted.hosts.unobserved > 0 || !hosted.providerConnections ||
       health.evaluatedAt - hosted.observedAt > 120_000) out.add('hosted-control-plane-degraded');
   if (!infraPanel || infraPanel.status === 'unknown' || infraPanel.error != null || infraPanel.data?.dns == null) {
@@ -1277,6 +1296,12 @@ export function resolveEvidenceFor(
   beesLiveness?: BeesLivenessContext,
   d026Quiescence?: D026QuiescenceEvidence,
 ): string {
+  if (sig === 'hosted-reverse-connector-lost' || sig === 'platform-lifecycle-budget-exceeded') {
+    const hosted = health.panels.infra?.data?.hostedControlPlane;
+    return `hosted observation at ${hosted?.observedAt ?? 'unknown'}: heartbeat lost ` +
+      `${hosted?.reverseConnectors?.lost ?? 'unknown'}, platform budget breaches ` +
+      `${hosted?.ownedCost?.breachedBudgets ?? 'unknown'}; responder Mug / workspace-host controller or billing operator`;
+  }
   if (sig === 'hosted-control-plane-degraded') {
     const hosted = health.panels.infra?.data?.hostedControlPlane;
     return `hosted observation at ${hosted?.observedAt ?? 'unknown'}: freshly unhealthy hosts ` +
@@ -2604,7 +2629,7 @@ export async function runLivenessAlarmTick(
       ...((s.key === 'agents-wedged' || s.key === 'agents-stranded') && agentStrandObservation
         ? { agentStrandObservation }
         : {}),
-      ...(s.key === 'hosted-control-plane-degraded' ? {
+      ...(['hosted-control-plane-degraded', 'hosted-reverse-connector-lost', 'platform-lifecycle-budget-exceeded'].includes(s.key) ? {
         hostedControlPlaneObservation: {
           observedAtMs: now,
           snapshotAtMs: healthForSignals.evaluatedAt,

@@ -9,6 +9,7 @@
  */
 import { createHash, randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto';
 import { defineTool, type RouteDefinition } from '@papercusp/tooldef/define-tool';
+import { safeCloudError } from '../../../cloud-telemetry';
 import {
   HostedSessionCookieCodec,
   type CreateHostedSessionInput,
@@ -243,11 +244,13 @@ function callbackRecoveryRedirect(origin: string, code: string): Response {
  * The callback's 503 exits swallow their cause so nothing internal reaches the
  * browser — which left the server blind too: the owner's `session_create_failed`
  * on 2026-09-23 was diagnosable only from the Postgres server log. Log the code
- * and the cause's message (a driver/constraint message, never a token).
+ * and the reviewed error fingerprint. Driver messages can contain row values,
+ * provider payloads and credentials, so they never cross this log boundary.
  */
 function logCallbackFailure(code: string, cause: unknown): void {
   console.warn(
-    `[hosted-auth] callback failed code=${code} cause=${cause instanceof Error ? cause.message : String(cause)}`,
+    `[hosted-auth] callback failed code=${code}`,
+    safeCloudError('request_failure', cause),
   );
 }
 

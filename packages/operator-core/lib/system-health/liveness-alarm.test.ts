@@ -61,6 +61,8 @@ function mkHealth(over: {
         lifecycle: null, api: null,
         hosts: { expectedRunning: 0, unhealthy: 0, unobserved: 0, platformOwnedRunning: 0 },
         providerConnections: { connected: 0, degraded: 0 },
+        reverseConnectors: { active: 0, lost: 0 },
+        ownedCost: { estimatedUsdCents: null, estimates: 0, unpriced: 0, breachedBudgets: 0 },
       },
     } },
   };
@@ -75,6 +77,26 @@ function mkHealth(over: {
 }
 
 describe('hosted control-plane alarm through the existing liveness engine', () => {
+  it('routes heartbeat loss and platform estimate thresholds and requires witnessed recovery', () => {
+    const snapshot = mkHealth();
+    const data = snapshot.panels.infra.data!;
+    const failed = { ...data.hostedControlPlane!,
+      reverseConnectors: { active: 2, lost: 1 },
+      ownedCost: { estimatedUsdCents: 2400, estimates: 3, unpriced: 1, breachedBudgets: 1 },
+    };
+    snapshot.panels.infra.data = { ...data, hostedControlPlane: failed };
+    const keys = evaluateLivenessAlarm(snapshot, null).map(s => s.key);
+    expect(keys).toContain('hosted-reverse-connector-lost');
+    expect(keys).toContain('platform-lifecycle-budget-exceeded');
+    expect(isEvaluatedLivenessSignature('hosted-reverse-connector-lost')).toBe(true);
+    const recovered = { ...failed, reverseConnectors: { active: 2, lost: 0 },
+      ownedCost: { ...failed.ownedCost, breachedBudgets: 0 } };
+    snapshot.panels.infra.data = { ...data, hostedControlPlane: recovered };
+    expect(evaluateLivenessAlarm(snapshot, null).map(s => s.key)).not.toContain('hosted-reverse-connector-lost');
+    expect(unobservableLivenessSignatures(snapshot).has('hosted-reverse-connector-lost')).toBe(false);
+    snapshot.panels.infra.data = { ...data, hostedControlPlane: { ...recovered, ownedCost: null } };
+    expect(unobservableLivenessSignatures(snapshot).has('platform-lifecycle-budget-exceeded')).toBe(true);
+  });
   const hosted = (unhealthy: number, degraded = 0) => ({
     observedAt: 1_000_000, windowMs: 3_600_000, lifecycle: null, api: null,
     hosts: { expectedRunning: 2, unhealthy, unobserved: 0, platformOwnedRunning: 1 },

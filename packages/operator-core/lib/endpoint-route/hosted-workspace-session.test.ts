@@ -684,7 +684,7 @@ describe('HostedWorkspaceSessionBroker membership reports (WI-10004257)', () => 
     try {
       const broker = new HostedWorkspaceSessionBroker({
         pingIntervalMs: 0,
-        membershipReport: async () => { throw new Error('database unavailable'); },
+        membershipReport: async () => { throw new Error('database unavailable: member-log-canary@example.test'); },
       });
       const host = new FakeSocket();
       broker.attachConnector(connector, host);
@@ -692,7 +692,10 @@ describe('HostedWorkspaceSessionBroker membership reports (WI-10004257)', () => 
       await broker.refreshMembership();
       expect(host.sent.map((frame) => (frame as { type: string }).type)).toEqual(['bound']);
       expect(host.closed).toEqual([]);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('membership report'), 'database unavailable');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('membership report'), {
+        code: 'connector_unavailable', fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('member-log-canary@example.test');
     } finally {
       warn.mockRestore();
     }

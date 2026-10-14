@@ -17,6 +17,7 @@ import type {
   WorkspaceHostScopeRef,
 } from '@papercusp/deployment-driver';
 import { notifySyncInvalidate } from '../sync-sse';
+import { HOSTED_CONNECTOR_LIVENESS_FRESH_MS } from '../endpoint-route/hosted-workspace-connector';
 
 export const WORKSPACE_HOST_CONTROL_QUERY = 'workspaceHosts.control';
 
@@ -28,6 +29,9 @@ export interface WorkspaceHostReliability {
   hosts: { expectedRunning: number; unhealthy: number; unobserved: number; platformOwnedRunning: number } | null;
   providerConnections: { connected: number; degraded: number } | null;
   api: { samples: number; errors: number; p95Ms: number | null } | null;
+  reverseConnectors?: { active: number; lost: number } | null;
+  /** Recorded platform-funded lifecycle estimates, not provider invoices or customer account spend. */
+  ownedCost?: { estimatedUsdCents: number | null; estimates: number; unpriced: number; breachedBudgets: number } | null;
 }
 
 /** Read existing ledgers, not another probe. Null slices are unobserved, never healthy zeros. */
@@ -108,6 +112,38 @@ export async function readWorkspaceHostReliability(
       WHERE workspace_id = ${workspaceId} AND invoked_at >= ${since}::timestamptz
         AND method <> 'INTERNAL' AND (path LIKE '/hosted/%' OR path LIKE '/api/hosted/%')
     `);
+    const reverse = await read(query => query<Counts[]>`
+      SELECT count(*) AS active,
+        count(*) FILTER (WHERE connector.heartbeat_at IS NULL OR connector.heartbeat_at <
+          ${new Date(nowMs - HOSTED_CONNECTOR_LIVENESS_FRESH_MS).toISOString()}::timestamptz) AS lost
+      FROM papercusp_auth.hosted_workspace_connectors connector
+      JOIN harness_shared.customer_workspaces customer
+        ON customer.workspace_id = connector.control_workspace_id
+          AND customer.organization_id = connector.organization_id AND customer.id = connector.customer_workspace_id
+      WHERE connector.control_workspace_id = ${workspaceId} AND connector.state = 'active'
+        AND connector.transport = 'websocket' AND customer.state = 'active'
+    `);
+    const ownedCost = await read(query => query<Counts[]>`
+      WITH owned AS (
+        SELECT operation.estimated_cost_cents, operation.cost_currency,
+          customer.id AS customer_id, customer.monthly_lifecycle_budget_cents
+        FROM harness_shared.workspace_host_operations operation
+        JOIN harness_shared.customer_workspaces customer ON customer.workspace_id = operation.workspace_id
+          AND customer.id = operation.customer_workspace_id AND customer.organization_id = operation.organization_id
+        WHERE operation.workspace_id = ${workspaceId} AND operation.billing_owner_kind = 'platform'
+          AND operation.created_at >= customer.lifecycle_budget_period_started_at
+      ), budgets AS (
+        SELECT customer_id, monthly_lifecycle_budget_cents,
+          sum(estimated_cost_cents) FILTER (WHERE cost_currency = 'USD') AS estimated_cents
+        FROM owned GROUP BY customer_id, monthly_lifecycle_budget_cents
+      )
+      SELECT sum(estimated_cost_cents) FILTER (WHERE cost_currency = 'USD') AS estimated_usd_cents,
+        count(*) FILTER (WHERE cost_currency = 'USD' AND estimated_cost_cents IS NOT NULL) AS estimates,
+        count(*) FILTER (WHERE estimated_cost_cents IS NULL OR cost_currency IS DISTINCT FROM 'USD') AS unpriced,
+        (SELECT count(*) FROM budgets WHERE monthly_lifecycle_budget_cents IS NOT NULL
+          AND estimated_cents > monthly_lifecycle_budget_cents) AS breached_budgets
+      FROM owned
+    `);
     return {
       observedAt: nowMs, windowMs,
       lifecycle: lifecycle ? { succeeded: n(lifecycle, 'succeeded'), failed: n(lifecycle, 'failed'),
@@ -116,6 +152,10 @@ export async function readWorkspaceHostReliability(
         unobserved: n(hosts, 'unobserved'), platformOwnedRunning: n(hosts, 'platform_owned_running') } : null,
       providerConnections: connections ? { connected: n(connections, 'connected'), degraded: n(connections, 'degraded') } : null,
       api: api ? { samples: n(api, 'samples'), errors: n(api, 'errors'), p95Ms: nullable(api, 'p95_ms') } : null,
+      reverseConnectors: reverse ? { active: n(reverse, 'active'), lost: n(reverse, 'lost') } : null,
+      ownedCost: ownedCost ? { estimatedUsdCents: nullable(ownedCost, 'estimated_usd_cents'),
+        estimates: n(ownedCost, 'estimates'), unpriced: n(ownedCost, 'unpriced'),
+        breachedBudgets: n(ownedCost, 'breached_budgets') } : null,
     };
   }
 }

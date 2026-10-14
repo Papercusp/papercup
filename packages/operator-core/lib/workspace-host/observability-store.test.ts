@@ -55,6 +55,8 @@ describe('workspace-host observability store', () => {
     }]);
     H.rows.set('FROM harness_shared.workspace_host_connections connection', [{ connected: '1', degraded: '1' }]);
     H.rows.set('FROM harness_shared.route_invocations', [{ samples: '5', errors: '1', p95_ms: 25 }]);
+    H.rows.set('FROM papercusp_auth.hosted_workspace_connectors connector', [{ active: '2', lost: '1' }]);
+    H.rows.set('FROM owned', [{ estimated_usd_cents: 2400, estimates: '3', unpriced: '1', breached_budgets: '1' }]);
     const snapshot = await readWorkspaceHostReliability('ws-A', 3_600_000);
     expect(H.withWorkspace).toHaveBeenCalledWith('ws-A', expect.any(Function), {
       bypassRlsForAdmin: true, statementTimeoutMs: 2_000, lockTimeoutMs: 500,
@@ -65,6 +67,8 @@ describe('workspace-host observability store', () => {
       hosts: { expectedRunning: 4, unhealthy: 1, unobserved: 1, platformOwnedRunning: 2 },
       providerConnections: { connected: 1, degraded: 1 },
       api: { samples: 5, errors: 1, p95Ms: 25 },
+      reverseConnectors: { active: 2, lost: 1 },
+      ownedCost: { estimatedUsdCents: 2400, estimates: 3, unpriced: 1, breachedBudgets: 1 },
     });
     expect(JSON.stringify(snapshot)).not.toMatch(/private|customerBill|token|request|health_checks/);
   });
