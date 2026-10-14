@@ -604,12 +604,12 @@ function hostedOrganizationPredicate(store: string, alias = 't', seen = new Set<
 export async function exportOrganizationData(
   sql: Sql,
   input: { scope: OrganizationDataScope; actor: ReceiptActor; purpose: string; executor?: Executor },
+  transaction?: Sql,
 ): Promise<OrganizationDataExport> {
   const executor = input.executor ?? 'pilot-data-plane';
   const requestedScope = validateScope(input.scope, executor === 'hosted-control-plane');
   authorizeDataOperation('export', requestedScope.organizationId, input.actor);
-  return sql.begin(async (tx) => {
-    const t = tx as unknown as Sql;
+  const execute = async (t: Sql): Promise<OrganizationDataExport> => {
     const owned = executor === 'hosted-control-plane'
       ? await t<{ id: string }[]>`SELECT id::text AS id FROM harness_shared.customer_workspaces
           WHERE organization_id::text = ${requestedScope.organizationId} ORDER BY id`
@@ -653,7 +653,10 @@ export async function exportOrganizationData(
       schemaVersion: await readSchemaVersion(t),
     }, input.actor, t);
     return { receiptId, stores };
-  });
+  };
+  // Hosted authorization already holds an admission transaction. Reuse it so
+  // revocation cannot race the read/receipt, and never nest BEGIN on TransactionSql.
+  return transaction ? execute(transaction) : sql.begin((tx) => execute(tx as unknown as Sql));
 }
 
 async function countRows(sql: Sql, store: string, workspaceIds: readonly string[]): Promise<number> {
