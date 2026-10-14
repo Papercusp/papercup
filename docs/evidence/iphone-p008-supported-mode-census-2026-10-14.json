@@ -98,22 +98,24 @@
     {
       "row": 6,
       "journey": "Real backend revocation, negative reads and fresh pairing",
-      "status": "partial",
+      "status": "retained-passed-subset",
       "evidence": "docs/evidence/iphone-p008-native-revocation-2026-10-14.json; testRunId 21244211; binding 44412",
-      "observed": "Native real revocation, Pair again, Keychain clearing through ordinary relaunch and fresh device identity passed.",
-      "remaining": "Reconcile existing backend authorization proof 21243583/binding 44242 before claiming explicit read/switch coverage; do not rerun passed native revocation."
+      "observed": "Native real revocation, Pair again, Keychain clearing through ordinary relaunch and fresh device identity passed; current source-bound backend proof 21243583/binding 44242 separately establishes runtime-config/read/heartbeat/switch refusal for revoked credentials with positive controls.",
+      "remaining": "Preserve the two exact source-bound subsets; do not rerun completed native revocation merely to reconstruct proof."
     },
     {
       "row": 7,
       "journey": "Expired pair and device credentials",
-      "status": "not-established-by-this-census",
-      "remaining": "Find or execute exact expiry-negative receipts with fresh-pair recovery against owned current-build backend."
+      "status": "partial",
+      "observed": "Current integration proof 21243583/binding 44242 expires an owned pair token (401) and correctly signed device token (403 read/heartbeat/switch), then checks the unexpired positive control.",
+      "remaining": "Native visible expired-pair/device guidance and fresh pairing against the real current-build backend."
     },
     {
       "row": 8,
       "journey": "Unauthorized workspace isolation and supported UI switching",
-      "status": "not-established-by-this-census",
-      "remaining": "Reconcile current integration proof and execute any missing native authorized/unauthorized switching journey."
+      "status": "partial",
+      "observed": "Current integration proof 21243583/binding 44242 proves token workspace cannot be overridden by a header, workspace device lists are isolated, cross-workspace revocation has no effect, and unknown workspace switching is refused.",
+      "remaining": "Native supported UI switching and its selected workspace authorization journey."
     },
     {
       "row": 9,
@@ -130,6 +132,14 @@
       "remaining": "Accepted live hosted/BYOC target and relevant platform entitlement evidence. P-016 typed dependency is preserved."
     }
   ],
+  "existingBackendProof": {
+    "testRunId": 21243583,
+    "bindingId": 44242,
+    "testPath": "packages/operator-core/lib/device-operator-api-profile.integration.test.ts",
+    "status": "pass",
+    "currentness": "current",
+    "verifiedHow": "Read exact persisted test row, conventional test's positive/negative cases, and fresh server-measured plans:get-spec-evidence for binding44242; no test was rerun."
+  },
   "acceptanceGovernance": {
     "rubric": "acceptance-iphone-public-release-2026-08-11",
     "revision": 3,
