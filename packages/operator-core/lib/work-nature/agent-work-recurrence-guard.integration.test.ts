@@ -326,6 +326,65 @@ describe('P-012: the claimable preview surfaces only agent work', () => {
 });
 
 describe('P-012 / D-024: the by-id claim refuses every non-agent category', () => {
+  it('observe agrees with named claims on categories and preserves readiness and status overrides', async () => {
+    const categoryAgent = (s: Seeded) => s.nature === 'work' && s.audience === 'agent';
+    const nonAgent = SEEDS.filter((s) => s.status === 'open' && !categoryAgent(s));
+    const agent = SEEDS.filter(categoryAgent);
+    expect(new Set(nonAgent.map((s) => s.nature))).toEqual(new Set(NATURES));
+    expect(nonAgent.some((s) => s.audience === 'human')).toBe(true);
+    expect(agent.some((s) => s.seed.payload.lane === 'observation')).toBe(true);
+    expect(agent.some((s) => s.seed.payload.needsOwnerAction === true)).toBe(true);
+    expect(agent.some((s) => !['open', 'wip', 'blocked'].includes(s.status))).toBe(true);
+
+    const mismatches: string[] = [];
+    for (const s of nonAgent) {
+      const observed = await wi.observeWorkItem(s.id, { harness: H });
+      const claimed = await wi.claimWorkItem(s.id, 'observe-category-probe', { harness: H });
+      expect(observed?.notAgentWork).toEqual({ nature: s.nature, audience: s.audience });
+      if (observed?.available !== false || observed.gated !== true || claimed !== null) {
+        mismatches.push(`${label(s.id)} → available=${observed?.available}, gated=${observed?.gated}, claimed=${claimed?.id ?? null}`);
+      }
+    }
+    expect(mismatches).toEqual([]);
+
+    for (const s of agent) {
+      const observed = await wi.observeWorkItem(s.id, { harness: H });
+      expect({ id: s.id, available: observed?.available, gated: observed?.gated }).toEqual({
+        id: s.id, available: true, gated: undefined,
+      });
+      expect((await wi.claimWorkItem(s.id, 'observe-category-probe', { harness: H }))?.assignee).toBe('observe-category-probe');
+    }
+  });
+
+  it.each([H, `operator:${WS}`])('observes the resolved issue category in %s and revalidates held dispatches', async (rowHarness) => {
+    const s = SEEDS.find((s) => s.seed.itemKind === 'bug')!;
+    await db.sql`UPDATE harness_shared.work_items SET audience = 'human', harness_slug = ${rowHarness}
+      WHERE workspace_id = ${WS} AND feature_id = ${s.id}`;
+    expect(await wi.observeWorkItem(s.id, { harness: H })).toMatchObject({
+      available: false, gated: true, notAgentWork: { nature: 'work', audience: 'human' },
+    });
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'held-category-probe'
+      WHERE workspace_id = ${WS} AND feature_id = ${s.id}`;
+    const held = await wi.observeWorkItem(s.id, { harness: H });
+    expect(held).toMatchObject({ available: false, claimedBy: 'held-category-probe' });
+    expect(held?.gated).toBeUndefined();
+    expect(await wi.observeWorkItem(s.id, { harness: H, revalidateHeld: true })).toMatchObject({
+      available: false, claimedBy: 'held-category-probe', gated: true,
+      notAgentWork: { nature: 'work', audience: 'human' },
+    });
+    expect((await db.sql`SELECT taken_by FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND feature_id = ${s.id}`)[0]?.taken_by).toBe('held-category-probe');
+  });
+
+  it('the category lookup honors the resolved workspace instead of the active workspace', async () => {
+    const s = SEEDS.find((s) => s.nature === 'work' && s.audience === 'human')!;
+    const otherWorkspace = 'category-foreign-workspace';
+    await db.sql`UPDATE harness_shared.work_items SET workspace_id = ${otherWorkspace}
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${s.id}`;
+    expect(await wi.readNonAgentWorkCategory(s.id, H)).toBeNull();
+    expect(await wi.readNonAgentWorkCategory(s.id, H, otherWorkspace)).toEqual({ nature: 'work', audience: 'human' });
+  });
+
   it('refuses records, documents, events and human-audience work by id, and still serves agent work', async () => {
     const live = SEEDS.filter((s) => s.status === 'open');
     const categoryAgent = (s: Seeded) => s.nature === 'work' && s.audience === 'agent';
