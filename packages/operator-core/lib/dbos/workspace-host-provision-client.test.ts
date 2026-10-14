@@ -54,6 +54,8 @@ describe('workspace-host provisioning DBOS client', () => {
       workflowName: HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME, workflowID: expected.workflowId,
       deduplicationID: expected.deduplicationId, appVersion: 'bg-host-v1' }, deletion);
     expect(enqueue.mock.calls[1]).toEqual(enqueue.mock.calls[0]);
+    expect(enqueue.mock.calls[2]?.[0].queueName).toBe(WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME);
+    expect(enqueue.mock.calls[0]?.[0].queueName).toBe(enqueue.mock.calls[2]?.[0].queueName);
     expect(accepted).toEqual({ workflowId: expected.workflowId, operationId: 'delete-1' });
     expect(hostedCustomerDeletionEnqueueRequest({ ...deletion, organizationId: 'org-2' }).workflowId).not.toBe(expected.workflowId);
   });

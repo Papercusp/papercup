@@ -102,7 +102,7 @@ export function createWorkspaceHostProvisioningClient(
     return client;
   };
 
-  // Every action is the one workspace-host workflow on its one queue; only the request differs.
+  // Reuse the existing governor-admitted queue and version-pinned client.
   const enqueueRequest = async (request: { workflowId: string; deduplicationId: string; workflowInput: unknown },
     workflowName: string = WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME) => {
     const handle = await (await connected()).enqueue(
