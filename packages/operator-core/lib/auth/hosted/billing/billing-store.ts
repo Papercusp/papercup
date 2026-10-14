@@ -18,6 +18,7 @@
 import { withHostedServiceContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
+import { appendOrganizationAuditEvent } from '../governance';
 import { isHostedSubscriptionStatus, type HostedSubscriptionSnapshot } from './entitlement-seam';
 import { subscriptionOrderKey, type HostedBillingEvent, type HostedBillingFact } from './stripe-billing-events';
 
@@ -97,10 +98,11 @@ export class PostgresHostedBillingStore implements HostedBillingStore {
 
   async recordCustomer(customer: HostedBillingCustomer): Promise<HostedBillingCustomer> {
     return this.run(async (sql) => {
-      await sql`
+      const inserted = await sql`
         INSERT INTO papercusp_auth.hosted_billing_customers (organization_id, stripe_customer_id, livemode)
         VALUES (${customer.organizationId}::uuid, ${customer.stripeCustomerId}, ${customer.livemode})
         ON CONFLICT (organization_id) DO NOTHING
+        RETURNING organization_id
       `;
       const rows = await sql<Array<{ stripe_customer_id: string; livemode: boolean }>>`
         SELECT stripe_customer_id, livemode
@@ -108,6 +110,14 @@ export class PostgresHostedBillingStore implements HostedBillingStore {
          WHERE organization_id = ${customer.organizationId}::uuid
       `;
       if (!rows[0]) throw new Error('hosted_billing_customer_unavailable');
+      if (inserted.length) {
+        await appendOrganizationAuditEvent({
+          organizationId: customer.organizationId, actorKind: 'system', actorId: 'hosted-billing',
+          action: 'billing.customer.linked', purpose: 'hosted_subscription_billing',
+          targetType: 'billing_customer', targetId: rows[0].stripe_customer_id,
+          metadata: { livemode: rows[0].livemode },
+        }, sql);
+      }
       return { organizationId: customer.organizationId, stripeCustomerId: rows[0].stripe_customer_id, livemode: rows[0].livemode };
     });
   }
@@ -201,14 +211,24 @@ export class PostgresHostedBillingStore implements HostedBillingStore {
         if (event.facts.length === 0) return { outcome: 'ignored', organizationId: null };
 
         let organizationId: string | null = null;
+        const organizations = new Set<string>();
         for (const fact of event.facts) {
           organizationId = await applyFact(sql, fact, event, input.planKeyForPrice);
+          organizations.add(organizationId);
         }
         await sql`
           UPDATE papercusp_auth.hosted_billing_webhook_events
              SET outcome = 'applied', organization_id = ${organizationId}::uuid
            WHERE provider_event_id = ${event.eventId}
         `;
+        for (const organization of organizations) {
+          await appendOrganizationAuditEvent({
+            organizationId: organization, actorKind: 'system', actorId: 'stripe',
+            action: 'billing.event.applied', purpose: 'hosted_subscription_billing',
+            targetType: 'billing_event', targetId: event.eventId,
+            metadata: { providerEventId: event.eventId, eventType: event.eventType, livemode: event.livemode },
+          }, sql);
+        }
         return { outcome: 'applied', organizationId };
       });
     } catch (error) {

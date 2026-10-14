@@ -22,6 +22,7 @@ import {
   type WorkosLifecycleProjectionStore,
 } from './workos-lifecycle-worker';
 import type { WorkOsWebhookReceiptResult } from './workos-webhook-intake';
+import { appendOrganizationAuditEvent } from './governance';
 
 export type HostedServiceContextRunner = <T>(fn: (sql: Sql) => Promise<T>) => Promise<T>;
 
@@ -315,6 +316,18 @@ export class PostgresWorkosLifecycleProjectionStore implements WorkosLifecyclePr
                  updated_at = now()
            WHERE id = ${userId}::uuid
         `;
+        if (mutation.status === 'deleted') {
+          const organizations = await sql<IdRow[]>`
+            SELECT DISTINCT organization_id::text AS id
+              FROM papercusp_auth.organization_memberships WHERE user_id = ${userId}::uuid`;
+          for (const organization of organizations) {
+            await appendOrganizationAuditEvent({
+              organizationId: organization.id, actorKind: 'system', actorId: 'workos',
+              action: 'user.deleted', purpose: 'verified_identity_lifecycle',
+              targetType: 'user', targetId: userId, metadata: { providerEventId: cursor.eventId },
+            }, sql);
+          }
+        }
         return { userIds: [userId] };
       }
       case 'upsert-organization': {
@@ -346,6 +359,14 @@ export class PostgresWorkosLifecycleProjectionStore implements WorkosLifecyclePr
              AND external_organization_id = ${mutation.externalOrganizationId}
            RETURNING id::text AS id
         `;
+        for (const row of rows) {
+          await appendOrganizationAuditEvent({
+            organizationId: row.id, actorKind: 'system', actorId: 'workos',
+            action: mutation.status === 'deleted' ? 'organization.deleted' : 'organization.suspended',
+            purpose: 'verified_identity_lifecycle', targetType: 'organization', targetId: row.id,
+            metadata: { providerEventId: cursor.eventId },
+          }, sql);
+        }
         return rows[0] ? { organizationIds: [rows[0].id] } : undefined;
       }
       case 'upsert-invitation-reference': {
@@ -417,7 +438,7 @@ export class PostgresWorkosLifecycleProjectionStore implements WorkosLifecyclePr
         const userId = userTargets?.userIds?.[0];
         const organizationId = organizationTargets?.organizationIds?.[0];
         if (userId && organizationId) {
-          await sql`
+          const changed = await sql<IdRow[]>`
             UPDATE papercusp_auth.organization_memberships
                SET status = 'revoked',
                    revoked_at = COALESCE(revoked_at, ${cursor.occurredAt}::timestamptz),
@@ -425,7 +446,15 @@ export class PostgresWorkosLifecycleProjectionStore implements WorkosLifecyclePr
              WHERE user_id = ${userId}::uuid
                AND organization_id = ${organizationId}::uuid
                AND status <> 'revoked'
+            RETURNING id::text AS id
           `;
+          for (const row of changed) {
+            await appendOrganizationAuditEvent({
+              organizationId, actorKind: 'system', actorId: 'workos', action: 'membership.revoked',
+              purpose: 'verified_identity_lifecycle', targetType: 'membership', targetId: row.id,
+              metadata: { providerEventId: cursor.eventId, source: 'login_membership' },
+            }, sql);
+          }
         }
         return userId && organizationId ? this.membershipSessionTargets(sql, userId, organizationId) : undefined;
       }
@@ -460,13 +489,21 @@ export class PostgresWorkosLifecycleProjectionStore implements WorkosLifecyclePr
         const userId = links[0]?.hosted_user_id;
         const organizationId = (await this.organizationTargets(sql, mutation.externalOrganizationId))?.organizationIds?.[0];
         if (!userId || !organizationId) return undefined;
-        await sql`
+        const changed = await sql<IdRow[]>`
           UPDATE papercusp_auth.organization_memberships
              SET status = 'revoked',
                  revoked_at = COALESCE(revoked_at, ${cursor.occurredAt}::timestamptz), updated_at = now()
            WHERE user_id = ${userId}::uuid AND organization_id = ${organizationId}::uuid
              AND status <> 'revoked'
+          RETURNING id::text AS id
         `;
+        for (const row of changed) {
+          await appendOrganizationAuditEvent({
+            organizationId, actorKind: 'system', actorId: 'workos', action: 'membership.revoked',
+            purpose: 'verified_identity_lifecycle', targetType: 'membership', targetId: row.id,
+            metadata: { providerEventId: cursor.eventId, source: 'directory_sync' },
+          }, sql);
+        }
         return this.membershipSessionTargets(sql, userId, organizationId);
       }
       case 'observe-directory-membership': {

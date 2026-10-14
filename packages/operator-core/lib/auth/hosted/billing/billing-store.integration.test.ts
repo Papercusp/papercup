@@ -187,6 +187,35 @@ describe('PostgresHostedBillingStore (real Postgres, real roles)', () => {
     expect(await store().customerFor(randomUUID())).toBeNull();
   });
 
+  it('appends tenant billing receipts exactly once with the customer link and accepted webhook', async () => {
+    const f = await fixture();
+    const raw = subscriptionJson(f, { id: `evt_${hex()}`, created: T0, status: 'active' });
+    expect(await deliver(store(), raw)).toMatchObject({ outcome: 'applied' });
+    expect(await deliver(store(), raw)).toMatchObject({ outcome: 'duplicate' });
+    await store().recordCustomer({ organizationId: f.organizationId, stripeCustomerId: f.customerId, livemode: false });
+    const audit = await db.adminSql<Array<{ action: string; actor_kind: string; metadata: Record<string, unknown> }>>`
+      SELECT action, actor_kind, metadata FROM papercusp_auth.organization_audit_events
+       WHERE organization_id = ${f.organizationId}::uuid ORDER BY recorded_at, id`;
+    expect(audit.map((e) => e.action)).toEqual(['billing.customer.linked', 'billing.event.applied']);
+    expect(audit.every((e) => e.actor_kind === 'system')).toBe(true);
+    expect(audit[1].metadata).toMatchObject({ providerEventId: parsed(raw).eventId });
+    expect(JSON.stringify(audit)).not.toContain('price_team');
+  });
+
+  it('rolls back billing facts and provider processing when a tenant audit append fails', async () => {
+    const f = await fixture();
+    const raw = subscriptionJson(f, { id: `evt_${hex()}`, created: T0, status: 'active' });
+    await db.adminSql.unsafe('REVOKE INSERT ON papercusp_auth.organization_audit_events FROM hosted_service');
+    try {
+      await expect(deliver(store(), raw)).rejects.toThrow(/permission denied/);
+      expect(await subscriptionRow(f.subscriptionId)).toBeNull();
+      expect(await eventRow(parsed(raw).eventId)).toBeNull();
+    } finally {
+      await db.adminSql.unsafe('GRANT INSERT ON papercusp_auth.organization_audit_events TO hosted_service');
+    }
+    expect(await deliver(store(), raw)).toMatchObject({ outcome: 'applied' });
+  });
+
   it('converges to the same final row for every delivery order (order-independent max-registers)', async () => {
     // A realistic signup → upgrade → schedule-cancel lifecycle, including a
     // same-second pair (incomplete → active) that only the status rank orders,
