@@ -14,6 +14,7 @@ import { normalizeRemote } from '../pr-host/pr-poll-routine';
 
 export const PR_DELIVERY_AUDIT_MAX = 100;
 const HISTORY_MAX = 100;
+const UPSTREAM_HEADS_MAX = 100;
 const terminal = new Set(['done', 'resolved', 'closed']);
 const exec = promisify(execFile);
 const sha = /^[0-9a-f]{40}$/;
@@ -76,7 +77,7 @@ export async function loadPrDeliveryAuditPopulation(
       state: r.state, authority: r.authority, payload: r.payload })) };
 }
 
-/** Read-only Git: use fresh upstream refs and the working copy's already-fetched objects. */
+/** Read-only Git: inspect fresh upstream heads and the working copy's already-fetched objects. */
 export async function inspectPrDeliveryRow(
   row: PrDeliveryAuditRow, project: ProjectEntry | undefined,
   deps: { git?: AuditGit; host: Pick<PrHost, 'getPr'> | null; blobs?: typeof completionHeadBlobMap },
@@ -91,8 +92,8 @@ export async function inspectPrDeliveryRow(
   const parsed = CompletionSettlementManifestSchema.safeParse(evidence?.settlementManifest);
   if (!parsed.success) return answer('unknown', 'No valid completion content receipt.');
   const manifest = parsed.data;
-  if (!project?.path || !project.github_remote || !project.github_default_branch)
-    return answer('unknown', 'The upstream repository or authoritative branch is missing.');
+  if (!project?.path || !project.github_remote)
+    return answer('unknown', 'The upstream repository is missing.');
   const entries = manifest.contentIdentity;
   if (manifest.residualPaths?.length || manifest.repositoryRoot !== project.path
     || manifest.normalizedPaths.some(path => !entries.some(e => e.path === path))
@@ -100,10 +101,20 @@ export async function inspectPrDeliveryRow(
       || (!e.deletion && !e.workingTreeBlobSha)))
     return answer('unknown', 'Incomplete or cross-repository completion content receipt.');
   const git = deps.git ?? auditGit;
-  const tip = await git(project.path, ['ls-remote', '--exit-code', project.github_remote,
-    `refs/heads/${project.github_default_branch}`]);
-  const upstreamSha = tip.stdout.split(/\s/)[0];
-  if (tip.code !== 0 || !sha.test(upstreamSha ?? '')) return answer('unknown', 'Fresh upstream tip is unavailable.');
+  // A repository's default branch need not be the standing PR's base, and a
+  // direct fix can land on another upstream head. Inspect the actual heads;
+  // the fixing pot is required to publish its unreviewed work to its fork.
+  const remoteHeads = await git(project.path, ['ls-remote', '--exit-code', '--heads', project.github_remote]);
+  const tips = remoteHeads.stdout.split('\n').filter(Boolean).map(line => {
+    const [commit, ref] = line.split(/\s+/);
+    return { sha: commit, branch: ref?.replace(/^refs\/heads\//, '') };
+  });
+  if (remoteHeads.code !== 0 || !tips.length
+    || tips.some(t => !sha.test(t.sha ?? '') || !t.branch))
+    return answer('unknown', 'Fresh upstream heads are unavailable.');
+  if (tips.length > UPSTREAM_HEADS_MAX)
+    return answer('unknown', 'The upstream branch census is incomplete.');
+  let upstreamSha = tips.find(t => t.branch === project.github_default_branch)?.sha ?? tips[0]!.sha;
   const paths = entries.map(e => e.path);
   const read = deps.blobs ?? completionHeadBlobMap;
   const matches = async (commit: string): Promise<boolean | null> => {
@@ -117,13 +128,14 @@ export async function inspectPrDeliveryRow(
   };
   // Inspect history too: a later change/revert must not hide an earlier direct push.
   const history = await git(project.path, ['log', '--first-parent', '--format=%H', `--max-count=${HISTORY_MAX + 1}`,
-    upstreamSha, '--not', manifest.headSha, '--', ...paths]);
+    ...tips.map(t => t.sha), '--not', manifest.headSha, '--', ...paths]);
   if (history.code !== 0) return answer('unknown', 'Upstream objects are not available in the maintained working copy.', { upstreamSha });
-  const baselineAncestry = await git(project.path, ['merge-base', '--is-ancestor', manifest.headSha, upstreamSha]);
-  if (![0, 1].includes(baselineAncestry.code))
+  const baselineAncestries = await Promise.all(tips.map(t =>
+    git(project.path, ['merge-base', '--is-ancestor', manifest.headSha, t.sha])));
+  if (baselineAncestries.some(a => ![0, 1].includes(a.code)))
     return answer('unknown', 'The completion baseline ancestry could not be read.', { upstreamSha });
-  const commits = [...new Set([upstreamSha, ...history.stdout.split('\n').filter(Boolean),
-    ...(baselineAncestry.code === 0 ? [manifest.headSha] : [])])];
+  const commits = [...new Set([...tips.map(t => t.sha), ...history.stdout.split('\n').filter(Boolean),
+    ...(baselineAncestries.some(a => a.code === 0) ? [manifest.headSha] : [])])];
   let fixSha: string | undefined;
   const matchingCommits: string[] = [];
   for (const commit of commits.slice(0, HISTORY_MAX)) {
@@ -138,6 +150,7 @@ export async function inspectPrDeliveryRow(
       return answer('unknown', 'The upstream history census is incomplete.', { upstreamSha });
     return answer('pass', 'The recorded fix has not reached upstream.', { upstreamSha });
   }
+  upstreamSha = tips.find(t => matchingCommits.includes(t.sha))?.sha ?? upstreamSha;
   const link = row.payload.standingPr as Record<string, unknown> | undefined;
   const proof = { upstreamSha, fixSha };
   const url = typeof link?.url === 'string' ? link.url : '';
@@ -152,14 +165,15 @@ export async function inspectPrDeliveryRow(
   if (!fetched.ok) return answer('unknown', `PR host read failed: ${fetched.error.kind}.`, { ...proof, prUrl: url });
   const pr = fetched.data;
   const fork = normalizeRemote(project.fork_remote);
+  const targetTip = tips.find(t => t.branch === pr.base_ref);
   if (pr.state !== 'merged' || pr.head_ref !== STANDING_PR_BRANCH || pr.is_draft
     || pr.head_sha !== link.testedSha || !sha.test(pr.merge_commit_sha ?? '')
-    || pr.base_ref !== project.github_default_branch || pr.url !== url
+    || !targetTip || pr.url !== url
     || !fork || pr.head_repo !== fork.replace(/^github\.com\//, ''))
     return answer('fail', 'Fix reached upstream without the matching merged standing PR.', { ...proof, prUrl: url });
   const [headMatches, baseMatches, mergeMatches, ancestor] = await Promise.all([
     matches(String(link.testedSha)), matches(String(link.targetSha)), matches(pr.merge_commit_sha!),
-    git(project.path, ['merge-base', '--is-ancestor', pr.merge_commit_sha!, upstreamSha]),
+    git(project.path, ['merge-base', '--is-ancestor', pr.merge_commit_sha!, targetTip.sha]),
   ]);
   if ([headMatches, baseMatches, mergeMatches].includes(null) || ![0, 1].includes(ancestor.code))
     return answer('unknown', 'Merged PR content or ancestry could not be verified.', { ...proof, prUrl: url });

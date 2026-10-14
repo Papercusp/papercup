@@ -73,6 +73,25 @@ describe('PR bypass falsifier against real upstream Git', () => {
     expect(await inspectPrDeliveryRow(row, project, { host: host(pr()) }))
       .toMatchObject({ verdict: 'pass', upstreamSha: fix, prUrl: url });
   });
+  it('accepts the merged standing PR when its base differs from the registered default branch', async () => {
+    git(repo, 'push', 'origin', `${base}:staging`);
+    git(repo, 'push', 'origin', 'HEAD:main'); link();
+    project.github_default_branch = 'staging';
+    expect(await inspectPrDeliveryRow(row, project, { host: host(pr()) }))
+      .toMatchObject({ verdict: 'pass', upstreamSha: fix, prUrl: url });
+  });
+  it('detects a direct fix on an upstream branch other than the default', async () => {
+    git(repo, 'push', 'origin', 'HEAD:staging');
+    expect(await inspectPrDeliveryRow(row, project, { host: null }))
+      .toMatchObject({ verdict: 'fail', upstreamSha: fix, fixSha: fix });
+  });
+  it('keeps a capped upstream branch census unknown', async () => {
+    expect(await inspectPrDeliveryRow(row, project, { host: null,
+      git: async (path, args) => args[0] === 'ls-remote'
+        ? { code: 0, stdout: Array.from({ length: 101 }, (_, i) => `${base}\trefs/heads/branch-${i}`).join('\n') }
+        : auditGit(path, args),
+    })).toMatchObject({ verdict: 'unknown', reason: 'The upstream branch census is incomplete.' });
+  });
   it.each([
     { state: 'open' }, { head_repo: 'another/subject' }, { head_sha: 'a'.repeat(40) },
     { head_ref: 'one-pr-per-agent' }, { base_ref: 'wrong-branch' }, { is_draft: true },
