@@ -41,6 +41,11 @@ import {
   type PotSearchOutcome,
 } from './documents-corpus';
 import { searchLiveSources, type LiveSearchOutcome } from './live-search-adapter';
+import {
+  judgeInjectionLegs,
+  type InjectionPermits,
+  type LaunchGovernanceTarget,
+} from '../governance-policy/session-governance';
 
 export const GRANTED_SOURCES_BUDGET_TOKENS = 600;
 /**
@@ -273,6 +278,12 @@ export interface GrantedSourcesDeps {
     ctx: PersonalToolContext,
     params: Parameters<typeof searchLiveSources>[2],
   ) => Promise<LiveSearchOutcome>;
+  /**
+   * Which legs the workspace's inherited governance policy permits to reach the model
+   * (WI-6554700010011633). Defaults to `judgeInjectionLegs`, which is inert where no policy
+   * enforcement is installed and fail-closed (no leg) when the chain cannot be read.
+   */
+  judgeLegs?: (workspaceId: string, session?: LaunchGovernanceTarget | null) => Promise<InjectionPermits>;
 }
 
 type InjectionSubjects = Awaited<ReturnType<typeof resolveInjectionSubjects>>;
@@ -284,6 +295,7 @@ function defaultDeps(): GrantedSourcesDeps {
     resolveContext: resolvePersonalAmbientToolContext,
     resolveSubjects: resolveInjectionSubjects,
     subscribedSources: resolveSubscribedSources,
+    judgeLegs: judgeInjectionLegs,
     collectPersonal: (input) => collectPersonalAmbientResults(input),
     // Its own transaction with the workspace GUC, like the personal disclose step:
     // the grant read, ACL read and ledger write must all see this workspace's rows.
@@ -434,6 +446,11 @@ export async function collectPotEntries(
 /**
  * Build the turn-start block. Fail-soft per leg: a failure or refusal in one leg
  * is silence for that leg, never an error for the turn and never a weaker check.
+ *
+ * Governance (WI-6554700010011633): before any leg reads, the workspace's inherited policy
+ * judges each leg's dataUse (`model-context` + the leg label) and, when `session` is known,
+ * the session model and provider. A refused leg is never read, so its text never reaches
+ * the model; an unreadable policy refuses every leg.
  */
 export async function buildGrantedSourcesContextBlock(
   input: {
@@ -443,21 +460,26 @@ export async function buildGrantedSourcesContextBlock(
     query: string;
     budgetTokens?: number;
     relevanceFloor?: number;
+    /** The receiving session's backend/model, when the caller knows it. */
+    session?: LaunchGovernanceTarget | null;
   },
   deps: GrantedSourcesDeps = defaultDeps(),
 ): Promise<string | null> {
   const query = input.query.trim().slice(0, 500);
   if (!query || !input.ownerId.trim() || !input.userId.trim()) return null;
-  const leg = { ...input, query };
+  const { session, ...rest } = input;
+  const leg = { ...rest, query };
+  const refusedAll: InjectionPermits = { personal: false, pot: false, organization: false, live: false };
+  const permits = (deps.judgeLegs ?? judgeInjectionLegs)(input.workspaceId, session).catch(() => refusedAll);
   const subjects = deps.resolveSubjects(deps.sql, input.ownerId, input.workspaceId);
   // One subscription read feeds both subscription-gated legs.
   const sources = subjects.then((s) => deps.subscribedSources(deps.sql, input.workspaceId, s));
   const none = () => [] as GrantedSourceEntry[];
   const [personal, pot, organization, live] = await Promise.all([
-    deps.collectPersonal(leg).catch(() => null),
-    subjects.then((s) => collectPotEntries(leg, deps, s)).catch(none),
-    sources.then((list) => collectOrganizationEntries(leg, deps, undefined, list)).catch(none),
-    sources.then((list) => collectLiveEntries(leg, deps, undefined, list)).catch(none),
+    permits.then((p) => (p.personal ? deps.collectPersonal(leg) : null)).catch(() => null),
+    permits.then((p) => (p.pot ? subjects.then((s) => collectPotEntries(leg, deps, s)) : none())).catch(none),
+    permits.then((p) => (p.organization ? sources.then((list) => collectOrganizationEntries(leg, deps, undefined, list)) : none())).catch(none),
+    permits.then((p) => (p.live ? sources.then((list) => collectLiveEntries(leg, deps, undefined, list)) : none())).catch(none),
   ]);
   const personalEntries: GrantedSourceEntry[] = (personal?.documents ?? []).map((d) => ({
     scope: 'personal',

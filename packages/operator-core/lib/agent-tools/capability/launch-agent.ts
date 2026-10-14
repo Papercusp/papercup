@@ -1960,6 +1960,19 @@ export default defineTool({
     //
     // Fresh launches only: a resume/fork runs under the CLI its session was
     // recorded on, which this call does not choose.
+    // WI-6554700010011633: the session's own model and provider are chosen HERE, after alias
+    // resolution and saved-profile inheritance — not at a tool dispatch the kernel seat sees.
+    // Judge every launch (fresh, successor, resume) against the workspace's inherited policy
+    // before any terminal opens; a resume onto a now-forbidden model is refused too.
+    {
+      const { judgeLaunchGovernance } = await import('../../governance-policy/session-governance');
+      const refusal = await judgeLaunchGovernance(
+        workspaceId,
+        foldedConfigs.map((folded) => ({ agent: folded.agent ?? 'claude', model: folded.model })),
+      );
+      if (refusal) return err(refusal);
+    }
+
     if (!isResume) {
       const preflighted = new Set<string>();
       for (const folded of foldedConfigs) {
