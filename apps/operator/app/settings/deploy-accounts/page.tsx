@@ -196,7 +196,7 @@ export default function DeployAccountsPage() {
       return;
     }
     if (!value.trim()) {
-      setAddError(linkMode === 'api-key' ? 'Paste an Anthropic Console API key (sk-ant-api…).' : provider === 'codex' ? 'Paste a Codex/OpenAI bearer token or env:NAME reference.' : 'Paste a setup-token (sk-ant-oat…) or a .credentials.json bundle.');
+      setAddError(linkMode === 'api-key' ? 'Paste an Anthropic Console API key (sk-ant-api… or sk-ant-usr…).' : provider === 'codex' ? 'Paste a Codex/OpenAI bearer token or env:NAME reference.' : 'Paste a setup-token (sk-ant-oat…) or a .credentials.json bundle.');
       return;
     }
     setBusy(true);
@@ -618,7 +618,7 @@ export default function DeployAccountsPage() {
               </div>
               <div className="pc-da__field">
                 <label htmlFor="anthropic-api-key">3 · Anthropic API key</label>
-                <input id="anthropic-api-key" type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder="sk-ant-api…" autoComplete="off" spellCheck={false} aria-describedby="anthropic-api-key-hint" />
+                <input id="anthropic-api-key" type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder="sk-ant-api… or sk-ant-usr…" autoComplete="off" spellCheck={false} aria-describedby="anthropic-api-key-hint" />
                 <small id="anthropic-api-key-hint">Stored privately on this machine. The key is never shown in the account list.</small>
               </div>
             </>
