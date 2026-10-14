@@ -542,9 +542,15 @@ export async function executeOperationalRun(
   let result: Pick<OperationalEvidenceArtifact, 'exitCode' | 'summary' | 'assertions'>;
   try { result = await definition.run(); }
   catch (error) {
+    const message = String(error instanceof Error ? error.message : error).trim() || 'Unknown exception';
+    // CLI errors often begin with connection/startup traces and end with the
+    // actual refusal. Keep both ends rather than discarding that semantic tail.
+    const omission = `\n[exception truncated: ${message.length} characters]\n`;
+    const evidence = message.length <= 2000 ? message
+      : message.slice(0, 600) + omission + message.slice(-(2000 - 600 - omission.length));
     result = { exitCode: 1, summary: 'Native operational check threw.', assertions: [{
       id: 'native-check-exception', passed: false,
-      evidence: String(error instanceof Error ? error.message : error).slice(0, 2000) || 'Unknown exception',
+      evidence,
     }] };
   }
   const finishedAt = new Date();
@@ -739,21 +745,81 @@ export async function recordOperationalRun(
   };
 }
 
+/** Reuse the canonical plan reader/parser; an empty or partial census cannot prove closure. */
+export async function inspectPlanTerminalCensus(
+  row: Pick<import('../plans/source').PlanRow, 'items' | 'content' | 'contentHash' | 'version'> | null,
+) {
+  const { planItemsForRow } = await import('../plans/source');
+  const { resolveEffectiveStatusForItems } = await import('../plans/effective-status');
+  const items = row ? resolveEffectiveStatusForItems(planItemsForRow(row)).items : [];
+  const unique = new Set(items.map(item => item.id));
+  const complete = Boolean(row && items.length > 0 && items.length <= 98 && unique.size === items.length);
+  const assertions: OperationalEvidenceArtifact['assertions'] = [{ id: 'plan-terminal-census:population',
+    passed: complete, evidence: `version=${row?.version ?? 'missing'} contentHash=${row?.contentHash ?? 'missing'} ` +
+      `population=${items.length} unique=${unique.size}; empty, duplicate and oversized populations fail.` }];
+  if (complete) for (const item of items) {
+    const note = /\s*—\s*note:\s*([\s\S]+)$/.exec(item.text)?.[1].trim();
+    const terminal = item.effectiveStatus === 'done' || item.effectiveStatus === 'dropped';
+    const reason = item.effectiveStatus !== 'dropped' || Boolean(note);
+    assertions.push({ id: `plan-terminal-census:${item.id}`, passed: terminal && reason,
+      evidence: (`stored=${item.storedStatus} effective=${item.effectiveStatus}; ` +
+        (item.effectiveStatus === 'dropped' ? `drop reason=${note || 'missing'}` : 'requires done or an explicit drop with reason')).slice(0, 2000) });
+  }
+  const failed = assertions.some(assertion => !assertion.passed);
+  return { exitCode: failed ? 1 : 0,
+    summary: failed ? 'Plan terminal census failed; inspect per-item assertions.' : 'Every enumerated item is done or explicitly dropped with a reason.',
+    assertions };
+}
+
+/** Executes the current canonical census, then records its actual assertions and runtime witnesses. */
+export async function executePlanTerminalCensus(
+  slug: string,
+  ctx: RecordContext,
+  deps?: {
+    readPlan: (slug: string, ctx: RecordContext) => Promise<Parameters<typeof inspectPlanTerminalCensus>[0]>;
+    execution: Parameters<typeof executeOperationalRun>[2];
+  },
+) {
+  const readPlan = deps?.readPlan ?? (async (slug: string, ctx: RecordContext) => {
+    const { getPlanRow } = await import('../plans/source');
+    return getPlanRow(slug, { workspaceId: ctx.workspaceId ?? undefined, harnessSlug: ctx.harnessSlug ?? undefined });
+  });
+  const unit = process.env.PAPERCUSP_VINTAGE_UNIT?.trim() ||
+    (process.env.PAPERCUSP_DESKTOP === '1' ? 'desktop-sidecar'
+      : `hono-host:${process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? '3070'}`);
+  return executeOperationalRun({ filePath: 'packages/operator-core/lib/agent-tools/testing/record-run.ts',
+    name: `Plan terminal census: ${slug}`, framework: 'operational',
+    command: ['testing:record-run', 'planTerminalCensus', slug], runtimeUnits: [unit],
+    run: async () => {
+      const before = await readPlan(slug, ctx);
+      const result = await inspectPlanTerminalCensus(before);
+      const after = await readPlan(slug, ctx);
+      const unchanged = Boolean(before && after && before.version === after.version &&
+        before.contentHash === after.contentHash && JSON.stringify(before.items) === JSON.stringify(after.items));
+      const assertions = [...result.assertions, { id: 'plan-terminal-census:unchanged', passed: unchanged,
+        evidence: 'Canonical version, content hash and indexed population must remain unchanged across the check.' }];
+      return { ...result, assertions, exitCode: result.exitCode || (unchanged ? 0 : 1),
+        summary: unchanged ? result.summary : 'Plan changed or became unavailable during the terminal census.' };
+    },
+  }, ctx, deps?.execution);
+}
+
 export default defineTool({
   name: 'testing:record-run',
   description:
+    'For a live plan terminal check, pass planTerminalCensus:{slug} instead of evidenceFile/expectedSha256. It executes the canonical population, refuses unexplained drops and changes, then writes native operational evidence. ' +
     `Register a completed non-Vitest check in harness_shared.test_runs and return testRunIds for plans:bind-spec-evidence. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256 for those bytes. Mutation probes need exact MUTATION_PROBE_EVIDENCE_JSON records and cannot use shared .papercusp/scratch. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256,rawLogCommit?} adds failed-case identities from a committed raw log after validating the original scoped receipt; rawLogCommit pins a full Git revision when the published log is redacted. It never changes that receipt or runs a test. A legacy operational receipt with NULL execution is recovered by appending a labelled row only when its scope, outcome, timestamps and original committed artifact bytes agree. Evidence JSON limit: ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; pin bulky raw artifacts by SHA-256. Verdict derives from exitCode + assertions, not caller input. Idempotent by artifact hash.`,
   guidance: {
     when: 'A completed Playwright, Cargo, node, shell, desktop, or other operational acceptance run needs a numeric ledger record; or historical mutation case identities need recovery.',
     notWhen:
       'Not for Vitest (use testing:run), temporary logs, or checks that did not run.',
     chaining:
-      'Run check → commit docs/evidence JSON → testing:record-run → bind returned IDs with plans:bind-spec-evidence.',
+      'Run check → commit docs/evidence JSON → testing:record-run → bind returned IDs with plans:bind-spec-evidence. The planTerminalCensus variant executes directly and returns the same numeric ledger IDs.',
   },
   capability: 'testing:run',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
-  args: z.object({
+  args: z.union([z.object({
     harness: harnessArg,
     evidenceFile: z
       .string()
@@ -763,10 +829,17 @@ export default defineTool({
         'Repo-relative committed JSON path under docs/evidence/. Absolute, temporary, untracked, dirty, and symlink-escape paths are refused.',
       ),
     expectedSha256: sha256Schema.describe('Lowercase SHA-256 of the exact committed evidence file bytes.'),
-  }),
+  }), z.object({
+    harness: harnessArg,
+    planTerminalCensus: z.object({ slug: z.string().regex(/^[a-z0-9][a-z0-9-]*$/).max(200) })
+      .describe('Execute a current canonical plan-item census and record its measured assertions. Non-terminal items, missing inline drop reasons, empty/duplicate populations and mid-check changes fail.'),
+  })]),
   async handler(args, ctx) {
     const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
     if (!harnessSlug) return harnessRequiredResult('testing:record-run', ctx);
+    if ('planTerminalCensus' in args) {
+      return { data: await executePlanTerminalCensus(args.planTerminalCensus.slug, { ...ctx, harnessSlug }) };
+    }
     return { data: await recordOperationalRun({ ...args, harness: harnessSlug }, ctx) };
   },
 });

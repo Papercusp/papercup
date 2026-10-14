@@ -17,6 +17,8 @@ import {
   parseOperationalEvidenceArtifact,
   recordOperationalRun,
   executeOperationalRun,
+  executePlanTerminalCensus,
+  inspectPlanTerminalCensus,
   verifyOperationalCheckDefinitionAtCommit,
   recoverArchivedMutationFailures,
   verifyOriginalOperationalEvidence,
@@ -156,6 +158,19 @@ describe('native operational execution witnesses', () => {
     expect(f.deps.persist.mock.calls[0][0].worktreeDirty).toBe(true);
   });
 
+  it('retains the semantic failure after a long CLI trace in the canonical ledger output', async () => {
+    const f = fixture();
+    const cause = 'processes:kill refused: incomplete task 0mv8ao23519l3q0xtp0';
+    f.definition.run.mockRejectedValue(new Error('MCP cleanup command failed\n' + 'connection trace\n'.repeat(400) + cause));
+    expect(await executeOperationalRun(f.definition, f.ctx, f.deps)).toMatchObject({ ok: true, status: 'fail' });
+    const recorded = f.deps.persist.mock.calls[0][0].rows[0];
+    expect(recorded.outputTail).toContain('MCP cleanup command failed');
+    expect(recorded.outputTail).toContain('[exception truncated:');
+    expect(recorded.outputTail).toContain(cause);
+    expect(recorded.outputTail!.length).toBeLessThanOrEqual(2200);
+    expect(recorded.execution).toMatchObject({ failed: 1, failedCaseTitles: ['native-check-exception'] });
+  });
+
   it('retains source/runtime changes rather than laundering them into stable proof', async () => {
     const f = fixture();
     f.deps.snapshot.mockReturnValueOnce({ commit: 'a'.repeat(40), porcelain: '' });
@@ -208,6 +223,51 @@ describe('native operational execution witnesses', () => {
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
+  });
+});
+
+describe('canonical plan terminal census', () => {
+  function row(status = 'done', text = 'Completed item') {
+    return { version: 7, contentHash: 'plan-hash', content: '', items: [{ id: 'P-001', status, text,
+      importance: 'normal', blockedBy: [], decisionRefs: [], phase: null }] } as Parameters<typeof inspectPlanTerminalCensus>[0];
+  }
+  it('passes done and explicit dropped reasons, and enumerates each item', async () => {
+    const plan = row()!;
+    plan.items.push({ ...plan.items[0], id: 'P-002', status: 'dropped', text: 'Old item — note: Superseded by the verified replacement.' });
+    expect(await inspectPlanTerminalCensus(plan)).toMatchObject({ exitCode: 0, assertions: [
+      { id: 'plan-terminal-census:population', passed: true },
+      { id: 'plan-terminal-census:P-001', passed: true },
+      { id: 'plan-terminal-census:P-002', passed: true },
+    ] });
+  });
+  it.each(['todo', 'wip', 'blocked', 'needs-human', 'dropped'])('fails an unresolved or unexplained %s item', async status => {
+    expect(await inspectPlanTerminalCensus(row(status))).toMatchObject({ exitCode: 1,
+      assertions: [{ passed: true }, { id: 'plan-terminal-census:P-001', passed: false }] });
+  });
+  it('cannot pass a missing, empty, duplicate or oversized population', async () => {
+    for (const population of [null, { ...row()!, items: [] },
+      { ...row()!, items: [row()!.items[0], row()!.items[0]] },
+      { ...row()!, items: Array.from({ length: 99 }, (_, i) => ({ ...row()!.items[0], id: `P-${i}` })) }]) {
+      expect(await inspectPlanTerminalCensus(population)).toMatchObject({ exitCode: 1,
+        assertions: [{ id: 'plan-terminal-census:population', passed: false }] });
+    }
+  });
+  it('records actual per-item failures and fails a population that changes during execution', async () => {
+    const persist = vi.fn(async (_params: Parameters<RecordOperationalRunDeps['persist']>[0]) => ({ written: 1, ids: [123] }));
+    const execution = { snapshot: vi.fn(() => ({ commit: 'b'.repeat(40), porcelain: '' })),
+      readRuntime: vi.fn(async () => 'c'.repeat(64)), verifyDefinition: vi.fn(async () => true), persist };
+    const readPlan = vi.fn(async () => row('dropped'));
+    const ctx = { workspaceId: 'workspace-test', harnessSlug: 'papercusp', projectDir: process.cwd() };
+    const result = await executePlanTerminalCensus('prior-plan', ctx, { readPlan, execution });
+    expect(result).toMatchObject({ ok: true, status: 'fail', testRunIds: [123] });
+    expect(persist.mock.calls[0][0].rows[0].execution).toMatchObject({ failed: 1,
+      failedCaseTitles: ['plan-terminal-census:P-001'],
+      operational: { command: ['testing:record-run', 'planTerminalCensus', 'prior-plan'] } });
+    readPlan.mockResolvedValueOnce(row()).mockResolvedValueOnce({ ...row()!, version: 8 });
+    expect(await executePlanTerminalCensus('prior-plan', ctx, { readPlan, execution })).toMatchObject({ status: 'fail' });
+    expect(persist.mock.calls[1][0].rows[0].execution).toMatchObject({ failed: 1,
+      failedCaseTitles: ['plan-terminal-census:unchanged'] });
+    expect(persist.mock.calls[1][0].rows[0].outputTail).toContain('Plan changed or became unavailable');
   });
 });
 
