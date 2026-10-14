@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { getOrgPg } from "@papercusp/db-org";
 import { mapDreamRun } from "../../dream/dream-run-store.ts";
 import { STUDY_BLOCKS } from "./accounting.mts";
-import { buildCalibrationBundle, calibrationStudyScope } from "./calibration.mts";
+import { buildCalibrationBundle, calibrationStudyScope, calibrationKeyPublication } from "./calibration.mts";
 import { freezeImmutableArtifacts } from "./freeze-artifacts.mts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -18,6 +18,20 @@ const blocks = await Promise.all(
 const comparisonFile = process.argv.find(arg => arg.startsWith('--comparison='))?.slice('--comparison='.length);
 const comparison = comparisonFile ? JSON.parse(await readFile(resolve(here, comparisonFile), 'utf8')) : undefined;
 const { pins, prefix } = calibrationStudyScope(blocks, comparison);
+const custodyFile = process.argv.find(arg => arg.startsWith('--publish-key-from='))?.slice('--publish-key-from='.length);
+if (custodyFile) {
+  const raw = await readFile(resolve(here, prefix + 'calibration-key-v2.json'), 'utf8');
+  const receipt = JSON.parse(await readFile(resolve(custodyFile), 'utf8'));
+  const reports = receipt.results?.filter((entry: { ok: boolean }) => entry.ok) ?? [];
+  if (reports.length !== 1 || !reports[0].report)
+    throw new Error('Calibration publication requires one complete reports:get receipt');
+  const bytes = calibrationKeyPublication(raw, reports[0].report);
+  const file = prefix + 'calibration-key-public-v2.json';
+  const frozen = await freezeImmutableArtifacts([{ path: resolve(here, file), bytes, label: file }]);
+  console.log(JSON.stringify({ ...frozen, file, publication: JSON.parse(bytes).publication,
+    providerCalls: 0, ledgerWrites: 0, originalKeyChanged: false }));
+  process.exit(0);
+}
 const { sql } = getOrgPg();
 try {
   // An uncapped census over exactly the frozen study identities; no live/global backlog.

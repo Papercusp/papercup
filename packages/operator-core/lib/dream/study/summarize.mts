@@ -8,6 +8,7 @@ import { dreamEvaluationProtocolHash, summarizeDreamGraphComparison } from '../d
 import { mapDreamRun } from '../dream-run-store.ts';
 import { computeDreamMetrics } from '../dream-metrics.ts';
 import { coerceJsonArray } from '../../experiment/ledger.ts';
+import { serializeIdentitySafeJson } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import {
   dreamCapabilityRun,
   dreamRunAssessments,
@@ -509,7 +510,7 @@ async function summarizeGraphComparison(file: string) {
   if (dreamEvaluationProtocolHash(comparison.protocol) !== comparison.pin)
     throw new Error('Changed graph comparison pin');
   const blind = JSON.parse(await readFile(resolve(here, 'native-graph-calibration-blind-v2.json'), 'utf8'));
-  const key = JSON.parse(await readFile(resolve(here, 'native-graph-calibration-key-v2.json'), 'utf8'));
+  const key = JSON.parse(await readFile(resolve(here, 'native-graph-calibration-key-public-v2.json'), 'utf8'));
   const review = JSON.parse(await readFile(resolve(here, 'native-graph-calibration-review-2026-10-14.json'), 'utf8'));
   const unblindedFile = process.argv.find(arg => arg.startsWith('--unblinded='))?.slice('--unblinded='.length);
   const unblinded = unblindedFile ? JSON.parse(await readFile(resolve(here, unblindedFile), 'utf8')) : null;
@@ -578,6 +579,7 @@ async function summarizeGraphComparison(file: string) {
       })) };
     const summary = summarizeDreamGraphComparison({ protocol: comparison.protocol, attempts: dreams, independent });
     const output = { measuredAt: new Date().toISOString(), protocolPin: comparison.pin, blindHash,
+      keyPublication: key.publication,
       ...summary, dreams, independentReview: review, unblindedReview: unblinded,
       recordedLinkedExperiments: metrics.experiments,
       verifiedBeneficialExperiments: metrics.experiments.executed === 0 ? 0 : null,
@@ -600,7 +602,10 @@ async function summarizeGraphComparison(file: string) {
       `Downstream: ${output.downstreamDisposition}; executed trials ${output.downstreamTrialsExecuted}.`, '',
       ...output.limitations.map(line => '- ' + line), '',
       'The companion native-graph-evidence-summary.json retains exact run/call identities, technical failures, frozen review and cost reservations.', ''];
-    await writeFile(resolve(here, 'native-graph-evidence-summary.json'), JSON.stringify(output, null, 2) + '\n');
+    // This is a publication view of private ledger evidence. Preserve original
+    // rows and frozen packets; scrub diagnostic strings with the same serializer
+    // as the content guard, leaving counters, hashes and keys intact.
+    await writeFile(resolve(here, 'native-graph-evidence-summary.json'), serializeIdentitySafeJson(output));
     await writeFile(resolve(here, 'native-graph-evidence-summary.md'), lines.join('\n'));
     console.log(JSON.stringify({ ...summary, downstreamDisposition: output.downstreamDisposition }));
   } finally { await sql.end({ timeout: 5 }); }

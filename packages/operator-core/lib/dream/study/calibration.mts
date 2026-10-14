@@ -1,4 +1,6 @@
 import { capabilityHash } from "../../dream/capability-contracts.ts";
+import { createHash } from 'node:crypto';
+import { serializeIdentitySafeJson } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import { CapabilityProposalSchema } from "../../dream/capability-pass.ts";
 import { DREAM_UTILITY_CONTRACT } from "../../dream/dream-evaluation.ts";
 import { dreamCapabilityRun } from "../../dream/dream-run-provenance.ts";
@@ -14,6 +16,26 @@ export function calibrationStudyScope(blocks: StudyBlock[], comparison?: StudyBl
     throw new Error('Calibration comparison requires a registered graph/control study');
   validateStudyBlocks([...blocks, comparison]);
   return { pins: [comparison.pin], prefix: 'native-graph-' };
+}
+
+/** Publish a separate view only after a complete owner-only report readback
+ * proves custody of the exact original bytes. Never replace the frozen key. */
+export function calibrationKeyPublication(rawBytes: string, report: {
+  report_id: string; path: string; visibility: string; body_md: string;
+}) {
+  if (!/^rpt_[a-f0-9-]{36}$/.test(report.report_id) || report.visibility !== 'owner' ||
+      report.path !== '/reports?sel=' + report.report_id ||
+      !report.body_md.endsWith('```json\n' + rawBytes + '```\n'))
+    throw new Error('Calibration publication requires exact owner-only custody readback');
+  const key = JSON.parse(rawBytes);
+  if (key.publication) throw new Error('Calibration publication requires the original key');
+  return serializeIdentitySafeJson({ ...key, publication: {
+    kind: 'identity-safe-derived-view',
+    originalSha256: createHash('sha256').update(rawBytes).digest('hex'),
+    originalBytes: Buffer.byteLength(rawBytes),
+    custody: { reportId: report.report_id, path: report.path, visibility: 'owner' },
+    note: 'Diagnostic identity strings are redacted in this view. Original frozen evidence is preserved in owner custody.',
+  } });
 }
 
 const PRIOR_TEXT_LIMIT = 12_000;
