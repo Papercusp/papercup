@@ -22,7 +22,12 @@
  * Access: only a HUMAN principal holding the governance `approve` capability over the workspace's
  * leaf policy layer may export it; everything else, including any error while deciding, is refused.
  *
- * Out of scope here (P-008b): wiring organization data receipts (P-007c) into this stream.
+ * P-008b (WI-6554700010012184, D-018): organization audit events (receipts included) are a SECOND
+ * stream per organization (siem-export-org-audit.ts) over this same batch format and verifier;
+ * delivery state, the export key and its rotation live in siem-export-delivery.ts. A batch may carry
+ * the export key's id (`keyId`), and every export is bounded by `settleHorizon`: the settle window
+ * AND the start of the oldest open transaction, because a row's commit can lag its timestamp by the
+ * whole length of its transaction.
  */
 import { createHmac } from 'node:crypto';
 import type { Sql } from 'postgres';
@@ -58,9 +63,11 @@ export const SIEM_WITHHELD_FREE_TEXT = '[withheld:free-text]';
  *   live `error_code` values include raw database error messages).
  * - pseudonymize: keyed HMAC pseudonym, stable per export key.
  * - digest-keys: top-level identifier-shaped key names plus a keyed digest of the whole value.
+ * - declared-projection: a fixed, code-declared allowlist of fields, each with its own treatment;
+ *   a value the declaration does not recognize falls back to digest-keys (org-audit metadata).
  * - withhold: never read.
  */
-export type SiemTreatment = 'emit' | 'emit-code' | 'pseudonymize' | 'digest-keys' | 'withhold';
+export type SiemTreatment = 'emit' | 'emit-code' | 'pseudonymize' | 'digest-keys' | 'declared-projection' | 'withhold';
 
 export interface SiemColumnClass {
   readonly dataClass: CustomerDataClass;
@@ -131,8 +138,8 @@ export function siemClassificationProblems(columns: Record<string, SiemColumnCla
     if (c.dataClass === 'secret' && c.treatment !== 'withhold' && c.treatment !== 'digest-keys') {
       problems.push(`${name}: secret data must be withheld or digested`);
     }
-    if (c.dataClass === 'pii' && c.treatment !== 'pseudonymize' && c.treatment !== 'withhold') {
-      problems.push(`${name}: pii must be pseudonymized or withheld`);
+    if (c.dataClass === 'pii' && c.treatment !== 'pseudonymize' && c.treatment !== 'withhold' && c.treatment !== 'declared-projection') {
+      problems.push(`${name}: pii must be pseudonymized, withheld or projected by a declaration`);
     }
     if (c.dataClass === 'billing' && c.treatment !== 'withhold') problems.push(`${name}: billing data is withheld`);
   }
@@ -217,6 +224,15 @@ function toDate(value: unknown): Date {
   const d = value instanceof Date ? value : new Date(String(value));
   if (Number.isNaN(d.getTime())) throw new Error(`siem-export: invalid invoked_at ${JSON.stringify(value)}`);
   return d;
+}
+
+/** Shared with siem-export-org-audit.ts so both streams treat a value identically. */
+export const siemScalar = scalar;
+export const siemAssertKey = (key: Uint8Array | string): void => void keyBytes(key);
+/** emit-code: the value when it is a code-shaped identifier, otherwise the free-text marker. */
+export function siemCodeValue(value: unknown): string | null {
+  const v = scalar(value);
+  return v === null ? null : CODE_SHAPED.test(String(v)) ? String(v) : SIEM_WITHHELD_FREE_TEXT;
 }
 
 export interface SiemPolicyLayerRef {
@@ -371,6 +387,22 @@ export interface SiemBatchManifest {
   readonly startAfter: ChainHead | null;
   readonly head: ChainHead | null;
   readonly length: number;
+  /** Id of the pseudonym/digest key (`k:` + 16 hex of its sha256). Absent when the caller supplied none. */
+  readonly keyId?: string;
+}
+
+/**
+ * The export bound used for one batch: min(now - settle window, start of the oldest open
+ * transaction in this database). Returned BESIDE the batch, never inside the hashed manifest, so
+ * replay identity does not depend on when a batch was built.
+ */
+export interface SiemSettleHorizon {
+  readonly bound: Date;
+  readonly source: 'settle-window' | 'open-transaction';
+  /** false = the export role cannot see every backend, so the bound is the settle window alone. */
+  readonly complete: boolean;
+  readonly settleMs: number;
+  readonly oldestOpenTransactionStart: Date | null;
 }
 
 export interface SiemBatch {
@@ -378,34 +410,49 @@ export interface SiemBatch {
   /** The last link: hand it back as `prevHead` for the next batch. */
   readonly head: ChainLink | null;
   readonly jsonl: string;
+  readonly horizon?: SiemSettleHorizon;
 }
 
 export interface SiemBatchEntry {
+  /** The cursor value of this entry (the stream defines its shape). */
   readonly id: string;
   readonly event: SiemEvent;
 }
+
+export const SIEM_ORG_AUDIT_STREAM_PREFIX = 'papercusp.siem-export.org-audit:' as const;
 
 export function siemStreamId(workspaceId: string): string {
   return `papercusp.siem-export:${workspaceId}`;
 }
 
+/** The event uid a stream's cursor value names: `ti:<id>`, or `oae:<uuid>` for an org-audit cursor `<time>|<uuid>`. */
+export function siemCursorUid(streamId: string, cursor: string): string {
+  if (streamId.startsWith(SIEM_ORG_AUDIT_STREAM_PREFIX)) return `oae:${cursor.slice(cursor.lastIndexOf('|') + 1)}`;
+  return `ti:${cursor}`;
+}
+
 const headOf = (h: ChainHead | null): ChainHead | null => (h ? { seq: h.seq, entryHash: h.entryHash } : null);
 
 export function buildSiemBatch(input: {
-  readonly workspaceId: string;
+  /** Tool-invocation stream of this workspace (ignored when `streamId` is given). */
+  readonly workspaceId?: string;
+  readonly streamId?: string;
   readonly prevHead: ChainLink | null;
   readonly cursorFrom: string;
   readonly entries: readonly SiemBatchEntry[];
+  readonly keyId?: string;
 }): SiemBatch {
-  const streamId = siemStreamId(input.workspaceId);
+  const streamId = input.streamId ?? (input.workspaceId ? siemStreamId(input.workspaceId) : null);
+  if (!streamId) throw new Error('siem-export: buildSiemBatch needs a streamId or a workspaceId');
   if (input.prevHead && input.prevHead.streamId !== streamId) {
     throw new Error(`siem-export: prevHead belongs to stream '${input.prevHead.streamId}', not '${streamId}'`);
   }
   const links = appendLinks(streamId, input.prevHead, input.entries.map((e) => entryDigest(e.event)));
   const cursorTo = input.entries.length > 0 ? input.entries[input.entries.length - 1]!.id : input.cursorFrom;
   const head = links.length > 0 ? links[links.length - 1]! : input.prevHead;
+  const keyed = input.keyId ? { keyId: input.keyId } : {};
   const idempotencyKey = sha256Hex(
-    canonicalJson({ schema: SIEM_EXPORT_SCHEMA, streamId, cursorFrom: input.cursorFrom, cursorTo, startAfter: headOf(input.prevHead) }),
+    canonicalJson({ schema: SIEM_EXPORT_SCHEMA, streamId, cursorFrom: input.cursorFrom, cursorTo, startAfter: headOf(input.prevHead), ...keyed }),
   );
   const manifest: SiemBatchManifest = {
     schema: SIEM_EXPORT_SCHEMA,
@@ -416,6 +463,7 @@ export function buildSiemBatch(input: {
     startAfter: headOf(input.prevHead),
     head: headOf(head),
     length: links.length,
+    ...keyed,
   };
   const lines = [canonicalJson({ manifest })];
   input.entries.forEach((e, i) => lines.push(canonicalJson({ entry: e.event, link: links[i]! })));
@@ -454,28 +502,77 @@ export function verifySiemBatchJsonl(text: string, opts: { readonly startAfter?:
   const verdict = verifyChain(manifest.streamId, records, { requireEntries: true, startAfter, expectedHead: manifest.head });
   if (!verdict.ok) return { ok: false, reason: `chain break: ${verdict.firstBreak.reason}`, manifest, verdict };
   const lastUid = records.length > 0 ? (records[records.length - 1]!.entry as { metadata?: { uid?: string } })?.metadata?.uid : null;
-  if (records.length > 0 && lastUid !== `ti:${manifest.cursorTo}`) {
+  if (records.length > 0 && lastUid !== siemCursorUid(manifest.streamId, manifest.cursorTo)) {
     return { ok: false, reason: `cursorTo ${manifest.cursorTo} does not match the last event ${String(lastUid)}`, manifest, verdict };
   }
   return { ok: true, manifest, verdict, events: records.map((r) => r.entry as SiemEvent) };
 }
 
+/**
+ * The export bound: min(now - settle, start of the oldest OPEN transaction in this database).
+ *
+ * Why every open transaction and not only writing ones (measured, D-018): a row's timestamp is its
+ * transaction's START (`DEFAULT now()`), and the organization export writes its receipt only after
+ * reading every store, so until that final insert the transaction holds no xid. Any open
+ * transaction may still commit a row stamped with its start. A long read-only transaction (a
+ * backup) therefore holds the bound back: the export waits, it never skips a row.
+ *
+ * A backend the export role cannot see reports no `xact_start`, so without superuser or
+ * pg_read_all_stats the bound is the settle window alone and `complete` is false.
+ */
+export async function settleHorizon(sql: Sql, now: Date, settleMs: number = SIEM_DEFAULT_SETTLE_MS): Promise<SiemSettleHorizon> {
+  const settled = new Date(now.getTime() - Math.max(0, settleMs));
+  const [row] = (await sql`
+    SELECT
+      COALESCE((SELECT r.rolsuper FROM pg_roles r WHERE r.rolname = current_user), false)
+        OR pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER') AS complete,
+      (SELECT min(a.xact_start) FROM pg_stat_activity a
+        WHERE a.datname = current_database() AND a.pid <> pg_backend_pid()
+          AND a.backend_type = 'client backend' AND a.xact_start IS NOT NULL) AS oldest`) as unknown as {
+    complete: boolean;
+    oldest: Date | string | null;
+  }[];
+  const oldest = row?.oldest ? toDate(row.oldest) : null;
+  const byTransaction = oldest !== null && oldest.getTime() < settled.getTime();
+  return {
+    bound: byTransaction ? oldest : settled,
+    source: byTransaction ? 'open-transaction' : 'settle-window',
+    complete: row?.complete === true,
+    settleMs: Math.max(0, settleMs),
+    oldestOpenTransactionStart: oldest,
+  };
+}
+
 export async function readSiemInvocationPage(
   sql: Sql,
-  input: { readonly workspaceId: string; readonly afterId: string; readonly limit: number; readonly now: Date; readonly settleMs?: number },
+  input: {
+    readonly workspaceId: string;
+    readonly afterId: string;
+    readonly limit: number;
+    readonly now: Date;
+    readonly settleMs?: number;
+    /** Export bound from `settleHorizon`; defaults to now - settle. */
+    readonly bound?: Date;
+    /** Rebuild a delivered batch: stop at this id (inclusive). */
+    readonly upToId?: string;
+  },
 ): Promise<SiemSourceRow[]> {
   if (!input.workspaceId) throw new Error('siem-export: workspaceId is required');
   if (!/^\d+$/.test(input.afterId)) throw new Error(`siem-export: cursor ${JSON.stringify(input.afterId)} is not a bigint`);
+  if (input.upToId !== undefined && !/^\d+$/.test(input.upToId)) {
+    throw new Error(`siem-export: cursor ${JSON.stringify(input.upToId)} is not a bigint`);
+  }
   const limit = Math.max(1, Math.min(SIEM_MAX_PAGE, Math.trunc(input.limit)));
   const select = SIEM_READ_COLUMNS.map((c) => (c === 'id' ? 'id::text AS id' : `"${c}"`)).join(', ');
+  const upTo = input.upToId !== undefined ? ' AND id <= $4::bigint' : '';
   const rows = (await sql.begin(async (tx) => {
     await tx`SELECT set_config('app.workspace_id', ${input.workspaceId}, true)`;
     return tx.unsafe(
-      `SELECT ${select} FROM harness_shared.tool_invocations WHERE workspace_id = $1 AND id > $2::bigint ORDER BY id LIMIT $3`,
-      [input.workspaceId, input.afterId, limit],
+      `SELECT ${select} FROM harness_shared.tool_invocations WHERE workspace_id = $1 AND id > $2::bigint${upTo} ORDER BY id LIMIT $3`,
+      input.upToId !== undefined ? [input.workspaceId, input.afterId, limit, input.upToId] : [input.workspaceId, input.afterId, limit],
     );
   })) as unknown as SiemSourceRow[];
-  return settledPrefix(rows, new Date(input.now.getTime() - (input.settleMs ?? SIEM_DEFAULT_SETTLE_MS)));
+  return settledPrefix(rows, input.bound ?? new Date(input.now.getTime() - (input.settleMs ?? SIEM_DEFAULT_SETTLE_MS)));
 }
 
 export class SiemExportAccessError extends Error {
@@ -521,25 +618,32 @@ export interface ExportSiemPageInput {
   readonly now?: Date;
   readonly settleMs?: number;
   readonly sql?: Sql;
+  /** Stamped in the manifest and idempotency key (siem-export-delivery.ts derives it from the key). */
+  readonly keyId?: string;
+  /** Rebuild a delivered batch up to this id (inclusive) instead of reading a fresh page. */
+  readonly upToId?: string;
 }
 
-/** authorize → read settled rows → resolve policy at each event's time → project → chain. */
-export async function exportSiemPage(input: ExportSiemPageInput): Promise<SiemBatch> {
+/** authorize → bound by the settle horizon → read rows → resolve policy at each event's time → project → chain. */
+export async function exportSiemPage(input: ExportSiemPageInput): Promise<SiemBatch & { readonly horizon: SiemSettleHorizon }> {
   keyBytes(input.key);
   const db = input.sql ?? getOrgPg().sql;
   const now = input.now ?? new Date();
   const { chain } = await assertSiemExportAuthorized(input.principal, input.workspaceId, { sql: db, now });
+  const horizon = await settleHorizon(db, now, input.settleMs);
   const rows = await readSiemInvocationPage(db, {
     workspaceId: input.workspaceId,
     afterId: input.afterId,
     limit: input.limit,
     now,
-    settleMs: input.settleMs,
+    bound: horizon.bound,
+    upToId: input.upToId,
   });
   const versions = await Promise.all(chain.map((layer) => listVersions(layer.layerId, 500, db)));
   const entries = rows.map((row) => ({
     id: String(scalar(row.id)),
     event: projectSiemEvent(row, { key: input.key, policyChain: policyAt(versions, toDate(row.invoked_at)) }),
   }));
-  return buildSiemBatch({ workspaceId: input.workspaceId, prevHead: input.prevHead, cursorFrom: input.afterId, entries });
+  const batch = buildSiemBatch({ workspaceId: input.workspaceId, prevHead: input.prevHead, cursorFrom: input.afterId, entries, keyId: input.keyId });
+  return { ...batch, horizon };
 }
