@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { mkdir, rm, symlink } from 'node:fs/promises';
 import { expect, it } from 'vitest';
 import type {} from '../../test/current-su-native-http-scenario';
+import type {} from '../../test/staging-first-http-fixture';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 

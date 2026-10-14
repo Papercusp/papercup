@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedWorkerProgress } from '../test/isolated-integration-proof';
+import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress } from '../test/isolated-integration-proof';
 
 it('preserves failure progress and verifies a real reaped signal without certifying success', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-progress-'));
@@ -87,6 +87,13 @@ process.once('message', async message => {
       },
       execute: async (observe, evidenceDir) => {
         runId = JSON.parse(readFileSync(join(evidenceDir, '../prepare/source.json'), 'utf8')).runId;
+        const nativeLog = join(runtimeRoot, 'native.log');
+        writeFileSync(nativeLog, 'native bootstrap stopped before first turn\n');
+        retainIsolatedNativeTaskDiagnostics(evidenceDir, { taskId: 'private-native', state: 'running',
+          sessionId: null }, { stdout: nativeLog, boot: join(runtimeRoot, 'missing-boot.log') });
+        rmSync(nativeLog);
+        retainIsolatedNativeTaskDiagnostics(evidenceDir, { taskId: 'private-native', state: 'running',
+          sessionId: null }, { stdout: nativeLog });
         child = fork(supervisorPath, [], { cwd: root, execArgv: [],
           env: { ...process.env, PROOF_RUNTIME: runtimeRoot, PROOF_DATA: dataDir },
           stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
@@ -105,8 +112,13 @@ process.once('message', async message => {
       .toContain('original journey assertion');
     const artifacts = new Map<string, string>();
     for (const path of ['phases/prepare/operator-api-build-result.json',
-      'phases/execute/worker-result.json', 'phases/execute/lifecycle-observation.json'])
+      'phases/execute/worker-result.json', 'phases/execute/lifecycle-observation.json',
+      'phases/execute/native-task-stdout.log', 'phases/execute/native-task-diagnostics.json'])
       artifacts.set(path, readFileSync(join(evidenceRoot, runId!, path), 'utf8'));
+    expect(artifacts.get('phases/execute/native-task-stdout.log')).toBe('native bootstrap stopped before first turn\n');
+    expect(JSON.parse(artifacts.get('phases/execute/native-task-diagnostics.json')!)).toMatchObject({
+      task: { sessionId: null, state: 'running' }, files: { stdout: { captured: false, reason: 'missing' } },
+    });
     const lifecyclePath = 'phases/execute/lifecycle.json';
     if (valid) {
       const bytes = readFileSync(join(evidenceRoot, runId!, lifecyclePath), 'utf8');

@@ -1,6 +1,6 @@
 /** Private current-build request fixture; launched only by its integration suite. */
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -8,7 +8,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
-import { privateBundleRuntimeEnv, waitForPrivateOperator, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -80,12 +80,9 @@ async function main() {
   if (!prepared) {
     console.log('STAGING_FIRST_HTTP_PHASE bundle-start');
     try {
-      const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
-        { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
-      writeFileSync(join(evidenceDir, 'build.log'), output);
-    } catch (error: any) {
-      writeFileSync(join(evidenceDir, 'build.log'), String(error.stdout ?? '') + String(error.stderr ?? ''));
-      throw error;
+      buildPrivateOperatorApiBundle(root, evidenceDir);
+    } finally {
+      writeFileSync(join(evidenceDir, 'build.log'), readFileSync(join(evidenceDir, 'operator-api-build.log')));
     }
   }
   const bundleBytes = readFileSync(bundle);

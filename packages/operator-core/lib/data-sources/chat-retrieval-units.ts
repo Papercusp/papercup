@@ -22,9 +22,15 @@
  * the source's chat-message datatype to `document`. Where they land follows the
  * source's scope (see corpusRouteFor):
  *   - organization (permission_mapping.mode = source-acl): the unit's permission list
- *     is the channel's list (source = connector kind, source_ref = channel id). A list
- *     that does not exist yet is created EMPTY, so nobody can read the unit until the
- *     connector reports the channel's members (fail closed).
+ *     is the channel's container list (source = connector kind, source_ref =
+ *     containerPermissionRef(source id, channel id)), the list the connector's membership
+ *     snapshot fills. A list that does not exist yet is created EMPTY, so nobody can read
+ *     the unit until the connector reports the channel's members (fail closed).
+ *
+ * Writer and driver (plan papercusp-enterprise-readiness-roadmap-2026-10-09 D-016): the
+ * connector document sink stores every `chat-message` record through upsertChatMessages
+ * (chatMessageInputFromRecord), and the connector-sync routine runs runChatRollupPass each
+ * tick: retention, the cut-over of legacy per-message corpus rows, then the rollup.
  *   - personal (mode = owner): the owner's Personal Vault, through the vault writer, so
  *     vault semantics apply (deny-by-default grants, disclosure ledger, the disabled
  *     switch). The key is account-prefixed like every vault row.
@@ -270,15 +276,27 @@ export type CorpusRoute =
 type RouteInput = Pick<SourceRow, 'kind' | 'scope' | 'datatype_mappings' | 'destination_policy' | 'permission_mapping'>
   & Partial<Pick<SourceRow, 'scope_ref' | 'owner_user_id' | 'provider_account_id'>>;
 
-/** Which of a source's provider objects is being routed. Chat sources route `message`
- *  (default chat-message); other connectors name their own object, e.g. a ticket source
- *  routes `comment` with default ticket-comment. */
+/** Which of a source's provider objects is being routed. The key is the datatype id, the same
+ *  key the connector's document sink routes by (datatype-destination-sink.ts), so a chat source
+ *  routes `chat-message`; other connectors name their own datatype, e.g. `ticket-comment`. */
 export interface CorpusRouteObject {
   mappingKey: string;
   defaultDatatype: string;
 }
 
-const CHAT_MESSAGE_OBJECT: CorpusRouteObject = { mappingKey: 'message', defaultDatatype: DEFAULT_CHAT_MESSAGE_DATATYPE };
+const CHAT_MESSAGE_OBJECT: CorpusRouteObject = {
+  mappingKey: DEFAULT_CHAT_MESSAGE_DATATYPE,
+  defaultDatatype: DEFAULT_CHAT_MESSAGE_DATATYPE,
+};
+
+/**
+ * The permission-list source_ref of one ACL container of a source (D-026): a Slack channel, a
+ * GitHub repository. The membership snapshot fills exactly these lists
+ * (applyDataSourceMembership), so every organization row that names a container binds here.
+ */
+export function containerPermissionRef(sourceId: string, ref: string): string {
+  return `${sourceId}#${ref}`;
+}
 
 /** Whether, and where, this data source's units go to the documents corpus. */
 export function corpusRouteFor(source: RouteInput, object: CorpusRouteObject = CHAT_MESSAGE_OBJECT): CorpusRoute {
@@ -514,8 +532,9 @@ export async function rollupChatUnits(
       result.unitsRemoved += 1;
     }
 
+    // The channel's container list (D-026), the one the membership snapshot fills.
     const list = route.write && route.scope === 'organization'
-      ? await ensurePermissionList(sql, workspaceId, route.source, bucket.channel_id)
+      ? await ensurePermissionList(sql, workspaceId, route.source, containerPermissionRef(bucket.data_source_id, bucket.channel_id))
       : null;
     const docKind = unitKind === 'thread' ? 'chat-thread' : 'chat-window';
     const target = route.write
