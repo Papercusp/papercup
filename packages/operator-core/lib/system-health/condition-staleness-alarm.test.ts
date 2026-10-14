@@ -1168,6 +1168,41 @@ describe('runConditionStalenessTick — bridge wiring', () => {
     expect(seen).toEqual([{ key: 'green-stall:papercusp', open: false }]);
   });
 
+  it('WI-6554700010009404: keeps a stale one-shot provider condition open through the final bridge input', async () => {
+    const key = 'alarm:codex-rollout-provider:%5B%22papercusp-workspace%22%2C%2240302%22%2C%22su-d88420f0-c0b4-4dc7-92c7-f60ab3ddab44%22%5D';
+    const condition = mkState({
+      condition_key: key,
+      first_seen: '2026-10-12T20:55:48.319Z',
+      open_since: '2026-10-12T20:55:48.319Z',
+      last_seen: '2026-10-13T06:35:46.575Z',
+      alarm_count: 87,
+      one_shot: true,
+    });
+    const resolutionBroadcasts: string[][] = [];
+    const bridgeInputs: Array<{ key: string; open: boolean }> = [];
+
+    const result = await runConditionStalenessTick({
+      readStates: async () => [condition],
+      listOpen: async () => [],
+      escalate: async () => undefined,
+      now: () => Date.parse('2026-10-13T10:00:00.000Z'),
+      absenceMs: 2 * 60 * 60_000,
+      homeHarness: () => 'papercusp',
+      broadcastResolvedMany: async ({ conditionKeys }) => {
+        resolutionBroadcasts.push(conditionKeys);
+        return true;
+      },
+      bridgeConditions: async (states) => {
+        bridgeInputs.push(...states.map((state) => ({ key: state.conditionKey, open: state.open })));
+        return { acquired: [], released: [], skipped: 0 };
+      },
+    });
+
+    expect(result.reconciled).toEqual([]);
+    expect(resolutionBroadcasts).toEqual([]);
+    expect(bridgeInputs).toEqual([{ key, open: true }]);
+  });
+
   it('a bridge failure never crashes the tick', async () => {
     const res = await runConditionStalenessTick({
       readStates: async () => [mkState({ condition_key: 'green-stall:papercusp' })],

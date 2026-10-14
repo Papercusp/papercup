@@ -485,6 +485,11 @@ export async function recordIsolatedIntegrationProof(options: {
           // Teardown uses the original observer even when the journey rejects.
           // A failed assertion must not erase an already observed cleanup.
           ({ lifecycle, ended, observationError } = observation ?? {});
+          // Persist the original observation before a journey rejection escapes
+          // this phase. Incomplete cleanup remains explicit and cannot pass the
+          // validation below; no lifecycle is invented when start was absent.
+          if (lifecycle) await retainIsolatedLifecycleBeforeSourceCheck(
+            ctx.evidenceDir, lifecycle, ended ?? null, () => {});
         }
         if (observationError) throw observationError;
         assert.ok(lifecycle && ended, 'original start and cleanup observations are required');
@@ -492,11 +497,14 @@ export async function recordIsolatedIntegrationProof(options: {
         assert.ok(!existsSync(lifecycle.runtimeRoot) && !existsSync(lifecycle.dataDir));
         assert.notEqual(readProcessIdentity(lifecycle.worker.pid), lifecycle.worker.identity);
         assert.notEqual(readProcessIdentity(lifecycle.database.pid), lifecycle.database.identity);
-        await retainIsolatedLifecycleBeforeSourceCheck(ctx.evidenceDir, lifecycle, ended, () => {
-          if (original) recheckPreparation();
-          else for (const file of source.files) assert.equal(hash(readFileSync(join(root, file.path))), file.sha256);
-        });
+        if (original) recheckPreparation();
+        else for (const file of source.files) assert.equal(hash(readFileSync(join(root, file.path))), file.sha256);
       } else {
+        // Preserve available original diagnostics even if cleanup validation
+        // rejects: that rejection is exactly when the observations matter.
+        const runDir = join(ctx.evidenceDir, '../..');
+        for (const receipt of isolatedIntegrationDiagnosticArtifacts(runDir))
+          if (!retainedArtifacts.includes(receipt)) retainedArtifacts.push(receipt);
         // A failed preparation allocated no worker or private database.
         if (!observedChild) {
           assert.ok(!lifecycle && !ended);
@@ -504,11 +512,6 @@ export async function recordIsolatedIntegrationProof(options: {
         }
         assert.ok(lifecycle && ended && observedChild?.exitCode !== null);
         assert.ok(!existsSync(lifecycle.runtimeRoot) && !existsSync(lifecycle.dataDir));
-        // The runner snapshots these originals before count pruning. Modes that
-        // do not produce browser/input receipts must not acquire missing requirements.
-        const runDir = join(ctx.evidenceDir, '../..');
-        for (const receipt of isolatedIntegrationDiagnosticArtifacts(runDir))
-          if (!retainedArtifacts.includes(receipt)) retainedArtifacts.push(receipt);
       }
       return { ok: true };
     },
@@ -527,6 +530,7 @@ export async function recordIsolatedIntegrationProof(options: {
 export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[] {
   return ['phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-inputs.json',
     'phases/prepare/verifier-source.json', 'phases/execute/worker-result.json',
+    'phases/execute/lifecycle-observation.json',
     'phases/execute/portal-browser-source.json', 'phases/execute/portal-browser-receipt.json',
     'phases/execute/browser-inputs.json'].filter(path => existsSync(join(runDir, path)));
 }

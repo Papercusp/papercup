@@ -234,6 +234,7 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   // keyset page (or excluded by a filter), so page membership is never consulted.
   const workItemDetailQuery = useSyncQuery<WorkItemDetailRow>({
     queryName: 'workItems.detail',
+    requestClass: 'interactive-control',
     args: { harnessSlug: slug, id: kind === 'workItem' ? selectedId : '' },
     enabled: Boolean(slug) && kind === 'workItem' && Boolean(selectedId),
   });

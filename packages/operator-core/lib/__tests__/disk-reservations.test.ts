@@ -233,6 +233,16 @@ describe('disk reservation ledger — Node reader', () => {
       expect(mountKeyForPath(a)).toBe(mountKeyForPath(b));
       expect(readReservedGb(a, { env })).toBe(95);
       expect(readReservedGb(b, { env })).toBe(95);
+      expect(readReservationSnapshot(a, { env })).toMatchObject({ state: 'measured', reservedBytes: 95 * GIB, issues: [] });
+      expect(readReservationSnapshot(b, { env })).toMatchObject({ state: 'measured', reservedBytes: 95 * GIB, issues: [] });
+      const unmapped = '_unmapped_fixture';
+      seedReservation(ledger, unmapped, 'live.res', { ...fields, gb: 7 });
+      expect(readReservationSnapshot(a, { env })).toMatchObject({ state: 'unknown', reservedBytes: null,
+        knownReservedBytes: 95 * GIB, issues: [`legacy-mounts:unresolved-claim:${unmapped}`] });
+      seedReservation(ledger, unmapped, 'live.res', { ...fields, gb: 7, expires: 1 });
+      expect(readReservationSnapshot(a, { env })).toMatchObject({ state: 'measured', reservedBytes: 95 * GIB });
+      seedReservation(ledger, unmapped, 'live.res', { ...fields, gb: 7, start: 'not-the-current-process' });
+      expect(readReservationSnapshot(a, { env })).toMatchObject({ state: 'measured', reservedBytes: 95 * GIB });
     } finally { process.env.PATH = originalPath; }
     const refusal = execFileSync('bash', ['-c', 'source "$1"; papercusp_require_free_gb "$2" 10 alias >/dev/null 2>&1; printf "%s" "$?"', '--', SHELL_LIB, a], { env, encoding: 'utf8', timeout: 30_000 });
     expect(refusal).toBe('28'); // 100 free - 95 reserved cannot admit ten.

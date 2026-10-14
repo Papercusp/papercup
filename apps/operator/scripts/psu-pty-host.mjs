@@ -9825,6 +9825,13 @@ export function hostThroughPty(o) {
   const reexecCode = reexecExitCodeFrom(env);
   const stdin = o.io?.stdin ?? process.stdin;
   const stdout = o.io?.stdout ?? process.stdout;
+  // Diagnostics share the screen's POSIX TTY in interactive launches. A direct
+  // stderr.write can block input even when screen output is asynchronous.
+  const diagnosticOutput = createTerminalOutput({
+    stdout: process.stderr,
+    onError: (error) => appendHostEvent(ownerId, 'terminal-diagnostic-output-failed', hostErrorEvidence(error)),
+  });
+  const writeTerminalDiagnostic = (text) => diagnosticOutput.write(text);
   const onExit = o.onExit ?? ((code) => process.exit(code ?? 0));
   const bridgeTty = o.bridgeTty ?? !!(stdin.isTTY && typeof stdin.setRawMode === 'function');
   /** P-006: ROUTINE defer diagnostics go through here, never bare stderr — see
@@ -9833,7 +9840,7 @@ export function hostThroughPty(o) {
   const writeHostDiagnostic = (text) => {
     if (!shouldWriteHostDiagnostic({ bridgeTty, env })) return false;
     try {
-      process.stderr.write(text);
+      writeTerminalDiagnostic(text);
       return true;
     } catch {
       /* never let a diagnostic write break the session */
@@ -9853,7 +9860,7 @@ export function hostThroughPty(o) {
     pty = require('@lydell/node-pty');
   } catch (e) {
     appendHostEvent(ownerId, 'pty-load-failed', hostErrorEvidence(e));
-    process.stderr.write(
+    writeTerminalDiagnostic(
       `psu: failed to load @lydell/node-pty (${e.message}); falling back to a plain launch is the caller's job.\n`,
     );
     throw e;
@@ -9951,7 +9958,7 @@ export function hostThroughPty(o) {
     child = spawnChild();
   } catch (e) {
     appendHostEvent(ownerId, 'pty-spawn-failed', { command, ...hostErrorEvidence(e) });
-    process.stderr.write(`psu: failed to spawn '${command}' under a pty: ${e.message}\n`);
+    writeTerminalDiagnostic(`psu: failed to spawn '${command}' under a pty: ${e.message}\n`);
     throw e;
   }
   let terminalOutputError = null;
@@ -9986,13 +9993,13 @@ export function hostThroughPty(o) {
     const acknowledgement = onSpawn();
     void Promise.resolve(acknowledgement).catch((error) => {
       appendHostEvent(ownerId, 'resume-finalization-report-failed', hostErrorEvidence(error));
-      process.stderr.write(
+      writeTerminalDiagnostic(
         `psu: child spawned under pty, but its resume finalization report failed: ${error?.message ?? error}\n`,
       );
     });
   } catch (error) {
     appendHostEvent(ownerId, 'resume-finalization-callback-failed', hostErrorEvidence(error));
-    process.stderr.write(
+    writeTerminalDiagnostic(
       `psu: child spawned under pty, but its resume finalization callback failed: ${error?.message ?? error}\n`,
     );
   }
@@ -10129,7 +10136,7 @@ export function hostThroughPty(o) {
       };
       appendHostEvent(ownerId, 'quota-block-starvation', extra);
       try {
-        process.stderr.write(
+        writeTerminalDiagnostic(
           `psu-pty-host: QUOTA BLOCK STARVATION for ${ownerId} — ` +
             `${signal.ageMs}ms blocked with ${signal.attemptedGatedInjections} gated ` +
             `injection attempt(s) and zero successful deliveries; health signal recorded\n`,
@@ -10213,7 +10220,7 @@ export function hostThroughPty(o) {
       recoveryMs: claudeResumeCompactionRecoveryMs(env),
     });
     try {
-      process.stderr.write(
+      writeTerminalDiagnostic(
         `psu-pty-host: Claude resume compaction recovery timed out for ${ownerId}; ` +
           `the scripted kickoff will be dropped rather than written into an unresolved menu.\n`,
       );
@@ -10348,7 +10355,7 @@ export function hostThroughPty(o) {
         socketRebound: !sockOnDisk,
       });
       try {
-        process.stderr.write(
+        writeTerminalDiagnostic(
           `psu-pty-host: discovery re-asserted for ${ownerId} ` +
             `(json ${metaMine ? 'ok' : 'rewritten'}, sock ${sockOnDisk ? 'ok' : 'rebound'}) — ` +
             `it was removed while this host was live\n`,
@@ -10412,7 +10419,7 @@ export function hostThroughPty(o) {
     if (!wedge) return;
     appendHostEvent(ownerId, 'owner-composer-wedge-suspected', wedge);
     try {
-      process.stderr.write(
+      writeTerminalDiagnostic(
         `psu-pty-host: COMPOSER WEDGE SUSPECTED for ${ownerId} — ${wedge.consecutiveDefers} consecutive ` +
           `wake deferrals against an unchanged ${pendingLength}-char staged line, ` +
           `${
@@ -10490,7 +10497,7 @@ export function hostThroughPty(o) {
       consecutiveDefers,
     });
     try {
-      process.stderr.write(
+      writeTerminalDiagnostic(
         `psu-pty-host: COMPOSER WEDGE CLEARED for ${ownerId} — discarded a ${pendingLength}-char staged ` +
           (brokenBy === 'wake-loss'
             ? `line after ${consecutiveDefers} consecutive wakes were thrown away against it. `
@@ -10691,7 +10698,7 @@ export function hostThroughPty(o) {
           terminated: false,
         });
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             `psu-pty-host: ${label} submit unconfirmed for ${ownerId} after ` +
               `${resubmits} resubmit CRs — wake not delivered, session left running (WI-1378748)\n`,
           );
@@ -11431,7 +11438,7 @@ export function hostThroughPty(o) {
   // WI-10004943 adds a caller: a launch kickoff whose fresh-child retry cannot run.
   const writeStartupTurnDroppedLine = ({ label, dropReason, budgetMs, attempts }) => {
     try {
-      process.stderr.write(formatStartupTurnDroppedLine({ label, ownerId, dropReason, budgetMs, attempts }));
+      writeTerminalDiagnostic(formatStartupTurnDroppedLine({ label, ownerId, dropReason, budgetMs, attempts }));
     } catch {
       /* never let a diagnostic write break the host */
     }
@@ -11826,7 +11833,7 @@ export function hostThroughPty(o) {
             proofUnavailable,
           });
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               proofUnavailable
                 ? `psu: kickoff submitted but UNVERIFIED — native execution proof is unavailable ` +
                   `(${proof.reason}); never claiming delivered.\n`
@@ -11958,7 +11965,7 @@ export function hostThroughPty(o) {
           });
         }
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             turnStart.started
               ? `psu: kickoff delivered — verified the exact provenance marker in the native transcript` +
                 `${modelRetried ? ' (model turn started only after one in-session retry)' : ''}.\n`
@@ -12012,12 +12019,12 @@ export function hostThroughPty(o) {
           renderedHash: managedKickoff.renderedHash,
           nativeRef: proof.nativeRef,
         });
-        process.stderr.write(
+        writeTerminalDiagnostic(
           `psu: session port delivered — verified the exact seed checksum in the target native transcript.\n`,
         );
       } catch (error) {
         appendHostEvent(ownerId, 'session-port-delivery-ack-failed', hostErrorEvidence(error));
-        process.stderr.write(`psu: session-port delivery acknowledgement failed: ${error?.message ?? error}\n`);
+        writeTerminalDiagnostic(`psu: session-port delivery acknowledgement failed: ${error?.message ?? error}\n`);
         if (!quotaBlockDetector.isBlocked()) {
           try { child.kill(); } catch { /* already exited */ }
         }
@@ -12031,7 +12038,7 @@ export function hostThroughPty(o) {
           reason: 'launch-kickoff-error',
         });
       }
-      try { process.stderr.write(`psu: managed kickoff failed: ${error?.message ?? error}\n`); }
+      try { writeTerminalDiagnostic(`psu: managed kickoff failed: ${error?.message ?? error}\n`); }
       catch { /* diagnostics are best-effort */ }
       try { child.kill(); } catch { /* already exited */ }
     }).finally(() => {
@@ -12090,7 +12097,7 @@ export function hostThroughPty(o) {
         waitedMs,
       });
       try {
-        process.stderr.write(
+        writeTerminalDiagnostic(
           phase === 'force-release'
             ? `psu-pty-host: inject-mutex FORCE-RELEASED for ${ownerId} after ${waitedMs}ms — ` +
                 `a prior gated inject never reached its release; every gated inject since has been ` +
@@ -12893,7 +12900,7 @@ export function hostThroughPty(o) {
           maxBytes: MAX_CONTROL_PAYLOAD_BYTES,
         });
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             `psu-pty-host: control payload REJECTED for ${ownerId} ` +
               `(${payloadBytes} bytes > ${MAX_CONTROL_PAYLOAD_BYTES} byte cap)\n`,
           );
@@ -12934,7 +12941,7 @@ export function hostThroughPty(o) {
         const rejectExtra = { reason: 'ownerId-mismatch', mode: msg.mode, expected: ownerId, got: msg.ownerId };
         appendHostEvent(ownerId, 'control-payload-rejected', rejectExtra);
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             `psu-pty-host: control payload REJECTED for ${ownerId} — addressed to ${msg.ownerId} ` +
               `(mode:${msg.mode}); refusing to run another agent's turn/identity in this session (EI-153)\n`,
           );
@@ -13183,7 +13190,7 @@ export function hostThroughPty(o) {
           forced: msg.force === true,
         });
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             `psu-pty-host: SHUTDOWN accepted for ${ownerId}${msg.data ? ` — ${msg.data}` : ''}; ` +
               `winding the session down and closing this terminal.\n`,
           );
@@ -13311,7 +13318,7 @@ export function hostThroughPty(o) {
       // just above, which already returns immediately. Run the entire
       // mutex+gate+delivery pipeline as a detached background continuation;
       // every outcome it reaches (deferred/dropped/delivered/error) is already
-      // durably recorded via appendHostEvent()/process.stderr.write() calls
+      // durably recorded via appendHostEvent()/writeTerminalDiagnostic() calls
       // inside it, exactly as a caller under the OLD bare-close-is-`true`
       // protocol would have had to learn it — from the durable event log or
       // the pty's own output, never from this ACK.
@@ -13630,7 +13637,7 @@ export function hostThroughPty(o) {
           appendHostEvent(ownerId, 'respawn-carry-dropped', dropExtra);
           appendSharedDrillLedgerEvent(ownerId, 'respawn-carry-dropped', dropExtra);
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               superseded
                 ? `psu-pty-host: SUPERSEDED carry-respawn DROPPED for ${ownerId} ` +
                     `(a later respawn already fired at ${lastRespawnAtMs}, this message arrived ` +
@@ -13718,7 +13725,7 @@ export function hostThroughPty(o) {
             hint: 'stale pre-P-022 sender still running (EI-16190) — find and restart it',
           });
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: mode:compact DROPPED for ${ownerId} — retired by P-022 (carry-respawn is the only ` +
                 `context cut); a stale pre-cutover sender is still running (EI-16190): find and restart that process\n`,
             );
@@ -13858,7 +13865,7 @@ export function hostThroughPty(o) {
             };
             appendHostEvent(ownerId, 'stale-fire-dropped', dropExtra);
             try {
-              process.stderr.write(
+              writeTerminalDiagnostic(
                 `psu-pty-host: STALE fire #${deliver.fireNumber} DROPPED for ${ownerId} ` +
                   `(routine ${deliver.routineId} already delivered fire #${verdict.lastDelivered}; ` +
                   `mode:${deliver.mode}) — superseded by a later fire, never written\n`,
@@ -14053,7 +14060,7 @@ export function hostThroughPty(o) {
             ...hostErrorEvidence(err),
           });
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: gated delivery pipeline threw for ${ownerId}: ` +
                 `${String((err && err.message) || err).slice(0, 300)}\n`,
             );
@@ -14100,7 +14107,7 @@ export function hostThroughPty(o) {
   });
   server.on('error', (e) => {
     appendHostEvent(ownerId, 'control-socket-error', hostErrorEvidence(e));
-    process.stderr.write(`psu: control socket error: ${e.message}\n`);
+    writeTerminalDiagnostic(`psu: control socket error: ${e.message}\n`);
   });
   // Tight umask around bind so the node is never even briefly world-accessible,
   // then pin 0600 (owner-only). Shared by the initial bind and the WI-3455
@@ -14137,7 +14144,7 @@ export function hostThroughPty(o) {
           listenControlSocket();
         } catch (e) {
           appendHostEvent(ownerId, 'control-socket-rebind-failed', hostErrorEvidence(e));
-          process.stderr.write(`psu: control socket re-bind failed: ${e.message}\n`);
+          writeTerminalDiagnostic(`psu: control socket re-bind failed: ${e.message}\n`);
         }
       });
     } catch {
@@ -14603,7 +14610,7 @@ export function hostThroughPty(o) {
             });
           }
           if (residue?.killedPids?.length || residue?.failedPids?.length) {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: session scope cleanup for ${ownerId} killed ` +
                 `${residue.killedPids?.length ?? 0} detached descendant(s)` +
                 `${residue.failedPids?.length ? `; ${residue.failedPids.length} kill(s) failed` : ''}\n`,
@@ -14614,7 +14621,7 @@ export function hostThroughPty(o) {
           // session-end record. Surface the residue failure without stranding exit.
           appendHostEvent(ownerId, 'session-scope-cleanup-failed', hostErrorEvidence(error));
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: session scope cleanup failed for ${ownerId}: ${error?.message ?? error}\n`,
             );
           } catch {
@@ -14726,8 +14733,14 @@ export function hostThroughPty(o) {
         }
       }
       const finishExit = async () => {
-        if (!(await terminalOutput.finish())) {
+        const [screenDrained, diagnosticsDrained] = await Promise.all([
+          terminalOutput.finish(), diagnosticOutput.finish(),
+        ]);
+        if (!screenDrained) {
           appendHostEvent(ownerId, 'terminal-output-drain-timeout', { timeoutMs: 1000 });
+        }
+        if (!diagnosticsDrained) {
+          appendHostEvent(ownerId, 'terminal-diagnostic-output-drain-timeout', { timeoutMs: 1000 });
         }
         // WI-38292: an ADOPTING exit is not the session ending — it is the same
         // session continuing in a fresh process that loaded current host code. It
@@ -14755,7 +14768,7 @@ export function hostThroughPty(o) {
           error: `target child exited (${code ?? 0}) before native session-port persistence was verified`,
         }).catch((error) => {
           appendHostEvent(ownerId, 'session-port-failure-ack-failed', hostErrorEvidence(error));
-          try { process.stderr.write(`psu: session-port failure acknowledgement failed: ${error?.message ?? error}\n`); }
+          try { writeTerminalDiagnostic(`psu: session-port failure acknowledgement failed: ${error?.message ?? error}\n`); }
           catch { /* diagnostics are best-effort */ }
         }).finally(finishExit);
       } else if (managedKickoffDisposition) {
@@ -14783,7 +14796,7 @@ export function hostThroughPty(o) {
       };
       appendHostEvent(ownerId, 'submit-verify-exhausted', extra);
       try {
-        process.stderr.write(
+        writeTerminalDiagnostic(
           `psu-pty-host: ${extra.label} submit verification exhausted for ${ownerId} ` +
             `after ${extra.resubmits ?? '?'} resubmit CRs — terminating host (WI-41044)\n`,
         );
@@ -14797,7 +14810,7 @@ export function hostThroughPty(o) {
       if (cleaned) return false;
       appendHostEvent(ownerId, 'kickoff-refusal-unreported-terminating', details);
       try {
-        process.stderr.write(
+        writeTerminalDiagnostic(
           `psu-pty-host: kickoff not submitted (${details.kickoffReason ?? 'unknown'}) and the ` +
             `refusal receipt could not be published (${details.receiptReason ?? 'unknown'}) for ` +
             `${ownerId} — terminating headless host (WI-10006598)\n`,
@@ -15045,7 +15058,7 @@ export function hostThroughPty(o) {
         try {
           if (!recycleChild.identityActivationRefusedWarned) {
             recycleChild.identityActivationRefusedWarned = true;
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: carry-respawn refused for ${ownerId}: a priced Cupboard identity on this ` +
                 `session has no funds behind it. Fund it or detach it, then respawn ` +
                 `(further refusals logged to the event log only)\n`,
@@ -15116,7 +15129,7 @@ export function hostThroughPty(o) {
           // mint gap). The event-log row above still records every attempt.
           if (!recycleChild.argvBuildFailWarned) {
             recycleChild.argvBuildFailWarned = true;
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: carry-respawn argv build failed for ${ownerId}: ${e.message} ` +
                 `(further identical failures logged to the event log only)\n`,
             );
@@ -15499,7 +15512,7 @@ export function hostThroughPty(o) {
           else env.DISABLE_COMPACT = priorDisableCompact;
         }
         try {
-          process.stderr.write(`psu-pty-host: recycle spawn failed for ${ownerId}: ${e.message}\n`);
+          writeTerminalDiagnostic(`psu-pty-host: recycle spawn failed for ${ownerId}: ${e.message}\n`);
         } catch {
           /* never let a diagnostic write break the host */
         }
@@ -15798,7 +15811,7 @@ export function hostThroughPty(o) {
           }
           carryResult = { ...carryResult, delivered: false, reason: 'turn-start-unverified' };
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: carry turn start UNVERIFIED for ${ownerId} ` +
                 `(native ${nativeId ?? 'unknown'}; ${turnStartProof.reason ?? 'marker timeout'}) — ` +
                 `recording a drop, never respawn-carry-delivered\n`,
@@ -15957,7 +15970,7 @@ export function hostThroughPty(o) {
         // below, which is aimed at the very terminal whose loss we are recording.
         appendHostEvent(ownerId, 'orphan-teardown', { why });
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             `psu-pty-host: session orphaned (${why}) for ${ownerId} — killing child + exiting\n`,
           );
         } catch {

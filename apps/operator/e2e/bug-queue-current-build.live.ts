@@ -1,5 +1,20 @@
 import { test, expect } from './_egress';
 
+// Preserve admission evidence on failure: a wire trace cannot measure queue wait.
+test.afterEach(async ({ page, request }, info) => {
+  const client = await page.evaluate(() => {
+    const metrics = (window as unknown as { __sync_metrics__?: { snapshot(): unknown } }).__sync_metrics__;
+    return metrics?.snapshot() ?? { status: 'unavailable' };
+  }).catch((error) => ({ status: 'unavailable', error: String(error) }));
+  const runtime = await request.get('/api/health').then(async (response) => ({
+    status: response.status(), body: await response.json(),
+  })).catch((error) => ({ status: 'unavailable', error: String(error) }));
+  await info.attach('current-build-client-diagnostics', {
+    body: JSON.stringify({ at: new Date().toISOString(), client, runtime }),
+    contentType: 'application/json',
+  });
+});
+
 // R5 current-build acceptance. Reads actual enrolled data and actual browser
 // subscriptions; no route stubs, synthetic claims, or owner-policy writes.
 test('real reserved candidate stays a candidate with unknown execution through reload on the identified build', async ({ page, request }, info) => {

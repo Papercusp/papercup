@@ -550,6 +550,12 @@ let counterRows: Array<{
   cs?: string | null;
   lastyield?: string | null;
   lastsynced?: string | null;
+  // Own-head publish refusal snapshot columns read by readEscalationCounters.
+  pubrefused?: string | null;
+  pubblocked?: string | null;
+  pubat?: string | number | null;
+  lastexempt?: string | number | null;
+  lastpub?: string | null;
 }> = [];
 /** Previous bridge egress watermark returned for the bridge-ordering regression fixture. */
 let bridgePreviousEgressHead: string | null = null;
@@ -5103,6 +5109,51 @@ describe('EI-18 repeated-failure escalation (git-sync-error)', () => {
       }),
     );
     expect(loopbackFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('records the publish-refused edge-trigger inputs on the git_sync pipeline event (WI-6554700010011022)', async () => {
+    // The edge trigger broadcasts when the refusal's commit differs from the one recorded a
+    // tick earlier, and both are read once at fire start. The event must carry both commits
+    // and the snapshot's age so a repeated broadcast can be traced from the ledger.
+    counterRows = [
+      {
+        et: 0,
+        lo: [],
+        pubrefused: 'secrets',
+        pubblocked: 'c0ffee00c0ffee00',
+        pubat: null,
+        lastexempt: null,
+        lastpub: 'deadbeefdeadbeef',
+      },
+    ];
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const before = Date.now();
+
+    await action(ctx);
+
+    const after = Date.now();
+    // The differing commits are exactly what makes the edge trigger broadcast this tick.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('own-head publish REFUSED (secrets) at c0ffee00c0ff'));
+    warn.mockRestore();
+    const event = appendPipelineEventMock.mock.calls
+      .map(([ev]) => ev)
+      .find((ev) => ev.kind === 'git_sync') as
+      | { detail: { escalationInputs: Record<string, unknown> } }
+      | undefined;
+    expect(event?.detail.escalationInputs).toEqual({
+      fireStartedAtMs: expect.any(Number),
+      prevReadAtMs: expect.any(Number),
+      publishBlockedAtCommit: 'c0ffee00c0ffee00',
+      prevPublishBlockedAtCommit: 'deadbeefdeadbeef',
+    });
+    const { fireStartedAtMs, prevReadAtMs } = event!.detail.escalationInputs as {
+      fireStartedAtMs: number;
+      prevReadAtMs: number;
+    };
+    expect(fireStartedAtMs).toBeGreaterThanOrEqual(before);
+    expect(prevReadAtMs).toBeGreaterThanOrEqual(fireStartedAtMs);
+    expect(prevReadAtMs).toBeLessThanOrEqual(after);
   });
 
   it('the THIRD consecutive error tick writes the git-sync-error escalation + broadcasts, and dispatches NO resolver', async () => {

@@ -415,6 +415,44 @@ vh_capture_phase_start() {
   VH_PHASE_CAPTURE_ACTIVE=1
 }
 
+# True while <pid> exists and is not a zombie. `kill -0` alone is not enough:
+# an exited-but-unreaped tee still answers it until the shell waits on it.
+_vh_pid_running() {
+  local pid="$1" line state
+  [ -n "$pid" ] || return 1
+  if [ -r "/proc/$pid/stat" ]; then
+    { read -r line < "/proc/$pid/stat"; } 2>/dev/null || return 1
+    line="${line##*) }"
+    state="${line%% *}"
+  else
+    state="$(ps -o stat= -p "$pid" 2>/dev/null)" || return 1
+    state="${state#"${state%%[![:space:]]*}"}"
+  fi
+  [ -n "$state" ] && [ "${state#Z}" = "$state" ]
+}
+
+# Wait for the capture tee, but only for VH_CAPTURE_TEE_GRACE_SEC (default 10).
+# tee exits on EOF, and EOF needs EVERY holder of its input pipe to close it. A
+# detached descendant (a daemon left behind by a killed prepare step) inherits
+# that pipe, so an unbounded wait pinned the verifier, and the Cargo slot lock it
+# held, for 15h after result.json was written (WI-6554700010011505). After the
+# grace the tee is stopped: only output written after this point by that
+# lingering descendant is lost. The descendant itself is never killed here.
+_vh_wait_capture_tee() {
+  local tee_pid="$1" grace="${VH_CAPTURE_TEE_GRACE_SEC:-10}" ticks=0
+  case "$grace" in ''|*[!0-9]*) grace=10 ;; esac
+  while _vh_pid_running "$tee_pid"; do
+    if [ "$ticks" -ge $(( grace * 10 )) ]; then
+      _vh_say "VH_CAPTURE_TEE_FORCED phase=${VH_CUR_PHASE:-?} grace_sec=$grace reason=capture-pipe-held-open"
+      kill "$tee_pid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.1
+    ticks=$(( ticks + 1 ))
+  done
+  wait "$tee_pid" 2>/dev/null || true
+}
+
 vh_capture_phase_stop() {
   [ "${VH_PHASE_CAPTURE_ACTIVE:-0}" = 1 ] || return 0
   local out_fd="${VH_PHASE_CAPTURE_OUT_FD:-}" err_fd="${VH_PHASE_CAPTURE_ERR_FD:-}"
@@ -422,7 +460,7 @@ vh_capture_phase_stop() {
   if [ -n "$out_fd" ] && [ -n "$err_fd" ]; then
     exec 1>&"$out_fd" 2>&"$err_fd"
   fi
-  [ -z "$tee_pid" ] || wait "$tee_pid" 2>/dev/null || true
+  [ -z "$tee_pid" ] || _vh_wait_capture_tee "$tee_pid"
   exec {VH_PHASE_CAPTURE_OUT_FD}>&-
   exec {VH_PHASE_CAPTURE_ERR_FD}>&-
   VH_PHASE_CAPTURE_TEE_PID=""

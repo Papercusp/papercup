@@ -10,6 +10,25 @@ import { resolveFsMutexLockRoot } from '../../../scripts/lib/fs-mutex.mjs';
 const root = resolve(__dirname, '../../..');
 
 describe('current-build execution route contract', () => {
+  it('prepares only a dummy Codex account in the native fixture private pool', () => {
+    const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-setup-'));
+    try {
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
+        '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
+        join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')], {
+        cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
+        env: { ...process.env, STAGING_FIRST_HTTP_SCENARIO: 'current-su-native-setup',
+          STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir },
+      });
+      expect(result.status, result.stdout.slice(-2000) + result.stderr.slice(-2000)).toBe(0);
+      const line = result.stdout.split('\n').find(row => row.startsWith('CURRENT_SU_NATIVE_SETUP_RECEIPT '));
+      expect(line, result.stdout.slice(-2000)).toBeTruthy();
+      expect(JSON.parse(line!.slice('CURRENT_SU_NATIVE_SETUP_RECEIPT '.length))).toMatchObject({
+        workspace: expect.stringMatching(/^test-runtime-/), accountId: 'private-current-su',
+        provider: 'codex', providerForwarding: false });
+    } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
+  }, 200_000);
+
   it.each(['--isolated-runtime', '--isolated-runtime=operator-api'])(
     'pins the allocator before native host loading (%s)', mode => {
       const probe = `

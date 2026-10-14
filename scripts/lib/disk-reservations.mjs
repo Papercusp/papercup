@@ -68,7 +68,7 @@ function deviceForPath(path) {
 }
 
 /** Read live pre-upgrade claims without rewriting or losing their identities. */
-function reservationKeys(path, ledger, issues) {
+function reservationKeys(path, ledger, issues, nowSec) {
   const key = mountKeyForPath(path);
   const keys = new Set(key ? [key] : []);
   const device = deviceForPath(path);
@@ -80,15 +80,38 @@ function reservationKeys(path, ledger, issues) {
     try {
       out = execFileSync('df', ['-Pk', '-a'], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (error) {
-      issues?.push(`legacy-mounts:${error.code || 'unreadable'}`);
       // df reports all readable mounts even when one unrelated mount is denied.
       // Discarding those rows loses known live claims on otherwise healthy disks.
       out = typeof error.stdout === 'string' ? error.stdout : '';
     }
+    const mappedLegacy = new Set();
     for (const line of out.split('\n').slice(1)) {
       const mount = line.trim().split(/\s+/).slice(5).join(' ');
       const legacy = mount.replace(/[^A-Za-z0-9]/g, '_');
-      if (mount && directories.has(legacy) && deviceForPath(mount) === device) keys.add(legacy);
+      if (!mount || !directories.has(legacy)) continue;
+      const mountDevice = deviceForPath(mount);
+      if (mountDevice === null) continue;
+      mappedLegacy.add(legacy);
+      if (mountDevice === device) keys.add(legacy);
+    }
+    // Strict evidence needs the ledger's live demand to be accounted for, not
+    // success from unrelated df probes. Empty, expired and dead-owner legacy
+    // directories carry no demand. An unmapped live claim still fails closed.
+    if (issues) for (const legacy of directories) {
+      if (!legacy.startsWith('_') || mappedLegacy.has(legacy)) continue;
+      for (const name of readdirSync(join(ledger, legacy))) {
+        if (!name.endsWith('.res')) continue;
+        let rec;
+        try { rec = parseRecord(readFileSync(join(ledger, legacy, name), 'utf8')); }
+        catch (error) {
+          if (error.code !== 'ENOENT') issues.push(`legacy-claim:${error.code || 'unreadable'}`);
+          continue;
+        }
+        const expires = Number(rec.expires), pid = Number(rec.pid);
+        if (rec.expires?.trim() && Number.isFinite(expires) && expires >= 0 && nowSec > expires) continue;
+        if (Number.isInteger(pid) && pid > 0 && !ownerStillLive(pid, rec.start, issues)) continue;
+        issues.push(`legacy-mounts:unresolved-claim:${legacy}`);
+      }
     }
   } catch (error) {
     if (error.code !== 'ENOENT') issues?.push(`ledger:${error.code || 'unreadable'}`);
@@ -139,7 +162,7 @@ export function readReservedGb(path, { env = process.env, now = Date.now(), issu
   const ledger = reservationDir(env);
   let total = 0;
   const nowSec = Math.floor(now / 1000);
-  for (const key of reservationKeys(path, ledger, issues)) {
+  for (const key of reservationKeys(path, ledger, issues, nowSec)) {
     let entries;
     try { entries = readdirSync(join(ledger, key)); } catch (error) {
       if (error.code !== 'ENOENT') issues?.push(`claims:${error.code || 'unreadable'}`);

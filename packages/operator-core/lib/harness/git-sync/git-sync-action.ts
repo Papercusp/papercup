@@ -3937,6 +3937,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   let attributionOn!: boolean;
   let docFreshnessModule: typeof import('../docs/sweep-after-sync') | null = null;
   let prevHeadSha: string | null = null;
+  // WI-6554700010011022: the moment `prev` was read, so the tick's pipeline event can show
+  // which snapshot drove a publish-refused broadcast (prev is read ~35 min before record).
+  let prevReadAtMs: number | null = null;
   try {
     await guarded('activity-start', () =>
       writeActivity({
@@ -3950,6 +3953,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     );
     // EI-18: previous tick's counters BEFORE this tick overwrites them.
     prev = await guarded('read-escalation-counters', () => readEscalationCounters(slug, workspaceId));
+    prevReadAtMs = Date.now();
 
     // Capture HEAD before the sync so the doc-freshness sweep (P-003) can diff the
     // exact paths this tick moved. Best-effort — never gate the sync on it.
@@ -4486,6 +4490,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           // previous tick's publish leg — see readEscalationCounters.
           publishRefusal: prev.publishRefusal,
           prevPublishBlockedAtCommit: prev.prevPublishBlockedAtCommit,
+          fireStartedAtMs: activityStartedAt,
+          prevReadAtMs,
           cfgBranch: cfg.branch,
           maxBlobBytes: cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES,
           maxCommitTotalBytes: cfg.maxCommitTotalBytes ?? DEFAULT_MAX_COMMIT_TOTAL_BYTES,
@@ -8042,6 +8048,9 @@ async function recordAndEscalateTick(a: {
    *  publishing cleanly), and the freeze point seen one tick before that. */
   publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
   prevPublishBlockedAtCommit: string | null;
+  /** WI-6554700010011022: this fire's start and when `prev` was read (epoch ms). */
+  fireStartedAtMs: number;
+  prevReadAtMs: number | null;
   cfgBranch: string | undefined;
   maxBlobBytes: number;
   maxCommitTotalBytes: number;
@@ -8092,6 +8101,15 @@ async function recordAndEscalateTick(a: {
       committedCount: outcome.committedCount,
       skippedPaths: outcome.skippedPaths ?? [],
       consecutiveErrorTicks: errTicks,
+      // WI-6554700010011022: the inputs the publish-refused edge trigger compared this tick.
+      // The trigger broadcasts when publishBlockedAtCommit !== prevPublishBlockedAtCommit;
+      // both are read once at fire start, so the timestamps show how old that snapshot was.
+      escalationInputs: {
+        fireStartedAtMs: a.fireStartedAtMs,
+        prevReadAtMs: a.prevReadAtMs,
+        publishBlockedAtCommit: a.publishRefusal?.blockedAtCommit ?? null,
+        prevPublishBlockedAtCommit: a.prevPublishBlockedAtCommit,
+      },
       ...(outcome.headSha ? { headSha: outcome.headSha } : {}),
       ...(outcome.localCommitSha ? { localCommitSha: outcome.localCommitSha } : {}),
       ...(outcome.localCommitSha && outcome.localCommitAtMs != null ? { localCommitAtMs: outcome.localCommitAtMs } : {}),

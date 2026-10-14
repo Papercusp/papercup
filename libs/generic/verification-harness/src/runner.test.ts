@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -385,6 +385,87 @@ exit "$rc"
       'VH_COMMAND_RESULT phase=prepare step=source-snapshot exit=7',
     );
   });
+
+  // WI-6554700010011505: a detached descendant (e.g. a daemon left behind by a
+  // killed prepare step) inherits the capture pipe, so tee never sees EOF. An
+  // unbounded wait in vh_capture_phase_stop then pinned the verifier, and the
+  // Cargo slot lock it held, for 15h after result.json was written.
+  it('stops waiting for the capture tee when a detached descendant still holds its pipe', () => {
+    const root = tmp();
+    const file = path.join(root, 'hold.sh');
+    const holderPidFile = path.join(root, 'holder.pid');
+    writeFileSync(file, `
+set -u
+source ${JSON.stringify(vh)}
+vh_phase prepare ""
+vh_init shell-capture-hold ${JSON.stringify(root)} || exit 2
+vh_begin prepare
+trap 'rc=$?; vh_capture_phase_stop; vh_exit "$rc"' EXIT
+vh_capture_phase_start
+echo "before holder"
+sleep 60 &
+echo "$!" > ${JSON.stringify(holderPidFile)}
+exit 0
+`);
+
+    // Streams go to FILES, not pipes: the holder inherits the harness's saved
+    // stdout/stderr descriptors too, so a pipe would make Node wait on the holder
+    // instead of measuring when the verifier shell itself exits.
+    const outFile = path.join(root, 'stdout.log');
+    const errFile = path.join(root, 'stderr.log');
+    const outFd = openSync(outFile, 'w');
+    const errFd = openSync(errFile, 'w');
+    const started = Date.now();
+    let result: ReturnType<typeof spawnSync>;
+    try {
+      result = spawnSync('bash', [file], {
+        stdio: ['ignore', outFd, errFd],
+        timeout: 20_000,
+        env: { ...process.env, VH_CAPTURE_TEE_GRACE_SEC: '1' },
+      });
+    } finally {
+      closeSync(outFd);
+      closeSync(errFd);
+      if (existsSync(holderPidFile)) {
+        try { process.kill(Number(readFileSync(holderPidFile, 'utf8').trim())); } catch { /* already gone */ }
+      }
+    }
+    const elapsedMs = Date.now() - started;
+    const streams = readFileSync(outFile, 'utf8') + readFileSync(errFile, 'utf8');
+
+    expect(result.signal, streams).toBeNull();
+    expect(result.status, streams).toBe(0);
+    expect(elapsedMs).toBeLessThan(15_000);
+    expect(streams).toContain('VH_CAPTURE_TEE_FORCED phase=prepare grace_sec=1');
+    expect(readFileSync(path.join(root, 'latest', 'phases', 'prepare', 'command-output.log'), 'utf8')).toContain('before holder');
+    expect(existsSync(path.join(root, 'latest', 'result.json'))).toBe(true);
+  }, 30_000);
+
+  it('does not wait out the tee grace when nothing else holds the capture pipe', () => {
+    const root = tmp();
+    const file = path.join(root, 'clean.sh');
+    writeFileSync(file, `
+set -u
+source ${JSON.stringify(vh)}
+vh_phase prepare ""
+vh_init shell-capture-clean ${JSON.stringify(root)} || exit 2
+vh_begin prepare
+trap 'rc=$?; vh_capture_phase_stop; vh_exit "$rc"' EXIT
+vh_capture_phase_start
+echo "clean capture"
+exit 0
+`);
+    const started = Date.now();
+    const stdout = execFileSync('bash', [file], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 20_000,
+      env: { ...process.env, VH_CAPTURE_TEE_GRACE_SEC: '10' },
+    });
+    expect(Date.now() - started).toBeLessThan(8_000);
+    expect(stdout).not.toContain('VH_CAPTURE_TEE_FORCED');
+    expect(readFileSync(path.join(root, 'latest', 'phases', 'prepare', 'command-output.log'), 'utf8')).toContain('clean capture');
+  }, 30_000);
 
   it('--only with --reuse latest reuses setup and skips unselected phases', () => {
     const root = tmp();

@@ -248,6 +248,61 @@ process.exit(result.status ?? 1);`);
   });
 
   describe('papercusp_pinned_deps_snapshot — the floor the overlay stands on', () => {
+    it.each(['hardlink', 'copy'])('preserves workspace executable closure in a complete %s verifier and a nested snapshot', mode => {
+      const t = fixture(); const donor = join(t, 'donor');
+      const manifest = JSON.stringify({ name: '@fixture/cli', bin: { cli: './dist/cli.js' } });
+      write(join(donor, 'packages/cli/package.json'), manifest);
+      write(join(donor, 'packages/cli/dist/cli.js'), 'import "./support.js";');
+      write(join(donor, 'packages/cli/dist/support.js'), 'export const frozen = true;');
+      mkdirSync(join(donor, 'node_modules/@fixture'), { recursive: true });
+      mkdirSync(join(donor, 'node_modules/.bin'));
+      symlinkSync('../../packages/cli', join(donor, 'node_modules/@fixture/cli'));
+      symlinkSync('../@fixture/cli/dist/cli.js', join(donor, 'node_modules/.bin/cli'));
+      const prepare = (root: string) => {
+        write(join(root, 'packages/cli/package.json'), manifest);
+        write(join(root, '.verifier-source.json'), JSON.stringify({ files: [{ path: 'packages/cli/package.json' }] }));
+      };
+      const snapshot = join(t, 'snapshot'); prepare(snapshot);
+      const first = runLib(['snapshot', donor, snapshot, mode]);
+      expect(first.code, first.err).toBe(0);
+      expect(readFileSync(join(snapshot, 'node_modules/.bin/cli'), 'utf8')).toContain('./support.js');
+      expect(readFileSync(join(snapshot, 'packages/cli/dist/support.js'), 'utf8')).toContain('frozen');
+      const nested = join(t, 'nested'); prepare(nested);
+      const second = runLib(['snapshot', snapshot, nested, mode]);
+      expect(second.code, second.err).toBe(0);
+      rmSync(join(donor, 'packages/cli/dist'), { recursive: true });
+      expect(readFileSync(join(nested, 'node_modules/.bin/cli'), 'utf8')).toContain('./support.js');
+      expect(statSync(join(nested, 'packages/cli/dist/cli.js')).ino === statSync(join(snapshot, 'packages/cli/dist/cli.js')).ino)
+        .toBe(mode === 'hardlink');
+      expect(runLib(['preflight', nested]).code).toBe(0);
+    });
+
+    it('refuses an incomplete copied workspace closure instead of stamping donor validity', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snapshot');
+      write(join(donor, 'packages/cli/package.json'), JSON.stringify({ name: 'cli' }));
+      write(join(donor, 'packages/cli/source.js'), 'source');
+      mkdirSync(join(donor, 'node_modules/.bin'), { recursive: true });
+      symlinkSync('../../packages/cli/source.js', join(donor, 'node_modules/.bin/cli'));
+      write(join(snapshot, '.verifier-source.json'), JSON.stringify({ files: [] }));
+      const r = runLib(['snapshot', donor, snapshot]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('dangling-pinned-dependency-link:node_modules/.bin/cli');
+      expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(false);
+    });
+
+    it('refuses workspace output when the frozen manifest differs from its donor', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snapshot');
+      write(join(donor, 'packages/cli/package.json'), JSON.stringify({ name: 'cli', version: '2', bin: './dist/cli.js' }));
+      write(join(donor, 'packages/cli/dist/cli.js'), 'donor');
+      write(join(donor, 'node_modules/dep/index.js'), 'dep');
+      write(join(snapshot, 'packages/cli/package.json'), JSON.stringify({ name: 'cli', version: '1', bin: './dist/cli.js' }));
+      write(join(snapshot, '.verifier-source.json'), JSON.stringify({ files: [{ path: 'packages/cli/package.json' }] }));
+      const r = runLib(['snapshot', donor, snapshot]);
+      expect(r.code).toBe(1); expect(r.err).toContain('workspace-bin-manifest-mismatch');
+      expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(false);
+      expect(existsSync(join(snapshot, 'packages/cli/dist'))).toBe(false);
+    });
+
     it('preserves hardlink identity when the donor is given as a relative path', () => {
       const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
       const source = join(donor, 'node_modules/dep/index.js');
