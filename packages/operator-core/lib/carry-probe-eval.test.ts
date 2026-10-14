@@ -168,6 +168,34 @@ describe('R-10: a probe that is not provably read-only is refused without being 
   });
 });
 
+describe('R-28: a probe that overruns its per-probe budget is reported, not waited on', () => {
+  it('renders a probe that exceeds its per-probe timeout as could-not-run with reason timeout', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // 'hang' never answers; every other id answers at once.
+    const dispatchTool = vi.fn((_name: string, args: Record<string, unknown>) =>
+      args.id === 'hang'
+        ? new Promise<never>(() => {})
+        : Promise.resolve({ content: [{ type: 'text', text: JSON.stringify({ state: 'red' }) }] }),
+    );
+    const sources = carriedProbeSources({
+      loop: {
+        ownerId: 'su-me',
+        checks: [check('slow check holds', probe('status:read', 'hang')), check('fast check holds', probe('status:read', 'fast'))],
+      },
+    });
+    const block = await carriedProbeBlockForDelivery(sources, { dispatchTool, timeoutMs: 20 });
+    expect(dispatchTool).toHaveBeenCalledTimes(2);
+    const lines = block!.split('\n');
+    expect(lines[0]).toContain('0 hold · 1 changed · 1 could not run');
+    const timedOut = lines.find((l) => l.startsWith('  ? COULD NOT RUN — slow check holds [loop check 1]'));
+    expect(timedOut).toBeDefined();
+    expect(timedOut).toMatch(/: timeout — probe status:read did not return within its 20ms budget/);
+    // The overrun did not stall the batch: the other probe still ran and reported its own result.
+    expect(lines).toContain('  ✗ CHANGED — fast check holds [loop check 2]: observed "red"');
+    warn.mockRestore();
+  });
+});
+
 describe('delivery fail-soft never reads as "all hold"', () => {
   it('turns a runner failure into an explicit could-not-run block', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
