@@ -1199,5 +1199,787 @@
       ]
     }
   },
+  "originalCommandExecutionPreparation": {
+    "status": "partial-original-native-command-receipts-no-operational-acceptance",
+    "scope": "Original maintained commands, their own declared check-input censuses, and exact stdout/stderr; not a full transformed/runtime closure or a comparison cohort.",
+    "voice": {
+      "task": "@papercusp/web :: lint:el-tools",
+      "cwd": "apps/operator",
+      "command": "node scripts/el-tools-check.mjs",
+      "check": "el-tools-drift",
+      "nativeExecution": {
+        "sessionId": "01a13af3-244d-75b3-96a5-976ed9f2cb8a",
+        "eventOrdinal": 437,
+        "eventId": "exec-d2216dfb-d5c5-4c09-8dd9-f24278bbe43b",
+        "startedAt": "2026-10-14T15:33:10.529Z",
+        "completedAt": "2026-10-14T15:33:11.299Z",
+        "commandExitCode": 0,
+        "afterDiscoveryExitCode": 0,
+        "outerExitCode": 0,
+        "provenance": "Recovered original native CommandExecution event and paired output from the predecessor transcript; command was not repeated."
+      },
+      "qualification": {
+        "headAtRead": "510cd3a575d5cb8ac93570328eddb15f9b2f2a0e",
+        "beforeAfterInputsIdentical": true,
+        "inputHashesMatchCurrent": true,
+        "inputHashesMatchCommitted": true,
+        "inputs": [
+          {
+            "path": "apps/operator/scripts/el-agent-sync.mjs",
+            "sha256": "7223a1c8bb7b8dbd7e253648c54cf8d78cb49091e12d3e7ad658fa5d70ff2d56",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "apps/operator/scripts/el-tools-check.mjs",
+            "sha256": "1ed3c2f70d93d771a69a434f702789fb17169dbe1d49673282a3c79092ff5f41",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/agent-dispatch.ts",
+            "sha256": "752a16bde85869a1b793ee9f36473b6909395c49a04b166edbbbacb7bbf32849",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/agents.ts",
+            "sha256": "7c1686c0f85ed0a78bf49d285cfd97e3729367b39f8b29dc175eb35c1d4e0825",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/chat.ts",
+            "sha256": "6e125aaa7f5db7803564d04ad36f34a6bd16cace0f95c3d967f6481a8b66c107",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/delegation.ts",
+            "sha256": "5aed1a73a30abe909ee497c50d1253b7d009da67ad85db4f13b3bded19af8724",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/harness.ts",
+            "sha256": "ef27d4734d42296c502d44526169beac2fe1d20708220e9f289245c23697fd80",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/help.ts",
+            "sha256": "093ea447c31d618ca51ddd5cece65c61b1a33a20b3f5dc37950e5135a02e2755",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/nav.ts",
+            "sha256": "37d9d1d192f4a47a8606317775adc013520bb0ae3f716a8cc99a483123f8901c",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/operator.ts",
+            "sha256": "9186d53f3a310a5a14b483ec83beb6eca5c365031e5c703946a804a5ded7de1b",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/recent-activity.ts",
+            "sha256": "f002cb38717ee7a50bd00eaceac199e92b55753f75b6c64d80113a07943c0479",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/voice.ts",
+            "sha256": "04cb7d8ef5e171f3d0ea3f6754cb7a33fdfbc0e354c56cf0f0a0fd62ef19d1b5",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/workspace.ts",
+            "sha256": "11b8deb0ceb0da3c8e0348197d1523fec82714c3f7945ee5bdd6e0f22560b87e",
+            "currentMatch": true,
+            "committedMatch": true
+          }
+        ],
+        "logs": [
+          {
+            "path": "~/.papercusp/scratch/c0523-voice-command-inputs-before-v1.log",
+            "sha256": "9f5909bc381f0f5da723aea87b6fe7390f37d4c078013d01bc2c16a89539948c"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-voice-command-inputs-after-v1.log",
+            "sha256": "9f5909bc381f0f5da723aea87b6fe7390f37d4c078013d01bc2c16a89539948c"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-voice-command-result-v1.log",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-voice-command-result-v1.err",
+            "sha256": "6dad0d153551abc0bef8aa109e9ec0af79c9070887e78d04178aad303b7d87b9"
+          }
+        ],
+        "warning": "report_problem is operator-tagged but absent from TOOLS; original guard allows warnings. Intent is unconfirmed; filed and assigned EI-25970186699682942.",
+        "files": [],
+        "testFilesFabricated": false,
+        "executed": true,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false,
+        "limits": "Declared check inputs do not enumerate the imported formatter or all installed/runtime dependencies. Successful command exit does not qualify that unmeasured closure."
+      }
+    },
+    "loopSettlement": {
+      "observedAt": "2026-10-14T15:40:10Z",
+      "lastLoopTurnAt": "2026-10-14T15:36:53.811Z",
+      "lastDeliveryOutcome": "loop-loop-turn",
+      "cycle": {
+        "phase": "settled",
+        "turnInFlightSec": null,
+        "lastTurn": {
+          "parkedAt": "2026-10-14T15:08:08.753Z",
+          "settledAt": "2026-10-14T15:38:13.471Z",
+          "turnSec": 1805,
+          "settledBy": "reconcile-loop-routines",
+          "settledVia": "loop-turn",
+          "scheduledDelaySec": 95,
+          "postSettleDelaySec": null
+        },
+        "basis": "turnSec = parked->rearmed: the member's own turn (next_fire_at is infinity while parked), NOT a re-arm delay. postSettleDelaySec = rearmed->next parked: what the re-arm actually cost (~intervalSec + <=30s reconcile tick). loop.cadenceRatio / effectiveIntervalSec include the turn by construction."
+      },
+      "rewake": {
+        "rewakeGuaranteed": true,
+        "reason": null
+      },
+      "limits": "The completed turn came from a delivery created before the 15:20 recovery rearm. Settlement proves that delivered turn completed; it does not establish a new post-rearm fire, stable cadence, or root-cause repair."
+    },
+    "remaining": [
+      "Owned EI-25971079786392324 Wine lifecycle diagnosis, durable guard and focused rerun before aggregate qualification",
+      "Original Astro diagnostic commands",
+      "Qualified ordered command/overlap comparison contract",
+      "Whole source, installed dependency and final transformed/runtime closure",
+      "Four actual ABBA cohorts after D020/P006 permission hold is satisfied",
+      "Original seven-day, strict-idle, alarm-delivery and shipped-artifact acceptance"
+    ],
+    "desktop": {
+      "nativeReceipt": {
+        "kind": "original-native-command-execution",
+        "workItemId": "WI-6554700010010682",
+        "cwd": "papercusp-desktop",
+        "before": {
+          "command": [
+            "bash",
+            "bin/lib/run-selftests.sh",
+            "--print-selection"
+          ],
+          "startedAt": "2026-10-14T15:45:33.412636+00:00",
+          "completedAt": "2026-10-14T15:45:33.572253+00:00",
+          "exitCode": 0,
+          "stdout": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-before-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-before-v1.err"
+        },
+        "execution": {
+          "command": [
+            "bash",
+            "bin/lib/run-selftests.sh"
+          ],
+          "startedAt": "2026-10-14T15:45:33.572697+00:00",
+          "completedAt": "2026-10-14T15:55:51.980419+00:00",
+          "exitCode": 1,
+          "stdout": "~/.papercusp/scratch/c0523-desktop-aggregate-result-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-desktop-aggregate-result-v1.err"
+        },
+        "after": {
+          "command": [
+            "bash",
+            "bin/lib/run-selftests.sh",
+            "--print-selection"
+          ],
+          "startedAt": "2026-10-14T15:55:51.982800+00:00",
+          "completedAt": "2026-10-14T15:55:52.083346+00:00",
+          "exitCode": 0,
+          "stdout": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-after-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-after-v1.err"
+        },
+        "operationalAcceptance": false,
+        "runtimeClosure": "unmeasured"
+      },
+      "beforeAfterInputsIdentical": true,
+      "inputCount": 36,
+      "inputHashesMatchCurrent": true,
+      "inputs": [
+        {
+          "path": "papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh",
+          "sha256": "d616b9bad545a18b28f91f0fb393ce3d0d1c516070a3cc0816ade8d02f1daabd"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/b5-restart.selftest.sh",
+          "sha256": "569edb7c51db5038c328e55cef36663f8ae27eabbcf0c519a1a2051bde989ef2"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/b6-concurrent.selftest.sh",
+          "sha256": "51f1c444b36e17ca3a50b9dc63aa687c4311ca422f316701253870552b82fb32"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh",
+          "sha256": "c5ae36f5771ce5d3077f05cb9eb20888cfe82e98d73020c7f1b890a1d2d19fdc"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh",
+          "sha256": "9d70f92b867af0f6f0db302613c0efce15625fff5743e0d768f8380581b597d8"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/disk-preflight.selftest.sh",
+          "sha256": "3c2a5cb2eff2f0fd9c5ea7672b013d45124930a1ea93dc5d8a91b49d6c0168c4"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/federation-asserts.selftest.sh",
+          "sha256": "e3a1bf018da88a59e90d14142bfda2bc457cdbeed96094cf27cb340e28b10264"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh",
+          "sha256": "2f85f6d342cd9448464a459edebab64b8ccc99671258726fa968e3c2d69e5993"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh",
+          "sha256": "aef9158c726831d31511006589743da70105d5d12d16726367ea928f59efb5ec"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh",
+          "sha256": "0a021b93fca5083f815faa4d811124203cf2925ce0d2d4f9a14f8ebd9253fb9e"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh",
+          "sha256": "97045237020bb10cd6d4961100688edd221d5e8918f0f833e893fac71000a6d7"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh",
+          "sha256": "b1fd0e9b4a34e5540ef3585703d71a2f4bc94861dce9d1243f2e070800ae09fc"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh",
+          "sha256": "df08d6e1d8eab890bcb4bb041ce9707cc3933d4c8094d91fce83aff6aa64b78e"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh",
+          "sha256": "38ee04130e3a201c2b2c89c8dcfaa1005e4d229afb1a9e6137b4e63a868139c7"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/matrix-pass-transcript.selftest.sh",
+          "sha256": "f2886eecedc97a5a9771e00fba7e9941c077bf95640b1fd1442c5dcb664022f9"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/matrix-scenario-adapters.selftest.sh",
+          "sha256": "164da3d16cbe9804b8d5aab9fbc8fe63746ab7bc3695c8ad453488bd27d84d1c"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/matrix-verdict-states.selftest.sh",
+          "sha256": "11ebcf61c18fdc2e088163c8230d0027fd5aecc0b116febc9ff051d2c2bf2053"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/offline-installer-evidence-redaction.selftest.sh",
+          "sha256": "701bff63b7ed758f291839cc85006ceb304ce1697922a4f436f83a9114ae70ee"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/pipefail-predicate.baseline.txt",
+          "sha256": "276f9a2329728c94e08f61c2f0a395ae1b891fd043dedc9cdf38a38eff4b4544"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/release-artifacts.selftest.sh",
+          "sha256": "8c5312411d0b30c06589dd5e981901a0100f4dd97e22b6b34a77f1bf7fd60503"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/release-content-identity.selftest.sh",
+          "sha256": "a26344f90bf45b1f3f53600ccacfbf38ec6182f81b13f2638bcab2e606e5ac7a"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh",
+          "sha256": "21377523a45ac7a4d6805c7afe965643186963f0b2d42361923f1ce6a2d35b78"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/release-tag-pin.selftest.sh",
+          "sha256": "e2222ec0f0d0738572245c0e22af6a552c43cb23bf388e69c477a2d505686865"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/remote-object-state.selftest.sh",
+          "sha256": "310ff84da85e429e531fccc8fe0048d5dfb2659a66dd6d9af7b938badefdf751"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh",
+          "sha256": "a92a812a8e104a0a12e9887d093b2f44b73fa3c12faa762de39314ba3a8cf03c"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh",
+          "sha256": "f9a60653bef0a21430df4cc17fbd9cba2199c8568451583b110eb491160141e3"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh",
+          "sha256": "10d422894bb2f0eeb6d6f1ea7dce58406fa9e9a11eae5cd00e6b9605087d1cfc"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh",
+          "sha256": "a18dc019ddcb15b0a8ae07757cb2a90f1d1fcb99bc2ca74d61af5a33c37fc27c"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/roster-scope.selftest.sh",
+          "sha256": "ecf85b6e4d1257993b40f0c5db57f0f66ec0f1d35b18803c27df03fbadc6adfe"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/run-selftests.sh",
+          "sha256": "66cc2631486ed5d0e7fa368a54bb751f1a27b58bfeeb85e5870b337986b2e586"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/rust-path-remap.selftest.sh",
+          "sha256": "7775eb9b7fc33f6b57e1c3140f64257aa9cc52481a7c024682870ea36a13cab6"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh",
+          "sha256": "ec3277fd9ace47350564c62f1dc42ad707fd4aa0bdb408a3920d9c9203918bf4"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/streak-escalation.selftest.sh",
+          "sha256": "39e5d9cd48a5dc88ca624a692e25ea7d8cd287c2ec5def00ef28e5493044f44c"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/vm-boot-extra-drives.selftest.sh",
+          "sha256": "05cbd36df5f7b402c7b210cbaaff18f72fcebe946386bf591a7bf13230aed6e3"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/vm-port-alloc.selftest.sh",
+          "sha256": "da754cc5cf24c42addb6e12e7107f13d726ef802289430661eea139b9adccfdf"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/vm-run-env.selftest.sh",
+          "sha256": "2feba0e1c0ca2200e9413180baf17e6e526afa31cfce99934a06aff1d45e4a41"
+        }
+      ],
+      "logs": [
+        {
+          "path": "~/.papercusp/scratch/c0523-desktop-aggregate-command-v1.json",
+          "sha256": "4b9cffb8b28d0a0deeeb59f5bc9eb2ea9f9270825b28dae25107c9b389e6be4b"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-before-v1.log",
+          "sha256": "041aafffd1498030b87149fc6e8c1052059d9496dfa07ac9d8b6b2abb299f2a9"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-after-v1.log",
+          "sha256": "041aafffd1498030b87149fc6e8c1052059d9496dfa07ac9d8b6b2abb299f2a9"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-desktop-aggregate-result-v1.log",
+          "sha256": "46876db2bf3b017ec2e1141973716259f1da32d87d8347febfb6b518ef71a48d"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-desktop-aggregate-result-v1.err",
+          "sha256": "7d88860bff885960adc00b7ea1f1647098d8b25eb6bdd78801bb22ed4a2ce3e1"
+        }
+      ],
+      "files": [
+        "papercusp-desktop/bin/lib/federation-asserts.selftest.sh",
+        "papercusp-desktop/bin/lib/release-artifacts.selftest.sh",
+        "papercusp-desktop/bin/lib/release-content-identity.selftest.sh",
+        "papercusp-desktop/bin/lib/release-tag-pin.selftest.sh",
+        "papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh",
+        "papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh",
+        "papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh",
+        "papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh",
+        "papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh",
+        "papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh",
+        "papercusp-desktop/bin/lib/vm-run-env.selftest.sh",
+        "papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh",
+        "papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh",
+        "papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh",
+        "papercusp-desktop/bin/lib/b5-restart.selftest.sh",
+        "papercusp-desktop/bin/lib/b6-concurrent.selftest.sh",
+        "papercusp-desktop/bin/lib/matrix-scenario-adapters.selftest.sh",
+        "papercusp-desktop/bin/lib/matrix-verdict-states.selftest.sh",
+        "papercusp-desktop/bin/lib/matrix-pass-transcript.selftest.sh",
+        "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh",
+        "papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh",
+        "papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh",
+        "papercusp-desktop/bin/lib/roster-scope.selftest.sh",
+        "papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh",
+        "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh",
+        "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh",
+        "papercusp-desktop/bin/lib/rust-path-remap.selftest.sh",
+        "papercusp-desktop/bin/lib/disk-preflight.selftest.sh",
+        "papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh",
+        "papercusp-desktop/bin/lib/streak-escalation.selftest.sh",
+        "papercusp-desktop/bin/lib/remote-object-state.selftest.sh",
+        "papercusp-desktop/bin/lib/offline-installer-evidence-redaction.selftest.sh",
+        "papercusp-desktop/bin/lib/vm-port-alloc.selftest.sh",
+        "papercusp-desktop/bin/lib/vm-boot-extra-drives.selftest.sh"
+      ],
+      "scope": "Original native command and declared input census only. The exact unmodified argv is in the original native receipt; portable root notation is used here. Imported dependencies/final transforms remain unmeasured.",
+      "operationalAcceptance": false,
+      "runtimeClosure": "unmeasured",
+      "scripts": [
+        {
+          "file": "federation-asserts.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "release-artifacts.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "release-content-identity.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "release-tag-pin.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "gen-latest-manifest.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "live-federation-gate-reaper.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "release-local-leg-reaper.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "local-matrix-starvation.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "rig-bank-logs.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "local-matrix-bank.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "vm-run-env.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "seat-offer-diag.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "b9-attestation-precondition.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "b3-revocation-kcut.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "b5-restart.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "b6-concurrent.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "matrix-scenario-adapters.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "matrix-verdict-states.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "matrix-pass-transcript.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "replication-soak-diagnostics.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "restart-settle-barrier.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "rig-wait-converged.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "roster-scope.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "deployed-state-guards.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "inno-legacy-reaper.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "inno-uninstall-cleanup.selftest.sh",
+          "status": "failed",
+          "skipLines": []
+        },
+        {
+          "file": "rust-path-remap.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "disk-preflight.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "mac-vm-fresh-state.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "streak-escalation.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "remote-object-state.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "offline-installer-evidence-redaction.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "vm-port-alloc.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "vm-boot-extra-drives.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        }
+      ],
+      "guards": [
+        "array-disk-completeness",
+        "pipefail-predicate-baseline"
+      ],
+      "qualified": false,
+      "failureItem": "EI-25971079786392324",
+      "rootCause": "unknown",
+      "diagnostics": "/tmp/inno-uninst-selftest.Nw1E1M",
+      "observation": "Compilation passed; the installer phase failed to connect to the owned Wine server. Product cleanup acceptance was not measured."
+    },
+    "fixtureBuild": {
+      "nativeReceipt": {
+        "kind": "original-native-command-execution",
+        "workItemId": "WI-6554700010010682",
+        "cwd": "apps/slack-asana-bug-drill",
+        "before": {
+          "command": [
+            "node",
+            "scripts/build.mjs",
+            "--print-selection",
+            "--repository-root",
+            "<canonical-repository-root>"
+          ],
+          "startedAt": "2026-10-14T15:56:22.115604+00:00",
+          "completedAt": "2026-10-14T15:56:22.309975+00:00",
+          "exitCode": 0,
+          "stdout": "~/.papercusp/scratch/c0523-fixture-build-inputs-before-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-fixture-build-inputs-before-v1.err"
+        },
+        "execution": {
+          "command": [
+            "node",
+            "scripts/build.mjs"
+          ],
+          "startedAt": "2026-10-14T15:56:22.310420+00:00",
+          "completedAt": "2026-10-14T15:58:05.019245+00:00",
+          "exitCode": 0,
+          "stdout": "~/.papercusp/scratch/c0523-fixture-build-result-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-fixture-build-result-v1.err"
+        },
+        "after": {
+          "command": [
+            "node",
+            "scripts/build.mjs",
+            "--print-selection",
+            "--repository-root",
+            "<canonical-repository-root>"
+          ],
+          "startedAt": "2026-10-14T15:58:05.019342+00:00",
+          "completedAt": "2026-10-14T15:58:05.116398+00:00",
+          "exitCode": 0,
+          "stdout": "~/.papercusp/scratch/c0523-fixture-build-inputs-after-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-fixture-build-inputs-after-v1.err"
+        },
+        "operationalAcceptance": false,
+        "runtimeClosure": "unmeasured"
+      },
+      "beforeAfterInputsIdentical": true,
+      "inputCount": 26,
+      "inputHashesMatchCurrent": true,
+      "inputs": [
+        {
+          "path": "apps/slack-asana-bug-drill/app/api/health/route.ts",
+          "sha256": "26fda492c2047a2fa488d875180b5f4bd1ff0605004c17bd8515ec9d0f76957b"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/api/quote/route.ts",
+          "sha256": "f1ddfea0a7e1985ed17a1be8e62805ef9b3bac3e7c7d3049db22db3f2502f046"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/api/quotes/route.ts",
+          "sha256": "12c2b474b34990f0784e4a9b012027bc454f5072c692b07659f7e17d8e5dd19b"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/globals.css",
+          "sha256": "5e3e42a42b53d46bfff58defc20442bd4d2763bd1a7f660973b526b7189acab4"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/layout.tsx",
+          "sha256": "9db33e074f8b11d12007b1d72e31bd16d426461bf6cac74b4bff3bb8779a9b6e"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/page.tsx",
+          "sha256": "73186da4566abcbbc58c4c7204e55b651fd387ef9aeb7714c36ea6a1aebf6a37"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/tokens.css",
+          "sha256": "956a7e727acee15f2bfcff0d58eb3288bf5f4ee7da3ec2692a4499a7c421b9b6"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/next-env.d.ts",
+          "sha256": "1862ac4bbbc5192d4bf562161df66ea547ed3e67173100656ab606ae9797db2b"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/next.config.mjs",
+          "sha256": "065d48d2b855f52503b6a35f5bc0494fbfa61831a8eadf60aef8378c0a3bdea5"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/package-lock.json",
+          "sha256": "faa5633d6289b0ccede56be6207f1685e120f9162ad272471a48ae6fd9991740"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/package.json",
+          "sha256": "3a09b456f5e90e1dbb7bcaa91ea37bcf2c8c29186338f52710098be191e4061d"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/packages/contracts/package.json",
+          "sha256": "035f43f6855c9e527637bc3b3a1a76f1b5458b47e451d373fe583c1024235887"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/packages/contracts/src/index.ts",
+          "sha256": "e80602a22cd30987cb19e98b01d01e84f4625515b3bb08270456fbed446d5afb"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/packages/data/package.json",
+          "sha256": "43e3b21844aeda7bd1c087855058c1cca6441049895ba6f401b5411c4cfcbb92"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/packages/data/src/index.ts",
+          "sha256": "2aae4f1f555ea223e6cb7c0beeec25cecbd1465390681e0c1daf532d1f77f5f6"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/scripts/build.mjs",
+          "sha256": "267c2fe56f9c007636e4917cbc99f4ccf7c05d730392e5c4200acb6bcdc308ad"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/scripts/dependency-preflight.mjs",
+          "sha256": "616613ab35a78f288a6606f6c524545fb52767489a91dc8ddae8f19d4854544e"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/scripts/source-identity.mjs",
+          "sha256": "dead8c647eb79b8530005a268e189714d00482ff57af56403f54fa7b668eb720"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/scripts/start.mjs",
+          "sha256": "3a1df19cbdffff811f21646ea4baf58097fb975e4cc646278a46bdb4789e1718"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/src/composition.test.ts",
+          "sha256": "eab4d0adbb5df9cf1310fe819899f597e550ebafa964ec47ff0d2e77bd56c651"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/src/quote.test.ts",
+          "sha256": "24d157d2d725bb77c1536972c258d1f9094a5cb50c3c52a7f45fd6e40bdbf389"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/src/quote.ts",
+          "sha256": "daa9e76b81893adf2a36d70931e8709e9b8f0a5dc8a639117ae39428f76c9277"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/src/terms.ts",
+          "sha256": "687e44401e6ba2e8e207036db15cb2313c58d0876054d5aca9c1108ddbc20c4c"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/tsconfig.json",
+          "sha256": "53fbd51b71bc66ed9487fe093b556be15758dd57078a2b340d29f82e628b5cd8"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/vendor/papercusp-embedded-pg-discovery-0.1.0.tgz",
+          "sha256": "e28bcdae350b213635369ab0ec0e671dcfcc06e115e050ed082dfa65c11a7f19"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/vendor/papercusp-module-singleton-0.1.0.tgz",
+          "sha256": "566c52824dc1bbbbea9cfa58e8de48fe94c8fb9e2c1cfd97cf0bdab749efa88e"
+        }
+      ],
+      "logs": [
+        {
+          "path": "~/.papercusp/scratch/c0523-fixture-build-command-v1.json",
+          "sha256": "b81379793ff6039b319d4aea54aab68189cb351b8cb90137fed11f4c33a279d8"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-fixture-build-inputs-before-v1.log",
+          "sha256": "f2689ee93e9a2268a2ddc9c230d70a5a15316d2cfac629b03560a50dbd393d36"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-fixture-build-inputs-after-v1.log",
+          "sha256": "f2689ee93e9a2268a2ddc9c230d70a5a15316d2cfac629b03560a50dbd393d36"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-fixture-build-result-v1.log",
+          "sha256": "e9d5cfe9fee1d6dace33bc2a462c629155c40af7a5139d781dda6b36d62b0e99"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-fixture-build-result-v1.err",
+          "sha256": "c52f1afb1c49817c79191c7ba2b55d30aceae7f64c30b3c9aa6af8eb732204e6"
+        }
+      ],
+      "files": [],
+      "scope": "Original native command and declared input census only. The exact unmodified argv is in the original native receipt; portable root notation is used here. Imported dependencies/final transforms remain unmeasured.",
+      "operationalAcceptance": false,
+      "runtimeClosure": "unmeasured"
+    }
+  },
   "next": "No native command handles remain. Prepare actual original full-gate inputs and runtime closure without launching the D020-held cohort. Wrapper local integration is complete; reuse saved proofs only at matching source hashes. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
 }
