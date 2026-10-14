@@ -720,10 +720,9 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     expect(fs.existsSync(join(cache, 'tu-legacy-operator.lock'))).toBe(false);
   });
 
-  it("falls back to a legacy acquire when the serving operator rejects the advertised operation scope", async () => {
+  it("denies and retains an operation when the serving operator rejects its advertised scope", async () => {
     rejectCoordinationDomain = true;
     rejectHookOperation = true;
-    nextInner = { ok: true, lock_id: "legacy-operation-lock" };
     const toolUseId = "tu-legacy-operation";
     const r = await run(editOf("sub/legacy-operation.ts", toolUseId));
     expect(r.status).toBe(0);
@@ -731,30 +730,23 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     const out = JSON.parse(r.stdout);
     expect(out.hookSpecificOutput).toMatchObject({
       hookEventName: "PreToolUse",
-      permissionDecision: "allow",
-      permissionDecisionReason: "file-lock compatibility fallback (non-blocking)",
+      permissionDecision: "deny",
     });
-    expect(out.hookSpecificOutput.additionalContext).toContain(
-      "rejected hook_operation despite advertising the native edit protocol",
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(
+      /rejected the native operation scope before authority was prepared/i,
     );
-    expect(out.hookSpecificOutput.additionalContext).toContain(
-      "rejected the coordination_domain argument",
-    );
-    expect(requests).toHaveLength(3);
+    expect(requests).toHaveLength(1);
     expect(requests[0].body.params.arguments.hook_operation).toBeDefined();
     expect(requests[0].body.params.arguments.coordination_domain).toBe(
       fs.realpathSync(repo),
     );
-    expect(requests[1].body.params.arguments.hook_operation).toBeUndefined();
-    expect(requests[1].body.params.arguments.coordination_domain).toBe(
-      fs.realpathSync(repo),
+    expect(requests[0].body.params.arguments.hook_operation.authority).toBeUndefined();
+    expect(fs.existsSync(join(cache, `${toolUseId}.lock`))).toBe(false);
+    const operationRecord = JSON.parse(
+      fs.readFileSync(join(cache, `${toolUseId}.operation.json`), "utf8"),
     );
-    expect(requests[2].body.params.arguments).not.toHaveProperty("hook_operation");
-    expect(requests[2].body.params.arguments).not.toHaveProperty("coordination_domain");
-    expect(fs.readFileSync(join(cache, `${toolUseId}.lock`), "utf8")).toBe(
-      "legacy-operation-lock",
-    );
-    expect(fs.existsSync(join(cache, `${toolUseId}.operation.json`))).toBe(false);
+    expect(operationRecord.operation.id).toEqual(expect.any(String));
+    expect(operationRecord.operation.authority).toBeFalsy();
   });
 
   it("does not downgrade after the native operation authority has been prepared", async () => {
