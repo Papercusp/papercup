@@ -4512,7 +4512,9 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     expect(onFire).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(1);
-    expect(onFire).toHaveBeenCalledWith("absolute-hard-ceiling");
+    expect(onFire).toHaveBeenCalledWith("absolute-hard-ceiling", expect.objectContaining({
+      idleBudgetMs: 1000, hardCeilingMs: 2500, tightenedBecause: null,
+    }));
     expect(release).toHaveBeenCalledTimes(1);
     expect(kill).toHaveBeenCalledWith(-999, "SIGKILL");
   });
@@ -4547,7 +4549,9 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     expect(onFire).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(1);
-    expect(onFire).toHaveBeenCalledWith("absolute-hard-ceiling");
+    expect(onFire).toHaveBeenCalledWith("absolute-hard-ceiling", expect.objectContaining({
+      idleBudgetMs: 10_000, hardCeilingMs: 3000, tightenedBecause: 'post-verdict return funnel',
+    }));
     expect(release).toHaveBeenCalledTimes(1);
     expect(kill).toHaveBeenCalledWith(-999, "SIGKILL");
     // The fire line names the tightening, so a post-verdict kill is not misread as a 3h overrun.

@@ -2343,7 +2343,17 @@ export function buildSelfWatchdogCheckpointResult(opts: {
   failingTests: string[];
   candidateSource?: CheckpointCandidateSource;
   diagnostic?: CheckpointDiagnostic;
+  watchdog?: { reason: SelfWatchdogFireReason; context: SelfWatchdogFireContext };
 }): CheckpointResult {
+  const fired = opts.watchdog;
+  const watchdogSummary = fired
+    ? `self-watchdog fired: ${fired.reason}; trigger=${fired.context.trigger}` +
+      `; elapsedMs=${fired.context.firedAtMs - fired.context.startedAtMs}` +
+      `; idleForMs=${fired.context.firedAtMs - fired.context.lastProgressAtMs}` +
+      `; idleBudgetMs=${fired.context.idleBudgetMs}; hardCeilingMs=${fired.context.hardCeilingMs}` +
+      (fired.context.tightenedBecause ? `; tightenedBecause=${fired.context.tightenedBecause}` : '') +
+      '; run-lock released and process group is being terminated.'
+    : '';
   return {
     advanced: false,
     candidate: opts.candidate,
@@ -2355,7 +2365,7 @@ export function buildSelfWatchdogCheckpointResult(opts: {
     // `green === null` is the ONLY dispatch for `green-checkpoint:inconclusive`.
     green: null,
     reason: "error",
-    summary: opts.summary,
+    summary: watchdogSummary ? `${watchdogSummary}${opts.summary ? ` ${opts.summary}` : ''}` : opts.summary,
     failingTests: opts.failingTests,
     runId: opts.runId,
   };
@@ -2742,6 +2752,17 @@ export interface SelfWatchdogHandle {
 
 /** The two ways a progress-aware self-watchdog can terminate a run. */
 export type SelfWatchdogFireReason = "idle-timeout" | "absolute-hard-ceiling";
+
+/** Snapshot at expiry, before asynchronous terminal publication can change the timing. */
+export interface SelfWatchdogFireContext {
+  trigger: SelfWatchdogTrigger;
+  startedAtMs: number;
+  firedAtMs: number;
+  lastProgressAtMs: number;
+  idleBudgetMs: number;
+  hardCeilingMs: number;
+  tightenedBecause: string | null;
+}
 
 /** Internal transport used only by release-checkpoint-launch.ts's detached MANUAL unit.
  * Scheduled runs omit it and retain SELF_WATCHDOG_MS as their independent parent-death
@@ -3138,7 +3159,7 @@ export function armSelfWatchdog(
      *  targets our OWN process group on the very next synchronous line, so the event loop never
      *  turns again and the emit's continuation never runs. (A sync/absent onFire keeps the
      *  original fully-synchronous kill path.) */
-    onFire?: (reason: SelfWatchdogFireReason) => void | Promise<void>;
+    onFire?: (reason: SelfWatchdogFireReason, context: SelfWatchdogFireContext) => void | Promise<void>;
     /** Max wait for an async `onFire` to settle before the guaranteed kill (injected in tests).
      *  Defaults to SELF_WATCHDOG_ONFIRE_GRACE_MS. */
     onFireGraceMs?: number;
@@ -3160,6 +3181,7 @@ export function armSelfWatchdog(
         : null);
   const onFireGraceMs = opts.onFireGraceMs ?? SELF_WATCHDOG_ONFIRE_GRACE_MS;
   const startedAtMs = Date.now();
+  let lastProgressAtMs = startedAtMs;
   // WI-6554700010009615: mutable because tighten() can pull the ceiling IN (never out).
   let hardDeadlineAtMs = startedAtMs + hardCeilingMs;
   let effectiveHardCeilingMs = hardCeilingMs;
@@ -3182,11 +3204,20 @@ export function armSelfWatchdog(
     if (cancelled || firedAlready) return;
     firedAlready = true;
     clearTimers();
+    const context: SelfWatchdogFireContext = {
+      trigger: opts.trigger ?? 'scheduled-parent-backstop',
+      startedAtMs,
+      firedAtMs: Date.now(),
+      lastProgressAtMs,
+      idleBudgetMs: ms,
+      hardCeilingMs: effectiveHardCeilingMs,
+      tightenedBecause,
+    };
     const processGroupId = resolveProcessGroupId(pid) ?? pid;
     const triggerDetail =
       opts.trigger === "manual-run-deadline"
         ? "manual checkpoint deadline elapsed (this timer does not imply parent loss)"
-        : "presumed-dead parent (release-actions.ts's runScript never landed its SIGTERM+SIGKILL)";
+        : "scheduled parent backstop elapsed (parent liveness was not measured)";
     const deadlineDetail =
       reason === "absolute-hard-ceiling"
         ? `absolute hard ceiling elapsed after ${formatSelfWatchdogDuration(effectiveHardCeilingMs)}` +
@@ -3223,7 +3254,7 @@ export function armSelfWatchdog(
     };
     let fired: void | Promise<void>;
     try {
-      fired = opts.onFire?.(reason);
+      fired = opts.onFire?.(reason, context);
     } catch {
       /* best-effort — emit the loud red verdict first, even if the hook fails */
       fired = undefined;
@@ -3251,7 +3282,7 @@ export function armSelfWatchdog(
     idleTimer = setTimeout(
       () =>
         fire(
-          hardDeadlineAtMs - Date.now() <= ms
+          hardDeadlineAtMs - Date.now() <= 0
             ? "absolute-hard-ceiling"
             : "idle-timeout",
         ),
@@ -3271,6 +3302,7 @@ export function armSelfWatchdog(
     },
     progress: () => {
       if (cancelled || firedAlready) return;
+      lastProgressAtMs = Date.now();
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = undefined;
       scheduleIdleTimer();
@@ -24010,7 +24042,7 @@ if (require.main === module) {
         // single event-loop turn. Every agent parked on the red verdict via checkpoint:await missed
         // it and hung to its own timeout — in the ONE situation (lost parent, abnormal exit) where
         // that wake matters most. armSelfWatchdog now BOUND-awaits this hook before the kill.
-        onFire: async () => {
+        onFire: async (fireReason, fireContext) => {
           // EI-20669541349219660: the suite MAY have finished red before this kill — its
           // parsed failing-file list is persisted beside the run-lock the moment it exists
           // (writeFailingFilesMarker, keyed by runId). Carrying it here is what breaks the
@@ -24023,12 +24055,6 @@ if (require.main === module) {
             ),
             runId,
           );
-          const watchdogSummary =
-            selfWatchdog.trigger === "manual-run-deadline"
-              ? `manual checkpoint exceeded its ${formatSelfWatchdogDuration(selfWatchdog.ms)} deadline with no normal exit — ` +
-                `run-lock released and process group is being terminated.`
-              : `self-watchdog fired after ${formatSelfWatchdogDuration(selfWatchdog.ms)} with no normal exit — ` +
-                `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`;
           // EI-20702428259478130: this verdict is INCONCLUSIVE, not red — see `green: null` in the
           // builder. A watchdog kill means this run never rendered a verdict, so claiming the code
           // is RED is a fabricated measurement.
@@ -24062,9 +24088,8 @@ if (require.main === module) {
             buildSelfWatchdogCheckpointResult({
               candidate: prewarmedDependencyGeneration.candidate,
               runId,
-              summary: carried.note
-                ? `${watchdogSummary} ${carried.note}`
-                : watchdogSummary,
+              summary: carried.note ?? '',
+              watchdog: { reason: fireReason, context: fireContext },
               // EI-20702428259478130: carry the rescued failing-file list on the RESULT rather than
               // only in an event payload. This used to ride on the hand-rolled `green-checkpoint:red`
               // emit below, which is gone (see the block comment there); `failingTests` is a typed
