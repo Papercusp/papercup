@@ -123,6 +123,23 @@ describe('rubric template schema', () => {
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'probe', probe, unit: 'x'.repeat(33) }).success).toBe(false);
   });
 
+  it('accepts explicit intermediate rating bands for instrument and probe ledger checks', () => {
+    const near = [{ rating: 'degraded', expect: { op: 'lte', value: 200 } }];
+    const probe = { kind: 'sql', sql: 'SELECT 1 AS v', schemaRevision: 'r', expect: { path: '$.rows[0].v', op: 'lte', value: 50 } };
+    expect(
+      rubricCriterionCheckSchema.safeParse({
+        kind: 'instrument', instrumentKey: 'host:df-root-used-pct', expect: { op: 'lte', value: 50 }, ratingBands: near,
+      }).success,
+    ).toBe(true);
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'instrument', instrumentKey: 'host:df-root-used-pct', ratingBands: near }).success).toBe(false);
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'probe', probe, unit: 'ms', ratingBands: near }).success).toBe(true);
+    expect(
+      rubricCriterionCheckSchema.safeParse({
+        kind: 'probe', probe, ratingBands: [{ rating: 'degraded', expect: { op: 'close', value: 2 } }],
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts a native Cargo check with explicit manifest/source attribution', () => {
     expect(
       rubricCriterionCheckSchema.safeParse({
