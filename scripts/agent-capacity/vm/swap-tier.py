@@ -373,6 +373,19 @@ def mib(b):
     return None if b is None else round(b / 2**20, 1)
 
 
+def regained(before, after):
+    """Bytes of anonymous memory an agent got back in RAM between two samples.
+
+    Measured as growth of resident anon, never as a drop in swap-used. On a disk swap device
+    the kernel keeps a page's swap slot after reading it back (swap cache), so swap-used barely
+    moves while the agent pages itself back in: measured 14 Oct 2026, idle agents on pd-ssd
+    regained ~1.1 GiB of resident memory while swap-used fell 74 MiB. zram frees the slot on
+    read, so there the two agree. Resident growth also counts memory the agent newly allocates;
+    the `none` arm (nothing in swap) measures that baseline, about 3 MiB per wake.
+    """
+    return max(0, (after["anon"] or 0) - (before["anon"] or 0))
+
+
 def summarize(rows, probe):
     """Reduce results.jsonl rows (+ probe samples [(t, exec_ms, oversleep_ms)]) to per-arm numbers."""
     arms = {}
@@ -388,11 +401,12 @@ def summarize(rows, probe):
         elif k == "reclaimed":
             s["reclaimed"].append(r)
         elif k == "idle":
-            s["idlePagedBackMiB"] = mib(sum(max(0, (r["before"][n]["swap"] or 0) - (r["after"][n]["swap"] or 0)) for n in r["before"]))
+            s["idleRegainedMiB"] = mib(sum(regained(r["before"][n], r["after"][n]) for n in r["before"]))
         elif k == "wake":
             s["wakes"][r["phase"]].append(r)
         elif k == "arm-end":
             s["swapAfterMiB"] = mib(sum(v["swap"] or 0 for v in r["agents"].values()))
+            s["residentAfterMiB"] = mib(sum(v["anon"] or 0 for v in r["agents"].values()))
             zr = r["host"].get("zram")
             if zr:
                 s["zramEnd"] = zr
@@ -419,7 +433,7 @@ def summarize(rows, probe):
                 "seconds": round(sum(r["seconds"] for r in rc), 1),
                 "swapOutMiBps": round(mib(sum(swapped)) / max(0.001, sum(r["seconds"] for r in rc)), 1),
             }
-            res["idlePagedBackMiB"] = s.get("idlePagedBackMiB")
+            res["idleRegainedMiB"] = s.get("idleRegainedMiB")
             res["zram"] = s.get("zramAfterReclaim")
         for ph in ("single", "storm"):
             ws = s["wakes"][ph]
@@ -428,13 +442,13 @@ def summarize(rows, probe):
             total = [(w["tDone"] - w["t0"]) if w.get("tDone") else None for w in ws]
             echo = [(w["tEcho"] - w["t0"]) if w.get("tEcho") else None for w in ws]
             submit = [(w["tDone"] - w["tEnter"]) if w.get("tDone") and w.get("tEnter") else None for w in ws]
-            back = [max(0, (w["pre"]["swap"] or 0) - (w["post"]["swap"] or 0)) for w in ws]
+            back = [regained(w["pre"], w["post"]) for w in ws]
             majflt = [max(0, (w["post"]["majflt"] or 0) - (w["pre"]["majflt"] or 0)) for w in ws]
             block = {"agents": len(ws), "failed": sum(1 for t in total if t is None),
                      "totalSec": {"p50": _r(pctl(total, 50)), "p90": _r(pctl(total, 90)), "max": _r(pctl(total, 100))},
                      "echoSec": {"p50": _r(pctl(echo, 50)), "max": _r(pctl(echo, 100))},
                      "submitToReplySec": {"p50": _r(pctl(submit, 50)), "max": _r(pctl(submit, 100))},
-                     "pagedBackMiBPerAgent": mib(statistics.mean(back)),
+                     "regainedMiBPerAgent": mib(statistics.mean(back)),
                      "majfltPerAgent": round(statistics.mean(majflt))}
             if ph == "storm":
                 done = [w["tDone"] for w in ws if w.get("tDone")]
@@ -446,6 +460,7 @@ def summarize(rows, probe):
                                         "max": _r(pctl([p[1] for p in samples], 100)), "samples": len(samples)}
             res[ph] = block
         res["swapAfterStormMiB"] = s.get("swapAfterMiB")
+        res["residentAfterStormMiB"] = s.get("residentAfterMiB")
         out.append(res)
     return out
 
