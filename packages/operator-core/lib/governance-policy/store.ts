@@ -123,7 +123,9 @@ export async function loadChainForWorkspace(workspaceId: string, sql?: Sql): Pro
   const chain = rows.map(layerOf);
   const problem = chainShapeProblem(chain);
   if (problem) return { status: 'malformed', reason: problem, chain };
-  const bad = chain.find((l) => !isWellFormedLayer(l));
+  // `: boolean` stops TS 5.5 inferring `l is never` from the negated type guard, which would
+  // type `bad` as never and hide the layerId/version it is about to report.
+  const bad = chain.find((l): boolean => !isWellFormedLayer(l));
   if (bad) return { status: 'malformed', reason: `layer ${bad.layerId} v${bad.version} has malformed rules or exceptions`, chain };
   return { status: 'ok', chain };
 }
@@ -298,11 +300,14 @@ export async function upsertLayer(input: UpsertLayerInput, sql?: Sql): Promise<S
       rules: input.rules,
       exceptions,
     });
+    // jsonb binds as JSON.stringify + ::text::jsonb: the only form correct on BOTH the getOrgPg
+    // client and a default postgres() pool (a bare ::jsonb double-encodes on the latter, storing a
+    // jsonb string that every later load reports malformed). agent-insights/postgres-js-jsonb-binding.
     const rows = await tx<RawLayerRow[]>`
       INSERT INTO harness_shared.governance_policy_layers
         (layer_id, level, scope_ref, parent_layer_id, version, rules, exceptions, content_hash, updated_by, updated_at)
       VALUES (${input.layerId}, ${input.level}, ${input.scopeRef}, ${input.parentLayerId}, ${version},
-              ${JSON.stringify(input.rules)}::jsonb, ${JSON.stringify(exceptions)}::jsonb, ${contentHash}, ${input.actor}, now())
+              ${JSON.stringify(input.rules)}::text::jsonb, ${JSON.stringify(exceptions)}::text::jsonb, ${contentHash}, ${input.actor}, now())
       ON CONFLICT (layer_id) DO UPDATE SET
         level = EXCLUDED.level, scope_ref = EXCLUDED.scope_ref, parent_layer_id = EXCLUDED.parent_layer_id,
         version = EXCLUDED.version, rules = EXCLUDED.rules, exceptions = EXCLUDED.exceptions,
@@ -313,7 +318,7 @@ export async function upsertLayer(input: UpsertLayerInput, sql?: Sql): Promise<S
       INSERT INTO harness_shared.governance_policy_layer_versions
         (layer_id, version, level, scope_ref, parent_layer_id, rules, exceptions, content_hash, actor, reason)
       VALUES (${input.layerId}, ${version}, ${input.level}, ${input.scopeRef}, ${input.parentLayerId},
-              ${JSON.stringify(input.rules)}::jsonb, ${JSON.stringify(exceptions)}::jsonb, ${contentHash}, ${input.actor}, ${input.reason})
+              ${JSON.stringify(input.rules)}::text::jsonb, ${JSON.stringify(exceptions)}::text::jsonb, ${contentHash}, ${input.actor}, ${input.reason})
     `;
     return rows[0];
   });

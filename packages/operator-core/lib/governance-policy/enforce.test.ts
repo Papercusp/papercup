@@ -95,7 +95,7 @@ describe('governedRequestOf — subject mapping', () => {
   });
 
   it('judges an unparseable URL verbatim so it cannot slip past an egress allow list', () => {
-    expect(governedRequestOf({ toolName: 'web:fetch', capabilities: [], args: { url: 'not a url' } }).egress).toEqual(['not a url']);
+    expect(governedRequestOf({ toolName: 'web:fetch', capabilities: [], boundary: 'dispatch', args: { url: 'not a url' } }).egress).toEqual(['not a url']);
   });
 });
 
