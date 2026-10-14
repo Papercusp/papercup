@@ -42,7 +42,13 @@ class RecordingQueue implements ProviderLaneQueue {
 
 const LANES: readonly ProviderLaneId[] = ['claude', 'codex'];
 
-function makeLifecycle(options: { tiered?: boolean; now?: () => number } = {}) {
+function makeLifecycle(
+  options: {
+    tiered?: boolean;
+    now?: () => number;
+    healthyAccountsFor?: (lane: ProviderLaneId) => number | null | undefined;
+  } = {},
+) {
   const queues = new Map<ProviderLaneId, RecordingQueue>();
   for (const id of LANES) queues.set(id, new RecordingQueue());
   const lifecycle = new ProviderAdmissionLifecycle({
@@ -52,6 +58,7 @@ function makeLifecycle(options: { tiered?: boolean; now?: () => number } = {}) {
       ...(options.tiered ? { baseTierCaps: { 1: 4, 2: 3, 3: 2, 4: 2 } } : {}),
     })),
     now: options.now ?? (() => 1_000),
+    ...(options.healthyAccountsFor ? { healthyAccountsFor: options.healthyAccountsFor } : {}),
   });
   return { lifecycle, queues };
 }
@@ -117,6 +124,53 @@ describe.each(LANES)('provider admission lifecycle conformance — %s lane', (la
 
     // CALIBRATION: the floor claim is vacuous unless a contraction actually ran.
     expect(lifecycle.snapshotFor(lane).contractions).toBeGreaterThan(0);
+  });
+
+  // WI-6554700010012367 (plan gateway-admission-congestion-only-2026-10-13 P-002, "a floor
+  // sized to healthy accounts"): the 2026-10-13 incident pinned the Codex lane at a static
+  // floor of 4 while more accounts than that were healthy and upstream answered in seconds.
+  it('never contracts a lane below its count of healthy accounts', () => {
+    const healthy = 12;
+    const { lifecycle } = makeLifecycle({ healthyAccountsFor: (id) => (id === lane ? healthy : null) });
+    succeed(lifecycle, lane, 400);
+    expect(lifecycle.windowFor(lane)).toBeGreaterThan(healthy);
+
+    throttle(lifecycle, lane, 600);
+    expect(lifecycle.windowFor(lane)).toBe(healthy);
+    expect(lifecycle.snapshotFor(lane).minimumWindow).toBe(healthy);
+    // CALIBRATION: contractions really ran and stopped AT the healthy count.
+    expect(lifecycle.snapshotFor(lane).contractions).toBeGreaterThan(0);
+
+    // CONTROL: the identical storm with no healthy-account reader falls to the static
+    // floor, below the healthy count, so the assertion above is not vacuous.
+    const control = makeLifecycle();
+    succeed(control.lifecycle, lane, 400);
+    throttle(control.lifecycle, lane, 600);
+    expect(control.lifecycle.windowFor(lane)).toBeLessThan(healthy);
+  });
+
+  it('treats an unknown, zero or throwing healthy-account reader as the configured floor', () => {
+    const control = makeLifecycle();
+    succeed(control.lifecycle, lane, 400);
+    throttle(control.lifecycle, lane, 600);
+    const staticFloor = control.lifecycle.windowFor(lane);
+
+    const readers: Array<() => number | null | undefined> = [
+      () => null,
+      () => undefined,
+      () => 0,
+      () => Number.NaN,
+      () => {
+        throw new Error('pool unavailable');
+      },
+    ];
+    for (const reader of readers) {
+      const { lifecycle } = makeLifecycle({ healthyAccountsFor: reader });
+      succeed(lifecycle, lane, 400);
+      throttle(lifecycle, lane, 600);
+      expect(lifecycle.windowFor(lane)).toBe(staticFloor);
+      expect(lifecycle.snapshotFor(lane).contractions).toBeGreaterThan(0);
+    }
   });
 
   it('absorbs an isolated throttle without contracting', () => {

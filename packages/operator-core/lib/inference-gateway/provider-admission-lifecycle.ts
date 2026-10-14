@@ -119,6 +119,16 @@ export interface ProviderAdmissionWindowPolicy {
 
 export interface ProviderAdmissionLifecycleOptions extends ProviderAdmissionWindowPolicy {
   readonly lanes: readonly ProviderLaneRegistration[];
+  /**
+   * Live count of healthy (serviceable, non-walled) accounts on a lane, or null when
+   * unknown. A contraction never takes a lane below this count, so congestion can
+   * never throttle a lane to fewer requests than it has usable accounts
+   * (plan gateway-admission-congestion-only-2026-10-13#P-002, "a floor sized to
+   * healthy accounts"; WI-6554700010012367). It is read at contraction time only:
+   * it never raises a window, and null, zero or a count at or below
+   * `minimumWindow` leaves the configured floor in charge.
+   */
+  readonly healthyAccountsFor?: (lane: ProviderLaneId) => number | null | undefined;
   /** Injected clock. Present so the lifecycle never reads an ambient one. */
   readonly now?: () => number;
   readonly log?: (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -236,6 +246,7 @@ export class ProviderAdmissionLifecycle {
   readonly #now: () => number;
   readonly #log: (level: 'info' | 'warn' | 'error', message: string) => void;
   readonly #minimumWindow: number;
+  readonly #healthyAccountsFor: ((lane: ProviderLaneId) => number | null | undefined) | undefined;
   readonly #initialWindow: number;
   readonly #increaseStep: number;
   readonly #healthySamplesPerIncrease: number;
@@ -267,8 +278,26 @@ export class ProviderAdmissionLifecycle {
       fraction(options.contractionFraction, DEFAULT_CONTRACTION_FRACTION),
     );
     this.#contractionThreshold = positiveInt(options.contractionThreshold, DEFAULT_CONTRACTION_THRESHOLD);
+    this.#healthyAccountsFor = options.healthyAccountsFor;
 
     for (const lane of options.lanes) this.#register(lane);
+  }
+
+  /**
+   * The floor a contraction respects on one lane: the configured minimum, raised to
+   * the lane's live healthy-account count when that count is known and larger. A
+   * throwing or non-finite reader is treated as unknown, never as zero.
+   */
+  #floorFor(lane: ProviderLaneId): number {
+    let healthy: number | null | undefined;
+    try {
+      healthy = this.#healthyAccountsFor?.(lane);
+    } catch {
+      healthy = null;
+    }
+    return typeof healthy === 'number' && Number.isFinite(healthy) && healthy > this.#minimumWindow
+      ? Math.floor(healthy)
+      : this.#minimumWindow;
   }
 
   #register(registration: ProviderLaneRegistration): void {
@@ -423,8 +452,10 @@ export class ProviderAdmissionLifecycle {
     lane.cleanStreak = 0;
     // Round UP so one contraction never removes more than the configured share;
     // but always remove at least one slot, or a small window could never contract.
+    // Never below the lane's healthy-account floor (P-002).
+    const floor = this.#floorFor(lane.id);
     const next = Math.max(
-      this.#minimumWindow,
+      floor,
       Math.min(lane.window - 1, Math.ceil(lane.window * this.#contractionFraction)),
     );
     if (next >= lane.window) return;
@@ -434,7 +465,7 @@ export class ProviderAdmissionLifecycle {
     this.#apply(lane);
     this.#log(
       'warn',
-      `inference-gateway: ${lane.id} admission window → ${lane.window} (${reason}; floor ${this.#minimumWindow}, peak ${lane.observedPeak})`,
+      `inference-gateway: ${lane.id} admission window → ${lane.window} (${reason}; floor ${floor}, peak ${lane.observedPeak})`,
     );
   }
 
@@ -454,7 +485,7 @@ export class ProviderAdmissionLifecycle {
       lane: lane.id,
       window: lane.window,
       observedPeak: lane.observedPeak,
-      minimumWindow: this.#minimumWindow,
+      minimumWindow: this.#floorFor(lane.id),
       pressure: lane.pressure,
       cleanStreak: lane.cleanStreak,
       contractions: lane.contractions,
