@@ -317,6 +317,10 @@ import './session-dir-gc-action';
 // infra-perf-robustness-audit-2026-06-18 P-006). Seeded INACTIVE
 // (seed-telemetry-retention-routine.ts --active).
 import './telemetry-retention-action';
+// `system:organization-content-reseal` — re-seals organization documents left under an older DEK
+// version after rotateDek (WI-6554700010012443 U5). Seeded ACTIVE
+// (seed-organization-content-reseal-routine.ts).
+import './organization-content-reseal-action';
 // `system:gc-plan-runs` — WI-5273: wires the already-built-and-tested
 // gcScheduledPlanRuns (gc-plan-runs.ts) to an actual cadence — it had NEVER
 // been invoked outside its own test since scheduled-recurring-plans-2026-06-16,
