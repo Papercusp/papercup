@@ -314,6 +314,7 @@ export const HOSTED_CUSTOMER_DATA_TABLES: readonly CustomerDataTable[] = [
   table('papercusp_auth', 'hosted_billing_customers', {
     purpose: 'Organization to Stripe customer mapping.',
     systemOfRecord: 'stripe-mirror', retention: 'billing-record', organizationLink: ORG,
+    pii: 'reconciliation_checkpoint',
     billing: 'stripe_customer_id livemode',
     operational: 'organization_id created_at updated_at',
   }),
@@ -326,8 +327,9 @@ export const HOSTED_CUSTOMER_DATA_TABLES: readonly CustomerDataTable[] = [
   table('papercusp_auth', 'hosted_billing_webhook_events', {
     purpose: 'Stripe webhook receipt ledger (idempotency and outcome).',
     systemOfRecord: 'stripe-mirror', retention: 'billing-record', organizationLink: ORG,
+    pii: 'api_observation',
     billing: 'provider_event_id event_type livemode outcome rejection_code',
-    operational: 'body_digest organization_id received_at',
+    operational: 'body_digest fact_digest organization_id received_at',
   }),
   table('papercusp_auth', 'hosted_prepaid_allocations', {
     purpose: 'Prepaid (Stripe-funded) budget allocations to customer workspaces.',
