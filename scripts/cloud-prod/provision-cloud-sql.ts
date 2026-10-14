@@ -26,6 +26,7 @@
  * as absent; any other describe failure is retried and then fatal.
  */
 import { execFile } from 'node:child_process';
+import { stripVTControlCharacters } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import {
   assertIdent,
@@ -205,11 +206,12 @@ export function flagNames(args: readonly string[]): string[] {
  * --quiet are listed in every command's help under GCLOUD WIDE FLAGS.
  */
 export function unknownFlags(args: readonly string[], helpText: string): string[] {
+  const plainHelp = stripVTControlCharacters(helpText);
   const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return flagNames(args).filter((name) => {
     const base = name.startsWith('no-') ? name.slice(3) : name;
     const documented = new RegExp(`(^|[\\s\\[,])--(\\[no-\\])?(${escape(name)}|${escape(base)})(?![\\w-])`, 'm');
-    return !documented.test(helpText);
+    return !documented.test(plainHelp);
   });
 }
 

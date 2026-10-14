@@ -199,7 +199,9 @@ const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, "embedded-pg.json");
  * so its embedded Postgres roles must not carry the repo-public DEV passwords. This
  * 0600 file (in the 0700 state dir) holds the host's generated role passwords; the
  * embedded server keys every role to it and refuses to boot while a default still
- * authenticates. PAPERCUSP_PG_HOST_CREDENTIALS=1 opts any other host in.
+ * authenticates. PAPERCUSP_PG_HOST_CREDENTIALS=1 opts any other host in. Once
+ * created, the file is also the persistent opt-in: the cluster is already keyed
+ * to those secrets, so a later launch without the flag must keep using them.
  */
 export const EMBEDDED_PG_CREDENTIALS_FILE = join(PAPERCUSP_DIR, "embedded-pg-credentials.json");
 
@@ -207,7 +209,11 @@ export const EMBEDDED_PG_CREDENTIALS_FILE = join(PAPERCUSP_DIR, "embedded-pg-cre
 export function embeddedPgCredentialsFile(
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
-  if (isVmReleaseDistribution(env) || env.PAPERCUSP_PG_HOST_CREDENTIALS === "1") {
+  if (
+    isVmReleaseDistribution(env) ||
+    env.PAPERCUSP_PG_HOST_CREDENTIALS === "1" ||
+    existsSync(EMBEDDED_PG_CREDENTIALS_FILE)
+  ) {
     return EMBEDDED_PG_CREDENTIALS_FILE;
   }
   return undefined;

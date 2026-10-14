@@ -396,6 +396,21 @@ suite('gcloud flag preflight', () => {
     ]);
   });
 
+  it('recognizes flags in terminal-formatted gcloud help without accepting undocumented flags', () => {
+    const help = [
+      '    [\u001b[1m--network\u001b[m=\u001b[4mNETWORK\u001b[m]',
+      '    [\u001b[1m--subnet\u001b[m=\u001b[4mSUBNET\u001b[m]',
+      '    [\u001b[1m--service-account\u001b[m=ACCOUNT | \u001b[1m--no-service-account\u001b[m]',
+      '    [\u001b[1m--scopes\u001b[m=SCOPE | \u001b[1m--no-scopes\u001b[m]',
+      '    [\u001b[1m--labels\u001b[m=KEY=VALUE]',
+      '    [\u001b[1m--metadata\u001b[m=KEY=VALUE]',
+    ].join('\n');
+    expect(unknownFlags([
+      '--network=n', '--subnet=s', '--no-service-account', '--no-scopes',
+      '--labels=a=b', '--metadata=startup-script=x', '--not-a-real-flag',
+    ], help)).toEqual(['not-a-real-flag']);
+  });
+
   it('creates the instance on the beta track, where every flag is documented', () => {
     expect(instanceCreateArgs(PROD_SPEC).slice(0, 4)).toEqual([...INSTANCE_CREATE_CMD]);
     expect(INSTANCE_CREATE_CMD[0]).toBe('beta');
