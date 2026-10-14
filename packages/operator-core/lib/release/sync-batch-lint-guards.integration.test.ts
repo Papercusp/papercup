@@ -37,12 +37,13 @@ it('runs a real guard child, files its seeded red and queues the ledgered editor
       const childEnv = { ...process.env };
       delete childEnv.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
       delete childEnv.PC_EXECUTED_SOURCE_MAP_RESULT;
-      // Filing embeds the new item. Under GPU contention, onnxruntime failed a
-      // CUDA allocation for embeddinggemma and the child then aborted natively
-      // ("corrupted double-linked list"). Pin the CPU device, as
-      // sidecar-performance.integration.test.ts does, so this proof never
-      // competes for VRAM.
-      childEnv.PAPERCUSP_EMBED_DEVICE = 'cpu';
+      // Filing would embed the new item, loading the native onnxruntime
+      // embedder in this child. Its teardown intermittently aborts with
+      // "corrupted double-linked list" (SIGABRT) AFTER the receipt prints, on
+      // GPU and on a CPU pin alike (WI-6554700010010481, WI-10005599). The
+      // proof is about guard filing and wakes, not embeddings, so disable the
+      // embedder as su-session-attached-live.integration.test.ts does.
+      childEnv.PAPERCUSP_MEMORY_EMBEDDER = 'disabled';
       const child = spawn(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
         process.execPath, '--import', 'tsx', resolve(root, 'packages/operator-core/test/_sync-batch-lint-guards-child.ts')], {
         cwd: root, detached: true, env: { ...childEnv, PC_ISOLATED_RUNTIME_PROOF: '1',

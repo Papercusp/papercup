@@ -1035,7 +1035,7 @@ export interface ListWorkItemsFilter {
    * sibling used by the /adv inherited pot scope (selected pot + descendants).
    */
   harnesses?: readonly string[];
-  /** Case-insensitive literal substring matched against title + body/summary. */
+  /** Case-insensitive literal substring matched against title + body/summary and retained capture occurrence title/body. */
   q?: string;
   kind?: WorkItemKind;
   /**

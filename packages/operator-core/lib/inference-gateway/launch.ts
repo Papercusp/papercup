@@ -662,8 +662,8 @@ function createOptionalFailoverPool(
       if (!inner) throw unavailable();
       return inner.active();
     },
-    onExhausted(exhaustedId, resetAt) {
-      return inner?.onExhausted(exhaustedId, resetAt) ?? null;
+    onExhausted(exhaustedId, resetAt, keyOf, park) {
+      return inner?.onExhausted(exhaustedId, resetAt, keyOf, park) ?? null;
     },
     select(accountId) {
       return inner?.select?.(accountId) ?? null;

@@ -25,6 +25,7 @@ import {
   pickGitEncryption,
   assertEpochSealIdentityPresent,
   assertShippingCutDbTarget,
+  resolveUuidIdempotencyDropPlanInput,
   encodeEpochKeysFile,
   collectSeedEpochKeys,
   graftCorestoreEntry,
@@ -182,22 +183,45 @@ describe('D166 private row-drop plan transport', () => {
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 
-  it('refuses stale-plan reuse or refresh before opening a store or replacing the output', async () => {
+  it('requires an exact private file/hash and a fresh, non-reused corestore cut', () => {
+    const valid = {
+      requested: true,
+      file: 'private-plans.json',
+      hash: 'a'.repeat(64),
+      skipCorestoreRefresh: true,
+      reuseCorestore: false,
+      noCorestore: false,
+    };
+    expect(resolveUuidIdempotencyDropPlanInput(valid)).toEqual({ file: valid.file, hash: valid.hash });
+    expect(resolveUuidIdempotencyDropPlanInput({ ...valid, requested: false })).toBeUndefined();
+
+    for (const invalid of [
+      { ...valid, file: undefined },
+      { ...valid, hash: undefined },
+      { ...valid, skipCorestoreRefresh: false },
+      { ...valid, reuseCorestore: true },
+      { ...valid, noCorestore: true },
+    ]) {
+      expect(() => resolveUuidIdempotencyDropPlanInput(invalid))
+        .toThrow('UUID row-drop plans require an exact private file/hash and a fresh cut with --skip-corestore-refresh');
+    }
+  });
+
+  it('refuses an invalid row-drop cut before opening a store or replacing the output', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'seed-uuid-refuse-'));
     try {
       const out = join(dir, 'prior-seed'); await mkdir(out);
       await writeFile(join(out, 'manifest.json'), 'prior bytes');
-      for (const flags of [[], ['--skip-corestore-refresh', '--reuse-corestore', out],
-        ['--skip-corestore-refresh', '--no-corestore']]) {
-        const result = spawnSync(process.execPath, ['--import', 'tsx',
-          fileURLToPath(new URL('./cut-seed-cli.ts', import.meta.url)), '--out', out,
-          '--uuid-idempotency-drop-plans', join(dir, 'missing.json'),
-          '--uuid-idempotency-drop-plans-sha256', 'a'.repeat(64), ...flags],
-        { encoding: 'utf8', timeout: 30_000 });
-        expect(result.status).not.toBe(0);
-        expect(result.stderr).toContain('fresh cut with --skip-corestore-refresh');
-        expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior bytes');
-      }
+      const result = spawnSync(process.execPath, ['--import', 'tsx',
+        fileURLToPath(new URL('./cut-seed-cli.ts', import.meta.url)), '--out', out,
+        '--uuid-idempotency-drop-plans', join(dir, 'missing.json'),
+        '--uuid-idempotency-drop-plans-sha256', 'a'.repeat(64)],
+      { encoding: 'utf8', timeout: 30_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.signal).toBeNull();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('fresh cut with --skip-corestore-refresh');
+      expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior bytes');
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });

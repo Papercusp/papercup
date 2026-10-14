@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../harness-registry';
 import { runGovernedOperation } from '../resource-governor/execution';
 import { readRegistry } from '../workspace-registry';
-import { resolveDependencyGenerationRetentionRoots } from './dependency-generation-prebuild';
+import { resolveDependencyGenerationRetentionRoots } from './dependency-generation-root';
 
 export interface DependencyRetentionReport {
   schemaVersion: 1;

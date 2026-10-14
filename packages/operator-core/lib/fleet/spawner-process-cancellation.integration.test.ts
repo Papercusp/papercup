@@ -611,19 +611,25 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     expect(h.finished).not.toHaveBeenCalled();
   });
 
-  it.each(['inherit', 'ignore'] as const)('terminates a descendant with %s pipes before settling cancellation', async (stdio) => {
+  it.each([
+    { stdio: 'inherit', readyDelayMs: 0 },
+    { stdio: 'ignore', readyDelayMs: 0 },
+    { stdio: 'ignore', readyDelayMs: 1200 },
+  ] as const)('terminates a descendant with $stdio pipes and $readyDelayMs ms startup before settling cancellation', async ({ stdio, readyDelayMs }) => {
     const readyPath = join(dir, 'descendant-ready');
-    const descendant = `process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(${JSON.stringify(readyPath)}, String(process.pid)); setInterval(() => {}, 1000);`;
-    const parent = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: ${JSON.stringify(stdio)} }); setInterval(() => {}, 1000);`;
+    const descendant = `process.on('SIGTERM', () => {}); setTimeout(() => { require('node:fs').writeFileSync(${JSON.stringify(readyPath)}, String(process.pid)); process.send('ready'); }, ${readyDelayMs}); setInterval(() => {}, 1000);`;
+    const parent = `const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { stdio: [${JSON.stringify(stdio)}, ${JSON.stringify(stdio)}, ${JSON.stringify(stdio)}, 'ipc'] }); child.once('message', () => process.stdout.write('descendant ready\\n')); setInterval(() => {}, 1000);`;
     const controller = new AbortController();
+    let ready!: () => void;
+    const descendantReady = new Promise<void>((resolve) => { ready = resolve; });
     const result = execProcess({
       command: process.execPath, args: ['-e', parent], timeoutMs: 5000,
-    }, { signal: controller.signal, onPid: (pid) => pids.add(pid) });
-    let descendantPid = 0;
-    await vi.waitFor(async () => {
-      descendantPid = Number(await readFile(readyPath, 'utf8'));
-      expect(descendantPid).toBeGreaterThan(0);
-    });
+    }, { signal: controller.signal, onPid: (pid) => pids.add(pid), onOutputActivity: ready });
+    // The child's own deadline bounds startup. An explicit acknowledgement
+    // proves readiness without vi.waitFor's unrelated one-second default.
+    await Promise.race([descendantReady, result.then(() => { throw new Error('parent exited before descendant readiness'); })]);
+    const descendantPid = Number(await readFile(readyPath, 'utf8'));
+    expect(descendantPid).toBeGreaterThan(0);
     pids.add(descendantPid);
     expect(alive(descendantPid)).toBe(true);
     let descendantAliveAtSettlement: boolean | undefined;

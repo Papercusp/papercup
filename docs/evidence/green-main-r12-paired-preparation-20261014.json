@@ -536,7 +536,7 @@
         "The comparison preparer presently requires every task to own nonempty selected files. Remaining command checks need an explicit original obligation representation and native receipts; removing those checks to satisfy the file partition is forbidden."
       ]
     },
-    "next": "Prepare both actual Astro sync/check populations and the newly explicit fixture build pretest; qualify original voice/desktop aggregate execution receipts without dropping guards or inventing test files. Extend the existing comparison/native reader only with matching original command obligations and receipts. Full source/dependency/final-transform closure and four real ABBA runs remain unproduced; D020/P006 and all original plan residue stay held/unapproved/unshipped.",
+    "next": "Reuse the later native Astro diagnostics, fixture pretest, post-fix voice and desktop aggregate command receipts at matching source/log hashes. Their earlier preparation snapshots below remain historical. Extend the existing comparison/native reader only with matching original command obligations and ordered-step receipts; standalone command exits do not prove the full chain. Full source/dependency/final-transform closure and four real ABBA runs remain unproduced; D020/P006 and all original plan residue stay held/unapproved/unshipped.",
     "postSyncAstroPreparation": {
       "status": "post-sync-population-preparation-partial-local-tests-pass",
       "reuses": [
@@ -1355,8 +1355,8 @@
       "limits": "The completed turn came from a delivery created before the 15:20 recovery rearm. Settlement proves that delivered turn completed; it does not establish a new post-rearm fire, stable cadence, or root-cause repair."
     },
     "remaining": [
-      "Owned EI-25971079786392324 Wine lifecycle diagnosis, durable guard and focused rerun before aggregate qualification",
-      "Original Astro diagnostic commands",
+      "Independently qualify later saved native fixture, Astro, post-fix voice and desktop aggregate receipts against original command obligations",
+      "Public-docs Vitest step and all original ordered command-step execution receipts",
       "Qualified ordered command/overlap comparison contract",
       "Whole source, installed dependency and final transformed/runtime closure",
       "Four actual ABBA cohorts after D020/P006 permission hold is satisfied",
@@ -2266,5 +2266,161 @@
       "scope": "Legacy Inno test has the same lifecycle pattern. Original aggregate passed it; current failure is unconfirmed. Owned follow-up retains that limitation."
     }
   },
-  "next": "No native command handles remain. Prepare actual original full-gate inputs and runtime closure without launching the D020-held cohort. Wrapper local integration is complete; reuse saved proofs only at matching source hashes. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
+  "postFixDesktopAggregatePreparation": {
+    "status": "original-desktop-aggregate-command-passed-declared-inputs-unchanged",
+    "evidenceFile": "docs/evidence/green-main-desktop-aggregate-native-receipt-20261014.json",
+    "evidenceSha256": "1c5af38bbf286553069838e50e73f7c30a715d049f5510a2cfc09c3af164d9f9",
+    "supersedesForCurrentCommand": "originalCommandExecutionPreparation.desktop",
+    "historicalFailurePreserved": true,
+    "exitCode": 0,
+    "scriptsExecuted": 34,
+    "scriptFailures": 0,
+    "scriptSkips": 0,
+    "beforeAfterInputsIdentical": true,
+    "inputCount": 36,
+    "inputHashesMatchCurrent": true,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "currentSelectorDiagnosticVerification": {
+    "status": "committed-source-local-guard-pass-original-timeout-cause-unknown",
+    "workItemId": "EI-25977769047232321",
+    "testCommand": "npm run test:file -- packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+    "receipt": {
+      "path": "~/.papercusp/scratch/c0523-selection-diagnostics-successor-v2.log",
+      "sha256": "04a4c2c1d3a43d4fb4a318eb83fc91244f3974344d80ff0e37bb6114f501f16f"
+    },
+    "result": {
+      "passed": 79,
+      "failed": 0,
+      "skipped": 0,
+      "requested": 1,
+      "executed": 1,
+      "matched": 1,
+      "childSubstituted": 0,
+      "nativeAstroElapsedMs": 14206,
+      "testedHead": "d36029ecb83b379b6f5ca9e002a0e064242464c7",
+      "provenance": "stamped-named-test-path"
+    },
+    "sourceAtRead": {
+      "head": "bbdad9d26b24363ca9bbe124a294bb1c26dddcf8",
+      "files": [
+        {
+          "path": "scripts/resolve-vitest-config-contracts.mjs",
+          "sha256": "190c5503df0d0c5de9b9e64268a979e97d5ee3a810342c06870739411324bf4f",
+          "committedMatch": true
+        },
+        {
+          "path": "scripts/lib/related-tests.mjs",
+          "sha256": "f25b1ccaa9788f3200a6abdb1bd4fdf34ebd143daf1d29c77a00dfb78e10c918",
+          "committedMatch": true
+        },
+        {
+          "path": "scripts/lib/related-tests.d.mts",
+          "sha256": "1ad96b5025e98d3a68c543ed7a22a711d29bfbbb7ab18d769162a241e9775576",
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+          "sha256": "135751bbe6dd7360bd281fd4e8915d7c6654b8b330cd5b3be90f90ad0902df9d",
+          "committedMatch": true
+        }
+      ]
+    },
+    "priorFailedVerification": {
+      "path": "~/.papercusp/scratch/c0523-selection-diagnostics-successor-v1.log",
+      "scope": "78pass/1 missing diagnostics field;4 committed resolver substitutions. Not a timeout recurrence."
+    },
+    "limits": "Diagnostic retention guards and local selector behavior only. Earlier41256ms timeout root cause remains unknown. No full runtime closure or operational acceptance."
+  },
+  "currentSelectionPreparation": {
+    "status": "partial-original-full-gate-population-preparation",
+    "command": "node scripts/affected-tests.mjs --all --print-selection --sync-astro",
+    "log": {
+      "path": "~/.papercusp/logs/papercusp-affected-tests/2252475-9b84330b.log",
+      "sha256": "2a317e46c3b01fdd96caaf77f086742c31836adc2d0edf19cd47bfeecc8622b5"
+    },
+    "nativeExitCode": "unknown-shell-session-envelope-not-preserved",
+    "population": {
+      "coverage": "partial",
+      "uniqueFiles": 10158,
+      "fileOccurrences": 10161,
+      "representedTasks": 112,
+      "unenumerated": [
+        {
+          "task": "@papercusp/web :: lint:el-tools",
+          "reason": "unexecuted-command-obligations",
+          "command": "node scripts/el-tools-check.mjs"
+        },
+        {
+          "task": "@papercupai/papercusp-docs :: test",
+          "reason": "overlapping-chain-file-population",
+          "command": "astro check && vitest run"
+        },
+        {
+          "task": "@papercupai/papercusp-docs :: test",
+          "step": 0,
+          "command": "astro check",
+          "reason": "unexecuted-command-obligations"
+        },
+        {
+          "task": "@papercusp/desktop :: test",
+          "step": 7,
+          "command": "bash bin/lib/run-selftests.sh",
+          "reason": "unexecuted-command-obligations"
+        },
+        {
+          "task": "@papercupai/operator-docs :: test",
+          "reason": "unexecuted-command-obligations",
+          "command": "astro check"
+        },
+        {
+          "task": "@bug-drill/fixture :: test",
+          "reason": "unexecuted-lifecycle-command",
+          "command": "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run"
+        }
+      ],
+      "overlaps": []
+    },
+    "executed": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "limits": "Final native preparation marker read from completed process log. Outer exit envelope was lost by this successor; no exit0 assertion. Population includes check inputs and test occurrences, not a count of test executions. This is not a frozen ABBA population."
+  },
+  "currentOriginalCommandPreparation": {
+    "status": "saved-local-command-proof-reconciled-native-step-qualification-open",
+    "workItemId": "WI-6554700010010682",
+    "fixture": {
+      "receiptSection": "originalCommandExecutionPreparation.fixtureBuild",
+      "originalCommand": "node scripts/build.mjs",
+      "cwd": "apps/slack-asana-bug-drill",
+      "nativeExitCode": 0,
+      "inputHashesChecked": 26,
+      "logHashesChecked": 5,
+      "inputAndLogHashMismatches": [],
+      "executed": true,
+      "limits": "The carried unexecuted-fixture note was stale. This is the original saved command-local proof, not full installed-dependency or transformed-runtime closure."
+    },
+    "reusableGuardProof": {
+      "schedulerReceiptSection": "fullSelectionPreparation.originalCommandOccurrencePreparation.verification.finalScheduler",
+      "schedulerPassed": 147,
+      "schedulerSourceAndGuardPinsMatchCurrentAndCommitted": true,
+      "selectorReceiptSection": "currentSelectorDiagnosticVerification",
+      "selectorPassed": 79,
+      "selectorSourceAndGuardPinsMatchCurrentAndCommitted": true,
+      "limits": "The older nativeCommandObligationPreparation and occurrence selector pins are historical. The three scheduler pins match the saved occurrence proof; the four latest selector/diagnostics pins match its newer proof. No test was repeated."
+    },
+    "retainedOriginalObligations": [
+      { "task": "@papercusp/web :: lint:el-tools", "step": null, "kind": "command-check", "check": "el-tools-drift", "inputs": 13 },
+      { "task": "@papercupai/operator-docs :: test", "step": null, "kind": "command-check", "check": "astro-check", "inputs": 14 },
+      { "task": "@papercupai/papercusp-docs :: test", "step": 0, "kind": "command-check", "check": "astro-check", "inputs": 18 },
+      { "task": "@bug-drill/fixture :: test", "step": null, "kind": "npm-lifecycle", "script": "pretest", "inputs": 26 },
+      { "task": "@papercusp/desktop :: test", "step": 7, "kind": "command-check", "check": "desktop-selftest-aggregate", "inputs": 36 }
+    ],
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "next": "Reuse the latest matched scheduler147, selector79, fixture exit0 and desktop34-script proof without repeating unchanged checks. Independently qualify original command obligations and ordered steps through the existing native artifact reader, then complete source/dependency/final-transform closure. Do not launch the D020-held cohort. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
 }

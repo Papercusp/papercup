@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { defineTool } from '@papercusp/agent-mcp';
+import { classifyAgentPane, defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import { resolveDeviceSessionOwner } from './sessions';
 import { requireDeviceAgentSessions } from '../../../owner-sessions/device-authority';
@@ -7,6 +7,9 @@ import { readSessionRosterSnapshot } from '../../../owner-sessions/roster';
 import { adminToolResultJson, endOwnerSession } from '../../../owner-sessions/actions';
 import { auditDeviceAction, deviceActionRefusal, runDeviceAction } from '../../../owner-sessions/device-actions';
 import { resolveSessionStates } from '../../../agent-tools/coordination/liveness-oracle';
+import { getKnownRoles } from '../../../known-roles';
+import { getRole } from '../../../role-registry';
+import { BACKEND_FEATURE_CAPABILITIES } from '../../../backend-feature-capabilities';
 
 const end = defineTool({
   method: 'POST', path: '/device/sessions/:owner/end', auth: DEVICE_AUTH, cors: true,
@@ -28,9 +31,17 @@ const end = defineTool({
       if (target.row.state === 'ended') return { status: 200, body: { ok: true, state: 'ended', alreadyEnded: true } };
       const roster = await readSessionRosterSnapshot({ workspaceId: principal.workspaceId });
       const raw = [...roster.active, ...roster.starting, ...roster.pending].find(row => row.ownerId === context.owner);
-      // Positive evidence of a native agent, with explicit protected roles denied.
-      if (!raw || /routine|git[-_]?sync|checkpoint|human|system|bg-host/i.test(`${raw.role ?? ''} ${raw.ownerId}`)
-        || !(raw.nativeSession || raw.agent || /^su-/.test(raw.ownerId))) {
+      // A prefix or a truthy handle is not an agent identity. Use the same
+      // role/plugin and native-backend catalogs as launch/roster shaping, and
+      // fail closed when either part is missing or unknown.
+      const role = typeof raw?.role === 'string' ? raw.role : '';
+      const knownRole = role !== '' && (getKnownRoles().includes(role)
+        || classifyAgentPane({ role }).kind === 'su'
+        || getRole(role, raw?.harnessSlug ?? '') !== null);
+      const backend = raw?.nativeSession?.backend;
+      const nativeAgent = typeof backend === 'string' && Object.hasOwn(BACKEND_FEATURE_CAPABILITIES, backend);
+      if (!raw || !knownRole || !nativeAgent
+        || /routine|git[-_]?sync|checkpoint|human|system|bg-host/i.test(`${role} ${raw.ownerId}`)) {
         return deviceActionRefusal('protected_session');
       }
       const revoked = await requireDeviceAgentSessions(principal);

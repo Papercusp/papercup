@@ -28,6 +28,19 @@ vi.mock('./notify-evicted', () => ({
   notifyEvictedFactOwners: async () => [],
 }));
 
+// P-003: retract/supersede now cascades to closed work items. This fixture
+// applies only the agent_facts migrations (no work_items table), and the cascade
+// is covered by retraction-cascade.test.ts — record the store's calls instead, so
+// this suite still pins that the hooks fire with the right fact identity.
+const cascadeCalls = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock('./retraction-cascade', () => ({
+  cascadeFactChange: async (_sql: unknown, e: Record<string, unknown>) => {
+    cascadeCalls.push(e);
+    return { ok: true, kind: e.kind, factRef: '', matched: 0, flagged: [], notified: [], failedRecipients: [], unnotifiable: [], truncated: false };
+  },
+  supersessionChangedBody: async () => true,
+}));
+
 import {
   assertFact,
   retractFact,
@@ -3567,5 +3580,55 @@ describe('countLiveFacts is the census behind a listFacts page (WI-38910)', () =
 
     expect(folded).toHaveLength(0);
     expect(total).toBe(0);
+  });
+});
+
+describe('P-003 retraction cascade hooks (real PG)', () => {
+  const base = { scope: 'owner' as const, scopeRef: 'su-cascade', key: 'cascade-premise', createdBy: 'su-int', workspaceId: WS };
+  const ids = async () =>
+    (
+      await db.sql<{ id: string }[]>`
+        SELECT id::text FROM harness_shared.agent_facts
+         WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = 'su-cascade' AND key = 'cascade-premise'
+`
+    )
+      // Numeric sort in JS: ORDER BY on the `id::text` alias would sort '1000' before '999'.
+      .map((r) => Number(r.id))
+      .sort((a, b) => a - b);
+
+  it('retractFact cascades with the retracted version id, reason and retractor', async () => {
+    cascadeCalls.length = 0;
+    await assertFact({ ttlSec: 3600, ...base, body: 'premise v1' }, db.sql);
+    const [v1] = await ids();
+    await retractFact({ ...base, reason: 'premise disproved', retractedBy: 'su-retractor' }, db.sql);
+    expect(cascadeCalls).toEqual([
+      expect.objectContaining({
+        kind: 'retracted',
+        workspaceId: WS,
+        scope: 'owner',
+        scopeRef: 'su-cascade',
+        key: 'cascade-premise',
+        versionId: v1,
+        reason: 'premise disproved',
+        by: 'su-retractor',
+      }),
+    ]);
+  });
+
+  it('a re-assert that replaces a version cascades a supersession naming old and new ids', async () => {
+    await assertFact({ ttlSec: 3600, ...base, body: 'premise v2' }, db.sql);
+    cascadeCalls.length = 0;
+    await assertFact({ ttlSec: 3600, ...base, body: 'premise v3' }, db.sql);
+    const all = await ids();
+    const [oldId, newId] = all.slice(-2);
+    expect(cascadeCalls).toEqual([
+      expect.objectContaining({ kind: 'superseded', key: 'cascade-premise', versionId: oldId, supersededBy: newId }),
+    ]);
+  });
+
+  it('a first assert (nothing superseded) cascades nothing', async () => {
+    cascadeCalls.length = 0;
+    await assertFact({ ttlSec: 3600, ...base, key: 'cascade-fresh', body: 'new' }, db.sql);
+    expect(cascadeCalls).toEqual([]);
   });
 });

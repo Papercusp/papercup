@@ -1975,7 +1975,7 @@ export interface GatewayStats {
    * `accounts-unserviceable` = the upstream answers, but every account is parked (usage walls, auth
    * quarantine, failover backoff). Consumers must not word the first as a usage wall.
    */
-  codexUnserviceableCause?: 'upstream-unreachable' | 'accounts-unserviceable' | null;
+  codexUnserviceableCause?: 'upstream-unreachable' | 'temporary-cooldown' | 'accounts-unserviceable' | null;
   /** WI-10007199: Codex upstream reachability, independent of account capacity. */
   codexReachability?: UpstreamReachabilitySnapshot;
   /** Bee-FACING final 503s (2026-06-22 audit) — what the bee receives after the gateway exhausts internal
@@ -4327,7 +4327,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       model && codexModelRefusals.isRefused(account.accountId, model) ? Infinity : accountHealthKey(account, Date.now());
     return {
       active: (override) => source.active(override ?? keyOf),
-      onExhausted: (accountId, resetAt, override) => source.onExhausted(accountId, resetAt, override ?? keyOf),
+      onExhausted: (accountId, resetAt, override, park) => source.onExhausted(accountId, resetAt, override ?? keyOf, park),
       select: (accountId) => source.select?.(accountId) ?? null,
       readmit: (accountId, opts) => source.readmit?.(accountId, opts) ?? false,
       parkState: (accountId) => source.parkState?.(accountId),
@@ -4860,12 +4860,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const codexEarliestRecoveryAt =
       codexHealthyAccounts > 0 ? 0 : codexRecoveryHorizons.length > 0 ? Math.min(...codexRecoveryHorizons) : Infinity;
     const codexReach = codexReachability.snapshot(now);
+    // A pool park is not proof of quota exhaustion. Only a known cooldown on an
+    // otherwise serviceable account may make launch advisory; quota, auth and
+    // legacy/unknown parks remain blocking, as do independent durable usage walls.
+    const codexTemporarilyCooling = [deps.codexPool, codexCliPool].some((source) =>
+      source?.entries?.().some((account) =>
+        source.parkState?.(account.accountId)?.cause === 'cooldown' && accountHealthKey(account, now) < Infinity));
     const codexUnserviceableCause: GatewayStats['codexUnserviceableCause'] =
       codexHealthyAccounts > 0 || codexAccountCount() === 0
         ? null
         : codexReach.unreachable
           ? 'upstream-unreachable'
-          : 'accounts-unserviceable';
+          : codexTemporarilyCooling ? 'temporary-cooldown' : 'accounts-unserviceable';
     const paceEntry = (st: typeof snap) => ({
       smoothRpm: st.smoothRpm === true,
       rpm: st.limits.rpm ?? null,

@@ -1174,21 +1174,7 @@ function checkRunLockHeld(
  * so in practice this sees every genuinely in-flight suite. Fail-soft: `defaultReadLockOwner`
  * never throws (a missing/unreadable lock file just reads as "not held").
  */
-export function isCheckpointRunLockHeldCheap(
-  root: string,
-  pidAlive: (pid: number) => boolean = defaultPidAlive,
-  readLockOwner: (lockDir: string) => { pid?: number; startedAt?: string } | null = defaultReadLockOwner,
-  readProcessStartMs: (pid: number) => number | null = defaultReadProcessStartMs,
-  checkpointLogDir: string = checkpointLogDirFromEnv(),
-): { held: boolean; pid?: number; elapsedSec: number | null } {
-  const r = checkRunLockHeld(root, pidAlive, readLockOwner, readProcessStartMs, checkpointLogDir);
-  // Keep the existing cheap shape for the clear path, but expose the verified owner PID when
-  // held. Consumers that need to reason about the run's mechanism (rather than merely its
-  // liveness) can now inspect /proc/<pid> without re-reading owner.json or racing a recycled PID.
-  return r.held
-    ? { held: true, pid: r.pid ?? undefined, elapsedSec: r.elapsed_sec ?? null }
-    : { held: false, elapsedSec: null };
-}
+export { isCheckpointRunLockHeldCheap } from './release-checkpoint-lock';
 
 export interface CheckpointProcessAuthorityReading {
   active: boolean;

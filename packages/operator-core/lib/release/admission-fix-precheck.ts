@@ -30,9 +30,9 @@ import { execFileSync, spawn } from 'node:child_process';
 import { accessSync, constants as fsConstants, createWriteStream, existsSync, mkdirSync, statSync, type WriteStream } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveDependencyGenerationRoot } from './dependency-generation-prebuild';
+import { resolveDependencyGenerationRoot } from './dependency-generation-root';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
-import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-launch';
+import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-lock';
 import { dependencyGenerationInfraCode } from './checkpoint-log-tags';
 export { dependencyGenerationInfraCode, DEPENDENCY_GENERATION_INFRA_EXITS,
   type DependencyGenerationInfraCode } from './checkpoint-log-tags';

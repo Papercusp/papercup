@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   fleetMemberships: vi.fn(),
   resumableSessions: vi.fn(),
   archiveStamp: vi.fn(),
+  resumeTarget: vi.fn(),
 }));
 
 const OWNER = 'su-p006-pinned-codex';
@@ -44,6 +45,10 @@ vi.mock('../../../adv-sessions', async (original) => ({
 }));
 vi.mock('../../../session-archive', () => ({
   pgSessionArchiveStore: () => ({ readStamp: mocks.archiveStamp }),
+}));
+vi.mock('../../../agent-launch-core', async (original) => ({
+  ...(await original<typeof import('../../../agent-launch-core')>()),
+  resolveResumeTarget: mocks.resumeTarget,
 }));
 vi.mock('../../../agent-tools/coordination/presence', async (original) => ({
   ...(await original<typeof import('../../../agent-tools/coordination/presence')>()),
@@ -124,6 +129,7 @@ beforeEach(() => {
   mocks.fleetMemberships.mockResolvedValue(new Map());
   mocks.resumableSessions.mockResolvedValue([]);
   mocks.archiveStamp.mockResolvedValue(null);
+  mocks.resumeTarget.mockResolvedValue({ ok: false, error: 'not_found' });
 });
 
 async function call(model?: string, extra: { requireGatewayProvider?: boolean } = {}) {
@@ -131,6 +137,35 @@ async function call(model?: string, extra: { requireGatewayProvider?: boolean } 
     method: 'POST', body: JSON.stringify({ owner: OWNER, advSessionId: ADV_SESSION_ID, model, ...extra }),
   }));
 }
+
+describe('resumable agent ID lookup', () => {
+  it.each(['claude', 'codex', 'omp'])('loads the canonical latest %s row outside the recent window', async (agent) => {
+    const latest = { id: ADV_SESSION_ID, agent, coordOwnerId: OWNER, sessionId: 'native-latest' };
+    mocks.resumeTarget.mockResolvedValue({ ok: true, advSessionId: ADV_SESSION_ID, ownerId: OWNER });
+    mocks.resumableSessions.mockResolvedValue([latest]);
+
+    const response = await resumableSessions(new Request(`http://localhost:3170/api/adv/sessions/resumable?agentId=${OWNER}`));
+    expect(response.status).toBe(200);
+    expect(mocks.resumeTarget).toHaveBeenCalledExactlyOnceWith({ agentId: OWNER });
+    expect(mocks.resumableSessions).toHaveBeenCalledExactlyOnceWith(30, { exactId: ADV_SESSION_ID });
+    expect(await response.json()).toMatchObject({
+      sessions: [latest], exact: { id: ADV_SESSION_ID, ownerId: OWNER, requestedAgentId: OWNER },
+    });
+  });
+
+  it('does not return recent unrelated agents when the requested agent is absent', async () => {
+    mocks.resumableSessions.mockResolvedValue([{ id: 1, coordOwnerId: 'su-other' }]);
+    const response = await resumableSessions(new Request(`http://localhost:3170/api/adv/sessions/resumable?agentId=${OWNER}`));
+    expect(await response.json()).toEqual({ sessions: [] });
+    expect(mocks.resumableSessions).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed agent IDs before consulting the resolver', async () => {
+    const response = await resumableSessions(new Request('http://localhost:3170/api/adv/sessions/resumable?agentId=not-an-su'));
+    expect(response.status).toBe(400);
+    expect(mocks.resumeTarget).not.toHaveBeenCalled();
+  });
+});
 
 describe('resumable archived backend identity', () => {
   const nativeId = '01a133bc-e525-75a1-885d-ea1cd5d4a1e5';

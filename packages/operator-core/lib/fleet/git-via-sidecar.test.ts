@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   gitSidecarEnabled,
   isSidecarInfrastructureFault,
@@ -283,34 +283,71 @@ describe('spawner-sidecar process progress guard', () => {
   });
 
   it('refreshes the idle deadline on child output while retaining the absolute hard ceiling', async () => {
-    // The window must outlast a loaded node boot (WI-10004030), and the child must keep
-    // producing output for well over one window — otherwise it finishes inside the first
-    // window and the test no longer proves the deadline was refreshed. The window must ALSO
-    // cover the child's own exit after its last write: under green-checkpoint load a 1s
-    // window was beaten by teardown alone, after all 26 writes had been observed
-    // (WI-6554700010008342).
-    const IDLE_MS = 2_500;
-    const TICK_MS = 100;
-    const TICKS = 55;
-    const HARD_MS = 12_000;
-    expect(TICK_MS).toBeLessThan(IDLE_MS);
-    expect(TICKS * TICK_MS).toBeGreaterThan(2 * IDLE_MS);
-    expect(TICKS * TICK_MS + IDLE_MS).toBeLessThan(HARD_MS);
-    const script =
-      `process.stderr.write('progress\\n'); let n=0; const t=setInterval(() => { process.stderr.write('progress\\n'); if (++n === ${TICKS}) clearInterval(t); }, ${TICK_MS});`;
-    const started = Date.now();
-    const res = await execProcess(
-      {
+    // WI-6554700010008342: advance guard time only between observed real pipe
+    // events. Node boot and reaping no longer consume the idle window, and the
+    // child keeps writing until the actual hard guard kills its process group.
+    const IDLE_MS = 1_000;
+    const STEP_MS = 900;
+    const HARD_MS = 5_000;
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+    const watchdog = new Promise<never>((_, reject) => {
+      watchdogTimer = realSetTimeout(() => reject(new Error('sidecar output/exit rendezvous timed out')), 20_000);
+    });
+    let outputCount = 0;
+    let outputReady: (() => void) | undefined;
+    const nextOutput = (): Promise<void> => new Promise((resolve) => { outputReady = resolve; });
+    const ready = nextOutput();
+    const abort = new AbortController();
+    let settled = false;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const result = execProcess({
         command: process.execPath,
-        args: ['-e', script],
+        args: ['-e', "process.stderr.write('progress\\n'); setInterval(() => process.stderr.write('progress\\n'), 20);"],
         idleTimeoutMs: IDLE_MS,
         timeoutMs: HARD_MS,
+    }, {
+      ...executionDeps,
+      signal: abort.signal,
+      onOutputActivity: () => {
+        outputCount++;
+        outputReady?.();
+        outputReady = undefined;
       },
-      executionDeps,
-    );
-    expect(Date.now() - started).toBeGreaterThanOrEqual(2 * IDLE_MS);
-    expect(res.code, res.stderr).toBe(0);
-    expect(res.stderr).toContain('progress');
+      // The real group exit fence can need asynchronous probes after close.
+      // Restore its real timers instead of faking successful process cleanup.
+      onStage: (stage) => { if (stage === 'child-close') vi.useRealTimers(); },
+    }).then((res) => { settled = true; return res; });
+    const exitedBeforeProgress = result.then((res) => {
+      throw new Error(`child exited before the next progress event: ${res.stderr}`);
+    });
+    try {
+      await Promise.race([ready, exitedBeforeProgress, watchdog]);
+      for (let step = 0; step < 5; step++) {
+        const progress = nextOutput();
+        vi.advanceTimersByTime(STEP_MS);
+        await Promise.race([progress, exitedBeforeProgress, watchdog]);
+        expect(settled).toBe(false);
+      }
+      // Five real output events kept the child alive beyond four initial idle
+      // windows. The original hard deadline must still fire at exactly 5000.
+      expect(outputCount).toBeGreaterThanOrEqual(6);
+      vi.advanceTimersByTime(HARD_MS - 5 * STEP_MS - 1);
+      expect(settled).toBe(false);
+      vi.advanceTimersByTime(1);
+      const res = await Promise.race([result, watchdog]);
+      expect(res.code).toBe(-1);
+      expect(res.stderr).toContain(`timed out after ${HARD_MS}ms`);
+      expect(res.stderr).not.toContain('no output progress');
+    } finally {
+      realClearTimeout(watchdogTimer);
+      vi.useRealTimers();
+      abort.abort();
+      await result;
+      // A successful hard kill also resolves this diagnostic branch.
+      await exitedBeforeProgress.catch(() => {});
+    }
   }, 30_000);
 
   it('kills a silent child at the idle deadline instead of waiting for the hard ceiling', async () => {

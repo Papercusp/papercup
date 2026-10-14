@@ -670,7 +670,8 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       }
 
       const park = !hardPinned && Boolean(opts.pool);
-      const exhausted = park ? opts.pool!.onExhausted(account.accountId, now() + opts.authQuarantineMs) : null;
+      const exhausted = park ? opts.pool!.onExhausted(account.accountId, now() + opts.authQuarantineMs,
+        undefined, { cause: 'auth' }) : null;
       const candidate =
         exhausted && exhausted.accountId !== account.accountId
           ? (opts.accounts().find((item) => item.accountId === exhausted.accountId) ?? null)
@@ -782,7 +783,12 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       if (!opts.pool) return null;
 
       const current = currentRoute.value.account.accountId;
-      const next = opts.pool.onExhausted(current, resolveResetAt(context));
+      const response = context.lastResponse;
+      const quota = response?.status === 429 && (response.metadata?.quotaExhausted ||
+        opts.rateReset(response.metadata?.headers ?? {}).transient === false);
+      const credentialUnavailable = !response && context.lastError?.message.includes('codex OAuth token unavailable');
+      const next = opts.pool.onExhausted(current, resolveResetAt(context), undefined,
+        { cause: quota ? 'quota' : credentialUnavailable ? 'auth' : 'cooldown' });
       if (!next || next.accountId === current) return null;
       if (triedAccounts.has(next.accountId)) return null;
       const account = opts.accounts().find((candidate) => candidate.accountId === next.accountId);
@@ -937,7 +943,8 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
           const reset = opts.rateReset(headers);
           if (quota.accountWide || reset.transient === false) {
             if (!hardPinned) opts.pool?.onExhausted(account.accountId,
-              quota.status === 429 && quota.resetAt && quota.resetAt > now() ? quota.resetAt : now() + opts.failoverBackoffMs);
+              quota.status === 429 && quota.resetAt && quota.resetAt > now() ? quota.resetAt : now() + opts.failoverBackoffMs,
+              undefined, { cause: quota.status === 429 ? 'quota' : 'cooldown' });
           } else {
             opts.coolIp(egress.key, Math.min(reset.retryAfterMs ?? opts.failoverBackoffMs, opts.ipCooldownMaxMs));
           }

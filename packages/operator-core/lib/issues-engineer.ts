@@ -1877,10 +1877,37 @@ export function issueShapeWhereSql(sql: OrgSql, aliased: boolean, filter: ListIs
 export function issueMatchWhereSql(sql: OrgSql, aliased: boolean, filter: ListIssuesFilter) {
   const col = (c: string) => sql.unsafe(aliased ? `ei.${c}` : c);
   const q = filter.q?.trim();
+  // Capture coalesces deliberately keep the incoming prose in the append-only
+  // occurrence ledger instead of replacing the survivor's title/body. Keep the
+  // documented q read lossless by checking that ledger as well. The lookup is
+  // keyed by the canonical work-item identity (and the existing covering index
+  // on workspace + harness + item id), so this is not a free-text scan over the
+  // occurrence table. `reported_title` and evidence.body are the two fields
+  // written by improvements:capture for the caller's text.
+  const occurrenceTextMatch = q
+    ? sql`EXISTS (
+        SELECT 1
+          FROM harness_shared.work_item_occurrences occurrence
+         WHERE occurrence.workspace_id = ${col('workspace_id')}
+           AND occurrence.canonical_work_item_id = ${col('issue_id')}
+           AND occurrence.canonical_harness_slug = CASE
+             WHEN ${col('scope')} LIKE 'harness:%' THEN substring(${col('scope')} from 9)
+             ELSE ${col('scope')}
+           END
+           AND (
+             occurrence.reported_title ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
+             OR COALESCE(occurrence.evidence ->> 'body', '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
+           )
+      )`
+    : sql`FALSE`;
   return sql`
     ${
       q
-        ? sql`(COALESCE(${col('title')}, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(${col('body')}, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')`
+        ? sql`(
+            COALESCE(${col('title')}, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
+            OR COALESCE(${col('body')}, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\'
+            OR ${occurrenceTextMatch}
+          )`
         : sql`TRUE`
     }
     AND ${

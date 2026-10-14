@@ -1601,6 +1601,21 @@ function str(args: Args, key: string): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
+export function resolveUuidIdempotencyDropPlanInput(input: {
+  requested: boolean;
+  file?: string;
+  hash?: string;
+  skipCorestoreRefresh: boolean;
+  reuseCorestore: boolean;
+  noCorestore: boolean;
+}): { file: string; hash: string } | undefined {
+  if (!input.requested) return undefined;
+  if (!input.file || !input.hash || !input.skipCorestoreRefresh || input.reuseCorestore || input.noCorestore) {
+    throw new Error('UUID row-drop plans require an exact private file/hash and a fresh cut with --skip-corestore-refresh');
+  }
+  return { file: input.file, hash: input.hash };
+}
+
 export function parseGitDepth(args: Args): number | undefined {
   const raw = str(args, 'depth');
   if (args.shallow === true && raw !== undefined && raw !== '1') {
@@ -1686,16 +1701,14 @@ async function main(): Promise<void> {
     throw new Error('seed finding export redaction is unsupported for sealed content; correct the authorized source and cut a fresh corestore');
   }
   let uuidIdempotencyDropPlans: CorestoreCutSpec['uuidIdempotencyDropPlans'];
-  let uuidPlanInput: { file: string; hash: string } | undefined;
-  if ('uuid-idempotency-drop-plans' in args || 'uuid-idempotency-drop-plans-sha256' in args) {
-    const file = str(args, 'uuid-idempotency-drop-plans');
-    const hash = str(args, 'uuid-idempotency-drop-plans-sha256');
-    if (!file || !hash || args['skip-corestore-refresh'] !== true
-        || 'reuse-corestore' in args || args['no-corestore'] === true) {
-      throw new Error('UUID row-drop plans require an exact private file/hash and a fresh cut with --skip-corestore-refresh');
-    }
-    uuidPlanInput = { file, hash };
-  }
+  const uuidPlanInput = resolveUuidIdempotencyDropPlanInput({
+    requested: 'uuid-idempotency-drop-plans' in args || 'uuid-idempotency-drop-plans-sha256' in args,
+    file: str(args, 'uuid-idempotency-drop-plans'),
+    hash: str(args, 'uuid-idempotency-drop-plans-sha256'),
+    skipCorestoreRefresh: args['skip-corestore-refresh'] === true,
+    reuseCorestore: 'reuse-corestore' in args,
+    noCorestore: args['no-corestore'] === true,
+  });
   const root = resolveWorkspaceRoot();
   const hive = str(args, 'hive') ?? DEFAULT_HIVE;
   const repo = str(args, 'repo') ?? root;

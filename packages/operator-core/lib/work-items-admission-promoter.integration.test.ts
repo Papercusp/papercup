@@ -250,11 +250,9 @@ beforeAll(async () => {
   db = await createFreshPgDb('work-items-admission-promoter');
   h.sql = db.sql;
   await db.sql.unsafe(DDL);
-  // Promoter fallbacks are real buffered writes, so its disposable schema must
-  // include that dependency instead of failing asynchronously in another case.
-  for (const migration of ['1458-fallback-observations.sql', '1471-retrieval-search-correlation.sql']) {
-    await db.sql.unsafe(readFileSync(new URL(`../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url), 'utf8'));
-  }
+  // Promoter fallbacks are real buffered writes. createFreshPgDb provisions the
+  // fallback_observations sink for every fixture (WI-6554700010013241); this file asserts the
+  // column the promoter's correlated writes depend on is present.
   const [fallbackSchema] = await db.sql`SELECT data_type FROM information_schema.columns
     WHERE table_schema = 'harness_shared' AND table_name = 'fallback_observations' AND column_name = 'correlation_id'`;
   expect(fallbackSchema?.data_type).toBe('uuid');

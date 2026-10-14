@@ -1,5 +1,8 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_MAX_IN_FLIGHT } from './proxy';
 
@@ -30,6 +33,32 @@ function serviceEnvNumber(name: string, source = service): number {
 }
 
 describe('papercup-mcp-proxy production admission profile', () => {
+  it('starts the real tsx service entry across the CommonJS/ESM boundary', async () => {
+    const root = fileURLToPath(new URL('../../', import.meta.url));
+    const child = spawn(process.execPath, ['--import', 'tsx', 'bin/mcp-proxy.ts'], {
+      cwd: root,
+      env: {
+        ...process.env,
+        PAPERCUSP_MCP_PROXY_PORT: '0',
+        PAPERCUSP_MCP_PROXY_TARGET_PORT: '3170',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', data => { output += String(data); });
+    child.stderr.on('data', data => { output += String(data); });
+    const closed = once(child, 'close');
+    try {
+      await vi.waitFor(() => {
+        expect(child.exitCode, output).toBeNull();
+        expect(output).toContain('[mcp-proxy] listening on 127.0.0.1:0');
+      }, { timeout: 10_000 });
+    } finally {
+      child.kill('SIGTERM');
+      await closed;
+    }
+  }, 15_000);
+
   it('EI-21524993137902308: preserves a full 30-member reconnect lane inside the hard cap', () => {
     const reserve = serviceEnvNumber('PAPERCUSP_MCP_PROXY_CONTROL_PLANE_RESERVE');
     const handshakes = serviceEnvNumber('PAPERCUSP_MCP_PROXY_MAX_HANDSHAKES_IN_FLIGHT');

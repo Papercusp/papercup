@@ -275,7 +275,7 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   // store cannot replace it during prewarm. Without a valid record, retain the
   // existing inherited-env/tree-local fallback. The native writer keeps former
   // stores in the record for pin/lease retention after a relocation.
-  const { readRecordedDependencyGenerationRoot } = await import('../../release/dependency-generation-prebuild');
+  const { readRecordedDependencyGenerationRoot } = await import('../../release/dependency-generation-root');
   const recordedDependencyRoot = readRecordedDependencyGenerationRoot(entry.path);
   if (recordedDependencyRoot) {
     env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = recordedDependencyRoot;

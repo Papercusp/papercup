@@ -112,7 +112,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '../libs/test-config/src/tmpdir-guard.ts';
-import { applyEnvLocal } from './lib/pg-url.mjs';
+import { applyEnvLocal, parseEnvFile, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 
 /** Child environment for commands executing against the isolated committed clone. */
 export function lintAsCommittedChildEnv(environment = process.env, repoRoot = null) {
@@ -137,6 +137,43 @@ export function lintAsCommittedChildEnv(environment = process.env, repoRoot = nu
     );
   }
   return child;
+}
+
+/**
+ * Carry the operator's DATABASE ROUTE into the clone itself, not only into this process's
+ * children (WI-6554700010012470). A `--keep` / `--materialize-only` tree is reused later by
+ * commands that never pass through {@link lintAsCommittedChildEnv}: mutation-probe's overlay
+ * relocation, or a direct `npm run test:file` inside the root. With no
+ * `apps/operator/.env.local` to find, connection.ts falls through to the box-wide
+ * embedded-pg.json discovery file, which names whatever desktop/server sidecar PG wrote it
+ * last. That is not the operator database, and it moves when that sidecar restarts.
+ * Measured 2026-10-14 09:06Z: a guard passed 8/8 inside a kept root, but test:file's
+ * admission-ledger finalization hit ECONNREFUSED 127.0.0.1:17182 (the installed server's
+ * previous PG), so the router exited 3 and mutation-probe scored a harness-error.
+ *
+ * Writes ONLY the DB-url pins applyEnvLocal would inject (PG_URL_ENV_VARS), never the rest
+ * of the operator file. The path is gitignored, so the clone stays clean, and
+ * connection.ts still ignores the file under the PAPERCUSP_PG_PORT /
+ * PAPERCUSP_SKIP_PG_DISCOVERY isolation levers.
+ *
+ * @returns {{ path: string, names: string[] } | null} null when the operator file has no DB pin
+ */
+export function materializeOperatorDbRoute(repoRoot, workRoot) {
+  const source = join(repoRoot, 'apps', 'operator', '.env.local');
+  if (!existsSync(source)) return null;
+  let parsed;
+  try {
+    parsed = parseEnvFile(readFileSync(source, 'utf8'));
+  } catch {
+    return null;
+  }
+  const names = PG_URL_ENV_VARS.filter((name) => parsed.get(name));
+  if (names.length === 0) return null;
+  const target = join(workRoot, 'apps', 'operator', '.env.local');
+  mkdirSync(dirname(target), { recursive: true });
+  const body = names.map((name) => `${name}=${parsed.get(name)}`).join('\n');
+  writeFileSync(target, `# lint-as-committed: operator database route only, from ${source}\n${body}\n`, { mode: 0o600 });
+  return { path: target, names };
 }
 
 /**
@@ -1145,6 +1182,10 @@ function main() {
       console.log(`  main snapshot: ${mainSnapshot} (independent of tested HEAD ${sha})`);
     }
     console.log(`  materialised committed tree in ${((Date.now() - t0) / 1000).toFixed(1)}s -> ${workRoot}`);
+    const operatorDbRoute = materializeOperatorDbRoute(repoRoot, workRoot);
+    if (operatorDbRoute) {
+      console.log(`  operator database route: ${operatorDbRoute.names.join(', ')} -> ${relative(workRoot, operatorDbRoute.path)}`);
+    }
 
     // ── initialise submodules: a plain checkout leaves them as EMPTY gitlink dirs ──
     // Must run BEFORE the node_modules symlink step below: a submodule that is itself

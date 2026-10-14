@@ -1443,6 +1443,7 @@ import './plans/set-title';
 import './plans/set-item-blocked-by';
 import './plans/set-item-phase';
 import './plans/set-decision-body';
+import './plans/conformance';
 // plan-level lifecycle flip (draft→ready approve / demote / ship / reject).
 import './plans/set-plan-status';
 // scheduled-recurring-plans-2026-06-16 P-014 — author/clear a plan's schedule + manual run-now.

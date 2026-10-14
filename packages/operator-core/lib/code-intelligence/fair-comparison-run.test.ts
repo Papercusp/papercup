@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { SymbolSite } from './contracts';
 import { preregister, type AnswerKey, type ArmCapabilities, type FairCase } from './fair-comparison';
 import { guardedArm, type FairArm } from './fair-comparison-arms';
-import { preregMismatch, runArm, scoreRuns } from './fair-comparison-run';
+import { preregMismatch, runArm, scoreRuns, type FairArmFactory, type ResourceStage } from './fair-comparison-run';
+import { nativeEvaluationProtocol, nativeLanguageControls } from './fair-comparison-corpus';
 
 const cases: FairCase[] = [
   { id: 'c-callers', intent: 'callers', subject: 'f', tags: [], source: 'authored' },
@@ -75,6 +76,119 @@ describe('runArm', () => {
     const run = await runArm(fakeArm(capsA, {}, { indexOk: false }), cases, prereg);
     expect(run.index?.ok).toBe(false);
     expect(run.reps).toEqual([]);
+  });
+});
+
+describe('fresh protocol repetitions', () => {
+  const controls = nativeLanguageControls();
+  const pinnedCases = controls.cases.filter(kase => kase.language === 'typescript');
+  const pinnedKeys = controls.keys.filter(key => pinnedCases.some(kase => kase.id === key.caseId));
+  const protocol = { ...nativeEvaluationProtocol('b'.repeat(40), controls.files, [
+    { language: 'typescript', refs: [], unavailable: 'authored controls only; real tasks unmeasured' },
+  ]), languages: ['typescript'] };
+  const registered = preregister({ cases: pinnedCases, keys: pinnedKeys, arms: [capsA], reps: 3, seed: 7, protocol });
+  function factory(events: string[], opts: { reused?: boolean; missing?: boolean; failedRep?: number; throwingRep?: number } = {}): FairArmFactory {
+    return { capabilities: capsA, unavailable: null, async create(rep) {
+      events.push(`create:${rep}`);
+      const id = opts.reused ? 1 : rep;
+      const arm = fakeArm(capsA, { 'c-callers': ['a.ts:3'], 'c-def': ['a.ts:1'] });
+      return { identity: { taskId: `task:${id}`, cgroupPath: `/task-${id}`, treeRoot: `/tree-${id}`,
+        home: `/home-${id}`, sourceCommit: protocol.sourceCommit, runtimeVersion: 'test-v1' },
+      arm: { ...arm, index: async () => {
+        events.push(`index:${rep}`);
+        if (opts.throwingRep === rep) throw new Error('setup crashed');
+        return { wallMs: 1, peakRssKb: 999999, ok: opts.failedRep !== rep, error: opts.failedRep === rep ? 'setup failed' : null, loadAvg1: null };
+      }, query: async kase => { events.push(`query:${rep}:${kase.id}`); return arm.query(kase); },
+      close: async () => { events.push(`close:${rep}`); await arm.close?.(); } },
+      sampleResources: async (stage: ResourceStage) => {
+        events.push(`sample:${rep}:${stage}`);
+        return { sampledAt: '2026-10-14T18:00:00Z', memoryCurrentBytes: opts.missing ? null : rep * 1048576,
+          memoryPeakBytes: opts.missing ? null : (rep + 1) * 1048576, indexFiles: opts.missing ? null : [], unknown: [] };
+      } };
+    } };
+  }
+  it('refuses a protocol on a reused legacy arm before indexing; unavailable controls remain unscored', async () => {
+    const arm = fakeArm(capsA, {});
+    await expect(runArm(arm, pinnedCases, registered)).rejects.toThrow(/fresh repetition factory/);
+    expect(arm.closed()).toBe(false);
+    expect((await runArm({ ...arm, unavailable: 'not installed' }, pinnedCases, registered)).reps).toEqual([]);
+  });
+  it('creates, indexes and closes three independent tasks, preserving cold, warm-up and warm answers in order', async () => {
+    const events: string[] = [];
+    const run = await runArm(factory(events), pinnedCases, registered);
+    expect(run.measurementMode).toBe('fresh-repetitions');
+    expect(run.reps.map(rep => rep.identity?.taskId)).toEqual(['task:1', 'task:2', 'task:3']);
+    for (const rep of run.reps) {
+      expect(rep.coldAnswers).toHaveLength(2);
+      expect(rep.warmupAnswers).toHaveLength(pinnedCases.length);
+      expect(rep.answers).toHaveLength(pinnedCases.length);
+      expect(rep.resources?.ready.memoryCurrentBytes).toBe(rep.rep * 1048576);
+      const sequence = events.filter(event => event.split(':')[1] === String(rep.rep));
+      expect(sequence[0]).toBe(`create:${rep.rep}`);
+      expect(sequence[1]).toBe(`index:${rep.rep}`);
+      expect(sequence[2]).toBe(`sample:${rep.rep}:ready`);
+      const warmIndex = sequence.indexOf(`sample:${rep.rep}:warm`);
+      const finalIndex = sequence.indexOf(`sample:${rep.rep}:final`);
+      expect(sequence.slice(3, warmIndex)).toHaveLength(2 + pinnedCases.length);
+      expect(sequence.slice(warmIndex + 1, finalIndex)).toHaveLength(pinnedCases.length);
+      expect(sequence.at(-2)).toBe(`sample:${rep.rep}:final`);
+      expect(sequence.at(-1)).toBe(`close:${rep.rep}`);
+    }
+    expect(scoreRuns([run], pinnedCases, pinnedKeys, {}, registered).decision.reason).not.toMatch(/measurements unqualified/);
+  });
+  it('rejects a reused task/tree/home before its second index, but still closes it', async () => {
+    const events: string[] = [];
+    await expect(runArm(factory(events, { reused: true }), pinnedCases, registered)).rejects.toThrow(/reused or omitted taskId/);
+    expect(events).not.toContain('index:2');
+    expect(events.at(-1)).toBe('close:2');
+  });
+  it('keeps failed setup attempts and continues fresh repetitions without inventing answers', async () => {
+    const events: string[] = [];
+    const run = await runArm(factory(events, { failedRep: 2, throwingRep: 3 }), pinnedCases, registered);
+    expect(run.reps.map(rep => rep.outcome)).toEqual(['completed', 'setup-failed', 'setup-failed']);
+    expect(run.reps.slice(1).every(rep => rep.answers.length === 0 && rep.coldAnswers?.length === 0)).toBe(true);
+    expect(run.reps[2]?.index?.error).toContain('setup crashed');
+    expect(events.filter(event => event.startsWith('close:'))).toEqual(['close:1', 'close:2', 'close:3']);
+    expect(scoreRuns([run], pinnedCases, pinnedKeys, {}, registered).decision.reason).toContain('setup-incomplete');
+  });
+  it('does not substitute a parent RSS reading for missing task memory or an unread index census', async () => {
+    const run = await runArm(factory([], { missing: true }), pinnedCases, registered);
+    expect(run.reps[0]?.index?.peakRssKb).toBe(999999);
+    expect(run.reps[0]?.resources?.final.memoryPeakBytes).toBeNull();
+    expect(run.reps[0]?.resources?.ready.indexFiles).toBeNull();
+    const decision = scoreRuns([run], pinnedCases, pinnedKeys, {}, registered).decision;
+    expect(decision.kind).toBe('inconclusive');
+    expect(decision.reason).toContain('resources-unmeasured');
+  });
+  it('rejects saved legacy warmth as protocol measurement proof', async () => {
+    const run = await runArm(factory([]), pinnedCases, registered);
+    const legacy = { ...run, measurementMode: undefined };
+    expect(scoreRuns([legacy], pinnedCases, pinnedKeys, {}, registered).decision.reason).toContain('legacy-measurements');
+  });
+  it('retains factory startup errors as failed attempts, including the raw error', async () => {
+    const base = factory([]);
+    const run = await runArm({ ...base, create: async rep => {
+      if (rep === 2) throw new Error('task creation refused');
+      return base.create(rep);
+    } }, pinnedCases, registered);
+    expect(run.reps[1]?.setupError).toContain('task creation refused');
+    expect(run.reps[1]?.answers).toEqual([]);
+    expect(run.reps[2]?.outcome).toBe('completed');
+    expect(scoreRuns([run], pinnedCases, pinnedKeys, {}, registered).decision.reason).toContain('rep2:setup-incomplete');
+  });
+  it('keeps unreadable and over-budget task measurements inconclusive after JSON round-trip', async () => {
+    const run = await runArm(factory([]), pinnedCases, registered);
+    const saved = JSON.parse(JSON.stringify(run)) as typeof run;
+    const rep = saved.reps[0]!;
+    const ready = rep.resources!.ready;
+    const changed = { ...saved, reps: [{ ...rep, resources: { ...rep.resources!, ready: {
+      ...ready, indexFiles: [{ path: 'cache/index', bytes: (registered.budgets.indexDiskMbMax + 1) * 1048576 }],
+    } } }, ...saved.reps.slice(1)] };
+    expect(scoreRuns([changed], pinnedCases, pinnedKeys, {}, registered).decision.reason).toContain('ready-index-budget');
+    const unreadable = { ...saved, reps: [{ ...rep, resources: { ...rep.resources!, ready: {
+      ...ready, unknown: ['memory.current unreadable'],
+    } } }, ...saved.reps.slice(1)] };
+    expect(scoreRuns([unreadable], pinnedCases, pinnedKeys, {}, registered).decision.reason).toContain('ready-resources-unmeasured');
   });
 });
 

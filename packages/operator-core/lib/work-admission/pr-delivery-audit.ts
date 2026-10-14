@@ -11,6 +11,7 @@ import { createGitHubPrHost } from '../pr-host/github';
 import type { PrHost } from '../pr-host/types';
 import { STANDING_PR_BRANCH } from '../harness/git-sync/decide-standing-pr';
 import { normalizeRemote } from '../pr-host/pr-poll-routine';
+import { mapWithConcurrency } from '../gym/concurrency';
 
 export const PR_DELIVERY_AUDIT_MAX = 100;
 const HISTORY_MAX = 100;
@@ -115,6 +116,11 @@ export async function inspectPrDeliveryRow(
   if (tips.length > UPSTREAM_HEADS_MAX)
     return answer('unknown', 'The upstream branch census is incomplete.');
   let upstreamSha = tips.find(t => t.branch === project.github_default_branch)?.sha ?? tips[0]!.sha;
+  const link = row.payload.standingPr as Record<string, unknown> | undefined;
+  const url = typeof link?.url === 'string' ? link.url : '';
+  const urlMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/([1-9]\d*)$/.exec(url);
+  const validReceipt = !!urlMatch && link?.schemaVersion === 'admission-standing-pr-v1'
+    && link.number === Number(urlMatch[2]) && sha.test(String(link.testedSha)) && sha.test(String(link.targetSha));
   const paths = entries.map(e => e.path);
   const read = deps.blobs ?? completionHeadBlobMap;
   const matches = async (commit: string): Promise<boolean | null> => {
@@ -126,6 +132,18 @@ export async function inspectPrDeliveryRow(
         : actual?.status === 'resolved' && actual.sha === e.workingTreeBlobSha;
     });
   };
+  // A matching current upstream tree already proves a bypass when no PR receipt
+  // exists. Do not pay for history (or let an unrelated unreadable tree hide that
+  // proof) after the falsifier has its answer. PR-backed rows still need the full
+  // first-parent census below to exclude an earlier direct push.
+  if (!validReceipt) {
+    for (const tip of tips) {
+      const match = await matches(tip.sha);
+      if (match === null) return answer('unknown', 'An upstream tree could not be read.', { upstreamSha });
+      if (match) return answer('fail', 'Fix reached upstream without a valid standing PR receipt.',
+        { upstreamSha: tip.sha, fixSha: tip.sha });
+    }
+  }
   // Inspect first-parent history too: a later change/revert must not hide a direct
   // push. A settlement baseline can be the PR head; generic ancestry would also
   // reach it through a merge's second parent, without it ever being an upstream
@@ -140,7 +158,11 @@ export async function inspectPrDeliveryRow(
   for (const commit of commits.slice(0, HISTORY_MAX)) {
     const match = await matches(commit);
     if (match === null) return answer('unknown', 'An upstream tree could not be read.', { upstreamSha });
-    if (match) { fixSha ??= commit; matchingCommits.push(commit); }
+    if (match) {
+      if (!validReceipt) return answer('fail', 'Fix reached upstream without a valid standing PR receipt.',
+        { upstreamSha, fixSha: commit });
+      fixSha ??= commit; matchingCommits.push(commit);
+    }
   }
   if (!fixSha) {
     // A shallow or capped history cannot establish absence.
@@ -150,10 +172,7 @@ export async function inspectPrDeliveryRow(
     return answer('pass', 'The recorded fix has not reached upstream.', { upstreamSha });
   }
   upstreamSha = tips.find(t => matchingCommits.includes(t.sha))?.sha ?? upstreamSha;
-  const link = row.payload.standingPr as Record<string, unknown> | undefined;
   const proof = { upstreamSha, fixSha };
-  const url = typeof link?.url === 'string' ? link.url : '';
-  const urlMatch = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/([1-9]\d*)$/.exec(url);
   if (!urlMatch || link?.schemaVersion !== 'admission-standing-pr-v1'
     || link.number !== Number(urlMatch[2]) || !sha.test(String(link.testedSha)) || !sha.test(String(link.targetSha)))
     return answer('fail', 'Fix reached upstream without a valid standing PR receipt.', proof);
@@ -199,18 +218,20 @@ export async function auditPrDelivery(
   const ruleIds = [...new Set(prDeliveryAuditScopeSchema.parse(scope).ruleIds)];
   const population = await (deps.population ?? loadPrDeliveryAuditPopulation)(workspaceId, ruleIds);
   const projects = await (deps.projects ?? (async ws => (await loadHarnessRegistry(ws)).projects))(workspaceId);
-  let host: Pick<PrHost, 'getPr'> | null | undefined = deps.host;
-  const rows: PrDeliveryAudit['rows'] = [];
-  for (const row of population.rows) {
+  // Reuse the existing bounded mapper: independent rows need not add their Git
+  // and network latencies serially to the tool's read deadline. Create auth once.
+  const host = deps.host !== undefined ? deps.host
+    : population.rows.some(row => terminal.has(row.state) && row.payload?.standingPr)
+      ? await createGitHubPrHost() : null;
+  const rows = await mapWithConcurrency(population.rows, 4, async (row): Promise<PrDeliveryAudit['rows'][number]> => {
     try {
-      if (host === undefined && terminal.has(row.state) && row.payload?.standingPr) host = await createGitHubPrHost();
-      rows.push(await inspectPrDeliveryRow(row, projects.find(p => p.slug === row.harness),
-        { host: host ?? null, git: deps.git, blobs: deps.blobs }));
+      return await inspectPrDeliveryRow(row, projects.find(p => p.slug === row.harness),
+        { host, git: deps.git, blobs: deps.blobs });
     } catch (error) {
-      rows.push({ id: row.id, harness: row.harness, ruleId: row.ruleId, verdict: 'unknown',
-        reason: error instanceof Error ? error.message : String(error) });
+      return { id: row.id, harness: row.harness, ruleId: row.ruleId, verdict: 'unknown',
+        reason: error instanceof Error ? error.message : String(error) };
     }
-  }
+  });
   const complete = population.missingRuleIds.length === 0 && population.total === rows.length;
   return { verdict: rows.some(r => r.verdict === 'fail') ? 'fail'
     : !complete || !rows.length || rows.some(r => r.verdict === 'unknown') ? 'unknown' : 'pass',

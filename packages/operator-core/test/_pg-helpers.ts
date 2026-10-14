@@ -22,6 +22,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { createFreshTestDb } from '@papercusp/test-config';
+import { FALLBACK_OBSERVATIONS_MIN_DDL } from './_work-items-schema';
 
 import { stripSqlComments as sharedStripSqlComments } from '../../../scripts/lib/strip-comments-and-strings.mjs';
 
@@ -699,7 +700,8 @@ export const FED_ORDER_KEY_DDL = `
 
 /**
  * ⚠ THIS DOES NOT RUN REAL MIGRATIONS. It provisions a genuinely EMPTY database
- * (`CREATE SCHEMA harness_shared` + the fed-order-key fns only) — every table your
+ * (`CREATE SCHEMA harness_shared` + the fed-order-key fns + the ambient
+ * `fallback_observations` sink only) — every other table your
  * test needs, YOU hand-roll as inline DDL in the calling `*.integration.test.ts`
  * file. There is no schema replay to fall back on.
  *
@@ -737,6 +739,15 @@ export async function createFreshPgDb(
   });
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
   await sql.unsafe(FED_ORDER_KEY_DDL);
+  // The fallback-observations sink is ambient infrastructure, not a table a test opts into:
+  // any production path under test may call observeFallback(), whose debounced flush (2s,
+  // unref'd timer) writes here through the mocked getOrgPg handle. Without the table that
+  // flush console.warns 'relation harness_shared.fallback_observations does not exist', and
+  // vitest-fail-on-console fails WHICHEVER test happens to be running when the timer fires —
+  // a timing-dependent red in an unrelated case (WI-6554700010013241; same class as
+  // WI-10005130 and WI-6554700010008895, which each patched one fixture). IF NOT EXISTS, so a
+  // test that provisions the table itself is unaffected.
+  await sql.unsafe(FALLBACK_OBSERVATIONS_MIN_DDL).simple();
 
   const cleanup = async () => {
     await sql.end({ timeout: 5 });

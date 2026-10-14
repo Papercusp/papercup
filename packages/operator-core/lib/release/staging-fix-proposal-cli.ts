@@ -16,7 +16,7 @@ import type { FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue
 import type { AdmissionPrecheckWorkerInput, AdmissionPrecheckQueueTarget } from './admission-fix-precheck-managed';
 import { createCheckpointTreeFixPrecheckRunner, deriveAdmissionPrecheckRoot, resolveCanonicalIntegrationRoot, type SignatureLike } from './admission-fix-precheck';
 import { importCompletenessPreflight } from './admission-import-completeness';
-import { resolveDependencyGenerationRoot } from './dependency-generation-prebuild';
+import { resolveDependencyGenerationRoot } from './dependency-generation-root';
 import { integrationBranch } from './judged-sha-containment';
 import { createStagingFixProposalDeps, proposeStagingFixes, type FailingLeg } from './staging-fix-proposal';
 

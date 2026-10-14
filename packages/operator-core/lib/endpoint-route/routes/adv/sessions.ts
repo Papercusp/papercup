@@ -1453,13 +1453,24 @@ const resumable = defineTool({
     // authority the consult dispatcher already resolved its source with, so psu
     // and the dispatcher cannot disagree about which row a transcript belongs to.
     const requestedSessionId = (searchParams.get('sessionId') ?? '').trim();
-    let exactBySession: { id: number; ownerId: string | null; requestedSessionId: string } | null = null;
+    const requestedAgentId = (searchParams.get('agentId') ?? '').trim();
+    let exactBySession: { id: number; ownerId: string | null; requestedSessionId?: string; requestedAgentId?: string } | null = null;
     if (exactRowId == null && RESUMABLE_NATIVE_SESSION_ID_RE.test(requestedSessionId)) {
       const { resolveResumeTarget } = await import('../../../agent-launch-core');
       const target = await resolveResumeTarget({ sessionId: requestedSessionId });
       if (target.ok) {
         exactBySession = { id: target.advSessionId, ownerId: target.ownerId, requestedSessionId };
       }
+    } else if (exactRowId == null && requestedAgentId) {
+      // Reuse the launch/resume authority: it selects the newest registration
+      // and follows carry lineage, independently of the picker's recent window.
+      if (!/^su-[a-z0-9-]+$/i.test(requestedAgentId)) {
+        return json({ error: 'invalid_agent_id' }, 400);
+      }
+      const { resolveResumeTarget } = await import('../../../agent-launch-core');
+      const target = await resolveResumeTarget({ agentId: requestedAgentId });
+      if (!target.ok) return json({ sessions: [] }, 200);
+      exactBySession = { id: target.advSessionId, ownerId: target.ownerId, requestedAgentId };
     }
     const exactId = exactRowId ?? exactBySession?.id ?? null;
     const sessions = await listResumableSessions(Number.isFinite(limit) && limit > 0 ? limit : 30, { exactId });
@@ -1540,7 +1551,7 @@ const resumable = defineTool({
     return new Response(
       JSON.stringify({
         sessions: enriched,
-        // Present only when a `sessionId` lookup resolved a row, so an older
+        // Present only when a `sessionId` or `agentId` lookup resolved a row, so an older
         // psu (or a miss) reads exactly the response it always did.
         ...(exactBySession ? { exact: exactBySession } : {}),
       }),

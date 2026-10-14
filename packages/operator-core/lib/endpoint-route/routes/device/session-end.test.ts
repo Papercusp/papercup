@@ -16,6 +16,7 @@ vi.mock('../../../owner-sessions/device-actions', async original => ({
 }));
 import routes from './session-end';
 import { isPhoneDevicePath } from '../../../device-ingress-paths';
+import { getKnownRoles } from '../../../known-roles';
 const call = async (body: unknown = {}) => {
   const response = await routes[0].handler(new Request('http://localhost/api/device/sessions/su-target/end',
     { method: 'POST', body: JSON.stringify(body) }), { principal: { kind: 'device', slug: 'phone-a', workspaceId: 'workspace-a' }, params: { owner: 'su-target' } } as never) as Response;
@@ -47,6 +48,25 @@ describe('paired-device end session', () => {
   it.each(['routine-host', 'git-sync', 'green-checkpoint', 'human', 'system'])('refuses protected role %s before a kill', async role => {
     f.raw = { ...f.raw, role };
     expect((await call()).status).toBe(403);
+    expect(f.end).not.toHaveBeenCalled();
+  });
+  it.each(getKnownRoles())('allows catalogued agent role %s with a native session', async role => {
+    f.raw = { ...f.raw, role };
+    expect((await call()).status).toBe(200);
+    expect(f.end).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ['unknown role with an su owner id', { role: 'future-protected-service' }],
+    ['missing role', { role: null }],
+    ['empty role', { role: '' }],
+    ['non-string role', { role: { name: 'su' } }],
+    ['missing native handle', { nativeSession: null }],
+    ['malformed native handle', { nativeSession: {} }],
+    ['unknown native backend', { nativeSession: { backend: 'service' } }],
+    ['boolean native handle', { nativeSession: true }],
+  ])('fails closed on %s before invoking any end action', async (_case, overrides) => {
+    f.raw = { ...f.raw, ...overrides };
+    expect(await call()).toEqual({ status: 403, body: { ok: false, error: 'protected_session' } });
     expect(f.end).not.toHaveBeenCalled();
   });
   it('refuses a target absent from this workspace', async () => {

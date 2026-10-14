@@ -17,8 +17,7 @@
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -26,6 +25,7 @@ import { createTextCollector } from '../child-output';
 import { emitAwaitedEvent } from '../events/await/engine';
 import { createNotifyBus } from '../pg-notify-bus';
 import { CHECKPOINT_QUALIFICATION_METADATA_KEY } from './checkpoint-qualification-transaction';
+import { resolveDependencyGenerationRoot } from './dependency-generation-root';
 
 export const DEPENDENCY_PREBUILD_NOTIFY_CHANNEL = 'papercusp_dependency_prebuild_changed';
 export const DEPENDENCY_PREBUILD_EVENT_PREFIX = 'dependency-generation:prebuild';
@@ -124,54 +124,14 @@ export interface DependencyPrebuildReadyState extends DependencyPrebuildBase {
  * root, so env-less callers (a manual `systemd-run --unit` gate run, install:safe,
  * an agent's hand prewarm) resolve the same store as bg-host (WI-10005159).
  */
-export function dependencyGenerationRootRecord(integrationRoot: string): string {
-  return join(integrationRoot, '.papercusp/dependency-generation-root');
-}
-
-export function readRecordedDependencyGenerationRoot(integrationRoot: string): string | null {
-  let text: string;
-  try {
-    text = readFileSync(dependencyGenerationRootRecord(integrationRoot), 'utf8');
-  } catch {
-    return null;
-  }
-  // bash `IFS= read -r` takes the first line verbatim; only an absolute path counts.
-  const recorded = text.split('\n', 1)[0] ?? '';
-  return isAbsolute(recorded) ? recorded : null;
-}
-
-/**
- * Effective dependency-generation store for an integration root — the TS mirror
- * of `dependency_generation_resolve_root` in dependency-generation.sh: env, then
- * the root recorded under the integration root, then the tree-local store (bash
- * `:-` treats an empty value as unset, hence `||`).
- */
-export function resolveDependencyGenerationRoot(
-  integrationRoot: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const configured = env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT?.trim();
-  return resolve(
-    configured ||
-      readRecordedDependencyGenerationRoot(integrationRoot) ||
-      join(integrationRoot, '.papercusp/dependency-generations'),
-  );
-}
-
-/** Current first-line readers stay compatible; additional absolute lines retain
- * discovery of stores left behind by an environment-configured root move. */
-export function resolveDependencyGenerationRetentionRoots(
-  integrationRoot: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string[] {
-  const current = resolveDependencyGenerationRoot(integrationRoot, env);
-  let recorded: string[] = [];
-  try {
-    recorded = readFileSync(dependencyGenerationRootRecord(integrationRoot), 'utf8')
-      .split('\n').filter((value) => isAbsolute(value)).map((value) => resolve(value));
-  } catch { /* No record means only the current store is known. */ }
-  return [...new Set([current, ...recorded])];
-}
+// Keep these pure path helpers in a dependency-free leaf so worker entries can
+// use them without importing this producer's database/event orchestration graph.
+export {
+  dependencyGenerationRootRecord,
+  readRecordedDependencyGenerationRoot,
+  resolveDependencyGenerationRoot,
+  resolveDependencyGenerationRetentionRoots,
+} from './dependency-generation-root';
 
 export interface DependencyPrebuildFailedState extends DependencyPrebuildBase {
   status: 'failed';

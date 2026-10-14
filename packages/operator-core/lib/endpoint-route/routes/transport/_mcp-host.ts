@@ -206,6 +206,7 @@ import {
 import {
   validIdempotencyKey,
   lookupStoredMcpResult,
+  normalizeStructuredReplayResult,
   storeMcpResult,
   type StoredMcpResult,
 } from './_mcp-result-replay';
@@ -4709,56 +4710,12 @@ export function registerMcpHost(server: McpServer): void {
                     (err instanceof Error ? err.message : String(err)),
                 );
               }
-              const storedResult = stored as {
+              const storedResult = normalizeStructuredReplayResult(stored as {
                 content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
                 isError?: boolean;
                 _meta?: Record<string, unknown>;
                 structuredContent?: unknown;
-              };
-              // A retry may opt into structured output even when the original
-              // request did not. Recover only an unambiguous JSON object body;
-              // result-door envelopes describe retrieval state, not tool data.
-              if (requestedStructured && storedResult.structuredContent === undefined) {
-                let structuredUnavailableReason = 'stored-result-not-rehydratable';
-                const [onlyContent] = storedResult.content;
-                if (
-                  storedResult.content.length === 1 &&
-                  onlyContent?.type === 'text' &&
-                  typeof onlyContent.text === 'string'
-                ) {
-                  try {
-                    const decoded: unknown = JSON.parse(onlyContent.text);
-                    if (
-                      decoded !== null &&
-                      typeof decoded === 'object' &&
-                      !Array.isArray(decoded) &&
-                      (decoded as { schemaVersion?: unknown }).schemaVersion !== 'papercusp.output-envelope/v1'
-                    ) {
-                      storedResult.structuredContent = decoded;
-                      storedResult._meta = { ...(storedResult._meta ?? {}), structured: true };
-                    } else if (
-                      decoded !== null &&
-                      typeof decoded === 'object' &&
-                      (decoded as { schemaVersion?: unknown }).schemaVersion === 'papercusp.output-envelope/v1'
-                    ) {
-                      structuredUnavailableReason = 'result-door-envelope-is-not-tool-data';
-                    }
-                  } catch {
-                    // Compact or other non-JSON content cannot be rehydrated safely.
-                  }
-                }
-                // MCP clients that loaded outputSchema reject a non-error result
-                // without structuredContent before callers can inspect its text.
-                // Preserve the honest result-door envelope as an explicit tool
-                // error when its spilled/partial body cannot satisfy that contract.
-                if (storedResult.structuredContent === undefined) {
-                  storedResult.isError = true;
-                  storedResult._meta = {
-                    ...(storedResult._meta ?? {}),
-                    structuredUnavailable: { reason: structuredUnavailableReason },
-                  };
-                }
-              }
+              }, requestedStructured);
               // P-006 / D-014: a replay is still model-facing output. Stored
               // outcomes were already per-result-doored before persistence,
               // but this request must consume the CURRENT aggregate cohort or

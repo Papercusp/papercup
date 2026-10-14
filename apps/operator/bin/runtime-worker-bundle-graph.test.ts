@@ -12,6 +12,7 @@
  * The worker list is DERIVED from the bundler script (never hand-listed) and each worker is
  * built with the bundler's own flags, so this fails exactly when that restart would.
  */
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
@@ -21,10 +22,36 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../..');
 const BUNDLER = join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh');
-/** Generous: healthy worker graphs are tens of inputs; the regression was ~11,900. */
+const HOST_BUNDLER = join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh');
+/** General budget; the precision worker has a separately measured healthy graph. */
 const MAX_INPUTS = 300;
+/** Production externals bring the precision worker's measured graph to 353 inputs. */
+const WORKER_INPUT_LIMITS: Record<string, number> = {
+  'packages/operator-core/lib/memory/bench/precision-bench-worker.ts': 500,
+};
 /** Host-only packages whose presence means the worker swallowed the host graph. */
 const FORBIDDEN = /node_modules\/(?:@dbos-inc\/|@?testcontainers\/|ssh2\/)/;
+
+/** Read the exact host external list used by bundle_host_workers, including its appended flags. */
+function runtimeWorkerExternals(): string[] {
+  const host = readFileSync(HOST_BUNDLER, 'utf8');
+  const start = host.indexOf('\nHOST_EXTERNALS=(') + 1;
+  const end = host.indexOf('\nif ! VIEM_ALIAS_OUTPUT=', start);
+  if (start < 1 || end < 0) throw new Error('bundle-host.sh HOST_EXTERNALS boundary could not be read');
+  const setup = host.slice(start, end);
+  const script = [
+    'set -euo pipefail',
+    'source "$1"',
+    setup,
+    'node -e "console.log(JSON.stringify(process.argv.slice(1)))" -- "${HOST_EXTERNALS[@]}"',
+  ].join('\n');
+  const raw = execFileSync('bash', ['-c', script, 'runtime-worker-externals', BUNDLER], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  });
+  const fromHost = (JSON.parse(raw) as string[]).map((value) => value.replace(/^--external:/, ''));
+  return [...new Set([...fromHost, 'sodium-native', 'esbuild'])];
+}
 
 /** Mirrors bundle_host_workers' esbuild invocation. */
 const BUNDLER_FLAGS: BuildOptions = {
@@ -32,7 +59,7 @@ const BUNDLER_FLAGS: BuildOptions = {
   platform: 'node',
   format: 'esm',
   target: 'node22',
-  external: ['sodium-native'],
+  external: runtimeWorkerExternals(),
   absWorkingDir: REPO_ROOT,
   write: false,
   metafile: true,
@@ -46,6 +73,11 @@ function bundledWorkerSources(): string[] {
 
 const firstLines = (err: unknown, n = 6): string => String((err as Error)?.message ?? err).split('\n').slice(0, n).join('\n');
 
+function isForbiddenPath(value: string): boolean {
+  const normalized = value.replaceAll('\\', '/');
+  return FORBIDDEN.test(normalized) || FORBIDDEN.test(`node_modules/${normalized}`);
+}
+
 /** Shortest import chain from `entryKey` to the first input matching FORBIDDEN. */
 function chainToForbidden(meta: Metafile, entryKey: string): string {
   const parents = new Map<string, string>();
@@ -53,13 +85,20 @@ function chainToForbidden(meta: Metafile, entryKey: string): string {
   const seen = new Set(queue);
   while (queue.length) {
     const cur = queue.shift()!;
-    if (FORBIDDEN.test(cur)) {
+    if (isForbiddenPath(cur)) {
       const chain = [cur];
       for (let p = parents.get(cur); p; p = parents.get(p)) chain.unshift(p);
       return chain.join('\n  -> ');
     }
     for (const imp of meta.inputs[cur]?.imports ?? []) {
-      if (imp.external || !imp.path || seen.has(imp.path)) continue;
+      if (!imp.path) continue;
+      if (isForbiddenPath(imp.path)) {
+        const chain = [cur];
+        for (let p = parents.get(cur); p; p = parents.get(p)) chain.unshift(p);
+        chain.push(`${imp.external ? '[external] ' : ''}${imp.path}`);
+        return chain.join('\n  -> ');
+      }
+      if (imp.external || seen.has(imp.path)) continue;
       seen.add(imp.path);
       parents.set(imp.path, cur);
       queue.push(imp.path);
@@ -70,6 +109,11 @@ function chainToForbidden(meta: Metafile, entryKey: string): string {
 
 type Verdict = { flagged: false; inputs: number } | { flagged: true; why: string };
 
+function maxInputsFor(entryAbs: string): number {
+  const repoPath = relative(REPO_ROOT, entryAbs).replaceAll('\\', '/');
+  return WORKER_INPUT_LIMITS[repoPath] ?? MAX_INPUTS;
+}
+
 /** The ONE detector, shared by the real cases and the control/calibration fixtures. */
 async function workerVerdict(entryAbs: string): Promise<Verdict> {
   let metafile: Metafile;
@@ -79,10 +123,12 @@ async function workerVerdict(entryAbs: string): Promise<Verdict> {
     return { flagged: true, why: `does not bundle — bg-host's ExecStartPre would fail:\n${firstLines(err)}` };
   }
   const inputs = Object.keys(metafile.inputs);
-  if (inputs.some((p) => FORBIDDEN.test(p))) {
-    return { flagged: true, why: `reaches host-only packages:\n  ${chainToForbidden(metafile, relative(REPO_ROOT, entryAbs))}` };
+  const forbidden = chainToForbidden(metafile, relative(REPO_ROOT, entryAbs));
+  if (forbidden !== '(no forbidden package reached)') {
+    return { flagged: true, why: `reaches host-only packages:\n  ${forbidden}` };
   }
-  if (inputs.length > MAX_INPUTS) return { flagged: true, why: `graph grew to ${inputs.length} inputs (max ${MAX_INPUTS})` };
+  const maxInputs = maxInputsFor(entryAbs);
+  if (inputs.length > maxInputs) return { flagged: true, why: `graph grew to ${inputs.length} inputs (max ${maxInputs})` };
   return { flagged: false, inputs: inputs.length };
 }
 
@@ -92,7 +138,7 @@ async function diagnose(entryAbs: string): Promise<string> {
     const { metafile } = (await build({
       ...BUNDLER_FLAGS,
       entryPoints: [entryAbs],
-      external: ['sodium-native', '@opentelemetry/*'],
+      external: [...(BUNDLER_FLAGS.external ?? []), '@opentelemetry/*'],
       loader: { '.node': 'empty' },
     })) as { metafile: Metafile };
     return `${Object.keys(metafile.inputs).length} inputs; chain:\n  ${chainToForbidden(metafile, relative(REPO_ROOT, entryAbs))}`;
@@ -119,6 +165,9 @@ describe('bg-host runtime worker bundles stay small and buildable', () => {
     expect(workers).toContain('packages/operator-core/lib/memory/bench/precision-bench-worker.ts');
     expect(workers).toContain('packages/operator-core/lib/role-codex-home.worker.ts');
     expect(workers.length).toBeGreaterThanOrEqual(2);
+    expect(BUNDLER_FLAGS.external).toContain('@opentelemetry/exporter-logs-otlp-proto');
+    expect(BUNDLER_FLAGS.external).toContain('@dbos-inc/dbos-sdk');
+    expect(BUNDLER_FLAGS.external).toContain('ssh2');
   });
 
   it('calibration: a worker importing a small leaf module is NOT flagged', async () => {
@@ -147,6 +196,6 @@ describe('bg-host runtime worker bundles stay small and buildable', () => {
           'Break the edge with an injected seam; a lazy literal import() is still inlined by esbuild.',
       );
     }
-    expect(v.inputs).toBeLessThanOrEqual(MAX_INPUTS);
+    expect(v.inputs).toBeLessThanOrEqual(maxInputsFor(abs));
   }, 120_000);
 });

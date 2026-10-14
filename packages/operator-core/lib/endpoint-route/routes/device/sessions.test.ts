@@ -225,9 +225,36 @@ describe('R-20 — row fields', () => {
     expect(compared).toBe(desktopEntries.length);
     for (const row of body.sessions.filter((r: { section: string }) => r.section === 'ended')) {
       const source = desktop.ended.find((e) => `ended:${e.id}` === row.key)!;
-      expect({ ownerId: row.ownerId, label: row.label, role: row.role, harness: row.harness, lastActiveAt: row.lastActiveAt })
-        .toEqual({ ownerId: source.coordOwnerId, label: source.label, role: source.role, harness: source.harnessSlug, lastActiveAt: source.lastActiveAt });
+      expect(source, row.key).toBeDefined();
+      // Ended launch rows retain identity/activity but have no live assignment.
+      // Assert presence as well as null values: JSON cannot omit these fields.
+      for (const field of ['ownerId', 'label', 'role', 'harness', 'pot', 'fleet', 'intent', 'heldWorkItem', 'lastActiveAt']) {
+        expect(row, row.key).toHaveProperty(field);
+      }
+      expect({
+        ownerId: row.ownerId, label: row.label, role: row.role, harness: row.harness,
+        pot: row.pot, fleet: row.fleet, intent: row.intent, heldWorkItem: row.heldWorkItem,
+        lastActiveAt: row.lastActiveAt,
+      }, row.key).toEqual({
+        ownerId: source.coordOwnerId, label: source.label, role: source.role, harness: source.harnessSlug,
+        pot: null, fleet: null, intent: null, heldWorkItem: null,
+        lastActiveAt: source.lastActiveAt ?? source.endedAt ?? source.startedAt ?? null,
+      });
     }
+  });
+
+  it.each([
+    ['ended time', { lastActiveAt: null, endedAt: '2026-10-12T09:00:00.000Z' }, '2026-10-12T09:00:00.000Z'],
+    ['start time', { lastActiveAt: null, endedAt: null }, '2026-10-12T00:00:00.000Z'],
+    ['unknown time', { lastActiveAt: null, endedAt: null, startedAt: null }, null],
+  ])('retains the full archival field contract with %s', async (_case, overrides, lastActiveAt) => {
+    serve({ ...base(), ended: [ended(1, overrides)] });
+    const { body } = await getJson();
+    const row = body.sessions.find((s: { key: string }) => s.key === 'ended:1');
+    expect(row).toMatchObject({
+      ownerId: 'su-ended-1', label: 'ended 1', role: 'su', harness: 'papercusp',
+      pot: null, fleet: null, intent: null, heldWorkItem: null, lastActiveAt,
+    });
   });
 
   it('keeps an empty label or intent as the desktop has it, and drops launch internals', async () => {

@@ -21,6 +21,7 @@ import { getSystemActionEntry, listSystemActions } from '../../harness/routines/
 // Registers the plan-schedulable actions in THIS process (the tool host may not load the
 // routines engine's full register-system-actions set), so the check above sees them.
 import '../../harness/routines/rubric-rescore-action';
+import '../../spec-conformance/conformance-review';
 
 const scheduleSchema = z
   .object({

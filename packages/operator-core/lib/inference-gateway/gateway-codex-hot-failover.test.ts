@@ -27,6 +27,34 @@ async function codexHome(accountId: string): Promise<string> {
 }
 
 describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
+  it.each(['cooldown', 'quota', 'auth', undefined] as const)(
+    'stats distinguish a %s park from account usage exhaustion', async cause => {
+      const pool = createFailoverPool(['chatgpt-a', 'chatgpt-b'].map(accountId => ({
+        accountId, token: async () => 'unused',
+      })));
+      const recovery = Date.now() + 120_000;
+      for (const account of pool.entries!()) pool.onExhausted(account.accountId, recovery, undefined, { cause });
+      gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+        codexCliPool: pool, codexCliAccounts: () => [], selfHeal: { enabled: false } });
+      const port = await gateway.listen(0);
+      const stats = await (await fetch('http://127.0.0.1:' + port + '/stats')).json();
+      expect(stats).toMatchObject({ codexHealthyAccounts: 0, codexTotalAccounts: 2,
+        codexEarliestRecoveryAt: recovery,
+        codexUnserviceableCause: cause === 'cooldown' ? 'temporary-cooldown' : 'accounts-unserviceable' });
+    });
+
+  it('an exhausted durable usage window still blocks an account with a cooldown park', async () => {
+    const pool = createFailoverPool([{ accountId: 'chatgpt-a', token: async () => 'unused' }]);
+    pool.onExhausted('chatgpt-a', Date.now() + 15_000, undefined, { cause: 'cooldown' });
+    gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      codexCliPool: pool, codexCliAccounts: () => [], selfHeal: { enabled: false } });
+    gateway.setAccountRateHints([{ accountId: 'chatgpt-a', utilization7d: 1,
+      windowResetAt7d: Date.now() + 3600_000 }]);
+    const port = await gateway.listen(0);
+    const stats = await (await fetch('http://127.0.0.1:' + port + '/stats')).json();
+    expect(stats).toMatchObject({ codexHealthyAccounts: 0, codexUnserviceableCause: 'accounts-unserviceable' });
+  });
+
   it.each([false, true])('surfaces a generic context SSE error to the native client (after output: %s)', async afterOutput => {
     const account = { accountId: 'context-account', home: await codexHome('context-account') };
     const output = afterOutput ? 'data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'visible once' }) + '\n\n' : '';

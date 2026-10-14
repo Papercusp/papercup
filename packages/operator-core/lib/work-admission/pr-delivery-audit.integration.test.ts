@@ -6,7 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { inspectPrDeliveryRow, loadPrDeliveryAuditPopulation, auditGit, type PrDeliveryAuditRow } from './pr-delivery-audit';
+import { auditPrDelivery, inspectPrDeliveryRow, loadPrDeliveryAuditPopulation, auditGit, type PrDeliveryAuditRow } from './pr-delivery-audit';
+import { completionHeadBlobMap } from '../agent-tools/work_items/completion-freshness';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../coord-lifecycle/records';
 import { STANDING_PR_BRANCH } from '../harness/git-sync/decide-standing-pr';
 import type { Pr, PrHost } from '../pr-host/types';
@@ -59,6 +60,37 @@ describe('PR bypass falsifier against real upstream Git', () => {
     git(repo, 'push', 'origin', 'HEAD:main');
     expect(await inspectPrDeliveryRow(row, project, { host: null }))
       .toMatchObject({ verdict: 'fail', upstreamSha: fix, fixSha: fix });
+  });
+  it('returns a proven bypass without scanning unrelated unreadable historical trees', async () => {
+    git(repo, 'push', 'origin', 'HEAD:main');
+    const read: string[] = [];
+    const result = await inspectPrDeliveryRow(row, project, { host: null,
+      blobs: async (path, commit, paths) => {
+        read.push(commit);
+        return commit === base ? undefined : completionHeadBlobMap(path, commit, paths);
+      },
+    });
+    expect(result).toMatchObject({ verdict: 'fail', fixSha: fix });
+    expect(read).toEqual([fix]);
+  });
+  it('audits a terminal cohort with bounded concurrent upstream reads and preserves row order', async () => {
+    git(repo, 'push', 'origin', 'HEAD:main');
+    const cohort = Array.from({ length: 6 }, (_, i) => ({ ...row, id: `EI-parallel-${i}` }));
+    let active = 0, maximum = 0;
+    const result = await auditPrDelivery('ws', { ruleIds: [ruleId] }, {
+      population: async () => ({ rows: cohort, total: cohort.length, missingRuleIds: [] }),
+      projects: async () => [project], host: null,
+      git: async (path, args) => {
+        if (args[0] !== 'ls-remote') return auditGit(path, args);
+        active++; maximum = Math.max(maximum, active);
+        try { return await auditGit(path, args); } finally { active--; }
+      },
+    });
+    expect(result).toMatchObject({ verdict: 'fail', complete: true, checked: 6 });
+    expect(result.rows.map(r => r.id)).toEqual(cohort.map(r => r.id));
+    expect(result.rows.every(r => r.verdict === 'fail')).toBe(true);
+    expect(maximum).toBeGreaterThan(1);
+    expect(maximum).toBeLessThanOrEqual(4);
   });
   it('still detects the direct fix after it is reverted upstream', async () => {
     git(repo, 'push', 'origin', 'HEAD:main'); git(repo, 'revert', '--no-edit', fix); git(repo, 'push', 'origin', 'HEAD:main');

@@ -103,6 +103,47 @@ describe('committed reporter database route', () => {
       }
     } finally { rmSync(original, { recursive: true, force: true }); }
   });
+
+  // WI-6554700010012470: a kept clone reused WITHOUT lintAsCommittedChildEnv (mutation-probe's
+  // overlay, a direct test:file in the root) must still route to the operator database. The
+  // failing consumer was connection.ts (getOrgPg) via the box-wide discovery file, so the
+  // round-trip below is through connection.ts's own resolver, not pg-url's parser.
+  it('materializes only the operator DB pins into the clone, in a form connection.ts resolves', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'committed-db-route-'));
+    try {
+      const original = join(parent, 'original');
+      const clone = join(parent, 'clone');
+      mkdirSync(join(original, 'apps/operator'), { recursive: true });
+      mkdirSync(clone, { recursive: true });
+      writeFileSync(join(original, 'apps/operator/.env.local'),
+        'DATABASE_URL="postgres://fixture:fixture@127.0.0.1:15432/canonical"\nUNRELATED_SECRET=must-not-carry\n');
+      const target = join(clone, 'apps/operator/.env.local');
+      expect(mod.materializeOperatorDbRoute(original, clone)).toEqual({ path: target, names: ['DATABASE_URL'] });
+      const written = readFileSync(target, 'utf8');
+      expect(written).toContain('DATABASE_URL=postgres://fixture:fixture@127.0.0.1:15432/canonical');
+      expect(written).not.toContain('UNRELATED_SECRET');
+      expect(lstatSync(target).mode & 0o777).toBe(0o600);
+
+      const env: NodeJS.ProcessEnv = { ...process.env, ROUTE_FILE: target };
+      for (const name of ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL',
+        'PAPERCUSP_PG_PORT', 'PAPERCUSP_SKIP_PG_DISCOVERY']) delete env[name];
+      const probe = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
+        "import { _resolveUrlsForTests } from '@papercusp/db-org/connection';" +
+        ' const u = new URL(_resolveUrlsForTests(process.env.ROUTE_FILE).admin);' +
+        ' console.log(JSON.stringify({ host: u.hostname, port: u.port, database: u.pathname }));'],
+        { cwd: repoRoot, env, encoding: 'utf8', timeout: 30_000 });
+      expect(probe.status, probe.stderr).toBe(0);
+      expect(JSON.parse(probe.stdout.trim().split('\n').at(-1) ?? 'null'))
+        .toEqual({ host: '127.0.0.1', port: '15432', database: '/canonical' });
+
+      const bare = join(parent, 'bare');
+      mkdirSync(join(bare, 'apps/operator'), { recursive: true });
+      writeFileSync(join(bare, 'apps/operator/.env.local'), 'UNRELATED_SECRET=x\n');
+      expect(mod.materializeOperatorDbRoute(bare, join(parent, 'clone2'))).toBeNull();
+      expect(existsSync(join(parent, 'clone2/apps/operator/.env.local'))).toBe(false);
+      expect(mod.materializeOperatorDbRoute(join(parent, 'missing'), join(parent, 'clone3'))).toBeNull();
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
 });
 describe('committed workspace selection', () => {
   const manifestPath = (workspace?: string) => mod.workspaceManifestPath(workspace);

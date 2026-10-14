@@ -272,6 +272,9 @@ import './plan-run-action';
 import './blueprint-operation-action';
 // test-rubric-unification-2026-10-12 P-008 (D-008): plan-schedulable rubric re-score.
 import './rubric-rescore-action';
+// spec-driven-tooling-integration-2026-10-05 P-030 (R-21): plan-schedulable independent
+// conformance review — one deduplicated review work-item per plan.
+import '../../spec-conformance/conformance-review';
 // work-on-everything-goal-2026-08-23 P-020 (D-006 ruling 3): `system:goal-start` —
 // one scheduled activation of an existing goal via the startGoalById primitive.
 import './goal-start-action';

@@ -139,10 +139,6 @@ export const CENSUS: readonly CensusEntry[] = [
   p('packages/operator-core/lib/external-triggers/social/bluesky-write-adapter.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/conformance.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/cursor-freshness.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/facebook-comments-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/facebook-common.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/facebook-posts-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/facebook-write-adapter.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/instagram-comments-adapter.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/instagram-common.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/instagram-write-adapter.ts', 'social'),
@@ -186,7 +182,7 @@ export const CENSUS: readonly CensusEntry[] = [
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 46;
+export const CENSUS_HIGH_WATERMARK = 42;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.
@@ -342,7 +338,14 @@ export function strictKindsInContent(body: string): StrictKind[] {
  * its reason. An entry must keep matching (stale entries fail) and may never name a kind
  * by path. Keep this short; a Slack, Asana or bug-workflow module does not belong here.
  */
-export const NOT_STRICT_SPECIFIC: Record<string, { kinds: StrictKind[]; reason: string }> = {
+interface StrictAllowance {
+  kinds: StrictKind[];
+  /** Only these metadata literals are exempt; protocol elsewhere in the file still fails. */
+  contentAllowance?: RegExp;
+  reason?: string;
+}
+
+export const NOT_STRICT_SPECIFIC: Record<string, StrictAllowance> = {
   'packages/operator-core/lib/personal-vault/provider-egress.mjs': {
     kinds: ['slack'],
     reason:
@@ -355,12 +358,24 @@ export const NOT_STRICT_SPECIFIC: Record<string, { kinds: StrictKind[]; reason: 
       'GENERATED index census of every table; lists chat_bug_suggestions until the contract ' +
       'migration WI-6554700010008890 drops it, after which this entry goes stale and is removed',
   },
+  'packages/operator-core/lib/data-governance/organization-data-receipts.ts': {
+    kinds: ['bug-workflow'],
+    contentAllowance: /(['"])harness_shared\.chat_bug_suggestions\1/g,
+    reason: 'Provider-neutral organization deletion order names a legacy data-source FK child; ' +
+      'only the quoted qualified table name is metadata, not the bug-report workflow.',
+  },
+  'packages/operator-core/lib/data-governance/pilot-processing-map.ts': {
+    kinds: ['bug-workflow'],
+    contentAllowance: /(['"])harness_shared\.chat_bug_suggestions\1/g,
+    reason: 'Provider-neutral retention inventory names the same legacy FK child. ' +
+      'The exemption ends when that table leaves the inventory.',
+  },
 };
 
 /** Every app-code module under `root` specific to a strict kind, as `path: kinds`. */
 export function strictViolations(
   root: string,
-  allow: Record<string, { kinds: StrictKind[] }> = NOT_STRICT_SPECIFIC,
+  allow: Record<string, StrictAllowance> = NOT_STRICT_SPECIFIC,
 ): string[] {
   const files: string[] = [];
   for (const r of APP_ROOTS) walk(join(root, r), files, root);
@@ -368,7 +383,12 @@ export function strictViolations(
   for (const f of files.sort()) {
     const byPath = strictKindsInPath(f);
     const allowed = new Set(allow[f]?.kinds ?? []);
-    const byContent = strictKindsInContent(readFileSync(join(root, f), 'utf8')).filter((k) => !allowed.has(k));
+    const body = readFileSync(join(root, f), 'utf8');
+    const contentAllowance = allow[f]?.contentAllowance;
+    const remainingKinds = contentAllowance
+      ? strictKindsInContent(body.replace(contentAllowance, ''))
+      : [];
+    const byContent = strictKindsInContent(body).filter((k) => !allowed.has(k) || remainingKinds.includes(k));
     const kinds = [...new Set([...byPath, ...byContent])];
     if (kinds.length > 0) out.push(`${f}: ${kinds.join(', ')}`);
   }
@@ -378,17 +398,21 @@ export function strictViolations(
 /** NOT_STRICT_SPECIFIC entries that no longer match their kinds, or that name a kind by path. */
 export function staleStrictAllowances(
   root: string,
-  allow: Record<string, { kinds: StrictKind[] }> = NOT_STRICT_SPECIFIC,
+  allow: Record<string, StrictAllowance> = NOT_STRICT_SPECIFIC,
 ): string[] {
   const stale: string[] = [];
-  for (const [path, { kinds }] of Object.entries(allow)) {
+  for (const [path, { kinds, contentAllowance }] of Object.entries(allow)) {
     const abs = join(root, path);
     if (!existsSync(abs)) {
       stale.push(`${path}: file is gone`);
       continue;
     }
     if (strictKindsInPath(path).length > 0) stale.push(`${path}: path names a strict kind`);
-    const found = new Set(strictKindsInContent(readFileSync(abs, 'utf8')));
+    const body = readFileSync(abs, 'utf8');
+    const found = new Set(strictKindsInContent(body));
+    if (contentAllowance && body.replace(contentAllowance, '') === body) {
+      stale.push(`${path}: no longer matches content allowance`);
+    }
     for (const k of kinds) if (!found.has(k)) stale.push(`${path}: no longer matches ${k}`);
   }
   return stale;
@@ -486,6 +510,21 @@ describe('provider-specific code census (shrink-only)', () => {
   it('every census group has an owned migration', () => {
     for (const e of CENSUS) expect(MIGRATION_OWNERS[e.group], e.path).toMatch(/\S/);
   });
+
+  it('Facebook Pages stays package-owned while its personal-vault migration remains separate', () => {
+    expect(CENSUS.filter((e) => e.group === 'social' && /facebook/i.test(e.path))).toEqual([]);
+    expect(CENSUS.some((e) => e.group === 'facebook-vault')).toBe(true);
+    const root = fixtureRoot({
+      'packages/operator-core/lib/external-triggers/social/facebook-posts-adapter.ts': 'export {};\n',
+    });
+    try {
+      expect(unlistedProviderModules(root, CENSUS)).toEqual([
+        'packages/operator-core/lib/external-triggers/social/facebook-posts-adapter.ts',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('strict R-3 check: no Slack, Asana or bug-workflow module in app code', () => {
@@ -567,6 +606,22 @@ describe('strict R-3 check: no Slack, Asana or bug-workflow module in app code',
       'Slack, Asana and the chat bug workflow ship only as the slack, asana and bug-triage packages ' +
         '(libs/papercusp/plugins). Move this code into the package, or make it provider-neutral.',
     ).toEqual([]);
+  });
+
+  it('governance metadata exemptions cannot hide a restored provider implementation', () => {
+    const path = 'packages/operator-core/lib/data-governance/organization-data-receipts.ts';
+    const root = fixtureRoot({ [path]: "export const stores = ['harness_shared.chat_bug_suggestions'];\n" });
+    try {
+      const allow = { [path]: NOT_STRICT_SPECIFIC[path]! };
+      expect(strictViolations(root, {})).toEqual([`${path}: bug-workflow`]);
+      expect(strictViolations(root, allow)).toEqual([]);
+      writeFileSync(join(root, path), "export const stores = ['harness_shared.chat_bug_suggestions'];\nexport const reaction = ':bug:';\n");
+      expect(strictViolations(root, allow)).toEqual([`${path}: bug-workflow`]);
+      writeFileSync(join(root, path), "export const reaction = ':bug:';\n");
+      expect(staleStrictAllowances(root, allow)).toEqual([`${path}: no longer matches content allowance`]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('every strict allowance still applies and names no kind by path', () => {

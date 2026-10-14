@@ -63,6 +63,8 @@ export interface AccountRecoveryHorizonOptions {
 export interface AccountParkState {
   parkedAt: number;
   until: number;
+  /** Why this account is out of rotation; absent on legacy/unknown parks. */
+  cause?: 'cooldown' | 'quota' | 'auth';
 }
 
 /**
@@ -78,6 +80,7 @@ export interface AccountPool {
     exhaustedId: string,
     resetAt: number,
     keyOf?: (account: ActiveAccount) => number,
+    park?: Pick<AccountParkState, 'cause'>,
   ): ActiveAccount | null;
   /** Resolve an account-affinity pin without silently substituting another account. */
   select?(accountId: string): ActiveAccount | null;

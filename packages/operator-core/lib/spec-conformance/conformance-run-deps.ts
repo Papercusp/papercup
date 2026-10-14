@@ -18,6 +18,8 @@
  * Plan: spec-conformance-loop-2026-10-14 (P-018).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { readPlanBySlug } from '../agent-tools/plans/source';
+import { approvedDeviations } from './deviation';
 import {
   probeCheckResults,
   readLatestRubricCheckResults,
@@ -106,8 +108,21 @@ export interface ProductionConformanceDepsInput {
   workspaceId: string;
   harnessSlug: string;
   planSlug: string;
-  /** Requirements carrying an approved deviation (R-7, P-020). */
+  /**
+   * Requirements carrying an approved deviation (R-17, P-028). Defaults to
+   * {@link planApprovedDeviations}: re-derived from the plan's CURRENT text on every
+   * run, so a later edit that makes a requirement owner-sourced revokes an agent approval.
+   */
   approvedDeviations?: () => Promise<ReadonlySet<string>>;
+}
+
+/** Approved deviations for a stored plan; an unreadable plan suppresses nothing. */
+export async function planApprovedDeviations(
+  input: Pick<ProductionConformanceDepsInput, 'workspaceId' | 'harnessSlug' | 'planSlug'>,
+  readPlan: typeof readPlanBySlug = readPlanBySlug,
+): Promise<ReadonlySet<string>> {
+  const read = await readPlan(input.planSlug, { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug });
+  return read ? approvedDeviations(read.row.content) : new Set<string>();
 }
 
 /** The DB-backed dependency set the conformance sweep (P-023) runs with. */
@@ -232,6 +247,6 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
       });
     },
 
-    ...(input.approvedDeviations ? { approvedDeviations: input.approvedDeviations } : {}),
+    approvedDeviations: input.approvedDeviations ?? (() => planApprovedDeviations(input)),
   };
 }

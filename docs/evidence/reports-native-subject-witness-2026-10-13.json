@@ -37,8 +37,8 @@
     "group": "reports-native-f146-explicit-scope-20261013",
     "commit": "e8e83b6c00341b8f45ff841c3225e21f7dca620a",
     "step": 17,
-    "error": "Error: Command failed: /home/builduser/papercupai-workspace/papercusp/.papercusp/tmp/reports-native-f146-explicit-scope-20261013/verify-tauri-headless.bt6YpD/poll-dom.sh --require .reports-page --eval document.querySelectorAll('.reports-list-item').length === 1\n      && document.querySelector('.reports-list-item')?.textContent.includes(\"Reports native verification corrected\")\n      && document.querySelector('.reports-reader h2')?.textContent === \"Reports native verification\"\n      && document.querySelector('[aria-label=\"Search reports\"]')?.value === \"Reports native verification\"\n      && document.querySelector('[aria-label=\"Report subject\"]')?.value === \"external:reports-native-fixture\"\n      && document.querySelectorAll('.reports-history-item').length === 2\nFATAL: DOM assertion did not pass within 60s (pid=2061286)\n[FAIL] eval: (document.querySelectorAll('.reports-page').length >= 1) && (document.querySelectorAll('.reports-list-item').length === 1\n      && document.querySelector('.reports-list-item')?.textContent.includes(\"Reports native verification corrected\")\n      && document.querySelector('.reports-reader h2')?.textContent === \"Reports native verification\"\n      && document.querySelector('[aria-label=\"Search reports\"]')?.value === \"Reports native verification\"\n      && document.querySelector('[aria-label=\"Report subject\"]')?.value === \"external:reports-native-fixture\"\n      && document.querySelectorAll('.reports-history-item').length === 2)\n⚠ SETTLE: the page was STILL LOADING when this ran — 1 sync request(s) in flight, 0 queued.\n   Do NOT conclude from a missing element that the feature is missing. Most components here\n   are guarded on async data (`entry && <Thing entry={entry}/>`, `if (!x) return null`), so they\n   are legitimately absent until that data lands.\n   Falsifier: re-run this same assertion after `bash \"$VERIFY_TAURI_SETTLE\"`. If the element\n   then appears, what you measured was a RACE, not a defect.\n",
-    "sourcePath": "/home/builduser/.local/state/verification-harness/reports-library-tauri/20261013T113418Z-2419837/phases/native/failure.json",
+    "error": "Error: Command failed: $HOME/papercupai-workspace/papercusp/.papercusp/tmp/reports-native-f146-explicit-scope-20261013/verify-tauri-headless.bt6YpD/poll-dom.sh --require .reports-page --eval document.querySelectorAll('.reports-list-item').length === 1\n      && document.querySelector('.reports-list-item')?.textContent.includes(\"Reports native verification corrected\")\n      && document.querySelector('.reports-reader h2')?.textContent === \"Reports native verification\"\n      && document.querySelector('[aria-label=\"Search reports\"]')?.value === \"Reports native verification\"\n      && document.querySelector('[aria-label=\"Report subject\"]')?.value === \"external:reports-native-fixture\"\n      && document.querySelectorAll('.reports-history-item').length === 2\nFATAL: DOM assertion did not pass within 60s (pid=2061286)\n[FAIL] eval: (document.querySelectorAll('.reports-page').length >= 1) && (document.querySelectorAll('.reports-list-item').length === 1\n      && document.querySelector('.reports-list-item')?.textContent.includes(\"Reports native verification corrected\")\n      && document.querySelector('.reports-reader h2')?.textContent === \"Reports native verification\"\n      && document.querySelector('[aria-label=\"Search reports\"]')?.value === \"Reports native verification\"\n      && document.querySelector('[aria-label=\"Report subject\"]')?.value === \"external:reports-native-fixture\"\n      && document.querySelectorAll('.reports-history-item').length === 2)\n⚠ SETTLE: the page was STILL LOADING when this ran — 1 sync request(s) in flight, 0 queued.\n   Do NOT conclude from a missing element that the feature is missing. Most components here\n   are guarded on async data (`entry && <Thing entry={entry}/>`, `if (!x) return null`), so they\n   are legitimately absent until that data lands.\n   Falsifier: re-run this same assertion after `bash \"$VERIFY_TAURI_SETTLE\"`. If the element\n   then appears, what you measured was a RACE, not a defect.\n",
+    "sourcePath": "$HOME/.local/state/verification-harness/reports-library-tauri/20261013T113418Z-2419837/phases/native/failure.json",
     "sha256": "55aa70b4bf2136e095c82f36d5784eba61a60cca32d07fe786b941354d6226e2",
     "url": "http://127.0.0.1:33701/reports?ws=verify-tauri-isolated-90&kind=audit&subject=external%3Areports-native-fixture&vis=owner&q=Reports+native+verification&tag=native-fixture&since=2000-01-01&sel=rpt_0bcde3fb-632c-4e16-a299-7963091ba1bd&hist=true",
     "visibleReportText": "Reports\nSupport\nSettings\nDEV\nCupboard\nGitHub\nv0.0.26\n1\n\n\nBlue frost\n▾\nIsolated verifier\n▾\n\nU\n\n\n24\n\n\n🎯\n\n\n\n🚫\n\nRead aloud\n\nPapercup\nTell me what you want to inspect, scan, or unblock.\nQUICK DRAFT PROMPTS\n\nScan workspaces\nfind active harnesses and urgent issues\n\nReview blockers\nsurface failing runs, audits, and pending answers\n\nSummarize state\nget a quick brief on what changed recently\n\n\nSend\nReports\n1 reports · 1 today\n⌕\n\n/\nAll\n1\n\nAudits\n1\n\nReviews\n0\n\nAnalyses\n0\n\nPostmortems\n0\n\nDigests\n0\n\nProposals\n0\n\nOther\n0\nAbout: Native acceptance subject ▾\nSince\n\nMore filters · active\nClear filters\nLAST HOUR\n\nReports native verification corrected\nJust now\nAudit · Only you\nAUDIT\nNative acceptance subject\nRevised\n~1 min read\nAUDIT\nabout\nNative acceptance subject\nReports native verification\nWritten by loopback\n10/13/2026, 7:34:21 AM\n1 min read\nOnly you\n\nEdition 1 of 2 — Reports native verification\nCopy as Markdown\nAsk a follow-up\nVersion history\nVersion history\n\n\nEdition 1 · Reports native verification\n10/13/2026, 7:34:21 AM\n\nEdition 2 · Reports native verification corrected\n10/13/2026, 7:34:39 AM\nFindings\n\nA complete private report.\n\nPublished\nReader\nON THIS PAGE\n\nFindings\n0% read\nTAGS\n\nnative-fixture\nDETAILS\n\nKind\naudit\nWritten by\nloopback\nPot\nWorkspace\nSubject\nNative acceptance subject\nVisibility\nowner\nPublished\n10/13/2026, 7:34:21 AM\nSource\nagent\nReport ID\nrpt_0bcde3fb-632c-4e16-a299-7963091ba1bd\nEdition 1 of 2\n\n\nDEV\n\nv0.0.26\n·\ne8e83b6c0034",
@@ -59,7 +59,7 @@
     "initialSetupFailure": {
       "ok": false,
       "runId": "ccb2de76-bc0c-453d-953c-d6378b6dd2f4",
-      "root": "/home/builduser/papercupai-workspace/papercusp",
+      "root": "$HOME/papercupai-workspace/papercusp",
       "passed": 0,
       "failed": 1,
       "skipped": 20,
@@ -90,7 +90,7 @@
     "predicateRed": {
       "ok": false,
       "runId": "803a15fd-7b1a-410d-9057-611ae5c0cc6e",
-      "root": "/home/builduser/papercupai-workspace/papercusp",
+      "root": "$HOME/papercupai-workspace/papercusp",
       "passed": 0,
       "failed": 1,
       "skipped": 20,
@@ -99,7 +99,7 @@
         {
           "file": "apps/operator-vite/src/components/reports/ReportsRoute.test.tsx",
           "test": "Reports route accepts the native history and subject filter witness from the real button control",
-          "message": "AssertionError: expected false to be true // Object.is equality\n    at /home/builduser/papercupai-workspace/papercusp/apps/operator-vite/src/components/reports/ReportsRoute.test.tsx:83:24\n    at file:///home/builduser/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file:///home/builduser/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file:///home/builduser/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file:///home/builduser/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file:///home/builduser/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file:///home/builduser/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)\n    at file:///home/builduser/papercupai-workspace"
+          "message": "AssertionError: expected false to be true // Object.is equality\n    at $HOME/papercupai-workspace/papercusp/apps/operator-vite/src/components/reports/ReportsRoute.test.tsx:83:24\n    at file://${HOME}/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:302:11\n    at file://${HOME}/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:26\n    at file://${HOME}/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2326:20\n    at new Promise (<anonymous>)\n    at runWithCancel (file://${HOME}/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2323:10)\n    at file://${HOME}/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2305:20\n    at new Promise (<anonymous>)\n    at runWithTimeout (file://${HOME}/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:2272:10)\n    at file://$HOME/papercupai-workspace"
         }
       ],
       "failuresTruncated": false,
@@ -121,7 +121,7 @@
     "fixedSuites": {
       "ok": true,
       "runId": "76135627-4457-48af-ac21-55cb8882a266",
-      "root": "/home/builduser/papercupai-workspace/papercusp",
+      "root": "$HOME/papercupai-workspace/papercusp",
       "passed": 62,
       "failed": 0,
       "skipped": 0,
@@ -223,7 +223,7 @@
   "qualifiedLocalSuites": {
     "ok": true,
     "runId": "5c604aa5-f803-4e4b-abf3-d6a488f3bbf2",
-    "root": "/home/builduser/papercupai-workspace/papercusp",
+    "root": "$HOME/papercupai-workspace/papercusp",
     "passed": 78,
     "failed": 0,
     "skipped": 0,
@@ -343,10 +343,26 @@
     "ledgerReceipt": "/tmp/reports-f146-subject-prerequisite-ledger.json",
     "sourceReceipt": "/tmp/reports-f146-subject-committed-preflight-source.json",
     "testRuns": [
-      { "id": 21201999, "file": "apps/operator-vite/src/components/reports/ReportsRoute.test.tsx", "passed": 21 },
-      { "id": 21202489, "file": "packages/operator-core/lib/__tests__/verify-tauri-launcher.test.ts", "passed": 8 },
-      { "id": 21202490, "file": "packages/operator-core/lib/reports-library-native-launcher.test.ts", "passed": 41 },
-      { "id": 21202491, "file": "packages/operator-core/lib/__tests__/verify-tauri-isolated-pg-readiness.test.ts", "passed": 8 }
+      {
+        "id": 21201999,
+        "file": "apps/operator-vite/src/components/reports/ReportsRoute.test.tsx",
+        "passed": 21
+      },
+      {
+        "id": 21202489,
+        "file": "packages/operator-core/lib/__tests__/verify-tauri-launcher.test.ts",
+        "passed": 8
+      },
+      {
+        "id": 21202490,
+        "file": "packages/operator-core/lib/reports-library-native-launcher.test.ts",
+        "passed": 41
+      },
+      {
+        "id": 21202491,
+        "file": "packages/operator-core/lib/__tests__/verify-tauri-isolated-pg-readiness.test.ts",
+        "passed": 8
+      }
     ],
     "totalPassed": 78,
     "failed": 0,
@@ -369,10 +385,20 @@
     "harnessRunId": "20261013T124949Z-1811969",
     "taskReceipt": "/tmp/reports-f146-subject-terminal-task.json",
     "distilledEvidence": "/tmp/reports-f146-subject-terminal-distilled.json",
-    "harnessResult": "/home/builduser/.local/state/verification-harness/verify-tauri-headless/20261013T124949Z-1811969/result.json",
-    "prepare": { "status": "passed", "elapsedMs": 760725 },
-    "boot": { "status": "passed", "elapsedMs": 120415 },
-    "assert": { "status": "failed", "elapsedMs": 82410, "endedAt": "2026-10-13T13:05:53.673Z" },
+    "harnessResult": "$HOME/.local/state/verification-harness/verify-tauri-headless/20261013T124949Z-1811969/result.json",
+    "prepare": {
+      "status": "passed",
+      "elapsedMs": 760725
+    },
+    "boot": {
+      "status": "passed",
+      "elapsedMs": 120415
+    },
+    "assert": {
+      "status": "failed",
+      "elapsedMs": 82410,
+      "endedAt": "2026-10-13T13:05:53.673Z"
+    },
     "error": "PostgresError: unsupported startup parameter: client_connection_check_interval",
     "recordedNativeRowsAtRead": 0,
     "ledgerReceipt": "/tmp/reports-f146-subject-native-ledger.json",
@@ -391,9 +417,24 @@
     "fix": "nativeLedgerEnvironment preserves the exact ledger URL, removes the recorder's inherited private PG port and explicitly classifies the known loopback pooler endpoint. The private app environment remains intact.",
     "guard": "checkNativeLedger executes a SELECT-only handshake with a 10-second deadline before native allocation; the maintained launcher suite covers success and failure plus six exact ledger routes using the real startup-option builder.",
     "localProof": {
-      "baseline": { "testRunId": 21207913, "passed": 41, "failed": 6, "worktreeDirty": true },
-      "routingRepair": { "testRunId": 21207926, "passed": 47, "failed": 0, "worktreeDirty": true },
-      "handshakeGuard": { "testRunId": 21207954, "passed": 49, "failed": 0, "worktreeDirty": true },
+      "baseline": {
+        "testRunId": 21207913,
+        "passed": 41,
+        "failed": 6,
+        "worktreeDirty": true
+      },
+      "routingRepair": {
+        "testRunId": 21207926,
+        "passed": 47,
+        "failed": 0,
+        "worktreeDirty": true
+      },
+      "handshakeGuard": {
+        "testRunId": 21207954,
+        "passed": 49,
+        "failed": 0,
+        "worktreeDirty": true
+      },
       "evidence": [
         "/tmp/reports-f146-ledger-regression-baseline.log",
         "/tmp/reports-f146-ledger-regression-repair.log",
@@ -484,8 +525,19 @@
       "testPath": "apps/operator-vite/src/components/reports/ReportsRoute.test.tsx",
       "sourceSha256": "93d1794a487898c48fe088e0f60d245fcbad7c146c2d360bf0d996d96e870936",
       "testSha256": "edad068cee312194b11360fe85ea7cec67eccc93a4114c818fa05567f07c7045",
-      "baseline": { "testRunId": 21214459, "passed": 0, "failed": 1, "filtered": 20 },
-      "fixedSuite": { "testRunId": 21214466, "passed": 22, "failed": 0, "skipped": 0, "collectionFailed": false },
+      "baseline": {
+        "testRunId": 21214459,
+        "passed": 0,
+        "failed": 1,
+        "filtered": 20
+      },
+      "fixedSuite": {
+        "testRunId": 21214466,
+        "passed": 22,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false
+      },
       "provenance": "Local working-source proof; source and test differed from HEAD at the 16:49:56 check. No committed or native pass is asserted.",
       "rootCauseVerification": {
         "hypothesis": "The native selector searches the wrong DOM container.",
@@ -587,7 +639,11 @@
       "resultPath": "~/.local/state/verification-harness/verify-tauri-headless/20261013T184909Z-2902573/result.json",
       "runId": "20261013T184909Z-2902573",
       "verdict": "pass",
-      "phases": ["prepare:passed", "boot:passed", "assert:passed"],
+      "phases": [
+        "prepare:passed",
+        "boot:passed",
+        "assert:passed"
+      ],
       "assertEndedAt": "2026-10-13T19:17:48.023Z",
       "verdictEndedAt": "2026-10-13T19:17:48.513Z"
     },
@@ -633,5 +689,10 @@
     "The completed native proof does not resolve the separately owned teardown and fork-termination defects.",
     "All old native groups are terminal; never replay them.",
     "No canonical read in flight was established by the original transport count."
-  ]
+  ],
+  "portablePathNormalization": {
+    "homePlaceholder": "$HOME",
+    "repositoryRoot": "$HOME/papercupai-workspace/papercusp",
+    "note": "Absolute filesystem roots in captured historical evidence were normalized; command results and artifact provenance were otherwise preserved."
+  }
 }

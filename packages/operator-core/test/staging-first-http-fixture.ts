@@ -35,6 +35,10 @@ async function main() {
   const root = resolve(import.meta.dirname, '../../..');
   const evidenceDir = e.STAGING_FIRST_HTTP_EVIDENCE_DIR!;
   assert.ok(evidenceDir, 'retained evidence directory required');
+  // Native assignments launch from this worker as well as the private host.
+  // Filtering only hostEnv leaves test preloads on the worker's launch lineage.
+  if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native'))
+    e.NODE_OPTIONS = privateBundleRuntimeEnv(e).NODE_OPTIONS;
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'report-journal') e.PAPERCUSP_FLAG_PAPERCUSP_REPORTS_LIBRARY = '1';
   const harness = `${workspace}-guard`;
   const registry = await loadHarnessRegistry(workspace, { fresh: true });
@@ -60,7 +64,8 @@ async function main() {
     await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
     console.log('CURRENT_SU_NATIVE_SETUP_RECEIPT ' + JSON.stringify({ workspace,
       accountId: 'private-current-su', provider: 'codex', providerForwarding: false,
-      launcherPath: process.env.PAPERCUSP_PSU_LAUNCHER ?? null }));
+      launcherPath: process.env.PAPERCUSP_PSU_LAUNCHER ?? null,
+      nodeOptions: e.NODE_OPTIONS ?? '' }));
     return;
   }
   if (['committed-reader-setup', 'committed-reader-setup-exception'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '')) {
@@ -300,8 +305,12 @@ catch (error) {
     // This process owns a disposable database. Reuse the maintained reset to
     // retire org, app, harness and LISTEN pools, including on assertion failure.
     await _resetForTests();
+    const report = process.report!.getReport() as { libuv?: Array<Record<string, unknown>> };
     retainIsolatedWorkerProgress(evidenceDir, 'fixture-pools-closed', {
       activeResources: process.getActiveResourcesInfo(), exitCode: process.exitCode ?? 0,
+      activeSockets: (report.libuv ?? []).filter(handle => handle.type === 'tcp').slice(0, 16)
+        .map(handle => ({ active: handle.is_active, referenced: handle.is_referenced,
+          local: handle.localEndpoint, remote: handle.remoteEndpoint })),
     });
   }
 }

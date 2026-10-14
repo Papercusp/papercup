@@ -135,6 +135,10 @@ beforeAll(async () => {
   // (EI-24551293655721837, EI-21222032743884155, WI-10004700).
   await applyEventSubstrateMigrationsForTest(db.sql, { label: 'work-items.integration.test.ts' });
   await db.sql.unsafe(HFC_DDL);
+  // work_items:list q also searches retained capture text on the canonical
+  // issue occurrence ledger (migration 831). Install its production schema so
+  // this integration fixture exercises the same indexed read path.
+  await db.sql.unsafe(readMigration('831-issue-occurrence-ledger.sql')).simple();
   // WI-10006622: owner-directive provenance (directive_ref) is written by both
   // create families and read by listWorkItemsByDirective — install the production
   // column + index from its creating migration rather than a hand-rolled copy.
@@ -175,6 +179,7 @@ beforeEach(async () => {
   h.activeWorkspace = 'default';
   wi.resetWorkItemEmbedderWarmup();
   await db.sql`TRUNCATE harness_shared.work_items,
+                       harness_shared.work_item_occurrences,
                        harness_shared.work_item_deps, harness_shared.work_item_blocked,
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
@@ -3427,6 +3432,38 @@ describe('WI-4405 — includeObservations / admissibleOnly parity on the read pa
     });
     const list = await wi.listWorkItems({ harness: 'papercup', kind: 'bug', includeObservations: true });
     expect(list.some((w) => w.id === obs.id)).toBe(true);
+  });
+
+  it('q finds capture text retained only in an observation occurrence', async () => {
+    const obs = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'canonical survivor title',
+      summary: 'canonical survivor summary',
+      harness: 'papercup',
+      createdBy: 'agA',
+      payload: { lane: 'observation' },
+    });
+    await db.sql`
+      INSERT INTO harness_shared.work_item_occurrences
+        (workspace_id, canonical_harness_slug, canonical_work_item_id, reporter,
+         source_tool, report_kind, reported_title, evidence)
+      VALUES
+        ('default', 'papercup', ${obs.id}, 'agB', 'improvements:capture', 'coalesced',
+         'folded occurrence title marker',
+         ${JSON.stringify({ body: 'folded occurrence body marker' })}::text::jsonb)
+    `;
+
+    const titleHit = await wi.listWorkItems({
+      harness: 'papercup', kind: 'bug', includeObservations: true, q: 'folded occurrence title marker',
+    });
+    const bodyHit = await wi.listWorkItems({
+      harness: 'papercup', kind: 'bug', includeObservations: true, q: 'folded occurrence body marker',
+    });
+
+    expect(titleHit.map((item) => item.id)).toEqual([obs.id]);
+    expect(bodyHit.map((item) => item.id)).toEqual([obs.id]);
+    expect(titleHit[0]?.title).toBe('canonical survivor title');
+    expect(bodyHit[0]?.summary).toBe('canonical survivor summary');
   });
 
   it('listWorkItems { admissibleOnly: true } ALWAYS excludes it, even alongside includeObservations:true (an observation is never claimable)', async () => {

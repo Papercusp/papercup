@@ -42,6 +42,7 @@ import {
   hasConcreteDecisionMeasurement,
 } from './decision-provenance';
 import { neutralizeToolCallTags } from '../../text-safety';
+import { containsDeviationFence } from '../../spec-conformance/deviation';
 import { planDecisionRef } from '../../agent-goal-ref';
 import {
   allocateNextDecisionId,
@@ -119,7 +120,7 @@ const argsSchema = z
     { message: 'pass { slug, title, body } for one, or items:[{ slug, title, body }] for many' },
   );
 
-interface NewDecision {
+export interface NewDecision {
   slug: string;
   title: string;
   body: string;
@@ -128,6 +129,21 @@ interface NewDecision {
   harness?: string;
   rationale?: string;
 }
+
+/** Internal callers only — never reachable from tool args. */
+export interface AddDecisionOptions {
+  /**
+   * The ```deviation fence is reserved to the plans:conformance deviation transaction
+   * (R-17, spec-conformance/deviation.ts). Only that transaction sets this; a hand-authored
+   * decision carrying the fence is refused so it cannot forge an approved deviation.
+   */
+  allowDeviationFence?: boolean;
+}
+
+export const DEVIATION_FENCE_RESERVED_NOTE =
+  'The ```deviation fence is reserved to the deviation transaction: record a deviation with ' +
+  "plans:conformance { op:'propose-deviation' } and approve it with { op:'approve-deviation' }. " +
+  'Remove the fenced block from this decision body.';
 
 export interface DecisionMeasurementAdvisory {
   code: 'tree_fact_measurement_missing';
@@ -336,7 +352,21 @@ async function decisionContext(
  *  rides the result; not_found / legacy_plan / busy map to this item's failure.
  *  Busy results preserve the safe owner/expiry fields plus the optional point-in-time
  *  PostgreSQL holder snapshot. */
-async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Promise<BulkItemResult> {
+export async function addDecisionOne(
+  rawIt: NewDecision,
+  ctx: UnifiedToolContext,
+  opts: AddDecisionOptions = {},
+): Promise<BulkItemResult> {
+  // R-17: the ```deviation fence is machine authority (drift-alarm suppression, closure
+  // exemption). Checked first, before any write path, against the RAW body.
+  if (!opts.allowDeviationFence && containsDeviationFence(rawIt.body)) {
+    return {
+      ok: false,
+      slug: rawIt.slug,
+      error: 'deviation_fence_reserved',
+      message: DEVIATION_FENCE_RESERVED_NOTE,
+    };
+  }
   // EI-21915372335188454: a client-side tool-call serializer that mis-closes a
   // `<parameter name="body">` block (e.g. `</body>` instead of `</parameter>`)
   // has been observed leaking the literal tool-call XML for every argument AFTER

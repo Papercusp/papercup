@@ -81,15 +81,22 @@ describe('current-build execution route contract', () => {
         join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')], {
         cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
         env: { ...process.env, STAGING_FIRST_HTTP_SCENARIO: 'current-su-native-setup',
-          STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir },
+          STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
+          NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --trace-warnings` },
       });
       expect(result.status, result.stdout.slice(-2000) + result.stderr.slice(-2000)).toBe(0);
       const line = result.stdout.split('\n').find(row => row.startsWith('CURRENT_SU_NATIVE_SETUP_RECEIPT '));
       expect(line, result.stdout.slice(-2000)).toBeTruthy();
-      expect(JSON.parse(line!.slice('CURRENT_SU_NATIVE_SETUP_RECEIPT '.length))).toMatchObject({
+      const receipt = JSON.parse(line!.slice('CURRENT_SU_NATIVE_SETUP_RECEIPT '.length));
+      expect(receipt).toMatchObject({
         workspace: expect.stringMatching(/^test-runtime-/), accountId: 'private-current-su',
         provider: 'codex', providerForwarding: false,
         launcherPath: join(root, 'apps/operator/scripts/psu-launcher.mjs') });
+      expect(receipt.nodeOptions).not.toContain('vitest-startup-trace.mjs');
+      expect(receipt.nodeOptions).not.toMatch(/(?:^|\s)(?:--import|--loader)=?tsx/);
+      expect(receipt.nodeOptions).toContain('--trace-warnings');
+      if (process.env.NODE_OPTIONS?.includes('committed-source-loader.mjs'))
+        expect(receipt.nodeOptions).toContain('committed-source-loader.mjs');
     } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
   }, 200_000);
 

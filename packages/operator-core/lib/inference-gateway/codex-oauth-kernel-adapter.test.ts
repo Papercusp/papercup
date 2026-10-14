@@ -113,15 +113,18 @@ function upstream(
  */
 function makePool(rotation: Array<{ accountId: string } | null>) {
   const exhaustedCalls: Array<{ id: string; resetAt: number }> = [];
+  const parkCauses: Array<'cooldown' | 'quota' | 'auth' | undefined> = [];
   let cursor = 0;
-  const pool: AccountPool & { exhaustedCalls: typeof exhaustedCalls } = {
+  const pool: AccountPool & { exhaustedCalls: typeof exhaustedCalls; parkCauses: typeof parkCauses } = {
     exhaustedCalls,
+    parkCauses,
     active: () => {
       throw new Error('the OAuth adapter must never advance the pool (D-010)');
     },
     select: () => null,
-    onExhausted: (exhaustedId: string, resetAt: number) => {
+    onExhausted: (exhaustedId: string, resetAt: number, _keyOf, park) => {
       exhaustedCalls.push({ id: exhaustedId, resetAt });
+      parkCauses.push(park?.cause);
       return (rotation[cursor++] ?? null) as ReturnType<AccountPool['onExhausted']>;
     },
   };
@@ -685,6 +688,23 @@ describe('codex OAuth kernel adapter — rotation, credentials, and pool discipl
     expect(result).toMatchObject({ status: 200, failovers: 1 });
     expect(started[0]?.metadata.accountId).toBe('chatgpt-b');
     expect(started[0]?.metadata.pinYieldedFrom).toBe('chatgpt-a');
+    expect(pool.parkCauses).toEqual(['auth']);
+  });
+
+  it.each([
+    { status: 503, transient: true, cause: 'cooldown' },
+    { status: 429, transient: true, cause: 'cooldown' },
+    { status: 429, transient: false, cause: 'quota' },
+  ])('records $cause for a $status failover (transient: $transient)', async ({ status, transient, cause }) => {
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const h = harness(async (_url, init) => init.diagnosticAccountId === 'chatgpt-a'
+      ? upstream(status, {}, sseBody('temporarily unavailable'))
+      : upstream(200, {}, sseBody('ok')), {
+      accounts: [cli('chatgpt-a'), cli('chatgpt-b')], pool,
+      rateReset: () => ({ resetAt: Date.now() + 15_000, retryAfterMs: 15_000, transient }),
+    });
+    expect((await executeGatewayRequestKernel(h.options)).status).toBe(200);
+    expect(pool.parkCauses).toEqual([cause]);
   });
 
   it('surfaces a 503 when no account can produce a token', async () => {
@@ -1091,6 +1111,7 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
     expect(h.prepared).toHaveLength(1);
     expect(h.written.join('')).toBe(output + failure);
     expect(pool.exhaustedCalls).toEqual([{ id: 'chatgpt-a', resetAt: now + 5000 }]);
+    expect(pool.parkCauses).toEqual(['cooldown']);
   });
 
   it('keeps a hard-pinned account on an overload and returns the truthful failure', async () => {

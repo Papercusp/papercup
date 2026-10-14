@@ -42,14 +42,17 @@
  * exact shape of the phantom D-046 was written about — an artifact that
  * validates, installs, and then never fires.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { createRequire } from 'node:module';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   validateTriggerPackDeclaration,
+  jsonResponse,
   type PluginOAuthRequirement,
   type PluginTriggerPack,
+  type ProviderAdapter,
 } from '@papercusp/plugin-sdk';
 import {
   isSocialPlatformVerified,
@@ -66,7 +69,6 @@ import { mastodonEventName } from './mastodon-adapter';
 import { redditEventName } from './reddit-adapter';
 import { youtubeActivityEventName } from './youtube-activities-adapter';
 import { youtubeCommentEventName } from './youtube-comments-adapter';
-import { facebookCommentEventName } from './facebook-comments-adapter';
 import { instagramCommentEventName } from './instagram-comments-adapter';
 import { threadsReplyEventName } from './threads-conversation-adapter';
 
@@ -151,11 +153,7 @@ const PRODUCIBLE: Record<string, { names: Set<string>; closed: boolean }> = {
     closed: false, // snippet.type is provider-controlled.
   },
   'facebook-pages': {
-    names: new Set([
-      'post', // facebook-posts-adapter emits the literal.
-      facebookCommentEventName({ parent: { id: 'p' } } as never),
-      facebookCommentEventName({} as never),
-    ]),
+    names: new Set<string>(), // Filled by the real installed package below.
     closed: true,
   },
   instagram: {
@@ -173,7 +171,7 @@ const PRODUCIBLE: Record<string, { names: Set<string>; closed: boolean }> = {
     closed: true,
   },
   tiktok: {
-    // tiktok-videos-adapter emits the literal, like facebook-posts-adapter.
+    // tiktok-videos-adapter emits the literal.
     // ONE name, and that is the platform speaking rather than a gap: TikTok
     // exposes no comment surface at all at this grant tier, so an upload is the
     // only inbound event that can exist.
@@ -181,6 +179,32 @@ const PRODUCIBLE: Record<string, { names: Set<string>; closed: boolean }> = {
     closed: true,
   },
 };
+
+beforeAll(async () => {
+  const adapter = createRequire(import.meta.url)(
+    resolve(REPO_ROOT, 'libs/papercusp/plugins/facebook-pages/index.cjs'),
+  ).providerAdapter as ProviderAdapter;
+  const created_time = '2026-10-01T00:00:00.000Z';
+  let cursor: string | null = null;
+  for (let n = 0; n < 5; n++) {
+    const page = await adapter.syncPage({
+      source: 'facebook-events', config: { pageId: '123' }, cursor,
+      mode: cursor ? 'incremental' : 'backfill',
+    }, { fetch: async ({ request }) => jsonResponse(200, {
+      data: new URL(request.url).pathname.endsWith('/published_posts')
+        ? [{ id: '123_1', created_time, message: 'post' }]
+        : [{ id: '111', created_time, message: 'comment' },
+          { id: '112', created_time, message: 'reply', parent: { id: '111' } }],
+    }) });
+    for (const record of page.records) PRODUCIBLE['facebook-pages']!.names.add(record.event!);
+    cursor = page.nextCursor;
+    if (!page.hasMore) {
+      expect(PRODUCIBLE['facebook-pages']!.names).toEqual(new Set(['post', 'comment', 'reply']));
+      return;
+    }
+  }
+  throw new Error('Facebook package event scan did not finish');
+});
 
 /**
  * Packs are derived from the platforms that are verified AND READABLE.

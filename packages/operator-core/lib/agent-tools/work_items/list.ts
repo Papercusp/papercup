@@ -235,9 +235,9 @@ export default defineTool({
     // failing runs still made exactly ONE work_items:list call instead of two. It also cost
     // +90 B, which evicted coord:read from the 100,000 B shipping seed. Re-proposing it needs
     // new evidence, not a retry.
-    "List work-items across kinds (feature/chunk/bug/change/task). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state, or q (a case-insensitive literal substring over title and body/summary). Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
+    "List work-items across kinds (feature/chunk/bug/change/task). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state, or q (a case-insensitive literal substring over title, body/summary, and retained capture occurrence title/body). Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
   guidance: {
-    when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Pass `q` for a case-insensitive literal substring over title and body/summary. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so a steerer can read the whole backlog's order in one call before steering it with work_items:set_priority.",
+    when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Pass `q` for a case-insensitive literal substring over title, body/summary, and retained capture occurrence title/body. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so a steerer can read the whole backlog's order in one call before steering it with work_items:set_priority.",
     chaining:
       "work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.",
     notWhen:
