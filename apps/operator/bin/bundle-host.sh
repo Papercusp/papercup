@@ -517,6 +517,8 @@ bundle_rc=0
 # captured to a file so it can be BOTH echoed to the journal and parsed into the
 # marker. WI-10005113: `|| bundle_rc=$?`, not `if ! ( … ); then bundle_rc=1`, so
 # the subshell's REAL status survives and a signal death (128+N) is reported as one.
+# Resolve in the parent so host, workers and spawner share this build's pin.
+if bundle_host_run_step compiler-resolve bundle_host_prepare_esbuild "$REPO_ROOT" >"$BUILD_LOG" 2>&1; then
 (
   bundle_host_run_step bundle-lock flock -w 120 9 || { echo "ERROR: timed out waiting for bundle lock $LOCKFILE (another build stuck?)"; exit 1; }
   # WI-55467: the SAME errexit hole the checker comment below describes applies to
@@ -541,8 +543,7 @@ bundle_rc=0
   while :; do
     bundle_host_run_step host-probe-wait "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" wait --root "$REPO_ROOT" \
       --stamp-file "$PROBE_STAMP" || exit 1
-    if ! bundle_host_run_step host-compile "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/npm-install-safe.mjs" \
-      --repo-root "$REPO_ROOT" --exec-under-cache-lock -- npx --yes esbuild@0.25.0 "$ENTRY" \
+    if ! bundle_host_run_step host-compile bundle_host_esbuild "$REPO_ROOT" "$ENTRY" \
       --bundle --platform=node --format=esm --target=node22 \
       "${HOST_MINIFY_ARGS[@]}" \
       --outfile="$TMPFILE" \
@@ -610,7 +611,10 @@ bundle_rc=0
   # Both published files participate in the same restricted-hold rollback.
   mv -f "$METAFILE" "$OUTFILE.meta.json" || exit 1
   mv -f "$TMPFILE" "$OUTFILE"
-) 9>"$LOCKFILE" >"$BUILD_LOG" 2>&1 || bundle_rc=$?
+) 9>"$LOCKFILE" >>"$BUILD_LOG" 2>&1 || bundle_rc=$?
+else
+  bundle_rc=$?
+fi
 cat "$BUILD_LOG"
 if [[ $bundle_rc -ne 0 ]]; then
   report_bundle_step_failure "$bundle_rc" "$BUILD_LOG"
