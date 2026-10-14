@@ -15,6 +15,7 @@ import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { nativeRetentionCommand, readReclaimReceipt, runDiskReclaimOnce, writeReclaimAudit, type ReclaimSql } from './disk-reclaim';
 import { type RetentionClass } from './retention-policy';
 import { inspectRetentionTrees } from './disk-consumer-census';
+import { readDiskHeadroomSoakEvidence } from './retention-interval-evidence';
 import { createFreshPgDb, applyEventSubstrateMigrationsForTest, COORD_SUBSCRIPTION_SUBSTRATE } from '../../test/_pg-helpers';
 
 const inspectionProbe = vi.hoisted(() => ({ before: undefined as ((path: string) => (() => void) | undefined) | undefined }));
@@ -582,6 +583,40 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.complete).toBe(false); expect(await stat(path)).toBeTruthy();
     expect(receipt.entries[0]?.reason).toContain('audit offline');
   });
+  it('assesses the complete soak ledger in real Postgres without borrowing another workspace or host alarm', async () => {
+    const db = await createFreshPgDb('disk-soak-ledger');
+    const gib = 1024 ** 3, host = 'soak-fixture-host', workspace = 'soak-fixture-workspace';
+    const at = (hour: number) => new Date(Date.parse('2026-10-01T00:00:00Z') + hour * 3_600_000).toISOString();
+    const requirements = { host, artifactRef: 'fixture-shipped-artifact', shippedAt: at(-1), startAt: at(0), measuredAt: at(72),
+      maxSampleGapMs: 3_600_000, maxAlarmGapMs: 3_600_000 };
+    try {
+      await db.sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
+      for (const migration of ['1472-disk-consumer-census.sql', '761-attention-notifications-audit.sql']) {
+        await db.sql.unsafe(await readFile(new URL('../../../../libs/papercusp/libs/db/sql/' + migration, import.meta.url), 'utf8'));
+      }
+      await db.sql`
+        INSERT INTO harness_shared.disk_census_runs
+          (run_id, host, device, started_at, finished_at, size_bytes, used_bytes, avail_bytes, attributed_bytes, complete)
+        SELECT gen_random_uuid(), ${host}, device, ${at(0)}::timestamptz + hour * interval '1 hour',
+               ${at(0)}::timestamptz + hour * interval '1 hour', ${500 * gib}, ${400 * gib}, ${100 * gib}, ${400 * gib}, true
+          FROM generate_series(0, 72) AS hour CROSS JOIN unnest(ARRAY['/', '/mnt/data']) AS device`;
+      expect((await readDiskHeadroomSoakEvidence(db.sql, workspace, requirements)).assessment.soakStatus).toBe('pass');
+      await db.sql`UPDATE harness_shared.disk_census_runs SET avail_bytes = ${99 * gib}
+                    WHERE device = '/' AND finished_at = ${at(36)}::timestamptz`;
+      expect((await readDiskHeadroomSoakEvidence(db.sql, workspace, requirements)).assessment.soakStatus).toBe('fail');
+      const data = { conditionKey: 'alarm:disk-space', host, consumers: { '/': ['postgres'], '/mnt/data': ['scratch'] } };
+      await db.sql`INSERT INTO harness_shared.attention_notifications (workspace_id, kind, title, body, data, created_at)
+        VALUES ('other-workspace', 'intervention', 'fixture', 'fixture', ${db.sql.json(data)}, ${at(36)}::timestamptz),
+               (${workspace}, 'intervention', 'fixture', 'fixture', ${db.sql.json({ ...data, host: 'other-host' })}, ${at(36)}::timestamptz)`;
+      expect((await readDiskHeadroomSoakEvidence(db.sql, workspace, requirements)).assessment.soakStatus).toBe('fail');
+      await db.sql`INSERT INTO harness_shared.attention_notifications (workspace_id, kind, title, body, data, created_at)
+        VALUES (${workspace}, 'intervention', 'fixture', 'fixture', ${db.sql.json(data)}, ${at(36)}::timestamptz)`;
+      expect((await readDiskHeadroomSoakEvidence(db.sql, workspace, requirements)).assessment.soakStatus).toBe('pass');
+      await db.sql`INSERT INTO harness_shared.attention_notifications (workspace_id, kind, title, body, data, created_at)
+        VALUES (${workspace}, 'intervention', 'fixture', 'fixture', ${db.sql.json({ conditionKey: 'alarm:disk-space' })}, ${at(48)}::timestamptz)`;
+      expect((await readDiskHeadroomSoakEvidence(db.sql, workspace, requirements)).assessment.soakStatus).toBe('unknown');
+    } finally { await db.cleanup(); }
+  }, 120_000);
   it('persists start, exact removal intent, removed path and final receipt in real Postgres', async () => {
     const adminUri = await getTestPg();
     const name = 'reclaim_' + randomBytes(5).toString('hex');
