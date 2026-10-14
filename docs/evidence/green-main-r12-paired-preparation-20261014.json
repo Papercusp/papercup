@@ -2501,5 +2501,20 @@
     "operationalAcceptance": false,
     "limits": "Read-only raw receipt/log qualification of saved desktop and fixture commands: exact task/step/command, six raw log hashes each, unchanged/current 36 and 26-input censuses, 34 ordered PASS desktop verdicts, fixture lifecycle and discovery/execution ordering plus build completion. Remaining native formats, full chain, installed dependencies, final transformed runtime, ABBA cohorts and shipment remain open."
   },
-  "next": "Extend the existing command-preparation reader branch to independently pinned Astro/voice native formats. Desktop and fixture command-local preparation now passed native IO readback; reuse their saved original commands and the maintained173 scheduler tests. Complete ordered native chain and source/dependency/final-transform closure. Do not launch the D020-held cohort. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
+  "nativeCommandPreparationAstroVoiceQualification": {
+    "status": "five-saved-original-command-readback-passed",
+    "evidence": "docs/evidence/green-main-command-preparation-qualification-20261014.json",
+    "readback": "~/.papercusp/scratch/c0523-five-command-preparation-readback-v1.json",
+    "readbackSha256": "5d69109b3c8beef43350b275f0122135d20ffbf641abea0d60118b6bd60a85c0",
+    "populationSha256": "6240b4080a9fee16c4413d89446b825c7a1622b022853e6c94ff8c0e2ce21338",
+    "maintainedTestsPassed": 223,
+    "testsSkipped": 0,
+    "childSubstituted": 0,
+    "nativeTestExitCode": 0,
+    "scopedTypecheckExitCode": 0,
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false
+  },
+  "next": "Saved desktop, fixture, both Astro and voice native formats now qualify through the existing command-preparation reader with223 maintained tests and scopedTSCexit0. Reuse their saved original commands. Next extend the existing reader to retain and qualify the original ordered-chain occurrence population with native per-step execution evidence, then complete source/dependency/final-transform closure. Partial selection remains partial; no full-chain or cohort acceptance is implied. Do not launch the D020/P006-held cohort. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
 }
