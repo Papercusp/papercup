@@ -1461,6 +1461,7 @@ cfg['mcpServers']['papercusp-su'] = {
             + '&ctx_tier=${PAPERCUSP_CONTEXT_TIER:-}'),
     'headers': {
         'Authorization': 'Bearer ' + token,
+        'x-papercusp-native-session': '${PAPERCUSP_NATIVE_SESSION_ID:-}',
     },
 }
 with open(path, 'w') as f:
