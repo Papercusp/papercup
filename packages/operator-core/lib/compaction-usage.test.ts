@@ -10,7 +10,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const advSessionRowsMock = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+const advSessionRowsMock = vi.hoisted(() =>
+  vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => [] as unknown[]),
+);
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: advSessionRowsMock }),
@@ -121,7 +123,7 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     advSessionRowsMock.mockClear();
     advSessionRowsMock.mockResolvedValue([{ id: 22, agent: 'claude', session_id: 'native-newest' }]);
     await resolveSessionRef('su-order');
-    const statement = advSessionRowsMock.mock.calls[0]?.[0] as TemplateStringsArray;
+    const statement = advSessionRowsMock.mock.calls[0]?.[0];
     expect(statement.join('')).toContain('ORDER BY started_at DESC, id DESC');
   });
 

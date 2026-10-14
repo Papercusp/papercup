@@ -1334,13 +1334,16 @@ describe('force rung (agent-managed-compaction P-012, carry-respawn under P-022)
     expect(payload.data).toBe('and also fix the login page');
   });
 
-  it('a failed spec build (no transcript anywhere) ⇒ NOT forced this pass; retries later', async () => {
+  it('an unresolved session ref and no transcript cannot drive an estimate-based cut', async () => {
     estimateMock.mockResolvedValue(200_000);
     findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['carry-respawn'] });
     hostSupportsMock.mockReturnValue(true);
-    newestTranscriptMock.mockReturnValue(null); // ref is null too ⇒ no transcript at all
+    resolveSessionRefMock.mockResolvedValue(null);
+    newestTranscriptMock.mockReturnValue(null);
     const out = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(out.forceCompacted).toEqual([]);
+    expect(out.overLimit).toEqual([]);
+    expect(estimateMock).not.toHaveBeenCalled();
     expect(injectMock).not.toHaveBeenCalled();
   });
 
