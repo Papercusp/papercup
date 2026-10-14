@@ -30,7 +30,35 @@ import { RESOURCE_GOVERNOR_PARK_OWNER } from '../resource-governor/queue';
 import { activeExternalBlockers } from '../external-blockers';
 import { boundedOrgTxn, OrgTxnTimeoutError } from '../pg-bounded-txn';
 import type { RevisionAdoptionBrief } from '../harness/improvements/agent-review';
+import { SERVING_RUNTIMES } from '../serving-runtimes';
 export { resolveClaimSpecWorkspace } from './claim-spec-workspace';
+
+/** A shared stored policy must remain readable by every local API authority. */
+async function claimSpecConsumerCompatibilityErrors(spec: ClaimSpec): Promise<string[]> {
+  if (spec.revisionAdoption === undefined) return [];
+  const consumers = ['release-operator', 'staging-operator', 'bg-host'] as const;
+  const results = await Promise.all(consumers.map(async (runtime) => {
+    const port = SERVING_RUNTIMES[runtime].healthPort;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+        signal: AbortSignal.timeout(1_500),
+      });
+      const health = response.ok ? await response.json() as {
+        ok?: unknown; sha?: unknown;
+        claimSpec?: { specVersion?: unknown; revisionAdoption?: unknown };
+      } : null;
+      if (health?.ok === true && typeof health.sha === 'string' && health.sha.trim()
+          && health.claimSpec?.specVersion === spec.specVersion
+          && Array.isArray(health.claimSpec.revisionAdoption)
+          && health.claimSpec.revisionAdoption.includes(spec.revisionAdoption)) return null;
+      return `revisionAdoption consumer ${runtime} (${health?.sha ?? 'unknown build'}) has not attested support`;
+    } catch {
+      return `revisionAdoption consumer ${runtime} could not be qualified`;
+    }
+  }));
+  return results.filter((error): error is string => error !== null).map((error) =>
+    `${error}; retain the incumbent spec until all consuming API readers support this field`);
+}
 
 /**
  * EI-18694186565089433: the revision is stored TWICE — the `cup_claim_specs.revision`
@@ -437,6 +465,8 @@ export async function setClaimSpec(
         if (!merged) return { ok: false, errors: ['appendIds requires an existing positive ID cohort; dynamic lanes need an explicit replacement spec'] };
         const revision = (prior?.revision ?? 0) + 1;
         const candidate = withColumnRevision(merged, revision);
+        const compatibilityErrors = await claimSpecConsumerCompatibilityErrors(candidate);
+        if (compatibilityErrors.length) return { ok: false, errors: compatibilityErrors };
         // Keep the stored federation scope as well as all authored rank, limits,
         // states and filter fences. Append is not a scope-rehome operation.
         const potSlug = prior ? prior.harness_slug : args.potSlug ?? null;
@@ -459,6 +489,8 @@ export async function setClaimSpec(
   }
   const v = validateClaimSpec(args.spec);
   if (!v.ok || !v.spec) return { ok: false, errors: v.errors };
+  const compatibilityErrors = await claimSpecConsumerCompatibilityErrors(v.spec);
+  if (compatibilityErrors.length) return { ok: false, errors: compatibilityErrors };
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
   const potSlug = args.potSlug ?? null;
