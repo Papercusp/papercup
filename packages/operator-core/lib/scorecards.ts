@@ -756,12 +756,14 @@ function canonicalJson(value: unknown): string {
 }
 
 function rerunRecipeEvidenceIdentity(recipe: SpecTestAdequacyRerunRecipe): Record<string, unknown> {
-  const withoutEvaluatorBuild = (value: object): Record<string, unknown> =>
-    Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'evaluatorBuild'));
-  return {
-    ...withoutEvaluatorBuild(recipe),
-    args: withoutEvaluatorBuild(recipe.args),
-  };
+  // `args` is the executable replay projection. `asStructuredObservation` rebuilds
+  // it from persisted selection/current metadata when cards are read, so hashing it
+  // makes an unchanged card acquire a different identity after that read. The
+  // canonical selection and currentness snapshot below retain the evidence identity;
+  // classRef and evaluatorRevision retain the evaluator semantics that affect grading.
+  return Object.fromEntries(
+    Object.entries(recipe).filter(([key]) => key !== 'evaluatorBuild' && key !== 'args'),
+  );
 }
 
 /**
