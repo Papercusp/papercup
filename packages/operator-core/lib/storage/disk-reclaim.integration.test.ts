@@ -102,16 +102,6 @@ describe('retention on a real fixture tree', () => {
     expect(await readFile(path, 'utf8')).toBe('expired');
   });
 
-  it('delivers a candidate payload larger than the native argv limit through an enrolled input pipe', async () => {
-    const input = JSON.stringify(Array.from({ length: 14_000 }, (_, i) => `/scratch/expired-${i}`));
-    expect(Buffer.byteLength(input)).toBeGreaterThan(128 * 1024);
-    const result = await nativeRetentionCommand(repoRoot, process.execPath, ['--input-type=module', '-e',
-      "const chunks=[]; for await(const chunk of process.stdin) chunks.push(chunk); const input=Buffer.concat(chunks).toString('utf8'); console.log(JSON.stringify({bytes:Buffer.byteLength(input),paths:JSON.parse(input).length}));"],
-    { stdin: input, stdoutOnly: true });
-    expect(result.ok).toBe(true);
-    expect(JSON.parse((result.detail as { output: string }).output)).toEqual({ bytes: Buffer.byteLength(input), paths: 14_000 });
-  });
-
   it('runs the native cargo delegate repeatedly with captured receipts and no missed completion', async () => {
     fixture = await mkdtemp(join(tmpdir(), 'disk-retention-cargo-'));
     const shared = join(fixture, 'target');
@@ -149,6 +139,15 @@ describe('retention on a real fixture tree', () => {
         extra: [...COORD_SUBSCRIPTION_SUBSTRATE.extra,
           '696-task-ledger.sql', '700-task-ledger-bash-job-id-idx.sql', '774-task-ledger-ended-unobserved-state.sql'],
       });
+      // Exercise the input transport against this real enrolled-task database.
+      // A single argv argument of this size fails with E2BIG on Linux.
+      const input = JSON.stringify(Array.from({ length: 14_000 }, (_, i) => `/scratch/expired-${i}`));
+      expect(Buffer.byteLength(input)).toBeGreaterThan(128 * 1024);
+      const streamed = await nativeRetentionCommand(repoRoot, process.execPath, ['--input-type=module', '-e',
+        "const chunks=[]; for await(const chunk of process.stdin) chunks.push(chunk); const input=Buffer.concat(chunks).toString('utf8'); console.log(JSON.stringify({bytes:Buffer.byteLength(input),paths:JSON.parse(input).length}));"],
+      { stdin: input, stdoutOnly: true });
+      expect(streamed, JSON.stringify(streamed)).toMatchObject({ ok: true });
+      expect(JSON.parse((streamed.detail as { output: string }).output)).toEqual({ bytes: Buffer.byteLength(input), paths: 14_000 });
       const listed = await nativeRetentionCommand(repoRoot, '/usr/bin/env', [...args, '--dry-run']);
       expect(listed, JSON.stringify(listed)).toMatchObject({ ok: true });
       expect(listed.detail).toMatchObject({ code: 0, output: expect.stringContaining(`would reap: ${dead}`) });
@@ -160,7 +159,7 @@ describe('retention on a real fixture tree', () => {
       const repeated = await nativeRetentionCommand(repoRoot, '/usr/bin/env', args);
       expect(repeated, JSON.stringify(repeated)).toMatchObject({ ok: true });
       const { getTask } = await import('../task-manager/store');
-      for (const result of [listed, removed]) {
+      for (const result of [streamed, listed, removed, repeated]) {
         const id = (result.detail as { taskId: string }).taskId;
         await expect.poll(async () => (await getTask(id))?.state).toBe('exited');
         expect(await getTask(id)).toMatchObject({ exitCode: 0 });
