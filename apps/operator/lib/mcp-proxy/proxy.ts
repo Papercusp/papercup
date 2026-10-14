@@ -2119,6 +2119,9 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
   [
     "scheduler:get_next",
     "coord:orient",
+    // Work-item and plan claim transitions may be followed by this explicit
+    // intent declaration; keep it on the same recovery/control-plane reserve.
+    "coord:declare-intent",
     "coord:send",
     // The automatic status glance is a read-only liveness surface. Keep it on the
     // reserved admission path so a saturated ordinary pool cannot hide the fleet
