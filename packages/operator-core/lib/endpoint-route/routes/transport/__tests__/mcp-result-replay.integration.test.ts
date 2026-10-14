@@ -18,6 +18,7 @@ import {
   lookupStoredMcpResult,
   serializeStoredMcpResult,
   storeMcpResult,
+  claimPendingMcpResult,
   sweepExpiredMcpResults,
   type StoredMcpResult,
 } from '../_mcp-result-replay';
@@ -153,7 +154,27 @@ describe('MCP result replay (audit P-046 / EI-68)', () => {
     },
   );
 
-  it('the sweep removes only rows past the 1h TTL; lookup ignores them either way', async () => {
+  it('retains a non-idempotent pot creation receipt across the generic expiry and sweep', async () => {
+    const { sql } = getOrgPg();
+    await storeMcpResult({ ownerKey: OWNER_A, idempotencyKey: 'old-pot-create',
+      toolName: 'pot:create_from_repo', workspaceId: 'default', result: RESULT });
+    await sql`UPDATE harness_shared.mcp_tool_results SET created_at = now() - interval '2 hours'
+      WHERE owner_key = ${OWNER_A} AND idempotency_key = 'old-pot-create'`;
+    await sweepExpiredMcpResults();
+    expect((await lookupStoredMcpResult(OWNER_A, 'old-pot-create'))?.content).toEqual(RESULT.content);
+  });
+  it('retains an unfinished pot operation so another process cannot claim it after expiry', async () => {
+    const { sql } = getOrgPg();
+    const input = { ownerKey: OWNER_A, idempotencyKey: 'old-pending-pot', toolName: 'pot:create_from_repo',
+      workspaceId: 'default', result: { ...RESULT, _meta: { state: 'pending', progressId: 'original' } } };
+    expect((await claimPendingMcpResult(input)).claimed).toBe(true);
+    await sql`UPDATE harness_shared.mcp_tool_results SET created_at = now() - interval '2 hours'
+      WHERE owner_key = ${OWNER_A} AND idempotency_key = 'old-pending-pot'`;
+    await sweepExpiredMcpResults();
+    expect(await claimPendingMcpResult(input)).toMatchObject({ claimed: false, pending: true });
+    expect(await lookupStoredMcpResult(OWNER_A, 'old-pending-pot')).toBeNull();
+  });
+  it('the sweep removes ordinary rows past the 1h TTL; lookup ignores them either way', async () => {
     const { sql } = getOrgPg();
     await storeMcpResult({
       ownerKey: OWNER_A,

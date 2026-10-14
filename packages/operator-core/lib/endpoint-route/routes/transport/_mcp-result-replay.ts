@@ -81,6 +81,10 @@ export interface PendingMcpResultClaim {
 
 /** Replay rows older than this are dead — the caller has long moved on. */
 const REPLAY_TTL_MS = 60 * 60 * 1000;
+// Force-create allocates a new suffixed pot on every dispatch. Its logical
+// operation receipt must survive reconnects after the ordinary cache TTL.
+// Reuse this receipt table as the durable operation identity; no new ledger.
+const DURABLE_CREATION_TOOL = 'pot:create_from_repo';
 /** Opportunistic sweep at most this often per process. */
 const SWEEP_MIN_INTERVAL_MS = 60 * 1000;
 let lastSweepAt = 0;
@@ -141,7 +145,8 @@ export async function lookupStoredMcpResult(
     SELECT result, is_error
       FROM harness_shared.mcp_tool_results
      WHERE owner_key = ${ownerKey} AND idempotency_key = ${idempotencyKey}
-       AND created_at > now() - make_interval(secs => ${REPLAY_TTL_MS / 1000})
+       AND (created_at > now() - make_interval(secs => ${REPLAY_TTL_MS / 1000})
+         OR tool_name = ${DURABLE_CREATION_TOOL})
   `;
   const row = rows[0];
   if (!row) return null;
@@ -345,7 +350,7 @@ export async function sweepExpiredMcpResults(now = Date.now()): Promise<number> 
   const rows = await sql<Array<{ n: number }>>`
     WITH del AS (
       DELETE FROM harness_shared.mcp_tool_results
-       WHERE created_at < ${cutoff}::timestamptz
+       WHERE created_at < ${cutoff}::timestamptz AND tool_name <> ${DURABLE_CREATION_TOOL}
       RETURNING 1
     )
     SELECT count(*)::int AS n FROM del
