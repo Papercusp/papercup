@@ -85,6 +85,7 @@ export const HOSTED_BROWSER_FIRST_WORKSPACE_PATH = '/hosted/browser/onboarding/f
 /** Selects the organization's existing workspace for a session that holds none. */
 export const HOSTED_BROWSER_SELECT_WORKSPACE_PATH = '/hosted/browser/onboarding/select-workspace' as const;
 export const HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH = '/hosted/browser/data/organization/export' as const;
+export const HOSTED_BROWSER_USER_EXPORT_PATH = '/hosted/browser/data/user/export' as const;
 
 export const HOSTED_BROWSER_QUERY_NAME = 'workspaceHosts.control' as const;
 
@@ -99,6 +100,7 @@ export const HOSTED_BROWSER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: HOSTED_BROWSER_FIRST_WORKSPACE_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_SELECT_WORKSPACE_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH, access: 'session' },
+  { method: 'POST', path: HOSTED_BROWSER_USER_EXPORT_PATH, access: 'session' },
   { method: 'GET', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'session' },
   { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'session' },
   { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_HELP_PATH, access: 'session' },
@@ -138,6 +140,7 @@ export interface HostedBrowserRouteDependencies {
   readonly runTenant?: HostedTenantContextRunner;
   /** Revalidates membership/session and exports through the hosted service transaction. */
   readonly exportOrganizationData?: (principal: HostedPrincipal) => Promise<OrganizationDataExport>;
+  readonly exportUserData?: (principal: HostedPrincipal) => Promise<OrganizationDataExport>;
   readonly readControl?: (workspaceId: string, tx?: Sql) => Promise<unknown[]>;
   readonly deliverCloudTelemetry?: typeof import('../telemetry-flush')['deliverCloudPosthog'];
   readonly readConnection?: (
@@ -561,8 +564,8 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   const subscribeEvents = deps.subscribe ?? subscribe;
   const backfill = deps.backfillSince ?? backfillSince;
 
-  const organizationExport = defineTool({
-    method: 'POST', path: HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH,
+  const exportRoute = (path: string, userOnly: boolean, read: HostedBrowserRouteDependencies['exportOrganizationData']) => defineTool({
+    method: 'POST', path,
     auth: { capabilities: [], kind: ['user'], trust: ['verified'] },
     cors: { origins: [origin] }, sampleRate: 0,
     async handler(request, ctx) {
@@ -573,13 +576,13 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
       if (csrf) return csrf;
       const mismatch = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
       if (mismatch) return mismatch;
-      if (!principal.permissions.has('members:manage')) return jsonError('customer_data_forbidden', 403);
-      if (!deps.exportOrganizationData) return jsonError('customer_data_unavailable', 503);
+      if (!principal.permissions.has(userOnly ? 'workspace:view' : 'members:manage')) return jsonError('customer_data_forbidden', 403);
+      if (!read) return jsonError('customer_data_unavailable', 503);
       try {
         // No caller-supplied scope, user id or purpose is read.
-        const exported = await deps.exportOrganizationData(principal);
+        const exported = await read(principal);
         return Response.json(exported, { headers: {
-          'cache-control': 'no-store', 'content-disposition': 'attachment; filename="organization-data.json"',
+          'cache-control': 'no-store', 'content-disposition': `attachment; filename="${userOnly ? 'user' : 'organization'}-data.json"`,
           'x-content-type-options': 'nosniff',
         } });
       } catch (error) {
@@ -588,6 +591,9 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
       }
     },
   });
+
+  const organizationExport = exportRoute(HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH, false, deps.exportOrganizationData);
+  const userExport = exportRoute(HOSTED_BROWSER_USER_EXPORT_PATH, true, deps.exportUserData);
 
   const fallbackObservation = defineTool({
     method: 'POST',
@@ -877,7 +883,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   const monitoring = createHostedCloudMonitoringRoutes({ origin, controlPlaneWorkspaceId, runTenant });
   const tutorialAssistance = createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorkspaceId, runTenant, dependencies: deps.tutorialAssistance });
   return {
-    routes: [query, sse, fallbackObservation, connection, provision, action, firstWorkspace, selectWorkspace, organizationExport, ...tutorialProgress, ...tutorialAssistance, ...monitoring],
+    routes: [query, sse, fallbackObservation, connection, provision, action, firstWorkspace, selectWorkspace, organizationExport, userExport, ...tutorialProgress, ...tutorialAssistance, ...monitoring],
     allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,
   };
 }

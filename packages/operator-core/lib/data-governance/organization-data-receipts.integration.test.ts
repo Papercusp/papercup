@@ -13,12 +13,13 @@
  *    reconciliation denies it again.
  */
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createHostedPrincipal } from '../auth/hosted-principal';
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
-import { exportHostedOrganizationData } from './hosted-customer-data';
+import { exportHostedOrganizationData, exportHostedUserData } from './hosted-customer-data';
 import { createPersonalGrant, purgePersonalSource, upsertPersonalDocuments } from '../personal-vault/store';
 import {
   CHAT_DERIVED_DOCUMENT_KINDS,
@@ -39,6 +40,7 @@ import {
 } from '../data-sources/documents-corpus';
 import {
   DATA_SOURCE_DEPENDENTS,
+  HOSTED_EXPORT_BRIDGED_STORES,
   PILOT_STORE_ACCESS_COLUMNS,
   RECEIPT_ACTIONS,
   deleteOrganizationData,
@@ -142,6 +144,8 @@ async function seed(opts: { hold: boolean }): Promise<void> {
 
 beforeAll(async () => {
   org = await createOrgTestDb();
+  const migration = new URL('../../../../libs/papercusp/libs/db/sql/1509-hosted-customer-data-workspace-export.sql', import.meta.url);
+  await org.adminSql.unsafe(readFileSync(existsSync(migration) ? migration : new URL(`${migration.href}.DRAFT`), 'utf8'));
   const [user] = await org.adminSql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name)
     VALUES (${`org-data-receipts-alice-${Date.now()}`}, 'alice') RETURNING id`;
@@ -168,6 +172,32 @@ beforeEach(async () => {
 });
 
 describe('organization data receipts (P-007c)', () => {
+  it('the hosted role can read the whole declared export population directly or through the fixed bridge (P-010)', async () => {
+    const stores = planOrganizationDataOperation().filter(t => t.executor === 'hosted-control-plane'
+      && t.attribution.kind !== 'unattributable').map(t => t.store);
+    const missing = await org.appSql.begin(async tx => {
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      const rows = await tx<{ store: string; readable: boolean }[]>`SELECT store, has_table_privilege(store, 'SELECT') AS readable
+        FROM unnest(${tx.array(stores)}::text[]) AS store`;
+      return rows.filter(r => !r.readable && !HOSTED_EXPORT_BRIDGED_STORES.includes(r.store)).map(r => r.store);
+    });
+    expect(missing, 'Every missing read must have a reviewed scoped bridge; never fix one permission at a time').toEqual([]);
+  });
+
+  it('the fixed bridge rejects unscoped reads, mismatched tenants and arbitrary stores (P-010)', async () => {
+    const read = (organizationId: string | null, requested: string, store: string) => org.appSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'hosted-control-plane-service', true),
+        set_config('app.organization_id', ${organizationId ?? ''}, true)`;
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      return tx`SELECT data FROM papercusp_auth.read_hosted_customer_export_rows(${store}, ${requested})`;
+    });
+    await expect(read(null, scope.organizationId, 'harness_shared.customer_workspaces')).rejects.toThrow('service scope is invalid');
+    await expect(read(scope.organizationId, randomUUID(), 'harness_shared.customer_workspaces')).rejects.toThrow('service scope is invalid');
+    await expect(read(scope.organizationId, scope.organizationId, 'papercusp_auth.hosted_sessions')).rejects.toThrow('store is not allowed');
+    await expect(org.appSql`SELECT data FROM papercusp_auth.read_hosted_customer_export_rows
+      ('harness_shared.customer_workspaces', ${scope.organizationId})`).rejects.toThrow('permission denied');
+  });
+
   it('every declared access column exists in the live schema', async () => {
     for (const [store, columns] of Object.entries(PILOT_STORE_ACCESS_COLUMNS)) {
       const [schema, table] = store.split('.');
@@ -288,6 +318,7 @@ describe('organization data receipts (P-007c)', () => {
   });
 
   it('refuses a new unmapped hosted column and rolls the export receipt back (P-010)', async () => {
+
     await org.adminSql.unsafe('ALTER TABLE papercusp_auth.hosted_users ADD COLUMN p010_unmapped text');
     try {
       await expect(exportOrganizationData(org.adminSql, { executor: 'hosted-control-plane',
@@ -318,6 +349,8 @@ describe('organization data receipts (P-007c)', () => {
     const run = () => org.appSql.begin(async tx => {
       await tx`SELECT set_config('app.workspace_id', 'hosted-control-plane-service', true)`;
       await tx.unsafe('SET LOCAL ROLE hosted_service');
+      const [access] = await tx<{ direct: boolean }[]>`SELECT has_table_privilege('harness_shared.customer_workspaces', 'SELECT') AS direct`;
+      expect(access!.direct).toBe(false);
       return exportHostedOrganizationData(tx as never, principal);
     });
     const exported = await run();
@@ -339,6 +372,54 @@ describe('organization data receipts (P-007c)', () => {
     const receipts = await org.adminSql`SELECT id FROM papercusp_auth.organization_audit_events
       WHERE organization_id = ${organizationId}::uuid AND action = 'organization.data.export'`;
     expect(receipts).toHaveLength(1);
+  });
+
+  it('exports a member’s own user records and joined sealed-session metadata without other users or organization-level records (P-010)', async () => {
+    const organizationId = randomUUID(), userId = randomUUID(), peerId = randomUUID();
+    await org.adminSql`INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name, status)
+      VALUES (${organizationId}::uuid, ${`personal-${organizationId}`}, 'Personal export', 'active')`;
+    for (const id of [userId, peerId]) {
+      await org.adminSql`INSERT INTO papercusp_auth.hosted_users (id, primary_email, status)
+        VALUES (${id}::uuid, ${`${id}@example.test`}, 'active')`;
+      await org.adminSql`INSERT INTO papercusp_auth.organization_memberships (organization_id, user_id, role, created_via)
+        VALUES (${organizationId}::uuid, ${id}::uuid, 'member', 'organization_bootstrap')`;
+      await org.adminSql`INSERT INTO papercusp_auth.legal_acceptances
+        (organization_id, user_id, document_kind, document_version, acceptance_source, accepted_at)
+        VALUES (${organizationId}::uuid, ${id}::uuid, 'terms', 'test-v1', 'hosted_ui', now())`;
+      // Migration1418 enrolls preferences on membership insertion. Exercise
+      // that real path instead of inserting a duplicate fixture row.
+      const preferences = await org.adminSql`UPDATE papercusp_auth.hosted_user_preferences
+        SET profile = profile || ${JSON.stringify({ displayName: id })}::text::jsonb
+        WHERE organization_id = ${organizationId}::uuid AND user_id = ${id}::uuid RETURNING user_id`;
+      expect(preferences).toHaveLength(1);
+    }
+    const authority = await new PostgresHostedMembershipAuthority(org.adminSql as never).resolveActive({ userId, organizationId });
+    const session = await new HostedSessionStore(org.adminSql as never).create({ userId, organizationId,
+      permissionVersion: authority!.permissionVersion, upstreamProvider: 'workos', upstreamSessionId: `user-export-${userId}`,
+      expiresAt: new Date(Date.now() + 3600000) });
+    await org.adminSql`INSERT INTO papercusp_auth.workos_sealed_sessions (external_session_id, sealed_session, expires_at)
+      VALUES (${session.upstreamSessionId}, 'never-export-sealed', ${session.expiresAt.toISOString()}::timestamptz)`;
+    const principal = createHostedPrincipal({ workspaceId: 'control', userId, activeOrganizationId: organizationId,
+      sessionId: session.id, sessionVersion: session.permissionVersion, permissions: authority!.permissions });
+    const run = (exporter: typeof exportHostedUserData) => org.appSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'hosted-control-plane-service', true)`;
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      return exporter(tx as never, principal);
+    });
+    await expect(run(exportHostedOrganizationData)).rejects.toThrow('customer_data_forbidden');
+    const data = await run(exportHostedUserData);
+    const rows = (store: string) => data.stores.find(s => s.store === store)?.rows ?? [];
+    expect(rows('papercusp_auth.hosted_users')).toEqual([expect.objectContaining({ id: userId })]);
+    expect(rows('papercusp_auth.organization_memberships')).toEqual([expect.objectContaining({ user_id: userId })]);
+    expect(rows('papercusp_auth.legal_acceptances')).toEqual([expect.objectContaining({ user_id: userId })]);
+    expect(rows('papercusp_auth.hosted_user_preferences')).toEqual([expect.objectContaining({ user_id: userId })]);
+    expect(rows('papercusp_auth.workos_sealed_sessions')).toHaveLength(1);
+    expect(rows('papercusp_auth.organizations')).toHaveLength(0);
+    expect(JSON.stringify(data)).not.toContain(peerId);
+    expect(JSON.stringify(data)).not.toContain('never-export-sealed');
+    expect((await receiptRow(data.receiptId)).metadata.userId).toBe(userId);
+    await new HostedSessionStore(org.adminSql as never).revoke(session.id);
+    await expect(run(exportHostedUserData)).rejects.toThrow('customer_data_forbidden');
   });
 
   it('deletes the scope, keeps rows under a legal hold, and names the hold conflict', async () => {

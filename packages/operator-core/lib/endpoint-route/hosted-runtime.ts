@@ -52,7 +52,7 @@ import { awsProviderDelegationAdapter } from '../workspace-host/hosted-aws-auth'
 import { hostedDelegationOrganization } from '../workspace-host/hosted-delegation-organization';
 import { papercuspHostingGrantEffective } from '../workspace-host/hosted-gcp-hosting';
 import { HostedSessionCookieCodec } from '../auth/hosted-session';
-import { exportHostedOrganizationData } from '../data-governance/hosted-customer-data';
+import { exportHostedOrganizationData, exportHostedUserData } from '../data-governance/hosted-customer-data';
 import { createWorkspaceHostProvisioningClient } from '../dbos/workspace-host-provision-client';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { createHostedFirstWorkspace } from '../auth/hosted/first-workspace';
@@ -83,6 +83,7 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /hosted/browser/onboarding/first-workspace',
   'POST /hosted/browser/onboarding/select-workspace',
   'POST /hosted/browser/data/organization/export',
+  'POST /hosted/browser/data/user/export',
   'GET /hosted/browser/onboarding/tutorial-progress',
   'POST /hosted/browser/onboarding/tutorial-progress',
   'POST /hosted/browser/onboarding/tutorial-help',
@@ -475,6 +476,8 @@ export async function createHostedRuntime(
       runTenant: dependencies.hostedBrowser?.runTenant ?? runTenant,
       exportOrganizationData: dependencies.hostedBrowser?.exportOrganizationData
         ?? ((principal) => runService(tx => exportHostedOrganizationData(tx, principal))),
+      exportUserData: dependencies.hostedBrowser?.exportUserData
+        ?? ((principal) => runService(tx => exportHostedUserData(tx, principal))),
       firstWorkspace,
       ...(provisioning ? { provisioning } : {}),
       ...(operations ? { operations } : {}),
