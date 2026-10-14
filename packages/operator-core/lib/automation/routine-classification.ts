@@ -572,6 +572,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   },
   'system:session-dir-gc': { spend: 'none', why: 'Deletes isolation dirs of ended sessions' },
   'system:telemetry-retention': { spend: 'none', why: 'Applies telemetry retention windows' },
+  'system:organization-content-reseal': { spend: 'none', why: 'Re-seals organization documents left under an older data-key version; bounded reads and compare-and-swap writes, no model or agent launch' },
   'system:idle-session-reaper': { spend: 'none', why: 'Reaps idle session rows' },
   'system:idle-backend-reaper': {
     spend: 'none',
