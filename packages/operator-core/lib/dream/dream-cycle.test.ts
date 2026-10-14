@@ -213,6 +213,16 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     expect(await runDreamCycle(h.input, h.d)).toMatchObject({ reason: 'review-unavailable', attempts: 1, costUsd: 0 });
     expect(h.runs.size).toBe(1);
   });
+  it('uses the observed packet verifier at production readiness before any paid generation', async () => {
+    const h = await harness();
+    h.d.verifyPacket = vi.fn(async () => ({ fresh: false, reason: 'Compiler graph differs from current cited source' }));
+    expect(await runDreamCycle(h.input, h.d)).toMatchObject({ reason: 'review-unavailable', attempts: 1, costUsd: 0 });
+    expect(h.d.verifyPacket).toHaveBeenCalled();
+    expect(h.llm).not.toHaveBeenCalled();
+    const run = [...h.runs.values()][0]!;
+    expect(run.review).toMatchObject({ ready: false, reason: 'source-unavailable',
+      note: 'Compiler graph differs from current cited source' });
+  });
   it('marks an unpriced-model admission refusal as generation skipped', async () => {
     const h = harness();
     h.input.pass = { model: 'unpriced-provider' };

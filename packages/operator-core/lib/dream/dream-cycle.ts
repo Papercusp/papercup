@@ -62,6 +62,7 @@ export interface DreamCycleDeps {
   loadPackets: (signal: AbortSignal) => Promise<CapabilityPacket[]>;
   loadHistory: () => Promise<DreamRun[]>;
   reviewSources: (packets: CapabilityPacket[]) => CapabilityReviewSources;
+  verifyPacket?: typeof verifyCapabilityPacket;
   loadProblems?: () => Promise<DreamProblemContext>;
   beginRun: (input: {
     runId: string;
@@ -494,7 +495,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
             sources: deps.reviewSources(packets!), dreamerModel: pass.model, config: reviewConfig,
             signal, cycleDeadlineMs: deadlineMs,
           }, {
-            verifyPacket: verifyCapabilityPacket,
+            verifyPacket: deps.verifyPacket ?? verifyCapabilityPacket,
             rerank: (query, priors, options) => local('rerank:preflight', 'rerank', () =>
               (deps.rerank ?? rerankCapabilityPriors)(query, priors, options)),
           }),
@@ -553,7 +554,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
               problemContext,
             },
             {
-              verifyPacket: verifyCapabilityPacket,
+              verifyPacket: deps.verifyPacket ?? verifyCapabilityPacket,
               rerank: (query, priors, options) =>
                 local('rerank', 'rerank', () => (deps.rerank ?? rerankCapabilityPriors)(query, priors, options)),
             },
