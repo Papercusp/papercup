@@ -139,6 +139,9 @@ OUTFILE="${2:-dist-host/hono-host.mjs}"
 [[ "$ENTRY" = /* ]] || ENTRY="$OPERATOR_DIR/$ENTRY"
 [[ "$OUTFILE" = /* ]] || OUTFILE="$OPERATOR_DIR/$OUTFILE"
 OUTDIR="$(dirname "$OUTFILE")"
+BUNDLE_HOST_STEP_LOG="$OUTFILE.build-steps.jsonl"
+mkdir -p "$OUTDIR"
+: > "$BUNDLE_HOST_STEP_LOG"
 # >>> custom-output runtime dependencies (EI-25510203057543967)
 # Bare ESM imports resolve beside the generated file, independently of cwd.
 # Default outputs inherit this checkout's node_modules; an explicit output
@@ -389,7 +392,7 @@ restricted_hold_gate() { # 0 = admitted · 1 = refused (the snapshot was restore
   if [[ -f "$OUTDIR/spawner-sidecar.mjs.meta.json" ]]; then
     args+=(--metafile "$OUTDIR/spawner-sidecar.mjs.meta.json")
   fi
-  "${COMMITTED_NODE[@]}" "$GATE_HELPER" "${args[@]}" >"$GATE_LOG" 2>&1 || gate_rc=$?
+  bundle_host_run_step restricted-hold-gate "${COMMITTED_NODE[@]}" "$GATE_HELPER" "${args[@]}" >"$GATE_LOG" 2>&1 || gate_rc=$?
   cat "$GATE_LOG"
   [[ $gate_rc -eq 0 ]]
 }
@@ -492,7 +495,7 @@ for gate_artifact in "${OUTFILE##*/}" "${OUTFILE##*/}.meta.json" spawner-sidecar
   gate_snapshot_args+=(--artifact "$gate_artifact")
 done
 mkdir -p "$BUNDLE_HOST_GATE_META_DIR"
-if ! "${COMMITTED_NODE[@]}" "$GATE_HELPER" snapshot --outdir "$OUTDIR" --snapshot-dir "$GATE_SNAPSHOT_DIR" \
+if ! bundle_host_run_step artifact-snapshot "${COMMITTED_NODE[@]}" "$GATE_HELPER" snapshot --outdir "$OUTDIR" --snapshot-dir "$GATE_SNAPSHOT_DIR" \
     "${gate_snapshot_args[@]}" >"$GATE_LOG" 2>&1; then
   cat "$GATE_LOG"
   echo "🚨 ERROR: could not snapshot the last-known-good bundle for the restricted-hold gate; not building over it." | tee -a "$GATE_LOG"
@@ -509,7 +512,7 @@ bundle_rc=0
 # marker. WI-10005113: `|| bundle_rc=$?`, not `if ! ( … ); then bundle_rc=1`, so
 # the subshell's REAL status survives and a signal death (128+N) is reported as one.
 (
-  flock -w 120 9 || { echo "ERROR: timed out waiting for bundle lock $LOCKFILE (another build stuck?)"; exit 1; }
+  bundle_host_run_step bundle-lock flock -w 120 9 || { echo "ERROR: timed out waiting for bundle lock $LOCKFILE (another build stuck?)"; exit 1; }
   # WI-55467: the SAME errexit hole the checker comment below describes applies to
   # esbuild itself, and it was left unplugged. A failed/killed esbuild wrote no
   # $METAFILE, execution fell through to the checker, and the checker died with a raw
@@ -530,9 +533,9 @@ bundle_rc=0
   # umbrella, then 90 s (WI-10006268).
   probe_attempt=1
   while :; do
-    "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" wait --root "$REPO_ROOT" \
+    bundle_host_run_step host-probe-wait "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" wait --root "$REPO_ROOT" \
       --stamp-file "$PROBE_STAMP" || exit 1
-    if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/npm-install-safe.mjs" \
+    if ! bundle_host_run_step host-compile "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/npm-install-safe.mjs" \
       --repo-root "$REPO_ROOT" --exec-under-cache-lock -- npx --yes esbuild@0.25.0 "$ENTRY" \
       --bundle --platform=node --format=esm --target=node22 \
       "${HOST_MINIFY_ARGS[@]}" \
@@ -547,7 +550,7 @@ bundle_rc=0
       echo "ERROR: esbuild failed to bundle $ENTRY (see the esbuild diagnostics above)."
       exit 1
     fi
-    if "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" verify --root "$REPO_ROOT" \
+    if bundle_host_run_step host-probe-verify "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" verify --root "$REPO_ROOT" \
       --stamp-file "$PROBE_STAMP"; then
       break
     fi
@@ -561,7 +564,7 @@ bundle_rc=0
   # This subshell is the left side of `|| bundle_rc=$?`; Bash disables errexit inside such a
   # tested compound command. An unwrapped checker failure therefore fell through to ascii-escape + mv,
   # publishing the rejected bundle and returning success. Fail explicitly before the atomic swap.
-  if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \
+  if ! bundle_host_run_step host-cli-guard "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \
     --metafile "$METAFILE" --base-dir "$REPO_ROOT"; then
     exit 1
   fi
@@ -572,7 +575,7 @@ bundle_rc=0
   # atomic mv is below) for value references that reach global scope unbound. Findings keep LKG.
   # Metafile input keys are repo-root relative; keep --base-dir at REPO_ROOT. Unreadable inputs
   # and a selected batch with zero analyzable inputs refuse publication instead of reading clean.
-  if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundle-free-refs.mjs" \
+  if ! bundle_host_run_step host-free-refs "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundle-free-refs.mjs" \
     --metafile "$METAFILE" --base-dir "$REPO_ROOT" --since "$OUTFILE" \
     "${HOST_BANNER_DEFINES[@]}" --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
     "${BUNDLED_SOURCE_SHA_DEFINE[@]}"; then
@@ -584,14 +587,14 @@ bundle_rc=0
   # below, so the swap stays atomic and a failure here leaves the last-known-good
   # $OUTFILE untouched. The helper never exits non-zero — a bundle that skipped
   # the escape is correct, just fatter, and is not worth failing a boot over.
-  "${COMMITTED_NODE[@]}" "$HELPER_DIR/ascii-escape-bundle.mjs" "$TMPFILE"
+  bundle_host_run_step host-ascii "${COMMITTED_NODE[@]}" "$HELPER_DIR/ascii-escape-bundle.mjs" "$TMPFILE" || exit 1
   # WI-10005299: syntax-gate the FINAL bytes before the swap. ascii-escape's own check only
   # judges its rewrite, and on failure it keeps the input on the assumption that escaping
   # broke it. When the INPUT was already invalid (a banner/module `__dirname` redeclaration),
   # that shipped a bundle that died with a SyntaxError on every start. stdin + input-type keeps
   # the ESM grammar for a temp path that has no .mjs extension. Failing here keeps the
   # last-known-good $OUTFILE.
-  if ! node --input-type=module --check < "$TMPFILE"; then
+  if ! bundle_host_run_step host-syntax node --input-type=module --check < "$TMPFILE"; then
     echo "ERROR: the bundled $OUTFILE fails \`node --check\` (it would throw a SyntaxError at load); keeping the last-known-good bundle."
     exit 1
   fi
