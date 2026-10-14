@@ -5,12 +5,18 @@
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { verifierGitCheckoutSync, verifierSourceFiles } from '@papercusp/test-config/verifier-source';
 import type { RestrictedEditHolding } from '../../personal-vault/git-sync-hold';
 import { restrictedHoldBundleRefusal, restrictedHoldRefusal, TEST_ROUTER_PATH } from './restricted-hold-fence';
+
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, lstat: vi.fn(actual.lstat) };
+});
 
 let root: string;
 
@@ -123,7 +129,7 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
     if (owned) rmSync(owned, { recursive: true, force: true });
     owned = undefined;
   });
-  function archive() {
+  function archive(withSubmodule = false) {
     owned = mkdtempSync(join(tmpdir(), 'bundle-archive-'));
     const selectedRoot = join(owned, 'source');
     mkdirSync(join(selectedRoot, 'src'), { recursive: true });
@@ -131,13 +137,26 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
     const git = (args: string[]) => execFileSync('git', ['-C', selectedRoot, ...args], { encoding: 'utf8' }).trim();
     git(['init', '--quiet']);
     git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'parent']);
+    const submodules: Array<{ path: string; sha: string }> = [];
+    if (withSubmodule) {
+      const path = 'vendor/library';
+      const nested = join(selectedRoot, path);
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(nested, 'clean.ts'), 'export const nested = true;\n');
+      const run = (args: string[]) => execFileSync('git', ['-C', nested, ...args], { encoding: 'utf8' }).trim();
+      run(['init', '--quiet']);
+      run(['add', 'clean.ts']);
+      run(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'nested source']);
+      submodules.push({ path, sha: run(['rev-parse', 'HEAD']) });
+      git(['add', path]);
+    }
     git(['add', 'src/clean.ts']);
     git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'source']);
     const sourceCommit = git(['rev-parse', 'HEAD']);
-    const files = verifierSourceFiles(selectedRoot, { gitMetadataPaths: ['.git'] });
+    const files = verifierSourceFiles(selectedRoot, { gitMetadataPaths: ['.git', ...submodules.map(row => row.path + '/.git')] });
     const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit,
       testedInputs: [{ path: 'src/clean.ts', sha256: files[0].sha256 }],
-      gitCheckout: verifierGitCheckoutSync(selectedRoot, sourceCommit), files };
+      submodules, gitCheckout: verifierGitCheckoutSync(selectedRoot, sourceCommit, submodules), files };
     const receiptPath = join(owned, 'receipt.json');
     writeFileSync(receiptPath, JSON.stringify(receipt));
     writeFileSync(join(selectedRoot, '.verifier-source.json'), JSON.stringify(receipt));
@@ -152,6 +171,36 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
     expect(await restrictedHoldBundleRefusal(a.selectedRoot,
       { files: [a.file], dirs: [join(a.selectedRoot, 'src')] }, { holdings })).toBeNull();
     expect(holdings).not.toHaveBeenCalled();
+  });
+
+  it('uses verified repository boundaries without rediscovering them for each bundle source', async () => {
+    const a = archive();
+    vi.mocked(lstat).mockClear();
+    expect(await restrictedHoldBundleRefusal(a.selectedRoot,
+      { files: [a.file], dirs: [] })).toBeNull();
+    const boundaryProbes = vi.mocked(lstat).mock.calls.filter(([path]) =>
+      String(path).startsWith(a.selectedRoot + '/') && String(path).endsWith('/.git'));
+    expect(boundaryProbes).toEqual([]);
+  });
+
+  it('resolves a verified nested repository through the parent Git pin even with a forged newer receipt', async () => {
+    const a = archive(true);
+    const nested = join(a.selectedRoot, 'vendor/library');
+    const file = join(nested, 'clean.ts');
+    const inputs = { files: [file], dirs: [] };
+    expect(await restrictedHoldBundleRefusal(a.selectedRoot, inputs)).toBeNull();
+    writeFileSync(file, 'export const planted = true;\n');
+    const git = (args: string[]) => execFileSync('git', ['-C', nested, ...args], { encoding: 'utf8' }).trim();
+    git(['add', 'clean.ts']);
+    git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'unselected nested source']);
+    const submodules = [{ path: 'vendor/library', sha: git(['rev-parse', 'HEAD']) }];
+    const forged = { ...a.receipt, submodules,
+      gitCheckout: verifierGitCheckoutSync(a.selectedRoot, a.receipt.sourceCommit, submodules),
+      files: verifierSourceFiles(a.selectedRoot, { gitMetadataPaths: ['.git', 'vendor/library/.git'] }) };
+    writeFileSync(a.receiptPath, JSON.stringify(forged));
+    writeFileSync(join(a.selectedRoot, '.verifier-source.json'), JSON.stringify(forged));
+    const refusal = await restrictedHoldBundleRefusal(a.selectedRoot, inputs);
+    expect(refusal?.hint).toContain('differs from committed source: vendor/library/clean.ts');
   });
 
   it('retains ordered phase boundaries for an admitted archive and localizes a forged receipt refusal', async () => {

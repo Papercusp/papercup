@@ -37,6 +37,8 @@ import type {
   ProviderMembershipSnapshot,
   ProviderSyncError,
   ProviderSyncPage,
+  ProviderCatchUp,
+  ProviderLossRisk,
 } from '@papercusp/plugin-sdk';
 import {
   ingestExternalTriggerEvent,
@@ -55,6 +57,7 @@ import { resolveProviderServices } from '../integrations/service-credentials';
 import {
   PROVIDER_ACL_REF_PATTERN,
   providerCoverageIssues,
+  providerSyncProgressIssues,
   PROVIDER_SYNC_ADOPT_CAPABILITY,
   PROVIDER_SYNC_WAKE_CAPABILITY,
   providerSyncErrorOf,
@@ -138,6 +141,8 @@ export interface ConnectorSourceOutcome {
    * attributable to an operation and status instead of inferred from a counter (WI-10001662).
    */
   cursorResetReason?: string;
+  catchUp?: ProviderCatchUp;
+  lossRisk?: ProviderLossRisk;
   /** True when this pass adopted the source's pre-provider cursor state (D-020). */
   adopted?: boolean;
   /** Provider-required config keys absent before this source can be synced. */
@@ -465,6 +470,10 @@ function assertPage(page: unknown, provider: RegisteredProvider): asserts page i
       message: `provider ${provider.descriptor.id} returned malformed coverage: ${coverageIssues.join('; ')}`,
     });
   }
+  const progressIssues = providerSyncProgressIssues(p);
+  if (progressIssues.length > 0) {
+    throw new ProviderSyncFailure({ kind: 'transient', message: `provider ${provider.descriptor.id} returned malformed sync progress: ${progressIssues.join('; ')}` });
+  }
 }
 
 const SOURCE_COLUMNS = (sql: postgres.Sql) => sql`
@@ -556,10 +565,19 @@ async function commitCursor(
   leaseSeconds: number,
   cursor: string | null,
   backfillStatus: string,
+  progress?: { catchUp?: ProviderCatchUp; lossRisk?: ProviderLossRisk; catchUpFrom?: string | null },
 ): Promise<boolean> {
+  const prior = source.cursor.providerSync;
+  const storedProgress = progress === undefined ? null : JSON.stringify({
+    ...(prior && typeof prior === 'object' && !Array.isArray(prior) ? prior : {}),
+    ...progress,
+    ...(backfillStatus !== 'pending' ? { lastSyncedAt: new Date().toISOString() } : {}),
+  });
   const rows = await sql<{ id: string }[]>`
     UPDATE harness_shared.data_sources
-       SET cursor = jsonb_set(COALESCE(cursor, '{}'::jsonb), '{provider}', ${jsonText(cursor)}::text::jsonb),
+       SET cursor = jsonb_set(COALESCE(cursor, '{}'::jsonb), '{provider}', ${jsonText(cursor)}::text::jsonb)
+             || CASE WHEN ${storedProgress}::text IS NOT NULL THEN jsonb_build_object('providerSync',
+                  ${storedProgress}::text::jsonb) ELSE '{}'::jsonb END,
            backfill_status = ${backfillStatus},
            sync_lease_expires_at = now() + make_interval(secs => ${leaseSeconds}),
            updated_at = now()
@@ -764,6 +782,11 @@ async function syncSource(
     return { ...outcome, outcome: 'leased-elsewhere' };
   }
   let cursor = providerCursorOf(source);
+  const priorProgress = source.cursor.providerSync as { lossRisk?: ProviderLossRisk; catchUpFrom?: string } | undefined;
+  let catchUpFrom = typeof priorProgress?.catchUpFrom === 'string' ? priorProgress.catchUpFrom : undefined;
+  if (priorProgress && providerSyncProgressIssues(priorProgress).length === 0 && priorProgress.lossRisk) {
+    outcome.lossRisk = priorProgress.lossRisk;
+  }
   let working = source;
   const sinkCache = new Map<string, ExternalTriggerSink[]>();
   try {
@@ -806,6 +829,7 @@ async function syncSource(
             source: source.id,
             cursor,
             mode,
+            ...(catchUpFrom ? { catchUpFrom } : {}),
             ...(source.config ? { config: source.config } : {}),
             ...(deps.services ? { services: deps.services } : {}),
             ...(sourceScopeOf(source) ? { scope: sourceScopeOf(source)! } : {}),
@@ -818,10 +842,11 @@ async function syncSource(
         if (failure.kind === 'cursor-expired' && !outcome.cursorReset) {
           outcome.cursorReset = true;
           outcome.cursorResetReason = failure.message;
+          catchUpFrom = cursor ?? undefined;
           cursor = null;
           mode = 'backfill';
           outcome.mode = mode;
-          if (!(await commitCursor(sql, working, deps.owner, opts.leaseSeconds, null, 'pending'))) {
+          if (!(await commitCursor(sql, working, deps.owner, opts.leaseSeconds, null, 'pending', { catchUpFrom: catchUpFrom ?? null }))) {
             return { ...outcome, outcome: 'leased-elsewhere' };
           }
           working = { ...working, cursor: { ...working.cursor, provider: null }, backfillStatus: 'pending' };
@@ -857,17 +882,29 @@ async function syncSource(
         if (reconciled) outcome.coverageTombstoned = (outcome.coverageTombstoned ?? 0) + reconciled.tombstoned;
       }
       const backfillStatus = mode === 'backfill' ? (page.hasMore ? 'running' : 'complete') : 'complete';
-      if (!(await commitCursor(sql, working, deps.owner, opts.leaseSeconds, page.nextCursor, backfillStatus))) {
+      const progress = {
+        ...(page.catchUp ? { catchUp: page.catchUp } : {}),
+        ...(page.lossRisk ?? outcome.lossRisk ? { lossRisk: page.lossRisk ?? outcome.lossRisk } : {}),
+        catchUpFrom: page.hasMore ? catchUpFrom ?? null : null,
+      };
+      if (!(await commitCursor(sql, working, deps.owner, opts.leaseSeconds, page.nextCursor, backfillStatus, progress))) {
         return { ...outcome, outcome: 'leased-elsewhere' };
       }
+      if (page.catchUp) outcome.catchUp = page.catchUp;
+      if (page.lossRisk) outcome.lossRisk = page.lossRisk;
       cursor = page.nextCursor;
-      working = { ...working, cursor: { ...working.cursor, provider: cursor }, backfillStatus };
+      working = { ...working, cursor: { ...working.cursor, provider: cursor, providerSync: {
+        ...(working.cursor.providerSync as object ?? {}), ...progress,
+      } }, backfillStatus };
       outcome.hasMore = page.hasMore;
       if (!page.hasMore) break;
     }
     await finishPass(sql, working, deps.owner, {
-      status: 'connected',
-      lastError: outcome.rejected > 0 ? `connector_records_rejected:${outcome.rejected}` : null,
+      status: outcome.lossRisk ? 'degraded' : 'connected',
+      // A later successful read cannot recover events the remote already discarded. Preserve the warning.
+      lastError: outcome.lossRisk
+        ? `connector_loss_risk:${outcome.lossRisk.kind}; oldest_reachable_at=${outcome.lossRisk.oldestReachableAt}; ${outcome.lossRisk.detail}`
+        : outcome.rejected > 0 ? `connector_records_rejected:${outcome.rejected}` : null,
       failureCount: 0,
       // More pages pending → due again immediately; otherwise the poll cadence.
       nextAttemptSeconds: outcome.hasMore ? null : opts.pollIntervalSeconds,

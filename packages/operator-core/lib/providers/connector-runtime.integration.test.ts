@@ -168,6 +168,7 @@ interface SourceState {
   next_in: number | null;
   lease_owner: string | null;
   last_error: string | null;
+  progress: { catchUp?: ProviderSyncPage['catchUp']; lossRisk?: ProviderSyncPage['lossRisk']; lastSyncedAt?: string } | null;
 }
 
 async function state(sourceId: string): Promise<SourceState> {
@@ -178,7 +179,8 @@ async function state(sourceId: string): Promise<SourceState> {
            sync_failure_count AS failure_count,
            EXTRACT(EPOCH FROM sync_next_attempt_at - now())::float8 AS next_in,
            sync_lease_owner AS lease_owner,
-           last_error
+           last_error,
+           cursor->'providerSync' AS progress
       FROM harness_shared.data_sources
      WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
   return row;
@@ -770,6 +772,69 @@ describe('container readership and source scope (D-026)', () => {
       members: [member('U0')],
       containers: [{ ref: 'C1', members: [] }],
     });
+  });
+
+  it('preserves the rejected cursor for catch-up and records retention loss in source health (P-032)', async () => {
+    const src = await createSource();
+    handler = scripted({ start: page([mail('m1')], 'old', false) });
+    await syncOne(src);
+    await makeDue(src);
+    const lossRisk = { kind: 'retention-window-exceeded' as const, oldestReachableAt: '2026-10-02T00:00:00Z', detail: 'Events before this boundary were discarded' };
+    handler = async (req) => {
+      if (req.cursor === 'old') throw new ProviderSyncFailure({ kind: 'cursor-expired', message: 'retention expired' });
+      expect(req).toMatchObject({ cursor: null, mode: 'backfill', catchUpFrom: 'old' });
+      return { ...page([mail('m2')], 'new', false), catchUp: { path: 'backfill', reason: 'cursor-expired' }, lossRisk };
+    };
+    expect(await syncOne(src)).toMatchObject({ outcome: 'synced', cursorReset: true, lossRisk });
+    expect(await state(src)).toMatchObject({ cursor: 'new', status: 'degraded', failure_count: 0,
+      progress: { lossRisk, catchUp: { path: 'backfill', reason: 'cursor-expired' } } });
+    expect((await state(src)).last_error).toContain('oldest_reachable_at=2026-10-02T00:00:00Z');
+    expect(Number.isFinite(Date.parse((await state(src)).progress!.lastSyncedAt!))).toBe(true);
+    await makeDue(src);
+    handler = async () => page([], 'later', false);
+    expect(await syncOne(src)).toMatchObject({ outcome: 'synced', lossRisk });
+    expect(await state(src)).toMatchObject({ cursor: 'later', status: 'degraded', progress: { lossRisk } });
+    await expectExactlyOnce(src);
+  });
+
+  it('refuses malformed retention evidence before admission or cursor commit (P-032)', async () => {
+    const src = await createSource();
+    handler = async () => ({ ...page([mail('m1')], 'bad', false),
+      lossRisk: { kind: 'retention-window-exceeded', oldestReachableAt: 'yesterday', detail: '' } });
+    expect(await syncOne(src)).toMatchObject({ outcome: 'failed', admitted: 0 });
+    expect(await state(src)).toMatchObject({ cursor: null, progress: null });
+    expect(await ledger(src)).toEqual([]);
+  });
+
+  it('keeps the rejected cursor across a failed reset backfill and a later pass (P-032)', async () => {
+    const src = await createSource();
+    handler = scripted({ start: page([], 'old', false) });
+    await syncOne(src);
+    await makeDue(src);
+    handler = async (req) => {
+      if (req.cursor === 'old') throw { kind: 'cursor-expired', message: 'retention expired' };
+      expect(req.catchUpFrom).toBe('old');
+      throw new Error('remote unavailable during backfill');
+    };
+    expect(await syncOne(src)).toMatchObject({ outcome: 'failed', cursorReset: true });
+    expect(await state(src)).toMatchObject({ cursor: null, progress: { catchUpFrom: 'old' } });
+    await makeDue(src);
+    handler = async (req) => {
+      expect(req).toMatchObject({ cursor: null, mode: 'backfill', catchUpFrom: 'old' });
+      return page([], null, false);
+    };
+    expect(await syncOne(src)).toMatchObject({ outcome: 'synced' });
+    expect(await state(src)).toMatchObject({ cursor: null, progress: { catchUpFrom: null } });
+    expect(Number.isFinite(Date.parse((await state(src)).progress!.lastSyncedAt!))).toBe(true);
+  });
+
+  it('does not commit a page loss warning past a failed record admission (P-032)', async () => {
+    const src = await createSource();
+    crashIngestAfter = 0;
+    handler = async () => ({ ...page([mail('m1')], 'bad', false),
+      lossRisk: { kind: 'capped-window-overflow', oldestReachableAt: '2026-10-02T00:00:00Z', detail: 'Capped read could not close the gap' } });
+    expect(await syncOne(src)).toMatchObject({ outcome: 'failed' });
+    expect(await state(src)).toMatchObject({ cursor: null, progress: null });
   });
 
   it('applies each coverage window after the page is admitted and before its cursor commits (WI-6554700010012278)', async () => {

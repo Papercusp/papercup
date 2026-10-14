@@ -56,7 +56,7 @@ export interface StagingFirstBlockerProblem {
 const DEPLOYED_ENV_RE =
   /(?:\bmain\b(?!(?:\s+|-)(?:bundle|chunk|entry|thread|loop|event(?:\s+|-)loop)\b)|:3070\b|\bgreen[- ]checkpoint\b|\b(?:deploy(?:ed|ing)?(?!(?:\s+|-)\bmodel\b)|deployment(?!(?:\s+|-)\b(?:ownership|configuration|topology|source|model)\b))\b)/i;
 const STRONG_GATE_RE =
-  /(?:\bwait(?:ing)?\s+(?:for|on)\b|\bblock(?:ed|ing|s)?\b.{0,40}\b(?:on|until|before|by)\b|\bprerequisite\b|\bonly\s+after\b|\bbefore\s+(?:continu(?:e|ing)|implement(?:ation|ing)?|clos(?:e|ing)|mark(?:ing)?\s+(?:it\s+)?done)\b|\b(?:must|required?|requires?)\b.{0,80}\b(?:before|until|prior to)\b)/i;
+  /(?:\bwait(?:ing)?\s+(?:for|on)\b|\bblock(?:ed|ing|s)?\b.{0,40}\b(?:on|until|before|by)\b|\bprerequisite\b|\bbefore\s+(?:continu(?:e|ing)|implement(?:ation|ing)?|clos(?:e|ing)|mark(?:ing)?\s+(?:it\s+)?done)\b|\b(?:must|required?|requires?)\b.{0,80}\b(?:before|until|prior to)\b)/i;
 // A bare `until` is ordinary ordering prose. It is a strong gate only when
 // its object is itself a release-plane token. This prevents e.g. `main bundle
 // ... cannot begin until: parse` from pairing unrelated words.
@@ -211,7 +211,11 @@ function strongDeployedGateClauses(text: string): string[] {
     .filter(
       (clause) =>
         DEPLOYED_ENV_RE.test(clause) &&
-        (STRONG_GATE_RE.test(clause) || RELEASE_PLANE_UNTIL_RE.test(clause)) &&
+        (STRONG_GATE_RE.test(clause) || RELEASE_PLANE_UNTIL_RE.test(clause) ||
+          // Bind only-after to its object, rather than a scanned release subject
+          // earlier in the sentence. A later explicit prerequisite still counts.
+          [...clause.matchAll(/\bonly\s+after\b([^;,.!?]*)/gi)]
+            .some((match) => DEPLOYED_ENV_RE.test(match[1]!))) &&
         !NEGATED_OR_META_GATE_RE.test(clause),
     );
 }

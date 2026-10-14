@@ -242,10 +242,11 @@ export function buildSuperuserMcpUrl(
   operatorBaseUrl: string,
   workspaceId: string,
   allWorkspaces = false,
+  routingEnv: NodeJS.ProcessEnv = process.env,
 ): string {
   // WI-573: route the console's superuser MCP through the resilient proxy when the env opts in
   // (PAPERCUSP_MCP_PROXY_BASE) so it survives a :3070 deploy restart; else the operator base.
-  const url = new URL(`${resolveAgentMcpBaseUrl(operatorBaseUrl)}/api/mcp`);
+  const url = new URL(`${resolveAgentMcpBaseUrl(operatorBaseUrl, routingEnv)}/api/mcp`);
   url.searchParams.set('superuser', '1');
   url.searchParams.set('workspace', allWorkspaces ? '*' : workspaceId);
   return url.toString();
@@ -313,7 +314,16 @@ export async function buildConsoleEnvelope(
     cwd = await resolveWorkspaceHomeCwd(opts.workspaceId);
   }
 
-  const agentMcpBaseUrl = opts.agentMcpBaseUrl ?? resolveLongLivedSessionMcpBaseUrl();
+  // An explicit endpoint binds this launch to a runtime (for example a consult
+  // preparing an isolated session port). The background host's ordinary agents
+  // endpoint must not move that preparation onto a different serving build.
+  // Keep the same-runtime proxy routing and the default agents policy.
+  const mcpRoutingEnv = opts.agentMcpBaseUrl == null
+    ? process.env
+    : { ...process.env, PAPERCUSP_BG_HOST_AGENTS_MCP_BASE: undefined };
+  const agentMcpBaseUrl = resolveAgentMcpBaseUrl(
+    opts.agentMcpBaseUrl ?? resolveLongLivedSessionMcpBaseUrl(), mcpRoutingEnv,
+  );
 
   // 2. Build env — same shape as the Pi pty (PI_CODING_AGENT_DIR if
   //    we have a state dir, PAPERCUSP_HARNESS_SLUG if we have a slug,
@@ -331,7 +341,7 @@ export async function buildConsoleEnvelope(
     // explicit marker so psu clears inherited gateway credentials before
     // restoring the system login (EI-21575557995965463).
     PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default',
-    PAPERCUSP_OPERATOR_URL: resolveAgentMcpBaseUrl(agentMcpBaseUrl),
+    PAPERCUSP_OPERATOR_URL: agentMcpBaseUrl,
     // A selected A/B/current-build endpoint is a pin. Clear any inherited managed
     // marker; automatically resolved desktop/proxy endpoints retain rediscovery.
     PAPERCUSP_OPERATOR_URL_PROVENANCE: opts.agentMcpBaseUrl != null ? '' : 'psu-launcher',
@@ -416,7 +426,7 @@ export async function buildConsoleEnvelope(
     // '*' which most first-party tools reject. Baking &workspace=<slug>
     // gives the user's agent useful defaults; tool-by-tool override via
     // args still works.
-    const mcpUrl = buildSuperuserMcpUrl(agentMcpBaseUrl, opts.workspaceId, opts.allWorkspaces);
+    const mcpUrl = buildSuperuserMcpUrl(agentMcpBaseUrl, opts.workspaceId, opts.allWorkspaces, mcpRoutingEnv);
     mcpJsonContents = JSON.stringify(
       {
         mcpServers: {

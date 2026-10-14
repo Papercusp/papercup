@@ -999,7 +999,8 @@ export async function replyToCanonicalSocialPost(
     visibility,
     idempotencyKey: socialReplyIdempotencyKey(ref, text),
   };
-  const result = await invokeOutboundProvider(sql, target, capability, { ...request }, deps);
+  // Package-specific coordinates stay in the server-resolved canonical payload.
+  const result = await invokeOutboundProvider(sql, target, capability, { ...request, payload: doc.payload }, deps);
   const outcome = socialWriteOutcome(ref.platform, target, capability, result);
 
   return {

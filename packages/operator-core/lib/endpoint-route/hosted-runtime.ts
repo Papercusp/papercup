@@ -52,7 +52,8 @@ import { awsProviderDelegationAdapter } from '../workspace-host/hosted-aws-auth'
 import { hostedDelegationOrganization } from '../workspace-host/hosted-delegation-organization';
 import { papercuspHostingGrantEffective } from '../workspace-host/hosted-gcp-hosting';
 import { HostedSessionCookieCodec } from '../auth/hosted-session';
-import { exportHostedOrganizationData, exportHostedUserData } from '../data-governance/hosted-customer-data';
+import { createHostedCustomerDeletionRequester, exportHostedOrganizationData, exportHostedUserData } from '../data-governance/hosted-customer-data';
+import type { HostedCustomerDeletionPolicy } from '../data-governance/hosted-customer-deletion';
 import { createWorkspaceHostProvisioningClient } from '../dbos/workspace-host-provision-client';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { createHostedFirstWorkspace } from '../auth/hosted/first-workspace';
@@ -84,6 +85,8 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /hosted/browser/onboarding/select-workspace',
   'POST /hosted/browser/data/organization/export',
   'POST /hosted/browser/data/user/export',
+  'POST /hosted/browser/data/organization/delete',
+  'POST /hosted/browser/data/user/delete',
   'GET /hosted/browser/onboarding/tutorial-progress',
   'POST /hosted/browser/onboarding/tutorial-progress',
   'POST /hosted/browser/onboarding/tutorial-help',
@@ -254,6 +257,9 @@ export interface HostedRuntimeDependencies {
   readonly resolveSecret?: HostedRuntimeSecretResolver;
   readonly runService?: HostedServiceContextRunner;
   readonly runTenant?: HostedTenantContextRunner;
+  /** Server-owned, immutable P-011 retention decision. Pending means refusal;
+   * browser fields and an arbitrary approval-ref string never enable purge. */
+  readonly resolveApprovedCustomerDeletionPolicy?: () => Promise<HostedCustomerDeletionPolicy | null>;
   /** Injectable hosted SPA route leaves for hermetic composition tests. */
   readonly hostedBrowser?: HostedBrowserRouteDependencies;
   readonly providerDelegationAdapters?: Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>>;
@@ -478,6 +484,12 @@ export async function createHostedRuntime(
         ?? ((principal) => runService(tx => exportHostedOrganizationData(tx, principal))),
       exportUserData: dependencies.hostedBrowser?.exportUserData
         ?? ((principal) => runService(tx => exportHostedUserData(tx, principal))),
+      requestCustomerDeletion: dependencies.hostedBrowser?.requestCustomerDeletion ?? (dbosClient
+        ? createHostedCustomerDeletionRequester({ runService,
+            resolveApprovedPolicy: dependencies.resolveApprovedCustomerDeletionPolicy ?? (async () => null),
+            enqueueCustomerDeletion: request => dbosClient.enqueueCustomerDeletion(request),
+          })
+        : undefined),
       firstWorkspace,
       ...(provisioning ? { provisioning } : {}),
       ...(operations ? { operations } : {}),

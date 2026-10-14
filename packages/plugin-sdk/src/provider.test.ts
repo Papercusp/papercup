@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizeProviderOptions,
   providerCoverageIssues,
+  providerSyncProgressIssues,
+  providerCursorFreshness,
   PROVIDER_OPTIONS_MAX,
   providerOptionSourceOf,
   PROVIDER_APP_DEFINITION_MAX_LENGTH,
@@ -19,6 +21,37 @@ import {
   validateProviderDescriptor,
   type ProviderDescriptor,
 } from './provider';
+
+describe('provider sync progress', () => {
+  it('reads committed sync freshness without interpreting opaque provider cursors', () => {
+    const now = Date.parse('2026-10-01T01:00:00Z');
+    expect(providerCursorFreshness({ watermark: 'old' }, now)).toBeNull();
+    expect(providerCursorFreshness({ provider: 'opaque-position' }, now)).toMatchObject({ state: 'position-only', at: null });
+    expect(providerCursorFreshness({ provider: null }, now)).toMatchObject({ state: 'never-synced' });
+    const lossRisk = { kind: 'retention-window-exceeded' as const, oldestReachableAt: '2026-10-01T00:00:00Z', detail: 'Remote events were discarded' };
+    expect(providerCursorFreshness({ provider: null, providerSync: { lastSyncedAt: '2026-10-01T00:00:00Z', lossRisk } }, now))
+      .toMatchObject({ state: 'synced', ageMs: 3_600_000, lossRisk });
+    expect(providerCursorFreshness({ provider: 'unknown', providerSync: { lastSyncedAt: 'bad', lossRisk: {} } }, now))
+      .toEqual({ state: 'position-only', at: null, ageMs: null, position: 'unknown', detail: 'provider cursor is present; its internal shape is opaque' });
+  });
+
+  it('accepts legacy pages and coherent catch-up and retention evidence', () => {
+    expect(providerSyncProgressIssues({})).toEqual([]);
+    expect(providerSyncProgressIssues({ catchUp: { path: 'cursor-replay' } })).toEqual([]);
+    expect(providerSyncProgressIssues({
+      catchUp: { path: 'backfill', reason: 'cursor-expired' },
+      lossRisk: { kind: 'retention-window-exceeded', oldestReachableAt: '2026-10-01T00:00:00Z', detail: 'Older events are no longer available' },
+    })).toEqual([]);
+  });
+
+  it('rejects ambiguous paths and unusable loss evidence', () => {
+    expect(providerSyncProgressIssues({ catchUp: { path: 'backfill' } })).toContain('catchUp.reason must explain a backfill');
+    expect(providerSyncProgressIssues({ catchUp: { path: 'live-only', reason: 'cursor-expired' } })).toContain('catchUp.reason is only valid for backfill');
+    for (const lossRisk of [null, [], { kind: 'unknown' }, { kind: 'retention-window-exceeded', oldestReachableAt: 'yesterday', detail: '' }]) {
+      expect(providerSyncProgressIssues({ lossRisk }).length).toBeGreaterThan(0);
+    }
+  });
+});
 
 /**
  * Value rules for a provider's OAuth identity endpoint (linear-asana-task-sync-2026-10-05 P-004).

@@ -50,12 +50,76 @@ function installNativeProcessTrace(out) {
           !readFileSync(path).equals(bytes)) return;
     } catch { /* Observation failures never change the native command. */ }
   };
+  // Record inputs accepted by each process's Writable API, without adding data
+  // listeners, changing its stdio, or replacing callbacks/return/error values.
+  // Direct fd/native writes and inherited child output remain outside this scope.
+  const streams = {};
+  for (const role of ['stdout', 'stderr']) {
+    const stream = process[role], originalWrite = stream.write;
+    const state = streams[role] = { chunks: [], observedByteLength: 0, capturedBytes: 0,
+      captureComplete: true, sequence: 0 };
+    stream.write = function(chunk, ...args) {
+      let bytes = null;
+      const order = state.sequence++;
+      try {
+        if (this === stream) bytes = typeof chunk === 'string' ? Buffer.from(chunk,
+          typeof args[0] === 'string' ? args[0] : stream._writableState?.defaultEncoding ?? 'utf8') :
+          ArrayBuffer.isView(chunk) ? Buffer.from(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)) : null;
+      } catch { /* The original write owns validation and errors. */ }
+      const result = originalWrite.call(this, chunk, ...args);
+      try {
+        if (this === stream) {
+          if (bytes === null) state.captureComplete = false;
+          else {
+            state.observedByteLength += bytes.length;
+            const available = Math.max(0, 16 * 1024 * 1024 - state.capturedBytes);
+            if (bytes.length > available || state.chunks.length >= 16384) state.captureComplete = false;
+            if (available > 0 && bytes.length > 0 && state.chunks.length < 16384) {
+              const retained = bytes.subarray(0, available);
+              state.chunks.push({ order, bytes: retained });
+              state.capturedBytes += retained.length;
+            }
+          }
+        }
+      } catch { state.captureComplete = false; }
+      return result;
+    };
+  }
+  const retainStreams = () => Object.fromEntries(Object.entries(streams).map(([role, state]) => {
+    const scope = 'node-writable-call-inputs';
+    try {
+      const bytes = Buffer.concat(state.chunks.sort((a, b) => a.order - b.order).map(row => row.bytes));
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const ref = `${sha256}.stream`, path = join(root, ref);
+      try { writeFileSync(path, bytes, { flag: 'wx', mode: 0o600 }); }
+      catch (error) { if (error?.code !== 'EEXIST') throw error; }
+      if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() || !readFileSync(path).equals(bytes))
+        throw new Error('redirected or changed stream artifact');
+      return [role, { scope, ref, sha256, byteLength: bytes.length,
+        observedByteLength: state.observedByteLength, captureComplete: state.captureComplete }];
+    } catch { return [role, { scope, captureComplete: false, artifactUnavailable: true }]; }
+  }));
   try {
     emit('node-entry', { executable: process.execPath, argv: process.argv.slice(),
       execArgv: process.execArgv.slice(), cwd: process.cwd(), lifecycle: lifecycle(process.env),
       nodeOptions: loaderIdentity(process.env.NODE_OPTIONS) });
   } catch { /* Even an unavailable cwd must not prevent the native entry. */ }
-  process.once('exit', code => emit('node-exit', { code }, true));
+  // A preload's exit listener would run before the program's later listeners
+  // and silently lose their writes. Delegate the original emission first and
+  // retain bytes after its synchronous listeners, preserving its return/throw.
+  const originalEmit = process.emit;
+  process.emit = function(event, ...args) {
+    if (this !== process || event !== 'exit') return originalEmit.call(this, event, ...args);
+    let listenersComplete = false;
+    try {
+      const result = originalEmit.call(this, event, ...args);
+      listenersComplete = true;
+      return result;
+    } finally {
+      if (!listenersComplete) for (const state of Object.values(streams)) state.captureComplete = false;
+      emit('node-exit', { code: args[0], exitListenersComplete: listenersComplete, streams: retainStreams() }, true);
+    }
+  };
   const originalSpawn = childProcess.spawn;
   childProcess.spawn = function(command, ...args) {
     const childIdentity = randomUUID();

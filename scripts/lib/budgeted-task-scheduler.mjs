@@ -76,9 +76,10 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
   // Bind prospective process events to this actual child pid and time interval.
   // Preserve all matching invocations; never turn the observed subset into an
   // original ordered-chain qualification or silently infer shell-only steps.
-  const processTrace = { scope: "partial-node-processes", events: [], gaps: [
+  const processTrace = { scope: "partial-node-processes", events: [], streams: [], gaps: [
     "shell-builtins-and-non-node-entries-unobserved", "private-or-sync-spawns-unobserved",
-    "per-step-streams-and-runtime-inputs-unobserved", "signal-exits-may-lack-node-exit",
+    "direct-fd-native-and-inherited-stream-writes-unobserved", "runtime-inputs-unobserved",
+    "signal-exits-may-lack-node-exit",
   ] };
   if (input.processTrace && Number.isSafeInteger(input.processTrace.rootPid) &&
       input.processTrace.rootPid > 0 && typeof input.processTrace.out === "string") {
@@ -88,8 +89,9 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
         throw new Error("redirected native process trace");
       const sourceRoot = realpathSync(path), names = readdirSync(sourceRoot);
       if (names.length > 16384) throw new Error("native process trace population exceeds bound");
-      const rows = names.map(name => {
-        if (!/^[a-f0-9]{64}\.json$/.test(name)) throw new Error("unexpected native process artifact");
+      if (names.some(name => !/^[a-f0-9]{64}\.(json|stream)$/.test(name)))
+        throw new Error("unexpected native process artifact");
+      const rows = names.filter(name => name.endsWith(".json")).map(name => {
         const file = join(sourceRoot, name), stat = lstatSync(file);
         if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024)
           throw new Error("redirected or oversized native process artifact");
@@ -118,10 +120,48 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
         throw new Error("native process root entry absent");
       processTrace.events = selected.map(({ row, bytes }) => ({ ...row,
         artifact: persist(bytes, "process-event.json") }));
+      let retainedStreamBytes = 0;
+      for (const { row } of selected.filter(({ row }) => row.event === "node-exit")) {
+        if (row.exitListenersComplete !== true)
+          processTrace.gaps.push(`native-exit-listeners-unverified:${row.processIdentity}`);
+        for (const role of ["stdout", "stderr"]) {
+          const pin = row.streams?.[role];
+          if (!pin || pin.artifactUnavailable) {
+            processTrace.gaps.push(`native-stream-unobserved:${row.processIdentity}:${role}`);
+            continue;
+          }
+          if (pin.scope !== "node-writable-call-inputs" || !comparisonDigest(pin.sha256) ||
+              pin.ref !== `${pin.sha256}.stream` || !Number.isSafeInteger(pin.byteLength) ||
+              pin.byteLength < 0 || pin.byteLength > 16 * 1024 * 1024 ||
+              !Number.isSafeInteger(pin.observedByteLength) || pin.observedByteLength < pin.byteLength ||
+              typeof pin.captureComplete !== "boolean" ||
+              pin.captureComplete && pin.observedByteLength !== pin.byteLength)
+            throw new Error("malformed native stream artifact pin");
+          const file = join(sourceRoot, pin.ref), stat = lstatSync(file);
+          retainedStreamBytes += pin.byteLength;
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== pin.byteLength ||
+              retainedStreamBytes > 64 * 1024 * 1024)
+            throw new Error("redirected, oversized or incomplete native stream artifact");
+          const bytes = readFileSync(file);
+          if (createHash("sha256").update(bytes).digest("hex") !== pin.sha256)
+            throw new Error("native stream artifact hash mismatch");
+          processTrace.streams.push({ processIdentity: row.processIdentity, pid: row.pid, role,
+            scope: pin.scope, observedByteLength: pin.observedByteLength,
+            captureComplete: pin.captureComplete, artifact: persist(bytes, "native-stream") });
+          if (!pin.captureComplete)
+            processTrace.gaps.push(`native-stream-truncated:${row.processIdentity}:${role}`);
+        }
+      }
+      for (const { row } of selected.filter(({ row }) => row.event === "node-entry")) {
+        if (!selected.some(({ row: exit }) => exit.event === "node-exit" &&
+            exit.pid === row.pid && exit.processIdentity === row.processIdentity))
+          processTrace.gaps.push(`native-stream-terminal-unobserved:${row.processIdentity}`);
+      }
       if (selected.some(({ row }) => ["trace-limit", "trace-event-too-large"].includes(row.event)))
         processTrace.gaps.push("native-process-observation-truncated");
     } catch (error) {
       processTrace.events = [];
+      processTrace.streams = [];
       processTrace.gaps.push(`native-process-trace-unreadable:${String(error?.message ?? error)}`);
     }
   } else processTrace.gaps.push("native-process-trace-unobserved");

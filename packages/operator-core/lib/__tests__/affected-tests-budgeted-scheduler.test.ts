@@ -64,7 +64,7 @@ describe('native affected-task parent receipt transport', () => {
     const root = mkdtempSync(join(tmpdir(), 'native-process-parent-'));
     try {
       const out = join(root, 'source-map.json');
-      const command = [process.execPath, '-e', "require('node:child_process').spawn(process.execPath, ['-e', 'process.exitCode = 3'], {stdio:'inherit'});"];
+      const command = [process.execPath, '-e', "require('node:child_process').spawn(process.execPath, ['-e', 'process.stdout.write(Buffer.from([0,255,10])); process.stderr.write(Buffer.from([254,13,10])); process.exitCode = 3'], {stdio:'inherit'});"];
       const startedAtMs = Date.now();
       const child = spawnSync(command[0]!, command.slice(1), { cwd: REPO_ROOT,
         env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
@@ -86,6 +86,15 @@ describe('native affected-task parent receipt transport', () => {
       expect(trace.events.filter(row => row.event === 'node-entry')).toHaveLength(2);
       expect(trace.events.some(row => row.pid === unrelated.pid)).toBe(false);
       expect(trace.events.find(row => row.event === 'child-close')).toMatchObject({ code: 3 });
+      expect(trace.streams).toHaveLength(4);
+      const leaf = trace.events.find(row => row.event === 'node-entry' && row.pid !== child.pid)!;
+      const leafStreams = trace.streams.filter(row => row.processIdentity === leaf.processIdentity);
+      for (const row of leafStreams) {
+        expect(row.captureComplete).toBe(true);
+        expect(readFileSync(join(result.root, row.artifact.ref))).toEqual(
+          Buffer.from(row.role === 'stdout' ? [0,255,10] : [254,13,10]));
+      }
+      expect(trace.gaps).toContain('direct-fd-native-and-inherited-stream-writes-unobserved');
       for (const row of trace.events) {
         const bytes = readFileSync(join(result.root, row.artifact.ref));
         expect(createHash('sha256').update(bytes).digest('hex')).toBe(row.artifact.sha256);
@@ -95,7 +104,12 @@ describe('native affected-task parent receipt transport', () => {
       expect(result.observation.runtimeClosure).toBe('unmeasured');
       // Tampered or redirected process evidence is retained as a gap, never a
       // fabricated step or a successful qualification.
-      const names = readdirSync(`${out}.native-processes`);
+      const stream = leafStreams[0]!;
+      writeFileSync(join(`${out}.native-processes`, `${stream.artifact.sha256}.stream`), Buffer.from([1,2,3]));
+      const badStream = writeBudgetedTaskNativeExecutionReceipt(join(root, 'bad-stream'), input).observation;
+      expect(badStream.processTrace.streams).toEqual([]);
+      expect(badStream.processTrace.gaps.join(' ')).toContain('stream artifact hash mismatch');
+      const names = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json'));
       writeFileSync(join(`${out}.native-processes`, names[0]!), '{}');
       const bad = writeBudgetedTaskNativeExecutionReceipt(join(root, 'bad'), input).observation;
       expect(bad.processTrace.events).toEqual([]);

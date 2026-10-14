@@ -302,10 +302,21 @@ function implementationCouplingReason(behavior: string): string | null {
   // an existing customer/account is an observable identity, not code coupling.
   const implementationPrescription =
     /\b(?:through|via|using)\s+(?:the\s+)?existing\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\b/i.exec(behavior) ??
-    /\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\s+(?:implements?|handles?|runs?|invokes?|provides?)\b/i.exec(behavior) ??
-    /(?:^|[.!?]\s+)(?:reuse|extend|modify|wire|integrate|evaluate)\s+(?!(?:of|is|was|will|must|can|may)\b)[^.!?\n]+/i.exec(behavior);
+    /\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|records?|capability)\s+(?:implements?|handles?|runs?|invokes?|provides?)\b/i.exec(behavior);
   if (implementationPrescription) {
     return 'prescribes implementation reuse or selection ' + JSON.stringify(implementationPrescription[0].trim());
+  }
+  // Reusing verification proof does not choose the implementation under test.
+  // Inspect each imperative separately so a proof-reuse instruction cannot hide
+  // a later machinery choice. All source/route/storage/construct checks still
+  // inspect the complete behavior, including any qualifying proof condition.
+  const verificationProofReuse = /^reuse\s+(?:(?:the|prior|previous|current|clean|passing|verified|existing)\s+)*(?:(?:verification|test|check|proof)\s+)?(?:receipts?|evidence|(?:test|check)\s+results?)(?:\s+(?:when|if)\s+[^.!?;\n]+)?$/i;
+  const imperativePrescriptions = /(?:^|[.!?;]\s*)(?:reuse|extend|modify|wire|integrate|evaluate)\s+(?!(?:of|is|was|will|must|can|may)\b)[^.!?;\n]+/gi;
+  for (const match of behavior.matchAll(imperativePrescriptions)) {
+    const prescription = match[0].replace(/^[.!?;]\s*/, '').trim();
+    if (!verificationProofReuse.test(prescription)) {
+      return 'prescribes implementation reuse or selection ' + JSON.stringify(prescription);
+    }
   }
   const filesystemPermission =
     /\b0[0-7]{3}\b[^.!?\n]{0,60}\b(?:file|file\s+system|filesystem|directory)\b|\b(?:file|file\s+system|filesystem|directory)\b[^.!?\n]{0,60}\b0[0-7]{3}\b/i.exec(behavior);
@@ -706,9 +717,11 @@ export function evaluatePlanSpecQuality(input: {
     { behavior: 'A failure produces an alarm through the existing alarm subscription mechanism.', expected: 'coupled' as const },
     { behavior: 'Reuse the runtime usage ledger for per-call token counts.', expected: 'coupled' as const },
     { behavior: 'Reuse PostHog for consented portal events.', expected: 'coupled' as const },
+    { behavior: 'Reuse prior clean receipts when current; reuse PostHog for consented portal events.', expected: 'coupled' as const },
     { behavior: 'An existing customer sees their subscription after signing in.', expected: 'independent' as const },
     { behavior: 'The customer reuses an existing account when accepting an invitation.', expected: 'independent' as const },
     { behavior: 'Reuse of an expired invitation is refused.', expected: 'independent' as const },
+    { behavior: 'Reuse prior clean receipts when current; do not recreate proof just for recovery.', expected: 'independent' as const },
   ].map((control) => {
     const actual = implementationCouplingReason(control.behavior) === null ? 'independent' as const : 'coupled' as const;
     return { ...control, actual, passed: actual === control.expected };

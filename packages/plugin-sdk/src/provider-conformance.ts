@@ -30,6 +30,7 @@ import {
   providerSocialDeleteResultIssue,
   providerSocialWriteResultIssue,
   providerCoverageIssues,
+  providerSyncProgressIssues,
   providerSyncErrorOf,
   validateProviderDescriptor,
   type HostFetch,
@@ -127,6 +128,8 @@ export interface ProviderConformanceHarness {
   scope?: ProviderSourceScope;
   /** Pages a drain may take before the kit calls it non-terminating. Default 25. */
   maxPages?: number;
+  /** A known gap beyond the remote retention window, with an independently expected boundary. */
+  retentionGap?: { cursor: string; oldestReachableAt: string; response?: HostFetchResponse; createFetch?: () => HostFetch };
   faults?: {
     /** Response for a rate-limited call. Default a 429 with `retry-after: 30`; `false` skips the check. */
     rateLimited?: HostFetchResponse | false;
@@ -173,6 +176,7 @@ export const PROVIDER_CONFORMANCE_CHECKS = [
   'final-cursor-does-not-restart',
   'unreadable-cursor-is-cursor-expired',
   'expired-cursor-is-cursor-expired',
+  'retention-loss-reported',
   'rate-limit-not-retried',
   'auth-not-retried',
   'server-error-not-retried',
@@ -279,8 +283,8 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
    * Wrap a fresh harness fetch: refuse what the host would refuse, count calls, and optionally
    * answer the FIRST call with a fault response (any later call after a fault is a retry).
    */
-  const guardedFetch = (fault?: HostFetchResponse) => {
-    const inner = harness.createFetch();
+  const guardedFetch = (fault?: HostFetchResponse, createFetch = harness.createFetch) => {
+    const inner = createFetch();
     const state = { calls: 0 };
     const fetch: HostFetch = async (input) => {
       state.calls += 1;
@@ -328,6 +332,11 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
       const coverageIssues = providerCoverageIssues(page.coverage, descriptor.datatypes ?? []);
       if (coverageIssues.length > 0) {
         result.malformed = `malformed coverage: ${coverageIssues.join('; ')}`;
+        return result;
+      }
+      const progressIssues = providerSyncProgressIssues(page);
+      if (progressIssues.length > 0) {
+        result.malformed = `malformed sync progress: ${progressIssues.join('; ')}`;
         return result;
       }
       result.pages.push(page);
@@ -493,6 +502,39 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
   await expectSignal('unreadable-cursor-is-cursor-expired', CONFORMANCE_UNREADABLE_CURSOR, undefined, 'cursor-expired', 'a cursor the package never issued');
 
   const faults = harness.faults ?? {};
+  if (harness.retentionGap) {
+    run('retention-loss-reported');
+    const gap = harness.retentionGap;
+    const { host } = guardedFetch(gap.response, gap.createFetch);
+    try {
+      let page: ProviderSyncPage;
+      try {
+        page = await syncPage(gap.cursor, 'incremental', host);
+      } catch (cause) {
+        if (providerSyncErrorOf(cause)?.kind !== 'cursor-expired') throw cause;
+        // The same reset the host performs preserves the rejected cursor for loss reporting.
+        page = await adapter.syncPage({ source, cursor: null, mode: 'backfill', catchUpFrom: gap.cursor,
+          config: harness.config, services: harness.services, scope: harness.scope }, host);
+      }
+      let reported = false;
+      const issues: string[] = [];
+      for (let n = 0; n < maxPages; n++) {
+        issues.push(...providerSyncProgressIssues(page));
+        if (page.lossRisk && Date.parse(page.lossRisk.oldestReachableAt) === Date.parse(gap.oldestReachableAt)) reported = true;
+        if (!page.hasMore) break;
+        if (!page.nextCursor || n === maxPages - 1) throw new Error('retention catch-up did not complete');
+        page = await adapter.syncPage({ source, cursor: page.nextCursor, mode: 'backfill', catchUpFrom: gap.cursor,
+          config: harness.config, services: harness.services, scope: harness.scope }, host);
+      }
+      if (issues.length > 0 || !reported) {
+        fail('retention-loss-reported', `known retention gap did not report its oldest reachable instant ${gap.oldestReachableAt}${issues.length ? `: ${issues.join('; ')}` : ''}`);
+      }
+    } catch (cause) {
+      fail('retention-loss-reported', `retention catch-up failed: ${errorText(cause)}`);
+    }
+  } else {
+    skip('retention-loss-reported', 'harness declares no known retention gap');
+  }
   if (faults.expiredCursor) {
     await expectSignal('expired-cursor-is-cursor-expired', faults.expiredCursor.cursor, faults.expiredCursor.response, 'cursor-expired', 'a cursor the platform refuses');
   } else {

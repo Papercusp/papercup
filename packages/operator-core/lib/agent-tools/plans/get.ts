@@ -746,6 +746,9 @@ export default defineTool({
     // Stage times include awaited IO and synchronous work since the prior mark;
     // they are wall time, not database-only or CPU time.
     const readTimings: Array<Record<string, unknown>> = [];
+    // The evidence-only judge's activation audit is also outside cachedRead. Keep
+    // its wall time separate so a fast cached plan factory cannot hide a slow audit.
+    const activationAuditTimings: Array<{ slug: string; elapsedMs: number }> = [];
     const env = await runBulk(
       slugs,
       async (slug) => {
@@ -1641,10 +1644,24 @@ export default defineTool({
         if (result.ok !== true) continue;
         const slug = typeof result.slug === 'string' ? result.slug : null;
         if (!slug) continue;
+        const auditStartedAt = performance.now();
         result.latestActivationAudit = await getLatestActivationAudit(slug, {
           ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
         });
+        activationAuditTimings.push({
+          slug,
+          elapsedMs: Math.max(0, performance.now() - auditStartedAt),
+        });
       }
+    }
+    if (activationAuditTimings.length) {
+      ctxAny.metadata?.({
+        plansGetActivationAudit: {
+          unit: 'ms',
+          timing: 'wall-time-per-plan',
+          reads: activationAuditTimings,
+        },
+      });
     }
     ctxAny.metadata?.({ plansGetRead: { unit: 'ms', timing: 'wall-time-per-stage-overlapping', reads: readTimings } });
     return bulkContent(env);

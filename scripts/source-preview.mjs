@@ -790,7 +790,10 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     throw new PreviewError('verifier child estimate must be a nonnegative integer', 2);
   const sourceRepo = realpathSync(repo);
   const donor = committedWorkRootDependencyDonor(sourceRepo);
-  const scratch = join(sourceRepo, '.papercusp', 'scratch');
+  // A materialized source tree may live on another device. Dependency snapshots
+  // use hardlinks, so allocate beside the physical donor while keeping sourceRepo
+  // as the source identity passed to the freezer and task receipt.
+  const scratch = join(donor, '.papercusp', 'scratch');
   await fs.mkdir(scratch, { recursive: true });
   const owned = await fs.mkdtemp(join(scratch, 'verifier-command-'));
   const root = join(owned, 'invoked-source');

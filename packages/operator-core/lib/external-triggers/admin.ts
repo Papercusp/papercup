@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
+import { providerCursorFreshness, type ProviderCursorFreshness } from '@papercusp/plugin-sdk';
 import {
   EMAIL_DRAFT_PROPOSAL_HARNESS,
   EMAIL_DRAFT_PROPOSAL_KIND,
@@ -140,7 +141,7 @@ export interface ExternalTriggerSocialAdminFacts {
    */
   readTransport: string | null;
   /** Cursor freshness; see cursor-freshness.ts for why not a nullable date. */
-  cursor: SocialCursorFreshness;
+  cursor: SocialCursorFreshness | ProviderCursorFreshness;
   /**
    * The storm cap this platform's rate budget funds, and whether a provider
    * throttle currently HOLDS all launches. `hold` is not `maxRuns: 0`: a cap of
@@ -1326,7 +1327,7 @@ export function socialAdminFacts(kind: string, cursor: unknown, nowMs: number): 
             detail:
               'this platform has no readable content stream at any grant tier we hold — it is write-only, so there is nothing to sync',
           }
-        : socialCursorFreshness(cursor, nowMs),
+        : providerCursorFreshness(cursor, nowMs) ?? socialCursorFreshness(cursor, nowMs),
     rateBudget: {
       maxRuns: policy.maxRuns,
       windowSeconds: policy.windowSeconds,

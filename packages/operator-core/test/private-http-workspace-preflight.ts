@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -972,6 +972,31 @@ export async function portalBrowserSurfaceBuild(portalSourceRoot: string, option
     paths[prefix + '/*'] = [replacement + '/*'];
   }
   return { plugin, paths, define: { 'import.meta.env': JSON.stringify(operatorSurfaceImportMetaEnv()) }, source };
+}
+
+/** Validate the launcher's single selected alias, without admitting an ambient
+ * fallback. The alias keeps the source socket's peer/message-bus protocol. */
+export function assertPrivateManagedTaskRoute(env: NodeJS.ProcessEnv) {
+  assert.ok(env.HOME && env.XDG_RUNTIME_DIR, 'private managed-task runtime required');
+  const runtime = join(resolve(env.HOME, '..'), 'xdg-runtime');
+  assert.equal(env.XDG_RUNTIME_DIR, runtime, 'managed-task route must use the private runtime');
+  assert.equal(realpathSync(runtime), runtime, 'private runtime must not redirect outside its root');
+  const routes = ['systemd/private', 'bus'];
+  const selected = routes.find(route => env.DBUS_SESSION_BUS_ADDRESS === `unix:path=${join(runtime, route)}`);
+  assert.ok(selected, 'one exact private managed-task bus address required');
+  const alias = join(runtime, selected);
+  const link = lstatSync(alias);
+  assert.ok(link.isSymbolicLink() && link.uid === process.getuid!(), 'selected route must be an owned alias');
+  const socket = realpathSync(alias);
+  const sourceRuntime = resolve(socket, selected === 'bus' ? '..' : '../..');
+  assert.equal(join(sourceRuntime, selected), socket, 'selected alias must preserve the socket protocol');
+  const target = statSync(alias);
+  assert.ok(target.isSocket() && target.uid === process.getuid!(), 'selected route must reach an owned socket');
+  for (const route of routes.filter(route => route !== selected)) {
+    assert.equal(lstatSync(join(runtime, route), { throwIfNoEntry: false }), undefined,
+      'an unselected manager route must not be exposed');
+  }
+  return { address: env.DBUS_SESSION_BUS_ADDRESS, alias, socket };
 }
 
 export function preparePrivateHttpWorkspaces() {

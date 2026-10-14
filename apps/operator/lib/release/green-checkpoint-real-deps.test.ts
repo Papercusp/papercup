@@ -549,7 +549,7 @@ describe("realCheckpointDeps.runGateAtRef — proof-backed empty Vitest invocati
       expect(result.pass).toBe(true);
       expect(record).toHaveBeenCalledWith("@papercusp/operator-vite::test", {
         offReason: "arming-threw(fixture_arming_failure)",
-      });
+      }, expect.objectContaining({ runContext: "green-checkpoint" }));
       const call = calls.find(c => c.args.includes("test"));
       expect(call?.args.slice(0, 2)).toEqual(["run", "test"]);
       expect(call?.args).not.toContain("--passWithNoTests");

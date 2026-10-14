@@ -74,6 +74,8 @@ import { goalPlanPlacementChangedKey } from '../agent-obligations';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { openEscalation } from '../agent-tools/coordination/escalations';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import { takeFleetLeadership } from '../agent-tools/fleet_registry/take-leadership-core';
 import { listCouplingsFor, peerOf } from '../coord/couplings';
 import { getFleet } from '../agent-fleets-store';
@@ -584,6 +586,7 @@ export type GoalPlanFleetObservation =
     };
 
 export interface GoalPlanFleetObservationDeps {
+  rail?: AlarmAttentionDeps;
   readGoals: GoalDrainFleetSweepDeps['readGoals'];
   resolveLiveness: GoalDrainFleetSweepDeps['resolveLiveness'];
   resolveFleetLiveness: GoalDrainFleetSweepDeps['resolveFleetLiveness'];
@@ -594,8 +597,9 @@ export interface GoalPlanFleetObservationDeps {
 }
 
 /**
- * Compose the watchdog's existing readers without running its escalation or
- * recovery side effects. This is the canonical bridge for turn/leader briefs:
+ * Compose the watchdog's existing readers without launching fleets or sending
+ * bespoke escalations. Publish the same keyed conditions as the sweep so a
+ * brief-only detection is durable. This is the canonical bridge for briefs:
  * they receive the same classifier verdict as the watchdog, not a copied SQL
  * approximation or a call to the mutating sweep.
  */
@@ -625,6 +629,20 @@ export async function readGoalPlanFleetObservation(
     const verdicts = await deps.resolveLiveness([...new Set(relevantHolders.map((holder) => holder.ownerId))]);
     const cohort = await deps.readCohort([goal], deps.resolveFleetLiveness);
     if (cohort.status === 'unknown') return { status: 'unknown', alert: null, applicablePlanCount: null };
+    for (const check of goalPlanFleetConditionChecks(goal, relevantHolders, verdicts, cohort)) {
+      try {
+        if (check.breached) {
+          const event = { conditionKey: check.conditionKey, oneShot: true,
+            summary: `Goal plan-fleet coverage: ${goal.title}`, body: check.detail };
+          if (overrides.rail?.broadcast) await overrides.rail.broadcast(event);
+          else await broadcastSevereEvent(event);
+        } else if (check.recovered) {
+          await resolveAlarm(check.conditionKey, 'goal-drain-fleet', overrides.rail);
+        }
+      } catch (error) {
+        console.warn(`[goal-drain-fleet-watchdog] condition delivery failed: ${String(error)}`);
+      }
+    }
     const applicablePlanCount = cohort.plans.filter((plan) => plan.itemIds.length > 0).length;
     return {
       status: 'known',
@@ -898,6 +916,7 @@ export interface GoalDrainRelaunchResult {
 }
 
 export interface GoalDrainFleetSweepDeps {
+  rail?: AlarmAttentionDeps;
   readGoals: () => Promise<{ goals: GoalDrainRowLike[]; holders: GoalHolderLike[] }>;
   resolveLiveness: (ownerIds: string[]) => Promise<Map<string, LivenessVerdict>>;
   /** Resolve every declared drain fleet (by fleetKey) to a liveness verdict. */
@@ -2150,6 +2169,7 @@ async function runPlanFleetLeg(
 
   let escalated = 0;
   for (const goal of liveHeld) {
+    await publishGoalDrainChecks(goalPlanFleetConditionChecks(goal, holders, verdicts, cohort), deps.rail);
     const alert = classifyGoalPlanFleetCoverage(goal, holders, verdicts, cohort);
     if (!alert) continue;
     let opened = false;
@@ -2211,6 +2231,11 @@ async function runRelaunchLeg(
   const slot = await deps.reserveRelaunchSlot(goal, nowMs);
   if (slot.kind === 'ineligible') return 'ineligible';
   if (slot.kind === 'capped') {
+    await publishGoalDrainChecks([{
+      conditionKey: goalDrainConditionKey(goal, 'relaunch-exhausted', goal.drainFleet),
+      breached: true, recovered: false,
+      detail: `Goal ${goal.goalId}; fleet ${goal.drainFleet}; relaunch attempts ${slot.attemptsInWindow}.`,
+    }], deps.rail);
     try {
       await deps.escalateRelaunchExhausted(alert, slot.attemptsInWindow);
     } catch (e) {
@@ -2303,6 +2328,10 @@ export async function runGoalDrainFleetSweepOnce(
     : new Map<string, DrainFleetSpecScope>();
 
   const alerts = scanGoalDrainFleets(goals, relevant, verdicts, fleetLiveness, specScopes, deps.now(), deps.graceMs);
+  for (const goal of goals) {
+    await publishGoalDrainChecks(goalDrainConditionChecks(goal, relevant, verdicts,
+      fleetLiveness, specScopes, deps.now(), deps.graceMs), deps.rail);
+  }
   let escalated = 0;
   let relaunched = 0;
   let relaunchCapped = 0;
@@ -2386,6 +2415,83 @@ export async function runGoalDrainFleetSweepOnce(
     }
   }
   return { scanned: goals.length, escalated, skipped: false, relaunched, relaunchCapped, planFleetEscalated };
+}
+
+interface GoalDrainConditionCheck {
+  conditionKey: string;
+  breached: boolean;
+  recovered: boolean;
+  detail: string;
+}
+
+/** Exact goal incarnation and declared subject; replacing a fleet cannot clear
+ * a failure measured on the previous fleet. No process-local episode state. */
+export function goalDrainConditionKey(goal: Pick<GoalDrainRowLike, 'workspaceId' | 'goalId' | 'createdAtMs'>,
+  reason: string, subject: string | null): string {
+  return `alarm:goal-drain-fleet:` + encodeURIComponent(JSON.stringify([
+    goal.workspaceId, goal.goalId, goal.createdAtMs, reason, subject,
+  ]));
+}
+
+function goalDrainConditionChecks(goal: GoalDrainRowLike, holders: readonly GoalHolderLike[],
+  verdicts: ReadonlyMap<string, LivenessVerdict>, fleetLiveness: ReadonlyMap<string, DrainFleetLiveness>,
+  scopes: ReadonlyMap<string, DrainFleetSpecScope>, now: number, grace: number): GoalDrainConditionCheck[] {
+  if (!Number.isFinite(now) || !Number.isFinite(goal.createdAtMs) || goal.createdAtMs <= 0 ||
+      goal.createdAtMs > now || !goal.workspaceId?.trim() || !goal.goalId?.trim()) return [];
+  const held = holders.some(holder => holder.workspaceId === goal.workspaceId && holder.goalId === goal.goalId &&
+    !!verdicts.get(holder.ownerId) && holderCountsAsAlive(verdicts.get(holder.ownerId)!));
+  if (!held) return [];
+  const alert = classifyGoalDrainFleet(goal, holders, verdicts, fleetLiveness, scopes, now, grace);
+  const alive = goal.drainFleet !== null && fleetLiveness.get(fleetKey(goal.workspaceId, goal.drainFleet)) === 'alive';
+  const scoped = alive && scopes.get(goal.goalId) === 'goal-scoped';
+  return ['no-drain-fleet-declared', 'drain-fleet-not-found', 'drain-fleet-dead',
+    'drain-fleet-not-goal-scoped', 'relaunch-exhausted'].map(reason => ({
+    conditionKey: goalDrainConditionKey(goal, reason, reason === 'no-drain-fleet-declared' ? null : goal.drainFleet),
+    breached: alert?.reason === reason || (reason === 'relaunch-exhausted' && !!alert &&
+      goal.drainRespawn?.needsHuman === true),
+    recovered: reason === 'no-drain-fleet-declared' || reason === 'drain-fleet-not-goal-scoped' ||
+      reason === 'relaunch-exhausted' ? scoped : alive,
+    detail: `Workspace ${goal.workspaceId}; goal ${goal.goalId}; fleet ${goal.drainFleet}; ${reason}.`,
+  }));
+}
+
+function goalPlanFleetConditionChecks(goal: GoalDrainRowLike, holders: readonly GoalHolderLike[],
+  verdicts: ReadonlyMap<string, LivenessVerdict>, cohort: GoalPlanFleetCohort): GoalDrainConditionCheck[] {
+  if (cohort.status !== 'known' || !Number.isFinite(goal.createdAtMs) || goal.createdAtMs <= 0 ||
+      !goal.workspaceId?.trim() || !goal.goalId?.trim()) return [];
+  const held = holders.some(holder => holder.workspaceId === goal.workspaceId && holder.goalId === goal.goalId &&
+    !!verdicts.get(holder.ownerId) && holderCountsAsAlive(verdicts.get(holder.ownerId)!));
+  if (!held) return [];
+  const plans = cohort.plans.filter(plan => plan.workspaceId === goal.workspaceId && plan.goalId === goal.goalId &&
+    plan.itemIds.length > 0);
+  if (plans.some(plan => plan.targetingFleets.some(fleet => fleet.liveness === 'unknown'))) return [];
+  return plans.flatMap(plan => {
+    const alive = plan.targetingFleets.filter(fleet => fleet.liveness === 'alive');
+    const claimed = alive.some(fleet => fleet.liveClaimItemIds.some(id => plan.itemIds.includes(id)));
+    return ['started-plan-no-live-targeting-fleet', 'started-plan-targeting-fleet-zero-live-claims'].map(reason => ({
+      conditionKey: goalDrainConditionKey(goal, reason, JSON.stringify([plan.harnessSlug, plan.planSlug])),
+      breached: reason === 'started-plan-no-live-targeting-fleet' ? alive.length === 0 : alive.length > 0 && !claimed,
+      recovered: reason === 'started-plan-no-live-targeting-fleet' ? alive.length > 0 : claimed,
+      detail: `Workspace ${goal.workspaceId}; goal ${goal.goalId}; plan ${plan.harnessSlug}/${plan.planSlug}; ${reason}.`,
+    }));
+  });
+}
+
+async function publishGoalDrainChecks(checks: GoalDrainConditionCheck[], rail?: AlarmAttentionDeps): Promise<void> {
+  for (const check of checks) {
+    try {
+      if (check.breached) {
+        const event = { conditionKey: check.conditionKey, oneShot: true,
+          summary: 'Goal drain-fleet obligation', body: check.detail };
+        if (rail?.broadcast) await rail.broadcast(event);
+        else await broadcastSevereEvent(event);
+      } else if (check.recovered) {
+        await resolveAlarm(check.conditionKey, 'goal-drain-fleet', rail);
+      }
+    } catch (error) {
+      console.warn(`[goal-drain-fleet-watchdog] condition delivery failed: ${String(error)}`);
+    }
+  }
 }
 
 let watchdogTimer: ManagedHandle | null = null;

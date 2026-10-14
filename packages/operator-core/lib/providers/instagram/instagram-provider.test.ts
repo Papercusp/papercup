@@ -8,6 +8,7 @@ import {
   type HostFetch,
   type ProviderAdapter,
   type ProviderRecord,
+  type ProviderSyncPage,
 } from '@papercusp/plugin-sdk';
 
 const adapter = createRequire(import.meta.url)('../../../../../libs/papercusp/plugins/instagram/index.cjs').providerAdapter as ProviderAdapter;
@@ -35,10 +36,11 @@ function fake() {
 
 async function drain(fetch: HostFetch, cursor: string | null = null) {
   const records: ProviderRecord[] = [];
+  const pages: ProviderSyncPage[] = [];
   for (let n = 0; n < 10; n += 1) {
     const page = await adapter.syncPage({ source: 'instagram-source', cursor, mode: cursor ? 'incremental' : 'backfill', config }, { fetch });
-    records.push(...page.records); cursor = page.nextCursor;
-    if (!page.hasMore) return { records, cursor };
+    pages.push(page); records.push(...page.records); cursor = page.nextCursor;
+    if (!page.hasMore) return { records, cursor, pages };
   }
   throw new Error('Instagram package did not finish');
 }
@@ -47,7 +49,7 @@ describe('Instagram provider package (P-028)', () => {
   it('validates the descriptor and declares the media-primary capabilities', async () => {
     const descriptor = await adapter.describe();
     expect(validateProviderDescriptor(descriptor)).toEqual([]);
-    expect(descriptor.capabilities).toEqual(['social.post', 'social.reply', 'social.delete']);
+    expect(descriptor.capabilities).toEqual(['social.post', 'social.reply', 'social.delete', 'ingress.normalize']);
     expect(descriptor.oauth?.clientRegistrationRef).toBe('facebook');
   });
 
@@ -59,23 +61,113 @@ describe('Instagram provider package (P-028)', () => {
     expect(result.records[1]?.payload.replyToId).toBe('c1');
   });
 
+  it('retrieves webhook comment and caption mentions with the documented IG User fields', async () => {
+    const calls: string[] = [];
+    const fetch: HostFetch = async ({ request }) => {
+      const url = new URL(request.url); calls.push(url.searchParams.get('fields')!);
+      expect(url.pathname).toBe(`/v26.0/${config.igUserId}`);
+      return jsonResponse(200, { id: config.igUserId, ...(calls.length === 1
+        ? { mentioned_comment: { id: '111', text: '@avi hello', timestamp: at(1), like_count: 2, media: { id: '222' } } }
+        : { mentioned_media: { id: '333', caption: 'avi caption', timestamp: at(2), username: 'sam' } }) });
+    };
+    const value = await adapter.invoke({ source: 's', capability: 'ingress.normalize', args: {
+      sourceConfig: config, envelope: { object: 'instagram', entry: [
+        { id: 'another-account', changes: [{ field: 'mentions', value: { media_id: '444' } }] },
+        { id: config.igUserId, changes: [
+          { field: 'mentions', value: { comment_id: '111', media_id: '222' } },
+          { field: 'mentions', value: { comment_id: '111', media_id: '222' } },
+          { field: 'mentions', value: { media_id: '333' } },
+          { field: 'comments', value: { id: '555' } },
+        ] },
+      ] },
+    } }, { fetch }) as { records: ProviderRecord[] };
+    expect(calls).toEqual([
+      'mentioned_comment.comment_id(111){id,text,timestamp,like_count,media{id}}',
+      'mentioned_media.media_id(333){id,caption,timestamp,like_count,username,media_type}',
+    ]);
+    expect(value.records.map((r) => [r.nativeId, r.event])).toEqual([['111', 'mention'], ['333', 'mention']]);
+    expect(value.records[0]?.payload).toMatchObject({ subjectId: '222', commentId: '111', mentionKind: 'comment', likeCount: 2 });
+    expect(value.records[1]?.payload).toMatchObject({ subjectId: '333', text: 'avi caption', mentionKind: 'caption', author: 'sam' });
+  });
+
+  it('refuses forged lookup selectors and mismatched mention responses without retry', async () => {
+    const invoke = (value: unknown, fetch: HostFetch) => adapter.invoke({ source: 's', capability: 'ingress.normalize', args: {
+      sourceConfig: config, envelope: { object: 'instagram', entry: [{ id: config.igUserId, changes: [{ field: 'mentions', value }] }] },
+    } }, { fetch });
+    const fetch = vi.fn(async () => jsonResponse(200, { id: config.igUserId, mentioned_media: { id: '999', timestamp: at(1) } }));
+    await expect(invoke({ media_id: '333){access_token}' }, fetch)).rejects.toThrow('malformed_mention_ids');
+    expect(fetch).not.toHaveBeenCalled();
+    await expect(invoke({ media_id: '333' }, fetch)).rejects.toThrow('malformed_mention_lookup');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const throttled = vi.fn(async () => jsonResponse(429, {}));
+    await expect(invoke({ media_id: '333' }, throttled)).rejects.toMatchObject({ kind: 'rate-limited' });
+    expect(throttled).toHaveBeenCalledTimes(1);
+  });
+
   it('resumes without replaying a completed media window', async () => {
     const world = fake();
     const first = await drain(world.fetch);
     expect((await drain(world.fetch, first.cursor)).records).toEqual([]);
   });
 
+  it('replies to stored comment and caption mentions through the IG User mentions edge', async () => {
+    for (const mentionKind of ['comment', 'caption']) {
+      const fetch = vi.fn(async ({ request }: Parameters<HostFetch>[0]) => {
+        expect(request.method).toBe('POST');
+        expect(new URL(request.url).pathname).toBe(`/v26.0/${config.igUserId}/mentions`);
+        expect(Object.fromEntries(new URLSearchParams(request.body))).toEqual({
+          media_id: '222', ...(mentionKind === 'comment' ? { comment_id: '111' } : {}), message: 'thanks',
+        });
+        return jsonResponse(200, { id: '444' });
+      });
+      expect(await adapter.invoke({ source: 's', config, capability: 'social.reply', args: {
+        target: { platform: 'instagram', topLevelCommentId: 'wrong-for-a-mention' }, text: 'thanks',
+        payload: { platform: 'instagram', kind: 'mention', mentionKind, mediaId: '222', commentId: '111' },
+      } }, { fetch })).toEqual({ externalId: '444' });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('refuses malformed mention selectors before writing and never retries an unconfirmed mention reply', async () => {
+    const args = { target: { platform: 'instagram' }, text: 'thanks',
+      payload: { platform: 'instagram', kind: 'mention', mentionKind: 'comment', mediaId: '222', commentId: '111' } };
+    const fetch = vi.fn(async () => jsonResponse(503, {}));
+    await expect(adapter.invoke({ source: 's', config, capability: 'social.reply', args: { ...args,
+      payload: { ...args.payload, commentId: '111&access_token=forged' },
+    } }, { fetch })).rejects.toThrow('invalid_mention_reply');
+    expect(fetch).not.toHaveBeenCalled();
+    await expect(adapter.invoke({ source: 's', config, capability: 'social.reply', args }, { fetch })).rejects.toThrow('write_unconfirmed_do_not_retry');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('passes the shared provider conformance kit for all declared writes', async () => {
+    const prior = await drain(fake().fetch);
     const report = await runProviderConformance({
-      adapter, source: 'instagram-source', config, createFetch: () => fake().fetch,
+      retentionGap: { cursor: prior.cursor!, oldestReachableAt: '2026-10-03T00:00:00.000Z', createFetch: () => async ({ request }) =>
+        new URL(request.url).pathname.endsWith('/media')
+          ? jsonResponse(200, { data: [{ id: 'media-1' }] })
+          : jsonResponse(200, { data: Array.from({ length: 50 }, (_, n) => ({ id: `gap-${n}`, text: 'new', timestamp: at(3) })) }),
+      },
+      adapter, source: 'instagram-source', config, createFetch: () => {
+        const base = fake().fetch;
+        return async (input) => {
+          const url = new URL(input.request.url);
+          if (url.pathname === `/v26.0/${config.igUserId}`) {
+            return jsonResponse(200, { id: config.igUserId, mentioned_media: { id: '333', caption: 'mentioned', timestamp: at(1) } });
+          }
+          return base(input);
+        };
+      },
       invocations: [
         { capability: 'social.post', args: { destination: config.igUserId, text: 'caption', media: [{ type: 'image', url: 'https://cdn.example/image.jpg' }] } },
         { capability: 'social.reply', args: { target: { objectId: 'c1' }, text: 'reply' } },
         { capability: 'social.delete', args: { externalId: 'c1' } },
+        { capability: 'ingress.normalize', args: { sourceConfig: config, envelope: { object: 'instagram', entry: [{ id: config.igUserId, changes: [{ field: 'mentions', value: { media_id: '333' } }] }] } } },
       ],
       validatePayload: (_datatype, payload) => typeof payload.id === 'string' && typeof payload.text === 'string' ? null : 'id/text missing',
     });
     expect(report.failures.map((failure) => `${failure.check}: ${failure.detail}`)).toEqual([]);
+    expect(report.checksRun).toContain('retention-loss-reported');
   });
 
   it('refuses a text-only post before host.fetch', async () => {
@@ -90,21 +182,27 @@ describe('Instagram provider package (P-028)', () => {
     expect(calls).toBe(1);
   });
 
-  it('does not commit a full capped comment window that lost the watermark', async () => {
+  it('admits a capped window with typed incomplete-history evidence when the watermark was lost', async () => {
     const first = await drain(fake().fetch);
     const fetch: HostFetch = async ({ request }) => new URL(request.url).pathname.endsWith('/media')
       ? jsonResponse(200, { data: [{ id: 'media-1' }] })
       : jsonResponse(200, { data: Array.from({ length: 50 }, (_, n) => ({ id: `new-${n}`, text: 'new', timestamp: at(3) })) });
-    await expect(drain(fetch, first.cursor)).rejects.toMatchObject({ kind: 'transient', lossRisk: { kind: 'capped-window-overflow', mediaId: 'media-1' } });
+    const result = await drain(fetch, first.cursor);
+    expect(result.records).toHaveLength(50);
+    expect(result.pages.at(-1)).toMatchObject({ catchUp: { path: 'backfill', reason: 'no-replay-supported' },
+      lossRisk: { kind: 'capped-window-overflow', oldestReachableAt: '2026-10-03T00:00:00.000Z' } });
+    expect(result.pages.at(-1)!.lossRisk!.detail).toContain('media-1');
+    expect((await drain(fetch, result.cursor)).records).toEqual([]);
   });
 
   it('reports the same capped-history risk on a full cold-start window', async () => {
     const fetch: HostFetch = async ({ request }) => new URL(request.url).pathname.endsWith('/media')
       ? jsonResponse(200, { data: [{ id: 'media-1' }] })
       : jsonResponse(200, { data: Array.from({ length: 50 }, (_, n) => ({ id: `old-${n}`, text: 'history', timestamp: at(1) })) });
-    await expect(drain(fetch)).rejects.toMatchObject({
-      kind: 'transient', lossRisk: { kind: 'capped-window-overflow', mediaId: 'media-1' },
-    });
+    const result = await drain(fetch);
+    expect(result.records).toHaveLength(50);
+    expect(result.pages.at(-1)).toMatchObject({ catchUp: { path: 'cold-start' },
+      lossRisk: { kind: 'capped-window-overflow', oldestReachableAt: '2026-10-01T00:00:00.000Z' } });
   });
 
   it('accepts a full warm window that still reaches the stored watermark', async () => {
@@ -115,7 +213,9 @@ describe('Instagram provider package (P-028)', () => {
         { id: 'c1', text: 'old boundary', timestamp: at(1) },
         ...Array.from({ length: 49 }, (_, n) => ({ id: `new-${n}`, text: 'new', timestamp: at(3) })),
       ] });
-    expect((await drain(fetch, first.cursor)).records).toHaveLength(49);
+    const result = await drain(fetch, first.cursor);
+    expect(result.records).toHaveLength(49);
+    expect(result.pages.every((page) => page.lossRisk === undefined)).toBe(true);
   });
 
   it('keeps timestamp boundary ids, captionless replies and partial-page resume lossless', async () => {

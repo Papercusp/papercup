@@ -309,6 +309,70 @@ describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
     ]);
   });
 
+  it('qualifies a draft column against its own ALTER target, not another altered table', () => {
+    const sql = [
+      'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;',
+      'ALTER TABLE fc_probe_memory ADD COLUMN fc_probe_count integer;',
+    ].join('\n');
+    expect(findDraftColumnReferences(sql, [{
+      file: 'store.ts',
+      text: 'const query = sql`SELECT fc_probe_outcome FROM fc_probe_memory`;',
+    }]).references).toEqual([]);
+    expect(findDraftColumnReferences(sql, [{
+      file: 'store.ts',
+      text: 'const query = sql`SELECT fc_probe_outcome FROM fc_probe_sessions`;',
+    }]).references).toEqual([{ column: 'fc_probe_outcome', file: 'store.ts', line: 1 }]);
+  });
+
+  it('does not combine unrelated queries, prose, or TypeScript fields with a table elsewhere in a file', () => {
+    const sql = 'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;';
+    const text = [
+      'const query = sql`SELECT id FROM fc_probe_sessions`;',
+      'const other = sql`SELECT fc_probe_outcome FROM fc_other_sessions`;',
+      'const description = "The fc_probe_outcome is recorded separately.";',
+      'interface Row { readonly fc_probe_outcome?: string }',
+      'const fc_probe_outcome = measure();',
+      'const value = row.fc_probe_outcome;',
+    ].join('\n');
+    expect(findDraftColumnReferences(sql, [{ file: 'store.ts', text }]).references).toEqual([]);
+  });
+
+  it('retains genuine reads in ordinary SQL strings and concatenated query arguments', () => {
+    const sql = 'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;';
+    for (const text of [
+      "const query = 'SELECT fc_probe_outcome FROM fc_probe_sessions';",
+      "await db.query('SELECT fc_probe_outcome ' + 'FROM fc_probe_sessions');",
+      "const query = sql`SELECT ${sql`fc_probe_outcome`} FROM fc_probe_sessions`;",
+    ]) {
+      expect(findDraftColumnReferences(sql, [{ file: 'store.ts', text }]).references)
+        .toEqual([{ column: 'fc_probe_outcome', file: 'store.ts', line: 1 }]);
+    }
+  });
+
+  it('does not join independent SQL statements or unrelated schema objects', () => {
+    const sql = 'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;';
+    const sources = [
+      { file: 'store.sql', text: 'SELECT id FROM fc_probe_sessions; SELECT fc_probe_outcome FROM fc_other_sessions;' },
+      { file: 'schema.ts', text: [
+        "const sessions = pgTable('fc_probe_sessions', { id: text() });",
+        "const other = pgTable('fc_other_sessions', { fc_probe_outcome: text() }, () => [check('valid', sql`fc_probe_outcome IS NOT NULL`)]);",
+      ].join('\n') },
+      { file: 'manifest.ts', text: "const tables = [{table:'fc_probe_sessions', definition:'SELECT id FROM fc_probe_sessions'}, {table:'fc_other_sessions', definition:'SELECT fc_probe_outcome FROM fc_other_sessions'}];" },
+    ];
+    expect(findDraftColumnReferences(sql, sources).references).toEqual([]);
+  });
+
+  it('preserves a true schema definition and an unresolved interpolated SQL target', () => {
+    const sql = 'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;';
+    for (const text of [
+      "const table = pgTable('fc_probe_sessions', { fc_probe_outcome: text() });",
+      "const table = 'fc_probe_sessions'; const query = sql`SELECT fc_probe_outcome FROM ${sql(table)}`;",
+    ]) {
+      expect(findDraftColumnReferences(sql, [{ file: 'store.ts', text }]).references)
+        .toEqual([{ column: 'fc_probe_outcome', file: 'store.ts', line: 1 }]);
+    }
+  });
+
   // ⚠ The two fixtures below deliberately use FICTIONAL identifiers (`fc_probe_backends`,
   // `fc_probe_mode`) rather than the real pair that motivated them. A test proving this detector
   // must contain the exact shape the detector hunts for, so real names here make the test file

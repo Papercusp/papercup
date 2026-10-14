@@ -101,6 +101,7 @@ describe('social:reply — rail 1', () => {
       instanceHost: 'mastodon.social',
     });
     expect(seen()[0]!.text).toBe('thanks!');
+    expect((seen()[0] as SocialReplyRequest & { payload: unknown }).payload).toMatchObject(MASTODON_DOC.metadata);
     expect(result.inReplyTo).toBe('mastodon:109999');
     expect(result.ref).toBe('mastodon:110000');
     expect(result.label).toContain('mastodon.social');

@@ -332,6 +332,20 @@ export interface RetentionTreeCensus {
   error?: string;
 }
 
+/** Match lstat's seconds * 1000 + nanoseconds / 1e6 without rounding epoch seconds first. */
+function findTimestampMs(value: string): number | undefined {
+  const match = /^(-?\d+)(?:\.(\d{1,9})0*)?$/.exec(value);
+  if (!match) return undefined;
+  let seconds = Number(match[1]);
+  let nanoseconds = Number((match[2] ?? '').padEnd(9, '0'));
+  if (!Number.isSafeInteger(seconds)) return undefined;
+  if (value.startsWith('-') && nanoseconds !== 0) {
+    seconds -= 1;
+    nanoseconds = 1e9 - nanoseconds;
+  }
+  return seconds * 1000 + nanoseconds / 1e6;
+}
+
 /** Full max-age census through the same read-only native find as own-files.
  * Stream metadata, aggregate direct children, and prune proven recent/protected
  * subtrees. A time cap or unreadable node invalidates the entire candidate set.
@@ -370,8 +384,9 @@ export async function inspectRetentionTrees(root: string, opts: {
     };
     const take = (row: string[]) => {
       const [type, dev, ino, mtime, ctime, blocks, owner, path] = row;
+      const modifiedMs = findTimestampMs(mtime!), changedMs = findTimestampMs(ctime!);
       if (!path?.startsWith(root + '/') || !/^[fdlbcsp]$/.test(type!) ||
-          ![dev, ino, blocks, owner].every((v) => /^\d+$/.test(v!)) || ![mtime, ctime].every((v) => Number.isFinite(Number(v)))) {
+          ![dev, ino, blocks, owner].every((v) => /^\d+$/.test(v!)) || modifiedMs === undefined || changedMs === undefined) {
         malformed = true; return;
       }
       result.inspectedNodes++;
@@ -380,10 +395,10 @@ export async function inspectRetentionTrees(root: string, opts: {
       let group = groups.get(child);
       if (!group) {
         if (!direct) { malformed = true; return; }
-        group = { entry: { path: child, newestWriteMs: 0, bytes: 0, dev: Number(dev), ino: Number(ino) } };
+        group = { entry: { path: child, newestWriteMs: Number.NEGATIVE_INFINITY, bytes: 0, dev: Number(dev), ino: Number(ino) } };
         groups.set(child, group);
       }
-      const newest = Math.max(Number(mtime), Number(ctime)) * 1000;
+      const newest = Math.max(modifiedMs, changedMs);
       group.entry.newestWriteMs = Math.max(group.entry.newestWriteMs, newest);
       group.entry.bytes += Number(blocks) * 512;
       if (excluded.includes(path)) group.reason = 'protected policy root';

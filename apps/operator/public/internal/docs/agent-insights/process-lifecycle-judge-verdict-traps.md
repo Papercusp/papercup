@@ -1,7 +1,7 @@
-# Process-lifecycle judging: four traps that produce a confident wrong verdict
+# Process-lifecycle judging: five traps that produce a confident wrong verdict
 URL: /internal/docs/agent-insights/process-lifecycle-judge-verdict-traps
 
-Why process-lifecycle judge items pile up unworked, and the four measured traps that each yield a plausible-looking wrong verdict: a keep→gone flip inside a 3-minute window, claimSubjectMismatch as the DEFAULT completion outcome (7 Queen spawns, 0 verdicts), gone-protocol checks naming fields the deployed build does not emit, and a silently-capped sleep() that makes a working positive control read as broken.
+Why process-lifecycle judge items pile up unworked, and five measured traps that yield plausible but wrong verdicts: stale keep→gone evidence, claimSubjectMismatch, protocol/source skew, silently capped sleep(), and systemd/DBus failures masked as a successful zero.
 
 All four traps below were measured in one judging pass on 2026-10-05 (WI-10006061 / WI-10006062, tasks `0muvg6x2hxbjajqcc7r` and `0muvg6xd1159fapeoy0`). Each one, left unhandled, yields a **well-formed wrong verdict** rather than an error — which is why they are expensive.
 
@@ -122,6 +122,14 @@ For a `gone` verdict, an empty exact-scope result is explicitly *not* proof. Str
 * 5 − 4 = 1 PIDs
 
 That **positively accounts** for both two-PID candidates exiting, rather than merely failing to find them — which is the difference between "absent" and "my probe returned nothing".
+
+## 5. systemd/DBus failures from `capability:bash` mask blind probes as zero
+
+Measured 2026-10-13 while judging task `0mv74ap9918ex3ndml5` (EI-25898902062381586): `systemctl --user show -p ActiveState` returned `Failed to connect to bus: Operation not permitted`. In the same host context, `systemctl --user list-units 'pc-*.scope' --no-legend | wc -l` printed `0`; `--all | grep -c` returned `0` for both the candidate and a known-present control. The control scope was independently proven present in that minute by `processes:list` (`exactScopeUnitMatches=1`) and cgroupfs (`pids.current=18`, `cgroup.events` reported `populated 1`); 255 populated Papercusp scopes existed on the host.
+
+**Cause.** `capability:bash` cannot access the user manager’s D-Bus. `list-units` therefore produced no usable listing, while the downstream `wc -l` / `grep -c` pipelines exited successfully and converted the instrument failure into a plausible zero. That zero is indistinguishable from a real absence unless the probe is checked against a known-present scope.
+
+**Rule.** Treat `systemctl --user` readings from `capability:bash` as unknown, never as unit-absence evidence. More generally, every absence-bearing shell probe used for a lifecycle verdict must query a known-present positive control in the same call; if the control is missing or the command reports an error, discard every negative result and leave the verdict unknown. A positive control only proves the instrument can see something; prove the candidate’s absence with the complete census and exact-scope/cgroupfs procedure above.
 
 ## Reading the work item without overflowing the result door
 

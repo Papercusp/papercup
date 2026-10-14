@@ -15,7 +15,8 @@ import { performance } from 'node:perf_hooks';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { capabilityBwrapWorks } from './exec-sandbox';
 import capabilityGit, { createScratchClone, emptyPathspecNote, runGit, runGitReadOnlyEvidence } from './git';
-import { runLocalGit } from '../../scratch-git-clone';
+import { createScratchClone as createLocalScratchClone, estimateScratchGitTimeout, runLocalGit,
+  SCRATCH_GIT_BASE_TIMEOUT_MS, SCRATCH_GIT_MAX_TIMEOUT_MS } from '../../scratch-git-clone';
 
 const spawnCalls = vi.hoisted(() => vi.fn());
 vi.mock('node:child_process', async (importOriginal) => {
@@ -125,6 +126,24 @@ describe('standalone scratch Git failure diagnostics (EI-25802116941940647)', ()
     expect(result.code).toBe(0);
     expect(result.output).toMatch(/^git version/);
     expect(result.output).not.toContain('[scratch-git-runner]');
+  });
+
+  it('forwards a measured committed-tree deadline while retaining the bounded default', async () => {
+    vi.stubEnv('PC_HEAVY_ADMISSION_DIR', '');
+    vi.stubEnv('PC_HEAVY_ADMISSION_ID', '');
+    const mocked = vi.mocked(execFile);
+    mocked.mockImplementationOnce(((...args: unknown[]) => {
+      (args.at(-1) as (error: null, stdout: string, stderr: string) => void)(null, 'ok', '');
+    }) as typeof execFile);
+    try {
+      const result = await runLocalGit(['--version'], STATE, never, 180_000);
+      expect(result).toEqual({ code: 0, output: 'ok' });
+      expect(mocked.mock.calls.at(-1)?.[2]).toMatchObject({ timeout: 180_000 });
+      expect(estimateScratchGitTimeout({ bytes: 0, entries: 0 })).toBe(SCRATCH_GIT_BASE_TIMEOUT_MS);
+      expect(estimateScratchGitTimeout({ bytes: 1_683_640_292, entries: 32_412 })).toBeGreaterThan(SCRATCH_GIT_BASE_TIMEOUT_MS);
+      expect(estimateScratchGitTimeout({ bytes: Number.MAX_SAFE_INTEGER, entries: Number.MAX_SAFE_INTEGER }))
+        .toBe(SCRATCH_GIT_MAX_TIMEOUT_MS);
+    } finally { mocked.mockClear(); vi.unstubAllEnvs(); }
   });
 
   it.each([0, 70_000])('charges active Git time, excluding %i ms of admission suspension', async (freezeMs) => {
@@ -280,6 +299,31 @@ describe('scratchClone — guarded cheap local materialisation (WI-38848)', () =
     expect(git(result.path, ['remote'])).toBe('');
     expect(existsSync(join(result.path, 'node_modules'))).toBe(false);
     expect(readFileSync(join(result.path, '.git', 'objects', 'info', 'alternates'), 'utf8').trim()).not.toBe('');
+  });
+
+  it('sizes checkout from the selected committed tree and preserves all source bytes', async () => {
+    const source = repository('cap-git-sized-scratch-source-');
+    const measured: Array<{ argv: string[]; timeoutMs: number | undefined }> = [];
+    const large = Buffer.alloc(2 * 1024 * 1024, 'x');
+    writeFileSync(join(source, 'population.bin'), large);
+    git(source, ['add', 'population.bin']);
+    git(source, ['commit', '--quiet', '-m', 'committed population']);
+    const sha = git(source, ['rev-parse', 'HEAD']);
+    // The dirty donor cannot inflate or substitute the committed population.
+    writeFileSync(join(source, 'population.bin'), 'different working bytes');
+    const result = await createLocalScratchClone({ source, ref: sha, signal: never,
+      runGit: (argv, cwd, signal, timeoutMs) => {
+        measured.push({ argv, timeoutMs });
+        return runLocalGit(argv, cwd, signal, timeoutMs);
+      } });
+    cleanup.push(result.path);
+    expect(readFileSync(join(result.path, 'population.bin'))).toEqual(large);
+    const checkout = measured.find(call => call.argv.includes('checkout'));
+    expect(checkout?.timeoutMs).toBe(estimateScratchGitTimeout({
+      bytes: large.length + Buffer.byteLength('cap-git-sized-scratch-source-\n'), entries: 2,
+    }));
+    expect(checkout?.timeoutMs).toBeGreaterThan(SCRATCH_GIT_BASE_TIMEOUT_MS);
+    expect(git(result.path, ['rev-parse', 'HEAD'])).toBe(sha);
   });
 
   it('materialises local submodules at their exact pins with shared objects and no origins', async () => {

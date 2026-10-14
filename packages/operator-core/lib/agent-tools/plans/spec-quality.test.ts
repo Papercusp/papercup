@@ -467,6 +467,10 @@ describe('evaluatePlanSpecQuality', () => {
     'Extend existing lifecycle, health, public-ingress and API instrumentation.',
     'Reuse restricted audit records for accountable access observations.',
     'Evaluate existing PostHog error capability before adding another vendor.',
+    'Reuse prior clean receipts when current; reuse PostHog for consented portal events.',
+    'Reuse current verification evidence through the existing runtime.',
+    'Reuse prior test results from verification.ts.',
+    'Reuse prior clean receipts to implement the workflow.',
   ])('detects reuse prescriptions in both item and sourceBar contracts: %s', (behavior) => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
@@ -501,6 +505,30 @@ describe('evaluatePlanSpecQuality', () => {
       specId: 'SPEC-001-01', planItemId: 'P-001', behavior,
       disposition: 'evaluated', rating: 'pass', reason: null,
     });
+  });
+
+  it.each([
+    'Reuse prior clean receipts when current; do not recreate proof just for recovery.',
+    'Reuse current verification evidence.',
+    'Reuse prior passing test results when their source fingerprints are current.',
+    'Reuse the current test receipts.',
+  ])('keeps verification-proof reuse independent in item and sourceBar contracts: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship',
+      clauses: [clause({ behavior }), clause({
+        specId: 'AUTO-BAR-R-1-P-001', sourceValId: null, behavior,
+        sourceBar: { barKey: 'R-1', barHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64),
+          rubricSlug: 'acceptance-quality-plan', rubricRevision: 1, evidencePlane: 'tree' },
+      })],
+    });
+
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    for (const specId of ['SPEC-001-01', 'AUTO-BAR-R-1-P-001']) {
+      expect(result.details.implementationIndependenceClauseDiagnostics).toContainEqual(
+        expect.objectContaining({ specId, behavior, disposition: 'evaluated', rating: 'pass', reason: null }),
+      );
+    }
   });
 
   it('reports implementation-independence controls and explicit exclusions for the current clause population', () => {

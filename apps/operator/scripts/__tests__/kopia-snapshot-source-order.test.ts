@@ -68,7 +68,7 @@ function writeFakes(alreadySnapshotted: string[]): void {
   // Fake sudo: drop the leading -n (and an optional --) and exec the rest.
   writeFileSync(
     join(dir, 'sudo'),
-    '#!/usr/bin/env bash\nwhile [ "$1" = "-n" ] || [ "$1" = "--" ]; do shift; done\nexec "$@"\n',
+    '#!/usr/bin/env bash\nwhile [ "$1" = "-n" ] || [ "$1" = "--" ]; do shift; done\nif [ "$1" = "-u" ]; then shift 2; fi\nexec "$@"\n',
   );
   // Fake kopia: answer `snapshot list --all`, and record the argv of
   // `snapshot create` verbatim so the ORDER is observable.
@@ -80,6 +80,7 @@ function writeFakes(alreadySnapshotted: string[]): void {
     `#!/usr/bin/env bash
 if [ "$1" = "snapshot" ] && [ "$2" = "list" ]; then
   [ "$KOPIA_LOG_DIR" = "$KOPIA_TEST_EXPECT_LOG_DIR" ] || { echo "missing KOPIA_LOG_DIR" >&2; exit 90; }
+  if [[ " $* " == *" --json "* ]]; then echo '[]'; exit 0; fi
   cat <<'LISTING'
 ${listing}
 LISTING
@@ -94,7 +95,8 @@ fi
 exit 0
 `,
   );
-  for (const f of ['sudo', 'kopia']) chmodSync(join(dir, f), 0o755);
+  writeFileSync(join(dir, 'psql'), '#!/usr/bin/env bash\nwhile IFS= read -r line; do\n case "$line" in\n  SELECT*) echo f ;;\n  *PAPERCUSP_HOLD_READY*) echo PAPERCUSP_HOLD_READY ;;\n esac\ndone\n');
+  for (const f of ['sudo', 'kopia', 'psql']) chmodSync(join(dir, f), 0o755);
 }
 
 /** Separates one `kopia snapshot create` invocation's argv from the next. */
@@ -117,6 +119,8 @@ function runSweepRawInvocations(requiredDir: string, procRoot?: string): string[
       KOPIA_BACKUP_GUARD_ACTIVE: '1', // do not re-enter the pressure guard
       KOPIA_SNAPSHOT_LOG_DIR: join(dir, 'log'),
       KOPIA_SNAPSHOT_SUDO: join(dir, 'sudo'),
+      KOPIA_HOLD_SUDO_BIN: join(dir, 'sudo'),
+      KOPIA_HOLD_PSQL_BIN: join(dir, 'psql'),
       KOPIA_SNAPSHOT_BIN: join(dir, 'kopia'),
       KOPIA_LOG_DIR: join(dir, 'kopia-cli-logs'),
       KOPIA_TEST_EXPECT_LOG_DIR: join(dir, 'kopia-cli-logs'),
@@ -446,6 +450,7 @@ describe('kopia-snapshot-all.sh sweep rotation', () => {
       join(dir, 'kopia'),
       `#!/usr/bin/env bash
 if [ "$1" = "snapshot" ] && [ "$2" = "list" ]; then
+  if [[ " $* " == *" --json "* ]]; then echo '[]'; exit 0; fi
 ${SOURCES.map((s) => `  echo 'backup@host:${s} 2026-09-05 13:00:00 EDT k0 1 GB drwxr-xr-x'`).join('\n')}
   exit 0
 fi
@@ -518,6 +523,7 @@ exit 0
       join(dir, 'kopia'),
       `#!/usr/bin/env bash
 if [ "$1" = "snapshot" ] && [ "$2" = "list" ]; then
+  if [[ " $* " == *" --json "* ]]; then echo '[]'; exit 0; fi
 ${SOURCES.map((s) => `  echo 'backup@host:${s} 2026-09-05 13:00:00 EDT k0 1 GB drwxr-xr-x'`).join('\n')}
   exit 0
 fi

@@ -22,6 +22,7 @@ import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-aut
 import { admitHostedCustomerDeletion, exportHostedOrganizationData, exportHostedUserData } from './hosted-customer-data';
 import { authorizeHostedCustomerDeletion, freezeHostedCustomerDeletionAccess, HOSTED_DELETION_SNAPSHOT_ACTION,
   readHostedCustomerDeletionSnapshot } from './hosted-customer-deletion-store';
+import { deleteHostedCustomerDatabase } from './hosted-customer-deletion-database';
 import { createPersonalGrant, purgePersonalSource, upsertPersonalDocuments } from '../personal-vault/store';
 import {
   CHAT_DERIVED_DOCUMENT_KINDS,
@@ -420,7 +421,7 @@ describe('organization data receipts (P-007c)', () => {
     expect((await org.adminSql`SELECT status FROM papercusp_auth.organizations WHERE id=${organizationId}::uuid`)[0].status).toBe('active');
   });
 
-  it('freezes organization access atomically, preserves shared users and dedupes durable targets (P-010)', async () => {
+  it('freezes and deletes organization data atomically with tenant isolation, retention and replay (P-010)', async () => {
     const organizationId = randomUUID(), otherOrg = randomUUID(), userId = randomUUID(), sharedId = randomUUID();
     for (const id of [organizationId, otherOrg]) await org.adminSql`
       INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name)
@@ -537,6 +538,75 @@ describe('organization data receipts (P-007c)', () => {
       WHERE hosted_user_id=${userId}::uuid`)).rejects.toThrow('hosted customer deletion access is frozen');
     await service(tx => tx`UPDATE papercusp_auth.hosted_users SET display_name='Shared user remains active'
       WHERE id=${sharedId}::uuid`);
+    // Populate both tenants, including rows whose delete privilege is absent
+    // from hosted_service. The reviewed bridge must implement the whole map.
+    for (const id of [organizationId, otherOrg]) {
+      await org.adminSql`INSERT INTO papercusp_auth.hosted_user_preferences (organization_id, user_id, profile)
+        VALUES (${id}::uuid, ${sharedId}::uuid, '{"name":"private-profile"}'::jsonb)
+        ON CONFLICT (organization_id,user_id) DO UPDATE SET profile=EXCLUDED.profile`;
+      await org.adminSql`INSERT INTO papercusp_auth.legal_acceptances
+        (organization_id,user_id,document_kind,document_version,acceptance_source)
+        VALUES (${id}::uuid, ${sharedId}::uuid, 'terms', 'deletion-retention', 'administrative')`;
+    }
+    await org.adminSql`INSERT INTO papercusp_auth.hosted_billing_customers (organization_id,stripe_customer_id,livemode)
+      VALUES (${organizationId}::uuid, 'cus_retainedFinancialBinding', false)`;
+    await expect(service(tx => deleteHostedCustomerDatabase(tx, request, async () => policy)))
+      .rejects.toThrow('workspace teardown is incomplete');
+    expect((await org.adminSql`SELECT status FROM papercusp_auth.hosted_users WHERE id=${userId}::uuid`)[0].status)
+      .toBe('deactivated');
+    await org.adminSql`UPDATE harness_shared.customer_workspaces SET state='deleted',deleted_at=now()
+      WHERE organization_id=${organizationId}`;
+    await expect(org.appSql`SELECT * FROM papercusp_auth.delete_hosted_customer_rows
+      ('papercusp_auth.hosted_users',${organizationId},${request.operationId})`).rejects.toThrow('permission denied');
+    const mutate = (store: string, requestedOrganizationId: string) => service(async tx => {
+      await tx`SELECT set_config('app.organization_id',${organizationId},true)`;
+      return tx`SELECT * FROM papercusp_auth.delete_hosted_customer_rows
+        (${store},${requestedOrganizationId},${request.operationId})`;
+    });
+    await expect(mutate('papercusp_auth.hosted_users',otherOrg)).rejects.toThrow('service scope is invalid');
+    await expect(mutate('papercusp_auth.legal_acceptances',organizationId)).rejects.toThrow('store is not allowed');
+    // A failed canonical receipt cannot leave a partially erased account.
+    await org.adminSql.unsafe(`CREATE FUNCTION papercusp_auth.p010_reject_deletion_receipt() RETURNS trigger
+      LANGUAGE plpgsql AS $$ BEGIN IF NEW.action = 'organization.data.deletion' THEN
+      RAISE EXCEPTION 'deletion-receipt-write-refused'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER p010_reject_deletion_receipt BEFORE INSERT ON papercusp_auth.organization_audit_events
+      FOR EACH ROW EXECUTE FUNCTION papercusp_auth.p010_reject_deletion_receipt()`);
+    try {
+      await expect(service(tx => deleteHostedCustomerDatabase(tx, request, async () => policy)))
+        .rejects.toThrow('deletion-receipt-write-refused');
+      expect((await org.adminSql`SELECT status FROM papercusp_auth.hosted_users WHERE id=${userId}::uuid`)[0].status)
+        .toBe('deactivated');
+      expect(await org.adminSql`SELECT id FROM papercusp_auth.organization_memberships
+        WHERE organization_id=${organizationId}::uuid`).toHaveLength(2);
+    } finally {
+      await org.adminSql.unsafe(`DROP TRIGGER p010_reject_deletion_receipt ON papercusp_auth.organization_audit_events;
+        DROP FUNCTION papercusp_auth.p010_reject_deletion_receipt()`);
+    }
+    // Migration 1418 enrolls both new memberships into tutorial preferences;
+    // the executor must remove those rows as well as the explicit profile.
+    expect(await org.adminSql`SELECT user_id FROM papercusp_auth.hosted_user_preferences
+      WHERE organization_id=${organizationId}::uuid`).toHaveLength(2);
+    const deleted = await service(tx => deleteHostedCustomerDatabase(tx, request, async () => policy));
+    expect(deleted.stores.map(s => s.store).sort()).toEqual(planOrganizationDataOperation().map(s => s.store).sort());
+    expect(deleted.stores.find(s => s.store === 'papercusp_auth.hosted_users'))
+      .toMatchObject({ outcome: 'redacted', rowCount: 1, rowsRemaining: 1 });
+    expect(deleted.stores.find(s => s.store === 'papercusp_auth.hosted_user_preferences'))
+      .toMatchObject({ outcome: 'deleted', rowCount: 2, rowsRemaining: 0 });
+    expect(deleted.stores.find(s => s.store === 'papercusp_auth.legal_acceptances')).toMatchObject({ outcome: 'retained' });
+    expect((await receiptRow(deleted.receiptId)).metadata).toMatchObject({ operationId: request.operationId, executor: 'hosted-control-plane' });
+    expect((await org.adminSql`SELECT primary_email,display_name,status FROM papercusp_auth.hosted_users
+      WHERE id=${userId}::uuid`)[0]).toEqual({ primary_email: null, display_name: null, status: 'deleted' });
+    expect((await org.adminSql`SELECT status FROM papercusp_auth.hosted_users WHERE id=${sharedId}::uuid`)[0].status).toBe('active');
+    expect(await org.adminSql`SELECT id FROM papercusp_auth.organization_memberships WHERE organization_id=${organizationId}::uuid`).toHaveLength(0);
+    expect(await org.adminSql`SELECT id FROM papercusp_auth.organization_memberships WHERE organization_id=${otherOrg}::uuid`).toHaveLength(1);
+    expect(await org.adminSql`SELECT user_id FROM papercusp_auth.hosted_user_preferences WHERE organization_id=${otherOrg}::uuid`).toHaveLength(1);
+    expect(await org.adminSql`SELECT id FROM papercusp_auth.legal_acceptances WHERE organization_id=${organizationId}::uuid`).toHaveLength(1);
+    expect(await org.adminSql`SELECT stripe_customer_id FROM papercusp_auth.hosted_billing_customers
+      WHERE organization_id=${organizationId}::uuid`).toHaveLength(1);
+    expect(await Promise.all([1,2].map(() => service(tx => deleteHostedCustomerDatabase(tx, request, async () => policy)))))
+      .toEqual([deleted, deleted]);
+    expect(await org.adminSql`SELECT id FROM papercusp_auth.organization_audit_events
+      WHERE organization_id=${organizationId}::uuid AND action='organization.data.deletion'`).toHaveLength(1);
   });
 
   it('rechecks global ownership before freezing a user and preserves shared organization resources (P-010)', async () => {
@@ -582,6 +652,20 @@ describe('organization data receipts (P-007c)', () => {
       WHERE user_id=${peerId}::uuid AND status='active'`).toHaveLength(2);
     expect(await org.adminSql`SELECT id FROM papercusp_auth.organizations
       WHERE id IN (${organizationId}::uuid, ${otherOrg}::uuid) AND status='active'`).toHaveLength(2);
+    for (const oid of [organizationId,otherOrg]) {
+      for (const uid of [userId,peerId]) await org.adminSql`
+        INSERT INTO papercusp_auth.hosted_user_preferences (organization_id,user_id,profile)
+        VALUES (${oid}::uuid,${uid}::uuid,'{"name":"global-user-profile"}'::jsonb)
+        ON CONFLICT (organization_id,user_id) DO UPDATE SET profile=EXCLUDED.profile`;
+    }
+    const result = await service(tx => deleteHostedCustomerDatabase(tx, request, async () => policy));
+    expect(result.stores.find(s => s.store === 'papercusp_auth.hosted_user_preferences'))
+      .toMatchObject({ outcome: 'deleted', rowCount: 2, rowsRemaining: 0 });
+    expect(result.stores.find(s => s.store === 'papercusp_auth.organizations')).toMatchObject({ outcome: 'not-attributable' });
+    expect(await org.adminSql`SELECT user_id FROM papercusp_auth.hosted_user_preferences WHERE user_id=${userId}::uuid`).toHaveLength(0);
+    expect(await org.adminSql`SELECT user_id FROM papercusp_auth.hosted_user_preferences WHERE user_id=${peerId}::uuid`).toHaveLength(2);
+    expect(await org.adminSql`SELECT id FROM papercusp_auth.organizations
+      WHERE id IN (${organizationId}::uuid,${otherOrg}::uuid) AND status='active'`).toHaveLength(2);
   });
 
   it('rolls back access freeze if the immutable target receipt cannot commit (P-010)', async () => {

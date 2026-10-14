@@ -365,6 +365,9 @@ function describeDays(ageMs: number): string {
  *  floor authoritatively — better than a plausible-sounding remedy for the wrong one. */
 function remedyFor(alert: UnservableAlert): string {
   switch (alert.floor) {
+    case 'live-gate-ops':
+      return `Check state:read { cell: 'gate.greenCheckpoint.ownership' } before acting. If held by you, continue the existing gate-fix item. If held by another live agent, send them item ${alert.itemId} and condition ${itemConditionKey(alert)} once, then stop. If unheld, the registered fixer can claim by ID with work_items:claim { id: '${alert.itemId}', harness: '${alert.harnessSlug}' } and drive it to a verified verdict. ` +
+        'work_items:observe available:true does not establish live-gate-ops self-select eligibility.';
     case 'needs-owner-action':
       return `work_items:update { id: '${alert.itemId}', needsHuman: false } if it should actually be worked`;
     case 'observation-lane':

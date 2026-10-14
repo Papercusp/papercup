@@ -524,7 +524,79 @@ const APP_PERFORMANCE_INSTRUMENTS: readonly CommandInstrument[] = [
   },
 ];
 
+export const GATE_SENTINEL_HEALTH_INSTRUMENT_KEY = 'host:gate-liveness-sentinel-health';
+
+// Extend the existing command-instrument executor instead of granting the judge
+// dev-tool access. Select no Environment fields: unit credentials are not evidence.
+export const GATE_SENTINEL_HEALTH_COMMAND = [
+  "const {execFileSync}=require('node:child_process');",
+  "const show=(unit,props)=>execFileSync('systemctl',['--user','show',unit,...props.flatMap(p=>['-p',p])],{encoding:'utf8',timeout:2000}).trim().split('\\n').filter(Boolean).reduce((out,l)=>{const i=l.indexOf('='),k=l.slice(0,i),v=l.slice(i+1);out[k]=out[k]?out[k]+' '+v:v;return out;},{});",
+  "const timer=show('papercusp-gate-liveness-sentinel.timer',['Id','LoadState','ActiveState','UnitFileState','Triggers','WantedBy','TimersMonotonic','LastTriggerUSecMonotonic','NextElapseUSecMonotonic']);",
+  "const service=show('papercusp-gate-liveness-sentinel.service',['Id','LoadState','ActiveState','Result','ExecMainStatus','ExecMainStartTimestampMonotonic','ExecMainExitTimestampMonotonic','ExecStart','Requires','Wants','BindsTo','PartOf']);",
+  "const linger=execFileSync('loginctl',['show-user',String(require('node:os').userInfo().uid),'-p','Linger','--value'],{encoding:'utf8',timeout:2000}).trim();",
+  "process.stdout.write(JSON.stringify({schemaVersion:1,timer,service,linger,monotonicUs:Number(process.hrtime.bigint()/1000n)}));",
+].join('\n');
+
+/** 1 = measured healthy, 0 = measured broken, null = unavailable/incomplete. */
+export function parseGateSentinelHealth(stdout: string): number | null {
+  let input: { schemaVersion?: unknown; timer?: Record<string, unknown>; service?: Record<string, unknown>; linger?: unknown; monotonicUs?: unknown };
+  try { input = JSON.parse(stdout); } catch { return null; }
+  if (!input || input.schemaVersion !== 1 || !input.timer || !input.service) return null;
+  const { timer, service } = input;
+  const fields = (row: Record<string, unknown>, keys: string[]) => keys.every(key => typeof row[key] === 'string' && row[key] !== '');
+  if (!fields(timer, ['Id', 'LoadState']) || !fields(service, ['Id', 'LoadState'])) return null;
+  if (timer.Id !== 'papercusp-gate-liveness-sentinel.timer' || service.Id !== 'papercusp-gate-liveness-sentinel.service' ||
+      timer.LoadState !== 'loaded' || service.LoadState !== 'loaded') return 0;
+  if (!fields(timer, ['ActiveState', 'UnitFileState', 'Triggers', 'WantedBy', 'TimersMonotonic']) ||
+      !fields(service, ['ActiveState', 'Result', 'ExecMainStatus', 'ExecStart']) || typeof input.linger !== 'string') return null;
+  if (timer.ActiveState !== 'active' || timer.UnitFileState !== 'enabled' || input.linger !== 'yes' ||
+      !String(timer.Triggers).split(/\s+/).includes(String(service.Id)) ||
+      !String(timer.WantedBy).split(/\s+/).includes('timers.target') ||
+      !String(timer.TimersMonotonic).includes('OnStartupUSec=') ||
+      !String(timer.TimersMonotonic).includes('OnUnitActiveUSec=') ||
+      !String(service.ExecStart).includes('scripts/gate-liveness-sentinel.mts') ||
+      service.ActiveState === 'failed' || service.Result !== 'success' || service.ExecMainStatus !== '0') return 0;
+  for (const key of ['Requires', 'Wants', 'BindsTo', 'PartOf']) {
+    if (typeof service[key] !== 'string') return null;
+    if (/papercu(?:p|sp)-(?:dev-api|staging-api|operator)(?:\.|\s|$)/.test(String(service[key]))) return 0;
+  }
+  const stamp = (value: unknown): number | null => {
+    if (typeof value !== 'string') return null;
+    if (/^\d+$/.test(value)) return Number.isSafeInteger(Number(value)) ? Number(value) : null;
+    // systemctl formats timer monotonic properties as spans but service stamps
+    // as integer microseconds. Reject unknown units or partially parsed spans.
+    const scales: Record<string, number> = { w: 604_800_000_000, d: 86_400_000_000, h: 3_600_000_000, min: 60_000_000, s: 1_000_000, ms: 1000, us: 1, 'µs': 1 };
+    const tokens = value.trim().split(/\s+/); let total = 0;
+    for (const token of tokens) {
+      const match = /^(\d+(?:\.\d+)?)(w|d|h|min|s|ms|us|µs)$/.exec(token);
+      if (!match) return null;
+      total += Number(match[1]) * scales[match[2]];
+    }
+    return Number.isSafeInteger(Math.round(total)) ? Math.round(total) : null;
+  };
+  const now = input.monotonicUs;
+  const last = stamp(timer.LastTriggerUSecMonotonic), next = stamp(timer.NextElapseUSecMonotonic);
+  const start = stamp(service.ExecMainStartTimestampMonotonic), end = stamp(service.ExecMainExitTimestampMonotonic);
+  if (typeof now !== 'number' || !Number.isSafeInteger(now) || now <= 0 || last === null || next === null || start === null || end === null) return null;
+  // A oneshot may be inactive between successful ticks. A tick in progress has
+  // no completed receipt yet: unknown, never a false healthy or a false outage.
+  if (last <= 0 || start <= 0 || end < start || last > now || start > now || end > now) return null;
+  const maxAgeUs = (600 + 180 + 30) * 1_000_000; // cadence + service timeout + timer accuracy
+  if (now - last > maxAgeUs || now - end > maxAgeUs) return 0;
+  if (next === 0 && ['active', 'activating'].includes(String(service.ActiveState))) return null;
+  return next > now && next - now <= maxAgeUs ? 1 : 0;
+}
+
 const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
+  {
+    key: GATE_SENTINEL_HEALTH_INSTRUMENT_KEY,
+    evaluator: 'command',
+    description: 'Live out-of-operator sentinel deployment: exact loaded identities, enabled active reboot-starting timer, lingering user manager, recent successful oneshot and next trigger; 1 healthy, 0 broken, unreadable/incomplete unknown.',
+    unit: 'count',
+    argv: [process.execPath, '-e', GATE_SENTINEL_HEALTH_COMMAND],
+    timeoutMs: 8_000,
+    parse: parseGateSentinelHealth,
+  },
   psi('cpu', 'some'),
   psi('cpu', 'full'),
   psi('io', 'some'),

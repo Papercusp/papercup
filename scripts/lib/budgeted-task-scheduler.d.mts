@@ -22,6 +22,9 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, in
     orderedChainQualified: false; runtimeClosure: 'unmeasured'; operationalAcceptance: false;
     steps: never[]; gaps: string[];
     processTrace: { scope: string; gaps: string[];
+      streams: Array<{ processIdentity: string; pid: number; role: string; scope: string;
+        observedByteLength: number; captureComplete: boolean;
+        artifact: { ref: string; sha256: string; byteLength: number } }>;
       events: Array<{ [key: string]: unknown; artifact: { ref: string; sha256: string; byteLength: number } }> };
     execution: { command: string[]; cwd: string; startedAtMs: number; finishedAtMs: number;
       childWallMs: number; exitCode: number | null; signal: string | null; error: string | null;

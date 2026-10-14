@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { linuxProcStateFromStat } from "@papercusp/operator-core/lib/process-identity";
 import { buildCheckpointSystemdArgv } from "@papercusp/operator-core/lib/release-checkpoint-launch";
+import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-head-admission";
 import { captureGateSuiteVerdictReplay } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
 import {
   runGreenCheckpoint,
@@ -6437,6 +6438,57 @@ describe("runGreenCheckpoint", () => {
     expect(calls.indexOf("runGreen")).toBeGreaterThan(
       calls.indexOf("runChangedFileTypecheckPreflight"),
     );
+  });
+
+  it.each([true, false])("P-035: repair preflight uses the frozen delta and preserves the full gate verdict (green=%s)", async (fullGateGreen) => {
+    const pin = await commit("packages/operator-core/lib/backlog.ts", "export const backlog = 1;\n", "pin");
+    await git(repo, ["branch", "ready", pin]);
+    const frozen = await commit("packages/operator-core/lib/backlog.ts", "export const backlog = 2;\n", "frozen backlog");
+    const repaired = await commit("packages/operator-core/lib/repair.ts", "export const repair = 1;\n", "repair delta");
+    // Model the ref published by a real admission; a synthetic repair commit
+    // without it must correctly fail the frozen-lineage promotion guard.
+    await git(repo, ["update-ref", frozenLineageRef(frozen), repaired]);
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: pin,
+      repairHead: repaired,
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      failingTests: [],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(fullGateGreen, fullGateGreen ? [] : ["lint:tsc"]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => { queue = next; };
+    const ranges: Array<{ from: string; to: string }> = [];
+    deps.changedFilesForRange = async (from, to) => {
+      ranges.push({ from, to });
+      return from === frozen
+        ? ["packages/operator-core/lib/repair.ts"]
+        : ["packages/operator-core/lib/backlog.ts", "packages/operator-core/lib/repair.ts"];
+    };
+    const checked: string[][] = [];
+    deps.runChangedFileTypecheckPreflight = async (files, range) => {
+      checked.push(files);
+      expect(range).toEqual({ from: frozen, to: repaired });
+      return { status: "passed", summary: "repair delta passes" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(ranges).toContainEqual({ from: frozen, to: repaired });
+    expect(checked).toEqual([["packages/operator-core/lib/repair.ts"]]);
+    // A regression inherited from the frozen candidate still blocks promotion even
+    // when the narrower provisional check passes. The full gate remains the authority.
+    expect(calls).toContain("runGreen");
+    expect(result.advanced, JSON.stringify(result)).toBe(fullGateGreen);
+    expect(result.green, JSON.stringify(result)).toBe(fullGateGreen);
+    expect(calls.includes("advance")).toBe(fullGateGreen);
   });
 
   it("WI-38422: a failed changed-file typecheck returns the ordinary not-green verdict without entering the affected sweep", async () => {
@@ -13415,8 +13467,13 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
      *  time measurement, so exercising it needs a confirm that actually costs time — the
      *  real one is tens of minutes. */
     confirmDelayMs?: number;
-  }): { deps: CheckpointDeps; calls: string[] } {
+  }): {
+    deps: CheckpointDeps;
+    calls: string[];
+    executions: Array<Parameters<CheckpointDeps["runGreen"]>[2]>;
+  } {
     const calls: string[] = [];
+    const executions: Array<Parameters<CheckpointDeps["runGreen"]>[2]> = [];
     let runGreenN = 0;
     const deps: CheckpointDeps = {
       setupTree: async (ref) => {
@@ -13426,7 +13483,8 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
           throw new Error(`pinned runtime build failed at ${ref.slice(0, 7)}`);
         }
       },
-      runGreen: async () => {
+      runGreen: async (_tree, _base, execution) => {
+        executions.push(execution);
         runGreenN++;
         if (runGreenN === 1) {
           calls.push("runGreen:candidate");
@@ -13489,7 +13547,7 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
         : {}),
       log: () => {},
     };
-    return { deps, calls };
+    return { deps, calls, executions };
   }
 
   beforeEach(() => {
@@ -13544,7 +13602,7 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
 
     it("WI-38298: recovers to a later green prefix after the first prefix confirm is red", async () => {
       const { c2, c3, c4 } = await chain();
-      const { deps, calls } = partialDeps({
+      const { deps, calls, executions } = partialDeps({
         candidateFailingTests: [FAILING],
         affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
         changedFiles: {
@@ -13567,6 +13625,14 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
       expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(2);
       expect(calls).toContain(`setup:${c2.slice(0, 7)}`);
       expect(calls).toContain(`setup:${c3.slice(0, 7)}`);
+      expect(executions[1]).toMatchObject({
+        candidate: c2,
+        headAtStart: c2,
+      });
+      expect(executions[2]).toMatchObject({
+        candidate: c3,
+        headAtStart: c3,
+      });
     });
 
     it("classifies an unbuildable initial prefix and recovers to a later confirmed prefix", async () => {
@@ -13829,7 +13895,7 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
 
   it("advances `main` to the longest GREEN prefix and holds the red tip", async () => {
     const { c2, c3, c4 } = await chain();
-    const { deps, calls } = partialDeps({
+    const { deps, calls, executions } = partialDeps({
       candidateFailingTests: ["@ws/failing"],
       affected: {
         [c2]: ["@ws/other"],
@@ -13851,6 +13917,10 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
     expect(await revParse(repo, "ready")).toBe(c3); // FF'd to the longest clean prefix, NOT the red tip
     expect(calls).toContain("runGreen:confirm");
     expect(calls).toContain("advance:" + c3.slice(0, 7));
+    expect(executions[1]).toMatchObject({
+      candidate: c3,
+      headAtStart: c3,
+    });
     // EI-19329608646178878: the confirm step (`runGreen:confirm`) checked out `prefixTip`
     // (c3) via setupTree — the checkpoint tree must be restored to the run's TRUE candidate
     // (c4) afterward, so a live probe of that checkout (candidateSource:'run-probe' on the

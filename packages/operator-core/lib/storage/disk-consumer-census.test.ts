@@ -22,6 +22,46 @@ vi.mock('node:http', async (importOriginal) => ({
 const isRoot = process.getuid?.() === 0;
 
 describe('streaming retention census evidence', () => {
+  it.each([
+    ['1792019778.0253824420', 1792019778025.3823],
+    ['1792019778.0263825090', 1792019778026.3826],
+    ['-0.5000000000', -500],
+  ])('keeps the lstat millisecond identity of native timestamp %s', async (timestamp, expectedMs) => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-timestamp-'));
+    const info = await fsp.lstat(root);
+    const spawn = (() => {
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+      queueMicrotask(() => {
+        child.stdout.write(['f', String(info.dev), '1', timestamp, timestamp, '1', String(process.getuid?.() ?? 0), join(root, 'unchanged'), ''].join('\0'));
+        child.emit('close', 0);
+      });
+      return child;
+    }) as unknown as CensusSpawn;
+    try {
+      const census = await inspectRetentionTrees(root, { retainAfterMs: 2_000_000_000_000, spawn });
+      expect(census.error).toBeUndefined();
+      expect(census.entries).toEqual([expect.objectContaining({ path: join(root, 'unchanged'), newestWriteMs: expectedMs })]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['1e3', '1.1234567891', 'NaN'])('refuses an invalid native timestamp %s', async (timestamp) => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-timestamp-invalid-'));
+    const info = await fsp.lstat(root);
+    const spawn = (() => {
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+      queueMicrotask(() => {
+        child.stdout.write(['f', String(info.dev), '1', timestamp, '1.0', '1', String(process.getuid?.() ?? 0), join(root, 'unknown'), ''].join('\0'));
+        child.emit('close', 0);
+      });
+      return child;
+    }) as unknown as CensusSpawn;
+    try {
+      const census = await inspectRetentionTrees(root, { retainAfterMs: 2_000_000_000_000, spawn });
+      expect(census.error).toBe('incomplete retention metadata records');
+      expect(census.entries).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('lets a large advancing native census finish and tolerates concurrent readdir disappearance only', async () => {
     const root = mkdtempSync(join(tmpdir(), 'retention-progress-'));
     const info = await fsp.lstat(root);

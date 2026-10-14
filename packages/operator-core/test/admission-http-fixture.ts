@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { readProcessIdentity } from '../lib/process-identity';
@@ -11,7 +11,7 @@ import { killTask } from '../lib/task-manager/control';
 import { absCgroupDir, walkCgroupTree } from '../lib/task-manager/cgroup-read';
 import { isTerminalState, scopeUnitForTask } from '../lib/task-manager/types';
 import { createFrozenCandidateRepairQueue, parseFrozenCandidateRepairQueue } from '../lib/release/frozen-candidate-repair-queue';
-import { preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle } from './private-http-workspace-preflight';
+import { assertPrivateManagedTaskRoute, preparePrivateHttpWorkspaces, preparePrivateOperatorApiBundle } from './private-http-workspace-preflight';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -48,10 +48,8 @@ async function main() {
   assert.ok(evidenceDir, 'retained evidence directory required');
   const ordinary = e.ADMISSION_HTTP_CASE === 'ordinary';
   if (ordinary) {
-    assert.equal(e.DBUS_SESSION_BUS_ADDRESS, undefined, 'desktop bus must stay isolated');
-    assert.ok(lstatSync(join(e.XDG_RUNTIME_DIR!, 'systemd', 'private')).isSymbolicLink(),
-      'explicit private managed-task route required');
-    assert.equal(existsSync(join(e.XDG_RUNTIME_DIR!, 'bus')), false, 'desktop session bus must not be exposed');
+    const route = assertPrivateManagedTaskRoute(e);
+    writeFileSync(join(evidenceDir, 'managed-task-route.json'), JSON.stringify(route));
   }
   const sources = ['packages/operator-core/lib/agent-tools/release/repair-queue.ts',
     'packages/operator-core/lib/release/admission-jobs.ts',

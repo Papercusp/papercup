@@ -280,6 +280,28 @@ describe('default escalation guidance', () => {
     expect(body).toContain('canonical harness owner/claim spec');
     expect(body).not.toContain('improvements:capture');
   });
+
+  it('routes live-gate-ops items through ownership before by-id claim and rejects observe as self-select proof', async () => {
+    broadcastSevereEventMock.mockClear();
+    openEscalationMock.mockClear();
+    await runUnservableCriticalSweepOnce({} as Sql, {
+      readRows: async () => [row({ itemId: 'WI-gate', floor: 'live-gate-ops' })],
+      readOpenConditionKeys: async () => [],
+      flagEnabled: async () => true,
+      now: () => NOW,
+    });
+
+    const body = broadcastSevereEventMock.mock.calls[0]?.[0]?.body ?? '';
+    expect(body).toContain("state:read { cell: 'gate.greenCheckpoint.ownership' }");
+    expect(body).toContain('If held by another live agent');
+    expect(body).toContain("work_items:claim { id: 'WI-gate', harness: 'papercusp' }");
+    expect(body).toContain('alarm:unservable-critical:');
+    expect(body).toContain('work_items:observe available:true does not establish live-gate-ops self-select eligibility');
+    expect(body).not.toContain('work_items:observe { ids:');
+    expect(openEscalationMock.mock.calls[0]?.[1]?.body).toContain(
+      'work_items:observe available:true does not establish live-gate-ops self-select eligibility',
+    );
+  });
 });
 
 describe('original unservable-critical condition lifecycle', () => {

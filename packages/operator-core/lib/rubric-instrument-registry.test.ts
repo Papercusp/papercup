@@ -5,6 +5,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import * as nativeAdoption from './code-intelligence/native-adoption';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
@@ -12,6 +13,9 @@ import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 import {
   BM25_LATENCY_INSTRUMENT_KEY,
+  GATE_SENTINEL_HEALTH_COMMAND,
+  GATE_SENTINEL_HEALTH_INSTRUMENT_KEY,
+  parseGateSentinelHealth,
   auditInstrumentBindings,
   budgetUtilisationPct,
   getRegisteredInstrument,
@@ -70,6 +74,75 @@ describe('instrument parsers read the real output formats', () => {
     expect(parseOldestDockerAgeSec(stdout, { now })).toBe(7200);
     expect(parseOldestDockerAgeSec('\n', { now })).toBe(0);
     expect(parseOldestDockerAgeSec('About an hour ago', { now })).toBeNull();
+  });
+});
+
+describe('live sentinel deployment instrument (R-3)', () => {
+  const snapshot = () => ({
+    schemaVersion: 1, monotonicUs: 2_000_000_000, linger: 'yes',
+    timer: { Id: 'papercusp-gate-liveness-sentinel.timer', LoadState: 'loaded', ActiveState: 'active', UnitFileState: 'enabled',
+      Triggers: 'papercusp-gate-liveness-sentinel.service', WantedBy: 'timers.target',
+      TimersMonotonic: '{ OnStartupUSec=5min } { OnUnitActiveUSec=10min }',
+      LastTriggerUSecMonotonic: '1900000000', NextElapseUSecMonotonic: '2500000000' },
+    service: { Id: 'papercusp-gate-liveness-sentinel.service', LoadState: 'loaded', ActiveState: 'inactive', Result: 'success',
+      ExecMainStatus: '0', ExecMainStartTimestampMonotonic: '1900000000', ExecMainExitTimestampMonotonic: '1910000000',
+      ExecStart: '{ path=/repo/node_modules/.bin/tsx ; argv[]=/repo/scripts/gate-liveness-sentinel.mts ; }',
+      Requires: 'sysinit.target', Wants: '', BindsTo: '', PartOf: '' },
+  });
+  it('accepts a recent successful inactive oneshot with an enabled reboot-starting timer', () => {
+    expect(parseGateSentinelHealth(JSON.stringify(snapshot()))).toBe(1);
+    expect(auditInstrumentBindings({ prior: [], next: [{ key: 'r-3', check: { kind: 'instrument', instrumentKey: GATE_SENTINEL_HEALTH_INSTRUMENT_KEY } }] }).refused).toEqual([]);
+  });
+  it('reads systemctl timer spans without mistaking healthy inventory for a broken deployment', () => {
+    const s = snapshot();
+    s.timer.LastTriggerUSecMonotonic = '31min 40s';
+    s.timer.NextElapseUSecMonotonic = '41min 40s';
+    expect(parseGateSentinelHealth(JSON.stringify(s))).toBe(1);
+    s.timer.NextElapseUSecMonotonic = '41min unknown';
+    expect(parseGateSentinelHealth(JSON.stringify(s))).toBeNull();
+  });
+  it.each(['absent', 'disabled', 'stopped', 'failed', 'wrong-script', 'no-linger', 'no-startup', 'stale', 'no-next', 'operator-dependency'])('detects %s instead of passing a unit fixture', defect => {
+    const s = snapshot();
+    if (defect === 'absent') s.timer.LoadState = 'not-found';
+    if (defect === 'disabled') s.timer.UnitFileState = 'disabled';
+    if (defect === 'stopped') s.timer.ActiveState = 'inactive';
+    if (defect === 'failed') s.service.Result = 'exit-code';
+    if (defect === 'wrong-script') s.service.ExecStart = '/repo/operator';
+    if (defect === 'no-linger') s.linger = 'no';
+    if (defect === 'no-startup') s.timer.TimersMonotonic = '{ OnUnitActiveUSec=10min }';
+    if (defect === 'stale') s.monotonicUs += 900_000_000;
+    if (defect === 'no-next') s.timer.NextElapseUSecMonotonic = '0';
+    if (defect === 'operator-dependency') s.service.Requires = 'papercusp-dev-api.service';
+    expect(parseGateSentinelHealth(JSON.stringify(s))).toBe(0);
+  });
+  it('keeps missing, malformed, first-run and in-progress execution evidence unknown', async () => {
+    for (const raw of ['', 'null', '{}', JSON.stringify({ ...snapshot(), monotonicUs: 'unreadable' })]) expect(parseGateSentinelHealth(raw)).toBeNull();
+    const s: any = snapshot();
+    delete s.service.ExecMainExitTimestampMonotonic;
+    expect(parseGateSentinelHealth(JSON.stringify(s))).toBeNull();
+    s.service.ExecMainExitTimestampMonotonic = '0';
+    expect(parseGateSentinelHealth(JSON.stringify(s))).toBeNull();
+    expect(await runInstrument(GATE_SENTINEL_HEALTH_INSTRUMENT_KEY, { exec: async () => { throw new Error('no user bus'); } })).toMatchObject({ value: null, error: 'no user bus' });
+  });
+  it('collects only bounded read-only systemd fields and feeds the native instrument executor', async () => {
+    const s = snapshot(), calls: unknown[][] = []; let stdout = '';
+    runInNewContext(GATE_SENTINEL_HEALTH_COMMAND, {
+      require: (name: string) => name === 'node:os' ? { userInfo: () => ({ uid: 1000 }) } : { execFileSync: (command: string, args: string[], options: unknown) => {
+        calls.push([command, args, options]);
+        if (command === 'loginctl') return 'yes\n';
+        const row = args.includes(s.timer.Id) ? s.timer : s.service;
+        return Object.entries(row).flatMap(([k, v]) => k === 'TimersMonotonic'
+          ? ['TimersMonotonic={ OnUnitActiveUSec=10min }', 'TimersMonotonic={ OnStartupUSec=5min }']
+          : [`${k}=${v}`]).join('\n');
+      } },
+      process: { stdout: { write: (v: string) => { stdout += v; } }, hrtime: { bigint: () => BigInt(s.monotonicUs) * 1000n } },
+    });
+    expect(parseGateSentinelHealth(stdout)).toBe(1);
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).toMatchObject(['systemctl', expect.arrayContaining(['--user', 'show', s.timer.Id]), { timeout: 2000 }]);
+    expect(calls[1][1]).not.toContain('Environment');
+    expect(calls[2]).toMatchObject(['loginctl', ['show-user', '1000', '-p', 'Linger', '--value'], { timeout: 2000 }]);
+    expect(await runInstrument(GATE_SENTINEL_HEALTH_INSTRUMENT_KEY, { exec: async () => stdout })).toMatchObject({ value: 1, unit: 'count' });
   });
 });
 

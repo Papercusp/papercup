@@ -1,12 +1,12 @@
 import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
-import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
+import { describe, expect, it, vi } from 'vitest';
+import { assertPrivateManagedTaskRoute, preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../..');
 
@@ -15,6 +15,89 @@ function childDiagnostic(result: SpawnSyncReturns<string>, startedAt: number): s
     error: result.error && { name: result.error.name, message: result.error.message,
       code: (result.error as NodeJS.ErrnoException).code }, stdout: result.stdout, stderr: result.stderr });
 }
+
+describe('private admission pinned manager route', () => {
+  async function withRoute(route: string, check: (fixture: {
+    env: NodeJS.ProcessEnv; runtime: string; source: string; alias: string; socket: string;
+  }) => void) {
+    const directory = mkdtempSync(join(tmpdir(), 'admission-route-'));
+    const runtime = join(directory, 'xdg-runtime');
+    const source = join(directory, 'source-runtime');
+    for (const path of [join(runtime, 'systemd'), join(source, 'systemd')]) mkdirSync(path, { recursive: true });
+    const alias = join(runtime, route);
+    const socket = join(source, route);
+    const server = createServer(connection => connection.destroy());
+    try {
+      await new Promise<void>((done, reject) => { server.once('error', reject); server.listen(socket, done); });
+      symlinkSync(socket, alias);
+      check({ runtime, source, alias, socket, env: { HOME: join(directory, 'home'),
+        XDG_RUNTIME_DIR: runtime, DBUS_SESSION_BUS_ADDRESS: `unix:path=${alias}` } });
+    } finally {
+      if (server.listening) await new Promise<void>(done => server.close(() => done()));
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  it.each(['systemd/private', 'bus'])('accepts the exact owned %s alias selected by the launcher', async route => {
+    await withRoute(route, ({ env, alias, socket }) => {
+      expect(assertPrivateManagedTaskRoute(env)).toEqual({ address: `unix:path=${alias}`, alias, socket });
+    });
+  });
+
+  it.each(['missing', 'ambient', 'fallback', 'options'])('rejects a %s address before admission', async kind => {
+    await withRoute('bus', ({ env }) => {
+      if (kind === 'missing') delete env.DBUS_SESSION_BUS_ADDRESS;
+      if (kind === 'ambient') env.DBUS_SESSION_BUS_ADDRESS = 'unix:path=/run/user/1000/bus';
+      if (kind === 'fallback') env.DBUS_SESSION_BUS_ADDRESS += ';unix:path=/run/user/1000/bus';
+      if (kind === 'options') env.DBUS_SESSION_BUS_ADDRESS += ',guid=unverified';
+      expect(() => assertPrivateManagedTaskRoute(env)).toThrow('one exact private managed-task bus address required');
+    });
+  });
+
+  it.each(['systemd/private', 'bus'])('rejects a %s alias for the other socket protocol', async route => {
+    const other = route === 'bus' ? 'systemd/private' : 'bus';
+    await withRoute(other, ({ env, runtime, socket }) => {
+      unlinkSync(join(runtime, other));
+      const alias = join(runtime, route);
+      symlinkSync(socket, alias);
+      env.DBUS_SESSION_BUS_ADDRESS = `unix:path=${alias}`;
+      expect(() => assertPrivateManagedTaskRoute(env)).toThrow('selected alias must preserve the socket protocol');
+    });
+  });
+
+  it('rejects a second route even when its alias is dangling', async () => {
+    await withRoute('bus', ({ env, runtime }) => {
+      symlinkSync('/missing/unselected/private', join(runtime, 'systemd/private'));
+      expect(() => assertPrivateManagedTaskRoute(env)).toThrow('an unselected manager route must not be exposed');
+    });
+  });
+
+  it('rejects an alias to a regular file', async () => {
+    await withRoute('bus', ({ env, alias, source }) => {
+      const file = join(source, 'other/bus');
+      mkdirSync(join(source, 'other'));
+      writeFileSync(file, 'not a socket');
+      unlinkSync(alias); symlinkSync(file, alias);
+      expect(() => assertPrivateManagedTaskRoute(env)).toThrow('selected route must reach an owned socket');
+    });
+  });
+
+  it('rejects a route owned by another uid', async () => {
+    await withRoute('bus', ({ env }) => {
+      const uid = process.getuid!();
+      const getuid = vi.spyOn(process, 'getuid').mockReturnValue(uid + 1);
+      try { expect(() => assertPrivateManagedTaskRoute(env)).toThrow('selected route must be an owned alias'); }
+      finally { getuid.mockRestore(); }
+    });
+  });
+
+  it('rejects a runtime outside the disposable home root', async () => {
+    await withRoute('bus', ({ env, source }) => {
+      env.XDG_RUNTIME_DIR = source;
+      expect(() => assertPrivateManagedTaskRoute(env)).toThrow('managed-task route must use the private runtime');
+    });
+  });
+});
 
 describe('private managed task preflight', () => {
   it('probes a pinned owned bus when the private socket is unusable, without an ambient fallback', async () => {

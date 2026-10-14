@@ -301,9 +301,15 @@ export async function restrictedHoldBundleRefusal(
       // forged marker over held working bytes cannot become an admission.
       const paths = [...committedPaths];
       const byPath = new Map(source.files.map(file => [file.path, file]));
+      // The fresh full census already verified these independent Git directories.
+      // Reuse that population in the maintained reader instead of probing every
+      // source's ancestor directories again. Blob reads still resolve each
+      // repository's commit through the selected parent's actual Git links.
+      const repositories = new Set((source.submodules ?? []).map(row => row.path));
       await phase('git-origin', async () => {
         for (let start = 0; start < paths.length; start += 256) {
-          const committed = await readCommittedFiles(realRoot, source.sourceCommit, paths.slice(start, start + 256));
+          const committed = await readCommittedFiles(realRoot, source.sourceCommit, paths.slice(start, start + 256),
+            { exists: async repo => repositories.has(repo) });
           for (const [path, file] of committed) {
             if (!file || file.sha256 !== byPath.get(path)?.sha256)
               throw new Error(`bundle input differs from committed source: ${path}`);

@@ -88,6 +88,8 @@ describe('hosted runtime composition', () => {
       ['POST', '/api/hosted/browser/workspace-hosts/connection'],
       ['POST', '/api/hosted/browser/workspace-hosts/provision'],
       ['POST', '/api/hosted/browser/workspace-hosts/action'],
+      ['POST', '/api/hosted/browser/data/organization/delete'],
+      ['POST', '/api/hosted/browser/data/user/delete'],
       ['GET', '/api/hosted/browser/onboarding/tutorial-progress'],
       ['POST', '/api/hosted/browser/onboarding/tutorial-progress'],
       ['POST', '/api/hosted/browser/onboarding/tutorial-help'],

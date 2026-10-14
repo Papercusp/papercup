@@ -237,7 +237,10 @@ export async function withCutSeedSingleton<T>(input: {
         '--no-force-backfill rather than starting a second force-backfill.',
       );
     }
-    return [input.run(tx as unknown as postgres.Sql)];
+    // Await inside the transaction callback. postgres-js receives this async
+    // callback's Promise, so its synchronous array handling cannot await a
+    // Promise nested in the returned array before committing/releasing tx.
+    return [await input.run(tx as unknown as postgres.Sql)];
   });
   return result;
 }

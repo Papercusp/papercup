@@ -339,7 +339,7 @@ export function validateScope(scope: OrganizationDataScope, allowEmptyWorkspaces
 
 // ── The receipt and its single writer ─────────────────────────────────────────
 
-export type StoreOutcome = 'exported' | 'deleted' | 'retained' | 'verified' | 'deferred' | 'not-attributable' | 'failed';
+export type StoreOutcome = 'exported' | 'deleted' | 'redacted' | 'retained' | 'verified' | 'deferred' | 'not-attributable' | 'failed';
 
 export interface StoreReceipt {
   readonly store: string;
@@ -404,6 +404,8 @@ export interface HeldContentCheck {
 
 export interface OrganizationDataReceipt {
   readonly operation: DataOperation;
+  /** Durable workflow identity; permits transactional deletion-receipt replay. */
+  readonly operationId?: string;
   /** Hosted account exports also cover organizations that have not created a workspace. */
   readonly executor?: Executor;
   readonly scope: OrganizationDataScope;
@@ -449,6 +451,7 @@ export function receiptMetadata(receipt: OrganizationDataReceipt, codeVersion: s
     schemaVersion: receipt.schemaVersion,
   };
   if (receipt.executor) meta.executor = receipt.executor;
+  if (receipt.operationId) meta.operationId = nonEmpty(receipt.operationId, 'operationId');
   if (receipt.scope.userId) meta.userId = receipt.scope.userId;
   if (receipt.holdConflicts) {
     meta.holdConflicts = receipt.holdConflicts.map((h) => ({
@@ -551,7 +554,7 @@ async function liveColumns(sql: Sql, store: string): Promise<string[]> {
   return rows.map((r) => r.column_name);
 }
 
-async function readSchemaVersion(sql: Sql): Promise<string | null> {
+export async function readSchemaVersion(sql: Sql): Promise<string | null> {
   // A permission error aborts a Postgres transaction even if JS catches it.
   // Schema provenance is optional; inspect access before issuing the query.
   const [access] = await sql<{ readable: boolean | null }[]>`

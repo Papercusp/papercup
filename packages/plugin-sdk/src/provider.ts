@@ -584,6 +584,8 @@ export interface ProviderSyncRequest {
   /** Opaque cursor returned by the previous page, or null for a fresh backfill. */
   cursor: string | null;
   mode: 'backfill' | 'incremental';
+  /** Cursor rejected earlier in this pass. A reset can still report what history was lost. */
+  catchUpFrom?: string;
   /** Per-source configuration validated against the descriptor's configSchema. */
   config?: Record<string, unknown>;
   /** Parameters of the descriptor's configured service credentials (D-018.1). */
@@ -633,6 +635,10 @@ export interface ProviderSyncPage {
   nextCursor: string | null;
   /** True when more pages are immediately available. */
   hasMore: boolean;
+  /** How this page attempted to close the gap; opaque cursors remain package-owned. */
+  catchUp?: ProviderCatchUp;
+  /** Positive evidence of an unrecoverable gap, never an inference from an empty page. */
+  lossRisk?: ProviderLossRisk;
   /**
    * The source's complete current membership, when this page finished enumerating it. Only a
    * provider whose descriptor declares `membership` may set it. The host applies it before it
@@ -648,6 +654,90 @@ export interface ProviderSyncPage {
    * live objects. The host applies coverage after the page's records and before `nextCursor`.
    */
   coverage?: ProviderCoverage[];
+}
+
+export interface ProviderCatchUp {
+  path: 'cold-start' | 'cursor-replay' | 'backfill' | 'live-only';
+  /** Required only for backfill. */
+  reason?: 'cursor-expired' | 'cursor-rejected' | 'no-replay-supported';
+}
+
+export interface ProviderLossRisk {
+  kind: 'retention-window-exceeded' | 'capped-window-overflow';
+  /** Oldest instant still reachable through the remote API, not the host's sync time. */
+  oldestReachableAt: string;
+  detail: string;
+}
+
+/** Host-owned sync freshness; the provider cursor stays opaque to readers. */
+export interface ProviderCursorFreshness {
+  state: 'synced' | 'position-only' | 'never-synced' | 'unrecognized';
+  at: string | null;
+  ageMs: number | null;
+  position: string | null;
+  detail: string;
+  lossRisk?: ProviderLossRisk;
+}
+
+/** Null for a legacy source not yet using the provider cursor contract. */
+export function providerCursorFreshness(cursor: unknown, nowMs: number): ProviderCursorFreshness | null {
+  if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)
+    || !Object.prototype.hasOwnProperty.call(cursor, 'provider')) return null;
+  const row = cursor as { provider?: unknown; providerSync?: unknown };
+  const progress = row.providerSync && typeof row.providerSync === 'object' && !Array.isArray(row.providerSync)
+    ? row.providerSync as { lastSyncedAt?: unknown; lossRisk?: ProviderLossRisk } : {};
+  const at = typeof progress.lastSyncedAt === 'string' && Number.isFinite(Date.parse(progress.lastSyncedAt))
+    ? progress.lastSyncedAt : null;
+  const position = typeof row.provider === 'string' && row.provider !== '' ? row.provider : null;
+  return {
+    state: at ? 'synced' : position ? 'position-only' : row.provider === null ? 'never-synced' : 'unrecognized',
+    at,
+    ageMs: at ? nowMs - Date.parse(at) : null,
+    position,
+    detail: at ? 'host last committed a provider sync page at this instant'
+      : position ? 'provider cursor is present; its internal shape is opaque'
+      : 'no successfully committed provider page is recorded',
+    ...(providerSyncProgressIssues(progress).length === 0 && progress.lossRisk ? { lossRisk: progress.lossRisk } : {}),
+  };
+}
+
+/** The runtime and kit share the same validation of optional sync progress. */
+export function providerSyncProgressIssues(page: { catchUp?: unknown; lossRisk?: unknown }): string[] {
+  const issues: string[] = [];
+  const object = (value: unknown): value is Record<string, unknown> =>
+    !!value && typeof value === 'object' && !Array.isArray(value);
+  if (page.catchUp !== undefined) {
+    const progress = page.catchUp;
+    if (!object(progress)) issues.push('catchUp must be an object');
+    else {
+      if (!['cold-start', 'cursor-replay', 'backfill', 'live-only'].includes(String(progress.path))) {
+        issues.push('catchUp.path must name a supported reconciliation path');
+      }
+      if (progress.path === 'backfill') {
+        if (!['cursor-expired', 'cursor-rejected', 'no-replay-supported'].includes(String(progress.reason))) {
+          issues.push('catchUp.reason must explain a backfill');
+        }
+      } else if (progress.reason !== undefined) issues.push('catchUp.reason is only valid for backfill');
+    }
+  }
+  if (page.lossRisk !== undefined) {
+    const loss = page.lossRisk;
+    if (!object(loss)) issues.push('lossRisk must be an object');
+    else {
+      if (!['retention-window-exceeded', 'capped-window-overflow'].includes(String(loss.kind))) {
+        issues.push('lossRisk.kind must name a retention or capped-window gap');
+      }
+      if (typeof loss.oldestReachableAt !== 'string'
+        || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(loss.oldestReachableAt)
+        || !Number.isFinite(Date.parse(loss.oldestReachableAt))) {
+        issues.push('lossRisk.oldestReachableAt must be an ISO-8601 instant');
+      }
+      if (typeof loss.detail !== 'string' || loss.detail.trim() === '' || loss.detail.length > 2000) {
+        issues.push('lossRisk.detail must be non-empty and at most 2000 characters');
+      }
+    }
+  }
+  return issues;
 }
 
 /**

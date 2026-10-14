@@ -37,7 +37,7 @@ describe('focused runner startup tracing', () => {
       expect(code).toBe(fail ? 7 : 0);
       expect(stdout).toBe(fail ? 'pre\nfirst\nsecond\n' : 'pre\nfirst\nsecond\npost\n');
       expect(stderr).toBe('');
-      const rows = readdirSync(`${out}.native-processes`).map(name =>
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
         JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
       const leaves = rows.filter(row => row.event === 'node-entry' && row.argv[1]?.endsWith('.cjs'))
         .sort((a, b) => a.atMs - b.atMs);
@@ -46,13 +46,88 @@ describe('focused runner startup tracing', () => {
       expect(leaves.map(row => row.lifecycle.event)).toEqual(fail ? ['pretest', 'test', 'test'] :
         ['pretest', 'test', 'test', 'posttest']);
       for (const leaf of leaves) {
-        expect(rows.find(row => row.event === 'node-exit' && row.processIdentity === leaf.processIdentity))
-          .toMatchObject({ code: fail && leaf.argv[1].endsWith('second.cjs') ? 7 : 0 });
+        const exit = rows.find(row => row.event === 'node-exit' && row.processIdentity === leaf.processIdentity);
+        expect(exit).toMatchObject({ code: fail && leaf.argv[1].endsWith('second.cjs') ? 7 : 0 });
+        const expected = leaf.argv[1].slice(dir.length + 1).replace('.cjs', '\n');
+        expect(exit.streams.stdout).toMatchObject({ scope: 'node-writable-call-inputs',
+          byteLength: Buffer.byteLength(expected), captureComplete: true });
+        expect(readFileSync(join(`${out}.native-processes`, exit.streams.stdout.ref), 'utf8')).toBe(expected);
+        expect(exit.streams.stderr).toMatchObject({ byteLength: 0, captureComplete: true });
       }
       expect(rows.filter(row => row.event === 'child-spawn').map(row => row.lifecycle.script))
         .toEqual(expect.arrayContaining(['node pre.cjs', 'node first.cjs && node second.cjs']));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 25_000);
+
+  it('retains binary and encoded Writable inputs without changing native output', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-binary-streams-'));
+    const out = join(dir, 'sources.json');
+    try {
+      const { stdout, stderr } = await promisify(execFile)(process.execPath, ['-e',
+        "process.stdout.write(Buffer.from([0,255,10])); process.stdout.write('ff00','hex'); process.stderr.write(new Uint8Array([254,13,10])); process.on('exit',()=>process.stdout.write('late'));"], {
+        env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+          PAPERCUSP_TEST_STARTUP_TRACE: '0' }), encoding: 'buffer', timeout: 10_000,
+      });
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      const exit = rows.find(row => row.event === 'node-exit');
+      expect(stdout).toEqual(Buffer.from([0,255,10,255,0,108,97,116,101]));
+      expect(stderr).toEqual(Buffer.from([254,13,10]));
+      for (const role of ['stdout','stderr']) expect(readFileSync(join(`${out}.native-processes`,
+        exit.streams[role].ref))).toEqual(role === 'stdout' ? stdout : stderr);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('delegates write receiver, callback, return and thrown error unchanged', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-write-contract-'));
+    const out = join(dir, 'sources.json');
+    const preload = new URL('../../../../scripts/lib/vitest-startup-trace.mjs?native-write-contract', import.meta.url).href;
+    try {
+      const source = `const native = process.stdout.write; const callback = () => {}; const error = new Error('original');
+        const calls = []; process.stdout.write = function(...args) {
+          calls.push({receiver:this === process.stdout, chunk:args[0], encoding:args[1], callback:args[2] === callback});
+          if (args[0] === 'throw') throw error; return false;
+        };
+        process.env.PC_EXECUTED_SOURCE_MAP_OUT = ${JSON.stringify(out)};
+        await import(${JSON.stringify(preload)});
+        const returned = process.stdout.write('accepted','utf8',callback) === false;
+        process.stdout.write.call({},'other','utf8',callback);
+        let sameError = false; try { process.stdout.write('throw','utf8',callback); } catch (caught) { sameError = caught === error; }
+        native.call(process.stdout,JSON.stringify({returned,sameError,calls}));`;
+      const env: Record<string, string> = { ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: '0' } as Record<string, string>;
+      delete env.PC_EXECUTED_SOURCE_MAP_OUT;
+      const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', source], {
+        env, timeout: 10_000,
+      });
+      expect(JSON.parse(stdout)).toEqual({ returned: true, sameError: true, calls: [
+        {receiver:true,chunk:'accepted',encoding:'utf8',callback:true},
+        {receiver:false,chunk:'other',encoding:'utf8',callback:true},
+        {receiver:true,chunk:'throw',encoding:'utf8',callback:true},
+      ] });
+      const exits = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8'))).filter(row => row.event === 'node-exit');
+      expect(exits).toHaveLength(1);
+      expect(readFileSync(join(`${out}.native-processes`, exits[0].streams.stdout.ref), 'utf8')).toBe('accepted');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('marks the stream bound explicitly while leaving the full native write intact', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-write-bound-'));
+    const out = join(dir, 'sources.json');
+    try {
+      const { stdout } = await promisify(execFile)(process.execPath, ['-e',
+        'process.stdout.write(Buffer.alloc(16 * 1024 * 1024 + 1, 65));'], {
+        env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+          PAPERCUSP_TEST_STARTUP_TRACE: '0' }), encoding: 'buffer', maxBuffer: 20 * 1024 * 1024, timeout: 10_000,
+      });
+      expect(stdout.length).toBe(16 * 1024 * 1024 + 1);
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      const pin = rows.find(row => row.event === 'node-exit').streams.stdout;
+      expect(pin).toMatchObject({ captureComplete: false, observedByteLength: stdout.length, byteLength: 16 * 1024 * 1024 });
+      expect(readFileSync(join(`${out}.native-processes`, pin.ref))).toEqual(stdout.subarray(0, pin.byteLength));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 
   it('keeps native output and exit status when the evidence directory is unavailable', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'native-process-unavailable-'));

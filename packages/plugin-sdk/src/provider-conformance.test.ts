@@ -43,6 +43,7 @@ interface Flaws {
   declaresUnexercised: boolean;
   invalidDescriptor: boolean;
   neverEnds: boolean;
+  ignoreRetentionLoss: boolean;
 }
 
 function readCursor(raw: string): { v?: unknown; after?: unknown } | null {
@@ -74,12 +75,15 @@ function demoAdapter(flaws: Partial<Flaws> = {}): ProviderAdapter {
     describe: () => descriptor,
     async syncPage(request, host): Promise<ProviderSyncPage> {
       let after = 0;
+      let retentionGap = false;
       if (request.cursor !== null) {
         const parsed = readCursor(request.cursor);
         if (!parsed || parsed.v !== 1 || typeof parsed.after !== 'number') {
           if (!flaws.coldStartOnUnreadableCursor) throw { kind: 'cursor-expired', message: 'demo_cursor_unreadable' };
         } else {
           after = parsed.after;
+          retentionGap = after < 0;
+          if (retentionGap) after = 0;
           if (flaws.inclusiveResume && request.cursor !== lastIssued && after > 0) after -= 1;
         }
       }
@@ -111,7 +115,12 @@ function demoAdapter(flaws: Partial<Flaws> = {}): ProviderAdapter {
         occurredAt: item.updated,
       }));
       if (flaws.neverEnds) return { records, nextCursor: issue(after + 1), hasMore: true };
-      return { records, nextCursor: issue(body.nextAfter ?? after + body.items.length), hasMore: body.nextAfter !== null };
+      return { records, nextCursor: issue(body.nextAfter ?? after + body.items.length), hasMore: body.nextAfter !== null,
+        ...(retentionGap && !flaws.ignoreRetentionLoss ? {
+          catchUp: { path: 'backfill' as const, reason: 'cursor-expired' as const },
+          lossRisk: { kind: 'retention-window-exceeded' as const, oldestReachableAt: ITEMS[0]!.updated, detail: 'Old events fell outside retention' },
+        } : {}),
+      };
     },
     async invoke(request, host) {
       if (request.capability === 'social.post') {
@@ -157,6 +166,7 @@ function harness(flaws: Partial<Flaws> = {}): ProviderConformanceHarness {
   return {
     adapter: demoAdapter(flaws),
     createFetch: demoWorld,
+    retentionGap: { cursor: JSON.stringify({ v: 1, after: -1 }), oldestReachableAt: ITEMS[0]!.updated },
     faults: { expiredCursor: { cursor: JSON.stringify({ v: 1, after: 2 }), response: jsonResponse(410, { error: 'cursor too old' }) } },
     invocations: [
       { capability: 'social.post', args: { text: 'launch day' } },
@@ -195,6 +205,7 @@ describe('runProviderConformance', () => {
     ['declaresUnexercised', 'capability-exercised'],
     ['invalidDescriptor', 'descriptor-valid'],
     ['neverEnds', 'pages-to-completion'],
+    ['ignoreRetentionLoss', 'retention-loss-reported'],
   ];
 
   it.each(cases)('a package with flaw %s fails %s', async (flaw, check) => {
@@ -224,6 +235,25 @@ describe('runProviderConformance', () => {
   it('formats a failing report with one line per finding', async () => {
     const report = await runProviderConformance(harness({ escapeEgress: true }));
     expect(formatProviderConformanceReport(report)).toMatch(/^demo-social: \d+ conformance failure\(s\)\n {2}- \[/);
+  });
+
+  it('checks retention reporting after the host resets a rejected cursor', async () => {
+    const test = harness();
+    const adapter = test.adapter;
+    test.adapter = { ...adapter, syncPage: async (request, host) => {
+      if (request.cursor === test.retentionGap!.cursor) throw { kind: 'cursor-expired', message: 'old cursor' };
+      return adapter.syncPage({ ...request, cursor: request.cursor === null ? request.catchUpFrom ?? null : request.cursor }, host);
+    } };
+    const report = await runProviderConformance(test);
+    expect(report.failures, formatProviderConformanceReport(report)).toEqual([]);
+    expect(report.checksRun).toContain('retention-loss-reported');
+  });
+
+  it('rejects a retention report naming the wrong reachable boundary', async () => {
+    const test = harness();
+    test.retentionGap!.oldestReachableAt = '2026-10-02T12:00:00Z';
+    const report = await runProviderConformance(test);
+    expect(report.failures.map((entry) => entry.check)).toEqual(['retention-loss-reported']);
   });
 });
 

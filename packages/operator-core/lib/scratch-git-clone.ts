@@ -10,8 +10,31 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
-export type ScratchGitRunner = (argv: string[], cwd: string, signal: AbortSignal) =>
+export const SCRATCH_GIT_BASE_TIMEOUT_MS = 60_000;
+export const SCRATCH_GIT_MAX_TIMEOUT_MS = 600_000;
+const SCRATCH_GIT_BYTES_PER_MS = 25_000;
+const SCRATCH_GIT_ENTRY_MS = 1;
+
+export type ScratchGitRunner = (argv: string[], cwd: string, signal: AbortSignal, timeoutMs?: number) =>
   Promise<{ code: number | null; output: string }>;
+
+/**
+ * Size the Git command deadline from the committed tree that will actually be
+ * materialised. The old fixed 60-second wall killed large exact-ref checkouts
+ * before source verification began. This remains bounded and preserves the
+ * small-repository default while charging both bytes and tracked entries.
+ */
+export function estimateScratchGitTimeout({ bytes, entries, submodules = 0 }: {
+  bytes: number; entries: number; submodules?: number;
+}): number {
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || !Number.isSafeInteger(entries) || entries < 0 ||
+      !Number.isSafeInteger(submodules) || submodules < 0) {
+    throw new Error('scratchClone tree measurement is invalid');
+  }
+  const measured = SCRATCH_GIT_BASE_TIMEOUT_MS + Math.ceil(bytes / SCRATCH_GIT_BYTES_PER_MS) +
+    entries * SCRATCH_GIT_ENTRY_MS + submodules * SCRATCH_GIT_BASE_TIMEOUT_MS;
+  return Math.min(SCRATCH_GIT_MAX_TIMEOUT_MS, Math.max(SCRATCH_GIT_BASE_TIMEOUT_MS, measured));
+}
 
 /** Reuse pc-heavy's cumulative suspension ledger, as the test router does. */
 function admissionFrozenMs(): number | null {
@@ -28,9 +51,11 @@ function admissionFrozenMs(): number | null {
 }
 
 /** Standalone local-only runner: bounded, no shell, no inherited credentials. */
-export function runLocalGit(argv: string[], cwd: string, signal: AbortSignal):
+export function runLocalGit(argv: string[], cwd: string, signal: AbortSignal,
+  requestedTimeoutMs = SCRATCH_GIT_BASE_TIMEOUT_MS):
 Promise<{ code: number | null; output: string }> {
-  const timeoutMs = 60_000;
+  const timeoutMs = Number.isSafeInteger(requestedTimeoutMs) && requestedTimeoutMs >= SCRATCH_GIT_BASE_TIMEOUT_MS
+    ? Math.min(SCRATCH_GIT_MAX_TIMEOUT_MS, requestedTimeoutMs) : SCRATCH_GIT_BASE_TIMEOUT_MS;
   const started = performance.now();
   const frozenBefore = admissionFrozenMs();
   let frozenMs = 0;
@@ -119,6 +144,7 @@ export interface ScratchCloneOptions {
 interface ScratchCloneContext {
   signal: AbortSignal;
   submodules: number;
+  timeoutMs: number;
   runGit: ScratchGitRunner;
 }
 
@@ -162,7 +188,7 @@ async function gitStep(
   ctx: ScratchCloneContext,
   label: string,
 ): Promise<string> {
-  const result = await ctx.runGit(argv, cwd, ctx.signal);
+  const result = await ctx.runGit(argv, cwd, ctx.signal, ctx.timeoutMs);
   if (result.code !== 0) throw scratchError(label, result.output);
   return result.output.trim();
 }
@@ -330,6 +356,7 @@ export async function createScratchClone(options: ScratchCloneOptions): Promise<
   const ctx: ScratchCloneContext = {
     signal: options.signal ?? new AbortController().signal,
     submodules: 0,
+    timeoutMs: SCRATCH_GIT_BASE_TIMEOUT_MS,
     runGit: options.runGit ?? runLocalGit,
   };
   const source = await localRepositoryRoot(options.source, ctx, 'scratchClone.source');
@@ -340,6 +367,28 @@ export async function createScratchClone(options: ScratchCloneOptions): Promise<
     ctx,
     `scratchClone.ref does not resolve to a commit (${requestedRef})`,
   );
+  const tree = await gitStep(
+    ['ls-tree', '-rl', '--full-tree', '--', sha],
+    source,
+    ctx,
+    `scratchClone committed tree could not be measured (${sha})`,
+  );
+  let entries = 0;
+  let bytes = 0;
+  let submodules = 0;
+  for (const line of tree.split('\n')) {
+    if (!line) continue;
+    const match = /^(\d+)\s+(\w+)\s+([0-9a-f]+)\s+(-|\d+)\t/.exec(line);
+    if (!match) throw new Error('scratchClone committed tree measurement is malformed');
+    entries += 1;
+    if (match[2] === 'commit') submodules += 1;
+    else {
+      const size = Number(match[4]);
+      if (!Number.isSafeInteger(size) || size < 0) throw new Error('scratchClone committed tree size is invalid');
+      bytes += size;
+    }
+  }
+  ctx.timeoutMs = estimateScratchGitTimeout({ bytes, entries, submodules });
 
   const owned = await createOwnedScratchDestination(source, ctx, options.destination);
   const destination = owned.path;
