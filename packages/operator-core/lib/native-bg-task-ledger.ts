@@ -157,6 +157,14 @@ export interface OpenWriterScan {
   byPath: Map<string, string[]>;
   /** False on deadline exhaustion or (in failClosed mode) unreadable evidence. */
   complete: boolean;
+  /** Bounded evidence for an incomplete scan; never turns partial evidence into an all-clear. */
+  diagnostics?: {
+    reason?: string; elapsedMs?: number; processesTotal?: number; processesScanned?: number;
+    descriptorsScanned?: number; deadlineExceeded?: boolean; readFailures?: number;
+    failureSamples?: Array<{ operation: string; path: string; code: string }>;
+    taskId?: string | null; exitCode?: number | null; signal?: string | null;
+    stderr?: string; outputTruncated?: boolean;
+  };
 }
 
 /**
@@ -186,6 +194,7 @@ export async function openWriterPidsMany(
     failClosed?: boolean;
   } = {},
 ): Promise<OpenWriterScan> {
+  const started = Date.now();
   const byPath = new Map<string, string[]>();
   const wanted = new Set(paths);
   if (wanted.size === 0) return { byPath, complete: true };
@@ -193,24 +202,33 @@ export async function openWriterPidsMany(
   let entries: string[];
   try {
     entries = await readdir(procRoot);
-  } catch {
-    return { byPath, complete: !opts.failClosed };
+  } catch (err) {
+    return { byPath, complete: !opts.failClosed, ...(opts.failClosed ? { diagnostics: {
+      reason: 'proc root unreadable', elapsedMs: Date.now() - started, readFailures: 1,
+      failureSamples: [{ operation: 'proc-root', path: procRoot, code: (err as NodeJS.ErrnoException)?.code ?? 'UNKNOWN' }],
+    } } : {}) };
   }
   const pids = entries.filter((e) => /^\d+$/.test(e));
   const deadline = opts.deadlineMs === undefined ? Infinity : Date.now() + opts.deadlineMs;
   let complete = true;
   let next = 0;
-  const readFailed = (err: unknown): void => {
+  let processesScanned = 0, descriptorsScanned = 0, readFailures = 0, deadlineExceeded = false;
+  const failureSamples: NonNullable<OpenWriterScan['diagnostics']>['failureSamples'] = [];
+  const expired = (): boolean => {
+    if (Date.now() <= deadline) return false;
+    complete = false; deadlineExceeded = true; return true;
+  };
+  const readFailed = (err: unknown, operation: string, path: string): void => {
     // ENOENT is an exited process/closed fd (or a kernel thread without cwd).
     // Permission and IO failures do not prove absence of a holder.
-    if (opts.failClosed && (err as NodeJS.ErrnoException)?.code !== 'ENOENT') complete = false;
+    if (opts.failClosed && (err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      complete = false; readFailures++;
+      if (failureSamples.length < 8) failureSamples.push({ operation, path, code: (err as NodeJS.ErrnoException)?.code ?? 'UNKNOWN' });
+    }
   };
   const worker = async (): Promise<void> => {
     while (next < pids.length) {
-      if (Date.now() > deadline) {
-        complete = false;
-        return;
-      }
+      if (expired()) return;
       const pid = pids[next++];
       const fdDir = join(procRoot, pid, 'fd');
       const seen = new Set<string>();
@@ -236,32 +254,38 @@ export async function openWriterPidsMany(
       };
       if (opts.includeCwd) {
         try { record(await readlink(join(procRoot, pid, 'cwd'))); }
-        catch (err) { readFailed(err); }
+        catch (err) { readFailed(err, 'cwd', join(procRoot, pid, 'cwd')); }
       }
       let fds: string[];
       try {
         fds = await readdir(fdDir);
       } catch (err) {
-        readFailed(err);
+        readFailed(err, 'fd-directory', fdDir);
+        processesScanned++;
         continue;
       }
       for (const fd of fds) {
-        if (Date.now() > deadline) { complete = false; return; }
+        if (expired()) return;
+        descriptorsScanned++;
         let target: string;
         try {
           target = await readlink(join(fdDir, fd));
         } catch (err) {
-          readFailed(err);
+          readFailed(err, 'fd', join(fdDir, fd));
           continue; // fd closed under us — skip
         }
         record(target);
       }
+      processesScanned++;
     }
   };
   const width = Math.min(Math.max(1, opts.concurrency ?? 32), pids.length);
   await Promise.all(Array.from({ length: width }, worker));
   for (const holders of byPath.values()) holders.sort((a, b) => Number(a) - Number(b));
-  return { byPath, complete };
+  return { byPath, complete, ...(!complete ? { diagnostics: {
+    elapsedMs: Date.now() - started, processesTotal: pids.length, processesScanned, descriptorsScanned,
+    deadlineExceeded, readFailures, failureSamples,
+  } } : {}) };
 }
 
 /**

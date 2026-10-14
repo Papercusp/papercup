@@ -23,6 +23,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 import {
   parseNativeBgLedger,
   selectLiveNativeBgTasks,
@@ -311,6 +312,27 @@ describe('candidateNativeBgRecords', () => {
 });
 
 describe('openWriterPidsMany (WI-10005283)', () => {
+  it.runIf(process.platform === 'linux')('detects path-only descriptors that Linux write leases do not exclude', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-opath-'));
+    const path = join(root, 'file'); writeFileSync(path, 'live path owner');
+    const child = spawn('/usr/bin/python3', ['-c',
+      'import os,sys; fd=os.open(sys.argv[1],os.O_PATH); print("ready",flush=True); sys.stdin.read(1); os.close(fd)', path],
+    { stdio: ['pipe', 'pipe', 'pipe'] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once('error', reject);
+        child.stdout.once('data', (data: Buffer) => data.toString().trim() === 'ready' ? resolve() : reject(new Error('O_PATH holder did not start')));
+        child.once('exit', () => reject(new Error('O_PATH holder exited before ready')));
+      });
+      const scan = await openWriterPidsMany([path]);
+      expect(scan.byPath.get(path)).toContain(String(child.pid));
+    } finally {
+      child.stdin.end('x');
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('finds every nested holder in a wide candidate batch without sibling-prefix matches', async () => {
     const proc = fakeProc({
       '300': ['/tmp/tree/deep/file', '/tmp/tree/deep/file (deleted)', '/tmp/tree-other/file'],
@@ -346,14 +368,39 @@ describe('openWriterPidsMany (WI-10005283)', () => {
   });
 
   it('retention mode refuses a missing proc root and expired scan budget', async () => {
-    expect((await openWriterPidsMany(['/tmp/tree'], {
+    const missing = await openWriterPidsMany(['/tmp/tree'], {
       procRoot: '/nonexistent-proc-root', failClosed: true,
-    })).complete).toBe(false);
+    });
+    expect(missing.complete).toBe(false);
+    expect(missing.diagnostics).toMatchObject({ readFailures: 1,
+      failureSamples: [{ operation: 'proc-root', path: '/nonexistent-proc-root', code: 'ENOENT' }] });
     const proc = fakeProc({ '1': ['/tmp/tree/file'] });
     try {
-      expect((await openWriterPidsMany(['/tmp/tree'], {
+      const expired = await openWriterPidsMany(['/tmp/tree'], {
         procRoot: proc, failClosed: true, deadlineMs: -1,
-      })).complete).toBe(false);
+      });
+      expect(expired.complete).toBe(false);
+      expect(expired.diagnostics).toMatchObject({ deadlineExceeded: true, processesTotal: 1, processesScanned: 0, readFailures: 0 });
+    } finally { rmSync(proc, { recursive: true, force: true }); }
+  });
+
+  it('distinguishes bounded IO failure evidence from a deadline and ignores closed descriptors', async () => {
+    const proc = fakeProc(Object.fromEntries(Array.from({ length: 12 }, (_, i) => [String(i + 1), []])));
+    // ELOOP comes from the parent directory traversal; a dangling target alone
+    // is valid readlink evidence, so replace fd with a self-referential link.
+    for (let i = 1; i <= 12; i++) {
+      rmSync(join(proc, String(i), 'fd'), { recursive: true });
+      symlinkSync('fd', join(proc, String(i), 'fd'));
+    }
+    try {
+      const scan = await openWriterPidsMany(['/tmp/tree'], { procRoot: proc, failClosed: true, includeCwd: true });
+      expect(scan.complete).toBe(false);
+      expect(scan.diagnostics).toMatchObject({ deadlineExceeded: false, readFailures: 12, processesScanned: 12 });
+      expect(scan.diagnostics?.failureSamples).toHaveLength(8);
+      expect(scan.diagnostics?.failureSamples?.every((sample) => sample.operation === 'fd-directory' && sample.code === 'ELOOP')).toBe(true);
+      const soft = await openWriterPidsMany(['/tmp/tree'], { procRoot: proc });
+      expect(soft.complete).toBe(true);
+      expect(soft.diagnostics).toBeUndefined();
     } finally { rmSync(proc, { recursive: true, force: true }); }
   });
 

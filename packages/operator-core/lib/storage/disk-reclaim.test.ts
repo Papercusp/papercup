@@ -94,6 +94,34 @@ describe('retention holder evidence', () => {
     expect(privileged).not.toHaveBeenCalled();
   });
 
+  it('retains scanner failure metrics across the privileged transport', async () => {
+    const diagnostics = { elapsedMs: 12, processesTotal: 10, processesScanned: 9, descriptorsScanned: 40,
+      deadlineExceeded: false, readFailures: 1, failureSamples: [{ operation: 'fd-directory', path: '/proc/5/fd', code: 'EACCES' }] };
+    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      options.onSpawn(child as unknown as ChildProcess, 'incomplete-holder-task');
+      child.stdout.write(JSON.stringify({ complete: false, byPath: [[process.cwd(), [String(process.pid)]]], diagnostics }));
+      child.emit('close', 0, null); return { child, taskId: 'incomplete-holder-task' };
+    });
+    const result = await scanRetentionHolders(['/scratch'], { uid: () => 1000, readStatus: async () => 'NSpid:\t1\n' });
+    expect(result.complete).toBe(false);
+    expect(result.diagnostics).toEqual(diagnostics);
+  });
+
+  it('retains bounded stderr, task identity and signal when privilege transport fails', async () => {
+    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      options.onSpawn(child as unknown as ChildProcess, 'denied-holder-task');
+      child.stderr.write('x'.repeat(5000) + 'sudo: permission denied');
+      child.emit('close', null, 'SIGTERM'); return { child, taskId: 'denied-holder-task' };
+    });
+    const result = await scanRetentionHolders(['/scratch'], { uid: () => 1000, readStatus: async () => 'NSpid:\t1\n' });
+    expect(result.complete).toBe(false);
+    expect(result.diagnostics).toMatchObject({ taskId: 'denied-holder-task', exitCode: null, signal: 'SIGTERM', outputTruncated: false });
+    expect(result.diagnostics?.stderr).toHaveLength(4000);
+    expect(result.diagnostics?.stderr).toContain('sudo: permission denied');
+  });
+
   it.each(['not-json', JSON.stringify({ complete: true, byPath: [] }), JSON.stringify({ complete: true, byPath: [['/foreign', ['1']]] })])(
     'rejects privileged output without valid, caller-controlled evidence: %s', async (output) => {
       const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });

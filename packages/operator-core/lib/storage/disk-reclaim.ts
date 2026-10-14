@@ -61,8 +61,6 @@ export interface DiskReclaimOptions {
   record?: (phase: string, details: unknown) => Promise<void>;
   /** Production reuses the streaming native census for complete max-age trees. */
   inspectTrees?: typeof import('./disk-consumer-census').inspectRetentionTrees;
-  /** Fresh kernel open-holder proof for consecutive regular files; directories still use /proc. */
-  fileEffects?: typeof removeRetentionFiles;
 }
 
 export type ReclaimSql = Pick<import('postgres').Sql, 'unsafe'>;
@@ -93,7 +91,9 @@ export async function writeReclaimAudit(sql: ReclaimSql, workspaceId: string, ru
 }
 
 const RETENTION_HOLDER_SCAN_MS = 30_000;
-const incompleteHolders = (): OpenWriterScan => ({ complete: false, byPath: new Map() });
+const incompleteHolders = (reason: string, diagnostics: OpenWriterScan['diagnostics'] = {}): OpenWriterScan => ({
+  complete: false, byPath: new Map(), diagnostics: { ...diagnostics, reason },
+});
 
 /** The existing async scanner needs host-wide read access before it can prove absence. */
 export async function scanRetentionHolders(paths: readonly string[], deps: {
@@ -105,15 +105,19 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
   const status = await (deps.readStatus ?? (() => readFile('/proc/self/status', 'utf8')))().catch(() => '');
   const ids = /^NSpid:\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\s+/);
   // A nested PID namespace cannot prove a host tree unused.
-  if (!ids || ids.length !== 1) return incompleteHolders();
+  if (!ids || ids.length !== 1) return incompleteHolders('host PID namespace control unavailable');
   const control = process.cwd();
   const wanted = [...new Set([...paths, control])];
   const scan = (deps.uid ?? (() => process.getuid?.() ?? -1))() === 0
     ? await (deps.scan ?? openWriterPidsMany)(wanted, {
       descendants: true, includeCwd: true, failClosed: true, deadlineMs: RETENTION_HOLDER_SCAN_MS,
     })
-    : await (deps.privileged ?? scanPrivilegedRetentionHolders)(wanted, control).catch(incompleteHolders);
-  if (!scan.byPath.get(control)?.includes(String(process.pid))) scan.complete = false;
+    : await (deps.privileged ?? scanPrivilegedRetentionHolders)(wanted, control)
+      .catch((err) => incompleteHolders(`privileged holder scan failed: ${message(err)}`));
+  if (!scan.byPath.get(control)?.includes(String(process.pid))) {
+    scan.complete = false;
+    scan.diagnostics = { ...scan.diagnostics, reason: [scan.diagnostics?.reason, 'original caller PID control missing'].filter(Boolean).join('; ') };
+  }
   return scan;
 }
 
@@ -132,26 +136,60 @@ async function scanPrivilegedRetentionHolders(paths: readonly string[], control:
     const result = await openWriterPidsMany(paths, {
       descendants: true, includeCwd: true, failClosed: true, deadlineMs: ${RETENTION_HOLDER_SCAN_MS},
     });
-    process.stdout.write(JSON.stringify({ complete: result.complete, byPath: [...result.byPath] }));
+    process.stdout.write(JSON.stringify({ complete: result.complete, byPath: [...result.byPath], diagnostics: result.diagnostics }));
   `;
   const result = await nativeRetentionCommand(repoRoot, '/usr/bin/sudo', [
     '-n', process.execPath, '--import', require.resolve('tsx/esm'), '--input-type=module', '-e', worker,
     '--', JSON.stringify(paths), join(repoRoot, 'packages/operator-core/lib/native-bg-task-ledger.ts'),
   ], { stdoutOnly: true, outputLimit: 1024 * 1024, timeoutMs: RETENTION_HOLDER_SCAN_MS + 1_000 });
   if (!result.ok || !result.detail || typeof result.detail !== 'object' ||
-      !('output' in result.detail) || typeof result.detail.output !== 'string') return incompleteHolders();
+      !('output' in result.detail) || typeof result.detail.output !== 'string') {
+    const detail = result.detail as { error?: string; code?: number | null; signal?: string | null; taskId?: string | null; stderr?: string; outputTruncated?: boolean } | null;
+    return incompleteHolders(detail?.error ?? 'privileged holder transport failed', {
+      taskId: detail?.taskId, exitCode: detail?.code, signal: detail?.signal,
+      stderr: detail?.stderr, outputTruncated: detail?.outputTruncated,
+    });
+  }
   try {
     const parsed: unknown = JSON.parse(result.detail.output);
     if (!parsed || typeof parsed !== 'object' || !('complete' in parsed) || typeof parsed.complete !== 'boolean' ||
-        !('byPath' in parsed) || !Array.isArray(parsed.byPath)) return incompleteHolders();
+        !('byPath' in parsed) || !Array.isArray(parsed.byPath)) return incompleteHolders('invalid privileged holder result');
     const byPath = new Map<string, string[]>();
     for (const row of parsed.byPath) {
       if (!Array.isArray(row) || row.length !== 2 || typeof row[0] !== 'string' || !paths.includes(row[0]) ||
-          !Array.isArray(row[1]) || !row[1].every((pid: unknown) => typeof pid === 'string' && /^\d+$/.test(pid))) return incompleteHolders();
+          !Array.isArray(row[1]) || !row[1].every((pid: unknown) => typeof pid === 'string' && /^\d+$/.test(pid))) return incompleteHolders('invalid privileged holder path/PID evidence');
       byPath.set(row[0], row[1]);
     }
-    return { complete: parsed.complete && byPath.get(control)?.includes(String(process.pid)) === true, byPath };
-  } catch { return incompleteHolders(); }
+    let diagnostics: OpenWriterScan['diagnostics'];
+    if ('diagnostics' in parsed && parsed.diagnostics !== undefined) {
+      const raw = parsed.diagnostics;
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return incompleteHolders('invalid privileged scan diagnostics');
+      diagnostics = {};
+      for (const key of ['elapsedMs', 'processesTotal', 'processesScanned', 'descriptorsScanned', 'readFailures'] as const) {
+        if (key in raw) {
+          const value = (raw as Record<string, unknown>)[key];
+          if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return incompleteHolders('invalid privileged scan metrics');
+          diagnostics[key] = value;
+        }
+      }
+      if ('deadlineExceeded' in raw) {
+        if (typeof raw.deadlineExceeded !== 'boolean') return incompleteHolders('invalid privileged deadline evidence');
+        diagnostics.deadlineExceeded = raw.deadlineExceeded;
+      }
+      if ('reason' in raw && typeof raw.reason === 'string') diagnostics.reason = raw.reason.slice(0, 1000);
+      if ('failureSamples' in raw) {
+        if (!Array.isArray(raw.failureSamples) || raw.failureSamples.length > 8) return incompleteHolders('invalid privileged failure samples');
+        diagnostics.failureSamples = [];
+        for (const sample of raw.failureSamples) {
+          if (!sample || typeof sample !== 'object' || typeof sample.operation !== 'string' ||
+              typeof sample.path !== 'string' || typeof sample.code !== 'string') return incompleteHolders('invalid privileged failure sample');
+          diagnostics.failureSamples.push({ operation: sample.operation.slice(0, 100), path: sample.path.slice(0, 4096), code: sample.code.slice(0, 100) });
+        }
+      }
+    }
+    return { complete: parsed.complete && byPath.get(control)?.includes(String(process.pid)) === true, byPath,
+      ...(diagnostics ? { diagnostics } : {}) };
+  } catch { return incompleteHolders('privileged holder JSON could not be decoded'); }
 }
 
 /** Select by each root's keep rule. Oldest first; do not depend on available bytes (D-005). */
@@ -351,46 +389,9 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const selected = selectRetentionEntries(entries, policy, started);
         if (!selected.length) continue;
         const holders = await outsideInspectionBudget(() => scan(selected.map((e) => e.path)));
-        if (!holders.complete) { receipt.errors.push(`incomplete process-holder scan:${root.path}`); continue; }
-        for (let index = 0; index < selected.length; index++) {
-          const entry = selected[index]!;
+        if (!holders.complete) { receipt.errors.push(`incomplete process-holder scan:${root.path}: ${JSON.stringify(holders.diagnostics ?? {})}`); continue; }
+        for (const entry of selected) {
           if (budgetExpired()) { stopAtBudget(root.path); break; }
-          if (!receipt.dryRun && options.fileEffects && retainAfterMs !== undefined && !holders.byPath.has(entry.path)) {
-            // Preserve selection order across files and directories. A bounded
-            // group pays one managed-child launch, while EVERY unlink acquires
-            // its own kernel lease and checks identity/write activity afresh.
-            const batch: RetentionEntry[] = [];
-            for (let cursor = index; cursor < selected.length && batch.length < 64; cursor++) {
-              const candidate = selected[cursor]!;
-              if (holders.byPath.has(candidate.path) || JSON.stringify([...batch, candidate]).length > 60_000) break;
-              try { if (!(await lstat(candidate.path)).isFile()) break; }
-              catch { break; }
-              batch.push(candidate);
-            }
-            if (batch.length) {
-              try {
-                // All intents precede the child; the child checks each file
-                // immediately before its effect, after these database waits.
-                for (const candidate of batch) await outsideInspectionBudget(async () => options.record?.('remove-intent', candidate));
-                const outcomes = await outsideInspectionBudget(() => options.fileEffects!(batch, { retainAfterMs }));
-                receipt.entries.push(...outcomes);
-                for (const outcome of outcomes) {
-                  if (outcome.status === 'removed') {
-                    try { await outsideInspectionBudget(async () => options.record?.('removed', outcome)); }
-                    catch (err) { receipt.errors.push(`removed audit:${outcome.path}: ${message(err)}`); }
-                  }
-                  if (outcome.status === 'failed') receipt.errors.push(`remove:${outcome.path}: ${outcome.reason}`);
-                }
-              } catch (err) {
-                // Native partial/unknown results never become exhaustion proof.
-                receipt.entries.push(...batch.map((candidate) => ({ path: candidate.path, classId: candidate.classId,
-                  bytes: candidate.bytes, status: 'failed' as const, reason: message(err) })));
-                receipt.errors.push(`file effects:${root.path}: ${message(err)}`);
-              }
-              index += batch.length - 1;
-              continue;
-            }
-          }
           const outcome: DiskReclaimReceipt['entries'][number] = { path: entry.path, classId: entry.classId, bytes: entry.bytes, status: 'protected' };
           receipt.entries.push(outcome);
           if (holders.byPath.has(entry.path)) { outcome.reason = 'live process'; continue; }
@@ -410,7 +411,11 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               (reason) => { outcome.reason = reason; });
             if (!fresh) continue;
             const freshHolders = await outsideInspectionBudget(() => scan([entry.path]));
-            if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) { outcome.reason = 'process evidence unavailable or held'; continue; }
+            if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) {
+              outcome.reason = 'process evidence unavailable or held';
+              if (!freshHolders.complete) receipt.errors.push(`incomplete process-holder scan before removal:${entry.path}: ${JSON.stringify(freshHolders.diagnostics ?? {})}`);
+              continue;
+            }
             if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs) { outcome.status = 'changed'; continue; }
             if (receipt.dryRun) { outcome.status = 'would-remove'; continue; }
             await outsideInspectionBudget(() => rm(entry.path, { recursive: true, force: false }));
@@ -457,14 +462,16 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
   const { managedSpawn } = await import('../task-manager/managed-spawn');
   let finish!: (result: { ok: boolean; detail: unknown }) => void;
   const observed = new Promise<{ ok: boolean; detail: unknown }>((resolve) => { finish = resolve; });
-  let output = '', taskId: string | null = null, settled = false;
+  let output = '', stderr = '', taskId: string | null = null, settled = false;
   let outputTruncated = false;
   const timeoutMs = options.timeoutMs ?? 120_000;
   const outputLimit = options.outputLimit ?? 4000;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const done = (ok: boolean, detail: unknown) => {
     if (settled) return;
-    settled = true; clearTimeout(timer); finish({ ok, detail });
+    settled = true; clearTimeout(timer);
+    finish({ ok, detail: options.stdoutOnly && detail && typeof detail === 'object'
+      ? { ...detail, stderr, outputTruncated } : detail });
   };
   try {
     await managedSpawn(command, args, {
@@ -487,48 +494,13 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
         };
         child.stdout?.on('data', append);
         if (!options.stdoutOnly) child.stderr?.on('data', append);
+        else child.stderr?.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4000); });
         child.once('error', (error) => done(false, { error: message(error), taskId, output }));
         child.once('close', (code, signal) => done(code === 0 && !(options.stdoutOnly && outputTruncated), { code, signal, taskId, output }));
       },
     });
   } catch (error) { done(false, { error: message(error), taskId, output }); }
   return observed;
-}
-
-/** Reuse the managed delegate for a bounded regular-file effect group. Linux
- * write leases refuse existing opens (including hard-link aliases) and notify
- * the holder before a competing open can proceed. Unsupported proof fails closed.
- */
-export async function removeRetentionFiles(entries: readonly RetentionEntry[], options: { retainAfterMs: number }, deps: {
-  command?: typeof nativeRetentionCommand;
-  repoRoot?: string;
-} = {}): Promise<DiskReclaimReceipt['entries']> {
-  if (!entries.length) return [];
-  const root = entries[0]!.root;
-  if (entries.length > 64 || entries.some((entry) => entry.root !== root || dirname(entry.path) !== root)) throw new Error('invalid regular-file effect group');
-  const rootStat = await lstat(root);
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('file effect root is not a plain directory');
-  const repoRoot = deps.repoRoot ?? process.env.PAPERCUSP_INTEGRATION_ROOT ?? process.cwd();
-  const input = JSON.stringify({ root, rootDev: rootStat.dev, rootIno: rootStat.ino, uid: process.getuid?.(),
-    callerPid: process.pid, retainAfterMs: options.retainAfterMs,
-    entries: entries.map(({ path, dev, ino, newestWriteMs }) => ({ path, dev, ino, newestWriteMs })) });
-  if (input.length > 64_000) throw new Error('regular-file effect group exceeds native argument bound');
-  const result = await (deps.command ?? nativeRetentionCommand)(repoRoot, '/usr/bin/python3', [
-    join(repoRoot, 'scripts/lib/retention-file-lease.py'), input,
-  ], { stdoutOnly: true, outputLimit: 1024 * 1024, timeoutMs: 120_000 });
-  if (!result.ok || !result.detail || typeof result.detail !== 'object' || !('output' in result.detail) ||
-      typeof result.detail.output !== 'string') throw new Error('regular-file lease proof unavailable');
-  const rows: unknown = JSON.parse(result.detail.output);
-  if (!Array.isArray(rows) || rows.length !== entries.length) throw new Error('incomplete regular-file effect receipt');
-  return rows.map((row: unknown, index) => {
-    const entry = entries[index]!;
-    if (!row || typeof row !== 'object' || !('path' in row) || row.path !== entry.path ||
-        !('status' in row) || !['removed', 'protected', 'changed', 'failed'].includes(String(row.status)) ||
-        ('reason' in row && typeof row.reason !== 'string')) throw new Error('invalid regular-file effect receipt');
-    return { path: entry.path, classId: entry.classId, bytes: entry.bytes,
-      status: row.status as DiskReclaimReceipt['entries'][number]['status'],
-      ...('reason' in row ? { reason: row.reason as string } : {}) };
-  });
 }
 
 /** Runtime delegates preserve the owning program's leases and its original receipts. */
@@ -588,7 +560,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   ];
   let runId = '';
   const { inspectRetentionTrees } = await import('./disk-consumer-census');
-  return runDiskReclaimOnce({ ...options, delegates, protectedPaths, inspectTrees: inspectRetentionTrees, fileEffects: removeRetentionFiles, record: async (phase, detail) => {
+  return runDiskReclaimOnce({ ...options, delegates, protectedPaths, inspectTrees: inspectRetentionTrees, record: async (phase, detail) => {
     if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;
     await writeReclaimAudit(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(), runId, phase, detail);
   } });
