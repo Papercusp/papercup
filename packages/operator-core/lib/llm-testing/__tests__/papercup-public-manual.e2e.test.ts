@@ -73,6 +73,42 @@ const privateCanary = 'PRIVATE_ORCHARD_CANARY_8462';
 
 const remoteWorkContinues = /not\b.{0,45}\bstop|continue|keep\b.{0,30}\b(?:work|run)|\b(?:doesn|won)['’]t\b.{0,30}\bstop/i;
 
+function assertActualPortalManualFixture(preflightOnly: boolean, canonicalQuestion: string | undefined, fixtureDir: string | undefined) {
+  if (canonicalQuestion) {
+    expect(fixtureDir, 'Canonical Portal acceptance uses the selected existing runtime').toBeUndefined();
+  } else if (!preflightOnly) {
+    expect(fixtureDir, 'Use the verified disposable public/private canary bundle').toBeTruthy();
+  }
+}
+
+describe('actual Portal manual fixture admission', () => {
+  it('admits the no-model presentation control without a canary bundle', () => {
+    expect(() => assertActualPortalManualFixture(true, undefined, undefined)).not.toThrow();
+  });
+
+  it('also admits the no-model control on an existing canary runtime', () => {
+    expect(() => assertActualPortalManualFixture(true, undefined, '/tmp/manual-canary')).not.toThrow();
+  });
+
+  it('refuses a paid canary question without its verified bundle', () => {
+    expect(() => assertActualPortalManualFixture(false, undefined, undefined))
+      .toThrow('Use the verified disposable public/private canary bundle');
+  });
+
+  it('admits a paid canary question with its bundle', () => {
+    expect(() => assertActualPortalManualFixture(false, undefined, '/tmp/manual-canary')).not.toThrow();
+  });
+
+  it('admits the natural FAQ question against the canonical runtime', () => {
+    expect(() => assertActualPortalManualFixture(false, 'Can I close this tab?', undefined)).not.toThrow();
+  });
+
+  it.each([false, true])('refuses a canary substitution for a canonical question with preflightOnly=%s', (preflightOnly) => {
+    expect(() => assertActualPortalManualFixture(preflightOnly, 'Can I close this tab?', '/tmp/manual-canary'))
+      .toThrow('Canonical Portal acceptance uses the selected existing runtime');
+  });
+});
+
 describe('canonical FAQ continuation wording oracle', () => {
   it.each([
     'Yes. Closing this tab won’t stop remote work. Local work still needs its computer on and connected; pause or stop explicitly if needed.',
@@ -2538,7 +2574,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     expect(portalRoot, 'Select the maintained Portal checkout').toBeTruthy();
     expect(candidateRoot, 'Select an immutable, unpromoted Portal release').toBeTruthy();
     expect(hostedFile, 'Select the hosted control-plane secret references').toBeTruthy();
-    if (!canonicalQuestion) expect(manualFixtureDir, 'Use the verified disposable public/private canary bundle').toBeTruthy();
+    assertActualPortalManualFixture(preflightOnly, canonicalQuestion, manualFixtureDir);
     expect(principalBearer).toBeTruthy();
     expect(['127.0.0.1', 'localhost']).toContain(new URL(baseUrl!).hostname);
     const { entry: portalEntry, metadata } = await verifyPortalRuntimePreconditions(candidateRoot!);

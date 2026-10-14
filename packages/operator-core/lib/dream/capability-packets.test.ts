@@ -154,8 +154,29 @@ describe('source-backed capability extraction', () => {
     expect(await verifyCapabilityPacket(forged, f.input, f.deps)).toMatchObject({ fresh: false, reason: expect.stringContaining('boundary differs') });
     const inventedEdge = structuredClone(result.packet);
     inventedEdge.graph!.relationships[0]!.target.line1 = 2;
-    expect(await verifyCapabilityPacket(inventedEdge, f.input, f.deps)).toEqual({ fresh: false,
-      reason: 'Compiler graph differs from current cited source' });
+    const mismatch = await verifyCapabilityPacket(inventedEdge, f.input, f.deps);
+    expect(mismatch).toMatchObject({ fresh: false, reason: 'Compiler graph differs from current cited source',
+      graphMismatch: { unitId: f.input.unit.id, sourceFingerprint: result.packet.graph!.sourceFingerprint,
+        differingFields: ['relationships'], expected: inventedEdge.graph, actual: result.packet.graph } });
+    if (mismatch.fresh) throw new Error('A forged edge must remain rejected');
+    expect(mismatch.graphMismatch!.expectedHash).toBe(capabilityHash(JSON.stringify(inventedEdge.graph)));
+    expect(mismatch.graphMismatch!.actualHash).toBe(capabilityHash(JSON.stringify(result.packet.graph)));
+    // A measured first discovery followed by an unavailable rebuild must keep
+    // both projections in the builder's failure; no retry may erase the cause.
+    let graphCalls = 0;
+    const changedDiscovery = await buildCapabilityPacket({ ...f.input, manifestRevision: 'mismatch-detector' }, {
+      ...f.deps, graph: async (...args) => {
+        const answer = await f.deps.graph!(...args);
+        return ++graphCalls === 1 ? answer : { ...answer, error: 'seeded compiler refusal' };
+      },
+    });
+    expect(changedDiscovery).toMatchObject({ status: 'unavailable',
+      reason: 'Compiler graph differs from current cited source', graphMismatch: {
+        differingFields: expect.arrayContaining(['status', 'candidates', 'relationships', 'unmapped']),
+        expected: { status: 'measured' }, actual: { status: 'unknown', candidates: [], relationships: [],
+          unmapped: expect.arrayContaining([expect.stringContaining('seeded compiler refusal')]) },
+      } });
+    expect(graphCalls).toBe(2);
     expect(await verifyCapabilityPacket(result.packet, f.input, { readArtifact: f.deps.readArtifact })).toEqual({
       fresh: false, reason: 'Compiler graph verification unavailable' });
     await writeFile(join(f.root, ref.path), ref.anchor + ' { return 2; }\n');

@@ -17,6 +17,7 @@ import { getResourceProfile, type ResourceProfile } from '@papercusp/resource-pr
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { readReservationSnapshot } from '../../../../scripts/lib/disk-reservations.mjs';
 import { diskPolicyFromEnv } from '../storage/disk-space-policy';
+import { measureLiveNodeEntrySource, isLiveNodeEntrySourceCurrent, type LiveNodeEntrySource } from '../runtime-vintage';
 import {
   LIVE_HEALTH_SCHEMA_VERSION,
   LIVE_HEALTH_SIGNAL_SPECS,
@@ -26,6 +27,7 @@ import {
   isLiveHealthSnapshot,
   isLiveHealthStorage,
   isLiveHealthWriter,
+  isLiveHealthSourceCustody,
   liveHealthWindow,
   measuredLiveHealthReading,
   mergeLiveHealthFragments,
@@ -37,6 +39,7 @@ import {
   type LiveHealthSnapshot,
   type LiveHealthStorageSample,
   type LiveHealthWriter,
+  type LiveHealthSourceCustody,
 } from './live-health';
 
 export const LIVE_HEALTH_DEFAULT_CADENCE_MS = 2_000;
@@ -115,6 +118,7 @@ export interface LiveHealthStorageHistorySample {
   readonly cadenceMs: number;
   readonly writer: LiveHealthWriter;
   readonly storage: LiveHealthStorageSample;
+  readonly sourceCustody?: LiveHealthSourceCustody | null;
 }
 
 function isStorageHistorySample(value: unknown): value is LiveHealthStorageHistorySample {
@@ -124,7 +128,10 @@ function isStorageHistorySample(value: unknown): value is LiveHealthStorageHisto
     Number.isSafeInteger(row.sequence) && row.sequence > 0 &&
     Number.isFinite(row.sampledAtMs) && Number.isFinite(row.cadenceMs) && row.cadenceMs > 0 &&
     isLiveHealthWriter(row.writer) && row.writer.kind === 'monitor' && row.writer.startedAtMs <= row.sampledAtMs &&
-    isLiveHealthStorage(row.storage) && row.storage.startedAtMs >= row.sampledAtMs;
+    isLiveHealthStorage(row.storage) && row.storage.startedAtMs >= row.sampledAtMs &&
+    (row.sourceCustody === undefined || row.sourceCustody === null ||
+      (isLiveHealthSourceCustody(row.sourceCustody) && row.sourceCustody.nativePid === row.writer.pid &&
+        row.sourceCustody.sampleStartedAtMs === row.sampledAtMs));
 }
 
 export function liveHealthStorageHistorySample(snapshot: LiveHealthSnapshot): LiveHealthStorageHistorySample | null {
@@ -132,7 +139,8 @@ export function liveHealthStorageHistorySample(snapshot: LiveHealthSnapshot): Li
     row.kind === 'monitor' && row.startedAtMs === snapshot.monitorStartedAtMs && row.id === `monitor.host:${row.pid}`);
   if (!snapshot.storage || !writer) return null;
   return { schemaVersion: LIVE_HEALTH_STORAGE_HISTORY_SCHEMA, sequence: snapshot.sequence,
-    sampledAtMs: snapshot.sampledAtMs, cadenceMs: snapshot.cadenceMs, writer, storage: snapshot.storage };
+    sampledAtMs: snapshot.sampledAtMs, cadenceMs: snapshot.cadenceMs, writer, storage: snapshot.storage,
+    ...(snapshot.sourceCustody === undefined ? {} : { sourceCustody: snapshot.sourceCustody }) };
 }
 
 const HISTORY_ENCODING = 'live-health-history-gzip-v1';
@@ -806,6 +814,10 @@ export interface LiveHealthMonitorOptions {
   readonly writeSnapshot?: typeof writeLiveHealthJson;
   readonly writeHistory?: (snapshot: LiveHealthSnapshot) => Promise<void>;
   readonly log?: (message: string) => void;
+  readonly sourceWitness?: {
+    readonly capture: typeof measureLiveNodeEntrySource;
+    readonly current: typeof isLiveNodeEntrySourceCurrent;
+  };
 }
 
 export class LiveHealthMonitor {
@@ -819,10 +831,17 @@ export class LiveHealthMonitor {
   private readonly writeSnapshot: typeof writeLiveHealthJson;
   private readonly writeHistory: (snapshot: LiveHealthSnapshot) => Promise<void>;
   private readonly log: (message: string) => void;
+  private readonly sourcePin: LiveNodeEntrySource | null;
+  private readonly sourceCurrent: typeof isLiveNodeEntrySourceCurrent;
   private previous: HostLiveHealthCounters | null = null;
   private sequence = 0;
   private timer: ManagedHandle | null = null;
   private lifecycle = 0;
+  private lastSampleTiming: {
+    startedAt: number;
+    completedAt: number | null;
+    phases: Record<string, number>;
+  } | null = null;
   private sampleInFlight: {
     ready: Promise<LiveHealthSnapshot>;
     complete: Promise<LiveHealthSnapshot>;
@@ -836,6 +855,10 @@ export class LiveHealthMonitor {
     this.readFragments = options.readFragments ?? readLiveHealthFragments;
     this.writeSnapshot = options.writeSnapshot ?? writeLiveHealthJson;
     this.log = options.log ?? ((message) => console.warn(message));
+    // Hash the direct loaded entry once; per-sample stat/identity checks refuse
+    // edits or replacement without re-hashing a fleet-sized bundle every tick.
+    this.sourcePin = (options.sourceWitness?.capture ?? measureLiveNodeEntrySource)(process.pid);
+    this.sourceCurrent = options.sourceWitness?.current ?? isLiveNodeEntrySourceCurrent;
     const history = new LiveHealthHistoryWriter(join(this.paths.rootDir, 'live-health-history.jsonl'));
     // Fleet-sized observations cannot consume the storage interval's byte budget.
     // Reuse the same bounded writer/codec, with an explicit storage-only schema.
@@ -895,56 +918,92 @@ export class LiveHealthMonitor {
 
   private async sampleSerial(published: (snapshot: LiveHealthSnapshot) => void): Promise<LiveHealthSnapshot> {
     const started = performance.now();
-    const sampledAtMs = this.now();
-    const current = await this.collectHost(sampledAtMs, this.paths, this.profile.platform);
-    const signals = emptyLiveHealthSignals(sampledAtMs);
-    applyHostLiveHealthReadings(signals, this.writer.id, current, this.previous);
-    const observations = emptyLiveHealthObservations();
-    for (const [key, reading] of Object.entries(signals) as Array<[LiveHealthSignalKey, LiveHealthReading]>) {
-      if (reading.writerId === this.writer.id) observations[key][this.writer.id] = reading;
+    const previousTiming = this.lastSampleTiming;
+    if (previousTiming && started - previousTiming.startedAt > LIVE_HEALTH_SNAPSHOT_MAX_AGE_MS) {
+      this.log('[resource-governor-health] sample gap exceeded freshness: ' + JSON.stringify({
+        gapMs: started - previousTiming.startedAt,
+        previousSampleMs: previousTiming.completedAt === null ? null : previousTiming.completedAt - previousTiming.startedAt,
+        sinceCompletionMs: previousTiming.completedAt === null ? null : Math.max(0, started - previousTiming.completedAt),
+        previousPhases: previousTiming.phases,
+      }));
     }
-    const writers: Record<string, LiveHealthWriter> = { [this.writer.id]: this.writer };
-    const fragments = await this.readFragments(this.paths, sampledAtMs);
-    mergeLiveHealthFragments(signals, writers, fragments, sampledAtMs, observations);
-    const collectedAtMs = this.now();
-    signals['latency.monitorTickMs'] = measuredLiveHealthReading({
-      key: 'latency.monitorTickMs',
-      value: Math.max(0, performance.now() - started),
-      writerId: this.writer.id,
-      observedAtMs: collectedAtMs,
-      collectedAtMs,
-      window: liveHealthWindow('delta', sampledAtMs, collectedAtMs),
-      confidence: 1,
-    });
-    observations['latency.monitorTickMs'][this.writer.id] = signals['latency.monitorTickMs'];
-    const snapshot: LiveHealthSnapshot = {
-      schemaVersion: LIVE_HEALTH_SCHEMA_VERSION,
-      sequence: ++this.sequence,
-      sampledAtMs,
-      monitorStartedAtMs: this.writer.startedAtMs,
-      cadenceMs: this.cadenceMs,
-      profile: this.profile,
-      writers,
-      observations,
-      signals,
-      ...(current.storage ? { storage: current.storage } : {}),
+    const timing = { startedAt: started, completedAt: null as number | null, phases: {} as Record<string, number> };
+    this.lastSampleTiming = timing;
+    const phase = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
+      const before = performance.now();
+      try { return await run(); }
+      finally { timing.phases[name] = Math.max(0, performance.now() - before); }
     };
-    await this.writeSnapshot(this.paths.snapshotPath, snapshot);
-    this.previous = current;
-    published(snapshot);
-    // READY describes a complete atomic snapshot. Let the main entry emit it
-    // before synchronous history compression/validation begins. Keep this whole
-    // operation in flight through persistence so timer ticks cannot queue samples.
-    await yieldToEventLoop();
+    let complete = false;
     try {
-      await this.writeHistory(snapshot);
-    } catch (error) {
-      this.log(
-        '[resource-governor-health] history write failed: ' +
-          (error instanceof Error ? error.message : String(error)),
-      );
+      const sampledAtMs = this.now();
+      const sourceBefore = this.sourcePin ? this.sourceCurrent(this.sourcePin) : false;
+      const current = await phase('collectHost', () => this.collectHost(sampledAtMs, this.paths, this.profile.platform));
+      const signals = emptyLiveHealthSignals(sampledAtMs);
+      applyHostLiveHealthReadings(signals, this.writer.id, current, this.previous);
+      const observations = emptyLiveHealthObservations();
+      for (const [key, reading] of Object.entries(signals) as Array<[LiveHealthSignalKey, LiveHealthReading]>) {
+        if (reading.writerId === this.writer.id) observations[key][this.writer.id] = reading;
+      }
+      const writers: Record<string, LiveHealthWriter> = { [this.writer.id]: this.writer };
+      const fragments = await phase('readFragments', () => this.readFragments(this.paths, sampledAtMs));
+      const composeStarted = performance.now();
+      mergeLiveHealthFragments(signals, writers, fragments, sampledAtMs, observations);
+      const collectedAtMs = this.now();
+      signals['latency.monitorTickMs'] = measuredLiveHealthReading({
+        key: 'latency.monitorTickMs',
+        value: Math.max(0, performance.now() - started),
+        writerId: this.writer.id,
+        observedAtMs: collectedAtMs,
+        collectedAtMs,
+        window: liveHealthWindow('delta', sampledAtMs, collectedAtMs),
+        confidence: 1,
+      });
+      observations['latency.monitorTickMs'][this.writer.id] = signals['latency.monitorTickMs'];
+      const snapshot: LiveHealthSnapshot = {
+        schemaVersion: LIVE_HEALTH_SCHEMA_VERSION,
+        sequence: ++this.sequence,
+        sampledAtMs,
+        monitorStartedAtMs: this.writer.startedAtMs,
+        cadenceMs: this.cadenceMs,
+        profile: this.profile,
+        writers,
+        observations,
+        signals,
+        sourceCustody: this.sourcePin ? {
+          kind: 'node-entry-sha256', nativePid: this.writer.pid!, processIdentity: this.sourcePin.processIdentity,
+          sha256: this.sourcePin.sha256, sampleStartedAtMs: sampledAtMs, sampleCompletedAtMs: collectedAtMs,
+          stableDuringSample: sourceBefore && this.sourceCurrent(this.sourcePin),
+        } : null,
+        ...(current.storage ? { storage: current.storage } : {}),
+      };
+      timing.phases.compose = Math.max(0, performance.now() - composeStarted);
+      await phase('writeSnapshot', () => this.writeSnapshot(this.paths.snapshotPath, snapshot));
+      this.previous = current;
+      published(snapshot);
+      // READY describes a complete atomic snapshot. Let the main entry emit it
+      // before synchronous history compression/validation begins. Keep this whole
+      // operation in flight through persistence so timer ticks cannot queue samples.
+      await phase('historyYield', () => yieldToEventLoop());
+      try {
+        await phase('history', () => this.writeHistory(snapshot));
+      } catch (error) {
+        this.log('[resource-governor-health] history write failed: ' +
+          (error instanceof Error ? error.message : String(error)));
+      }
+      complete = true;
+      return snapshot;
+    } finally {
+      timing.completedAt = performance.now();
+      const sampleMs = Math.max(0, timing.completedAt - started);
+      if (sampleMs > LIVE_HEALTH_SNAPSHOT_MAX_AGE_MS) {
+        // Collection latency alone cannot explain an archive stall or an idle
+        // cadence gap. Log measurements, retaining the existing unknown policy.
+        this.log('[resource-governor-health] sample exceeded freshness: ' + JSON.stringify({
+          sequence: this.sequence, outcome: complete ? 'complete' : 'failed', sampleMs, phases: timing.phases,
+        }));
+      }
     }
-    return snapshot;
   }
 
   async start(): Promise<LiveHealthSnapshot> {

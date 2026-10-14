@@ -115,7 +115,18 @@ export interface BuildCapabilityPacketInput {
 
 export type CapabilityPacketBuild =
   | { status: 'ready'; packet: CapabilityPacket; cacheHit: boolean; costUsd: number; durationMs: number }
-  | { status: 'unavailable'; reason: string; costUsd: number; durationMs: number };
+  | { status: 'unavailable'; reason: string; costUsd: number; durationMs: number; graphMismatch?: CapabilityGraphMismatch };
+
+/** Bounded graph projections, not compiler bodies or a replay of the failed query. */
+export interface CapabilityGraphMismatch {
+  unitId: string;
+  sourceFingerprint: string;
+  expectedHash: string;
+  actualHash: string;
+  differingFields: Array<keyof CapabilityPacketGraph>;
+  expected: CapabilityPacketGraph;
+  actual: CapabilityPacketGraph;
+}
 
 async function readUnitFiles(root: string, unit: CapabilityUnit): Promise<Map<string, string>> {
   const paths = [...new Set(unit.evidence.map((ref) => ref.path))];
@@ -152,7 +163,7 @@ export async function verifyCapabilityPacket(
   value: unknown,
   input: BuildCapabilityPacketInput,
   deps: Pick<CapabilityPacketDeps, 'readArtifact' | 'graph'> = defaultDeps,
-): Promise<{ fresh: true } | { fresh: false; reason: string }> {
+): Promise<{ fresh: true } | { fresh: false; reason: string; graphMismatch?: CapabilityGraphMismatch }> {
   const parsed = CapabilityPacketSchema.safeParse(value);
   if (!parsed.success) return { fresh: false, reason: 'Invalid packet evidence contract' };
   const expectedUnit = CapabilityUnitSchema.safeParse(input.unit);
@@ -226,8 +237,16 @@ export async function verifyCapabilityPacket(
     if (packet.graph?.status === 'measured') {
       if (!deps.graph) return { fresh: false, reason: 'Compiler graph verification unavailable' };
       const currentGraph = await inspectCapabilityGraph(root, packet.scope.repositoryId, packet.sources, deps.graph);
-      if (JSON.stringify(CapabilityPacketGraphSchema.parse(currentGraph)) !== JSON.stringify(packet.graph))
-        return { fresh: false, reason: 'Compiler graph differs from current cited source' };
+      const actual = CapabilityPacketGraphSchema.parse(currentGraph);
+      const expectedText = JSON.stringify(packet.graph), actualText = JSON.stringify(actual);
+      if (actualText !== expectedText)
+        return { fresh: false, reason: 'Compiler graph differs from current cited source', graphMismatch: {
+          unitId: packet.unit.id, sourceFingerprint: packet.graph.sourceFingerprint,
+          expectedHash: capabilityHash(expectedText), actualHash: capabilityHash(actualText),
+          differingFields: (Object.keys(actual) as Array<keyof CapabilityPacketGraph>)
+            .filter(key => JSON.stringify(actual[key]) !== JSON.stringify(packet.graph![key])),
+          expected: packet.graph, actual,
+        } };
     }
     return { fresh: true };
   } catch (error) {
@@ -515,7 +534,8 @@ export async function buildCapabilityPacket(
     if (JSON.stringify(packet).length > maxPacketChars)
       throw new Error('Packet exceeds budget; required contracts were retained, so it is not admitted');
     const verified = await verifyCapabilityPacket(packet, { ...input, unit }, deps);
-    if (!verified.fresh) throw new Error(verified.reason);
+    if (!verified.fresh) return { status: 'unavailable', reason: verified.reason, costUsd: 0,
+      durationMs: durationMs(), ...(verified.graphMismatch ? { graphMismatch: verified.graphMismatch } : {}) };
     await deps.cache.set(input.scope.workspaceId, key, packet, {
       hardTtlMs: CACHE_TTL_MS,
       tags: ['dream:capability:' + input.scope.potSlug],

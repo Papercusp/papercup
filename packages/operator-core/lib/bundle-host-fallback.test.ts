@@ -209,6 +209,23 @@ describe('bundle-host.sh last-known-good fallback', () => {
     expect(readFileSync(outfile + '.meta.json')).toEqual(metadata);
   }, 260_000);
 
+  it.each(['relative', 'absolute'] as const)('refuses a held copied SQL source using a %s directory', frame => {
+    const entry = join(dir, 'clean-copy-entry.ts');
+    writeFileSync(entry, 'export const clean = true;\n');
+    mkdirSync(join(dir, 'dist-host'), { recursive: true });
+    writeFileSync(outfile, GOOD_BUNDLE);
+    const locksDir = join(REPO_ROOT, 'libs/papercusp/packages/locks/src/sql');
+    const held = join(locksDir, '004-rename-coordination-domain.sql');
+    const census = join(dir, 'held-copy-census.json');
+    writeFileSync(census, JSON.stringify([{ path: held, owner: 'fixture',
+      intent: 'held-copy regression', coordinationDomain: REPO_ROOT }]));
+    const refused = runBundler(entry, { PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: census,
+      PAPERCUSP_LOCKS_SQL_DIR: frame === 'absolute' ? locksDir : '../../libs/papercusp/packages/locks/src/sql' });
+    expect(refused.code, refused.output).not.toBe(0);
+    expect(refused.output).toContain('004-rename-coordination-domain.sql is a bundle input and a held restricted write');
+    expect(readFileSync(outfile, 'utf8')).toBe(GOOD_BUNDLE);
+  }, 260_000);
+
   it('enters the install-safe mutex before resolving bundle dependencies', () => {
     const src = readFileSync(SCRIPT, 'utf8');
     const guardIdx = src.indexOf('--exec-under-lock');

@@ -82,6 +82,7 @@ import {
 } from '../../acceptance-bar-seed';
 import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
+import { conformanceActivationVerdict } from '../../spec-conformance/activation-gate';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { resolveActivationClassRef } from './activation-class-ref';
 import { previewPlanStartConsult } from './get-activation-readiness';
@@ -573,6 +574,24 @@ export default defineTool({
           } };
         }
       }
+      // spec-conformance-loop-2026-10-14 R-1: every requirement compiles to an
+      // executable check (done-when, falsifier, or approved unenforced declaration).
+      // Evaluated LAST, just before success/record, so every more specific
+      // diagnostic (source refs, provenance, BAR seed) is reported first.
+      const conformanceRefusal = (preview: boolean) => {
+        if (!currentPlan) return null;
+        const conformance = conformanceActivationVerdict(currentPlan.content);
+        if (conformance.ok) return null;
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          ...(preview ? { dryRun: true as const, preview: true as const } : {}),
+          error: conformance.error,
+          problems: conformance.problems,
+          message: conformance.message,
+        } };
+      };
 
       const sourceProblems: Problem[] = [];
       const sourceRefs: string[] = [];
@@ -810,6 +829,8 @@ export default defineTool({
             dryRun: true as const, preview: true as const,
           } };
         }
+        const previewConformance = conformanceRefusal(true);
+        if (previewConformance) return previewConformance;
         return { data: {
           ok: true as const,
           slug: args.slug,
@@ -832,6 +853,8 @@ export default defineTool({
         } };
       }
 
+      const writeConformance = conformanceRefusal(false);
+      if (writeConformance) return writeConformance;
       const recorded = await recordCurrentActivationAudit({
         workspaceId,
         planSlug: args.slug,

@@ -226,10 +226,27 @@ function nodeEntryBundleDigest(version: string | null | undefined): string | nul
     ? version!.slice('node-entry-sha256:'.length) : null;
 }
 
-/** Only a direct Node bundle entry written before this process started is proven. */
-function liveNodeEntryDigest(pid: number): string | null {
+export interface LiveNodeEntrySource {
+  readonly pid: number;
+  readonly processIdentity: string;
+  readonly entry: string;
+  readonly entryStat: string;
+  readonly sha256: string;
+}
+
+function nodeEntryStat(entry: string): string | null {
+  try {
+    const stat = statSync(entry);
+    return stat.isFile() ? [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':') : null;
+  } catch { return null; }
+}
+
+/** Capture once; only a direct Node entry predating the kernel process is proven. */
+export function measureLiveNodeEntrySource(pid: number): LiveNodeEntrySource | null {
   if (process.platform !== 'linux') return null;
   try {
+    const processIdentity = liveProcessIdentity(pid);
+    if (!processIdentity) return null;
     if (!/^node(?:js)?$/.test(basename(readlinkSync(`/proc/${pid}/exe`)))) return null;
     const argv = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
     if (argv.length !== 2 || !/\.(?:c|m)?js$/.test(argv[1])) return null;
@@ -244,10 +261,22 @@ function liveNodeEntryDigest(pid: number): string | null {
       || !before.isFile() || before.mtimeMs > startedAt - 25 || before.ctimeMs > startedAt - 25) return null;
     const digest = createHash('sha256').update(readFileSync(entry)).digest('hex');
     const after = statSync(entry);
-    return before.dev === after.dev && before.ino === after.ino
+    if (!(before.dev === after.dev && before.ino === after.ino
       && before.size === after.size && before.mtimeMs === after.mtimeMs
-      && before.ctimeMs === after.ctimeMs ? digest : null;
+      && before.ctimeMs === after.ctimeMs && liveProcessIdentity(pid) === processIdentity)) return null;
+    return { pid, processIdentity, entry,
+      entryStat: [before.dev, before.ino, before.size, before.mtimeMs, before.ctimeMs].join(':'), sha256: digest };
   } catch { return null; }
+}
+
+/** Cheap per-sample validation; a replaced or edited entry invalidates its pin. */
+export function isLiveNodeEntrySourceCurrent(source: LiveNodeEntrySource): boolean {
+  return liveProcessIdentity(source.pid) === source.processIdentity &&
+    nodeEntryStat(source.entry) === source.entryStat && liveProcessIdentity(source.pid) === source.processIdentity;
+}
+
+function liveNodeEntryDigest(pid: number): string | null {
+  return measureLiveNodeEntrySource(pid)?.sha256 ?? null;
 }
 
 /** /proc exposes the loaded inode even after its original path is replaced. */

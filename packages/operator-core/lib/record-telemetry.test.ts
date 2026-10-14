@@ -13,7 +13,7 @@ vi.mock('./operator-state-pg', () => ({
 
 import { recordTelemetryReport, MAX_TELEMETRY_REPORTS, prepareCloudTelemetryDelivery, deliverCloudTelemetry, safeCloudError, type CloudTelemetryContext } from './record-telemetry';
 import { createHostedPrincipal } from './auth/hosted-principal';
-import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from './telemetry-kinds';
+import { DEFAULT_CLOUD_TELEMETRY_CONSENT, type CloudTelemetryConsent } from './telemetry-kinds';
 
 beforeEach(() => store.clear());
 
@@ -107,7 +107,7 @@ describe('cloud final-delivery privacy boundary', () => {
   it('checks current consent for a queued export and never catches up across consent epochs', async () => {
     const send = vi.fn(async () => {});
     const local = { ...context, origin: 'customer-runtime' as const };
-    let current = { ...consent, diagnostics: { enabled: true, since: '2026-10-13T12:00:00Z' } };
+    let current: CloudTelemetryConsent = { ...consent, diagnostics: { enabled: true, since: '2026-10-13T12:00:00Z' } };
     const readConsent = vi.fn(async () => current);
     expect(await deliverCloudTelemetry(aggregate, local, { readConsent, send })).toEqual({ delivered: true });
     current = { ...current, diagnostics: { enabled: false, since: null } };

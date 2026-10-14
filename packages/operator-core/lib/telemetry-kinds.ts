@@ -75,6 +75,13 @@ export const cloudTelemetryConsentSchema = z.object({
   diagnostics: consentChoice,
 }).strict();
 export type CloudTelemetryConsent = z.infer<typeof cloudTelemetryConsentSchema>;
+/** Customers choose categories; only the server can stamp consent epochs. */
+export const cloudTelemetryConsentUpdateSchema = z.object({
+  disclosure_version: z.literal(CLOUD_MONITORING_DISCLOSURE_VERSION),
+  analytics: z.boolean().optional(),
+  diagnostics: z.boolean().optional(),
+}).strict().refine(value => value.analytics !== undefined || value.diagnostics !== undefined, 'no consent choice');
+export type CloudTelemetryConsentUpdate = z.infer<typeof cloudTelemetryConsentUpdateSchema>;
 export const DEFAULT_CLOUD_TELEMETRY_CONSENT: CloudTelemetryConsent = {
   disclosure_version: CLOUD_MONITORING_DISCLOSURE_VERSION,
   analytics: { enabled: false, since: null }, diagnostics: { enabled: false, since: null },

@@ -151,6 +151,21 @@ const ALLOWLIST: Record<string, Classification> = {
       'personal owner lives in owner_user_id (a human user id). No presence-tied reader/reaper keys on it, and ' +
       'rebinding it would corrupt the pot ref. Same class as desktop_sessions.scope_ref.',
   },
+  'governance_policy_layers.scope_ref': {
+    status: 'exempt',
+    reason:
+      'papercusp-enterprise-readiness-roadmap-2026-10-09 P-005 (migration 1497): the governance-policy LAYER scope, ' +
+      "paired with level='organization'|'department'|'workspace' and unique per (level, scope_ref). It holds an org, " +
+      'department or workspace id, never an agent ownerId/sid. No presence-tied reader/reaper keys on it, and ' +
+      'rebinding it would move a policy layer onto the wrong tenant. Same class as data_sources.scope_ref.',
+  },
+  'governance_policy_layer_versions.scope_ref': {
+    status: 'exempt',
+    reason:
+      'Migration 1497 append-only versioned evidence of governance_policy_layers: a historical copy of the ' +
+      'layer scope (org/department/workspace id) at each version. It is provenance, not a current-holder claim, ' +
+      'so rewriting it would falsify the audit record. Same exemption as governance_policy_layers.scope_ref.',
+  },
   'agent_activity.owner_id': {
     status: 'exempt',
     reason: 'append-only activity LOG (who did what, when) — not a current-holder claim any reader treats as live.',

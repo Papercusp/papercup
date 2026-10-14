@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { processGroupLifetime } from './process-group-lifetime';
-import { linuxPgrpFromProcStat, linuxProcStateFromStat } from '../process-identity';
+import { linuxPgrpFromProcStat, linuxProcStateFromStat, linuxStartTicksFromProcStat } from '../process-identity';
 
 function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (error) {
@@ -15,9 +15,11 @@ function alive(pid: number): boolean {
 }
 
 describe.skipIf(process.platform === 'win32')('process group host shutdown', () => {
-  it.skipIf(process.platform !== 'linux')('finishes an exited group containing only an unreaped dead member without signalling its live outside-group reaper', async () => {
+  it.skipIf(process.platform !== 'linux').each([false, true])('finishes a kernel-dead group with delayed JS exit=%s without signalling its live outside-group reaper', async delayedExit => {
     const directory = mkdtempSync(join(tmpdir(), 'group-exit-zombie-'));
     const release = join(directory, 'release');
+    const testStartTicks = linuxStartTicksFromProcStat(readFileSync(`/proc/${process.pid}/stat`, 'utf8'));
+    expect(testStartTicks).toMatch(/^\d+$/);
     // A separate process group keeps the reaper alive. Its child remains in
     // the original group as a real kernel Z record until this test releases it.
     const controller = `import os,time,json,sys
@@ -28,12 +30,18 @@ deadline=time.monotonic()+10
 while open('/proc/'+str(pid)+'/stat').read().split(')')[-1].strip().split()[0]!='Z':
  time.sleep(.01)
 print(json.dumps({'dead':pid,'reaper':os.getpid()}),flush=True)
-while not os.path.exists(sys.argv[1]) and time.monotonic()<deadline: time.sleep(.01)
+def test_alive():
+ try:
+  fields=open('/proc/'+sys.argv[2]+'/stat').read().rsplit(')',1)[1].strip().split()
+  return fields[0] not in ('Z','X') and fields[19]==sys.argv[3]
+ except (FileNotFoundError,ProcessLookupError): return False
+while not os.path.exists(sys.argv[1]) and test_alive(): time.sleep(.01)
 os.waitpid(pid,0)
 `;
     const child = spawn(process.execPath, ['-e', `
       const { spawn } = require('node:child_process');
-      const reaper = spawn('python3', ['-c', ${JSON.stringify(controller)}, ${JSON.stringify(release)}],
+      const reaper = spawn('python3', ['-c', ${JSON.stringify(controller)}, ${JSON.stringify(release)},
+        ${JSON.stringify(String(process.pid))}, ${JSON.stringify(testStartTicks)}],
         { stdio: ['ignore', 'pipe', 'pipe'] });
       reaper.stderr.on('data', b => process.stderr.write(b));
       reaper.once('error', e => { console.error(e); process.exit(1); });
@@ -45,7 +53,14 @@ os.waitpid(pid,0)
     `], { detached: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
     const closed = once(child, 'close');
     const messages: string[] = [];
-    const lifetime = processGroupLifetime(child, message => messages.push(message));
+    // The kernel fixture is real; only the late Node exit notification differs.
+    // This reproduces a supervisor waiting before libuv has reaped its child.
+    const observedChild = delayedExit ? new Proxy(child, {
+      get(target, key, receiver) {
+        return key === 'exitCode' || key === 'signalCode' ? null : Reflect.get(target, key, receiver);
+      },
+    }) : child;
+    const lifetime = processGroupLifetime(observedChild, message => messages.push(message));
     let stderr = '';
     let deadPid = 0;
     child.stderr?.on('data', b => { stderr += b; });

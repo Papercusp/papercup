@@ -380,10 +380,16 @@ GATE_PENDING=0
 FALLBACK_RC=1
 restricted_hold_gate() { # 0 = admitted · 1 = refused (the snapshot was restored)
   GATE_PENDING=0
+  # Copy commands below resolve these sources from OPERATOR_DIR. The gate
+  # resolves metafile inputs from REPO_ROOT, so carry absolute copy inputs
+  # across that frame change (including caller-provided relative overrides).
+  local blueprint_source="${PAPERCUSP_HARNESS_BLUEPRINTS_DIR:-../../libs/papercusp/packages/harness/blueprints}"
+  local locks_source="${PAPERCUSP_LOCKS_SQL_DIR:-../../libs/papercusp/packages/locks/src/sql}"
+  [[ "$blueprint_source" == /* ]] || blueprint_source="$OPERATOR_DIR/$blueprint_source"
+  [[ "$locks_source" == /* ]] || locks_source="$OPERATOR_DIR/$locks_source"
   local -a args=(gate --root "$REPO_ROOT" --base-dir "$REPO_ROOT" --outdir "$OUTDIR" --snapshot-dir "$GATE_SNAPSHOT_DIR"
     --metafile "$BUNDLE_HOST_GATE_META_DIR/${OUTFILE##*/}.meta.json" --metafile-dir "$BUNDLE_HOST_GATE_META_DIR"
-    --path "${PAPERCUSP_HARNESS_BLUEPRINTS_DIR:-../../libs/papercusp/packages/harness/blueprints}"
-    --path "${PAPERCUSP_LOCKS_SQL_DIR:-../../libs/papercusp/packages/locks/src/sql}")
+    --path "$blueprint_source" --path "$locks_source")
   local src gate_rc=0
   for src in "${HOST_RUNTIME_SIBLING_SOURCES[@]}"; do args+=(--path "$REPO_ROOT/$src"); done
   if [[ -f "$BUNDLE_HOST_GATE_META_DIR/copied-sources.txt" ]]; then

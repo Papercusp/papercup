@@ -20,8 +20,51 @@
  */
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { createHash } from 'node:crypto';
+import type { Sql } from 'postgres';
 import { isHostedPrincipal, type HostedPrincipal } from './auth/hosted-principal';
-import { cloudTelemetryConsentSchema, cloudTelemetryEventSchema, CLOUD_ERROR_CODES, type CloudTelemetryEvent, type TelemetryKind } from './telemetry-kinds';
+import { cloudTelemetryConsentSchema, cloudTelemetryConsentUpdateSchema, cloudTelemetryEventSchema, CLOUD_ERROR_CODES, DEFAULT_CLOUD_TELEMETRY_CONSENT, type CloudTelemetryConsent, type CloudTelemetryEvent, type TelemetryKind } from './telemetry-kinds';
+
+/** Existing hosted preference storage supplies the consent. Require the
+ * verified tenant transaction so no ambient/admin read can choose its scope. */
+export async function readCloudTelemetryConsent(tx: Sql, principal: HostedPrincipal): Promise<CloudTelemetryConsent> {
+  await assertCloudTelemetryScope(tx, principal);
+  const [row] = await tx<{ consent: unknown }[]>`
+    SELECT profile->'cloudMonitoring' AS consent FROM papercusp_auth.hosted_user_preferences
+     WHERE organization_id = ${principal.activeOrganizationId}::uuid AND user_id = ${principal.userId}::uuid`;
+  if (row?.consent == null) return structuredClone(DEFAULT_CLOUD_TELEMETRY_CONSENT);
+  return cloudTelemetryConsentSchema.parse(row.consent);
+}
+
+async function assertCloudTelemetryScope(tx: Sql, principal: HostedPrincipal): Promise<void> {
+  if (!isHostedPrincipal(principal)) throw new Error('cloud_telemetry_principal_required');
+  const [scope] = await tx<{ organization: string; user: string }[]>`
+    SELECT current_setting('app.organization_id', true) AS organization,
+           current_setting('app.user_id', true) AS "user"`;
+  if (!scope || scope.organization !== principal.activeOrganizationId || scope.user !== principal.userId) {
+    throw new Error('cloud_telemetry_scope_mismatch');
+  }
+}
+
+/** Same scoped preference row as the reader. Serialize changes so a concurrent
+ * category update cannot overwrite revocation, and preserve other preferences. */
+export async function writeCloudTelemetryConsent(tx: Sql, principal: HostedPrincipal, input: unknown): Promise<CloudTelemetryConsent> {
+  const update = cloudTelemetryConsentUpdateSchema.parse(input);
+  await assertCloudTelemetryScope(tx, principal);
+  await tx`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['cloud-monitoring', principal.activeOrganizationId, principal.userId])}, 0))`;
+  const current = await readCloudTelemetryConsent(tx, principal);
+  const now = new Date().toISOString();
+  const choice = (key: 'analytics' | 'diagnostics') => update[key] === undefined ? current[key] :
+    update[key] === false ? { enabled: false, since: null } :
+    current[key].enabled && current[key].since ? current[key] : { enabled: true, since: now };
+  const consent = cloudTelemetryConsentSchema.parse({ disclosure_version: update.disclosure_version,
+    analytics: choice('analytics'), diagnostics: choice('diagnostics') });
+  await tx`
+    INSERT INTO papercusp_auth.hosted_user_preferences (organization_id, user_id, profile)
+    VALUES (${principal.activeOrganizationId}::uuid, ${principal.userId}::uuid, ${JSON.stringify({ cloudMonitoring: consent })}::jsonb)
+    ON CONFLICT (organization_id, user_id) DO UPDATE
+    SET profile = hosted_user_preferences.profile || EXCLUDED.profile`;
+  return consent;
+}
 
 export interface CloudTelemetryContext {
   /** Supplied by the authenticated server route, never request JSON. */

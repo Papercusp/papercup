@@ -460,6 +460,18 @@ export interface LiveHealthSnapshot {
   readonly signals: Readonly<Record<LiveHealthSignalKey, LiveHealthReading>>;
   /** Optional only for legacy snapshots. Discrete observations never imply capacity between samples. */
   readonly storage?: LiveHealthStorageSample;
+  /** Missing/null is unknown; this witnesses only the recorded sample's source. */
+  readonly sourceCustody?: LiveHealthSourceCustody | null;
+}
+
+export interface LiveHealthSourceCustody {
+  readonly kind: 'node-entry-sha256';
+  readonly nativePid: number;
+  readonly processIdentity: string;
+  readonly sha256: string;
+  readonly sampleStartedAtMs: number;
+  readonly sampleCompletedAtMs: number;
+  readonly stableDuringSample: boolean;
 }
 
 export interface LiveHealthStorageSample {
@@ -678,6 +690,15 @@ export function isLiveHealthWriter(value: unknown): value is LiveHealthWriter {
   );
 }
 
+export function isLiveHealthSourceCustody(value: unknown): value is LiveHealthSourceCustody {
+  return isRecord(value) && value.kind === 'node-entry-sha256' &&
+    finite(value.nativePid) && Number.isSafeInteger(value.nativePid) && value.nativePid > 0 &&
+    typeof value.processIdentity === 'string' && value.processIdentity.length > 0 &&
+    typeof value.sha256 === 'string' && /^[a-f0-9]{64}$/.test(value.sha256) &&
+    finite(value.sampleStartedAtMs) && finite(value.sampleCompletedAtMs) &&
+    value.sampleCompletedAtMs >= value.sampleStartedAtMs && typeof value.stableDuringSample === 'boolean';
+}
+
 function isLiveHealthWindowForKey(key: LiveHealthSignalKey, value: unknown): value is LiveHealthWindow {
   if (!isRecord(value)) return false;
   const spec = LIVE_HEALTH_SIGNAL_SPECS[key];
@@ -746,6 +767,7 @@ export function isLiveHealthSnapshot(value: unknown): value is LiveHealthSnapsho
   if (!isRecord(value)) return false;
   if (value.schemaVersion !== LIVE_HEALTH_SCHEMA_VERSION) return false;
   if (value.storage !== undefined && !isLiveHealthStorage(value.storage)) return false;
+  if (value.sourceCustody !== undefined && value.sourceCustody !== null && !isLiveHealthSourceCustody(value.sourceCustody)) return false;
   if (!finite(value.sequence) || !Number.isInteger(value.sequence) || value.sequence < 1) return false;
   if (!finite(value.sampledAtMs) || !finite(value.monitorStartedAtMs) || value.monitorStartedAtMs > value.sampledAtMs) {
     return false;
@@ -777,6 +799,12 @@ export function isLiveHealthSnapshot(value: unknown): value is LiveHealthSnapsho
 
   for (const [writerId, rawWriter] of Object.entries(value.writers)) {
     if (!isLiveHealthWriter(rawWriter) || rawWriter.id !== writerId) return false;
+  }
+  if (value.sourceCustody) {
+    const source = value.sourceCustody as LiveHealthSourceCustody;
+    const monitor = value.writers[`monitor.host:${source.nativePid}`];
+    if (!isLiveHealthWriter(monitor) || monitor.kind !== 'monitor' || monitor.pid !== source.nativePid || monitor.startedAtMs !== value.monitorStartedAtMs ||
+      source.sampleStartedAtMs !== value.sampledAtMs) return false;
   }
   for (const key of LIVE_HEALTH_SIGNAL_KEYS) {
     const compact = value.signals[key];

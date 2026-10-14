@@ -408,6 +408,32 @@ test('running database readiness retries converge and exhaustion retains the fin
   assert.equal(probes, 2);
 });
 
+test('database readiness reports each actual TCP probe without emitting Docker output or secrets', async () => {
+  const secret = randomUUID(), receipts = [];
+  let probes = 0;
+  await waitForSandboxPostgres('owned-pg', {
+    delay: async () => {}, onProgress: receipt => receipts.push(receipt),
+    run: args => args[0] === 'exec' ? { status: ++probes === 3 ? 0 : 2, stdout: secret } :
+      { status: 0, stdout: probes === 1 ? secret : 'running' },
+  });
+  assert.deepEqual(receipts.map(r => [r.attempt, r.status, r.containerState]),
+    [[1, 'not-ready', 'unknown'], [2, 'not-ready', 'running'], [3, 'accepting', undefined]]);
+  assert.equal(receipts.every(r => r.container === 'owned-pg' && r.attempts === 31 && r.elapsedMs >= 0), true);
+  assert.equal(JSON.stringify(receipts).includes(secret), false);
+});
+
+test('database readiness distinguishes a failed Docker probe and records exhaustion before teardown', async () => {
+  const receipts = [];
+  await assert.rejects(waitForSandboxPostgres('owned-pg', {
+    attempts: 1, onProgress: receipt => receipts.push(receipt),
+    run: args => args[0] === 'exec' ? { status: null, error: new Error('Docker probe timed out') } :
+      { status: 0, stdout: args[2] === '{{.State.Status}}' ? 'running' : '{}' },
+    delay: async () => assert.fail('exhausted readiness cannot retry'),
+  }), /Docker probe timed out/);
+  assert.deepEqual(receipts.map(r => [r.attempt, r.attempts, r.status, r.containerState]),
+    [[1, 1, 'probe-error', 'running']]);
+});
+
 test('stopping a sandbox cancels database readiness without another Docker operation', async () => {
   await waitForSandboxPostgres('owned-pg', { isStopped: () => true, run: () => assert.fail('already stopping') });
 });

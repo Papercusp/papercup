@@ -7932,19 +7932,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
 
           // WI-6554700010011504: the wedge-prevention deadline ran out between a chosen
-          // route and its attempt. That is the ladder's SHED — the same terminal 429 the
+          // route and its attempt. That is the ladder's SHED — the same terminal status the
           // retry ladder forwards when it is exhausted (x-should-retry=false + the
-          // attempt count), never an "upstream stall" 502.
+          // attempt count), never an "upstream stall" 502. The kernel carries the status
+          // the retry was rescuing: an exhausted 529 overload stays a 529 (not a
+          // misleading rate limit); everything else is the throttle shed's 429.
           if (failure.code === 'retry-budget-exhausted') {
             retryBudgetExhausted(); // records the shed exactly once (idempotent)
+            const overloaded = failure.status === 529;
             sendJson(
               res,
-              429,
+              overloaded ? 529 : 429,
               {
                 type: 'error',
                 error: {
-                  type: 'rate_limit_error',
-                  message: `inference-gateway: internal-retry deadline ${internalRetryDeadlineMs}ms exhausted for ${model} (last account '${active.accountId}'); no account could take the request`,
+                  type: overloaded ? 'overloaded_error' : 'rate_limit_error',
+                  message: `inference-gateway: internal-retry deadline ${internalRetryDeadlineMs}ms exhausted for ${model} (last account '${active.accountId}'${overloaded ? ', upstream overloaded' : ''}); no account could take the request`,
                 },
                 gateway: true,
               },

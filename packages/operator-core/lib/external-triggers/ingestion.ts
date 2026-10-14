@@ -35,6 +35,11 @@ export interface CanonicalExternalEvent extends NormalizedExternalEvent {
   sourceId: string;
   datatypeId: string;
   dedupeKey: string;
+  /**
+   * The provider deleted the object. A sink that keeps a copy removes it instead of
+   * storing `payload` as a new version.
+   */
+  deleted?: boolean;
 }
 
 export interface IngestExternalTriggerInput {
@@ -48,6 +53,8 @@ export interface IngestExternalTriggerInput {
   normalize(payload: unknown): Record<string, unknown> | Promise<Record<string, unknown>>;
   occurredAt?: string | null;
   dedupeKey?: string;
+  /** The provider deleted the object (CanonicalExternalEvent.deleted). */
+  deleted?: boolean;
   additionalSinks?: ExternalTriggerSink[];
 }
 
@@ -285,6 +292,7 @@ export async function ingestExternalTriggerEvent(
     dedupeKey: required(input.dedupeKey ?? defaultDedupeKey(source, datatypeId, externalId), 'dedupe_key'),
     payload,
     workspaceId,
+    ...(input.deleted === true ? { deleted: true } : {}),
   };
 
   const emit = deps.emit ?? emitAwaitedEvent;
@@ -305,6 +313,7 @@ export async function ingestExternalTriggerEvent(
           occurredAt: normalized.occurredAt ?? null,
           datatypeId: normalized.datatypeId,
           dedupeKey: normalized.dedupeKey,
+          ...(normalized.deleted ? { deleted: true } : {}),
           payload: normalized.payload,
         },
       });

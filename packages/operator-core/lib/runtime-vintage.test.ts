@@ -23,6 +23,8 @@ import {
   reportRuntimeVintage,
   listRuntimeVintage,
   measureRuntimeVintageEnvironment,
+  measureLiveNodeEntrySource,
+  isLiveNodeEntrySourceCurrent,
   resolvePostgresInstanceReport,
   type RuntimeVintageRow,
 } from './runtime-vintage';
@@ -198,6 +200,10 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
     try {
       await once(child.stdout!, 'data');
       const digest = createHash('sha256').update(source).digest('hex');
+      const sourcePin = measureLiveNodeEntrySource(child.pid!);
+      expect(sourcePin).toMatchObject({ pid: child.pid, sha256: digest, entry });
+      expect(isLiveNodeEntrySourceCurrent(sourcePin!)).toBe(true);
+      expect(isLiveNodeEntrySourceCurrent({ ...sourcePin!, processIdentity: 'replaced-process' })).toBe(false);
       await reportRuntimeVintage({ unit: 'node-bundle', pid: child.pid!, treeSha: null,
         bundleVersion: `node-entry-sha256:${digest}`, workspaceId: 'default',
         extra: { kernelNodeEntryDigest: 'caller-authored' } });
@@ -206,6 +212,8 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
       expect(rows[0].extra.kernelNodeEntryDigest).toBe(digest);
       expect(measureRuntimeVintageEnvironment(rows, ['node-bundle'])).toMatch(/^[a-f0-9]{64}$/);
       await writeFile(entry, `${source}\n// changed after startup`);
+      expect(isLiveNodeEntrySourceCurrent(sourcePin!)).toBe(false);
+      expect(measureLiveNodeEntrySource(child.pid!)).toBeNull();
       expect(measureRuntimeVintageEnvironment(rows, ['node-bundle'])).toBeNull();
       await reportRuntimeVintage({ unit: 'changed-bundle', pid: child.pid!, treeSha: null,
         bundleVersion: `node-entry-sha256:${createHash('sha256').update(readFileSync(entry)).digest('hex')}`,

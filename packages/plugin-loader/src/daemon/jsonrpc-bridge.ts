@@ -180,7 +180,14 @@ export class JsonRpcBridge {
         if (!p) continue; // stale reply
         this.pending.delete(msg.id);
         if ('error' in msg && msg.error) {
-          p.reject(new Error(`${msg.error.code}: ${msg.error.message}`));
+          // Keep the JSON-RPC error's `code` and `data` on the Error. A provider declares its sync
+          // failure kind there (`{ kind: 'rate-limited', retryAfterSeconds }`, `{ kind: 'auth' }`),
+          // and the host's classifier (plugin-sdk providerSyncErrorOf) reads `cause.data`; dropping
+          // it turned every daemon provider's 429 or revoked token into a generic transient failure.
+          const err = new Error(`${msg.error.code}: ${msg.error.message}`) as Error & { code?: unknown; data?: unknown };
+          err.code = msg.error.code;
+          if (msg.error.data !== undefined) err.data = msg.error.data;
+          p.reject(err);
         } else {
           p.resolve((msg as JsonRpcResponse).result);
         }

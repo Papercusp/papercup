@@ -3,10 +3,12 @@
  * the real import-closure worker. The census half (git-sync's restricted readers) is injected
  * here; restricted-hold-fence.integration.test.ts drives it from real Postgres.
  */
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { verifierGitCheckoutSync, verifierSourceFiles } from '@papercusp/test-config/verifier-source';
 import type { RestrictedEditHolding } from '../../personal-vault/git-sync-hold';
 import { restrictedHoldBundleRefusal, restrictedHoldRefusal, TEST_ROUTER_PATH } from './restricted-hold-fence';
 
@@ -114,6 +116,102 @@ describe('restrictedHoldRefusal — fail closed', () => {
 });
 
 // WI-10005745 — the host bundle door: an exact intersection with what the bundle consumed.
+describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
+  let owned: string | undefined;
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (owned) rmSync(owned, { recursive: true, force: true });
+    owned = undefined;
+  });
+  function archive() {
+    owned = mkdtempSync(join(tmpdir(), 'bundle-archive-'));
+    const selectedRoot = join(owned, 'source');
+    mkdirSync(join(selectedRoot, 'src'), { recursive: true });
+    writeFileSync(join(selectedRoot, 'src/clean.ts'), 'export const clean = true;\n');
+    const git = (args: string[]) => execFileSync('git', ['-C', selectedRoot, ...args], { encoding: 'utf8' }).trim();
+    git(['init', '--quiet']);
+    git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'parent']);
+    git(['add', 'src/clean.ts']);
+    git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'source']);
+    const sourceCommit = git(['rev-parse', 'HEAD']);
+    const files = verifierSourceFiles(selectedRoot, { gitMetadataPaths: ['.git'] });
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit,
+      testedInputs: [{ path: 'src/clean.ts', sha256: files[0].sha256 }],
+      gitCheckout: verifierGitCheckoutSync(selectedRoot, sourceCommit), files };
+    const receiptPath = join(owned, 'receipt.json');
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    writeFileSync(join(selectedRoot, '.verifier-source.json'), JSON.stringify(receipt));
+    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receiptPath);
+    vi.stubEnv('VERIFY_TAURI_SOURCE_REF', receipt.sourceCommit);
+    return { selectedRoot, receiptPath, receipt, file: join(selectedRoot, 'src/clean.ts') };
+  }
+
+  it('qualifies the real source census and copied directory before admitting without live PG', async () => {
+    const a = archive();
+    const holdings = vi.fn(async (): Promise<RestrictedEditHolding[]> => { throw new Error('live PG forbidden'); });
+    expect(await restrictedHoldBundleRefusal(a.selectedRoot,
+      { files: [a.file], dirs: [join(a.selectedRoot, 'src')] }, { holdings })).toBeNull();
+    expect(holdings).not.toHaveBeenCalled();
+  });
+
+  it('refuses a marker without an independent source receipt', async () => {
+    const a = archive();
+    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', '');
+    const refusal = await restrictedHoldBundleRefusal(a.selectedRoot, { files: [a.file], dirs: [] });
+    expect(refusal).toMatchObject({ error: 'restricted_hold_state_unknown' });
+    expect(refusal?.hint).toContain('missing independent verifier source receipt');
+  });
+
+  it('refuses changed source instead of falling through to an empty census', async () => {
+    const a = archive();
+    writeFileSync(a.file, 'export const planted = true;');
+    const holdings = vi.fn(hold());
+    const refusal = await restrictedHoldBundleRefusal(a.selectedRoot, { files: [a.file], dirs: [] }, { holdings });
+    expect(refusal?.hint).toContain('tampered verification source archive');
+    expect(holdings).not.toHaveBeenCalled();
+  });
+
+  it('refuses an external receipt that differs from the archive marker', async () => {
+    const a = archive();
+    writeFileSync(a.receiptPath, '{}');
+    expect(await restrictedHoldBundleRefusal(a.selectedRoot, { files: [a.file], dirs: [] }))
+      .toMatchObject({ error: 'restricted_hold_state_unknown' });
+  });
+
+  it('refuses a forged matching receipt over working bytes absent from the selected Git commit', async () => {
+    const a = archive();
+    writeFileSync(a.file, 'export const planted = true;');
+    const forged = { ...a.receipt, files: verifierSourceFiles(a.selectedRoot, { gitMetadataPaths: ['.git'] }) };
+    writeFileSync(a.receiptPath, JSON.stringify(forged));
+    writeFileSync(join(a.selectedRoot, '.verifier-source.json'), JSON.stringify(forged));
+    const refusal = await restrictedHoldBundleRefusal(a.selectedRoot, { files: [a.file], dirs: [] });
+    expect(refusal?.hint).toContain('differs from committed source');
+  });
+
+  it.each(['file', 'directory', 'dependency-symlink'] as const)('refuses a %s reaching outside the selected archive', async kind => {
+    const a = archive();
+    let input = a.receiptPath;
+    if (kind === 'directory') input = owned!;
+    if (kind === 'dependency-symlink') {
+      mkdirSync(join(a.selectedRoot, 'node_modules'));
+      input = join(a.selectedRoot, 'node_modules/planted.js');
+      symlinkSync(a.receiptPath, input);
+    }
+    const refusal = await restrictedHoldBundleRefusal(a.selectedRoot,
+      { files: kind === 'directory' ? [] : [input], dirs: kind === 'directory' ? [input] : [] });
+    expect(refusal).toMatchObject({ error: 'restricted_hold_state_unknown' });
+    expect(refusal?.hint).toContain('escapes selected archive');
+  });
+
+  it('keeps the shared-tree live census even when an archive receipt is selected', async () => {
+    archive();
+    const holdings = vi.fn(hold('src/held.ts'));
+    expect(await restrictedHoldBundleRefusal(root, { files: [join(root, 'src/held.ts')], dirs: [] }, { holdings }))
+      .toMatchObject({ error: 'restricted_write_held' });
+    expect(holdings).toHaveBeenCalledOnce();
+  });
+});
+
 describe('restrictedHoldBundleRefusal', () => {
   const abs = (rel: string) => join(root, rel);
 

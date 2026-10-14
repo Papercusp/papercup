@@ -30,8 +30,10 @@
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile, realpath } from 'node:fs/promises';
-import { extname, isAbsolute, join, resolve, sep } from 'node:path';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
+import { readCommittedFiles } from '../plans/committed-tree-reader';
 import {
   listDirtyFilesRecursive,
   readRestrictedEditHoldings,
@@ -246,6 +248,50 @@ export async function restrictedHoldBundleRefusal(
   let held: string[];
   try {
     realRoot = await realpath(root);
+    // The maintained verifier runs independently archived committed source,
+    // with an external receipt and materialized private dependencies. Qualify
+    // that boundary instead of reading the live disclosure DB from a private
+    // integration. A marker or selected receipt is a requirement, never a skip:
+    // tampering and any input that reaches the shared tree fail closed.
+    if (existsSync(join(realRoot, '.verifier-source.json'))) {
+      const source = readVerifierSourceReceiptSync(realRoot);
+      if (!source.gitCheckout) throw new Error('archive bundle requires independently verified Git checkout');
+      const recorded = new Set(source.files.map(file => file.path));
+      const committedPaths = new Set<string>();
+      const visited = new Set<string>();
+      const qualify = async (path: string, directory = false): Promise<void> => {
+        if (!isAbsolute(path)) throw new Error(`archive bundle input is not absolute: ${path}`);
+        const actual = await realpath(path);
+        const rel = relative(realRoot, actual).split(sep).join('/');
+        if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel))
+          throw new Error(`bundle input escapes selected archive: ${path}`);
+        if (directory) {
+          if (visited.has(actual)) return;
+          visited.add(actual);
+          for (const entry of await readdir(actual)) {
+            const child = join(actual, entry);
+            await qualify(child, (await stat(child)).isDirectory());
+          }
+        } else if (!recorded.has(rel) && !rel.startsWith('node_modules/') && !rel.includes('/node_modules/')) {
+          throw new Error(`bundle input is outside recorded source: ${path}`);
+        } else if (recorded.has(rel)) committedPaths.add(rel);
+      };
+      for (const file of inputs.files) await qualify(file);
+      for (const dir of inputs.dirs) await qualify(dir, true);
+      // A supplied receipt is an assertion, not committed origin. Reuse the
+      // batched Git-object reader for every executed/copied source input. A
+      // forged marker over held working bytes cannot become an admission.
+      const paths = [...committedPaths];
+      const byPath = new Map(source.files.map(file => [file.path, file]));
+      for (let start = 0; start < paths.length; start += 256) {
+        const committed = await readCommittedFiles(realRoot, source.sourceCommit, paths.slice(start, start + 256));
+        for (const [path, file] of committed) {
+          if (!file || file.sha256 !== byPath.get(path)?.sha256)
+            throw new Error(`bundle input differs from committed source: ${path}`);
+        }
+      }
+      return null;
+    }
     held = await heldPathsUnder(realRoot, await (deps.holdings ?? restrictedHoldingsFor)(realRoot));
   } catch (error) {
     return {

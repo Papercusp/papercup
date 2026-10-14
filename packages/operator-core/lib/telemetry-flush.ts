@@ -29,6 +29,24 @@ import { getPosthogConfigWithSource } from './posthog-config';
 import { POSTHOG_PUBLIC_DEFAULTS } from './posthog-public-defaults';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { deliverCloudTelemetry, type CloudTelemetryContext } from './record-telemetry';
+
+/** Strict cloud delivery shares the maintained PostHog configuration and batch
+ * transport. Unlike local crash archives it never has an internal-build bypass
+ * or a backlog: every delivery rechecks the customer's current scoped choice. */
+export function deliverCloudPosthog(input: unknown, context: CloudTelemetryContext, readConsent: () => Promise<unknown>) {
+  return deliverCloudTelemetry(input, context, { readConsent, send: async envelope => {
+    const configured = getPosthogConfigWithSource().config;
+    const config = configured ?? POSTHOG_PUBLIC_DEFAULTS;
+    const response = await fetch(`${config.host.replace(/\/+$/, '')}/batch/`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ api_key: config.projectKey, batch: [{ ...envelope,
+        properties: { ...envelope.properties, $insert_id: envelope.properties.operation_id } }] }),
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok) throw new Error('cloud_telemetry_delivery_rejected');
+  } });
+}
 
 interface BufferedReport {
   received_at: string;

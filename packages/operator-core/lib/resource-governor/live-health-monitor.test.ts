@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import type { ResourceProfile } from '@papercusp/resource-profile';
 import {
@@ -78,6 +79,62 @@ function historySnapshot(sequence: number): LiveHealthSnapshot {
 }
 
 describe('compact storage interval history', () => {
+  it.each([[true, true], [true, false], [false, true]])(
+    'records future sample custody and preserves it in both codecs (%s, %s)', async (before, after) => {
+      const root = await mkdtemp(join(tmpdir(), 'papercusp-source-custody-'));
+      const pin = { pid: process.pid, processIdentity: 'fixture-process', entry: '/fixture/entry.mjs',
+        entryStat: 'fixture-stat', sha256: 'a'.repeat(64) };
+      const capture = vi.fn(() => pin);
+      const current = vi.fn().mockReturnValueOnce(before).mockReturnValueOnce(after);
+      const storage = await collectLiveHealthStorage(['/'], () => 2_000, {
+        filesystem: async () => ({ dev: 1, totalBytes: 100, availableBytes: 90, totalInodes: 100, freeInodes: 90 }),
+        reservations: () => ({ state: 'measured', deviceKey: 'dev-1', reservedBytes: 0, knownReservedBytes: 0, issues: [] }),
+      });
+      const monitor = new LiveHealthMonitor({ paths: { rootDir: root, fragmentsDir: join(root, 'fragments'),
+        snapshotPath: join(root, 'live-health.json') }, now: () => 2_000,
+        collectHost: async () => counters({ storage }), readFragments: async () => [], sourceWitness: { capture, current } });
+      try {
+        const actual = await monitor.sampleOnce();
+        expect(capture).toHaveBeenCalledExactlyOnceWith(process.pid);
+        expect(actual.sourceCustody).toEqual({ kind: 'node-entry-sha256', nativePid: process.pid,
+          processIdentity: pin.processIdentity, sha256: pin.sha256, sampleStartedAtMs: 2_000, sampleCompletedAtMs: 2_000,
+          stableDuringSample: before && after });
+        const full = decodeLiveHealthHistorySnapshot((await readFile(join(root, 'live-health-history.jsonl'), 'utf8')).trim().split('\n'))!;
+        const compact = decodeLiveHealthStorageHistorySample((await readFile(join(root, 'live-health-storage-history.jsonl'), 'utf8')).trim().split('\n'))!;
+        expect(full.sourceCustody).toEqual(actual.sourceCustody);
+        expect(compact.sourceCustody).toEqual(actual.sourceCustody);
+        expect(decodeLiveHealthHistorySnapshot([JSON.stringify({ ...full,
+          writers: { ...full.writers, [monitor.writer.id]: { ...monitor.writer, pid: process.pid + 1 } } })])).toBeNull();
+        for (const corrupt of [{ sha256: 'bad' }, { nativePid: process.pid + 1 }, { sampleStartedAtMs: 1_999 },
+          { sampleCompletedAtMs: 1_999 }, { stableDuringSample: 'true' }]) {
+          const custody = { ...actual.sourceCustody, ...corrupt };
+          expect(decodeLiveHealthStorageHistorySample([JSON.stringify({ ...compact, sourceCustody: custody })])).toBeNull();
+          expect(decodeLiveHealthHistorySnapshot([JSON.stringify({ ...full, sourceCustody: custody })])).toBeNull();
+        }
+        const { sourceCustody: omitted, ...legacy } = compact;
+        expect(omitted).toBeDefined();
+        expect(decodeLiveHealthStorageHistorySample([JSON.stringify(legacy)]))
+          .not.toHaveProperty('sourceCustody');
+        current.mockReturnValue(true);
+        await monitor.sampleOnce();
+        expect(capture).toHaveBeenCalledTimes(1);
+      } finally { await monitor.stop(); await rm(root, { recursive: true, force: true }); }
+    });
+
+  it('keeps unsupported source custody explicitly unknown instead of hashing today’s checkout', async () => {
+    const capture = vi.fn(() => null);
+    const current = vi.fn(() => true);
+    const monitor = new LiveHealthMonitor({ paths: PATHS, now: () => 2_000,
+      collectHost: async () => counters(), readFragments: async () => [], writeSnapshot: async () => {},
+      writeHistory: async () => {}, sourceWitness: { capture, current } });
+    try {
+      expect((await monitor.sampleOnce()).sourceCustody).toBeNull();
+      expect((await monitor.sampleOnce()).sourceCustody).toBeNull();
+      expect(capture).toHaveBeenCalledTimes(1);
+      expect(current).not.toHaveBeenCalled();
+    } finally { await monitor.stop(); }
+  });
+
   it.each([false, true])('preserves full producer history when compact storage persistence fails: %s', async (failCompact) => {
     const root = await mkdtemp(join(tmpdir(), 'papercusp-storage-producer-'));
     try {
@@ -313,6 +370,73 @@ describe('live-health host parsers', () => {
 });
 
 describe('LiveHealthMonitor composition', () => {
+  it.each([false, true])('diagnoses slow archival success/failure and separates subsequent idle delay: %s', async (failHistory) => {
+    let tick = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => tick);
+    const log = vi.fn();
+    const monitor = new LiveHealthMonitor({ paths: PATHS, now: () => 2_000 + tick,
+      collectHost: async () => { tick += 40; return counters(); },
+      readFragments: async () => { tick += 60; return []; },
+      writeSnapshot: async () => { tick += 100; },
+      writeHistory: async () => { tick += 16_000; if (failHistory) throw new Error('archive unavailable'); }, log });
+    try {
+      await monitor.sampleOnce();
+      const slow = log.mock.calls.find(([line]) => line.startsWith('[resource-governor-health] sample exceeded freshness: '))![0];
+      expect(JSON.parse(slow.slice(slow.indexOf('{')))).toEqual({
+        sequence: 1, outcome: 'complete', sampleMs: 16_200,
+        phases: { collectHost: 40, readFragments: 60, compose: 0, writeSnapshot: 100, historyYield: 0, history: 16_000 },
+      });
+      expect(log.mock.calls.some(([line]) => line.includes('history write failed: archive unavailable'))).toBe(failHistory);
+      tick += 1_200;
+      await monitor.sampleOnce();
+      const gap = log.mock.calls.find(([line]) => line.startsWith('[resource-governor-health] sample gap exceeded freshness: '))![0];
+      expect(JSON.parse(gap.slice(gap.indexOf('{')))).toMatchObject({
+        gapMs: 17_400, previousSampleMs: 16_200, sinceCompletionMs: 1_200,
+        previousPhases: { history: 16_000 },
+      });
+    } finally { await monitor.stop(); clock.mockRestore(); }
+  });
+
+  it('detects an idle cadence gap after a fast sample without blaming archival work', async () => {
+    let tick = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => tick);
+    const log = vi.fn();
+    const monitor = new LiveHealthMonitor({ paths: PATHS, now: () => 2_000 + tick,
+      collectHost: async () => counters(), readFragments: async () => [],
+      writeSnapshot: async () => { tick += 100; }, writeHistory: async () => { tick += 100; }, log });
+    try {
+      await monitor.sampleOnce();
+      expect(log).not.toHaveBeenCalled();
+      tick += 20_000;
+      await monitor.sampleOnce();
+      expect(log).toHaveBeenCalledTimes(1);
+      const line = log.mock.calls[0]![0];
+      expect(line).toContain('sample gap exceeded freshness: ');
+      expect(JSON.parse(line.slice(line.indexOf('{')))).toMatchObject({
+        gapMs: 20_200, previousSampleMs: 200, sinceCompletionMs: 20_000,
+        previousPhases: { history: 100, writeSnapshot: 100 },
+      });
+    } finally { await monitor.stop(); clock.mockRestore(); }
+  });
+
+  it('records the slow failing phase without reporting unexecuted history', async () => {
+    let tick = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => tick);
+    const log = vi.fn();
+    const writeHistory = vi.fn(async () => {});
+    const monitor = new LiveHealthMonitor({ paths: PATHS, now: () => 2_000 + tick,
+      collectHost: async () => counters(), readFragments: async () => [],
+      writeSnapshot: async () => { tick += 16_000; throw new Error('snapshot unavailable'); }, writeHistory, log });
+    try {
+      await expect(monitor.sampleOnce()).rejects.toThrow('snapshot unavailable');
+      expect(writeHistory).not.toHaveBeenCalled();
+      const line = log.mock.calls[0]![0];
+      const diagnostic = JSON.parse(line.slice(line.indexOf('{')));
+      expect(diagnostic).toMatchObject({ outcome: 'failed', sampleMs: 16_000, phases: { writeSnapshot: 16_000 } });
+      expect(diagnostic.phases).not.toHaveProperty('history');
+    } finally { await monitor.stop(); clock.mockRestore(); }
+  });
+
   it.each([false, true])('publishes readiness before stalled history and coalesces ticks until persistence settles: %s', async (failHistory) => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     let settleHistory!: () => void;

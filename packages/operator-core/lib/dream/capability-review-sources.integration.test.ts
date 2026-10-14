@@ -122,8 +122,10 @@ describe('native P024 current existing-integration source priors beyond the cata
       expect(finalReviewCalls).toBe(1);
       expect(result, result.note).toMatchObject({ verdict: 'reject', reason: disposition,
         usage: { costUsd: 0 }, coverage: { globalNovelty: 'not-established' } });
-      expect(result.priorMatches).toContainEqual(expect.objectContaining({ ref: 'code-source:existing.ts',
-        sourceHash: capabilityHash(existing), contentHash: capabilityHash(existing) }));
+      const prior = result.priorMatches.find(prior => prior.ref === 'code-source:existing.ts')!;
+      expect(prior.sourceHash).toBe(capabilityHash(existing));
+      expect(prior.contentHash).toBe(capabilityHash(prior.text));
+      expect(JSON.parse(prior.text).source).toBe(existing);
     }, 60_000,
   );
   it('rejects a persisted candidate path that traverses into or symlinks to an unauthorized repository', async () => {

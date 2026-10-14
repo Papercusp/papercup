@@ -3935,18 +3935,24 @@ test('[B-GW-1 AIMD] an UN-ROUTABLE pool-wide CONGESTION 429 (no healthy account)
   );
   const r = await post({ model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'x' }] });
   const status = r.status;
-  await r.text();
+  const shouldRetry = r.headers.get('x-should-retry');
+  const exhaustedAttempts = r.headers.get('x-papercusp-retries-exhausted');
+  const body = await r.text();
   const s = (await (await ask('/stats')).json()) as {
     admission: { maxConcurrent: number };
     aimd: { effective: number; floor: number; decreases: number };
   };
-  // The request fails: no account could take it. (Which terminal status the retry-deadline path returns —
-  // measured 502 here although its log says "shed 429" — is tracked separately; this test pins the WINDOW.)
-  assert.notEqual(
+  // WI-6554700010011504: no account could take it, so the wedge-prevention ladder SHEDS — the Claude
+  // lane's terminal throttle (429 + x-should-retry=false + the attempt count), never a 502 "upstream
+  // stall" (measured: the spent budget used to be clamped to a 1ms TTFB attempt).
+  assert.equal(
     status,
-    200,
-    `pool exhausted → the request fails after rotation (got ${status}; aimd decreases=${s.aimd.decreases} effective=${s.aimd.effective})`,
+    429,
+    `pool exhausted → shed 429 (got ${status}; aimd decreases=${s.aimd.decreases} effective=${s.aimd.effective}; body ${body.slice(0, 400)})`,
   );
+  assert.equal(shouldRetry, 'false', `the terminal shed stops SDK retry loops (got ${shouldRetry})`);
+  assert.ok(Number(exhaustedAttempts) >= 1, `the shed names its attempt count (got ${exhaustedAttempts})`);
+  assert.doesNotMatch(body, /stall|TTFB/i, 'the lane deadline is not reported as an upstream stall');
   assert.equal(s.aimd.decreases, 1, `one un-routable congestion request = exactly one decrease (got ${s.aimd.decreases})`);
   assert.ok(
     s.aimd.effective < 16 && s.aimd.effective >= 12,
