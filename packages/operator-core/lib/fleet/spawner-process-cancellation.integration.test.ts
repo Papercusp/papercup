@@ -61,7 +61,7 @@ beforeEach(async () => {
   vi.stubEnv('PAPERCUSP_SPAWNER_IPC_SOCKET', join(dir, 'server.sock'));
   clients = [];
   const previousSignalHandlers = new Set(process.listeners('SIGTERM'));
-  server = runSpawnerSidecarServer();
+  server = runSpawnerSidecarServer({ slowExecMs: 40 });
   shutdown = process.listeners('SIGTERM').find((handler) => !previousSignalHandlers.has(handler)) as () => void;
   await once(server, 'listening');
 });
@@ -118,6 +118,70 @@ async function executionFence(client: SpawnerIpcClient) {
 }
 
 describe('cancellable caller with real IPC and child processes', () => {
+  it.each(['admission', 'settlement'] as const)('distinguishes a stalled %s from child execution without logging the payload', async (phase) => {
+    const events = vi.spyOn(console, 'info').mockImplementation(() => {});
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    if (phase === 'admission') h.begin.mockImplementationOnce(async () => { await barrier; return receipt(); });
+    else h.finished.mockImplementationOnce(async () => { await barrier; return true; });
+    const client = recoveryClient();
+    let requestId = 0;
+    let clientConnectionId = '';
+    let settled = false;
+    const secret = 'test-only-never-log-command-arguments-or-environment';
+    const result = client.call<{ code: number; stdout: string }>('process:exec', {
+      command: process.execPath, args: ['-e', `process.stdout.write(${JSON.stringify(secret)})`],
+      env: { PC_TEST_SECRET: secret }, cwd: dir, timeoutMs: 2000,
+      callerLabel: PROCESS_EXEC_CALLER_LABELS.command,
+    }, { onRequestId: (id, connection) => { requestId = id; clientConnectionId = connection; } });
+    void result.then(() => { settled = true; }, () => {});
+    const stage = phase === 'admission' ? 'admission-start' : 'settlement-start';
+    const matching = () => events.mock.calls.filter(([tag, details]) =>
+      tag === '[spawner-process-exec-stage]' &&
+      (details as { clientConnectionId?: string; stage?: string }).clientConnectionId === clientConnectionId &&
+      (details as { stage?: string }).stage === stage);
+    try {
+      await vi.waitFor(() => expect(matching().length).toBeGreaterThan(0));
+      const details = matching()[0]![1] as Record<string, unknown>;
+      const fence = await executionFence(client);
+      expect(details).toMatchObject({
+        serverGeneration: fence.serverGeneration, connectionId: fence.connectionId,
+        clientConnectionId, requestId, callerLabel: PROCESS_EXEC_CALLER_LABELS.command,
+        stage, elapsedMs: expect.any(Number),
+      });
+      const stages = details.stageMs as Record<string, number>;
+      if (phase === 'admission') {
+        expect(details.childPid).toBeNull();
+        expect(stages).not.toHaveProperty('child-spawn');
+        expect(stages).not.toHaveProperty('child-close');
+      } else {
+        expect(details.childPid).toBeGreaterThan(0);
+        expect(stages).toHaveProperty('child-close');
+        expect(stages).toHaveProperty('group-exit-confirmed');
+        expect(stages).not.toHaveProperty('settlement-complete');
+        expect(alive(details.childPid as number)).toBe(false);
+      }
+      expect(settled).toBe(false);
+      expect(JSON.stringify(details)).not.toContain(secret);
+      expect(JSON.stringify(details)).not.toContain(dir);
+      expect(details).not.toHaveProperty('command');
+      expect(details).not.toHaveProperty('env');
+    } finally {
+      release();
+      expect(await result).toMatchObject({ code: 0, stdout: secret });
+    }
+    await vi.waitFor(() => expect(events.mock.calls.some(([tag, details]) =>
+      tag === '[spawner-process-exec-stage]' &&
+      (details as { clientConnectionId?: string; event?: string }).clientConnectionId === clientConnectionId &&
+      (details as { event?: string }).event === 'request-settled')).toBe(true));
+    const completed = events.mock.calls.find(([tag, details]) =>
+      tag === '[spawner-process-exec-stage]' &&
+      (details as { clientConnectionId?: string; event?: string }).clientConnectionId === clientConnectionId &&
+      (details as { event?: string }).event === 'request-settled')![1] as { stageMs: Record<string, number> };
+    expect(completed.stageMs).toHaveProperty('settlement-complete');
+    expect(completed.stageMs).toHaveProperty('exec-complete');
+  });
+
   it('drains a lost reply without replaying a file mutation or killing a shared sibling', async () => {
     // Kernel recovery is exercised separately against real Linux scopes in
     // sidecar-exec-lifetime.integration.test.ts. This in-process server models

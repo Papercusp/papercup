@@ -87,7 +87,7 @@ export interface ReviewerRelaunchGuardInput {
   retainedOwnerId: string | null | undefined;
 }
 
-function sqlDeps(sql: Sql): ReviewerRelaunchGuardDeps {
+export function reviewerRelaunchSqlDeps(sql: Sql): ReviewerRelaunchGuardDeps {
   return {
     async reviewerReservations(ownerId, workspaceId) {
       const rows = await sql<Array<{ feature_id: string; plan_slug: string | null }>>`
@@ -134,7 +134,7 @@ function sqlDeps(sql: Sql): ReviewerRelaunchGuardDeps {
  */
 export async function findReviewerRelaunchConflict(
   input: ReviewerRelaunchGuardInput,
-  deps: ReviewerRelaunchGuardDeps = sqlDeps(getOrgPg().sql),
+  deps: ReviewerRelaunchGuardDeps = reviewerRelaunchSqlDeps(getOrgPg().sql),
 ): Promise<ReviewerRelaunchConflict | null> {
   const launcher = input.launcherOwnerId?.trim() ?? '';
   const reviewer = input.retainedOwnerId?.trim() ?? '';

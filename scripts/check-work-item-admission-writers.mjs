@@ -202,6 +202,10 @@ function trackedFiles() {
     files: files
       .filter((p) => /\.tsx?$/.test(p))
       .filter((p) => !p.includes('/_retired/') && !p.includes('/node_modules/'))
+      // Test support modules are tracked TypeScript too, but they seed private
+      // fixtures and are not production filing paths. Keep the CLI and its measured
+      // population free of these intentional test-only writers.
+      .filter((p) => !/(^|\/)(?:test|tests|__tests__)\//.test(p))
       .filter((p) => !/\.(test|spec)\.tsx?$/.test(p)),
     unscanned,
   };
