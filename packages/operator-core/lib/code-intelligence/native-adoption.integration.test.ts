@@ -127,6 +127,20 @@ describe('measureNativeAdoptionWindow → ratings (R-30 / R-31)', () => {
     expect(rateNativeAdoption(metrics, { ...target, minAgentAdoptionRate: 0.6 }).goodUse.verdict).toBe('fail');
   });
 
+  it('reports observability limits on every real-ledger measurement, including an empty window', async () => {
+    for (const window of [
+      { workspaceId: WS, windowStart: START, windowEnd: END },
+      { workspaceId: `${WS}-no-activity`, windowStart: START, windowEnd: END },
+    ]) {
+      const metrics = await measureNativeAdoptionWindow(window, db!.adminSql);
+      expect(metrics.cannotObserve.length).toBeGreaterThan(0);
+      expect(metrics.cannotObserve).toEqual(expect.arrayContaining([
+        expect.stringContaining('agent_activity'),
+        expect.stringContaining('Follow-through'),
+      ]));
+    }
+  });
+
   it('resolves platform-computed scorecard snapshots for both criteria through the real seam', async () => {
     const rubric = {
       ref: 'acceptance-native-adoption-test',
