@@ -70,6 +70,7 @@ import {
 } from "./lib/vitest-summary.mjs";
 import {
   RELATED_FILTER_LIST_ENV,
+  prepareRelatedTestSelection,
   selectRelatedTests,
   playwrightOwnedTest,
   tsconfigPathEntriesFor,
@@ -5372,17 +5373,16 @@ async function resolveExecutedMapContext() {
     judgedSha,
     changedBetween: gitChangedBetween({ repoRoot: ROOT }),
     client,
-    maps: new Map(),
   };
 }
 
-async function executedMapFor(ctx, wsName) {
+async function executedMapFor(ctx, wsName, files) {
   if (!ctx.enabled) return { map: null, rows: 0, error: null };
-  if (ctx.maps.has(wsName)) return ctx.maps.get(wsName);
+  if (!files.length) return { map: new Map(), rows: 0, error: null };
   let out;
   try {
     out = await Promise.race([
-      loadExecutedSourceMap({ client: ctx.client, workspaceName: wsName, repoRoot: ROOT }),
+      loadExecutedSourceMap({ client: ctx.client, workspaceName: wsName, repoRoot: ROOT, files }),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("executed-map read timed out")), 15_000).unref(),
       ),
@@ -5391,7 +5391,6 @@ async function executedMapFor(ctx, wsName) {
   } catch (err) {
     out = { map: null, rows: 0, error: String((err && err.message) || err).replace(/\s+/g, " ") };
   }
-  ctx.maps.set(wsName, out);
   return out;
 }
 
@@ -5421,13 +5420,28 @@ if (relatedOnly) {
 
     if (!byWorkspace.has(t.ws.name)) {
       const wsRoot = join(ROOT, t.ws.dir);
-      const executedMap = await executedMapFor(executedMapContext, t.ws.name);
       let result;
+      let executedMap = { map: null, rows: 0, error: null };
       try {
+        const aliases = tsconfigPathEntriesFor(wsRoot);
+        const prepared = prepareRelatedTestSelection({
+          rootDir: wsRoot,
+          changedPaths: changedAbs,
+          aliases,
+        });
+        const candidates = prepared.selection.mode === "related"
+          ? [...prepared.selection.selected].sort()
+          : [];
+        executedMap = await executedMapFor(
+          executedMapContext,
+          t.ws.name,
+          candidates.map((file) => relative(ROOT, file)),
+        );
         result = selectRelatedTests({
           rootDir: wsRoot,
           changedPaths: changedAbs,
-          aliases: tsconfigPathEntriesFor(wsRoot),
+          aliases,
+          prepared,
           executedMap: executedMap.map,
           judgedSha: executedMapContext.judgedSha,
           changedBetween: executedMapContext.changedBetween,
