@@ -101,12 +101,12 @@ beforeEach(async () => {
   );
 });
 
-async function auditEvent(minutesAgo: number, action = 'organization.member.invited', metadata: Record<string, unknown> = { role: 'admin' }) {
+async function auditEvent(minutesAgo: number, action = 'organization.member.invited', metadata: Record<string, unknown> = { role: 'admin' }, organizationId = ORG) {
   const at = new Date(clock.getTime() - minutesAgo * 60_000);
   await sql`
     INSERT INTO papercusp_auth.organization_audit_events
       (organization_id, actor_kind, actor_id, action, purpose, target_type, target_id, metadata, occurred_at, recorded_at)
-    VALUES (${ORG}, 'customer_user', ${`user-${minutesAgo}`}, ${action}, 'support', 'organization', ${ORG},
+    VALUES (${organizationId}, 'customer_user', ${`user-${minutesAgo}`}, ${action}, 'support', 'organization', ${organizationId},
             ${sql.json(metadata as postgres.JSONValue)}, ${at}, ${at})`;
 }
 
@@ -209,5 +209,37 @@ describe('org-audit SIEM delivery', () => {
       siemExportAck({ ...op({ principal: 'su-agent-1' }), idempotencyKey: 'a'.repeat(64), cursorTo: 'x' }),
     ).rejects.toBeInstanceOf(SiemExportAccessError);
     expect((await loadSiemStream(sql, stream)).persisted).toBe(false);
+  });
+
+  it('isolates restricted login, membership, credential, workspace and billing records by organization authority', async () => {
+    const otherOrganization = '44444444-4444-4444-8444-444444444444';
+    const otherStream: SiemStreamRef = { kind: 'org-audit', organizationId: otherOrganization };
+    await upsertLayer({ layerId: 'org-beta', level: 'organization', scopeRef: otherOrganization,
+      parentLayerId: null, rules: {}, exceptions: [], actor: 'admin:beta-root', reason: 'tenant isolation fixture' }, sql);
+    await recordBootstrapDelegation(sql, { principal: 'admin:beta-root', layerId: 'org-beta', now: clock });
+    const actions = ['login.success', 'membership.reduce', 'credential.rotate', 'workspace.created', 'billing.invoice.paid'];
+    for (const [index, action] of actions.entries()) {
+      await auditEvent(120 + index, action, { outcome: 'succeeded' });
+      await auditEvent(120 + index, `foreign.${action}`, { outcome: 'succeeded' }, otherOrganization);
+    }
+
+    for (const principal of ['su-agent-1', 'admin:bob']) {
+      await expect(siemExportNext(op({ principal }))).rejects.toBeInstanceOf(SiemExportAccessError);
+    }
+    await expect(siemExportNext(op({ stream: otherStream }))).rejects.toBeInstanceOf(SiemExportAccessError);
+    expect((await loadSiemStream(sql, otherStream)).persisted).toBe(false);
+
+    const own = await siemExportNext(op({ limit: 20 }));
+    expect(own.manifest.length).toBe(actions.length);
+    expect(verifySiemBatchJsonl(own.jsonl).ok).toBe(true);
+    for (const action of actions) expect(own.jsonl).toContain(`"${action}"`);
+    expect(own.jsonl).not.toContain('foreign.');
+    expect(own.jsonl).not.toContain(otherOrganization);
+
+    const other = await siemExportNext(op({ principal: 'admin:beta-root', stream: otherStream, limit: 20 }));
+    expect(other.manifest.length).toBe(actions.length);
+    expect(verifySiemBatchJsonl(other.jsonl).ok).toBe(true);
+    for (const action of actions) expect(other.jsonl).toContain(`"foreign.${action}"`);
+    expect(other.jsonl).not.toContain(ORG);
   });
 });

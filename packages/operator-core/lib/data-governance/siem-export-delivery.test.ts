@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
-import { SIEM_MIN_KEY_BYTES, siemStreamId } from './siem-export';
-import { orgAuditStreamId } from './siem-export-org-audit';
+import { SIEM_MIN_KEY_BYTES, SiemExportAccessError, siemStreamId } from './siem-export';
+import { assertOrgAuditExportAuthorized, orgAuditStreamId } from './siem-export-org-audit';
 import {
   SIEM_EXPORT_KEY_REF_ENV,
   SiemExportError,
@@ -91,5 +91,15 @@ describe('siemExportAck input validation — refused before authorization or any
     expect(await codeOf(siemExportAck({ principal: 'admin:x', stream, idempotencyKey: 'a'.repeat(64), cursorTo: '  ', sql: NO_SQL }))).toBe(
       'bad_request',
     );
+  });
+});
+
+describe('restricted organization audit authorization', () => {
+  it('refuses non-human readers before looking up an organization or its audit records', async () => {
+    for (const principal of ['su-agent-1', 'pot:customer-worker', '']) {
+      await expect(assertOrgAuditExportAuthorized(
+        principal, '33333333-3333-4333-8333-333333333333', { sql: NO_SQL },
+      )).rejects.toBeInstanceOf(SiemExportAccessError);
+    }
   });
 });
