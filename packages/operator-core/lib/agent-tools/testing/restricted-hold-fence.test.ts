@@ -154,6 +154,40 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
     expect(holdings).not.toHaveBeenCalled();
   });
 
+  it('retains ordered phase boundaries for an admitted archive and localizes a forged receipt refusal', async () => {
+    const a = archive();
+    const records: Array<{ step: string; event: string; status?: number; error?: string }> = [];
+    const progress = (record: typeof records[number]) => { records.push(record); };
+    const inputs = { files: [a.file], dirs: [] };
+    expect(await restrictedHoldBundleRefusal(a.selectedRoot, inputs, { progress })).toBeNull();
+    expect(records).toEqual(['source-receipt', 'input-containment', 'git-origin'].flatMap(name => [
+      { step: `restricted-hold-${name}`, event: 'start' },
+      { step: `restricted-hold-${name}`, event: 'end', status: 0 },
+    ]));
+    records.length = 0;
+    writeFileSync(a.file, 'export const planted = true;');
+    const forged = { ...a.receipt, files: verifierSourceFiles(a.selectedRoot, { gitMetadataPaths: ['.git'] }) };
+    writeFileSync(a.receiptPath, JSON.stringify(forged));
+    writeFileSync(join(a.selectedRoot, '.verifier-source.json'), JSON.stringify(forged));
+    expect(await restrictedHoldBundleRefusal(a.selectedRoot, inputs, { progress }))
+      .toMatchObject({ error: 'restricted_hold_state_unknown' });
+    expect(records.at(-1)).toMatchObject({ step: 'restricted-hold-git-origin', event: 'end', status: 3,
+      error: expect.stringContaining('differs from committed source') });
+  });
+
+  it('records receipt failure before either input traversal or Git origin begins', async () => {
+    const a = archive();
+    writeFileSync(a.file, 'export const planted = true;');
+    const progress = vi.fn();
+    expect(await restrictedHoldBundleRefusal(a.selectedRoot, { files: [a.file], dirs: [] }, { progress }))
+      .toMatchObject({ error: 'restricted_hold_state_unknown' });
+    expect(progress.mock.calls.map(([record]) => record)).toEqual([
+      { step: 'restricted-hold-source-receipt', event: 'start' },
+      { step: 'restricted-hold-source-receipt', event: 'end', status: 3,
+        error: expect.stringContaining('tampered verification source archive') },
+    ]);
+  });
+
   it('refuses a marker without an independent source receipt', async () => {
     const a = archive();
     vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', '');

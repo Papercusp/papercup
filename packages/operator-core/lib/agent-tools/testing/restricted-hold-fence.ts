@@ -34,6 +34,7 @@ import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
 import { readCommittedFiles } from '../plans/committed-tree-reader';
+import type { BundleHoldProgress } from '../../../../../scripts/lib/restricted-hold-preflight.mjs';
 import {
   listDirtyFilesRecursive,
   readRestrictedEditHoldings,
@@ -241,11 +242,23 @@ export interface BundleInputs {
 export async function restrictedHoldBundleRefusal(
   root: string,
   inputs: BundleInputs,
-  deps: Pick<RestrictedHoldFenceDeps, 'holdings'> = {},
+  deps: Pick<RestrictedHoldFenceDeps, 'holdings'> & { progress?: (record: BundleHoldProgress) => void } = {},
 ): Promise<RestrictedHoldRefusal | null> {
   if (!existsSync(root)) return null;
   let realRoot: string;
   let held: string[];
+  const phase = async <T>(name: string, action: () => T | Promise<T>): Promise<T> => {
+    const step = `restricted-hold-${name}`;
+    deps.progress?.({ step, event: 'start' });
+    try {
+      const value = await action();
+      deps.progress?.({ step, event: 'end', status: 0 });
+      return value;
+    } catch (error) {
+      deps.progress?.({ step, event: 'end', status: 3, error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  };
   try {
     realRoot = await realpath(root);
     // The maintained verifier runs independently archived committed source,
@@ -254,8 +267,11 @@ export async function restrictedHoldBundleRefusal(
     // integration. A marker or selected receipt is a requirement, never a skip:
     // tampering and any input that reaches the shared tree fail closed.
     if (existsSync(join(realRoot, '.verifier-source.json'))) {
-      const source = readVerifierSourceReceiptSync(realRoot);
-      if (!source.gitCheckout) throw new Error('archive bundle requires independently verified Git checkout');
+      const source = await phase('source-receipt', () => {
+        const receipt = readVerifierSourceReceiptSync(realRoot);
+        if (!receipt.gitCheckout) throw new Error('archive bundle requires independently verified Git checkout');
+        return receipt;
+      });
       const recorded = new Set(source.files.map(file => file.path));
       const committedPaths = new Set<string>();
       const visited = new Set<string>();
@@ -276,23 +292,27 @@ export async function restrictedHoldBundleRefusal(
           throw new Error(`bundle input is outside recorded source: ${path}`);
         } else if (recorded.has(rel)) committedPaths.add(rel);
       };
-      for (const file of inputs.files) await qualify(file);
-      for (const dir of inputs.dirs) await qualify(dir, true);
+      await phase('input-containment', async () => {
+        for (const file of inputs.files) await qualify(file);
+        for (const dir of inputs.dirs) await qualify(dir, true);
+      });
       // A supplied receipt is an assertion, not committed origin. Reuse the
       // batched Git-object reader for every executed/copied source input. A
       // forged marker over held working bytes cannot become an admission.
       const paths = [...committedPaths];
       const byPath = new Map(source.files.map(file => [file.path, file]));
-      for (let start = 0; start < paths.length; start += 256) {
-        const committed = await readCommittedFiles(realRoot, source.sourceCommit, paths.slice(start, start + 256));
-        for (const [path, file] of committed) {
-          if (!file || file.sha256 !== byPath.get(path)?.sha256)
-            throw new Error(`bundle input differs from committed source: ${path}`);
+      await phase('git-origin', async () => {
+        for (let start = 0; start < paths.length; start += 256) {
+          const committed = await readCommittedFiles(realRoot, source.sourceCommit, paths.slice(start, start + 256));
+          for (const [path, file] of committed) {
+            if (!file || file.sha256 !== byPath.get(path)?.sha256)
+              throw new Error(`bundle input differs from committed source: ${path}`);
+          }
         }
-      }
+      });
       return null;
     }
-    held = await heldPathsUnder(realRoot, await (deps.holdings ?? restrictedHoldingsFor)(realRoot));
+    held = await phase('live-census', async () => heldPathsUnder(realRoot, await (deps.holdings ?? restrictedHoldingsFor)(realRoot)));
   } catch (error) {
     return {
       error: 'restricted_hold_state_unknown',
