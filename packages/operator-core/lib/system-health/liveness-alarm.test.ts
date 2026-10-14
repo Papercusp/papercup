@@ -54,7 +54,15 @@ function mkHealth(over: {
   // WI-6554700010008585: a default fixture is a current-build tick that OBSERVED healthy DNS. Without a
   // dns reading the infra panel has not observed resolution, so dns-resolution-failing is unobservable.
   const defaults: Partial<Record<PanelKey, Partial<HealthPanel<unknown>>>> = {
-    infra: { data: { dns: { ok: true, allFailed: false, probeMs: 5, names: [{ name: 'api.github.com', ok: true, ms: 5 }] } } },
+    infra: { data: {
+      dns: { ok: true, allFailed: false, probeMs: 5, names: [{ name: 'api.github.com', ok: true, ms: 5 }] },
+      hostedControlPlane: {
+        observedAt: over.evaluatedAt ?? 1_000_000, windowMs: 3_600_000,
+        lifecycle: null, api: null,
+        hosts: { expectedRunning: 0, unhealthy: 0, unobserved: 0, platformOwnedRunning: 0 },
+        providerConnections: { connected: 0, degraded: 0 },
+      },
+    } },
   };
   for (const k of PANEL_KEYS) panels[k] = panel(k, over.panels?.[k] ?? defaults[k] ?? {});
   return {
@@ -65,6 +73,48 @@ function mkHealth(over: {
     panels: panels as unknown as SystemHealth['panels'],
   };
 }
+
+describe('hosted control-plane alarm through the existing liveness engine', () => {
+  const hosted = (unhealthy: number, degraded = 0) => ({
+    observedAt: 1_000_000, windowMs: 3_600_000, lifecycle: null, api: null,
+    hosts: { expectedRunning: 2, unhealthy, unobserved: 0, platformOwnedRunning: 1 },
+    providerConnections: { connected: 1, degraded },
+  });
+  const health = (value: ReturnType<typeof hosted> | null) => mkHealth({
+    panels: { infra: { data: { hostedControlPlane: value } } },
+  });
+  it('names one stable alarm and responder, and witnesses recovery without the analytics sink', () => {
+    const failed = health(hosted(1));
+    const first = evaluateLivenessAlarm(failed, null).filter(s => s.key === 'hosted-control-plane-degraded');
+    expect(first).toHaveLength(1);
+    expect(first[0]?.summary).toContain('Responder: workspace-host controller');
+    expect(evaluateLivenessAlarm(failed, null).filter(s => s.key === first[0]?.key)).toHaveLength(1);
+    const recovered = health(hosted(0));
+    expect(evaluateLivenessAlarm(recovered, null).some(s => s.key === 'hosted-control-plane-degraded')).toBe(false);
+    expect(unobservableLivenessSignatures(recovered).has('hosted-control-plane-degraded')).toBe(false);
+    expect(resolveEvidenceFor('hosted-control-plane-degraded', recovered)).toContain('freshly unhealthy hosts 0');
+    expect(isEvaluatedLivenessSignature('hosted-control-plane-degraded')).toBe(true);
+  });
+  it('does not resolve an open alarm from absent, partial or stale control-plane evidence', () => {
+    for (const value of [null, { ...hosted(0), hosts: null }, { ...hosted(0), observedAt: 1 },
+      { ...hosted(0), hosts: { ...hosted(0).hosts, unobserved: 1 } }]) {
+      const snapshot = mkHealth({ panels: { infra: { data: { hostedControlPlane: value } } } });
+      expect(unobservableLivenessSignatures(snapshot).has('hosted-control-plane-degraded')).toBe(true);
+    }
+    expect(evaluateLivenessAlarm(health(hosted(0, 1)), null)
+      .some(s => s.key === 'hosted-control-plane-degraded')).toBe(true);
+  });
+  it('does not duplicate a hosted failure in the Infra catch-all, but retains independent Infra incidents', () => {
+    const failed = mkHealth({ panels: { infra: { status: 'crit', data: { hostedControlPlane: hosted(1) } } } });
+    const signals = evaluateLivenessAlarm(failed, null);
+    expect(signals.some(s => s.key === 'hosted-control-plane-degraded')).toBe(true);
+    expect(signals.some(s => s.key === 'panel:infra')).toBe(false);
+    const independent = mkHealth({ panels: { infra: { status: 'crit', data: {
+      hostedControlPlane: hosted(1), perf: { status: 'crit' },
+    } } } });
+    expect(evaluateLivenessAlarm(independent, null).some(s => s.key === 'panel:infra')).toBe(true);
+  });
+});
 
 // P-009 (ex-P-010, EI-22489500008234936): a starved git-sync must alarm on missed intervals,
 // not only at the generic 10 to 20 minute dead-routine window.

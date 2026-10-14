@@ -19,6 +19,7 @@ import {
   staticImportClosure,
   transitiveDeps,
   writeRelatedFilterList,
+  enumerateAffectedTaskSelection,
 } from '../../../../scripts/lib/related-tests.mjs';
 
 /**
@@ -35,6 +36,82 @@ import {
  */
 
 const ROOT = '/repo/lib';
+
+describe('original gate selection preparation', () => {
+  const task = (script = 'test', command = 'vitest run', relatedFiles?: string[]) => ({
+    ws: { name: '@probe/core', dir: 'packages/core', scripts: { [script]: command } }, script, relatedFiles,
+  });
+  const options = (results: unknown[]) => ({ root: '/repo', filterDir: tmpdir(), runResolver: () => results });
+  const resolved = (files: string[]) => ({ ok: true, enumerated: true, files, config: { include: files, exclude: [] } });
+
+  it('keeps wide lanes unknown until their real config enumerates files', () => {
+    const result = enumerateAffectedTaskSelection([task()], options([resolved(['a.test.ts', 'b.test.ts'])]));
+    expect(result.files).toEqual(['packages/core/a.test.ts', 'packages/core/b.test.ts']);
+    expect(result.coverage).toBe('complete');
+    expect(result.executed).toBe(false);
+    expect(result.runtimeClosure).toBe('unmeasured');
+    expect(result.operationalAcceptance).toBe(false);
+  });
+
+  it('retains unsupported composite/guard tasks even if they supplied a file list', () => {
+    const result = enumerateAffectedTaskSelection([
+      task(), task('lint:guard', 'node guard.mjs', ['guard.test.ts']),
+      task('test:compound', 'vitest run && node more.mjs'),
+    ], options([resolved(['a.test.ts'])]));
+    expect(result.coverage).toBe('partial');
+    expect(result.unenumerated.map(row => row.task)).toEqual(['@probe/core :: lint:guard', '@probe/core :: test:compound']);
+  });
+
+  it('does not shrink to relatedFiles when config resolution or the batch fails', () => {
+    expect(enumerateAffectedTaskSelection([task('test', 'vitest run', ['a.test.ts'])],
+      options([{ ok: false, error: 'config unavailable' }])).unenumerated[0].reason).toBe('config unavailable');
+    expect(enumerateAffectedTaskSelection([task()], options([])).coverage).toBe('partial');
+  });
+
+  it('refuses duplicate, escaping, or unqualified file populations', () => {
+    for (const result of [resolved(['../outside.test.ts']), resolved(['a.test.ts', 'a.test.ts']),
+      { ok: true, files: ['a.test.ts'] }]) {
+      expect(enumerateAffectedTaskSelection([task()], options([result])).unenumerated).toHaveLength(1);
+    }
+  });
+
+  it('records overlapping task populations instead of accepting a false partition', () => {
+    const result = enumerateAffectedTaskSelection([task(), task('test:integration')],
+      options([resolved(['a.test.ts']), resolved(['a.test.ts'])]));
+    expect(result.coverage).toBe('partial');
+    expect(result.overlaps).toEqual(['packages/core/a.test.ts']);
+  });
+
+  it('uses the actual lane cwd, native include/exclude and related filter in one resolver batch', () => {
+    const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
+    const dir = mkdtempSync(join(tmpdir(), 'selection-native-'));
+    try {
+      mkdirSync(join(dir, 'packages/core'), { recursive: true });
+      const ws = join(dir, 'packages/core');
+      const shared = join(repo, 'libs/test-config/src/vitest-config.ts');
+      writeFileSync(join(ws, 'vitest.config.mts'), `import { defineVitestConfig } from ${JSON.stringify(shared)};\nexport default defineVitestConfig({layer:'unit',laneSplit:true,exclude:['**/excluded.test.ts']});`);
+      for (const file of ['pure.test.ts', 'other.test.ts', 'excluded.test.ts']) writeFileSync(join(ws, file), '// pure fixture');
+      writeFileSync(join(ws, 'stateful.test.ts'), 'vi.mock("fixture")');
+      const requests: unknown[] = [];
+      const runResolver = (batch: unknown[]) => {
+        requests.push(...batch);
+        const output = execFileSync(process.execPath, [join(repo, 'scripts/resolve-vitest-config-contracts.mjs')],
+          { cwd: repo, input: JSON.stringify({ requests: batch }), encoding: 'utf8', timeout: 30_000 });
+        return JSON.parse(output.split('\n').reverse().find(line => line.startsWith('PC_VITEST_CONFIG_CONTRACTS='))!
+          .slice('PC_VITEST_CONFIG_CONTRACTS='.length)).results;
+      };
+      const result = enumerateAffectedTaskSelection([
+        task('test:lane-pure', `PC_TEST_LANE=pure node ${join(repo, 'scripts/run-vitest-pure-lane.mjs')}`, ['pure.test.ts', 'stateful.test.ts', 'excluded.test.ts']),
+        task('test:lane-stateful', 'PC_TEST_LANE=stateful vitest run'),
+      ], { root: dir, filterDir: dir, runResolver });
+      expect(requests).toHaveLength(2);
+      expect(result.unenumerated).toEqual([]);
+      expect(result.files).toEqual(['packages/core/pure.test.ts', 'packages/core/stateful.test.ts']);
+      expect(result.tasks[0].files).toEqual(['packages/core/pure.test.ts']);
+      expect(result.tasks[1].files).toEqual(['packages/core/stateful.test.ts']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 40_000);
+});
 const BLUEPRINT_STEPS_DIR = join(dirname(dirname(fileURLToPath(import.meta.url))), 'blueprint-steps');
 
 /** Build a fake fs from a { path: contents } map. */

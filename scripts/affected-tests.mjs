@@ -19,6 +19,7 @@ import { expandWorkspaces as expandRootWorkspaces } from './assert-workspace-lin
 //                   and starved behind gate-sized admission.
 //   --all           ignore git diff; run every workspace's tests
 //   --dry           print what would run, don't run
+//   --print-selection  emit resolved file/config preparation plus unknown-task residue, then exit
 //
 // Diagnostics:
 //   --print-affected                  print `AFFECTED_WS\t<name>`, one runnable
@@ -73,6 +74,7 @@ import {
   tsconfigPathEntriesFor,
   unitExcludedVitestTest,
   writeRelatedFilterList,
+  enumerateAffectedTaskSelection,
 } from "./lib/related-tests.mjs";
 import { fixtureSpecClosureUnion } from "./lib/e2e-fixture-specs.mjs";
 import {
@@ -1097,6 +1099,7 @@ const changedPathsOverride = (() => {
   return [...new Set(requested.flatMap(normalizeExplicitChangedPath))];
 })();
 const printAffected = has("--print-affected");
+const printSelection = has("--print-selection");
 
 // ── P-009 part (a): the `--coverage` passthrough ───────────────────────────────
 //
@@ -1170,6 +1173,7 @@ const KNOWN_FLAGS = [
   "--range-to",
   "--changed-paths",
   "--print-affected",
+  "--print-selection",
   "--related",
   "--el-suite",
   "--exclude",
@@ -5644,6 +5648,15 @@ if (coverageRequested) {
         "    verdict built on it vacuous. Widen the run, or drop --coverage.",
     );
   }
+}
+
+if (printSelection) {
+  // Reuse the final maintained selection and native config bridge. This never emits an
+  // executed-file line, loads duration history, acquires test admission, or runs a cohort.
+  const selection = enumerateAffectedTaskSelection(tasks, { root: ROOT, filterDir: RUN_LOG_ROOT });
+  outSync(`AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}`);
+  terminalSuppressed = true;
+  process.exit(0);
 }
 
 if (printAffected) {

@@ -12,6 +12,34 @@ export function resolveRelatedWidenThreshold(env?: Record<string, string | undef
     source: "default" | "env";
     invalid?: string;
 };
+/** Preparation only: enumerate the maintained selector's actual task configs, never executions.
+ * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
+ */
+export function enumerateAffectedTaskSelection(tasks: any, { root, filterDir, runResolver }?: {}): {
+    schemaVersion: number;
+    kind: string;
+    phase: string;
+    coverage: string;
+    files: any[];
+    tasks: {
+        files: any;
+        config: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    }[];
+    unenumerated: {
+        task: string;
+        reason: any;
+        command: any;
+    }[];
+    overlaps: any[];
+    executed: boolean;
+    runtimeClosure: string;
+    operationalAcceptance: boolean;
+};
 /**
  * Persist a workspace-relative selection as a filter-list file.
  *

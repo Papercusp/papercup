@@ -25,6 +25,8 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { stripCommentsAndStrings, stripCommentsOnly } from "./strip-comments-and-strings.mjs";
 import { listFilesIncludingUntracked } from "./tracked-files.mjs";
+import { execFileSync } from 'node:child_process';
+import { resolveTaskReportExpectation, scriptCommandWords } from './executed-source-map.mjs';
 
 // ── WIDENING THRESHOLD (plan gate-latency-selection-and-retry-policy-2026-09-06, P-001) ──
 // A related selection is CORRECT BY CONSTRUCTION at any share of the suite — every test that
@@ -70,6 +72,85 @@ export function resolveRelatedWidenThreshold(env = process.env) {
 // Content-addressing keeps the passing-task-verdict identity stable for an identical
 // selection across runs, while a different selection can never alias a full-suite pass.
 export const RELATED_FILTER_LIST_ENV = "PC_TEST_FILTER_LIST";
+
+/** Preparation only: enumerate the maintained selector's actual task configs, never executions.
+ * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
+ */
+export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runResolver } = {}) {
+  const unenumerated = [];
+  const requests = [];
+  const selected = [];
+  for (const t of tasks) {
+    const id = `${t.ws.name} :: ${t.script}`;
+    const command = t.ws.scripts?.[t.script] ?? '';
+    const words = scriptCommandWords(command);
+    const pureWrapper = words[0] === 'node' && /(?:^|\/)run-vitest-pure-lane\.mjs$/.test(words[1] ?? '');
+    const direct = /(?:^|\/)vitest$/.test(words[0] ?? '');
+    const envWords = command.trim().split(/\s+/).filter(word => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+    const laneWord = envWords.find(word => word.startsWith('PC_TEST_LANE='));
+    const lane = laneWord?.slice('PC_TEST_LANE='.length);
+    const rest = words.slice(pureWrapper ? 2 : 1);
+    let supported = (direct || pureWrapper) && !/[;&|`"']|\$\(/.test(command) &&
+      envWords.every(word => /^PC_TEST_LANE=(pure|stateful)$/.test(word));
+    for (let i = 0; i < rest.length; i++) {
+      const word = rest[i];
+      if (['run', '--passWithNoTests', '--no-passWithNoTests'].includes(word)) continue;
+      if (word.startsWith('--config=')) continue;
+      if ((word === '--config' || word === '-c') && rest[i + 1] && !rest[i + 1].startsWith('-')) { i++; continue; }
+      supported = false;
+    }
+    if (!supported || (pureWrapper && lane !== 'pure')) {
+      unenumerated.push({ task: id, reason: 'unsupported-task-command', command });
+      continue;
+    }
+    const wsRoot = path.resolve(root, t.ws.dir);
+    const route = resolveTaskReportExpectation({ command, wsDir: wsRoot });
+    if (route.config === null && route.reason !== 'no-config') {
+      unenumerated.push({ task: id, reason: route.reason, command });
+      continue;
+    }
+    const env = lane ? { PC_TEST_LANE: lane } : {};
+    if (Array.isArray(t.relatedFiles) && t.relatedFiles.length > 0)
+      env[RELATED_FILTER_LIST_ENV] = writeRelatedFilterList(filterDir, t.relatedFiles).path;
+    selected.push({ id, workspace: t.ws.name, dir: t.ws.dir, script: t.script, command });
+    requests.push({ root: wsRoot, config: route.config ?? false, enumerateFiles: true, env });
+  }
+  const resolveRequests = runResolver ?? (requests => {
+    const output = execFileSync(process.execPath, [path.join(root, 'scripts/resolve-vitest-config-contracts.mjs')], {
+      cwd: root, input: JSON.stringify({ requests }), encoding: 'utf8', timeout: 120_000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    const marker = 'PC_VITEST_CONFIG_CONTRACTS=';
+    const line = output.split(/\r?\n/).reverse().find(line => line.startsWith(marker));
+    if (!line) throw new Error('config resolver returned no contract marker');
+    return JSON.parse(line.slice(marker.length)).results;
+  });
+  let results;
+  try {
+    results = requests.length ? resolveRequests(requests) : [];
+    if (!Array.isArray(results) || results.length !== requests.length) throw new Error('config resolver population mismatch');
+  } catch (error) {
+    results = requests.map(() => ({ ok: false, error: error.message }));
+  }
+  const entries = [];
+  for (const [i, task] of selected.entries()) {
+    const result = results[i];
+    if (result?.ok !== true || result.enumerated !== true || !Array.isArray(result.files) ||
+        result.files.some(file => typeof file !== 'string' || !file || path.isAbsolute(file) ||
+          file.includes('\\') || file.split('/').some(part => part === '..' || part === '.')) ||
+        new Set(result.files).size !== result.files.length) {
+      unenumerated.push({ task: task.id, reason: result?.error ?? 'invalid-config-file-population', command: task.command });
+      continue;
+    }
+    entries.push({ ...task, files: result.files.map(file => path.posix.join(task.dir, file)).sort(), config: result.config });
+  }
+  const files = [...new Set(entries.flatMap(task => task.files))].sort();
+  const overlaps = files.filter(file => entries.filter(task => task.files.includes(file)).length > 1);
+  return { schemaVersion: 1, kind: 'full-gate', phase: 'selection-preparation',
+    coverage: unenumerated.length === 0 && files.length > 0 && overlaps.length === 0 ? 'complete' : 'partial',
+    files, tasks: entries, unenumerated, overlaps, executed: false,
+    runtimeClosure: 'unmeasured', operationalAcceptance: false };
+}
 
 /**
  * Persist a workspace-relative selection as a filter-list file.

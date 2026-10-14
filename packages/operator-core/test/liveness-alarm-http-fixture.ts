@@ -10,7 +10,7 @@ import { privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-
 import { writeSharedSnapshot } from '../lib/derived-reads/shared-snapshot';
 import { createPrivateHealthSnapshot } from './private-http-workspace-preflight';
 import type { AgentStrandHealth } from '../lib/system-health/agent-strand-census';
-import type { CoordinationHealth } from '../lib/system-health/types';
+import type { CoordinationHealth, InfraHealth } from '../lib/system-health/types';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -30,6 +30,9 @@ async function stopHost() {
 
 async function main() {
   const e = process.env;
+  const hostedSubject = e.LIVENESS_ALARM_HTTP_SUBJECT === 'hosted-control-plane-degraded';
+  const signal = hostedSubject ? 'hosted-control-plane-degraded' : 'agents-wedged';
+  const threshold = hostedSubject ? 1 : 10;
   const workspace = e.PAPERCUSP_WORKSPACE_ID!;
   const base = e.PAPERCUSP_OPERATOR_URL!;
   assert.match(workspace, /^test-runtime-/);
@@ -48,6 +51,8 @@ async function main() {
     'packages/operator-core/lib/system-health/compute.ts',
     'packages/operator-core/lib/derived-reads/shared-snapshot.ts',
     'packages/operator-core/lib/agent-tools/coordination/escalations.ts',
+    'packages/operator-core/lib/workspace-host/observability-store.ts',
+    'packages/operator-core/lib/severe-event-owner.ts',
     'apps/operator/bin/hono-host.ts'];
   const fingerprint = () => Object.fromEntries(sources.map(path => [path,
     createHash('sha256').update(readFileSync(join(root, path))).digest('hex')]));
@@ -66,6 +71,7 @@ async function main() {
   const bytes = readFileSync(bundle);
   assert.ok(bytes.includes(Buffer.from('system-health/liveness-alarm.ts')), 'alarm missing from executed artifact');
   assert.ok(bytes.includes(Buffer.from('agentStrandObservation')), 'runtime observation missing from executed artifact');
+  if (hostedSubject) assert.ok(bytes.includes(Buffer.from('hostedControlPlaneObservation')), 'hosted observation missing from executed artifact');
   assert.deepEqual(fingerprint(), sourceBefore, 'source moved while building the tested artifact');
   const bundleSha256 = createHash('sha256').update(bytes).digest('hex');
   const headers = { origin: base, 'x-papercusp-workspace': workspace };
@@ -74,6 +80,7 @@ async function main() {
   const intervalMs = 500;
   async function startHost() {
     const hostEnv = privateBundleRuntimeEnv({ ...e,
+      TELEMETRY_ENABLED: '0', PAPERCUSP_CLOUD_MONITORING_ENVIRONMENT: 'test',
       PAPERCUSP_INFRA_LIVENESS_ALARM: '1', PAPERCUSP_INFRA_LIVENESS_ALARM_MS: String(intervalMs) });
     host = spawn(process.execPath, [bundle], { cwd: root,
       env: hostEnv,
@@ -95,12 +102,24 @@ async function main() {
       wedgedSample: [], stranded: 0, strandedSample: [], wedgedUnreadable: wedged === null, strandedUnreadable: false };
     health.panels.coordination.status = 'warn';
     health.panels.coordination.data = { agentStrand: strand } as CoordinationHealth;
+    if (hostedSubject) {
+      health.panels.coordination.status = 'unknown';
+      health.panels.coordination.data = null;
+      health.panels.infra.status = wedged === null ? 'unknown' : wedged > 0 ? 'crit' : 'ok';
+      health.panels.infra.data = {
+        hostedControlPlane: wedged === null ? null : {
+          observedAt: at, windowMs: 3_600_000, lifecycle: null, api: null,
+          hosts: { expectedRunning: 1, unhealthy: wedged, unobserved: 0, platformOwnedRunning: 1 },
+          providerConnections: { connected: 1, degraded: 0 },
+        },
+      } as InfraHealth;
+    }
     await writeSharedSnapshot('system.health', workspace, health, 1);
     return at;
   }
   const raises = async () => (await sql`SELECT body FROM harness_shared.coord_event_log
     WHERE workspace_id = ${workspace} AND surface = 'escalations'
-      AND body->>'from' = 'system:infra-liveness-alarm' AND body->>'livenessSignature' = 'agents-wedged'
+      AND body->>'from' = 'system:infra-liveness-alarm' AND body->>'livenessSignature' = ${signal}
     ORDER BY ts`).map(row => row.body);
   const resolutions = async (id: string) => (await sql`SELECT body FROM harness_shared.coord_event_log
     WHERE workspace_id = ${workspace} AND surface = 'escalations'
@@ -124,16 +143,28 @@ async function main() {
     assert.equal((await resolutions(id)).length, 0, 'absence of evidence cannot resolve a standing alarm');
     assert.equal((await raises()).length, 1, 'one threshold episode must have one alarm');
   }
-  const thresholdAt = await snapshot(10);
+  const thresholdAt = await snapshot(threshold);
   const first = await startHost();
   console.log('LIVENESS_ALARM_HTTP_PHASE threshold-worker-ready');
   const raised = (await until('threshold alarm', raises, rows => rows.length === 1))[0];
-  assert.match(raised.body, /Signal: agents-wedged/);
-  assert.equal(raised.agentStrandObservation.wedged, 10);
-  assert.equal(raised.agentStrandObservation.snapshotAtMs, thresholdAt);
-  assert.equal(raised.agentStrandObservation.thresholds.wedged, 10);
-  assert.equal(raised.agentStrandObservation.runtime.pid, first.pid);
-  assert.equal(raised.agentStrandObservation.runtime.sha, first.health.sha);
+  assert.ok(raised.body.includes('Signal: ' + signal));
+  const observation = hostedSubject ? raised.hostedControlPlaneObservation : raised.agentStrandObservation;
+  assert.equal(observation.snapshotAtMs, thresholdAt);
+  assert.equal(observation.runtime.pid, first.pid);
+  assert.equal(observation.runtime.sha, first.health.sha);
+  if (hostedSubject) {
+    assert.equal(observation.reading.hosts.unhealthy, 1);
+    assert.equal(observation.responder.ownerSelector, '@role:mug');
+    assert.equal(raised.needsHumanRoute, false);
+    // The specific alarm owns this fault; the Infra panel must not double-page it.
+    const duplicates = await sql`SELECT body FROM harness_shared.coord_event_log
+      WHERE workspace_id = ${workspace} AND surface = 'escalations'
+        AND body->>'from' = 'system:infra-liveness-alarm' AND body->>'livenessSignature' = 'panel:infra'`;
+    assert.equal(duplicates.length, 0);
+  } else {
+    assert.equal(observation.wedged, 10);
+    assert.equal(observation.thresholds.wedged, 10);
+  }
   await new Promise(done => setTimeout(done, intervalMs * 4));
   await standing(raised.msg_id);
   await stopHost();
@@ -145,17 +176,22 @@ async function main() {
   await snapshot(null);
   await new Promise(done => setTimeout(done, intervalMs * 4));
   await standing(raised.msg_id);
-  await snapshot(9);
+  await snapshot(threshold - 1);
   const recovered = (await until('measured below-threshold recovery', () => resolutions(raised.msg_id), rows => rows.length === 1))[0];
   assert.equal(recovered.choice, 'auto-resolved');
-  assert.match(recovered.note, /wedged=9/);
-  assert.match(recovered.note, /alarm threshold >= 10/);
+  if (hostedSubject) {
+    assert.match(recovered.note, /freshly unhealthy hosts 0/);
+    assert.match(recovered.note, /degraded provider connections 0/);
+  } else {
+    assert.match(recovered.note, /wedged=9/);
+    assert.match(recovered.note, /alarm threshold >= 10/);
+  }
   assert.doesNotMatch(recovered.note, /no per-signature evidence/);
   assert.equal((await raises()).length, 1);
   assert.deepEqual(fingerprint(), sourceBefore, 'source changed during the live journey');
   await stopHost();
   console.log('LIVENESS_ALARM_HTTP_RECEIPT ' + JSON.stringify({ workspace, hostStopped: true,
-    threshold: 10, belowThreshold: 9, alarmCount: 1, restartDedupCount: 1,
+    signal, threshold, belowThreshold: threshold - 1, alarmCount: 1, restartDedupCount: 1,
     unknownPreserved: true, sourceUnchanged: true, sourceFingerprints: sourceBefore,
     bundleSha256, intervalMs, first, second, raised, recovered }));
 }

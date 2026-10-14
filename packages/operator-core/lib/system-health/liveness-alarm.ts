@@ -98,6 +98,7 @@ import {
 } from './single-primary-check';
 import {
   infraCritAmbientOnly,
+  infraStatus,
   POOL_PROJECTION_STALE_WARN_MS,
   projectionWriteStalled,
 } from './thresholds';
@@ -598,6 +599,7 @@ export const EVALUATED_LIVENESS_SIGNATURES: ReadonlySet<string> = new Set([
   'accounts-starved',
   'pg-restarted',
   'dns-resolution-failing',
+  'hosted-control-plane-degraded',
   'agents-wedged',
   'agents-stranded',
 ]);
@@ -912,6 +914,18 @@ export function evaluateLivenessAlarm(
     });
   }
 
+  const hosted = health.panels.infra?.data?.hostedControlPlane;
+  if (hosted && health.evaluatedAt - hosted.observedAt <= 120_000 &&
+      ((hosted.hosts?.unhealthy ?? 0) > 0 || (hosted.providerConnections?.degraded ?? 0) > 0)) {
+    signals.push({
+      key: 'hosted-control-plane-degraded', severity: 'blocker',
+      summary: `Hosted control plane DEGRADED: ${hosted?.hosts?.unhealthy ?? 'unknown'} freshly unhealthy hosts; ` +
+        `${hosted?.providerConnections?.degraded ?? 'unknown'} degraded provider connections. ` +
+        'Responder: workspace-host controller. Inspect Hosts operation timeline / standing-health; ' +
+        'reuse the existing lifecycle recovery. Customer guest diagnostics are not collected.',
+    });
+  }
+
   // 5c. EI-9794: autoloop FIRE-RECENCY staleness — independent of `last_status` /
   //     `consecutive_errors` (frozen the instant a loop stops firing) and of the
   //     `armed` wake-routine bit (a self-deactivating one-shot's normal resting
@@ -1007,6 +1021,11 @@ export function evaluateLivenessAlarm(
     // event-loop/PG-pool bug that this alarm correctly still pages for). A crit
     // for any OTHER reason — or a mix that ALSO carries an operator-defect leg —
     // still pages exactly as before.
+    // The hosted incident has its own stable identity/responder. Do not open a
+    // second catch-all alarm for that same fault; an independent Infra crit still pages.
+    if (panel.key === 'infra' && panel.data &&
+        signals.some(signal => signal.key === 'hosted-control-plane-degraded') &&
+        infraStatus({ ...(panel.data as InfraHealth), hostedControlPlane: null }) !== 'crit') continue;
     if (panel.key === 'infra' && panel.data && infraCritAmbientOnly(panel.data as InfraHealth)) {
       signals.push({
         key: 'panel:infra',
@@ -1116,6 +1135,10 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
   // panel, or a null/absent `dns` (probe could not run, or a snapshot from a build without the probe),
   // has NOT observed resolution recovering, so an open dns-resolution-failing row must stay open.
   const infraPanel = health.panels.infra;
+  // Both legs must be witnessed to declare recovery; a partial/unreadable read retains the alarm.
+  const hosted = infraPanel?.data?.hostedControlPlane;
+  if (!hosted?.hosts || hosted.hosts.unobserved > 0 || !hosted.providerConnections ||
+      health.evaluatedAt - hosted.observedAt > 120_000) out.add('hosted-control-plane-degraded');
   if (!infraPanel || infraPanel.status === 'unknown' || infraPanel.error != null || infraPanel.data?.dns == null) {
     out.add('dns-resolution-failing');
   }
@@ -1254,6 +1277,12 @@ export function resolveEvidenceFor(
   beesLiveness?: BeesLivenessContext,
   d026Quiescence?: D026QuiescenceEvidence,
 ): string {
+  if (sig === 'hosted-control-plane-degraded') {
+    const hosted = health.panels.infra?.data?.hostedControlPlane;
+    return `hosted observation at ${hosted?.observedAt ?? 'unknown'}: freshly unhealthy hosts ` +
+      `${hosted?.hosts?.unhealthy ?? 'unknown'}, degraded provider connections ` +
+      `${hosted?.providerConnections?.degraded ?? 'unknown'}; responder workspace-host controller`;
+  }
   // `panel:<key>` — the catch-all family (evaluateLivenessAlarm §6) fires while a panel
   // self-reports `crit`, so that panel's OWN status at resolve time IS the observation.
   //
@@ -2575,6 +2604,15 @@ export async function runLivenessAlarmTick(
       ...((s.key === 'agents-wedged' || s.key === 'agents-stranded') && agentStrandObservation
         ? { agentStrandObservation }
         : {}),
+      ...(s.key === 'hosted-control-plane-degraded' ? {
+        hostedControlPlaneObservation: {
+          observedAtMs: now,
+          snapshotAtMs: healthForSignals.evaluatedAt,
+          runtime: { ...getBuildInfo(), pid: process.pid },
+          reading: healthForSignals.panels.infra?.data?.hostedControlPlane ?? null,
+          responder: resolveSevereEventOwner(s.key),
+        },
+      } : {}),
       ...(s.diagnosis ? { healthTickStallDiagnosis: s.diagnosis } : {}),
       // EI-10060: no registered/derivable owner for this signal — nobody is
       // durably on the hook for it beyond the ambient `to:['*']` broadcast

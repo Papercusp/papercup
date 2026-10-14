@@ -42,6 +42,11 @@
  */
 const CONDITION_OWNER_REGISTRY: ReadonlyArray<{ prefix: string; ownerSelector: string; reason: string }> = [
   {
+    prefix: 'hosted-control-plane-degraded',
+    ownerSelector: '@role:mug',
+    reason: 'hosted workspace availability is an operational dependency; the Mug drives the owning workspace-host controller recovery from its existing health and lifecycle timeline',
+  },
+  {
     prefix: 'health-tick-stale',
     ownerSelector: '@role:mug',
     reason: 'a frozen health tick blinds fleet placement — the Mug is the fleet-health role responsible for noticing and driving a restart',

@@ -12,7 +12,10 @@ const options = isolatedWorkerOptions(480_000);
 
 // R-12 needs a real request worker and durable ledger, independently of the unit
 // alarm seam. Reuse the maintained private operator profile and lifetime proof.
-it('keeps a request-worker wedged alarm standing across restart and resolves only a measured recovery', async context => {
+it.each([
+  { subject: 'agents-wedged', title: 'keeps a request-worker wedged alarm standing across restart and resolves only a measured recovery' },
+  { subject: 'hosted-control-plane-degraded', title: 'keeps one accountable hosted reliability alarm across restart and unknown evidence, then resolves witnessed recovery' },
+])('$title', async ({ subject }, context) => {
   const runId = await recordIsolatedIntegrationProof({
     root,
     filePath: 'packages/operator-core/lib/system-health/liveness-alarm-current-build.e2e.test.ts',
@@ -26,6 +29,8 @@ it('keeps a request-worker wedged alarm standing across restart and resolves onl
       'packages/operator-core/lib/system-health/agent-strand-census.ts',
       'packages/operator-core/lib/system-health/liveness-alarm.ts',
       'packages/operator-core/lib/system-health/compute.ts',
+      'packages/operator-core/lib/workspace-host/observability-store.ts',
+      'packages/operator-core/lib/severe-event-owner.ts',
       'packages/operator-core/lib/derived-reads/shared-snapshot.ts',
       'packages/operator-core/lib/agent-tools/coordination/escalations.ts',
       'packages/operator-core/lib/build-info.ts',
@@ -34,7 +39,8 @@ it('keeps a request-worker wedged alarm standing across restart and resolves onl
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
       const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
-        LIVENESS_ALARM_HTTP_EVIDENCE_DIR: evidenceDir, TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') };
+        LIVENESS_ALARM_HTTP_EVIDENCE_DIR: evidenceDir, LIVENESS_ALARM_HTTP_SUBJECT: subject,
+        TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') };
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
@@ -57,13 +63,18 @@ it('keeps a request-worker wedged alarm standing across restart and resolves onl
       expect(line, isolatedWorkerFailureDetail(result.output)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('LIVENESS_ALARM_HTTP_RECEIPT '.length));
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/), hostStopped: true,
-        threshold: 10, alarmCount: 1, restartDedupCount: 1, belowThreshold: 9,
+        signal: subject, threshold: subject === 'agents-wedged' ? 10 : 1,
+        alarmCount: 1, restartDedupCount: 1, belowThreshold: subject === 'agents-wedged' ? 9 : 0,
         unknownPreserved: true, sourceUnchanged: true,
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
-        raised: { from: 'system:infra-liveness-alarm', livenessSignature: 'agents-wedged',
-          agentStrandObservation: { wedged: 10, thresholds: { wedged: 10 } } },
-        recovered: { choice: 'auto-resolved', note: expect.stringContaining('wedged=9') },
+        raised: { from: 'system:infra-liveness-alarm', livenessSignature: subject },
+        recovered: { choice: 'auto-resolved', note: expect.stringContaining(subject === 'agents-wedged'
+          ? 'wedged=9' : 'freshly unhealthy hosts 0') },
       });
+      if (subject === 'agents-wedged') expect(receipt.raised.agentStrandObservation)
+        .toMatchObject({ wedged: 10, thresholds: { wedged: 10 } });
+      else expect(receipt.raised.hostedControlPlaneObservation)
+        .toMatchObject({ responder: { ownerSelector: '@role:mug' }, reading: { hosts: { unhealthy: 1 } } });
       expect(receipt.recovered.note).not.toContain('no per-signature evidence');
       const start = events.find(event => event.kind === 'isolated-runtime-start');
       const end = events.find(event => event.kind === 'isolated-runtime-end');
