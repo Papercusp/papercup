@@ -63,7 +63,7 @@
  *     double-advance is structurally impossible rather than merely avoided.
  */
 import { describeFetchError } from '../loopback-fetch';
-import { claudeAttemptHeaders } from './credential-store';
+import { claudeAttemptBody, claudeAttemptHeaders } from './credential-store';
 import { presentedSecretsFromHeaders, scrubbedErrorBody } from './error-body-scrub';
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
@@ -562,7 +562,7 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
         // from a subscription account to a Console API-key account switches Bearer+oauth-beta
         // for x-api-key mid-request. An account with no recorded mode is a subscription account.
         headers: claudeAttemptHeaders(opts.baseHeaders, account.authMode ?? 'oauth', token, account.anthropicWorkspaceId),
-        body: opts.body,
+        body: claudeAttemptBody(opts.body, account.authMode ?? 'oauth'),
         accountId: account.accountId,
         dispatcher,
       };
