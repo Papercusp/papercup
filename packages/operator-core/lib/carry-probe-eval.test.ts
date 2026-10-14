@@ -77,8 +77,8 @@ describe('carriedProbeSources', () => {
   });
 });
 
-describe('R-1: every carried probe is rendered as holds, changed (observed value) or could-not-run (reason)', () => {
-  it('evaluates each probe against its expect value at delivery and renders one line per probe', async () => {
+describe('R-1 / R-25: changed and could-not-run probes get a line; matching probes print nothing', () => {
+  it('renders a changed probe with its observed value and a probe that could not run with its reason', async () => {
     const dispatchTool = statusDispatcher();
     const sources = carriedProbeSources({
       loop: {
@@ -100,9 +100,24 @@ describe('R-1: every carried probe is rendered as holds, changed (observed value
     expect(lines.find((l) => l.startsWith('  ? COULD NOT RUN — table exists [loop check 3]'))).toMatch(
       /tool_error — read-only probe status:read returned an error: relation does not exist/,
     );
-    expect(lines).toContain('  ✓ HOLDS — gate is green [loop #gate]');
-    // exactly one line per evaluated probe, plus the header
-    expect(lines).toHaveLength(4);
+    // R-25: the matching probe is counted in the header but gets no line of its own.
+    expect(lines.some((l) => l.includes('gate is green'))).toBe(false);
+    // the header plus one line per changed or could-not-run probe
+    expect(lines).toHaveLength(3);
+  });
+
+  it('renders nothing for probes that still match their expect value', async () => {
+    const dispatchTool = statusDispatcher();
+    const sources = carriedProbeSources({
+      loop: {
+        ownerId: 'su-me',
+        checks: [check('gate is green', probe('status:read', 'ok'), 'gate'), check('ci is green', probe('status:read', 'ok'))],
+      },
+    });
+    const block = await carriedProbeBlockForDelivery(sources, { dispatchTool });
+    // Both probes ran and matched: D-001 'prints nothing when nothing changed'.
+    expect(dispatchTool).toHaveBeenCalledTimes(2);
+    expect(block).toBeNull();
   });
 
   it('renders a check without a probe as nothing (only probed checks are evaluated)', async () => {

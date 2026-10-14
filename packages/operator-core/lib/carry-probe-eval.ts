@@ -13,8 +13,11 @@
  *   - `runCarriedProbesForDelivery` runs them through `runContinuityProbeBatch`, which already
  *     refuses any probe that is not provably read-only WITHOUT dispatching it, caps the probe count
  *     per wake and bounds each probe's time;
- *   - `renderCarriedProbeBlock` renders every evaluated probe as holds / changed (with the observed
- *     value) / could-not-run (with the reason), plus a line for probes left un-run by the cap.
+ *   - `renderCarriedProbeBlock` renders one line per probe that changed (with the observed value)
+ *     or could not run (with the reason), plus a line for probes left un-run by the cap. A probe
+ *     that still matches prints nothing, and a delivery where every probe matched prints no block
+ *     at all (D-001 'prints nothing when nothing changed'; bars R-1/R-25). The header still counts
+ *     the matching probes whenever a block is printed.
  *
  * Deterministic only (D-001): read-only tool dispatch and string formatting, no model call.
  * Fail-soft but never falsely green: a runner failure renders an explicit "could not run" line, it
@@ -176,6 +179,9 @@ export function renderCarriedProbeBlock(
   const changed = batch.results.filter((r) => r.status === 'stale');
   const couldNotRun = batch.results.filter((r) => r.status === 'error' || r.status === 'unknown');
   const holds = batch.results.filter((r) => r.status === 'fresh');
+  // D-001 / R-25: a probe that still matches prints nothing, and a delivery where every probe
+  // matched (none changed, none failed, none left un-run by the cap) prints no block at all.
+  if (changed.length === 0 && couldNotRun.length === 0 && batch.truncated === 0) return null;
   const counts = [
     `${holds.length} hold`,
     `${changed.length} changed`,
@@ -190,7 +196,6 @@ export function renderCarriedProbeBlock(
     ...couldNotRun.map(
       (r) => `  ? COULD NOT RUN — ${clip(r.claim, CARRIED_PROBE_CLAIM_CHARS)} [${sourceLabel(r)}]: ${renderReason(r)}`,
     ),
-    ...holds.map((r) => `  ✓ HOLDS — ${clip(r.claim, CARRIED_PROBE_CLAIM_CHARS)} [${sourceLabel(r)}]`),
   ];
   if (batch.truncated > 0) {
     lines.push(
