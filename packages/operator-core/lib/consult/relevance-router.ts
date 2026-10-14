@@ -561,7 +561,14 @@ function subjectEvidenceAction(toolDescription?: string | null): string | null {
 const TOOL_SUBJECT_PATTERN = /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/i;
 
 export function subjectEvidenceQuery(subject: string, toolDescription?: string | null): string | null {
-  if (!TOOL_SUBJECT_PATTERN.test(subject)) return subject;
+  if (!TOOL_SUBJECT_PATTERN.test(subject)) {
+    // Compare the primary question with competing primary actions, rather than
+    // letting secondary delivery/recovery instructions qualify an unrelated
+    // passage. Keep all context preceding the question; retrieval and responder
+    // briefs continue to receive the full request.
+    const end = subject.indexOf('?');
+    return end < 0 ? subject : subject.slice(0, end + 1);
+  }
   const action = subjectEvidenceAction(toolDescription);
   return action ? `${subject}\n${action}` : null;
 }

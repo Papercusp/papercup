@@ -84,11 +84,16 @@ describe('problem-specific expertise qualification', () => {
     const question = 'Which lease writer caused the before/after change? Note: preserve the native cleanup receipt.';
     const scorer = vi.fn(async () => [0.9, 0.1]);
     const contracts = [{ name: 'session:request-compaction', description: 'Recover a generic continuation.' }];
-    expect(subjectEvidenceQuery(question)).toBe(question);
+    const primary = 'Which lease writer caused the before/after change?';
+    expect(subjectEvidenceQuery(question)).toBe(primary);
     expect(await scoreSubjectEvidence(question, ['lease actor audit with generic continuation'],
       Date.now() + 4000, { scorer, contracts })).toEqual([0.9]);
     expect(scorer).toHaveBeenCalledWith('lease actor audit with generic continuation',
-      [question, 'session:request-compaction\nRecover a generic continuation.'], expect.any(Object));
+      [primary, 'session:request-compaction\nRecover a generic continuation.'], expect.any(Object));
+    expect(subjectEvidenceQuery('Context: the native child kept a receipt. Which lease actor changed it? Preserve the log.'))
+      .toBe('Context: the native child kept a receipt. Which lease actor changed it?');
+    expect(subjectEvidenceQuery('Diagnose native lease actors and preserve the original receipt'))
+      .toBe('Diagnose native lease actors and preserve the original receipt');
   });
 
   it('rejects natural-question procedural overlap when another primary action explains the passage better', async () => {
