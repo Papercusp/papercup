@@ -2990,6 +2990,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // transparently moves pacing onto the new account's fresh bucket. The QUEUE is the concurrency
   // authority, so make the governor's own concurrency cap non-binding (raise it to the queue cap)
   // and let the governor enforce only rate/pause/pace — safe in the gateway's own process.
+  const accountGovernors = new Map<string, Set<RateLimitGovernor>>();
   const governorForAccount = (model: string, accountId: string): RateLimitGovernor => {
     // EI-2648: thread `accountId` into the injected factory too. The default branch already keys
     // by account; without this the injected branch could not, so a test double had no way to make
@@ -2997,6 +2998,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const g = deps.governorFor
       ? deps.governorFor(model, accountId)
       : governorForBackend('claude-code', model, undefined, accountId);
+    let buckets = accountGovernors.get(accountId);
+    if (!buckets) accountGovernors.set(accountId, (buckets = new Set()));
+    buckets.add(g);
     // The QUEUE is the concurrency authority, so the governor's own concurrency
     // limit must stay non-binding. It now tracks the LIVE learned window rather
     // than a configured cap, so a lane that grows past its seed does not start
@@ -11194,16 +11198,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const ids = account
         ? [account]
         : [...new Set(targetPools.flatMap((p) => (p.entries?.() ?? []).map((e) => e.accountId)))];
-      for (const targetPool of targetPools) {
-        for (const id of ids) targetPool.readmit?.(id, { reason: 'admin' });
-      }
-      const at = Date.now();
-      const healthyAccounts =
-        provider === 'codex'
-          ? codexServiceableCount(deps.codexPool, at) +
-            codexServiceableCount(codexCliPool, at, codexCliPool ? [] : codexCliHealthEntries())
-          : (pool.healthyCount?.() ?? 1);
-      sendJson(res, 200, { ok: true, provider, readmitted: ids, healthyAccounts });
+      void (async () => {
+        if (provider === 'claude') {
+          for (const id of ids) {
+            for (const governor of accountGovernors.get(id) ?? []) await governor.operatorReadmit();
+          }
+        }
+        for (const targetPool of targetPools) {
+          for (const id of ids) targetPool.readmit?.(id, { reason: 'admin' });
+        }
+        const at = Date.now();
+        const healthyAccounts =
+          provider === 'codex'
+            ? codexServiceableCount(deps.codexPool, at) +
+              codexServiceableCount(codexCliPool, at, codexCliPool ? [] : codexCliHealthEntries())
+            : (serviceableHealthyCount() ?? 1);
+        sendJson(res, 200, { ok: true, provider, readmitted: ids, healthyAccounts });
+      })().catch(() => {
+        sendJson(res, 503, { ok: false, provider, error: { type: 'api_error', message: 'inference-gateway: account readmit failed' } });
+      });
       return;
     }
     if (req.method === 'POST' && requestPath === '/admin/clamp-mode') {
