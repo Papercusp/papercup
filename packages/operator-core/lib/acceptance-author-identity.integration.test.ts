@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
+  acceptanceLineageAncestors,
   acceptanceLineageClosure,
   areAcceptanceLineageRelated,
   isAcceptanceAuthorIdentity,
@@ -10,6 +11,80 @@ import {
 } from './acceptance-author-identity';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
+
+describe('bounded acceptance lineage on converging graphs', () => {
+  let db: OrgTestDb;
+  const workspaceId = 'acceptance-converging-lineage';
+  const root = 'diamond-root';
+  const layers = 22;
+  const layer = (n: number) => [`diamond-${n}-a`, `diamond-${n}-b`];
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    const edges: Array<[string, string]> = [];
+    for (let n = 1; n <= layers; n++) {
+      for (const from of n === 1 ? [root] : layer(n - 1)) {
+        for (const to of layer(n)) edges.push([from, to]);
+      }
+    }
+    for (let n = 1; n <= 66; n++) edges.push([`chain-${n - 1}`, `chain-${n}`]);
+    edges.push(['cycle-a', 'cycle-b'], ['cycle-b', 'cycle-a']);
+    await db.adminSql`INSERT INTO harness_shared.tool_invocations ${db.adminSql(edges.map(([from, to], n) => ({
+      workspace_id: workspaceId,
+      harness_slug: 'lineage-diamond',
+      plugin_name: 'agentmcp',
+      tool_name: 'coord:rebind-identity',
+      role: 'su',
+      spawn_id: `lineage-edge-${n}`,
+      window_key: `lineage-edge-${n}`,
+      status: 'ok',
+      args_json: { from, to },
+      coord_owner_id: to,
+    })))}`;
+  });
+
+  afterAll(async () => { await db?.cleanup(); });
+
+  it('reads each reachable identity despite millions of converging paths', async () => {
+    // A statement deadline makes the pre-fix path explosion fail promptly; it
+    // never leaves a runaway fixture query after Vitest times the assertion out.
+    const sql = await db.adminSql.reserve();
+    try {
+      await sql`SET statement_timeout = '1500ms'`;
+      const opts = { sql, workspaceId };
+      const nodes = [root, ...Array.from({ length: layers }, (_, n) => layer(n + 1)).flat()];
+      expect(await acceptanceLineageClosure(root, opts)).toEqual(new Set(nodes));
+      expect(await acceptanceLineageAncestors(layer(layers)[0], opts)).toEqual(
+        new Set([root, ...nodes.slice(1, -2), layer(layers)[0]]),
+      );
+      expect(await areAcceptanceLineageRelated(root, 'unrelated', opts)).toBe(false);
+      expect(await lineagePartyKeys([root, layer(layers)[0], 'unrelated'], opts)).toEqual(
+        new Map([[root, root], [layer(layers)[0], root], ['unrelated', 'unrelated']]),
+      );
+      expect(await isAcceptanceAuthorIdentity(root, 'unrelated', opts)).toBe(false);
+      expect(await isAcceptanceAuthorIdentity(root, layer(layers)[0], opts)).toBe(true);
+    } finally {
+      await sql`RESET statement_timeout`;
+      sql.release();
+    }
+  });
+
+  it('preserves the exact hop limits and terminates cyclic lineage', async () => {
+    const opts = { sql: db.adminSql, workspaceId };
+    expect(await areAcceptanceLineageRelated('chain-0', 'chain-64', opts)).toBe(true);
+    expect(await areAcceptanceLineageRelated('chain-0', 'chain-65', opts)).toBe(false);
+    const closure = await acceptanceLineageClosure('chain-0', opts);
+    expect(closure.has('chain-64')).toBe(true);
+    expect(closure.has('chain-65')).toBe(false);
+    const ancestors = await acceptanceLineageAncestors('chain-65', opts);
+    expect(ancestors.has('chain-1')).toBe(true);
+    expect(ancestors.has('chain-0')).toBe(false);
+    expect(await isAcceptanceAuthorIdentity('chain-0', 'chain-32', opts)).toBe(true);
+    expect(await isAcceptanceAuthorIdentity('chain-0', 'chain-33', opts)).toBe(false);
+    expect(await acceptanceLineageClosure('cycle-a', opts)).toEqual(new Set(['cycle-a', 'cycle-b']));
+    expect(await acceptanceLineageAncestors('cycle-a', opts)).toEqual(new Set(['cycle-a', 'cycle-b']));
+  });
+});
 
 describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
   let db: OrgTestDb;
