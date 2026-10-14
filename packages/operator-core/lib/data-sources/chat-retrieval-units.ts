@@ -793,6 +793,8 @@ export function chatMessageInputFromRecord(record: ChatMessageRecord): ChatMessa
     authorLabel: textOf(payload.senderLabel) || null,
     body: typeof payload.text === 'string' ? payload.text : typeof payload.body === 'string' ? payload.body : '',
     postedAt: occurred || new Date(),
+    // An edit keeps the message's original post time (its bucket) and says when it was edited.
+    editedAt: textOf(payload.editedAt) || null,
     raw: payload,
   };
 }
