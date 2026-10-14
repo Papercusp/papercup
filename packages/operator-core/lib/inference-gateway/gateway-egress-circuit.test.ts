@@ -542,3 +542,42 @@ test('admitted transport failures still reach the claude window once pressure is
     `the transport failure reached the claude window (${initial} → ${gw.stats().admission.maxConcurrent})`,
   );
 });
+
+// gateway-admission-congestion-only-2026-10-13 R-5 / P-004: one request cannot burn every account.
+// A very large uncached prompt that is slow to start times out on first byte on EVERY account. Before
+// P-004 each timeout failed over to the next account (up to the six-attempt budget) and the stall
+// absorb then re-entered the whole ladder, re-uploading the same prompt each time. The request must
+// now stop after the TTFB bound (two attempts) and return an error, even with more healthy-looking
+// accounts left and the absorb budget still open.
+test('a request that times out on first byte on every account is attempted on at most two accounts (R-5)', async () => {
+  const calls: string[] = [];
+  const stallingFetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const auth = (init?.headers as Record<string, string> | undefined)?.authorization ?? '';
+    calls.push(auth.replace(/^Bearer\s+/i, ''));
+    // Headers never arrive; only the gateway's TTFB deadline (an abort) ends the wait.
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener('abort', () => reject(signal.reason ?? new Error('aborted')), { once: true });
+    });
+  }) as typeof fetch;
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('A1'), acct('A2'), acct('A3'), acct('A4')]),
+    fetchImpl: stallingFetch,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 2000,
+    upstreamHeadersTimeoutMs: 40,
+    // An open absorb budget: without the bound, the stall absorb would re-enter the ladder.
+    requestAbsorbMs: 3000,
+  });
+  port = await gw.listen(0);
+
+  const res = await post();
+  await res.arrayBuffer();
+
+  assert.ok(res.status >= 500, `the request fails rather than hanging (status ${res.status})`);
+  assert.equal(calls.length, 2, `attempted on ${calls.length} account(s): ${calls.join(', ')}`);
+  assert.equal(new Set(calls).size, 2, 'the two attempts went to two different accounts');
+});

@@ -1036,6 +1036,71 @@ describe('proxyOpenAi — happy path + header discipline', () => {
   });
 });
 
+/**
+ * gateway-admission-congestion-only-2026-10-13 R-3 / P-003 — pace uploads, not open streams.
+ *
+ * Before P-003 the Codex provider-lane slot was taken around the WHOLE admitted handler,
+ * so a streamed response held it until its last byte. Here the upstream answers with SSE
+ * headers and one event, then holds the response open; while it is open the lane must
+ * report the slot free, and a second request must be admitted and complete.
+ */
+describe('proxyOpenAi — a streaming response does not hold the provider admission slot (R-3)', () => {
+  it('frees the Codex slot while the stream is open, admits a second request, then relays the rest', async () => {
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let upstreamCalls = 0;
+    await bootCodex((_req, res) => {
+      upstreamCalls += 1;
+      if (upstreamCalls === 1) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_open' } })}\n\n`);
+        void firstHeld.then(() => {
+          res.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_open' } })}\n\ndata: [DONE]\n\n`);
+        });
+        return;
+      }
+      ok(_req, res);
+    });
+
+    const first = await postResponses({ model: 'gpt-5.6-sol', input: 'hold me open', stream: true });
+    expect(first.status).toBe(200);
+    const reader = first.body!.getReader();
+    const decoder = new TextDecoder();
+    let relayed = '';
+    while (!relayed.includes('response.created')) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      relayed += decoder.decode(chunk.value, { stream: true });
+    }
+    expect(relayed).toContain('response.created');
+    expect(relayed, 'the first stream is still open').not.toContain('response.completed');
+
+    // The stream is open and no longer holds a slot.
+    const during = (await (await ask('/stats')).json()) as { codexAdmission: { running: number; queued: number } };
+    expect(during.codexAdmission).toMatchObject({ running: 0, queued: 0 });
+
+    // A second request is admitted and finishes while the first stream is still open.
+    const second = await postResponses({ model: 'gpt-5.6-sol', input: 'second' });
+    expect(second.status).toBe(200);
+    expect((await second.json()) as { ok?: boolean }).toMatchObject({ ok: true });
+
+    releaseFirst();
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      relayed += decoder.decode(chunk.value, { stream: true });
+    }
+    expect(relayed).toContain('response.completed');
+    expect(relayed).toContain('[DONE]');
+
+    const after = (await (await ask('/stats')).json()) as { codexAdmission: { running: number; queued: number } };
+    expect(after.codexAdmission).toMatchObject({ running: 0, queued: 0 });
+    expect(upstreamCalls).toBe(2);
+  });
+});
+
 describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
   it('observes the completed provider model and forwarded effort without treating the request model as serving proof', async () => {
     await bootCodex((_req, res) => {

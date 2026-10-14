@@ -483,6 +483,53 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
     expect(f.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1, failoverCalls: 0 });
   });
 
+  // gateway-admission-congestion-only-2026-10-13 R-5 / P-004: one request cannot burn every account.
+  function everyAccountStallsFixture(policy: Partial<GatewayKernelPolicy>) {
+    const f = fixture(lane, {
+      policy: { maxAttempts: 6, ttfbTimeoutMs: 5, ...policy },
+      executeAttempt: async () => new Promise<KernelResponse>(() => undefined),
+    });
+    // A fresh account on every failover, so only the bound under test can stop the walk.
+    let failovers = 0;
+    f.options.adapter.selectFailover = async () => {
+      failovers += 1;
+      return {
+        ...f.routeB,
+        key: `${f.routeB.key}:${failovers}`,
+        accountId: f.routeB.accountId === null ? null : `account-${failovers}`,
+      };
+    };
+    return f;
+  }
+  const executed = (events: string[]) => events.filter((event) => event.startsWith('execute:')).length;
+
+  it('stops failing over once maxTtfbTimeouts attempts have timed out on first byte (R-5)', async () => {
+    const f = everyAccountStallsFixture({ maxTtfbTimeouts: 2 });
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'ttfb-timeout', outcome: 'upstream-error', status: 504, retryable: false });
+    expect(error.cause).toMatchObject({ code: 'ttfb-timeout', retryable: true });
+    expect(executed(f.events)).toBe(2);
+    expect(f.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1 });
+  });
+
+  it('CONTROL: without maxTtfbTimeouts a first-byte timeout fails over until maxAttempts', async () => {
+    const f = everyAccountStallsFixture({});
+    const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+
+    expect(error).toMatchObject({ code: 'ttfb-timeout', retryable: true });
+    expect(executed(f.events)).toBe(6);
+  });
+
+  it('rejects a maxTtfbTimeouts that is not a positive integer', async () => {
+    for (const maxTtfbTimeouts of [0, -1, 1.5]) {
+      const f = everyAccountStallsFixture({ maxTtfbTimeouts });
+      const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
+      expect(error, `maxTtfbTimeouts=${maxTtfbTimeouts}`).toMatchObject({ code: 'invalid-policy' });
+      expect(executed(f.events)).toBe(0);
+    }
+  });
+
   it('closes a failed TTFB stage before selecting the failover route', async () => {
     const f = fixture(lane, {
       executeAttempt: async (_prepared, context) => {
@@ -1170,14 +1217,26 @@ describe('gateway request kernel releases the admission slot while a response st
 
   it('keeps every relay guard outside the slot: a stalled released stream still aborts upstream and releases its handle', async () => {
     const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 1 });
+    // Models a real fetch body: after one chunk it stops producing, and the ONLY thing
+    // that ends the wait is the attempt's transport being torn down (abortUpstream).
+    // A native async generator cannot be cancelled by `return()` while it is suspended
+    // on an await, so if the out-of-slot relay ever stopped aborting upstream this
+    // case would hang rather than pass.
+    let fixtureRef: { attemptSignal: () => AbortSignal | undefined } | undefined;
     async function* stallsAfterFirst(): AsyncIterable<Uint8Array> {
       yield Buffer.from('first');
-      await new Promise<void>(() => undefined);
+      await new Promise<void>((_resolve, reject) => {
+        const signal = fixtureRef?.attemptSignal();
+        if (!signal) return reject(new Error('attempt signal was never captured'));
+        if (signal.aborted) return reject(signal.reason);
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
     }
     const f = streamingFixture(stallsAfterFirst(), queue, {
       releaseForStream: true,
       policy: { bodyIdleTimeoutMs: 5 },
     });
+    fixtureRef = f;
 
     const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
 

@@ -93,6 +93,19 @@ export interface GatewayKernelPolicy {
    * timer that never fires.
    */
   ttfbCapMs?: () => number;
+  /**
+   * ONE REQUEST CANNOT BURN EVERY ACCOUNT (gateway-admission-congestion-only-2026-10-13
+   * R-5 / P-004). An optional cap on how many attempts in this run may end in a
+   * TTFB timeout before the kernel stops failing over.
+   *
+   * A TTFB timeout is retryable, so without this bound one very large, uncached prompt
+   * that is simply slow to start would be re-uploaded to `maxAttempts` accounts in
+   * turn, each upload competing with every other request for the same upstream. Once
+   * the cap is reached the kernel throws a NON-retryable `ttfb-timeout` (the original
+   * failure is its `cause`), so a lane's outer recovery loop does not re-enter it either.
+   * Absent = no separate bound (only `maxAttempts` applies).
+   */
+  maxTtfbTimeouts?: number;
   bodyIdleTimeoutMs: number;
   downstreamIdleTimeoutMs: number;
   maxAttempts: number;
@@ -389,7 +402,7 @@ function validatePolicy(policy: GatewayKernelPolicy): void {
   // `ttfbCapMs` (D-014) is always a callback and is evaluated per attempt, so
   // its VALUE cannot be validated here either — a non-finite return is ignored
   // at the call site rather than failing a request that has a usable deadline.
-  const positive: Array<Exclude<keyof GatewayKernelPolicy, 'ttfbTimeoutMs' | 'ttfbCapMs'>> = [
+  const positive: Array<Exclude<keyof GatewayKernelPolicy, 'ttfbTimeoutMs' | 'ttfbCapMs' | 'maxTtfbTimeouts'>> = [
     'maxBodyBytes',
     'bodyReadTimeoutMs',
     'requestCeilingMs',
@@ -408,6 +421,16 @@ function validatePolicy(policy: GatewayKernelPolicy): void {
   }
   if (!Number.isInteger(policy.maxAttempts)) {
     throw new GatewayRequestKernelError('gateway request kernel maxAttempts must be an integer', {
+      code: 'invalid-policy',
+      outcome: 'gateway-error',
+      status: 500,
+    });
+  }
+  if (
+    policy.maxTtfbTimeouts !== undefined &&
+    (!Number.isInteger(policy.maxTtfbTimeouts) || policy.maxTtfbTimeouts <= 0)
+  ) {
+    throw new GatewayRequestKernelError('gateway request kernel maxTtfbTimeouts must be a positive integer', {
       code: 'invalid-policy',
       outcome: 'gateway-error',
       status: 500,
@@ -985,6 +1008,8 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
             : opts.policy.ttfbTimeoutMs,
         );
 
+        /** R-5: attempts in this run that ended in a TTFB timeout (see `maxTtfbTimeouts`). */
+        let ttfbTimeouts = 0;
         for (let attempt = 1; attempt <= opts.policy.maxAttempts; attempt++) {
           attempts = attempt;
           // D-018: the route's own pre-attempt pace, BEFORE the attempt context is
@@ -1109,6 +1134,24 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
               response: null,
               error: attemptFailure,
             });
+            if (attemptFailure.code === 'ttfb-timeout') {
+              ttfbTimeouts += 1;
+              const bound = opts.policy.maxTtfbTimeouts;
+              if (bound !== undefined && ttfbTimeouts >= bound) {
+                // R-5: this prompt has now failed to start on `bound` attempts; another
+                // account would only re-upload it into the same slow start.
+                throw new GatewayRequestKernelError(
+                  `gateway upstream TTFB exceeded on ${ttfbTimeouts} attempt(s); not failing over further (bound ${bound})`,
+                  {
+                    code: 'ttfb-timeout',
+                    outcome: attemptFailure.outcome,
+                    status: attemptFailure.status,
+                    retryable: false,
+                    cause: attemptFailure,
+                  },
+                );
+              }
+            }
             if (attemptFailure.retryable && attempt < opts.policy.maxAttempts) {
               const next = await chooseNextRoute({
                 currentRoute,

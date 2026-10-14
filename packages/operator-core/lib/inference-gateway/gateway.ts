@@ -403,6 +403,12 @@ const ORG_DISALLOWED_RE =
  *  observed $0 fail: "Server is temporarily limiting requests · Rate limited" → bee exits rc=1 in ~10s),
  *  and routes around a usage cap (which the bee won't retry at all). */
 const INTERNAL_RETRY_MAX_ATTEMPTS = 6;
+/** ONE REQUEST CANNOT BURN EVERY ACCOUNT (gateway-admission-congestion-only-2026-10-13 R-5 / P-004).
+ *  How many attempts of a single request may end in a TTFB timeout before the gateway stops failing
+ *  it over. A prompt that has failed to start on two accounts is slow because of the prompt (a very
+ *  large uncached upload), not the account; each further failover re-uploads it into the same slow
+ *  start while every other request waits behind those uploads. The caller gets the 504 instead. */
+const TTFB_TIMEOUT_MAX_ATTEMPTS = 2;
 /** Short backoff before retrying a TRANSIENT 429 on a freshly-rotated account (the throttle is
  *  account-specific, so a different account usually sidesteps it; the pause just avoids a hot loop). */
 const TRANSIENT_429_BACKOFF_MS = 400;
@@ -6531,6 +6537,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // Carried ACROSS passes: the live `attempt` counter bounds rotations for the
       // WHOLE request, not per ladder entry, so each pass gets only what is left.
       let attemptsUsed = 0;
+      /** R-5: attempts of this request that ended in a TTFB timeout, across every pass. */
+      let ttfbTimeoutsUsed = 0;
       let curEgressKey = egressCacheKey(active.accountId, undefined);
       let lastTransportHadProxy = false;
       let shedRecorded = false;
@@ -7037,6 +7045,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
               // The live `attempt` bounds rotations for the WHOLE request, so a pass
               // gets only the remainder — and a budget RESET restores the full count.
               maxAttempts: Math.max(1, INTERNAL_RETRY_MAX_ATTEMPTS - attemptsUsed),
+              // R-5: the TTFB bound is per REQUEST, so a pass gets only what is left of it.
+              maxTtfbTimeouts: Math.max(1, TTFB_TIMEOUT_MAX_ATTEMPTS - ttfbTimeoutsUsed),
             },
             telemetry: requestStageTelemetry,
             // D-008: adopt the span this HTTP request already opened, or the kernel
@@ -7127,6 +7137,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                     return;
                   }
                   const stalled = error.code === 'ttfb-timeout';
+                  if (stalled) ttfbTimeoutsUsed += 1;
                   // WI-6554700010009426: an admitted attempt that died on the wire (TTFB
                   // deadline / transport) spent its slot and produced nothing. It adds ONE
                   // unit of congestion pressure per request (WI-6554700010011426, plan D-001):
@@ -7956,6 +7967,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
             if (
               ABSORB_STALLS_ON &&
               everRotated &&
+              // R-5: a request that has hit its TTFB bound is not re-entered — holding it
+              // through the stall would just upload the same slow prompt to more accounts.
+              ttfbTimeoutsUsed < TTFB_TIMEOUT_MAX_ATTEMPTS &&
               absorbDeadlineAt > 0 &&
               Date.now() < absorbDeadlineAt &&
               !res.headersSent
@@ -9029,6 +9043,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             bodyIdleTimeoutMs: upstreamBodyIdleTimeoutMs,
             downstreamIdleTimeoutMs: downstreamIdleMs,
             maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
+            maxTtfbTimeouts: TTFB_TIMEOUT_MAX_ATTEMPTS,
           },
           telemetry: requestStageTelemetry,
           span: stageSpan,
@@ -10153,6 +10168,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             bodyIdleTimeoutMs: upstreamBodyIdleTimeoutMs,
             downstreamIdleTimeoutMs: downstreamIdleMs,
             maxAttempts: INTERNAL_RETRY_MAX_ATTEMPTS,
+            maxTtfbTimeouts: TTFB_TIMEOUT_MAX_ATTEMPTS,
           },
           telemetry: requestStageTelemetry,
           // D-008: adopt the span this HTTP request already opened. Without it the
