@@ -134,6 +134,47 @@ describe('EI-25695165283875278 — assertion artifacts survive snapshot teardown
 });
 
 describe("EI-25270951515189161 — verifier snapshots avoid active source edits", () => {
+  it('qualifies committed Git source before dependencies and refuses the archive-only regression', () => {
+    const committed = src.slice(src.indexOf('snapshot_committed_operator_source() {'), operatorSnapshotCallIdx);
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-bundle-checkout-contract-'));
+    try {
+      for (const archiveOnly of [false, true]) {
+        const orderFile = resolve(fixture, archiveOnly ? 'archive-order' : 'checkout-order');
+        const result = spawnSync('bash', ['-c', [
+          'set -euo pipefail',
+          'REPO_DIR=/canonical; WORK="$TEST_ROOT"; OPERATOR_SNAPSHOT_PARENT="$TEST_ROOT"',
+          'VERIFY_TAURI_SOURCE_REF=commit; VERIFY_TAURI_SOURCE_INPUTS=apps/operator/ui.ts',
+          'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
+          // Model the existing exporter/fence contract: a source receipt alone
+          // cannot qualify bundle inputs against independently held Git objects.
+          'node() {',
+          '  printf "%s\\n" "$*" >> "$TEST_ORDER"',
+          '  if [[ "$*" == *verifier-measure* ]]; then echo 4096; fi',
+          '  if [[ "$*" == *verifier-prepare* ]]; then',
+          '    case " $* " in *" --git-checkout "*) ;; *) echo "independently verified Git checkout required" >&2; return 2 ;; esac',
+          '  fi',
+          '}',
+          'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$TEST_ORDER"; }\' > "${!#}"; }',
+          dependencySnapshotSource,
+          archiveOnly ? committed.replace('--git-checkout', '') : committed,
+          'snapshot_committed_operator_source',
+        ].join('\n')], { encoding: 'utf8', timeout: 10_000,
+          env: { ...process.env, TEST_ROOT: fixture, TEST_ORDER: orderFile } });
+        const order = readFileSync(orderFile, 'utf8');
+        if (archiveOnly) {
+          expect(result.status).toBe(1);
+          expect(result.stderr).toContain('independently verified Git checkout required');
+          expect(order).not.toContain('verifier-verify');
+          expect(order).not.toContain('\ndeps\n');
+        } else {
+          expect(result.status, result.stderr).toBe(0);
+          expect(order.indexOf('verifier-verify')).toBeGreaterThan(order.indexOf('verifier-prepare'));
+          expect(order.indexOf('\ndeps\n')).toBeGreaterThan(order.indexOf('verifier-verify'));
+        }
+      }
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
   it.each([false, true])('preserves the invoked source repository through re-exec while keeping the dependency donor separate (distinct=%s)', distinct => {
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-source-donor-contract-'));
     const sourceRepo = resolve(fixture, 'tested source');
@@ -476,10 +517,12 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
 
 describe("EI-25270951515189161 — frozen host bundle import smoke runs before Tauri", () => {
   const smokeStartIdx = src.indexOf("smoke_verifier_operator_host() {");
-  const smokeEndIdx = src.indexOf("build_verifier_operator_host || {", smokeStartIdx);
+  const smokeEndIdx = src.indexOf("\nvh_run_step verifier-host-bundle ", smokeStartIdx);
+  if (smokeStartIdx < 0 || smokeEndIdx < 0) throw new Error('Maintained host smoke function boundary was not found');
   const smokeSource = src.slice(smokeStartIdx, smokeEndIdx);
 
-  function runSmoke(bundleSource: string, timeoutSec: number | string | null = 3, arenaCap?: string, configuredBudget?: string) {
+  function runSmoke(bundleSource: string, timeoutSec: number | string | null = 3, arenaCap?: string,
+    configuredBudget?: string, inheritedEnv: NodeJS.ProcessEnv = process.env) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-host-import-smoke-"));
     const bundle = resolve(fixture, "hono-host.mjs");
     writeFileSync(bundle, bundleSource);
@@ -499,7 +542,11 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
           encoding: "utf8",
           timeout: 8_000,
           env: {
-            ...process.env,
+            ...inheritedEnv,
+            // These standalone .mjs fixtures are outside the selected checkout.
+            // Test-runner preloads can execute before the smoke's own preload,
+            // changing both the failure cause and the timed import budget.
+            NODE_OPTIONS: undefined,
             MALLOC_ARENA_MAX: arenaCap,
             HOST_IMPORT_TIMEOUT: undefined,
             VERIFY_TAURI_HOST_IMPORT_TIMEOUT: configuredBudget,
@@ -531,6 +578,7 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
         "console.log('PAPERCUSP_HOST_IMPORT_SMOKE_OK');\n",
     );
     expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).not.toContain('vh_run_step: command not found');
     expect(result.stderr).toContain("import smoke passed");
     expect(result.smokeEvidence).toMatchObject({ exitCode: 0, outcome: "passed" });
     expect(result.smokeOutput).toContain("PAPERCUSP_HOST_IMPORT_SMOKE_START");
@@ -558,6 +606,16 @@ describe("EI-25270951515189161 — frozen host bundle import smoke runs before T
     const insufficient = runSmoke(delayed, 1);
     expect(insufficient.status).toBe(1);
     expect(insufficient.smokeEvidence).toMatchObject({ exitCode: 124, outcome: "process-failed" });
+  });
+
+  it('isolates the standalone smoke fixture from a failing outer-runner preload', () => {
+    const result = runSmoke("console.log('PAPERCUSP_HOST_IMPORT_SMOKE_OK');\n", 3, undefined, undefined, {
+      ...process.env,
+      NODE_OPTIONS: '--import=data:text/javascript,throw%20new%20Error(%22outer%20runner%20preload%20leaked%22)',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.smokeEvidence).toMatchObject({ exitCode: 0, outcome: 'passed' });
+    expect(result.smokeOutput).not.toContain('outer runner preload leaked');
   });
 
   it.each([undefined, "4"])("sets the arena cap before import and preserves a configured cap (%s)", arenaCap => {

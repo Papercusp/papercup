@@ -1630,8 +1630,12 @@ snapshot_committed_operator_source() {
   receipt="$WORK/verifier-source-receipt.json"
   OPERATOR_SOURCE_ROOT="$snapshot_root"
   write_run_marker "$$" || return 1
+  # The host-bundle fence verifies every source input against independent Git
+  # objects. An archive receipt alone cannot qualify that execution boundary.
+  # Ask the maintained exporter for its verified checkout before dependencies
+  # or costly bundling; keep the fence fail-closed rather than skipping it.
   node "$source_repo/scripts/source-preview.mjs" verifier-prepare \
-    --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" --out "$snapshot_root" \
+    --repo "$source_repo" --ref "$VERIFY_TAURI_SOURCE_REF" --out "$snapshot_root" --git-checkout \
     "${input_args[@]}" --receipt "$receipt" || return 1
   # Caller receipt is outside the archive; verify before loading any exported helper.
   node "$REPO_DIR/scripts/source-preview.mjs" verifier-verify \
