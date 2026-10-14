@@ -28,7 +28,10 @@
  *  - egress  : the hostname of `url` / `urls` / `endpoint` / `baseUrl` / `href` / `uri`
  *              arguments (an unparseable value is judged verbatim, so it fails an allow list).
  *  - dataUse : declared `dataUse` / `dataUses` / `dataClass` arguments, plus `<ns>` for every
- *              `<ns>:read` capability the call declares (`secrets:read` → `secrets`).
+ *              `<ns>:read` capability the call declares (`secrets:read` → `secrets`). A
+ *              `dataClass` / `dataClasses` value naming a customer data class
+ *              (auth/hosted/customer-data-map.ts) is also judged as `class:<cls>` (P-016a DLP),
+ *              the same label the injection legs carry, so one `class:pii` rule covers both.
  *  - actions : every declared capability (`plans:write`, `net:fetch`, …), `boundary:<b>` for any
  *              non-dispatch boundary, and `exec:<binary>` for a native/shell spawn.
  */
@@ -36,6 +39,7 @@ import type { KernelEnforcementRequest, KernelEnforcementResult } from '@papercu
 import { pinModuleState } from '@papercusp/module-singleton';
 import { evaluateInheritedPolicy, type GovernedRequest } from './inherited-policy';
 import { knownProcessingRouteOfHost, modelPrefixProviderHost, processingRouteOfHost } from './processing-route';
+import { dataClassUseLabel, isCustomerDataClass } from '../auth/hosted/customer-data-map';
 import { loadChainForWorkspace, type ChainLoad } from './store';
 
 export const ORG_POLICY_CODE_PREFIX = 'org_policy:';
@@ -101,6 +105,8 @@ const PROVIDER_KEYS = ['provider', 'providers', 'modelProvider'] as const;
 const REGION_KEYS = ['region', 'regions', 'processingRegion'] as const;
 const URL_KEYS = ['url', 'urls', 'endpoint', 'baseUrl', 'href', 'uri'] as const;
 const DATA_USE_KEYS = ['dataUse', 'dataUses', 'dataClass'] as const;
+/** Arguments naming a customer data class; each known class is also judged as `class:<cls>`. */
+const DATA_CLASS_KEYS = ['dataClass', 'dataClasses'] as const;
 const PLUGIN_VERB = /^([a-z0-9][a-z0-9-]*)\.[a-z0-9_-]+$/i;
 
 function hostOf(raw: string): string {
@@ -129,6 +135,10 @@ export function governedRequestOf(request: Pick<KernelEnforcementRequest, 'toolN
   const capabilities = strings([...request.capabilities]);
   const dataUse = [
     ...pick(DATA_USE_KEYS),
+    ...pick(DATA_CLASS_KEYS)
+      .map((c) => c.toLowerCase())
+      .filter(isCustomerDataClass)
+      .map(dataClassUseLabel),
     ...capabilities.filter((c) => c.endsWith(':read')).map((c) => c.slice(0, -':read'.length)),
   ];
   const actions = [...capabilities];

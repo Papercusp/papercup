@@ -13,6 +13,7 @@ import {
   SIEM_READ_COLUMNS,
   SIEM_SOURCE_COLUMNS,
   SIEM_WITHHELD_CREDENTIAL,
+  SIEM_CODE_SHAPED,
   SIEM_WITHHELD_FREE_TEXT,
   buildSiemBatch,
   isDeniedInvocation,
@@ -21,6 +22,7 @@ import {
   settledPrefix,
   siemArgsDigest,
   siemClassificationProblems,
+  siemCodeValue,
   siemPseudonym,
   verifySiemBatchJsonl,
   type SiemBatchEntry,
@@ -210,6 +212,27 @@ describe('redaction', () => {
     expect(ev(projectSiemEvent(row(2, { status: 'error', error_code: 'authorization_denied' }), ctx)).status_detail).toBe(
       'authorization_denied',
     );
+  });
+
+  // WI-6554700010012363: ONE emit-code shape for both streams (D-017 tool invocations, D-018
+  // organization audit). Uuid-shaped ids pass as codes; a uuid ACTOR is still pseudonymized,
+  // because the actor column's treatment is pseudonymize, never emit-code.
+  it('uses one emit-code shape for both streams: codes and uuids pass, free text and overlong values do not', () => {
+    const uuid = '11111111-1111-4111-8111-111111111111';
+    expect(siemCodeValue(uuid)).toBe(uuid);
+    expect(siemCodeValue('23505')).toBe('23505');
+    expect(siemCodeValue('authorization_denied')).toBe('authorization_denied');
+    expect(siemCodeValue('a'.repeat(128))).toBe('a'.repeat(128));
+    expect(siemCodeValue('a'.repeat(129))).toBe(SIEM_WITHHELD_FREE_TEXT);
+    expect(siemCodeValue('-leading-dash')).toBe(SIEM_WITHHELD_FREE_TEXT);
+    expect(siemCodeValue('two words')).toBe(SIEM_WITHHELD_FREE_TEXT);
+    expect(siemCodeValue(null)).toBeNull();
+    expect(SIEM_CODE_SHAPED.test(uuid)).toBe(true);
+
+    const e = ev(projectSiemEvent(row(3, { status: 'error', error_code: uuid, coord_owner_id: uuid }), ctx));
+    expect(e.status_detail).toBe(uuid);
+    expect(e.actor.user.uid).toBe(siemPseudonym(KEY, uuid));
+    expect(JSON.stringify(e.actor)).not.toContain(uuid);
   });
 
   it('secret canary: no credential, raw actor or free text reaches the exported bytes', () => {

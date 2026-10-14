@@ -7,10 +7,16 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { HOSTED_CUSTOMER_DATA_TABLES, qualifiedName } from '../auth/hosted/customer-data-map';
+import {
+  CUSTOMER_DATA_CLASSES,
+  HOSTED_CUSTOMER_DATA_TABLES,
+  isCustomerDataClass,
+  qualifiedName,
+} from '../auth/hosted/customer-data-map';
 import {
   PILOT_CONTRACT_ROWS,
   PILOT_PROCESSING_MAP,
+  pilotPathDataClasses,
   pilotStorePopulation,
 } from './pilot-processing-map';
 
@@ -148,6 +154,21 @@ describe('pilot processing map', () => {
       }
     }
     expect(PILOT_PROCESSING_MAP.some((p) => p.status === 'selected' && p.restrictions.kind === 'enforced')).toBe(true);
+  });
+
+  // P-016a DLP (WI-6554700010011918): every path names the customer data classes it moves, in the
+  // one vocabulary the dataUse `class:<cls>` labels use. Export never releases secrets; a backup
+  // carries every class, so restore and deletion reach all of them.
+  it('declares the data classes every path moves, in the customer data-class vocabulary', () => {
+    for (const p of PILOT_PROCESSING_MAP) {
+      expect(p.dataClasses.length, `${p.id} declares no data classes`).toBeGreaterThan(0);
+      expect(new Set(p.dataClasses).size, `${p.id} repeats a class`).toBe(p.dataClasses.length);
+      for (const cls of p.dataClasses) expect(isCustomerDataClass(cls), `${p.id}: ${cls}`).toBe(true);
+      expect(pilotPathDataClasses(p.id)).toEqual(p.dataClasses);
+    }
+    expect(pilotPathDataClasses('organization-export-and-deletion')).not.toContain('secret');
+    expect([...pilotPathDataClasses('backups-and-restores')].sort()).toEqual([...CUSTOMER_DATA_CLASSES].sort());
+    expect(() => pilotPathDataClasses('no-such-path')).toThrow(/no path 'no-such-path'/);
   });
 
   it('gives every pending path an owning work-item', () => {

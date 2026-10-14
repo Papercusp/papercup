@@ -86,7 +86,8 @@ describe('governedRequestOf — subject mapping', () => {
       providers: [],
       regions: [],
       egress: ['api.example.com'],
-      dataUse: ['pii', 'secrets'],
+      // A dataClass naming a customer data class is also judged as its class: label (P-016a DLP).
+      dataUse: ['pii', 'class:pii', 'secrets'],
       actions: ['secrets:read', 'net:fetch', 'boundary:indirect-dispatch'],
     });
   });

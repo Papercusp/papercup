@@ -133,9 +133,12 @@ describe('judgeLaunchGovernance', () => {
 
 describe('judgeInjectionLegs', () => {
   it('carries model-context plus the leg label on every leg', () => {
-    expect(injectionGovernedRequest('organization')).toEqual({ dataUse: [MODEL_CONTEXT_DATA_USE, 'organization-documents'] });
+    // ...and the class: labels of the leg's processing-map path (search-and-retrieval, P-016a DLP).
+    expect(injectionGovernedRequest('organization')).toEqual({
+      dataUse: [MODEL_CONTEXT_DATA_USE, 'organization-documents', 'class:customer-content', 'class:pii'],
+    });
     expect(injectionGovernedRequest('live', { agent: 'codex', model: 'gpt-5.6' })).toEqual({
-      dataUse: [MODEL_CONTEXT_DATA_USE, 'federated-search'],
+      dataUse: [MODEL_CONTEXT_DATA_USE, 'federated-search', 'class:customer-content', 'class:pii'],
       models: ['gpt-5.6'],
       providers: ['openai'],
       regions: [UNRESOLVED_REGION],

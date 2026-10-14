@@ -21,6 +21,12 @@
  */
 import { z } from 'zod';
 import {
+  CUSTOMER_DATA_CLASSES,
+  CUSTOMER_DATA_CLASS_DESCRIPTIONS,
+  dataClassUseLabel,
+  type CustomerDataClass,
+} from '../auth/hosted/customer-data-map';
+import {
   describeRefusal,
   evaluateInheritedPolicy,
   GOVERNED_CATEGORIES,
@@ -200,7 +206,27 @@ export interface GovernancePolicyState {
   historyTruncated: boolean;
   categories: readonly GovernedCategory[];
   levels: readonly PolicyLevel[];
+  /**
+   * The customer data classes a `dataUse` rule can govern (P-016a DLP): `label` is the value a
+   * rule names (`class:pii`); the store refuses any other `class:` value.
+   */
+  dataClasses: readonly GovernedDataClass[];
   generatedAt: string;
+}
+
+export interface GovernedDataClass {
+  label: string;
+  class: CustomerDataClass;
+  description: string;
+}
+
+/** The data-class vocabulary, in CUSTOMER_DATA_CLASSES order. */
+export function governedDataClasses(): GovernedDataClass[] {
+  return CUSTOMER_DATA_CLASSES.map((cls) => ({
+    label: dataClassUseLabel(cls),
+    class: cls,
+    description: CUSTOMER_DATA_CLASS_DESCRIPTIONS[cls],
+  }));
 }
 
 export function chainRevision(chain: readonly Pick<PolicyLayer, 'layerId' | 'version'>[]): string | null {
@@ -235,6 +261,7 @@ export async function getGovernancePolicyState(
     historyTruncated: ordered.length > withHistory.length,
     categories: GOVERNED_CATEGORIES,
     levels: POLICY_LEVELS,
+    dataClasses: governedDataClasses(),
     generatedAt: d.now().toISOString(),
   };
 }

@@ -32,6 +32,7 @@
 import {
   HOSTED_CUSTOMER_DATA_TABLES,
   qualifiedName,
+  type CustomerDataClass,
   type RetentionClass,
 } from '../auth/hosted/customer-data-map';
 import type { GovernedCategory } from '../governance-policy/inherited-policy';
@@ -118,6 +119,13 @@ export interface PilotDataPath {
   readonly canaryJourney: readonly string[] | null;
   /** Processing-location restrictions this path enforces (P-016a). */
   readonly restrictions: ProcessingRestrictions;
+  /**
+   * P-016a DLP: the data classes (hosted customer-data vocabulary) this path moves. REQUIRED and
+   * never empty. The injection seat derives each leg's `class:<class>` dataUse labels from the
+   * path that carries it (`pilotPathDataClasses`), so the map, not a second list, decides what
+   * a `dataUse.deny: ['class:pii']` rule withholds.
+   */
+  readonly dataClasses: readonly CustomerDataClass[];
   /** Never empty. `['none']` is the explicit "nothing unknown". */
   readonly unknowns: readonly string[];
 }
@@ -127,6 +135,8 @@ const DS = 'packages/operator-core/lib/data-sources';
 export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   {
     id: 'source-read-and-copy',
+    // Stored document and chat copies (content), permission lists and identity bindings that name people (pii).
+    dataClasses: ['customer-content', 'pii', 'operational'],
     restrictions: { kind: 'no-model-processing', reason: `Connector reads and stored copies stay in the operator database. ${VIA_MODEL_INFERENCE}` },
     label: 'Connector read and stored copy of organization source content',
     contractRows: ['Source read and stored copy'],
@@ -167,6 +177,8 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'search-and-retrieval',
+    // Search hits are source text; senders, authors and mentions name people.
+    dataClasses: ['customer-content', 'pii'],
     restrictions: { kind: 'no-model-processing', reason: `Search returns ACL-filtered rows to the calling session; federated providers receive the query, not model processing. ${VIA_MODEL_INFERENCE}` },
     label: 'Organization search, federated live search and the granted-sources turn block',
     contractRows: ['Search and embeddings'],
@@ -198,6 +210,8 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'model-inference',
+    // Prompts carry injected source text and the people it names.
+    dataClasses: ['customer-content', 'pii'],
     restrictions: {
       kind: 'enforced',
       categories: ['models', 'providers', 'regions', 'egress'],
@@ -213,7 +227,7 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
       { file: 'packages/operator-core/lib/governance-policy/inherited-policy.ts', exportedSymbol: 'evaluateInheritedPolicy', role: 'Organization, department and workspace policy chain' },
       { file: `${DS}/granted-sources-injection.ts`, exportedSymbol: 'fenceUntrustedSourceText', role: 'Fences source text as untrusted before it enters model context' },
       { file: 'packages/operator-core/lib/governance-policy/session-governance.ts', exportedSymbol: 'judgeLaunchGovernance', role: 'Judges the launched session\'s resolved model (models) and provider API host (egress) before any terminal opens, in capability:launch-agent and fleet:launch-on-plan' },
-      { file: 'packages/operator-core/lib/governance-policy/session-governance.ts', exportedSymbol: 'judgeInjectionLegs', role: 'Judges each granted-sources leg (dataUse model-context plus the leg label, and the session provider when known) before the leg reads; a refused leg is never read' },
+      { file: 'packages/operator-core/lib/governance-policy/session-governance.ts', exportedSymbol: 'judgeInjectionLegs', role: 'Judges each granted-sources leg (dataUse model-context plus the leg label and its class:<cls> data-class labels, and the session provider when known) before the leg reads; a refused leg is never read' },
     ],
     aclCheck: 'Only content that passed the search-and-retrieval ACL filter is injected, and only from legs the inherited policy permits.',
     revocation: 'The policy chain is re-read per dispatch, per launch and per turn-start injection (5s cache), with a fail-closed refusal when a chain read fails and there is no last-known chain.',
@@ -223,6 +237,7 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
       'packages/operator-core/lib/governance-policy/session-governance.test.ts',
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts',
       'packages/operator-core/lib/governance-policy/processing-route.test.ts',
+      'packages/operator-core/lib/governance-policy/data-classes.test.ts',
     ],
     unknowns: [
       'Provider-side retention is not recorded. A global endpoint (api.anthropic.com, api.openai.com) does not prove where it processes, so its region is judged as unresolved-region: residency needs a regions allow list, and no launch backend reaches a region-pinned route yet (P-016 private-route decision).',
@@ -231,6 +246,8 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'personal-vault-disclosure',
+    // Personal mail and files and their reader sets.
+    dataClasses: ['customer-content', 'pii'],
     restrictions: { kind: 'not-assessed', reason: 'Outside the assumed pilot profile.' },
     label: 'Reader-set disclosure of personal-vault documents',
     contractRows: ['Model inference'],
@@ -252,6 +269,8 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'workflow-output-and-audit',
+    // Workflow outputs are content; audit rows carry actors (pii) and states.
+    dataClasses: ['customer-content', 'pii', 'operational'],
     restrictions: { kind: 'no-model-processing', reason: `Outputs and audit rows are written to the operator database; the model calls that produced them were judged on the model-inference path. ${VIA_MODEL_INFERENCE}` },
     label: 'Workflow output, organization audit events, operator audit and model-call ledger',
     contractRows: ['Workflow output and audit'],
@@ -280,6 +299,8 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'logs-and-telemetry',
+    // Log lines can quote content and people until redaction proves otherwise (status unknown).
+    dataClasses: ['operational', 'pii', 'customer-content'],
     restrictions: { kind: 'not-assessed', reason: 'Path status is unknown; where telemetry is processed is part of the customer-key and private-route decision (P-016).' },
     label: 'Service logs and telemetry that may carry pilot content',
     contractRows: ['Logs and telemetry'],
@@ -303,6 +324,8 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'backups-and-restores',
+    // A database dump carries every class, secrets included.
+    dataClasses: ['customer-content', 'pii', 'secret', 'billing', 'operational'],
     restrictions: { kind: 'not-assessed', reason: 'Path status is unknown; backup location and keys are part of the customer-key lifecycle decision (P-016).' },
     label: 'Database backups and restore of pilot stores',
     contractRows: ['Backups and restores'],
@@ -325,6 +348,8 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
   },
   {
     id: 'organization-export-and-deletion',
+    // Export never emits the secret class (exportOrganizationData).
+    dataClasses: ['customer-content', 'pii', 'billing', 'operational'],
     restrictions: { kind: 'no-model-processing', reason: 'Export and deletion read and write the operator database and receipts; no model processes the exported content on this path.' },
     label: 'Organization-scoped export and deletion over the declared store population',
     contractRows: ['Source read and stored copy', 'Backups and restores'],
@@ -369,6 +394,13 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
     ],
   },
 ];
+
+/** The data classes one pilot path moves (P-016a DLP). Throws on an unknown id: a caller names a real path. */
+export function pilotPathDataClasses(pathId: string): readonly CustomerDataClass[] {
+  const path = PILOT_PROCESSING_MAP.find((p) => p.id === pathId);
+  if (!path) throw new Error(`pilot-processing-map: no path '${pathId}'`);
+  return path.dataClasses;
+}
 
 export interface PopulationEntry {
   readonly qualified: string;

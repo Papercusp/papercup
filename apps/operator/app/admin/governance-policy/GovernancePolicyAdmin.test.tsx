@@ -116,6 +116,7 @@ function state(over: Partial<GovernancePolicyState> = {}): GovernancePolicyState
     historyTruncated: false,
     categories: CATEGORIES,
     levels: ['organization', 'department', 'workspace'],
+    dataClasses: [{ label: 'class:pii', class: 'pii', description: 'Personal data about a person.' }],
     generatedAt: '2026-10-14T00:00:00Z',
     ...over,
   };

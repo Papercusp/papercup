@@ -205,7 +205,15 @@ export function siemArgsDigest(key: Uint8Array | string, args: unknown): SiemArg
   return { keys, omittedKeys: all.length - keys.length, hmac: hmacHex(key, 'args', canonical) };
 }
 
-const CODE_SHAPED = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
+/**
+ * The ONE emit-code shape both SIEM streams use (WI-6554700010012363): an identifier of 1-128
+ * characters from [A-Za-z0-9_.:-], starting with a letter or digit. It admits codes
+ * (`authorization_denied`, SQLSTATE `23505`), uuids (an org-audit `target_id`, D-018 item 4),
+ * store names, migration file names and build shas. Anything with a space or another free-text
+ * character is withheld. Credentials are scrubbed before this check, so an identifier-shaped
+ * secret never reaches it.
+ */
+export const SIEM_CODE_SHAPED = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
 function scalar(value: unknown): string | number | boolean | null {
   if (value === null || value === undefined) return null;
@@ -232,7 +240,7 @@ export const siemAssertKey = (key: Uint8Array | string): void => void keyBytes(k
 /** emit-code: the value when it is a code-shaped identifier, otherwise the free-text marker. */
 export function siemCodeValue(value: unknown): string | null {
   const v = scalar(value);
-  return v === null ? null : CODE_SHAPED.test(String(v)) ? String(v) : SIEM_WITHHELD_FREE_TEXT;
+  return v === null ? null : SIEM_CODE_SHAPED.test(String(v)) ? String(v) : SIEM_WITHHELD_FREE_TEXT;
 }
 
 export interface SiemPolicyLayerRef {
@@ -304,11 +312,9 @@ export function projectSiemEvent(row: SiemSourceRow, ctx: ProjectSiemEventContex
       case 'emit':
         source[column] = scalar(raw);
         break;
-      case 'emit-code': {
-        const v = scalar(raw);
-        source[column] = v === null ? null : CODE_SHAPED.test(String(v)) ? String(v) : SIEM_WITHHELD_FREE_TEXT;
+      case 'emit-code':
+        source[column] = siemCodeValue(raw);
         break;
-      }
       case 'pseudonymize': {
         const v = scalar(raw);
         source[column] = v === null || v === '' ? null : siemPseudonym(ctx.key, String(v));

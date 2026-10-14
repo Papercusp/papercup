@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { workScopeExceptionExpirySchema } from '../work-scope-policy';
+import { CUSTOMER_DATA_CLASSES, DATA_CLASS_USE_PREFIX, dataClassUseLabel, isCustomerDataClass } from '../auth/hosted/customer-data-map';
 import {
   GOVERNED_CATEGORIES,
   POLICY_LEVELS,
@@ -244,6 +245,13 @@ export function validateLayerInput(input: UpsertLayerInput): string | null {
   if (!isWellFormedLayer(candidate)) {
     return `rules must map only ${GOVERNED_CATEGORIES.join('/')} to { allow?: string[], deny?: string[] }`;
   }
+  const dataUseRule = input.rules?.dataUse;
+  for (const side of ['allow', 'deny'] as const) {
+    for (const value of dataUseRule?.[side] ?? []) {
+      const problem = unknownDataClassLabel(value);
+      if (problem) return `rules.dataUse.${side}: ${problem}`;
+    }
+  }
   for (const [i, e] of (input.exceptions ?? []).entries()) {
     if (!GOVERNED_CATEGORIES.includes(e?.category)) return `exceptions[${i}].category is not a governed category`;
     if (typeof e.pattern !== 'string' || !e.pattern.trim()) return `exceptions[${i}].pattern is required`;
@@ -251,8 +259,24 @@ export function validateLayerInput(input: UpsertLayerInput): string | null {
     if (!workScopeExceptionExpirySchema.safeParse(e.expiresAt).success) {
       return `exceptions[${i}].expiresAt must be an absolute ISO-8601 time; exceptions always expire`;
     }
+    if (e.category === 'dataUse') {
+      const problem = unknownDataClassLabel(e.pattern);
+      if (problem) return `exceptions[${i}].pattern: ${problem}`;
+    }
   }
   return null;
+}
+
+/**
+ * A `class:<cls>` dataUse value must name a customer data class (P-016a DLP), so a typo such as
+ * `class:pll` cannot silently govern nothing. A wildcard pattern (`class:*`) is a deliberate
+ * family match and is left to the evaluator. Returns the refusal text, else null.
+ */
+export function unknownDataClassLabel(value: string): string | null {
+  if (typeof value !== 'string' || !value.startsWith(DATA_CLASS_USE_PREFIX) || value.includes('*')) return null;
+  const cls = value.slice(DATA_CLASS_USE_PREFIX.length);
+  if (isCustomerDataClass(cls)) return null;
+  return `'${value}' names no customer data class; use one of ${CUSTOMER_DATA_CLASSES.map(dataClassUseLabel).join(', ')}`;
 }
 
 /** Create or replace one layer, bumping its version and recording the change, atomically. */

@@ -22,7 +22,9 @@
  *             a `regions` allow list refuses it until a region-pinned route exists.
  *  - dataUse: every injection leg carries MODEL_CONTEXT_DATA_USE plus its own label, so one
  *             rule (`dataUse.deny: ['model-context']`) stops all injected source text, and a
- *             narrower rule stops one leg.
+ *             narrower rule stops one leg. Each leg also carries a `class:<cls>` label for every
+ *             data class its pilot processing-map path moves (P-016a DLP), so
+ *             `dataUse.deny: ['class:pii']` withholds every leg that can carry personal data.
  *
  * The provider is mapped to `egress`, never to `models`: a `models` allow list of model ids
  * would otherwise refuse every launch because a provider token matches none of its patterns.
@@ -30,6 +32,8 @@
 import type { GovernedRequest } from './inherited-policy';
 import { workspacePolicyJudge, type EnforceInheritedPolicyDeps } from './enforce';
 import { MODEL_PROVIDER_EGRESS, modelPrefixProviderHost, processingRouteOfHost, type ProcessingRoute } from './processing-route';
+import { dataClassUseLabel } from '../auth/hosted/customer-data-map';
+import { pilotPathDataClasses } from '../data-governance/pilot-processing-map';
 
 /** Provider API host per launch backend. `omp` routes per model, so it is resolved from the model. */
 export const BACKEND_PROVIDER_EGRESS: Readonly<Record<string, string>> = {
@@ -156,9 +160,27 @@ export const INJECTION_LEG_DATA_USE: Readonly<Record<InjectionLeg, string>> = {
   live: 'federated-search',
 };
 
+/**
+ * The pilot processing-map path each injection leg's text travels (P-016a DLP). The personal
+ * leg discloses vault content; the pot, organization and live legs are retrieval results.
+ */
+export const INJECTION_LEG_PROCESSING_PATH: Readonly<Record<InjectionLeg, string>> = {
+  personal: 'personal-vault-disclosure',
+  pot: 'search-and-retrieval',
+  organization: 'search-and-retrieval',
+  live: 'search-and-retrieval',
+};
+
+/** The data classes one injection leg carries, as `class:<cls>` dataUse labels (one vocabulary). */
+export function injectionLegDataClassLabels(leg: InjectionLeg): string[] {
+  return pilotPathDataClasses(INJECTION_LEG_PROCESSING_PATH[leg]).map(dataClassUseLabel);
+}
+
 /** The governed subject for one injection leg. `target` adds the session model/provider when known. */
 export function injectionGovernedRequest(leg: InjectionLeg, target?: LaunchGovernanceTarget | null): GovernedRequest {
-  const subject: GovernedRequest = { dataUse: [MODEL_CONTEXT_DATA_USE, INJECTION_LEG_DATA_USE[leg]] };
+  const subject: GovernedRequest = {
+    dataUse: [MODEL_CONTEXT_DATA_USE, INJECTION_LEG_DATA_USE[leg], ...injectionLegDataClassLabels(leg)],
+  };
   if (!target) return subject;
   return { ...subject, ...launchGovernedRequest([target]) };
 }
