@@ -150,6 +150,60 @@ export function browserReady(root) {
   return executable;
 }
 
+// Let Playwright report its launch failure before the outer deadline fires.
+// The probe owns a process group so a stalled browser cannot outlive the probe.
+export async function browserLaunchReady(root, { env = process.env, timeoutMs = 15000 } = {}) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 100) throw new Error('Invalid browser readiness deadline');
+  const launchTimeout = Math.min(10000, Math.floor(timeoutMs * 0.75));
+  const program = `const mark=(phase,extra={})=>console.log(JSON.stringify({phase,...extra}));
+mark('import');
+try {
+  const { chromium } = await import('playwright');
+  mark('launch');
+  const browser = await chromium.launch({headless:true,timeout:${launchTimeout}});
+  mark('close',{version:browser.version()});
+  await browser.close();
+  mark('ready');
+} catch (error) { console.error(String(error)); process.exitCode=1; }`;
+  return new Promise((resolveProbe, rejectProbe) => {
+    const grouped = process.platform !== 'win32';
+    const child = spawn(process.execPath, ['--input-type=module', '-e', program], {
+      cwd: root, detached: grouped, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...env, DEBUG: [env.DEBUG, 'pw:browser'].filter(Boolean).join(',') },
+    });
+    let stdout = '', stderr = '', phase = 'start', timedOut = false, escalation;
+    const terminate = signal => {
+      try { if (grouped && child.pid) process.kill(-child.pid, signal); else child.kill(signal); }
+      catch (error) { if (error.code !== 'ESRCH') stderr += `\n${error.message}`; }
+    };
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      terminate('SIGTERM');
+      escalation = setTimeout(() => terminate('SIGKILL'), 1000);
+    }, timeoutMs);
+    child.stdout.on('data', chunk => {
+      stdout = (stdout + chunk).slice(-16384);
+      const marks = [...stdout.matchAll(/"phase":"(import|launch|close|ready)"/g)];
+      if (marks.length) phase = marks.at(-1)[1];
+    });
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-16384); });
+    const clear = () => { clearTimeout(deadline); clearTimeout(escalation); };
+    child.once('error', error => { clear(); rejectProbe(error); });
+    child.once('close', (code, signal) => {
+      clear();
+      if (code === 0 && !timedOut && phase === 'ready') {
+        resolveProbe({ stdout: stdout.trim(), stderr: stderr.trim() });
+        return;
+      }
+      // Clean up remaining descendants even when the parent exited first.
+      terminate('SIGKILL');
+      const error = new Error(`Browser readiness failed in ${phase}: ${timedOut ? 'deadline exceeded' : `exit ${code} signal ${signal}`}\n${stderr}\n${stdout}`);
+      Object.assign(error, { phase, timedOut, exitCode: code, stdout, stderr });
+      rejectProbe(error);
+    });
+  });
+}
+
 /** Check consumed package exports and relative imports, even when live bytes match. */
 export function verifyProductImports(root, portalRoot) {
   const portalRequire = createRequire(join(portalRoot, 'packages/ui/package.json'));
@@ -239,7 +293,7 @@ async function main() {
     verifyProductImports(root, options.portalRoot);
     if (!['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/opt/google/chrome/chrome'].some(existsSync))
       throw new Error('Missing system Chrome required by the Portal browser review');
-  } else browserReady(root);
+  } else { browserReady(root); await browserLaunchReady(root); }
   speechReady();
   console.log(`NATIVE_PREFLIGHT_READY profile=${profile} source=verified browser=installed ssip=ready`);
   if (args.includes('--check')) return;

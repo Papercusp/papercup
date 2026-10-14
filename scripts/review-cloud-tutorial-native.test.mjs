@@ -6,7 +6,62 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
-import { sources, productSources, productPortalSources, hostedProductPortalSources, resolveReviewArgs, reviewCommand, verifySources, verifyProductImports, speechReady } from './review-cloud-tutorial-native.mjs';
+import { sources, productSources, productPortalSources, hostedProductPortalSources, resolveReviewArgs, reviewCommand, verifySources, verifyProductImports, speechReady, browserLaunchReady } from './review-cloud-tutorial-native.mjs';
+
+function browserFixture(t, moduleText) {
+  const root = mkdtempSync(join(tmpdir(), 'native-browser-probe-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const pkg = join(root, 'node_modules/playwright');
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ type: 'module', exports: './index.mjs' }));
+  writeFileSync(join(pkg, 'index.mjs'), moduleText);
+  return root;
+}
+
+test('browser readiness runs launch and close with a deadline inside its outer budget', async t => {
+  const root = browserFixture(t, `export const chromium={async launch(options){
+    if (!(options.timeout > 0 && options.timeout < 2000)) throw Error('unbounded browser launch');
+    return {version:()=> 'fixture-browser',async close(){ console.error('closed owned browser'); }};
+  }};`);
+  const result = await browserLaunchReady(root, { timeoutMs: 2000 });
+  assert.match(result.stdout, /fixture-browser/);
+  assert.match(result.stdout, /"phase":"ready"/);
+  assert.match(result.stderr, /closed owned browser/);
+});
+
+test('browser readiness preserves the failing phase and browser diagnostics', async t => {
+  for (const [phase, body] of [
+    ['import', `throw Error('fixture import refused');`],
+    ['launch', `export const chromium={async launch(){throw Error('fixture protocol refused')}};`],
+    ['close', `export const chromium={async launch(){return {version:()=> 'fixture',async close(){throw Error('fixture close refused')}}}};`],
+  ]) {
+    const root = browserFixture(t, body);
+    await assert.rejects(browserLaunchReady(root, { timeoutMs: 2000 }), error => {
+      assert.equal(error.phase, phase);
+      assert.equal(error.timedOut, false);
+      assert.match(error.message, /fixture .* refused/);
+      return true;
+    });
+  }
+});
+
+test('browser readiness kills a stalled browser descendant and retains its launch phase', async t => {
+  const root = browserFixture(t, `import{spawn}from'node:child_process';import{writeFileSync}from'node:fs';
+    export const chromium={async launch(){
+      const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});
+      writeFileSync('browser.pid',String(child.pid));
+      await new Promise(()=>{});
+    }};`);
+  await assert.rejects(browserLaunchReady(root, { timeoutMs: 1000 }), error => {
+    assert.equal(error.phase, 'launch');
+    assert.equal(error.timedOut, true);
+    assert.match(error.message, /deadline exceeded/);
+    return true;
+  });
+  const pid = Number(readFileSync(join(root, 'browser.pid'), 'utf8'));
+  await new Promise(resolveWait => setTimeout(resolveWait, 100));
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+});
 
 test('desktop re-entry keeps caller-relative manifests and roots when its working directory changes', () => {
   const caller = resolve('/caller'), child = resolve('/retained');
