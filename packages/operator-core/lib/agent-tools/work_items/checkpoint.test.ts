@@ -3042,6 +3042,37 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         expect(row).not.toContain('✓');
         expect(r.falsifierMissing).toBeUndefined();
       });
+
+      it('accepts replaces and sampleAdequate in batched items[].checks', async () => {
+        const prior = withCarryNoteChecks('prior batch body', [
+          { claim: 'prior batch check', recheck: 'run prior probe' },
+        ]);
+        withPrior(prior);
+
+        const out = await env({
+          items: [
+            {
+              id: 'WI-7',
+              checkpoint: 'updated batch body',
+              checks: [
+                {
+                  claim: 'updated batch check',
+                  replaces: 'prior batch check',
+                  recheck: 'run updated probe',
+                  verified: 'observed one sample, which is inconclusive',
+                  sampleAdequate: false,
+                },
+              ],
+            },
+          ],
+        });
+
+        expect(out.results[0]).toMatchObject({ ok: true, id: 'WI-7', checks: 1 });
+        const stored = await lastStored();
+        expect(stored).toMatch(/- \? (?:\[#[-a-z0-9]+\] )?updated batch check/);
+        expect(stored).toContain('sample inconclusive: observed one sample, which is inconclusive');
+        expect(stored).not.toContain('prior batch check');
+      });
     });
 
     // P-013 (EI-20281899810081153) moved the DEFAULT to rowsMode:'merge' on BOTH

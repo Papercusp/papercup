@@ -35,13 +35,18 @@ function serviceEnvNumber(name: string, source = service): number {
 describe('papercup-mcp-proxy production admission profile', () => {
   it('starts the real tsx service entry across the CommonJS/ESM boundary', async () => {
     const root = fileURLToPath(new URL('../../', import.meta.url));
+    const env = {
+      ...process.env,
+      PAPERCUSP_MCP_PROXY_PORT: '0',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3170',
+    };
+    // Match host-native-module.test.ts: exercise the actual service's tsx
+    // environment, not the runner's CommonJS committed-source transform guard.
+    // That guard has its own suite; startup here must evaluate current source.
+    delete env.NODE_OPTIONS;
     const child = spawn(process.execPath, ['--import', 'tsx', 'bin/mcp-proxy.ts'], {
       cwd: root,
-      env: {
-        ...process.env,
-        PAPERCUSP_MCP_PROXY_PORT: '0',
-        PAPERCUSP_MCP_PROXY_TARGET_PORT: '3170',
-      },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';

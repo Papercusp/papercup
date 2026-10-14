@@ -279,7 +279,7 @@ scripted launch.
 Session selection:
   -h, --help                         Show this help and exit
   -V, --version                      Show the psu build version and exit
-  --resume[=<id>] [id]               Resume a tracked or native session
+  --resume[=<id>] [id]               Resume a tracked/native session or an su agent's latest session
   --fork, --fork-session             Fork the selected session (with --resume)
   --brain                            Show the retired brain-session message
 
@@ -3124,9 +3124,21 @@ export async function resolveDirectTrackedResumeSession(
   id,
   { apiImpl = api, home = homedir() } = {},
 ) {
+  const wanted = String(id ?? "");
+  if (/^su-[a-z0-9-]+$/i.test(wanted)) {
+    // Always resolve on the server: the bounded recent list can omit the
+    // owner's latest registration, and a carry can change its native UUID.
+    const result = await apiImpl(
+      `/api/adv/sessions/resumable?agentId=${encodeURIComponent(wanted)}`,
+    );
+    const exact = result?.exact;
+    if (exact?.requestedAgentId !== wanted) return null;
+    return (result.sessions ?? []).find((session) =>
+      Number(session.id) === exact.id && session.coordOwnerId === exact.ownerId,
+    ) ?? null;
+  }
   const cached = resolveTrackedResumeSession(sessions, id, { home });
   if (cached) return cached;
-  const wanted = String(id ?? "");
   const binding = UUID_RE.test(wanted) ? recoverSessionIdentity(wanted, { home }) : null;
   const exactId = /^\d+$/.test(wanted) ? Number(wanted) : (binding?.advSessionId ?? NaN);
   if (!Number.isSafeInteger(exactId) || exactId <= 0) return null;
@@ -7237,7 +7249,7 @@ export const WALLED_POOL_REFUSAL_EXIT = 78;
  *   agent?: string | null,
  *   model?: string | null,
  *   account?: string | null | { mode?: string, provider?: string },
- *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'accounts-unserviceable' | null, codexReachability?: { lastTransportFailureKind?: 'dns' | 'connect' | 'timeout' | 'other' | null } } | null,
+ *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'temporary-cooldown' | 'accounts-unserviceable' | null, codexReachability?: { lastTransportFailureKind?: 'dns' | 'connect' | 'timeout' | 'other' | null } } | null,
  *   now?: number
  * }} input
  * @returns {{ kind: 'proceed' | 'warn' | 'refuse', message: string | null, recoveryAt: number | null }}
@@ -7304,6 +7316,17 @@ export function codexAutoPoolVerdict({
     typeof rawRecovery === "number" && Number.isFinite(rawRecovery)
       ? rawRecovery
       : null;
+  if (stats.codexUnserviceableCause === "temporary-cooldown") {
+    return {
+      kind: "warn",
+      recoveryAt: recovery,
+      message:
+        `psu: WARNING — Codex auto-route accounts are temporarily cooling down (${count} accounts serviceable). ` +
+        "The gateway reports usable account capacity behind a temporary retry cooldown; this is not a usage or credit wall. " +
+        (recovery !== null ? `Earliest retry ${new Date(recovery).toISOString()}. ` : "") +
+        "Launching with normal gateway retry handling.",
+    };
+  }
   // A horizon already in the PAST is the one all-walled snapshot we decline to act
   // on: the gateway itself predicted capacity back by now, so `healthy: 0` may be a
   // stale read rather than a live wall. Warn and launch — never refuse on a
@@ -7321,6 +7344,17 @@ export function codexAutoPoolVerdict({
     recovery === null
       ? "; earliest recovery unknown"
       : `; earliest known recovery ${new Date(recovery).toISOString()}`;
+  if (stats.codexUnserviceableCause === "accounts-unserviceable") {
+    return {
+      kind: "refuse",
+      recoveryAt: recovery,
+      message:
+        `psu: REFUSING TO LAUNCH — Codex auto-route has no serviceable accounts: ${count}${horizon}. ` +
+        "Account exclusions can include usage limits, credential quarantine, or other routing restrictions; this count alone does not establish exhausted usage. " +
+        "Inspect gateway account health, use --account default to skip the gateway, or retry at recovery. " +
+        `Override with ${ALLOW_WALLED_LAUNCH_ENV}=1 if you know this snapshot is wrong.`,
+    };
+  }
   return {
     kind: "refuse",
     recoveryAt: recovery,
@@ -12226,10 +12260,27 @@ export function killSpawnProcessTree(
  * @property {(()=>any)|null} [onSpawnFailure]
  */
 
-/** The original plain launch: inherit the user's stdio straight into the child.
- *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
- *  start.
- *  @param {SpawnInheritOptions} options
+/** Print our resume command after the backend has returned the human's terminal.
+ * @param {*} env
+ * @param {*} [processApi]
+ */
+export function printPsuResumeHint(env, processApi = process) {
+  if (env?.PAPERCUSP_PSU_HEADLESS === "1" ||
+      !processApi.stdin?.isTTY || !processApi.stdout?.isTTY) return false;
+  const owner = String(env?.PAPERCUSP_SID ?? "");
+  const advId = String(env?.PAPERCUSP_ADV_SESSION_ID ?? "");
+  const id = /^su-[a-z0-9-]+$/i.test(owner) ? owner : /^\d+$/.test(advId) ? advId : null;
+  try {
+    processApi.stdout.write(`\npsu: Resume this agent with: psu --resume${id ? ` ${id}` : ""}\n`);
+    return true;
+  } catch {
+    // A closed terminal must not prevent exit reporting or teardown.
+    return false;
+  }
+}
+
+/** The plain launch inherits stdio when a managed host is unavailable.
+ * @param {SpawnInheritOptions} options
  */
 export function spawnInherit(options) {
   const {
@@ -12358,6 +12409,7 @@ export function spawnInherit(options) {
       )
       .catch(() => undefined)
       .finally(() => {
+        printPsuResumeHint(env, processApi);
         // Remove handlers before re-signalling this supervisor, or the signal
         // re-enters forwardSignal and can recurse indefinitely.
         if (terminalSignal) processKill(processApi.pid, terminalSignal);
@@ -12896,7 +12948,12 @@ export function runWrapper(options) {
             {
               killedBySignal,
             },
-          ).finally(() => process.exit(code ?? 0));
+          ).finally(() => {
+            // The host restores the terminal and drains provider output before
+            // this callback. Recycles/carry adoption use onReexec instead.
+            printPsuResumeHint(env);
+            process.exit(code ?? 0);
+          });
         },
       }).catch((e) => {
         // The pty was already spawned (the promise only rejects on an unforeseen
@@ -16633,6 +16690,9 @@ export async function resumeFlow(
       // transcript in launchResolvedResume immediately before launch.
       await launchResolvedResumeImpl(tracked, args, { tracked: true });
       return;
+    }
+    if (/^su-[a-z0-9-]+$/i.test(args.resumeId)) {
+      throw new Error(`psu: no resumable session for agent "${args.resumeId}" — check the su ID.`);
     }
 
     // 2. Not tracked → search the agents' OWN session stores for the id. On a

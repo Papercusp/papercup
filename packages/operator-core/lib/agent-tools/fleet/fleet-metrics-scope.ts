@@ -363,6 +363,20 @@ export function selectFleetMetricCurrentItems(scope: ResolvedFleetMetricScope, i
   return items.filter((item) => matchesWorkItemClaimSpec(item, scope.claimSpec.current));
 }
 
+function filterUsesSummary(filter: FilterNode | undefined): boolean {
+  if (!filter) return false;
+  if ('field' in filter) return filter.field === 'summary';
+  if ('not' in filter) return filterUsesSummary(filter.not);
+  if ('all' in filter) return filter.all.some(filterUsesSummary);
+  if ('any' in filter) return filter.any.some(filterUsesSummary);
+  return false;
+}
+
+/** Whether any current or historical claim-spec predicate consumes hydrated summary text. */
+export function fleetMetricClaimFiltersUseSummary(filters: readonly (FilterNode | undefined)[]): boolean {
+  return filters.some(filterUsesSummary);
+}
+
 /**
  * Select identities with the scheduler's compiler before hydrating payloads.
  * Keep the union of current and historical filters: old-spec flow events and
@@ -374,11 +388,12 @@ export async function readFleetMetricSourceItems(scope: ResolvedFleetMetricScope
   return readFleetMetricRows(scope);
 }
 
-async function readFleetMetricRows(scope: ResolvedFleetMetricScope, notTerminal = false): Promise<WorkItem[]> {
+async function readFleetMetricRows(scope: ResolvedFleetMetricScope, notTerminal = false, metricProjection = false): Promise<WorkItem[]> {
   const { sql } = getOrgPg();
   const { compileFilter } = await import('../../scheduler/get-next');
   const filters = [scope.claimSpec.current, ...scope.claimSpec.segments.map(segment => segment.spec)]
     .map(spec => spec.view.filter);
+  const bodyProjection = metricProjection && !fleetMetricClaimFiltersUseSummary(filters) ? 'fleetMetricsCensus' : undefined;
   const uniqueFilters = [...new Map(filters.map(value => [JSON.stringify(value), value])).values()];
   const filter: FilterNode | undefined = filters.some(value => value === undefined)
     ? undefined : uniqueFilters.length === 1 ? uniqueFilters[0] : { any: uniqueFilters as FilterNode[] };
@@ -404,6 +419,7 @@ async function readFleetMetricRows(scope: ResolvedFleetMetricScope, notTerminal 
     ids: identities,
     notTerminal,
     payloadProjection: 'fleetMetricsCensus',
+    ...(bodyProjection ? { bodyProjection } : {}),
   });
 }
 
@@ -490,7 +506,7 @@ export async function readFleetMetricSource(scope: ResolvedFleetMetricScope): Pr
   });
   void terminalContributions.catch(() => undefined);
   try {
-    return { items: await readFleetMetricRows(scope, true), terminalContributions };
+    return { items: await readFleetMetricRows(scope, true, true), terminalContributions };
   } catch (error) {
     // Drain the independent transaction on failure as well as success.
     await terminalContributions.catch(() => undefined);

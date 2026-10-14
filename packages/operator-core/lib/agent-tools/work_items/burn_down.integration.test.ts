@@ -448,7 +448,10 @@ describe('default fleet reports over the real current-spec queue', () => {
       };
       try {
         const source = await readFleetMetricSourceItems(scope);
-        const baselineQueries = [...queries];
+        // The debug hook also sees unrelated telemetry writes (for example a
+        // fallback_observations insert). Count only the family hydration SELECTs
+        // that define this reader's SQL boundary.
+        const baselineQueries = queries.filter(query => /^\s*SELECT\b/i.test(query));
         if (flowMode === 'at-event-spec') {
           const extended = await readFleetMetricSource(scope);
           expect(extended.items).toEqual(source);
@@ -459,7 +462,9 @@ describe('default fleet reports over the real current-spec queue', () => {
       finally { sql.options.debug = originalDebug; }
     };
     const current = await read();
-    expect(current.queries).toHaveLength(1);
+    const querySummary = (queries: readonly string[]) => queries.map((query, index) =>
+      `${index + 1}: ${query.replace(/\s+/g, ' ').slice(0, 500)}`).join('\n');
+    expect(current.queries, `source SQL calls:\n${querySummary(current.queries)}`).toHaveLength(1);
     expect(current.queries[0]).toContain('FROM harness_shared.engineer_issues');
     expect(current.source).toHaveLength(2006);
     expect(current.source.find(item => item.id === 'WI-kind-old-bug'))
@@ -474,7 +479,7 @@ describe('default fleet reports over the real current-spec queue', () => {
         view: { ...DEFAULT_CLAIM_SPEC.view, filter: { field: 'kind', op: '=', value: 'task' } },
       } }, sql)).toMatchObject({ ok: true });
     const historical = await read('at-event-spec');
-    expect(historical.queries).toHaveLength(2);
+    expect(historical.queries, `historical source SQL calls:\n${querySummary(historical.queries)}`).toHaveLength(2);
     // seedQueue's prerequisite is also a task; the historical union must keep
     // it even though it was outside the original bug-only current population.
     expect(new Set(historical.source.map(item => item.id)))
@@ -559,7 +564,9 @@ describe('default fleet reports over the real current-spec queue', () => {
     let source: Awaited<ReturnType<typeof readFleetMetricSourceItems>>;
     try { source = await readFleetMetricSourceItems(resolution); }
     finally { sql.options.debug = originalDebug; }
-    expect(queries).toHaveLength(2);
+    const selectQueries = queries.filter(query => /^\s*SELECT\b/i.test(query));
+    expect(selectQueries, `source SQL calls: ${queries.map((query, index) =>
+      `${index + 1}: ${query.replace(/\s+/g, ' ').slice(0, 500)}`).join('\n')}`).toHaveLength(2);
     const selectedIds = new Set(source.map(item => item.id));
     const expectedIds = [
       ...ids, ...Array.from({ length: 2101 }, (_, index) => `WI-large-source-${index + 1}`),
@@ -677,7 +684,8 @@ describe('default fleet reports over the real current-spec queue', () => {
             ${sql.json(payload)}::jsonb)`;
         const filter = { harness: HARNESS, includeObservations: true, ids: [id] };
         const [full] = await listAllWorkItemsForFileExport(filter);
-        const [projected] = await listAllWorkItemsForFileExport({ ...filter, payloadProjection: 'fleetMetricsCensus' });
+        const [projected] = await listAllWorkItemsForFileExport({ ...filter, payloadProjection: 'fleetMetricsCensus',
+          bodyProjection: 'fleetMetricsCensus' });
         expect(projected?.id).toBe(id);
         expect(projected?.summary).toBe(full?.summary);
         expect(claimSpecSubjectFromWorkItem(projected!)).toEqual(claimSpecSubjectFromWorkItem(full!));
@@ -694,6 +702,23 @@ describe('default fleet reports over the real current-spec queue', () => {
         FROM (SELECT ${JSON.stringify(value)}::text::jsonb AS payload, 'done'::text AS state, 1 AS marker) fixture`;
       expect(rows[0]!.payload).toEqual(value);
     }
+  }, 30_000);
+
+  it('omits un-enrolled issue bodies for the metric census but retains readiness and summary-filter inputs', async () => {
+    const id = 'WI-metric-census-body-projection';
+    const body = 'large non-readiness body '.repeat(4000);
+    await sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, payload)
+      VALUES ('default', ${HARNESS}, ${id}, 'body projection', ${body}, 'open', 'bug', ${sql.json({ tags: ['kept'] })}::jsonb)`;
+    const filter = { harness: HARNESS, kind: 'bug' as const, includeObservations: true, ids: [id] };
+    const [full] = await listAllWorkItemsForFileExport(filter);
+    const [projected] = await listAllWorkItemsForFileExport({ ...filter, payloadProjection: 'fleetMetricsCensus',
+      bodyProjection: 'fleetMetricsCensus' });
+    const [summaryFiltered] = await listAllWorkItemsForFileExport({ ...filter, q: 'large non-readiness body',
+      payloadProjection: 'fleetMetricsCensus' });
+    expect(full?.summary).toBe(body);
+    expect(projected?.summary).toBe('');
+    expect(summaryFiltered?.summary).toBe(body);
   }, 30_000);
 
   it('reuses projected issue metadata without changing complete rows or malformed JSON shapes', async () => {

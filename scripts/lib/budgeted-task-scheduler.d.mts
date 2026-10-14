@@ -67,6 +67,25 @@ export interface BudgetedTaskComparisonArtifactPins {
   runtimeClosure: { ref: string };
   cohorts: Array<{ ref: string; sha256: string }>;
 }
+export interface BudgetedTaskCommandPreparationPins {
+  mode: "command-preparation";
+  repositoryRoot: string;
+  selection: { ref: string; sha256: string };
+  commands: Array<{ task: string; step: number | null;
+    receipt: { ref: string; sha256: string };
+    logs: Record<"stdout" | "stderr" | "beforeStdout" | "beforeStderr" | "afterStdout" | "afterStderr",
+      { ref: string; sha256: string }> }>;
+}
+export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
+  pins: BudgetedTaskCommandPreparationPins): Promise<{ mode: "command-preparation";
+    selection: unknown; commands: Array<{ task: string; step: number | null;
+      kind: "command-check"; check: string; command: string;
+      inputs: Array<{ path: string; sha256: string }>; fileOccurrences: unknown[];
+      receipt: { ref: string; sha256: string }; childWallMs: number; scriptsExecuted: number;
+      scriptOrder: string[] }>;
+    originalArtifactsResolved: true; currentDeclaredInputsMatched: true;
+    orderedChainQualified: false; runtimeClosure: "unmeasured";
+    operationalAcceptance: false; populationSha256: string }>;
 export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
   pins: BudgetedTaskComparisonArtifactPins): Promise<{ manifest: BudgetedTaskComparisonManifest;
     cohorts: BudgetedTaskComparisonCohort[]; originalArtifactsResolved: true; populationSha256: string }>;

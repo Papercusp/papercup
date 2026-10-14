@@ -238,6 +238,8 @@ export async function readBudgetedTaskComparisonArtifacts(evidenceRoot, pins) {
       throw new Error(`Original artifact hash mismatch: ${ref}`);
     return json ? JSON.parse(bytes.toString("utf8")) : bytes;
   };
+  if (pins.mode === "command-preparation")
+    return readOriginalCommandPreparation(readPinned, pins);
   const manifest = await readPinned(pins.manifest.ref, pins.manifest.sha256);
   // Check structural identity before following refs supplied by an invalid manifest.
   const prepared = prepareBudgetedTaskComparison(manifest);
@@ -295,6 +297,114 @@ export async function readBudgetedTaskComparisonArtifacts(evidenceRoot, pins) {
   }
   return { manifest, cohorts, originalArtifactsResolved: true,
     populationSha256: comparisonHash({ manifest, cohorts }) };
+}
+
+// Standalone command-local preparation is deliberately a separate branch of the
+// existing IO reader. It never turns a partial selection into a comparison
+// manifest, admits a cohort, or attests installed dependencies/runtime closure.
+async function readOriginalCommandPreparation(readPinned, pins) {
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const require = (ok, message) => {
+    if (!ok) throw new Error(`COMMAND_PREPARATION_REFUSAL ${message}`);
+  };
+  const marker = (bytes, prefix) => {
+    const lines = bytes.toString("utf8").split(/\r?\n/).filter(line => line.startsWith(prefix));
+    require(lines.length === 1, `exactly one ${prefix} marker required`);
+    return JSON.parse(lines[0].slice(prefix.length));
+  };
+  const selectionBytes = await readPinned(pins.selection.ref, pins.selection.sha256, false);
+  const selection = marker(selectionBytes, "AFFECTED_TESTS_SELECTION=");
+  require(selection.schemaVersion === 1 && selection.kind === "full-gate" &&
+    Array.isArray(selection.commandObligations) && Array.isArray(selection.tasks) &&
+    Array.isArray(selection.fileOccurrences), "original native selection required");
+  require(Array.isArray(pins.commands) && pins.commands.length > 0 && pins.commands.length <= 64,
+    "bounded original command pins required");
+  const sourceRoot = await realpath(pins.repositoryRoot);
+  const qualified = [];
+  const identities = new Set();
+  for (const pin of pins.commands) {
+    require(typeof pin.task === "string" && (pin.step === null ||
+      Number.isSafeInteger(pin.step) && pin.step >= 0), "explicit original task and step required");
+    const identity = JSON.stringify([pin.task, pin.step]);
+    require(!identities.has(identity), "duplicate original command step");
+    identities.add(identity);
+    const originals = selection.commandObligations.filter(row => row.task === pin.task &&
+      (row.step ?? null) === pin.step);
+    require(originals.length === 1, "exact original command obligation required");
+    const obligation = originals[0];
+    // Add another maintained native format only when its raw execution and
+    // diagnostics have an independently measured contract. Unknown formats fail.
+    require(obligation.kind === "command-check" && obligation.check === "desktop-selftest-aggregate",
+      "unsupported native command receipt format");
+    const tasks = selection.tasks.filter(task => task.id === pin.task);
+    require(tasks.length === 1, "exact original task required");
+    const task = tasks[0];
+    const step = pin.step === null ? task : task.steps?.[pin.step];
+    require(step && step.command === obligation.command, "original ordered command differs");
+    const occurrences = selection.fileOccurrences.filter(row => row.task === pin.task &&
+      (row.step ?? null) === pin.step);
+    const inputs = obligation.inputs;
+    require(Array.isArray(inputs) && inputs.length > 0 && inputs.every(row =>
+      comparisonPath(row.path) && comparisonDigest(row.sha256)) &&
+      new Set(inputs.map(row => row.path)).size === inputs.length &&
+      occurrences.length > 0 && new Set(occurrences.map(row => row.file)).size === occurrences.length &&
+      occurrences.every(row => row.kind === "test-file" && row.command === obligation.command &&
+        inputs.some(input => input.path === row.file)), "original input occurrences differ");
+    const receipt = await readPinned(pin.receipt.ref, pin.receipt.sha256);
+    require(receipt.schemaVersion === 1 && receipt.kind === "original-command-execution" &&
+      receipt.cwd === task.dir && same(receipt.command, ["bash", "bin/lib/run-selftests.sh"]) &&
+      obligation.command === receipt.command.join(" ") && receipt.exitCode === 0 &&
+      Number.isFinite(receipt.childWallMs) && receipt.childWallMs > 0 &&
+      Number.isFinite(Date.parse(receipt.startedAt)) &&
+      Date.parse(receipt.finishedAt) > Date.parse(receipt.startedAt),
+    "successful original native command identity required");
+    require(Array.isArray(receipt.logs) && receipt.logs.length === 6 &&
+      new Set(receipt.logs.map(row => row.path)).size === 6, "six original command logs required");
+    const logs = {};
+    for (const role of ["stdout", "stderr", "beforeStdout", "beforeStderr", "afterStdout", "afterStderr"]) {
+      const log = pin.logs?.[role];
+      require(log && receipt.logs.some(row => (row.path.startsWith("~/") ? row.path.slice(2) : row.path) ===
+        log.ref && row.sha256 === log.sha256), "log pin absent from original receipt");
+      logs[role] = await readPinned(log.ref, log.sha256, false);
+    }
+    require(new Set(Object.values(pin.logs).map(log => log.ref)).size === 6,
+      "command log roles must be distinct");
+    const before = marker(logs.beforeStdout, "COMMAND_CHECK_SELECTION=");
+    const after = marker(logs.afterStdout, "COMMAND_CHECK_SELECTION=");
+    require(logs.beforeStderr.length === 0 && logs.afterStderr.length === 0 &&
+      same(before, after) && same(before, receipt.before) && same(after, receipt.after) &&
+      before.schemaVersion === 1 && before.kind === "command-check-inputs" && before.check === obligation.check &&
+      same(before.inputs, inputs), "unchanged original command census required");
+    for (const input of inputs) {
+      const path = await realpath(join(sourceRoot, input.path));
+      const within = relative(sourceRoot, path);
+      require(within && !isAbsolute(within) && within !== ".." && !within.startsWith("../"),
+        "command source escaped repository root");
+      const bytes = await readFile(path);
+      require(bytes.length <= 64 * 1024 * 1024 &&
+        createHash("sha256").update(bytes).digest("hex") === input.sha256,
+      `current command input differs: ${input.path}`);
+    }
+    const verdicts = [...logs.stdout.toString("utf8").matchAll(/^--- ([^\r\n]+): (PASS|FAIL|SKIP)$/gm)]
+      .map(match => ({ script: match[1], verdict: match[2] }));
+    require(Array.isArray(before.listed) && before.listed.length > 0 &&
+      new Set(before.listed).size === before.listed.length &&
+      same(before.files, before.listed.map(script => `${receipt.cwd}/bin/lib/${script}`)) &&
+      same(occurrences.map(row => row.file).sort(), before.files.slice().sort()) &&
+      same(verdicts.map(row => row.script), before.listed) &&
+      verdicts.every(row => row.verdict === "PASS") &&
+      logs.stdout.toString("utf8").split(/\r?\n/).filter(line =>
+        line === `PASS — all ${before.listed.length} papercusp-desktop selftests green`).length === 1,
+    "complete ordered native aggregate PASS verdicts required");
+    qualified.push({ task: pin.task, step: pin.step, kind: obligation.kind, check: obligation.check,
+      command: obligation.command, inputs, fileOccurrences: occurrences,
+      receipt: pin.receipt, childWallMs: receipt.childWallMs, scriptsExecuted: verdicts.length,
+      scriptOrder: verdicts.map(row => row.script) });
+  }
+  return freezeComparison({ mode: "command-preparation", selection, commands: qualified,
+    originalArtifactsResolved: true, currentDeclaredInputsMatched: true,
+    orderedChainQualified: false, runtimeClosure: "unmeasured", operationalAcceptance: false,
+    populationSha256: comparisonHash({ selection: pins.selection, commands: qualified }) });
 }
 // EI-21669294176320490: the scheduler's worker/task counters are local to one
 // Node invocation.  A fleet of concurrent `test:affected` processes could

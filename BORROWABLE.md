@@ -111,6 +111,7 @@ it here.
 |---|---|---|
 | `@papercusp/test-config` | Shared Vitest config + testcontainers (PG/Redis/Typesense) + generic createFreshTestDb isolation + MSW + schema-driven fixtures + in-process Hono client; NestJS boot helper via the ./nest subpath. | [git@github.com:Papercusp/test-config](git@github.com:Papercusp/test-config.git) |
 | `@papercusp/testing-shell` | Shared testing-domains registry + UI shell. Consumed by /admin/testing (operator-vite) and the harness Tests tab (operator). Registry is pure data; the panel/shell take an injected dataSource so the same component drives both the admin and harness API surfaces. | [git@github.com:Papercusp/testing-shell](git@github.com:Papercusp/testing-shell.git) |
+| `@papercusp/verification-harness` | Verification-harness contract + shared runner for expensive harnesses (drills, release cuts, headless UI runs, LLM batteries): declared phases with dependencies and a fast preflight, structured per-phase results {phase, step, reasonCode, evidenceDir}, one retained evidence dir per run, --only/--from re-runs that reuse passed setup from a prior run, and never-abort continuation past failures later phases do not depend on. bin/vh.sh gives shell harnesses the same contract. | in-repo · `libs/generic/verification-harness` |
 
 ## Reusable with host wiring (Papercusp tie-in kept by design)
 

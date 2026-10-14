@@ -2,6 +2,25 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // apps/operator/scripts/psu-pty-host.mjs and regenerate.
 /**
+ * Serialize atomic discovery-file writes without blocking the PTY host's event
+ * loop on filesystem metadata. A slow rename must never stop stdin, PTY output,
+ * or control-socket handling. New writes replace a queued snapshot; the write
+ * already in flight is allowed to finish, then the newest snapshot is persisted.
+ * @param {{path:string,tempPath:string,writeFile?:Function,rename?:Function,onError?:Function}} options
+ */
+export function createAsyncAtomicFileWriter({ path, tempPath, writeFile, rename, onError, }: {
+    path: string;
+    tempPath: string;
+    writeFile?: Function;
+    rename?: Function;
+    onError?: Function;
+}): {
+    write(payload: any): boolean;
+    close(): Promise<void>;
+    whenIdle(): Promise<void>;
+    readonly closed: boolean;
+};
+/**
  * Validate Codex's state storage in the process that will launch it. The
  * operator materializes the home, but a temp companion may have disappeared
  * before a fresh launch, resume, or carry reaches this host. SQLite code 14

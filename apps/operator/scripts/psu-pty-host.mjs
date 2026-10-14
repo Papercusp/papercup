@@ -73,9 +73,67 @@ import {
   readSync,
   statSync,
   writeSync,
+  promises as fsPromises,
 } from 'node:fs';
 import net from 'node:net';
 import { createTerminalOutput } from './psu-terminal-output.mjs';
+
+/**
+ * Serialize atomic discovery-file writes without blocking the PTY host's event
+ * loop on filesystem metadata. A slow rename must never stop stdin, PTY output,
+ * or control-socket handling. New writes replace a queued snapshot; the write
+ * already in flight is allowed to finish, then the newest snapshot is persisted.
+ * @param {{path:string,tempPath:string,writeFile?:Function,rename?:Function,onError?:Function}} options
+ */
+export function createAsyncAtomicFileWriter({
+  path,
+  tempPath,
+  writeFile = fsPromises.writeFile,
+  rename = fsPromises.rename,
+  onError = () => {},
+}) {
+  let queued = null;
+  let pending = null;
+  let closed = false;
+  const drain = async () => {
+    while (queued !== null) {
+      const payload = queued;
+      queued = null;
+      try {
+        await writeFile(tempPath, payload, { encoding: 'utf8', mode: 0o600 });
+        await rename(tempPath, path);
+      } catch (error) {
+        try { onError(error); } catch { /* diagnostics must not escape the writer */ }
+      }
+    }
+  };
+  const schedule = () => {
+    if (!pending) {
+      pending = drain().finally(() => {
+        pending = null;
+        if (queued !== null) schedule();
+      });
+    }
+    return pending;
+  };
+  return {
+    write(payload) {
+      if (closed) return false;
+      queued = String(payload);
+      schedule();
+      return true;
+    },
+    close() {
+      closed = true;
+      queued = null;
+      return this.whenIdle();
+    },
+    async whenIdle() {
+      while (pending) await pending;
+    },
+    get closed() { return closed; },
+  };
+}
 
 /** Environment fragments injected by launchers and tests need not carry every
  * ambient key that an application framework merges into NodeJS.ProcessEnv.
@@ -10601,24 +10659,25 @@ export function hostThroughPty(o) {
     // "unknown version", never to "up to date".
     hostCodeVersion: LOADED_HOST_CODE_VERSION,
   };
+  // WI-6554700010013215: discovery persistence is off the PTY host's event
+  // loop. The old synchronous writeFileSync+renameSync path was observed in
+  // D-state inside __start_renaming, stopping keystrokes and PTY output while
+  // the filesystem completed metadata work. The writer keeps atomic rename
+  // semantics and coalesces periodic activity snapshots.
+  const metadataWriter = createAsyncAtomicFileWriter({
+    path: metaPath,
+    tempPath: `${metaPath}.${process.pid}.tmp`,
+    onError: () => {},
+  });
   const writeMeta = () => {
     try {
-      // WI-3455: ATOMIC (tmp + rename). A plain in-place writeFileSync gives a
-      // reader a window on a truncated/partial document — and the operator-side
-      // janitor (pruneDeadDiscoveryFiles) DELETES a file it reads as corrupt,
-      // i.e. a lost race here used to cost a LIVE host its discovery key.
-      // rename(2) on the same fs is atomic, so readers only ever see a complete
-      // json. The tmp name is pid-scoped so two hosts racing the same key never
-      // corrupt each other's staging file.
-      const tmp = `${metaPath}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
+      metadataWriter.write(JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
         ...authBlockDetector.snapshot(),
         ...(env.PAPERCUSP_AGENT === 'codex' ? {
           nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
         } : {}),
         execution: currentNativeExecution(),
       }));
-      renameSync(tmp, metaPath);
     } catch {
       /* best-effort — discovery degrades to the base contract */
     }
@@ -10654,13 +10713,16 @@ export function hostThroughPty(o) {
   // would silently trample a live successor's registration).
   let rebindControlSocket = () => {}; // assigned after the server exists below
   let lastHealNoticeAt = 0;
-  const selfHealTick = () => {
-    const m = readDiscoveryMeta(ownerId);
+  const selfHealTick = async () => {
+    let m = null;
+    try { m = JSON.parse(await fsPromises.readFile(metaPath, 'utf8')); } catch { /* missing/corrupt metadata is reasserted */ }
+    if (metadataWriter.closed) return false;
     if (m && m.pid && m.pid !== process.pid && pidAlive(m.pid) && pidLooksLikePsuHost(m.pid)) {
       return false; // a newer LIVE host owns the key — stand down, don't fight
     }
     const metaMine = !!(m && m.pid === process.pid);
-    const sockOnDisk = existsSync(sock);
+    const sockOnDisk = await fsPromises.access(sock).then(() => true, () => false);
+    if (metadataWriter.closed) return false;
     if (metaMine && sockOnDisk) return true;
     writeMeta();
     if (!sockOnDisk) rebindControlSocket();
@@ -10689,24 +10751,32 @@ export function hostThroughPty(o) {
   let parkTick = () => {};
   let pendingSubmissionTick = () => {};
   let quotaRecoveryTick = () => {};
-  const activityTimer = setInterval(() => {
-    let ownKey = true;
+  let activityTickPending = false;
+  const activityTimer = setInterval(async () => {
+    if (activityTickPending || metadataWriter.closed) return;
+    activityTickPending = true;
     try {
-      ownKey = selfHealTick();
-    } catch {
-      /* self-heal is best-effort — never break the activity persist */
-    }
-    const snap = activity.snapshot();
-    if (ownKey) {
-      lastPersisted = snap.lastActivityAt ?? 0;
-      writeMeta();
-      pendingSubmissionTick();
-      quotaRecoveryTick();
-    }
-    try {
-      parkTick();
-    } catch {
-      /* a park decision must never break the activity persist */
+      let ownKey = true;
+      try {
+        ownKey = await selfHealTick();
+      } catch {
+        /* self-heal is best-effort — never break the activity persist */
+      }
+      if (metadataWriter.closed) return;
+      const snap = activity.snapshot();
+      if (ownKey) {
+        lastPersisted = snap.lastActivityAt ?? 0;
+        writeMeta();
+        pendingSubmissionTick();
+        quotaRecoveryTick();
+      }
+      try {
+        parkTick();
+      } catch {
+        /* a park decision must never break the activity persist */
+      }
+    } finally {
+      activityTickPending = false;
     }
   }, activityPersistMs);
   if (typeof activityTimer.unref === 'function') activityTimer.unref();
@@ -15013,6 +15083,9 @@ export function hostThroughPty(o) {
       if (cleaned) return;
       cleaned = true;
       hostCleanedUp = true;
+      // Stop accepting snapshots immediately. Finish the one atomic write in
+      // flight before removing the key, so it cannot resurrect a dead host.
+      const metadataClosed = metadataWriter.close();
       stopStartupTrace('host-cleanup');
       // P-019: nothing held for a resume can run now; release it as
       // undeliverable so each sender's dedup slot clears instead of hanging.
@@ -15154,29 +15227,33 @@ export function hostThroughPty(o) {
       // successor's re-bound socket node. unref() instead: the server stops
       // holding the event loop open (so an embedding process — a test — can
       // exit) and process exit reaps the fd WITHOUT unlinking the path.
-      const registered = readDiscoveryMeta(ownerId);
-      const ownedByOther = !!(registered && registered.pid && registered.pid !== process.pid);
-      if (ownedByOther) {
-        try {
-          server.unref();
-        } catch {
-          /* ignore */
-        }
-      } else {
-        try {
-          server.close();
-        } catch {
-          /* ignore */
-        }
-        for (const p of [sock, metaPath]) {
+      const releaseDiscovery = () => {
+        const registered = readDiscoveryMeta(ownerId);
+        const ownedByOther = !!(registered && registered.pid && registered.pid !== process.pid);
+        if (ownedByOther) {
           try {
-            if (existsSync(p)) unlinkSync(p);
+            server.unref();
           } catch {
             /* ignore */
           }
+        } else {
+          try {
+            server.close();
+          } catch {
+            /* ignore */
+          }
+          for (const p of [sock, metaPath]) {
+            try {
+              if (existsSync(p)) unlinkSync(p);
+            } catch {
+              /* ignore */
+            }
+          }
         }
-      }
+      };
       const finishExit = async () => {
+        await metadataClosed;
+        releaseDiscovery();
         const [screenDrained, diagnosticsDrained] = await Promise.all([
           terminalOutput.finish(), diagnosticOutput.finish(),
         ]);

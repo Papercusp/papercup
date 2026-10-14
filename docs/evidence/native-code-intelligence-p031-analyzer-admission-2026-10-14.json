@@ -112,6 +112,265 @@
       "Explicit unsupported scope and truncation boundaries"
     ]
   },
+  "referenceFixtures": {
+    "state": "planned-unexecuted",
+    "purpose": "Exact five-language reference population for future maintained analyzer integration tests. These fixtures are static parse inputs; helper calls model sources, sinks and sanitizers and do not assert compilation, runtime execution, real vulnerabilities or analyzer accuracy.",
+    "cases": [
+      {
+        "language": "typescript",
+        "file": "reference.ts",
+        "source": "function positive() { const value = untrusted(); sink(value); }\nfunction literal_negative() { sink(\"safe\"); }\nfunction sanitized_negative() { const value = sanitize(untrusted()); sink(value); }\nfunction overwritten_negative() { let value = untrusted(); value = \"safe\"; sink(value); }\nfunction dynamic_boundary(callback: (value: unknown) => void) { const value = untrusted(); callback(value); }\n",
+        "positiveSinkLine": 1,
+        "status": "planned-unexecuted",
+        "expectedStaticFindingFunctions": [
+          "positive"
+        ],
+        "expectedStaticNonfindingFunctions": [
+          "literal_negative",
+          "sanitized_negative",
+          "overwritten_negative"
+        ],
+        "unknownFunctions": [
+          "dynamic_boundary"
+        ],
+        "rule": {
+          "id": "native-p031-local-flow-typescript",
+          "languages": [
+            "typescript"
+          ],
+          "mode": "taint",
+          "message": "Declared reference source flows to the declared reference sink.",
+          "severity": "INFO",
+          "pattern-sources": [
+            {
+              "pattern": "untrusted()"
+            }
+          ],
+          "pattern-sanitizers": [
+            {
+              "pattern": "sanitize(...)"
+            }
+          ],
+          "pattern-sinks": [
+            {
+              "patterns": [
+                {
+                  "pattern": "sink($VALUE)"
+                },
+                {
+                  "focus-metavariable": "$VALUE"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "language": "javascript",
+        "file": "reference.js",
+        "source": "function positive() { const value = untrusted(); sink(value); }\nfunction literal_negative() { sink(\"safe\"); }\nfunction sanitized_negative() { const value = sanitize(untrusted()); sink(value); }\nfunction overwritten_negative() { let value = untrusted(); value = \"safe\"; sink(value); }\nfunction dynamic_boundary(callback) { const value = untrusted(); callback(value); }\n",
+        "positiveSinkLine": 1,
+        "status": "planned-unexecuted",
+        "expectedStaticFindingFunctions": [
+          "positive"
+        ],
+        "expectedStaticNonfindingFunctions": [
+          "literal_negative",
+          "sanitized_negative",
+          "overwritten_negative"
+        ],
+        "unknownFunctions": [
+          "dynamic_boundary"
+        ],
+        "rule": {
+          "id": "native-p031-local-flow-javascript",
+          "languages": [
+            "javascript"
+          ],
+          "mode": "taint",
+          "message": "Declared reference source flows to the declared reference sink.",
+          "severity": "INFO",
+          "pattern-sources": [
+            {
+              "pattern": "untrusted()"
+            }
+          ],
+          "pattern-sanitizers": [
+            {
+              "pattern": "sanitize(...)"
+            }
+          ],
+          "pattern-sinks": [
+            {
+              "patterns": [
+                {
+                  "pattern": "sink($VALUE)"
+                },
+                {
+                  "focus-metavariable": "$VALUE"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "language": "python",
+        "file": "reference.py",
+        "source": "def positive():\n    value = untrusted()\n    sink(value)\n\ndef literal_negative():\n    sink(\"safe\")\n\ndef sanitized_negative():\n    value = sanitize(untrusted())\n    sink(value)\n\ndef overwritten_negative():\n    value = untrusted()\n    value = \"safe\"\n    sink(value)\n\ndef dynamic_boundary(callback):\n    value = untrusted()\n    callback(value)\n",
+        "positiveSinkLine": 3,
+        "status": "planned-unexecuted",
+        "expectedStaticFindingFunctions": [
+          "positive"
+        ],
+        "expectedStaticNonfindingFunctions": [
+          "literal_negative",
+          "sanitized_negative",
+          "overwritten_negative"
+        ],
+        "unknownFunctions": [
+          "dynamic_boundary"
+        ],
+        "rule": {
+          "id": "native-p031-local-flow-python",
+          "languages": [
+            "python"
+          ],
+          "mode": "taint",
+          "message": "Declared reference source flows to the declared reference sink.",
+          "severity": "INFO",
+          "pattern-sources": [
+            {
+              "pattern": "untrusted()"
+            }
+          ],
+          "pattern-sanitizers": [
+            {
+              "pattern": "sanitize(...)"
+            }
+          ],
+          "pattern-sinks": [
+            {
+              "patterns": [
+                {
+                  "pattern": "sink($VALUE)"
+                },
+                {
+                  "focus-metavariable": "$VALUE"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "language": "go",
+        "file": "reference.go",
+        "source": "package reference\nfunc positive() { value := untrusted(); sink(value) }\nfunc literal_negative() { sink(\"safe\") }\nfunc sanitized_negative() { value := sanitize(untrusted()); sink(value) }\nfunc overwritten_negative() { value := untrusted(); value = \"safe\"; sink(value) }\nfunc dynamic_boundary(callback func(string)) { value := untrusted(); callback(value) }\n",
+        "positiveSinkLine": 2,
+        "status": "planned-unexecuted",
+        "expectedStaticFindingFunctions": [
+          "positive"
+        ],
+        "expectedStaticNonfindingFunctions": [
+          "literal_negative",
+          "sanitized_negative",
+          "overwritten_negative"
+        ],
+        "unknownFunctions": [
+          "dynamic_boundary"
+        ],
+        "rule": {
+          "id": "native-p031-local-flow-go",
+          "languages": [
+            "go"
+          ],
+          "mode": "taint",
+          "message": "Declared reference source flows to the declared reference sink.",
+          "severity": "INFO",
+          "pattern-sources": [
+            {
+              "pattern": "untrusted()"
+            }
+          ],
+          "pattern-sanitizers": [
+            {
+              "pattern": "sanitize(...)"
+            }
+          ],
+          "pattern-sinks": [
+            {
+              "patterns": [
+                {
+                  "pattern": "sink($VALUE)"
+                },
+                {
+                  "focus-metavariable": "$VALUE"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "language": "rust",
+        "file": "reference.rs",
+        "source": "fn positive() { let value = untrusted(); sink(value); }\nfn literal_negative() { sink(\"safe\"); }\nfn sanitized_negative() { let value = sanitize(untrusted()); sink(value); }\nfn overwritten_negative() { let mut value = untrusted(); value = \"safe\"; sink(value); }\nfn dynamic_boundary(callback: fn(&str)) { let value = untrusted(); callback(value); }\n",
+        "positiveSinkLine": 1,
+        "status": "planned-unexecuted",
+        "expectedStaticFindingFunctions": [
+          "positive"
+        ],
+        "expectedStaticNonfindingFunctions": [
+          "literal_negative",
+          "sanitized_negative",
+          "overwritten_negative"
+        ],
+        "unknownFunctions": [
+          "dynamic_boundary"
+        ],
+        "rule": {
+          "id": "native-p031-local-flow-rust",
+          "languages": [
+            "rust"
+          ],
+          "mode": "taint",
+          "message": "Declared reference source flows to the declared reference sink.",
+          "severity": "INFO",
+          "pattern-sources": [
+            {
+              "pattern": "untrusted()"
+            }
+          ],
+          "pattern-sanitizers": [
+            {
+              "pattern": "sanitize(...)"
+            }
+          ],
+          "pattern-sinks": [
+            {
+              "patterns": [
+                {
+                  "pattern": "sink($VALUE)"
+                },
+                {
+                  "focus-metavariable": "$VALUE"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "acceptanceRequirements": [
+      "Admit and fingerprint the maintained runtime and rules before invocation.",
+      "Run each case in the conventional native ecosystem integration suite; missing analyzer prerequisites fail admission explicitly.",
+      "Check raw parser/analyzer errors separately from an empty match set.",
+      "Require only the declared positive sink finding; any literal, sanitizer or overwritten negative finding fails the reference cell.",
+      "Keep the callback target outside the selected scope unknown even if static output contains no finding.",
+      "Bind fixture/rule/runtime/source hashes and canonical test-run ids; P-026 completion/currentness still gates final R-28 acceptance."
+    ]
+  },
   "remainingGates": [
     "P-026 foundation acceptance is still a real dependency.",
     "No reference-case accuracy or native-interface security claim has been measured.",
