@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Script } from 'node:vm';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import * as terminalCounters from '../../../../scripts/lib/terminal-counter-fields.mjs';
 
 import { parseTaskBudgetRefusal } from '../../../../scripts/lib/task-exit-class.mjs';
@@ -522,7 +523,7 @@ describe('R12 original native voice transcript receipt', () => {
 });
 
 describe('R12 original fixture lifecycle receipt', () => {
-  it.each(['valid', 'missing-lifecycle', 'wrong-script', 'wrong-discovery', 'after-before-exit',
+  it.each(['valid', 'valid-ordered-lifecycle', 'missing-lifecycle', 'wrong-script', 'wrong-discovery', 'after-before-exit',
     'discovery-failure', 'missing-build-result'])('qualifies lifecycle only with %s evidence', async defect => {
     const root = mkdtempSync(join(tmpdir(), 'r12-fixture-lifecycle-'));
     const pin = (ref: string, value: unknown, raw = false) => {
@@ -538,7 +539,9 @@ describe('R12 original fixture lifecycle receipt', () => {
       const lifecycleCommands = defect === 'missing-lifecycle' ? [] :
         [{ script: defect === 'wrong-script' ? 'other' : 'pretest', command }];
       const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'partial',
-        fileOccurrences: [], tasks: [{ id: 'fixture :: test', dir: 'fixture', command: 'vitest run', lifecycleCommands }],
+        fileOccurrences: [] as Array<{ task: string; step: null; command: string; file: string; kind: string }>,
+        tasks: [{ id: 'fixture :: test', dir: 'fixture', script: 'test', command: 'vitest run', lifecycleCommands,
+          files: [] as string[] }],
         commandObligations: [{ task: 'fixture :: test', kind: 'npm-lifecycle', script: 'pretest', command, inputs }] };
       const census = { schemaVersion: 1, kind: 'command-check-inputs', check: 'fixture-build', files: [], inputs };
       const logs = { stdout: pin('command.out', defect === 'missing-build-result' ? 'partial build\n' :
@@ -560,6 +563,40 @@ describe('R12 original fixture lifecycle receipt', () => {
       const pins = { mode: 'command-preparation' as const, repositoryRoot,
         selection: pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true),
         commands: [{ task: 'fixture :: test', step: null, receipt: pin('receipt.json', receipt), logs }] };
+      if (defect === 'valid-ordered-lifecycle') {
+        mkdirSync(join(repositoryRoot, 'fixture'));
+        const testFile = 'fixture/check.test.ts', testBody = 'original test source';
+        writeFileSync(join(repositoryRoot, testFile), testBody);
+        const packageBody = JSON.stringify({ scripts: { pretest: command, test: 'vitest run' } });
+        writeFileSync(join(repositoryRoot, 'fixture/package.json'), packageBody);
+        const packageInput = { path: 'fixture/package.json', sha256: createHash('sha256').update(packageBody).digest('hex') };
+        const testInputs = [packageInput, { path: testFile, sha256: createHash('sha256').update(testBody).digest('hex') }];
+        selection.tasks[0]!.files = [testFile];
+        selection.fileOccurrences.push({ task: 'fixture :: test', step: null, command: 'vitest run', file: testFile, kind: 'test-file' });
+        pins.selection = pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true);
+        const report = { success: true, numPassedTests: 1, numTotalTests: 1, numFailedTests: 0,
+          numPendingTests: 0, numTodoTests: 0, numFailedTestSuites: 0,
+          testResults: [{ name: join(repositoryRoot, testFile), status: 'passed',
+            assertionResults: [{ status: 'passed', failureMessages: [] }] }] };
+        const testReceipt = { kind: 'original-native-command-execution', cwd: 'fixture', originalCommand: 'vitest run',
+          before: { inputs: testInputs }, after: { inputs: testInputs }, execution: {
+            command: ['bash', '-lc', 'vitest run'], exitCode: 0, signal: null, error: null,
+            startedAt: '2026-10-14T00:00:03Z', completedAt: '2026-10-14T00:00:04Z',
+            stdout: 'test.out', stderr: 'test.err', report: 'test.report.json' } };
+        const chainSteps = [{ phase: 'pre', step: null, format: 'command-preparation', receipt: pins.commands[0]!.receipt },
+          { phase: 'test', step: null, format: 'vitest-json', receipt: pin('test.json', testReceipt), logs: {
+            stdout: pin('test.out', '', true), stderr: pin('test.err', '', true), report: pin('test.report.json', report) } }];
+        const parent = { kind: 'original-native-command-execution', cwd: 'fixture', originalCommand: 'vitest run',
+          inputs: [packageInput], execution: { command: ['npm', 'run', 'test'], exitCode: 0, signal: null, error: null,
+            startedAt: '2026-10-14T00:00:00Z', completedAt: '2026-10-14T00:00:05Z', stdout: 'parent.out', stderr: 'parent.err' },
+          steps: chainSteps.map(({ phase, step, receipt }) => ({ phase, step, receipt })) };
+        Object.assign(pins, { chains: [{ task: 'fixture :: test', receipt: pin('parent.json', parent), steps: chainSteps,
+          logs: { stdout: pin('parent.out', '', true), stderr: pin('parent.err', '', true) } }] });
+        const result = await readBudgetedTaskComparisonArtifacts(root, pins);
+        expect(result.orderedChainQualified).toBe(true);
+        expect(result.chains[0]!.steps).toMatchObject([{ phase: 'pre', kind: 'npm-lifecycle' }, { phase: 'test', testsPassed: 1 }]);
+        return;
+      }
       if (defect === 'valid') {
         const result = await readBudgetedTaskComparisonArtifacts(root, pins);
         expect(result.commands[0]).toMatchObject({ kind: 'npm-lifecycle', script: 'pretest',
@@ -567,6 +604,155 @@ describe('R12 original fixture lifecycle receipt', () => {
         expect(result.orderedChainQualified).toBe(false);
       } else await expect(readBudgetedTaskComparisonArtifacts(root, pins)).rejects.toThrow();
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('R12 original ordered native occurrence qualification', () => {
+  function fixture(format: 'node-test' | 'vitest-json' = 'node-test') {
+    const root = mkdtempSync(join(tmpdir(), 'r12-ordered-native-'));
+    const repositoryRoot = join(root, 'repo');
+    mkdirSync(join(repositoryRoot, 'app'), { recursive: true });
+    const digest = (bytes: string) => createHash('sha256').update(bytes).digest('hex');
+    const pin = (ref: string, value: unknown, raw = false) => {
+      const bytes = raw ? String(value) : JSON.stringify(value);
+      writeFileSync(join(root, ref), bytes);
+      return { ref, sha256: digest(bytes) };
+    };
+    const taskId = 'app :: test';
+    const file = 'app/repeated.test.mjs';
+    const body = "import { test } from 'node:test'; import assert from 'node:assert/strict';\ntest('original assertion', () => assert.equal(2 + 2, 4));\n";
+    writeFileSync(join(repositoryRoot, file), body);
+    const collector = join(REPO_ROOT, 'libs/test-config/src/node-test-ledger-collector.ts');
+    const native = spawnSync(process.execPath, ['--test', `--test-reporter=${collector}`, 'repeated.test.mjs'],
+      { cwd: join(repositoryRoot, 'app'), encoding: 'utf8', timeout: 10_000 });
+    if (native.status !== 0) throw new Error(`native collector fixture failed: ${native.stderr}`);
+    const nodeReport = JSON.parse(native.stdout);
+    const command = format === 'node-test' ? 'node --test repeated.test.mjs' : 'vitest run';
+    const packageBody = JSON.stringify({ scripts: { test: `${command} && ${command}` } });
+    writeFileSync(join(repositoryRoot, 'app/package.json'), packageBody);
+    const inputs = [{ path: file, sha256: digest(body) }, { path: 'app/package.json', sha256: digest(packageBody) }];
+    const fileOccurrences = [0, 1].map(step => ({ task: taskId, step, command, file, kind: 'test-file' }));
+    const task = { id: taskId, dir: 'app', script: 'test', command: `${command} && ${command}`,
+      lifecycleCommands: [] as Array<{ script: string; command: string }>,
+      steps: [0, 1].map(() => ({ command, script: 'test', files: [file] })) };
+    const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'partial',
+      unenumerated: ['runtime closure'], tasks: [task], commandObligations: [], fileOccurrences };
+    const report = format === 'node-test' ? nodeReport : { success: true, numPassedTests: 1,
+      numTotalTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, numFailedTestSuites: 0,
+      testResults: [{ name: join(repositoryRoot, file), status: 'passed',
+        assertionResults: [{ status: 'passed', failureMessages: [] }] }] };
+    const receipts = [0, 1].map(step => ({ kind: 'original-native-command-execution', cwd: 'app',
+      originalCommand: command, before: { inputs }, after: { inputs: structuredClone(inputs) },
+      execution: { command: ['bash', '-lc', command], exitCode: 0, signal: null, error: null,
+        startedAt: `2026-10-14T00:00:0${step * 2 + 1}Z`, completedAt: `2026-10-14T00:00:0${step * 2 + 2}Z`,
+        stdout: `step${step}.out`, stderr: `step${step}.err`, report: `step${step}.report.json` } }));
+    const steps = receipts.map((receipt, step) => ({ phase: 'test' as const, step, format,
+      receipt: pin(`step${step}.json`, receipt), logs: {
+        stdout: pin(receipt.execution.stdout, native.stdout, true),
+        stderr: pin(receipt.execution.stderr, '', true), report: pin(receipt.execution.report, report) } }));
+    const parent = { kind: 'original-native-command-execution', cwd: 'app', originalCommand: task.command,
+      inputs: [inputs[1]], execution: { command: ['npm', 'run', 'test'], exitCode: 0, signal: null, error: null,
+        startedAt: '2026-10-14T00:00:00Z', completedAt: '2026-10-14T00:00:05Z', stdout: 'parent.out', stderr: 'parent.err' },
+      steps: steps.map(({ phase, step, receipt }) => ({ phase, step, receipt })) };
+    const pins = { mode: 'command-preparation' as const, repositoryRoot, commands: [],
+      selection: pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true),
+      chains: [{ task: taskId, receipt: pin('parent.json', parent), steps,
+        logs: { stdout: pin('parent.out', native.stdout, true), stderr: pin('parent.err', '', true) } }] };
+    const saveSelection = () => { pins.selection = pin('selection.log',
+      `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true); };
+    const saveParent = () => { pins.chains[0]!.receipt = pin('parent.json', parent); };
+    const saveSteps = () => {
+      receipts.forEach((receipt, i) => { steps[i]!.receipt = pin(`step${i}.json`, receipt); });
+      parent.steps = steps.map(({ phase, step, receipt }) => ({ phase, step, receipt }));
+      saveParent();
+    };
+    const saveReport = () => { steps[0]!.logs.report = pin('step0.report.json', report); };
+    return { root, pins, selection, task, parent, receipts, steps, report, inputs, file, pin,
+      saveSelection, saveParent, saveSteps, saveReport };
+  }
+  it.each(['node-test', 'vitest-json'] as const)
+  ('retains repeated file occurrences in their original %s steps', async format => {
+    const f = fixture(format);
+    try {
+      const result = await readBudgetedTaskComparisonArtifacts(f.root, f.pins);
+      expect(result).toMatchObject({ orderedChainQualified: true, operationalAcceptance: false,
+        runtimeClosure: 'unmeasured', orderedChainCoverage: { population: [f.task.id], qualified: [f.task.id], missing: [] } });
+      expect(result.chains[0]!.steps).toHaveLength(2);
+      expect(result.chains[0]!.steps).toMatchObject([
+        { step: 0, fileOccurrences: [{ file: f.file }], testsPassed: 1 },
+        { step: 1, fileOccurrences: [{ file: f.file }], testsPassed: 1 },
+      ]);
+      expect(Object.isFrozen(result.chains[0]!.steps)).toBe(true);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('leaves unsupplied original chains explicitly missing', async () => {
+    const f = fixture();
+    try {
+      f.selection.tasks.push({ ...f.task, id: 'another :: test' }); f.saveSelection();
+      const result = await readBudgetedTaskComparisonArtifacts(f.root, f.pins);
+      expect(result.orderedChainQualified).toBe(false);
+      expect(result.orderedChainCoverage.missing).toEqual(['another :: test']);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['missing-step', 'reversed-step', 'duplicate-chain', 'parent-binding', 'parent-exit', 'parent-command',
+    'parent-signal', 'parent-wrapper', 'parent-source-drift', 'step-command', 'step-exit', 'step-signal',
+    'interval-overlap', 'interval-outside-parent', 'input-drift', 'input-missing', 'source-drift',
+    'occurrence-missing', 'occurrence-duplicate', 'occurrence-command', 'occurrence-kind', 'extra-occurrence',
+    'report-missing-file', 'report-duplicate-file', 'report-skip', 'report-zero-tests', 'report-failed',
+    'report-source-escape', 'receipt-reuse', 'log-role-alias', 'log-symlink-alias', 'log-drift',
+    'wrong-runner-report', 'unsupported-lifecycle', 'parent-log-drift', 'parent-log-alias', 'undeclared-lifecycle'])
+  ('refuses %s in original ordered evidence', async defect => {
+    const f = fixture();
+    try {
+      if (defect === 'missing-step') f.steps.pop();
+      if (defect === 'reversed-step') f.steps.reverse();
+      if (defect === 'duplicate-chain') f.pins.chains.push(f.pins.chains[0]!);
+      if (defect === 'parent-binding') { f.parent.steps[0]!.receipt.sha256 = 'a'.repeat(64); f.saveParent(); }
+      if (defect === 'parent-exit') { f.parent.execution.exitCode = 1; f.saveParent(); }
+      if (defect === 'parent-command') { f.parent.execution.command = ['npm', 'run', 'other']; f.saveParent(); }
+      if (defect === 'parent-signal') { Object.assign(f.parent.execution, { signal: 'SIGTERM' }); f.saveParent(); }
+      if (defect === 'parent-wrapper') { f.parent.originalCommand = 'other'; f.saveParent(); }
+      if (defect === 'parent-source-drift') writeFileSync(join(f.pins.repositoryRoot, 'app/package.json'), '{}');
+      if (defect === 'step-command') { f.receipts[0]!.execution.command = ['bash', '-lc', 'other']; f.saveSteps(); }
+      if (defect === 'step-exit') { f.receipts[0]!.execution.exitCode = 1; f.saveSteps(); }
+      if (defect === 'step-signal') { Object.assign(f.receipts[0]!.execution, { signal: 'SIGTERM' }); f.saveSteps(); }
+      if (defect === 'interval-overlap') { f.receipts[1]!.execution.startedAt = f.receipts[0]!.execution.startedAt; f.saveSteps(); }
+      if (defect === 'interval-outside-parent') { f.parent.execution.completedAt = '2026-10-14T00:00:03Z'; f.saveParent(); }
+      if (defect === 'input-drift') { f.receipts[0]!.after.inputs[0]!.sha256 = 'a'.repeat(64); f.saveSteps(); }
+      if (defect === 'input-missing') { f.receipts[0]!.before.inputs = [f.inputs[1]!];
+        f.receipts[0]!.after.inputs = [f.inputs[1]!]; f.saveSteps(); }
+      if (defect === 'source-drift') writeFileSync(join(f.pins.repositoryRoot, f.file), 'changed');
+      if (defect === 'occurrence-missing') { f.selection.fileOccurrences.pop(); f.saveSelection(); }
+      if (defect === 'occurrence-duplicate') { f.selection.fileOccurrences.push(f.selection.fileOccurrences[0]!); f.saveSelection(); }
+      if (defect === 'occurrence-command') { f.selection.fileOccurrences[0]!.command = 'other'; f.saveSelection(); }
+      if (defect === 'occurrence-kind') { f.selection.fileOccurrences[0]!.kind = 'check-input'; f.saveSelection(); }
+      if (defect === 'extra-occurrence') { f.selection.fileOccurrences.push({ ...f.selection.fileOccurrences[0]!, step: 99 }); f.saveSelection(); }
+      if (defect === 'report-missing-file') { f.report.files = []; f.saveReport(); }
+      if (defect === 'report-duplicate-file') { f.report.files.push(f.report.files[0]); f.saveReport(); }
+      if (defect === 'report-skip') { f.report.files[0].skipped = 1; f.saveReport(); }
+      if (defect === 'report-zero-tests') { f.report.files[0].passed = 0; f.saveReport(); }
+      if (defect === 'report-failed') { f.report.files[0].failed = 1; f.saveReport(); }
+      if (defect === 'report-source-escape') { f.report.files[0].file = join(f.root, 'parent.json'); f.saveReport(); }
+      if (defect === 'receipt-reuse') { f.steps[1]!.receipt = f.steps[0]!.receipt;
+        f.parent.steps = f.steps.map(({ phase, step, receipt }) => ({ phase, step, receipt })); f.saveParent(); }
+      if (defect === 'log-role-alias') f.steps[0]!.logs.stderr = f.steps[0]!.logs.stdout;
+      if (defect === 'log-symlink-alias') {
+        symlinkSync(join(f.root, 'step0.out'), join(f.root, 'alias.out'));
+        f.steps[1]!.logs.stdout = { ...f.steps[0]!.logs.stdout, ref: 'alias.out' };
+        f.receipts[1]!.execution.stdout = 'alias.out'; f.saveSteps();
+      }
+      if (defect === 'log-drift') writeFileSync(join(f.root, 'step0.out'), 'changed');
+      if (defect === 'wrong-runner-report') Object.assign(f.steps[0]!, { format: 'vitest-json' });
+      if (defect === 'parent-log-drift') writeFileSync(join(f.root, 'parent.out'), 'changed');
+      if (defect === 'parent-log-alias') f.pins.chains[0]!.logs.stderr = f.pins.chains[0]!.logs.stdout;
+      if (defect === 'undeclared-lifecycle') {
+        const body = JSON.stringify({ scripts: { test: f.task.command, pretest: 'other' } });
+        writeFileSync(join(f.pins.repositoryRoot, 'app/package.json'), body);
+        f.inputs[1]!.sha256 = createHash('sha256').update(body).digest('hex'); f.saveParent();
+      }
+      if (defect === 'unsupported-lifecycle') { f.task.lifecycleCommands.push({ script: 'before', command: 'other' }); f.saveSelection(); }
+      await expect(readBudgetedTaskComparisonArtifacts(f.root, f.pins)).rejects.toThrow();
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
   });
 });
 
