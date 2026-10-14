@@ -623,6 +623,29 @@ export function codexRolloutConditionKey(
   return `alarm:codex-rollout-${kind}:` + encodeURIComponent(JSON.stringify([workspaceId, sessionId, ownerId]));
 }
 
+function parseCodexRolloutConditionSession(
+  conditionKey: string,
+): { kind: 'persistence' | 'provider'; sessionId: string } | null {
+  const kind = conditionKey.startsWith('alarm:codex-rollout-provider:')
+    ? 'provider'
+    : conditionKey.startsWith('alarm:codex-rollout-persistence:') ? 'persistence' : null;
+  if (!kind) return null;
+  try {
+    const identity: unknown = JSON.parse(decodeURIComponent(
+      conditionKey.slice(`alarm:codex-rollout-${kind}:`.length),
+    ));
+    if (!Array.isArray(identity) || identity.length !== 3 ||
+        !(identity[0] === null || typeof identity[0] === 'string') ||
+        typeof identity[1] !== 'string' || !/^\d+$/.test(identity[1]) ||
+        typeof identity[2] !== 'string' || !identity[2].trim()) return null;
+    const sessionId = Number(identity[1]);
+    if (!Number.isSafeInteger(sessionId) || sessionId <= 0) return null;
+    return { kind, sessionId: String(sessionId) };
+  } catch {
+    return null;
+  }
+}
+
 function measuredTime(value: unknown, now: number): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= now;
 }
@@ -667,6 +690,43 @@ export async function checkCodexRolloutPersistence(
     } catch { /* Unknown state cannot prove an old condition recovered. */ }
     const healthyPersistencePhases = new Set<string>();
     const healthyProviderPhases = new Set<string>();
+    const activeSessionIds = new Set(rows
+      .filter(row => row && Number.isSafeInteger(row.id) && row.id > 0)
+      .map(row => String(row.id)));
+    // These alarms are one-shot, so silence cannot establish recovery. Session
+    // termination is stronger evidence: once the adv row is no longer active,
+    // no future provider success can arrive to resolve its condition. Close only
+    // exact Codex rollout keys whose session has a durable ended_at marker;
+    // a missing row or unreadable census is not proof of termination.
+    if (episodesKnown) {
+      const endedCandidates = episodes
+        .map(episode => ({ episode, identity: parseCodexRolloutConditionSession(episode.conditionKey) }))
+        .filter(item => item.identity && !activeSessionIds.has(item.identity.sessionId));
+      const candidateIds = [...new Set(endedCandidates.map(item => Number(item.identity!.sessionId)))];
+      let endedSessionIds = new Set<string>();
+      if (candidateIds.length > 0) {
+        try {
+          const endedRows = await sql<Array<{ id: number }>>`
+            SELECT id
+              FROM harness_shared.adv_sessions
+             WHERE agent = 'codex' AND ended_at IS NOT NULL AND id = ANY(${candidateIds})
+          `;
+          endedSessionIds = new Set(endedRows
+            .filter(row => row && Number.isSafeInteger(row.id) && row.id > 0)
+            .map(row => String(row.id)));
+        } catch { /* An unreadable ended-session census cannot prove recovery. */ }
+      }
+      for (const { episode, identity } of endedCandidates) {
+        if (!identity || !endedSessionIds.has(identity.sessionId)) continue;
+        if (await resolveAlarm(episode.conditionKey, 'codex-rollout-watchdog', opts.rail)) {
+          if (identity.kind === 'provider') {
+            healthyProviderPhases.add(PROVIDER_FAILURE_PHASE_PREFIX + identity.sessionId);
+          } else {
+            healthyPersistencePhases.add(PHASE_PREFIX + identity.sessionId);
+          }
+        }
+      }
+    }
     const alive = opts.pidAlive ?? defaultPidAlive;
     const stalled: Array<{
       snapshot: CodexRolloutPersistenceSnapshot;

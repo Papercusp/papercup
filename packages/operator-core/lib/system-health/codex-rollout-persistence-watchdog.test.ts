@@ -88,6 +88,7 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
   let updates: unknown[][];
   let legacyFailure: boolean;
   let coalesced: boolean;
+  let endedSessionIds: number[];
   const broadcast = vi.fn(async (_event: { conditionKey?: string; oneShot?: boolean }) => true);
   const resolve = vi.fn(async (_event: { conditionKey: string }) => true);
   let opts: CodexRolloutPersistenceWatchdogOptions;
@@ -95,6 +96,9 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
   const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const query = strings.join('');
     if (query.includes('SELECT id, coord_owner_id AS owner_id')) return rows;
+    if (query.includes('SELECT id') && query.includes('ended_at IS NOT NULL')) {
+      return endedSessionIds.map(id => ({ id }));
+    }
     if (query.includes('INSERT INTO harness_shared.harness_escalations')) {
       expect(broadcast).toHaveBeenCalled();
       if (legacyFailure) throw new Error('legacy write failed');
@@ -118,7 +122,7 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
   beforeEach(async () => {
     vi.clearAllMocks();
     now = Date.now() + 1000;
-    rows = [{ ...row }]; open = []; updates = []; legacyFailure = false; coalesced = true;
+    rows = [{ ...row }]; open = []; updates = []; legacyFailure = false; coalesced = true; endedSessionIds = [];
     broadcast.mockResolvedValue(true); resolve.mockResolvedValue(true);
     root = await mkdtemp(join(tmpdir(), 'codex-condition-'));
     previousHome = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
@@ -167,6 +171,24 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
       if (mode === 'invalid-pid') rows = [{ ...row, pid: Number.NaN }];
       await pass(); expect(resolve).not.toHaveBeenCalled(); expect(updates).toEqual([]);
     });
+
+  it('resolves one-shot provider alarms only after their Codex adv session is durably ended', async () => {
+    const providerKey = key('provider');
+    rows = [];
+    endedSessionIds = [42];
+    open = [{ conditionKey: providerKey, openedAtMs: now - 60_000 }];
+
+    const result = await pass();
+
+    expect(resolve).toHaveBeenCalledWith({
+      conditionKey: providerKey,
+      summary: 'codex-rollout-watchdog recovered',
+    });
+    expect(result.providerRecovered).toEqual(['42']);
+    expect(updates).toHaveLength(1);
+    expect(lifecycleMocks.endSession).not.toHaveBeenCalled();
+    expect(lifecycleMocks.releaseWorkItems).not.toHaveBeenCalled();
+  });
 
   it.each(['missing-history', 'missing-rollout', 'partial-directory', 'dead-pid', 'idle-history', 'future-mtime', 'failed-episodes'])(
     'preserves persistence recovery for %s evidence', async mode => {
