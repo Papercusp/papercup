@@ -36,6 +36,7 @@ import { listPresence } from './presence';
 import { resolveBestEffortAgainstRoster, isSelectorOrWildcard, knownOwnerIdSet } from './recipient-resolve';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { reserveWakeFanout, withWakeFanoutPacing, WAKE_FANOUT_BURST } from './wake-fanout-pacing';
 import {
   isOwnerVerifiedRelay,
   RELAY_PROVENANCE_FIELD,
@@ -195,6 +196,9 @@ export interface WakeRecipientsResult {
   /** Legacy queue-count alias retained for callers that predate `queued`. Despite its
    *  name, this is NOT execution-confirmed turn count; it mirrors EmitResult.woken. */
   woken: number;
+  /** Durable scheduled wakes, not a miss and never grounds for relaunch. */
+  deferred?: number;
+  deferredTargets?: string[];
   /** ALWAYS `false`, and typed `false` on purpose — a wake fan CANNOT answer this.
    *
    *  `wakeRecipients` returns once the wake is ENQUEUED on the await-event pump; the
@@ -335,17 +339,21 @@ export async function wakeRecipients(
   );
   const [resolved, roster] = rosterBounded.value;
   const allTargets = [...new Set(resolved)].filter((r) => !NON_WAKEABLE.has(r));
-  // P-022: cap the wake fan — beyond MAX_WAKE_FANOUT the overflow is injected but
-  // NOT woken (the durable inbox row already landed at sendMessage), so an
-  // oversized audience can't detonate thousands of billable turns from one send.
-  const targets = allTargets.slice(0, MAX_WAKE_FANOUT);
-  const fanoutCapped = allTargets.slice(MAX_WAKE_FANOUT);
-  if (fanoutCapped.length > 0) {
-     
-    console.warn(
-      `[inbox-wake] wake fan-out capped at ${MAX_WAKE_FANOUT}: ${fanoutCapped.length} recipient(s) ` +
-        'INJECTED but not woken (oversized audience — they see it on their next turn).',
-    );
+  // Overflow now has a durable delivery time instead of being silently left asleep.
+  const targets = allTargets;
+  const fanoutCapped: string[] = [];
+  const urgent = isLoopWakeSource(opts.source) || isDeliveryLadderWakeSource(opts.source) ||
+    isEscalationSlaRerouteWakeSource(opts.source);
+  let pacing: Awaited<ReturnType<typeof reserveWakeFanout>> = [];
+  if (targets.length > WAKE_FANOUT_BURST && !urgent) {
+    try {
+      pacing = await reserveWakeFanout(targets.length, opts.workspaceId);
+    } catch (e) {
+      // Never fail open into the exact herd this gate exists to prevent.
+      console.warn(`[inbox-wake] bulk wake admission unavailable: ${e instanceof Error ? e.message : e}`);
+      return { targets, keys: [], queued: 0, woken: 0, pickupConfirmed: false, pickup: [],
+        staged: 0, stagedTargets: [], fanoutCapped, timedOutTargets: targets };
+    }
   }
   // The per-agent wake-MODE gate (hive-agent-tabs P-007/D-005), GRADUATED off
   // the POT_AGENT_TABS flag (start-hive-wake P-007 / OQ-2): the gate is the
@@ -387,12 +395,12 @@ export async function wakeRecipients(
     isOwnerVerifiedRelay(opts.relayProvenance);
   type TargetOutcome =
     | { kind: 'staged'; ownerId: string }
-    | { kind: 'fired'; ownerId: string; key: string; woken: number }
+    | { kind: 'fired'; ownerId: string; key: string; woken: number; deferred: number }
     | { kind: 'fire-failed'; key: string }
     | { kind: 'timed-out'; ownerId: string; key: string }
     | { kind: 'skipped' };
   const outcomes = await Promise.all(
-    targets.map(async (ownerId): Promise<TargetOutcome> => {
+    targets.map(async (ownerId, index): Promise<TargetOutcome> => {
       const key = inboxWakeKey(ownerId);
       type CompletedOutcome = Exclude<TargetOutcome, { kind: 'timed-out' }>;
       const bounded = await withBoundedTimeout<CompletedOutcome | null>(
@@ -440,11 +448,15 @@ export async function wakeRecipients(
             const res = await emitAwaitedEvent({
               key,
               summary: opts.summary,
-              payload: payloadWithRelayProvenance(opts.payload, opts.relayProvenance),
+              payload: pacing[index]
+                ? withWakeFanoutPacing(payloadWithRelayProvenance(opts.payload, opts.relayProvenance), pacing[index])
+                : payloadWithRelayProvenance(opts.payload, opts.relayProvenance),
               source: opts.source,
               workspaceId: opts.workspaceId,
+              urgent: urgent || targets.length <= WAKE_FANOUT_BURST &&
+                (isOwnerGuiWakeSource(opts.source) || isOwnerVerifiedRelay(opts.relayProvenance)),
             });
-            return { kind: 'fired', ownerId, key, woken: res.woken };
+            return { kind: 'fired', ownerId, key, woken: res.woken, deferred: res.deferred ?? 0 };
           } catch (e) {
             // Best-effort: the message already persisted to the inbox; a wake-fan
             // hiccup degrades to "seen on the recipient's next natural turn".
@@ -468,6 +480,8 @@ export async function wakeRecipients(
   const keys: string[] = [];
   const requiredAttempts: RequiredWakeAttempt[] = [];
   let woken = 0;
+  let deferred = 0;
+  const deferredTargets: string[] = [];
   let staged = 0;
   const stagedTargets: string[] = [];
   const timedOutTargets: string[] = [];
@@ -481,9 +495,11 @@ export async function wakeRecipients(
       case 'fired':
         keys.push(o.key);
         woken += o.woken;
+        deferred += o.deferred;
+        if (o.deferred > 0) deferredTargets.push(o.ownerId);
         // Only a QUEUED delivery can later be judged not-picked-up; a 0-match fire has no row.
         if (o.woken > 0) pickup.push(wakePickupHandle(o.ownerId));
-        if (opts.requiredWake) {
+        if (opts.requiredWake && o.deferred === 0) {
           requiredAttempts.push({
             subscriberId: ownerFromInboxWakeKey(o.key) ?? o.key,
             eventKey: o.key,
@@ -508,6 +524,8 @@ export async function wakeRecipients(
     keys,
     queued: woken,
     woken,
+    deferred,
+    deferredTargets,
     pickupConfirmed: false,
     pickup,
     staged,

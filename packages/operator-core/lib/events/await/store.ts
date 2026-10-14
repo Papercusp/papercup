@@ -18,6 +18,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { boundedOrgTxn, type BoundedOrgTxnOptions } from '../../pg-bounded-txn';
+import { readWakeFanoutPacing, reserveWakeFanout, withWakeFanoutPacing, WAKE_FANOUT_BURST } from '../../agent-tools/coordination/wake-fanout-pacing';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import {
   findLiveHostAsync,
@@ -2183,22 +2184,32 @@ export async function insertDeliveries(input: {
    *  resume-turn-exit handler can attribute a turn death to its source (e.g. a loop fire's
    *  `loop:<routineId>`). */
   source?: string | null;
+  /** Emit result accounting: callbacks run only after a durable insert. */
+  onDeferred?: (subscriberId: string, notBeforeMs: number) => void;
+  pacingWorkspaceId?: string;
 }): Promise<number> {
   if (input.awaits.length === 0) return 0;
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  const explicitPacing = readWakeFanoutPacing(input.payload);
+  const bulk = input.awaits.length > WAKE_FANOUT_BURST && !input.urgent && !input.source?.startsWith('loop:');
+  const subscribers = [...new Set(input.awaits.filter((a) => !a.urgency).map((a) => a.subscriberId))];
+  const reservations = bulk && !explicitPacing ? await reserveWakeFanout(subscribers.length, input.pacingWorkspaceId) : [];
+  const bySubscriber = new Map(subscribers.map((id, i) => [id, reservations[i]]));
   let n = 0;
   for (const a of input.awaits) {
     // The delivery is urgent if EITHER the emit declared it OR the watch is an
     // always-urgent watch (a.urgency) — either bypasses the floor.
     const urgent = (input.urgent ?? false) || a.urgency;
-    const deliveryPayload = withLifecycleBindingProvenance(input.payload, a.boundTo);
+    const pacing = urgent || input.source?.startsWith('loop:') ? null : explicitPacing ?? bySubscriber.get(a.subscriberId);
+    const deliveryPayload = withLifecycleBindingProvenance(pacing ? withWakeFanoutPacing(input.payload, pacing) : input.payload, a.boundTo);
     const payloadJson = deliveryPayload === undefined ? null : JSON.stringify(deliveryPayload);
     const write = (tx: typeof sql) => tx<Array<{ id: number }>>`
       INSERT INTO harness_shared.event_wake_deliveries
-        (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec, source)
+        (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec, source, next_attempt_at)
       VALUES (${ws}, ${a.id}, ${a.subscriberId}, ${a.eventKey}, ${payloadJson}::text::jsonb,
-              ${input.summary ?? null}, ${urgent}, ${a.minSleepSec ?? null}, ${input.source ?? null})
+              ${input.summary ?? null}, ${urgent}, ${a.minSleepSec ?? null}, ${input.source ?? null},
+              ${new Date(pacing?.notBeforeMs ?? Date.now()).toISOString()}::timestamptz)
       RETURNING id
     `;
     // A standing watch may deliver many times. A consumed one-shot may deliver
@@ -2215,6 +2226,7 @@ export async function insertDeliveries(input: {
         })
       : await write(sql);
     if (inserted.length === 0) continue;
+    if (pacing && pacing.notBeforeMs > Date.now()) input.onDeferred?.(a.subscriberId, pacing.notBeforeMs);
     const deliveryId = Number(inserted[0]?.id);
 
     // EI-21303383797798186: a loop fire supersedes every older undelivered fire
@@ -2263,12 +2275,18 @@ export async function reconcileFiredWakeDeliveries(limit = 100): Promise<number>
      ORDER BY a.fired_at, a.id LIMIT ${limit}
   `;
   let recovered = 0;
-  for (const raw of rows) {
+  // Preserve bulk cardinality when recovering a shared-key resume whose emitter
+  // died after consuming its awaits. Recovering each row as a single directed wake
+  // would bypass pacing precisely when a restart has accumulated the biggest herd.
+  const recoveryReservations = rows.length > WAKE_FANOUT_BURST ? await reserveWakeFanout(rows.length) : [];
+  for (const [index, raw] of rows.entries()) {
     const awaited = mapAwait(raw);
     const timeout = awaited.firedReason === 'timeout';
     recovered += await insertDeliveries({
       awaits: [awaited],
-      payload: awaited.firedPayload ?? {
+      payload: recoveryReservations[index] && !readWakeFanoutPacing(awaited.firedPayload)
+        ? withWakeFanoutPacing(awaited.firedPayload ?? { recoveredDelivery: true, eventKey: awaited.eventKey, ...(timeout ? { timeout: true } : {}) }, recoveryReservations[index])
+        : awaited.firedPayload ?? {
         recoveredDelivery: true,
         eventKey: awaited.eventKey,
         ...(timeout ? { timeout: true } : {}),

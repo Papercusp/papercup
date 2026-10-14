@@ -132,20 +132,22 @@ export async function emitScorecardEmitted(
   opts: {
     workspaceId?: string;
     settledAudit?: ScorecardGradingAuditSettledPayload;
+    /** An existing audit card settled on retry; emit only its settlement event. */
+    filed?: boolean;
   } & ScorecardEmittedEventsDeps = {},
 ): Promise<void> {
   const emit = opts.emit ?? emitAwaitedEvent;
   const subject = payload.subjectRef ? ` on ${payload.subjectRef}` : '';
   const verdict = payload.hasAcceptance ? ' (carries the acceptance verdict)' : '';
   const events = [
-    {
+    ...(opts.filed !== false ? [{
       key: scorecardEmittedKey(payload.rubricRef),
       payload,
       summary: `scorecard ${payload.issueId} filed against ${payload.rubricRef}${subject} by ${payload.createdBy ?? 'unknown'}${verdict}`,
       source: payload.createdBy ?? 'scorecards:emit',
       ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
-    },
-    ...(payload.subjectKind === 'plan' && payload.subjectRef
+    }] : []),
+    ...(opts.filed !== false && payload.subjectKind === 'plan' && payload.subjectRef
       ? [
           {
             key: planAcceptanceChangedKey(payload.subjectRef),

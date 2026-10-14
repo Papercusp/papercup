@@ -66,6 +66,7 @@ const h = vi.hoisted(() => ({
   sendMessage: vi.fn(async () => ({ msg_id: 'm-1' })),
   fetchPresenceFleet: vi.fn(async () => new Map<string, { fleetSlug: string; fleetRole: string }>()),
   admitSpawn: vi.fn(async (): Promise<{ admitted: boolean }> => ({ admitted: true })),
+  admitWakeFanout: vi.fn(async (): Promise<number> => 0),
   // WI-4014 Part 2: standing event-key inject subscribers folded into the notify path.
   listEventKeySubscribers: vi.fn(async (): Promise<Array<{ subscriber_id: string; delivery_mode: string }>> => []),
   // Legacy read cursor used only for message-less inbox notifications. Empty by
@@ -95,6 +96,10 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('./store', () => h.store);
+vi.mock('../../agent-tools/coordination/wake-fanout-pacing', async (orig) => ({
+  ...(await orig<typeof import('../../agent-tools/coordination/wake-fanout-pacing')>()),
+  admitWakeFanout: h.admitWakeFanout,
+}));
 vi.mock('./wake-executor', () => ({ executeWake: h.executeWake, degradeToInboxOrDrop: h.degradeToInboxOrDrop }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: h.sendMessage, repliedMsgIdsBatch: h.repliedMsgIdsBatch }));
 vi.mock('../../attention/bulk-run-store', () => ({
@@ -205,6 +210,7 @@ beforeEach(() => {
   h.store.settleVerifiedAwaitTimeout.mockResolvedValue(null);
   h.store.fireTimedOutAwaits.mockResolvedValue([]);
   h.store.claimDueDeliveries.mockResolvedValue([]);
+  h.admitWakeFanout.mockResolvedValue(0);
   h.store.settleCancelledAwaitDeliveries.mockResolvedValue([]);
   h.compose.claimDueComposedRoots.mockResolvedValue([]);
   predicateTimeoutHook.getPredicateTimeoutContext.mockResolvedValue(null);
@@ -939,6 +945,30 @@ describe('emitAwaitedEvent — WI-4014 Part 2: standing event-key inject subscri
 });
 
 describe('pumpWakeDeliveries — pacing (D-007)', () => {
+  it('an overdue bulk queue after restart cannot bypass execution admission; a directed wake stays immediate', async () => {
+    process.env.PAPERCUSP_AWAIT_MAX_RESUMES_PER_TICK = '250';
+    const bulk = Array.from({ length: 200 }, (_, i) => workRow({ id: 10_000 + i, subscriberId: `bulk-${i}`, source: 'resume-fleet',
+      payload: { __papercuspWakeFanout: { workspaceId: 'ws-test', notBeforeMs: 1 } } }));
+    const directed = workRow({ id: 12_000, subscriberId: 'owner-directed', urgent: true });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([...bulk, directed]);
+    let tokens = 5;
+    h.admitWakeFanout.mockImplementation(async () => tokens-- > 0 ? 0 : 6_000);
+    const stats = await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake).toHaveBeenCalledTimes(6);
+    expect(h.executeWake).toHaveBeenCalledWith(expect.objectContaining({ subscriberId: 'owner-directed' }), expect.anything());
+    expect(stats.deferred).toBe(195);
+    expect(h.store.markDeliveryDeferred).toHaveBeenCalledTimes(195);
+  });
+
+  it('a loop or unpaced directed wake coalesced with a deferred bulk wake bypasses its execution bucket', async () => {
+    const paced = workRow({ id: 13_000, subscriberId: 'loop-owner', payload: { __papercuspWakeFanout: { workspaceId: 'ws-test', notBeforeMs: 1 } } });
+    const loop = workRow({ id: 13_001, subscriberId: 'loop-owner', source: 'loop:rt-test' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([paced, loop]);
+    await pumpWakeDeliveries('ws-test');
+    expect(h.admitWakeFanout).not.toHaveBeenCalled();
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+  });
+
   it('settles claimed deliveries for any cancelled await before grouping or execution', async () => {
     const cancelled = workRow({
       id: 120,

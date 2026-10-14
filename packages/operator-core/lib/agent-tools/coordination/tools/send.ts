@@ -2299,6 +2299,8 @@ async function sendOne(
         woken: number;
         /** False until a later checkpoint/activity observation proves pickup. */
         pickupConfirmed: boolean;
+        deferred?: number;
+        deferredTargets?: string[];
         staged?: number;
         /** EI-19965318428068990: an explicit, non-numeric discriminant so a caller reading
          *  ONLY `queued` (the durable delivery count) cannot conflate a STAGED
@@ -2315,7 +2317,7 @@ async function sendOne(
          *  delivery was queued but turn pickup is not confirmed; 'unknown' means the local wake
          *  deadline elapsed before the fire result arrived, so the underlying wake may still
          *  complete and the sender MUST verify pickup rather than treating it as absent. */
-        wakeOutcome?: 'queued' | 'partial-staged' | 'staged-manual-mode' | 'missed' | 'unknown';
+        wakeOutcome?: 'queued' | 'partial-staged' | 'staged-manual-mode' | 'missed' | 'unknown' | 'deferred' | 'partial-deferred';
         /** EI-5957: the ownerIds whose wake STAGED (manual wake-mode) — named so a
          *  leader-steering send surfaces WHO didn't get the directive, alongside `note`. */
         stagedTargets?: string[];
@@ -2390,6 +2392,11 @@ async function sendOne(
     });
     const queued = fan.queued ?? fan.woken;
     wake = { mode: wakeMode, targets: fan.targets, queued, woken: queued, pickupConfirmed: false };
+    if (fan.deferred) {
+      wake.deferred = fan.deferred;
+      wake.deferredTargets = fan.deferredTargets;
+      wake.note = `${fan.deferred} bulk wake(s) durably DEFERRED for pacing; they will be delivered by the event pump. Deferred recipients are not dead or absent; do not relaunch them. Pickup windows start on actual delivery.`;
+    }
     if (fan.staged > 0) wake.staged = fan.staged;
     if (fan.timedOutTargets?.length) wake.timedOutTargets = fan.timedOutTargets;
     if (fan.pickup?.length) wake.pickup = fan.pickup;
@@ -2402,6 +2409,8 @@ async function sendOne(
     if (fan.targets.length > 0) {
       wake.wakeOutcome = fan.timedOutTargets?.length
         ? 'unknown'
+        : (fan.deferred ?? 0) > 0
+          ? queued > 0 ? 'partial-deferred' : 'deferred'
         : queued > 0 && fan.staged === 0
           ? 'queued'
           : queued > 0 && fan.staged > 0
@@ -2418,7 +2427,7 @@ async function sendOne(
     // notes never collide.
     if (fan.stagedTargets.length > 0) {
       wake.stagedTargets = fan.stagedTargets;
-      wake.note = buildStagedWakeNote(fan.stagedTargets);
+      wake.note = [wake.note, buildStagedWakeNote(fan.stagedTargets)].filter(Boolean).join(' ');
     }
     if (fan.timedOutTargets?.length) {
       const targets = fan.timedOutTargets.join(', ');
@@ -2429,7 +2438,7 @@ async function sendOne(
         '({ agent, sent_ts }) for messages_shown_ts/read_through_ts before claiming the holder was nudged.';
       wake.note = wake.note ? `${wake.note} ${timeoutNote}` : timeoutNote;
     }
-    const missed = fan.targets.length > 0 && queued === 0 && fan.staged === 0 && !fan.timedOutTargets?.length;
+    const missed = fan.targets.length > 0 && queued === 0 && !fan.deferred && fan.staged === 0 && !fan.timedOutTargets?.length;
     if (missed) {
       // FF#1 — the forcing function: a 'required' miss is ALWAYS loud; an 'optimistic'
       // miss is loud UNLESS the caller consciously declared a durable backstop

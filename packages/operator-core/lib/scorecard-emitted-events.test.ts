@@ -164,6 +164,13 @@ describe('grading-audit settlement key (EI-24852356444105284)', () => {
     expect(keys.some((k) => k.startsWith('scorecard:grading-audit:'))).toBe(false);
   });
 
+  it('a recovered settlement wakes its target without announcing another card filing', async () => {
+    const emit = vi.fn().mockResolvedValue({ ok: true, key: 'k' });
+    await emitScorecardEmitted(basePayload(), { emit: emit as never, filed: false, settledAudit: settled() });
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({ key: 'scorecard:grading-audit:EI-AUDITED', payload: settled() });
+  });
+
   it('a failed rubric-key emit does not suppress the settled key', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const emit = vi.fn().mockRejectedValueOnce(new Error('bus down')).mockResolvedValue({ ok: true, key: 'k' });

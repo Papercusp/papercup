@@ -120,6 +120,37 @@ describe('wakeClaimableAwaitersAfterSpecChange — EI-20079462322478221', () => 
   });
 });
 
+describe('replacement write wakes — EI-25930135591137865', () => {
+  it.each([false, true])('wakes members only when the store commits: ok=%s', async (ok) => {
+    getFleet.mockReset().mockResolvedValue({ slug: 'compatible-fleet' });
+    getClaimSpecRecord.mockReset().mockResolvedValue(null);
+    previewSpecPoolEffect.mockReset().mockResolvedValue({ matched: 20, pool: 20, states: ['open'] });
+    setClaimSpec.mockReset().mockResolvedValue(ok
+      ? { ok: true, errors: [], revision: 15 }
+      : { ok: false, errors: ['release-operator has not attested support'] });
+    listFleetMembers.mockReset().mockResolvedValue(['su-member-a', 'su-member-b']);
+    wakeClaimableAwaitersForSubscribers.mockReset().mockResolvedValue(2);
+
+    const result = await (setClaimSpecTool as any).handler({
+      fleet: 'compatible-fleet', harness: 'papercusp',
+      spec: { ...DEFAULT_CLAIM_SPEC, specId: 'adoption-lane', revisionAdoption: 'first' },
+    }, { isSuperuser: true, uiClientId: 'su-leader', workspaceId: 'ws-test' });
+
+    expect(setClaimSpec).toHaveBeenCalledOnce();
+    expect(result.data.ok).toBe(ok);
+    expect(result.data.claimableAwaitersWoken).toBe(ok ? 2 : 0);
+    if (ok) {
+      expect(wakeClaimableAwaitersForSubscribers).toHaveBeenCalledWith({
+        subscriberIds: ['su-member-a', 'su-member-b'], specId: 'adoption-lane', revision: 15,
+      });
+    } else {
+      expect(result.data.errors).toEqual(['release-operator has not attested support']);
+      expect(listFleetMembers).not.toHaveBeenCalled();
+      expect(wakeClaimableAwaitersForSubscribers).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe('published claim-spec guidance — WI-37997 severity ordering', () => {
   it('advertises the safe ordinal severity_rank term and a critical-first issue example', () => {
     const json = z.toJSONSchema(setClaimSpecTool.args as never) as {

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import type { PapercuspUnifiedToolContext } from '../lib/agent-tools/_tool-context';
@@ -29,6 +29,11 @@ import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-po
 export async function prepareCurrentSuNativeScenario(workspace: string) {
   assert.match(workspace, /^test-runtime-/);
   assert.equal(process.env.PAPERCUSP_WORKSPACE_ID, workspace);
+  // ports.launch executes in this worker, independently of the private HTTP
+  // host's environment. The installed psu shim otherwise chooses release.
+  const launcher = resolve(import.meta.dirname, '../../../apps/operator/scripts/psu-launcher.mjs');
+  assert.ok(existsSync(launcher), 'current-build psu launcher missing');
+  process.env.PAPERCUSP_PSU_LAUNCHER = launcher;
   const home = join(process.env.HOME!, '.private-current-su-codex');
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt',

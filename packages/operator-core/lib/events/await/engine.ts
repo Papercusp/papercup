@@ -28,6 +28,7 @@ import { eventKeySubscriberScope, listEventKeySubscribers } from '../../agent-to
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { admitSpawn } from '../../fleet/governor';
 import { activeWorkspaceId, backgroundWorkspaceIds } from '../../workspace-registry';
+import { admitWakeFanout, readWakeFanoutPacing } from '../../agent-tools/coordination/wake-fanout-pacing';
 import { runWithWorkspace } from '../../workspace-als';
 import {
   cancelAwaitsByIds,
@@ -237,6 +238,8 @@ export interface EmitResult {
   key: string;
   /** Wake awaits fired by this emit (deliveries queued). */
   woken: number;
+  /** Scheduled bulk deliveries excluded from the immediate woken count. */
+  deferred?: number;
   /** Notify recipients the inbox message went to (post-expansion happens in sendMessage). */
   notified: string[];
   msgId: string | null;
@@ -402,6 +405,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     }
   }
 
+  let deferred = 0;
   // 2. Queue durable wake deliveries + kick the pump off the hot path.
   if (wakes.length > 0) {
     await insertDeliveries({
@@ -412,6 +416,8 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
       // P0a: persist the emit attribution on the delivery so a later turn-death is
       // attributable to its source (e.g. a loop fire's `loop:<routineId>`).
       source: opts.source ?? null,
+      onDeferred: () => { deferred++; },
+      pacingWorkspaceId: ws,
     });
     if (autoPumpEnabled) {
       setImmediate(() => {
@@ -518,7 +524,8 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   return {
     ok: true,
     key: opts.key,
-    woken: wakes.length,
+    woken: wakes.length - deferred,
+    deferred,
     notified: notifyTo,
     msgId,
     waiters: fired.length,
@@ -1003,6 +1010,24 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
 
       const headline = group[group.length - 1];
       const siblings = group.slice(0, -1);
+
+      // Source reservations survive restart; execution admission prevents an overdue
+      // backlog from becoming a catch-up herd on many hosts or repeated pump kicks.
+      // An unpaced/urgent directed wake coalesced with a bulk row stays immediate.
+      const paced = group.map((d) => readWakeFanoutPacing(d.payload));
+      if (!group.some((d) => d.urgent || d.source?.startsWith('loop:')) && paced.every((p) => p !== null)) {
+        let delayMs: number;
+        try {
+          delayMs = await admitWakeFanout(paced[0]!);
+        } catch (e) {
+          log(`bulk wake admission unavailable for ${subscriberId}: ${e instanceof Error ? e.message : e}`);
+          delayMs = 6_000;
+        }
+        if (delayMs > 0) {
+          for (const d of group) { await markDeliveryDeferred(d.id, delayMs); stats.deferred++; }
+          continue;
+        }
+      }
 
       // EI-18673058981655804: before spending resume-cap/governor budget or a whole
       // turn on this group, check whether it is PROVABLY redundant — every delivery

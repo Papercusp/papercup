@@ -764,12 +764,16 @@ export default defineTool({
       updatedBy: ident.ownerId,
       potSlug,
     });
-    const wake = await wakeClaimableAwaitersAfterSpecChange({
-      cupId: targetBeeId,
-      fleet: args.fleet?.trim(),
-      specId: validated.spec.specId,
-      revision: res.revision ?? null,
-    });
+    // A compatibility refusal leaves the incumbent revision untouched.
+    // Wake parked members only after the store commits a replacement.
+    const wake = res.ok
+      ? await wakeClaimableAwaitersAfterSpecChange({
+          cupId: targetBeeId,
+          fleet: args.fleet?.trim(),
+          specId: validated.spec.specId,
+          revision: res.revision ?? null,
+        })
+      : { woken: 0 };
 
     // Best-effort inert-spec guard (coding-hive-bee-vs-coding-factory-scoper-2026-06-23): a claim
     // spec only STEERS a SELF-PULLING agent (a coding-hive bee, the queen, or an su fleet

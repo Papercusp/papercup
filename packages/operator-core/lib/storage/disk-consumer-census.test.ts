@@ -99,7 +99,7 @@ describe('measureDocker response deadlines', () => {
             clearTimeout(deadlineTimer);
             const res = new EventEmitter();
             Object.assign(res, { statusCode: 200, setEncoding() {} });
-            onResponse?.(res as IncomingMessage);
+            (onResponse as unknown as ((res: IncomingMessage) => void) | undefined)?.(res as IncomingMessage);
             res.emit('data', JSON.stringify(opts.path === '/info'
               ? { DockerRootDir: '/fixture/docker' }
               : {
