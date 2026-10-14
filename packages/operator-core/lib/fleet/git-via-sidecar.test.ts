@@ -162,25 +162,29 @@ describe('isSidecarInfrastructureFault (WI-10002709)', () => {
 });
 
 describe('spawner-sidecar process progress guard', () => {
-  it('drains already-written progress before judging an idle deadline after a parent-loop stall', async () => {
-    // Gate red at repair head c5865549 (and 6bf86578), 2026-09-27: the old
-    // version let the child exit on its own and asserted code 0, so under gate
-    // load a child that was slow to start or to be reaped hit the 150ms idle
-    // window AFTER the drain this test is about. The child now writes forever
-    // and the test ends it deterministically, so the verdict depends only on
-    // loop-phase ordering, never on how fast a loaded host schedules a child.
-    const idleTimeoutMs = 1_000; // generous: a loaded host must still start the child inside it
+  it.each([0, 1_200])('drains already-written progress before judging an idle deadline after a parent-loop stall (startup %ims)', async (startupMs) => {
+    // Startup is a precondition, not the idle-drain behavior under test. Freeze
+    // guard timers until real pipe output arrives, then restore the real event
+    // loop before the stall. The delayed case exceeds the initial idle window
+    // and prevents child startup from masquerading as a drain-order regression.
+    const idleTimeoutMs = 1_000;
     const stallMs = 1_500; // > idleTimeoutMs, so the idle deadline expires inside the stall
     const script = [
       "const send = phase => process.stderr.write(JSON.stringify({ phase, at: Date.now() }) + '\\n');",
-      "send('ready'); setInterval(() => send('progress'), 40);",
+      `setTimeout(() => { send('ready'); setInterval(() => send('progress'), 40); }, ${startupMs});`,
     ].join(' ');
     const abort = new AbortController();
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const watchdog = realSetTimeout(() => abort.abort(), 15_000);
     let queuedBlock = false;
     let blockedFrom = 0;
     let blockedUntil = 0;
     let drainedAfterStall = false;
-    const res = await execProcess({
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let res: Awaited<ReturnType<typeof execProcess>>;
+    try {
+      res = await execProcess({
       command: process.execPath,
       args: ['-e', script],
       idleTimeoutMs,
@@ -202,6 +206,9 @@ describe('spawner-sidecar process progress guard', () => {
         }
         if (queuedBlock) return;
         queuedBlock = true;
+        // reportOutput runs before armIdleTimer, so the first real output
+        // arms a real idle timer after retiring the frozen startup timers.
+        vi.useRealTimers();
         // The child has reported readiness. Occupy the CHECK phase while it
         // keeps writing, so the expired timer races the next POLL phase.
         setImmediate(() => {
@@ -210,11 +217,17 @@ describe('spawner-sidecar process progress guard', () => {
           blockedUntil = Date.now();
         });
       },
-    });
+      onStage: (stage) => { if (stage === 'child-close') vi.useRealTimers(); },
+      });
+    } finally {
+      vi.useRealTimers();
+      realClearTimeout(watchdog);
+      abort.abort();
+    }
     const writes = res.stderr.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
     // The stall really outlasted the idle deadline, and the child really wrote
     // during it: distinguish absent child progress from progress in the OS pipe.
-    expect(blockedUntil - blockedFrom).toBeGreaterThanOrEqual(stallMs);
+    expect(blockedUntil - blockedFrom, res.stderr).toBeGreaterThanOrEqual(stallMs);
     expect(writes.filter((entry) => entry.phase === 'progress' && entry.at > blockedFrom && entry.at < blockedUntil).length).toBeGreaterThanOrEqual(3);
     expect(drainedAfterStall).toBe(true);
     expect(res.stderr).not.toContain('no output progress');
@@ -222,31 +235,46 @@ describe('spawner-sidecar process progress guard', () => {
     expect(res.code).toBe(-1);
   }, 20_000);
 
-  it('does not kill a child that exited while the parent loop stalled past the idle deadline', async () => {
+  it.each([0, 1_200])('does not kill a child that exited while the parent loop stalled past the idle deadline (startup %ims)', async (startupMs) => {
     // Gate red at repair head 6bf86578 (2026-09-27): a lagging host loop resumes
     // with the idle timer expired AND the child's EOF/exit pending. The idle
     // verdict runs in CHECK, but 'close' (and the exit fence) land after it, so
     // an already-finished child was killed and reported as a guard failure.
-    // The idle window must still let a loaded host START the child (its
-    // 'ready' is the first output), and the stall must outlast both that
-    // window and the child's own exit; tighter margins flaked under gate load.
+    // As in the drain fixture, startup must finish before guard time starts.
+    // Keep the real stall and kernel exit fence after that readiness boundary.
     let queuedBlock = false;
-    const res = await execProcess({
+    const abort = new AbortController();
+    const realSetTimeout = globalThis.setTimeout;
+    const realClearTimeout = globalThis.clearTimeout;
+    const watchdog = realSetTimeout(() => abort.abort(), 15_000);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let res: Awaited<ReturnType<typeof execProcess>>;
+    try {
+      res = await execProcess({
       command: process.execPath,
-      args: ['-e', "process.stderr.write('ready\\n'); setTimeout(() => process.exit(0), 100);"],
+      args: ['-e', `setTimeout(() => { process.stderr.write('ready\\n'); setTimeout(() => process.exit(0), 100); }, ${startupMs});`],
       idleTimeoutMs: 1_000,
       timeoutMs: 15_000,
     }, {
       ...executionDeps,
+      signal: abort.signal,
       onOutputActivity: () => {
         if (queuedBlock) return;
         queuedBlock = true;
+        vi.useRealTimers();
         setImmediate(() => {
           const from = Date.now();
           while (Date.now() - from < 2_500) { /* stall until the child has exited */ }
         });
       },
-    });
+      onStage: (stage) => { if (stage === 'child-close') vi.useRealTimers(); },
+      });
+    } finally {
+      vi.useRealTimers();
+      realClearTimeout(watchdog);
+      abort.abort();
+    }
+    expect(queuedBlock, res.stderr).toBe(true);
     expect(res.stderr).not.toContain('no output progress');
     expect(res.code, res.stderr).toBe(0);
   }, 20_000);
