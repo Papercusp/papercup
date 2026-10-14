@@ -19,7 +19,7 @@ function fake() {
   return recordedHostFetch([
     { method: 'GET', url: (u) => u.pathname === '/v23.0/17841400000000000/media', response: jsonResponse(200, { data: [{ id: 'media-1' }, { id: 'media-2' }] }) },
     { url: (u) => u.pathname === '/v23.0/media-1/comments', response: jsonResponse(200, { data: [
-      { id: 'c1', timestamp: at(1), text: 'hello', username: 'avi' },
+      { id: 'c1', timestamp: at(1), text: 'hello', username: 'avi', like_count: 3 },
       { id: 'c2', timestamp: at(2), text: 'reply', username: 'sam', parent_id: 'c1' },
     ] }) },
     { url: (u) => u.pathname === '/v23.0/media-2/comments', response: jsonResponse(200, { data: [] }) },
@@ -53,6 +53,8 @@ describe('Instagram provider package (P-028)', () => {
   it('maps comments and nested replies through the installed package', async () => {
     const result = await drain(fake().fetch);
     expect(result.records.map((r) => [r.nativeId, r.event])).toEqual([['c1', 'comment'], ['c2', 'reply']]);
+    expect(result.records[0]?.payload).toMatchObject({ platform: 'instagram', kind: 'comment', subjectId: 'media-1', likeCount: 3 });
+    expect(result.records[1]?.payload).toMatchObject({ platform: 'instagram', kind: 'reply', subjectId: 'media-1' });
     expect(result.records[1]?.payload.replyToId).toBe('c1');
   });
 

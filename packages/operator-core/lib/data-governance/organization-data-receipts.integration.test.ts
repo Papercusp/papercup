@@ -16,6 +16,9 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createHostedPrincipal } from '../auth/hosted-principal';
+import { HostedSessionStore } from '../auth/hosted-session';
+import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
+import { exportHostedOrganizationData } from './hosted-customer-data';
 import { createPersonalGrant, purgePersonalSource, upsertPersonalDocuments } from '../personal-vault/store';
 import {
   CHAT_DERIVED_DOCUMENT_KINDS,
@@ -296,6 +299,46 @@ describe('organization data receipts (P-007c)', () => {
     } finally {
       await org.adminSql.unsafe('ALTER TABLE papercusp_auth.hosted_users DROP COLUMN p010_unmapped');
     }
+  });
+
+  it('authenticates hosted exports inside their receipt transaction and rejects stale authority (P-010)', async () => {
+    const organizationId = randomUUID(), userId = randomUUID();
+    await org.adminSql`INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name, status)
+      VALUES (${organizationId}::uuid, ${`p010-${organizationId}`}, 'Export account', 'active')`;
+    await org.adminSql`INSERT INTO papercusp_auth.hosted_users (id, primary_email, status)
+      VALUES (${userId}::uuid, 'atomic-export@example.test', 'active')`;
+    await org.adminSql`INSERT INTO papercusp_auth.organization_memberships (organization_id, user_id, role, created_via)
+      VALUES (${organizationId}::uuid, ${userId}::uuid, 'owner', 'organization_bootstrap')`;
+    const authority = await new PostgresHostedMembershipAuthority(org.adminSql as never).resolveActive({ userId, organizationId });
+    const session = await new HostedSessionStore(org.adminSql as never).create({ userId, organizationId,
+      permissionVersion: authority!.permissionVersion, upstreamProvider: 'workos', upstreamSessionId: `export-${userId}`,
+      expiresAt: new Date(Date.now() + 3600000) });
+    const principal = createHostedPrincipal({ workspaceId: 'control', userId, activeOrganizationId: organizationId,
+      sessionId: session.id, sessionVersion: session.permissionVersion, permissions: authority!.permissions });
+    const run = () => org.appSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'hosted-control-plane-service', true)`;
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      return exportHostedOrganizationData(tx as never, principal);
+    });
+    const exported = await run();
+    expect(exported.stores.find(s => s.store === 'papercusp_auth.hosted_users')!.rows)
+      .toEqual([expect.objectContaining({ id: userId, primary_email: 'atomic-export@example.test' })]);
+    expect((await receiptRow(exported.receiptId)).actor_kind).toBe('customer_user');
+    // The service helper receives a transaction with no begin: the success above
+    // exercises the no-nested-BEGIN path against real Postgres.
+    await org.adminSql`UPDATE papercusp_auth.organization_memberships SET role = 'member'
+      WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid`;
+    await expect(run()).rejects.toThrow('customer_data_forbidden');
+    await org.adminSql`UPDATE papercusp_auth.organization_memberships SET role = 'owner'
+      WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid`;
+    await org.adminSql`UPDATE papercusp_auth.hosted_users SET status = 'deactivated', deactivated_at = now() WHERE id = ${userId}::uuid`;
+    await expect(run()).rejects.toThrow('customer_data_forbidden');
+    await org.adminSql`UPDATE papercusp_auth.hosted_users SET status = 'active', deactivated_at = NULL WHERE id = ${userId}::uuid`;
+    await new HostedSessionStore(org.adminSql as never).revoke(session.id);
+    await expect(run()).rejects.toThrow('customer_data_forbidden');
+    const receipts = await org.adminSql`SELECT id FROM papercusp_auth.organization_audit_events
+      WHERE organization_id = ${organizationId}::uuid AND action = 'organization.data.export'`;
+    expect(receipts).toHaveLength(1);
   });
 
   it('deletes the scope, keeps rows under a legal hold, and names the hold conflict', async () => {

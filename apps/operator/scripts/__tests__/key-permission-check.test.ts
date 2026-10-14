@@ -160,6 +160,14 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
     expect(unit).toMatch(/^IOSchedulingPriority=7$/m);
   });
 
+  it('documents reloading and checking the manager after symlinked unit updates', () => {
+    const readme = readFileSync(join(SCRIPTS, 'systemd', 'README.md'), 'utf8');
+
+    expect(readme).toContain('After either symlinked unit file changes, rerun `systemctl --user daemon-reload`');
+    expect(readme).toContain('systemd keeps the loaded definition until that command runs again.');
+    expect(readme).toContain('systemctl --user show papercup-fedplane-key-permission.service -p Nice -p CPUWeight -p IOSchedulingClass -p IOSchedulingPriority');
+  });
+
   it('prunes configured vendored directories from the tier-1 .ssh sweep', () => {
     const fx = withControl(fixture());
     const vendoredSsh = join(fx.root, 'vendor', '.ssh');

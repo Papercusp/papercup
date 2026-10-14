@@ -1190,9 +1190,11 @@ cannot read at all. A named regression test pins it.
   exported deploy key or a loose `.pem`. The defaults also prune Android
   Gradle's generated `intermediates` directories by name; workspace source and
   configuration trees remain scanned.
-  Bounded by `KEYPERM_DEEP_TIMEOUT_S` and run at `nice 19` / `ionice -c 3`,
-  because this box routinely sits at load average 60+ and a probe that degrades
-  its host is a probe somebody disables.
+  Bounded by `KEYPERM_DEEP_TIMEOUT_S`; each deep sweep runs at `nice 10` /
+  `ionice -c 2 -n 7`, the lowest best-effort I/O priority that can still make
+  progress while the device is active. The service also uses `Nice=10`,
+  `CPUWeight=50`, and matching best-effort I/O settings to keep its CPU share
+  moderate without risking idle-class starvation.
 
 The unit runs **unprivileged**, so `/root` is unreadable and is reported as a
 named blind spot rather than counted as clean. A host that needs `/root` covered
@@ -1206,6 +1208,14 @@ ln -sf "$(pwd)/papercup-fedplane-key-permission.service" ~/.config/systemd/user/
 ln -sf "$(pwd)/papercup-fedplane-key-permission.timer"   ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now papercup-fedplane-key-permission.timer
+```
+
+After either symlinked unit file changes, rerun `systemctl --user daemon-reload`;
+systemd keeps the loaded definition until that command runs again. Before a
+qualifying full scan, check the active service properties with:
+
+```bash
+systemctl --user show papercup-fedplane-key-permission.service -p Nice -p CPUWeight -p IOSchedulingClass -p IOSchedulingPriority
 ```
 
 Verify: `systemctl --user list-timers papercup-fedplane-key-permission.timer`,

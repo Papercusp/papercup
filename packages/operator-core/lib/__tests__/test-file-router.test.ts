@@ -1554,7 +1554,10 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     const child = Object.assign(new EventEmitter(), {
       pid: 4348, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
     });
-    const env = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/reachable/bus' };
+    const env = {
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/reachable/bus',
+      PAPERCUSP_TEST_SECRET: 'scope-diagnostic-must-not-leak',
+    };
     const probeScopeSupportImpl = vi.fn(async () => ({ ok: true }));
     const spawnImpl = vi.fn(() => child);
     const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
@@ -1593,11 +1596,34 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     child.stdout.write(stdout);
     child.stderr.write(`${prefix}Failed to start transient scope unit: Transport endpoint is not connected\n`);
     child.emit('close', 1, null);
-    await expect(pending).resolves.toMatchObject({
+    const result = await pending;
+    expect(result).toMatchObject({
       status: 1, timedOut: false,
       error: launchFailed ? expect.objectContaining({ code: 'TEST_SCOPE_LAUNCH_FAILED' }) : null,
       stderr: expect.stringContaining('Transport endpoint is not connected'),
     });
+    if (launchFailed) {
+      const error = result.error as Error & { scopeLaunchEvidence?: Record<string, unknown> };
+      const evidence = error.scopeLaunchEvidence;
+      const spawnArgs = (spawnImpl.mock.calls[0] as unknown[])[1] as string[];
+      expect(evidence).toMatchObject({
+        launcher: '/usr/bin/systemd-run',
+        scopeUnit: spawnArgs[3]?.slice('--unit='.length),
+        probePassed: true,
+        systemdArgs: spawnArgs.slice(0, 6),
+        payloadArgumentCount: 3,
+        busEnvironment: {
+          xdgRuntimeDirSet: false,
+          runtimeSystemdPrivateSocketExists: false,
+          runtimeBusSocketExists: false,
+          dbusSessionAddressSet: true,
+          dbusAddressTransport: 'unix',
+          dbusSessionUnixSocketExists: expect.any(Boolean),
+        },
+      });
+      expect(error.message).toContain(`scopeEvidence=${JSON.stringify(evidence)}`);
+      expect(error.message).not.toContain(env.PAPERCUSP_TEST_SECRET);
+    }
     expect(spawnImpl).toHaveBeenCalledTimes(1);
   });
 

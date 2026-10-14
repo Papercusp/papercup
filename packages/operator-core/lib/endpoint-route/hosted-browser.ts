@@ -70,6 +70,8 @@ import { acceptSyncTransportObservation } from './routes/desktop/telemetry-repor
 import { createHostedCloudMonitoringRoutes, HOSTED_BROWSER_MONITORING_PATH, HOSTED_BROWSER_MONITORING_EVENT_PATH } from './routes/hosted-cloud-monitoring';
 import { cloudProvisioningObservation, readCloudTelemetryConsent } from '../record-telemetry';
 import { getBuildInfo } from '../build-info';
+import { HostedCustomerDataAuthorizationError } from '../data-governance/hosted-customer-data';
+import type { OrganizationDataExport } from '../data-governance/organization-data-receipts';
 export { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH } from './routes/hosted-tutorial-progress';
 
 export const HOSTED_BROWSER_REST_QUERY_PATH = '/hosted/browser/rest-query' as const;
@@ -82,6 +84,7 @@ export const HOSTED_BROWSER_ACTION_PATH = '/hosted/browser/workspace-hosts/actio
 export const HOSTED_BROWSER_FIRST_WORKSPACE_PATH = '/hosted/browser/onboarding/first-workspace' as const;
 /** Selects the organization's existing workspace for a session that holds none. */
 export const HOSTED_BROWSER_SELECT_WORKSPACE_PATH = '/hosted/browser/onboarding/select-workspace' as const;
+export const HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH = '/hosted/browser/data/organization/export' as const;
 
 export const HOSTED_BROWSER_QUERY_NAME = 'workspaceHosts.control' as const;
 
@@ -95,6 +98,7 @@ export const HOSTED_BROWSER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: HOSTED_BROWSER_ACTION_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_FIRST_WORKSPACE_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_SELECT_WORKSPACE_PATH, access: 'authenticated' },
+  { method: 'POST', path: HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH, access: 'session' },
   { method: 'GET', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'session' },
   { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'session' },
   { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_HELP_PATH, access: 'session' },
@@ -132,6 +136,8 @@ export interface HostedBrowserRouteDependencies {
   readonly recordTransportFallback?: Parameters<typeof acceptSyncTransportObservation>[1];
   /** Injectable in route tests; production uses the canonical tenant wrapper. */
   readonly runTenant?: HostedTenantContextRunner;
+  /** Revalidates membership/session and exports through the hosted service transaction. */
+  readonly exportOrganizationData?: (principal: HostedPrincipal) => Promise<OrganizationDataExport>;
   readonly readControl?: (workspaceId: string, tx?: Sql) => Promise<unknown[]>;
   readonly deliverCloudTelemetry?: typeof import('../telemetry-flush')['deliverCloudPosthog'];
   readonly readConnection?: (
@@ -555,6 +561,34 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   const subscribeEvents = deps.subscribe ?? subscribe;
   const backfill = deps.backfillSince ?? backfillSince;
 
+  const organizationExport = defineTool({
+    method: 'POST', path: HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH,
+    auth: { capabilities: [], kind: ['user'], trust: ['verified'] },
+    cors: { origins: [origin] }, sampleRate: 0,
+    async handler(request, ctx) {
+      const principal = ctx.principal;
+      if (!principal || !isHostedPrincipal(principal)) return jsonError('hosted_principal_required', 401);
+      if (principal.workspaceId !== controlPlaneWorkspaceId) return jsonError('control_plane_binding_mismatch', 403);
+      const csrf = exactOriginOr403(request, origin);
+      if (csrf) return csrf;
+      const mismatch = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
+      if (mismatch) return mismatch;
+      if (!principal.permissions.has('members:manage')) return jsonError('customer_data_forbidden', 403);
+      if (!deps.exportOrganizationData) return jsonError('customer_data_unavailable', 503);
+      try {
+        // No caller-supplied scope, user id or purpose is read.
+        const exported = await deps.exportOrganizationData(principal);
+        return Response.json(exported, { headers: {
+          'cache-control': 'no-store', 'content-disposition': 'attachment; filename="organization-data.json"',
+          'x-content-type-options': 'nosniff',
+        } });
+      } catch (error) {
+        return error instanceof HostedCustomerDataAuthorizationError
+          ? jsonError('customer_data_forbidden', 403) : jsonError('customer_data_unavailable', 503);
+      }
+    },
+  });
+
   const fallbackObservation = defineTool({
     method: 'POST',
     path: HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH,
@@ -843,7 +877,7 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   const monitoring = createHostedCloudMonitoringRoutes({ origin, controlPlaneWorkspaceId, runTenant });
   const tutorialAssistance = createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorkspaceId, runTenant, dependencies: deps.tutorialAssistance });
   return {
-    routes: [query, sse, fallbackObservation, connection, provision, action, firstWorkspace, selectWorkspace, ...tutorialProgress, ...tutorialAssistance, ...monitoring],
+    routes: [query, sse, fallbackObservation, connection, provision, action, firstWorkspace, selectWorkspace, organizationExport, ...tutorialProgress, ...tutorialAssistance, ...monitoring],
     allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,
   };
 }

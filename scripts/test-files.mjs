@@ -2928,13 +2928,38 @@ export function runCapturedTestProcess(command, args, options = {}) {
       // releasing its demand receipt or recording a failed test. Payload output
       // (including the admitted-scope notice) makes this shape ambiguous and
       // must retain its own verdict. Never replay the payload on this evidence.
-      const scopeLaunchError = launcher === 'systemd-run' && status !== 0 && status != null && !signal &&
+      const scopeAdmissionFailed = launcher === 'systemd-run' && status !== 0 && status != null && !signal &&
         !timedOut && capturedStdout.trim() === '' &&
-        /^(?:Failed to start transient scope unit:|Failed to connect to bus:)[^\r\n]+$/i.test(capturedStderr.trim())
-        ? Object.assign(new Error(`test scope admission failed: ${capturedStderr.trim()}`), {
-          code: 'TEST_SCOPE_LAUNCH_FAILED',
-        })
-        : null;
+        /^(?:Failed to start transient scope unit:|Failed to connect to bus:)[^\r\n]+$/i.test(capturedStderr.trim());
+      let scopeLaunchError = null;
+      if (scopeAdmissionFailed) {
+        const runtimeDir = childEnv.XDG_RUNTIME_DIR?.trim();
+        const sessionBusAddress = childEnv.DBUS_SESSION_BUS_ADDRESS?.trim();
+        const sessionBusUnixPath = /(?:^|;)unix:(?:[^;]*,)?path=([^,;]+)/.exec(sessionBusAddress ?? '')?.[1] ?? null;
+        const isSocket = path => {
+          try { return statSync(path).isSocket(); } catch { return false; }
+        };
+        const payloadCommandIndex = spawnArgs.indexOf(command);
+        const scopeLaunchEvidence = {
+          launcher: spawnCommand,
+          scopeUnit,
+          probePassed: scopeSupport?.ok === true,
+          systemdArgs: payloadCommandIndex > 0 ? spawnArgs.slice(0, payloadCommandIndex) : spawnArgs.slice(0, 6),
+          payloadArgumentCount: payloadCommandIndex > 0 ? spawnArgs.length - payloadCommandIndex - 1 : null,
+          busEnvironment: {
+            xdgRuntimeDirSet: Boolean(runtimeDir),
+            runtimeSystemdPrivateSocketExists: Boolean(runtimeDir && isSocket(join(runtimeDir, 'systemd', 'private'))),
+            runtimeBusSocketExists: Boolean(runtimeDir && isSocket(join(runtimeDir, 'bus'))),
+            dbusSessionAddressSet: Boolean(sessionBusAddress),
+            dbusAddressTransport: sessionBusAddress ? (/^([^:]+):/.exec(sessionBusAddress)?.[1] ?? 'unknown') : 'unset',
+            dbusSessionUnixSocketExists: sessionBusUnixPath ? isSocket(sessionBusUnixPath) : null,
+          },
+        };
+        scopeLaunchError = Object.assign(
+          new Error(`test scope admission failed: ${capturedStderr.trim()} scopeEvidence=${JSON.stringify(scopeLaunchEvidence)}`),
+          { code: 'TEST_SCOPE_LAUNCH_FAILED', scopeLaunchEvidence },
+        );
+      }
       resolveRun({
         status,
         signal,

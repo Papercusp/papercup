@@ -9,6 +9,7 @@ import {
   HOSTED_BROWSER_ACTION_PATH,
   HOSTED_BROWSER_FALLBACK_OBSERVATION_PATH,
   HOSTED_BROWSER_FIRST_WORKSPACE_PATH,
+  HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH,
   HOSTED_BROWSER_QUERY_NAME,
   HOSTED_BROWSER_REST_QUERY_PATH,
   HOSTED_BROWSER_SELECT_WORKSPACE_PATH,
@@ -59,6 +60,38 @@ function tenantRunner(calls: Array<{ selectedWorkspaceId?: string }>) {
 }
 
 describe('hosted browser route boundary', () => {
+  it('exports the authenticated organization without a workspace and ignores caller-supplied scope', async () => {
+    const account = createHostedPrincipal({ workspaceId: CONTROL_PLANE_WORKSPACE, userId: 'owner',
+      activeOrganizationId: 'org-a', sessionId: 'session', sessionVersion: 1, permissions: ['members:manage'] });
+    const exportOrganizationData = vi.fn(async () => ({ receiptId: 'receipt', stores: [] }));
+    const browser = createHostedBrowserRoutes({ publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+      dependencies: { exportOrganizationData } });
+    expect(browser.allowlist).toContainEqual({ method: 'POST', path: HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH, access: 'session' });
+    const response = await routeHandler(browser.routes, HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH)(new Request(
+      `${ORIGIN}/api${HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH}`, { method: 'POST', headers: { origin: ORIGIN },
+        body: JSON.stringify({ organizationId: 'org-b', workspaceIds: ['other'], userId: 'other' }) }), context(account));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('content-disposition')).toContain('attachment');
+    expect(await response.json()).toEqual({ receiptId: 'receipt', stores: [] });
+    expect(exportOrganizationData).toHaveBeenCalledExactlyOnceWith(account);
+  });
+
+  it('refuses unauthenticated, foreign-origin, foreign-workspace and non-admin exports before execution', async () => {
+    const exportOrganizationData = vi.fn(async () => ({ receiptId: 'receipt', stores: [] }));
+    const handler = routeHandler(createHostedBrowserRoutes({ publicOrigin: ORIGIN,
+      controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE, dependencies: { exportOrganizationData } }).routes,
+    HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH);
+    const admin = createHostedPrincipal({ ...principal, permissions: ['members:manage'] });
+    const request = (headers: Record<string, string>) => new Request(`${ORIGIN}/api${HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH}`,
+      { method: 'POST', headers });
+    expect((await handler(request({ origin: ORIGIN }), { ...context(), principal: undefined })).status).toBe(401);
+    expect((await handler(request({ origin: 'https://other.test' }), context(admin))).status).toBe(403);
+    expect((await handler(request({ origin: ORIGIN, 'x-papercusp-workspace': 'foreign' }), context(admin))).status).toBe(403);
+    expect((await handler(request({ origin: ORIGIN }), context())).status).toBe(403);
+    expect(exportOrganizationData).not.toHaveBeenCalled();
+  });
+
   it('records only allowlisted transport outcomes through the shared local recorder', async () => {
     const recordTransportFallback = vi.fn(() => true);
     const browser = createHostedBrowserRoutes({

@@ -307,7 +307,7 @@ describe('<AgentsRunningPill>', () => {
   // `return null` at zero, which read as a missing feature during the post-boot
   // hydration window (WI-37363).
   it('stays mounted at zero and reads "0 agents running", without the is-running state class', () => {
-    H.active = [agent({ liveness: 'live', sessionState: 'parked' })];
+    H.active = [agent({ liveness: 'live', sessionState: 'ended', loopArmed: true })];
     render(<Pill />);
     const pill = screen.getByTestId('agents-running-pill');
     expect(pill.textContent).toContain('0 agents running');
@@ -315,7 +315,7 @@ describe('<AgentsRunningPill>', () => {
   });
 
   it('at zero, the popover shows an honest empty note instead of a blank roster', () => {
-    H.active = [agent({ liveness: 'live', sessionState: 'parked' })];
+    H.active = [agent({ liveness: 'live', sessionState: null })];
     nuqs.open = true;
     render(<Pill />);
     expect(screen.getByTestId('agents-running-empty').textContent).toContain('No agents running');
