@@ -264,8 +264,6 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       .map((message) => JSON.parse(message.slice(prefix.length)) as Record<string, unknown>);
     expect(events).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ phase: 'append-prior-read', state: 'started', itemId: 'WI-7' }),
-        expect.objectContaining({ phase: 'append-prior-read', state: 'completed', itemId: 'WI-7' }),
         expect.objectContaining({ phase: 'provenance-action-proof-read', state: 'started', itemId: 'WI-7' }),
         expect.objectContaining({ phase: 'provenance-action-proof-read', state: 'completed', itemId: 'WI-7' }),
         expect.objectContaining({ phase: 'provenance-current-turn-stamp', state: 'started', itemId: 'WI-7' }),
@@ -280,6 +278,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         expect.objectContaining({ phase: 'plan-decision-ref-advisory', state: 'completed', itemId: 'WI-7' }),
       ]),
     );
+    expect(events.some((event) => event.phase === 'append-prior-read')).toBe(false);
     expect(events.every((event) => event.itemIndex === 1 && event.itemCount === 1)).toBe(true);
   });
 
@@ -1235,10 +1234,14 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
   it('EI-22707338795824591: preserves a verifier exception instead of reporting read back null or recommending a duplicate append', async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
-    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, text: string) => text);
-    getWorkItemCheckpoint
-      .mockResolvedValueOnce('prior checkpoint body')
-      .mockRejectedValueOnce(new Error('bounded verifier read timed out'));
+    const prior = 'prior checkpoint body';
+    let stored: string | null = null;
+    setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, note: string, opts) => {
+      const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+      stored = blockedReason ? prior : opts?.transform?.(prior, note) ?? note;
+      return { stored, priorLength: prior.length, blockedReason };
+    });
+    getWorkItemCheckpoint.mockRejectedValueOnce(new Error('bounded verifier read timed out'));
 
     const r = await one({ id: 'WI-7', checkpoint: 'one append only', append: true });
 
@@ -1260,6 +1263,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(r.error).toContain('bounded verifier read timed out');
     expect(r.error).toContain('Do NOT retry this write');
     expect(r.error).not.toContain('read back null');
+    expect(stored).toBe('prior checkpoint body\n\n---\none append only');
     expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
   });
 
@@ -1506,20 +1510,30 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
   });
 
   describe('EI-9036: append mode (join onto the existing checkpoint instead of replacing it)', () => {
+    // The production store applies this transform against the authoritative prior
+    // while holding the carry row lock. Model that contract in append fixtures:
+    // the handler submits only the addendum and must not pre-read the body.
+    const withLockedPrior = (priorNote: string | null) => {
+      setWorkItemCheckpointWithPrior.mockImplementation(
+        async (_ref: unknown, note: string | null | undefined, opts?: { transform?: (prior: string | null, incoming: string | null | undefined) => string | null | undefined }) => {
+          const transformed = opts?.transform ? opts.transform(priorNote, note) : note;
+          const trimmed = (transformed ?? '').trim();
+          return { stored: trimmed.length > 0 ? trimmed : null, priorLength: priorNote?.length ?? 0 };
+        },
+      );
+    };
+
     it('append:true joins the new text onto the existing checkpoint with a --- separator', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
-      // Only the PRIOR-fetch call is stubbed explicitly; the post-write verify-read
-      // falls back to the suite default (echoes the last setWorkItemCheckpoint call).
-      getWorkItemCheckpoint.mockResolvedValueOnce('did step 1; next: step 2 (detailed 4-file build record)');
-      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      const prior = 'did step 1; next: step 2 (detailed 4-file build record)';
+      withLockedPrior(prior);
       const r = await one({ id: 'WI-7', checkpoint: 'tsc came back clean', append: true });
       expect(setWorkItemCheckpointWithPrior.mock.calls.at(-1)?.[2]).toMatchObject({
         latestUpdate: 'tsc came back clean',
       });
-      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
-        { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' },
-        'did step 1; next: step 2 (detailed 4-file build record)\n\n---\ntsc came back clean',
-      );
+      expect(setWorkItemCheckpointWithPrior.mock.calls.at(-1)?.[1]).toBe('tsc came back clean');
+      const stored = (await setWorkItemCheckpointWithPrior.mock.results.at(-1)?.value as { stored: string }).stored;
+      expect(stored).toBe(`${prior}\n\n---\ntsc came back clean`);
       expect(r).toMatchObject({ ok: true, id: 'WI-7', cleared: false, verified: true });
       // The detailed prior record survives verbatim inside the stored text — the exact
       // failure EI-9036 reported (an addendum call silently wiping it) cannot happen.
@@ -1531,13 +1545,12 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const prior = withCarryNoteWalls('prior narrative', [
         { claim: 'the gate remains open', recheck: 'recheck the gate' },
       ]);
-      getWorkItemCheckpoint.mockResolvedValueOnce(prior);
-      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      withLockedPrior(prior);
 
       const r = await one({ id: 'WI-7', checkpoint: 'new progress', append: true });
 
       expect(r).toMatchObject({ ok: true, id: 'WI-7', cleared: false, verified: true });
-      const stored = setWorkItemCheckpoint.mock.calls.at(-1)?.[1] as string;
+      const stored = (await setWorkItemCheckpointWithPrior.mock.results.at(-1)?.value as { stored: string }).stored;
       expect(stored).toContain('prior narrative');
       expect(stored).toContain('new progress');
       expect(stored).toContain('## Walls');
@@ -1547,10 +1560,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
     it('append:true with NO prior checkpoint just stores the addendum as-is (no leading separator)', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
-      getWorkItemCheckpoint.mockResolvedValueOnce(null); // nothing stored yet
-      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      withLockedPrior(null); // nothing stored yet
       const r = await one({ id: 'WI-7', checkpoint: 'first note', append: true });
-      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), 'first note');
+      expect(setWorkItemCheckpointWithPrior.mock.calls.at(-1)?.[1]).toBe('first note');
+      const stored = (await setWorkItemCheckpointWithPrior.mock.results.at(-1)?.value as { stored: string }).stored;
+      expect(stored).toBe('first note');
       expect(r).toMatchObject({ ok: true, cleared: false });
     });
 
@@ -1565,8 +1579,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     it('EI-22624970955266330: append:true accepts a body containing the [turn:self] sentinel (the guard compares the EXPANDED addendum)', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       resolveCurrentTurnStamp.mockResolvedValueOnce({ ref: 'turn:abc123@2026-09-08T13:10:00.000Z' });
-      getWorkItemCheckpoint.mockResolvedValueOnce('prior narrative worth keeping');
-      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      withLockedPrior('prior narrative worth keeping');
 
       const r = await one({
         id: 'WI-7',
@@ -1575,7 +1588,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       });
 
       expect(r).toMatchObject({ ok: true, id: 'WI-7', verified: true });
-      const stored = setWorkItemCheckpoint.mock.calls.at(-1)?.[1] as string;
+      const stored = (await setWorkItemCheckpointWithPrior.mock.results.at(-1)?.value as { stored: string }).stored;
       expect(stored).toContain('prior narrative worth keeping');
       // CALIBRATION: the sentinel must actually have been EXPANDED, or this test would
       // pass vacuously — a run where the resolver returned null exercises none of the
@@ -1587,14 +1600,14 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     it('EI-22624970955266330 CALIBRATION: an append with NO sentinel is unaffected (the resolver is never consulted)', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       resolveCurrentTurnStamp.mockClear();
-      getWorkItemCheckpoint.mockResolvedValueOnce('prior narrative worth keeping');
-      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      withLockedPrior('prior narrative worth keeping');
 
       const r = await one({ id: 'WI-7', checkpoint: 'plain addendum, no sentinel', append: true });
 
       expect(r).toMatchObject({ ok: true, id: 'WI-7', verified: true });
       expect(resolveCurrentTurnStamp).not.toHaveBeenCalled();
-      expect(setWorkItemCheckpoint.mock.calls.at(-1)?.[1]).toContain('plain addendum, no sentinel');
+      const stored = (await setWorkItemCheckpointWithPrior.mock.results.at(-1)?.value as { stored: string }).stored;
+      expect(stored).toContain('plain addendum, no sentinel');
     });
 
     it('append:true rejects a confirmed blank checkpoint (append + clear is a contradiction) without touching the store', async () => {
@@ -1616,11 +1629,16 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       const prior = '## MEASURED BASELINE\n' + 'P'.repeat(31970);
       const addendum = '## LATEST PROGRESS\n' + 'A'.repeat(40);
-      getWorkItemCheckpoint.mockResolvedValueOnce(prior);
-      setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
+      let stored = '';
+      setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
+        const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+        stored = blockedReason ? prior : opts?.transform?.(prior, text) ?? text;
+        return { stored, priorLength: prior.length, blockedReason };
+      });
+      getWorkItemCheckpoint.mockImplementationOnce(async () => stored);
       const r = await one({ id: 'WI-7', checkpoint: addendum, append: true });
       expect(r.ok).toBe(true);
-      const [, storedArg] = setWorkItemCheckpoint.mock.calls[0] as [unknown, string];
+      const storedArg = stored;
       expect(storedArg.length).toBeLessThanOrEqual(32000);
       // The measured baseline at the head survives; only superseded prior bytes are
       // represented by the visible marker before the new addendum.
@@ -1632,7 +1650,6 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
     it('EI-18665443723911343: the shorthand `append` accepts the literal string "true"/"false" identically to a real boolean', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
-      getWorkItemCheckpoint.mockResolvedValueOnce('prior note');
       setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
       // Previously: "expected boolean, received string" on this exact shorthand shape,
       // even though items:[{ ..., append: true }] accepted the identical value.
@@ -1644,8 +1661,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.ok).toBe(true);
       expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
         expect.anything(),
-        'prior note\n\n---\naddendum via string append',
+        'addendum via string append',
       );
+      expect(getWorkItemCheckpoint).toHaveBeenCalledTimes(1); // post-write verification only
     });
 
     it('EI-18665443723911343: the string "false" is NOT truthy-coerced (unlike z.coerce.boolean/Boolean()) — plain replace, no append', async () => {
@@ -1665,11 +1683,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
     it('a per-item append:true overrides a batch-level append:false/omitted default, and vice versa', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
-      getWorkItemCheckpoint.mockResolvedValueOnce('existing');
       setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
       // Batch default append:true, no per-item override → still appends.
       const out = await env({ append: true, items: [{ id: 'WI-7', checkpoint: 'addendum' }] });
-      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), 'existing\n\n---\naddendum');
+      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), 'addendum');
       expect(out.results[0].ok).toBe(true);
     });
 
@@ -2009,27 +2026,28 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(call[2].guard).toBeUndefined();
     });
 
-    it('does NOT warn on a NORMAL (successful pre-read) append — WI-7190 arms a guard on append too, but it does not fire here', async () => {
+    it('does NOT warn on a normal atomic append with a substantial locked prior', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
-      getWorkItemCheckpoint.mockResolvedValueOnce('P'.repeat(5000));
-      setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string) => ({
-        stored: text,
-        priorLength: 5000,
-      }));
+      const prior = 'P'.repeat(5000);
+      let stored = '';
+      setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
+        const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+        stored = blockedReason ? prior : opts?.transform?.(prior, text) ?? text;
+        return { stored, priorLength: prior.length, blockedReason };
+      });
+      getWorkItemCheckpoint.mockImplementationOnce(async () => stored);
       const r = await one({ id: 'WI-7', checkpoint: 'short addendum', append: true });
       expect(r.ok).toBe(true);
       expect(r.shrinkWarning).toBeUndefined();
-      // WI-7190: append now ALSO arms a guard (it used to arm none at all) — but it
-      // only blocks when the tool's own pre-read disagreed with the authoritative
-      // prior. Here the pre-read succeeded (5000 chars, matching priorLength), so
-      // invoking the guard with that same authoritative prior must NOT block.
+      expect(stored).toBe(`${prior}\n\n---\nshort addendum`);
       const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [
         unknown,
         unknown,
         { guard?: (n: string | null, l: number) => string | null },
       ];
       expect(call[2].guard).toBeTypeOf('function');
-      expect(call[2].guard!('P'.repeat(5000), 5000)).toBeNull();
+      expect(call[2].guard!(prior, prior.length)).toBeNull();
+      expect(getWorkItemCheckpoint).toHaveBeenCalledTimes(1); // post-write verification only
     });
 
     it('the default suite delegate (no override) never produces a shrinkWarning — priorLength:0 never trips the threshold', async () => {
@@ -2233,22 +2251,27 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(call[2].guard).toBeUndefined();
     });
 
-    it('append:true with a SUCCESSFUL pre-read is never blocked, however huge the prior', async () => {
+    it('append:true joins a large checkpoint using the locked prior, without a separate pre-read', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
-      getWorkItemCheckpoint.mockResolvedValueOnce('P'.repeat(20000));
-      setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string) => ({
-        stored: text,
-        priorLength: 20000,
-      }));
+      const prior = 'P'.repeat(20000);
+      let stored = '';
+      setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string, opts) => {
+        const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+        stored = blockedReason ? prior : opts?.transform?.(prior, text) ?? text;
+        return { stored, priorLength: prior.length, blockedReason };
+      });
+      getWorkItemCheckpoint.mockImplementationOnce(async () => stored);
       const r = await one({ id: 'WI-7', checkpoint: 'short addendum', append: true });
       expect(r.ok).toBe(true);
+      expect(stored).toBe(`${prior}\n\n---\nshort addendum`);
+      expect(getWorkItemCheckpoint).toHaveBeenCalledTimes(1); // post-write verification only
       const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [
         unknown,
         unknown,
         { guard?: (n: string | null, l: number) => string | null },
       ];
       expect(call[2].guard).toBeTypeOf('function');
-      expect(call[2].guard!('P'.repeat(20000), 20000)).toBeNull();
+      expect(call[2].guard!(prior, prior.length)).toBeNull();
     });
 
     it('EI-22801779900317365: append_body_overflow reports prose, check-row, submitted, and remaining-capacity chars separately', async () => {
@@ -2292,51 +2315,35 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(result.error).toContain(`remaining capacity before this append is ${CHECKPOINT_BODY_CAP_CHARS - prior.length}`);
     });
 
-    describe('WI-7190: append silently clobbered a substantial checkpoint when its pre-read disagreed with the authoritative prior', () => {
-      it('blocks the append when the pre-read used to build the join returned nothing but the authoritative prior (read inside the write transaction) is substantial', async () => {
-        getWorkItem.mockResolvedValue({ id: 'WI-7190', harness: 'papercup' });
-        // The append pre-read (getWorkItemCheckpoint) comes back empty — the exact
-        // failure mode reported: the write path resolved the item, the read path
-        // used to build the join did not.
-        getWorkItemCheckpoint.mockResolvedValueOnce(null);
-        setWorkItemCheckpointWithPrior.mockImplementation(
-          async (_ref: unknown, _text: string, opts?: { guard?: (n: string | null, l: number) => string | null }) => {
-            // The AUTHORITATIVE prior IS there — 10,671 chars, read inside the
-            // store's own locked transaction, independent of the tool's separate
-            // pre-read above.
-            const blockedReason = opts?.guard
-              ? (opts.guard('a 10671-char prior checkpoint...', 10671) ?? undefined)
-              : undefined;
-            return { stored: blockedReason ? 'unchanged prior' : 'new section', priorLength: 10671, blockedReason };
-          },
-        );
-        const r = await one({ id: 'WI-7190', checkpoint: 'new section', append: true });
-        expect(r.ok).toBe(false);
-        expect(r.error).toContain('append_base_unreadable');
-        expect(r.error).toContain('10671');
-        expect(r.error).not.toContain('shrink_blocked');
-        expect(r).toMatchObject({
-          errorCode: 'append_base_unreadable',
-          recovery: {
-            append: { args: { append: true } },
-            replace: { args: { append: false, confirmShrink: true } },
-          },
+    describe('EI-25882323366169485: append joins from the authoritative locked prior', () => {
+      it('does not let an empty pre-read strand an append when a large prior exists', async () => {
+        getWorkItem.mockResolvedValue({ id: 'EI-25800299430454847', harness: 'papercusp' });
+        const prior = 'P'.repeat(30295);
+        let stored: string | null = null;
+        setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, note: string, opts) => {
+          const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+          stored = blockedReason ? prior : opts?.transform?.(prior, note) ?? note;
+          return { stored, priorLength: prior.length, blockedReason };
         });
-      });
+        // Before the fix this read ran BEFORE the write to construct the joined note
+        // and returned null, causing append_base_unreadable. Now the only read is the
+        // post-write verifier, which sees the note produced by the locked transform.
+        getWorkItemCheckpoint.mockImplementationOnce(async () => stored);
 
-      it('confirmShrink:true forces the append through even when the pre-read disagreed with the authoritative prior', async () => {
-        getWorkItem.mockResolvedValue({ id: 'WI-7190', harness: 'papercup' });
-        getWorkItemCheckpoint.mockResolvedValueOnce(null);
-        setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'new section', priorLength: 10671 });
-        const r = await one({ id: 'WI-7190', checkpoint: 'new section', append: true, confirmShrink: true });
-        expect(r.ok).toBe(true);
-        const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, unknown, { guard?: unknown }];
-        expect(call[2].guard).toBeUndefined();
+        const r = await one({
+          id: 'EI-25800299430454847',
+          harness: 'papercusp',
+          checkpoint: 'append correction',
+          append: true,
+        });
+
+        expect(r).toMatchObject({ ok: true, id: 'EI-25800299430454847', verified: true });
+        expect(stored).toBe(`${prior}\n\n---\nappend correction`);
+        expect(getWorkItemCheckpoint).toHaveBeenCalledTimes(1); // post-write verification only
       });
 
       it('does not block a genuinely fresh item with no prior checkpoint at all (priorLength 0)', async () => {
         getWorkItem.mockResolvedValue({ id: 'WI-NEW', harness: 'papercup' });
-        getWorkItemCheckpoint.mockResolvedValueOnce(null);
         setWorkItemCheckpointWithPrior.mockImplementation(
           async (_ref: unknown, _text: string, opts?: { guard?: (n: string | null, l: number) => string | null }) => {
             const blockedReason = opts?.guard ? (opts.guard(null, 0) ?? undefined) : undefined;
@@ -2348,14 +2355,14 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       });
 
       // EI-20283744332352340 — the guard keyed off `wantsAppend`, but a checks-only
-      // patch never performs the pre-read it inspects, so `appendPriorRaw === null`
-      // there means "never attempted", not "the two paths disagree". Every
+      // patch performs no join, so a missing addendum means "never attempted", not
+      // "the two paths disagree". Every
       // checks-only patch against a >500-char checkpoint was refused, and the
       // refusal's own recovery block pointed at `confirmShrink:true` — the
       // destructive replace this guard exists to prevent. Reproduced live on
       // WI-38258 (22,058 chars), including with `harness` passed explicitly, which
       // is what rules out the filed item's stated `harness` hypothesis.
-      it('does NOT block a checks-only additive patch — no join is attempted, so an unread pre-read is not a disagreement', async () => {
+      it('does NOT block a checks-only additive patch — no join or pre-read is needed', async () => {
         getWorkItem.mockResolvedValue({ id: 'WI-38258', harness: 'papercup' });
         const priorNote = 'D'.repeat(22058);
         setWorkItemCheckpointWithPrior.mockImplementation(
@@ -3385,7 +3392,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         });
         expect(r.message).toContain('confirmRetire:true is not sufficient');
         expect(r.message).toContain('retireIds');
-        expect(getWorkItemCheckpoint).toHaveBeenCalledTimes(1);
+        expect(getWorkItemCheckpoint).not.toHaveBeenCalled(); // refusal comes from the locked transform
       });
 
       it('refuses an unconfirmed explicit [] clear', async () => {
@@ -3822,10 +3829,8 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
        * only way to retire a stale check, and the test above pins it.
        */
       describe('EI-19944669306930709: `append: true` governs `checks` too (union, not replace)', () => {
-        /** Seed a prior note, then serve it to BOTH reader paths STATEFULLY.
-         *  `getWorkItemCheckpoint` backs the append pre-read AND the post-write
-         *  verify-read, so a static mock returns the stale prior to the verify and the
-         *  write fails `checkpoint_verify_failed` — advance it when the store commits. */
+        /** Seed a prior note, then serve the post-write verifier STATEFULLY. The
+         *  append itself uses the prior selected inside the locked store transaction. */
         const seed = async (checks: Array<{ id?: string; claim: string; recheck?: string; verified?: string }>) => {
           withPrior(null);
           await one({ id: 'WI-7', checkpoint: 'the body worth keeping', checks });
@@ -4874,9 +4879,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     });
 
     it('append mode folds the prior note WITHOUT emitting a second ## Checks section', async () => {
-      // append joins the whole prior note — rendered Checks section and all — so the
-      // transform has to strip it before re-attaching, or the note grows one section
-      // per append and the parse becomes ambiguous.
+      // The locked transform joins the whole prior note — rendered Checks section and
+      // all — so it strips the prior section before re-attaching it, or the note grows
+      // one section per append and the parse becomes ambiguous.
       withPrior(null);
       await one({
         id: 'WI-7',
@@ -4885,18 +4890,12 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       });
       const prior = await lastStored();
 
-      // Two DIFFERENT reads happen on the append path and they must not be conflated:
-      // the pre-read that fetches the prior to join onto, then the P-003 verify-read
-      // that must see what was just STORED. Pinning both to `prior` fails the
-      // verify-read and the handler returns its error shape instead.
-      let reads = 0;
       getWorkItemCheckpoint.mockImplementation(async () => {
-        reads += 1;
-        if (reads === 1) return prior;
         const last = setWorkItemCheckpointWithPrior.mock.results.at(-1);
         return last ? ((await last.value) as { stored: string | null }).stored : null;
       });
       withPrior(prior);
+      getWorkItemCheckpoint.mockClear();
       const r = await one({ id: 'WI-7', checkpoint: 'an addendum', append: true });
       expect(r.ok).toBe(true);
       const stored = await lastStored();
@@ -4905,6 +4904,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored).toContain('an addendum');
       expect(stored).toContain('- ✓ X holds');
       expect(r.checks).toBe(1);
+      expect(getWorkItemCheckpoint).toHaveBeenCalledTimes(1); // post-write verification only
     });
 
     it('re-stating a carried claim WITH evidence promotes it from ? to ✓', async () => {

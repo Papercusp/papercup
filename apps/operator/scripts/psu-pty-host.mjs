@@ -11184,11 +11184,14 @@ export function hostThroughPty(o) {
     // A fresh marked Codex kickoff requires positive backend-frame evidence
     // even before its banner arrives. A delayed banner cannot authorize the
     // marker-only last resort through the absence of startup observations.
-    const startupReadinessProven = () =>
-      codexMarkerKickoffRequiresFrame() ? childBackendFirstFrameAt > 0 : childStartupReady;
     const codexStartupExplicitlyStarting = () =>
       String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&
       codexFooterStateFromOutput(childStartupOutput, childScreenDims()) === 'starting';
+    // A painted model proves that the session frame exists, but its composer
+    // can still be unavailable while MCP startup paints a Starting footer.
+    const startupReadinessProven = () =>
+      !codexStartupExplicitlyStarting() &&
+      (codexMarkerKickoffRequiresFrame() ? childBackendFirstFrameAt > 0 : childStartupReady);
     const startupFallbackCanAuthorize = () =>
       !codexMarkerKickoffRequiresFrame() &&
       !codexStartupExplicitlyStarting() &&
@@ -11538,6 +11541,10 @@ export function hostThroughPty(o) {
             dropReason = 'codex-backend-frame-not-observed';
             break;
           }
+          if (requireInitialOutput && codexStartupExplicitlyStarting()) {
+            dropReason = 'codex-startup-still-starting';
+            break;
+          }
           // The text is the first step; later steps are delayed submit CRs, so
           // readiness is captured now, not after them.
           const turnWriteStartedAt = Date.now();
@@ -11576,6 +11583,10 @@ export function hostThroughPty(o) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
             if (hostCleanedUp || shuttingDown) return { delivered: false, reason: 'host-ended', attempts };
+            if (requireInitialOutput && codexStartupExplicitlyStarting()) {
+              markerEchoFailureReason = 'codex-startup-still-starting';
+              break;
+            }
             const chunks = ptyWriteChunks(step.data);
             const marker = stepIndex === 0 && verifyKickoffMarkerEcho
               ? leadingTurnOriginMarker(text)

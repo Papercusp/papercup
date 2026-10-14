@@ -118,6 +118,13 @@ export function resolveChildSessionOperatorBaseUrl(env: NodeJS.ProcessEnv = proc
  * persistent clients use the stable proxy instead.
  */
 export function resolveLongLivedSessionMcpBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  // Staging launches need the staging host's own runtime vintage. The generic stable proxy
+  // defaults to green :3070; using it from :3170 makes discovery and tool dispatch disagree
+  // whenever staging has newer handlers. Reuse the host-aware resolver, which selects the
+  // configured :9171 → :3170 proxy and stays direct to :3170 if that proxy is not configured.
+  if (env.PAPERCUSP_HONO_PORT?.trim() === '3170') {
+    return resolveAgentMcpBaseUrl(resolveSpawnHostOperatorBaseUrl(env), env);
+  }
   // On the background host its own proxy (:9271) fronts :3271; a declared agents endpoint wins
   // so terminal/fleet launches it runs follow the same routing as its other agents.
   const bgHostAgents = resolveBackgroundHostAgentsBase(env);

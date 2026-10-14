@@ -30,6 +30,7 @@ import {
   measureVerifierSourceBytes,
   prepareVerifierSource,
   prepareVerifierDependencies,
+  captureVerifierDependencies,
   runVerifierCommand,
   validateVerifierInputs,
   runCli,
@@ -63,6 +64,8 @@ const NATIVE_RUNTIME_FILES = [
 ];
 
 const VITEST_RESULT_CACHE = 'packages/operator-core/.vitest-tmp/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/results.json';
+const DEPENDENCY_POLICY_PATH = 'apps/operator/bin/release/dependency-generation.sh';
+const DEPENDENCY_POLICY = readFileSync(new URL('../../../' + DEPENDENCY_POLICY_PATH, import.meta.url), 'utf8');
 
 function listFiles(dir: string): string[] {
   const acc: string[] = [];
@@ -393,17 +396,74 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(existsSync(refused)).toBe(false);
   });
 
+  it.each(['unchanged', 'content', 'added', 'removed', 'mode', 'new-tree', 'workspace-link', 'ephemeral',
+    'absolute-link', 'escaping-link', 'indirect-escape', 'dangling-link', 'redirected-tree',
+    'duplicate-tree', 'missing-population', 'invalid-path', 'nested-tree'] as const)
+  ('measures materialized dependency bytes with the existing census (%s)', async defect => {
+    const root = join(tmp, 'dependency-census-' + defect);
+    const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+    write(root, helper, '#!/bin/bash\nset -eu\ntest "$1" = trees\necho node_modules\nif [ -d "$2/app/node_modules" ]; then echo app/node_modules; fi\n');
+    write(root, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+    write(root, 'node_modules/example/index.mjs', 'export default 1;\n');
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40),
+      testedInputs: [{ path: 'input.mjs', sha256: 'b'.repeat(64) }], files: [], submodules: [] };
+    const before = captureVerifierDependencies({ dest: root, receipt });
+    expect(before.trees.map(tree => tree.path)).toEqual(['node_modules']);
+    const dependency = join(root, 'node_modules/example/index.mjs');
+    if (defect === 'content') writeFileSync(dependency, 'export default 2;\n');
+    if (defect === 'added') write(root, 'node_modules/example/extra.mjs', 'added');
+    if (defect === 'removed') rmSync(dependency);
+    if (defect === 'mode') await fsPromises.chmod(dependency, 0o755);
+    if (defect === 'new-tree') write(root, 'app/node_modules/second/index.mjs', 'second');
+    if (defect === 'ephemeral') for (const path of ['.cache/out', '.package-lock.json',
+      '.papercusp-isolated-snapshot', 'example/.astro/out', 'example/.vite/out',
+      'example/.vite-temp/out', 'example/.verdict-data/out']) write(root, 'node_modules/' + path, 'runtime output');
+    if (defect === 'workspace-link') {
+      write(root, 'app/index.mjs', 'workspace source');
+      symlinkSync('../app', join(root, 'node_modules/workspace'));
+    }
+    if (defect === 'absolute-link') symlinkSync(join(root, 'app'), join(root, 'node_modules/redirect'));
+    if (defect === 'escaping-link') symlinkSync('../../', join(root, 'node_modules/redirect'));
+    if (defect === 'indirect-escape') {
+      symlinkSync(tmp, join(root, 'app'));
+      symlinkSync('../app', join(root, 'node_modules/redirect'));
+    }
+    if (defect === 'dangling-link') symlinkSync('../absent', join(root, 'node_modules/redirect'));
+    if (defect === 'redirected-tree') {
+      await fsPromises.rename(join(root, 'node_modules'), join(root, 'donor'));
+      symlinkSync('donor', join(root, 'node_modules'));
+    }
+    const populations: Partial<Record<typeof defect, string>> = { 'duplicate-tree': 'node_modules\\nnode_modules',
+      'missing-population': '', 'invalid-path': '../node_modules',
+      'nested-tree': 'node_modules\\nnode_modules/example/node_modules' };
+    const population = populations[defect];
+    if (population !== undefined) write(root, helper,
+      '#!/bin/bash\nprintf "' + population + '\\n"\n');
+    if (['absolute-link', 'escaping-link', 'indirect-escape', 'dangling-link',
+      'redirected-tree', 'duplicate-tree', 'missing-population', 'invalid-path', 'nested-tree'].includes(defect)) {
+      expect(() => captureVerifierDependencies({ dest: root, receipt })).toThrow();
+    } else {
+      const after = captureVerifierDependencies({ dest: root, receipt });
+      if (defect === 'unchanged' || defect === 'ephemeral') expect(after).toEqual(before);
+      else expect(after).not.toEqual(before);
+      if (defect === 'workspace-link') expect(after.trees[0]!.files).toContainEqual(expect.objectContaining({
+        path: 'workspace', kind: 'symlink', sha256: createHash('sha256').update('../app').digest('hex'),
+      }));
+    }
+  });
+
   it('loads Node from the invoked tree before native allocation and survives donor dependency removal', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-native-dependencies'));
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
     write(fixture.repo, script, "import value from '@native-proof/runtime';\nif (value !== 'private-snapshot') throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     // Substitute the expensive copy only; execute real Node resolution from the
     // independent source tree, with ambient loaders and NODE_PATH excluded.
-    write(fixture.repo, helper, '#!/bin/bash\nset -eu\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
-    git(fixture.repo, ['add', script, helper, '.gitignore']);
+    git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'native dependency preflight fixture']);
     const scratch = join(fixture.repo, '.papercusp', 'scratch');
     await fsPromises.mkdir(scratch, { recursive: true });
@@ -422,12 +482,16 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
-    await prepareVerifierDependencies({ donor: fixture.repo, dest, receipt });
+    const dependencies = await prepareVerifierDependencies({ donor: fixture.repo, dest, receipt });
+    expect(dependencies.trees[0]!.files.map(file => file.path)).toEqual([
+      '@native-proof/runtime/index.mjs', '@native-proof/runtime/package.json',
+    ]);
     expect(statSync(join(dest, 'node_modules/@native-proof/runtime/index.mjs')).ino)
       .toBe(statSync(join(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs')).ino);
     rmSync(join(fixture.repo, 'node_modules/@native-proof/runtime'), { recursive: true });
     expect(probe().status).toBe(0);
     expect(probe().stdout.trim()).toBe('4096');
+    expect(captureVerifierDependencies({ dest, receipt })).toEqual(dependencies);
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
     rmSync(join(dest, 'node_modules'), { recursive: true });
     await expect(prepareVerifierDependencies({ donor: fixture.repo, dest, receipt }))
@@ -440,11 +504,12 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
     write(fixture.repo, script, "import value from '@native-proof/runtime';\nif (value !== 'private-snapshot') throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     // Keep the physical-donor precondition and real independent Node resolution;
     // substitute only the expensive production dependency census/copy.
-    write(fixture.repo, helper, '#!/bin/bash\nset -eu\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ntest ! -L "$2/node_modules/.bin"\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ntest ! -L "$2/node_modules/.bin"\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/node_modules/\n/.papercusp/scratch/\n');
-    git(fixture.repo, ['add', script, helper, '.gitignore']);
+    git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'materialized dependency donor fixture']);
     const sha = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
     write(fixture.repo, 'node_modules/.bin/probe', '#!/bin/sh\n');
@@ -469,15 +534,16 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(existsSync(join(tmp, 'refused-donor-receipt.json'))).toBe(false);
   });
 
-  it.each(['donor-change', 'child-failure', 'frozen-tamper', 'phase-io-failure'] as const)
+  it.each(['donor-change', 'child-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure'] as const)
     ('freezes the full command before provider allocation and cleans its owned tree (%s)', async mode => {
       const fixture = makeSuperproject(join(tmp, 'verifier-command-' + mode));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
       const preflight = 'scripts/source-preview.mjs';
       const provider = 'scripts/provider-fixture.mjs';
       const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+      write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
       write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
-      write(fixture.repo, helper, '#!/bin/bash\nset -eu\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
       write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
       write(fixture.repo, provider, [
         "import { readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';",
@@ -492,10 +558,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         "  source: readFileSync('scripts/provider-fixture.mjs', 'utf8'),",
         "  options: process.env.NODE_OPTIONS, path: process.env.NODE_PATH, flag: process.argv[5] }));",
         "if (mode === 'frozen-tamper') writeFileSync('scripts/provider-fixture.mjs', 'tampered frozen source');",
+        "if (mode === 'dependency-tamper') writeFileSync('node_modules/@native-proof/runtime/index.mjs', 'tampered installed bytes');",
         "if (mode === 'child-failure') process.exitCode = 37;",
         "if (mode === 'phase-io-failure') { const path = process.env.VERIFY_TAURI_SOURCE_RECEIPT + '.phases.jsonl'; rmSync(path); mkdirSync(path); }",
       ].join('\n'));
-      git(fixture.repo, ['add', preflight, provider, helper, '.gitignore']);
+      git(fixture.repo, ['add', preflight, provider, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
       git(fixture.repo, ['commit', '-qm', 'full verifier command fixture']);
       const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
       const original = readFileSync(join(fixture.repo, provider), 'utf8');
@@ -511,6 +578,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         : runVerifierCommand({ repo: fixture.repo, ref, inputs: [provider], receiptPath, command,
           env: { ...process.env, NODE_OPTIONS: '--import=/nonexistent/ambient-loader', NODE_PATH: '/ambient/dependencies' } });
       if (mode === 'frozen-tamper') await expect(invocation).rejects.toThrow('tampered verification source archive');
+      else if (mode === 'dependency-tamper') await expect(invocation).rejects.toThrow('Verifier materialized dependencies changed during command');
       else if (mode === 'phase-io-failure') await expect(invocation).rejects.toThrow('EISDIR');
       else await expect(invocation).resolves.toBe(mode === 'child-failure' ? 37 : 0);
       const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
@@ -535,10 +603,19 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(phases.filter(row => row.event === 'started').map(row => row.phase)).toEqual([
         'source.freeze', 'receipt.write', 'deps.source.before', 'deps.snapshot',
         'deps.source.after-snapshot', 'deps.inputs', 'deps.measure', 'deps.source.after-preflight',
-        'child.run', 'source.postverify', 'cleanup',
+        'deps.census', 'deps.receipt.write', 'child.run', 'deps.postverify',
+        ...(mode === 'dependency-tamper' ? [] : ['source.postverify']), 'cleanup',
       ]);
       expect(phases.filter(row => row.event === 'failed').map(row => row.phase))
-        .toEqual(mode === 'frozen-tamper' ? ['source.postverify'] : []);
+        .toEqual(mode === 'frozen-tamper' ? ['source.postverify'] : mode === 'dependency-tamper' ? ['deps.postverify'] : []);
+      const beforeDependencies = JSON.parse(readFileSync(receiptPath + '.dependencies.json', 'utf8'));
+      const afterDependencies = JSON.parse(readFileSync(receiptPath + '.dependencies.after.json', 'utf8'));
+      expect(beforeDependencies.scope).toBe('materialized-dependency-files');
+      expect(beforeDependencies.sourceCommit).toBe(ref);
+      expect(beforeDependencies.sourceReceiptSha256).toBe(createHash('sha256')
+        .update(JSON.stringify(JSON.parse(readFileSync(receiptPath, 'utf8')))).digest('hex'));
+      if (mode === 'dependency-tamper') expect(afterDependencies).not.toEqual(beforeDependencies);
+      else expect(afterDependencies).toEqual(beforeDependencies);
       expect(phases.find(row => row.phase === 'child.run' && row.event === 'completed'))
         .toMatchObject({ exitCode: mode === 'child-failure' ? 37 : 0 });
       expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });

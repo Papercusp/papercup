@@ -68,6 +68,10 @@ function diagnosticsFor(dir: string): ts.Diagnostic[] {
   return [...ts.getPreEmitDiagnostics(program)];
 }
 
+function programForInput(input: string): ts.Program {
+  return ts.createProgram([join(ROOT, input)], declarationsCompilerOptions());
+}
+
 describe('tsconfig.declarations.json — imports in an input graph', () => {
   it('rejects a .ts-suffixed relative import (TS5097), so a source must not use one', () => {
     expect(declarationsCompilerOptions().allowImportingTsExtensions).toBeUndefined();
@@ -80,5 +84,15 @@ describe('tsconfig.declarations.json — imports in an input graph', () => {
       ts.flattenDiagnosticMessageText(d.messageText, '\n'),
     );
     expect(messages).toEqual([]);
+  });
+
+  it('keeps source-preview’s production declaration graph free of TS5097', () => {
+    const program = programForInput('scripts/source-preview.mjs');
+    expect(program.getSourceFiles().some((file) =>
+      resolve(file.fileName) === resolve(ROOT, 'packages/operator-core/lib/verifier-source.ts'),
+    )).toBe(true);
+    const extensionImportDiagnostics = ts.getPreEmitDiagnostics(program)
+      .filter((diagnostic) => diagnostic.code === TS_EXTENSION_IMPORT);
+    expect(extensionImportDiagnostics).toEqual([]);
   });
 });

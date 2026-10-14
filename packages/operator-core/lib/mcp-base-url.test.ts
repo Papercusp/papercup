@@ -254,23 +254,35 @@ describe('resolveSpawnHostOperatorBaseUrl (WI-6154)', () => {
 });
 
 describe('resolveLongLivedSessionMcpBaseUrl', () => {
-  it('uses the stable proxy fallback instead of inheriting a staging host port', () => {
+  it('routes staging-host launches through the same-vintage proxy, not the live proxy', () => {
     expect(
       resolveLongLivedSessionMcpBaseUrl({
         PAPERCUSP_HONO_PORT: '3170',
-        PAPERCUSP_OPERATOR_URL: 'http://localhost:3170',
-      }),
-    ).toBe('http://127.0.0.1:9071');
-  });
-
-  it('prefers the configured stable proxy and trims trailing slashes', () => {
-    expect(
-      resolveLongLivedSessionMcpBaseUrl({
-        PAPERCUSP_HONO_PORT: '3170',
-        PAPERCUSP_OPERATOR_URL: 'http://localhost:3170',
-        PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9171/',
+        PAPERCUSP_OPERATOR_URL: 'http://localhost:3070',
+        PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071',
+        PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
       }),
     ).toBe('http://127.0.0.1:9171');
+  });
+
+  it('keeps staging on its own port when the same-vintage proxy is not configured', () => {
+    expect(
+      resolveLongLivedSessionMcpBaseUrl({
+        PAPERCUSP_HONO_PORT: '3170',
+        PAPERCUSP_OPERATOR_URL: 'http://localhost:3070',
+        PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071',
+      }),
+    ).toBe('http://localhost:3170');
+  });
+
+  it('keeps the configured stable proxy for live-host launches and trims trailing slashes', () => {
+    expect(
+      resolveLongLivedSessionMcpBaseUrl({
+        PAPERCUSP_HONO_PORT: '3070',
+        PAPERCUSP_OPERATOR_URL: 'http://localhost:3070',
+        PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071/',
+      }),
+    ).toBe('http://127.0.0.1:9071');
   });
 });
 

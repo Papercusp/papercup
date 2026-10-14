@@ -721,6 +721,58 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
       throw new PreviewError('verifier dependency preflight returned no source size', 2);
   });
   await runPhase('deps.source.after-preflight', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
+  return runPhase('deps.census', () => captureVerifierDependencies({ dest, receipt }));
+}
+
+/** Measure installed bytes, not lockfile intent. Reuse the release helper's
+ * product-owned tree population and the source verifier's exact file census.
+ * Workspace link targets still need source verification; this receipt does
+ * not claim final transformed code or a complete runtime import closure.
+ * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>> }} options
+ */
+export function captureVerifierDependencies({ dest, receipt }) {
+  const root = realpathSync(dest);
+  const result = spawnSync('bash', [join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'trees', root],
+    { cwd: root, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8',
+      timeout: 60_000, maxBuffer: 1024 * 1024 });
+  if (result.error || result.status !== 0)
+    throw new PreviewError(`verifier dependency enumeration failed: ${result.error?.message || result.stderr || result.status}`, 2);
+  const paths = result.stdout.trim().split('\n').filter(Boolean).sort();
+  assert.ok(paths.length > 0 && paths.length <= 1000 && new Set(paths).size === paths.length,
+    'Verifier dependency tree population missing or duplicated');
+  const policyPath = 'apps/operator/bin/release/dependency-generation.sh';
+  const policy = { path: policyPath,
+    sha256: createHash('sha256').update(readFileSync(join(root, policyPath))).digest('hex') };
+  const trees = paths.map(path => {
+    assert.ok(!isAbsolute(path) && !path.includes('\\') &&
+      !path.split('/').some(part => !part || part === '.' || part === '..') &&
+      path.split('/').at(-1) === 'node_modules' &&
+      !paths.some(other => path.startsWith(`${other}/`)), 'Invalid verifier dependency tree');
+    const tree = join(root, path);
+    assert.ok(lstatSync(tree).isDirectory() && realpathSync(tree) === tree,
+      `Verifier dependency tree must be independent: ${path}`);
+    // Use the generation writer's population, including its exact ephemeral
+    // output policy. A second cache-name list would eventually disagree with
+    // the immutable install whose bytes this verifier is meant to measure.
+    const records = spawnSync('bash', ['-c',
+      'source "$1" || exit; records=$(mktemp) || exit; trap \'rm -f -- "$records" "$records.unsorted"\' EXIT; dependency_generation_source_records "$2" "$records" || exit; cat "$records"',
+      'verifier-dependency-records', join(root, policyPath), tree],
+    { cwd: root, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8',
+      timeout: 120_000, maxBuffer: 128 * 1024 * 1024 });
+    if (records.error || records.status !== 0)
+      throw new PreviewError(`verifier dependency census failed: ${records.error?.message || records.stderr || records.status}`, 2);
+    const population = records.stdout.trimEnd().split('\n').filter(Boolean).map(line => line.split('\t'));
+    assert.ok(population.every(row => row.length === 10 && ['d', 'f', 'l'].includes(row[1])),
+      'Invalid verifier dependency generation records');
+    const files = verifierSourceFiles(tree, { symlinkRoot: root,
+      includedPaths: new Set(population.map(row => row[0])) });
+    assert.equal(files.length, population.filter(row => row[1] !== 'd').length,
+      'Verifier dependency population changed during census');
+    return { path, files };
+  });
+  return { schemaVersion: 'verifier-dependencies-v1', scope: 'materialized-dependency-files',
+    root, sourceCommit: receipt.sourceCommit, policy,
+    sourceReceiptSha256: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'), trees };
 }
 
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
@@ -746,7 +798,9 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref, dest: root,
       inputs, inputsFile, tauriInputs, gitCheckout: true }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
-    await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase });
+    const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase });
+    await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
+      `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
     const childEnv = verifierSourceChildEnv({ root, receiptPath,
       env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
         VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } });
@@ -764,6 +818,14 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       } finally {
         process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
       }
+    });
+    await runPhase('deps.postverify', async () => {
+      const after = captureVerifierDependencies({ dest: root, receipt });
+      // Keep the actual final census even on drift; never overwrite the
+      // original observation with a reconstructed matching receipt.
+      await fs.writeFile(`${receiptPath}.dependencies.after.json`, `${JSON.stringify(after)}\n`,
+        { flag: 'wx', mode: 0o600 });
+      assert.deepEqual(after, dependencies, 'Verifier materialized dependencies changed during command');
     });
     await runPhase('source.postverify', () => verifyVerifierSource(root, receipt, { runtimeArtifacts: true }));
     return exitCode;

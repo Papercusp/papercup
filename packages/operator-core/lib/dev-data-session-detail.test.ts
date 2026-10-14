@@ -275,7 +275,11 @@ describe('getSessionDetail related_chats', () => {
     expect(query).toContain('GROUP BY source_kind, owner');
     expect(query).toContain('FROM harness_shared.session_turns');
     expect(query).toContain('FROM harness_shared.agent_activity');
-    expect(partsCall?.slice(1)).toEqual(['codex-session-from-transcript']);
+    expect(partsCall?.slice(1)).toEqual([
+      'codex-session-from-transcript',
+      'codex-session-from-transcript',
+      'codex-session-from-transcript',
+    ]);
 
     const invocationCall = dbMocks.orgSql.mock.calls[3];
     const invocationTemplate = invocationCall?.[0] as TemplateStringsArray | undefined;

@@ -160,7 +160,45 @@ export function prepareVerifierDependencies({ donor, dest, receipt, runPhase }: 
     dest: string;
     receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
     runPhase?: VerifierPhaseRunner;
-}): Promise<void>;
+}): Promise<{
+    schemaVersion: string;
+    scope: string;
+    root: string;
+    sourceCommit: string;
+    policy: {
+        path: string;
+        sha256: string;
+    };
+    sourceReceiptSha256: string;
+    trees: {
+        path: string;
+        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+    }[];
+}>;
+/** Measure installed bytes, not lockfile intent. Reuse the release helper's
+ * product-owned tree population and the source verifier's exact file census.
+ * Workspace link targets still need source verification; this receipt does
+ * not claim final transformed code or a complete runtime import closure.
+ * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>> }} options
+ */
+export function captureVerifierDependencies({ dest, receipt }: {
+    dest: string;
+    receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
+}): {
+    schemaVersion: string;
+    scope: string;
+    root: string;
+    sourceCommit: string;
+    policy: {
+        path: string;
+        sha256: string;
+    };
+    sourceReceiptSha256: string;
+    trees: {
+        path: string;
+        files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
+    }[];
+};
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
  * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv }} options
