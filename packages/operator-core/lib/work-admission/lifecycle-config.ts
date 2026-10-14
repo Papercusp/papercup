@@ -11,6 +11,20 @@
 
 import { isTicketStatusCategory, type TicketStatusCategory } from '../data-sources/ticket-vocabulary';
 
+/**
+ * How the fixes for a rule's admitted work reach the subject repository
+ * (slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 P-013, D-015):
+ *   - `direct`: whatever the target pot's git-sync does (today's behaviour);
+ *   - `pr`: ONLY through the target pot's working copy (hiveGit.integration = review, with a
+ *     fork) and its standing PR. A `pr` rule is refused when saved, and refuses every admission,
+ *     while its target harness is not in that state (pr-delivery.ts), so PR-required work can
+ *     never be dispatched into a pot that pushes straight to the main repository.
+ * Kept on the lifecycle object (no new column) because it governs how admitted work travels to
+ * completion, which is what the lifecycle already describes.
+ */
+export const ADMISSION_DELIVERIES = ['direct', 'pr'] as const;
+export type AdmissionDelivery = (typeof ADMISSION_DELIVERIES)[number];
+
 export interface AdmissionLifecycle {
   /** On claim: move the source to `in-progress` and comment who picked it up. */
   claim: boolean;
@@ -24,6 +38,8 @@ export interface AdmissionLifecycle {
   externalClose: boolean;
   /** On an outside reopen of a finished item that the rule still matches: reopen the item. */
   reopen: boolean;
+  /** How the admitted work's fixes reach the subject repository ({@link AdmissionDelivery}). */
+  delivery: AdmissionDelivery;
 }
 
 export const DEFAULT_ADMISSION_LIFECYCLE: Readonly<AdmissionLifecycle> = Object.freeze({
@@ -33,6 +49,7 @@ export const DEFAULT_ADMISSION_LIFECYCLE: Readonly<AdmissionLifecycle> = Object.
   completeCategory: 'done',
   externalClose: true,
   reopen: true,
+  delivery: 'direct',
 });
 
 const SWITCHES = ['claim', 'hold', 'complete', 'externalClose', 'reopen'] as const;
@@ -48,7 +65,7 @@ export function parseAdmissionLifecycle(raw: unknown): AdmissionLifecycle {
     throw new Error('admission_rule_invalid: lifecycle must be an object');
   }
   const input = raw as Record<string, unknown>;
-  const known = new Set<string>([...SWITCHES, 'completeCategory']);
+  const known = new Set<string>([...SWITCHES, 'completeCategory', 'delivery']);
   const unknown = Object.keys(input).filter((k) => !known.has(k));
   if (unknown.length > 0) {
     throw new Error(
@@ -67,6 +84,12 @@ export function parseAdmissionLifecycle(raw: unknown): AdmissionLifecycle {
     }
     out.completeCategory = input.completeCategory;
   }
+  if (input.delivery !== undefined) {
+    if (typeof input.delivery !== 'string' || !(ADMISSION_DELIVERIES as readonly string[]).includes(input.delivery)) {
+      throw new Error(`admission_rule_invalid: lifecycle.delivery must be one of ${ADMISSION_DELIVERIES.join(', ')}`);
+    }
+    out.delivery = input.delivery as AdmissionDelivery;
+  }
   return out;
 }
 
@@ -74,11 +97,21 @@ export function parseAdmissionLifecycle(raw: unknown): AdmissionLifecycle {
  * The lifecycle a stored rule runs. Stored values were validated on write, so this only fills
  * defaults; a malformed stored value (hand-edited row) falls back to the defaults rather than
  * stopping the sync that reads it.
+ *
+ * Except `delivery`, which fails CLOSED: a stored object whose `delivery` is anything other
+ * than absent or exactly 'direct' resolves to 'pr', even when the rest of the object is
+ * malformed, so a damaged row can never quietly turn PR-required work into direct pushes.
  */
 export function resolveAdmissionLifecycle(stored: unknown): AdmissionLifecycle {
   try {
     return parseAdmissionLifecycle(stored);
   } catch {
-    return { ...DEFAULT_ADMISSION_LIFECYCLE };
+    return { ...DEFAULT_ADMISSION_LIFECYCLE, delivery: storedDeliveryFailClosed(stored) };
   }
+}
+
+function storedDeliveryFailClosed(stored: unknown): AdmissionDelivery {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return 'direct';
+  const delivery = (stored as Record<string, unknown>).delivery;
+  return delivery === undefined || delivery === 'direct' ? 'direct' : 'pr';
 }

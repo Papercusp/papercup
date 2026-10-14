@@ -99,21 +99,32 @@ describe('planLifecycleWrites', () => {
 describe('admission lifecycle switches', () => {
   it('fills defaults: every reaction on, completion moves the source to done (owner #1417)', () => {
     expect(parseAdmissionLifecycle({})).toEqual({
-      claim: true, hold: true, complete: true, completeCategory: 'done', externalClose: true, reopen: true,
+      claim: true, hold: true, complete: true, completeCategory: 'done', externalClose: true, reopen: true, delivery: 'direct',
     });
     expect(parseAdmissionLifecycle({ claim: false, completeCategory: 'in-review' })).toMatchObject({ claim: false, completeCategory: 'in-review' });
+    expect(parseAdmissionLifecycle({ delivery: 'pr' })).toMatchObject({ delivery: 'pr', claim: true });
   });
 
-  it('refuses unknown keys, non-boolean switches and a category outside the vocabulary', () => {
+  it('refuses unknown keys, non-boolean switches, a category outside the vocabulary and an unknown delivery', () => {
     expect(() => parseAdmissionLifecycle({ onClaim: true })).toThrow(/admission_rule_invalid: unknown lifecycle key\(s\) onClaim/);
     expect(() => parseAdmissionLifecycle({ claim: 'yes' })).toThrow(/lifecycle.claim must be a boolean/);
     expect(() => parseAdmissionLifecycle({ completeCategory: 'shipped' })).toThrow(/completeCategory/);
+    expect(() => parseAdmissionLifecycle({ delivery: 'push' })).toThrow(/lifecycle.delivery must be one of direct, pr/);
     expect(() => parseAdmissionLifecycle([])).toThrow(/must be an object/);
   });
 
   it('reads a malformed stored value as the defaults instead of stopping a sync', () => {
     expect(resolveAdmissionLifecycle({ bogus: 1 })).toEqual({ ...DEFAULT_ADMISSION_LIFECYCLE });
     expect(resolveAdmissionLifecycle(null)).toEqual({ ...DEFAULT_ADMISSION_LIFECYCLE });
+  });
+
+  it('fails CLOSED on delivery: a damaged stored row never turns PR-required work into direct pushes (P-013)', () => {
+    // The rest of the object is malformed, but the stored delivery still binds.
+    expect(resolveAdmissionLifecycle({ delivery: 'pr', bogus: 1 }).delivery).toBe('pr');
+    // An unrecognised delivery value reads as the restrictive one, never as 'direct'.
+    expect(resolveAdmissionLifecycle({ delivery: 'PR' }).delivery).toBe('pr');
+    expect(resolveAdmissionLifecycle({ delivery: 'direct', bogus: 1 }).delivery).toBe('direct');
+    expect(resolveAdmissionLifecycle({ claim: 'yes' }).delivery).toBe('direct');
   });
 });
 
