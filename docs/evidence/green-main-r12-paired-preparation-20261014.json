@@ -2422,5 +2422,84 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Reuse the latest matched scheduler147, selector79, fixture exit0 and desktop34-script proof without repeating unchanged checks. Independently qualify original command obligations and ordered steps through the existing native artifact reader, then complete source/dependency/final-transform closure. Do not launch the D020-held cohort. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
+  "nativeCommandPreparationQualification": {
+    "status": "saved-desktop-and-fixture-command-preparation-readback-passed",
+    "reader": "scripts/lib/budgeted-task-scheduler.mjs::readBudgetedTaskComparisonArtifacts",
+    "mode": "command-preparation",
+    "selection": {
+      "ref": ".papercusp/logs/papercusp-affected-tests/2252475-9b84330b.log",
+      "sha256": "2a317e46c3b01fdd96caaf77f086742c31836adc2d0edf19cd47bfeecc8622b5"
+    },
+    "command": {
+      "task": "@papercusp/desktop :: test",
+      "step": 7,
+      "command": "bash bin/lib/run-selftests.sh",
+      "receipt": {
+        "ref": ".papercusp/scratch/c0523-desktop-aggregate-postfix-v1.json",
+        "sha256": "38c4d983bc46285fb927a883886d500b0edc4f3ebab0ae5333a11ac1b35c1d82"
+      },
+      "inputCount": 36,
+      "testFileOccurrences": 34,
+      "scriptsExecuted": 34,
+      "scriptVerdict": "34 PASS / 0 FAIL / 0 SKIP",
+      "beforeAfterInputsIdentical": true,
+      "currentDeclaredInputsMatched": true
+    },
+    "fixtureLifecycle": {
+      "task": "@bug-drill/fixture :: test",
+      "step": null,
+      "kind": "npm-lifecycle",
+      "script": "pretest",
+      "command": "node scripts/build.mjs",
+      "receipt": {
+        "ref": ".papercusp/scratch/c0523-fixture-build-command-v1.json",
+        "sha256": "b81379793ff6039b319d4aea54aab68189cb351b8cb90137fed11f4c33a279d8"
+      },
+      "inputCount": 26,
+      "fileOccurrences": 0,
+      "currentDeclaredInputsMatched": true,
+      "originalDiscoveryExecutionOrderMatched": true,
+      "buildResultMarkerMatched": true,
+      "operationalAcceptance": false
+    },
+    "populationSha256": "8cf2ba86c8756317d5f15418f15bc8ce6917674be2f5cca6adf72827df2fd9c4",
+    "sourcePins": [
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.mjs",
+        "sha256": "e65a70ec70c30eaf7aa0319dd1bfa51ddecb5c8e7253c7aa0303ac63ab97936f"
+      },
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.d.mts",
+        "sha256": "e65e111f4c2c3224dbb70d2130dabb4e268d9eb7fb51ac730158235c7052488d"
+      },
+      {
+        "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "sha256": "eb6fe222267792036de832a8726906f633150b735c2d2d9c46af6c354a53e504"
+      }
+    ],
+    "maintainedTest": {
+      "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+      "log": "~/.papercusp/scratch/c0523-command-preparation-scheduler-v2.log",
+      "logSha256": "37bea4ac9041980257a7fecaac8f98ce658951b9d982b648f93d023961df8697",
+      "testsPassed": 173,
+      "testsSkipped": 0,
+      "childSubstituted": 0,
+      "nativeExitCode": 0,
+      "testedHead": "3f81fdd049",
+      "scope": "current-local named suite; full import/runtime closure unmeasured"
+    },
+    "typecheck": {
+      "log": "~/.papercusp/scratch/c0523-command-preparation-tsc-v2.log",
+      "sha256": "6dadff0ad23f3b32dbad67191419d508e9532a03aab8dfc7563228745388070f",
+      "namedFiles": 1,
+      "nativeExitCode": 0,
+      "typeErrors": 0,
+      "scope": "maintained scheduler test file and its resolved types; full scripts JS graph unmeasured"
+    },
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "limits": "Read-only raw receipt/log qualification of saved desktop and fixture commands: exact task/step/command, six raw log hashes each, unchanged/current 36 and 26-input censuses, 34 ordered PASS desktop verdicts, fixture lifecycle and discovery/execution ordering plus build completion. Remaining native formats, full chain, installed dependencies, final transformed runtime, ABBA cohorts and shipment remain open."
+  },
+  "next": "Extend the existing command-preparation reader branch to independently pinned Astro/voice native formats. Desktop and fixture command-local preparation now passed native IO readback; reuse their saved original commands and the maintained173 scheduler tests. Complete ordered native chain and source/dependency/final-transform closure. Do not launch the D020-held cohort. All six receipt forms remain unbound/unapproved; one complete outside-lineage review waits for all real evidence."
 }
