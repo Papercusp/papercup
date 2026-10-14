@@ -2233,7 +2233,9 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
  * ledger write still returns deliverable tagged text (the turn then shows as
  * UNVERIFIED at the hook — visible, never a dropped wake).
  */
-async function tagWakeText(d: DeliveryWork, text: string, tag: WakeTurnTagger): Promise<EnrolledWakeText> {
+// Export the existing boundary so callers' regression suites can carry their
+// actual wake payload through enrollment instead of reconstructing an envelope.
+export async function tagWakeText(d: Pick<DeliveryWork, 'payload' | 'subscriberId'>, text: string, tag: WakeTurnTagger): Promise<EnrolledWakeText> {
   const origin = readLoopDeliveryMarker(d.payload)
     ? 'loop-fire'
     : // EI-20130618357432548: an owner CHAT-PANE turn is the same authority as an
@@ -4469,6 +4471,12 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         return {
           kind: 'park',
           reason: `headless resume turn pid ${pid} is still running for this session; parked until it exits`,
+          // The detached turn already owns this delivery's resume boundary. Keep
+          // the durable row parked while it runs; the pump must not mistake this
+          // intentional wait for an exhausted, unowned park and emit a parallel
+          // inbox fallback. A later retry can observe the child exit and continue
+          // through the normal settlement path.
+          hostCommitPending: true,
         };
       }
       // WI-666: a warm engine-loop owner is explicitly unattended and its
