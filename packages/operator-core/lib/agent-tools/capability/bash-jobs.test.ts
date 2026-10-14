@@ -1449,10 +1449,12 @@ describe('PAPERCUSP_OPERATOR_URL inheritance', () => {
   it('rewrites an inherited direct operator URL through the resilient proxy when configured', async () => {
     const prevOperator = process.env.PAPERCUSP_OPERATOR_URL;
     const prevProxy = process.env.PAPERCUSP_MCP_PROXY_BASE;
+    const prevProxyTargetPort = process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT;
     const prevHonoPort = process.env.PAPERCUSP_HONO_PORT;
     const prevOperatorDevPort = process.env.OPERATOR_DEV_PORT;
     process.env.PAPERCUSP_OPERATOR_URL = 'http://localhost:3070/api/mcp';
     process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
+    process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT = '3070';
     process.env.PAPERCUSP_HONO_PORT = '3070';
     delete process.env.OPERATOR_DEV_PORT;
     try {
@@ -1472,6 +1474,8 @@ describe('PAPERCUSP_OPERATOR_URL inheritance', () => {
       else process.env.PAPERCUSP_OPERATOR_URL = prevOperator;
       if (prevProxy === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
       else process.env.PAPERCUSP_MCP_PROXY_BASE = prevProxy;
+      if (prevProxyTargetPort === undefined) delete process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT;
+      else process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT = prevProxyTargetPort;
       if (prevHonoPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
       else process.env.PAPERCUSP_HONO_PORT = prevHonoPort;
       if (prevOperatorDevPort === undefined) delete process.env.OPERATOR_DEV_PORT;
