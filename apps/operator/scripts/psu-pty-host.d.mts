@@ -1927,7 +1927,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExe
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, readWakeMode, wakeModeRetryMs, waitWakeModeRetry, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, readWakeMode, wakeModeRetryMs, waitWakeModeRetry, }: {
     acquireInject: any;
     waitIdle?: (() => Promise<{
         deferred: boolean;
@@ -1944,6 +1944,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     emitEvent: any;
     capMs?: number | undefined;
     maxProductionAttempts?: number | undefined;
+    maxDrillAttempts?: number | undefined;
     yieldAfterDefer?: (() => Promise<any>) | undefined;
     onSettlement?: ((_messages: any, _outcome: any) => void) | undefined;
     isStale?: (() => boolean) | undefined;
@@ -1980,9 +1981,10 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
      *  key is a no-op. */
     endFirstAttempt(msg: any): void;
     /**
-     * Schedule the one-shot retry for a busy-gate-refused carry-respawn drill.
-     * Returns 'queued' when scheduled, 'duplicate' when a retry for this drillId
-     * is already pending (the caller should terminally drop instead), or
+     * Schedule the re-poll loop for a busy-gate-refused carry-respawn. A drill
+     * still performs one lifecycle cut; it may need multiple safe-boundary
+     * windows before that cut is safe. Returns 'queued' when scheduled,
+     * 'duplicate' when a loop for this drillId is already pending, or
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
@@ -4241,8 +4243,8 @@ export function makeStaleFireGuard(): {
 };
 /** EI-18109211232286833: is a `carry-respawn` control message too stale to
  *  deliver? `receivedAtMs` is the moment this host first decoded the message
- *  (stamped once in `conn.on('end')`, reused unchanged across the one
- *  `makeCarryRearmController` retry), so this measures TOTAL elapsed wait —
+ *  (stamped once in `conn.on('end')`, reused unchanged across every
+ *  `makeCarryRearmController` re-poll attempt), so this measures TOTAL elapsed wait —
  *  original busy-gate wait plus the re-arm's — not a per-attempt window.
  *  Pure + injectable clock (matches this file's style, e.g. makeStaleFireGuard
  *  above); exported for unit tests. A message with no `receivedAtMs` (a

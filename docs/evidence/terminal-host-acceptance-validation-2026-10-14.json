@@ -3,7 +3,11 @@
   "kind": "operational-test-evidence",
   "name": "Terminal host captured evidence validation and current incarnation",
   "framework": "operational",
-  "command": "readTerminalHostAcceptance(artifact, exact owner discovery, ownerId)",
+  "command": [
+    "node",
+    "--input-type=module",
+    "readTerminalHostAcceptance(artifact, exact owner discovery, ownerId)"
+  ],
   "exitCode": 0,
   "startedAt": "2026-10-14T20:39:37.740Z",
   "finishedAt": "2026-10-14T20:39:37.741Z",

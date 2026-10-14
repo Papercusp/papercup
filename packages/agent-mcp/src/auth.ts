@@ -112,6 +112,10 @@ function cacheKey(workspaceId: string, slug: string): string {
 
 let listenerStarted = false;
 let listenerWarned = false;
+type InvalidationListenerHandle = { unlisten: () => Promise<void> };
+let invalidationListenerHandle: InvalidationListenerHandle | null = null;
+let invalidationListenerStart: Promise<void> | null = null;
+let invalidationListenerGeneration = 0;
 
 /**
  * Start the LISTEN that makes `invalidate()` fire on capability writes.
@@ -121,6 +125,7 @@ let listenerWarned = false;
 function ensureInvalidationListener(): void {
   if (listenerStarted) return;
   listenerStarted = true;
+  const generation = invalidationListenerGeneration;
   // LISTEN is session-bound and must stay off getOrgPg(), whose query pool is
   // intentionally routed through PgBouncer transaction mode on server hosts.
   // PgBouncer can discard NotificationResponse packets from an unlinked server
@@ -130,21 +135,32 @@ function ensureInvalidationListener(): void {
   // template without .listen — skip silently there.
   const listen = (sql as unknown as { listen?: unknown }).listen;
   if (typeof listen !== 'function') return;
-  void sql
-    .listen(PRINCIPAL_INVALIDATE_CHANNEL, (payload: string) => {
-      try {
-        const parsed = JSON.parse(payload) as { workspace_id?: unknown; slug?: unknown };
-        if (typeof parsed.workspace_id === 'string' && typeof parsed.slug === 'string') {
-          invalidate(parsed.workspace_id, parsed.slug);
-          return;
+  const start = (async () => {
+    try {
+      const handle = await sql.listen(PRINCIPAL_INVALIDATE_CHANNEL, (payload: string) => {
+        try {
+          const parsed = JSON.parse(payload) as { workspace_id?: unknown; slug?: unknown };
+          if (typeof parsed.workspace_id === 'string' && typeof parsed.slug === 'string') {
+            invalidate(parsed.workspace_id, parsed.slug);
+            return;
+          }
+        } catch {
+          // fall through to the safe fallback
         }
-      } catch {
-        // fall through to the safe fallback
+        CACHE.clear();
+        TOKEN_INDEX_CACHE.clear();
+      });
+      // A test reset can retire the db-org listener pool while this fire-and-
+      // forget LISTEN is still connecting. Never let that stale completion
+      // resurrect a socket after teardown; close the returned subscription
+      // immediately instead.
+      if (!listenerStarted || generation !== invalidationListenerGeneration) {
+        await handle.unlisten().catch(() => {});
+        return;
       }
-      CACHE.clear();
-      TOKEN_INDEX_CACHE.clear();
-    })
-    .catch((err: unknown) => {
+      invalidationListenerHandle = handle;
+    } catch (err: unknown) {
+      if (generation !== invalidationListenerGeneration) return;
       listenerStarted = false; // retry on a later resolve
       if (!listenerWarned) {
         listenerWarned = true;
@@ -153,7 +169,12 @@ function ensureInvalidationListener(): void {
           err,
         );
       }
-    });
+    }
+  })();
+  invalidationListenerStart = start;
+  void start.finally(() => {
+    if (invalidationListenerStart === start) invalidationListenerStart = null;
+  });
 }
 
 function bearerHash(bearer: string): string {
@@ -365,11 +386,23 @@ export function invalidate(workspaceId: string, slug: string): void {
   CACHE.delete(cacheKey(workspaceId, slug));
 }
 
+/** Test-only — close the lazy LISTEN before rotating the db-org test pool. */
+export async function _stopInvalidationListenerForTests(): Promise<void> {
+  listenerStarted = false;
+  invalidationListenerGeneration += 1;
+  const start = invalidationListenerStart;
+  invalidationListenerStart = null;
+  const handle = invalidationListenerHandle;
+  invalidationListenerHandle = null;
+  if (handle) await handle.unlisten().catch(() => {});
+  await start?.catch(() => {});
+}
+
 /** Test-only. */
-export function _resetAuthCacheForTests(): void {
+export async function _resetAuthCacheForTests(): Promise<void> {
+  await _stopInvalidationListenerForTests();
   CACHE.clear();
   TOKEN_INDEX_CACHE.clear();
-  listenerStarted = false;
   listenerWarned = false;
 }
 

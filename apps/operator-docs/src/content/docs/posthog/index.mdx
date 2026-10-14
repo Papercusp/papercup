@@ -168,6 +168,23 @@ For a connected cloud workspace, enable the diagnostics category in Profile, the
 
 Delivery rechecks the same tenant, user, selected workspace, session version and consent epoch. Revocation, re-consent, demotion, session/tenant change, a closed channel or unavailable authority refuses delivery. Re-enabling starts a new window and never backfills earlier activity. No exporter queue or automatic recurring sender is introduced. Local reads continue after revocation or delivery failure.
 
+
+### Exact exported event fields
+
+The closed event schemas allow only the properties below. Every event also carries server-owned `event`, `distinct_id`, `timestamp`, `organization_id`, `operation_id`, `environment`, `release`, `source` and `synthetic`. Diagnostic aggregates additionally carry opaque `workspace_id`. The configured transport adds stable `uuid` and `$insert_id` identities and the configured capture `api_key`; it never sends a personal API key.
+
+| Event | Purpose | Allowed event properties |
+|---|---|---|
+| `cloud_portal_session` | Consenting sign-in, return and setup | `action` |
+| `cloud_tutorial` | Fixed first-cloud-agent progression | `lesson_id`, `lesson_version`, `action`, `step`, `status` |
+| `product_tutorial` | Public guide navigation and server-witnessed saved reviews | `lesson_id`, `lesson_version`, `action`, `lesson` |
+| `cloud_workspace_provisioning` | Witnessed lifecycle phases | `phase`, `provider`, `hosting_mode`, `duration_ms`, `failure_code` |
+| `cloud_feature_adoption` | Fixed portal feature choices | `feature` |
+| `cloud_error` | Reviewed failure categories without messages or stacks | `code`, `fingerprint` |
+| `cloud_diagnostic_aggregate` | Administrator-authorized bounded usage export | `period_start`, `period_end`, `calls`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `provider_cost_usd`, `estimated_cost_usd`, `unpriced_calls` |
+
+Enum values are also restricted and extra properties are rejected. The maintained `packages/operator-core/lib/doc-claims/cloud-monitoring-disclosure.test.ts` derives the event/property population from production schemas, requiring a disclosure update when a field is added.
+
 ### Destination, retention and identities
 
 The existing default destination is Papercusp's PostHog at **flags.papercuspai.com**, for disclosed reliability and adoption analysis. Deployment configuration may select the existing configured PostHog destination; a different destination requires separate authorization. The current project has no enforced event-deletion limit. Disabling a category stops future delivery and does not delete events already delivered.

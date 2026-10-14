@@ -5,6 +5,7 @@
  *
  *   npm run gen:declarations                         # emit every enrolled output
  *   npm run gen:declarations -- --files=a.mjs,b.mjs # emit selected enrolled outputs
+ *   npm run gen:declarations -- --files a.mjs,b.mjs # the same selection, spaced form
  *   npm run gen:declarations:check                   # verify every committed output
  *
  * Both modes compile into an isolated temp directory. `--check` compares that
@@ -337,16 +338,40 @@ export function check(repoRoot = REPO_ROOT, config = CONFIG): void {
   }
 }
 
-const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
-  const filesArgs = process.argv.slice(2).filter((arg) => arg.startsWith('--files='));
-  const requestedInputs = filesArgs.flatMap((arg) =>
-    arg.slice('--files='.length).split(',').filter((input) => input.length > 0),
-  );
-  if (process.argv.includes('--check')) {
-    if (filesArgs.length > 0) throw new Error('`--files` is only valid for generation, not `--check`');
-    check();
+/** Validate the complete CLI before invoking either compiler-backed operation. */
+export function runDeclarationCli(
+  args: readonly string[],
+  {
+    generateImpl = (selected?: readonly string[]) => generate(REPO_ROOT, CONFIG, runTsc, selected),
+    checkImpl = check,
+  } = {},
+): void {
+  const requestedInputs: string[] = [];
+  let hasSelection = false;
+  let checkOnly = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--check') {
+      checkOnly = true;
+      continue;
+    }
+    let value: string | undefined;
+    if (arg === '--files') value = args[++index];
+    else if (arg.startsWith('--files=')) value = arg.slice('--files='.length);
+    else throw new Error(`unknown declaration-generator argument: ${arg}`);
+    if (!value || value.startsWith('--') || value.split(',').some((input) => !input.trim())) {
+      throw new Error('`--files` requires a non-empty comma-separated list of enrolled .mjs inputs');
+    }
+    hasSelection = true;
+    requestedInputs.push(...value.split(','));
+  }
+  if (checkOnly) {
+    if (hasSelection) throw new Error('`--files` is only valid for generation, not `--check`');
+    checkImpl();
   } else {
-    generate(REPO_ROOT, CONFIG, runTsc, filesArgs.length > 0 ? requestedInputs : undefined);
+    generateImpl(hasSelection ? requestedInputs : undefined);
   }
 }
+
+const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) runDeclarationCli(process.argv.slice(2));

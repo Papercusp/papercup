@@ -23,6 +23,8 @@ let sqlCalls = 0;
 let listenChannel: string | null = null;
 let listenCallback: ((payload: string) => void) | null = null;
 let listenerHandleCalls = 0;
+let listenerUnlistenCalls = 0;
+let deferredListen: Promise<{ unlisten: () => Promise<void> }> | null = null;
 
 vi.mock('@papercusp/db-org', async (orig) => {
   // tagged-template: sql`...` → sql(strings, ...values)
@@ -35,7 +37,10 @@ vi.mock('@papercusp/db-org', async (orig) => {
       listenerHandleCalls++;
       listenChannel = channel;
       listenCallback = cb;
-      return Promise.resolve({ unlisten: () => Promise.resolve() });
+      if (deferredListen) return deferredListen;
+      return Promise.resolve({
+        unlisten: () => { listenerUnlistenCalls++; return Promise.resolve(); },
+      });
     },
   });
   return {
@@ -60,14 +65,15 @@ import {
   resolveBearer,
   invalidate,
   _resetAuthCacheForTests,
+  _stopInvalidationListenerForTests,
   _authCacheTuning,
   PRINCIPAL_INVALIDATE_CHANNEL,
 } from './auth';
 
 const hashOf = (bearer: string) => createHash('sha256').update(bearer).digest('hex');
 
-beforeEach(() => {
-  _resetAuthCacheForTests();
+beforeEach(async () => {
+  await _resetAuthCacheForTests();
   tokenIndexRows = [];
   principalRows = [];
   withWorkspaceCalls = 0;
@@ -75,6 +81,8 @@ beforeEach(() => {
   listenChannel = null;
   listenCallback = null;
   listenerHandleCalls = 0;
+  listenerUnlistenCalls = 0;
+  deferredListen = null;
 });
 
 afterEach(() => {
@@ -83,6 +91,40 @@ afterEach(() => {
 });
 
 describe('resolveBearer', () => {
+  it('waits for and unlistens a subscription that finishes after teardown starts', async () => {
+    const bearer = 'system-bearer-token-pending-listener';
+    tokenIndexRows = [
+      { token: bearer, kind: 'system', harness_slug: 'system:operator', workspace_id: 'ws1' },
+    ];
+    principalRows = [{ bearer_hash: hashOf(bearer), capabilities: ['*'] }];
+    let finishListen!: (handle: { unlisten: () => Promise<void> }) => void;
+    deferredListen = new Promise(done => { finishListen = done; });
+    expect(await resolveBearer(bearer)).not.toBeNull();
+    let stopped = false;
+    const stopping = _stopInvalidationListenerForTests().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    finishListen({ unlisten: async () => { listenerUnlistenCalls++; } });
+    await stopping;
+    expect(listenerUnlistenCalls).toBe(1);
+    expect(stopped).toBe(true);
+  });
+
+  it('closes the principal invalidation LISTEN before test teardown', async () => {
+    const bearer = 'system-bearer-token-listener-cleanup';
+    tokenIndexRows = [
+      { token: bearer, kind: 'system', harness_slug: 'system:operator', workspace_id: 'ws1' },
+    ];
+    principalRows = [{ bearer_hash: hashOf(bearer), capabilities: ['*'] }];
+
+    expect(await resolveBearer(bearer)).not.toBeNull();
+    expect(listenerHandleCalls).toBe(1);
+    await _stopInvalidationListenerForTests();
+    expect(listenerUnlistenCalls).toBe(1);
+    await _stopInvalidationListenerForTests();
+    expect(listenerUnlistenCalls).toBe(1);
+  });
+
   it('returns null for an empty bearer (no PG lookup)', async () => {
     expect(await resolveBearer('')).toBeNull();
     expect(withWorkspaceCalls).toBe(0);

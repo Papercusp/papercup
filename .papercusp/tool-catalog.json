@@ -23540,10 +23540,11 @@
         "mug",
         "documenter",
         "curator",
-        "kettle"
+        "kettle",
+        "judge"
       ],
       "guidance": {
-        "when": "Reading a template-instance plan's structured data (e.g. a rubric instance's fields) to consume it programmatically — never scrape it out of the markdown.",
+        "when": "Reading a template-instance plan's structured data (e.g. a rubric instance's fields) to consume it programmatically — never scrape it out of the markdown. An evidence-only judge may use this read when rubrics:get cannot project a backing rubric row.",
         "notWhen": "You need the whole plan (Now / items / decisions / prose) — plans:get. Writing the data — plans:set-template-data. Listing plans of a template type — plans:list { template }.",
         "chaining": "plans:get-template-data { slug } → plans:set-template-data { slug, data } to update it."
       }

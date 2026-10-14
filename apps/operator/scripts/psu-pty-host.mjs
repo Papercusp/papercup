@@ -4862,16 +4862,17 @@ export function makeAgentBusyGate({
 /**
  * Carry-respawn drill RE-ARM controller (EI-12754, the leader-concurred re-arm
  * leg deferred out of the EI-12655 diff). A carry-respawn DRILL refused at the
- * busy-gate bail used to terminally drop on the FIRST refusal — correct for a
- * wake `turn` (the durable inbox stands for the next natural turn) but lossy
- * for a drill, whose whole point is the cut. This schedules exactly ONE
- * deferred retry at the next settled turn:
+ * busy-gate bail used to terminally drop after its single re-armed window —
+ * correct for a wake `turn` (the durable inbox stands for the next natural
+ * turn) but lossy for a drill, whose whole point is the cut. This schedules a
+ * deferred retry loop across safe-boundary windows:
  *
  *   - same clean-boundary discipline (the retry re-acquires the inject mutex
  *     and re-waits the SAME agent-busy gate — no timer polling of its own, the
  *     gate's quiet check is the settle detector; D-006 never-kill-mid-turn holds);
- *   - once-only per drillId (a permanently-busy session drops LOUD on the
- *     re-armed attempt instead of looping);
+ *   - one actual lifecycle cut per drillId; busy windows are re-polled without
+ *     holding the inject mutex, and the host's age-derived attempt budget keeps
+ *     a permanently-busy drill bounded;
  *   - every path emits a durable event: 'carry-drill-rearm-queued' when the
  *     retry is scheduled (non-terminal — op:'report'/'verify' ignore it), then
  *     either recycle()'s own terminal delivered/dropped events, or a terminal
@@ -4921,6 +4922,9 @@ export function makeCarryRearmController({
   emitEvent, // (kind, extra) => void — writes BOTH the per-owner host log + shared ledger
   capMs = TURN_INJECT_BUSY_CAP_MS * 2,
   maxProductionAttempts = Number.POSITIVE_INFINITY,
+  // The host derives this finite drill budget from the existing freshness and
+  // re-arm windows. Keep the factory's standalone default conservative.
+  maxDrillAttempts = 1,
   // Production retries are unbounded. When staged owner input is already
   // known, yield to the host's timers/input events instead of spinning only
   // through immediately-resolved promise microtasks.
@@ -5093,9 +5097,10 @@ export function makeCarryRearmController({
       inFlight.delete(msg);
     },
     /**
-     * Schedule the one-shot retry for a busy-gate-refused carry-respawn drill.
-     * Returns 'queued' when scheduled, 'duplicate' when a retry for this drillId
-     * is already pending (the caller should terminally drop instead), or
+     * Schedule the re-poll loop for a busy-gate-refused carry-respawn. A drill
+     * still performs one lifecycle cut; it may need multiple safe-boundary
+     * windows before that cut is safe. Returns 'queued' when scheduled,
+     * 'duplicate' when a loop for this drillId is already pending, or
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
@@ -5128,8 +5133,8 @@ export function makeCarryRearmController({
         // 00:28:00 ran on fruitlessly for another 14 minutes. The newest
         // request is strictly the better one to deliver (newer carry document,
         // newer receivedAtMs, so it also survives the staleness guard longer),
-        // so the in-flight re-poll ADOPTS it. A DRILL still dedupes terminally:
-        // a drill is a one-shot test whose whole point is that single shot.
+        // so the in-flight re-poll ADOPTS it. A DRILL still dedupes by drillId:
+        // one drill has one lifecycle cut, so a duplicate control is refused.
         if (isDrill) return 'duplicate';
         pendingMessages.get(key)?.add(msg);
         latest.set(key, msg);
@@ -5181,13 +5186,13 @@ export function makeCarryRearmController({
         // dropped 'busy-gate-expired'). Instead it RE-POLLS across successive
         // windows — RELEASING the inject mutex between attempts so coord/loop
         // wakes to this session are never wedged — until the agent idles and
-        // the carry is delivered. Production has no age-based drop; drills
-        // remain bounded by their one-shot contract.
+        // the carry is delivered. Drills use the same safe-boundary re-poll,
+        // bounded by their freshness age and host-derived attempt budget.
         // Production compaction is a MUST-DELIVER continuation. A live session
         // may spend longer than the historical 30-minute stale/attempt budget
         // in one continuously-rendering turn; dropping the carry then strands
         // the session at its context ceiling. Drills remain bounded experiments.
-        const maxAttempts = isDrill ? 1 : maxProductionAttempts;
+        const maxAttempts = isDrill ? maxDrillAttempts : maxProductionAttempts;
         // EI-19480099650947832: carried onto every terminal row so a drop says
         // WHY it could never fire — see waitAtPrompt's maxQuietForMs comment.
         let observedMaxQuietMs = 0;
@@ -5365,9 +5370,9 @@ export function makeCarryRearmController({
               }
               continue;
             }
-            // Deferred: the agent stayed mid-turn past the cap. Production
-            // carries continue to the next window; drills fall out after their
-            // one shot.
+            // Deferred: the agent stayed mid-turn past the cap. Both production
+            // carries and drills may continue to another safe-boundary window;
+            // drills stop at their freshness or attempt budget.
             // EI-19480099650947832: re-read AGAIN here — a supersede that landed
             // DURING this attempt must not be killed off by the staleness of the
             // message this attempt happened to start with. That is the whole
@@ -5384,8 +5389,8 @@ export function makeCarryRearmController({
               return;
             }
           }
-          // A drill's single shot deferred, or a production respawn exhausted the
-          // anti-spin cap without ever idling — terminal, loud.
+          // A drill exhausted its bounded retry budget, or production exhausted
+          // the optional anti-spin cap without ever idling — terminal, loud.
           emitEvent(droppedKind, {
             ...extra, rearmed: true, reason: deferReason,
             observedMaxQuietMs, attempts: attemptsMade, ...terminalIds(),
@@ -9135,8 +9140,8 @@ export function makeStaleFireGuard() {
 
 /** EI-18109211232286833: is a `carry-respawn` control message too stale to
  *  deliver? `receivedAtMs` is the moment this host first decoded the message
- *  (stamped once in `conn.on('end')`, reused unchanged across the one
- *  `makeCarryRearmController` retry), so this measures TOTAL elapsed wait —
+ *  (stamped once in `conn.on('end')`, reused unchanged across every
+ *  `makeCarryRearmController` re-poll attempt), so this measures TOTAL elapsed wait —
  *  original busy-gate wait plus the re-arm's — not a per-attempt window.
  *  Pure + injectable clock (matches this file's style, e.g. makeStaleFireGuard
  *  above); exported for unit tests. A message with no `receivedAtMs` (a
@@ -12737,6 +12742,10 @@ export function hostThroughPty(o) {
     env.PAPERCUSP_PSU_PTY_CARRY_STALE_MS,
     CARRY_RESPAWN_MAX_AGE_MS,
   );
+  // Give a drill enough re-arm windows to use its existing freshness horizon.
+  // isStale still refuses a cut after that horizon; this count also bounds a
+  // legacy drill message that lacks receivedAtMs and therefore cannot age out.
+  const carryDrillRearmAttempts = Math.max(1, Math.ceil(carryRespawnMaxAgeMs / carryRearmCapMs));
   /**
    * P-003/P-005: reasons the native turn verifier is unavailable that have
    * already been reported durably for this host process. The predicate below is
@@ -12881,6 +12890,7 @@ export function hostThroughPty(o) {
       }
     },
     capMs: carryRearmCapMs,
+    maxDrillAttempts: carryDrillRearmAttempts,
     // Age expiry is drill-only. A newer child supersedes production carries
     // too, and must retire their pending wake suppression without another cut.
     isStale: (msg) =>
@@ -13773,7 +13783,7 @@ export function hostThroughPty(o) {
         return { ok: false, reason: 'deferred-carry-respawn-pending' };
       }
       // EI-18109211232286833: stamp the receipt time ONCE, here, so both this
-      // delivery attempt and its one makeCarryRearmController retry (which
+      // delivery attempt and its makeCarryRearmController re-poll loop (which
       // reuses this same `msg` object — see carryRearm.schedule below) measure
       // TOTAL elapsed wait against isCarryRespawnStale, not a per-attempt one.
       if (msg.mode === 'carry-respawn' && msg.receivedAtMs == null) {
