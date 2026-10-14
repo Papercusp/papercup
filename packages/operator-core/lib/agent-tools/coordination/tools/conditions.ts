@@ -284,6 +284,69 @@ export async function readConditionEnvelopes(): Promise<Record<string, unknown>[
 }
 
 /**
+ * Read the lifecycle envelopes for one exact condition key.
+ *
+ * The aggregate fold above is intentionally bounded to the newest condition
+ * window.  An exact lookup must not make callers scan or page that aggregate:
+ * the partial JSONB index can seek the requested key directly, including keys
+ * that are quiet while unrelated conditions keep the aggregate window full.
+ * The non-PG seam keeps the same contract by filtering the already available
+ * log rows locally.
+ */
+export async function readConditionEnvelopesForKey(
+  conditionKey: string,
+): Promise<Record<string, unknown>[]> {
+  const key = conditionKey.trim();
+  if (!key) return [];
+  if (!coordHasPgFastPath()) {
+    const envelopes = await readConditionEnvelopes();
+    return envelopes.filter((envelope) => {
+      if (envelope["condition_key"] === key || envelope["resolves_condition"] === key) return true;
+      const resolvesMany = envelope["resolves_conditions"];
+      return Array.isArray(resolvesMany) && resolvesMany.includes(key);
+    });
+  }
+
+  const sql = coordSql();
+  const workspaceId = coordWorkspaceId();
+  let shared = conditionReads.get(sql);
+  if (!shared) {
+    shared = createCache({ maxL1Entries: 1, defaultHardTtlMs: 0 });
+    conditionReads.set(sql, shared);
+  }
+  const cacheKey = `conditions:${key}`;
+  try {
+    const envelopes = await shared.getOrSet(workspaceId, cacheKey, async () => {
+      const sinceBound = new Date(Date.now() - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
+      const rows = await sql<{ body: unknown }[]>`
+        SELECT body
+          FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${workspaceId}
+           AND surface = 'messages'
+           AND ts >= ${sinceBound}
+           AND (body ? 'condition_key' OR body ? 'resolves_condition' OR body ? 'resolves_conditions')
+           AND (body->>'condition_key' = ${key}
+                OR body->>'resolves_condition' = ${key}
+                OR body->'resolves_conditions' ? ${key})
+         ORDER BY id DESC
+         LIMIT ${CONDITIONS_FAST_PATH_ROW_CAP}
+      `;
+      return rows.reverse().map((r) =>
+        (typeof r.body === "string" ? JSON.parse(r.body) : r.body) as Record<string, unknown>,
+      );
+    });
+    return envelopes.map((envelope) => ({
+      ...envelope,
+      ...(Array.isArray(envelope.resolves_conditions)
+        ? { resolves_conditions: [...envelope.resolves_conditions] }
+        : {}),
+    }));
+  } finally {
+    shared.forget(workspaceId, cacheKey);
+  }
+}
+
+/**
  * WI-6554700010011878: the NEWEST condition-keyed envelope (alarm OR resolution) that names
  * `conditionKey`, or null when none survives in the retention window or there is no PG fast
  * path. This is the per-emit read `broadcastSevereEvent` uses to enforce the one-shot
@@ -322,7 +385,7 @@ export async function readLatestConditionEnvelope(
 export default defineTool({
   name: "coord:conditions",
   description:
-    'The live "what is wrong RIGHT NOW" view: folds condition-keyed severe-event broadcasts (git-sync stalls, green-gate freezes, …) into per-condition STATE instead of message history. Returns open conditions first (latest alarm newer than any resolution) with first_seen/last_seen/alarm_count/latest_summary, then recently-resolved ones (resolved_at + resolved_summary). An OPEN condition is claimable work; a resolved one needs no action.',
+    'The live "what is wrong RIGHT NOW" view: folds condition-keyed severe-event broadcasts (git-sync stalls, green-gate freezes, …) into per-condition STATE instead of message history. Returns open conditions first (latest alarm newer than any resolution) with first_seen/last_seen/alarm_count/latest_summary, then recently-resolved ones (resolved_at + resolved_summary). Pass condition_key for one exact-key lookup without scanning the aggregate window. An OPEN condition is claimable work; a resolved one needs no action.',
   guidance: {
     when:
       'Orienting on current system health — "is anything wrong right now?" — before claiming a stall/red-gate broadcast, or when an old severe-event alarm in your inbox needs a live open/resolved verdict.',
@@ -346,21 +409,37 @@ export default defineTool({
       .max(50)
       .optional()
       .describe("Max resolved conditions returned (most recent kept). Default 10."),
+    condition_key: z
+      .string()
+      .trim()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe(
+        "Exact condition key to read. Uses the keyed lifecycle lookup and returns only that condition; " +
+          "an unmatched key is reported with condition_found:false.",
+      ),
   }),
   async handler(args) {
-    const envelopes = await readConditionEnvelopes();
+    const conditionKey = args.condition_key?.trim();
+    const envelopes = conditionKey
+      ? await readConditionEnvelopesForKey(conditionKey)
+      : await readConditionEnvelopes();
     const states = computeConditionStates(envelopes);
     // WI-6554700010011878: the PG fold covers at most CONDITIONS_FAST_PATH_ROW_CAP of the
     // newest condition rows. A full window means older keys can be MISSING from both lists,
     // so say so on the aggregate: a capped fold must never read as the complete census.
     const windowSaturated =
       coordHasPgFastPath() && envelopes.length >= CONDITIONS_FAST_PATH_ROW_CAP;
-    const open = states.filter((s) => s.open);
+    const selected = conditionKey
+      ? states.filter((s) => s.condition_key === conditionKey)
+      : states;
+    const open = selected.filter((s) => s.open);
     const resolvedLimit = args.resolved_limit ?? 10;
     const resolved =
       args.include_resolved === false
         ? []
-        : states.filter((s) => !s.open).slice(0, resolvedLimit);
+        : selected.filter((s) => !s.open).slice(0, resolvedLimit);
     return {
       content: [
         {
@@ -368,7 +447,13 @@ export default defineTool({
           text: JSON.stringify({
             open_count: open.length,
             open,
-            resolved_count: states.length - open.length,
+            resolved_count: selected.length - open.length,
+            ...(conditionKey
+              ? {
+                  condition_key: conditionKey,
+                  condition_found: selected.length > 0,
+                }
+              : {}),
             resolved,
             ...(windowSaturated
               ? {
