@@ -30,6 +30,7 @@ import { POSTHOG_PUBLIC_DEFAULTS } from './posthog-public-defaults';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { deliverCloudTelemetry, type CloudTelemetryContext } from './record-telemetry';
+import { customerAgentExecutionRequired } from './auth/loopback-peer-trust';
 
 /** Existing capture ingress is separate from the flag/admin API. A healthy
  * project listing cannot prove that events can enter the ingestion pipeline. */
@@ -175,7 +176,7 @@ export async function flushTelemetry(): Promise<FlushResult> {
   result.internalBuild = config.internalBuild;
   const isProd = process.env.NODE_ENV === 'production';
   if (
-    isProd &&
+    isProd && !customerAgentExecutionRequired() &&
     (config.optedIn || config.internalBuild) &&
     config.host &&
     config.projectKey

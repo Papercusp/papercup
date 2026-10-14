@@ -34,6 +34,7 @@ import flagsStream from './flags/stream';
 import flagsSet from './flags/set';
 import workScopeRoutes from './work-scope/set';
 import governancePolicyRoutes from './governance-policy/policy';
+import governanceSiemExportRoutes from './governance-policy/siem-export';
 import flagsTestingFeatures from './flags/testing-features';
 import flagsPreset from './flags/preset';
 import flagsDashboardUrl from './flags/dashboard-url';
@@ -649,6 +650,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(flagsSet as AnyRoute),
   ...flatten(workScopeRoutes as AnyRoute[]),
   ...flatten(governancePolicyRoutes as AnyRoute[]),
+  ...flatten(governanceSiemExportRoutes as AnyRoute[]),
   ...flatten(flagsTestingFeatures as AnyRoute[]),
   ...flatten(flagsPreset as AnyRoute),
   ...flatten(flagsDashboardUrl as AnyRoute),

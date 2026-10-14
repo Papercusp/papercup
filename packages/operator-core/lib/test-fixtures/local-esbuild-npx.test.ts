@@ -15,6 +15,15 @@ beforeEach(() => {
 afterEach(() => rmSync(directory, { recursive: true, force: true }));
 
 describe('local bundle compiler fixture', () => {
+  it('resolves the exact pinned compiler for the shared builder', () => {
+    const result = spawnSync('npx', ['--yes', '--package=esbuild@0.25.0', '-c', 'command -v esbuild'],
+      { env, encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const compiler = result.stdout.trim();
+    expect(compiler).toMatch(/^\//);
+    expect(spawnSync(compiler, ['--version'], { encoding: 'utf8' }).stdout.trim()).toBe('0.25.0');
+  });
+
   it('emits and executes real compiled bytes without invoking npm', () => {
     const entry = join(directory, 'entry.ts');
     const output = join(directory, 'entry.mjs');

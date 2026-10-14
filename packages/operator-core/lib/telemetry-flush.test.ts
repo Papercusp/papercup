@@ -2,13 +2,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHostedPrincipal } from './auth/hosted-principal';
 import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from './telemetry-kinds';
 vi.mock('./posthog-config', () => ({ getPosthogConfigWithSource: () => ({ config: { host: 'https://sink.invalid', projectKey: 'capture-test-key' } }) }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
-vi.mock('./operator-state-pg', () => ({ readOperatorState: vi.fn(), writeOperatorState: vi.fn() }));
-vi.mock('./workspace-registry', () => ({ activeWorkspaceId: vi.fn() }));
-vi.mock('./setup-wizard-install-id', () => ({ ensureInstallId: vi.fn() }));
+const local = vi.hoisted(() => ({ sql: vi.fn(async () => []), read: vi.fn(), write: vi.fn(), install: vi.fn(async () => 'local-install') }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: local.sql }) }));
+vi.mock('./operator-state-pg', () => ({ readOperatorState: local.read, writeOperatorState: local.write }));
+vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'local-workspace' }));
+vi.mock('./setup-wizard-install-id', () => ({ ensureInstallId: local.install }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
-import { deliverCloudPosthog, readCloudCaptureHealth } from './telemetry-flush';
-afterEach(() => vi.unstubAllGlobals());
+vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (definition: unknown) => definition }));
+import { deliverCloudPosthog, readCloudCaptureHealth, flushTelemetry } from './telemetry-flush';
+import telemetryConfig from './endpoint-route/routes/desktop/telemetry-config';
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.clearAllMocks(); });
 
 describe('strict cloud PostHog transport', () => {
   const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: 'tenant-a', userId: 'user-a',
@@ -40,5 +43,20 @@ describe('strict cloud PostHog transport', () => {
   it('returns a dropped-event receipt for capture rejection without rejecting product work', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 502 })));
     expect(await deliverCloudPosthog(event, context, async () => consent)).toEqual({ delivered: false, code: 'delivery_unavailable' });
+  });
+
+  it('keeps legacy reports and browser SDK local on customer hosts despite opt-in and maintainer flags', async () => {
+    vi.stubEnv('NODE_ENV', 'production'); vi.stubEnv('PAPERCUSP_INTERNAL_BUILD', 'true');
+    vi.stubEnv('PAPERCUSP_HOSTED_WORKSPACE_ROOT', '/customer/workspace');
+    vi.stubEnv('PAPERCUSP_LOOPBACK_PEER_UID_POLICY', 'off');
+    local.read.mockImplementation(async (key: string) => key === 'setup_wizard_state'
+      ? { telemetry_enabled: true } : { reports: [{ kind: 'crash', payload: { prompt: 'private-content' }, received_at: '2026-10-14T00:00:00Z' }] });
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
+    const result = await flushTelemetry();
+    expect(result.archived).toBe(1);
+    expect(result.forwarded).toBe(0);
+    const response = await (telemetryConfig.handler as () => Promise<Response>)();
+    expect(await response.json()).toEqual({ enabled: false, reason: 'customer-data-local' });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });

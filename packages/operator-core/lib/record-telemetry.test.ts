@@ -132,6 +132,14 @@ describe('cloud final-delivery privacy boundary', () => {
     expect(await deliverCloudTelemetry(event, context, { readConsent: async () => consent, send })).toMatchObject({ delivered: false, code: 'delivery_unavailable' });
   });
 
+  it('rejects an unverified local principal before any cloud send', async () => {
+    const send = vi.fn(async () => {});
+    const forged = { ...principal, profile: 'local' } as unknown as CloudTelemetryContext['principal'];
+    expect(await deliverCloudTelemetry(event, { ...context, principal: forged }, { readConsent: async () => consent, send }))
+      .toMatchObject({ delivered: false, code: 'unverified_principal' });
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it('reduces errors to reviewed code/type fingerprints, excluding content', () => {
     const error = new TypeError('secret prompt at https://private');
     error.stack = 'secret source code';
