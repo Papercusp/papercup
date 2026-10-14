@@ -165,6 +165,23 @@ function expectRefused(reason: RegExp, sha = green) {
 }
 
 describe('SPEC-P-007 production green-main deploy guard', () => {
+  it('production configuration preflight includes Stripe references and refuses a local delegation key', () => {
+    configureActivation();
+    const referenceLog = join(temp, 'reference-check.log');
+    env.TEST_REFERENCE_LOG = referenceLog;
+    writeFileSync(join(temp, 'bin/npx'), '#!/bin/sh\nprintf "%s\\n" "$*" > "$TEST_REFERENCE_LOG"\n', { mode: 0o755 });
+    const checked = install(['--check-env']);
+    expect(checked.status, checked.stderr).toBe(0);
+    const argv = readFileSync(referenceLog, 'utf8');
+    expect(argv).toContain('--required PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF WORKOS_API_KEY_REF WORKOS_COOKIE_PASSWORD_REF WORKOS_WEBHOOK_SECRET_REF PAPERCUSP_STRIPE_SECRET_KEY_REF PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF');
+    expect(argv).toContain('--optional PAPERCUSP_HOSTED_GCP_DELEGATION_SOURCE_CREDENTIALS_REF');
+    env.PAPERCUSP_HOSTED_GCP_DELEGATION_SOURCE_CREDENTIALS = '/dev-box/private-key.json';
+    const refused = install(['--check-env']);
+    expect(refused.status).not.toBe(0);
+    expect(refused.stdout).toContain('FORBIDDEN');
+    expect(refused.stdout + refused.stderr).not.toContain('/dev-box/private-key.json');
+  });
+
   it('checks the real JSON health/readiness contract and accepts the bundle writer’s short SHA', async () => {
     await withProbe(path => path === '/api/health'
       ? { ok: true, service: 'papercusp-operator', sha: green.slice(0, 10) }

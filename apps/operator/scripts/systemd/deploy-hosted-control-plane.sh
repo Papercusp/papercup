@@ -60,6 +60,10 @@ REF_NAMES=(
   WORKOS_COOKIE_PASSWORD_REF
   WORKOS_WEBHOOK_SECRET_REF
 )
+PRODUCTION_REF_NAMES=(
+  PAPERCUSP_STRIPE_SECRET_KEY_REF
+  PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF
+)
 # LABEL: optional, and despite the _REF suffix it is NOT a secret reference —
 # nothing dereferences it. createWorkOsWebhookRoute passes it straight to the
 # receipt store, which records it verbatim as provenance (workos-webhook-
@@ -269,6 +273,12 @@ check_env() {
     else
       export HARNESS_ADMIN_DATABASE_URL="${HARNESS_ADMIN_DATABASE_URL:-${DATABASE_URL:-}}"
     fi
+    if [[ "${PAPERCUSP_DEPLOYMENT_ENVIRONMENT:-}" == production ]]; then
+      REF_NAMES+=("${PRODUCTION_REF_NAMES[@]}")
+      if [[ -n "${PAPERCUSP_HOSTED_GCP_DELEGATION_SOURCE_CREDENTIALS:-}" ]]; then
+        printf 'PAPERCUSP_HOSTED_GCP_DELEGATION_SOURCE_CREDENTIALS\tFORBIDDEN\tproduction_key_file\n'; rc=1
+      fi
+    fi
     export PAPERCUSP_INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-$REPO_ROOT}"
 
     rc=0
@@ -289,7 +299,8 @@ check_env() {
       printf 'REFERENCE_CHECK\tUNAVAILABLE\toperator_root_unreadable\n'
       exit 1
     fi
-    npx tsx bin/hosted-check-refs.ts --required "${REF_NAMES[@]}" || rc=1
+    npx tsx bin/hosted-check-refs.ts --required "${REF_NAMES[@]}" \
+      --optional PAPERCUSP_HOSTED_GCP_DELEGATION_SOURCE_CREDENTIALS_REF || rc=1
 
     # Labels are reported, never dereferenced, and never gate the cut-over.
     for name in "${OPTIONAL_LABEL_NAMES[@]}"; do
