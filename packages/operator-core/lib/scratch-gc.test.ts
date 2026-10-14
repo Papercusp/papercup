@@ -431,7 +431,7 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     expect(scratchUsageBytes(workspaceId)).toBe(7);
   });
 
-  it('overlaps one exact scan and caps filesystem work across concurrent workspaces', async () => {
+  it('keeps each workspace walk sequential and caps filesystem work across concurrent workspaces', async () => {
     for (let i = 0; i < 6; i++) {
       makeRunDir('ws-Q', `tool-${i}`, UUID(10 + i), 128);
       makeRunDir('ws-R', `tool-${i}`, UUID(20 + i), 256);
@@ -447,8 +447,10 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     const rTools = new Set(Array.from({ length: 6 }, (_, i) => join(scratchRootForWorkspace('ws-R'), `tool-${i}`)));
     const installGate = (toolDirs: Set<string>) => {
       let release!: () => void;
+      let reachedOne!: () => void;
       let reachedTwo!: () => void;
       const gate = new Promise<void>((resolve) => { release = resolve; });
+      const oneRead = new Promise<void>((resolve) => { reachedOne = resolve; });
       const twoReads = new Promise<void>((resolve) => { reachedTwo = resolve; });
       let activeFs = 0;
       let maxFs = 0;
@@ -464,6 +466,7 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
         if (isToolDir) {
           activeToolReads += 1;
           maxToolReads = Math.max(maxToolReads, activeToolReads);
+          if (activeToolReads >= 1) reachedOne();
           if (activeToolReads >= 2) reachedTwo();
         }
         try {
@@ -479,20 +482,20 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
         try { return await stat(path, options); }
         finally { activeFs -= 1; }
       }) as typeof statAsync);
-      return { twoReads, release, get maxFs() { return maxFs; }, get maxToolReads() { return maxToolReads; } };
+      return { oneRead, twoReads, release, get maxFs() { return maxFs; }, get maxToolReads() { return maxToolReads; } };
     };
-    const waitForTwoOrTimeout = async (twoReads: Promise<void>) => {
+    const waitForSignalOrTimeout = async (signal: Promise<void>) => {
       let timeout: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([twoReads, new Promise<void>((resolve) => { timeout = setTimeout(resolve, 1000); })]);
+      await Promise.race([signal, new Promise<void>((resolve) => { timeout = setTimeout(resolve, 1000); })]);
       if (timeout) clearTimeout(timeout);
     };
     try {
       const oneScan = installGate(qTools);
       const qScan = refreshScratchUsage('ws-Q');
       try {
-        await waitForTwoOrTimeout(oneScan.twoReads);
-        expect(oneScan.maxToolReads).toBe(2);
-        expect(oneScan.maxFs).toBe(2);
+        await waitForSignalOrTimeout(oneScan.oneRead);
+        expect(oneScan.maxToolReads).toBe(1);
+        expect(oneScan.maxFs).toBe(1);
       } finally {
         oneScan.release();
         await qScan;
@@ -502,7 +505,7 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
       const twoScans = installGate(new Set([...qTools, ...rTools]));
       const bothScans = Promise.all([refreshScratchUsage('ws-Q'), refreshScratchUsage('ws-R')]);
       try {
-        await waitForTwoOrTimeout(twoScans.twoReads);
+        await waitForSignalOrTimeout(twoScans.twoReads);
         await new Promise<void>((resolve) => setTimeout(resolve, 20));
         expect(twoScans.maxToolReads).toBe(2);
         expect(twoScans.maxFs).toBe(2);
