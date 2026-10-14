@@ -114,9 +114,7 @@ beforeAll(async () => {
 afterAll(async () => { await db?.cleanup(); });
 
 it('scans the routed-consult population once instead of once per launched session', async () => {
-  const connection = await db.adminSql.reserve();
-  try {
-    await connection.begin(async (tx) => {
+  await db.adminSql.begin(async (tx) => {
       await tx`SET LOCAL statement_timeout = '2000ms'`;
       let measured: Record<string, unknown> | undefined;
       await areAcceptanceLineageRelated('chain-0', 'consult-fork', {
@@ -132,10 +130,7 @@ it('scans the routed-consult population once instead of once per launched sessio
       visit(measured!.Plan as Record<string, unknown>);
       expect(scans).toHaveLength(1);
       expect(scans[0]['Actual Loops']).toBe(1);
-    });
-  } finally {
-    connection.release();
-  }
+  });
 });
 
 it('tracks parent edits, absent/blank/null payloads, and pre-existing rows without an application writer', async () => {
