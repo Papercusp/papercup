@@ -65,7 +65,10 @@ export function terminalIdentityRepairSource(source) {
   return { needed: true, source: next, beforeHash: hash(source), afterHash: hash(next) };
 }
 
-/** Apply/read back the exact prepared source. No debugger pause is requested. */
+/** Apply/read back the exact prepared source. No debugger pause is requested.
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'send'>} client
+ * @param {{scriptId:string,source:string,apply?:boolean}} options
+ */
 export async function applyTerminalIdentityRepair(client, { scriptId, source, apply = false }) {
   const prepared = terminalIdentityRepairSource(source);
   const receipt = { needed: prepared.needed, applied: false,
@@ -93,6 +96,7 @@ function startTicks(pid) {
 /** Explicit exact-host operation; caller supplies its discovery owner identity.
  * The inspector is temporarily loopback-only and verified closed afterwards.
  * The loaded-source hash proves this repair, not a whole-host code upgrade.
+ * @param {{pid:number,ownerId:string,apply?:boolean}} options
  */
 export async function repairTerminalHost({ pid, ownerId, apply = false }) {
   if (!Number.isSafeInteger(pid) || pid <= 0 || typeof ownerId !== 'string' || !/^su-[a-zA-Z0-9-]+$/.test(ownerId))
@@ -103,7 +107,10 @@ export async function repairTerminalHost({ pid, ownerId, apply = false }) {
     throw new Error('Discovery identity or interactive terminal changed; repair refused');
   const argv = readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0');
   const entry = argv.find((arg) => arg.endsWith('/psu-launcher.mjs'));
-  if (!entry || !/^node(?:js)?$/.test(basename(readlinkSync('/proc/' + pid + '/exe'))))
+  // Linux appends this literal suffix to an executable unlinked by an upgrade;
+  // the running inode is still Node. Keep all other executable names refused.
+  const executable = basename(readlinkSync('/proc/' + pid + '/exe')).replace(/ \(deleted\)$/, '');
+  if (!entry || !/^node(?:js)?$/.test(executable))
     throw new Error('Discovery PID is not a Node terminal host; repair refused before signaling');
   const started = startTicks(pid);
   if (await discoverInspector({ portCount: 1 })) throw new Error('Inspector port is already occupied; leave the existing debugger alone');

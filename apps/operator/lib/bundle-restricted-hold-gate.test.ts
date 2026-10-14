@@ -162,6 +162,18 @@ describe('runGate', () => {
     expect(records.every(row => typeof row.at === 'number' && typeof row.pid === 'number')).toBe(true);
   });
 
+  it('restores the last-known-good bundle when the retained journal cannot be written', () => {
+    snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs'] });
+    rebuild();
+    vi.stubEnv('BUNDLE_HOST_STEP_LOG', work); // a directory cannot be appended to
+    const preflight = vi.fn(() => ({ verdict: 'admit' as const }));
+    const { code, lines } = gate(preflight, []);
+    expect(code).toBe(GATE_EXIT.refuse);
+    expect(preflight).not.toHaveBeenCalled();
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
+    expect(lines.join('\n')).toContain('EISDIR');
+  });
+
   it('admits: keeps the fresh bundle, discards the snapshot, and hands the census the exact inputs', () => {
     snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs', 'blueprints', 'sql'] });
     rebuild();

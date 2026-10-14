@@ -323,6 +323,8 @@
     "apps/operator/scripts/psu-pty-host.mjs",
     // WI-10007614: the asynchronous TTY bridge and offline customer diagnostics.
     "apps/operator/scripts/psu-terminal-output.mjs",
+    // Live terminal repair is imported by its conventional TypeScript regression.
+    "apps/operator/scripts/psu-terminal-repair.mjs",
     "apps/operator/scripts/psu-terminal-diagnostics.mjs",
     // EI-20228184337467634 — ptool.mjs is imported by TypeScript tests; register
     // its runtime dependency too so the complete CLI import surface is typed.

@@ -88,7 +88,7 @@ describe('decideContextPressureGate', () => {
     });
   });
 
-  it('offers the warm-loop retune when no host exists but a WARM loop is active', () => {
+  it('preserves the warm loop when no host exists and request-compaction cannot retune it', () => {
     const d = decideContextPressureGate({
       bucket: 'critical',
       recovery: {
@@ -99,10 +99,12 @@ describe('decideContextPressureGate', () => {
       },
     });
     if (!d.refuse) throw new Error('expected refusal');
-    expect(d.error).toContain('no-PTY fallback retunes the active WARM loop to COLD');
+    expect(d.error).toContain('keep the active WARM loop');
+    expect(d.error).toContain('returns no_live_pty_host with retuned:false');
+    expect(d.error).toContain('does not retune WARM to COLD');
     expect(d.error).toContain('session:request-compaction');
     expect(d.diagnosis).toMatchObject({
-      remedy: 'checkpoint, then warm-loop retune',
+      remedy: 'checkpoint, preserve the warm loop, and use a managed host',
       recoveryPath: 'warm-loop',
     });
   });

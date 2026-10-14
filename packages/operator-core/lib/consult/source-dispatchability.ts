@@ -36,13 +36,18 @@ export interface SourceDispatchabilityObservation {
   detail: string;
 }
 
-export type SourceDispatchabilityProbe = (candidate: RoutingCandidate) => Promise<SourceDispatchabilityObservation>;
+export type SourceDispatchabilityProbe = (
+  candidate: RoutingCandidate,
+  workspaceId?: string,
+) => Promise<SourceDispatchabilityObservation>;
 
 export interface FilterDispatchableOptions {
   /** Parallel probes. Each is a PG resolve + a filesystem lookup + a stamp read. */
   concurrency?: number;
   /** Total wall-clock budget; candidates not probed in time are KEPT. */
   budgetMs?: number;
+  /** Workspace used to apply the dispatch walk's persisted per-source launch cooldown. */
+  workspaceId?: string;
 }
 
 const DEFAULT_CONCURRENCY = 6;
@@ -70,7 +75,7 @@ export async function filterDispatchableRoute(
       const candidate = candidates[next++]!;
       if (observed.has(candidate.ownerId)) continue;
       try {
-        observed.set(candidate.ownerId, await probe(candidate));
+        observed.set(candidate.ownerId, await probe(candidate, options.workspaceId));
       } catch (e) {
         observed.set(candidate.ownerId, {
           ownerId: candidate.ownerId,
@@ -119,7 +124,25 @@ export async function filterDispatchableRoute(
  */
 export async function probeConsultSourceDispatchable(
   candidate: RoutingCandidate,
+  workspaceId?: string,
+  probes: SourceDispatchabilityProbes = {},
 ): Promise<SourceDispatchabilityObservation> {
+  if (workspaceId) {
+    try {
+      const nowMs = Date.now();
+      const cooldown = await (probes.readCooldown ?? readSourceCooldown)(workspaceId, candidate.ownerId, nowMs);
+      if (cooldown) {
+        return {
+          ownerId: candidate.ownerId,
+          dispatchable: false,
+          detail: `source launch cooldown until ${cooldown.until}: ${cooldown.lastFailure}`,
+        };
+      }
+    } catch {
+      // Cooldown is a selection hint, not a new outage mode. On a read fault,
+      // keep the existing transcript probe as the authoritative fail-open path.
+    }
+  }
   const [{ resolveDispatchSource }, { resolveResumeTarget }, { probeConsultResumeTranscript }] = await Promise.all([
     import('./consult-dispatch'),
     import('../agent-launch-core'),
@@ -137,4 +160,34 @@ export async function probeConsultSourceDispatchable(
   }
   const probe = await probeConsultResumeTranscript(source.target);
   return { ownerId: candidate.ownerId, dispatchable: probe.dispatchable, detail: probe.detail };
+}
+
+export interface SourceCooldownEvidence {
+  failures: number;
+  until: string;
+  lastFailure: string;
+}
+
+export interface SourceDispatchabilityProbes {
+  readCooldown?: (
+    workspaceId: string,
+    sourceOwnerId: string,
+    nowMs: number,
+  ) => Promise<SourceCooldownEvidence | null>;
+}
+
+async function readSourceCooldown(
+  workspaceId: string,
+  sourceOwnerId: string,
+  nowMs: number,
+): Promise<SourceCooldownEvidence | null> {
+  const [{ getOrgPg }, { SOURCE_FAILURE_LOOKBACK_MS, readSourceDispatchRecords, sourceCooldownFrom }] =
+    await Promise.all([import('@papercusp/db-org'), import('./consult-dispatch')]);
+  const records = await readSourceDispatchRecords(
+    getOrgPg().sql,
+    workspaceId,
+    sourceOwnerId,
+    new Date(nowMs - SOURCE_FAILURE_LOOKBACK_MS).toISOString(),
+  );
+  return sourceCooldownFrom(records, nowMs);
 }

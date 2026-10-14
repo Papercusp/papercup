@@ -120,10 +120,10 @@ function remedyForRecoveryPath(
       };
     case 'warm-loop':
       return {
-        label: 'checkpoint, then warm-loop retune',
+        label: 'checkpoint, preserve the warm loop, and use a managed host',
         text:
-          'write/refresh loop:checkpoint { did, left, insight, next }, then call session:request-compaction; ' +
-          'its no-PTY fallback retunes the active WARM loop to COLD before the next wake.',
+          'write/refresh loop:checkpoint { did, left, insight, next }, keep the active WARM loop, and use an authorized managed psu-pty host before expecting a fresh-context successor. ' +
+          'Without a live host, session:request-compaction returns no_live_pty_host with retuned:false; it does not retune WARM to COLD.',
       };
     case 'no-path':
       return {

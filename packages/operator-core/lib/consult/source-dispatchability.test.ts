@@ -7,7 +7,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ResumeTarget } from '../agent-launch-core';
 import type { RouteResult, RoutingCandidate } from './relevance-router';
-import { filterDispatchableRoute, type SourceDispatchabilityObservation } from './source-dispatchability';
+import {
+  filterDispatchableRoute,
+  probeConsultSourceDispatchable,
+  type SourceDispatchabilityObservation,
+} from './source-dispatchability';
 import { probeConsultResumeTranscript } from './resume-transcript-preflight';
 import { probeTranscriptArchive } from '../session-transcript-remat';
 
@@ -63,6 +67,28 @@ describe('filterDispatchableRoute', () => {
       return obs(c.ownerId, false);
     });
     expect(out.snapshot.candidates.map((c) => c.ownerId)).toEqual(['boom']);
+  });
+
+  it('removes a candidate whose persisted launch failures put it on cooldown before selection', async () => {
+    const readCooldown = vi.fn(async () => ({
+      failures: 3,
+      until: '2026-10-14T17:00:00.000Z',
+      lastFailure: 'kickoff-not-persisted on claude/opus',
+    }));
+    const out = await filterDispatchableRoute(
+      route(['cooling']),
+      (candidate, workspaceId) => probeConsultSourceDispatchable(candidate, workspaceId, { readCooldown }),
+      { workspaceId: 'workspace-1' },
+    );
+    expect(readCooldown).toHaveBeenCalledWith('workspace-1', 'cooling', expect.any(Number));
+    expect(out.snapshot.candidates).toEqual([]);
+    expect(out.qualified).toEqual([]);
+    expect(out.verdict).toBe('no_qualified_responder');
+    expect(out.snapshot.undispatchableSources).toEqual([{
+      ownerId: 'cooling',
+      dispatchable: false,
+      detail: 'source launch cooldown until 2026-10-14T17:00:00.000Z: kickoff-not-persisted on claude/opus',
+    }]);
   });
 
   it('fails OPEN: candidates not probed within the budget are kept', async () => {

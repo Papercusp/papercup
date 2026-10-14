@@ -380,6 +380,28 @@ export function buildIndex({ rootDir, aliases, fs, edgeCache }?: {
  */
 export function transitiveDeps(index: any): (file: any) => Set<any>;
 /**
+ * Build the graph index and static candidate superset once. Callers can query a scoped executed
+ * map for `selection.selected`, then pass this same prepared value to `selectRelatedTests`.
+ *
+ * @param {object}                 o
+ * @param {string}                 o.rootDir
+ * @param {string[]}               o.changedPaths
+ * @param {RelatedIndex | null}    [o.index]
+ * @param {TsconfigPathEntry[]}    [o.aliases]
+ * @param {RelatedFs}              [o.fs]
+ * @returns {{ index: RelatedIndex, selection: StaticSelection }}
+ */
+export function prepareRelatedTestSelection({ rootDir, changedPaths, index, aliases, fs }?: {
+    rootDir: string;
+    changedPaths: string[];
+    index?: RelatedIndex | null | undefined;
+    aliases?: TsconfigPathEntry[] | undefined;
+    fs?: RelatedFs | undefined;
+}): {
+    index: RelatedIndex;
+    selection: StaticSelection;
+};
+/**
  * Select the test files that a change to `changedPaths` could affect.
  *
  * `mode` is `'related'` only when we are confident the subset is sound; every other
@@ -402,9 +424,10 @@ export function transitiveDeps(index: any): (file: any) => Set<any>;
  * @param {ChangedBetween | null}  [o.changedBetween] P-002: (recordedSha, judgedSha) ⇒ absolute
  *                                                  paths that changed between them, or null when
  *                                                  the pair cannot be diffed (⇒ treated as stale)
+ * @param {{ index: RelatedIndex, selection: StaticSelection } | null} [o.prepared] static selection from `prepareRelatedTestSelection`
  * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string, threshold: number, executedMap: ExecutedMapSummary }}
  */
-export function selectRelatedTests({ rootDir, changedPaths, aliases, threshold, fs, index, executedMap, judgedSha, changedBetween, }?: {
+export function selectRelatedTests({ rootDir, changedPaths, aliases, threshold, fs, index, executedMap, judgedSha, changedBetween, prepared, }?: {
     rootDir: string;
     changedPaths: string[];
     aliases?: TsconfigPathEntry[] | undefined;
@@ -414,6 +437,10 @@ export function selectRelatedTests({ rootDir, changedPaths, aliases, threshold, 
     executedMap?: ExecutedMap | null | undefined;
     judgedSha?: string | null | undefined;
     changedBetween?: ChangedBetween | null | undefined;
+    prepared?: {
+        index: RelatedIndex;
+        selection: StaticSelection;
+    } | null | undefined;
 }): {
     mode: "related" | "full";
     selected: string[];
@@ -524,6 +551,15 @@ export type RelatedIndex = {
      * files carrying an import we could NOT resolve
      */
     unresolved: Set<string>;
+};
+export type StaticSelection = {
+    mode: "related" | "full";
+    selected: Set<string>;
+    total: number;
+    reason?: string;
+    changedSet?: Set<string>;
+    reach?: (file: string) => Set<string>;
+    unresolved?: Set<string>;
 };
 /**
  * `executed` holds ABSOLUTE module paths (the same shape as `changedPaths`).

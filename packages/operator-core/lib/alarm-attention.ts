@@ -58,10 +58,24 @@ async function defaultRecentlyEscalated(title: string, cooldownMs: number): Prom
 }
 
 async function defaultResolve(input: SevereEventResolution): Promise<boolean> {
-  const { computeConditionStates, readConditionEnvelopes } = await import('./agent-tools/coordination/tools/conditions');
-  const open = computeConditionStates(await readConditionEnvelopes())
-    .some((condition) => condition.condition_key === input.conditionKey && condition.open);
-  if (!open) return false;
+  const { computeConditionStates, readConditionEnvelopes, readLatestConditionEnvelope } =
+    await import('./agent-tools/coordination/tools/conditions');
+  // The generic fold deliberately stops at CONDITIONS_FAST_PATH_ROW_CAP across
+  // every condition family. Long-open one-shot conditions can age out of that
+  // window while still being current, so prefer the indexed exact-key read when
+  // it is available and use the bounded fold only for non-PG transports.
+  const latest = await readLatestConditionEnvelope(input.conditionKey);
+  if (latest) {
+    const hasResolution =
+      (typeof latest['resolves_condition'] === 'string' && latest['resolves_condition'].length > 0) ||
+      (Array.isArray(latest['resolves_conditions']) &&
+        latest['resolves_conditions'].some((key) => typeof key === 'string' && key.length > 0));
+    if (hasResolution || latest['condition_key'] !== input.conditionKey) return false;
+  } else {
+    const open = computeConditionStates(await readConditionEnvelopes())
+      .some((condition) => condition.condition_key === input.conditionKey && condition.open);
+    if (!open) return false;
+  }
   const { broadcastSevereEventResolved } = await import('./severe-event-broadcast');
   return broadcastSevereEventResolved(input);
 }

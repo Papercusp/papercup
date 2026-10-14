@@ -102,6 +102,21 @@ describe('named first-attempt audit results', () => {
     expect(reporting).toContain('initialExecutedMapReads.get(taskKey(t))');
     expect(reporting).not.toContain('readExecutedMapResults(executedMapResultFile)');
   });
+
+  it('builds the static index before the scoped map read and reuses it for pruning', () => {
+    const source = readFileSync(join(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
+    const selection = source.slice(source.indexOf('if (relatedOnly)'));
+    const buildAt = selection.indexOf('prepareRelatedTestSelection(');
+    const candidatesAt = selection.indexOf('prepared.selection.selected');
+    const queryAt = selection.indexOf('executedMapFor(');
+    const pruneAt = selection.indexOf('selectRelatedTests(');
+    expect(buildAt).toBeGreaterThanOrEqual(0);
+    expect(candidatesAt).toBeGreaterThan(buildAt);
+    expect(queryAt).toBeGreaterThan(candidatesAt);
+    expect(pruneAt).toBeGreaterThan(queryAt);
+    expect(selection.slice(queryAt, pruneAt)).toContain('candidates.map((file) => relative(ROOT, file))');
+    expect(selection.slice(pruneAt, pruneAt + 500)).toContain('prepared,');
+  });
 });
 
 describe('rowsToExecutedMap', () => {
@@ -156,6 +171,42 @@ describe('loadExecutedSourceMap', () => {
     expect(calls[0]!.text).toMatch(/harness_shared\.test_executed_sources/);
     expect(calls[0]!.text).toMatch(/ORDER BY test_file, recorded_at DESC/);
   });
+
+  it('scopes the newest-row query to static test candidates', async () => {
+    const files = ['w/a.test.ts', 'w/b.test.ts'];
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const client = {
+      query: async (text: string, values?: unknown[]) => {
+        calls.push({ text, values: values ?? [] });
+        return { rows: [{ test_file: files[0]!, recorded_sha: 'abc', executed_modules: [files[0]!] }] };
+      },
+    };
+    const { map, rows } = await loadExecutedSourceMap({
+      client,
+      workspaceName: '@x/w',
+      repoRoot: ROOT,
+      files,
+    });
+    expect(rows).toBe(1);
+    expect(map.has('/repo/w/a.test.ts')).toBe(true);
+    expect(map.has('/repo/w/b.test.ts')).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.values).toEqual(['@x/w', files]);
+    expect(calls[0]!.text).toMatch(/test_file = ANY\(\$2::text\[\]\)/);
+  });
+
+  it('skips the executed-source query when static selection has no candidates', async () => {
+    let calls = 0;
+    const client = { query: async () => { calls += 1; return { rows: [] }; } };
+    const result = await loadExecutedSourceMap({
+      client,
+      workspaceName: '@x/w',
+      repoRoot: ROOT,
+      files: [],
+    });
+    expect(result).toEqual({ map: new Map(), rows: 0 });
+    expect(calls).toBe(0);
+  });
 });
 
 describe('gitChangedBetween', () => {
@@ -192,6 +243,7 @@ describe('gitChangedBetween', () => {
       repoRoot: ROOT,
       exec: (_file, args, opts) => {
         const cwd = (opts as { cwd: string }).cwd;
+        if (args[0] === 'rev-parse') return cwd;
         calls.push(`${cwd} ${args.slice(-2).join('..')}`);
         if (cwd === ROOT) return rawEntry('160000', '160000', O1, O2, 'M', 'libs/sub');
         if (cwd === '/repo/libs/sub') return rawEntry('100644', '100644', O1, O2, 'M', 'src/x.ts');
@@ -202,16 +254,76 @@ describe('gitChangedBetween', () => {
     expect(calls).toEqual([`${ROOT} aaa..bbb`, `/repo/libs/sub ${O1}..${O2}`]);
   });
 
-  it('answers null (cannot tell) for an added submodule or an undiffable pinned commit', () => {
+  it('diffs added and removed gitlinks against the empty tree', () => {
+    const addedCalls: string[] = [];
+    const addedHashCwds: string[] = [];
     const added = gitChangedBetween({
       repoRoot: ROOT,
-      exec: () => rawEntry('000000', '160000', Z, O2, 'A', 'libs/new-sub'),
+      exec: (_file, args, opts) => {
+        const cwd = (opts as { cwd: string }).cwd;
+        if (args[0] === 'rev-parse') return cwd;
+        if (args[0] === 'hash-object') {
+          addedHashCwds.push(cwd);
+          return '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+        }
+        addedCalls.push(`${cwd} ${args.slice(-2).join('..')}`);
+        if (cwd === ROOT) return rawEntry('000000', '160000', Z, O2, 'A', 'libs/new-sub');
+        if (cwd === '/repo/libs/new-sub') return rawEntry('000000', '100644', Z, O2, 'A', 'src/new.ts');
+        throw new Error(`unexpected cwd ${cwd}`);
+      },
     });
-    expect(added('aaa', 'bbb')).toBeNull();
+    expect(added('aaa', 'bbb')).toEqual(new Set([
+      '/repo/libs/new-sub',
+      '/repo/libs/new-sub/src/new.ts',
+    ]));
+    expect(addedCalls).toEqual([
+      `${ROOT} aaa..bbb`,
+      `/repo/libs/new-sub 4b825dc642cb6eb9a060e54bf8d69288fbee4904..${O2}`,
+    ]);
+    expect(addedHashCwds).toEqual(['/repo/libs/new-sub']);
+
+    const removedCalls: string[] = [];
+    const removedHashCwds: string[] = [];
+    const removed = gitChangedBetween({
+      repoRoot: ROOT,
+      exec: (_file, args, opts) => {
+        const cwd = (opts as { cwd: string }).cwd;
+        if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') throw new Error('removed worktree');
+        if (args[0] === 'rev-parse' && args[1] === '--path-format=absolute') return '/repo/.git/modules/libs/old-sub';
+        if (args[0] === 'hash-object') {
+          removedHashCwds.push(cwd);
+          return '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+        }
+        removedCalls.push(`${cwd} ${args.slice(-2).join('..')}`);
+        if (cwd === ROOT) return rawEntry('160000', '000000', O1, Z, 'D', 'libs/old-sub');
+        if (cwd === '/repo/.git/modules/libs/old-sub') return rawEntry('100644', '000000', O1, Z, 'D', 'src/old.ts');
+        throw new Error(`unexpected cwd ${cwd}`);
+      },
+    });
+    expect(removed('aaa', 'bbb')).toEqual(new Set([
+      '/repo/libs/old-sub',
+      '/repo/libs/old-sub/src/old.ts',
+    ]));
+    expect(removedCalls).toEqual([
+      `${ROOT} aaa..bbb`,
+      `/repo/.git/modules/libs/old-sub ${O1}..4b825dc642cb6eb9a060e54bf8d69288fbee4904`,
+    ]);
+    expect(removedHashCwds).toEqual(['/repo/.git/modules/libs/old-sub']);
+  });
+
+  it('keeps type changes and missing pinned commits fail-open as unknown drift', () => {
+    const typeChanged = gitChangedBetween({
+      repoRoot: ROOT,
+      exec: () => rawEntry('160000', '100644', O1, O2, 'T', 'libs/sub'),
+    });
+    expect(typeChanged('aaa', 'bbb')).toBeNull();
     const missingPin = gitChangedBetween({
       repoRoot: ROOT,
-      exec: (_file, _args, opts) => {
-        if ((opts as { cwd: string }).cwd === ROOT) return rawEntry('160000', '160000', O1, O2, 'M', 'libs/sub');
+      exec: (_file, args, opts) => {
+        const cwd = (opts as { cwd: string }).cwd;
+        if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') throw new Error('worktree absent');
+        if (args[0] === 'rev-parse' && args[1] === '--path-format=absolute') return '/repo/.git/modules/libs/sub';
+        if (cwd === ROOT) return rawEntry('160000', '160000', O1, O2, 'M', 'libs/sub');
         throw new Error('fatal: bad object');
       },
     });

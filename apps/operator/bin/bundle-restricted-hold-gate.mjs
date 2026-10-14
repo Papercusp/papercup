@@ -150,8 +150,13 @@ export function runGate({ root, baseDir, outdir, snapshotDir, metafiles, metafil
     collectingInputs = false;
     verdict = preflight({ repoRoot: root, inputsFile });
   } catch (error) {
-    if (collectingInputs) recordBundleHoldProgress({ step: 'restricted-hold-inputs', event: 'end', status: 3,
-      error: error instanceof Error ? error.message : String(error) });
+    if (collectingInputs) {
+      // Even a broken evidence destination must refuse and restore the build.
+      try {
+        recordBundleHoldProgress({ step: 'restricted-hold-inputs', event: 'end', status: 3,
+          error: error instanceof Error ? error.message : String(error) });
+      } catch { /* the refusal below retains the originating failure */ }
+    }
     verdict = {
       verdict: 'refuse',
       error: 'restricted_hold_state_unknown',

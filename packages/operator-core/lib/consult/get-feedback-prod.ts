@@ -133,7 +133,9 @@ export async function getFeedbackProd(
       // native file, no archive) can never be dispatched; keep it off the menu.
       if (!dispatchDisabled) {
         const { filterDispatchableRoute, probeConsultSourceDispatchable } = await import('./source-dispatchability');
-        constrained = await filterDispatchableRoute(constrained, probeConsultSourceDispatchable);
+        constrained = await filterDispatchableRoute(constrained, probeConsultSourceDispatchable, {
+          workspaceId: request.workspaceId,
+        });
       }
       return options.filterRoute ? options.filterRoute(constrained) : constrained;
     },

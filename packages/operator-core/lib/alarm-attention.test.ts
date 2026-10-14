@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import { escalateAlarm, resolveAlarm } from './alarm-attention';
 import { isActionableConditionKey } from './coord/actionable-conditions';
-vi.mock('./severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+const { readLatestConditionEnvelopeMock, broadcastResolvedMock } = vi.hoisted(() => ({
+  readLatestConditionEnvelopeMock: vi.fn(async (_conditionKey: string) => null as null | Record<string, unknown>),
+  broadcastResolvedMock: vi.fn(async () => true),
+}));
+vi.mock('./agent-tools/coordination/tools/conditions', () => ({
+  readLatestConditionEnvelope: readLatestConditionEnvelopeMock,
+  readConditionEnvelopes: vi.fn(async () => []),
+  computeConditionStates: vi.fn(() => []),
+}));
+vi.mock('./severe-event-broadcast', () => ({
+  broadcastSevereEvent: vi.fn(async () => true),
+  broadcastSevereEventResolved: broadcastResolvedMock,
+}));
 
 const request = {
   title: 'Test alarm',
@@ -82,5 +94,45 @@ describe('escalateAlarm', () => {
       expect(notify).toHaveBeenCalledOnce();
       expect(await resolveAlarm('alarm:test', request.source, { resolve: fail })).toBe(false);
     } finally { warn.mockRestore(); }
+  });
+});
+
+describe('default alarm recovery', () => {
+  it('resolves a long-open condition from the exact-key read when it is outside the shared fold window', async () => {
+    vi.clearAllMocks();
+    const conditionKey = 'alarm:old-one-shot';
+    readLatestConditionEnvelopeMock.mockResolvedValue({ condition_key: conditionKey });
+
+    expect(await resolveAlarm(conditionKey, request.source)).toBe(true);
+    expect(readLatestConditionEnvelopeMock).toHaveBeenCalledWith(conditionKey);
+    expect(broadcastResolvedMock).toHaveBeenCalledWith({
+      conditionKey,
+      summary: `${request.source} recovered`,
+    });
+  });
+
+  it('does not resolve a condition whose latest exact-key envelope is already a resolution', async () => {
+    vi.clearAllMocks();
+    const conditionKey = 'alarm:already-resolved';
+    readLatestConditionEnvelopeMock.mockResolvedValue({
+      condition_key: conditionKey,
+      resolves_condition: conditionKey,
+    });
+
+    expect(await resolveAlarm(conditionKey, request.source)).toBe(false);
+    expect(broadcastResolvedMock).not.toHaveBeenCalled();
+  });
+
+  it('retains the bounded condition fold when the exact-key lookup has no PG fast path', async () => {
+    vi.clearAllMocks();
+    const conditionKey = 'alarm:legacy-transport';
+    readLatestConditionEnvelopeMock.mockResolvedValue(null);
+    const { computeConditionStates } = await import('./agent-tools/coordination/tools/conditions');
+    vi.mocked(computeConditionStates).mockReturnValueOnce([
+      { condition_key: conditionKey, open: true },
+    ] as never);
+
+    expect(await resolveAlarm(conditionKey, request.source)).toBe(true);
+    expect(broadcastResolvedMock).toHaveBeenCalledWith(expect.objectContaining({ conditionKey }));
   });
 });

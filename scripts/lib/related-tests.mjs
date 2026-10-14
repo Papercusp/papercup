@@ -1059,50 +1059,18 @@ export function transitiveDeps(index) {
   };
 }
 
-/**
- * Select the test files that a change to `changedPaths` could affect.
- *
- * `mode` is `'related'` only when we are confident the subset is sound; every other
- * outcome is `'full'`, meaning the caller should run the whole suite. `reason`
- * always says which rail fired, so a collapse to "0 tests" can never be silent.
- *
- * @param {object}                 [o]
- * @param {string}                 o.rootDir        absolute dir to index (a workspace's source root)
- * @param {string[]}               o.changedPaths   absolute paths that changed
- * @param {TsconfigPathEntry[]}    [o.aliases]      `tsconfigPathEntriesFor` entries
- * @param {number}                 [o.threshold]    share of the suite at/above which the selection is
- *                                                  widened to the whole suite (default: the
- *                                                  `AFFECTED_RELATED_THRESHOLD` env, else
- *                                                  RELATED_WIDEN_THRESHOLD_DEFAULT)
- * @param {RelatedFs}              [o.fs]           filesystem seam (injected in tests)
- * @param {RelatedIndex | null}    [o.index]        prebuilt index, to avoid re-walking the tree
- * @param {ExecutedMap | null}     [o.executedMap]  P-002: per-test-file executed-source map (see
- *                                                  pruneWithExecutedMap); absent ⇒ no pruning
- * @param {string | null}          [o.judgedSha]    P-002: the sha this selection is judged at
- * @param {ChangedBetween | null}  [o.changedBetween] P-002: (recordedSha, judgedSha) ⇒ absolute
- *                                                  paths that changed between them, or null when
- *                                                  the pair cannot be diffed (⇒ treated as stale)
- * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string, threshold: number, executedMap: ExecutedMapSummary }}
+/** @typedef {{ mode: 'related' | 'full', selected: Set<string>, total: number, reason?: string,
+ * changedSet?: Set<string>, reach?: (file: string) => Set<string>, unresolved?: Set<string> }} StaticSelection */
+
+/** Compute the static candidate superset and closure once for a prebuilt graph index.
+ * @returns {StaticSelection}
  */
-export function selectRelatedTests({
-  rootDir,
-  changedPaths,
-  aliases = [],
-  threshold = resolveRelatedWidenThreshold().threshold,
-  fs = defaultFs(),
-  index = null,
-  executedMap = null,
-  judgedSha = null,
-  changedBetween = null,
-} = {}) {
-  const noMap = executedMapSummaryInert("not-reached");
-  const idx = index ?? buildIndex({ rootDir, aliases, fs });
+function collectStaticSelection({ rootDir, changedPaths, idx }) {
   const testFiles = idx.files.filter(isTestFile);
   const total = testFiles.length;
+  const full = (reason) => ({ mode: "full", selected: new Set(), total, reason });
 
-  if (total === 0) {
-    return { mode: "full", selected: [], total: 0, reason: "no-test-files", threshold, executedMap: noMap };
-  }
+  if (total === 0) return full("no-test-files");
 
   // Only changed paths INSIDE this root can be resolved against this index. A
   // change elsewhere (another package) that made this workspace affected cannot be
@@ -1112,26 +1080,8 @@ export function selectRelatedTests({
   const inScope = changedPaths.filter(
     (p) => p.startsWith(rootDir + path.sep) || p === rootDir,
   );
-  if (inScope.length === 0) {
-    return {
-      mode: "full",
-      selected: [],
-      total,
-      reason: "no-changed-paths-in-scope",
-      threshold,
-      executedMap: noMap,
-    };
-  }
-  if (inScope.length !== changedPaths.length) {
-    return {
-      mode: "full",
-      selected: [],
-      total,
-      reason: "changed-paths-outside-scope",
-      threshold,
-      executedMap: noMap,
-    };
-  }
+  if (inScope.length === 0) return full("no-changed-paths-in-scope");
+  if (inScope.length !== changedPaths.length) return full("changed-paths-outside-scope");
 
   const changedSet = new Set(inScope);
   const reach = transitiveDeps(idx);
@@ -1158,11 +1108,73 @@ export function selectRelatedTests({
     }
   }
 
-  if (selected.size === 0) {
-    // An in-scope change that reaches NO test is far more likely to be a graph gap
-    // than genuine proof that nothing covers it. Run everything.
-    return { mode: "full", selected: [], total, reason: "empty-selection", threshold, executedMap: noMap };
+  if (selected.size === 0) return full("empty-selection");
+  return { mode: "related", selected, total, changedSet, reach, unresolved: idx.unresolved };
+}
+
+/**
+ * Build the graph index and static candidate superset once. Callers can query a scoped executed
+ * map for `selection.selected`, then pass this same prepared value to `selectRelatedTests`.
+ *
+ * @param {object}                 o
+ * @param {string}                 o.rootDir
+ * @param {string[]}               o.changedPaths
+ * @param {RelatedIndex | null}    [o.index]
+ * @param {TsconfigPathEntry[]}    [o.aliases]
+ * @param {RelatedFs}              [o.fs]
+ * @returns {{ index: RelatedIndex, selection: StaticSelection }}
+ */
+export function prepareRelatedTestSelection({ rootDir, changedPaths, index = null, aliases = [], fs = defaultFs() } = {}) {
+  const idx = index ?? buildIndex({ rootDir, aliases, fs });
+  return { index: idx, selection: collectStaticSelection({ rootDir, changedPaths, idx }) };
+}
+
+/**
+ * Select the test files that a change to `changedPaths` could affect.
+ *
+ * `mode` is `'related'` only when we are confident the subset is sound; every other
+ * outcome is `'full'`, meaning the caller should run the whole suite. `reason`
+ * always says which rail fired, so a collapse to "0 tests" can never be silent.
+ *
+ * @param {object}                 [o]
+ * @param {string}                 o.rootDir        absolute dir to index (a workspace's source root)
+ * @param {string[]}               o.changedPaths   absolute paths that changed
+ * @param {TsconfigPathEntry[]}    [o.aliases]      `tsconfigPathEntriesFor` entries
+ * @param {number}                 [o.threshold]    share of the suite at/above which the selection is
+ *                                                  widened to the whole suite (default: the
+ *                                                  `AFFECTED_RELATED_THRESHOLD` env, else
+ *                                                  RELATED_WIDEN_THRESHOLD_DEFAULT)
+ * @param {RelatedFs}              [o.fs]           filesystem seam (injected in tests)
+ * @param {RelatedIndex | null}    [o.index]        prebuilt index, to avoid re-walking the tree
+ * @param {ExecutedMap | null}     [o.executedMap]  P-002: per-test-file executed-source map (see
+ *                                                  pruneWithExecutedMap); absent ⇒ no pruning
+ * @param {string | null}          [o.judgedSha]    P-002: the sha this selection is judged at
+ * @param {ChangedBetween | null}  [o.changedBetween] P-002: (recordedSha, judgedSha) ⇒ absolute
+ *                                                  paths that changed between them, or null when
+ *                                                  the pair cannot be diffed (⇒ treated as stale)
+ * @param {{ index: RelatedIndex, selection: StaticSelection } | null} [o.prepared] static selection from `prepareRelatedTestSelection`
+ * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string, threshold: number, executedMap: ExecutedMapSummary }}
+ */
+export function selectRelatedTests({
+  rootDir,
+  changedPaths,
+  aliases = [],
+  threshold = resolveRelatedWidenThreshold().threshold,
+  fs = defaultFs(),
+  index = null,
+  executedMap = null,
+  judgedSha = null,
+  changedBetween = null,
+  prepared = null,
+} = {}) {
+  const noMap = executedMapSummaryInert("not-reached");
+  const ready = prepared ?? prepareRelatedTestSelection({ rootDir, changedPaths, aliases, fs, index });
+  const { index: idx, selection: staticSelection } = ready;
+  const { total } = staticSelection;
+  if (staticSelection.mode !== "related") {
+    return { mode: "full", selected: [], total, reason: staticSelection.reason, threshold, executedMap: noMap };
   }
+  const { selected, changedSet, reach, unresolved } = staticSelection;
 
   // P-002: the static closure above is the SUPERSET; an executed-source map can only remove
   // hub-fan-out over-selection from it, and only for a test whose map is provably current.

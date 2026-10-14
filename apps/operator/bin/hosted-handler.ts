@@ -1,7 +1,9 @@
 /** Restricted same-origin HTTP host for the hosted control-plane profile. */
 
 import { Hono } from "hono";
-import { withHostedServiceContext, withWorkspace } from "@papercusp/db-org";
+import { withHostedServiceContext, withWorkspace, withTenantContext } from "@papercusp/db-org";
+import { readCloudTelemetryConsent } from "@papercusp/operator-core/lib/cloud-telemetry";
+import { tenantContext } from "@papercusp/operator-core/lib/endpoint-route/hosted-browser-context";
 import {
   createHostedRuntime,
   readHostedRuntimeConfiguration,
@@ -212,6 +214,7 @@ export function createHostedHandler(
   // every relay socket and reports what it sees; `heartbeat_at` is what the CLI's
   // `reachable` and terminal gate read, so a dead link stops reading as connected.
   const sessionBroker = new HostedWorkspaceSessionBroker({
+    readMonitoringConsent: principal => withTenantContext(tenantContext(principal), tx => readCloudTelemetryConsent(tx, principal)),
     resolveChannelPrincipal: async (binding) => controlPlaneWorkspaceId
       ? createHostedChannelPrincipalResolver({ controlPlaneWorkspaceId,
           sessionStore: plane.components.sessionStore,

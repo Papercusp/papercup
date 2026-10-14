@@ -7,6 +7,7 @@ import {
   type HostedWorkspaceRelaySocket,
 } from './hosted-workspace-session';
 import type { HostedConnectorBinding, HostedConnectorTicketBinding } from './hosted-workspace-connector';
+import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from '../telemetry-kinds';
 
 class FakeSocket extends EventEmitter implements HostedWorkspaceRelaySocket {
   readonly OPEN = 1;
@@ -33,6 +34,35 @@ const ticket = (session = 'hosted-session-1'): HostedConnectorTicketBinding => (
 });
 
 describe('HostedWorkspaceSessionBroker', () => {
+  it('returns fresh diagnostic consent only to an authenticated customer-host authority request', async () => {
+    const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: 'org-1',
+      selectedWorkspaceId: 'workspace-1', userId: 'user-1', sessionId: 'hosted-session-1',
+      sessionVersion: 3, permissions: ['workspace:operate'] });
+    const consent = vi.fn(async () => DEFAULT_CLOUD_TELEMETRY_CONSENT);
+    const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0,
+      resolveChannelPrincipal: async () => ({ ok: true, principal } as HostedPrincipalResolution), readMonitoringConsent: consent });
+    const host = new FakeSocket(), browser = new FakeSocket();
+    try {
+      broker.attachConnector(connector, host); broker.attachBrowser(ticket(), browser, { kind: 'operator-http' });
+      const open = host.sent.find(m => (m as { type: string }).type === 'relay.open') as { channelId: string };
+      const requestId = '11111111-1111-4111-8111-111111111111';
+      browser.message({ type: 'session.authorize', channelId: open.channelId, requestId, diagnostics: true });
+      expect(consent).not.toHaveBeenCalled();
+      host.message({ type: 'session.authorize', channelId: open.channelId, requestId });
+      await vi.waitFor(() => expect(host.sent).toContainEqual(expect.objectContaining({ type: 'session.authorized', requestId })));
+      expect(consent).not.toHaveBeenCalled();
+      host.sent = [];
+      host.message({ type: 'session.authorize', channelId: open.channelId, requestId, diagnostics: true });
+      await vi.waitFor(() => expect(host.sent).toContainEqual(expect.objectContaining({ type: 'session.authorized',
+        authority: expect.objectContaining({ monitoringConsent: DEFAULT_CLOUD_TELEMETRY_CONSENT }) })));
+      expect(consent).toHaveBeenCalledWith(principal);
+      expect(browser.sent).not.toContainEqual(expect.objectContaining({ type: 'session.authorized' }));
+      host.sent = []; consent.mockRejectedValue(new Error('PRIVATE_DATABASE_CONNECTION'));
+      host.message({ type: 'session.authorize', channelId: open.channelId, requestId, diagnostics: true });
+      await vi.waitFor(() => expect(host.sent).toContainEqual(expect.objectContaining({ authority: expect.objectContaining({ monitoringConsent: null }) })));
+      expect(JSON.stringify(host.sent)).not.toContain('PRIVATE_DATABASE_CONNECTION');
+    } finally { browser.close(); host.close(); broker.dispose(); }
+  });
   it('rechecks ticket-bound authority over the connector without trusting frame labels', async () => {
     const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: 'org-1',
       selectedWorkspaceId: 'workspace-1', userId: 'user-1', sessionId: 'hosted-session-1',

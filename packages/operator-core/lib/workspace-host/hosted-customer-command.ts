@@ -31,7 +31,7 @@ export interface HostedCustomerCommandResult {
 
 export interface HostedCustomerCommandDependencies {
   readonly resolvePrincipal: (headers: Headers) => Promise<
-    { readonly ok: true; readonly principal: HostedPrincipal } | { readonly ok: false }>;
+    { readonly ok: true; readonly principal: HostedPrincipal; readonly monitoringConsent?: unknown } | { readonly ok: false }>;
   /** Authenticated session material, copied once; never tool-call arguments. */
   readonly sessionHeaders: Headers;
   /** The workspace this execution host serves, from trusted host configuration. */

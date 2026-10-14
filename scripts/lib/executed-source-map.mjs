@@ -142,15 +142,21 @@ export function rowsToExecutedMap(rows, { repoRoot }) {
  *        a `pg` Client (scripts/lib/pg-url.mjs `connectScriptPg`)
  * @param {string} o.workspaceName npm workspace name
  * @param {string} o.repoRoot
+ * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @returns {Promise<{ map: import('./related-tests.mjs').ExecutedMap, rows: number }>}
  */
-export async function loadExecutedSourceMap({ client, workspaceName, repoRoot }) {
+export async function loadExecutedSourceMap({ client, workspaceName, repoRoot, files }) {
+  const selectedFiles = Array.isArray(files)
+    ? [...new Set(files.filter((file) => typeof file === "string" && file.length > 0))]
+    : null;
+  if (selectedFiles?.length === 0) return { map: new Map(), rows: 0 };
+  const fileFilter = selectedFiles ? "AND test_file = ANY($2::text[])" : "";
   const { rows } = await client.query(
     `SELECT DISTINCT ON (test_file) test_file, recorded_sha, executed_modules
        FROM harness_shared.test_executed_sources
-      WHERE workspace_name = $1
+      WHERE workspace_name = $1 ${fileFilter}
       ORDER BY test_file, recorded_at DESC`,
-    [workspaceName],
+    selectedFiles ? [workspaceName, selectedFiles] : [workspaceName],
   );
   return { map: rowsToExecutedMap(rows, { repoRoot }), rows: rows.length };
 }
@@ -289,13 +295,15 @@ export async function loadPassDurations({ client, files }) {
 export function gitChangedBetween({ repoRoot, exec = defaultExec, relative = false }) {
   /** @type {Map<string, Set<string> | null>} */
   const cache = new Map();
+  /** @type {Map<string, string | null>} */
+  const emptyTrees = new Map();
   return (recordedSha, judgedSha) => {
     const key = `${recordedSha}..${judgedSha}`;
     if (cache.has(key)) return cache.get(key);
     let result = null;
     try {
       const out = new Set();
-      result = collectRecursiveDiff({ exec, repoDir: repoRoot, prefix: "", a: recordedSha, b: judgedSha, out })
+      result = collectRecursiveDiff({ exec, repoDir: repoRoot, prefix: "", a: recordedSha, b: judgedSha, out, emptyTrees })
         ? relative
           ? out
           : new Set([...out].map((rel) => path.resolve(repoRoot, rel)))
@@ -317,12 +325,13 @@ const ZERO_OID_RE = /^0+$/;
  * submodule change as the bare gitlink path, which no executed module ever equals, so a change
  * inside any of the ~38 submodules used to read as "no drift". A moved gitlink is diffed INSIDE
  * the submodule between the two pinned commits. Anything that cannot be diffed (a submodule
- * added, removed or type-changed; a pinned commit missing from the local clone) returns false,
- * and the caller reads that as "cannot tell" (stale), never as "nothing changed".
+ * type-changed; a pinned commit missing from the local clone) returns false, and the caller
+ * reads that as "cannot tell" (stale), never as "nothing changed". Added and removed gitlinks
+ * are diffed against the empty tree so their present-side source paths are known.
  *
  * @returns {boolean} true when the full recursive diff was computed
  */
-export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }) {
+export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out, emptyTrees = new Map() }) {
   const opts = {
     cwd: repoDir,
     encoding: "utf8",
@@ -341,13 +350,64 @@ export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }) {
     const [, modeA, modeB, oidA, oidB] = m;
     out.add(prefix + rel);
     if (modeA !== "160000" && modeB !== "160000") continue;
-    if (modeA !== modeB || ZERO_OID_RE.test(oidA) || ZERO_OID_RE.test(oidB)) return false;
+    const absentA = ZERO_OID_RE.test(oidA);
+    const absentB = ZERO_OID_RE.test(oidB);
+    const gitlinkA = modeA === "160000";
+    const gitlinkB = modeB === "160000";
+    const addedGitlink = !gitlinkA && gitlinkB && absentA;
+    const removedGitlink = gitlinkA && !gitlinkB && absentB;
+    const movedGitlink = gitlinkA && gitlinkB && !absentA && !absentB;
+    if (!addedGitlink && !removedGitlink && !movedGitlink) return false;
     const subDir = path.join(repoDir, rel);
-    if (!collectRecursiveDiff({ exec, repoDir: subDir, prefix: `${prefix}${rel}/`, a: oidA, b: oidB, out })) {
+    const subRepoDir = locateSubmoduleRepository({ exec, repoDir, rel, subDir, opts });
+    if (!subRepoDir) return false;
+    const subA = absentA ? emptyTreeFor({ exec, repoDir: subRepoDir, opts, emptyTrees }) : oidA;
+    const subB = absentB ? emptyTreeFor({ exec, repoDir: subRepoDir, opts, emptyTrees }) : oidB;
+    if (!subA || !subB) return false;
+    if (!collectRecursiveDiff({ exec, repoDir: subRepoDir, prefix: `${prefix}${rel}/`, a: subA, b: subB, out, emptyTrees })) {
       return false;
     }
   }
   return true;
+}
+
+/**
+ * Resolve an initialized submodule worktree, or its stored module gitdir when the worktree
+ * was removed. Checking --show-toplevel prevents a removed gitlink path that became an ordinary
+ * directory from accidentally running the parent repository's diff.
+ * @returns {string | null}
+ */
+function locateSubmoduleRepository({ exec, repoDir, rel, subDir, opts }) {
+  try {
+    const root = String(exec("git", ["rev-parse", "--show-toplevel"], { ...opts, cwd: subDir })).trim();
+    if (root && path.resolve(root) === path.resolve(subDir)) return subDir;
+  } catch {
+    // A removed path or an uninitialized worktree falls through to Git's module store.
+  }
+  try {
+    const gitDir = String(exec(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-path", `modules/${rel}`],
+      opts,
+    )).trim();
+    return gitDir ? path.resolve(repoDir, gitDir) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** @returns {string | null} */
+function emptyTreeFor({ exec, repoDir, opts, emptyTrees }) {
+  if (emptyTrees.has(repoDir)) return emptyTrees.get(repoDir) ?? null;
+  let oid = null;
+  try {
+    const result = String(exec("git", ["hash-object", "-t", "tree", "--stdin"], { ...opts, cwd: repoDir, input: "" })).trim();
+    if (/^[0-9a-f]{40,64}$/.test(result)) oid = result;
+  } catch {
+    oid = null;
+  }
+  emptyTrees.set(repoDir, oid);
+  return oid;
 }
 
 function defaultExec(file, args, opts) {

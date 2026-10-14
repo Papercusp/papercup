@@ -1,7 +1,8 @@
 /** Generation-bound relay between one outbound workspace connector and browser sessions. */
 import { randomUUID } from 'node:crypto';
 import { safeCloudError } from '../cloud-telemetry';
-import { isHostedPrincipal } from '../auth/hosted-principal';
+import { isHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
+import { cloudTelemetryConsentSchema } from '../telemetry-kinds';
 import type { HostedPrincipalResolution } from '../auth/hosted-principal-resolver';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { parseHostedPsuCustomerArgv } from '../workspace-host/hosted-psu-session';
@@ -69,6 +70,8 @@ export interface HostedWorkspaceSessionAuditEvent {
 export interface HostedWorkspaceSessionBrokerOptions {
   /** Re-read server-owned authority for the consumed ticket, never frame labels. */
   resolveChannelPrincipal?: (binding: HostedConnectorTicketBinding) => Promise<HostedPrincipalResolution>;
+  /** Fresh scoped choice; returned only when the customer host requests export authority. */
+  readMonitoringConsent?: (principal: HostedPrincipal) => Promise<unknown>;
   idleMs?: number;
   maxMessageBytes?: number;
   randomId?: () => string;
@@ -265,6 +268,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
   private readonly membershipSent = new WeakMap<HostedWorkspaceRelaySocket, string>();
   private lastMembershipRefreshAt: number;
   private readonly resolveChannelPrincipal: HostedWorkspaceSessionBrokerOptions['resolveChannelPrincipal'];
+  private readonly readMonitoringConsent: HostedWorkspaceSessionBrokerOptions['readMonitoringConsent'];
   private readonly authorityRequests = new WeakMap<HostedWorkspaceRelaySocket, Set<string>>();
 
   constructor(options: HostedWorkspaceSessionBrokerOptions = {}) {
@@ -276,6 +280,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     this.now = options.now ?? Date.now;
     this.membershipReport = options.membershipReport ?? null;
     this.resolveChannelPrincipal = options.resolveChannelPrincipal;
+    this.readMonitoringConsent = options.readMonitoringConsent;
     this.membershipRefreshMs = options.membershipRefreshMs ?? HOSTED_MEMBERSHIP_REFRESH_MS;
     this.lastMembershipRefreshAt = this.now();
     const pingIntervalMs = options.pingIntervalMs ?? HOSTED_WORKSPACE_PING_INTERVAL_MS;
@@ -414,7 +419,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       }
       const raw = text(data);
       if (!raw) return;
-      let message: { type?: string; channelId?: string; requestId?: string; payload?: unknown; reason?: string };
+      let message: { type?: string; channelId?: string; requestId?: string; payload?: unknown; reason?: string; diagnostics?: unknown };
       try { message = JSON.parse(raw) as typeof message; } catch { return; }
       if (message.type === 'session.authorize') {
         void this.authorizeHostSession(socket, key, message);
@@ -559,7 +564,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
   }
 
   private async authorizeHostSession(socket: HostedWorkspaceRelaySocket, key: string,
-    message: { channelId?: string; requestId?: string }): Promise<void> {
+    message: { channelId?: string; requestId?: string; diagnostics?: unknown }): Promise<void> {
     const { channelId, requestId } = message;
     if (typeof channelId !== 'string' || channelId.length > 256
       || typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/i.test(requestId)
@@ -589,6 +594,18 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
           authority = { userId: p.userId, sessionId: p.sessionId, sessionVersion: p.sessionVersion,
             controlPlaneWorkspaceId: p.workspaceId, organizationId: p.activeOrganizationId,
             customerWorkspaceId: p.selectedWorkspaceId, permissions: [...p.permissions] };
+          if (message.diagnostics === true) {
+            // No customer measurement travels in this authority exchange. Missing,
+            // malformed or unavailable preferences grant no export authority.
+            try {
+              if (timer) clearTimeout(timer);
+              const consent = cloudTelemetryConsentSchema.parse(await Promise.race([
+                this.readMonitoringConsent?.(p) ?? Promise.resolve(null),
+                new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('consent_unavailable')), 15_000); }),
+              ]));
+              authority.monitoringConsent = consent;
+            } catch { authority.monitoringConsent = null; }
+          }
         }
       }
     } catch { /* Authority failure denies without sending database/provider details. */ }

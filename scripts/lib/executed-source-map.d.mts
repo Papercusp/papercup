@@ -60,9 +60,10 @@ export function rowsToExecutedMap(rows: Array<{
  *        a `pg` Client (scripts/lib/pg-url.mjs `connectScriptPg`)
  * @param {string} o.workspaceName npm workspace name
  * @param {string} o.repoRoot
+ * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @returns {Promise<{ map: import('./related-tests.mjs').ExecutedMap, rows: number }>}
  */
-export function loadExecutedSourceMap({ client, workspaceName, repoRoot }: {
+export function loadExecutedSourceMap({ client, workspaceName, repoRoot, files }: {
     client: {
         query: (text: string, values?: unknown[]) => Promise<{
             rows: any[];
@@ -70,6 +71,7 @@ export function loadExecutedSourceMap({ client, workspaceName, repoRoot }: {
     };
     workspaceName: string;
     repoRoot: string;
+    files?: string[] | undefined;
 }): Promise<{
     map: import("./related-tests.mjs").ExecutedMap;
     rows: number;
@@ -173,18 +175,20 @@ export function gitChangedBetween({ repoRoot, exec, relative }: {
  * submodule change as the bare gitlink path, which no executed module ever equals, so a change
  * inside any of the ~38 submodules used to read as "no drift". A moved gitlink is diffed INSIDE
  * the submodule between the two pinned commits. Anything that cannot be diffed (a submodule
- * added, removed or type-changed; a pinned commit missing from the local clone) returns false,
- * and the caller reads that as "cannot tell" (stale), never as "nothing changed".
+ * type-changed; a pinned commit missing from the local clone) returns false, and the caller
+ * reads that as "cannot tell" (stale), never as "nothing changed". Added and removed gitlinks
+ * are diffed against the empty tree so their present-side source paths are known.
  *
  * @returns {boolean} true when the full recursive diff was computed
  */
-export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }: {
+export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out, emptyTrees }: {
     exec: any;
     repoDir: any;
     prefix: any;
     a: any;
     b: any;
     out: any;
+    emptyTrees?: Map<any, any> | undefined;
 }): boolean;
 /**
  * Every package.json in the tree at `sha` (gate-test-reuse-yield-2026-10-01 D-009), superproject
