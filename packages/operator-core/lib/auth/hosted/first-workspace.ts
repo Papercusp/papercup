@@ -43,6 +43,7 @@
  * the server reads back through the verified role before admitting the workspace.
  */
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
+import { safeCloudError } from '../../cloud-telemetry';
 import {
   bindDelegationToOrganization,
   bindPapercuspHostedDelegation,
@@ -537,7 +538,7 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         if (hosting === 'papercusp' && error instanceof HostedAwsHostingUnconfiguredError) {
           return failure('papercusp_cloud_provider_unavailable', 503, false);
         }
-        console.error(`[hosted-first-workspace] delegation bind failed for host ${identity.hostId} (${hosting})`, error);
+        console.error(`[hosted-first-workspace] delegation bind failed for host ${identity.hostId} (${hosting})`, safeCloudError('provisioning_failure', error));
         return failure('delegation_source_unavailable', 503, true);
       }
       let planned: HostedProviderDelegationOnboarding;
@@ -598,7 +599,7 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
               connectionId: identity.connectionId,
             });
           }
-          console.error(`[hosted-first-workspace] AWS host infrastructure lookup failed for host ${identity.hostId}`, error);
+          console.error(`[hosted-first-workspace] AWS host infrastructure lookup failed for host ${identity.hostId}`, safeCloudError('provisioning_failure', error));
           return failure('delegation_source_unavailable', 503, true, { connectionId: identity.connectionId });
         }
         resolveSpec = async (spec) =>
@@ -640,7 +641,7 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         if (error instanceof HostedWorkspaceAdmissionError && error.code === 'organization_has_live_workspace') {
           return failure('organization_already_has_workspace', 409, false);
         }
-        console.error(`[hosted-first-workspace] admission failed for host ${identity.hostId}`, error);
+        console.error(`[hosted-first-workspace] admission failed for host ${identity.hostId}`, safeCloudError('provisioning_failure', error));
         return failure('workspace_admission_failed', 500, true, { connectionId: identity.connectionId });
       }
       if (hosting === 'papercusp') {
@@ -651,7 +652,7 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
           if (papercuspProvider === 'aws') await organization.awsPapercuspHosting(identity.hostId);
           else await organization.gcpPapercuspHosting(identity.hostId);
         } catch (error) {
-          console.error(`[hosted-first-workspace] host reservation re-assert failed for host ${identity.hostId}`, error);
+          console.error(`[hosted-first-workspace] host reservation re-assert failed for host ${identity.hostId}`, safeCloudError('provisioning_failure', error));
           return failure('workspace_admission_failed', 500, true, { connectionId: identity.connectionId });
         }
       }
