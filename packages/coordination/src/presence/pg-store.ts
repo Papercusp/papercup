@@ -109,6 +109,12 @@ function toRecord(r: CoordPresenceDbRow, now: number): PresenceRecord {
   };
 }
 
+export interface ContextEstimateSessionIdentity {
+  nativeSessionId: string | null;
+  /** The selected adv_sessions row id also fences Codex, whose native id is not stored there. */
+  advSessionId?: number | null;
+}
+
 export class PgPresenceStore implements PresenceStore {
   constructor(private readonly opts: PgPresenceStoreOptions) {}
 
@@ -329,17 +335,46 @@ export class PgPresenceStore implements PresenceStore {
     }
   }
 
-  async setContextEstimate(ownerId: string, tokens: number): Promise<void> {
+  async setContextEstimate(
+    ownerId: string,
+    tokens: number,
+    expectedSession: ContextEstimateSessionIdentity,
+  ): Promise<boolean> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     // Cached context-size estimate (agent-managed-compaction P-007/P-009) — written
     // by the compaction-compliance watchdog on a cadence, read by the inbox usage
-    // signal. No-op when no row exists.
-    await sql`
-      UPDATE harness_shared.coord_presence
-         SET context_tokens = ${tokens}, context_estimated_at = now()
-       WHERE owner_id = ${ownerId}
-    `;
+    // signal. Lock the resolver-selected adv-session row before updating the
+    // owner-keyed cache: a carry-respawn updates that row's native id in place.
+    // A delayed predecessor estimate then sees the successor id and is rejected.
+    // The resolver and this fence intentionally share the same selection order.
+    const written = await sql.begin(async (tx) => {
+      const current = await tx<{ id: number; session_id: string | null }[]>`
+        SELECT id, session_id
+          FROM harness_shared.adv_sessions
+         WHERE coord_owner_id = ${ownerId}
+           AND (session_id IS NOT NULL OR agent = 'codex')
+         ORDER BY started_at DESC, id DESC
+         LIMIT 1
+         FOR UPDATE
+      `;
+      const selected = current[0];
+      if (
+        !selected ||
+        selected.session_id !== expectedSession.nativeSessionId ||
+        (expectedSession.advSessionId != null && Number(selected.id) !== expectedSession.advSessionId)
+      ) {
+        return false;
+      }
+      const rows = await tx<{ owner_id: string }[]>`
+        UPDATE harness_shared.coord_presence
+           SET context_tokens = ${tokens}, context_estimated_at = now()
+         WHERE owner_id = ${ownerId}
+        RETURNING owner_id
+      `;
+      return rows.length > 0;
+    });
+    return written;
   }
 
   async clearContextEstimate(ownerId: string): Promise<void> {

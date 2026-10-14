@@ -117,6 +117,14 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     });
   });
 
+  it('selects the latest adv-session deterministically for the context-write fence', async () => {
+    advSessionRowsMock.mockClear();
+    advSessionRowsMock.mockResolvedValue([{ id: 22, agent: 'claude', session_id: 'native-newest' }]);
+    await resolveSessionRef('su-order');
+    const statement = advSessionRowsMock.mock.calls[0]?.[0] as TemplateStringsArray;
+    expect(statement.join('')).toContain('ORDER BY started_at DESC, id DESC');
+  });
+
   it('reads the newest valid last_token_usage and effective model window, never cumulative usage', async () => {
     const event = (tokens: number, total: number, window = 258_400) =>
       JSON.stringify({

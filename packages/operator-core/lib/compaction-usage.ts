@@ -633,7 +633,7 @@ export async function resolveSessionRef(ownerId: string): Promise<SessionRef | n
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${ownerId}
          AND (session_id IS NOT NULL OR agent = 'codex')
-       ORDER BY started_at DESC
+       ORDER BY started_at DESC, id DESC
        LIMIT 1
     `;
     if (!rows.length) return null;

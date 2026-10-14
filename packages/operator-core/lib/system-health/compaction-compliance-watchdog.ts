@@ -47,7 +47,7 @@ import {
 } from '../agent-config-constants';
 import { listActiveClaimFreshnessForOwner } from '../work-item-claims';
 import { classifyStaleClaims, type StaleClaim } from '../agent-tools/coordination/tools/inbox-flush-gate';
-import { recordContextUsage, setContextGaugeEnabled } from './context-usage-cache';
+import { clearContextUsage, recordContextUsage, setContextGaugeEnabled } from './context-usage-cache';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../agent-tools/coordination/compaction-recovery';
 import { addressContinuationToOwner } from '../carry-respawn-addressing';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -2584,7 +2584,10 @@ export async function checkCompactionCompliance(
           /* best-effort per owner */
         }
       }
-      const est = await estimateContextTokensForOwner(r.owner_id);
+      const estimateRef = await resolveSessionRefReconciled(r.owner_id);
+      const est = estimateRef
+        ? await estimateContextTokensForOwner(r.owner_id, { resolveRef: async () => estimateRef })
+        : null;
       if (est == null) {
         carryRespawnHealthySampleAt.delete(r.owner_id);
         carryRespawnUnderLimitSince.delete(r.owner_id);
@@ -2822,7 +2825,24 @@ export async function checkCompactionCompliance(
         }
       }
       frozenCodexWarned.delete(r.owner_id); // trustworthy again — re-arm the dedup
-      await setContextEstimate(r.owner_id, est).catch(() => {});
+      let estimateStored = false;
+      if (estimateRef) {
+        try {
+          estimateStored = await setContextEstimate(r.owner_id, est, {
+            nativeSessionId: estimateRef.sessionId,
+            advSessionId: estimateRef.sessionKey ?? null,
+          });
+        } catch {
+          estimateStored = false;
+        }
+      }
+      if (!estimateStored) {
+        // The estimate's source session changed while it was being measured, or
+        // the guarded write failed. Keep neither a stale local gauge nor any
+        // later over-limit action based on this sample.
+        clearContextUsage(r.owner_id);
+        continue;
+      }
       // P-013/P-015: mirror the fresh estimate into the in-process gauge cache so the
       // result-annotator + native-tool hook render the banded gauge with ZERO per-call
       // DB cost (the watchdog is the single writer; readers never touch PG).

@@ -61,7 +61,7 @@ const {
   observedPromptFloorMock: vi.fn(() => null as null | { tokens: number; observations: number; at: number }),
   contextWindowMock: vi.fn(async (_owner: string) => null as number | null),
   specMock: vi.fn(),
-  setEstimateMock: vi.fn(async () => {}),
+  setEstimateMock: vi.fn(async () => true),
   setLimitMock: vi.fn(async () => {}),
   deathMock: vi.fn(async (_owner: string) => false),
   // WI-10003466: default null = no tool-reference death, so every pre-existing
@@ -285,7 +285,7 @@ beforeEach(() => {
   observedPromptFloorMock.mockReturnValue(null);
   contextWindowMock.mockResolvedValue(null);
   specMock.mockResolvedValue(null);
-  setEstimateMock.mockResolvedValue(undefined);
+  setEstimateMock.mockResolvedValue(true);
   setLimitMock.mockResolvedValue(undefined);
   deathMock.mockResolvedValue(false);
   toolRefDeathMock.mockResolvedValue(null);
@@ -305,10 +305,9 @@ beforeEach(() => {
   hostSupportsMock.mockReturnValue(false);
   injectMock.mockResolvedValue(true);
   findTranscriptMock.mockResolvedValue('/tmp/live-session.jsonl');
-  // P-022: the force rung builds the carry spec itself; with the default null
-  // session-ref it falls back to newest-transcript-under-owner, so give it one.
+  // P-022: provide a stable native session for estimate fencing in this fixture.
   newestTranscriptMock.mockReturnValue('/tmp/live-session.jsonl');
-  resolveSessionRefMock.mockResolvedValue(null);
+  resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'native-current', sessionKey: 1 });
   resolveSessionRefReconciledMock.mockImplementation((owner: string) => resolveSessionRefMock(owner));
   buildOwnerRespawnMock.mockResolvedValue({
     systemPromptAddendum: 'deterministic carry',
@@ -866,7 +865,33 @@ describe('checkCompactionCompliance sweep (agent-managed-compaction P-009)', () 
     );
     expect(out.estimated).toEqual(['hot', 'cool']);
     expect(out.overLimit).toEqual(['hot']);
-    expect(setEstimateMock).toHaveBeenCalledWith('hot', 170_000);
+    expect(setEstimateMock).toHaveBeenCalledWith('hot', 170_000, {
+      nativeSessionId: 'native-current',
+      advSessionId: 1,
+    });
+  });
+
+  it('discards the sample and skips gauge/cut actions when the native-session fence rejects it', async () => {
+    resolveSessionRefMock.mockResolvedValue({
+      agent: 'claude',
+      sessionId: 'native-predecessor',
+      sessionKey: 41,
+    });
+    estimateMock.mockResolvedValue(170_000);
+    setEstimateMock.mockResolvedValue(false);
+
+    const out = await checkCompactionCompliance(fakeSql({
+      seeded: [{ owner_id: 'hot', owner_label: 'su · hot', compaction_limit: 158_000 }],
+    }));
+
+    expect(setEstimateMock).toHaveBeenCalledWith('hot', 170_000, {
+      nativeSessionId: 'native-predecessor',
+      advSessionId: 41,
+    });
+    expect(out.estimated).toEqual([]);
+    expect(out.overLimit).toEqual([]);
+    expect(out.forceCompacted).toEqual([]);
+    expect(injectMock).not.toHaveBeenCalled();
   });
 
   it('P-003: SURFACES an over-limit session\'s unflushed (stale-checkpoint) claim, and skips a fresh one', async () => {
@@ -2250,7 +2275,10 @@ describe('implausible-reading sanity clamp (EI-10434)', () => {
     const out = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(out.implausibleReadings).toEqual([]);
     expect(out.overLimit).toEqual(['garbage']);
-    expect(setEstimateMock).toHaveBeenCalledWith('garbage', 200_000);
+    expect(setEstimateMock).toHaveBeenCalledWith('garbage', 200_000, {
+      nativeSessionId: 'native-current',
+      advSessionId: 1,
+    });
   });
 
   it('a reading that RECOVERS to plausible after an implausible sweep is no longer discarded (re-arms the dedup)', async () => {
@@ -2262,7 +2290,10 @@ describe('implausible-reading sanity clamp (EI-10434)', () => {
     const second = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(second.implausibleReadings).toEqual([]);
     expect(second.estimated).toEqual(['garbage']);
-    expect(setEstimateMock).toHaveBeenCalledWith('garbage', 40_000);
+    expect(setEstimateMock).toHaveBeenCalledWith('garbage', 40_000, {
+      nativeSessionId: 'native-current',
+      advSessionId: 1,
+    });
   });
 
   it('warns only ONCE per owner across repeated implausible sweeps (dedup)', async () => {
@@ -2846,7 +2877,10 @@ describe('EI-21595542328480968: frozen codex readings never drive a cut', () => 
 
     expect(out.frozenCodexReadings).toEqual([]);
     expect(out.estimated).toEqual(['cx']);
-    expect(setEstimateMock).toHaveBeenCalledWith('cx', 179_963);
+    expect(setEstimateMock).toHaveBeenCalledWith('cx', 179_963, {
+      nativeSessionId: 'native-current',
+      advSessionId: 1,
+    });
     expect(clearEstimateMock).not.toHaveBeenCalled();
   });
 
@@ -2861,7 +2895,10 @@ describe('EI-21595542328480968: frozen codex readings never drive a cut', () => 
 
     expect(out.frozenCodexReadings).toEqual([]);
     expect(out.overLimit).toEqual(['cx']);
-    expect(setEstimateMock).toHaveBeenCalledWith('cx', 219_915);
+    expect(setEstimateMock).toHaveBeenCalledWith('cx', 219_915, {
+      nativeSessionId: 'native-current',
+      advSessionId: 1,
+    });
   });
 
   it("TRUSTS a long lag when the rollout IS this session's (the identity conjunct)", async () => {
