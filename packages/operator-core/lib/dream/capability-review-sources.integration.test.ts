@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
 import { getPilotCapabilityManifest } from './capability-catalog';
 import { capabilityHash } from './capability-contracts';
-import { CAPABILITY_PRIOR_KINDS } from './capability-review';
+import { CAPABILITY_PRIOR_KINDS, runCapabilityDreamReview, type CapabilityReviewJudgment } from './capability-review';
 import { buildCapabilityReviewSources, discoverCapabilityReviewCode } from './capability-review-sources';
-import { readCapabilitySource } from './capability-packets';
+import { readCapabilitySource, verifyCapabilityPacket } from './capability-packets';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -64,6 +65,67 @@ describe('native P024 current existing-integration source priors beyond the cata
     const absent = await adapter.search({ ...f.request, query: 'nonsensezzqwerty' });
     expect(absent.matches).toEqual([]); expect(absent.note).toContain('global novelty is not established');
   }, 30_000);
+  it.each(['duplicate', 'refinement'] as const)(
+    'P025 R22: classifies a known existing integration as %s through current source retrieval and the production reviewer',
+    async disposition => {
+      const f = await createDreamCapabilityFixture('review-workspace', 'review-pot');
+      roots.push(f.root);
+      const existing = 'export function existingCombinedCheck() { return "Combine the A output with the B check."; }\n';
+      await writeFile(join(f.root, 'existing.ts'), existing);
+      f.candidate.behavior = 'Use existingCombinedCheck to combine the A output with the B check.';
+      const sources = buildCapabilityReviewSources({ sql: {} as Sql, scope: f.scope,
+        rootPath: f.root, manifest: f.manifest, packets: f.packets }, {
+        plans: async () => ({ rows: [], truncated: false }), plan: async () => null,
+        ideas: async () => [], runs: async () => [], run: async () => null,
+        verifyPacket: (packet, input) => verifyCapabilityPacket(packet, input,
+          { readArtifact: path => readFile(path, 'utf8') }),
+        code: discoverCapabilityReviewCode, readCode: readCapabilitySource,
+      });
+      let finalReviewCalls = 0;
+      const result = await runCapabilityDreamReview({
+        candidate: f.candidate, selection: f.selection, rootPath: f.root, manifest: f.manifest,
+        sources, dreamerModel: 'fixture-generator', config: { model: 'fixture-independent-reviewer' },
+        // Fixed responses calibrate the negative reference. No provider runs or
+        // scientific study attempts are created by this integration test.
+        llmCall: async input => {
+          input.onAdmitted?.(); input.onResponseStart?.();
+          const request = JSON.parse(input.messages[0]!.content as string);
+          let response: unknown;
+          if (request.retained) response = request.retained.label === 'A'
+            ? f.review.controls.aOnly : f.review.controls.bOnly;
+          else {
+            finalReviewCalls++;
+            const priors = request.priors as Array<{ ref: string; text: string }>;
+            expect(priors.map(prior => prior.ref), JSON.stringify(priors)).toContain('code-source:existing.ts');
+            const judgment = structuredClone(f.review.judgment!);
+            const evidence = (index: number) => ({ ref: (index === 0 ? 'A' : 'B') + ':code',
+              quote: f.packets[index]!.sources[0]!.excerpt });
+            judgment.observations = f.candidate.observed.map((_, index) => ({ index,
+              status: 'supported', note: 'Checked against the claimed primary source.', evidence: [evidence(index)] }));
+            judgment.relation.evidence = [evidence(0), evidence(1)];
+            judgment.comparisons = priors.map(prior => ({ ref: prior.ref,
+              disposition: prior.ref === 'code-source:existing.ts' ? disposition : 'distinct',
+              note: prior.ref === 'code-source:existing.ts' ? 'The composed check already exists in current source.' : 'Independent supporting source.',
+              evidence: [{ ref: 'prior:' + prior.ref, quote: prior.text.slice(0, 300) }],
+            })) satisfies CapabilityReviewJudgment['comparisons'];
+            response = judgment;
+          }
+          return { text: '', json: response, costUsd: 0, inputTokens: 0, outputTokens: 0 };
+        },
+      }, {
+        verifyPacket: (packet, input) => verifyCapabilityPacket(packet, input,
+          { readArtifact: path => readFile(path, 'utf8') }),
+        rerank: async (_query, priors) => ({ priors: [...priors].sort((a, b) =>
+          Number(b.ref === 'code-source:existing.ts') - Number(a.ref === 'code-source:existing.ts')).slice(0, 8),
+        outcome: { attempted: true, scored: priors.length } }),
+      });
+      expect(finalReviewCalls).toBe(1);
+      expect(result, result.note).toMatchObject({ verdict: 'reject', reason: disposition,
+        usage: { costUsd: 0 }, coverage: { globalNovelty: 'not-established' } });
+      expect(result.priorMatches).toContainEqual(expect.objectContaining({ ref: 'code-source:existing.ts',
+        sourceHash: capabilityHash(existing), contentHash: capabilityHash(existing) }));
+    }, 60_000,
+  );
   it('rejects a persisted candidate path that traverses into or symlinks to an unauthorized repository', async () => {
     const f = await fixture(), adapter = f.sources();
     const prior = (await adapter.search(f.request)).matches[0]!;
