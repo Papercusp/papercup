@@ -276,8 +276,11 @@ export default defineTool({
       let emitted = (await emitScorecardForToolContext(parsed.data, ctx, { previewOnly: dryRun })) as EmitReply;
       // A card stranded on a retired evaluator build blocks this clause forever (see
       // findBuildStrandedPendingCard). Supersede it once with the card just reproduced.
+      // Identical evidence can return success before the pending-audit gate. It still
+      // needs a current-build card when the old build cannot complete that audit.
       let strandedSuperseded: StrandedCard | undefined;
-      if (emitted.code === 'grading_audit_required' && !parsed.data.supersedes && parsed.data.subject) {
+      const unchangedEvidence = emitted.ok === true && emitted.created === false && emitted.reason === 'unchanged-evidence';
+      if ((emitted.code === 'grading_audit_required' || unchangedEvidence) && !parsed.data.supersedes && parsed.data.subject) {
         const stranded = await findBuildStrandedPendingCard(parsed.data.rubricRef, parsed.data.subject);
         if (stranded) {
           strandedSuperseded = stranded;
