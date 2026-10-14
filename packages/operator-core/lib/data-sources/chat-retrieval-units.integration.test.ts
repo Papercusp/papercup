@@ -533,11 +533,13 @@ describe('document retention (P-017c)', () => {
   const OLD = '2026-06-01T00:00:00Z';
   const FRESH = '2026-09-28T00:00:00Z';
 
-  async function setRetention(id: string, maxAgeDays: unknown): Promise<void> {
+  async function setPolicy(id: string, policy: Record<string, number>): Promise<void> {
     await org.adminSql`
-      UPDATE harness_shared.data_sources SET retention_policy = ${org.adminSql.json({ maxAgeDays } as never)}
+      UPDATE harness_shared.data_sources SET retention_policy = ${org.adminSql.json(policy)}
        WHERE workspace_id = ${WS} AND id = ${id}::uuid`;
   }
+
+  const setRetention = (id: string, maxAgeDays: number): Promise<void> => setPolicy(id, { maxAgeDays });
 
   async function addDoc(
     externalId: string,
@@ -547,11 +549,14 @@ describe('document retention (P-017c)', () => {
   ): Promise<void> {
     const metadata = opts.channelId ? { channelId: opts.channelId } : {};
     const occurredAt = opts.occurredAt === undefined ? OLD : opts.occurredAt;
+    // documents_scope_chk: a permission-list document is organization-scoped and has no user.
+    const scope = opts.permissionListId ? 'organization' : 'personal';
+    const userId = opts.permissionListId ? null : alice;
     await org.adminSql`
       INSERT INTO harness_shared.documents
         (workspace_id, user_id, scope, source, source_id, kind, external_id, occurred_at, imported_at, title, text,
          metadata, dedupe_key, permission_list_id)
-      VALUES (${WS}, ${alice}::uuid, 'personal', 'slack', ${opts.source ?? sourceId}::uuid, ${opts.kind ?? 'file'}, ${externalId},
+      VALUES (${WS}, ${userId}::uuid, ${scope}, 'slack', ${opts.source ?? sourceId}::uuid, ${opts.kind ?? 'file'}, ${externalId},
               ${occurredAt}::timestamptz, ${opts.importedAt ?? FRESH}::timestamptz, ${externalId}, ${`retention body ${externalId}`},
               ${org.adminSql.json(metadata)}, ${`retention:${externalId}`}, ${opts.permissionListId ?? null}::uuid)`;
   }
@@ -577,14 +582,16 @@ describe('document retention (P-017c)', () => {
     expect(await remaining()).toEqual(['chat-message-old', 'chat-thread-old', 'chat-window-old', 'fresh', 'new-import']);
   });
 
-  it('leaves a source with no numeric maxAgeDays untouched', async () => {
+  it('leaves a source with no maxAgeDays untouched', async () => {
+    // The data_sources CHECK already refuses a non-numeric maxAgeDays, so the reachable
+    // no-expiry shapes are a policy without the key and the default empty policy.
     const noPolicy = await makeSource('source-acl');
-    await setRetention(sourceId, '30');
-    await addDoc('string-policy');
+    await setPolicy(sourceId, { deliveryDedupeHorizonDays: 7 });
+    await addDoc('dedupe-only-policy');
     await addDoc('no-policy', { source: noPolicy });
 
     expect(await purgeExpiredDocuments(org.adminSql, WS, { now: NOW })).toEqual({ documentsExpired: 0, documentsHeldKept: 0 });
-    expect(await remaining()).toEqual(['no-policy', 'string-policy']);
+    expect(await remaining()).toEqual(['dedupe-only-policy', 'no-policy']);
   });
 
   it('keeps and counts expired documents under a whole-source hold until the hold is released', async () => {
