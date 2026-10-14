@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -23,12 +25,96 @@ function install(args: string[] = ['--install-only'], sha = green) {
   });
 }
 
-function stamp() {
-  execFileSync(process.execPath, [join(repo, freshnessPath), 'stamp',
-    '--repo-root', repo, '--entry', join(repo, 'apps/operator/bin/serve.ts'),
-    '--outfile', join(repo, 'apps/operator/dist-hosted-control-plane/serve.mjs'),
-    '--manifest', join(repo, 'apps/operator/dist-hosted-control-plane/.bundle-fresh.json'),
+function stamp(root = repo) {
+  execFileSync(process.execPath, [join(root, freshnessPath), 'stamp',
+    '--repo-root', root, '--entry', join(root, 'apps/operator/bin/serve.ts'),
+    '--outfile', join(root, 'apps/operator/dist-hosted-control-plane/serve.mjs'),
+    '--manifest', join(root, 'apps/operator/dist-hosted-control-plane/.bundle-fresh.json'),
   ], { stdio: 'pipe' });
+}
+
+async function runAsync(args: string[]) {
+  try {
+    const result = await promisify(execFile)('bash', [join(repo, installerPath), ...args, '--production-release', green],
+      { env, timeout: 15_000, encoding: 'utf8' });
+    return { status: 0, ...result };
+  } catch (error) {
+    const result = error as { code: number; stdout: string; stderr: string };
+    return { status: result.code, stdout: result.stdout, stderr: result.stderr };
+  }
+}
+
+async function withProbe(body: (path: string) => unknown, run: () => Promise<void>) {
+  const server = createServer((request, response) => {
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify(body(request.url!)));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('expected TCP address');
+  env.PAPERCUSP_HOSTED_CP_PORT = String(address.port);
+  env.PAPERCUSP_HOSTED_CP_HEALTH_ATTEMPTS = '1';
+  try { await run(); }
+  finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+}
+
+function configureActivation() {
+  writeFileSync(join(temp, 'production.env'), [
+    'PAPERCUSP_HOSTED_PUBLIC_ORIGIN=https://production.example.test',
+    'PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID=production-test',
+    'WORKOS_CLIENT_ID=client_test',
+    ...['PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF', 'WORKOS_API_KEY_REF', 'WORKOS_COOKIE_PASSWORD_REF', 'WORKOS_WEBHOOK_SECRET_REF']
+      .map(name => `${name}=env:TEST_REFERENCE`),
+  ].join('\n'));
+  // Configuration dereferencing is covered by the existing configuration
+  // suite; this seam isolates release activation from the encrypted DB store.
+  const bin = join(temp, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'npx'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  env.PATH = `${bin}:${process.env.PATH}`;
+  env.TEST_UNIT_FILE = join(temp, 'units/hosted-production.service');
+  env.TEST_SERVING_SHA = join(temp, 'serving-sha');
+  writeFileSync(env.PAPERCUSP_HOSTED_CP_SYSTEMCTL!, `#!/bin/sh
+printf '%s\\n' "$*" >> "$TEST_SYSTEMCTL_LOG"
+case "$*" in
+  '--user is-active --quiet '* ) test -f "$TEST_SERVING_SHA" ;;
+  '--user restart '* )
+    sha=$(sed -n 's/^ExecStartPre=.* --production-release \\([0-9a-f]*\\)$/\\1/p' "$TEST_UNIT_FILE")
+    [ "$sha" != "$TEST_FAIL_START_SHA" ] || exit 1
+    printf '%s' "$sha" > "$TEST_SERVING_SHA" ;;
+  '--user stop '* ) rm -f "$TEST_SERVING_SHA" ;;
+esac
+`, { mode: 0o755 });
+}
+
+function servingProbe(path: string) {
+  const sha = existsSync(env.TEST_SERVING_SHA!) ? readFileSync(env.TEST_SERVING_SHA!, 'utf8') : null;
+  return path === '/api/health'
+    ? { ok: true, service: 'papercusp-operator', sha }
+    : { ok: sha !== null && sha !== env.TEST_NOT_READY_SHA, ready: sha !== null && sha !== env.TEST_NOT_READY_SHA };
+}
+
+function installPreviousRelease() {
+  const previousRoot = join(temp, 'previous');
+  cpSync(repo, previousRoot, { recursive: true });
+  stamp(previousRoot);
+  const previousSha = green;
+  const result = spawnSync('bash', [join(repo, installerPath), '--install-only', '--production-release', previousSha], {
+    encoding: 'utf8', env: { ...env, PAPERCUSP_HOSTED_CP_REPO_ROOT: previousRoot,
+      PAPERCUSP_HOSTED_CP_TEMPLATE: join(previousRoot, templatePath) },
+  });
+  expect(result.status, result.stderr).toBe(0);
+  const previousUnit = readFileSync(env.TEST_UNIT_FILE!, 'utf8');
+  writeFileSync(env.TEST_SERVING_SHA!, previousSha);
+  git('checkout', '-q', 'main');
+  writeFileSync(join(repo, 'new-release.txt'), 'candidate\n');
+  git('add', 'new-release.txt');
+  git('commit', '--no-verify', '-qm', 'next green fixture');
+  green = git('rev-parse', 'HEAD');
+  git('checkout', '--detach', '-q', green);
+  stamp();
+  rmSync(join(temp, 'systemctl.log'));
+  return { previousSha, previousUnit, previousRoot };
 }
 
 beforeEach(() => {
@@ -79,6 +165,133 @@ function expectRefused(reason: RegExp, sha = green) {
 }
 
 describe('SPEC-P-007 production green-main deploy guard', () => {
+  it('checks the real JSON health/readiness contract and accepts the bundle writer’s short SHA', async () => {
+    await withProbe(path => path === '/api/health'
+      ? { ok: true, service: 'papercusp-operator', sha: green.slice(0, 10) }
+      : { ok: true, ready: true }, async () => {
+      const result = await runAsync(['--check-health']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(join(temp, 'systemctl.log'))).toBe(false);
+    });
+  });
+
+  it.each(['wrong-sha', 'stale-bundle', 'not-ready', 'wrong-service', 'missing-sha'])(
+    'refuses an HTTP-200 %s listener without systemd mutations', async (failure) => {
+      await withProbe(path => path === '/api/health'
+        ? { ok: true, service: failure === 'wrong-service' ? 'other' : 'papercusp-operator',
+          sha: failure === 'missing-sha' ? null : failure === 'wrong-sha' ? 'a'.repeat(40) : green,
+          ...(failure === 'stale-bundle' ? { bundleStale: {} } : {}) }
+        : { ok: true, ready: failure !== 'not-ready' }, async () => {
+        const result = await runAsync(['--check-health']);
+        expect(result.status, result.stderr).not.toBe(0);
+        expect(existsSync(join(temp, 'systemctl.log'))).toBe(false);
+      });
+    });
+
+  it('activates a proved release only after configuration and readiness pass', async () => {
+    configureActivation();
+    await withProbe(servingProbe, async () => {
+      const result = await runAsync(['--activate-release']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(env.TEST_SERVING_SHA!, 'utf8')).toBe(green);
+      expect(readFileSync(join(temp, 'systemctl.log'), 'utf8')).toBe(
+        '--user daemon-reload\n--user restart hosted-production.service\n');
+    });
+  });
+
+  it.each(['not-ready', 'start-failure'])('restores and verifies the previous release on candidate %s', async (failure) => {
+    configureActivation();
+    await withProbe(servingProbe, async () => {
+      const { previousSha, previousUnit } = installPreviousRelease();
+      env[failure === 'not-ready' ? 'TEST_NOT_READY_SHA' : 'TEST_FAIL_START_SHA'] = green;
+      const result = await runAsync(['--activate-release']);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(`previous release restored and verified ready: ${previousSha}`);
+      expect(readFileSync(env.TEST_UNIT_FILE!, 'utf8')).toBe(previousUnit);
+      expect(readFileSync(env.TEST_SERVING_SHA!, 'utf8')).toBe(previousSha);
+      expect(readFileSync(join(temp, 'systemctl.log'), 'utf8')).toBe(
+        '--user is-active --quiet hosted-production.service\n--user daemon-reload\n' +
+        '--user restart hosted-production.service\n--user stop hosted-production.service\n' +
+        '--user daemon-reload\n--user restart hosted-production.service\n');
+    });
+  });
+
+  it('stops and removes a failed first deployment', async () => {
+    configureActivation();
+    env.TEST_NOT_READY_SHA = green;
+    await withProbe(servingProbe, async () => {
+      const result = await runAsync(['--activate-release']);
+      expect(result.status).not.toBe(0);
+      expect(existsSync(env.TEST_UNIT_FILE!)).toBe(false);
+      expect(existsSync(env.TEST_SERVING_SHA!)).toBe(false);
+    });
+  });
+
+  it('restores an inactive predecessor without starting it on candidate failure', async () => {
+    configureActivation();
+    await withProbe(servingProbe, async () => {
+      const { previousUnit } = installPreviousRelease();
+      rmSync(env.TEST_SERVING_SHA!);
+      env.TEST_NOT_READY_SHA = green;
+      const result = await runAsync(['--activate-release']);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('previous inactive state restored');
+      expect(readFileSync(env.TEST_UNIT_FILE!, 'utf8')).toBe(previousUnit);
+      expect(existsSync(env.TEST_SERVING_SHA!)).toBe(false);
+      expect(readFileSync(join(temp, 'systemctl.log'), 'utf8').match(/--user restart/g)).toHaveLength(1);
+    });
+  });
+
+  it('reports rollback failure without claiming the old release is ready', async () => {
+    configureActivation();
+    await withProbe(servingProbe, async () => {
+      const { previousSha, previousUnit } = installPreviousRelease();
+      env.TEST_NOT_READY_SHA = green;
+      env.TEST_FAIL_START_SHA = previousSha;
+      const result = await runAsync(['--activate-release']);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('rollback release failed health/readiness');
+      expect(result.stderr).not.toContain('restored and verified ready');
+      expect(readFileSync(env.TEST_UNIT_FILE!, 'utf8')).toBe(previousUnit);
+      expect(existsSync(env.TEST_SERVING_SHA!)).toBe(false);
+    });
+  });
+
+  it('refuses an unrecognized previous unit before changing it', async () => {
+    configureActivation();
+    mkdirSync(join(temp, 'units'));
+    const legacy = '[Service]\nExecStart=/usr/bin/node unrelated.mjs\n';
+    writeFileSync(env.TEST_UNIT_FILE!, legacy);
+    const result = await runAsync(['--activate-release']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('previous unit has no verified production release identity');
+    expect(readFileSync(env.TEST_UNIT_FILE!, 'utf8')).toBe(legacy);
+    expect(existsSync(join(temp, 'systemctl.log'))).toBe(false);
+  });
+
+  it('refuses incomplete configuration before installing or restarting a unit', async () => {
+    configureActivation();
+    writeFileSync(join(temp, 'production.env'), readFileSync(join(temp, 'production.env'), 'utf8') + '\nWORKOS_CLIENT_ID=\n');
+    const result = await runAsync(['--activate-release']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('hosted configuration incomplete');
+    expect(existsSync(join(temp, 'units'))).toBe(false);
+    expect(existsSync(join(temp, 'systemctl.log'))).toBe(false);
+  });
+
+  it('refuses activation before mutation when the previous artifact is no longer provable', async () => {
+    configureActivation();
+    await withProbe(servingProbe, async () => {
+      const { previousUnit, previousRoot } = installPreviousRelease();
+      writeFileSync(join(previousRoot, 'apps/operator/dist-hosted-control-plane/serve.mjs'), '// tampered\n');
+      const result = await runAsync(['--activate-release']);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('previous release proof failed');
+      expect(readFileSync(env.TEST_UNIT_FILE!, 'utf8')).toBe(previousUnit);
+      expect(existsSync(join(temp, 'systemctl.log'))).toBe(false);
+    });
+  });
+
   it('installs a proved green bundle and rechecks it before each production start', () => {
     const result = install();
     expect(result.status, result.stderr).toBe(0);

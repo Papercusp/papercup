@@ -34,6 +34,8 @@ UNIT_NAME="${PAPERCUSP_HOSTED_CP_UNIT:-papercusp-hosted-control-plane.service}"
 UNIT_DIR="${PAPERCUSP_HOSTED_CP_UNIT_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
 SYSTEMCTL_BIN="${PAPERCUSP_HOSTED_CP_SYSTEMCTL:-systemctl}"
 SYSTEMD_ANALYZE_BIN="${PAPERCUSP_HOSTED_CP_SYSTEMD_ANALYZE:-systemd-analyze}"
+HEALTH_ATTEMPTS="${PAPERCUSP_HOSTED_CP_HEALTH_ATTEMPTS:-30}"
+HEALTH_TIMEOUT_SEC="${PAPERCUSP_HOSTED_CP_HEALTH_TIMEOUT_SEC:-5}"
 
 # The seven names hosted-runtime.ts reads (readHostedRuntimeConfiguration),
 # split by what each name IS — because the correct check differs.
@@ -80,7 +82,7 @@ die() { printf 'hosted-control-plane: ERROR: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-Usage: deploy-hosted-control-plane.sh [--render-only|--check-env|--install-only|--check-release]
+Usage: deploy-hosted-control-plane.sh [--render-only|--check-env|--install-only|--check-release|--check-health|--activate-release]
                                     [--production-release <full-green-main-sha>]
 
   --render-only  (default) validate inputs and print the rendered unit; do not
@@ -108,12 +110,22 @@ Usage: deploy-hosted-control-plane.sh [--render-only|--check-env|--install-only|
                  with PAPERCUSP_BUNDLE_REUSE_FRESH=1 before installing.
   --check-release validate that production release without writing or starting
                  anything; requires --production-release.
+  --check-health verify /api/health names the requested SHA with no stale bundle,
+                 then require /api/health/ready to report ready. Read-only.
+  --activate-release
+                 Explicit cutover: check configuration, install and restart the
+                 pinned unit, then verify health/readiness. On failure restore
+                 the previous verified production unit and its active state.
+                 A first deployment failure stops and removes the failed unit.
+                 Requires --production-release; never run before rollout approval.
 
 Environment overrides:
   PAPERCUSP_HOSTED_CP_REPO_ROOT, PAPERCUSP_HOSTED_CP_PORT (default 3880),
   PAPERCUSP_HOSTED_CP_ENV_FILE (default ~/.config/papercusp/hosted-control-plane.env),
   PAPERCUSP_HOSTED_CP_NODE, PAPERCUSP_HOSTED_CP_UNIT_DIR, PAPERCUSP_HOSTED_CP_UNIT,
-  PAPERCUSP_HOSTED_CP_SYSTEMCTL, PAPERCUSP_HOSTED_CP_SYSTEMD_ANALYZE
+  PAPERCUSP_HOSTED_CP_SYSTEMCTL, PAPERCUSP_HOSTED_CP_SYSTEMD_ANALYZE,
+  PAPERCUSP_HOSTED_CP_HEALTH_ATTEMPTS (1-120, default 30),
+  PAPERCUSP_HOSTED_CP_HEALTH_TIMEOUT_SEC (1-30, default 5)
 EOF
 }
 
@@ -123,6 +135,8 @@ while (($#)); do
     --check-env) MODE="check-env" ;;
     --install-only) MODE="install-only" ;;
     --check-release) MODE="check-release" ;;
+    --check-health) MODE="check-health" ;;
+    --activate-release) MODE="activate-release" ;;
     --production-release)
       [[ $# -ge 2 && "$2" =~ ^[0-9a-f]{40}$ ]] || die "production release requires a full commit SHA"
       PRODUCTION_RELEASE="$2"; shift ;;
@@ -132,13 +146,16 @@ while (($#)); do
   shift
 done
 
-if [[ "${PAPERCUSP_DEPLOYMENT_ENVIRONMENT:-}" == production || "$MODE" == check-release ]]; then
+if [[ "${PAPERCUSP_DEPLOYMENT_ENVIRONMENT:-}" == production || "$MODE" == check-release || "$MODE" == check-health || "$MODE" == activate-release ]]; then
   [[ -n "$PRODUCTION_RELEASE" ]] || die "production requires --production-release <full-green-main-sha>"
 fi
 
 [[ -f "$TEMPLATE" ]] || die "template not found: $TEMPLATE"
 [[ -d "$OPERATOR_ROOT" && -f "$OPERATOR_ROOT/bin/serve.ts" ]] || die "operator checkout not found at $OPERATOR_ROOT"
 [[ "$PORT" =~ ^[0-9]{2,5}$ ]] || die "port must be numeric: $PORT"
+[[ "$UNIT_NAME" =~ ^[a-zA-Z0-9_.@-]+\.service$ ]] || die "unit name must be a service filename"
+[[ "$HEALTH_ATTEMPTS" =~ ^[1-9][0-9]*$ && "$HEALTH_ATTEMPTS" -le 120 ]] || die "health attempts must be 1-120"
+[[ "$HEALTH_TIMEOUT_SEC" =~ ^[1-9][0-9]*$ && "$HEALTH_TIMEOUT_SEC" -le 30 ]] || die "health timeout must be 1-30 seconds"
 [[ -n "$NODE_BIN" && -x "$NODE_BIN" ]] || die "node binary not found (set PAPERCUSP_HOSTED_CP_NODE)"
 NODE_DIR="$(dirname -- "$(readlink -f -- "$NODE_BIN")")"
 
@@ -286,9 +303,119 @@ check_env() {
   return "$status"
 }
 
+# Use the existing public probes, including their JSON contracts. HTTP 200 alone
+# can be a stale listener or an SPA; neither proves this release became ready.
+# Error output never includes response bodies or configuration values.
+check_health_once() {
+  "$NODE_BIN" --input-type=module - "$PORT" "$1" "$HEALTH_TIMEOUT_SEC" "${2:-$REPO_ROOT}" <<'HEALTH'
+import { execFileSync } from 'node:child_process';
+const [port, sha, timeout, root] = process.argv.slice(2);
+try {
+  const read = async (path) => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/health${path}`, {
+      redirect: 'error', signal: AbortSignal.timeout(Number(timeout) * 1000),
+    });
+    if (response.status !== 200) throw new Error('probe_status');
+    return response.json();
+  };
+  const health = await read('');
+  if (health?.ok !== true || health.service !== 'papercusp-operator' ||
+      !/^[0-9a-f]{7,40}$/.test(health.sha ?? '') || health.bundleStale != null) throw new Error('release_identity');
+  // bundle-host bakes a short SHA. Resolve it unambiguously in the proved
+  // release repository rather than accepting an arbitrary matching prefix.
+  const resolved = execFileSync('git', ['-C', root, 'rev-parse', '--verify', `${health.sha}^{commit}`],
+    { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  if (resolved !== sha) throw new Error('release_identity');
+  const ready = await read('/ready');
+  if (ready?.ok !== true || ready.ready !== true) throw new Error('not_ready');
+} catch {
+  process.exitCode = 1;
+}
+HEALTH
+}
+
+wait_for_health() {
+  local attempt
+  for ((attempt=1; attempt<=HEALTH_ATTEMPTS; attempt++)); do
+    if check_health_once "$1" "${2:-$REPO_ROOT}"; then return 0; fi
+    if ((attempt < HEALTH_ATTEMPTS)); then sleep 1; fi
+  done
+  printf 'hosted-control-plane: ERROR: release health/readiness failed after %s attempt(s)\n' "$HEALTH_ATTEMPTS" >&2
+  return 1
+}
+
+install_rendered_unit() {
+  render >"$1" || return 1
+  if command -v "$SYSTEMD_ANALYZE_BIN" >/dev/null 2>&1; then
+    "$SYSTEMD_ANALYZE_BIN" --user verify "$1" || return 1
+  fi
+  chmod 0644 "$1" || return 1
+  mv -f -- "$1" "$UNIT_DIR/$UNIT_NAME" || return 1
+  "$SYSTEMCTL_BIN" --user daemon-reload
+}
+
+activate_release() {
+  check_env || die "hosted configuration incomplete; activation refused"
+  local previous_sha="" previous_root="" was_active=0 line
+  # Refuse unrelated or legacy units before replacing anything. Recover the
+  # previous immutable release from our generated pre-start line; validate it
+  # through THIS guard rather than executing text read from an installed unit.
+  if [[ -e "$UNIT_DIR/$UNIT_NAME" || -L "$UNIT_DIR/$UNIT_NAME" ]]; then
+    [[ -f "$UNIT_DIR/$UNIT_NAME" && ! -L "$UNIT_DIR/$UNIT_NAME" ]] || die "previous unit must be a regular file"
+    while IFS= read -r line; do
+      if [[ "$line" =~ ^ExecStartPre=/usr/bin/bash\ (/[a-zA-Z0-9_./:@+-]+)/apps/operator/scripts/systemd/deploy-hosted-control-plane.sh\ --check-release\ --production-release\ ([0-9a-f]{40})$ ]]; then
+        [[ -z "$previous_sha" ]] || die "previous unit has ambiguous release identity"
+        previous_root="${BASH_REMATCH[1]}"; previous_sha="${BASH_REMATCH[2]}"
+      fi
+    done <"$UNIT_DIR/$UNIT_NAME"
+    [[ -n "$previous_sha" ]] || die "previous unit has no verified production release identity"
+    PAPERCUSP_HOSTED_CP_REPO_ROOT="$previous_root" PAPERCUSP_HOSTED_CP_TEMPLATE="$previous_root/apps/operator/scripts/systemd/papercusp-hosted-control-plane.service.in" \
+      bash "$SCRIPT_DIR/deploy-hosted-control-plane.sh" --check-release --production-release "$previous_sha" >/dev/null \
+      || die "previous release proof failed; activation refused"
+    if "$SYSTEMCTL_BIN" --user is-active --quiet "$UNIT_NAME"; then
+      was_active=1
+      check_health_once "$previous_sha" "$previous_root" || die "previous active release is not healthy; activation refused"
+    fi
+  fi
+  mkdir -p "$UNIT_DIR"
+  local stage
+  stage="$(mktemp -d "$UNIT_DIR/.activate-hosted-cp.XXXXXX")"
+  trap 'printf "hosted-control-plane: activation unfinished; recovery directory: %s\n" "$stage" >&2' EXIT
+  if [[ -n "$previous_sha" ]]; then cp -- "$UNIT_DIR/$UNIT_NAME" "$stage/previous" || die "could not preserve previous unit"; fi
+  if install_rendered_unit "$stage/$UNIT_NAME" && \
+    "$SYSTEMCTL_BIN" --user restart "$UNIT_NAME" && wait_for_health "$PRODUCTION_RELEASE"; then
+    rm -rf -- "$stage"; trap - EXIT
+    log "activated verified ready release: $PRODUCTION_RELEASE"
+    return 0
+  fi
+  # Stop the candidate before restoring; a failed restart may still have left
+  # a listener behind. A rollback failure stays loud and leaves its evidence.
+  "$SYSTEMCTL_BIN" --user stop "$UNIT_NAME" || die "candidate failed and could not be stopped; backup: $stage/previous"
+  if [[ -n "$previous_sha" ]]; then
+    mv -f -- "$stage/previous" "$UNIT_DIR/$UNIT_NAME"
+  else
+    rm -f -- "$UNIT_DIR/$UNIT_NAME"
+  fi
+  "$SYSTEMCTL_BIN" --user daemon-reload || die "rollback daemon-reload failed"
+  if ((was_active)); then
+    "$SYSTEMCTL_BIN" --user restart "$UNIT_NAME" && wait_for_health "$previous_sha" "$previous_root" \
+      || die "rollback release failed health/readiness"
+  fi
+  rm -rf -- "$stage"; trap - EXIT
+  if ((was_active)); then die "candidate failed; previous release restored and verified ready: $previous_sha"; fi
+  die "candidate failed; previous inactive state restored"
+}
+
 case "$MODE" in
   check-release)
     log "production release proof verified: $PRODUCTION_RELEASE"
+    ;;
+  check-health)
+    wait_for_health "$PRODUCTION_RELEASE" || die "requested production release is not healthy and ready"
+    log "release is healthy and ready: $PRODUCTION_RELEASE"
+    ;;
+  activate-release)
+    activate_release
     ;;
   render-only)
     render
@@ -303,15 +430,9 @@ case "$MODE" in
     tmpdir="$(mktemp -d "$UNIT_DIR/.stage-hosted-cp.XXXXXX")"
     tmp="$tmpdir/$UNIT_NAME"
     trap 'rm -rf "$tmpdir"' EXIT
-    render >"$tmp"
-    if command -v "$SYSTEMD_ANALYZE_BIN" >/dev/null 2>&1; then
-      "$SYSTEMD_ANALYZE_BIN" --user verify "$tmp" || die "rendered unit failed systemd-analyze verify"
-    fi
-    chmod 0644 "$tmp"
-    mv -f "$tmp" "$UNIT_DIR/$UNIT_NAME"
+    install_rendered_unit "$tmp" || die "unit installation or verification failed"
     rm -rf "$tmpdir"
     trap - EXIT
-    "$SYSTEMCTL_BIN" --user daemon-reload
     log "installed $UNIT_DIR/$UNIT_NAME (not enabled, not started)"
     log "next: $0 --check-env, then: systemctl --user start $UNIT_NAME"
     ;;
