@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources } from './with-documenso-sandbox.mjs';
+import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources } from './with-documenso-sandbox.mjs';
 
 async function withReaperServer(handler, run) {
   const sockets = new Set();
@@ -229,6 +229,77 @@ test('allocation errors redact injected credentials', async () => {
     spawnChild: () => spawn(process.execPath, ['-e', 'process.stderr.write(process.env.PASSWORD);process.exitCode=7'],
       { env: { ...process.env, PASSWORD: NEVER_EMIT_MARKER } }),
   }), error => error.message.includes('[redacted]') && !error.message.includes(NEVER_EMIT_MARKER));
+});
+
+test('container start remains joined past its warning and cleanup follows the actual daemon outcome', { timeout: 5000 }, async () => {
+  const owner = 'daohr-documenso-12345678-abc', containers = [], calls = [];
+  let warned, cleaned = false, finished = false;
+  const pendingWarning = new Promise(done => { warned = done; });
+  const pending = (async () => {
+    try {
+      await startSandboxContainer({ name: owner + '-pg', network: owner, args: ['pinned-image'], containers,
+        reaper: { assertConnected() {} },
+        allocate: async args => {
+          calls.push(args[0]);
+          if (args[0] === 'create') return 'owned-container';
+          assert.deepEqual(args, ['start', owner + '-pg']);
+          await dockerAllocation(args, {}, { pendingAfterMs: 10, onPending: warned,
+            spawnChild: () => spawn(process.execPath, ['-e', 'setTimeout(()=>process.stdout.write("started"),80)']),
+          });
+          finished = true;
+        },
+      });
+    } finally {
+      await cleanupSandboxResources({ containers, network: owner, networkCreated: false,
+        remove: async () => { assert.equal(finished, true); cleaned = true; }, inspect: () => '',
+      });
+    }
+  })();
+  await pendingWarning;
+  assert.equal(finished, false);
+  assert.equal(cleaned, false, 'a pending start must not race cleanup');
+  assert.deepEqual(containers, [owner + '-pg']);
+  await pending;
+  assert.deepEqual(calls, ['create', 'start']);
+  assert.equal(cleaned, true);
+});
+
+test('stop or lost cleanup lease during create forbids the subsequent start', async () => {
+  for (const loseLease of [false, true]) {
+    let created = false;
+    const containers = [];
+    const pending = startSandboxContainer({ name: 'owned-pg', network: 'owned-network', args: [], containers,
+      isStopped: () => created && !loseLease,
+      reaper: { assertConnected() { if (created) throw new Error('cleanup lease disconnected'); } },
+      allocate: async args => { assert.equal(args[0], 'create'); created = true; },
+      diagnosticRun: () => ({ status: 0, stdout: '{}' }),
+    });
+    if (loseLease) await assert.rejects(pending, /cleanup lease disconnected/);
+    else await pending;
+    assert.deepEqual(containers, ['owned-pg'], 'created resource remains owned for cleanup');
+  }
+});
+
+test('failed container start retains phase, container state and sanitized evidence before cleanup', async () => {
+  const secret = randomUUID(), calls = [];
+  await assert.rejects(startSandboxContainer({ name: 'owned-mail', network: 'owned-network', args: [], containers: [],
+    environment: { PASSWORD: secret }, reaper: { assertConnected() {} },
+    allocate: async args => { if (args[0] === 'start') throw new Error('daemon start failed ' + secret); },
+    diagnosticRun: args => {
+      calls.push(args[0]);
+      return { status: 0, stdout: args[0] === 'logs' ? 'startup detail ' + secret :
+        JSON.stringify({ Status: 'created', ExitCode: 0, Error: 'bind failed ' + secret, OOMKilled: false }) };
+    },
+  }), error => {
+    assert.match(error.message, /container start failed/);
+    assert.match(error.message, /owned-mail/);
+    assert.match(error.message, /created/);
+    assert.match(error.message, /daemon start failed/);
+    assert.match(error.message, /startup detail/);
+    assert.equal(error.message.includes(secret), false);
+    return true;
+  });
+  assert.deepEqual(calls, ['inspect', 'logs']);
 });
 
 test('normal cleanup waits for slow daemon removal before inspecting exact ownership', { timeout: 5000 }, async () => {

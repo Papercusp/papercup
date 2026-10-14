@@ -179,6 +179,29 @@ export async function dockerAllocation(args, environment = {}, {
   } finally { clearTimeout(warning); }
 }
 
+/** Start is also a daemon mutation: wait for its outcome before cleanup, and
+ * recheck the cleanup lease after create yields to the event loop. */
+export async function startSandboxContainer({ name, network, args, environment = {}, containers, reaper,
+  isStopped = () => false, allocate = dockerAllocation,
+  diagnosticRun = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 }),
+}) {
+  if (isStopped()) return;
+  reaper.assertConnected();
+  containers.push(name);
+  let phase = 'create';
+  try {
+    await allocate(['create', '--pull=missing', '--name', name, '--label', 'papercusp.test.owner=' + network,
+      '--network', network, ...args], environment);
+    if (isStopped()) return;
+    reaper.assertConnected();
+    phase = 'start';
+    await allocate(['start', name], environment);
+  } catch (error) {
+    throw new Error('Sandbox container ' + phase + ' failed: ' +
+      sandboxFailureDiagnostic(name, diagnosticRun, Object.values(environment), error.message), { cause: error });
+  }
+}
+
 /** A disposable daemon cache is not a sandbox prerequisite. Prepare only
  * immutable references, join each pull, and confirm availability before the
  * reaper or provider is allocated. create/run also use pull=missing so cache
@@ -283,15 +306,9 @@ export async function runSandbox({ image, command }) {
     }
     return result.stdout.trim();
   }
-  async function start(name, args, environment = {}) {
-    // Create and start have different effects. Await the allocation response
-    // before starting; a later start timeout cannot allocate another container.
-    reaper.assertConnected();
-    containers.push(name);
-    await dockerAllocation(['create', '--pull=missing', '--name', name, '--label', 'papercusp.test.owner=' + network,
-      '--network', network, ...args], environment);
-    if (!stopped) docker(['start', name]);
-  }
+  const start = (name, args, environment = {}) => startSandboxContainer({
+    name, args, environment, network, containers, reaper, isStopped: () => stopped,
+  });
   async function cleanup() {
     try {
       if (containers.length || networkCreated) {
