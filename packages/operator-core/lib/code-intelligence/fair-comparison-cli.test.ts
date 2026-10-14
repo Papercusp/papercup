@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { buildArm, FAIR_ARM_IDS, indexFileCensus, loadFairInputs, materializeFrozenControls,
-  prepareFrozenControl, validateFrozenInputs, verifyFrozenSource, workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
+  materializeFrozenRepositoryTask, prepareFrozenControl, validateFrozenInputs, verifyFrozenSource,
+  workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
 
 // Transitive users can mock only their own subprocess seam. Importing the CLI's
 // helpers must not read/promisify the absent execFile before an actual CLI run.
@@ -148,6 +149,20 @@ describe('saved native protocol inputs and worker controls', () => {
       mkdirSync(join(tree, pin.path, '..'), { recursive: true });
       writeFileSync(join(tree, pin.path), 'a changed source at a plausible snapshot path');
       await expect(verifyFrozenSource(tree, frozen)).rejects.toThrow(`source mismatch: ${pin.path}`);
+    } finally { rmSync(tree, { recursive: true, force: true }); }
+  });
+
+  it('refuses changed real-task questions and source bytes before writing a replay file', async () => {
+    const tree = mkdtempSync(join(tmpdir(), 'fair-repository-task-'));
+    const kase = frozen.cases.find(candidate => candidate.source === 'repository-task')!;
+    try {
+      await expect(materializeFrozenRepositoryTask(tree, { ...kase, subject: 'changed' }, frozen, 'wrong'))
+        .rejects.toThrow(/differs from frozen question/);
+      await expect(materializeFrozenRepositoryTask(tree, kase, frozen, 'wrong source at the right path'))
+        .rejects.toThrow(/source differs from frozen pin/);
+      await expect(materializeFrozenRepositoryTask(tree, control('current'), frozen, 'authored'))
+        .rejects.toThrow(/differs from frozen question/);
+      expect(existsSync(join(tree, kase.anchorFile!))).toBe(false);
     } finally { rmSync(tree, { recursive: true, force: true }); }
   });
 
