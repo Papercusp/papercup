@@ -33,6 +33,14 @@ const results = [];
 // never runs diagnostics; its original `astro check` remains an obligation.
 if (process.argv.includes('--astro-selection-child')) {
   const request = requests[0];
+  const phaseStartedAt = Date.now();
+  const phases = {};
+  let currentPhase = 'resolve-dependencies';
+  const enterPhase = name => {
+    currentPhase = name;
+    process.stdout.write(`ASTRO_SELECTION_PHASE=${JSON.stringify({ phase: name, elapsedMs: Date.now() - phaseStartedAt })}\n`);
+  };
+  const phase = (name, startedAt) => { phases[name] = Date.now() - startedAt; };
   try {
     if (requests.length !== 1 || request.runner !== 'astro-check' || request.syncBeforeCheck !== true)
       throw new Error('astro-sync-not-requested');
@@ -46,12 +54,22 @@ if (process.argv.includes('--astro-selection-child')) {
     const typescriptModule = checkRequire.resolve('typescript');
     const syncModule = resolve(dirname(astroPackage), 'dist/core/sync/index.js');
     const { default: sync } = await import(pathToFileURL(syncModule).href);
+    const syncStartedAt = Date.now();
+    enterPhase('sync');
     await sync({});
+    phase('syncMs', syncStartedAt);
     const { AstroCheck } = checkRequire('@astrojs/language-server');
+    const checkerStartedAt = Date.now();
+    enterPhase('checker');
     const checker = new AstroCheck(request.root, typescriptModule);
+    phase('checkerMs', checkerStartedAt);
     // Same exclusion as AstroCheck.lint, not a source glob or a tsconfig approximation.
+    const populationStartedAt = Date.now();
+    enterPhase('population');
     const absoluteFiles = checker.linter.getRootFileNames()
       .filter(file => !file.endsWith('.vue') && !file.endsWith('.svelte'));
+    phase('populationMs', populationStartedAt);
+    enterPhase('input-hashes');
     const repositoryRoot = realpathSync(request.repositoryRoot ?? request.root);
     const repositoryPath = file => {
       const result = relative(repositoryRoot, realpathSync(file)).replaceAll('\\', '/');
@@ -71,9 +89,11 @@ if (process.argv.includes('--astro-selection-child')) {
     results.push({ ok: true, enumerated: true, repositoryFiles: files, inputs,
       config: { runner: 'astro-check', tsconfig: checker.getTsconfig() ? repositoryPath(checker.getTsconfig()) : null },
       sync: { status: 'completed', beforePopulation: true },
-      executed: false, runtimeClosure: 'unmeasured', operationalAcceptance: false });
+      executed: false, runtimeClosure: 'unmeasured', operationalAcceptance: false,
+      diagnostics: { phases, elapsedMs: Date.now() - phaseStartedAt, currentPhase: 'completed' } });
   } catch (error) {
-    results.push({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    results.push({ ok: false, error: error instanceof Error ? error.message : String(error),
+      diagnostics: { phases, elapsedMs: Date.now() - phaseStartedAt, currentPhase } });
   }
   process.stdout.write(`${MARKER}${JSON.stringify({ results })}\n`);
   process.exit(0);
@@ -85,10 +105,19 @@ for (const request of requests) {
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   try {
     if (request.runner === 'astro-check') {
-      const output = execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--astro-selection-child'], {
-        cwd: request.root, input: JSON.stringify({ requests: [request] }), encoding: 'utf8',
-        timeout: 120_000, maxBuffer: 64 * 1024 * 1024,
-      });
+      let output;
+      try {
+        output = execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--astro-selection-child'], {
+          cwd: request.root, input: JSON.stringify({ requests: [request] }), encoding: 'utf8',
+          timeout: 120_000, maxBuffer: 64 * 1024 * 1024,
+        });
+      } catch (error) {
+        const tail = value => typeof value === 'string' ? value.slice(-4096) : undefined;
+        results.push({ ok: false, error: error instanceof Error ? error.message : String(error),
+          diagnostics: { childFailure: { code: error?.code, signal: error?.signal, status: error?.status,
+            stdoutTail: tail(error?.stdout), stderrTail: tail(error?.stderr) } } });
+        continue;
+      }
       const marker = output.split(/\r?\n/).reverse().find(line => line.startsWith(MARKER));
       const child = marker && JSON.parse(marker.slice(MARKER.length)).results;
       if (!Array.isArray(child) || child.length !== 1) throw new Error('invalid-astro-discovery-receipt');
