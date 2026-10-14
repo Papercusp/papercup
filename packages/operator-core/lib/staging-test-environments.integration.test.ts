@@ -100,14 +100,17 @@ describe('current-build execution route contract', () => {
     } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
   }, 200_000);
 
-  it.each([false, true])('retires private native query and LISTEN pools after the fixture (failure=%s)', failure => {
+  it.each([
+    ['pool', false], ['pool', true], ['launch', false], ['launch', true],
+    ['spawn', false], ['spawn', true],
+  ] as const)('retires private native %s pools after the fixture (failure=%s)', (kind, failure) => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-pool-cleanup-'));
     try {
       const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
         join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')], {
         cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
-        env: { ...process.env, STAGING_FIRST_HTTP_SCENARIO: 'current-su-native-pool-cleanup' + (failure ? '-failure' : ''),
+        env: { ...process.env, STAGING_FIRST_HTTP_SCENARIO: `current-su-native-${kind}-cleanup` + (failure ? '-failure' : ''),
           STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir },
       });
       expect(result.error, result.stderr.slice(-2000)).toBeUndefined();
@@ -117,10 +120,14 @@ describe('current-build execution route contract', () => {
       if (failure) expect(result.stderr).toContain('Private native pool cleanup exception control');
       const progress = readFileSync(join(evidenceDir, 'worker-progress.ndjson'), 'utf8')
         .trim().split('\n').map(line => JSON.parse(line));
-      expect(progress.map(row => row.stage)).toEqual([
-        'fixture-cleanup-start', 'fixture-host-stopped', 'fixture-pools-closed',
+      expect(progress.map(row => row.stage).filter(stage => stage !== 'fixture-pg-socket-opened')).toEqual([
+        'fixture-cleanup-start', 'fixture-host-stopped', 'fixture-pools-closing', 'fixture-pools-closed',
       ]);
       expect(progress.at(-1)).toMatchObject({ exitCode: failure ? 1 : 0 });
+      expect(progress.at(-2).pgConnections).toEqual(expect.arrayContaining([
+        expect.objectContaining({ application_name: expect.any(String), client_port: expect.any(Number) }),
+      ]));
+      expect(progress.at(-1).activeSockets.filter((socket: any) => socket.active && socket.referenced && socket.pgConnection)).toEqual([]);
     } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
   }, 200_000);
 
