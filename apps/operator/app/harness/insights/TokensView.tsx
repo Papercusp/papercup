@@ -191,7 +191,7 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
           <div style={TITLE}>
             <Coins size={16} aria-hidden /> Token spend
           </div>
-          <div style={SUB}>Cache-inclusive token &amp; cost burn this week, broken down by model, role, and day.</div>
+          <div style={SUB}>Calls observed by this runtime, with cache-inclusive tokens and labeled model costs.</div>
         </div>
         <button
           type="button"
@@ -203,11 +203,16 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
           <RefreshCw size={13} aria-hidden /> Refresh
         </button>
       </div>
+      <p style={SUB}>This local ledger covers calls this runtime observes. It does not measure provider-account usage,
+        subscription balances, invoices, or cloud bills. Papercusp service charges are separate.
+        Customer usage stays local unless you explicitly authorize aggregate diagnostic export.</p>
 
       {sync.loading && !snap ? (
         <div style={EMPTY}>Loading token spend…</div>
       ) : sync.error ? (
         <div style={EMPTY}>Token spend unavailable: {sync.error.message}</div>
+      ) : snap?.observation === 'unavailable' ? (
+        <div style={EMPTY} role="status" data-testid="tokens-unavailable">Local usage is unavailable. Token counts and costs are unknown.</div>
       ) : !snap || snap.totals.runs === 0 ? (
         <div style={EMPTY} data-testid="tokens-empty">
           <Coins size={20} aria-hidden />
@@ -217,9 +222,9 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
       ) : (
         <>
           <div style={SCOREBOARD} aria-label="Token spend totals">
-            <Stat value={formatUsd(snap.totals.costUsd)} label="Total spend" testid="tokens-stat-cost" />
+            <Stat value={formatUsd(snap.totals.costUsd)} label="Recorded model cost" testid="tokens-stat-cost" />
             <Stat value={formatTokens(snap.totals.tokens)} label="Total tokens" testid="tokens-stat-tokens" />
-            <Stat value={snap.totals.runs.toLocaleString()} label="Agent runs" testid="tokens-stat-runs" />
+            <Stat value={snap.totals.runs.toLocaleString()} label="Observed calls" testid="tokens-stat-runs" />
             <Stat value={cacheReadShare} label="Cache-read share" testid="tokens-stat-cache" />
           </div>
 
@@ -231,10 +236,25 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
               {snap.totals.estimatedUsd > 0
                 ? ` Includes ${formatUsd(snap.totals.estimatedUsd)} estimated from token counts (codex/OMP report no billed cost).`
                 : ''}
+              {snap.totals.reportedUsd !== undefined ? ` Provider-reported call cost: ${formatUsd(snap.totals.reportedUsd)}.` : ''}
+              {(snap.totals.unpricedCalls ?? 0) > 0 ? ` Cost is unknown for ${snap.totals.unpricedCalls} call(s); these are excluded from the recorded total.` : ''}
             </span>
           </div>
 
           <DayTrend snapshot={snap} />
+          <section style={CARD} aria-label="Recent local calls">
+            <div style={CARD_HEAD}>Recent local calls</div>
+            <p style={SUB}>Up to 20 recorded calls in the selected window. Unknown counters remain unknown.</p>
+            <div style={{ overflowX: 'auto' }}><table>
+              <thead><tr><th>Time</th><th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Model cost</th></tr></thead>
+              <tbody>{(snap.recentCalls ?? []).map(call => <tr key={call.id}>
+                <td>{new Date(call.atMs).toLocaleString()}</td><td>{call.model}</td>
+                {[call.inputTokens, call.outputTokens, call.cacheReadTokens, call.cacheCreationTokens].map((value, index) =>
+                  <td key={index}>{value === null ? 'Unknown' : formatTokens(value)}</td>)}
+                <td>{call.costUsd === null ? 'Unknown' : `${formatUsd(call.costUsd)} (${call.costSource === 'provider' ? 'provider reported' : 'estimated'})`}</td>
+              </tr>)}</tbody>
+            </table></div>
+          </section>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
             <Breakdown

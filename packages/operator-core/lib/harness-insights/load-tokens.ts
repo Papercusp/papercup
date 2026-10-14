@@ -18,8 +18,7 @@
  * unattributed and hidden from the by-account chart.
  *
  * Pure logic — injectable runQuery (mirrors the per-card loaders). Defensive: a
- * missing table/column (pre-migration substrate) yields the empty snapshot so the
- * subtab renders its empty state rather than 500-ing.
+ * missing table/column yields an explicitly unavailable snapshot, never zero usage.
  */
 
 import type {
@@ -27,6 +26,7 @@ import type {
   TokenGroupRow,
   TokenTimeBucket,
 } from './card-types';
+import { cloudTelemetryEventSchema, type CloudTelemetryEvent } from '../telemetry-kinds';
 
 export interface LoadHarnessTokensOpts {
   /** Request workspace (per-window-workspace-context). Explicit predicate so the
@@ -62,6 +62,8 @@ interface TotalsRow {
   runs: string | number | null;
   total_usd: string | number | null;
   estimated_usd: string | number | null;
+  reported_usd: string | number | null;
+  unpriced_calls: string | number | null;
   tokens: string | number | null;
   input_tokens: string | number | null;
   output_tokens: string | number | null;
@@ -79,14 +81,29 @@ interface DayRow {
   tokens: string | number | null;
   cost_usd: string | number | null;
 }
+interface CallRow {
+  id: string | number;
+  ts: string | number;
+  model: string | null;
+  cost_source: string | null;
+  cost_usd: string | number | null;
+  input_tokens: string | number | null;
+  output_tokens: string | number | null;
+  cache_read_tokens: string | number | null;
+  cache_creation_tokens: string | number | null;
+}
 
 function emptySnapshot(windowMs: number, accountAttributionAvailable = true): TokensDashboardSnapshot {
   return {
+    observation: 'unavailable',
+    recentCalls: [],
     windowMs,
     totals: {
       tokens: 0,
       costUsd: 0,
       estimatedUsd: 0,
+      reportedUsd: 0,
+      unpricedCalls: 0,
       runs: 0,
       inputTokens: 0,
       outputTokens: 0,
@@ -107,15 +124,19 @@ export async function loadHarnessTokens(
   const { workspace_id, harness_slug, runQuery } = opts;
   const windowMs = opts.windowMs ?? 7 * DAY_MS;
   const groupLimit = Math.max(1, Math.min(100, opts.groupLimit ?? 20));
-  const windowStart = Date.now() - windowMs;
+  const windowEnd = Date.now();
+  const windowStart = windowEnd - windowMs;
   const scope = [workspace_id, harness_slug, windowStart];
 
   try {
-    const [totalsRows, modelRows, roleRows, accountRows, dayRows] = await Promise.all([
+    const [totalsRows, modelRows, roleRows, accountRows, dayRows, callRows] = await Promise.all([
       runQuery<TotalsRow>(
         `SELECT COUNT(*)                                                          AS runs,
-                COALESCE(SUM(cost_usd), 0)                                        AS total_usd,
+                COALESCE(SUM(cost_usd) FILTER (WHERE cost_source IN ('provider', 'estimated')), 0) AS total_usd,
                 COALESCE(SUM(cost_usd) FILTER (WHERE cost_source = 'estimated'), 0) AS estimated_usd,
+                COALESCE(SUM(cost_usd) FILTER (WHERE cost_source = 'provider'), 0)  AS reported_usd,
+                COUNT(*) FILTER (WHERE cost_usd IS NULL OR cost_source IS NULL
+                  OR cost_source NOT IN ('provider', 'estimated'))                AS unpriced_calls,
                 COALESCE(SUM(${TOKENS_EXPR}), 0)                                  AS tokens,
                 COALESCE(SUM(COALESCE(input_tokens, 0)), 0)                       AS input_tokens,
                 COALESCE(SUM(COALESCE(output_tokens, 0)), 0)                      AS output_tokens,
@@ -128,7 +149,7 @@ export async function loadHarnessTokens(
       runQuery<GroupRow>(
         `SELECT COALESCE(NULLIF(model, ''), model_class, 'unknown') AS key,
                 COALESCE(SUM(${TOKENS_EXPR}), 0)                     AS tokens,
-                COALESCE(SUM(cost_usd), 0)                           AS cost_usd,
+                COALESCE(SUM(cost_usd) FILTER (WHERE cost_source IN ('provider', 'estimated')), 0) AS cost_usd,
                 COUNT(*)                                             AS runs
            FROM harness_shared.agent_usage_samples
           WHERE workspace_id = $1 AND harness_slug = $2 AND ts >= $3
@@ -140,7 +161,7 @@ export async function loadHarnessTokens(
       runQuery<GroupRow>(
         `SELECT COALESCE(NULLIF(role, ''), 'unattributed') AS key,
                 COALESCE(SUM(${TOKENS_EXPR}), 0)            AS tokens,
-                COALESCE(SUM(cost_usd), 0)                  AS cost_usd,
+                COALESCE(SUM(cost_usd) FILTER (WHERE cost_source IN ('provider', 'estimated')), 0) AS cost_usd,
                 COUNT(*)                                    AS runs
            FROM harness_shared.agent_usage_samples
           WHERE workspace_id = $1 AND harness_slug = $2 AND ts >= $3
@@ -152,7 +173,7 @@ export async function loadHarnessTokens(
       runQuery<GroupRow>(
         `SELECT account_id AS key,
                 COALESCE(SUM(${TOKENS_EXPR}), 0) AS tokens,
-                COALESCE(SUM(cost_usd), 0)       AS cost_usd,
+                COALESCE(SUM(cost_usd) FILTER (WHERE cost_source IN ('provider', 'estimated')), 0) AS cost_usd,
                 COUNT(*)                         AS runs
            FROM harness_shared.agent_usage_samples
           WHERE workspace_id = $1 AND harness_slug = $2 AND ts >= $3
@@ -166,11 +187,20 @@ export async function loadHarnessTokens(
         // ts is epoch ms; floor to the UTC day boundary so each bucket is one day.
         `SELECT (FLOOR(ts / ${DAY_MS}) * ${DAY_MS})::bigint AS day_start,
                 COALESCE(SUM(${TOKENS_EXPR}), 0)            AS tokens,
-                COALESCE(SUM(cost_usd), 0)                  AS cost_usd
+                COALESCE(SUM(cost_usd) FILTER (WHERE cost_source IN ('provider', 'estimated')), 0) AS cost_usd
            FROM harness_shared.agent_usage_samples
           WHERE workspace_id = $1 AND harness_slug = $2 AND ts >= $3
           GROUP BY 1
           ORDER BY day_start ASC`,
+        scope,
+      ),
+      runQuery<CallRow>(
+        `SELECT id, ts, COALESCE(NULLIF(model, ''), model_class, 'unknown') AS model,
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                cost_usd, cost_source
+           FROM harness_shared.agent_usage_samples
+          WHERE workspace_id = $1 AND harness_slug = $2 AND ts >= $3
+          ORDER BY ts DESC, id DESC LIMIT 20`,
         scope,
       ),
     ]);
@@ -188,11 +218,25 @@ export async function loadHarnessTokens(
     };
 
     return {
+      observation: 'observed',
+      periodStartMs: windowStart,
+      periodEndMs: windowEnd,
+      recentCalls: callRows.map(r => {
+        const costSource = r.cost_usd == null ? 'unknown' :
+          r.cost_source === 'provider' || r.cost_source === 'estimated' ? r.cost_source : 'unknown';
+        const nullable = (value: string | number | null) => value == null ? null : num(value);
+        return { id: String(r.id), atMs: num(r.ts), model: r.model ?? 'unknown',
+          inputTokens: nullable(r.input_tokens), outputTokens: nullable(r.output_tokens),
+          cacheReadTokens: nullable(r.cache_read_tokens), cacheCreationTokens: nullable(r.cache_creation_tokens),
+          costUsd: costSource === 'unknown' ? null : nullable(r.cost_usd), costSource };
+      }),
       windowMs,
       totals: {
         tokens: num(t?.tokens),
         costUsd: num(t?.total_usd),
         estimatedUsd: num(t?.estimated_usd),
+        reportedUsd: num(t?.reported_usd),
+        unpricedCalls: num(t?.unpriced_calls),
         runs: num(t?.runs),
         inputTokens: num(t?.input_tokens),
         outputTokens: num(t?.output_tokens),
@@ -206,7 +250,24 @@ export async function loadHarnessTokens(
       accountAttributionAvailable: true,
     };
   } catch {
-    // Pre-migration substrate (missing column/table) — render the empty state.
+    // Keep unavailable distinct from a successfully observed empty ledger.
     return emptySnapshot(windowMs, false);
   }
+}
+
+/** Explicit export projection of this local observed window. Final delivery
+ * still checks current consent; constructing this value grants no export. */
+export function cloudDiagnosticAggregateFromUsage(snapshot: TokensDashboardSnapshot, operationId: string): CloudTelemetryEvent | null {
+  if (snapshot.observation !== 'observed' || !Number.isFinite(snapshot.periodStartMs) ||
+    !Number.isFinite(snapshot.periodEndMs)) return null;
+  const totals = snapshot.totals;
+  const parsed = cloudTelemetryEventSchema.safeParse({ event: 'cloud_diagnostic_aggregate', operation_id: operationId,
+    properties: {
+      period_start: new Date(snapshot.periodStartMs!).toISOString(), period_end: new Date(snapshot.periodEndMs!).toISOString(),
+      calls: totals.runs, input_tokens: totals.inputTokens, output_tokens: totals.outputTokens,
+      cache_read_tokens: totals.cacheReadTokens, cache_creation_tokens: totals.cacheCreationTokens,
+      provider_cost_usd: totals.reportedUsd ?? null, estimated_cost_usd: totals.estimatedUsd,
+      unpriced_calls: totals.unpricedCalls ?? totals.runs,
+    } });
+  return parsed.success ? parsed.data : null;
 }
