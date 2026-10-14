@@ -63,6 +63,14 @@ describe('paired-device sends', () => {
     f.send.mockResolvedValue({ ok: true, delivery: { kind: 'staged' }, response: {} });
     expect((await call({ text: 'hi', idempotencyKey: 'k' })).body.delivery).toEqual({ kind: 'staged' });
   });
+  it('preserves a stored idempotency conflict without sending again', async () => {
+    f.run.mockResolvedValue({ status: 409, body: { ok: false, error: 'idempotency_conflict' } });
+    expect(await call({ text: 'changed body', idempotencyKey: 'same-key' }))
+      .toEqual({ status: 409, body: { ok: false, error: 'idempotency_conflict' } });
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.run).toHaveBeenCalledWith(expect.objectContaining({ principal, owner: 'su-target', action: 'send' }),
+      'same-key', { text: 'changed body' }, expect.any(Function));
+  });
   it('admits exact phone paths through both shared remote ingress doors', () => {
     expect(isPhoneDevicePath('/api/device/sessions/su-target/messages')).toBe(true);
     expect(isPhoneDevicePath('/api/device/sessions/../messages')).toBe(false);

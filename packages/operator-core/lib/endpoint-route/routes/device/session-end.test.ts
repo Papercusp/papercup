@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const f = vi.hoisted(() => ({ allowed: true, target: true, ended: false, raw: {} as Record<string, unknown>,
-  end: vi.fn(), audit: vi.fn(), state: 'ended' as string | null }));
+  end: vi.fn(), audit: vi.fn(), run: vi.fn(), state: 'ended' as string | null }));
 vi.mock('@papercusp/agent-mcp', async original => ({ ...(await original<typeof import('@papercusp/agent-mcp')>()), defineTool: (d: unknown) => d }));
 vi.mock('../../../owner-sessions/actions', () => ({ endOwnerSession: (...args: unknown[]) => f.end(...args), adminToolResultJson: (result: { parsed: unknown }) => result.parsed }));
 vi.mock('../../../owner-sessions/device-authority', () => ({ requireDeviceAgentSessions: async () => f.allowed ? null : Response.json({ error: 'agent_sessions_not_granted' }, { status: 403 }) }));
@@ -12,7 +12,7 @@ vi.mock('../../../agent-tools/coordination/liveness-oracle', () => ({ resolveSes
 vi.mock('../../../owner-sessions/device-actions', async original => ({
   ...(await original<typeof import('../../../owner-sessions/device-actions')>()),
   auditDeviceAction: (...args: unknown[]) => f.audit(...args),
-  runDeviceAction: async (_context: unknown, _key: string, _request: unknown, run: () => unknown) => run(),
+  runDeviceAction: (...args: unknown[]) => f.run(...args),
 }));
 import routes from './session-end';
 import { isPhoneDevicePath } from '../../../device-ingress-paths';
@@ -26,11 +26,14 @@ beforeEach(() => {
   f.raw = { ownerId: 'su-target', role: 'su', nativeSession: { backend: 'codex' } };
   f.end.mockReset().mockResolvedValue({ status: 200, parsed: { ok: true, results: [{ ok: true }] } });
   f.audit.mockReset().mockImplementation(async (_context, reply) => reply);
+  f.run.mockReset().mockImplementation(async (_context, _key, _request, run: () => unknown) => run());
 });
 describe('paired-device end session', () => {
   it('uses desktop Stop agent and reports the post-action shared oracle', async () => {
     expect(await call()).toEqual({ status: 200, body: { ok: true, state: 'ended' } });
     expect(f.end).toHaveBeenCalledWith({ workspaceId: 'workspace-a', ownerId: 'su-target', reason: 'Owner ended session from paired device phone-a' });
+    expect(f.run).toHaveBeenCalledWith({ principal: { kind: 'device', slug: 'phone-a', workspaceId: 'workspace-a' },
+      owner: 'su-target', action: 'end' }, expect.any(String), {}, expect.any(Function));
   });
   it('keeps an unavailable oracle verdict unknown', async () => {
     f.state = null;
