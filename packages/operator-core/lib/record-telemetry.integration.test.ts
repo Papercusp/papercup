@@ -159,8 +159,9 @@ describe('redacted render crash persistence (real PG)', () => {
       const response = await fetch(config.host.replace(/\/+$/, '') + path, { headers: {
         authorization: `Bearer ${config.personalApiKey}`, 'content-type': 'application/json' },
         ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(10_000) });
-      expect(response.status, `PostHog ${path} request`).toBe(200);
-      return response.json();
+      const text = await response.text();
+      expect(response.status, `PostHog ${path} request: ${text.slice(0, 1_000)}`).toBe(200);
+      return JSON.parse(text);
     };
     const projects = await request('/api/projects/');
     const project = projects.results.find((value: { api_token: string }) => value.api_token === config.projectKey);
@@ -183,31 +184,47 @@ describe('redacted render crash persistence (real PG)', () => {
       period_start: new Date().toISOString(), period_end: new Date().toISOString(), calls: 1,
       input_tokens: 12, output_tokens: 3, cache_read_tokens: 0, cache_creation_tokens: 0,
       provider_cost_usd: null, estimated_cost_usd: 0.01, unpriced_calls: 0 } });
+    const windowStart = new Date(Date.now() - 1_000).toISOString();
     const defaultEvent = make();
     expect(await deliverCloudPosthog(defaultEvent, context, readConsent)).toMatchObject({ delivered: false, code: 'consent_disabled' });
     const granted = await scoped(tx => writeCloudTelemetryConsent(tx, principal, {
       disclosure_version: DEFAULT_CLOUD_TELEMETRY_CONSENT.disclosure_version, diagnostics: true }));
-    const positive = make(), hostile = make(), revoked = make();
-    const identities = [defaultEvent, positive, hostile, revoked].map(event => {
+    const positive = make(), secondSessionPositive = make(), hostile = make(), revoked = make();
+    const identities = [defaultEvent, positive, secondSessionPositive, hostile, revoked].map(event => {
       const prepared = prepareCloudTelemetryDelivery(event, context, { ...granted, diagnostics: { enabled: true, since: '2000-01-01T00:00:00Z' } });
       if (!prepared.ok) throw new Error('synthetic identity preparation failed');
       return prepared.envelope.properties.operation_id;
     });
     expect(await deliverCloudPosthog(positive, context, readConsent)).toEqual({ delivered: true });
+    const secondPrincipal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: organization,
+      userId: user, selectedWorkspaceId: principal.selectedWorkspaceId, sessionId: randomUUID(), sessionVersion: 2, permissions: ['workspace:view'] });
+    expect(await deliverCloudPosthog(secondSessionPositive, { ...context, principal: secondPrincipal }, readConsent)).toEqual({ delivered: true });
     expect(await deliverCloudPosthog({ ...hostile, properties: { ...hostile.properties, prompt: 'synthetic-forbidden-field' } }, context, readConsent))
       .toMatchObject({ delivered: false, code: 'invalid_cloud_event' });
     await scoped(tx => writeCloudTelemetryConsent(tx, principal, { disclosure_version: granted.disclosure_version, diagnostics: false }));
     expect(await deliverCloudPosthog(revoked, context, readConsent)).toMatchObject({ delivered: false, code: 'consent_disabled' });
-    const query = `SELECT properties.operation_id, count() FROM events WHERE event = 'cloud_diagnostic_aggregate' AND properties.operation_id IN (${identities.map(id => `'${id}'`).join(',')}) GROUP BY properties.operation_id`;
-    let rows: Array<[string, number]> = [];
+    const windowEnd = new Date(Date.now() + 1_000).toISOString();
+    const query = `SELECT properties.operation_id, distinct_id, properties.organization_id, properties.workspace_id, uuid FROM events WHERE event = 'cloud_diagnostic_aggregate' AND timestamp >= parseDateTimeBestEffort('${windowStart}') AND timestamp <= parseDateTimeBestEffort('${windowEnd}') AND properties.operation_id IN (${identities.map(id => `'${id}'`).join(',')}) ORDER BY properties.operation_id`;
+    console.info('CLOUD_MONITORING_PRIVACY_QUERY', JSON.stringify({ projectId: project.id, windowStart, windowEnd, query }));
+    let rows: string[][] = [], queryResult: unknown;
     for (let attempt = 0; attempt < 12; attempt++) {
       const result = await request(`/api/projects/${project.id}/query/`, { refresh: 'force_blocking', query: { kind: 'HogQLQuery', query } });
       expect(result.is_cached, 'privacy ingestion proof must use a fresh query').toBe(false);
-      rows = result.results;
-      if (rows.some(([id]) => id === identities[1])) break;
+      queryResult = result; rows = result.results;
+      if (rows.some(([id]) => id === identities[1]) && rows.some(([id]) => id === identities[2])) break;
       await new Promise(resolve => setTimeout(resolve, 2_000));
     }
-    expect(rows).toEqual([[identities[1], 1]]);
+    expect(rows.map(row => row[0]).sort()).toEqual(identities.slice(1, 3).sort());
+    for (const column of [1, 2, 3]) {
+      expect(new Set(rows.map(row => row[column])).size).toBe(1);
+      expect(rows[0]![column]).toMatch(/^[a-f0-9]{64}$/);
+    }
+    for (const row of rows) expect(row[4]).toMatch(/^[a-f0-9-]{36}$/);
+    for (const raw of [organization, user, principal.selectedWorkspaceId!, principal.sessionId, secondPrincipal.sessionId])
+      expect(JSON.stringify(rows)).not.toContain(raw);
+    console.info('CLOUD_MONITORING_PRIVACY_RECEIPT', JSON.stringify({ projectId: project.id,
+      windowStart, windowEnd, approvedOperations: identities.slice(1, 3), excludedOperations: [identities[0], ...identities.slice(3)],
+      query, result: queryResult }));
   }, 90_000);
 
   it.runIf(process.env.PAPERCUSP_TEST_POSTHOG_LIVE === 'true')('ingests distinct confirmed phases and saved reviews once, rejects forged browser reviews, and materializes isolated business views', async () => {
@@ -219,7 +236,8 @@ describe('redacted render crash persistence (real PG)', () => {
       const response = await fetch(config.host.replace(/\/+$/, '') + path, { headers: {
         authorization: `Bearer ${config.personalApiKey}`, 'content-type': 'application/json' },
         ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(15_000) });
-      expect(response.status, `PostHog ${path}`).toBe(200); return response.json();
+      const text = await response.text();
+      expect(response.status, `PostHog ${path}: ${text.slice(0, 1_000)}`).toBe(200); return JSON.parse(text);
     };
     const projects = await request('/api/projects/');
     const project = projects.results.find((value: { api_token: string }) => value.api_token === config.projectKey);
