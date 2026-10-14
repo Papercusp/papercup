@@ -34,7 +34,13 @@ import {
 } from '../capability/foreground-transport-cap';
 import { captureRecipe, type RecipeCaptureDisposition } from './capture-recipe';
 import type { SimilarRecipe } from '../../code-recipes-search';
-import { deriveRecipeAuthority, recipeRevision } from '../../recipe-authority';
+import {
+  deriveRecipeAuthority,
+  recipeAuthorityContextFromRefs,
+  recipeRevision,
+  resolveLiveBoundRefs,
+  type RecipeAuthorityContext,
+} from '../../recipe-authority';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 import { recordRecipeRun } from '../../code-recipes-store';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
@@ -51,6 +57,10 @@ import { ORCHESTRATION_RECURSION_EXCLUSIONS } from '../orchestration/contract-pr
 import { validateRecipeScriptAgainstCatalog } from '../recipes/recipe-schema-validation';
 import { canonicalJson } from '../../authority/authority-rpc-envelope';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { deriveFleetMembership } from '../coordination/identity';
+import { resolvePresenceFleet } from '../coordination/presence-fleet';
+import { readIdentity } from '../locks/identity';
+import { getTxPool } from '../locks/su-lock-store';
 import { openManagedKernel, controlManagedKernel, runManagedKernelScript } from './kernel-owner';
 
 export type CodeRunCaptureMode = 'auto' | 'never';
@@ -2655,6 +2665,40 @@ async function maybeCaptureRecipe(
       ownerId = null; // unattributable ctx (e.g. a test/in-process call) — still capture
     }
 
+    // Similar-recipe runArgs are actionable only when the recommended recipe is
+    // bound to the caller's CURRENT lane. Do not derive this from the new script:
+    // a code:run script can mention a historical plan/item while the caller no
+    // longer holds it, which would advertise a proof that recipes:run rejects.
+    // Keep the broad workspace/harness scope even when the live claim read fails;
+    // that still permits genuinely generic recipes while filtering bound ones.
+    let recommendationContext: RecipeAuthorityContext = {
+      workspace: workspaceId,
+      ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
+    };
+    try {
+      const identity = readIdentity(ctx);
+      const liveRefs = await resolveLiveBoundRefs(
+        getOrgPg().sql,
+        getTxPool(),
+        identity.ownerId,
+        identity.coordinationDomain,
+      );
+      let liveFleet: string | null = null;
+      try {
+        liveFleet = (await resolvePresenceFleet(identity.ownerId, deriveFleetMembership())).fleetSlug;
+      } catch {
+        liveFleet = null;
+      }
+      recommendationContext = {
+        ...recipeAuthorityContextFromRefs(liveRefs),
+        workspace: workspaceId,
+        ...(liveFleet ? { fleet: liveFleet } : {}),
+        ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
+      };
+    } catch (err) {
+      ctx.log(`code:run live recipe authority read failed (bound recommendations filtered): ${(err as Error)?.message ?? String(err)}`);
+    }
+
     const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
     const profile = resolved ? resolveProseProfileSelection(resolved.mode, resolved.profile) : null;
 
@@ -2678,6 +2722,7 @@ async function maybeCaptureRecipe(
         ...(contract?.bindingSchema ? { bindingSchema: contract.bindingSchema } : {}),
         ...(contract ? { capabilityManifest: contract.capabilityManifest } : {}),
         ...(contract?.tags ? { tags: contract.tags } : {}),
+        recommendationContext,
         tools,
         allowed,
         executionTrace,
