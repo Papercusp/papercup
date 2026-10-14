@@ -9,6 +9,7 @@ import { recordWorkspaceKeyboardDelivery, typeWorkspaceNameWithKeyboard,
   type KeyboardDeliveryEvidence } from './_keyboard-input';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson';
+import { cloudTelemetryEventSchema } from '@papercusp/operator-core/lib/telemetry-kinds';
 import { prepareCloudTutorialNetlog } from '@papercusp/test-config/hermetic-tmpdir';
 import AxeBuilder from '@axe-core/playwright';
 import { writeFile } from 'node:fs/promises';
@@ -117,6 +118,25 @@ async function setupJourney(page: Page, existing: boolean, speech = false, targe
     apiHits.push(path);
     const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (request.method() === 'GET' && Object.hasOwn(shellReads, path)) return json(shellReads[path]);
+    // PostHogProvider and the guide emit bounded hosted metadata even when
+    // consent is off. Model the existing hosted ingress, not a vendor sink.
+    if (request.method() === 'POST' && path === '/api/hosted/browser/monitoring/event') {
+      let body: unknown;
+      try { body = request.postDataJSON(); } catch { body = null; }
+      const parsed = cloudTelemetryEventSchema.safeParse(body);
+      const reject = (error: string) => json({ ok: false, error, message: error }, 400);
+      if (!parsed.success) return reject('invalid_cloud_event');
+      const event = parsed.data;
+      if (event.event === 'cloud_diagnostic_aggregate' || event.event === 'cloud_workspace_provisioning' ||
+          (event.event === 'product_tutorial' && event.properties.action === 'explanation_reviewed')) {
+        return reject('unwitnessed_outcome');
+      }
+      shellWrites.push({ path, body: event });
+      const privateTask = event.event === 'cloud_tutorial' && (event.properties.action === 'complete' ||
+        (event.properties.step && ['agent', 'task', 'result', 'revision', 'practice'].includes(event.properties.step)));
+      return route.fulfill({ status: 202, contentType: 'application/json', headers: { 'cache-control': 'no-store' },
+        body: JSON.stringify({ delivered: false, code: privateTask ? 'customer_data_local' : 'consent_disabled' }) });
+    }
     // UiPresenceProvider/UiIntentDispatcher and useStateSnapshots subscribe
     // at the native root. No pending intents or open cards are seeded here.
     if (request.method() === 'GET' && (path === '/api/ui/intents/stream' || path === '/api/operator/state-snapshot')) {
@@ -273,8 +293,10 @@ test.afterEach(async ({ page }, testInfo) => {
 test('browser fixture detects an unmodelled API request even when its 501 is ignored', async ({ page }) => {
   const path = '/api/hosted/browser/unmodelled-fixture-control';
   const forbiddenShellWrite = '/api/workspaces';
+  const monitoringPath = '/api/hosted/browser/monitoring/event';
   const fixture = await setupJourney(page, true, false, 'gcp', [
     { path, method: 'POST' }, { path: forbiddenShellWrite, method: 'POST' },
+    { path: monitoringPath, method: 'GET' },
   ]);
   await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
   await fixture.sync.waitForServed(['workspaceHosts.control']);
@@ -287,6 +309,35 @@ test('browser fixture detects an unmodelled API request even when its 501 is ign
   })).status);
   expect(diagnosticStatus).toBe(200);
   expect(fixture.shellWrites).toContainEqual({ path: '/api/toast-log', body: { level: 'info', message: 'Fixture shell diagnostic control' } });
+  // Exercise the same monitoring boundary that the real shell consumes.
+  const operation_id = '00000000-0000-4000-8000-000000000001';
+  const monitoringEvent = { event: 'cloud_portal_session', operation_id, properties: { action: 'returned' } };
+  const monitor = (body: unknown) => page.evaluate(async ({ path, body }) => {
+    const response = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json(), cache: response.headers.get('cache-control') };
+  }, { path: monitoringPath, body });
+  expect(await monitor(monitoringEvent)).toEqual({ status: 202, body: { delivered: false, code: 'consent_disabled' }, cache: 'no-store' });
+  expect(fixture.shellWrites).toContainEqual({ path: monitoringPath, body: monitoringEvent });
+  const privateEvent = { event: 'cloud_tutorial', operation_id, properties: {
+    lesson_id: 'first-cloud-agent', lesson_version: 2, action: 'step_displayed', step: 'task',
+  } };
+  expect(await monitor(privateEvent)).toEqual({ status: 202, body: { delivered: false, code: 'customer_data_local' }, cache: 'no-store' });
+  expect(fixture.shellWrites).toContainEqual({ path: monitoringPath, body: privateEvent });
+  const validMonitoringWrites = fixture.shellWrites.filter(write => write.path === monitoringPath).length;
+  for (const body of [null, { ...monitoringEvent, properties: { action: 'returned', prompt: 'not metadata' } }]) {
+    expect(await monitor(body)).toMatchObject({ status: 400, body: { error: 'invalid_cloud_event' } });
+  }
+  for (const body of [
+    { event: 'cloud_workspace_provisioning', operation_id, properties: { phase: 'ready', provider: 'gcp', hosting_mode: 'byoc' } },
+    { event: 'cloud_diagnostic_aggregate', operation_id, properties: {
+      period_start: '2026-10-01T00:00:00Z', period_end: '2026-10-02T00:00:00Z', calls: 0,
+      input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0,
+      provider_cost_usd: null, estimated_cost_usd: null, unpriced_calls: 0,
+    } },
+    { event: 'product_tutorial', operation_id, properties: { lesson_id: 'product-guide', lesson_version: 3, action: 'explanation_reviewed', lesson: 'welcome' } },
+  ]) expect(await monitor(body)).toMatchObject({ status: 400, body: { error: 'unwitnessed_outcome' } });
+  expect(fixture.shellWrites.filter(write => write.path === monitoringPath)).toHaveLength(validMonitoringWrites);
+  expect(fixture.unmodelledRequests).toEqual([]);
   // The fixture intercepts this request; no control-plane write leaves the page.
   const status = await page.evaluate(async path => (await fetch(path, { method: 'POST' })).status, path);
   expect(status).toBe(501);
@@ -300,6 +351,12 @@ test('browser fixture detects an unmodelled API request even when its 501 is ign
   expect(forbiddenStatus).toBe(501);
   expect(fixture.unmodelledRequests).toEqual([
     { path, method: 'POST' }, { path: forbiddenShellWrite, method: 'POST' },
+  ]);
+  const wrongMethod = await page.evaluate(async path => (await fetch(path)).status, monitoringPath);
+  expect(wrongMethod).toBe(501);
+  expect(fixture.unmodelledRequests).toEqual([
+    { path, method: 'POST' }, { path: forbiddenShellWrite, method: 'POST' },
+    { path: monitoringPath, method: 'GET' },
   ]);
   expect(fixture.writes).toEqual([]);
   expect(fixture.browserErrors).toEqual([]);

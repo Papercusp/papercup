@@ -14,16 +14,12 @@
  *   2. THE REAL TREE has no unstamped work-item writer.
  */
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import {
   isUnstampedWorkItemWriter,
   mintsWorkItems,
   ALLOWLIST,
+  scan,
 } from '../../../scripts/check-work-item-admission-writers.mjs';
-
-/** This file sits at packages/operator-core/lib/ — three levels down. */
-const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
 /** A path in no map, so only the PREDICATE decides the verdict. */
 const NEW = 'packages/operator-core/lib/brand-new-filer.ts';
@@ -101,15 +97,10 @@ describe('isUnstampedWorkItemWriter (the predicate)', () => {
 
 describe('the real tree', () => {
   it('has no work-item writer that mints without deciding admission', () => {
-    // Exercise the exact CLI that gates the tree rather than duplicating its
-    // population filter here. The count is a positive control: a broken/empty
-    // scan cannot make this real-tree assertion pass vacuously.
-    const output = execFileSync(process.execPath, ['scripts/check-work-item-admission-writers.mjs'], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-    });
-    const mintingCount = output.match(/\[work-item-admission-writers\] OK — (\d+) minting file\(s\)/);
-    expect(mintingCount, output).not.toBeNull();
-    expect(Number(mintingCount?.[1])).toBeGreaterThan(5);
+    // Use the exact population and verdict function the CLI uses. The count is a
+    // positive control: a broken/empty scan cannot make this pass vacuously.
+    const { minting, offenders } = scan();
+    expect(minting.length, 'scan found no work-item writers at all — the instrument is broken').toBeGreaterThan(5);
+    expect(offenders).toEqual([]);
   });
 });

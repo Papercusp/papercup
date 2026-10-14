@@ -211,7 +211,13 @@ function trackedFiles() {
   };
 }
 
-function scan() {
+/**
+ * Scan the measured production source population. Exported so the registered
+ * real-tree test exercises this exact filter and verdict without a subprocess.
+ *
+ * @returns {{ minting: Array<{ rel: string, decided: boolean, allowlisted: boolean }>, offenders: string[], unscanned: unknown }}
+ */
+export function scan() {
   const { files, unscanned } = trackedFiles();
   const minting = [];
   const offenders = [];

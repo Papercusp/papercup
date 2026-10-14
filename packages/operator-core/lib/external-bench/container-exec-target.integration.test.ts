@@ -11,7 +11,7 @@
  * need Docker). Run: npm run test:file -- <this file>
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,26 +26,55 @@ import {
 const containers: string[] = [];
 let root: string;
 
-function startContainer(extra: string[] = []): string {
-  const id = execFileSync('docker', ['run', '-d', '--network', 'none', ...extra, 'alpine', 'sleep', '300'], {
-    encoding: 'utf8', timeout: 30_000,
-  }).trim();
+// Match the stock-native fixture's asynchronous phase diagnostics. Ending stdin
+// explicitly is required for the wrapper's docker exec -i on noninteractive probes.
+async function command(bin: string, args: string[], env?: NodeJS.ProcessEnv) {
+  const phase = bin === 'docker' ? args.slice(0, 2).join(' ') : 'wrapper';
+  const started = Date.now();
+  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: 'started', containerIds: containers }));
+  const result = await new Promise<{ stdout: string; stderr: string; status: number }>((resolve, reject) => {
+    const child = execFile(bin, args, { env, encoding: 'utf8', timeout: 30_000 }, (error, stdout, stderr) => {
+      if (error && typeof error.code !== 'number') {
+        console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: 'failed', elapsedMs: Date.now() - started,
+          error: String(error), stderr }));
+        reject(error);
+      } else resolve({ stdout, stderr, status: error?.code ?? 0 });
+    });
+    child.stdin?.end();
+  });
+  console.info('CONTAINER_EXEC_PHASE', JSON.stringify({ phase, state: 'completed', elapsedMs: Date.now() - started,
+    status: result.status }));
+  return result;
+}
+
+async function startContainer(extra: string[] = []): Promise<string> {
+  const result = await command('docker', ['run', '-d', '--network', 'none', ...extra, 'alpine', 'sleep', '300']);
+  expect(result.status, result.stderr).toBe(0);
+  const id = result.stdout.trim();
   containers.push(id);
   return id;
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   root = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'cexec-int-'));
-  execFileSync('docker', ['image', 'inspect', 'alpine'], { stdio: 'ignore', timeout: 30_000 });
+  const result = await command('docker', ['image', 'inspect', 'alpine']);
+  expect(result.status, result.stderr).toBe(0);
 });
 
-afterAll(() => {
-  if (containers.length) {
-    const removed = spawnSync('docker', ['rm', '-f', ...containers], { encoding: 'utf8', timeout: 30_000 });
-    expect(removed.error, removed.stderr).toBeUndefined();
-    expect(removed.status, removed.stderr).toBe(0);
+afterAll(async () => {
+  const failures: string[] = [];
+  for (const id of containers) {
+    try {
+      const removed = await command('docker', ['rm', '-f', id]);
+      expect(removed.status, removed.stderr).toBe(0);
+    } catch (error) {
+      failures.push(`${id}: ${String(error)}`);
+    }
   }
-  rmSync(root, { recursive: true, force: true });
+  // Keep fixture files on cleanup failure for inspection; Vitest retains the
+  // primary assertion independently of this hook's complete cleanup verdict.
+  if (failures.length) throw new Error(JSON.stringify({ root, cleanupFailures: failures }));
+  if (root) rmSync(root, { recursive: true, force: true });
 });
 
 describe('container exec target against a live container', () => {
@@ -71,8 +100,8 @@ describe('container exec target against a live container', () => {
     }
   });
 
-  it('resolveBackendLaunch picks the wrapper, which runs inside the container in the workdir', () => {
-    const cid = startContainer();
+  it('resolveBackendLaunch picks the wrapper, which runs inside the container in the workdir', async () => {
+    const cid = await startContainer();
     const { wrapperPath } = materializeDockerExecWrapper(
       { kind: 'docker-exec', containerId: cid, workdir: '/tmp', binPath: '/bin/sh' },
       { dir: mkdtempSync(join(root, 'w-')) },
@@ -85,19 +114,16 @@ describe('container exec target against a live container', () => {
     };
     const launch = resolveBackendLaunch('codex', { env });
     expect(launch?.bin).toBe(wrapperPath);
-    const r = spawnSync(
+    const r = await command(
       launch!.bin,
       ['-c', 'pwd; hostname; printf "%s|%s\\n" "$CODEX_HOME" "${UNRELATED_SECRET:-unset}"'],
-      // This command consumes no stdin. Bound the synchronous subprocess so
-      // a stuck Docker invocation cannot outlive Vitest's async watchdog.
-      { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 },
+      env,
     );
-    expect(r.error, r.stderr).toBeUndefined();
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout.trim().split('\n')).toEqual(['/tmp', cid.slice(0, 12), '/codex-home-from-host|unset']);
   });
 
-  it('relocated session home: the container reads and writes it through a same-path per-task mount and sees no other session', () => {
+  it('relocated session home: the container reads and writes it through a same-path per-task mount and sees no other session', async () => {
     const base = mkdtempSync(join(root, 'reloc-'));
     const homes = join(base, 'su-codex-homes'), perHomes = join(base, 'task-homes');
     const sqlite = join(base, 'codex-sqlite-homes'), perSqlite = join(base, 'task-sqlite');
@@ -105,17 +131,15 @@ describe('container exec target against a live container', () => {
     writeFileSync(join(homes, 'session-7', 'config.toml'), 'model = "frozen"\n');
     writeFileSync(join(homes, 'session-8', 'auth.json'), '{"token":"other-session"}\n');
     // The seam mounts each per-task dir over its shared root, at the same absolute path.
-    const cid = startContainer(['-v', `${perHomes}:${homes}`, '-v', `${perSqlite}:${sqlite}`]);
+    const cid = await startContainer(['-v', `${perHomes}:${homes}`, '-v', `${perSqlite}:${sqlite}`]);
     const { wrapperPath } = materializeDockerExecWrapper(
       { kind: 'docker-exec', containerId: cid, workdir: '/', binPath: '/bin/sh',
         sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }, { hostRoot: sqlite, perTaskDir: perSqlite }] } },
       { dir: mkdtempSync(join(root, 'r-')) },
     );
     const script = 'cat "$CODEX_HOME/config.toml"; ls "$(dirname "$CODEX_HOME")"; echo from-container > "$CODEX_HOME/rollout.jsonl"';
-    const r = spawnSync(wrapperPath, ['-c', script], {
-      env: { PATH: process.env.PATH ?? '', CODEX_HOME: join(homes, 'session-7') },
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
-    expect(r.error, r.stderr).toBeUndefined();
+    const r = await command(wrapperPath, ['-c', script],
+      { PATH: process.env.PATH ?? '', CODEX_HOME: join(homes, 'session-7') });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('model = "frozen"');
     // Only this session is visible inside the container; session-8 and its token stay on the host.
@@ -124,28 +148,24 @@ describe('container exec target against a live container', () => {
     expect(readFileSync(join(homes, 'session-7', 'rollout.jsonl'), 'utf8')).toBe('from-container\n');
   });
 
-  it("returns the in-container process's exit code", () => {
-    const cid = startContainer();
+  it("returns the in-container process's exit code", async () => {
+    const cid = await startContainer();
     const { wrapperPath } = materializeDockerExecWrapper(
       { kind: 'docker-exec', containerId: cid, workdir: '/', binPath: '/bin/sh' },
       { dir: mkdtempSync(join(root, 'x-')) },
     );
-    const r = spawnSync(wrapperPath, ['-c', 'exit 5'], {
-      env: { PATH: process.env.PATH ?? '' }, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
-    expect(r.error, r.stderr?.toString()).toBeUndefined();
+    const r = await command(wrapperPath, ['-c', 'exit 5'], { PATH: process.env.PATH ?? '' });
     expect(r.status).toBe(5);
   });
 
-  it('runs the musl Codex from the host install, mounted read-only at the seam path, with no network', () => {
+  it('runs the musl Codex from the host install, mounted read-only at the seam path, with no network', async () => {
     const musl = resolveContainerCodexBinary();
-    const cid = startContainer(['-v', `${musl}:${CONTAINER_CODEX_BIN_PATH}:ro`]);
+    const cid = await startContainer(['-v', `${musl}:${CONTAINER_CODEX_BIN_PATH}:ro`]);
     const { wrapperPath } = materializeDockerExecWrapper(
       { kind: 'docker-exec', containerId: cid, workdir: '/', binPath: CONTAINER_CODEX_BIN_PATH },
       { dir: mkdtempSync(join(root, 'c-')) },
     );
-    const r = spawnSync(wrapperPath, ['--version'], {
-      env: { PATH: process.env.PATH ?? '' }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
-    expect(r.error, r.stderr).toBeUndefined();
+    const r = await command(wrapperPath, ['--version'], { PATH: process.env.PATH ?? '' });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/codex-cli \d+\.\d+\.\d+/);
   });

@@ -54,7 +54,7 @@ export interface ReviewerReservationRef {
 export interface ReviewerRelaunchGuardDeps {
   /** Non-terminal review-target reservations R holds, released, or appears in the claim history of. */
   reviewerReservations(ownerId: string, workspaceId: string): Promise<ReviewerReservationRef[]>;
-  /** The launcher recorded on R's FIRST adv_sessions row, or null if none. */
+  /** First session launcher, falling back to exact-owner task provenance when missing. */
   firstLauncher(ownerId: string, workspaceId: string): Promise<string | null>;
   /** C plus every identity C descends from. */
   ancestors(ownerId: string, workspaceId: string): Promise<Set<string>>;
@@ -114,13 +114,26 @@ export function reviewerRelaunchSqlDeps(sql: Sql): ReviewerRelaunchGuardDeps {
         .map((row) => ({ reservationId: row.feature_id, planSlug: row.plan_slug.trim() }));
     },
     async firstLauncher(ownerId, workspaceId) {
+      // A rejected first turn can register a session before its launch_spec is
+      // populated. The managed task already records the recruiter and answering
+      // owner; missing session provenance must not turn that reviewer into an
+      // ordinary worker (EI-25972280994890936).
       const rows = await sql<Array<{ launch_parent_owner: string | null }>>`
-        SELECT launch_parent_owner
-          FROM harness_shared.adv_sessions
-         WHERE workspace_id = ${workspaceId}
-           AND coord_owner_id = ${ownerId}
-         ORDER BY id ASC
-         LIMIT 1`;
+        SELECT COALESCE(
+          (SELECT NULLIF(trim(launch_parent_owner), '')
+             FROM harness_shared.adv_sessions
+            WHERE workspace_id = ${workspaceId}
+              AND coord_owner_id = ${ownerId}
+            ORDER BY id ASC
+            LIMIT 1),
+          (SELECT NULLIF(trim(launched_by), '')
+             FROM harness_shared.task_ledger
+            WHERE workspace_id = ${workspaceId}
+              AND class = 'agent-session'
+              AND detail ->> 'coordOwnerId' = ${ownerId}
+            ORDER BY created_at ASC, task_id ASC
+            LIMIT 1)
+        ) AS launch_parent_owner`;
       return rows[0]?.launch_parent_owner?.trim() || null;
     },
     ancestors: (ownerId, workspaceId) => acceptanceLineageAncestors(ownerId, { sql, workspaceId }),
