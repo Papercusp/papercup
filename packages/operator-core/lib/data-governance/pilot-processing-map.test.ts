@@ -1,0 +1,174 @@
+/**
+ * Pins the pilot processing map (P-007a, WI-6554700010011592) to the code and the contract.
+ * A renamed or deleted seat, a store a seat no longer touches, a contract row with no path, or
+ * a path whose unknowns were silently emptied all fail here.
+ */
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import { HOSTED_CUSTOMER_DATA_TABLES, qualifiedName } from '../auth/hosted/customer-data-map';
+import {
+  PILOT_CONTRACT_ROWS,
+  PILOT_PROCESSING_MAP,
+  pilotStorePopulation,
+} from './pilot-processing-map';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+const CONTRACT_DOC = 'docs/evidence/enterprise-pilot-contract-draft-2026-10-11.md';
+
+const sourceCache = new Map<string, string>();
+function source(rel: string): string {
+  let text = sourceCache.get(rel);
+  if (text === undefined) {
+    text = readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+    sourceCache.set(rel, text);
+  }
+  return text;
+}
+
+function exportsSymbol(text: string, symbol: string): boolean {
+  const declared = new RegExp(
+    `^export\\s+(?:declare\\s+)?(?:async\\s+)?(?:function\\*?|const|let|class|interface|type|enum)\\s+${symbol}\\b`,
+    'm',
+  );
+  const listed = new RegExp(`^export\\s*\\{[^}]*\\b${symbol}\\b[^}]*\\}`, 'm');
+  return declared.test(text) || listed.test(text);
+}
+
+/** First-column cells of the contract's "Processing path" table. */
+function contractTableRows(): string[] {
+  const lines = source(CONTRACT_DOC).split('\n');
+  const header = lines.findIndex((l) => /^\|\s*Processing path\s*\|/.test(l));
+  expect(header, 'contract processing table header').toBeGreaterThanOrEqual(0);
+  const rows: string[] = [];
+  for (const line of lines.slice(header + 2)) {
+    if (!line.startsWith('|')) break;
+    rows.push(line.split('|')[1]!.trim());
+  }
+  return rows;
+}
+
+describe('pilot processing map', () => {
+  it('declares exactly the rows of the pilot contract processing table', () => {
+    expect(contractTableRows()).toEqual([...PILOT_CONTRACT_ROWS]);
+  });
+
+  it('covers every contract row with at least one in-profile path', () => {
+    for (const row of PILOT_CONTRACT_ROWS) {
+      const covering = PILOT_PROCESSING_MAP.filter(
+        (p) => p.status !== 'outside-profile' && p.contractRows.includes(row),
+      );
+      expect(covering.map((p) => p.id), row).not.toEqual([]);
+    }
+  });
+
+  it('has unique path ids', () => {
+    const ids = PILOT_PROCESSING_MAP.map((p) => p.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('cites only files that exist and export the named symbol', () => {
+    const broken: string[] = [];
+    for (const p of PILOT_PROCESSING_MAP) {
+      expect(p.enforcement.length, `${p.id} enforcement`).toBeGreaterThan(0);
+      for (const e of p.enforcement) {
+        const abs = path.join(REPO_ROOT, e.file);
+        if (!existsSync(abs)) broken.push(`${p.id}: missing file ${e.file}`);
+        else if (!exportsSymbol(source(e.file), e.exportedSymbol)) {
+          broken.push(`${p.id}: ${e.file} does not export ${e.exportedSymbol}`);
+        }
+      }
+    }
+    expect(broken).toEqual([]);
+  });
+
+  it('names only stores that one of the path\'s cited seats touches', () => {
+    const unpinned: string[] = [];
+    for (const p of PILOT_PROCESSING_MAP) {
+      const files = [...new Set(p.enforcement.map((e) => e.file))].filter((f) =>
+        existsSync(path.join(REPO_ROOT, f)),
+      );
+      for (const store of p.stores) {
+        if (!files.some((f) => source(f).includes(store.qualified))) {
+          unpinned.push(`${p.id}: ${store.qualified}`);
+        }
+      }
+    }
+    expect(unpinned).toEqual([]);
+  });
+
+  it('makes unknowns explicit: never empty, and "none" only on a selected path', () => {
+    for (const p of PILOT_PROCESSING_MAP) {
+      expect(p.unknowns.length, `${p.id} unknowns`).toBeGreaterThan(0);
+      const saysNone = p.unknowns.length === 1 && p.unknowns[0] === 'none';
+      if (saysNone) expect(p.status, `${p.id} claims nothing unknown`).toBe('selected');
+      if (p.status === 'unknown' || p.status === 'outside-profile') expect(saysNone).toBe(false);
+      for (const u of p.unknowns) expect(u.trim(), `${p.id} blank unknown`).not.toBe('');
+    }
+  });
+
+  // P-007b (WI-6554700010011594) / WI-6554700010011737: a selected path must name the tests that
+  // exercise its permitted and denied journeys, and those tests must exist. A path that is not
+  // selected names none, so a canary can never be claimed for a path the pilot does not run.
+  it('names existing canary journey tests on every selected path, and none elsewhere', () => {
+    for (const p of PILOT_PROCESSING_MAP) {
+      if (p.status === 'selected') {
+        expect(p.canaryJourney, p.id).not.toBeNull();
+        expect(p.canaryJourney!.length, p.id).toBeGreaterThan(0);
+        for (const rel of p.canaryJourney!) {
+          expect(rel, `${p.id}: ${rel}`).toMatch(/\.test\.ts$/);
+          expect(existsSync(path.join(REPO_ROOT, rel)), `${p.id}: ${rel}`).toBe(true);
+        }
+      } else {
+        expect(p.canaryJourney, p.id).toBeNull();
+      }
+    }
+  });
+
+  it('gives every pending path an owning work-item', () => {
+    for (const p of PILOT_PROCESSING_MAP.filter((x) => x.status === 'pending')) {
+      expect(p.ownerRef, p.id).toMatch(/^(WI|EI)-\d+$/);
+    }
+  });
+
+  it('does not cite the deleted Slack organization connector (D-014)', () => {
+    const cited = PILOT_PROCESSING_MAP.flatMap((p) => p.enforcement.map((e) => e.file));
+    expect(cited.filter((f) => f.endsWith('slack-org-connector.ts'))).toEqual([]);
+  });
+
+  describe('pilotStorePopulation', () => {
+    const population = pilotStorePopulation();
+
+    it('lists each qualified store once', () => {
+      const names = population.map((e) => e.qualified);
+      expect(new Set(names).size).toBe(names.length);
+    });
+
+    it('includes every hosted customer-data table', () => {
+      const names = new Set(population.map((e) => e.qualified));
+      const missing = HOSTED_CUSTOMER_DATA_TABLES.map(qualifiedName).filter((n) => !names.has(n));
+      expect(missing).toEqual([]);
+    });
+
+    it('includes every in-profile pilot store and no outside-profile-only store', () => {
+      const names = new Set(population.map((e) => e.qualified));
+      const inProfile = new Set(
+        PILOT_PROCESSING_MAP.filter((p) => p.status !== 'outside-profile').flatMap((p) =>
+          p.stores.map((s) => s.qualified),
+        ),
+      );
+      for (const n of inProfile) expect(names.has(n), n).toBe(true);
+      const outsideOnly = PILOT_PROCESSING_MAP.filter((p) => p.status === 'outside-profile')
+        .flatMap((p) => p.stores.map((s) => s.qualified))
+        .filter((n) => !inProfile.has(n) && !HOSTED_CUSTOMER_DATA_TABLES.map(qualifiedName).includes(n));
+      for (const n of outsideOnly) expect(names.has(n), n).toBe(false);
+    });
+
+    it('marks pilot stores as pilot-map and the rest as hosted-map', () => {
+      const pilot = population.filter((e) => e.source === 'pilot-map');
+      expect(pilot.map((e) => e.qualified)).toContain('harness_shared.documents');
+      expect(population.filter((e) => e.source === 'hosted-map').length).toBeGreaterThan(0);
+    });
+  });
+});
