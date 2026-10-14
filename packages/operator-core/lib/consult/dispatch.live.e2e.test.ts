@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { describe, expect, it } from 'vitest';
+import { resolveAgentWorkspaceRoot } from '../agent-tools/capability/base-dir';
 import { executeOperationalRun } from '../agent-tools/testing/record-run';
 import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
 import { findCanonicalClaudeLiveJsonl, findCanonicalNativeLiveJsonl, readStableLiveJsonl } from '../session-port/source';
@@ -66,6 +67,8 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
     expect(profile.consultBrief.existingConversationId || profile.consultBrief.questions.length).toBeTruthy();
     expect(profile.consultBrief.questions.length).toBeLessThanOrEqual(2);
     expect(process.env.PAPERCUSP_SID, 'preserve the authenticated session identity').toBeTruthy();
+    const recordContext = { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: root };
+    expect(resolveAgentWorkspaceRoot(recordContext), 'Recorder must measure this committed test tree').toBe(root);
     const route = call('dev:pipeline_position', {
       path: 'packages/operator-core/lib/consult/consult-dispatch.ts', testClass: 'operator-api',
       expectedSourceSha256: createHash('sha256').update(readFileSync(
@@ -161,7 +164,7 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
           { id: 'fresh-cited-turn-brief-launched', passed: true, evidence: JSON.stringify(proof) },
         ] };
       },
-    }, { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: root });
+    }, recordContext);
     console.info('CBP_LIVE_DISPATCH_RUN', JSON.stringify(measured));
     expect(measured).toMatchObject({ ok: true, status: 'pass', runtimeEnvironmentMeasured: true });
     if (!measured.ok) throw new Error(JSON.stringify(measured));
