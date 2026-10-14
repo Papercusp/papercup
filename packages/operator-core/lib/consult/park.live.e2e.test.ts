@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { executeOperationalRun } from '../agent-tools/testing/record-run';
+import { executeOperationalRun, parseOperationalEvidenceArtifact, type OperationalEvidenceArtifact } from '../agent-tools/testing/record-run';
 import { updateExternalBlockerHistory } from '../external-blockers';
 import { DECISION_REVIEW_CASCADE_FLAVOR } from './decision-review';
 
@@ -12,6 +12,9 @@ const root = resolve(import.meta.dirname, '../../../..');
 const profilePath = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
 const workspace = 'papercusp-workspace';
 const literal = (text: string) => `'${text.replaceAll("'", "''")}'`;
+const flowAssertion = (flow: string, evidence: string): OperationalEvidenceArtifact['assertions'][number] => ({
+  id: `loaded-staging-${flow}-clears-blocker-and-records-wake`, passed: true, evidence,
+});
 
 function call(name: string, args: Record<string, unknown>, origin: string) {
   const env = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
@@ -47,6 +50,16 @@ describe.skipIf(!profilePath)('consult-backed parking on the loaded staging oper
     expect(profile.origin).toBe('http://127.0.0.1:3170');
     expect(profile.runtimeUnits).toContain('hono-host:3170');
     const origin = profile.origin as string;
+    // Validate the recorder contract before creating any live fixture. The same
+    // typed builder produces the final evidence, so a malformed success result
+    // fails here rather than after the two production flows have executed.
+    const preflightAt = new Date().toISOString();
+    parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify({
+      schemaVersion: 1, kind: 'operational-test-evidence', name: 'P-009 recorder contract preflight',
+      framework: 'operational', command: ['npm', 'run', 'test:file'], exitCode: 0,
+      startedAt: preflightAt, finishedAt: preflightAt, summary: 'Validate before live fixture writes',
+      assertions: ['adopted', 'proceed'].map(flow => flowAssertion(flow, 'recorder contract preflight')),
+    })));
     const owner = call('coord:whoami', {}, origin).ownerId as string;
     expect(owner).toBe(process.env.PAPERCUSP_SID);
     for (const path of ['packages/operator-core/lib/consult/park-adapters.ts',
@@ -133,7 +146,7 @@ describe.skipIf(!profilePath)('consult-backed parking on the loaded staging oper
         }
         console.info('CBP_LIVE_PARK_PROOF', JSON.stringify(observations));
         return { exitCode: 0, summary: 'Both private park flows resolved through staging and fired the executing session verdict await',
-          assertions: observations.map(o => ({ name: `loaded staging ${o.flow} clears blocker and records wake`, passed: true })) };
+          assertions: observations.map(o => flowAssertion(String(o.flow), JSON.stringify(o).slice(0, 2000))) };
       },
     }, { workspaceId: workspace, harnessSlug: 'papercusp',
       repoPath: root, callerId: owner });
