@@ -97,6 +97,8 @@ describe('code:run persistent kernel boundary', () => {
 
   it('uses unambiguous host-derived scope and rejects missing authenticated context', () => {
     expect(codeRunKernelScope(context('a:b', 'c'))).not.toBe(codeRunKernelScope(context('b', 'c:a')));
+    expect(codeRunKernelScope(context('owner', 'workspace-a', '*')))
+      .toBe(codeRunKernelScope(context('owner', 'workspace-a', '')));
     expect(() => codeRunKernelScope(context('owner', ''))).toThrow('kernel_workspace_required');
     expect(() => codeRunKernelScope({ workspaceId: 'workspace-a' } as UnifiedToolContext)).toThrow();
   });

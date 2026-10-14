@@ -124,21 +124,23 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
   await bounded(closed, 'stdio drainage');
 }
 
-/** Prepared ESM bundles must not re-enter tsx's transformer. Keep every other
- * preload, especially the committed-source guard, and all resource limits. */
+/** Prepared ESM bundles must not inherit test transformers or Vitest's passive
+ * startup tracer into their confined native descendants. Keep source guards,
+ * unrelated preloads and all resource limits. */
 export function privateBundleRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const tokens = (env.NODE_OPTIONS ?? '').match(/(?:[^\s"']+|"(?:\\.|[^"\\])*"|'[^']*')+/g) ?? [];
   const value = (token: string) => token.replace(/"((?:\\.|[^"\\])*)"|'([^']*)'/g,
     (_, double: string | undefined, single: string | undefined) => double?.replace(/\\(["\\])/g, '$1') ?? single!);
-  const tsx = (specifier: string) => /^tsx(?:\/(?:esm|cjs))?$/.test(specifier)
-    || /(?:^|\/)node_modules\/tsx\//.test(specifier);
+  const testPreload = (specifier: string) => /^tsx(?:\/(?:esm|cjs))?$/.test(specifier)
+    || /(?:^|\/)node_modules\/tsx\//.test(specifier)
+    || /(?:^|\/)scripts\/lib\/vitest-startup-trace\.mjs$/.test(specifier);
   const kept: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const token = value(tokens[i]);
     const inline = token.match(/^(?:--import|--loader|--experimental-loader|--require|-r)=(.+)$/);
-    if (inline && tsx(inline[1])) continue;
+    if (inline && testPreload(inline[1])) continue;
     if (/^(?:--import|--loader|--experimental-loader|--require|-r)$/.test(token)
-      && tokens[i + 1] && tsx(value(tokens[i + 1]))) { i++; continue; }
+      && tokens[i + 1] && testPreload(value(tokens[i + 1]))) { i++; continue; }
     kept.push(tokens[i]);
   }
   return { ...env, NODE_OPTIONS: kept.join(' ') };

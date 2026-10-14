@@ -29,6 +29,7 @@ import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn, type StdioOptions } from 'node:child_process';
 import { processGroupLifetime } from './process-group-lifetime';
+import { SIDECAR_PROCESS_KILL_GRACE_MS } from './sidecar-exec-lifetime';
 import { observeAdmission, type AdmissionHealthObserver } from './sidecar-admission-wedge';
 
 import { isReadOnlyGitBatchExec } from '../git-batch';
@@ -437,7 +438,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
           stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
         }
         signalCommand('SIGTERM');
-        killTimer = setTimeout(() => signalCommand('SIGKILL'), deps.killGraceMs ?? 10_000);
+        killTimer = setTimeout(() => signalCommand('SIGKILL'), deps.killGraceMs ?? SIDECAR_PROCESS_KILL_GRACE_MS);
         killTimer.unref?.();
         // A kill signal is not an exit receipt. Only close (or a spawn error)
         // may settle this call and let the caller release repository locks.

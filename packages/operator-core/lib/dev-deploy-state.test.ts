@@ -197,6 +197,13 @@ describe('devDeployState', () => {
     expect(localBatch).not.toHaveBeenCalled();
   });
 
+  it('keeps the diagnostic RPC alive through the production ten-second child teardown', () => {
+    expect(DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS).toBeGreaterThan(
+      DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS + 10_000,
+    );
+    expect(DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS).toBeLessThan(35_000);
+  });
+
   it('counts a sidecar batch deadline miss without tripping the breaker, then falls back locally', async () => {
     const commands = [{ repo: integration, args: ['log', '-1', '--format=%H%n%ct%n%s', 'main^{commit}'] }];
     const viaSidecar: NonNullable<DevDeployGitBatchDeps['viaSidecar']> = vi.fn(async () => ({

@@ -23,6 +23,7 @@ const SCANNED = [
   'ProviderCredentialsForm.tsx',
   'ProviderOptionsSelect.tsx',
   'ProviderSourceSettingsForm.tsx',
+  'ProviderSourceConfigForm.tsx',
   'TriggerPackSection.tsx',
   'ticket-integrations-client.ts',
 ];

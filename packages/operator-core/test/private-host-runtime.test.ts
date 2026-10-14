@@ -1,9 +1,10 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 
@@ -66,9 +67,44 @@ it.each(['--import=tsx', '--import "tsx"', '--loader=tsx/esm', '--require tsx/cj
   expect(env.NODE_OPTIONS).toContain(preload);
 });
 
+it.each(['--import=/repo/scripts/lib/vitest-startup-trace.mjs',
+  '--import "file:///repo%20with%20spaces/scripts/lib/vitest-startup-trace.mjs"',
+  '--require=/repo/scripts/lib/vitest-startup-trace.mjs'])('removes test-owned startup trace %s while retaining source guards', preload => {
+  const guard = '--import="/repo with spaces/scripts/lib/committed-source-loader.mjs"';
+  const env = { NODE_OPTIONS: `${preload} ${guard} --trace-warnings`, OTHER: 'keep' };
+  expect(privateBundleRuntimeEnv(env)).toEqual({ ...env, NODE_OPTIONS: `${guard} --trace-warnings` });
+  expect(env.NODE_OPTIONS).toContain(preload);
+});
+
 it('preserves unrelated loaders and similarly named imports', () => {
-  const env = { NODE_OPTIONS: '--import=/repo/tsx-observer.mjs --loader=other-loader --require ./guard.cjs' };
+  const env = { NODE_OPTIONS: '--import=/repo/tsx-observer.mjs --loader=other-loader --require ./guard.cjs'
+    + ' --import=/repo/other/vitest-startup-trace.mjs --import=/repo/scripts/lib/vitest-startup-trace.mjs-extra' };
   expect(privateBundleRuntimeEnv(env)).toEqual(env);
+});
+
+it('boots a real confined Node descendant after removing the inaccessible test tracer and keeps its source guard', () => {
+  const traceRoot = mkdtempSync(join(tmpdir(), 'private-hidden-trace-')); dirs.push(traceRoot);
+  const guardRoot = mkdtempSync(join(tmpdir(), 'private-visible-guard-')); dirs.push(guardRoot);
+  mkdirSync(join(traceRoot, 'scripts/lib'), { recursive: true });
+  const trace = join(traceRoot, 'scripts/lib/vitest-startup-trace.mjs');
+  const guard = join(guardRoot, 'committed-source-loader.mjs');
+  writeFileSync(trace, 'globalThis.privateTraceLoaded = true;');
+  writeFileSync(guard, 'globalThis.privateGuardLoaded = true;');
+  const env = { ...process.env,
+    NODE_OPTIONS: `--import=${JSON.stringify(pathToFileURL(trace).href)} --import=${JSON.stringify(pathToFileURL(guard).href)} --trace-warnings` };
+  const args = ['--die-with-parent', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
+    '--ro-bind', guardRoot, guardRoot, '--tmpfs', traceRoot, '--', process.execPath, '-e',
+    'console.log(JSON.stringify({guard:globalThis.privateGuardLoaded,trace:globalThis.privateTraceLoaded??false}))'];
+  const failed = spawnSync('bwrap', args, { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5_000 });
+  expect(failed.error).toBeUndefined();
+  expect(failed.status, failed.stderr).toBe(1);
+  expect(failed.stderr).toContain('ERR_MODULE_NOT_FOUND');
+  expect(failed.stderr).toContain('vitest-startup-trace.mjs');
+  const launched = spawnSync('bwrap', args, { env: privateBundleRuntimeEnv(env),
+    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5_000 });
+  expect(launched.error).toBeUndefined();
+  expect(launched.status, launched.stderr).toBe(0);
+  expect(JSON.parse(launched.stdout)).toEqual({ guard: true, trace: false });
 });
 
 it.each(['signal', 'exit'] as const)('persists readiness evidence when the real child terminates by %s', async kind => {

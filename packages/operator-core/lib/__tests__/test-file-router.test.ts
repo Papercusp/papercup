@@ -2044,6 +2044,39 @@ describe('main() — failed assertion details survive private report cleanup (EI
 describe('main() — evidence runs require inserted Vitest ledger receipts', () => {
   const file = 'packages/operator-core/lib/__tests__/test-file-router.test.ts';
 
+  it.each(['shouldRecordTestRunPath', 'missingTestRunReceiptPaths'])(
+    'refuses a pinned reporter missing %s before collection or execution', async missingExport => {
+      const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+      process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = join(tmpdir(), 'unused-router-preflight-receipt.jsonl');
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const list = vi.fn(), run = vi.fn();
+      const reporter: Record<string, unknown> = {
+        shouldRecordTestRunPath: () => true, missingTestRunReceiptPaths: () => [],
+      };
+      // An export with the right name and wrong type is just as incompatible
+      // as an absent export; check callable shape, not key presence.
+      reporter[missingExport] = missingExport === 'shouldRecordTestRunPath' ? undefined : 'not callable';
+      try {
+        expect(await main([file], {
+          restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+          loadVitestReceiptReporterImpl: async () => reporter,
+          runVitestListImpl: list, runCapturedTestProcessImpl: run,
+        })).toBe(2);
+        expect(list).not.toHaveBeenCalled();
+        expect(run).not.toHaveBeenCalled();
+        const errors = errorSpy.mock.calls.map(([line]) => String(line)).join('\n');
+        expect(errors).toContain('TEST_FILE_LEDGER_RECEIPT_PREFLIGHT');
+        expect(errors).toContain(missingExport);
+        expect(logSpy.mock.calls.map(([line]) => String(line)).join('\n')).not.toContain('TEST_FILE_RESULT');
+      } finally {
+        logSpy.mockRestore(); errorSpy.mockRestore();
+        if (priorReceiptFile === undefined) delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+        else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = priorReceiptFile;
+      }
+    },
+  );
+
   async function runEvidenceCase(writeReceipt: boolean) {
     const dir = mkdtempSync(join(tmpdir(), 'test-file-receipt-verdict-'));
     const receiptFile = join(dir, 'receipts.jsonl');

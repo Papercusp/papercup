@@ -81,7 +81,9 @@ const CONNECTION_OWNED_CONFIG_KEYS = ['accountLabel'] as const;
  * list here (WI-10006213).
  */
 export function settableTicketConfigKeys(schema: Record<string, unknown> | null): string[] {
-  const properties = isPlainObject(schema?.properties) ? Object.keys(schema.properties) : [];
+  const properties = isPlainObject(schema?.properties) ? Object.entries(schema.properties)
+    .filter(([, property]) => !isPlainObject(property) || (!property.secret && !property.writeOnly && !property.readOnly))
+    .map(([key]) => key) : [];
   const keys = new Set([...properties, 'harnessSlug']);
   for (const owned of CONNECTION_OWNED_CONFIG_KEYS) keys.delete(owned);
   return [...keys];
@@ -125,6 +127,8 @@ export interface TicketProviderSummary {
   statusMapping: 'sections' | 'provider-defined';
   /** Top-level config keys the source needs before it can sync (descriptor configSchema.required). */
   requiredConfig: string[];
+  /** Non-secret source fields, rendered by the generic configuration form. */
+  sourceConfigSchema?: Record<string, unknown> | null;
   /**
    * Starts the existing OAuth flow for this provider and lands back on this page; null when the
    * provider signs in with pasted credentials only.
@@ -312,6 +316,14 @@ export function summarizeIntegrationProvider(
     canListContainers: d.capabilities.includes(TICKET_CONTAINERS_CAPABILITY),
     statusMapping: 'sectionCategories' in properties ? 'sections' : 'provider-defined',
     requiredConfig: missingRequiredJsonSchemaKeys(schema, {}),
+    sourceConfigSchema: schema ? {
+      ...schema,
+      properties: {
+        ...Object.fromEntries(Object.entries(properties).filter(([key]) => settableTicketConfigKeys(schema).includes(key))),
+        harnessSlug: { type: 'string', title: 'Project to store activity in', minLength: 1 },
+      },
+      required: [...new Set([...missingRequiredJsonSchemaKeys(schema, {}), 'harnessSlug'])],
+    } : null,
     connectHref: d.oauth ? ticketConnectHref(d) : null,
     credentials,
     sourceSettings: providerSourceSettingsOffer(d),
@@ -352,7 +364,7 @@ export async function ticketIntegrationsOverview(
   // Every offered provider's connected accounts are listed (account, status, last error), so a
   // credentials-only provider shows the source its saved credentials created (D-006). Only ticket
   // providers' accounts carry the scope, counts and rules this page also manages.
-  const byKind = new Map(ticketProviders(registry).map((entry) => [entry.descriptor.id, entry]));
+  const byKind = new Map(providers.map((entry) => [entry.descriptor.id, entry]));
   const offered = new Set([...providers.map((entry) => entry.descriptor.id), ...byKind.keys()]);
   const owned = (await listOwnedExternalTriggerSources(sql, scope.workspaceId, scope.ownerUserId)).filter((s) => offered.has(s.kind));
   const ids = owned.map((s) => s.id);
@@ -440,6 +452,7 @@ async function ownedTicketSource(
   sql: postgres.Sql,
   scope: TicketIntegrationsScope & { sourceId: string },
   registry: ProviderRegistry,
+  allowNonTicket = false,
 ): Promise<OwnedTicketSource> {
   const sourceId = str(scope.sourceId);
   if (!/^[0-9a-f-]{36}$/i.test(sourceId)) throw new TicketIntegrationError('ticket_source_not_found', `no source '${sourceId}'`, 404);
@@ -447,7 +460,7 @@ async function ownedTicketSource(
     SELECT id::text, kind, config FROM harness_shared.data_sources
      WHERE workspace_id = ${scope.workspaceId} AND id = ${sourceId}::uuid AND owner_user_id = ${scope.ownerUserId}::uuid`;
   if (!row) throw new TicketIntegrationError('ticket_source_not_found', `no source '${sourceId}' of yours`, 404);
-  const provider = ticketProviders(registry).find((p) => p.descriptor.id === row.kind) ?? null;
+  const provider = (allowNonTicket ? integrationProviders(registry) : ticketProviders(registry)).find((p) => p.descriptor.id === row.kind) ?? null;
   if (!provider) throw new TicketIntegrationError('ticket_provider_not_registered', `'${row.kind}' is not a registered ticket provider`, 409);
   return { id: row.id, kind: row.kind, config: isPlainObject(row.config) ? row.config : {}, provider };
 }
@@ -535,7 +548,7 @@ export async function setTicketSourceConfig(
   input: TicketIntegrationsScope & { sourceId: string; patch: Record<string, unknown> },
   deps: Pick<TicketIntegrationsDeps, 'registry'> = {},
 ): Promise<TicketSourceConfigResult> {
-  const source = await ownedTicketSource(sql, input, await requestRegistry(deps));
+  const source = await ownedTicketSource(sql, input, await requestRegistry(deps), true);
   if (!isPlainObject(input.patch)) throw new TicketIntegrationError('ticket_source_config_invalid', 'patch must be an object');
   const schema = configSchemaOf(source.provider.descriptor);
   const settable = settableTicketConfigKeys(schema);

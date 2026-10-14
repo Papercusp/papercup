@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { Server } from 'node:net';
 import type { GovernedExecution } from '../resource-governor/execution';
 
-const h = vi.hoisted(() => ({ begin: vi.fn(), finished: vi.fn(), cancelled: vi.fn(), pending: new Set<Promise<unknown>>() }));
+const h = vi.hoisted(() => ({ begin: vi.fn(), finished: vi.fn(), cancelled: vi.fn(), pending: new Set<Promise<unknown>>(), productionGrace: false }));
 vi.mock('../flag-override-store-boot-effect', () => ({}));
 vi.mock('../flag-override-store', () => ({ installFlagOverrideStore: () => {} }));
 vi.mock('../flag-change-listener', () => ({ ensureFlagChangeListener: async () => {} }));
@@ -19,7 +19,8 @@ vi.mock('./sidecar-exec-process', async (original) => {
   return {
     ...actual,
     execProcess: (params: Parameters<typeof actual.execProcess>[0], deps: Parameters<typeof actual.execProcess>[1]) => {
-      const result = actual.execProcess(params, { ...deps, beginExecution: h.begin, killGraceMs: 100, lazyReceiptMs: 0 });
+      const result = actual.execProcess(params, { ...deps, beginExecution: h.begin,
+        ...(h.productionGrace ? {} : { killGraceMs: 100 }), lazyReceiptMs: 0 });
       h.pending.add(result);
       void result.then(() => h.pending.delete(result), () => h.pending.delete(result));
       return result;
@@ -32,6 +33,7 @@ import { runSpawnerSidecarServer } from './spawner-sidecar-server';
 import { SpawnerIpcClient, type SpawnerCallOpts } from './spawner-ipc-client';
 import { runCommandViaSpawnerSidecar, isSidecarInfrastructureFault } from './git-via-sidecar';
 import * as lifetime from './sidecar-exec-lifetime';
+import { DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS, DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS } from '../dev-deploy-state';
 
 function receipt(): GovernedExecution {
   return {
@@ -69,6 +71,7 @@ const pids = new Set<number>();
 const childScript = "process.on('SIGTERM', () => setTimeout(() => { process.stdout.write('cleanup complete\\n'); process.exit(0); }, 40)); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);";
 
 beforeEach(async () => {
+  h.productionGrace = false;
   h.begin.mockReset().mockImplementation(async () => receipt());
   h.finished.mockReset().mockResolvedValue(true);
   h.cancelled.mockReset().mockResolvedValue(true);
@@ -136,6 +139,30 @@ async function executionFence(client: SpawnerIpcClient) {
 }
 
 describe('cancellable caller with real IPC and child processes', () => {
+  it('receives the child deadline result after production kill grace instead of an RPC fault', async () => {
+    h.productionGrace = true;
+    const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const client = recoveryClient();
+    let childPid = 0;
+    const result = client.call<{ code: number; stderr: string }>('process:exec', {
+      command: process.execPath,
+      args: ['-e', "process.on('SIGTERM', () => {}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);"],
+      timeoutMs: DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS,
+    }, {
+      timeoutMs: DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS,
+      onPid: (pid) => { childPid = pid; pids.add(pid); },
+    });
+    const receipt = await result;
+    expect(receipt.code).toBe(-1);
+    expect(receipt.stderr).toContain(`timed out after ${DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS}ms`);
+    expect(receipt.stderr).toContain('SIGKILL');
+    expect(childPid).toBeGreaterThan(0);
+    expect(alive(childPid)).toBe(false);
+    expect(h.finished).toHaveBeenCalledTimes(1);
+    expect(logs.mock.calls.some(([tag, details]) => tag === '[spawner-process-exec-stage]' &&
+      (details as { event?: string }).event === 'request-settled')).toBe(true);
+  }, 30_000);
+
   it.each(['admission', 'settlement'] as const)('distinguishes a stalled %s from child execution without logging the payload', async (phase) => {
     const events = vi.spyOn(console, 'info').mockImplementation(() => {});
     let release!: () => void;

@@ -41,6 +41,7 @@ import workItemsSetBlocker from '../work_items/set_blocker';
 import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
+import sessionCarryDrill from '../session/carry-drill';
 import capabilityRead from '../capability/read';
 import bashOutput from '../capability/bash_output';
 import bashKill from '../capability/bash_kill';
@@ -561,6 +562,18 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(entry?.argSchema).toContain(branchRule);
     expect(entry?.argSchema).toContain('forbidden');
     expect(compactSchemaForResult(schemaByTool.get('release:cut'))).toContain(branchRule);
+  });
+
+  it('advertises session:carry-drill fields only on the operation variants that accept them', () => {
+    expect(sessionCarryDrill.name).toBe('session:carry-drill');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'session:carry-drill');
+    const reportDrillIdRule = 'when op in (start|report|retire|unretire) => drillId forbidden';
+
+    expect(entry?.argSchema).toContain(reportDrillIdRule);
+    expect(compactSchemaForResult(schemaByTool.get('session:carry-drill'))).toContain(reportDrillIdRule);
+    expect(sessionCarryDrill.args.safeParse({ op: 'report', drillId: 'drill-1' }).success).toBe(false);
+    expect(sessionCarryDrill.args.safeParse({ op: 'grade', drillId: 'drill-1' }).success).toBe(true);
   });
 
   it('publishes activity:tool-log scope as a required owner/session one-of', () => {

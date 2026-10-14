@@ -8,6 +8,10 @@ import { taskIdFromScopeUnit } from '../task-manager/types';
 
 export const SPAWNER_SCOPE_ENV = 'PAPERCUSP_SPAWNER_SCOPE_UNIT';
 
+/** Process deadlines send SIGTERM first; an exit receipt may arrive only after
+ * this grace expires and SIGKILL has completed. Keep caller budgets tied to it. */
+export const SIDECAR_PROCESS_KILL_GRACE_MS = 10_000;
+
 export interface SidecarContainment {
   pid: number;
   identity: string;

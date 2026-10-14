@@ -12,13 +12,14 @@ const M = vi.hoisted(() => ({
   readInbox: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
   heartbeatPresence: vi.fn(async () => {}),
   drain: vi.fn(async () => {}),
+  readDirectedInbox: vi.fn(async () => [] as unknown[]),
   readWatermark: vi.fn(async () => ({
     messages_shown_ts: "9999-01-01T00:00:00Z",
     snapshot_rebootstrap_pending: false,
   })),
-  unanswered: vi.fn(async () => new Map([
-    ["owner-a", { newest: [{ msgId: "ask" }] }],
-  ])),
+  unanswered: vi.fn(async (recipientIds: string[] = []) => new Map(
+    recipientIds.map((recipientId) => [recipientId, { newest: [{ msgId: "ask" }] }] as const),
+  )),
   assemblePresenceSnapshot: vi.fn(async (
     _resolved: unknown,
     _opts?: {
@@ -50,8 +51,10 @@ vi.mock("../actor-identity", () => ({
   }),
   actorMailboxKeys: () => [] as string[],
 }));
-vi.mock("../messages", () => ({
+vi.mock("../messages", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../messages")>()),
   readInbox: M.readInbox,
+  readDirectedInbox: M.readDirectedInbox,
   drainAndDeliverUserMailbox: M.drain,
 }));
 vi.mock("../unanswered-directed", () => ({ fetchUnansweredDirected: M.unanswered }));
@@ -115,8 +118,13 @@ const ctx = (
   workspaceId = "ws-inbox",
   metadata: ReturnType<typeof vi.fn> = vi.fn(),
   indirectDispatch = false,
+  identityContext: {
+    principal?: { slug: string; authMethod?: string; trust?: string };
+    uiClientId?: string;
+  } = {},
 ): never =>
   ({
+    ...identityContext,
     ownerId,
     workspaceId,
     metadata,
@@ -137,10 +145,13 @@ beforeEach(async () => {
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
   M.readInbox.mockReset().mockResolvedValue([]);
+  M.readDirectedInbox.mockReset().mockResolvedValue([]);
   M.heartbeatPresence.mockClear();
   M.drain.mockClear();
   M.readWatermark.mockClear();
-  M.unanswered.mockClear();
+  M.unanswered.mockReset().mockImplementation(async (recipientIds: string[] = []) => new Map(
+    recipientIds.map((recipientId) => [recipientId, { newest: [{ msgId: "ask" }] }] as const),
+  ));
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
 });
@@ -344,6 +355,49 @@ async function read(args: Record<string, unknown>, owner = "owner-a", workspace 
 }
 
 describe("coord:inbox — share only equivalent full derives (P-011)", () => {
+  it("uses a verified bare session alias for directed and unanswered filters", async () => {
+    const bareSessionId = "su-judge-session";
+    const namespacedOwnerId = `system:judge/${bareSessionId}`;
+    const ask = {
+      msg_id: "alias-ask",
+      kind: "message",
+      from: "peer-a",
+      to: [bareSessionId],
+      ts: "2026-10-01T00:00:00Z",
+      summary: "question addressed to the signed session id",
+    };
+    M.readDirectedInbox.mockResolvedValue([ask]);
+    M.unanswered.mockImplementation(async (recipientIds: string[] = []) => new Map(
+      recipientIds.map((recipientId) => [recipientId, {
+        newest: recipientId === bareSessionId ? [{ msgId: ask.msg_id }] : [],
+      }]),
+    ));
+
+    const response = await tool.handler({
+      directed: true,
+      unanswered_only: true,
+      limit: 20,
+      include_ambient: true,
+      include_intents: true,
+      max_body_chars: 0,
+    } as never, ctx(namespacedOwnerId, "ws-inbox", vi.fn(), false, {
+      principal: { slug: "system:judge", authMethod: "spawn-url", trust: "trusted" },
+      uiClientId: bareSessionId,
+    })) as { content: Array<{ text: string }> };
+    const result = JSON.parse(response.content[0]!.text) as {
+      entries: Array<{ msg_id: string }>;
+      summary: { total: number };
+    };
+
+    expect(M.readDirectedInbox).toHaveBeenCalledWith(bareSessionId, expect.anything());
+    expect(M.unanswered).toHaveBeenCalledWith(
+      [namespacedOwnerId, bareSessionId],
+      expect.objectContaining({ perRecipientCap: expect.any(Number) }),
+    );
+    expect(result.entries.map(({ msg_id }) => msg_id)).toEqual([ask.msg_id]);
+    expect(result.summary.total).toBe(1);
+  });
+
   it("directed=true keeps mixed delivery only when it names the current reader", async () => {
     M.readInbox.mockImplementation(async () => [
       { msg_id: "for-owner", kind: "message", from: "peer-a", to: ["*", "owner-a"],

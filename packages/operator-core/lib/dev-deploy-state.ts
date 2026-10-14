@@ -33,6 +33,7 @@ import {
 } from './fleet/git-via-sidecar';
 import { type CellUnknown, cellUnknown, formatCellUnknown } from './cell-contract';
 import { resolveReleaseRoot } from './release/release-root';
+import { SIDECAR_PROCESS_KILL_GRACE_MS } from './fleet/sidecar-exec-lifetime';
 import {
   buildGitBatchInvocation,
   isReadOnlyGitBatchExec,
@@ -292,10 +293,12 @@ function commitRefArgs(ref: string): string[] {
 
 const DEV_DEPLOY_BATCH_TIMEOUT_MS = 60_000;
 export const DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS = 2_000;
-// The process RPC gets five seconds beyond the child deadline to report its
-// killed/exit result. The generic child+35s RPC default could outlive the
-// 35s pipeline-position read budget after sidecar startup and connect delays.
-export const DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS = 7_000;
+// A deadline result is an exit receipt: allow the sidecar's full termination
+// grace, then five seconds for exit fencing and receipt settlement. This stays
+// below the 35s diagnostic read budget without misclassifying normal teardown
+// as a transport failure that trips the shared sidecar breaker.
+export const DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS =
+  DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS + SIDECAR_PROCESS_KILL_GRACE_MS + 5_000;
 
 export interface DevDeployGitBatchDeps {
   sidecarEnabled?: () => boolean;

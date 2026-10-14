@@ -46,6 +46,7 @@ import { isDesktop } from '@/lib/ipc-status-tauri';
 import { ProviderAppRegistration } from './ProviderAppRegistration';
 import { ProviderCredentialsForm } from './ProviderCredentialsForm';
 import { ProviderSourceSettingsForm } from './ProviderSourceSettingsForm';
+import { ProviderSourceConfigForm } from './ProviderSourceConfigForm';
 import { ProviderOAuthClientForm } from './ProviderOAuthClientForm';
 import { TriggerPackSection, TriggerPackSetup } from './TriggerPackSection';
 
@@ -199,6 +200,7 @@ export default function IntegrationsSettingsPage() {
           panel={panel}
           onOpen={openPanel}
           onClose={closePanel}
+          onSaved={refresh}
         />
       ))}
       {overview && overview.triggerPacks.length + (overview.availableTriggerPacks?.length ?? 0) > 0 && (
@@ -235,6 +237,7 @@ function ProviderCard({
   panel,
   onOpen,
   onClose,
+  onSaved,
 }: {
   provider: TicketProviderSummary;
   sources: TicketSourceSummary[];
@@ -243,6 +246,7 @@ function ProviderCard({
   panel: Panel;
   onOpen: (sourceId: string, panel: Panel) => void;
   onClose: () => void;
+  onSaved: () => void;
 }) {
   const [connecting, setConnecting] = useState(false);
   const connect = useCallback(async () => {
@@ -311,6 +315,7 @@ function ProviderCard({
             onClose={onClose}
             onReconnect={() => void connect()}
             reconnecting={connecting}
+            onSaved={onSaved}
           />
         ))
       )}
@@ -331,6 +336,7 @@ function SourceRow({
   onClose,
   onReconnect,
   reconnecting,
+  onSaved,
 }: {
   source: TicketSourceSummary;
   provider: TicketProviderSummary;
@@ -340,6 +346,7 @@ function SourceRow({
   onClose: () => void;
   onReconnect: () => void;
   reconnecting: boolean;
+  onSaved: () => void;
 }) {
   const label = sourceLabel(source);
   const needs = missingLabels(source.missingConfig);
@@ -393,6 +400,9 @@ function SourceRow({
         </div>
       </div>
       {panel && provider.tracksTickets && <SourceDetail id={panelId} source={source} provider={provider} harnesses={harnesses} panel={panel} />}
+      {!provider.tracksTickets && provider.sourceConfigSchema && (
+        <ProviderSourceConfigForm key={JSON.stringify(source.config)} source={source} displayName={provider.displayName} schema={provider.sourceConfigSchema} onSaved={onSaved} />
+      )}
     </div>
   );
 }

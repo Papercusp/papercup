@@ -18,6 +18,7 @@ interface Schema {
   items?: Schema;
   default?: unknown;
   description?: string;
+  title?: string;
   minLength?: number;
   maximum?: number;
   exclusiveMinimum?: number;
@@ -65,7 +66,7 @@ export default function SchemaForm({ schema, value, onChange }: Props) {
         return (
           <label key={key} className="pc-dev-form-row">
             <span className="pc-dev-form-key">
-              {key}
+              {child.title || key}
               {isReq && <em className="pc-dev-req">*</em>}
               {child.description && (
                 <span className="pc-dev-form-hint" title={child.description}>

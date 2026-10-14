@@ -3123,6 +3123,10 @@ export async function main(
   {
     repoRoot = REPO_ROOT,
     beginNodeTestLedgerImpl = async options => (await loadNodeTestLedger()).beginNodeTestLedger(options),
+    loadVitestReceiptReporterImpl = async () => {
+      await loadGovernedExecutionModule();
+      return import('../libs/test-config/src/admin-test-runs-reporter.ts');
+    },
     runGovernedTestProcessImpl = runGovernedTestProcess,
     runCapturedTestProcessImpl = runCapturedTestProcess,
     runVitestListImpl = runVitestList,
@@ -3151,6 +3155,7 @@ export async function main(
     catch (error) { receiptStartError = error; }
   }
   const expectedVitestReceiptPaths = new Set();
+  let receiptReporter = null;
   // WI-6554700010009516: the child notice channel. Opened after the restricted-hold census (below)
   // and closed in the finally, so it stays null on every early return before that point.
   let childSourceNoticeSink = null;
@@ -3328,6 +3333,25 @@ export async function main(
     // Only a real admit marks it; a skip means an enclosing root already set (or owns) the marker.
     if (restrictedHold.verdict === 'admit') {
       process.env[RESTRICTED_HOLD_PREFLIGHT_ENV] = RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER;
+    }
+  }
+  // EI-25978996299130239: a superproject can pin a reporter older than its
+  // receipt contract. Refuse before collection, rather than spend a full test
+  // run discovering a missing export at finalization. Keep the loaded module
+  // for the verdict so both phases use the same validators.
+  if (!dry && receiptFile && groups.some(group => group.runner !== 'node')) {
+    try {
+      receiptReporter = await loadVitestReceiptReporterImpl();
+      const missing = ['shouldRecordTestRunPath', 'missingTestRunReceiptPaths']
+        .filter(name => typeof receiptReporter?.[name] !== 'function');
+      if (missing.length > 0) throw new Error(`reporter lacks required function exports: ${missing.join(', ')}`);
+    } catch (error) {
+      console.error(
+        `TEST_FILE_LEDGER_RECEIPT_PREFLIGHT status=not-measured ` +
+          `detail=${JSON.stringify(error instanceof Error ? error.message : String(error))} — ` +
+          'verify the committed runner and libs/test-config gitlink before executing tests.',
+      );
+      return TEST_FILE_EXIT_NOT_MEASURED;
     }
   }
   // WI-6554700010009516: export the child notice channel AFTER the restricted-hold census and
@@ -4065,8 +4089,7 @@ export async function main(
       // Load the canonical path and receipt validators from the same module that
       // writes rows; duplicating its JSON/path rules here would recreate the drift
       // this gate is meant to catch.
-      await loadGovernedExecutionModule();
-      const reporter = await import('../libs/test-config/src/admin-test-runs-reporter.ts');
+      const reporter = receiptReporter;
       expectedPaths = expectedPaths.filter(reporter.shouldRecordTestRunPath);
       if (expectedPaths.length > 0 && !receiptIssue && receiptFile) {
         const contents = readFileSync(receiptFile);

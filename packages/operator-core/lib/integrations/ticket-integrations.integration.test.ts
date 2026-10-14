@@ -511,7 +511,7 @@ describe('every read and write is scoped to the signed-in owner', () => {
   // P-005 attempt 9 (cupboard-distributable-integrations-2026-10-10): the overview listed only
   // ticket providers' accounts, so the account a credentials-only provider's saved token created
   // never appeared on its card. Its own registry keeps the offered-provider list above exact.
-  it('a credentials-only provider’s connected account is listed, but is not a ticket source this page configures', async () => {
+  it('a credentials-only provider’s account exposes its declared source config without gaining ticket actions', async () => {
     const CREDS_ONLY = 'chat-credentials-fixture';
     const credsDescriptor = {
       id: CREDS_ONLY,
@@ -521,6 +521,7 @@ describe('every read and write is scoped to the signed-in owner', () => {
       capabilities: ['chat.send'],
       egressHosts: ['chat.example.com'],
       setup: { credentials: [{ key: 'bot_token', label: 'Bot token' }] },
+      configSchema: { type: 'object', required: ['channelId'], properties: { channelId: { type: 'string', minLength: 1 } }, additionalProperties: true },
     } as ProviderDescriptor;
     const credsAdapter: ProviderAdapter = {
       describe: () => credsDescriptor,
@@ -538,9 +539,18 @@ describe('every read and write is scoped to the signed-in owner', () => {
     // Listed with its account; no ticket scope, so no config to report or demand.
     expect(overview.sources).toHaveLength(1);
     expect(overview.sources[0]).toMatchObject({
-      id: sourceId, provider: CREDS_ONLY, config: {}, missingConfig: [], mirrored: 0, admitted: 0, rules: [],
+      id: sourceId, provider: CREDS_ONLY, config: {}, missingConfig: ['channelId', 'harnessSlug'], mirrored: 0, admitted: 0, rules: [],
     });
-    expect(await refusal(setTicketSourceConfig(sql, { ...ALICE(), sourceId, patch: {} }, { registry: credsRegistry })))
+    expect(overview.providers[0].sourceConfigSchema).toMatchObject({ required: ['channelId', 'harnessSlug'] });
+    expect(await refusal(setTicketSourceConfig(sql, { ...ALICE(), sourceId, patch: { channelId: 42 } }, { registry: credsRegistry })))
+      .toEqual({ code: 'ticket_source_config_invalid', status: 400 });
+    expect(await setTicketSourceConfig(sql, { ...ALICE(), sourceId, patch: { channelId: 'channel-1', harnessSlug: 'target-harness' } }, { registry: credsRegistry }))
+      .toEqual({ config: { channelId: 'channel-1', harnessSlug: 'target-harness' }, missingConfig: [] });
+    expect((await ticketIntegrationsOverview(sql, ALICE(), { registry: credsRegistry })).sources[0].config)
+      .toEqual({ channelId: 'channel-1', harnessSlug: 'target-harness' });
+    expect(await refusal(setTicketSourceConfig(sql, { workspaceId: WS, ownerUserId: bob, sourceId, patch: { channelId: 'other' } }, { registry: credsRegistry })))
+      .toEqual({ code: 'ticket_source_not_found', status: 404 });
+    expect(await refusal(listTicketSourceContainers(sql, { ...ALICE(), sourceId }, { registry: credsRegistry })))
       .toEqual({ code: 'ticket_provider_not_registered', status: 409 });
   });
 });
