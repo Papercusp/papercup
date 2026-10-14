@@ -782,7 +782,9 @@ export async function executePlanTerminalCensus(
 ) {
   const readPlan = deps?.readPlan ?? (async (slug: string, ctx: RecordContext) => {
     const { getPlanRow } = await import('../plans/source');
-    return getPlanRow(slug, { workspaceId: ctx.workspaceId ?? undefined, harnessSlug: ctx.harnessSlug ?? undefined });
+    const harnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
+    if (!harnessSlug) throw new Error('testing:record-run requires a concrete harness scope');
+    return getPlanRow(slug, { workspaceId: ctx.workspaceId ?? undefined, harnessSlug });
   });
   const unit = process.env.PAPERCUSP_VINTAGE_UNIT?.trim() ||
     (process.env.PAPERCUSP_DESKTOP === '1' ? 'desktop-sidecar'
