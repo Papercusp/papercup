@@ -1421,8 +1421,18 @@ export function prepareForward(
     (m as { method?: unknown }).method === "tools/call";
   const calls = msgs.filter(isCall);
   const hasCodeRunWrapper = calls.some(isCodeRunToolCall);
+  // Absence of tools/call is not evidence of write freedom: REST delivery and
+  // lifecycle bodies have no call either. Reuse the curated handshake methods,
+  // and reject unknown/malformed batch members before any readonly/keyed path.
+  const recognizedBatch = msgs.length > 0 && msgs.every((message) =>
+    isCall(message) || (!!message && typeof message === "object" &&
+      !Array.isArray(message) && typeof (message as { method?: unknown }).method === "string" &&
+      RESERVED_CONTROL_PLANE_METHODS.has((message as { method: string }).method)),
+  );
+  if (!recognizedBatch)
+    return { body, headers, klass: "opaque", hasCodeRunWrapper, rpcMethods };
   if (calls.length === 0)
-    return { body, headers, klass: "idempotent", hasCodeRunWrapper, rpcMethods }; // no write → free safe retry
+    return { body, headers, klass: "idempotent", hasCodeRunWrapper, rpcMethods };
 
   if (!opts.keyingEnabled)
     return { body, headers, klass: "opaque", hasCodeRunWrapper, rpcMethods }; // kill-switch → refused-only
@@ -2288,6 +2298,8 @@ export function isMcpProxyWatchdogProbePath(requestPath: unknown): boolean {
 // saturated. Heartbeat is intentionally absent: it is a cheap repeating beat
 // and should fail fast rather than consume a reserved slot.
 export const RESERVED_CONTROL_PLANE_PATHS = new Set([
+  "/api/adv/sessions/port/delivery",
+  "/api/adv/sessions/port/status",
   "/api/adv/sessions/resumable",
   "/api/agent-mcp/console/bootstrap-su/options",
   "/api/agent-mcp/console/bootstrap-su",
@@ -2304,6 +2316,10 @@ export const RESERVED_CONTROL_PLANE_PATHS = new Set([
 // as continuation checkpoints. Heartbeat is deliberately excluded: it repeats
 // and may fail fast under pressure.
 export const CRITICAL_SESSION_LIFECYCLE_PATHS = new Set([
+  // Reconciliation follows the mutation on the same durability socket rather
+  // than contending with ordinary traffic or reconnect handshakes.
+  "/api/adv/sessions/port/delivery",
+  "/api/adv/sessions/port/status",
   "/api/agent-mcp/console/bootstrap-su/session-ended",
   "/api/agent-mcp/console/bootstrap-su/session-resumed",
   "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
