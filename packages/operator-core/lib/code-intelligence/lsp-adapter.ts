@@ -909,8 +909,8 @@ function withinProjectBoundary(path: string, root: string): boolean {
 
 /** Directories a directory-anchor walk never descends: generated, vendored or VCS. */
 const ANCHOR_WALK_SKIP = new Set(['node_modules', 'dist', 'build', 'coverage', 'target', '.git', '.next', '.turbo']);
-/** TypeScript sources a directory anchor may open; declaration files never create a project. */
-const TS_ANCHOR_SOURCE = /\.(?:ts|tsx|mts|cts)$/;
+/** Sources a TypeScript/JavaScript directory anchor may open; declarations never create a project. */
+const TS_ANCHOR_SOURCE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 /** Hard bound on a directory-anchor walk, so a wide directory refuses instead of stalling. */
 const ANCHOR_WALK_MAX_ENTRIES = 50_000;
 
@@ -923,10 +923,11 @@ function isDirectoryPath(path: string): boolean {
 }
 
 /** The nearest directory at-or-above `dir` holding `marker`, inside `fallbackRoot`. */
-function nearestAncestorWith(dir: string, marker: string, fallbackRoot: string): string | null {
+function nearestAncestorWith(dir: string, marker: string | readonly string[], fallbackRoot: string): string | null {
+  const markers = typeof marker === 'string' ? [marker] : marker;
   let cur = dir;
   while (withinProjectBoundary(cur, fallbackRoot)) {
-    if (existsSync(join(cur, marker))) return cur;
+    if (markers.some(name => existsSync(join(cur, name)))) return cur;
     const parent = dirname(cur);
     if (parent === cur) break;
     cur = parent;
@@ -955,7 +956,8 @@ export function resolveDirectoryAnchor(
   dir: string,
   rootPath: string,
 ): { project: string | null; document: string | null; error: string | null } {
-  const project = nearestAncestorWith(dir, 'tsconfig.json', rootPath);
+  const projectMarkers = specForLanguage('typescript').projectMarkers;
+  const project = nearestAncestorWith(dir, projectMarkers, rootPath);
   const nested: string[] = [];
   let best: { path: string; rank: number; depth: number } | null = null;
   let visited = 0;
@@ -977,8 +979,8 @@ export function resolveDirectoryAnchor(
         if (!walk(full, depth + 1)) return false;
         continue;
       }
-      if (name === 'tsconfig.json' && cur !== dir) {
-        nested.push(cur);
+      if (projectMarkers.includes(name) && cur !== dir) {
+        if (!nested.includes(cur)) nested.push(cur);
         continue;
       }
       if (TS_ANCHOR_SOURCE.test(name) && !/\.d\.[cm]?ts$/.test(name)) {
@@ -1009,7 +1011,7 @@ export function resolveDirectoryAnchor(
       project,
       document: null,
       error:
-        `directory anchor ${dir} spans ${nested.length} nested tsconfig project(s) ` +
+        `directory anchor ${dir} spans ${nested.length} nested tsconfig/jsconfig project(s) ` +
         `(${nested.slice(0, 5).join(', ')}${nested.length > 5 ? ', …' : ''}), and a symbol search covers ONE ` +
         `project — answering for the outer one would read as absence for symbols in the others. Anchor each ` +
         `project separately, or use gitnexus/rg for a repository-wide question.`,
@@ -1021,7 +1023,7 @@ export function resolveDirectoryAnchor(
       project,
       document: null,
       error: !project
-        ? `no tsconfig.json at or above directory anchor ${dir}, so there is no project to search. Pass a 'file' inside a directory covered by a tsconfig.json.`
+        ? `no tsconfig.json or jsconfig.json at or above directory anchor ${dir}, so there is no project to search. Pass a 'file' inside a configured TypeScript or JavaScript project.`
         : `directory anchor ${dir} contains no TypeScript source to open, so tsserver cannot create its project. Pass a 'file' anchor instead.`,
     };
   }
@@ -1154,9 +1156,9 @@ export function resolveSymbolSearchScope(
       root: rootPath,
       anchor: null,
       error:
-        `no tsconfig.json found between ${anchor} and ${rootPath}, so tsserver would file that ` +
+        `no tsconfig.json or jsconfig.json found between ${anchor} and ${rootPath}, so tsserver would file that ` +
         `anchor under an inferred project that navto does not search and would answer EMPTY for ` +
-        `every symbol. Pass a 'file' inside a directory covered by a tsconfig.json. Refusing ` +
+        `every symbol. Pass a 'file' inside a configured TypeScript or JavaScript project. Refusing ` +
         `rather than returning a false-empty that reads as "no such symbol".`,
     };
   }
@@ -1164,7 +1166,7 @@ export function resolveSymbolSearchScope(
 }
 
 /**
- * The nearest ancestor of `file` holding a `tsconfig.json`, or null.
+ * The nearest ancestor holding a declared TypeScript/JavaScript project marker, or null.
  *
  * The TypeScript analogue of the `Cargo.toml` walk in resolveProjectRoot, and
  * deliberately NOT folded into it: position-addressed ops must keep rooting at
@@ -1174,14 +1176,10 @@ export function resolveSymbolSearchScope(
  * needs the project actually LOADED at the server root.
  */
 function nearestTsProjectRoot(file: string, fallbackRoot: string): string | null {
-  let dir = dirname(file);
-  while (dir.startsWith(fallbackRoot)) {
-    if (existsSync(join(dir, 'tsconfig.json'))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
+  // Legacy/partial clients have no declared root; retain their conservative
+  // inferred-project key rather than treating missing scope as a real path.
+  if (!fallbackRoot) return null;
+  return nearestAncestorWith(dirname(file), specForLanguage('typescript').projectMarkers, fallbackRoot);
 }
 
 /** The configured project retaining `file`, or a conservative inferred-project key. */

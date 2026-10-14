@@ -935,6 +935,33 @@ describe('workspace_symbols search scope', () => {
     expect(scope.root).toBe(pkg);
   });
 
+  it('roots JavaScript file and directory searches at their configured jsconfig project', async () => {
+    const pkg = join(dir, 'javascript-project');
+    await mkdir(join(pkg, 'src'), { recursive: true });
+    await writeFile(join(pkg, 'jsconfig.json'), '{"compilerOptions":{"allowJs":true},"include":["src/*.js"]}\n');
+    const anchor = join(pkg, 'src', 'control.js');
+    await writeFile(anchor, 'export function target() { return 1; }\n');
+    for (const input of [anchor, join(pkg, 'src')]) {
+      expect(resolveSymbolSearchScope('typescript', input, dir)).toEqual({ root: pkg, anchor, error: null });
+    }
+  });
+
+  it('refuses directory searches across nested JavaScript projects and deduplicates their markers', async () => {
+    await writeFile(join(dir, 'tsconfig.json'), '{}\n');
+    for (const name of ['first', 'second']) {
+      const pkg = join(dir, name);
+      await mkdir(pkg);
+      await writeFile(join(pkg, 'jsconfig.json'), '{"compilerOptions":{"allowJs":true}}\n');
+      await writeFile(join(pkg, 'control.js'), 'export const target = 1;\n');
+    }
+    await writeFile(join(dir, 'first', 'tsconfig.json'), '{}\n');
+    const scope = resolveSymbolSearchScope('typescript', dir, dir);
+    expect(scope.anchor).toBeNull();
+    expect(scope.error).toContain('2 nested tsconfig/jsconfig project(s)');
+    expect(scope.error).toContain(join(dir, 'first'));
+    expect(scope.error).toContain(join(dir, 'second'));
+  });
+
   it('refuses an anchored TypeScript search with no tsconfig above the anchor', async () => {
     await mkdir(join(dir, 'loose'), { recursive: true });
     const anchor = join(dir, 'loose', 'x.ts');
@@ -975,7 +1002,7 @@ describe('workspace_symbols search scope', () => {
     }
     const scope = resolveSymbolSearchScope('typescript', join(dir, 'libs', 'generic'), dir);
     // Answering for one project would read as ABSENCE for symbols in the other.
-    expect(scope.error).toMatch(/2 nested tsconfig project/);
+    expect(scope.error).toMatch(/2 nested tsconfig\/jsconfig project/);
     expect(scope.error).toContain(join(dir, 'libs', 'generic', 'alpha'));
     expect(scope.anchor).toBeNull();
   });
