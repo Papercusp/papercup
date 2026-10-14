@@ -35,6 +35,9 @@ function errorResponse(status: number, code: string, message: string): Response 
   });
 }
 
+/** Hosted requests never reflect provider, SQL, or customer error text. */
+const presentHostedError = () => ({ code: 'handler_error', message: 'The hosted service could not complete the request.' });
+
 /**
  * HTTP status per denial reason.
  *
@@ -118,6 +121,11 @@ export function createHostedAuthStep(
   return {
     name: 'auth',
     async run(exec) {
+      // The shared route stack is also used by the local operator, whose
+      // historical handler_error body is intentionally more diagnostic. The
+      // hosted profile is internet-facing and must install its closed error
+      // boundary before auth resolution or handler execution can throw.
+      exec.errorPresenter = presentHostedError;
       const auth = exec.def.auth;
 
       if (auth === 'public') {

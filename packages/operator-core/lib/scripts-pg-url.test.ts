@@ -349,11 +349,30 @@ function isPortableExplicitPgReader(rel: string, masked: string): boolean {
     !/from ['"]\.\.?\//.test(masked);
 }
 
+// `with-test-pg.mjs` is the isolation supervisor, not a script consumer. It
+// deliberately creates a private Postgres, validates its loopback URL, and
+// injects that URL/port into child processes. Those explicit pins are the
+// isolation boundary; routing this supervisor through the shared resolver would
+// make the test runner select the operator's database instead of its throwaway
+// server. Keep the exemption executable so a future rewrite cannot quietly turn
+// the supervisor into an ambient-URL consumer.
+const TEST_PG_SUPERVISOR = 'with-test-pg.mjs';
+function isTestPgSupervisor(rel: string, masked: string): boolean {
+  if (rel !== TEST_PG_SUPERVISOR) return false;
+  return masked.includes('startEmbeddedPostgresServer') &&
+    masked.includes("PAPERCUSP_PG_PORT: String(port)") &&
+    masked.includes("PAPERCUSP_SKIP_PG_DISCOVERY: '1'") &&
+    masked.includes('const testAdminUrl = new URL(pg.urls.admin)') &&
+    masked.includes('PAPERCUSP_TEST_PG_ADMIN_URL: testAdminUrl.toString()');
+}
+
 function handRolledFiles(): string[] {
   return scriptFiles().filter((rel) => {
     if (rel === HELPER) return false;
     const masked = maskedSourceOf(rel);
-    return classify(masked).length > 0 && !isPortableExplicitPgReader(rel, masked);
+    return classify(masked).length > 0 &&
+      !isPortableExplicitPgReader(rel, masked) &&
+      !isTestPgSupervisor(rel, masked);
   });
 }
 
@@ -408,6 +427,18 @@ describe('the guard is falsifiable', () => {
       masked.replace('SELECT metadata', 'DELETE metadata'),
       masked + '\nimport x from "../lib/pg-url.mjs";',
     ]) expect(isPortableExplicitPgReader(PORTABLE_PG_READER, mutated)).toBe(false);
+  });
+
+  it('accepts only the maintained throwaway-PG isolation supervisor contract', () => {
+    const masked = maskedSourceOf(TEST_PG_SUPERVISOR);
+    expect(isTestPgSupervisor(TEST_PG_SUPERVISOR, masked)).toBe(true);
+    expect(isTestPgSupervisor('another-script.mjs', masked)).toBe(false);
+    for (const mutated of [
+      masked.replace('startEmbeddedPostgresServer', 'startExternalPostgresServer'),
+      masked.replace("PAPERCUSP_SKIP_PG_DISCOVERY: '1'", "PAPERCUSP_SKIP_PG_DISCOVERY: '0'"),
+      masked.replace('const testAdminUrl = new URL(pg.urls.admin)', 'const testAdminUrl = new URL(process.env.DATABASE_URL)'),
+      masked.replace('PAPERCUSP_TEST_PG_ADMIN_URL: testAdminUrl.toString()', 'PAPERCUSP_TEST_PG_ADMIN_URL: process.env.DATABASE_URL'),
+    ]) expect(isTestPgSupervisor(TEST_PG_SUPERVISOR, mutated)).toBe(false);
   });
 });
 

@@ -108,6 +108,35 @@ describe('hosted route stack', () => {
     expect(await res.json()).toEqual({ principalKind: null, capabilities: null });
   });
 
+  it('never reflects a hosted handler exception into its HTTP error body', async () => {
+    const privateValue = 'hosted-private-sql-customer@example.test';
+    const app = mount({
+      ...route('public', '/hosted/fault'),
+      handler: () => { throw new Error(`SQL failed for ${privateValue}`); },
+    }, allow());
+    const res = await app.request('/api/hosted/fault');
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body).toEqual({
+      error: { code: 'handler_error', message: 'The hosted service could not complete the request.' },
+    });
+    expect(JSON.stringify(body)).not.toContain(privateValue);
+  });
+
+  it('never reflects a hosted auth-resolver exception into its HTTP error body', async () => {
+    const privateValue = 'hosted-private-provider-token';
+    const app = mount(route({ capabilities: ['workspace:view'] }), async () => {
+      throw new Error(`provider payload ${privateValue}`);
+    });
+    const res = await app.request('/api/hosted/probe');
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body).toEqual({
+      error: { code: 'handler_error', message: 'The hosted service could not complete the request.' },
+    });
+    expect(JSON.stringify(body)).not.toContain(privateValue);
+  });
+
   it('admits an authenticated route and hands the handler the hosted principal', async () => {
     const app = mount(route({ capabilities: ['workspace:view'] }), allow('member'));
     const res = await app.request('/api/hosted/probe');

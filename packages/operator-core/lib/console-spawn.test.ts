@@ -32,6 +32,7 @@ import {
   normalizeHeadlessAgentTerm,
   KICKOFF_PROOF_PATH_ENV,
   KICKOFF_PROOF_TOKEN_ENV,
+  KICKOFF_PROOF_WINDOW_MS,
   _resetTerminalCacheForTests,
   pickLinuxTerminal,
   resolveTerminalPreference,
@@ -49,7 +50,10 @@ vi.mock('./gnome-terminal-profile.mjs', () => ({
 import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from './agent-kickoff/prompt-transport.mjs';
 import { isWindowsDesktopHost } from './windows-desktop-windows';
 import { requestDesktopConsoleLaunch } from './console-launch-bridge';
-import { publishKickoffProofReceipt } from '../../../apps/operator/scripts/psu-pty-host.mjs';
+import {
+  headlessRoleMcpVerifyWorstCaseMs,
+  publishKickoffProofReceipt,
+} from '../../../apps/operator/scripts/psu-pty-host.mjs';
 
 // WI-1882: make the WSL2/Windows-desktop signal deterministic on the Linux CI
 // host (where process.platform is already 'linux'). console-spawn consumes only
@@ -627,6 +631,10 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     taskEnrolment.begin.mockClear();
     taskEnrolment.complete.mockClear();
     taskControl.kill.mockClear();
+  });
+
+  it('keeps the default kickoff-proof budget beyond the headless MCP verification worst case', () => {
+    expect(KICKOFF_PROOF_WINDOW_MS).toBeGreaterThanOrEqual(headlessRoleMcpVerifyWorstCaseMs());
   });
 
   // No-systemd-run fallback path — pin hasSystemdRun:false so these don't flake
