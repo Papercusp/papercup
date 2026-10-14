@@ -67,6 +67,12 @@ export function fixtureIdentity(env: NodeJS.ProcessEnv) {
   assert(env.HOME && env.PAPERCUSP_HOME && env.PAPERCUSP_SKIP_PG_DISCOVERY === '1', 'Private HOME and PG required');
   const base = new URL(env.PAPERCUSP_OPERATOR_URL ?? '');
   assert(base.protocol === 'http:' && base.hostname === '127.0.0.1' && base.pathname === '/', 'Private loopback operator required');
+  assert.equal(env.PAPERCUSP_HONO_PORT, base.port, 'Private child operator port must match');
+  const pgPort = assertPort(Number(env.PAPERCUSP_PG_PORT));
+  assert(pgPort !== 5432, 'Owned isolated Postgres required');
+  const pg = new URL(env.PAPERCUSP_TEST_PG_ADMIN_URL ?? '');
+  assert(['postgres:', 'postgresql:'].includes(pg.protocol) && ['localhost', '127.0.0.1', '[::1]'].includes(pg.hostname) &&
+    pg.port === String(pgPort) && pg.username && pg.pathname.slice(1), 'Maintained isolated-runtime Postgres receipt required');
   const ingressPort = assertPort(Number(env.PAPERCUSP_EXTERNAL_INGRESS_PORT));
   assert(ingressPort !== Number(base.port) && ![3070, 3170, 3055].includes(ingressPort), 'Separate protected ingress required');
   return { workspaceId: env.PAPERCUSP_WORKSPACE_ID!, base: base.origin, ingressPort };
@@ -152,10 +158,10 @@ export async function expireFixturePair(pairToken: string, workspaceId: string, 
   return expiresAt;
 }
 
-export async function runNativeDeviceFixture(evidencePath: string, certPath: string, seconds = 1800) {
+export async function runNativeDeviceFixture(evidencePath: string, certPath: string, seconds = 1800,
+  interruptionSeconds = Number(process.env.PAPERCUSP_NATIVE_OFFLINE_SECONDS ?? '0')) {
   const identity = fixtureIdentity(process.env); // All preconditions precede any external write.
   assert(Number.isInteger(seconds) && seconds >= 30 && seconds <= 3600, 'Bounded lifetime required');
-  const interruptionSeconds = Number(process.env.PAPERCUSP_NATIVE_OFFLINE_SECONDS ?? '0');
   assert(interruptionSeconds === 0 || (Number.isInteger(interruptionSeconds) && interruptionSeconds >= 30 &&
     interruptionSeconds <= 120), 'Offline fixture interval must be 30 to 120 seconds');
   const evidence = resolve(evidencePath);
@@ -346,8 +352,9 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
 }
 
 if (isCliEntry(import.meta.url)) {
-  const [evidence, cert, lifetime] = process.argv.slice(2);
-  runNativeDeviceFixture(evidence ?? '', cert ?? '', lifetime ? Number(lifetime) : 1800).catch(error => {
+  const [evidence, cert, lifetime, offlineSeconds] = process.argv.slice(2);
+  runNativeDeviceFixture(evidence ?? '', cert ?? '', lifetime ? Number(lifetime) : 1800,
+    offlineSeconds === undefined ? undefined : Number(offlineSeconds)).catch(error => {
     console.error('NATIVE_HTTPS_FIXTURE_PREFLIGHT_FAILED=' + error.message); process.exitCode = 1;
   });
 }

@@ -9,6 +9,8 @@ const privateEnv = {
   PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_DBOS_ENABLE: '0', PAPERCUSP_DBOS_ROUTINES: '0',
   HOME: '/tmp/private-native/home', PAPERCUSP_HOME: '/tmp/private-native/home/.papercusp',
   PAPERCUSP_SKIP_PG_DISCOVERY: '1', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:40001',
+  PAPERCUSP_HONO_PORT: '40001', PAPERCUSP_PG_PORT: '40003',
+  PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private@127.0.0.1:40003/private',
   PAPERCUSP_EXTERNAL_INGRESS_PORT: '40002',
 };
 
@@ -102,6 +104,10 @@ describe('disposable native HTTPS fixture admission', () => {
       { PAPERCUSP_SKIP_PG_DISCOVERY: '0' }, { PAPERCUSP_POT_HOME_SLUG: 'papercusp' },
       { PAPERCUSP_EXTERNAL_INGRESS_PORT: '40001' }, { PAPERCUSP_EXTERNAL_INGRESS_PORT: '3070' },
       { PAPERCUSP_EXTERNAL_INGRESS_PORT: '3170' }, { PAPERCUSP_OPERATOR_URL: 'http://192.168.1.2:40001' },
+      { PAPERCUSP_HONO_PORT: '3070' }, { PAPERCUSP_PG_PORT: '5432' },
+      { PAPERCUSP_TEST_PG_ADMIN_URL: undefined },
+      { PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private@127.0.0.1:5432/private' },
+      { PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private@remote.example:40003/private' },
     ]) expect(() => fixtureIdentity({ ...privateEnv, ...change })).toThrow();
   });
 
