@@ -514,6 +514,20 @@ describe('writeRoleCodexHome', () => {
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-objective-title.sh');
   });
 
+  it('matches canonical code-mode parent calls for lock release (EI-25920487778813638)', async () => {
+    await installFakeHooks();
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({ sessionKey: 'parent-lock-matcher', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    const matcher = new RegExp(hooks.hooks.PostToolUse[0].matcher);
+    for (const name of ['apply_patch', 'Edit', 'Write', 'exec', 'functions.exec', 'functions__exec']) {
+      expect(matcher.test(name), name).toBe(true);
+    }
+    for (const name of ['functionsXexec', 'functions\\exec', 'unrelated']) {
+      expect(matcher.test(name), name).toBe(false);
+    }
+  });
+
   it('a role session WITH a sid gets the activity-bridge hook (worker activity → fleet view) with the coord fold OFF', async () => {
     await installFakeHooks();
     const writeRoleCodexHome = await load();
