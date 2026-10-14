@@ -35,6 +35,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -100,9 +101,25 @@ function tick() {
 }
 
 async function observe(eligible: number, applied: number, reason: string): Promise<void> {
-  expect(observeFallback(MECHANISM, { eligible, applied, reason, scope: SCOPE }, { workspaceId: WS })).toBe(true);
+  const correlationId = randomUUID();
+  expect(observeFallback(MECHANISM, { eligible, applied, reason, scope: SCOPE }, {
+    workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint',
+    correlationId,
+  })).toBe(true);
   const flushed = await flushFallbackObservations();
-  expect(flushed).toMatchObject({ written: 1, failed: 0 });
+  const rows = await db.adminSql<Array<{ reason: string; scope: string | null; samples: number; eligible: number; applied: number; workspace_id: string; process_tag: string | null; correlation_id: string | null }>>`
+    SELECT reason, scope, samples, eligible, applied, workspace_id, process_tag, correlation_id
+      FROM harness_shared.fallback_observations
+     WHERE mechanism = ${MECHANISM} AND workspace_id = 'default'
+       AND process_tag = 'gate-reuse:green-checkpoint' AND correlation_id = ${correlationId}
+     ORDER BY id
+  `;
+  // The writer batches process-wide observations. Verify this call's exact row rather than
+  // assuming its flush count excludes other producers that shared the batch.
+  expect(flushed).toMatchObject({ failed: 0 });
+  expect(rows).toMatchObject([{ reason, scope: SCOPE, samples: 1, eligible, applied,
+    workspace_id: 'default', process_tag: 'gate-reuse:green-checkpoint', correlation_id: correlationId }]);
+  expect(rows).toHaveLength(1);
 }
 
 /** Every work-item currently holding this condition key. */
@@ -155,18 +172,34 @@ beforeEach(async () => {
 });
 
 describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
+  it('does not merge local Papercusp observations into green-checkpoint pass-reuse health', async () => {
+    const task = '@papercusp/web::test';
+    const key = degradationConditionKey(MECHANISM, task, 'dirty-checkout');
+    expect(observeFallback(MECHANISM, { eligible: 1, applied: 0, reason: 'dirty-checkout', scope: task }, {
+      workspaceId: WS, processTag: 'gate-reuse',
+    })).toBe(true);
+    expect(await flushFallbackObservations()).toMatchObject({ written: 1, failed: 0 });
+    expect((await runDegradationSweepOnce({ prune: null })).opened).toEqual([]);
+
+    expect(observeFallback(MECHANISM, { eligible: 1, applied: 0, reason: 'dirty-checkout', scope: task }, {
+      workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint',
+    })).toBe(true);
+    expect(await flushFallbackObservations()).toMatchObject({ written: 1, failed: 0 });
+    expect((await runDegradationSweepOnce({ prune: null })).opened).toEqual([key]);
+  }, 120_000);
+
   it('uses disjoint adjacent windows at the boundary', async () => {
     const boundary = new Date(Date.now() - 5 * 60_000);
     expect(observeFallback(MECHANISM, { eligible: 1, applied: 0, reason: 'otherRunner', scope: 'boundary-task' }, {
-      workspaceId: WS, observedAt: boundary,
+      workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint', observedAt: boundary,
     })).toBe(true);
     expect(await flushFallbackObservations()).toMatchObject({ written: 1, failed: 0 });
 
     const prior = await readFallbackWindowsByScope(MECHANISM, 60_000, {
-      sql: db.adminSql, workspaceId: WS, now: boundary,
+      sql: db.adminSql, workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint', now: boundary,
     });
     const current = await readFallbackWindowsByScope(MECHANISM, 60_000, {
-      sql: db.adminSql, workspaceId: WS, now: new Date(boundary.getTime() + 60_000),
+      sql: db.adminSql, workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint', now: new Date(boundary.getTime() + 60_000),
     });
     expect(prior).toEqual([]);
     expect(current).toMatchObject([{ scope: 'boundary-task', window: { eligible: 1, applied: 0 } }]);
@@ -178,7 +211,7 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     const priorAt = new Date(Date.now() - 70 * 60_000);
     for (let i = 0; i < 20; i++) {
       expect(observeFallback(MECHANISM, { eligible: 1, applied: 1, reason: 'applied', scope: task }, {
-        workspaceId: WS, observedAt: priorAt,
+        workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint', observedAt: priorAt,
       })).toBe(true);
     }
     // Identical observations coalesce into ONE row whose `samples` is 20 (WI-6554700010009713);
@@ -210,6 +243,8 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
         expectedSha: 'a'.repeat(40),
         env: {
           GREEN_CHECKPOINT: '1',
+          PAPERCUSP_TEST_RUN_SOURCE: 'ci',
+          PAPERCUSP_TEST_RUN_GROUP: '64eab084-4e87-4e2b-99bd-3be2eb7c191f',
           PAPERCUSP_WORKSPACE_ID: WS,
           AFFECTED_TEST_REUSE_AUDIT_RATE: '0',
           AFFECTED_RECORD_EXECUTED_SOURCES: '0',
@@ -219,7 +254,7 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
           runnerIdentity: () => 'proof-v3 test-runner',
           connect: async () => ({ end: async () => undefined }) as never,
           loadProofs: async () => new Promise(() => undefined),
-          recordReuse: (label, decision) => recordGateReuseDecision(label, decision, writer),
+          recordReuse: (label, decision, context) => recordGateReuseDecision(label, decision, { runContext: context.runContext, runGroupId: context.runGroupId, writer }),
         },
       });
 
@@ -246,7 +281,8 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     const task = '@fixture/operator-core::test:lane-stateful';
     const key = degradationConditionKey(MECHANISM, task, 'otherRunner');
     const writer = { observeFallback, flushFallbackObservations };
-    expect(await recordGateReuseDecision(task, { summary: { candidates: 100, reused: 0, otherRunner: 100 } }, writer)).toBe(true);
+    const gateContext = { runContext: 'green-checkpoint' as const, writer };
+    expect(await recordGateReuseDecision(task, { summary: { candidates: 100, reused: 0, otherRunner: 100 } }, gateContext)).toBe(true);
     expect((await runDegradationSweepOnce()).opened).toEqual([key]);
     expect((await runDegradationSweepOnce()).opened).toEqual([]);
     await tick();
@@ -255,7 +291,7 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     expect(await alarmCount(key)).toBe(1);
     // Both producers use the same task scope, so later successful primary decisions
     // recover its existing episode rather than creating a separate round-specific key.
-    expect(await recordGateReuseDecision(task, { summary: { candidates: 200, reused: 200 } }, writer)).toBe(true);
+    expect(await recordGateReuseDecision(task, { summary: { candidates: 200, reused: 200 } }, gateContext)).toBe(true);
     expect((await runDegradationSweepOnce()).resolved).toEqual([key]);
     await tick();
     expect(await holdersOf(key)).toEqual([]);
@@ -268,11 +304,12 @@ describe('degradation watchdog on the real condition rail (R-2, R-8)', () => {
     const key = degradationConditionKey(MECHANISM, task, 'proofs-unavailable');
     const writer = { observeFallback, flushFallbackObservations };
 
-    expect(await recordGateReuseDecision(task, { offReason: 'proofs-unavailable' }, writer)).toBe(true);
+    const gateContext = { runContext: 'green-checkpoint' as const, writer };
+    expect(await recordGateReuseDecision(task, { offReason: 'proofs-unavailable' }, gateContext)).toBe(true);
     expect((await runDegradationSweepOnce()).opened).toEqual([key]);
 
     // A later measurable decision on this task settles the same condition.
-    expect(await recordGateReuseDecision(task, { summary: { candidates: 1, reused: 1 } }, writer)).toBe(true);
+    expect(await recordGateReuseDecision(task, { summary: { candidates: 1, reused: 1 } }, gateContext)).toBe(true);
     expect((await runDegradationSweepOnce()).resolved).toEqual([key]);
   }, 180_000);
 

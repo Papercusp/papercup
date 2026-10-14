@@ -923,6 +923,20 @@ describe('session:request-compaction — focus-integrity warning wired into the 
     awaits: [],
     fleet: null,
   };
+  const reviewTargetId = 'WI-6554700010010741';
+  const briefWithReviewTarget = {
+    ...briefWithHeld,
+    deferredItems: [
+      {
+        id: reviewTargetId,
+        title: 'Acceptance review-target reservation',
+        body: null,
+        harness: 'papercusp',
+        kind: 'task',
+        source: 'commented' as const,
+      },
+    ],
+  };
 
   it('prepends a ⚠ FOCUS INTEGRITY caution to the injected note when focus names a WI/carry-hash the owner does not hold', async () => {
     findLiveHost.mockReturnValue(carryHost);
@@ -934,6 +948,16 @@ describe('session:request-compaction — focus-integrity warning wired into the 
     expect(msg.data).toContain('⚠ FOCUS INTEGRITY');
     expect(msg.data).toContain('WI-2140920');
     expect(msg.data).toContain('carry-note e5729a1f033a');
+  });
+
+  it('preserves focus on a review target this session commented on', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    buildCarryBrief.mockResolvedValue(briefWithReviewTarget);
+    const focus = `Continue grading ${reviewTargetId}.`;
+    await call({ focus }, { role: 'judge' });
+    const msg = injected();
+    expect(msg.data).toContain(focus);
+    expect(msg.data).not.toContain('FOCUS INTEGRITY');
   });
 
   it('removes a foreign ref from the executable resume directive when the recipient has no lane', async () => {
@@ -1433,7 +1457,7 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
-  it('judge role receives a tool-neutral continuation and threads role into carry assembly', async () => {
+  it('judge role gets the permitted address check and threads role into carry assembly', async () => {
     findLiveHost.mockReturnValue(carryHost);
     const b = body(await call({ focus: 'evaluate the candidate evidence' }, { role: 'judge' }));
     const msg = injected();
@@ -1441,8 +1465,9 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(b.ok).toBe(true);
     expect(msg.data).toContain('assigned evaluation');
     expect(msg.data).toContain('evaluate the candidate evidence');
+    expect(msg.data).toContain('coord:orient {}');
+    expect(msg.data).toContain('self.ownerId');
     for (const forbidden of [
-      'coord:orient',
       'coord:declare-intent',
       'scheduler:get_next',
       'loop:status',

@@ -214,6 +214,8 @@ describe('COORD_ROLES', () => {
       // would also expose unrelated coordination tools.
       const { default: workItemsGet } = await import('../work_items/get.js');
       const { default: searchFulltext } = await import('../search/fulltext.js');
+      const { default: rubricSearch } = await import('../rubrics/search.js');
+      const { default: planRevisions } = await import('../plans/revisions-list.js');
       const { default: scorecardsEvaluate } = await import('../scorecards/evaluate.js');
       const { default: pgQuery } = await import('../dev/pg_query.js');
       const { default: degenerateCheck } = await import('../gates/degenerate-check.js');
@@ -221,6 +223,8 @@ describe('COORD_ROLES', () => {
       for (const [name, tool] of [
         ['work_items:get', workItemsGet],
         ['search:fulltext', searchFulltext],
+        ['rubrics:search', rubricSearch],
+        ['plans:revisions', planRevisions],
         ['scorecards:evaluate', scorecardsEvaluate],
         ['dev:pg_query', pgQuery],
         ['gates:degenerate-check', degenerateCheck],

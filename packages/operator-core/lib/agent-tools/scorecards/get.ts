@@ -17,9 +17,26 @@ import { GRADING_INTEGRITY_RUBRIC_REF } from '../../grading-integrity';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import {
+  createStageAttempt,
+  logIfStageStalls,
+  traceStageAwait,
+  withStageAttempt,
+} from '../../sync/hyperbee/stage-stall-log';
+import {
+  namedQueryStageTimings,
+  traceNamedQueryStage,
+  withNamedQueryDiagnosticContext,
+} from '../db-diagnostic-correlation-wiring';
+import {
   OBSERVATION_ATTRIBUTIONS,
   OBSERVATION_UNKNOWN_REASONS,
 } from '../../harness/improvements/observation-types';
+
+const SCORECARD_GET_DIAGNOSTIC_STAGE = {
+  evidenceRead: 'scorecards-get-evidence-read',
+  gradingAuditRubricRead: 'scorecards-get-rubric-read',
+} as const;
+type ScorecardGetDiagnosticStage = (typeof SCORECARD_GET_DIAGNOSTIC_STAGE)[keyof typeof SCORECARD_GET_DIAGNOSTIC_STAGE];
 
 export const scorecardGetArgs = z.object({
   issueId: z
@@ -265,8 +282,24 @@ const scorecardEvidenceReadSchema = z.object({
   next: evidenceReadCallSchema.optional(),
 }).passthrough();
 
+const scorecardGetDiagnosticsSchema = z.object({
+  schemaVersion: z.literal('scorecards-get-diagnostics-v1'),
+  correlationId: z.string().uuid(),
+  handlerState: z.enum(['running', 'completed', 'failed']),
+  handlerElapsedMs: z.number().int().nonnegative(),
+  omittedStages: z.number().int().nonnegative(),
+  stages: z.array(z.object({
+    // Stage strings come only from traceNamedQueryStage's source-owned names;
+    // caller arguments and database error text are never copied into this field.
+    stage: z.string().min(1).max(64),
+    elapsedMs: z.number().int().nonnegative(),
+    outcome: z.enum(['pending', 'fulfilled', 'rejected']),
+  })),
+});
+
 const scorecardGetResultSchema = z.object({
   ok: z.boolean(),
+  diagnostics: scorecardGetDiagnosticsSchema.optional(),
   scorecard: scorecardEvidenceSchema.optional(),
   evidenceRead: scorecardEvidenceReadSchema.optional(),
   rerunRecipeRead: z.object({
@@ -441,44 +474,109 @@ export default defineTool({
   result: scorecardGetResultSchema,
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
+    return withNamedQueryDiagnosticContext('scorecards:get', async (correlationId) => {
+      const handlerStartedAt = performance.now();
+      const diagnosticAttempt = createStageAttempt({ rowId: '', onEvent: () => {} });
+      let handlerState: 'running' | 'completed' | 'failed' = 'running';
+      const makeDiagnostics = (state: typeof handlerState) => {
+        const timing = namedQueryStageTimings();
+        return {
+          schemaVersion: 'scorecards-get-diagnostics-v1' as const,
+          correlationId,
+          handlerState: state,
+          handlerElapsedMs: Math.max(0, Math.round(performance.now() - handlerStartedAt)),
+          omittedStages: timing?.omittedStages ?? 0,
+          stages: timing?.stages ?? [],
+        };
+      };
+      const recordDiagnostics = (state: typeof handlerState) => {
+        const diagnostics = makeDiagnostics(state);
+        // Metadata is a replacement snapshot. Include the complete timing state
+        // on every update so a client timeout can still identify the pending phase.
+        try {
+          ctx.metadata?.({ scorecardsGetDiagnostics: diagnostics });
+        } catch {
+          /* Observability must not change the scorecard read result. */
+        }
+        return diagnostics;
+      };
+      const respond = (data: Record<string, unknown>) => {
+        handlerState = 'completed';
+        return { data: { ...data, diagnostics: recordDiagnostics(handlerState) } };
+      };
+      const runDiagnosticStage = async <T>(stage: ScorecardGetDiagnosticStage, run: () => PromiseLike<T>): Promise<T> => {
+        const pending = traceNamedQueryStage(stage, () => withStageAttempt(diagnosticAttempt, () =>
+          logIfStageStalls(
+            'scorecards:get',
+            `${stage} correlation=${correlationId}`,
+            traceStageAwait(stage, run),
+          ),
+        ));
+        // The first snapshot records the pending stage before the server or
+        // client timeout can obscure which await was in flight.
+        recordDiagnostics('running');
+        try {
+          return await pending;
+        } finally {
+          recordDiagnostics('running');
+        }
+      };
+
+      recordDiagnostics('running');
       try {
-        const issueId = args.issueId ?? args.id;
-        if (!issueId) {
-          return { data: { ok: false as const, error: 'issueId or id is required' } };
-        }
-        const result = await readScorecardEvidence(issueId);
-        if (result.kind === 'not_found') {
-          return { data: { ok: false as const, error: `scorecard '${issueId}' not found` } };
-        }
-        if (result.kind === 'not_scorecard') {
-          return { data: { ok: false as const, error: `'${issueId}' is not a scorecard` } };
-        }
-        const scorecard = result.scorecard.gradingAudit
-          ? {
-              ...result.scorecard,
-              gradingAuditCurrentness: classifyGradingAuditCurrentness(
-                result.scorecard.gradingAudit,
-                await getRubricWithoutSeeding(GRADING_INTEGRITY_RUBRIC_REF).catch(() => null),
-              ),
+        return await runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
+          try {
+            const issueId = args.issueId ?? args.id;
+            if (!issueId) {
+              return respond({ ok: false, error: 'issueId or id is required' });
             }
-          : result.scorecard;
-        return { data: boundedEvidenceRead(scorecard, args, issueId, inlineResultBudgetChars(identity.ownerId)) };
+            const result = await runDiagnosticStage(
+              SCORECARD_GET_DIAGNOSTIC_STAGE.evidenceRead,
+              () => readScorecardEvidence(issueId),
+            );
+            if (result.kind === 'not_found') {
+              return respond({ ok: false, error: `scorecard '${issueId}' not found` });
+            }
+            if (result.kind === 'not_scorecard') {
+              return respond({ ok: false, error: `'${issueId}' is not a scorecard` });
+            }
+            const gradingAuditRubric = result.scorecard.gradingAudit
+              ? await runDiagnosticStage(
+                  SCORECARD_GET_DIAGNOSTIC_STAGE.gradingAuditRubricRead,
+                  () => getRubricWithoutSeeding(GRADING_INTEGRITY_RUBRIC_REF),
+                ).catch(() => null)
+              : null;
+            const scorecard = result.scorecard.gradingAudit
+              ? {
+                  ...result.scorecard,
+                  gradingAuditCurrentness: classifyGradingAuditCurrentness(
+                    result.scorecard.gradingAudit,
+                    gradingAuditRubric,
+                  ),
+                }
+              : result.scorecard;
+            return respond(boundedEvidenceRead(scorecard, args, issueId, inlineResultBudgetChars(identity.ownerId)));
+          } catch (error) {
+            if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
+              return respond({
+                ok: false,
+                error: 'timeout',
+                retryable: true,
+                ...(error instanceof OrgTxnTimeoutError ? { pgCode: error.pgCode } : {}),
+                message:
+                  `scorecards:get read hit transient database contention: ${error.message}. ` +
+                  'No scorecard was returned; retry shortly.',
+              });
+            }
+            throw error;
+          }
+        });
       } catch (error) {
-        if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
-          return {
-            data: {
-              ok: false as const,
-              error: 'timeout',
-              retryable: true,
-              ...(error instanceof OrgTxnTimeoutError ? { pgCode: error.pgCode } : {}),
-              message:
-                `scorecards:get read hit transient database contention: ${error.message}. ` +
-                'No scorecard was returned; retry shortly.',
-            },
-          };
-        }
+        handlerState = 'failed';
+        recordDiagnostics(handlerState);
         throw error;
+      } finally {
+        diagnosticAttempt.finish(handlerState === 'completed' ? 'fulfilled' : 'rejected');
       }
     });
   },

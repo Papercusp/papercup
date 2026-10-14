@@ -94,8 +94,10 @@ const APP_FORWARDED_REQUEST_HEADERS = new Set([
   'papercusp-signature',
   'papercusp-event',
   'papercusp-delivery',
-  'x-hub-signature-256',
 ]);
+// Vendor proof headers carry no operator identity; the machine verifies their descriptor scheme.
+// Keep the relay independent of installed provider names and refuse every other custom header.
+const VENDOR_PROOF_HEADER = /^x-[a-z0-9-]+-(?:signature(?:-[0-9]+)?|secret)$/;
 export const APP_HTTP_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   'content-type',
   'cache-control',
@@ -132,7 +134,7 @@ export function appHttpRequestHeaders(input: unknown): Record<string, string> {
         continue;
       }
       const value = headerValue(raw);
-      if (APP_FORWARDED_REQUEST_HEADERS.has(key) && value !== null) headers[key] = value;
+      if ((APP_FORWARDED_REQUEST_HEADERS.has(key) || (VENDOR_PROOF_HEADER.test(key) && !key.startsWith('x-papercusp-'))) && value !== null) headers[key] = value;
     }
   }
   headers[EXTERNAL_INGRESS_MARKER_HEADER] = APP_RELAY_INGRESS_MARKER;

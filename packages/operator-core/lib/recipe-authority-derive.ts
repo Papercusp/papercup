@@ -151,7 +151,19 @@ const VOLATILE_COORDINATION_OWNER_ID =
   /\bsu-(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{4,64})\b/i;
 
 export function findVolatileCoordinationOwnerId(script: string): string | null {
-  return script.match(VOLATILE_COORDINATION_OWNER_ID)?.[0] ?? null;
+  const direct = script.match(VOLATILE_COORDINATION_OWNER_ID)?.[0];
+  if (direct) return direct;
+
+  // Condition keys commonly carry JSON values in URI-encoded form. In that
+  // representation the owner id is preceded/followed by an encoded quote
+  // (`%22`), so the raw text's neighbouring `2` characters suppress the
+  // word-boundary checks above even though the decoded value is a literal
+  // coordination owner id. Treat a complete percent escape as a separator
+  // while preserving the existing guard against ids embedded in words.
+  const encoded = script.match(
+    /(?:^|[^a-z0-9]|%[0-9a-f]{2})(su-(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{4,64}))(?![a-z0-9_])/i,
+  );
+  return encoded?.[1] ?? null;
 }
 
 /**

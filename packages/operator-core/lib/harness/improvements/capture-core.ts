@@ -404,6 +404,12 @@ export interface CaptureImprovementInput {
    */
   onIssuePersisted?: (issue: EngineerIssue) => Promise<void> | void;
   /**
+   * Awaited immediately before every `createIssue` attempt, including a retry
+   * after transient contention. Callers can use this boundary for a final
+   * freshness check after capture preparation has completed.
+   */
+  beforeIssueCreate?: () => Promise<void> | void;
+  /**
    * The agent-facing wrapper sets this for a fresh local change/feature capture so the
    * durable row is parked before the post-create review enrollment can run. Watchdog and
    * observation callers omit it; review enrollment is intentionally not a core-wide rule.
@@ -3129,14 +3135,16 @@ export async function captureImprovement(
       possibleDuplicates: reportedPossibleDuplicates,
       dedupCoverage,
       admissionIdentity: identity,
-      hint: input.body
-        ? 'Dedup results apply to this exact title and body. If the body will change before filing, rerun checkDuplicatesOnly with the final body because semantic matches can change.' +
-          incompleteCoverageHint
-        : 'This was a title-only pre-check. An empty `possibleDuplicates` list is not evidence that the eventual full capture has no duplicates: adding the final body can change semantic results and surface additional matches. Rerun checkDuplicatesOnly with the exact final body before relying on the results.' +
-          incompleteCoverageHint +
-          (dedupCoverage.degraded
-            ? ' Include the final body and rerun checkDuplicatesOnly before filing.'
-            : ''),
+      hint: isObservation
+        ? 'Observation-lane captures intentionally skip duplicate search: `dedupCoverage.lexical` and `dedupCoverage.semantic` are skipped. `possibleDuplicates: []` is not a duplicate verdict and cannot verify persistence. Use `work_items:list { includeObservations:true, q:<title fragment> }` to inspect visibility; q searches retained occurrence title/body for folded captures.'
+        : input.body
+          ? 'Dedup results apply to this exact title and body. If the body will change before filing, rerun checkDuplicatesOnly with the final body because semantic matches can change.' +
+            incompleteCoverageHint
+          : 'This was a title-only pre-check. An empty `possibleDuplicates` list is not evidence that the eventual full capture has no duplicates: adding the final body can change semantic results and surface additional matches. Rerun checkDuplicatesOnly with the exact final body before relying on the results.' +
+            incompleteCoverageHint +
+            (dedupCoverage.degraded
+              ? ' Include the final body and rerun checkDuplicatesOnly before filing.'
+              : ''),
       ...(alreadyDecided.length ? { alreadyDecided } : {}),
     };
   }
@@ -3831,7 +3839,10 @@ export async function captureImprovement(
       input.onDependencyTiming,
       'createIssueWithContentionRetry',
       () =>
-        acquireWithContentionRetry(() => deps.createIssue(createInput), {
+        acquireWithContentionRetry(async () => {
+          await input.beforeIssueCreate?.();
+          return deps.createIssue(createInput);
+        }, {
           backoffsMs: CAPTURE_CONTENTION_BACKOFFS_MS,
         }),
     );

@@ -17,6 +17,79 @@ function fakeFetch(responses: Array<{ status?: number; body: unknown }>) {
 
 const ORG = '11111111-2222-4333-8444-555555555555';
 
+describe('Stripe customer deletion (P-010)', () => {
+  const customer = { object: 'customer', id: 'cus_pinned', livemode: false, metadata: { organizationId: ORG } };
+  const tombstone = { object: 'customer', id: 'cus_pinned', deleted: true };
+  function deletionClient(responses: { body: unknown; status?: number; requestId?: string | null }[]) {
+    let index = 0;
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => {
+      const next = responses[index++] ?? { body: {}, status: 500 };
+      return new Response(JSON.stringify(next.body), { status: next.status ?? 200,
+        headers: next.requestId === null ? {} : { 'request-id': next.requestId ?? `req_${index}` } });
+    });
+    const built = createStripeBillingClient({ secretKey: 'sk_test_deletion', fetchImpl, liveModeAllowed: false });
+    if (!built.ok) throw new Error('client');
+    return { client: built.client, fetchImpl };
+  }
+
+  it('checks the frozen tenant pin before DELETE and requires a provider tombstone', async () => {
+    const { client, fetchImpl } = deletionClient([{ body: customer }, { body: tombstone }]);
+    expect(await client.deleteCustomer({ customerId: 'cus_pinned', organizationId: ORG })).toEqual({
+      ok: true, customerId: 'cus_pinned', alreadyDeleted: false, requestIds: ['req_1', 'req_2'],
+    });
+    expect(fetchImpl.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+      ['https://api.stripe.com/v1/customers/cus_pinned', 'GET'],
+      ['https://api.stripe.com/v1/customers/cus_pinned', 'DELETE'],
+    ]);
+    for (const [, init] of fetchImpl.mock.calls) expect(init).toMatchObject({ redirect: 'error',
+      headers: { authorization: 'Bearer sk_test_deletion' } });
+  });
+
+  it('replays from an authenticated tombstone without repeating a DELETE', async () => {
+    const { client, fetchImpl } = deletionClient([{ body: tombstone }]);
+    expect(await client.deleteCustomer({ customerId: 'cus_pinned', organizationId: ORG })).toMatchObject({
+      ok: true, alreadyDeleted: true, requestIds: ['req_1'],
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { ...customer, metadata: { organizationId: 'other-tenant' } },
+    { ...customer, livemode: true },
+    { ...customer, id: 'cus_other' },
+    { ...customer, object: 'account' },
+  ])('refuses a different customer, tenant, mode or object before mutation: %j', async body => {
+    const { client, fetchImpl } = deletionClient([{ body }]);
+    expect(await client.deleteCustomer({ customerId: 'cus_pinned', organizationId: ORG })).toMatchObject({
+      ok: false, code: 'malformed-response',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reinterpret a missing customer or missing provenance as deletion success', async () => {
+    for (const response of [{ body: { error: 'private@example.test' }, status: 404 },
+      { body: tombstone, requestId: null }]) {
+      const { client, fetchImpl } = deletionClient([response]);
+      const result = await client.deleteCustomer({ customerId: 'cus_pinned', organizationId: ORG });
+      expect(result.ok).toBe(false);
+      expect(JSON.stringify(result)).not.toContain('private@example.test');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('refuses an unconfirmed or wrong deletion response and unsafe customer ids', async () => {
+    for (const body of [customer, { ...tombstone, id: 'cus_other' }]) {
+      const { client } = deletionClient([{ body: customer }, { body }]);
+      expect(await client.deleteCustomer({ customerId: 'cus_pinned', organizationId: ORG })).toMatchObject({
+        ok: false, code: 'malformed-response',
+      });
+    }
+    const { client, fetchImpl } = deletionClient([]);
+    expect((await client.deleteCustomer({ customerId: 'cus_pinned/other', organizationId: ORG })).ok).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 describe('stripeKeyMode / live-mode gate', () => {
   it('classifies keys without echoing them', () => {
     expect(stripeKeyMode('sk_test_abc')).toBe('test');

@@ -103,7 +103,8 @@ describe('fresh protocol repetitions', () => {
       sampleResources: async (stage: ResourceStage) => {
         events.push(`sample:${rep}:${stage}`);
         return { sampledAt: '2026-10-14T18:00:00Z', memoryCurrentBytes: opts.missing ? null : rep * 1048576,
-          memoryPeakBytes: opts.missing ? null : (rep + 1) * 1048576, indexFiles: opts.missing ? null : [], unknown: [] };
+          memoryPeakBytes: opts.missing ? null : (rep + 1) * 1048576, peakChildProcesses: opts.missing ? null : 0,
+          indexFiles: opts.missing ? null : [], unknown: [] };
       } };
     } };
   }
@@ -189,6 +190,32 @@ describe('fresh protocol repetitions', () => {
       ...ready, unknown: ['memory.current unreadable'],
     } } }, ...saved.reps.slice(1)] };
     expect(scoreRuns([unreadable], pinnedCases, pinnedKeys, {}, registered).decision.reason).toContain('ready-resources-unmeasured');
+  });
+  it.each([undefined, null, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'refuses an unmeasured or invalid descendant-process peak (%s)', async peakChildProcesses => {
+      const run = await runArm(factory([]), pinnedCases, registered);
+      const rep = run.reps[0]!;
+      const changed = { ...run, reps: [{ ...rep, resources: { ...rep.resources!, final: {
+        ...rep.resources!.final, peakChildProcesses,
+      } } }, ...run.reps.slice(1)] };
+      const decision = scoreRuns([changed], pinnedCases, pinnedKeys, {}, registered).decision;
+      expect(decision.kind).toBe('inconclusive');
+      expect(decision.reason).toContain('final-child-processes-unmeasured');
+    },
+  );
+  it('enforces the frozen child-process ceiling after saving and reloading a run', async () => {
+    const run = await runArm(factory([]), pinnedCases, registered);
+    const saved = JSON.parse(JSON.stringify(run)) as typeof run;
+    const rep = saved.reps[0]!;
+    const withPeak = (peakChildProcesses: number) => ({ ...saved, reps: [{ ...rep, resources: {
+      ...rep.resources!, final: { ...rep.resources!.final, peakChildProcesses },
+    } }, ...saved.reps.slice(1)] });
+    expect(scoreRuns([withPeak(registered.budgets.childProcMax)], pinnedCases, pinnedKeys, {}, registered)
+      .decision.reason).not.toContain('child-process-budget');
+    const overBudget = scoreRuns([withPeak(registered.budgets.childProcMax + 1)], pinnedCases, pinnedKeys, {}, registered).decision;
+    expect(overBudget.kind).toBe('inconclusive');
+    expect(overBudget.reason).toContain('final-child-process-budget');
+    expect(registered.budgets.childProcMax).toBe(1);
   });
 });
 

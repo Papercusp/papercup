@@ -71,6 +71,13 @@ export interface StripeBillingClient {
     email?: string | null;
     name?: string | null;
   }): Promise<StripeBillingCallResult<{ customerId: string }>>;
+  /** P-010: only the server's frozen customer pin may reach this method.
+   * Validate current tenant/mode ownership before deletion; an authenticated
+   * deleted-customer tombstone makes replay safe beyond an idempotency window. */
+  deleteCustomer(input: {
+    customerId: string;
+    organizationId: string;
+  }): Promise<StripeBillingCallResult<{ customerId: string; alreadyDeleted: boolean; requestIds: readonly string[] }>>;
   createSubscriptionCheckout(input: {
     customerId: string;
     organizationId: string;
@@ -279,7 +286,7 @@ export function createStripeBillingClient(input: {
   }
   const post = (path: string, params: Record<string, unknown>, idempotencyKey?: string) =>
     postStripeForm({ url: `${STRIPE_API_BASE}${path}`, secretKey, params, fetchImpl, idempotencyKey });
-  const get = async (path: string, parentSignal?: AbortSignal): Promise<StripeBillingCallResult<{ body: StripeObject; requestId: string; status: number }>> => {
+  const get = async (path: string, parentSignal?: AbortSignal, method: 'GET' | 'DELETE' = 'GET'): Promise<StripeBillingCallResult<{ body: StripeObject; requestId: string; status: number }>> => {
     const controller = new AbortController();
     const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
     const started = performance.now();
@@ -289,7 +296,7 @@ export function createStripeBillingClient(input: {
     try {
       signal.throwIfAborted();
       const response = await fetchImpl(`${STRIPE_API_BASE}${path}`, {
-        method: 'GET', redirect: 'error', headers: { authorization: `Bearer ${secretKey}` },
+        method, redirect: 'error', headers: { authorization: `Bearer ${secretKey}` },
         signal,
       });
       signal.throwIfAborted();
@@ -614,6 +621,30 @@ export function createStripeBillingClient(input: {
         observedAtMs: Date.now(), requestIds };
       const evidenceRef = `stripe-lineage:${createHash('sha256').update(JSON.stringify(selected)).digest('hex')}`;
       return { ok: true, evidence: freezeEvidence({ ...selected, evidenceRef }) };
+    },
+
+    async deleteCustomer({ customerId, organizationId }) {
+      if (!/^cus_[A-Za-z0-9]+$/.test(customerId) || typeof organizationId !== 'string' || !organizationId.trim()) {
+        return malformed(0, 'invalid pinned stripe deletion scope');
+      }
+      const current = await get(`/customers/${customerId}`);
+      if (!current.ok) return current;
+      if (current.body.object !== 'customer' || current.body.id !== customerId) {
+        return malformed(current.status, 'stripe deletion customer pin mismatch');
+      }
+      if (current.body.deleted === true) {
+        return { ok: true, customerId, alreadyDeleted: true, requestIds: [current.requestId] };
+      }
+      if (current.body.livemode !== (mode === 'live') || !object(current.body.metadata)
+          || current.body.metadata.organizationId !== organizationId) {
+        return malformed(current.status, 'stripe deletion customer scope mismatch');
+      }
+      const deleted = await get(`/customers/${customerId}`, undefined, 'DELETE');
+      if (!deleted.ok) return deleted;
+      if (deleted.body.object !== 'customer' || deleted.body.id !== customerId || deleted.body.deleted !== true) {
+        return malformed(deleted.status, 'stripe deletion lacks pinned tombstone');
+      }
+      return { ok: true, customerId, alreadyDeleted: false, requestIds: [current.requestId, deleted.requestId] };
     },
 
     async createCustomer({ organizationId, email, name }) {

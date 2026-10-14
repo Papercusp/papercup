@@ -29,9 +29,11 @@ import {
   planCheckerPg,
   migrationChecker,
   featureChecker,
+  nonFileAnchorChecker,
   type AuditCheckers,
   type MemoryWithAnchors,
 } from './audit-anchors';
+import type { AnchorKind } from './anchors';
 import { pgClientFields } from './mem0-connection';
 import { detectPapercupRoot } from '../harness/register-papercusp';
 import { isCliEntry } from '../util/cli-entry';
@@ -78,9 +80,10 @@ async function loadAuditState(client: {
     kind: string;
     value: string;
     state: string;
+    workspace_id: string;
   };
   const res = await client.query(
-    `SELECT a.memory_id, a.kind, a.value, c.state
+    `SELECT a.memory_id, a.kind, a.value, c.state, c.workspace_id
      FROM harness_shared.memory_anchors a
      JOIN harness_shared.memory_canonical c ON c.id = a.memory_id
      ORDER BY a.memory_id, a.kind, a.value`,
@@ -93,14 +96,15 @@ async function loadAuditState(client: {
     const existing = byMem.get(r.memory_id);
     if (existing) {
       existing.anchors.push({
-        kind: r.kind as 'file' | 'feature' | 'plan' | 'migration' | 'symbol',
+        kind: r.kind as AnchorKind,
         value: r.value,
       });
     } else {
       byMem.set(r.memory_id, {
         memoryId: r.memory_id,
+        workspaceId: r.workspace_id,
         anchors: [{
-          kind: r.kind as 'file' | 'feature' | 'plan' | 'migration' | 'symbol',
+          kind: r.kind as AnchorKind,
           value: r.value,
         }],
       });
@@ -155,11 +159,16 @@ async function writeAuditResults(
   }
 }
 
-async function buildCheckers(
+export async function buildCheckers(
   opts: CliOptions,
   client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
 ): Promise<AuditCheckers> {
   return {
+    'work-item': nonFileAnchorChecker(client),
+    decision: nonFileAnchorChecker(client),
+    fact: nonFileAnchorChecker(client),
+    'session-turn': nonFileAnchorChecker(client),
+    report: nonFileAnchorChecker(client),
     file: fileChecker(opts.repoRoot),
     // Plans went PG-canonical (plans-pg-canonical-migration-2026-06-03): a
     // 'plan' anchor is valid iff a harness_plans row exists for the slug.

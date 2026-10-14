@@ -41,7 +41,7 @@ const resultContract = getTool.result as unknown as {
   safeParse: (value: unknown) => { success: boolean };
 };
 
-const makeDispatchContext = (): UnifiedToolContext => ({
+const makeDispatchContext = (overrides: Partial<UnifiedToolContext> = {}): UnifiedToolContext => ({
   log: vi.fn(),
   signal: new AbortController().signal,
   progress: vi.fn(),
@@ -56,6 +56,7 @@ const makeDispatchContext = (): UnifiedToolContext => ({
   requestedFormat: 'json',
   contextTier: 'trimmed',
   tx: {},
+  ...overrides,
 });
 
 const rerunRecipe: SpecTestAdequacyRerunRecipe = {
@@ -198,6 +199,76 @@ describe('scorecards:get evidence-first projection', () => {
         },
       },
     });
+  });
+
+  it('returns bounded phase timings correlated with the PG diagnostic context', async () => {
+    let readContext: ReturnType<typeof currentStageDiagnosticContext> = null;
+    readScorecardEvidenceM.mockImplementation(async () => {
+      readContext = currentStageDiagnosticContext();
+      return { kind: 'found', scorecard };
+    });
+    const metadata = vi.fn();
+
+    const result = await getTool.handler(
+      { issueId: scorecard.issueId } as never,
+      makeDispatchContext({ metadata }),
+    );
+
+    const diagnostics = (result as { data: { diagnostics: Record<string, unknown> } }).data.diagnostics;
+    expect(diagnostics).toMatchObject({
+      schemaVersion: 'scorecards-get-diagnostics-v1',
+      handlerState: 'completed',
+      omittedStages: 0,
+      stages: [expect.objectContaining({
+        stage: 'scorecards-get-evidence-read',
+        outcome: 'fulfilled',
+      })],
+    });
+    expect(diagnostics.correlationId).toMatch(/^[a-f0-9-]{36}$/i);
+    expect(readContext).toMatchObject({
+      stage: 'scorecards-get-evidence-read',
+      boundary: 'await',
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain(scorecard.issueId);
+    expect(metadata).toHaveBeenLastCalledWith({ scorecardsGetDiagnostics: diagnostics });
+    expect(resultContract.safeParse((result as { data: unknown }).data).success).toBe(true);
+  });
+
+  it('records a pending fixed-name stage and logs its correlation before it settles', async () => {
+    vi.useFakeTimers();
+    const stallLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const metadata = vi.fn();
+    let resolveRead!: (value: Awaited<ReturnType<typeof readScorecardEvidence>>) => void;
+    readScorecardEvidenceM.mockReturnValueOnce(new Promise((resolve) => { resolveRead = resolve; }));
+    const pending = getTool.handler(
+      { issueId: 'EI-private-card' } as never,
+      makeDispatchContext({ metadata }),
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(STAGE_STALL_LOG_MS);
+      const pendingMetadata = metadata.mock.lastCall?.[0]?.scorecardsGetDiagnostics;
+      expect(pendingMetadata).toMatchObject({
+        handlerState: 'running',
+        stages: [expect.objectContaining({
+          stage: 'scorecards-get-evidence-read',
+          outcome: 'pending',
+        })],
+      });
+      const line = String(stallLog.mock.calls[0]?.[0]);
+      expect(line).toContain('STAGE STALL for scorecards:get');
+      expect(line).toContain('scorecards-get-evidence-read correlation=');
+      expect(line).not.toContain('EI-private-card');
+
+      resolveRead({ kind: 'not_found' });
+      await expect(pending).resolves.toMatchObject({
+        data: { ok: false, error: "scorecard 'EI-private-card' not found", diagnostics: { handlerState: 'completed' } },
+      });
+    } finally {
+      resolveRead({ kind: 'not_found' });
+      stallLog.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('keeps a complete criterion page inside the outer model-facing result door', async () => {
@@ -754,14 +825,49 @@ describe('scorecards:get evidence-first projection', () => {
 
   it('preserves typed transient contention failures', async () => {
     readScorecardEvidenceM.mockRejectedValueOnce(new OrgTxnTimeoutError('55P03', new Error('lock timeout')));
-    await expect(getTool.handler({ issueId: 'EI-card' } as never, makeDispatchContext())).resolves.toMatchObject({
-      data: { ok: false, error: 'timeout', retryable: true, pgCode: '55P03' },
+    const orgTimeout = await getTool.handler({ issueId: 'EI-card' } as never, makeDispatchContext());
+    expect(orgTimeout).toMatchObject({
+      data: {
+        ok: false,
+        error: 'timeout',
+        retryable: true,
+        pgCode: '55P03',
+        diagnostics: {
+          handlerState: 'completed',
+          stages: [expect.objectContaining({ stage: 'scorecards-get-evidence-read', outcome: 'rejected' })],
+        },
+      },
     });
     readScorecardEvidenceM.mockRejectedValueOnce(
       new DbCallDeadlineError('boundedPgReadTxn:acquire(admin)', 8000, 8000, 'org-admin'),
     );
-    await expect(getTool.handler({ issueId: 'EI-card' } as never, makeDispatchContext())).resolves.toMatchObject({
-      data: { ok: false, error: 'timeout', retryable: true },
+    const dbDeadline = await getTool.handler({ issueId: 'EI-card' } as never, makeDispatchContext());
+    expect(dbDeadline).toMatchObject({
+      data: {
+        ok: false,
+        error: 'timeout',
+        retryable: true,
+        diagnostics: {
+          handlerState: 'completed',
+          stages: [expect.objectContaining({ stage: 'scorecards-get-evidence-read', outcome: 'rejected' })],
+        },
+      },
     });
+  });
+
+  it('retains phase diagnostics when an unexpected read rejection escapes', async () => {
+    readScorecardEvidenceM.mockRejectedValueOnce(new Error('private query detail'));
+    const metadata = vi.fn();
+    await expect(getTool.handler(
+      { issueId: 'EI-card' } as never,
+      makeDispatchContext({ metadata }),
+    )).rejects.toThrow('private query detail');
+
+    const diagnostics = metadata.mock.lastCall?.[0]?.scorecardsGetDiagnostics;
+    expect(diagnostics).toMatchObject({
+      handlerState: 'failed',
+      stages: [expect.objectContaining({ stage: 'scorecards-get-evidence-read', outcome: 'rejected' })],
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain('private query detail');
   });
 });

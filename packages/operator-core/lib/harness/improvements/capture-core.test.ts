@@ -295,6 +295,52 @@ describe('captureImprovement — retries transient atomic-write contention (EI-2
     expect(result).toMatchObject({ ok: true, created: true, issue: { id: 'EI-recovered' } });
     expect(attempts).toBe(2);
   });
+
+  it('runs the pre-create check immediately before every insert attempt, including retries', async () => {
+    const d = deps();
+    const steps: string[] = [];
+    let attempts = 0;
+    d.searchIssues = async () => {
+      steps.push('search');
+      return [];
+    };
+    d.findSemanticDupes = async () => null;
+    d.createIssue = async (input) => {
+      steps.push('create');
+      attempts += 1;
+      if (attempts === 1) throw new OrgTxnTimeoutError('55P03', new Error('lock timeout'));
+      return existing({ id: 'EI-retried-boundary', title: input.title });
+    };
+
+    await expect(captureImprovement({
+      title: 'recheck generation at every insert attempt',
+      kind: 'bug',
+      beforeIssueCreate: async () => {
+        steps.push('before-create');
+      },
+    }, d)).resolves.toMatchObject({ created: true, issue: { id: 'EI-retried-boundary' } });
+
+    expect(steps).toEqual(['search', 'before-create', 'create', 'before-create', 'create']);
+  });
+
+  it('does not attempt the insert when the pre-create check refuses', async () => {
+    const d = deps();
+    const refusal = new Error('generation changed; gather again');
+    const beforeIssueCreate = vi.fn(() => {
+      throw refusal;
+    });
+
+    await expect(captureImprovement({
+      title: 'refuse stale scorecard generation',
+      kind: 'change',
+      lane: 'observation',
+      initialState: 'done',
+      beforeIssueCreate,
+    }, d)).rejects.toBe(refusal);
+
+    expect(beforeIssueCreate).toHaveBeenCalledTimes(1);
+    expect(d.created).toHaveLength(0);
+  });
 });
 
 describe('captureImprovement — review-required pre-enrollment park', () => {
@@ -1901,6 +1947,40 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     expect(res.hint).toContain('title-only pre-check');
     expect(res.hint).toContain('An empty `possibleDuplicates` list is not evidence');
     expect(res.hint).toContain('Rerun checkDuplicatesOnly with the exact final body');
+  });
+
+  it('makes an observation-lane check-only empty list explicit as skipped, not clean', async () => {
+    const d = deps({ found: [dup] });
+    const res = await captureImprovement(
+      {
+        title: 'capability:read evidence_class depends on scratch contents',
+        body: 'A coord:conditions result spill did not contain event evidence.',
+        kind: 'change',
+        lane: 'observation',
+        checkDuplicatesOnly: true,
+        payloadExtra: {
+          observation: {
+            kind: 'friction',
+            scope: 'harness',
+            confidence: 'high',
+            refs: ['coord:conditions result-door spill'],
+          },
+        },
+      },
+      d,
+    );
+
+    expect(res).toMatchObject({
+      ok: true,
+      created: false,
+      reason: 'check-only',
+      possibleDuplicates: [],
+      dedupCoverage: { lexical: 'skipped', semantic: 'skipped', degraded: false },
+    });
+    expect(res.hint).toContain('Observation-lane captures intentionally skip duplicate search');
+    expect(res.hint).toContain('`possibleDuplicates: []` is not a duplicate verdict');
+    expect(d.created).toHaveLength(0);
+    expect(d.occurrences).toHaveLength(0);
   });
 
   it('uses the same candidates as capture when check-only receives the final body', async () => {

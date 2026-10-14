@@ -30,8 +30,10 @@ async function stopHost() {
 
 async function main() {
   const e = process.env;
-  const hostedSubject = e.LIVENESS_ALARM_HTTP_SUBJECT === 'hosted-control-plane-degraded';
-  const signal = hostedSubject ? 'hosted-control-plane-degraded' : 'agents-wedged';
+  const requested = e.LIVENESS_ALARM_HTTP_SUBJECT;
+  const signal = ['hosted-control-plane-degraded', 'hosted-reverse-connector-lost',
+    'platform-lifecycle-budget-exceeded'].includes(requested ?? '') ? requested! : 'agents-wedged';
+  const hostedSubject = signal !== 'agents-wedged';
   const threshold = hostedSubject ? 1 : 10;
   const workspace = e.PAPERCUSP_WORKSPACE_ID!;
   const base = e.PAPERCUSP_OPERATOR_URL!;
@@ -111,8 +113,14 @@ async function main() {
           observedAt: at, windowMs: 3_600_000, lifecycle: null, api: null,
           hosts: { expectedRunning: 1, unhealthy: wedged, unobserved: 0, platformOwnedRunning: 1 },
           providerConnections: { connected: 1, degraded: 0 },
+          reverseConnectors: { active: 1, lost: signal === 'hosted-reverse-connector-lost' ? wedged : 0 },
+          ownedCost: { estimatedUsdCents: 2400, estimates: 1, unpriced: 0,
+            breachedBudgets: signal === 'platform-lifecycle-budget-exceeded' ? wedged : 0 },
         },
       } as InfraHealth;
+      if (wedged !== null && signal !== 'hosted-control-plane-degraded') {
+        (health.panels.infra.data as InfraHealth).hostedControlPlane!.hosts!.unhealthy = 0;
+      }
     }
     await writeSharedSnapshot('system.health', workspace, health, 1);
     return at;
@@ -153,7 +161,9 @@ async function main() {
   assert.equal(observation.runtime.pid, first.pid);
   assert.equal(observation.runtime.sha, first.health.sha);
   if (hostedSubject) {
-    assert.equal(observation.reading.hosts.unhealthy, 1);
+    if (signal === 'hosted-control-plane-degraded') assert.equal(observation.reading.hosts.unhealthy, 1);
+    if (signal === 'hosted-reverse-connector-lost') assert.equal(observation.reading.reverseConnectors.lost, 1);
+    if (signal === 'platform-lifecycle-budget-exceeded') assert.equal(observation.reading.ownedCost.breachedBudgets, 1);
     assert.equal(observation.responder.ownerSelector, '@role:mug');
     assert.equal(raised.needsHumanRoute, false);
     // The specific alarm owns this fault; the Infra panel must not double-page it.
@@ -179,12 +189,14 @@ async function main() {
   await snapshot(threshold - 1);
   const recovered = (await until('measured below-threshold recovery', () => resolutions(raised.msg_id), rows => rows.length === 1))[0];
   assert.equal(recovered.choice, 'auto-resolved');
-  if (hostedSubject) {
+  if (signal === 'hosted-control-plane-degraded') {
     assert.match(recovered.note, /freshly unhealthy hosts 0/);
     assert.match(recovered.note, /degraded provider connections 0/);
-  } else {
+  } else if (signal === 'agents-wedged') {
     assert.match(recovered.note, /wedged=9/);
     assert.match(recovered.note, /alarm threshold >= 10/);
+  } else {
+    assert.match(recovered.note, /heartbeat lost 0, platform budget breaches 0/);
   }
   assert.doesNotMatch(recovered.note, /no per-signature evidence/);
   assert.equal((await raises()).length, 1);

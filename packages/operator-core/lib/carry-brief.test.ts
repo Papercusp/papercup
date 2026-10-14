@@ -951,6 +951,16 @@ describe('unverifiedFocusRefs / renderFocusIntegrityWarning (EI-2213122758449948
       carryNoteUpdatedAtMs: Date.now(),
     },
     heldItems: [{ id: 'WI-3319', title: null, body: null, harness: 'papercusp', checkpoint: null }],
+    deferredItems: [
+      {
+        id: 'WI-6554700010010741',
+        title: 'Acceptance review-target reservation',
+        body: null,
+        harness: 'papercusp',
+        kind: 'task',
+        source: 'commented',
+      },
+    ],
     directives: [],
     directivesTotalOpen: 0,
     walls: [],
@@ -973,6 +983,12 @@ describe('unverifiedFocusRefs / renderFocusIntegrityWarning (EI-2213122758449948
     expect(warning).toContain('⚠ FOCUS INTEGRITY');
     expect(warning).toContain('WI-2140920');
     expect(warning).toContain('carry-note e5729a1f033a');
+  });
+
+  it('does NOT flag this session\'s commented-on review target, even though it is not held', () => {
+    const refs = unverifiedFocusRefs('Continue grading WI-6554700010010741.', brief);
+    expect(refs).toEqual({ workItemIds: [], carryHashes: [] });
+    expect(renderFocusIntegrityWarning(refs)).toBe('');
   });
 
   it('does NOT flag the owner\'s own held item id or its own loop carry-note hash (no false positive)', () => {

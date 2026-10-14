@@ -1963,18 +1963,23 @@ const FOCUS_CARRY_HASH_RE = /\(([0-9a-f]{8,16})\)/g;
  * apparently carried over from ambient context (a broadcast / memory-search
  * hit) the judge session read but never held. This scans `text` for WI-/EI-/
  * F-NNN ids and parenthesized 8-16 hex carry-note hashes and reports any that
- * are NOT in `brief.heldItems` / do not match `brief.loop`'s own carry-note
- * hash. `renderCarryBriefFocus`'s OWN output is always self-consistent by
+ * are NOT in `brief.heldItems` or `brief.deferredItems` / do not match
+ * `brief.loop`'s own carry-note hash. `renderCarryBriefFocus`'s OWN output is always self-consistent by
  * construction (it only ever names ids drawn FROM `brief`, and never prints a
  * hash literal), so this never false-positives against the system-derived
  * default focus — it exists for the caller-supplied path, where nothing else
  * validates the free text before it ships.
  */
 export function unverifiedFocusRefs(text: string, brief: CarryBrief | null): UnverifiedFocusRefs {
-  const heldIds = new Set((brief?.heldItems ?? []).map((h) => h.id));
+  // A judge's review-target reservation is intentionally unheld; the session's
+  // own thread posts place it in deferredItems, which is valid lane evidence.
+  const knownWorkItemIds = new Set([
+    ...(brief?.heldItems ?? []).map((item) => item.id),
+    ...(brief?.deferredItems ?? []).map((item) => item.id),
+  ]);
   const ownHash = brief?.loop?.carryNote ? shortCarryHash(brief.loop.carryNote) : null;
   const workItemIds = Array.from(new Set(text.match(FOCUS_WORK_ITEM_ID_RE) ?? [])).filter(
-    (id) => !heldIds.has(id),
+    (id) => !knownWorkItemIds.has(id),
   );
   const carryHashes = Array.from(
     new Set(Array.from(text.matchAll(FOCUS_CARRY_HASH_RE), (m) => m[1])),
@@ -1992,7 +1997,7 @@ export function renderFocusIntegrityWarning(refs: UnverifiedFocusRefs): string {
   const named = [...refs.workItemIds, ...refs.carryHashes.map((h) => `carry-note ${h}`)].join(', ');
   return (
     `⚠ FOCUS INTEGRITY: this focus/continuation text names ${named}, which do NOT appear ` +
-    'among your own held work-items or your own loop carry-note (checked against THIS ' +
+    'among your own held or deferred work-items, or your own loop carry-note (checked against THIS ' +
     "owner's brief at request time). It may have been copied from a broadcast, another " +
     'owner\'s carry state, or ambient context rather than reflecting what you actually ' +
     'hold — verify (coord:presence / work_items:get) before acting on it; do not claim or ' +

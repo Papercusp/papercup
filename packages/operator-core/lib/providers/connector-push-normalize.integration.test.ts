@@ -34,8 +34,11 @@ beforeAll(async () => {
   await registry.register({ descriptor, adapter, pluginName: 'instagram' });
   const [user] = await org.adminSql<{ id: string }[]>`INSERT INTO harness_shared.users (username, display_name) VALUES (${`mention-test-${Date.now()}`}, 'owner') RETURNING id`;
   const [source] = await org.adminSql<{ id: string }[]>`
-    INSERT INTO harness_shared.data_sources (workspace_id, kind, name, status, owner_user_id, credential_ref, config, cursor, destination_policy)
-    VALUES (${WS}, 'instagram', 'mention source', 'connected', ${user!.id}::uuid, 'provider:instagram', ${JSON.stringify({ igUserId: IG })}::text::jsonb, '{}'::jsonb, '{}'::jsonb) RETURNING id`;
+    INSERT INTO harness_shared.data_sources
+      (workspace_id, kind, provider_account_id, status, owner_user_id, credential_ref, config, cursor, scope, destination_policy, permission_mapping)
+    VALUES (${WS}, 'instagram', ${`ig-${Date.now()}`}, 'ready', ${user!.id}::uuid, 'provider:instagram',
+      ${JSON.stringify({ igUserId: IG, installSlug: 'papercusp' })}::text::jsonb, '{}'::jsonb, 'personal', '{}'::jsonb, ${JSON.stringify({ mode: 'owner' })}::text::jsonb)
+    RETURNING id::text`;
   sourceId = source!.id;
 }, 180_000);
 afterAll(async () => { await org?.cleanup?.(); });

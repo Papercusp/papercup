@@ -6094,7 +6094,7 @@
           "POST"
         ]
       },
-      "description": "Post a TYPED reply into a consult thread. Responder kinds: answer (evidence REQUIRED — cite the transcript turns), clarifying_question, new_fact. Requester follow-up kinds: question, new_fact. Untyped posts into a consult are refused (conversations:post will not work); the exchange cap binds — at the cap, close instead.",
+      "description": "Post a TYPED reply into a consult thread. Responder kinds: answer (evidence REQUIRED — cite the transcript turns), clarifying_question, new_fact. Requester follow-up kinds: question, new_fact. On an undelivered consult with a saved reviewer menu, requester new_fact continues its finite cascade through untried reviewers. Untyped posts into a consult are refused (conversations:post will not work); the exchange cap binds — at the cap, close instead.",
       "capabilities": [
         "coord:write"
       ],
@@ -11929,7 +11929,7 @@
           "POST"
         ]
       },
-      "description": "Fire an event key through the await-event primitive: every agent with an events:await on the key is woken (durable delivery — pty-inject / session-resume / inbox ladder); an optional `to` list also gets a coord inbox notify (never wakes). Use the key your waiter registered. Reports `waiters` — ACTIVE await registrations matched (excludes extra `to[]`) — so `waiters:0` with no `to[]` means the emit reached no one.",
+      "description": "Fire an event key through the await-event primitive: every agent with an events:await on the key is woken (durable delivery — pty-inject / session-resume / inbox ladder); an optional `to` list also gets a coord inbox notify (never wakes) on a normal emit. On `announce:true`, `to` is rejected because the declaration is a latched gate notice that sends no notification; fire the returned key later to deliver. Use the key your waiter registered. Reports `waiters` — ACTIVE await registrations matched (excludes extra `to[]`) — so `waiters:0` with no `to[]` means the emit reached no one.",
       "capabilities": [
         "coord:write"
       ],
@@ -24315,7 +24315,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "judge"
       ],
       "guidance": {
         "when": "You need a plan's edit history with the *why* — what changed at each revision and the rationale behind it. The basis of the Revisions panel and of the context an agent launched from the plan is seeded with.",
@@ -30148,7 +30149,8 @@
         "doc-steward",
         "release-fixer",
         "merge-resolver",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {

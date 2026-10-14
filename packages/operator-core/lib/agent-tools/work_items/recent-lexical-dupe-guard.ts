@@ -149,6 +149,9 @@ async function queryRecentOpenItemsReal(windowMin: number, harness?: string): Pr
        -- Convert the cutoff, preserving the indexed column and fractional windows.
        AND created_ts >= (extract(epoch FROM (now() - (${windowMin} || ' minutes')::interval)) * 1000)::bigint
        AND (status IS NULL OR NOT (status = ANY(${terminal}::text[])))
+       -- Observation-lane notes share this table but never enter the work queue
+       -- (D-005). They must not consume the bounded scan or hide actual work.
+       AND lane IS DISTINCT FROM 'observation'
        AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
      ORDER BY created_ts DESC
      LIMIT ${CANDIDATE_LIMIT + 1}`;

@@ -24,6 +24,8 @@ beforeAll(async () => {
   await sql`CREATE TABLE harness_shared.work_items (
     workspace_id text NOT NULL, harness_slug text NOT NULL, feature_id text NOT NULL,
     title text, summary text, status text, embedding bytea,
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    lane text GENERATED ALWAYS AS (payload ->> 'lane') STORED,
     created_ts bigint NOT NULL DEFAULT ((extract(epoch FROM now()) * 1000)::bigint),
     PRIMARY KEY (workspace_id, harness_slug, feature_id)
   )`;
@@ -79,5 +81,23 @@ describe('recent lexical dedup epoch-ms store query', () => {
     expect(result.rows[0].id).toBe('WI-1');
     expect(result.rows.at(-1)?.id).toBe('WI-50');
     expect(result.truncated).toBe(true);
+  });
+
+  it('excludes observation rows before the cap so they cannot hide actual work', async () => {
+    await sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, status, payload, created_ts)
+      SELECT 'active-workspace', 'papercusp', 'EI-OBS-' || n, 'Turn-end reflection ' || n,
+        'open', jsonb_build_object('lane', 'observation'),
+        (extract(epoch FROM now()) * 1000)::bigint - n
+      FROM generate_series(1, 55) AS n`;
+    await sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, status, created_ts)
+      VALUES ('active-workspace', 'papercusp', 'WI-REAL', 'Real work item', 'open',
+        (extract(epoch FROM now()) * 1000)::bigint - 1000)`;
+
+    const result = await __queryRecentOpenItemsForTest(10, 'papercusp');
+
+    expect(result.rows.map(row => row.id)).toEqual(['WI-REAL']);
+    expect(result.truncated).toBe(false);
   });
 });

@@ -69,6 +69,10 @@ export interface ArmResourceSample {
   readonly sampledAt: string;
   readonly memoryCurrentBytes: number | null;
   readonly memoryPeakBytes: number | null;
+  /** Measured descendant-process high-water mark through this stage, including
+   * separately managed child scopes. Threads are not processes. Omitted/null
+   * means no complete process census; never infer zero from worker-only metrics. */
+  readonly peakChildProcesses?: number | null;
   /** Logical file sizes; null means incomplete census, [] means measured empty. */
   readonly indexFiles: readonly { readonly path: string; readonly bytes: number }[] | null;
   readonly unknown: readonly string[];
@@ -256,6 +260,11 @@ function protocolMeasurementResidue(runs: readonly ArmRun[], cases: readonly Fai
       }
       for (const stage of ['ready', 'warm', 'final'] as const) {
         const sample = rep.resources?.[stage];
+        const childPeak = sample?.peakChildProcesses;
+        if (!measured(childPeak) || !Number.isSafeInteger(childPeak))
+          residue.push(`${ref}:${stage}-child-processes-unmeasured`);
+        else if (childPeak > prereg.budgets.childProcMax)
+          residue.push(`${ref}:${stage}-child-process-budget`);
         if (!sample || !sample.sampledAt || sample.unknown.length || !measured(sample.memoryCurrentBytes)) {
           residue.push(`${ref}:${stage}-resources-unmeasured`); continue;
         }

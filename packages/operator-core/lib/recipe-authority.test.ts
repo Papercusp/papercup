@@ -210,6 +210,31 @@ describe('recipe recommendation authority (P-008)', () => {
     });
   });
 
+  it('fails closed when a coordination owner id is inside a URI-encoded condition key', async () => {
+    const encodedConditionKeyScript = `
+      const key = 'alarm:codex-rollout-provider:%5B%22papercusp-workspace%22%2C%2240336%22%2C%22su-e5f812b6-2f01-4cb8-8d23-3299e65fc494%22%5D';
+      return await tools.coord.conditions({ include_resolved: false });
+    `;
+
+    expect(findVolatileCoordinationOwnerId(encodedConditionKeyScript)).toBe(
+      'su-e5f812b6-2f01-4cb8-8d23-3299e65fc494',
+    );
+    await expect(deriveRecipeAuthority(encodedConditionKeyScript)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: {
+        kind: 'volatile-coordination-owner-id',
+        ownerId: 'su-e5f812b6-2f01-4cb8-8d23-3299e65fc494',
+      },
+    });
+
+    const verdict = await validateRecipeAuthorityProof({
+      script: encodedConditionKeyScript,
+      updatedAt: '2026-10-14T00:00:00.000Z',
+    });
+    expect(verdict).toMatchObject({ ok: false, error: 'authority_unresolved' });
+    expect((verdict as { reason: string }).reason).toContain('concrete agent owner id');
+  });
+
   // EI-20480226881133232 — the recurrence guard. The real `distill-exact-active-checkpoint-log`
   // recipe froze ONE gate run's /tmp log into a `const`, then reported that dead run's terminal
   // red as the LIVE gate's verdict (11 runs, misclassifying an in-flight candidate). The literal

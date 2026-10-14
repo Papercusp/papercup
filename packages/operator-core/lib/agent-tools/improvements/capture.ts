@@ -827,7 +827,7 @@ export default defineTool({
           .boolean()
           .optional()
           .describe(
-            'SEARCH ONLY, creates nothing: "has anyone already hit this?" — run BEFORE you diagnose, with just a `title` (the symptom in your own words).',
+            'SEARCH ONLY, creates nothing: "has anyone already hit this?" — for improvement-lane captures. `lane:"observation"` skips duplicate search; its empty `possibleDuplicates` is not a verdict (read dedupCoverage/hint). Pass the symptom in title and the exact body before relying on results.',
           ),
         // WI-5950. Kept SHORT on purpose: the prompt-weight budget (≤1500 soft / ≤1600 hard
         // per tool) is shared across every field, and the first draft of this description

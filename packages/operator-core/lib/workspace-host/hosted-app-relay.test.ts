@@ -339,6 +339,9 @@ describe('P-017 — a signed webhook is relayed without an app key (D-032 #4)', 
         'papercusp-event': 'push',
         'papercusp-delivery': 'd-1',
         'x-hub-signature-256': 'sha256=abc',
+        'x-hook-secret': 'vendor-handshake',
+        'x-other-signature': 'another-provider',
+        'x-papercusp-secret': 'never-forward',
         cookie: 'session=owner',
       },
       body: RAW,
@@ -358,6 +361,9 @@ describe('P-017 — a signed webhook is relayed without an app key (D-032 #4)', 
     expect(headers['papercusp-event']).toBe('push');
     expect(headers['papercusp-delivery']).toBe('d-1');
     expect(headers['x-hub-signature-256']).toBe('sha256=abc');
+    expect(headers['x-hook-secret']).toBe('vendor-handshake');
+    expect(headers['x-other-signature']).toBe('another-provider');
+    expect(headers['x-papercusp-secret']).toBeUndefined();
     expect(headers['x-papercusp-ingress']).toBe('app-relay');
     expect(headers.authorization).toBeUndefined();
     expect(headers.cookie).toBeUndefined();

@@ -12,7 +12,8 @@ const options = isolatedWorkerOptions(480_000);
 
 // R-12 needs a real request worker and durable ledger, independently of the unit
 // alarm seam. Reuse the maintained private operator profile and lifetime proof.
-async function verifyAlarm(subject: 'agents-wedged' | 'hosted-control-plane-degraded', context: TestContext) {
+async function verifyAlarm(subject: 'agents-wedged' | 'hosted-control-plane-degraded' |
+  'hosted-reverse-connector-lost' | 'platform-lifecycle-budget-exceeded', context: TestContext) {
   const runId = await recordIsolatedIntegrationProof({
     root,
     filePath: 'packages/operator-core/lib/system-health/liveness-alarm-current-build.e2e.test.ts',
@@ -66,12 +67,20 @@ async function verifyAlarm(subject: 'agents-wedged' | 'hosted-control-plane-degr
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         raised: { from: 'system:infra-liveness-alarm', livenessSignature: subject },
         recovered: { choice: 'auto-resolved', note: expect.stringContaining(subject === 'agents-wedged'
-          ? 'wedged=9' : 'freshly unhealthy hosts 0') },
+          ? 'wedged=9' : subject === 'hosted-control-plane-degraded'
+            ? 'freshly unhealthy hosts 0' : 'heartbeat lost 0, platform budget breaches 0') },
       });
       if (subject === 'agents-wedged') expect(receipt.raised.agentStrandObservation)
         .toMatchObject({ wedged: 10, thresholds: { wedged: 10 } });
-      else expect(receipt.raised.hostedControlPlaneObservation)
+      else if (subject === 'hosted-control-plane-degraded') expect(receipt.raised.hostedControlPlaneObservation)
         .toMatchObject({ responder: { ownerSelector: '@role:mug' }, reading: { hosts: { unhealthy: 1 } } });
+      else {
+        expect(receipt.raised.hostedControlPlaneObservation.responder).toMatchObject({ ownerSelector: '@role:mug' });
+        const reading = receipt.raised.hostedControlPlaneObservation.reading;
+        expect(subject === 'hosted-reverse-connector-lost' ? reading.reverseConnectors.lost
+          : reading.ownedCost.breachedBudgets).toBe(1);
+        expect(reading.hosts.unhealthy).toBe(0);
+      }
       expect(receipt.recovered.note).not.toContain('no per-signature evidence');
       const start = events.find(event => event.kind === 'isolated-runtime-start');
       const end = events.find(event => event.kind === 'isolated-runtime-end');
@@ -91,3 +100,7 @@ it('keeps a request-worker wedged alarm standing across restart and resolves onl
   context => verifyAlarm('agents-wedged', context), options.testTimeoutMs);
 it('keeps one accountable hosted reliability alarm across restart and unknown evidence, then resolves witnessed recovery',
   context => verifyAlarm('hosted-control-plane-degraded', context), options.testTimeoutMs);
+it('delivers one connector-loss alarm and resolves reconnection across restart and unknown evidence',
+  context => verifyAlarm('hosted-reverse-connector-lost', context), options.testTimeoutMs);
+it('delivers one Papercusp-owned spend alarm and resolves a measured budget recovery',
+  context => verifyAlarm('platform-lifecycle-budget-exceeded', context), options.testTimeoutMs);
