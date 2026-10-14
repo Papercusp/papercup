@@ -1,12 +1,13 @@
-/** P026: authored, preregistered controls through the exposed graph handler.
- * These are calibration cases, not real-task or backend-cost certification.
+/** P026: saved repository questions and separately labelled authored controls
+ * through exposed native handlers. Coverage refusals and missing cost witnesses
+ * remain explicit; passing an honesty guard never certifies backend acceptance.
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server } from 'node:net';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -40,6 +41,8 @@ import { closeTask } from '../task-manager/store';
 import { taskTerminalEventKey } from '../task-manager/task-terminal-events';
 import type { CodeIntelAnswer } from './contracts';
 import { nativeLanguageControls } from './fair-comparison-corpus';
+import { materializeFrozenRepositoryTask, validateFrozenInputs, verifyFrozenSource,
+  type FrozenFairInputs } from './fair-comparison-cli';
 import { shutdownAllLspClients } from './lsp-adapter';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import { runLspDaemonServer } from './lsp-daemon-server';
@@ -113,6 +116,77 @@ const controls = nativeLanguageControls();
 const operations = { callers: 'callers', callees: 'callees', definition: 'symbol', impact: 'impact' } as const;
 const cases = controls.cases.filter(kase => kase.intent in operations);
 const keys = new Map(controls.keys.map(key => [key.caseId, key]));
+
+const frozen = validateFrozenInputs(JSON.parse(readFileSync(new URL(
+  '../../../../docs/evidence/native-code-intelligence-preregistration-2026-10-09.json',
+  import.meta.url), 'utf8')) as FrozenFairInputs);
+const repositoryTasks = frozen.cases.filter(kase => kase.source === 'repository-task');
+const repositoryKeys = new Map(frozen.keys.map(key => [key.caseId, key]));
+const donor = join(process.env.P017_BENCH ?? join(homedir(), '.papercusp/bench/fair-comparison-2026-10'),
+  `snapshot-${frozen.preregistration.protocol!.sourceCommit.slice(0, 12)}`);
+
+describe('native P026 frozen repository-task replay', () => {
+  beforeAll(async () => { await verifyFrozenSource(donor, frozen); });
+
+  it.each(repositoryTasks)('$id', async kase => {
+    const root = mkdtempSync(join(tmpdir(), 'native-repository-task-'));
+    const path = kase.anchorFile!, source = readFileSync(join(donor, path), 'utf8');
+    const expectedSites = repositoryKeys.get(kase.id)!.sites;
+    const started = performance.now();
+    try {
+      const sourceWitness = await materializeFrozenRepositoryTask(root, kase, frozen, source);
+      let tool: string, request: unknown, response: unknown, sites: string[], coverage: string;
+      if (kase.intent === 'text-search') {
+        tool = 'native-command:rg';
+        const argv = ['--with-filename', '-n', '-F', '--', kase.subject, path];
+        request = { command: 'rg', argv, cwd: root };
+        const result = spawnSync('rg', argv, { cwd: root, encoding: 'utf8' });
+        response = { stdout: result.stdout, stderr: result.stderr, exitCode: result.status,
+          error: result.error?.message ?? null };
+        sites = result.stdout.split('\n').filter(Boolean).map(line => {
+          const match = /^(.*?):(\d+):/.exec(line);
+          expect(match, line).not.toBeNull();
+          return `${match![1]}:${match![2]}`;
+        }).sort();
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        expect(sites).toEqual([...expectedSites].sort());
+        coverage = 'answered';
+      } else {
+        tool = 'graph:query';
+        const args = graphQuery.args.parse({ op: 'symbol', name: kase.subject,
+          paths: [path], file_path: path });
+        request = args;
+        const answer = (await graphQuery.handler(args, { projectDir: root } as never) as { data: CodeIntelAnswer }).data;
+        response = answer;
+        sites = answer.sites.map(site => `${site.path}:${site.line1}`).sort();
+        if (kase.language === 'javascript') {
+          expect(answer.error, JSON.stringify(answer)).toBeNull();
+          expect(sites).toEqual([...expectedSites].sort());
+          expect(answer.evidence?.sourceScope.supportingFiles).toContainEqual(
+            expect.objectContaining({ path, contentHash: sourceWitness.contentHash }));
+          coverage = 'answered';
+        } else {
+          // Native graph admission currently covers JS/TS. This records a real
+          // request and its refusal, not successful Rust/Python task accuracy.
+          expect(answer.error).toMatch(/unsupported/i);
+          expect(answer.freshness.health).not.toBe('healthy');
+          expect(sites).toEqual([]);
+          coverage = 'unsupported';
+        }
+      }
+      console.log('NATIVE_REPOSITORY_TASK=' + JSON.stringify({ caseId: kase.id,
+        question: kase, preregHash: frozen.preregistration.hash, sourceWitness,
+        tool, request, response, sites, expectedSites, coverage,
+        wallMs: performance.now() - started, rawResponseBytes: Buffer.byteLength(JSON.stringify(response)),
+        // This suite is a shared process and this replay materializes the pinned
+        // file only. Never infer frozen project configuration or fresh-task costs.
+        configurationWitness: { status: 'not-measured', reason: 'pinned-project-configuration-not-materialized' },
+        resultTokens: null, processCosts: { status: 'not-measured', reason: 'shared-test-process-not-fresh-task' },
+        authoredControlOnly: false, backendVerdict: 'unqualified' }));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 60_000);
+});
 
 describe('native P026 multilingual authored graph acceptance', () => {
   it.each(cases)('$id', async kase => {
