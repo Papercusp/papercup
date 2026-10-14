@@ -1491,7 +1491,7 @@ describe('session-port managed seed + native persistence helpers', () => {
     "b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
     "if(!line)continue;if(line==='QUIT')process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
     "setTimeout(()=>{swallowing=true;process.stdout.write('\\x1b[6n');" +
-    "setTimeout(()=>process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.159.3) \\u2502\\n\\u203a Ask Codex to do anything\\n" +
+    "setTimeout(()=>process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.159.3) \\u2502\\n\\u2502 model: GPT-6.1-Sol xhigh /model to change \\u2502\\n\\u203a Ask Codex to do anything\\n" +
     "\\x1b[23;3HStarting \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left'),50);" +
     (readyAtMs === null
       ? ''
