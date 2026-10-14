@@ -915,6 +915,13 @@
         ],
         "limits": "Named local source/guard bytes only. Check current bytes and automatic settlement before reusing proof."
       },
+      "automaticSettlement": {
+        "head": "9bb1577ec9b9c840e6b086229df08f79b4ad61bb",
+        "sourceHashesUnchanged": true,
+        "namedCommittedMatches": 6,
+        "originalReceiptHashesMatch": true,
+        "scope": "Direct byte/hash readback of the six sourceAtRead paths against this committed HEAD. Earlier sourceAtRead local snapshot is preserved; no test was repeated. Evidence-document settlement and runtime/shipment are separate."
+      },
       "remaining": "Original command-step execution receipts remain unproduced. No complete source/dependency/final-runtime closure, original ABBA cohorts or operational acceptance. D020/P006 and six forms stay unbound/unapproved. Whole plan UNSHIPPED."
     },
     "fixturePretestPreparation": {

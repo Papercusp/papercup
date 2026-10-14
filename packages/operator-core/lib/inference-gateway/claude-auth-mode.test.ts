@@ -303,6 +303,17 @@ describe('P-006 — Claude credential shape per attempt', () => {
 });
 
 describe('P-006 — supporting surfaces', () => {
+  it('sends the selected account workspace and rejects caller workspace injection', async () => {
+    const { sent } = await runAttempts({
+      initial: { ...apiKeyAccount('scoped-api'), anthropicWorkspaceId: 'wrkspc_account' },
+      baseHeaders: { 'Anthropic-Workspace-Id': 'wrkspc_caller' },
+    });
+    expect(lower(sent[0]!)['anthropic-workspace-id']).toBe('wrkspc_account');
+    const base = { 'anthropic-workspace-id': 'wrkspc_previous' };
+    expect(claudeAttemptHeaders(base, 'api-key', API_KEY)).not.toHaveProperty('anthropic-workspace-id');
+    expect(claudeAttemptHeaders(base, 'oauth', OAUTH_TOKEN, 'wrkspc_api')).not.toHaveProperty('anthropic-workspace-id');
+  });
+
   it('claudeAuthModeForRef reads the mode from the ref alone', () => {
     expect(claudeAuthModeForRef('apikey:env:ANTHROPIC_API_KEY')).toBe('api-key');
     expect(claudeAuthModeForRef('apikey:credentials')).toBe('api-key');
@@ -327,12 +338,14 @@ describe('P-006 — supporting surfaces', () => {
     const account = {
       id: 'console',
       credentialRef: 'apikey:env:ANTHROPIC_API_KEY',
+      anthropicWorkspaceId: 'wrkspc_probe',
       rate: { pausedUntil: 0, lastPenaltyAt: 0, penaltyCount: 0, windowStartedAt: 0 },
     } as ClaudeAccount;
     await probeAccountCapacity(account, { fetchImpl: f, resolveToken: async () => API_KEY, buildDispatcher: async () => undefined }, 0.97);
     const [, init] = (f as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
     const headers = lower(init.headers as Record<string, string>);
     expect(headers['x-api-key']).toBe(API_KEY);
+    expect(headers['anthropic-workspace-id']).toBe('wrkspc_probe');
     expect(Object.keys(headers)).not.toContain('authorization');
     expect(headers['anthropic-beta'] ?? '').not.toContain(CLAUDE_OAUTH_BETA);
   });

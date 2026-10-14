@@ -22,8 +22,9 @@ function withProjection(
   projected: boolean,
   explain?: (plan: Record<string, unknown>) => void,
   analyze = true,
+  sql: Sql = db.adminSql,
 ): Sql {
-  return new Proxy(db.adminSql, {
+  return new Proxy(sql, {
     apply(target, receiver, args: unknown[]) {
       const [first, ...values] = args;
       if (!Array.isArray(first) || !Object.hasOwn(first, 'raw')) return Reflect.apply(target, receiver, args);
@@ -73,6 +74,20 @@ beforeAll(async () => {
     (workspace_id,conversation_id,requester_id,responder_id,state,question,latency_contract,routing)
     VALUES (${workspaceId},'p004-consult','requester','chain-2','awaiting_responder','q','proceed',
       '{"selection":{"selected":[{"ownerId":"chain-2","answeringOwnerId":"consult-fork"}]}}')`;
+  // A large consult population matters independently of launch payload width.
+  // The old per-session exclusion re-expanded every routing document for each
+  // session. Include real routed mappings and unrelated wide documents so both
+  // the durable fallback and the mapping extraction stay in the production plan.
+  await db.adminSql`
+    INSERT INTO harness_shared.consult_state
+      (workspace_id,conversation_id,requester_id,responder_id,state,question,latency_contract,routing)
+    SELECT ${workspaceId}, 'p004-noise-consult-' || n, 'requester', 'noise-source-' || n,
+           'awaiting_responder', 'q', 'proceed',
+           jsonb_build_object('selection', jsonb_build_object('selected', jsonb_build_array(
+             jsonb_build_object('ownerId', 'noise-source-' || n, 'answeringOwnerId', 'noise-answer-' || n)
+           )), 'context', repeat(md5(n::text), 128))
+      FROM generate_series(1,2500) n
+  `;
   // Model a ledger much larger than the consult-answer population. The partial
   // covering index must let the production edge query skip ordinary task rows.
   await db.adminSql`
@@ -93,9 +108,35 @@ beforeAll(async () => {
   await db.adminSql.begin(async (tx) => { await tx.unsafe(ddl); });
   await db.adminSql.begin(async (tx) => { await tx.unsafe(ddl); });
   await db.adminSql`ANALYZE harness_shared.adv_sessions`;
+  await db.adminSql`ANALYZE harness_shared.consult_state`;
 }, 180_000);
 
 afterAll(async () => { await db?.cleanup(); });
+
+it('scans the routed-consult population once instead of once per launched session', async () => {
+  const connection = await db.adminSql.reserve();
+  try {
+    await connection.begin(async (tx) => {
+      await tx`SET LOCAL statement_timeout = '2000ms'`;
+      let measured: Record<string, unknown> | undefined;
+      await areAcceptanceLineageRelated('chain-0', 'consult-fork', {
+        workspaceId,
+        sql: withProjection(true, (plan) => { measured = plan; }, true, tx as unknown as Sql),
+      });
+      expect(measured).toBeDefined();
+      const scans: Record<string, unknown>[] = [];
+      const visit = (node: Record<string, unknown>) => {
+        if (node['Relation Name'] === 'consult_state') scans.push(node);
+        for (const child of (node.Plans ?? []) as Record<string, unknown>[]) visit(child);
+      };
+      visit(measured!.Plan as Record<string, unknown>);
+      expect(scans).toHaveLength(1);
+      expect(scans[0]['Actual Loops']).toBe(1);
+    });
+  } finally {
+    connection.release();
+  }
+});
 
 it('tracks parent edits, absent/blank/null payloads, and pre-existing rows without an application writer', async () => {
   const [row] = await db.adminSql`INSERT INTO harness_shared.adv_sessions

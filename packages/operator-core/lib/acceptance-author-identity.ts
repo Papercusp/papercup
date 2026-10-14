@@ -32,6 +32,36 @@ export interface AcceptanceAuthorIdentityOpts {
  */
 function identityEdges(sql: Sql, workspaceId: string) {
   return sql`
+        -- Both launch suppression and lineage consume the SAME routed mapping.
+        -- Materialize it once: a correlated scan of every prompt-bearing consult
+        -- routing document for every launched session is quadratic in the two
+        -- populations, even when the reachability walk itself is deduplicated.
+        WITH consult_dispatch(from_id, to_id) AS MATERIALIZED (
+          SELECT sel->>'ownerId', sel->>'answeringOwnerId'
+            FROM harness_shared.consult_state cs
+            CROSS JOIN LATERAL jsonb_array_elements(
+                   CASE jsonb_typeof(cs.routing -> 'selection' -> 'selected')
+                     WHEN 'array' THEN cs.routing -> 'selection' -> 'selected'
+                     ELSE '[]'::jsonb
+                   END
+                 ) AS sel
+           WHERE cs.workspace_id = ${workspaceId}
+             AND NULLIF(sel->>'ownerId', '') IS NOT NULL
+             AND NULLIF(sel->>'answeringOwnerId', '') IS NOT NULL
+             AND sel->>'ownerId' IS DISTINCT FROM sel->>'answeringOwnerId'
+          UNION
+          -- The task row is the durable fallback when the selection stamp is
+          -- absent. It is written before dispatch and survives state cleanup.
+          SELECT ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}',
+                 ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}'
+            FROM harness_shared.task_ledger AS ledger_answer
+           WHERE ledger_answer.workspace_id = ${workspaceId}
+             AND ledger_answer.detail ? 'consultAnswer'
+             AND NULLIF(ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}', '') IS NOT NULL
+             AND NULLIF(ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}', '') IS NOT NULL
+             AND ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}'
+                 IS DISTINCT FROM ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}'
+        )
         SELECT args_json->>'from',
                COALESCE(NULLIF(args_json->>'to', ''), coord_owner_id)
           FROM harness_shared.tool_invocations
@@ -62,32 +92,8 @@ function identityEdges(sql: Sql, workspaceId: string) {
            AND launch_parent_owner IS NOT NULL
            AND NULLIF(coord_owner_id, '') IS NOT NULL
            AND NOT EXISTS (
-                 SELECT routed_sel->>'ownerId'
-                   FROM harness_shared.consult_state routed
-                   CROSS JOIN LATERAL jsonb_array_elements(
-                          CASE jsonb_typeof(routed.routing -> 'selection' -> 'selected')
-                            WHEN 'array' THEN routed.routing -> 'selection' -> 'selected'
-                            ELSE '[]'::jsonb
-                          END
-                        ) AS routed_sel
-                  WHERE routed.workspace_id = ${workspaceId}
-                    AND routed_sel->>'answeringOwnerId' = adv_sessions.coord_owner_id
-                    AND NULLIF(routed_sel->>'ownerId', '') IS NOT NULL
-                    AND routed_sel->>'ownerId' IS DISTINCT FROM routed_sel->>'answeringOwnerId'
-                 UNION ALL
-                 -- The consult dispatcher persists this mapping on the task row
-                 -- before launch. The selection stamp is best-effort and can be
-                 -- absent even when the routed fork exists, so consultAnswer is
-                 -- the durable fallback for suppressing the requester's launch edge.
-                 SELECT ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}'
-                   FROM harness_shared.task_ledger AS ledger_answer
-                  WHERE ledger_answer.workspace_id = adv_sessions.workspace_id
-                    AND ledger_answer.detail ? 'consultAnswer'
-                    AND ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}' = adv_sessions.coord_owner_id
-                    AND NULLIF(ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}', '') IS NOT NULL
-                    AND NULLIF(ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}', '') IS NOT NULL
-                    AND ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}'
-                        IS DISTINCT FROM ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}'
+                 SELECT 1 FROM consult_dispatch routed
+                  WHERE routed.to_id = adv_sessions.coord_owner_id
                )
         UNION
         SELECT parent_spawn_id, spawn_id
@@ -120,35 +126,7 @@ function identityEdges(sql: Sql, workspaceId: string) {
         -- transcript's lineage — is not evaluated at all. Exclusion must follow
         -- the KNOWLEDGE, not the process that started the session.
         --
-        -- Prefer the routed selection stamp for older/current state, and use the
-        -- dispatcher's durable task-ledger record when that best-effort stamp is
-        -- absent. Both rows name the same expert -> answering-session lineage.
-        SELECT sel->>'ownerId',
-               sel->>'answeringOwnerId'
-          FROM harness_shared.consult_state cs
-          CROSS JOIN LATERAL jsonb_array_elements(
-                 CASE jsonb_typeof(cs.routing -> 'selection' -> 'selected')
-                   WHEN 'array' THEN cs.routing -> 'selection' -> 'selected'
-                   ELSE '[]'::jsonb
-                 END
-               ) AS sel
-         WHERE cs.workspace_id = ${workspaceId}
-           AND NULLIF(sel->>'ownerId', '') IS NOT NULL
-           AND NULLIF(sel->>'answeringOwnerId', '') IS NOT NULL
-           AND sel->>'ownerId' IS DISTINCT FROM sel->>'answeringOwnerId'
-        UNION
-        -- P-004 fallback: consult-dispatch writes consultAnswer in the task ledger
-        -- before spawning. Unlike the consult_state answeringOwnerId selection
-        -- stamp, this durable mapping survives the common no-stamp path.
-        SELECT ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}',
-               ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}'
-          FROM harness_shared.task_ledger AS ledger_answer
-         WHERE ledger_answer.workspace_id = ${workspaceId}
-           AND ledger_answer.detail ? 'consultAnswer'
-           AND NULLIF(ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}', '') IS NOT NULL
-           AND NULLIF(ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}', '') IS NOT NULL
-           AND ledger_answer.detail #>> '{consultAnswer,sourceOwnerId}'
-               IS DISTINCT FROM ledger_answer.detail #>> '{consultAnswer,answeringOwnerId}'
+        SELECT from_id, to_id FROM consult_dispatch
   `;
 }
 
