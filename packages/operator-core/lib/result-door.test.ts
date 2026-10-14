@@ -65,6 +65,61 @@ function longText(chars: number): string {
     .slice(0, chars);
 }
 
+describe('discovery schema integrity', () => {
+  it.each([
+    { toolName: 'tools:find' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'tools:find' },
+  ])('keeps schemas atomic through $toolName spill failure', (route) => {
+    writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+    const small = JSON.stringify({ type: 'object', properties: {
+      body: { type: 'string', description: 'é'.repeat(1_000) },
+    }, required: ['body'], additionalProperties: false });
+    const oversized = JSON.stringify({ type: 'object', properties: {
+      body: { type: 'string', description: 'large schema '.repeat(2_000) },
+    } });
+    const source = { hits: [
+      { tool: 'work_items:comment', argSchema: small },
+      { tool: 'coord:send', argSchema: oversized },
+    ] };
+    const text = JSON.stringify(source);
+    const result = { content: [{ type: 'text' as const, text }],
+      structuredContent: source, _meta: { explicitFullRequest: true } };
+    const out = applyResultDoor(result, { ...route, workspaceId: 'ws-1', runId: RUN_ID });
+    const body = boundedBody(out) as any;
+    expect(body.hits[0].argSchema).toBe(small);
+    expect(JSON.parse(body.hits[0].argSchema)).toEqual(JSON.parse(small));
+    expect(body.hits[1]).toMatchObject({ tool: 'coord:send', argSchemaUnavailable: true });
+    expect(body.hits[1]).not.toHaveProperty('argSchema');
+    expect(body._projection.cursor).toMatchObject({
+      kind: 'volatile-scratch-page', reason: 'spill-write-failed', tool: 'capability:read',
+    });
+    const recovered = readVolatileScratchReference(body._projection.cursor.uri,
+      { workspaceId: 'ws-1' });
+    expect(recovered.payload.subarray(body._projection.cursor.bodyOffsetInPayload)
+      .toString('utf8')).toBe(text);
+    expect(() => readVolatileScratchReference(body._projection.cursor.uri,
+      { workspaceId: 'another-workspace' })).toThrow();
+    expect(out.structuredContent).toBe(source);
+    expect(measureResultContextBytes(out)).toBeLessThanOrEqual(BUDGET_CHARS);
+  });
+
+  it('preserves compact signatures atomically on ordinary projection without changing other tools', () => {
+    const signature = 'body:string ' + 'field guidance '.repeat(90);
+    const source = { hits: [{ tool: 'work_items:comment', argSchema: signature }],
+      padding: 'P'.repeat(BUDGET_CHARS * 3) };
+    const content = [{ type: 'text' as const, text: JSON.stringify(source) }];
+    const out = applyResultDoor({ content },
+      { toolName: 'tools:find', workspaceId: 'ws-1', runId: RUN_ID });
+    const body = boundedBody(out) as any;
+    expect(body.hits[0].argSchema).toBe(signature);
+    expect(readSpill('ws-1', 'tools:find', RUN_ID)).toContain(signature);
+    expect(measureResultContextBytes(out)).toBeLessThanOrEqual(BUDGET_CHARS);
+    const unrelated = applyResultDoor({ content },
+      { toolName: 'other:read', workspaceId: 'ws-1', runId: RUN_ID });
+    expect((boundedBody(unrelated) as any).hits[0].argSchema).not.toBe(signature);
+  });
+});
+
 describe('fleet admission receipt recovery', () => {
   it('keeps the repair header and original full-details cursor through a nested partial-result door', () => {
     const source = { ok: false, error: 'admission_refused', reason: 'floor-gated',
@@ -1128,6 +1183,36 @@ describe('applyResultDoor', () => {
         reason: expect.stringContaining('array item(s) omitted'),
       }),
     ]));
+  });
+
+  it.each([
+    { toolName: 'coord:thread' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'coord:thread' },
+  ])('EI-25974584172289918: $toolName keeps projected nested arrays domain-only with recovery', (route) => {
+    const source = {
+      entries: Array.from({ length: 200 }, (_, index) => ({
+        msg_id: `message-${index}`, kind: 'message', summary: 'reply '.repeat(100),
+      })),
+      values: Array.from({ length: 100 }, (_, index) => index),
+    };
+    const original = JSON.stringify(source);
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      { ...route, workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(doored) as ReturnType<typeof boundedBody> & {
+      entries: Array<Record<string, unknown>>;
+      _partial?: boolean;
+    };
+    const entries = body.entries;
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.length).toBeLessThan(source.entries.length);
+    expect(entries.every((row) => row.kind === 'message' && typeof row.msg_id === 'string')).toBe(true);
+    expect(body._partial).toBe(true);
+    expect(body._projection.truncated).toBe(true);
+    expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
+    expect(readSpill('ws-1', route.toolName, RUN_ID).endsWith(original)).toBe(true);
+    expect(measureResultContextBytes(doored)).toBeLessThanOrEqual(BUDGET_CHARS);
   });
 
   it('REGRESSION (EI-23481355842555588): coord:send delivery verdicts survive generic result-door trimming', () => {

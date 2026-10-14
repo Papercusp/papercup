@@ -2516,6 +2516,47 @@ function recordAt(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/** Discovery schemas are executable contracts, including compact signatures.
+ * Generic prose clipping must never leave a damaged contract under argSchema.
+ * Reuse the existing source cursor for schemas that cannot fit atomically. */
+function repairDiscoverySchemaProjection(
+  sourceValue: unknown,
+  projected: Record<string, unknown>,
+  targetBytes: number,
+): void {
+  const source = recordAt(sourceValue);
+  if (!Array.isArray(source?.hits) || !Array.isArray(projected.hits)) return;
+  const sourceSchemas = new Map<string, string>();
+  for (const value of source.hits) {
+    const hit = recordAt(value);
+    if (typeof hit?.tool === 'string' && typeof hit.argSchema === 'string') {
+      sourceSchemas.set(hit.tool, hit.argSchema);
+    }
+  }
+  const clipped: Array<{ hit: Record<string, unknown>; schema: string }> = [];
+  for (const value of projected.hits) {
+    const hit = recordAt(value);
+    const schema = typeof hit?.tool === 'string' ? sourceSchemas.get(hit.tool) : undefined;
+    if (!hit || schema === undefined || hit.argSchema === schema) continue;
+    delete hit.argSchema;
+    hit.argSchemaUnavailable = true;
+    clipped.push({ hit, schema });
+  }
+  // Remove every damaged schema first so a large early hit cannot crowd out
+  // a later usable schema. Account for UTF-8, as the transport door does.
+  const metadata = recordAt(projected._projection);
+  for (const { hit, schema } of clipped) {
+    delete hit.argSchemaUnavailable;
+    hit.argSchema = schema;
+    if (metadata) metadata.returnedChars = JSON.stringify(projected).length;
+    if (Buffer.byteLength(JSON.stringify(projected), 'utf8') > targetBytes) {
+      delete hit.argSchema;
+      hit.argSchemaUnavailable = true;
+    }
+  }
+  if (metadata) metadata.returnedChars = JSON.stringify(projected).length;
+}
+
 function retainedPrefixLength(source: string, projected: string): number {
   let length = 0;
   while (length < source.length && length < projected.length && source[length] === projected[length]) {
@@ -3461,6 +3502,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // work_items:list), so keep an array root while retaining the metadata
       // out-of-band for this process and in `_meta.resultDoor` below.
       preserveArrayRoot: parsedJsonBody && Array.isArray(bodyShape.json!.parsed),
+      // This door retains the containing envelope, omission counts and spill
+      // cursor. Keep nested arrays iterable as domain rows; bare array roots
+      // still carry their own marker because they have no containing object.
+      arrayTruncation: 'envelope',
       // These roots contain model-facing state that cannot be reconstructed
       // from the generic identity fields. Keep them visible even if
       // projection metadata forces the final identity-only fallback;
@@ -3486,6 +3531,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     });
     if (isScorecardsGetResult(opts) && parsedJsonBody && evaluatorCompactBody == null) {
       repairScorecardsGetProjection(bodyShape.json!.parsed, projected);
+    }
+    if (parsedJsonBody && (opts.toolName === 'tools:find' ||
+      (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'tools:find'))) {
+      repairDiscoverySchemaProjection(bodyShape.json!.parsed, projected, structuralTargetChars);
     }
     const structuralText = JSON.stringify(projected);
     let inserted = false;
