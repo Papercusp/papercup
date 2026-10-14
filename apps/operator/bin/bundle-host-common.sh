@@ -26,6 +26,52 @@ bundle_host_run_step() { # <fixed step name> <command> [args...]
   return "$step_rc"
 }
 
+# Resolve the pinned tool once per build instead of paying npm's package
+# resolution on every worker. A shell binding is local to this sourced recipe;
+# an inherited path is not evidence of the requested compiler.
+BUNDLE_HOST_ESBUILD_PATH=""
+bundle_host_cached_package() { # <repo root> <command> [args...]
+  local repo_root="$1"
+  shift
+  if declare -F run_sidecar_cached_package >/dev/null 2>&1; then
+    # Frozen desktop targets retain their existing cache-lease API adapter.
+    run_sidecar_cached_package "$@"
+  else
+    local -a run_node=("${COMMITTED_NODE[@]:-node}")
+    "${run_node[@]}" "$repo_root/scripts/npm-install-safe.mjs" \
+      --repo-root "$repo_root" --exec-under-cache-lock -- "$@"
+  fi
+}
+
+bundle_host_prepare_esbuild() { # <repo root>
+  [[ -z "$BUNDLE_HOST_ESBUILD_PATH" ]] || return 0
+  local compiler
+  compiler="$(bundle_host_cached_package "$1" npx --yes --package=esbuild@0.25.0 -c 'command -v esbuild')" || return 1
+  if [[ "$compiler" != /* || ! -x "$compiler" ]]; then
+    echo "ERROR: pinned esbuild resolver did not return an executable absolute path: $compiler" >&2
+    return 1
+  fi
+  BUNDLE_HOST_ESBUILD_PATH="$compiler"
+}
+
+bundle_host_esbuild() { # <repo root> [compiler args...]
+  local repo_root="$1"
+  shift
+  bundle_host_prepare_esbuild "$repo_root" || return 1
+  # Each use holds the maintained cache lease through version validation AND
+  # compilation. Cache cleanup between uses can remove the memoized path; that
+  # fails closed instead of substituting the installed (possibly newer) tool.
+  bundle_host_cached_package "$repo_root" bash -c '
+    compiler="$1"; shift
+    version="$("$compiler" --version)" || exit 78
+    if [[ "$version" != 0.25.0 ]]; then
+      echo "ERROR: host bundle requires esbuild 0.25.0; resolved $version" >&2
+      exit 78
+    fi
+    exec "$compiler" "$@"
+  ' bundle-host-esbuild "$BUNDLE_HOST_ESBUILD_PATH" "$@"
+}
+
 # ESM output needs Node's CJS compatibility bindings. The dummy module keeps
 # library CLI guards (`require.main === module`) from firing inside a bundle.
 # The generated marker is intentional: content-lint must route any false-positive
@@ -182,15 +228,9 @@ bundle_host_spawner() { # <repo root> <out dir> [esbuild boundary args...]
   # WI-10005802: bundle-host.sh defines COMMITTED_NODE so these helpers run their committed
   # bytes before its restricted-hold gate; other callers (release packaging) keep plain node.
   local -a run_node=("${COMMITTED_NODE[@]:-node}")
-  local -a package_runner=("${run_node[@]}" "$repo_root/scripts/npm-install-safe.mjs" --repo-root "$repo_root" --exec-under-cache-lock --)
-  # Exact-source desktop cuts already carry an API-compatible cache runner for
-  # older target helpers. Preserve that route instead of sending a new CLI flag.
-  if declare -F run_sidecar_cached_package >/dev/null 2>&1; then
-    package_runner=(run_sidecar_cached_package)
-  fi
   if ! bundle_host_run_step spawner-probe-wait "${run_node[@]}" "$repo_root/scripts/mutation-probe-window-gate.mjs" wait --root "$repo_root" \
       --stamp-file "$stamp" ||
-     ! bundle_host_run_step spawner-compile "${package_runner[@]}" npx --yes esbuild@0.25.0 "$repo_root/apps/operator/bin/spawner-sidecar.ts" \
+     ! bundle_host_run_step spawner-compile bundle_host_esbuild "$repo_root" "$repo_root/apps/operator/bin/spawner-sidecar.ts" \
       --bundle --platform=node --format=esm --target=node22 \
       --outfile="$tmp" --metafile="$meta" --banner:js="$HOST_BANNER" \
       "${HOST_BANNER_DEFINES[@]}" --define:__PAPERCUSP_BUNDLED_SIDECAR__=true "$@" ||
@@ -213,11 +253,6 @@ bundle_host_workers() {
   local repo_root="$1" out_dir="$2" source output tmp
   # A private dependency snapshot still shares npx's package cache with every
   # checkout. The repo install lease cannot protect it from cache maintenance.
-  local -a run_node=("${COMMITTED_NODE[@]:-node}")
-  local -a package_runner=("${run_node[@]}" "$repo_root/scripts/npm-install-safe.mjs" --repo-root "$repo_root" --exec-under-cache-lock --)
-  if declare -F run_sidecar_cached_package >/dev/null 2>&1; then
-    package_runner=(run_sidecar_cached_package)
-  fi
   local -a sources=(
     "${3:-$repo_root/libs/generic/memory/src/local-embedder-worker.script.mjs}"
     "$repo_root/packages/operator-core/lib/cpu-task-worker.script.mjs"
@@ -281,7 +316,7 @@ bundle_host_workers() {
     tmp="$out_dir/$output.new.$$.mjs"
     meta_args=()
     [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ] && meta_args=(--metafile="$BUNDLE_HOST_GATE_META_DIR/$output.meta.json")
-    if ! bundle_host_run_step "worker-$output" "${package_runner[@]}" npx --yes esbuild@0.25.0 "$source" \
+    if ! bundle_host_run_step "worker-$output" bundle_host_esbuild "$repo_root" "$source" \
       --bundle --platform=node --format=esm --target=node22 \
       "${worker_externals[@]}" \
       --external:sodium-native --external:esbuild --banner:js="$HOST_BANNER" "${HOST_BANNER_DEFINES[@]}" --outfile="$tmp" --log-limit=5 \
