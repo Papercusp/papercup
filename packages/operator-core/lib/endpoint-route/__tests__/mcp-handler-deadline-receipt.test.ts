@@ -332,6 +332,16 @@ registerProjectedTool({
   }) }] }),
 });
 
+registerProjectedTool({
+  pluginName: 'mcp-deadline-receipt-test',
+  description: 'test-only probe: small result for synthetic scratch-progress callback coverage',
+  inputSchema: { type: 'object', additionalProperties: true },
+  capabilities: [],
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'deadlinetest:progress' } },
+  fn: async () => ({ content: [{ type: 'text' as const, text: 'synthetic-progress-fixture' }] }),
+});
+
 const SYNTHETIC_COORD_SEND_ABORT = {
   ok: false,
   partial: true,
@@ -601,13 +611,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     }
   });
 
-  it('forwards scratch spill progress to MCP clients that supplied a progress token', async () => {
-    const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-mcp-progress-'));
-    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
-    const previousKillSwitch = process.env.PAPERCUSP_RESULT_DOOR_OFF;
-    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
-    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
-    _resetScratchUsageForTests();
+  it('forwards synthetic scratch progress to MCP clients that supplied a progress token', async () => {
     const progressToken = 'mcp-spill-progress';
     const traceId = '7c6a1e48-6764-4937-8b8e-f35fef8ea93d';
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
@@ -659,12 +663,12 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       },
     }];
     try {
-      const result = await callTool('deadlinetest:spill', {}, extra, { progressToken });
+      const result = await callTool('deadlinetest:progress', {}, extra, { progressToken });
       expect(result.isError, JSON.stringify(result)).not.toBe(true);
       expect(traceEvents(info.mock.calls)).toEqual(expect.arrayContaining([
         expect.objectContaining({
           traceId,
-          toolName: 'deadlinetest:spill',
+          toolName: 'deadlinetest:progress',
           stage: 'scratch_write_progress',
           scratchWriteProgress: expect.objectContaining({
             quotaRecoveryDiagnostics: expect.objectContaining({
@@ -703,12 +707,6 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       ]));
     } finally {
       info.mockRestore();
-      _resetScratchUsageForTests();
-      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
-      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
-      if (previousKillSwitch === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
-      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousKillSwitch;
-      rmSync(sandbox, { recursive: true, force: true });
     }
   });
 
