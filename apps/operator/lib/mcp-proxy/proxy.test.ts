@@ -418,6 +418,49 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body); // no idempotencyKey injection — replay re-executes the read
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
+  it("EI-25897333491653710: only loop:checkpoint read:true is readonly", () => {
+    const bodies = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "loop:checkpoint", arguments: { read: true } },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "loop:checkpoint", args: { read: true } },
+        },
+      }),
+    ];
+    for (const value of bodies) {
+      const body = Buffer.from(value);
+      const prepared = prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: gen,
+      });
+      expect(prepared.klass).toBe("readonly");
+      expect(prepared.body).toBe(body);
+    }
+
+    for (const arguments_ of [{}, { read: false }, { read: "true" }]) {
+      const prepared = prepareForward(
+        "POST",
+        {},
+        Buffer.from(JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "loop:checkpoint", arguments: arguments_ },
+        })),
+        { keyingEnabled: true, genKey: gen },
+      );
+      expect(prepared.klass).toBe("keyed");
+    }
+  });
   it('recipes:search is readonly and keeps the request body untouched', () => {
     const body = Buffer.from(
       '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recipes:search","arguments":{"query":"find a recovery recipe","semantic":false,"limit":5}}}',
@@ -2576,6 +2619,31 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"build:typecheck","arguments":{}}}',
     );
     expect(r.status).toBe(200);
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-25897333491653710: loop:checkpoint read:true retries after an upstream reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"read":true,"note":"recovered"}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"loop:checkpoint","arguments":{"read":true}}}',
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"read":true,"note":"recovered"}}');
     expect(upstream.hits()).toBe(2);
   });
 
