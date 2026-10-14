@@ -83,7 +83,8 @@ describe('P-033: watchdog expiry diagnostics', () => {
     vi.advanceTimersByTime(60);
 
     expect(result).toBeDefined();
-    const detail = buildCheckpointDetail(result!);
+    // The producer crosses the JSON result-marker seam before the routine records it.
+    const detail = buildCheckpointDetail(JSON.parse(JSON.stringify(result)));
     expect(detail.summary).toContain('self-watchdog fired: idle-timeout');
     expect(detail.summary).toContain('trigger=scheduled-parent-backstop');
     expect(detail.summary).toContain('elapsedMs=80; idleForMs=60');
