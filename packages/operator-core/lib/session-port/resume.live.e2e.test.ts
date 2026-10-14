@@ -23,6 +23,14 @@ const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 type Session = { id: string; agent: SessionBackend; coord_owner_id: string;
   session_id: string | null; omp_thread_id: string | null; ended_at: string | null };
 
+function verifiedEmptyCleanup(name: string, args: Record<string, unknown>, status: number | null,
+  value: Record<string, any> | undefined) {
+  const row = value?.results?.[0];
+  return name === 'processes:kill' && args.reapTerminalResidue === true && status === 5 &&
+    value?.results?.length === 1 && row.taskId === args.taskId && row.error === 'not_live' &&
+    typeof row.detail === 'string' && row.detail.includes('holds no live process right now; nothing to reap');
+}
+
 function call(name: string, args: Record<string, unknown>, origin: string) {
   const env = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
   delete env.PAPERCUSP_SCRATCH_ROOT;
@@ -33,7 +41,8 @@ function call(name: string, args: Record<string, unknown>, origin: string) {
   });
   let value: Record<string, any> | undefined;
   try { value = JSON.parse(result.stdout); } catch { /* Report the original CLI failure below. */ }
-  if (result.status !== 0 || !value || value.ok === false) {
+  if (!verifiedEmptyCleanup(name, args, result.status, value) &&
+    (result.status !== 0 || !value || value.ok === false)) {
     // stderr starts with connection traces. The actual tool refusal is normally
     // in stdout; retain that receipt before throwing into the operational recorder.
     const diagnostic = { name, status: result.status, signal: result.signal,
@@ -45,6 +54,24 @@ function call(name: string, args: Record<string, unknown>, origin: string) {
   }
   return value;
 }
+
+describe('owned matrix cleanup receipt', () => {
+  const args = { taskId: 'owned-task', reapTerminalResidue: true };
+  const receipt = { ok: false, results: [{ taskId: 'owned-task', error: 'not_live',
+    detail: 'state is exited — reap requested but scope owned.service holds no live process right now; nothing to reap' }] };
+  it('accepts only a positively verified empty owned scope', () => {
+    expect(verifiedEmptyCleanup('processes:kill', args, 5, receipt)).toBe(true);
+  });
+  it('does not infer cleanup from a terminal ledger row alone', () => {
+    expect(verifiedEmptyCleanup('processes:kill', args, 5, { ok: false,
+      results: [{ taskId: 'owned-task', error: 'not_live', detail: 'state is exited' }] })).toBe(false);
+  });
+  it('rejects unknown outcomes and receipts for another task', () => {
+    expect(verifiedEmptyCleanup('processes:kill', args, null, receipt)).toBe(false);
+    expect(verifiedEmptyCleanup('processes:kill', { ...args, taskId: 'another-task' }, 5, receipt)).toBe(false);
+    expect(verifiedEmptyCleanup('processes:kill', { taskId: 'owned-task' }, 5, receipt)).toBe(false);
+  });
+});
 
 function rows(sql: string, origin: string) {
   return call('dev:pg_query', { sql, maxRows: 10, timeoutMs: 15_000,
@@ -192,7 +219,7 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
             // This task was created by this test; stop its managed subtree only.
             try {
               const cleanup = call('processes:kill', { taskId: task.task_id,
-                includeSubtree: true, escalateAfterMs: 5000 }, origin);
+                includeSubtree: true, escalateAfterMs: 5000, reapTerminalResidue: true }, origin);
               console.info('CBP_FINAL_RESUME_CLEANUP', JSON.stringify({ taskId: task.task_id, receipt: cleanup }));
             } catch (cleanupError) {
               // A finally failure must not erase the observation that failed first.
