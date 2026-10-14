@@ -6901,6 +6901,17 @@ async function reconcileAndPushOneRepo(
     if (syncBack.status === 'merged') mergedNew = true;
     if (syncBack.status === 'error') o.log(`[git-sync] ${repoPath}: sync-back skipped this tick — ${syncBack.message}`);
   }
+  // D-017 §4 (P-014): a submodule that absorbed an upstream pin holds commits its fork has
+  // not received (submodules were pushed earlier this tick). Publishing the superproject now
+  // would put a gitlink on the fork that resolves nowhere, so its push waits one tick: the
+  // next tick pushes those submodules first (deepest-first), then the superproject.
+  const absorbedSubmodules = syncBack?.status === 'merged' ? (syncBack.absorbedSubmodules ?? []) : [];
+  if (doPush && absorbedSubmodules.length > 0) {
+    o.log(
+      `[git-sync] ${repoPath}: holding this tick's push — submodule(s) ${absorbedSubmodules.join(', ')} absorbed ` +
+        'upstream commits their forks have not received yet; the next tick pushes them first',
+    );
+  }
 
   // Frozen repair heads are allowed to prove a patch, but canonical staging remains
   // the only branch git-sync publishes. If a previously-promoted repair head is a
@@ -6922,7 +6933,7 @@ async function reconcileAndPushOneRepo(
   }
 
   let pushed = false;
-  if (doPush) {
+  if (doPush && absorbedSubmodules.length === 0) {
     // The successful fetch + merge gives us a current remote-tracking ref. When
     // HEAD has no commits beyond it, an authenticated push can move nothing and
     // should not be allowed to fail the whole harness on an unrelated credential

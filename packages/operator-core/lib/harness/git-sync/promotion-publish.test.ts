@@ -143,6 +143,92 @@ describe('publishPromotion', () => {
   });
 });
 
+describe('publishPromotion with submodules (P-014 / D-017 §5)', () => {
+  const SUB_SHA = 'b'.repeat(40);
+  const SUB_FORK = 'https://github.com/acme-bot/lib.git';
+  const SUB_UPSTREAM = 'https://github.com/acme/lib.git';
+  const LINK = { path: 'libs/lib', sha: SUB_SHA, url: SUB_UPSTREAM, branch: 'main' };
+
+  function subDeps(opts: {
+    unpublished?: Array<typeof LINK>;
+    findError?: string;
+    forks?: Record<string, string>;
+    forksSource?: 'set' | 'error';
+    pushSubError?: Error;
+  } = {}) {
+    const base = deps();
+    const order: string[] = [];
+    base.pushToFork.mockImplementation(async () => {
+      order.push('superproject');
+    });
+    const pushSubmoduleHead = vi.fn(async (_subDir: string, _fork: string, _sha: string, _branch: string) => {
+      order.push('submodule');
+      if (opts.pushSubError) throw opts.pushSubError;
+    });
+    const findUnpublishedGitlinks = vi.fn(async () =>
+      opts.findError ? { ok: false as const, error: opts.findError } : { ok: true as const, unpublished: opts.unpublished ?? [LINK] },
+    );
+    const d: PublishPromotionDeps = {
+      ...base.d,
+      hasSubmodules: () => true,
+      findUnpublishedGitlinks,
+      readSubmoduleForks: async () => ({ source: opts.forksSource ?? 'set', forks: opts.forks ?? { 'libs/lib': SUB_FORK } }),
+      pushSubmoduleHead,
+    };
+    return { ...base, d, order, pushSubmoduleHead, findUnpublishedGitlinks };
+  }
+
+  it('pushes each unpublished pin to its submodule fork BEFORE the superproject, then opens both PRs and links them', async () => {
+    const { d, order, pushSubmoduleHead, findUnpublishedGitlinks, publishStandingPr } = subDeps();
+    const out = await publishPromotion(INPUT, d);
+    expect(findUnpublishedGitlinks).toHaveBeenCalledWith(REPO, SHA, 'main');
+    expect(pushSubmoduleHead).toHaveBeenCalledWith(`${REPO}/libs/lib`, SUB_FORK, SUB_SHA, 'papercusp/working-copy');
+    expect(order).toEqual(['submodule', 'superproject']);
+    expect(publishStandingPr).toHaveBeenCalledTimes(2);
+    expect(publishStandingPr.mock.calls[0]?.[0]).toMatchObject({
+      forkRemote: SUB_FORK,
+      forkOwner: 'acme-bot',
+      upstreamRemote: SUB_UPSTREAM,
+      upstreamOwner: 'acme',
+      baseBranch: 'main',
+      promotedSha: SUB_SHA,
+    });
+    // The superproject PR names the submodule PR it depends on.
+    expect(publishStandingPr.mock.calls[1]?.[0]).toMatchObject({
+      forkRemote: FORK,
+      promotedSha: SHA,
+      relatedPrs: [{ path: 'libs/lib', sha: SUB_SHA, url: 'https://github.com/acme/widgets/pull/7' }],
+    });
+    expect(out).toMatchObject({ kind: 'fork', submodulePrs: [{ path: 'libs/lib', sha: SUB_SHA, standingPr: { ok: true } }] });
+  });
+
+  it('publishes no submodule PR when every pin is already on its main repository', async () => {
+    const { d, pushSubmoduleHead, publishStandingPr } = subDeps({ unpublished: [] });
+    const out = await publishPromotion(INPUT, d);
+    expect(pushSubmoduleHead).not.toHaveBeenCalled();
+    expect(publishStandingPr).toHaveBeenCalledTimes(1);
+    expect(out).not.toHaveProperty('submodulePrs');
+  });
+
+  it.each([
+    ['a submodule push is rejected', { pushSubError: new Error('non-fast-forward') }, /submodule_publish_failed/],
+    ['the pins cannot be verified', { findError: 'fetch failed' }, /submodule_pins_unverifiable/],
+    ['the pot has no fork of the submodule', { forks: {} }, /submodule_fork_missing/],
+    ['the submodule forks cannot be read', { forksSource: 'error' as const }, /submodule_forks_unreadable/],
+  ])('holds the promotion — the superproject is never pushed — when %s', async (_why, opts, reason) => {
+    const { d, pushToFork, publishStandingPr } = subDeps(opts);
+    await expect(publishPromotion(INPUT, d)).rejects.toThrow(reason);
+    expect(pushToFork).not.toHaveBeenCalled();
+    expect(publishStandingPr).not.toHaveBeenCalled();
+  });
+
+  it('holds the promotion for a checkout with submodules when no submodule publisher is wired', async () => {
+    const { d, pushToFork } = deps();
+    await expect(publishPromotion(INPUT, { ...d, hasSubmodules: () => true })).rejects.toThrow(/submodule_publish_unavailable/);
+    expect(pushToFork).not.toHaveBeenCalled();
+  });
+});
+
 describe('githubOwnerOf', () => {
   it.each([
     ['https://github.com/acme/widgets.git', 'acme'],

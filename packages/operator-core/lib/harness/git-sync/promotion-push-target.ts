@@ -24,13 +24,22 @@
  *    promotion is held rather than risking an upstream leak.
  */
 import { realpathSync } from 'node:fs';
+import { join } from 'node:path';
 import type { ProjectEntry } from '../../harness-registry';
+import { STANDING_PR_BRANCH } from './decide-standing-pr';
 import {
   POT_FORK_REMOTE_NAME,
+  repoHasSubmodules,
   resolveIntegrationPushRemote,
   type PotIntegrationModeRead,
 } from './pot-integration-mode';
-import { publishStandingPr, type PublishStandingPrResult, type StandingPrDeps } from './standing-pr';
+import {
+  publishStandingPr,
+  type PublishStandingPrResult,
+  type StandingPrDeps,
+  type SubmodulePrLink,
+} from './standing-pr';
+import type { SubmoduleForksRead, UnpublishedGitlink } from './submodule-forks';
 
 export type PromotionPushTarget =
   | { kind: 'origin'; reason: string }
@@ -149,7 +158,21 @@ export type PromotionPublishOutcome =
   /** Review mode without a fork: published nowhere; the local gate stays authoritative. */
   | { kind: 'skipped'; message: string }
   /** Review mode: pushed to the working copy; the standing PR refresh is best-effort. */
-  | { kind: 'fork'; potHomeSlug: string; remoteRef: string; standingPr: StandingPrRefresh };
+  | {
+      kind: 'fork';
+      potHomeSlug: string;
+      remoteRef: string;
+      standingPr: StandingPrRefresh;
+      /** D-017 §5: the standing PR of every submodule whose pin the main repository lacks. */
+      submodulePrs?: SubmoduleStandingPr[];
+    };
+
+/** One submodule's standing PR, refreshed alongside the superproject's (D-017 §5). */
+export interface SubmoduleStandingPr {
+  path: string;
+  sha: string;
+  standingPr: StandingPrRefresh;
+}
 
 export interface PublishPromotionInput extends ResolvePromotionPushTargetInput {
   /** The tested commit being promoted. */
@@ -170,6 +193,22 @@ export interface PublishPromotionDeps extends ResolvePromotionPushTargetDeps {
   recordStandingPr?: (input: PublishPromotionInput & {
     potHomeSlug: string; upstreamRemote: string; prNumber: number; prUrl: string;
   }) => Promise<{ linked: string[]; failed: Array<{ workItemId: string; error: string }> }>;
+  /** D-017: does the checkout use submodules? Default: {@link repoHasSubmodules}. */
+  hasSubmodules?: (repoPath: string) => boolean | undefined;
+  /**
+   * D-017 §5: the gitlinks in `sha` whose commits their submodule's main repository does
+   * not have yet, relative to the main repository's `baseBranch`. Required for a checkout
+   * with submodules: without it the promotion is held.
+   */
+  findUnpublishedGitlinks?: (
+    repoPath: string,
+    sha: string,
+    baseBranch: string,
+  ) => Promise<{ ok: true; unpublished: UnpublishedGitlink[] } | { ok: false; error: string }>;
+  /** D-017: the pot's recorded fork of each submodule. */
+  readSubmoduleForks?: (workspaceId: string, potHomeSlug: string) => Promise<SubmoduleForksRead>;
+  /** Push `sha` to `branch` on the submodule's fork (non-force), from its checkout. Throws on rejection. */
+  pushSubmoduleHead?: (subDir: string, forkUrl: string, sha: string, branch: string) => Promise<void>;
   log: (line: string) => void;
 }
 
@@ -200,6 +239,9 @@ export async function publishPromotion(
   }
 
   const remoteRef = input.ref.startsWith('refs/') ? input.ref : `refs/heads/${input.ref}`;
+  // D-017 §5: every pin the main repositories lack goes to its submodule fork FIRST. A
+  // failure throws (promotion held): the superproject must never publish an unreachable gitlink.
+  const pins = await publishSubmodulePins(input, target, remoteRef, deps);
   await deps.ensureRemote(input.repoPath, target.url);
   await deps.pushToFork(input.repoPath, input.sha, remoteRef);
   deps.log(
@@ -207,14 +249,122 @@ export async function publishPromotion(
       `(${target.remoteName} ${remoteRef}) — the main repository receives it only through the standing PR`,
   );
 
-  const standingPr = await refreshStandingPr(input, target, remoteRef, deps, 'promotion');
+  const submodulePrs: SubmoduleStandingPr[] = [];
+  for (const pin of pins) {
+    const pr = await refreshSubmoduleStandingPr(input, target, pin, deps);
+    deps.log(
+      pr.ok
+        ? `standing-pr (${pin.link.path}): ${pr.decision.action}${'prUrl' in pr && pr.prUrl ? ` ${pr.prUrl}` : ''}`
+        : `standing-pr (${pin.link.path}): not refreshed (${pr.stage}) — ${pr.error}`,
+    );
+    submodulePrs.push({ path: pin.link.path, sha: pin.link.sha, standingPr: pr });
+  }
+  const relatedPrs: SubmodulePrLink[] = submodulePrs.map((s) => ({
+    path: s.path,
+    sha: s.sha,
+    ...(s.standingPr.ok && 'prUrl' in s.standingPr && s.standingPr.prUrl ? { url: s.standingPr.prUrl } : {}),
+  }));
+
+  const standingPr = await refreshStandingPr(input, target, remoteRef, deps, 'promotion', relatedPrs);
   if (standingPr.ok) {
     const pr = 'prUrl' in standingPr && standingPr.prUrl ? ` ${standingPr.prUrl}` : '';
     deps.log(`standing-pr: ${standingPr.decision.action}${pr}`);
   } else {
     deps.log(`standing-pr: not refreshed (${standingPr.stage}) — ${standingPr.error}`);
   }
-  return { kind: 'fork', potHomeSlug: target.potHomeSlug, remoteRef, standingPr };
+  return {
+    kind: 'fork',
+    potHomeSlug: target.potHomeSlug,
+    remoteRef,
+    standingPr,
+    ...(submodulePrs.length ? { submodulePrs } : {}),
+  };
+}
+
+interface PublishedPin {
+  link: UnpublishedGitlink;
+  fork: string;
+}
+
+/**
+ * D-017 §5: push each gitlink the main repositories lack to its submodule fork's standing
+ * branch. Returns what was pushed; THROWS (promotion held) when a pin cannot be verified
+ * or published, so the superproject PR never names a commit no reachable fork carries.
+ */
+async function publishSubmodulePins(
+  input: PublishPromotionInput,
+  target: Extract<PromotionPushTarget, { kind: 'fork' }>,
+  remoteRef: string,
+  deps: PublishPromotionDeps,
+): Promise<PublishedPin[]> {
+  if ((deps.hasSubmodules ?? repoHasSubmodules)(input.repoPath) !== true) return [];
+  const held = (reason: string, message: string): Error => new Error(`promotion held (${reason}): ${message}`);
+  if (!deps.findUnpublishedGitlinks || !deps.readSubmoduleForks || !deps.pushSubmoduleHead) {
+    throw held('submodule_publish_unavailable', 'this checkout uses submodules but no submodule publisher is wired');
+  }
+  const found = await deps.findUnpublishedGitlinks(input.repoPath, input.sha, remoteRef.replace(/^refs\/heads\//, ''));
+  if (!found.ok) throw held('submodule_pins_unverifiable', found.error);
+  if (found.unpublished.length === 0) return [];
+  if (!input.workspaceId) throw held('submodule_forks_unreadable', `no workspace id for pot ${target.potHomeSlug}`);
+  const forks = await deps.readSubmoduleForks(input.workspaceId, target.potHomeSlug);
+  if (forks.source === 'error' || forks.source === 'malformed') {
+    throw held('submodule_forks_unreadable', `the submodule forks of ${target.potHomeSlug} are ${forks.source}`);
+  }
+  const pins: PublishedPin[] = [];
+  for (const link of found.unpublished) {
+    const fork = forks.forks[link.path];
+    if (!fork) {
+      throw held('submodule_fork_missing', `submodule '${link.path}' pins ${link.sha.slice(0, 12)}, but the pot has no fork of it`);
+    }
+    try {
+      await deps.pushSubmoduleHead(join(input.repoPath, link.path), fork, link.sha, STANDING_PR_BRANCH);
+    } catch (e) {
+      throw held('submodule_publish_failed', `submodule '${link.path}' @ ${link.sha.slice(0, 12)}: ${errText(e)}`);
+    }
+    deps.log(`git-push: published submodule '${link.path}' @ ${link.sha.slice(0, 12)} to its fork's ${STANDING_PR_BRANCH}`);
+    pins.push({ link, fork });
+  }
+  return pins;
+}
+
+/** Open or update one submodule's standing PR (fork standing branch → its main repository). Never throws. */
+async function refreshSubmoduleStandingPr(
+  input: PublishPromotionInput,
+  target: Extract<PromotionPushTarget, { kind: 'fork' }>,
+  pin: PublishedPin,
+  deps: PublishPromotionDeps,
+): Promise<StandingPrRefresh> {
+  const forkOwner = githubOwnerOf(pin.fork);
+  const upstreamOwner = githubOwnerOf(pin.link.url);
+  if (!forkOwner || !upstreamOwner) {
+    return { ok: false, stage: 'setup', error: `not a GitHub remote pair: fork ${pin.fork}, main ${pin.link.url || '(unknown)'}` };
+  }
+  const subDir = join(input.repoPath, pin.link.path);
+  let prDeps: StandingPrDeps | null;
+  try {
+    prDeps = await deps.createStandingPrDeps(subDir);
+  } catch (e) {
+    return { ok: false, stage: 'setup', error: `PR host unavailable: ${errText(e)}` };
+  }
+  if (!prDeps) return { ok: false, stage: 'setup', error: 'no GitHub PR host available (missing token)' };
+  try {
+    return await (deps.publishStandingPr ?? publishStandingPr)(
+      {
+        integration: target.integration,
+        forkRemote: pin.fork,
+        forkOwner,
+        upstreamRemote: pin.link.url,
+        upstreamOwner,
+        baseBranch: pin.link.branch,
+        promotedSha: pin.link.sha,
+        trigger: 'promotion',
+        potName: `${target.potHomeSlug} (${pin.link.path})`,
+      },
+      prDeps,
+    );
+  } catch (e) {
+    return { ok: false, stage: 'setup', error: errText(e) };
+  }
 }
 
 async function refreshStandingPr(
@@ -223,6 +373,7 @@ async function refreshStandingPr(
   remoteRef: string,
   deps: PublishPromotionDeps,
   trigger: 'promotion' | 'on-demand',
+  relatedPrs: readonly SubmodulePrLink[] = [],
 ): Promise<StandingPrRefresh> {
   const upstream = target.upstreamRemote;
   if (!upstream) {
@@ -252,6 +403,7 @@ async function refreshStandingPr(
         promotedSha: input.sha,
         trigger,
         potName: target.potHomeSlug,
+        ...(relatedPrs.length ? { relatedPrs } : {}),
       },
       prDeps,
     );
@@ -327,6 +479,19 @@ export async function createDefaultSendStandingPrNowDeps(log: (line: string) => 
   };
 }
 
+/** Code-returning git (never throws), for the submodule seams. */
+async function execGitCode(args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  try {
+    const { stdout, stderr } = await promisify(execFile)('git', args, { cwd, encoding: 'utf8' });
+    return { code: 0, stdout, stderr };
+  } catch (err) {
+    const e = err as { code?: unknown; stdout?: string; stderr?: string; message?: string };
+    return { code: typeof e.code === 'number' ? e.code : 1, stdout: e.stdout ?? '', stderr: e.stderr ?? e.message ?? '' };
+  }
+}
+
 /** The real seams for {@link publishPromotion}; `log` is the green-checkpoint logger. */
 export async function createDefaultPublishPromotionDeps(log: (line: string) => void): Promise<PublishPromotionDeps> {
   const [{ loadHarnessRegistry }, mode, standing, { redactToken }] = await Promise.all([
@@ -352,6 +517,25 @@ export async function createDefaultPublishPromotionDeps(log: (line: string) => v
       }
     },
     createStandingPrDeps: (repoPath) => standing.createDefaultStandingPrDeps({ repoPath }),
+    // D-017 §5: in a working copy `origin` is the main repository; its target branch is
+    // fetched fresh so "published" is judged against what the PR actually merges into.
+    findUnpublishedGitlinks: async (repoPath, sha, baseBranch) => {
+      const fetched = await execGitCode(
+        ['fetch', '--no-tags', 'origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
+        repoPath,
+      );
+      if (fetched.code !== 0) {
+        return { ok: false, error: redactToken(`could not fetch the main repository's ${baseBranch}: ${fetched.stderr.trim().slice(0, 200)}`) };
+      }
+      const { findUnpublishedGitlinks } = await import('./submodule-forks');
+      return findUnpublishedGitlinks({ repoDir: repoPath, commit: sha, baseCommit: `refs/remotes/origin/${baseBranch}`, runGit: execGitCode });
+    },
+    readSubmoduleForks: async (ws, slug) => (await import('./submodule-forks')).readSubmoduleForks(ws, slug),
+    pushSubmoduleHead: async (subDir, forkUrl, sha, branch) => {
+      await mode.ensurePotForkGitRemote(subDir, forkUrl);
+      const pushed = await execGitCode(['push', POT_FORK_REMOTE_NAME, `${sha}:refs/heads/${branch}`], subDir);
+      if (pushed.code !== 0) throw new Error(redactToken(pushed.stderr.trim() || pushed.stdout.trim() || `git push exited ${pushed.code}`));
+    },
     recordStandingPr: async (input) => {
       if (!input.workspaceId) throw new Error('missing workspace for admitted fix linkage');
       const [{ createGitHubPrHost }, { correlateAdmissionStandingPr }, { getOrgPg }] = await Promise.all([

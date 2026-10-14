@@ -56,6 +56,21 @@ export interface PublishStandingPrInput {
   trigger: StandingPrTrigger;
   /** Display name of the pot, for the PR title/body. */
   potName?: string;
+  /**
+   * D-017 §5 (P-014): the submodule standing PRs this PR's gitlinks depend on. Named in
+   * the body with the instruction to merge them first.
+   */
+  relatedPrs?: readonly SubmodulePrLink[];
+}
+
+/** A submodule's standing PR, as the superproject PR names it. */
+export interface SubmodulePrLink {
+  /** Superproject-relative submodule path. */
+  path: string;
+  /** The submodule PR's URL; absent when it could not be opened yet. */
+  url?: string;
+  /** The gitlink commit that PR carries. */
+  sha: string;
 }
 
 export type PublishStandingPrResult =
@@ -122,8 +137,24 @@ export function standingPrTitle(potName?: string): string {
   return potName ? `Tested work from ${potName}` : "Tested work from the agents' working copy";
 }
 
-export function standingPrBody(potName: string | undefined, headSha: string): string {
+export function standingPrBody(
+  potName: string | undefined,
+  headSha: string,
+  relatedPrs: readonly SubmodulePrLink[] = [],
+): string {
   const who = potName ? `the ${potName} pot` : 'this pot';
+  // D-017 §5: this PR's gitlinks resolve on the submodules' main repositories only once
+  // their own PRs merge, so those go first (the merge gate refuses until they have).
+  const submodules = relatedPrs.length
+    ? [
+        '',
+        '**Merge these submodule pull requests first** (also with a merge commit). This pull request ' +
+          'updates their pins, and cannot be merged until each pinned commit is on its main repository:',
+        ...relatedPrs.map(
+          (p) => `- \`${p.path}\` @ \`${p.sha.slice(0, 12)}\`: ${p.url ?? 'pull request not opened yet (retried on the next promotion)'}`,
+        ),
+      ]
+    : [];
   return [
     `This pull request carries the combined work of ${who}'s agents.`,
     '',
@@ -135,6 +166,7 @@ export function standingPrBody(potName: string | undefined, headSha: string): st
     'Please merge it with **Create a merge commit**, not "Squash and merge" or "Rebase and merge". ' +
       'The working copy recognises its already-merged work by commit id, so a squash or rebase ' +
       'would make that work show up again in the next pull request.',
+    ...submodules,
   ].join('\n');
 }
 
@@ -194,7 +226,7 @@ export async function publishStandingPr(
     opened = await deps.openPr({
       remote: input.upstreamRemote,
       title: standingPrTitle(input.potName),
-      body: standingPrBody(input.potName, decision.headSha),
+      body: standingPrBody(input.potName, decision.headSha, input.relatedPrs),
       head_ref: STANDING_PR_BRANCH,
       base_ref: input.baseBranch,
       ...(crossFork ? { head_owner: input.forkOwner } : {}),

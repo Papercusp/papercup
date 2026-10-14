@@ -12,7 +12,18 @@
  *
  * A conflict is aborted to a clean tree and reported (never left half-merged, never
  * resolved by picking a side): the caller turns it into a fix-it work-item in the pot.
+ *
+ * Submodules (plan slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 P-014,
+ * decision D-017 §4): when the main repository moves a gitlink, the submodule's
+ * checkout absorbs that exact commit FIRST (fast-forward, or a merge preflighted with
+ * `merge-tree`), so the superproject merge records a pin the checkout actually holds.
+ * Otherwise the next commit would record the checkout's stale HEAD and silently revert
+ * the upstream bump. A gitlink-only conflict whose submodule HEAD contains both sides is
+ * resolved to that HEAD; anything else is reported before any repository is changed.
  */
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { parseGitlinkDiff, parseUnmergedEntries } from './gitlinks';
 
 export type SyncBackRunGit = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
 
@@ -52,7 +63,17 @@ export function decideSyncBack(input: {
 export type SyncBackResult =
   | { status: 'skipped'; reason: string }
   | { status: 'up-to-date'; upstreamSha: string }
-  | { status: 'merged'; upstreamSha: string; mergedSha: string }
+  | {
+      status: 'merged';
+      upstreamSha: string;
+      mergedSha: string;
+      /**
+       * D-017 §4: submodule checkouts (superproject-relative paths) that absorbed an
+       * upstream pin this tick. Their new commits are not on the submodule forks yet,
+       * so the caller must not publish the superproject until they are.
+       */
+      absorbedSubmodules?: string[];
+    }
   | { status: 'conflict'; upstreamSha: string; conflictedFiles: string[] }
   | { status: 'error'; message: string };
 
@@ -114,6 +135,31 @@ export async function runSyncBack(
   if (decision.action === 'skip') return { status: 'skipped', reason: decision.reason };
   if (decision.action === 'up-to-date') return { status: 'up-to-date', upstreamSha: decision.upstreamSha };
 
+  // D-017 §4: submodule checkouts absorb the pins upstream moved, before the superproject
+  // merge. Planned (preflighted) first, so a conflict changes no repository.
+  const hasSubmodules = existsSync(join(repoPath, '.gitmodules'));
+  let absorbedSubmodules: string[] = [];
+  if (hasSubmodules) {
+    const ctx: AbsorbContext = { runGit, network, identityArgs: opts.identityArgs ?? [] };
+    const plan = await planMergeWithSubmodules(ctx, repoPath, decision.upstreamSha, '', 0);
+    if (!plan.ok && plan.conflict) {
+      log(
+        `[git-sync] ${repoPath}: sync-back of ${opts.upstreamRemote}/${opts.upstreamBranch} would conflict in ` +
+          `${plan.conflictedFiles.length} path(s); nothing changed`,
+      );
+      return { status: 'conflict', upstreamSha: decision.upstreamSha, conflictedFiles: plan.conflictedFiles };
+    }
+    if (!plan.ok) return { status: 'error', message: `sync-back submodule preflight failed: ${plan.message}` };
+    for (const step of plan.absorb) {
+      const failed = await executeAbsorption(ctx, step);
+      if (failed) return { status: 'error', message: failed };
+    }
+    absorbedSubmodules = absorbedPaths(plan.absorb);
+    for (const path of absorbedSubmodules) {
+      log(`[git-sync] ${repoPath}: submodule '${path}' absorbed its upstream pin before the sync-back merge`);
+    }
+  }
+
   const merge = await runGit(
     [
       ...(opts.identityArgs ?? []),
@@ -125,7 +171,9 @@ export async function runSyncBack(
     ],
     repoPath,
   );
-  if (merge.code !== 0) {
+  const resolvedGitlinks =
+    merge.code !== 0 && hasSubmodules ? await resolveGitlinkOnlyConflicts(runGit, repoPath, opts.identityArgs ?? []) : null;
+  if (merge.code !== 0 && !resolvedGitlinks?.ok) {
     const unmerged = await runGit(['diff', '--name-only', '--diff-filter=U', '-z'], repoPath);
     const conflictedFiles = unmerged.code === 0 ? unmerged.stdout.split('\0').filter(Boolean) : [];
     await runGit(['merge', '--abort'], repoPath);
@@ -140,7 +188,168 @@ export async function runSyncBack(
   }
   const head = await runGit(['rev-parse', 'HEAD'], repoPath);
   log(`[git-sync] ${repoPath}: synced back ${opts.upstreamRemote}/${opts.upstreamBranch} @ ${decision.upstreamSha.slice(0, 12)}`);
-  return { status: 'merged', upstreamSha: decision.upstreamSha, mergedSha: head.stdout.trim() };
+  return {
+    status: 'merged',
+    upstreamSha: decision.upstreamSha,
+    mergedSha: head.stdout.trim(),
+    ...(absorbedSubmodules.length ? { absorbedSubmodules } : {}),
+  };
+}
+
+// ─── D-017 §4: submodule checkouts absorb the pins upstream moved ────────────
+
+interface AbsorbContext {
+  runGit: SyncBackRunGit;
+  network: SyncBackRunGit;
+  identityArgs: string[];
+}
+
+type MergePlan =
+  | { ok: true; kind: 'contained' | 'fast-forward' | 'merge'; absorb: SubmoduleAbsorption[] }
+  | { ok: false; conflict: true; conflictedFiles: string[] }
+  | { ok: false; conflict: false; message: string };
+
+/** One submodule checkout that must take `target` before its parent merges. */
+interface SubmoduleAbsorption {
+  /** Superproject-relative path (for messages and the result). */
+  path: string;
+  dir: string;
+  target: string;
+  plan: Extract<MergePlan, { ok: true }>;
+}
+
+const MAX_SUBMODULE_DEPTH = 8;
+
+const short = (sha: string): string => sha.slice(0, 12);
+
+/** Make sure `sha` is a local commit in `dir`, fetching from its `origin` (its main repository) if not. */
+async function ensureCommitLocal(ctx: AbsorbContext, dir: string, sha: string): Promise<boolean> {
+  const present = async (): Promise<boolean> => (await ctx.runGit(['cat-file', '-e', `${sha}^{commit}`], dir)).code === 0;
+  if (await present()) return true;
+  await ctx.network(['fetch', '--no-tags', 'origin'], dir);
+  if (await present()) return true;
+  await ctx.network(['fetch', '--no-tags', 'origin', sha], dir);
+  return present();
+}
+
+/**
+ * Plan merging `target` into the checkout at `dir` WITHOUT changing it: which nested
+ * submodule checkouts must absorb the gitlinks `target` moves, and whether the merge
+ * itself is contained / a fast-forward / a merge. A merge conflict is acceptable only
+ * on a gitlink whose checked-out submodule absorbs the upstream side first (that
+ * submodule's HEAD then contains both sides). Fetches objects; mutates nothing else.
+ */
+async function planMergeWithSubmodules(
+  ctx: AbsorbContext,
+  dir: string,
+  target: string,
+  prefix: string,
+  depth: number,
+): Promise<MergePlan> {
+  const label = prefix ? `submodule '${prefix}'` : 'the working copy';
+  if ((await ctx.runGit(['merge-base', '--is-ancestor', target, 'HEAD'], dir)).code === 0) {
+    return { ok: true, kind: 'contained', absorb: [] };
+  }
+  const fastForward = (await ctx.runGit(['merge-base', '--is-ancestor', 'HEAD', target], dir)).code === 0;
+
+  const absorb: SubmoduleAbsorption[] = [];
+  const movedCheckouts = new Set<string>();
+  if (depth <= MAX_SUBMODULE_DEPTH && existsSync(join(dir, '.gitmodules'))) {
+    const base = await ctx.runGit(['merge-base', 'HEAD', target], dir);
+    if (base.code !== 0) return { ok: false, conflict: false, message: `${label} shares no history with ${short(target)}` };
+    const diff = await ctx.runGit(['diff', '--raw', '--no-abbrev', '--no-renames', base.stdout.trim(), target], dir);
+    if (diff.code !== 0) return { ok: false, conflict: false, message: `${label}: ${detail(diff)}` };
+    for (const link of parseGitlinkDiff(diff.stdout)) {
+      const subDir = join(dir, link.path);
+      const fullPath = prefix ? `${prefix}/${link.path}` : link.path;
+      // Not checked out: the parent's merge alone records the pin; nothing local diverges.
+      if (!existsSync(join(subDir, '.git'))) continue;
+      movedCheckouts.add(link.path);
+      if (!(await ensureCommitLocal(ctx, subDir, link.sha))) {
+        return {
+          ok: false,
+          conflict: false,
+          message: `submodule '${fullPath}': upstream pins ${short(link.sha)}, which its main repository does not serve`,
+        };
+      }
+      const sub = await planMergeWithSubmodules(ctx, subDir, link.sha, fullPath, depth + 1);
+      if (!sub.ok) return sub;
+      if (sub.kind !== 'contained') absorb.push({ path: fullPath, dir: subDir, target: link.sha, plan: sub });
+    }
+  }
+  if (fastForward) return { ok: true, kind: 'fast-forward', absorb };
+
+  const preflight = await ctx.runGit(['merge-tree', '--write-tree', '--name-only', '--no-messages', 'HEAD', target], dir);
+  if (preflight.code !== 0 && preflight.code !== 1) {
+    return { ok: false, conflict: false, message: `${label}: merge preflight failed: ${detail(preflight)}` };
+  }
+  const conflicted = preflight.code === 1 ? [...new Set(preflight.stdout.split('\n').slice(1).map((l) => l.trim()).filter(Boolean))] : [];
+  const unresolvable = conflicted.filter((p) => !movedCheckouts.has(p));
+  if (unresolvable.length) {
+    return { ok: false, conflict: true, conflictedFiles: unresolvable.map((p) => (prefix ? `${prefix}/${p}` : p)) };
+  }
+  return { ok: true, kind: 'merge', absorb };
+}
+
+/** Superproject-relative paths of every checkout an absorption plan changes, deepest first. */
+function absorbedPaths(steps: readonly SubmoduleAbsorption[]): string[] {
+  return steps.flatMap((s) => [...absorbedPaths(s.plan.absorb), s.path]);
+}
+
+/**
+ * Carry out one planned absorption: nested checkouts first, then this checkout takes its
+ * pin. Returns an error message, or null on success. A failed merge is aborted.
+ */
+async function executeAbsorption(ctx: AbsorbContext, step: SubmoduleAbsorption): Promise<string | null> {
+  for (const nested of step.plan.absorb) {
+    const failed = await executeAbsorption(ctx, nested);
+    if (failed) return failed;
+  }
+  if (step.plan.kind === 'fast-forward') {
+    const ff = await ctx.runGit(['merge', '--ff-only', step.target], step.dir);
+    return ff.code === 0 ? null : `submodule '${step.path}': fast-forward to its upstream pin ${short(step.target)} failed: ${detail(ff)}`;
+  }
+  const merge = await ctx.runGit(
+    [...ctx.identityArgs, 'merge', '--no-edit', '-m', `git-sync: sync-back absorbs the upstream pin ${short(step.target)}`, step.target],
+    step.dir,
+  );
+  if (merge.code === 0) return null;
+  const resolved = await resolveGitlinkOnlyConflicts(ctx.runGit, step.dir, ctx.identityArgs);
+  if (resolved.ok) return null;
+  await ctx.runGit(['merge', '--abort'], step.dir);
+  return `submodule '${step.path}': merging its upstream pin ${short(step.target)} failed: ${resolved.message}`;
+}
+
+/**
+ * After a failed merge in `dir`: when EVERY conflicted path is a gitlink whose checked-out
+ * submodule HEAD already contains both sides, record that HEAD and conclude the merge.
+ * Anything else is left for the caller to abort. Never picks a side.
+ */
+async function resolveGitlinkOnlyConflicts(
+  runGit: SyncBackRunGit,
+  dir: string,
+  identityArgs: readonly string[],
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const listed = await runGit(['ls-files', '-u', '-z'], dir);
+  if (listed.code !== 0) return { ok: false, message: detail(listed) };
+  const entries = parseUnmergedEntries(listed.stdout);
+  if (entries.length === 0) return { ok: false, message: 'the merge failed with no conflicted paths' };
+  const notGitlinks = [...new Set(entries.filter((e) => e.mode !== '160000').map((e) => e.path))];
+  if (notGitlinks.length) return { ok: false, message: `content conflicts in ${notGitlinks.join(', ')}` };
+  const paths = [...new Set(entries.map((e) => e.path))];
+  for (const path of paths) {
+    const subDir = join(dir, path);
+    if (!existsSync(join(subDir, '.git'))) return { ok: false, message: `gitlink '${path}' conflicts and is not checked out` };
+    for (const side of entries.filter((e) => e.path === path && e.stage !== 1)) {
+      if ((await runGit(['merge-base', '--is-ancestor', side.sha, 'HEAD'], subDir)).code !== 0) {
+        return { ok: false, message: `gitlink '${path}': the submodule checkout does not contain ${short(side.sha)}` };
+      }
+    }
+  }
+  const added = await runGit(['add', '--', ...paths], dir);
+  if (added.code !== 0) return { ok: false, message: detail(added) };
+  const committed = await runGit([...identityArgs, 'commit', '--no-edit'], dir);
+  return committed.code === 0 ? { ok: true } : { ok: false, message: detail(committed) };
 }
 
 /** Stable title for the fix-it work-item a sync-back conflict files in the pot (dedupe key). */
