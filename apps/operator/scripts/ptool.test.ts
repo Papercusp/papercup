@@ -572,6 +572,9 @@ describe('ptool operator routing', () => {
       .toEqual({ maxAttempts: 1 });
     expect(ptoolConnectionRetryOptions({ url: 'http://127.0.0.1:9071' }, {}))
       .toEqual({ maxAttempts: 1 });
+    expect(ptoolConnectionRetryOptions({ url: 'http://127.0.0.1:3170' }, {
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
+    })).toEqual({ maxAttempts: 1 });
     expect(ptoolConnectionRetryOptions({}, {
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:24689',
       PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
@@ -2802,6 +2805,9 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:9071', {})).toBe(PTOOL_CONNECT_TIMEOUT_MS);
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:9171', {
       PAPERCUSP_MCP_PROXY_PORT: '9171',
+    })).toBe(PTOOL_CONNECT_TIMEOUT_MS);
+    expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:9171', {
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
     })).toBe(PTOOL_CONNECT_TIMEOUT_MS);
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:4567', {
       PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:4567',
