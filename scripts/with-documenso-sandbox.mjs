@@ -338,7 +338,7 @@ export async function waitForSandboxPostgres(name, { run, secrets = [],
   }
 }
 
-export async function runSandbox({ image, command }) {
+export async function runSandbox({ image, command, signal }, { prepareImages = prepareSandboxImages } = {}) {
   const suffix = randomUUID().slice(0, 12);
   const network = 'daohr-documenso-' + suffix;
   const database = network + '-pg', mail = network + '-mail', app = network + '-app';
@@ -384,6 +384,7 @@ export async function runSandbox({ image, command }) {
     finally { if (directory) rmSync(directory, { recursive: true, force: true }); }
   }
   function stop() {
+    if (stopped) return;
     stopped = true;
     if (child) {
       try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already ended */ }
@@ -394,9 +395,12 @@ export async function runSandbox({ image, command }) {
     }
   }
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
+  signal?.addEventListener('abort', stop, { once: true });
+  if (signal?.aborted) stop();
   try {
+    if (stopped) return 130;
     // Image preparation must finish before any external resource allocation.
-    if (!await runPhase('images', () => prepareSandboxImages(image, { inspect: ref => docker(['image', 'inspect', ref]),
+    if (!await runPhase('images', () => prepareImages(image, { inspect: ref => docker(['image', 'inspect', ref]),
       isStopped: () => stopped }))) return 130;
     const openssl = spawnSync('openssl', ['version'], { stdio: 'ignore', timeout: 5000 });
     if (openssl.status !== 0) throw new Error('openssl is required for the sandbox signing certificate');
@@ -450,6 +454,7 @@ export async function runSandbox({ image, command }) {
     await start(app, ['-p', '127.0.0.1:' + port + ':3000', '--mount',
       'type=bind,src=' + join(directory, 'cert.p12') + ',dst=/opt/documenso/cert.p12,readonly',
       ...Object.keys(environment).flatMap(key => ['-e', key]), image], environment);
+    if (stopped) return 130;
     await runPhase('provider-ready', async () => {
       const deadline = Date.now() + 180_000;
       for (;;) {
@@ -478,6 +483,7 @@ export async function runSandbox({ image, command }) {
   } finally {
     clearTimeout(killTimer);
     process.off('SIGINT', stop); process.off('SIGTERM', stop);
+    signal?.removeEventListener('abort', stop);
     try { await runPhase('cleanup', cleanup); }
     finally { reaper?.close(); }
   }

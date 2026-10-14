@@ -499,11 +499,37 @@ test('stopping a sandbox cancels database readiness without another Docker opera
   await waitForSandboxPostgres('owned-pg', { isStopped: () => true, run: () => assert.fail('already stopping') });
 });
 
+test('an already aborted sandbox refuses image preparation and provider allocation', async () => {
+  assert.equal(await runSandbox({ image: 'must-not-be-inspected', command: [], signal: AbortSignal.abort() }, {
+    prepareImages: () => assert.fail('an aborted caller cannot start preparation'),
+  }), 130);
+});
+
+test('caller abort joins pending image preparation and stops the sandbox before its next allocation', async () => {
+  const controller = new AbortController();
+  let started, release, completed = false;
+  const preparing = new Promise(done => { started = done; });
+  const pending = runSandbox({ image: 'fixture', command: [], signal: controller.signal }, {
+    prepareImages: async (_image, { isStopped }) => {
+      assert.equal(isStopped(), false);
+      started();
+      await new Promise(done => { release = done; });
+      assert.equal(isStopped(), true, 'caller cancellation must reach the sandbox stop guard');
+      return false;
+    },
+  }).then(code => { completed = true; return code; });
+  await preparing;
+  controller.abort();
+  assert.equal(completed, false, 'an in-flight daemon operation must settle before cleanup');
+  release();
+  assert.equal(await pending, 130);
+});
+
 test('real provider starts with a private database and cleans every owned service after child failure',
-  { skip: !process.env.DOCUMENSO_TEST_IMAGE, timeout: 240_000 }, async () => {
+  { skip: !process.env.DOCUMENSO_TEST_IMAGE, timeout: 240_000 }, async t => {
     const before = spawnSync('docker', ['ps', '-aq', '--filter', 'label=papercusp.test.owner'], { encoding: 'utf8' });
     assert.equal(before.status, 0);
-    const code = await runSandbox({ image: process.env.DOCUMENSO_TEST_IMAGE, command: [process.execPath, '--input-type=module', '-e',
+    const code = await runSandbox({ image: process.env.DOCUMENSO_TEST_IMAGE, signal: t.signal, command: [process.execPath, '--input-type=module', '-e',
       'const r=JSON.parse(process.env.DOCUMENSO_TEST_RUNTIME); if(!r.isolatedDatabase||r.externalMail||!r.testCertificate) process.exit(91); const a=await fetch(process.env.DOCUMENSO_URL+"/signin"); if(!a.ok) process.exit(92); const m=await fetch(process.env.DOCUMENSO_TEST_MAIL_URL+"/email"); if(!m.ok) process.exit(93); process.exit(23);'] });
     assert.equal(code, 23, 'child failure must survive provider cleanup');
     const after = spawnSync('docker', ['ps', '-aq', '--filter', 'label=papercusp.test.owner'], { encoding: 'utf8' });
