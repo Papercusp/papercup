@@ -15,6 +15,14 @@ export class HostedCustomerDataAuthorizationError extends Error {
  * and its receipt commit. A browser cannot choose an organization or workspace.
  */
 export async function exportHostedOrganizationData(tx: Sql, principal: HostedPrincipal): Promise<OrganizationDataExport> {
+  return exportHostedCustomerData(tx, principal, false);
+}
+
+export async function exportHostedUserData(tx: Sql, principal: HostedPrincipal): Promise<OrganizationDataExport> {
+  return exportHostedCustomerData(tx, principal, true);
+}
+
+async function exportHostedCustomerData(tx: Sql, principal: HostedPrincipal, userOnly: boolean): Promise<OrganizationDataExport> {
   const session = await new HostedSessionStore(tx as never).resolveForUpdate(principal.sessionId, {
     expectedPermissionVersion: principal.sessionVersion,
   });
@@ -26,7 +34,7 @@ export async function exportHostedOrganizationData(tx: Sql, principal: HostedPri
     userId: principal.userId, organizationId: principal.activeOrganizationId,
   });
   if (!membership || membership.permissionVersion !== session.permissionVersion
-    || !membership.permissions.has('members:manage')) throw new HostedCustomerDataAuthorizationError();
+    || !membership.permissions.has(userOnly ? 'workspace:view' : 'members:manage')) throw new HostedCustomerDataAuthorizationError();
   const active = await tx`
     SELECT u.id FROM papercusp_auth.hosted_users u
       JOIN papercusp_auth.organizations o ON o.id = ${principal.activeOrganizationId}::uuid
@@ -34,8 +42,11 @@ export async function exportHostedOrganizationData(tx: Sql, principal: HostedPri
      FOR SHARE OF u, o`;
   if (active.length !== 1) throw new HostedCustomerDataAuthorizationError();
   const fresh = createHostedPrincipal({ ...principal, permissions: membership.permissions });
+  await tx`SELECT set_config('app.organization_id', ${fresh.activeOrganizationId}, true)`;
   return exportOrganizationData(tx, {
-    executor: 'hosted-control-plane', scope: { organizationId: fresh.activeOrganizationId, workspaceIds: [] },
-    actor: { kind: 'customer_user', principal: fresh }, purpose: 'Self-service organization data export',
+    hostedReadBridge: true,
+    executor: 'hosted-control-plane', scope: { organizationId: fresh.activeOrganizationId, workspaceIds: [],
+      ...(userOnly ? { userId: fresh.userId } : {}) },
+    actor: { kind: 'customer_user', principal: fresh }, purpose: userOnly ? 'Self-service user data export' : 'Self-service organization data export',
   }, tx);
 }
