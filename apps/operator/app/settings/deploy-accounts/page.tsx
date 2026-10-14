@@ -88,6 +88,7 @@ export default function DeployAccountsPage() {
   const [label, setLabel] = useQueryState('label', parseAsString.withDefault(''));
 
   const [value, setValue] = useState(''); // the pasted token / bundle — secret, useState only
+  const [anthropicWorkspaceId, setAnthropicWorkspaceId] = useState('');
   const [busy, setBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -181,6 +182,7 @@ export default function DeployAccountsPage() {
     setAccountId('');
     setLabel('');
     setValue('');
+    setAnthropicWorkspaceId('');
     setAddError(null);
     setAuthorizeUrl(null);
     setLinkId(null);
@@ -204,7 +206,7 @@ export default function DeployAccountsPage() {
       const r = await fetch('/api/admin/deploy-accounts/register', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ accountId, label: label || undefined, provider, value: value.trim(), ...(linkMode === 'api-key' ? { credentialType: 'api-key' } : {}) }),
+        body: JSON.stringify({ accountId, label: label || undefined, provider, value: value.trim(), ...(linkMode === 'api-key' ? { credentialType: 'api-key', ...(anthropicWorkspaceId.trim() ? { anthropicWorkspaceId: anthropicWorkspaceId.trim() } : {}) } : {}) }),
       });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'register failed');
@@ -218,7 +220,7 @@ export default function DeployAccountsPage() {
     } finally {
       setBusy(false);
     }
-  }, [accountId, label, provider, value, linkMode, resetForm, refresh]);
+  }, [accountId, label, provider, value, linkMode, anthropicWorkspaceId, resetForm, refresh]);
 
   // OAuth mode step A: start the provider CLI and capture its browser-login URL.
   const startOAuth = useCallback(async () => {
@@ -620,6 +622,11 @@ export default function DeployAccountsPage() {
                 <label htmlFor="anthropic-api-key">3 · Anthropic API key</label>
                 <input id="anthropic-api-key" type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder="sk-ant-api… or sk-ant-usr…" autoComplete="off" spellCheck={false} aria-describedby="anthropic-api-key-hint" />
                 <small id="anthropic-api-key-hint">Stored privately on this machine. The key is never shown in the account list.</small>
+              </div>
+              <div className="pc-da__field">
+                <label htmlFor="anthropic-workspace-id">Anthropic workspace ID (required for user-scoped keys)</label>
+                <input id="anthropic-workspace-id" value={anthropicWorkspaceId} onChange={(e) => setAnthropicWorkspaceId(e.target.value)} placeholder="wrkspc_…" autoComplete="off" spellCheck={false} aria-describedby="anthropic-workspace-hint" />
+                <small id="anthropic-workspace-hint">Use the workspace ID from the Anthropic Console. Keys scoped to one workspace can leave this blank.</small>
               </div>
             </>
           ) : (
