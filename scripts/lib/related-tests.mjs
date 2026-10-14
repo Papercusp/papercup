@@ -27,6 +27,7 @@ import { stripCommentsAndStrings, stripCommentsOnly } from "./strip-comments-and
 import { listFilesIncludingUntracked } from "./tracked-files.mjs";
 import { execFileSync } from 'node:child_process';
 import { resolveTaskReportExpectation, scriptCommandWords } from './executed-source-map.mjs';
+import { workspaceTestInvocation } from '../workspace-test.mjs';
 
 // ── WIDENING THRESHOLD (plan gate-latency-selection-and-retry-policy-2026-09-06, P-001) ──
 // A related selection is CORRECT BY CONSTRUCTION at any share of the suite — every test that
@@ -83,8 +84,14 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
   for (const t of tasks) {
     const id = `${t.ws.name} :: ${t.script}`;
     const command = t.ws.scripts?.[t.script] ?? '';
-    const words = scriptCommandWords(command);
+    let words = scriptCommandWords(command);
     const pureWrapper = words[0] === 'node' && /(?:^|\/)run-vitest-pure-lane\.mjs$/.test(words[1] ?? '');
+    const workspaceWrapper = words[0] === 'node' && /(?:^|\/)workspace-test\.mjs$/.test(words[1] ?? '');
+    if (workspaceWrapper) {
+      const invocation = workspaceTestInvocation(words.slice(2), root);
+      // Explicit argv files use the router's multi-config contract, not this full-suite route.
+      if (!invocation.routed) words = invocation.args;
+    }
     const direct = /(?:^|\/)vitest$/.test(words[0] ?? '');
     const envWords = command.trim().split(/\s+/).filter(word => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
     const laneWord = envWords.find(word => word.startsWith('PC_TEST_LANE='));
@@ -104,7 +111,7 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
       continue;
     }
     const wsRoot = path.resolve(root, t.ws.dir);
-    const route = resolveTaskReportExpectation({ command, wsDir: wsRoot });
+    const route = resolveTaskReportExpectation({ command: workspaceWrapper ? words.join(' ') : command, wsDir: wsRoot });
     if (route.config === null && route.reason !== 'no-config') {
       unenumerated.push({ task: id, reason: route.reason, command });
       continue;
@@ -113,7 +120,7 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
     if (Array.isArray(t.relatedFiles) && t.relatedFiles.length > 0)
       env[RELATED_FILTER_LIST_ENV] = writeRelatedFilterList(filterDir, t.relatedFiles).path;
     selected.push({ id, workspace: t.ws.name, dir: t.ws.dir, script: t.script, command });
-    requests.push({ root: wsRoot, config: route.config ?? false, enumerateFiles: true, env });
+    requests.push({ root: wsRoot, repositoryRoot: root, config: route.config ?? false, enumerateFiles: true, env });
   }
   const resolveRequests = runResolver ?? (requests => {
     const output = execFileSync(process.execPath, [path.join(root, 'scripts/resolve-vitest-config-contracts.mjs')], {
@@ -135,14 +142,16 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
   const entries = [];
   for (const [i, task] of selected.entries()) {
     const result = results[i];
-    if (result?.ok !== true || result.enumerated !== true || !Array.isArray(result.files) ||
-        result.files.some(file => typeof file !== 'string' || !file || path.isAbsolute(file) ||
+    const population = result?.repositoryFiles ?? result?.files;
+    if (result?.ok !== true || result.enumerated !== true || !Array.isArray(population) ||
+        population.some(file => typeof file !== 'string' || !file || path.isAbsolute(file) ||
           file.includes('\\') || file.split('/').some(part => part === '..' || part === '.')) ||
-        new Set(result.files).size !== result.files.length) {
+        new Set(population).size !== population.length) {
       unenumerated.push({ task: task.id, reason: result?.error ?? 'invalid-config-file-population', command: task.command });
       continue;
     }
-    entries.push({ ...task, files: result.files.map(file => path.posix.join(task.dir, file)).sort(), config: result.config });
+    entries.push({ ...task, files: result.repositoryFiles ? population.slice().sort() :
+      population.map(file => path.posix.join(task.dir, file)).sort(), config: result.config });
   }
   const files = [...new Set(entries.flatMap(task => task.files))].sort();
   const overlaps = files.filter(file => entries.filter(task => task.files.includes(file)).length > 1);

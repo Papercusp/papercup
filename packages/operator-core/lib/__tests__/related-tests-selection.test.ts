@@ -82,6 +82,18 @@ describe('original gate selection preparation', () => {
     expect(result.overlaps).toEqual(['packages/core/a.test.ts']);
   });
 
+  it('reuses the workspace launcher full-suite and integration configuration decisions', () => {
+    const requests: Array<{ config: string | false }> = [];
+    const result = enumerateAffectedTaskSelection([
+      task('test', 'node ../../scripts/workspace-test.mjs --passWithNoTests'),
+      task('test:integration', 'node ../../scripts/workspace-test.mjs --workspace-integration --passWithNoTests'),
+    ], { root: '/repo', filterDir: tmpdir(), runResolver: (batch: Array<{ config: string | false }>) => {
+      requests.push(...batch); return [resolved(['a.test.ts']), resolved(['a.integration.test.ts'])];
+    } });
+    expect(result.unenumerated).toEqual([]);
+    expect(requests[1].config).toBe('vitest.integration.config.ts');
+  });
+
   it('uses the actual lane cwd, native include/exclude and related filter in one resolver batch', () => {
     const repo = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), '..');
     const dir = mkdtempSync(join(tmpdir(), 'selection-native-'));
@@ -92,6 +104,9 @@ describe('original gate selection preparation', () => {
       writeFileSync(join(ws, 'vitest.config.mts'), `import { defineVitestConfig } from ${JSON.stringify(shared)};\nexport default defineVitestConfig({layer:'unit',laneSplit:true,exclude:['**/excluded.test.ts']});`);
       for (const file of ['pure.test.ts', 'other.test.ts', 'excluded.test.ts']) writeFileSync(join(ws, file), '// pure fixture');
       writeFileSync(join(ws, 'stateful.test.ts'), 'vi.mock("fixture")');
+      mkdirSync(join(dir, 'packages/shared'));
+      writeFileSync(join(dir, 'packages/shared/outside.test.ts'), '// owned outside the workspace');
+      writeFileSync(join(ws, 'cross.config.mts'), `import { defineVitestConfig } from ${JSON.stringify(shared)};\nexport default defineVitestConfig({layer:'unit',include:['../shared/*.test.ts']});`);
       const requests: unknown[] = [];
       const runResolver = (batch: unknown[]) => {
         requests.push(...batch);
@@ -103,12 +118,14 @@ describe('original gate selection preparation', () => {
       const result = enumerateAffectedTaskSelection([
         task('test:lane-pure', `PC_TEST_LANE=pure node ${join(repo, 'scripts/run-vitest-pure-lane.mjs')}`, ['pure.test.ts', 'stateful.test.ts', 'excluded.test.ts']),
         task('test:lane-stateful', 'PC_TEST_LANE=stateful vitest run'),
+        task('test:cross', 'vitest run --config cross.config.mts'),
       ], { root: dir, filterDir: dir, runResolver });
-      expect(requests).toHaveLength(2);
+      expect(requests).toHaveLength(3);
       expect(result.unenumerated).toEqual([]);
-      expect(result.files).toEqual(['packages/core/pure.test.ts', 'packages/core/stateful.test.ts']);
+      expect(result.files).toEqual(['packages/core/pure.test.ts', 'packages/core/stateful.test.ts', 'packages/shared/outside.test.ts']);
       expect(result.tasks[0].files).toEqual(['packages/core/pure.test.ts']);
       expect(result.tasks[1].files).toEqual(['packages/core/stateful.test.ts']);
+      expect(result.tasks[2].files).toEqual(['packages/shared/outside.test.ts']);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 40_000);
 });

@@ -40,22 +40,28 @@ for (const request of requests) {
       root: request.root,
       config: request.config,
     });
-    let files;
+    let files, repositoryFiles;
     if (request.enumerateFiles) {
       // These shapes require additional runner semantics; unknown is never an empty set.
       if (vitestConfig.includeSource?.length || vitestConfig.typecheck?.enabled ||
           vitestConfig.projects?.length) throw new Error('unsupported source/typecheck/project population');
       const base = vitestConfig.dir || vitestConfig.root;
       // Same glob engine and options as Vitest's TestProject.globFiles, without collection.
-      files = (await glob(vitestConfig.include, {
+      const absoluteFiles = (await glob(vitestConfig.include, {
         dot: true, cwd: base, ignore: vitestConfig.exclude, expandDirectories: false,
-      })).map(file => relative(request.root, resolve(base, file)).replaceAll('\\', '/')).sort();
-      if (files.some(file => isAbsolute(file) || file === '..' || file.startsWith('../')))
+      })).map(file => resolve(base, file));
+      files = absoluteFiles.map(file => relative(request.root, file).replaceAll('\\', '/')).sort();
+      if (request.repositoryRoot) {
+        // Template suites deliberately own files outside their package, inside the repo.
+        repositoryFiles = absoluteFiles.map(file => relative(request.repositoryRoot, file).replaceAll('\\', '/')).sort();
+      }
+      if ((repositoryFiles ?? files).some(file => isAbsolute(file) || file === '..' || file.startsWith('../')))
         throw new Error('resolved test population escapes workspace');
     }
     results.push({
       ok: true,
       ...(files ? { files, enumerated: true } : {}),
+      ...(repositoryFiles ? { repositoryFiles } : {}),
       config: {
         root: vitestConfig.root,
         ...(vitestConfig.dir ? { dir: vitestConfig.dir } : {}),

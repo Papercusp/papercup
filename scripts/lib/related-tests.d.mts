@@ -22,7 +22,7 @@ export function enumerateAffectedTaskSelection(tasks: any, { root, filterDir, ru
     coverage: string;
     files: any[];
     tasks: {
-        files: any;
+        files: any[];
         config: any;
         id: string;
         workspace: any;

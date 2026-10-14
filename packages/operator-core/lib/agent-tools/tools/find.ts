@@ -55,7 +55,7 @@ import {
   unionConditionalHint,
   unionRequiredKeyHint,
 } from '../../cupboard/tools-discovery';
-import { findTools, type Embedder } from '../../cupboard/tool-find';
+import { findTools, type Embedder, type ToolFindHit } from '../../cupboard/tool-find';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -1035,64 +1035,112 @@ export interface DiscoveryResultHit {
   via: string;
 }
 
+/** Exact colon-form tool names in a query are requests, not relevance hints. */
+export function exactToolNamesInQuery(query: string): string[] {
+  const names = new Set<string>();
+  const pattern = /(?:^|[^a-z0-9_.-])([a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*)(?=$|[^a-z0-9_-])/gi;
+  for (const match of query.matchAll(pattern)) names.add(match[1].toLowerCase());
+  return [...names];
+}
+
+/** Keep explicitly named catalog entries ahead of generic token-overlap hits. */
+export function prioritizeExactToolHits(
+  rankedHits: ToolFindHit[],
+  corpus: readonly ToolDiscoveryEntry[],
+  exactNames: readonly string[],
+  limit: number,
+): ToolFindHit[] {
+  const rankedByName = new Map(rankedHits.map((hit) => [hit.tool.toLowerCase(), hit]));
+  const entryByName = new Map(corpus.map((entry) => [entry.tool.toLowerCase(), entry]));
+  const exactHits = exactNames.flatMap((name): ToolFindHit[] => {
+    const ranked = rankedByName.get(name);
+    if (ranked) return [ranked];
+    const entry = entryByName.get(name);
+    if (!entry) return [];
+    return [{
+      tool: entry.tool,
+      description: entry.description ?? null,
+      argSchema: entry.argSchema ?? null,
+      category: entry.category,
+      via: 'lexical',
+      cosine: null,
+    }];
+  });
+  const exactNamesSet = new Set(exactHits.map((hit) => hit.tool.toLowerCase()));
+  const remaining = Math.max(0, limit - exactHits.length);
+  return [
+    ...exactHits.slice(0, limit),
+    ...rankedHits.filter((hit) => !exactNamesSet.has(hit.tool.toLowerCase())).slice(0, remaining),
+  ].slice(0, limit);
+}
+
 /** Keep the result valid and useful when the caller asks for many hits. */
 export function boundDiscoveryHits(
   base: Omit<Record<string, unknown>, 'hits' | 'count' | 'truncated'>,
   hits: DiscoveryResultHit[],
-): { hits: DiscoveryResultHit[]; truncated: boolean } {
+  exactNames: readonly string[] = [],
+): { hits: DiscoveryResultHit[]; truncated: boolean; omittedTools: string[] } {
   const kept: DiscoveryResultHit[] = [];
   let fieldsTruncated = hits.some((hit) => hit.argSchema?.endsWith('…') ?? false);
-  const fits = (hit: DiscoveryResultHit): boolean => Buffer.byteLength(JSON.stringify({
-    ...base,
-    count: 1,
-    totalMatches: hits.length,
-    truncated: true,
-    hits: [hit],
-  }), 'utf8') <= DISCOVERY_RESULT_MAX_BYTES;
-
-  for (const hit of hits) {
-    const candidate = [...kept, hit];
+  const omittedFor = (candidate: DiscoveryResultHit[]): string[] =>
+    exactNames.filter((name) => !candidate.some((hit) => hit.tool.toLowerCase() === name.toLowerCase()));
+  const fits = (candidate: DiscoveryResultHit[], candidateFieldsTruncated = fieldsTruncated): boolean => {
+    const omittedTools = omittedFor(candidate);
     const projected = {
       ...base,
       count: candidate.length,
       totalMatches: hits.length,
-      truncated: fieldsTruncated || candidate.length < hits.length,
+      truncated: candidateFieldsTruncated || candidate.length < hits.length || omittedTools.length > 0,
       hits: candidate,
+      ...(omittedTools.length > 0 ? { omittedTools } : {}),
     };
-    if (Buffer.byteLength(JSON.stringify(projected), 'utf8') <= DISCOVERY_RESULT_MAX_BYTES) {
+    return Buffer.byteLength(JSON.stringify(projected), 'utf8') <= DISCOVERY_RESULT_MAX_BYTES;
+  };
+
+  for (const hit of hits) {
+    const candidate = [...kept, hit];
+    if (fits(candidate)) {
       kept.push(hit);
       continue;
     }
-    if (kept.length > 0) break;
 
-    // The first hit must not bypass the result limit. Preserve its identity and
-    // as much complete argument-schema structure as fits; shed optional fields
-    // first, then stop at a top-level schema clause rather than return a broken
-    // fragment. Unstructured oversized schemas become an explicit no-fit.
+    // Preserve hit identity and as much complete argument-schema structure as
+    // fits; shed optional fields first, then stop at a top-level schema clause
+    // rather than return a broken fragment. Try this for later hits too, so an
+    // optional description/return projection on an earlier hit cannot hide an
+    // exact requested schema that still fits in compact form.
     const compactedHit: DiscoveryResultHit = {
       ...hit,
       description: boundedText(hit.description, 80),
       returns: null,
       returnsSource: null,
     };
-    let fittedHit = fits(compactedHit) ? compactedHit : null;
+    let fittedHit = fits([...kept, compactedHit], true) ? compactedHit : null;
     if (!fittedHit) {
       const withoutDescription = { ...compactedHit, description: null };
-      if (fits(withoutDescription)) fittedHit = withoutDescription;
+      if (fits([...kept, withoutDescription], true)) fittedHit = withoutDescription;
 
       if (!fittedHit && typeof hit.argSchema === 'string') {
         for (const schemaPrefix of compactSchemaPrefixes(hit.argSchema)) {
           const candidateHit = { ...withoutDescription, argSchema: schemaPrefix };
-          if (!fits(candidateHit)) break;
+          if (!fits([...kept, candidateHit], true)) break;
           fittedHit = candidateHit;
         }
       }
     }
-    if (!fittedHit) break;
+    if (!fittedHit) {
+      if (kept.length > 0) break;
+      break;
+    }
     kept.push(fittedHit);
     fieldsTruncated = true;
   }
-  return { hits: kept, truncated: fieldsTruncated || kept.length < hits.length };
+  const omittedTools = omittedFor(kept);
+  return {
+    hits: kept,
+    truncated: fieldsTruncated || kept.length < hits.length || omittedTools.length > 0,
+    omittedTools,
+  };
 }
 
 /**
@@ -1359,9 +1407,9 @@ export default defineTool({
       'means the server surface grew and requested a client refresh; it does not guarantee this client has ' +
       'materialized a direct-call wrapper yet. After a refresh/next turn, direct calls may work.',
     returns:
-      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schema projection, otherwise authored fallback, otherwise null), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], howToCall }. ' +
+      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schema projection, otherwise authored fallback, otherwise null), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], omittedTools? (explicit names missing from hits because of ranking/result limits), howToCall }. ' +
       'Each hit carries that tool\'s ARG schema AND its resolved RESPONSE shape (registered output schemas outrank authored prose), so you can write a code:run batch over a tool without calling it once just to learn its field names. ' +
-      'ALWAYS read `activated` + `howToCall` rather than assuming a direct call resolves.',
+      'Exact colon-form tool names in a query are prioritized. If `omittedTools` is present, query each listed name individually. ALWAYS read `activated` + `howToCall` rather than assuming a direct call resolves.',
     seeAlso: [
       'agent_tools:list (full permission-annotated dump)',
       'meta:define-tool (define a new tool if none exists)',
@@ -1435,6 +1483,7 @@ export default defineTool({
       registry: z.unknown().optional(),
       activated: z.unknown().optional(),
       hits: z.unknown().optional(),
+      omittedTools: z.unknown().optional(),
       howToCall: z.unknown().optional(),
     })
     .passthrough(),
@@ -1480,7 +1529,8 @@ export default defineTool({
     // `warming` and use the lexical leg until the matching revision is ready.
     const activeEmbeddings = indexedRevision === revision ? embIndex : null;
 
-    const hits = await findTools(corpus, args.query, {
+    const exactNames = exactToolNamesInQuery(args.query);
+    const rankedHits = await findTools(corpus, args.query, {
       limit: args.limit ?? 8,
       embedder,
       embeddings: activeEmbeddings,
@@ -1489,6 +1539,7 @@ export default defineTool({
       // by degrading this query to lexical-only at the interactive budget.
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
     });
+    const hits = prioritizeExactToolHits(rankedHits, corpus, exactNames, args.limit ?? 8);
 
     // `tools:find` returns a hand-serialized ToolResult, so the generic
     // payload-tier shaper cannot expand its compact discovery projection for
@@ -1520,13 +1571,16 @@ export default defineTool({
     let projectedHits = hits.map((h) => projectHit(h, fullArgSchemaRequested));
 
     const hasToolsInvokeHit = projectedHits.some((hit) => hit.tool === 'tools:invoke');
+    const exactNameRecoveryNote = exactNames.length > 0
+      ? ' Exact names are prioritized; if `omittedTools` is present, query each listed name individually.'
+      : '';
     const activatedHowToCall =
       (hasToolsInvokeHit
         ? 'Server requested a tool-list refresh. Use tools:invoke directly for a different target; do not route tools:invoke through itself.'
-        : 'Server requested a tool-list refresh. Use tools:invoke {name:"<exact tool name from hits>", args:{...}} now; direct wrappers may appear next turn.');
+        : 'Server requested a tool-list refresh. Use tools:invoke {name:"<exact tool name from hits>", args:{...}} now; direct wrappers may appear next turn.') + exactNameRecoveryNote;
     const inactiveHowToCall = hasToolsInvokeHit
-      ? 'Use tools:invoke directly for a different target; do not route tools:invoke through itself.'
-      : 'activated:false: direct wrappers may be unavailable. Use tools:invoke {name:"<exact tool name from hits>", args:{...}}.';
+      ? 'Use tools:invoke directly for a different target; do not route tools:invoke through itself.' + exactNameRecoveryNote
+      : 'activated:false: direct wrappers may be unavailable. Use tools:invoke {name:"<exact tool name from hits>", args:{...}}.' + exactNameRecoveryNote;
 
     // Bound the candidate names before activating them in the ordinary tier.
     // An explicit full-tier request carries every hit in the raw result; the
@@ -1542,7 +1596,7 @@ export default defineTool({
     };
     const activationHits = fullArgSchemaRequested
       ? projectedHits
-      : boundDiscoveryHits(activationBase, projectedHits).hits;
+      : boundDiscoveryHits(activationBase, projectedHits, exactNames).hits;
 
     // Dynamic expansion (dynamic-tool-surface-2026-07-01): activate the matched
     // tools for THIS session so a seeded (small-surface) client can call them.
@@ -1560,10 +1614,15 @@ export default defineTool({
 
     const howToCall = activated ? activatedHowToCall : inactiveHowToCall;
     const bounded = fullArgSchemaRequested
-      ? { hits: projectedHits, truncated: false }
+      ? {
+          hits: projectedHits,
+          truncated: exactNames.some((name) => !projectedHits.some((hit) => hit.tool.toLowerCase() === name)),
+          omittedTools: exactNames.filter((name) => !projectedHits.some((hit) => hit.tool.toLowerCase() === name)),
+        }
       : boundDiscoveryHits(
           { query: args.query, semantic, registry, activated, howToCall, totalMatches: hits.length },
           projectedHits,
+          exactNames,
         );
     const noHitFits = !fullArgSchemaRequested && hits.length > 0 && bounded.hits.length === 0;
     const budgetNote = noHitFits
@@ -1586,6 +1645,7 @@ export default defineTool({
             // consumed that notification and materialized wrappers yet.
             activated,
             hits: bounded.hits,
+            ...(bounded.omittedTools.length > 0 ? { omittedTools: bounded.omittedTools } : {}),
             // EI-10885: when activation did NOT happen, the old text still LED with
             // "Call the tool directly" — the one path that cannot work on this
             // surface — and relegated the path that always works to a fallback after

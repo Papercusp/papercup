@@ -1010,6 +1010,12 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
 
       const headline = group[group.length - 1];
       const siblings = group.slice(0, -1);
+      // A loop fire must either reach a loop-origin turn or remain visible to the
+      // loop reconciler as a dropped wake. Degrading an exhausted loop delivery to
+      // an ordinary inbox notice marks it delivered without starting the iteration;
+      // the loop then parks indefinitely because its origin marker is gone. Check
+      // every component, since coalescing can put an older loop marker in a sibling.
+      const loopDeliveryGroup = group.some((d) => deliveryContainsLoopMarker(d.payload));
 
       // Source reservations survive restart; execution admission prevents an overdue
       // backlog from becoming a catch-up herd on many hosts or repeated pump kicks.
@@ -1266,6 +1272,17 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         // same wake twice, so the normal park recheck continues past the generic
         // attempt ceiling for this explicitly tagged outcome.
         if (headline.attempts >= MAX_ATTEMPTS && !outcome.hostCommitPending) {
+          if (loopDeliveryGroup) {
+            const reason = `loop turn delivery remained parked and exhausted ${MAX_ATTEMPTS} attempts: ${outcome.reason}`;
+            await markDeliveryDropped(headline.id, reason);
+            stats.dropped++;
+            for (const d of siblings) {
+              await markDeliveryDropped(d.id, `loop turn delivery dropped (coalesced with #${headline.id})`);
+              stats.dropped++;
+            }
+            log(`wake #${headline.id} DROPPED after ${MAX_ATTEMPTS} parked loop attempts → ${subscriberId}: ${outcome.reason}`);
+            continue;
+          }
           const degraded = await degradeToInboxOrDrop(
             coalesced,
             `delivery remained parked and exhausted ${MAX_ATTEMPTS} attempts: ${outcome.reason}`,
@@ -1341,6 +1358,17 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       // claimDueDeliveries before executeWake ran), so `>= MAX_ATTEMPTS` here means
       // markDeliveryFailed below would otherwise mark it dead.
       if (headline.attempts >= MAX_ATTEMPTS) {
+        if (loopDeliveryGroup) {
+          const reason = `loop turn delivery kept failing and exhausted ${MAX_ATTEMPTS} attempts: ${outcome.error}`;
+          await markDeliveryDropped(headline.id, reason);
+          stats.dropped++;
+          for (const d of siblings) {
+            await markDeliveryDropped(d.id, `loop turn delivery dropped (coalesced with #${headline.id})`);
+            stats.dropped++;
+          }
+          log(`wake #${headline.id} DROPPED after ${MAX_ATTEMPTS} failing loop attempts → ${subscriberId}: ${outcome.error}`);
+          continue;
+        }
         const degraded = await degradeToInboxOrDrop(
           coalesced,
           `delivery kept failing and exhausted ${MAX_ATTEMPTS} attempts: ${outcome.error}`,

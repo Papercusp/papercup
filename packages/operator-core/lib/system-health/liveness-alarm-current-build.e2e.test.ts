@@ -15,7 +15,7 @@ const options = isolatedWorkerOptions(480_000);
 it.each([
   { subject: 'agents-wedged', title: 'keeps a request-worker wedged alarm standing across restart and resolves only a measured recovery' },
   { subject: 'hosted-control-plane-degraded', title: 'keeps one accountable hosted reliability alarm across restart and unknown evidence, then resolves witnessed recovery' },
-])('$title', async ({ subject }, context) => {
+])('$title', async ({ subject }) => {
   const runId = await recordIsolatedIntegrationProof({
     root,
     filePath: 'packages/operator-core/lib/system-health/liveness-alarm-current-build.e2e.test.ts',
@@ -86,6 +86,7 @@ it.each([
       console.info('LIVENESS_ALARM_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },
   });
-  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  const task = expect.getState().task;
+  if (task) Object.assign(task.meta, { papercuspIsolatedRuntimeRunId: runId });
   console.info('LIVENESS_ALARM_HTTP_PROOF_RUN ' + runId);
 }, options.testTimeoutMs);

@@ -56,6 +56,7 @@ import { chunkContentBudget } from '../coordination/tools/send-chunking';
 import { scorecardEmitArgs } from '../scorecards/emit';
 import scorecardEvaluate from '../scorecards/evaluate';
 import { schemaAliasAnnotation } from '../../cupboard/tools-discovery';
+import { findTools } from '../../cupboard/tool-find';
 import {
   COMPLETION_COVERAGE_CALL_CONSTRAINT,
   ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT,
@@ -97,8 +98,10 @@ import toolFind, {
   DISCOVERY_RESULT_MAX_BYTES,
   PLUGIN_HOST_READINESS_TIMEOUT_MS,
   ensureIndex,
+  exactToolNamesInQuery,
   normalizeToolsFindArgs,
   filterCorpusForConfirmedHiveScope,
+  prioritizeExactToolHits,
   warmToolFindIndex,
 } from './find';
 
@@ -125,6 +128,8 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
       returnsSource: 'registered-output-schema' | 'authored-tool-guidance' | null;
       via: string;
     }>;
+    omittedTools?: string[];
+    truncated: boolean;
     howToCall: string;
   };
 }
@@ -2004,13 +2009,22 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
       returns: null,
       via: 'lexical',
     }));
-    const bounded = boundDiscoveryHits(base, hits);
-    const payload = { ...base, count: bounded.hits.length, truncated: bounded.truncated, hits: bounded.hits };
+    const exactNames = hits.slice(0, 3).map((hit) => hit.tool);
+    const bounded = boundDiscoveryHits(base, hits, exactNames);
+    const payload = {
+      ...base,
+      count: bounded.hits.length,
+      truncated: bounded.truncated,
+      hits: bounded.hits,
+      ...(bounded.omittedTools.length > 0 ? { omittedTools: bounded.omittedTools } : {}),
+    };
 
     expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
     expect(JSON.parse(JSON.stringify(payload))).toEqual(payload);
     expect(bounded.truncated).toBe(true);
     expect(bounded.hits.length).toBeLessThan(hits.length);
+    expect(bounded.omittedTools).toEqual(exactNames.filter((name) => !bounded.hits.some((hit) => hit.tool === name)));
+    expect(bounded.omittedTools.length).toBeGreaterThan(0);
   });
 
   it('does not return a single hit that exceeds the discovery result budget', () => {
@@ -2068,6 +2082,61 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
 });
 
 describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () => {
+  it('prioritizes explicitly named tools and identifies requested names omitted by the result budget', async () => {
+    const requested = [
+      'work_items:link',
+      'work_items:set_state',
+      'coord:send',
+      'events:status',
+      'scheduler:get_next',
+    ];
+    const query = requested.join(', ');
+    expect(exactToolNamesInQuery(query)).toEqual(requested);
+
+    const out = await callHandler({ query, limit: 8 });
+    const returned = out.hits.map((hit) => hit.tool).filter((name) => requested.includes(name));
+    const returnedInRequestOrder = requested.filter((name) => returned.includes(name));
+    const lastExactIndex = out.hits.reduce((last, hit, index) => requested.includes(hit.tool) ? index : last, -1);
+    const firstOtherIndex = out.hits.findIndex((hit) => !requested.includes(hit.tool));
+
+    expect(returned).toEqual(returnedInRequestOrder);
+    expect(firstOtherIndex < 0 || lastExactIndex < firstOtherIndex).toBe(true);
+    expect(out.omittedTools ?? []).toEqual(requested.filter((name) => !returned.includes(name)));
+    expect(out.truncated).toBe(true);
+    if (out.omittedTools?.length) {
+      expect(out.howToCall).toContain('omittedTools');
+    }
+  });
+
+  it('fills explicit tool-name matches that generic relevance ranking left out', async () => {
+    const names = [
+      'work_items:link',
+      'work_items:set_state',
+      'coord:send',
+      'events:status',
+      'scheduler:get_next',
+      'work_items:claim_next',
+    ];
+    const corpus = names.map((tool) => ({
+      tool,
+      status: 'available' as const,
+      category: tool.split(':')[0],
+      description: `description for ${tool}`,
+      argSchema: 'id:string',
+      capability: 'test:read',
+      provider: { kind: 'builtin' as const, name: 'test' },
+    }));
+    const query = names.slice(0, 5).join(', ');
+    const requested = exactToolNamesInQuery(query);
+    const ranked = await findTools(corpus, query, { limit: 2 });
+    const selected = prioritizeExactToolHits(ranked, corpus, requested, 8);
+
+    expect(requested).toEqual(names.slice(0, 5));
+    expect(ranked).toHaveLength(2);
+    expect(ranked.some((hit) => hit.tool === 'work_items:link')).toBe(false);
+    expect(selected.slice(0, requested.length).map((hit) => hit.tool)).toEqual(requested);
+  });
+
   it('activates the matched tools for the session + reports activated:true', async () => {
     const activated: string[][] = [];
     const ctx = {

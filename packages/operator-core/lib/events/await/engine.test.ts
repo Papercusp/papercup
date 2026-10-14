@@ -1419,6 +1419,54 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(stats.parked).toBe(0);
   });
 
+  it.each([
+    ['cold', 'park'], ['cold', 'error'], ['warm', 'park'], ['warm', 'error'],
+  ] as const)('EI-25947345466684593: exhausted %s loop %s is a visible drop, never an inbox success', async (carry, kind) => {
+    h.executeWake.mockResolvedValueOnce(kind === 'park'
+      ? { kind, reason: 'alive, no injectable turn' }
+      : { kind, error: 'turn dispatch failed' });
+    h.store.claimDueDeliveries.mockResolvedValueOnce([workRow({
+      id: 81,
+      attempts: 8,
+      source: 'loop:rt-loop-cap',
+      payload: { carry, wakeCount: 165, harness: 'papercusp', routineId: 'rt-loop-cap' },
+    })]);
+
+    const stats = await pumpWakeDeliveries('ws-test');
+
+    expect(h.executeWake).toHaveBeenCalledOnce();
+    expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryFailed).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryParked).not.toHaveBeenCalled();
+    expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(81, expect.stringContaining('loop turn'));
+    expect(stats).toMatchObject({ claimed: 1, dropped: 1, delivered: 0, inbox: 0, parked: 0 });
+  });
+
+  it.each(['park', 'error'] as const)(
+    'EI-25947345466684593: an older coalesced loop marker prevents exhausted %s inbox fallback',
+    async (kind) => {
+      h.executeWake.mockResolvedValueOnce(kind === 'park'
+        ? { kind, reason: 'no injectable turn' }
+        : { kind, error: 'turn dispatch failed' });
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({ id: 82, createdAt: new Date(1000).toISOString(),
+          payload: { wakeCount: 165, harness: 'papercusp', routineId: 'rt-loop-cap' } }),
+        workRow({ id: 83, attempts: 9, createdAt: new Date(2000).toISOString(), payload: { msg_id: 'm-newer' } }),
+      ]);
+
+      const stats = await pumpWakeDeliveries('ws-test');
+
+      expect(h.executeWake).toHaveBeenCalledOnce();
+      expect(h.degradeToInboxOrDrop).not.toHaveBeenCalled();
+      expect(h.store.markDeliveryDelivered).not.toHaveBeenCalled();
+      expect(h.store.markDeliveriesCoalesced).not.toHaveBeenCalled();
+      expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(82, expect.stringContaining('loop turn'));
+      expect(h.store.markDeliveryDropped).toHaveBeenCalledWith(83, expect.stringContaining('loop turn'));
+      expect(stats).toMatchObject({ claimed: 2, dropped: 2, delivered: 0, inbox: 0, parked: 0 });
+    },
+  );
+
   it('keeps an accepted pending psu-host delivery parked at the retry cap until late host settlement', async () => {
     const pendingReason =
       'psu-host pending-delivery-id: delivery accepted before turn-start proof; retry remains durable';
