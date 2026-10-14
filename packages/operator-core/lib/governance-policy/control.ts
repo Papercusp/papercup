@@ -20,6 +20,7 @@
  * `decidedByAncestor`, so the pane can say so before the admin saves.
  */
 import { z } from 'zod';
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import {
   CUSTOMER_DATA_CLASSES,
   CUSTOMER_DATA_CLASS_DESCRIPTIONS,
@@ -494,9 +495,13 @@ export type GovernancePolicyWriteCode =
   /** The actor holds no authority over that scope (P-006 delegated administration). */
   | 'forbidden';
 
+type PolicyFailure<Code extends string> = Code extends 'forbidden'
+  ? { ok: false; code: Code; error: string; refusal: RefusalContract }
+  : { ok: false; code: Code; error: string };
+
 export type GovernancePolicyWriteResult =
   | { ok: true; layer: StoredPolicyLayer; revision: string }
-  | { ok: false; code: GovernancePolicyWriteCode; error: string };
+  | PolicyFailure<GovernancePolicyWriteCode>;
 
 export interface SetLayerRequest extends ProposedLayer {
   reason: string;
@@ -530,9 +535,9 @@ export async function setGovernancePolicyLayer(
     if (gate !== 'write' && gate !== 'bootstrap') return gate;
     layer = gate === 'bootstrap' ? await d.createOrganization(input) : await d.upsertLayer(input);
   } catch (err) {
-    if (err instanceof GovernanceAuthorityError) return { ok: false, code: authorityCode(err.code), error: err.message };
-    if (err instanceof GovernancePolicyWriteError) return { ok: false, code: err.code, error: err.message };
-    return { ok: false, code: 'unavailable', error: err instanceof Error ? err.message : String(err) };
+    if (err instanceof GovernanceAuthorityError) return governanceAuthorityFailure(err);
+    if (err instanceof GovernancePolicyWriteError) return policyFailure(err.code, err.message);
+    return policyFailure('unavailable', err instanceof Error ? err.message : String(err));
   }
   // An organization or department layer governs every workspace beneath it: drop every cached chain.
   d.invalidateCache();
@@ -602,7 +607,12 @@ async function directWriteGate(
   const existing = await d.loadLayer(req.layerId);
   if (req.level === 'organization' && !existing) {
     if (principalKindOf(actor) !== 'human') {
-      return { ok: false, code: 'forbidden', error: `${actor} is a service identity; only a human administrator can create an organization` };
+      return {
+        ok: false,
+        code: 'forbidden',
+        error: `${actor} is a service identity; only a human administrator can create an organization`,
+        refusal: governanceAuthorityRefusal({ actorKind: 'service', operation: 'organization-bootstrap' }),
+      };
     }
     return 'bootstrap';
   }
@@ -624,6 +634,7 @@ async function directWriteGate(
         ok: false,
         code: 'forbidden',
         error: `${actor} holds no prepare authority over ${scope}; an administrator writes only within its delegated scope`,
+        refusal: governanceAuthorityRefusal({ capability: 'prepare', scope, authority: 'not-granted' }),
       };
     }
   }
@@ -672,7 +683,7 @@ export interface PrepareChangeRequest extends SetLayerRequest {
 }
 
 export type GovernancePolicyChangeCode = GovernancePolicyWriteCode | SensitiveActionErrorCode;
-export type GovernancePolicyFailure = { ok: false; code: GovernancePolicyChangeCode; error: string };
+export type GovernancePolicyFailure = PolicyFailure<GovernancePolicyChangeCode>;
 export type GovernancePolicyChangeResult = { ok: true; request: SensitiveActionRequest } | GovernancePolicyFailure;
 export type GovernancePolicyApplyResult =
   | { ok: true; request: SensitiveActionRequest; layer: { layerId: string; version: number }; revision: string }
@@ -680,10 +691,35 @@ export type GovernancePolicyApplyResult =
 export type GovernanceDelegationResult = { ok: true; delegation: GovernanceDelegation } | GovernancePolicyFailure;
 
 function changeFailure(err: unknown): GovernancePolicyFailure {
-  if (err instanceof SensitiveActionError) return { ok: false, code: err.code, error: err.message };
-  if (err instanceof GovernanceAuthorityError) return { ok: false, code: authorityCode(err.code), error: err.message };
-  if (err instanceof GovernancePolicyWriteError) return { ok: false, code: err.code, error: err.message };
-  return { ok: false, code: 'unavailable', error: err instanceof Error ? err.message : String(err) };
+  if (err instanceof SensitiveActionError) return policyFailure(err.code, err.message);
+  if (err instanceof GovernanceAuthorityError) return governanceAuthorityFailure(err);
+  if (err instanceof GovernancePolicyWriteError) return policyFailure(err.code, err.message);
+  return policyFailure('unavailable', err instanceof Error ? err.message : String(err));
+}
+
+function governanceAuthorityRefusal(observed: RefusalContract['observed']): RefusalContract {
+  return {
+    observed,
+    liftsWhen:
+      'the operation is submitted by an actor with the required governance capability on the target layer; use a different authorized grantor for self-grant refusals or the prepare/approve/apply flow for an existing organization layer',
+    whoCanMakeItTrue: ['owner', 'host'],
+  };
+}
+
+function policyFailure<Code extends string>(
+  code: Code,
+  error: string,
+  observed: RefusalContract['observed'] = {},
+): PolicyFailure<Code> {
+  if (code === 'forbidden') {
+    return { ok: false, code, error, refusal: governanceAuthorityRefusal(observed) } as PolicyFailure<Code>;
+  }
+  return { ok: false, code, error } as PolicyFailure<Code>;
+}
+
+function governanceAuthorityFailure(error: GovernanceAuthorityError): PolicyFailure<GovernancePolicyWriteCode> {
+  const code = authorityCode(error.code);
+  return policyFailure(code, error.message, { authorityFailure: error.message.slice(0, 160) });
 }
 
 /**
