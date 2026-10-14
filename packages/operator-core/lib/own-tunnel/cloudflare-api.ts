@@ -33,6 +33,9 @@ export interface CloudflareZone {
   readonly id: string;
   readonly name: string;
   readonly account?: { readonly id: string };
+  readonly status?: string;
+  readonly paused?: boolean;
+  readonly name_servers?: ReadonlyArray<string>;
 }
 export interface CloudflareTunnel {
   readonly id: string;

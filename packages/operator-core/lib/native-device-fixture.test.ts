@@ -1,6 +1,6 @@
 import { createServer, request } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
-import { cleanupFixtureTunnel, fixtureIdentity, verifyProtectedIngress } from './native-device-fixture';
+import { cleanupFixtureTunnel, fixtureFailure, fixtureIdentity, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns } from './native-device-fixture';
 import type { CloudflareApi } from './own-tunnel/cloudflare-api';
 
 const privateEnv = {
@@ -12,6 +12,34 @@ const privateEnv = {
 };
 
 describe('disposable native HTTPS fixture admission', () => {
+  it('refuses inactive or incorrectly delegated zones before provisioning', async () => {
+    const zone = { id: 'z', name: 'example.org', status: 'active', paused: false,
+      name_servers: ['first.ns.example', 'second.ns.example'] };
+    const readNs = vi.fn(async () => ['SECOND.NS.EXAMPLE.', 'first.ns.example']);
+    await expect(verifyFixtureZone(zone, readNs)).resolves.toBeUndefined();
+    await expect(verifyFixtureZone({ ...zone, status: 'pending' }, readNs)).rejects.toThrow('active unpaused');
+    await expect(verifyFixtureZone({ ...zone, paused: true }, readNs)).rejects.toThrow('active unpaused');
+    await expect(verifyFixtureZone(zone, async () => ['peer.ns.example'])).rejects.toThrow('delegation mismatch');
+    expect(readNs).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for authoritative publication and preserves DNS failure details', async () => {
+    const missing = Object.assign(new Error('queryA ENODATA'), { code: 'ENODATA' });
+    const read = vi.fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(missing).mockResolvedValueOnce(['192.0.2.1']);
+    const pause = vi.fn(async () => undefined);
+    const failures: unknown[] = [];
+    await expect(waitForFixtureDns('native.example.org', [], { read, pause,
+      onFailure: error => failures.push(fixtureFailure(error)) })).resolves.toEqual(['192.0.2.1']);
+    expect(pause).toHaveBeenCalledTimes(1);
+    expect(failures).toEqual([{ message: 'queryA ENODATA', code: 'ENODATA' }]);
+    const exhausted = vi.fn(async () => { throw missing; });
+    const times = [0, 120001];
+    await expect(waitForFixtureDns('native.example.org', [], { read: exhausted, now: () => times.shift()! }))
+      .rejects.toThrow('queryA ENODATA');
+    expect(fixtureFailure(new TypeError('fetch failed', { cause: missing }))).toMatchObject({ causeCode: 'ENODATA' });
+  });
+
   it('refuses a real workspace, remote admin or ordinary operator port before provisioning', () => {
     expect(fixtureIdentity(privateEnv).ingressPort).toBe(40002);
     for (const change of [

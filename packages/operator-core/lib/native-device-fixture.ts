@@ -7,15 +7,55 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { Resolver, resolve4, resolveNs } from 'node:dns/promises';
 import { existsSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cloudflareApi, type CloudflareApi } from './own-tunnel/cloudflare-api';
+import { cloudflareApi, type CloudflareApi, type CloudflareZone } from './own-tunnel/cloudflare-api';
 import { assertPort, parseArgoTunnelCert, tunnelCnameTarget } from './own-tunnel/config';
 import { provisionCloudflareTunnel, removeCloudflareTunnel, type RemovalTarget } from './own-tunnel/provision';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const delay = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
+
+export function fixtureFailure(error: unknown) {
+  const detail = error instanceof Error ? error : new Error(String(error));
+  const code = (value: unknown) => value && typeof value === 'object' && 'code' in value
+    ? String(value.code) : undefined;
+  return { message: detail.message, code: code(detail),
+    causeCode: code(detail.cause), causeMessage: detail.cause instanceof Error ? detail.cause.message : undefined };
+}
+
+export async function verifyFixtureZone(zone: CloudflareZone, readNs = resolveNs) {
+  assert(zone.status === 'active' && zone.paused === false, 'Fixture requires an active unpaused DNS zone');
+  assert(zone.name_servers?.length, 'Fixture zone must name authoritative servers');
+  const delegated = await readNs(zone.name);
+  const normalized = (names: ReadonlyArray<string>) => names.map(n => n.toLowerCase().replace(/\.$/, '')).sort();
+  assert.deepEqual(normalized(delegated), normalized(zone.name_servers), 'Fixture DNS delegation mismatch');
+}
+
+/** Do not poison a recursive resolver with NXDOMAIN before the new record is published. */
+export async function waitForFixtureDns(hostname: string, nameservers: ReadonlyArray<string>, options: {
+  read?: () => Promise<string[]>; pause?: () => Promise<void>; now?: () => number;
+  onFailure?: (error: unknown) => void;
+} = {}) {
+  const now = options.now ?? Date.now;
+  const resolver = new Resolver({ timeout: 2000, tries: 1 });
+  if (!options.read) resolver.setServers((await Promise.all(nameservers.map(ns => resolve4(ns)))).flat());
+  const read = options.read ?? (() => resolver.resolve4(hostname));
+  const deadline = now() + 120_000;
+  for (;;) {
+    try {
+      const addresses = await read();
+      assert(addresses.length > 0, 'Authoritative DNS has no fixture address');
+      return addresses;
+    } catch (error) {
+      options.onFailure?.(error);
+      if (now() >= deadline) throw error;
+      await (options.pause ?? (() => delay(1000)))();
+    }
+  }
+}
 
 export function fixtureIdentity(env: NodeJS.ProcessEnv) {
   assert(/^test-runtime-[a-zA-Z0-9-]+$/.test(env.PAPERCUSP_WORKSPACE_ID ?? ''), 'Disposable workspace required');
@@ -86,6 +126,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   const api = cloudflareApi({ apiToken: login.apiToken });
   const zone = await api.getZone(login.zoneId);
   assert.equal(zone.account?.id, login.accountId, 'Certificate zone/account mismatch');
+  await verifyFixtureZone(zone); // Fail closed before creating external resources.
   const runId = randomUUID();
   const tunnelName = 'native-iphone-fixture-' + runId;
   const hostname = 'native-iphone-' + runId + '.' + zone.name;
@@ -130,6 +171,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
         receipt.localBoundary = await verifyProtectedIngress('http://127.0.0.1:' + identity.ingressPort);
         break;
       } catch (error) {
+        receipt.localLastFailure = fixtureFailure(error); save();
         if (Date.now() >= readyBy) throw error;
         await delay(500);
       }
@@ -148,11 +190,19 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       ...process.env, TUNNEL_TOKEN: provisioned.runToken,
     }, 'connector.log');
     receipt.connectorPid = connector.pid; save();
+    receipt.authoritativeAddresses = await waitForFixtureDns(hostname, zone.name_servers!, {
+      onFailure: error => { receipt.dnsLastFailure = fixtureFailure(error); save(); },
+    });
+    receipt.dnsPublishedAt = new Date().toISOString(); save();
     const publicReadyBy = Date.now() + 120_000;
     for (;;) {
       assert(!stopped && connector.exitCode === null && connector.signalCode === null, 'Fixture connector exited');
       try { receipt.publicBoundary = await verifyProtectedIngress(String(receipt.publicBase)); break; }
-      catch (error) { if (Date.now() >= publicReadyBy) throw error; await delay(1000); }
+      catch (error) {
+        receipt.publicLastFailure = fixtureFailure(error); save();
+        if (Date.now() >= publicReadyBy) throw error;
+        await delay(1000);
+      }
     }
     const minted = await fetch(identity.base + '/api/device/desktop/mint-pair-token', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -174,6 +224,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
     }
   } catch (error) {
     receipt.error = error instanceof Error ? error.message : String(error);
+    receipt.failure = fixtureFailure(error);
     process.exitCode = 1;
   } finally {
     process.off('SIGTERM', stop); process.off('SIGINT', stop);
